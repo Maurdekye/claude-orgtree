@@ -264,7 +264,9 @@ def node_message(slug: str, nid: str, body: Message):
         org.user_deep_reach(nid, gist)
         store.save_org(org)
     mail_notify(slug, USER, nid)
-    return supervisor.send_message(slug, nid, body.text)
+    # user=True: a user message may INTERRUPT the node's current response —
+    # "I told it to stop and it hasn't" must never happen again
+    return supervisor.send_message(slug, nid, body.text, user=True)
 
 
 @app.get("/api/orgs/{slug}/inbox")

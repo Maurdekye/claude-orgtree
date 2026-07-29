@@ -228,8 +228,12 @@ def identity_prompt(org: Org, nid: str) -> str:
         f"to act on the org: orgtree_message (reach your reports at any depth, your "
         f"superior, your peers), orgtree_hire (you must state purpose, folders, every "
         f"tool switch and visibility — no defaults), orgtree_retire/rehire/dissolve/"
-        f"reallocate, orgtree_chart. REQUIRED: call orgtree_status when you finish "
-        f"(done) or get stuck (blocked) — that is how your superior learns of it. "
+        f"reallocate, orgtree_retool (re-scope an existing report), orgtree_chart. "
+        f"You run headless: interactive tools (AskUserQuestion, plan mode) do not "
+        f"exist here — to ask something, send orgtree_message kind=question and end "
+        f"your turn; the answer arrives as a future turn. REQUIRED: call "
+        f"orgtree_status when you finish (done) or get stuck (blocked) — that is "
+        f"how your superior learns of it. "
         f"Your scratch folder is your own: keep a CLAUDE.md there as standing notes — "
         f"it is loaded automatically every turn and survives compaction. "
         + _claudemd_caveat(org, nid)
@@ -239,6 +243,58 @@ def identity_prompt(org: Org, nid: str) -> str:
 
 
 # --------------------------------------------------------------------- turns
+def _user_event(text: str) -> str:
+    """One stream-json input line: a user message for the running CLI."""
+    return json.dumps({"type": "user", "message": {
+        "role": "user", "content": [{"type": "text", "text": text}]}}) + "\n"
+
+
+def _envelope(slug: str, nid: str, text: str) -> str:
+    """Drain notices + mail atomically and prepend them (№27 envelope, §7.4).
+    Safe to call repeatedly — a second call finds nothing new."""
+    with store.DOC_LOCK:
+        org = store.load_org(slug)
+        if nid not in org.nodes:
+            return text
+        pending = (org.d.get("notices") or {}).pop(nid, None)
+        mail = org.take_mail(nid)
+        if pending or mail:
+            store.save_org(org)
+    prelude = []
+    if pending:
+        lines = "\n".join(f"- {p['at']}: {p['text']}" for p in pending)
+        prelude.append(f"[ORG NOTICES — {len(pending)} change(s) since your "
+                       f"last turn]\n{lines}\n[END NOTICES]")
+    if mail:
+        blocks = []
+        for m in mail:
+            tag = " ⚠ THE USER — user instructions outrank your chain" \
+                if m["from"] == USER else ""
+            blocks.append(f"FROM {m['from']} ({m.get('relationship', 'agent')}"
+                          f"{tag}) · {m.get('kind', 'message')} · {m['at']}\n"
+                          f"{m['body']}")
+        prelude.append(f"[MAIL — {len(mail)} message(s)]\n"
+                       + "\n---\n".join(blocks) + "\n[END MAIL]")
+    return ("\n\n".join(prelude) + "\n\n" + text) if prelude else text
+
+
+def _mirror_queue(slug: str, nid: str):
+    """Best-effort persistence of the in-memory queue (№: queued texts used to
+    vanish on restart — silently discarded messages). Called OUTSIDE _state_lock."""
+    st = state(slug, nid)     # ⚠ state() takes _state_lock — never nest it
+    with _state_lock:
+        q = list(st["queue"])
+    try:
+        with store.DOC_LOCK:
+            org = store.load_org(slug)
+            if nid in org.nodes:
+                org.node(nid)["queued_msgs"] = q
+                store.save_org(org)
+    except Exception:                                        # noqa: BLE001
+        pass
+
+
+
 def _build_cmd(org: Org, nid: str) -> list[str]:
     n = org.node(nid)
     slug = org.d["slug"]
@@ -256,14 +312,17 @@ def _build_cmd(org: Org, nid: str) -> list[str]:
             deny += [f"Edit({p}/**)", f"Write({p}/**)", f"NotebookEdit({p}/**)"]
         settings["permissions"] = {"deny": deny}
     cmd = _claude_argv() + ["-p",
-           "--output-format", "stream-json", "--verbose",
+           "--output-format", "stream-json", "--input-format", "stream-json",
+           "--verbose",
            "--model", model,
            "--permission-mode", sc.get("permission_mode", "acceptEdits"),
            "--append-system-prompt", identity_prompt(org, nid),
            "--settings", json.dumps(settings),
            "--strict-mcp-config"]
     tools = sc.get("tools", {})
-    disallowed = []
+    # interactive-only tools cannot work in a headless turn (there is no client
+    # to present them) — questions route through orgtree_message instead
+    disallowed = ["AskUserQuestion", "EnterPlanMode", "ExitPlanMode"]
     if not tools.get("bash", True):
         disallowed += ["Bash"]
     if not tools.get("web", True):
@@ -286,8 +345,16 @@ def _build_cmd(org: Org, nid: str) -> list[str]:
                 "PYTHONPATH": BACKEND_DIR},
     }
     cmd += ["--mcp-config", json.dumps({"mcpServers": chosen})]
-    # MCP tools are not auto-approved headless — allowlist exactly the granted servers
-    cmd += ["--allowedTools", ",".join(f"mcp__{k}" for k in sorted(chosen))]
+    # Headless permission reality: acceptEdits auto-approves FILE tools only.
+    # Bash, the web tools and MCP tools all prompt — and a headless prompt is
+    # an auto-DENY (an agent saw python "blocked by a permission hook") — so
+    # every granted capability must be explicitly allowlisted.
+    allowed = [f"mcp__{k}" for k in sorted(chosen)]
+    if tools.get("bash", True):
+        allowed.append("Bash")
+    if tools.get("web", True):
+        allowed += ["WebSearch", "WebFetch"]
+    cmd += ["--allowedTools", ",".join(allowed)]
     for d in sc["add_dirs"]:
         cmd += ["--add-dir", d["path"]]
     # §7.6 read-down: a node's file tools reach its own scratch (cwd) plus every
@@ -359,9 +426,17 @@ def _run_turn(slug: str, nid: str, text: str):
                 proc.kill()
             timer = threading.Timer(TURN_TIMEOUT, _expire)
             timer.start()
+            with _state_lock:
+                st["proc"] = proc         # for the user-interrupt escape hatch
+                st["responding"] = True
             try:
-                proc.stdin.write(text)
-                proc.stdin.close()
+                proc.stdin.write(_user_event(text))
+                proc.stdin.flush()
+                # stdin stays OPEN: queued messages are fed into the SAME
+                # process at each result boundary (spike-proven; writing DURING
+                # a response is useless — the CLI queue-removes such messages,
+                # live-observed). A user message can INTERRUPT the response to
+                # get delivered now.
                 for line in proc.stdout:      # live per-message feed to the UI
                     line = line.strip()
                     if not line:
@@ -386,10 +461,39 @@ def _run_turn(slug: str, nid: str, text: str):
                                                    "text": b.get("name", "tool")})
                     elif ev.get("type") == "result":
                         res = ev
+                        timer.cancel()                    # fresh budget per message
+                        timer = threading.Timer(TURN_TIMEOUT, _expire)
+                        timer.start()
+                        # the response resolved: feed the next queued message
+                        # into the same process, or close stdin to end it
+                        nxt = None
+                        with _state_lock:
+                            st["responding"] = False
+                            if st["queue"]:
+                                nxt = st["queue"].pop(0)
+                                st["responding"] = True
+                        if nxt is not None:
+                            _mirror_queue(slug, nid)
+                            try:
+                                proc.stdin.write(_user_event(nxt))
+                                proc.stdin.flush()
+                                continue
+                            except OSError:
+                                with _state_lock:
+                                    st["queue"].insert(0, nxt)
+                                    st["responding"] = False
+                                _mirror_queue(slug, nid)
+                        try:
+                            proc.stdin.close()
+                        except OSError:
+                            pass
                 err = proc.stderr.read()
                 proc.wait()
             finally:
                 timer.cancel()
+                with _state_lock:
+                    st["proc"] = None
+                    st["responding"] = False
             if timed_out.is_set():
                 raise RuntimeError(f"turn timed out after {TURN_TIMEOUT}s and was killed")
             err_blob = " / ".join((err or "").strip().splitlines()[-3:]) \
@@ -429,6 +533,7 @@ def _run_turn(slug: str, nid: str, text: str):
                 nxt = st["queue"].pop(0)
             else:
                 st["busy"] = False
+        _mirror_queue(slug, nid)
         notify(slug, nid, "turn_done")
         if nxt is not None:
             _run_turn(slug, nid, nxt)
@@ -523,19 +628,44 @@ def _compact_split(slug: str, nid: str):
     notify(slug, pred, "created")
 
 
-def send_message(slug: str, nid: str, text: str) -> dict:
-    """Queue-or-run. Returns immediately; turn runs on a worker thread. Attached
-    nodes (№17: the user has them open in a terminal) only queue — one driver at
-    a time is non-negotiable."""
+def send_message(slug: str, nid: str, text: str, user: bool = False) -> dict:
+    """Queue-or-run; returns immediately. A busy node's queue is drained into
+    the SAME live process at each result boundary (never mid-response — the
+    CLI drops those, live-observed). A USER message additionally sends an
+    interrupt control request, aborting the current response so the message
+    delivers NOW. Attached nodes (№17: open in the user's terminal) only
+    queue — one driver at a time is non-negotiable."""
     st = state(slug, nid)
+    text = _envelope(slug, nid, text)     # mail/notices ride along
+    queued = interrupting = False
     with _state_lock:
         if st.get("attached"):
             st["queue"].append(text)
-            return {"accepted": True, "queued": len(st["queue"]), "attached": True}
-        if st["busy"]:
+            n, queued = len(st["queue"]), True
+            out = {"accepted": True, "queued": n, "attached": True}
+        elif st["busy"]:
             st["queue"].append(text)
-            return {"accepted": True, "queued": len(st["queue"])}
-        st["busy"] = True
+            n, queued = len(st["queue"]), True
+            if user and st.get("responding"):
+                proc = st.get("proc")
+                try:
+                    if proc and proc.stdin and not proc.stdin.closed:
+                        proc.stdin.write(json.dumps({
+                            "type": "control_request",
+                            "request_id": f"orgtree-int-{n}",
+                            "request": {"subtype": "interrupt"}}) + "\n")
+                        proc.stdin.flush()
+                        interrupting = True
+                except OSError:
+                    pass
+            out = {"accepted": True, "queued": n, "interrupting": interrupting}
+        else:
+            st["busy"] = True
+            out = None
+    if queued:
+        _mirror_queue(slug, nid)
+    if out is not None:
+        return out
     threading.Thread(target=_run_turn, args=(slug, nid, text), daemon=True).start()
     return {"accepted": True, "queued": 0}
 
@@ -584,6 +714,28 @@ def reconcile(slug: str) -> list[str]:
                 marked.append(nid)
         if marked:
             store.save_org(org)
+        # drain-on-start: queued messages persisted in the doc survive restarts
+        # (they used to be memory-only and silently discarded)
+        revive = []
+        for nid, n in org.nodes.items():
+            q = n.get("queued_msgs") or []
+            if q and n["state"] == "live" and nid not in marked:
+                st = state(slug, nid)
+                with _state_lock:
+                    st["queue"].extend(q)
+                revive.append(nid)
+    for nid in revive:
+        st = state(slug, nid)
+        kick = None
+        with _state_lock:
+            if not st["busy"] and not st.get("attached") and st["queue"]:
+                st["busy"] = True
+                kick = st["queue"].pop(0)
+        _mirror_queue(slug, nid)
+        if kick is not None:
+            print(f"[orgtree] {slug}/{nid}: draining persisted queue")
+            threading.Thread(target=_run_turn, args=(slug, nid, kick),
+                             daemon=True).start()
     return marked
 
 
