@@ -1187,6 +1187,7 @@ function Activity({ act, dotOnly }) {
 function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onConfig }) {
   const [chat, setChat] = useState(null)
   const [text, setText] = useState('')
+  const [pending, setPending] = useState([])   // sent, not yet in the transcript
   const [asking, setAsking] = useState(false)
   const [view, setView] = useState('chat')     // chat | history | files
   const [live_feed, setLiveFeed] = useState([])
@@ -1208,6 +1209,9 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
       const stick = force || !loadedRef.current || nearBottom()
       loadedRef.current = true
       setChat(c)
+      // a pending message graduates once the transcript contains it
+      setPending((p) => p.filter((x) =>
+        !c.messages.slice(-20).some((m) => m.role === 'user' && m.text === x)))
       // the fetched transcript supersedes everything streamed so far — keeping
       // the feed around doubled the whole in-flight turn (transcript copy +
       // live copy). Stream events landing after this fetch re-append.
@@ -1239,7 +1243,11 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
     const t = text.trim()
     if (!t || !live) return
     setText('')
-    setChat((c) => c && ({ ...c, busy: true, messages: [...c.messages, { role: 'user', text: t }] }))
+    // NOT an optimistic chat append — while the node is busy the message is
+    // only queued, so transcript refreshes would wipe it until the queued
+    // turn starts. The pending list survives refreshes.
+    setPending((p) => [...p, t])
+    setChat((c) => c && ({ ...c, busy: true }))
     toBottom()
     sendMessage(slug, node.id, t).then(() => refresh(true))
       .catch((e) => toast([`⛔ ${e.message}`]))
@@ -1322,6 +1330,10 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
                 ? <div key={'f' + i} className="msg live tools">⏺ {f.text}</div>
                 : <div key={'f' + i} className="msg assistant live md"
                     dangerouslySetInnerHTML={md(f.text)} />
+            ))}
+            {pending.map((p, i) => (
+              <div key={'q' + i} className="msg user pending md"
+                dangerouslySetInnerHTML={md(p)} />
             ))}
             {chat?.busy && <div className="working"><span className="cc-spin">✳</span> working<span className="actdots" /></div>}
           </div>

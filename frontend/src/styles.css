@@ -346,6 +346,7 @@ main {
   align-self: stretch; background: var(--input);
   border: 1px solid var(--line-soft); border-radius: 6px; padding: 6px 9px;
 }
+.msg.user.pending { opacity: .65; }   /* sent, waiting for its turn */
 .msg.sys { align-self: center; color: var(--dim); font-size: 10px; background: none; }
 /* markdown inside chat messages */
 .md { white-space: normal; }
