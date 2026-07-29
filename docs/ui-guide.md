@@ -105,10 +105,10 @@ ledger self-audit chip appears ONLY if the credit invariants are ever violated
   is paging, not death). dissolve retires an ENTIRE subtree. rehire brings an
   archived node back at its old seat.
 - Composer: Enter sends, Shift+Enter for a newline. The session starts on the
-  first message. Messaging a BUSY agent interrupts its current response so
-  your message delivers immediately (your sent bubble shows dimmed until the
-  transcript contains it); agent-to-agent mail waits for the response to
-  finish. Queued messages survive server restarts. A `preserving` bearer answers through a discarded fork — it
+  first message. Messages to a BUSY agent deliver the moment its current
+  response ends — never interrupting it (your sent bubble shows dimmed until
+  delivered). Agents are told to end responses at milestones so that moment
+  comes often. Queued messages survive server restarts. A `preserving` bearer answers through a discarded fork — it
   retains nothing of the exchange.
 
 ## Lineage (the ≣ stack behind a card)

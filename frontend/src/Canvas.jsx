@@ -1229,6 +1229,10 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
   useEffect(() => {                       // live per-message feed while working
     if (streamEvt && streamEvt.node === node.id) {
       const stick = nearBottom()
+      if (streamEvt.kind === 'steered') {
+        // a pending user message just got DELIVERED mid-task
+        setPending((p) => p.filter((x) => !streamEvt.text.includes(x)))
+      }
       setLiveFeed((f) => [...f.slice(-24), streamEvt])
       if (stick) toBottom()
     }
@@ -1328,8 +1332,11 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
             {live_feed.map((f, i) => (
               f.kind === 'tool'
                 ? <div key={'f' + i} className="msg live tools">⏺ {f.text}</div>
-                : <div key={'f' + i} className="msg assistant live md"
-                    dangerouslySetInnerHTML={md(f.text)} />
+                : f.kind === 'steered'
+                  ? <div key={'f' + i} className="msg user live md"
+                      dangerouslySetInnerHTML={md(f.text)} />
+                  : <div key={'f' + i} className="msg assistant live md"
+                      dangerouslySetInnerHTML={md(f.text)} />
             ))}
             {pending.map((p, i) => (
               <div key={'q' + i} className="msg user pending md"

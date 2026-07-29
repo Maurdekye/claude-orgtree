@@ -231,7 +231,10 @@ def identity_prompt(org: Org, nid: str) -> str:
         f"reallocate, orgtree_retool (re-scope an existing report), orgtree_chart. "
         f"You run headless: interactive tools (AskUserQuestion, plan mode) do not "
         f"exist here — to ask something, send orgtree_message kind=question and end "
-        f"your turn; the answer arrives as a future turn. REQUIRED: call "
+        f"your turn; the answer arrives as a future turn. Messages sent to you "
+        f"(including the user's) deliver when your current response ends — so for "
+        f"long work, END your response at natural milestones and continue on the "
+        f"next message rather than running one marathon response. REQUIRED: call "
         f"orgtree_status when you finish (done) or get stuck (blocked) — that is "
         f"how your superior learns of it. "
         f"Your scratch folder is your own: keep a CLAUDE.md there as standing notes — "
@@ -302,7 +305,20 @@ def _build_cmd(org: Org, nid: str) -> list[str]:
     first = transcript_path(sid) is None
     model = org.d["models"].get(n["model"], n["model"])
     sc = n["scope"]
-    settings: dict = {"disableAllHooks": True}
+    # isolation by default: the user's global hooks must not leak into agents.
+    # ⚠ CLI <= 2.1.31 does not run TOOL hooks headless at all (live-tested at
+    # --settings, project and user-global levels — only lifecycle hooks fire),
+    # so the PostToolUse steering hook cannot work yet. When a future CLI
+    # honors it, set ORGTREE_STEER_HOOK=1: mid-task user messages would then
+    # deliver right after the next tool call (see steer.py). Until then,
+    # steered messages deliver at the next RESPONSE boundary via the queue
+    # fold — the soonest non-interrupting delivery this CLI permits.
+    if os.environ.get("ORGTREE_STEER_HOOK") == "1":
+        settings: dict = {"hooks": {"PostToolUse": [{"hooks": [
+            {"type": "command",
+             "command": f"{sys.executable} -m orgtree.steer", "timeout": 8}]}]}}
+    else:
+        settings = {"disableAllHooks": True}
     ro_paths = [d["path"] for d in sc["add_dirs"] if d["mode"] == "ro"]
     if ro_paths:
         # read-only enforcement: permission deny rules on the writing tools
@@ -413,8 +429,12 @@ def _run_turn(slug: str, nid: str, text: str):
             if prelude:
                 text = "\n\n".join(prelude) + "\n\n" + text
             notify(slug, nid, "turn_started")
+            env = clean_env()
+            env["ORGTREE_ORG"], env["ORGTREE_NODE"] = slug, nid
+            env["ORGTREE_PORT"] = os.environ.get("ORGTREE_PORT", "7360")
+            env["PYTHONPATH"] = BACKEND_DIR + os.pathsep + env.get("PYTHONPATH", "")
             proc = subprocess.Popen(
-                _build_cmd(org, nid), cwd=scratch_dir(slug, nid), env=clean_env(),
+                _build_cmd(org, nid), cwd=scratch_dir(slug, nid), env=env,
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, encoding="utf-8", errors="replace")
             res = {}
@@ -469,6 +489,10 @@ def _run_turn(slug: str, nid: str, text: str):
                         nxt = None
                         with _state_lock:
                             st["responding"] = False
+                            leftover = st.get("steer") or []
+                            st["steer"] = []
+                            if leftover:
+                                st["queue"][0:0] = leftover
                             if st["queue"]:
                                 nxt = st["queue"].pop(0)
                                 st["responding"] = True
@@ -494,6 +518,10 @@ def _run_turn(slug: str, nid: str, text: str):
                 with _state_lock:
                     st["proc"] = None
                     st["responding"] = False
+                    leftover = st.get("steer") or []
+                    st["steer"] = []
+                    if leftover:
+                        st["queue"][0:0] = leftover
             if timed_out.is_set():
                 raise RuntimeError(f"turn timed out after {TURN_TIMEOUT}s and was killed")
             err_blob = " / ".join((err or "").strip().splitlines()[-3:]) \
@@ -631,34 +659,26 @@ def _compact_split(slug: str, nid: str):
 def send_message(slug: str, nid: str, text: str, user: bool = False) -> dict:
     """Queue-or-run; returns immediately. A busy node's queue is drained into
     the SAME live process at each result boundary (never mid-response — the
-    CLI drops those, live-observed). A USER message additionally sends an
-    interrupt control request, aborting the current response so the message
-    delivers NOW. Attached nodes (№17: open in the user's terminal) only
-    queue — one driver at a time is non-negotiable."""
+    CLI drops those, live-observed). A USER message instead goes on the STEER
+    list: the PostToolUse hook delivers it right after the node's next tool
+    call finishes — soonest possible without interrupting (user ruling).
+    Attached nodes (№17: open in the user's terminal) only queue."""
     st = state(slug, nid)
     text = _envelope(slug, nid, text)     # mail/notices ride along
-    queued = interrupting = False
+    queued = False
     with _state_lock:
         if st.get("attached"):
             st["queue"].append(text)
             n, queued = len(st["queue"]), True
             out = {"accepted": True, "queued": n, "attached": True}
         elif st["busy"]:
-            st["queue"].append(text)
-            n, queued = len(st["queue"]), True
             if user and st.get("responding"):
-                proc = st.get("proc")
-                try:
-                    if proc and proc.stdin and not proc.stdin.closed:
-                        proc.stdin.write(json.dumps({
-                            "type": "control_request",
-                            "request_id": f"orgtree-int-{n}",
-                            "request": {"subtype": "interrupt"}}) + "\n")
-                        proc.stdin.flush()
-                        interrupting = True
-                except OSError:
-                    pass
-            out = {"accepted": True, "queued": n, "interrupting": interrupting}
+                st.setdefault("steer", []).append(text)
+                out = {"accepted": True, "queued": 0, "steering": True}
+            else:
+                st["queue"].append(text)
+                n, queued = len(st["queue"]), True
+                out = {"accepted": True, "queued": n}
         else:
             st["busy"] = True
             out = None
@@ -668,6 +688,15 @@ def send_message(slug: str, nid: str, text: str, user: bool = False) -> dict:
         return out
     threading.Thread(target=_run_turn, args=(slug, nid, text), daemon=True).start()
     return {"accepted": True, "queued": 0}
+
+
+def pop_steer(slug: str, nid: str) -> list[str]:
+    """The steering hook's fetch: everything pending for this node, atomically."""
+    st = state(slug, nid)
+    with _state_lock:
+        msgs = st.get("steer") or []
+        st["steer"] = []
+    return msgs
 
 
 def set_attached(slug: str, nid: str, attached: bool) -> dict:

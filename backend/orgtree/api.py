@@ -269,6 +269,18 @@ def node_message(slug: str, nid: str, body: Message):
     return supervisor.send_message(slug, nid, body.text, user=True)
 
 
+@app.post("/api/orgs/{slug}/nodes/{nid}/steer")
+async def node_steer(slug: str, nid: str):
+    """Called by the PostToolUse steering hook inside a node's turn: pops the
+    node's pending mid-task user messages for immediate delivery."""
+    msgs = supervisor.pop_steer(slug, nid)
+    if msgs:
+        for m in msgs:
+            await hub._send(slug, {"type": "node_stream", "org": slug,
+                                   "node": nid, "kind": "steered", "text": m[:2000]})
+    return {"messages": msgs}
+
+
 @app.get("/api/orgs/{slug}/inbox")
 def user_inbox(slug: str):
     try:
