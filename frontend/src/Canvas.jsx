@@ -1189,6 +1189,10 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
   const refresh = useCallback(() =>
     getChat(slug, node.id).then((c) => {
       setChat(c)
+      // the fetched transcript supersedes everything streamed so far — keeping
+      // the feed around doubled the whole in-flight turn (transcript copy +
+      // live copy). Stream events landing after this fetch re-append.
+      setLiveFeed([])
       requestAnimationFrame(() => {
         if (scroller.current) scroller.current.scrollTop = scroller.current.scrollHeight
       })
