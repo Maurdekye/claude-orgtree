@@ -31,6 +31,16 @@ from .ledger import USER, Org, now as now_iso
 
 COMPACT_AT = float(os.environ.get("ORGTREE_COMPACT_AT", "0.80"))   # §8.2
 ORACLE_AT = float(os.environ.get("ORGTREE_ORACLE_AT", "0.92"))     # §8.3 state 2→3
+
+# real context windows per tier (user-verified) — the CLI's
+# modelUsage.contextWindow under-reported 1M-window models as 200k.
+# Override with ORGTREE_CONTEXT_WINDOWS='{"opus": 500000, ...}'
+TIER_CONTEXT = {"haiku": 200_000, "sonnet": 1_000_000,
+                "opus": 1_000_000, "fable": 1_000_000}
+try:
+    TIER_CONTEXT.update(json.loads(os.environ.get("ORGTREE_CONTEXT_WINDOWS") or "{}"))
+except (json.JSONDecodeError, TypeError):
+    pass
 BACKEND_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
 
 # the Claude Code CLI: found on PATH, or pinned via ORGTREE_CLAUDE
@@ -436,9 +446,12 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict, st: dict, occ: int = 0
     if nid not in org.nodes:
         return
     cost = float(res.get("total_cost_usd") or 0.0)
-    cw = None
-    for mu in (res.get("modelUsage") or {}).values():
-        cw = mu.get("contextWindow") or cw
+    # the pinned per-tier window wins; the CLI's modelUsage.contextWindow is
+    # only a fallback for unknown tiers (it under-reported 1M models as 200k)
+    cw = TIER_CONTEXT.get(org.node(nid)["model"])
+    if not cw:
+        for mu in (res.get("modelUsage") or {}).values():
+            cw = mu.get("contextWindow") or cw
     st["occupancy"], st["context_window"] = occ or st["occupancy"], cw or st["context_window"]
     if cost or occ or cw:
         with store.DOC_LOCK:

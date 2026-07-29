@@ -101,6 +101,7 @@ No manual wiring is needed; the supervisor does all of it per turn:
 | `ORGTREE_MAX_TURNS` | `3` | concurrent agent turns |
 | `ORGTREE_TURN_TIMEOUT` | `1800` | seconds before a turn is abandoned |
 | `ORGTREE_COMPACT_AT` | `0.80` | context occupancy that triggers a compaction split |
+| `ORGTREE_CONTEXT_WINDOWS` | haiku 200k, others 1M | per-tier window override, JSON like `{"opus": 500000}` |
 | `ORGTREE_ORACLE_AT` | `0.92` | bearer occupancy that demotes it to a preserving oracle |
 
 ## A word on safety and cost
