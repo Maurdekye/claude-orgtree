@@ -465,6 +465,13 @@ async def agent_call(body: AgentCall):
                                   tools=a.get("tools"),
                                   org_visibility=a.get("org_visibility"),
                                   purpose=a.get("purpose"))
+            elif body.tool == "orgtree_retool":
+                result = org.set_scope(body.node, a.get("node", ""),
+                                       add_dirs=a.get("add_dirs"),
+                                       tools=a.get("tools"),
+                                       org_visibility=a.get("org_visibility"),
+                                       charter=a.get("charter"),
+                                       team_charter=a.get("team_charter"))
             elif body.tool == "orgtree_retire":
                 result = org.retire(body.node, a.get("node"))
             elif body.tool == "orgtree_rehire":

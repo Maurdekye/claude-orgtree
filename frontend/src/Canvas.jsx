@@ -1,3 +1,5 @@
+import DOMPurify from 'dompurify'
+import { marked } from 'marked'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   audienceAction, getChat, getHistory, getMcpServers, getScratch,
@@ -85,6 +87,11 @@ function sizeOf(id) {
 }
 
 const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2)
+
+// chat markdown: gfm + hard line breaks, sanitized (agents echo web content)
+const md = (text) => ({
+  __html: DOMPurify.sanitize(marked.parse(text ?? '', { gfm: true, breaks: true, async: false })),
+})
 const smooth = (t) => t * t * (3 - 2 * t)
 
 // ---- connection segments (world space). kind 'c' = cubic bezier, 'l' = line.
@@ -1184,18 +1191,28 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
   const [view, setView] = useState('chat')     // chat | history | files
   const [live_feed, setLiveFeed] = useState([])
   const scroller = useRef(null)
+  const loadedRef = useRef(false)     // first load always lands at the bottom
   const live = node.state === 'live'
+  const nearBottom = () => {
+    const el = scroller.current
+    return !el || el.scrollHeight - el.scrollTop - el.clientHeight < 40
+  }
+  const toBottom = () => requestAnimationFrame(() => {
+    if (scroller.current) scroller.current.scrollTop = scroller.current.scrollHeight
+  })
 
-  const refresh = useCallback(() =>
+  const refresh = useCallback((force = false) =>
     getChat(slug, node.id).then((c) => {
+      // sticky-bottom: follow new content only if the reader is already at
+      // (or near) the bottom — never yank them out of scrollback
+      const stick = force || !loadedRef.current || nearBottom()
+      loadedRef.current = true
       setChat(c)
       // the fetched transcript supersedes everything streamed so far — keeping
       // the feed around doubled the whole in-flight turn (transcript copy +
       // live copy). Stream events landing after this fetch re-append.
       setLiveFeed([])
-      requestAnimationFrame(() => {
-        if (scroller.current) scroller.current.scrollTop = scroller.current.scrollHeight
-      })
+      if (stick) toBottom()
     }).catch(() => {}), [slug, node.id])
 
   useEffect(() => { refresh() }, [refresh])
@@ -1207,12 +1224,11 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
   }, [pulse, node.id, refresh])
   useEffect(() => {                       // live per-message feed while working
     if (streamEvt && streamEvt.node === node.id) {
+      const stick = nearBottom()
       setLiveFeed((f) => [...f.slice(-24), streamEvt])
-      requestAnimationFrame(() => {
-        if (scroller.current) scroller.current.scrollTop = scroller.current.scrollHeight
-      })
+      if (stick) toBottom()
     }
-  }, [streamEvt, node.id])
+  }, [streamEvt, node.id])   // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!chat?.busy) return
     const t = setInterval(refresh, 5000)
@@ -1224,7 +1240,9 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
     if (!t || !live) return
     setText('')
     setChat((c) => c && ({ ...c, busy: true, messages: [...c.messages, { role: 'user', text: t }] }))
-    sendMessage(slug, node.id, t).then(refresh).catch((e) => toast([`⛔ ${e.message}`]))
+    toBottom()
+    sendMessage(slug, node.id, t).then(() => refresh(true))
+      .catch((e) => toast([`⛔ ${e.message}`]))
   }
 
   const liveKids = node.children.some((c) => c.state === 'live')
@@ -1302,7 +1320,8 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
             {live_feed.map((f, i) => (
               f.kind === 'tool'
                 ? <div key={'f' + i} className="msg live tools">⏺ {f.text}</div>
-                : <div key={'f' + i} className="msg assistant live">{f.text}</div>
+                : <div key={'f' + i} className="msg assistant live md"
+                    dangerouslySetInnerHTML={md(f.text)} />
             ))}
             {chat?.busy && <div className="working"><span className="cc-spin">✳</span> working<span className="actdots" /></div>}
           </div>
@@ -1417,7 +1436,7 @@ function Msg({ m }) {
   return (
     <div className={'msg ' + m.role + (m.oracle ? ' oracle' : '')}>
       {m.tools?.length > 0 && <div className="tools">⏺ {m.tools.join(' · ')}</div>}
-      {m.text && <div className="msgtext">{m.text}</div>}
+      {m.text && <div className="msgtext md" dangerouslySetInnerHTML={md(m.text)} />}
       {m.oracle && <div className="tools">◇ oracle exchange — not retained by the node</div>}
     </div>
   )

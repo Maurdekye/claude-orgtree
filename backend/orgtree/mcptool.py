@@ -88,6 +88,36 @@ TOOLS = [
         },
     },
     {
+        "name": "orgtree_retool",
+        "description": (
+            "Re-scope an existing agent in your subtree: change its folder grants, "
+            "tool set, MCP servers, org visibility, charter or team charter. Only "
+            "the fields you pass change. The capability rule still binds — you "
+            "cannot grant anything you do not hold yourself, and shrinking a grant "
+            "clamps everything beneath the target too."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "node": {"type": "string", "description": "the agent to re-scope"},
+                "add_dirs": {"type": "array",
+                             "items": {"type": "object",
+                                       "properties": {"path": {"type": "string"},
+                                                      "mode": {"type": "string",
+                                                               "enum": ["rw", "ro"]}},
+                                       "required": ["path", "mode"]},
+                             "description": "REPLACES its folder grants when passed"},
+                "tools": TOOLS_SCHEMA,
+                "org_visibility": {"type": "string",
+                                   "enum": ["self", "team", "subtree", "full"]},
+                "charter": {"type": "string",
+                            "description": "its standing role card (every turn)"},
+                "team_charter": {"type": "string",
+                                 "description": "standing instructions binding its whole subtree"},
+            },
+            "required": ["node"],
+        },
+    },
+    {
         "name": "orgtree_retire",
         "description": ("Retire a LEAF node in your subtree (frees its seat + grant "
                         "back to its parent), or yourself if you have no live reports. "

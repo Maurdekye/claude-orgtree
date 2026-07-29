@@ -1073,6 +1073,10 @@ class Org:
             self._notify([nid], "The user changed your configuration (folders, tools, "
                                 "charter, or org visibility). Your current scope is "
                                 "stated in your system prompt each turn.")
+        else:
+            self._notify([nid], f'Your superior "{actor}" changed your configuration '
+                                f'(folders, tools, charter, or org visibility). Your '
+                                f'current scope is stated in your system prompt each turn.')
         self._log("set_scope", actor, {"node": nid, "scope": sc}, warnings)
         return {"scope": sc, "warnings": warnings}
 
