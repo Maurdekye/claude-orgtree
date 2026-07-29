@@ -1,0 +1,5 @@
+fastapi>=0.110
+uvicorn>=0.27
+
+# optional — only for tools/ui_probe.py (headless UI screenshots):
+# playwright>=1.40
