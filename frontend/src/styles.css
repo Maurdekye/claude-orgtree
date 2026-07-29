@@ -54,11 +54,23 @@ aside footer { margin-top: auto; color: #6e6e6e; font-size: 11px; padding: 0 4px
 
 nav { display: flex; flex-direction: column; gap: 2px; }
 .org {
-  display: flex; justify-content: space-between; align-items: center; gap: 8px;
+  display: flex; align-items: center; gap: 8px;
   width: 100%; text-align: left; padding: 6px 10px; border-radius: 4px;
   border: 1px solid transparent; border-left: 2px solid transparent;
   background: none; color: var(--ink); cursor: pointer; font-size: 13px;
 }
+.org .spacer { flex: 1; }
+.org-del {
+  background: none; border: none; padding: 0 2px; font-size: 11px;
+  color: var(--dim); opacity: 0; transition: opacity .12s; line-height: 1;
+}
+.org:hover .org-del { opacity: .8; }
+.org-del:hover { color: var(--bad); opacity: 1; background: none; }
+.home {
+  background: none; border: none; text-align: left; padding: 4px 10px;
+  color: var(--dim); font-size: 12px; border-radius: 4px;
+}
+.home:hover { background: var(--panel-2); color: var(--ink); }
 .org:hover { background: var(--panel-2); }
 .org.current {
   background: var(--accent-soft); border-left-color: var(--accent);

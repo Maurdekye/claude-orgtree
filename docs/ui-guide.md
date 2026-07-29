@@ -7,6 +7,10 @@ read once.
 
 ## The canvas
 
+- The ☰ drawer lists your organizations; "⌂ all organizations" returns to
+  the start page. Each org row's 🗑 (hover) permanently deletes that org —
+  ledger, mail, lineage — after an in-page confirmation; workspace and
+  scratch folders remain on disk.
 - Pan by dragging empty space; zoom with the wheel. Wheel over an open desk
   scrolls whatever is under the cursor when it can scroll that way, and falls
   back to camera zoom when it can't (empty chat, list at its end). Wheel over

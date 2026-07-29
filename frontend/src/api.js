@@ -11,6 +11,8 @@ export const createOrg = (name, dirs) =>
     body: JSON.stringify({ name, dirs }),
   }).then(j)
 export const getTree = (slug) => fetch(`/api/orgs/${slug}`).then(j)
+export const deleteOrg = (slug) =>
+  fetch(`/api/orgs/${slug}`, { method: 'DELETE' }).then(j)
 export const runOp = (slug, body) =>
   fetch(`/api/orgs/${slug}/ops`, {
     method: 'POST',

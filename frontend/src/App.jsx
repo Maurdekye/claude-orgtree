@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  audienceAction, clearInbox, createOrg, getAudiences, getInbox, getOrgMd,
-  getTree, listOrgs, openWs, putOrgMd, runOp, saveSettings,
+  audienceAction, clearInbox, createOrg, deleteOrg, getAudiences, getInbox,
+  getOrgMd, getTree, listOrgs, openWs, putOrgMd, runOp, saveSettings,
 } from './api'
-import { OrgCanvas, useEsc } from './Canvas'
+import { ConfirmModal, OrgCanvas, useEsc } from './Canvas'
 import { DirList } from './forms'
 
 const TIER_LETTER = { haiku: 'H', sonnet: 'S', opus: 'O', fable: 'F' }
@@ -28,6 +28,7 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false)
   const [showInbox, setShowInbox] = useState(false)
   const [drawer, setDrawer] = useState(false)
+  const [doomedOrg, setDoomedOrg] = useState(null)   // org row pending deletion
   const wsRef = useRef(null)
 
   const toast = useCallback((lines) => {
@@ -98,18 +99,24 @@ export default function App() {
     [slug, toast, refreshTree, refreshOrgs])
 
   const pick = (s) => { setSlug(s); setShowSettings(false); setDrawer(false) }
+  const goHome = () => { setSlug(null); setDrawer(false) }
 
   const orgPanel = (
     <>
       <h1>orgtree</h1>
+      {slug && <button className="home" onClick={goHome}>⌂ all organizations</button>}
       <nav>
         {orgs.map((o) => (
-          <button key={o.slug}
+          <div key={o.slug} role="button" tabIndex={0}
             className={'org' + (o.slug === slug ? ' current' : '')}
-            onClick={() => pick(o.slug)}>
+            onClick={() => pick(o.slug)}
+            onKeyDown={(e) => { if (e.key === 'Enter') pick(o.slug) }}>
             <span>{o.name}</span>
+            <span className="spacer" />
             <span className="dim">{o.live}/{o.nodes} live</span>
-          </button>
+            <button className="org-del"
+              onClick={(e) => { e.stopPropagation(); setDoomedOrg(o) }}>🗑</button>
+          </div>
         ))}
         {!orgs.length && <div className="dim pad">no organizations yet</div>}
       </nav>
@@ -171,6 +178,16 @@ export default function App() {
             {orgPanel}
           </aside>
         </div>
+      )}
+
+      {doomedOrg && (
+        <ConfirmModal title={`permanently delete ${doomedOrg.name}?`}
+          body={`Erases the organization and its ${doomedOrg.nodes} node(s) — ledger, mail, lineage, audiences. Workspace and scratch folders remain on disk. This cannot be undone.`}
+          confirmLabel="delete organization"
+          onConfirm={() => deleteOrg(doomedOrg.slug)
+            .then(() => { if (slug === doomedOrg.slug) setSlug(null); refreshOrgs() })
+            .catch((e) => toast([`⛔ ${e.message}`]))}
+          close={() => setDoomedOrg(null)} />
       )}
 
       <div className="toasts">
