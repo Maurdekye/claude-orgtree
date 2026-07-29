@@ -341,6 +341,7 @@ def _run_turn(slug: str, nid: str, text: str):
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, encoding="utf-8", errors="replace")
             res = {}
+            turn_occ = 0        # context size = LAST assistant call's usage (№24)
             timed_out = threading.Event()
 
             def _expire():
@@ -360,6 +361,12 @@ def _run_turn(slug: str, nid: str, text: str):
                     except json.JSONDecodeError:
                         continue
                     if ev.get("type") == "assistant":
+                        u = ev.get("message", {}).get("usage") or {}
+                        t = (u.get("input_tokens", 0)
+                             + u.get("cache_read_input_tokens", 0)
+                             + u.get("cache_creation_input_tokens", 0))
+                        if t:                     # zero-usage synthetics don't count
+                            turn_occ = t
                         for b in ev.get("message", {}).get("content", []):
                             if b.get("type") == "text" and b.get("text", "").strip():
                                 stream(slug, nid, {"kind": "text",
@@ -402,7 +409,7 @@ def _run_turn(slug: str, nid: str, text: str):
                                 "at": now_iso()})
                     del log[:-40]
                     store.save_org(o2)
-            _after_turn(slug, nid, org, res, st)
+            _after_turn(slug, nid, org, res, st, turn_occ)
     except Exception as e:                                  # noqa: BLE001
         st["last_error"] = str(e)
     finally:
@@ -417,16 +424,18 @@ def _run_turn(slug: str, nid: str, text: str):
             _run_turn(slug, nid, nxt)
 
 
-def _after_turn(slug: str, nid: str, org: Org, res: dict, st: dict):
+def _after_turn(slug: str, nid: str, org: Org, res: dict, st: dict, occ: int = 0):
     """Post-turn bookkeeping: dollar cost (№32), context occupancy (№24), and the
     §8 compaction split when occupancy crosses the threshold. Tolerates the node
-    having been deleted mid-turn."""
+    having been deleted mid-turn.
+
+    ⚠ `occ` is the LAST assistant call's input+cache tokens, captured from the
+    stream. The result event's `usage` is CUMULATIVE across every API call of
+    the turn — using it here once overcounted a 19%-full context as 123% and
+    needlessly compact-split the node."""
     if nid not in org.nodes:
         return
     cost = float(res.get("total_cost_usd") or 0.0)
-    u = res.get("usage") or {}
-    occ = (u.get("input_tokens", 0) + u.get("cache_read_input_tokens", 0)
-           + u.get("cache_creation_input_tokens", 0))
     cw = None
     for mu in (res.get("modelUsage") or {}).values():
         cw = mu.get("contextWindow") or cw
