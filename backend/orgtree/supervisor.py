@@ -30,6 +30,12 @@ import threading
 from . import store
 from .ledger import USER, Org, now as now_iso
 
+# ---- kiosk mode (user spec): one fixed org for public exposure — config
+# frozen at launch, credits hard-capped, spend hard-limited.
+KIOSK_SLUG = os.environ.get("ORGTREE_KIOSK") or None
+KIOSK_CREDITS = int(os.environ.get("ORGTREE_KIOSK_CREDITS", "0") or 0)
+KIOSK_SPEND_LIMIT = float(os.environ.get("ORGTREE_KIOSK_SPEND_LIMIT", "0") or 0)
+
 COMPACT_AT = float(os.environ.get("ORGTREE_COMPACT_AT", "0.80"))   # §8.2
 ORACLE_AT = float(os.environ.get("ORGTREE_ORACLE_AT", "0.92"))     # §8.3 state 2→3
 
@@ -436,6 +442,9 @@ def _run_turn(slug: str, nid: str, text: str):
                 org = store.load_org(slug)
                 if org.node(nid)["state"] != "live":
                     raise RuntimeError(f"{nid} is not live")
+                if org.d.get("spend_frozen"):
+                    raise RuntimeError("kiosk spend limit reached — all agents "
+                                       "are frozen until relaunch")
                 if org.node(nid).get("limit_locked"):
                     raise RuntimeError(
                         "halted: weekly Fable usage limit exhausted — waiting for the "
@@ -667,6 +676,7 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict, st: dict, occ: int = 0
         for mu in (res.get("modelUsage") or {}).values():
             cw = mu.get("contextWindow") or cw
     st["occupancy"], st["context_window"] = occ or st["occupancy"], cw or st["context_window"]
+    spend_total = None
     if cost or occ or cw:
         with store.DOC_LOCK:
             o2 = store.load_org(slug)
@@ -681,6 +691,14 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict, st: dict, occ: int = 0
             if cw:
                 n["context_window"] = cw
             store.save_org(o2)
+            spend_total = sum(float(v.get("cost_usd") or 0.0)
+                              for v in o2.nodes.values())
+    # kiosk spend limit (user spec): breach → freeze everything, permanently.
+    # ⚠ cost is only reported at turn end, so the limit can overshoot by the
+    # in-flight turns' cost — an accepted, irreducible window.
+    if (KIOSK_SLUG == slug and KIOSK_SPEND_LIMIT > 0
+            and spend_total is not None and spend_total >= KIOSK_SPEND_LIMIT):
+        spend_freeze(slug)
     n = org.node(nid)
     if n.get("bearer_state"):
         # §8.3: a predecessor NEVER re-compacts — it has already been compacted, in
@@ -811,6 +829,27 @@ def interrupt_turn(slug: str, nid: str) -> dict:
         return {"interrupted": False, "reason": str(e)}
 
 
+def spend_freeze(slug: str) -> None:
+    """Kiosk spend limit breached: freeze EVERYTHING, immediately and
+    permanently (user spec — only a relaunch with a higher limit unfreezes).
+    Marks the org spend_frozen, freezes every live node with a spend-tagged
+    freeze, and interrupts all in-flight responses."""
+    with store.DOC_LOCK:
+        org = store.load_org(slug)
+        if org.d.get("spend_frozen"):
+            return
+        org.d["spend_frozen"] = True
+        for nid, n in org.nodes.items():
+            if n["state"] == "live":
+                fz = n.setdefault("frozen", {"at": now_iso(), "resume_texts": []})
+                fz["error"] = "kiosk spend limit reached"
+                fz["until"] = None
+                fz["spend"] = True
+        store.save_org(org)
+    interrupt_all(slug)
+    notify(slug, "", "spend_frozen")
+
+
 def interrupt_all(slug: str) -> dict:
     """The killswitch: instantly interrupt every active agent at once (user
     ruling — an unlatch-then-press control). Clears in-memory queues and steer
@@ -833,10 +872,14 @@ def interrupt_all(slug: str) -> dict:
 def resume_frozen(slug: str) -> list[str]:
     """The ▶ button: un-freeze every usage-limit-frozen agent at once and replay
     the turn(s) the limit interrupted; waiting mailbox mail rides along on the
-    turn's own envelope drain."""
+    turn's own envelope drain. A kiosk SPEND freeze is not resumable (user
+    spec) — only a relaunch with a higher limit clears it."""
     resumed: list[tuple[str, list[str]]] = []
     with store.DOC_LOCK:
         org = store.load_org(slug)
+        if org.d.get("spend_frozen"):
+            raise RuntimeError("the kiosk spend limit was reached — agents "
+                               "cannot be resumed from the UI")
         for nid, n in org.nodes.items():
             fz = n.pop("frozen", None)
             if fz is not None and n["state"] == "live":

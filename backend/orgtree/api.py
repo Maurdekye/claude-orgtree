@@ -16,7 +16,7 @@ import sys
 import threading
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -24,6 +24,45 @@ from . import store, supervisor
 from .ledger import LedgerError, USER, VIS_LEVELS, norm_dirs, norm_tools
 
 app = FastAPI(title="orgtree", version="1.0.0")
+
+
+# ---- kiosk mode (user spec): one fixed org for public exposure. The gate is
+# SERVER-SIDE — hiding UI buttons is not enforcement.
+@app.middleware("http")
+async def kiosk_gate(request, call_next):
+    if supervisor.KIOSK_SLUG:
+        p, m = request.url.path, request.method
+        frozen_config = (
+            (m == "POST" and p == "/api/orgs")            # create org
+            or (m == "DELETE" and p.startswith("/api/orgs/"))  # delete org
+            or p.endswith("/settings")                    # org settings
+            or p.endswith("/scope")                       # per-agent rights
+            or p == "/api/fs"                             # filesystem browse
+            or (m == "PUT" and p.endswith("/orgmd"))      # org.md edits
+            or p.endswith("/attach")                      # terminal handoff
+        )
+        if frozen_config:
+            return JSONResponse({"detail": "kiosk mode: configuration is "
+                                           "fixed at launch"}, status_code=403)
+        parts = p.split("/")
+        if (len(parts) > 3 and parts[1] == "api" and parts[2] == "orgs"
+                and parts[3] and parts[3] != supervisor.KIOSK_SLUG):
+            return JSONResponse({"detail": "kiosk mode: a single organization "
+                                           "is exposed"}, status_code=403)
+    return await call_next(request)
+
+
+def _kiosk_cap_check(org):
+    """Kiosk credit cap: NO operation may push total top-level holdings past
+    the cap — covers hires, §4.6 cascades, rehires, reallocations and
+    credit-request approvals in one invariant (checked before save)."""
+    if supervisor.KIOSK_SLUG and supervisor.KIOSK_CREDITS > 0:
+        held = org.audit()["top_level_holds"]
+        if held > supervisor.KIOSK_CREDITS:
+            raise LedgerError(
+                f"kiosk credit cap: the org may hold at most "
+                f"{supervisor.KIOSK_CREDITS} credits (this would make it "
+                f"{held:g})")
 
 
 mail_notify = lambda slug, frm, to: None   # wired at startup (thread-safe fanout)
@@ -113,7 +152,11 @@ class OrgCreate(BaseModel):
 
 @app.get("/api/orgs")
 def orgs_list():
-    return store.list_orgs()
+    orgs = store.list_orgs()
+    if supervisor.KIOSK_SLUG:
+        orgs = [{**o, "kiosk": True}
+                for o in orgs if o["slug"] == supervisor.KIOSK_SLUG]
+    return orgs
 
 
 @app.post("/api/orgs")
@@ -157,6 +200,12 @@ def org_tree(slug: str):
 
     for r in tree["roots"]:
         annotate(r)
+    if supervisor.KIOSK_SLUG == slug:
+        tree["kiosk"] = {
+            "credits": supervisor.KIOSK_CREDITS or None,
+            "spend_limit": supervisor.KIOSK_SPEND_LIMIT or None,
+            "spend_frozen": bool(tree.get("spend_frozen")),
+        }
     return tree
 
 
@@ -403,7 +452,10 @@ async def org_resume(slug: str):
         store.load_org(slug)
     except LedgerError as e:
         raise HTTPException(404, str(e))
-    resumed = supervisor.resume_frozen(slug)
+    try:
+        resumed = supervisor.resume_frozen(slug)
+    except RuntimeError as e:
+        raise HTTPException(409, str(e))
     await hub.changed(slug)
     return {"resumed": resumed}
 
@@ -420,6 +472,7 @@ async def credit_request_decide(slug: str, body: CreditDecision):
         try:
             org = store.load_org(slug)
             req = org.credit_request_action(body.id, body.action)
+            _kiosk_cap_check(org)
         except LedgerError as e:
             raise HTTPException(422, str(e))
         store.save_org(org)
@@ -763,6 +816,7 @@ async def agent_call(body: AgentCall):
                 drive.extend(result.pop("drive", []))
             else:
                 raise LedgerError(f"unknown orgtree tool {body.tool!r}")
+            _kiosk_cap_check(org)
         except LedgerError as e:
             raise HTTPException(422, str(e))
         store.save_org(org)
@@ -886,6 +940,7 @@ async def _org_op_locked(slug: str, body: Op):
             result = org.revoke_dir(body.actor, body.node, body.dir)
         else:
             raise LedgerError(f"unknown op {body.op!r}")
+        _kiosk_cap_check(org)
     except LedgerError as e:
         raise HTTPException(422, str(e))
     store.save_org(org)

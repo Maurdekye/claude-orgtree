@@ -106,6 +106,18 @@ snowflake, lock, layers, fullscreen, hearing.
   seats or committed to grants) and how much sits **free**. The org-settings
   "top-level grant cap" only bounds the hire slider.
 
+## Kiosk mode
+
+When orgtree is launched in kiosk mode (see the README), the UI locks to one
+org: no drawer, no settings, no gear panels anywhere (all rights are fixed at
+launch and the server refuses changes). The eye's bar is FINITE — a fixed
+size set by the credit cap, filled like an agent's bar with per-child slabs —
+and hire chips/draft sliders grey out against the org-wide remainder rather
+than never. The top bar shows total spend against the launch-configured
+limit; when it is breached every agent freezes immediately, the resume
+button disappears, and a red chip says so — only a relaunch with a higher
+limit resumes.
+
 ## The top bar
 
 The agents chip summarizes the org at a glance: total live agents, how many

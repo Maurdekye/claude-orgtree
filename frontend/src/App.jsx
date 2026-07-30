@@ -58,6 +58,9 @@ export default function App() {
   }, [])
 
   useEffect(() => { refreshOrgs() }, [refreshOrgs])
+  useEffect(() => {          // kiosk: the single org IS the app
+    if (!slug && orgs.length && orgs[0].kiosk) setSlug(orgs[0].slug)
+  }, [orgs, slug])
 
   useEffect(() => {                    // back/forward keep working
     const onPop = () => setSlug(slugFromPath())
@@ -109,6 +112,10 @@ export default function App() {
           refreshTree(slug)
         }
         if (data.event === 'resumed') refreshTree(slug)
+        if (data.event === 'spend_frozen') {
+          toast(['SPEND LIMIT REACHED — every agent is frozen; relaunch with a higher limit to resume'])
+          refreshTree(slug)
+        }
         if (data.event === 'turn_started') {
           setActivity((a) => ({ ...a, [data.node]: { phase: 'thinking' } }))
         } else if (data.event === 'turn_done') {
@@ -143,15 +150,15 @@ export default function App() {
             <span>{o.name}</span>
             <span className="spacer" />
             <span className="dim">{o.live}/{o.nodes} live</span>
-            <button className="org-del"
-              onClick={(e) => { e.stopPropagation(); setDoomedOrg(o) }}><DeleteIcon fontSize="inherit" /></button>
+            {!o.kiosk && <button className="org-del"
+              onClick={(e) => { e.stopPropagation(); setDoomedOrg(o) }}><DeleteIcon fontSize="inherit" /></button>}
           </div>
         ))}
         {!orgs.length && <div className="dim pad">no organizations yet</div>}
       </nav>
-      <NewOrg onCreate={(name, dirs) =>
+      {!(orgs.length && orgs[0].kiosk) && <NewOrg onCreate={(name, dirs) =>
         createOrg(name, dirs).then((r) => { refreshOrgs(); pick(r.slug) })
-          .catch((e) => toast([`error: ${e.message}`]))} />
+          .catch((e) => toast([`error: ${e.message}`]))} />}
     </>
   )
 
@@ -171,7 +178,8 @@ export default function App() {
           {tree ? (
             <>
               <header className="orgbar">
-                <button className="iconbtn" onClick={() => setDrawer(true)}><MenuIcon fontSize="inherit" /></button>
+                {!tree.kiosk &&
+                  <button className="iconbtn" onClick={() => setDrawer(true)}><MenuIcon fontSize="inherit" /></button>}
                 <h2>{tree.name}</h2>
                 {/* the ledger self-audit only speaks when something is wrong;
                     credit totals live on the eye's bar */}
@@ -196,7 +204,15 @@ export default function App() {
                   <span className="chip">${tree.cost_usd_total.toFixed(2)}</span>}
                 {tree.fable_lock &&
                   <span className="chip bad" title={tree.fable_lock.at}><BlockIcon fontSize="inherit" /> fable limit</span>}
+                {tree.kiosk?.spend_limit && (
+                  tree.spend_frozen
+                    ? <span className="chip bad"><BlockIcon fontSize="inherit" /> spend limit reached — agents frozen</span>
+                    : <span className={'chip' + (tree.cost_usd_total >= tree.kiosk.spend_limit * 0.9 ? ' bad' : '')}>
+                        spend ${tree.cost_usd_total.toFixed(2)} / ${tree.kiosk.spend_limit.toFixed(2)}
+                      </span>
+                )}
                 {(() => {   // usage-limit freeze: ▶ restarts every frozen agent
+                  if (tree.spend_frozen) return null
                   const frozen = [...flatNodes(tree).values()].filter((n) => n.frozen)
                   if (!frozen.length) return null
                   const until = frozen.map((n) => n.frozen.until).find(Boolean)
@@ -232,7 +248,8 @@ export default function App() {
                         .catch((e) => toast([`error: ${e.message}`]))
                     }}><StopIcon fontSize="inherit" /> STOP ALL</button>
                 </span>
-                <button onClick={() => setShowSettings(true)}><SettingsIcon fontSize="inherit" /> settings</button>
+                {!tree.kiosk &&
+                  <button onClick={() => setShowSettings(true)}><SettingsIcon fontSize="inherit" /> settings</button>}
               </header>
               <OrgCanvas tree={tree} op={op} slug={slug} pulse={pulse} toast={toast}
                 streamEvt={streamEvt} activity={activity} mailEvt={mailEvt}

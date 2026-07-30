@@ -333,6 +333,8 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
   // ⚠ Derived from TOP-LEVEL holdings ONLY (user ruling): sub-reallocations
   // re-partition circulation and must never move any other bar.
   const pxPerCredit = useMemo(() => {
+    // kiosk: the cap is the scale — the overseer bar is a fixed size (user spec)
+    if (tree.kiosk?.credits) return (NODE_H * 1.6) / tree.kiosk.credits
     const holds = tree.roots
       .filter((n) => n.state === 'live')
       .map((n) => n.seat + n.grant)
@@ -656,6 +658,10 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
   // either locked in some live node's SEAT or sitting FREE in some node's
   // grant (committed grants just contain the child's seat+free again) — so
   // circulation = Σ seats + Σ free, and those are the honest labels.
+  const kioskRemaining = tree.kiosk?.credits != null
+    ? Math.max(0, tree.kiosk.credits - (tree.audit?.top_level_holds ?? 0))
+    : null
+
   const orgStats = useMemo(() => {
     let free = 0
     const walk = (n) => {
@@ -744,6 +750,10 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
           if (n.id === USER) {
             return <UserNode key={USER} pos={p} isDrop={dropId === USER} seats={seats}
               stats={orgStats} mailGlow={mailGlow}
+              kiosk={tree.kiosk} kioskRemaining={kioskRemaining}
+              kioskSegs={tree.roots.filter((n) => n.state === 'live')
+                .map((n) => ({ seat: n.seat, grant: n.grant }))}
+              pxc={pxPerCredit} zoom={view.z}
               inboxCount={(tree.user_inbox_count ?? 0) + (tree.credit_requests?.length ?? 0)}
               onInbox={() => {
                 const nw = tree.user_inbox_newest ?? new Date().toISOString()
@@ -756,7 +766,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
           }
           if (n.id === DRAFT) {
             return <DraftNode key={DRAFT} pos={p} draft={draft} map={map} seats={seats}
-              maxTop={tree.max_top_grant ?? 1000}
+              maxTop={tree.max_top_grant ?? 1000} kioskRemaining={kioskRemaining}
               defaultTop={tree.default_top_grant ?? 50} zoom={view.z} pxc={pxPerCredit}
               onConfirm={confirmDraft} onCancel={() => setDraft(null)} />
           }
@@ -769,6 +779,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
               onSpawn={(t) => spawn(n.id, t)} onConfig={() => setConfigId(n.id)}
               onInbox={() => setInboxId(n.id)} onLineage={() => setLineageId(n.id)}
               onRecenter={() => centerOn(n.id)}   /* recenter AND re-zoom to fill */
+              kiosk={!!tree.kiosk} kioskRemaining={kioskRemaining}
               onDragStart={startNodeDrag} onDragMove={moveNodeDrag} onDragEnd={endNodeDrag} />
           )
         })}
@@ -802,7 +813,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
 
 // ------------------------------------------------------------- the overseer
 function UserNode({ pos, isDrop, stats, inboxCount, seats, mailGlow,
-  onInbox, onGear, onSpawn }) {
+  kiosk, kioskRemaining, kioskSegs, pxc, zoom, onInbox, onGear, onSpawn }) {
   return (
     <div className={'sq user' + (isDrop ? ' drop' : '') + (mailGlow ? ' mail-glow' : '')}
       style={{
@@ -811,14 +822,19 @@ function UserNode({ pos, isDrop, stats, inboxCount, seats, mailGlow,
       {/* the user's pool is infinite, so their bar fades out into the top
           instead of ending; hovering it reports the org's circulation
           (the tip is a sibling — the fade mask would swallow a child) */}
-      <div className="cbar-inf-wrap">
-        <div className="cbar-infinite" />
-        <div className="cbar-tip">
-          <div>circulation <b className="n-fill">{stats.circ}</b></div>
-          <div>seats <b className="n-seat">{stats.seats}</b></div>
-          <div>free <b className="n-free">{stats.free}</b></div>
-        </div>
-      </div>
+      {kiosk?.credits
+        ? /* kiosk: the pool is FINITE — a fixed-size bar with per-child slabs,
+             exactly like an agent's (user spec); not draggable */
+          <CreditBar seat={0} grant={kiosk.credits} committed={stats.circ}
+            segments={kioskSegs ?? []} zoom={zoom} pxc={pxc} />
+        : <div className="cbar-inf-wrap">
+            <div className="cbar-infinite" />
+            <div className="cbar-tip">
+              <div>circulation <b className="n-fill">{stats.circ}</b></div>
+              <div>seats <b className="n-seat">{stats.seats}</b></div>
+              <div>free <b className="n-free">{stats.free}</b></div>
+            </div>
+          </div>}
       <svg className="eye" viewBox="0 0 48 26">
         <path d="M 2 13 C 13 2, 35 2, 46 13 C 35 24, 13 24, 2 13 Z" />
         <circle className="iris" cx="24" cy="13" r="6.5" />
@@ -830,12 +846,12 @@ function UserNode({ pos, isDrop, stats, inboxCount, seats, mailGlow,
         onClick={(e) => { e.stopPropagation(); onInbox?.() }}>
         <MailIcon fontSize="inherit" />{inboxCount > 0 && <span className="count">{inboxCount}</span>}
       </button>
-      <button className="eye-gear" title="agent-hire defaults"
+      {!kiosk && <button className="eye-gear" title="agent-hire defaults"
         onPointerDown={(e) => e.stopPropagation()}
-        onClick={(e) => { e.stopPropagation(); onGear?.() }}><SettingsIcon fontSize="inherit" /></button>
+        onClick={(e) => { e.stopPropagation(); onGear?.() }}><SettingsIcon fontSize="inherit" /></button>}
       {/* real seat costs in the hover hints — a literal 0 was technically true
           (infinite pool) but read as wrong next to every other card */}
-      <SpawnChips onSpawn={onSpawn} free={Infinity} seats={seats} />
+      <SpawnChips onSpawn={onSpawn} free={kioskRemaining ?? Infinity} seats={seats} />
     </div>
   )
 }
@@ -1083,7 +1099,8 @@ function CreditBar({ seat = 0, grant, committed, segments = [], draftMode,
   )
 }
 
-function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, zoom, pxc, onConfirm, onCancel }) {
+function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRemaining,
+  zoom, pxc, onConfirm, onCancel }) {
   const [name, setName] = useState('')
   const [charter, setCharter] = useState('')
   // top-level drafts pre-fill the org's default grant (50 unless configured)
@@ -1092,7 +1109,9 @@ function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, zoom, pxc, onCo
   // user ruling: a user hire cascades grants up the chain (§4.6), so the
   // draft's ceiling is the org slider cap even DEEP in the tree — the parent's
   // own free credits are not a limit. (Kiosk mode will cap this instead.)
-  const max = maxTop
+  const max = kioskRemaining != null
+    ? Math.max(0, Math.min(maxTop, kioskRemaining - (seats[draft.tier] ?? 0)))
+    : maxTop
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onCancel() }
     window.addEventListener('keydown', onKey)
@@ -1131,7 +1150,7 @@ function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, zoom, pxc, onCo
 
 function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, map, op, slug,
   pulse, toast, streamEvt, pxc, zoom, act, onSpawn, onConfig, onInbox, onLineage,
-  onRecenter, onDragStart, onDragMove, onDragEnd }) {
+  onRecenter, kiosk, kioskRemaining, onDragStart, onDragMove, onDragEnd }) {
   const cls = ['sq', node.state, focused ? 'desk' : lod, 'tier-' + node.tier]
   if (node.busy) cls.push('busy')
   if (dragging) cls.push('lifted')
@@ -1180,9 +1199,9 @@ function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, map, op,
           onClick={(e) => { e.stopPropagation(); onInbox() }}>
           <MailIcon fontSize="inherit" />{node.mail_pending > 0 && <span className="count">{node.mail_pending}</span>}
         </button>
-        <button className="gearbtn"
+        {!kiosk && <button className="gearbtn"
           onPointerDown={(e) => e.stopPropagation()}
-          onClick={(e) => { e.stopPropagation(); onConfig() }}><SettingsIcon fontSize="inherit" /></button>
+          onClick={(e) => { e.stopPropagation(); onConfig() }}><SettingsIcon fontSize="inherit" /></button>}
         <ContextWheel occ={node.occupancy} cw={node.context_window} />
         {lod === 'mini' && node.last_status &&
           <span className={'statusdot ' + node.last_status.status}
@@ -1216,13 +1235,13 @@ function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, map, op,
       {focused && (
         <DeskChat node={node} map={map} op={op} slug={slug} pulse={pulse} toast={toast}
           streamEvt={streamEvt} onLineage={onLineage} onConfig={onConfig}
-          onRecenter={onRecenter} />
+          onRecenter={onRecenter} kiosk={kiosk} />
       )}
       {/* user ruling: chips are NEVER disabled by the node's own free credits —
           a user hire §4.6-cascades, granting the chain whatever it lacks.
           (Kiosk mode will pass the cap remainder here instead.) */}
       {live && !node.isBearerOf && !node.bearer_state &&
-        <SpawnChips onSpawn={onSpawn} free={Infinity} seats={seats} />}
+        <SpawnChips onSpawn={onSpawn} free={kioskRemaining ?? Infinity} seats={seats} />}
     </div>
   )
 }
@@ -1447,7 +1466,7 @@ function Activity({ act, dotOnly }) {
 // compact one-line chrome, plain assistant text, boxed user turns, ⏺ tool
 // lines, and a bordered composer with the model name in its footer row.
 function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onConfig,
-  onRecenter }) {
+  onRecenter, kiosk }) {
   const [chat, setChat] = useState(null)
   const [text, setText] = useState('')
   const [pending, setPending] = useState([])   // sent, not yet in the transcript
@@ -1586,7 +1605,7 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
             </button>
           ))}
         </span>
-        <button className="cc-icon" onClick={onConfig}><SettingsIcon fontSize="inherit" /></button>
+        {!kiosk && <button className="cc-icon" onClick={onConfig}><SettingsIcon fontSize="inherit" /></button>}
       </div>
       {asking && (
         <ConfirmModal title={`dissolve ${node.id}?`}

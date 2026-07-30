@@ -119,6 +119,39 @@ No manual wiring is needed; the supervisor does all of it per turn:
 | `ORGTREE_CONTEXT_WINDOWS` | haiku 200k, others 1M | per-tier window override, JSON like `{"opus": 500000}` |
 | `ORGTREE_ORACLE_AT` | `0.92` | bearer occupancy that demotes it to a preserving oracle |
 
+## Kiosk mode (public exposure)
+
+Kiosk mode locks orgtree down to **one preconfigured organization** for
+exposing to others (a demo, a shared sandbox). Prepare the org in normal
+mode — hire the seed agents, set folder holdings and tool rights, write
+charters — then relaunch with:
+
+```bash
+ORGTREE_KIOSK=<org-slug>            # the single org to expose
+ORGTREE_KIOSK_CREDITS=40            # hard cap on total credits (fixed bar)
+ORGTREE_KIOSK_SPEND_LIMIT=5.00      # hard USD limit — breach freezes ALL agents
+python -m orgtree.api
+```
+
+In kiosk mode, enforced **server-side**:
+
+- only that org exists — no creating, deleting, or switching orgs;
+- all configuration is frozen at launch: org settings, per-agent rights
+  (folders/tools/visibility), hire defaults, org.md, and the filesystem
+  browser are all refused (403);
+- the overseer's pool is **finite**: a fixed-size credit bar replaces the
+  infinite one, and no operation (hire, cascade, rehire, reallocate,
+  credit-request approval) may push total holdings past the cap;
+- total spend is shown in the top bar; **breaching the limit freezes every
+  agent immediately and permanently** — the resume button is refused; only a
+  relaunch with a higher limit unfreezes.
+
+⚠ Kiosk bounds *configuration and money*, not *capability*: visitors can
+still make agents do anything the fixed rights allow. For anything
+internet-facing, give the kiosk org **no bash**, workspace-only folders, and
+deliberate web access — and put real authentication (a reverse proxy with
+auth, Cloudflare Access, a VPN) in front; orgtree itself has none.
+
 ## A word on safety and cost
 
 Agents run **autonomously** inside the folders you grant, with file editing

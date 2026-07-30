@@ -1428,6 +1428,7 @@ class Org:
             "user_inbox_count": len(self.d.get("user_inbox", [])),
             "user_inbox_newest": (self.d.get("user_inbox") or [{}])[-1].get("at"),
             "fable_lock": self.d.get("fable_lock"),
+            "spend_frozen": bool(self.d.get("spend_frozen")),
             "fable_limit_policy": self.d.get("fable_limit_policy", "halt"),
             "audience_requests": self.d.get("audience_requests", []),
         }
