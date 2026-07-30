@@ -188,9 +188,10 @@ main {
 .sq.desk {
   cursor: default; border-color: var(--accent);
   box-shadow: 0 8px 40px rgba(0, 0, 0, .55), 0 0 0 1px rgba(217, 119, 87, .25);
-  /* a chat window, not a rounded game tile — 8px world radius reads ~24px at
-     desk zoom; tighten it (and the tier bar) while focused */
-  border-radius: 4px; border-top-width: 2px;
+  /* a chat window, not a rounded game tile — under the inverted scale regime
+     even 4px world radius reads ~30px at desk-fill and ate the composer's
+     corner; 1px renders ~7px */
+  border-radius: 1px; border-top-width: 2px;
 }
 /* ---- mini LOD: the card IS the label. The head keeps only the tier chip and
    status dots; the name fills the body large and wrapping (ellipsised 11px names
@@ -299,7 +300,7 @@ main {
 .desk-inner {
   width: 900px; height: 900px;
   transform: scale(0.13333); transform-origin: 0 0;
-  padding: 12px 14px 16px;
+  padding: 12px 18px 22px 14px;
 }
 .desk-body {
   display: flex; flex-direction: column; gap: 6px; min-height: 0;

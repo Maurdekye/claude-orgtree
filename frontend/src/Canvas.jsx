@@ -1523,8 +1523,9 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
 // selected message opened in the reading pane on the right. Waiting/unread
 // mail sorts on top and is highlighted until read/delivered.
 export function MailList({ pending = [], delivered = [], waitLabel, sender, outgoing }) {
+  // newest first throughout (user ruling) — waiting/unread stays grouped on top
   const all = [
-    ...pending.map((m) => ({ ...m, _wait: true })),
+    ...[...pending].reverse().map((m) => ({ ...m, _wait: true })),
     ...[...delivered].reverse(),
   ]
   const [sel, setSel] = useState(0)
