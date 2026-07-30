@@ -19,6 +19,9 @@
   --accent-soft: rgba(217, 119, 87, .16);
   --accent-hover: #e08a6d;
   --accent-ink: #fff;
+  --kiosk: #4ba3c7;         /* "exposed to the public" teal */
+  --kiosk-soft: rgba(75, 163, 199, .09);
+  --kiosk-hover: rgba(75, 163, 199, .16);
   --ok: #89d185;
   --bad: #f14c4c;
   --shadow: 0 2px 8px rgba(0, 0, 0, .36);
@@ -1034,16 +1037,22 @@ svg.MuiSvgIcon-root {
 .picker-err { color: var(--bad); font-size: 12px; }
 
 /* ---- kiosk dashboard (admin org list) -------------------------------- */
-.kiosk-badge { color: var(--accent); display: inline-flex; margin-left: 6px; font-size: 12px; }
+/* teal = "exposed to the public" — deliberately NOT the accent, so a kiosk
+   row reads differently from the selected row at a glance */
+.kiosk-badge { color: var(--kiosk); display: inline-flex; margin-left: 6px; font-size: 12px; }
+.org.kiosk-org { border-left-color: var(--kiosk); background: var(--kiosk-soft); }
+.org.kiosk-org:hover { background: var(--kiosk-hover); }
+.org.current.kiosk-org { background: var(--accent-soft); }
 .kiosk-dash { margin-top: 16px; border-top: 1px solid var(--line-soft); padding-top: 10px; }
 .kiosk-dash h3 {
   margin: 0 0 8px; font-size: 11px; letter-spacing: .08em;
   text-transform: uppercase; color: var(--dim);
   display: flex; align-items: center; gap: 6px;
 }
-.kiosk-dash h3 svg { color: var(--accent); }
+.kiosk-dash h3 svg { color: var(--kiosk); }
 .kiosk-row {
-  border: 1px solid var(--line-soft); border-radius: 6px;
+  border: 1px solid var(--line-soft); border-left: 2px solid var(--kiosk);
+  border-radius: 6px;
   padding: 8px 10px; margin-bottom: 8px; background: var(--panel);
   display: flex; flex-direction: column; gap: 6px; font-size: 12px;
 }
@@ -1055,7 +1064,7 @@ svg.MuiSvgIcon-root {
   display: flex; align-items: center; gap: 4px;
   color: var(--dim); font-size: 11px; min-width: 0;
 }
-.kiosk-caps input { width: 56px; min-width: 0; }
+.kiosk-caps input { width: 64px; min-width: 0; }
 .kiosk-url input {
   flex: 1; min-width: 0; font-size: 11px;
   color: var(--dim); text-overflow: ellipsis;

@@ -60,6 +60,12 @@ export default function App() {
   }, [])
 
   useEffect(() => { refreshOrgs() }, [refreshOrgs])
+  useEffect(() => {          // the org list/dashboard is LIVE while visible —
+    // kiosk spend/storage/caps move under it (agent turns, admin edits)
+    if (slug && !drawer) return
+    const t = setInterval(refreshOrgs, 3000)
+    return () => clearInterval(t)
+  }, [slug, drawer, refreshOrgs])
   useEffect(() => {          // kiosk: the single org IS the app
     if (!slug && orgs.length && orgs[0].kiosk) setSlug(orgs[0].slug)
   }, [orgs, slug])
@@ -154,7 +160,8 @@ export default function App() {
       <nav>
         {orgs.map((o) => (
           <div key={o.slug} role="button" tabIndex={0}
-            className={'org' + (o.slug === slug ? ' current' : '')}
+            className={'org' + (o.slug === slug ? ' current' : '')
+              + (o.kiosk_cfg?.enabled || o.kiosk ? ' kiosk-org' : '')}
             onClick={() => pick(o.slug)}
             onKeyDown={(e) => { if (e.key === 'Enter') pick(o.slug) }}>
             <span>{o.name}</span>

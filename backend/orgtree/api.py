@@ -479,16 +479,20 @@ async def org_kiosk(slug: str, body: KioskCfg):
             k["token"] = secrets.token_hex(16)
         org.d["kiosk"] = k
         cleared = []
-        if org.d.get("spend_frozen"):
-            spent = sum(float(v.get("cost_usd") or 0.0)
-                        for v in org.nodes.values())
-            lim = float(k.get("spend_limit") or 0)
-            if not k.get("enabled") or not lim or spent < lim:
-                supervisor.clear_hard_freeze(org, "spend")
-                cleared.append("spend")
+        spent = sum(float(v.get("cost_usd") or 0.0)
+                    for v in org.nodes.values())
+        lim = float(k.get("spend_limit") or 0)
+        over = k.get("enabled") and lim and spent >= lim
+        if org.d.get("spend_frozen") and not over:
+            supervisor.clear_hard_freeze(org, "spend")
+            cleared.append("spend")
         store.save_org(org)
-    # the storage limit is a write BLOCK, not a freeze — recheck it against
-    # the new limit (applies/lifts the block as needed, takes its own lock)
+        need_freeze = over and not org.d.get("spend_frozen")
+    # limits apply in REAL TIME (user ruling), both directions: lowering the
+    # spend limit below what's already spent freezes now, not at the next
+    # turn's end; the storage recheck applies/lifts the write block likewise
+    if need_freeze:
+        supervisor.hard_freeze(slug, "spend", "kiosk spend limit reached")
     if supervisor.storage_check(slug) == "cleared":
         cleared.append("storage")
     _token_cache["at"] = 0.0             # rotation/enable takes effect now

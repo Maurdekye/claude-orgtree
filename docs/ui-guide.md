@@ -114,9 +114,15 @@ is the admin dashboard. Each kiosk row shows spend / credits held / workspace
 storage against their caps, inline inputs to change the caps (a ✓ appears
 when edited), the share URL with copy and **rotate** buttons (rotation
 revokes the old link instantly), and a ⃠ button to stop exposing the org.
-Orgs exposed as kiosks carry a small globe badge in the org list; you still
-open and manage them with full rights — the restrictions apply only to
-visitors arriving through the secret URL.
+Kiosk orgs are highlighted **teal** in the org list (border, tint, and globe
+badge) — deliberately a different hue from the terracotta selection, so
+"exposed to the public" reads at a glance; you still open and manage them
+with full rights — the restrictions apply only to visitors arriving through
+the secret URL. The list and dashboard refresh themselves every few seconds
+while visible, and cap changes apply in **real time**: lowering the spend
+limit below what is already spent freezes the org immediately (raising it
+clears the freeze), and storage-limit changes apply or lift the write block
+on the spot — open visitor views update over their live connection.
 
 A **visitor** sees the UI locked to that one org: no drawer, no settings, no
 gear panels anywhere (the server refuses configuration on the public
