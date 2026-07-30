@@ -9,9 +9,9 @@ import {
 import { pickFolder } from './picker'
 import {
   AddIcon, ArrowUpIcon, AutorenewIcon, CheckIcon, CloseIcon, DeleteIcon,
-  DotIcon, EditIcon, FileIcon, FolderIcon, FrozenIcon, FullscreenIcon,
-  HearingIcon, LayersIcon, LockIcon, MailIcon, RemoveIcon, SettingsIcon,
-  SparkIcon, StopIcon, WarnIcon,
+  DotIcon, EditIcon, FileIcon, FocusIcon, FolderIcon, FrozenIcon,
+  FullscreenIcon, HearingIcon, LayersIcon, LockIcon, MailIcon, PlayIcon,
+  RemoveIcon, SettingsIcon, SparkIcon, StopIcon, ViewListIcon, WarnIcon,
 } from './icons'
 
 const TIER_LETTER = { haiku: 'H', sonnet: 'S', opus: 'O', fable: 'F' }
@@ -163,6 +163,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
   const [configId, setConfigId] = useState(null)
   const [lineageId, setLineageId] = useState(null)
   const [userCfg, setUserCfg] = useState(false)
+  const [trayOpen, setTrayOpen] = useState(false)   // the flat agent tray
   const [inboxId, setInboxId] = useState(null)
   // unread-mail attention: the eye glows until the mailbox is OPENED (merely
   // opening acknowledges the glow; the count badge stays until mails are READ)
@@ -788,6 +789,8 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
               pxc={pxPerCredit} zoom={view.z}
               focused={focusId === USER} eyeW={Math.max(eyeW, USER_W)}
               onFocus={() => centerOn(USER)}
+              posX={(id) => posOf(id)?.x ?? 0}
+              onJump={(id) => centerOn(id)}
               map={map} op={op} slug={slug} pulse={pulse} toast={toast}
               streamEvt={streamEvt}
               inboxCount={(tree.user_inbox_count ?? 0) + (tree.credit_requests?.length ?? 0)}
@@ -823,9 +826,59 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
       {/* stop pointerdown: the viewport's pan pointer-capture retargets clicks
           and silently kills these buttons */}
       <div className="zoomhud" onPointerDown={(e) => e.stopPropagation()}>
+        {/* jump to the SWITCHBOARD from anywhere (user spec) — the same glide
+            as clicking the eye; pairs with the per-tab jump buttons for fast
+            board ↔ agent hopping */}
+        <button className="hud-eye" title="jump to the switchboard"
+          onClick={() => centerOn(USER)}>
+          <svg viewBox="0 0 48 26">
+            <path d="M 2 13 C 13 2, 35 2, 46 13 C 35 24, 13 24, 2 13 Z" />
+            <circle className="iris" cx="24" cy="13" r="6.5" />
+            <circle className="pupil" cx="24" cy="13" r="2.6" />
+          </svg>
+        </button>
         <button onClick={() => animateTo({ ...viewRef.current, z: Math.min(Z_MAX, viewRef.current.z * 1.3) }, 220)}><AddIcon fontSize="inherit" /></button>
         <button onClick={() => animateTo({ ...viewRef.current, z: Math.max(0.24, viewRef.current.z / 1.3) }, 220)}><RemoveIcon fontSize="inherit" /></button>
         <button title="fit the whole org" onClick={() => fitAll()}><FullscreenIcon fontSize="inherit" /></button>
+      </div>
+      {/* the agent TRAY (user spec): a flat list of every agent — tier token,
+          name, context wheel, working state — in the nodes' own visual
+          language; a row click glides to that agent */}
+      <div className="tray-wrap" onPointerDown={(e) => e.stopPropagation()}>
+        {trayOpen && (
+          <div className="tray">
+            {[...map.values()]
+              .filter((n) => n.id !== USER && n.id !== DRAFT && !n.isBearerOf)
+              .sort((a, b) => {
+                const pa = posOf(a.id) ?? { x: 0, y: 0 }
+                const pb = posOf(b.id) ?? { x: 0, y: 0 }
+                return pa.y - pb.y || pa.x - pb.x
+              })
+              .map((n) => (
+                <div key={n.id} role="button" tabIndex={0}
+                  className={'tray-row' + (n.state !== 'live' ? ' off' : '')}
+                  onClick={() => centerOn(n.id)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') centerOn(n.id) }}>
+                  <span className={'tier t-' + n.tier}>{TIER_LETTER[n.tier] ?? '?'}</span>
+                  <span className="tray-name" title={n.purpose ?? n.id}>{n.id}</span>
+                  <ContextWheel occ={n.occupancy} cw={n.context_window} />
+                  {n.busy ? <Activity act={activity?.[n.id]} dotOnly />
+                    : n.frozen
+                      ? <FrozenIcon fontSize="inherit" className="tray-frozen" />
+                      : n.state !== 'live'
+                        ? <span className="dim">{n.state}</span>
+                        : n.last_status
+                          ? <span className={'statusdot ' + n.last_status.status}
+                              title={n.last_status.summary} />
+                          : <span className="statusdot idle" title="idle" />}
+                </div>
+              ))}
+          </div>
+        )}
+        <button className="tray-toggle" title="every agent, flat"
+          onClick={() => setTrayOpen((o) => !o)}>
+          <ViewListIcon fontSize="inherit" /> agents
+        </button>
       </div>
       {configId && map.get(configId) && (
         <NodeConfig node={map.get(configId)} map={map} tree={tree} slug={slug}
@@ -850,7 +903,8 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
 // ------------------------------------------------------------- the overseer
 function UserNode({ pos, isDrop, stats, inboxCount, seats, mailGlow,
   kiosk, pub, kioskRemaining, kioskSegs, pxc, zoom, onInbox, onGear, onSpawn,
-  focused, eyeW, onFocus, map, op, slug, pulse, toast, streamEvt }) {
+  focused, eyeW, onFocus, posX, onJump, map, op, slug, pulse, toast,
+  streamEvt }) {
   const downRef = useRef(null)
   return (
     <div className={'sq user' + (focused ? ' desk eyeboard' : '')
@@ -913,7 +967,7 @@ function UserNode({ pos, isDrop, stats, inboxCount, seats, mailGlow,
       {focused && (
         <EyeDesk map={map} op={op} slug={slug} pulse={pulse} toast={toast}
           streamEvt={streamEvt} inboxCount={inboxCount} onInbox={onInbox}
-          onGear={onGear} pub={pub} eyeW={eyeW} />
+          onGear={onGear} pub={pub} eyeW={eyeW} posX={posX} onJump={onJump} />
       )}
     </div>
   )
@@ -926,10 +980,12 @@ function UserNode({ pos, isDrop, stats, inboxCount, seats, mailGlow,
 // manage crowding. A line that exists via an audience grant carries an ✕:
 // closing that tab RESCINDS the grant (top-level lines are permanent).
 function EyeDesk({ map, op, slug, pulse, toast, streamEvt, inboxCount,
-  onInbox, onGear, pub, eyeW }) {
+  onInbox, onGear, pub, eyeW, posX, onJump }) {
   const agents = [...map.values()].filter((n) =>
     n.id !== USER && n.id !== DRAFT && n.state === 'live' && !n.isBearerOf
     && (n.parent === USER || n.audiences_held?.includes(USER)))
+    // tab order mirrors the tree's left→right spatial order (user ruling)
+    .sort((a, b) => (posX?.(a.id) ?? 0) - (posX?.(b.id) ?? 0))
   const [minned, setMinned] = useState(() => {
     try {
       return new Set(JSON.parse(localStorage.getItem('orgtree-eyemin-' + slug) || '[]'))
@@ -974,6 +1030,12 @@ function EyeDesk({ map, op, slug, pulse, toast, streamEvt, inboxCount,
                 {a.busy && <AutorenewIcon fontSize="inherit" className="cc-spin" />}
                 {a.mail_pending > 0 && <b className="eye-count">{a.mail_pending}</b>}
               </button>
+              {/* jump straight to the agent's own node — same glide as
+                  clicking its card (user spec) */}
+              <button className="eye-tab-x eye-tab-jump"
+                title="jump to this agent's node"
+                onClick={() => onJump?.(a.id)}>
+                <FocusIcon fontSize="inherit" /></button>
               {/* ✕ only on audience-granted lines; closing RESCINDS the grant
                   (user spec) — top-level lines have no ✕, they are intrinsic */}
               {a.parent !== USER && a.audiences_held?.includes(USER) &&
@@ -2052,37 +2114,64 @@ function FilesView({ slug, nid }) {
 }
 
 function LineagePanel({ node, op, close }) {
+  // spitshined (user request): generation cards in the app's current visual
+  // language — tier token, per-generation consult-tier picker (№16: a bearer
+  // answers from context, so any tier serves), live bearers marked green
   useEsc(close)
-  const [tier, setTier] = useState('')
+  const [tiers, setTiers] = useState({})       // per-generation tier override
+  const SEAT = { haiku: 1, sonnet: 3, opus: 5, fable: 10 }
+  const gens = [...(node.lineage ?? [])].sort(
+    (a, b) => (b.generation ?? 0) - (a.generation ?? 0))
   return (
     <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
-      <div className="settings" onClick={(e) => e.stopPropagation()}>
+      <div className="settings lineage-panel" onClick={(e) => e.stopPropagation()}>
         <h3><LayersIcon fontSize="inherit" /> {node.id} — lineage</h3>
-        {(node.lineage ?? []).map((b) => (
-          <div key={b.id} className="hist-row">
-            <b className="mono">{b.id}</b>
-            <span className="dim">gen {b.generation} · {b.tier}</span>
-            <span className={'badge ' + (b.state === 'archived' ? 'dim' : 'free')}>{b.state}</span>
-            {b.bearer_state && <span className="badge dim">{b.bearer_state}</span>}
+        <div className="dim lin-blurb">
+          Every generation is this agent's pre-compaction self, archived in
+          place with its full context. Rehire one as a consultable knowledge
+          bearer — it answers questions beside its successor; any tier works,
+          cheaper tiers consult for fewer credits.
+        </div>
+        {gens.map((b) => (
+          <div key={b.id}
+            className={'lin-row' + (b.state === 'archived' ? '' : ' live')}>
+            <span className={'tier t-' + b.tier}>{TIER_LETTER[b.tier] ?? '?'}</span>
+            <div className="lin-id">
+              <b className="mono">{b.id}</b>
+              <span className="dim">
+                generation {b.generation}
+                {b.bearer_state ? ` · ${b.bearer_state} bearer` : ''}
+              </span>
+            </div>
             {b.state === 'archived' ? (
               <>
-                <select value={tier} onChange={(e) => setTier(e.target.value)}>
-                  <option value="">original tier</option>
-                  <option value="haiku">consult as haiku · 1</option>
-                  <option value="sonnet">as sonnet · 3</option>
-                  <option value="opus">as opus · 5</option>
+                <select value={tiers[b.id] ?? ''} onChange={(e) =>
+                  setTiers((t) => ({ ...t, [b.id]: e.target.value }))}>
+                  <option value="">as {b.tier} · seat {SEAT[b.tier]}</option>
+                  {['haiku', 'sonnet', 'opus'].filter((t) => t !== b.tier)
+                    .map((t) => (
+                      <option key={t} value={t}>as {t} · seat {SEAT[t]}</option>
+                    ))}
                 </select>
                 <button className="primary" onClick={() =>
-                  op({ op: 'rehire', node: b.id, grant: 0, ...(tier ? { tier } : {}) })
-                    .then(close).catch(() => {})}>rehire</button>
+                  op({ op: 'rehire', node: b.id, grant: 0,
+                       ...(tiers[b.id] ? { tier: tiers[b.id] } : {}) })
+                    .then(close).catch(() => {})}>
+                  <PlayIcon fontSize="inherit" /> rehire</button>
               </>
             ) : (
-              <button onClick={() => op({ op: 'retire', node: b.id }).then(close).catch(() => {})}>retire</button>
+              <>
+                <span className="badge free">consultable</span>
+                <button className="danger" onClick={() =>
+                  op({ op: 'retire', node: b.id }).then(close).catch(() => {})}>
+                  retire · frees {SEAT[b.tier]}</button>
+              </>
             )}
           </div>
         ))}
-        {!(node.lineage ?? []).length && <div className="dim">no prior generations</div>}
-        <div className="row"><button className="primary" onClick={close}>close</button></div>
+        {!gens.length &&
+          <div className="dim pad">no prior generations — this agent has never compacted</div>}
+        <div className="row"><button onClick={close}>close</button></div>
       </div>
     </div>
   )

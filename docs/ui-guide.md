@@ -163,8 +163,12 @@ coordinator that delegates user audiences to its hires fills this view
 automatically). Each panel is a full chat: live transcript with **token-level streaming**
 (the reply grows word-by-word under a pulsing caret), working indicator,
 composer, and the send-button-becomes-STOP idiom. The **tab bar**
-above the panels is always visible — click a tab to minimize or reopen its
-chat (the set is remembered per org). A line that exists via an **audience
+above the panels is always visible, ordered to mirror the tree's left→right
+spatial layout — click a tab to minimize or reopen its chat (the set is
+remembered per org), or its ⌖ button to jump straight to that agent's node,
+the same glide as clicking its card. The eye button in the bottom-right zoom
+HUD jumps back to the switchboard from anywhere — board ↔ agent hopping is
+two clicks. A line that exists via an **audience
 grant** carries an ✕ on its tab: closing it **rescinds that grant** (only
 that one — other audiences the agent holds are untouched). Top-level lines
 are intrinsic and have no ✕. The square expands to the FULL screen aspect;
@@ -182,6 +186,15 @@ message lands as mail to **every live top-level agent**, attributed to
 `orgtree_message` to the same `@ext:` address; replies arrive in the outside
 session's chatq inbox attributed to the org. If no top-level agents are
 live, the message surfaces in your inbox instead of being lost.
+
+## The agent tray
+
+The **agents** button (bottom-left of the canvas) expands a flat list of
+every agent in the tree — rows in the nodes' own visual language: tier
+token, mono name, context wheel, and current working state (activity spinner
+while busy, status dot otherwise, snowflake when frozen; archived rows dim).
+Clicking a row glides to that agent. Rows sort in reading order (row by row,
+left to right).
 
 ## The top bar
 

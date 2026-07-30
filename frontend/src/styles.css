@@ -1157,3 +1157,51 @@ svg.MuiSvgIcon-root {
   content: "\258D"; color: var(--accent); margin-left: 2px;
   animation: pulse 1s ease-in-out infinite;
 }
+
+/* ---- hud eye + agent tray + lineage polish ---------------------------- */
+.zoomhud .hud-eye svg { width: 22px; height: 12px; display: block; }
+.zoomhud .hud-eye path { fill: none; stroke: var(--accent); stroke-width: 2.4; }
+.zoomhud .hud-eye .iris { fill: none; stroke: var(--accent); stroke-width: 2; }
+.zoomhud .hud-eye .pupil { fill: var(--accent); }
+.tray-wrap {
+  position: absolute; left: 10px; bottom: 10px; z-index: 7;
+  display: flex; flex-direction: column; align-items: flex-start; gap: 6px;
+}
+.tray-toggle {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--panel); border: 1px solid var(--line);
+  color: var(--dim); font-size: 12px; padding: 4px 10px; border-radius: 6px;
+}
+.tray-toggle:hover { color: var(--ink); background: var(--panel-2); }
+.tray {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+  box-shadow: var(--shadow); padding: 4px; min-width: 200px; max-width: 280px;
+  max-height: 46vh; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.tray-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 3px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;
+}
+.tray-row:hover { background: var(--panel-2); }
+.tray-row.off { opacity: .5; }
+.tray-row .tier { width: 18px; height: 18px; font-size: 10px; flex: none; }
+.tray-name {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; font-family: var(--mono);
+}
+.tray-frozen { color: #7fc4e8; font-size: 13px; }
+.eye-tab-jump { color: var(--dim); }
+.eye-tab-jump:hover { color: var(--accent); background: var(--accent-soft); }
+.lineage-panel { min-width: 480px; }
+.lin-blurb { font-size: 11.5px; line-height: 1.55; }
+.lin-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px; border: 1px solid var(--line-soft); border-radius: 6px;
+  background: color-mix(in srgb, var(--bg) 40%, var(--panel));
+}
+.lin-row.live { border-color: rgba(137, 209, 133, .4); }
+.lin-row .tier { flex: none; }
+.lin-id { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.lin-id .dim { font-size: 11px; }
+.lin-row select { max-width: 11em; }
