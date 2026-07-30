@@ -157,9 +157,11 @@ above the panels is always visible — click a tab to minimize or reopen its
 chat (the set is remembered per org). A line that exists via an **audience
 grant** carries an ✕ on its tab: closing it **rescinds that grant** (only
 that one — other audiences the agent holds are untouched). Top-level lines
-are intrinsic and have no ✕. The eye never moves and is never draggable: it
-is the fixed anchor of the coordinate space, so it sits in the same spot in
-every org regardless of tree shape.
+are intrinsic and have no ✕. The eye's credit bar stays beside the square
+and glides outward as it expands — the side gutters are sized so it remains
+visible. The eye never moves and is never draggable: it is the fixed anchor
+of the coordinate space, so it sits in the same spot in every org regardless
+of tree shape.
 
 ## The top bar
 
@@ -207,7 +209,10 @@ ledger self-audit chip appears ONLY if the credit invariants are ever violated
 ## The desk (zoomed-in chat)
 
 - Header (ONE row): tier, name (hover for its purpose), context wheel
-  (red ≥ 80% — compaction approaches), status chip, working indicator (✳),
+  (red ≥ 80% — compaction approaches; **in the zoomed view the wheel is a
+  button: click it to compact NOW**, after a confirm — same split as the
+  automatic one; zoomed-out wheels are passive indicators), status chip,
+  working indicator (✳),
   badges, cost, the retire/dissolve/rehire action, and the tabs. While the
   agent is responding, the composer's send button becomes a red ■ STOP
   (Claude Code idiom) that interrupts the current response — Enter still

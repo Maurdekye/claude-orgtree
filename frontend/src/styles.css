@@ -802,23 +802,26 @@ main {
     var(--panel) 0, var(--panel) 9px, #27272a 9px, #27272a 10px);
 }
 .draft-name {
-  flex: 1; min-width: 0; font-family: var(--mono); font-size: 11px;
-  padding: 3px 6px; border-radius: 3px;
+  /* matches the square tier token's height exactly (user ruling) */
+  flex: 1; min-width: 0; height: 22px; font-family: var(--mono);
+  font-size: 9.5px; padding: 2px 5px; border-radius: 3px;
 }
+/* floats ABOVE the box (user ruling) — frees a row inside the cramped card */
 .draft-tag {
-  font-size: 8.5px; letter-spacing: .12em; text-transform: uppercase;
-  color: var(--accent); opacity: .85;
+  position: absolute; top: -14px; left: 2px;
+  font-size: 8px; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--accent); opacity: .85; pointer-events: none;
 }
 /* small enough to type AND read at the hire zoom (user ruling) */
 .draft-charter {
   flex: 1; min-height: 0; resize: none;
-  font-size: 8.5px; line-height: 1.4; font-family: inherit;
+  font-size: 8px; line-height: 1.4; font-family: inherit;
   padding: 3px 5px; border-radius: 3px;
   background: var(--input); border: 1px solid var(--line); color: var(--ink);
 }
 .draft-charter:focus { outline: none; border-color: var(--accent); }
 .draft-foot { display: flex; gap: 4px; margin-top: auto; }
-.draft-foot button { font-size: 10px; padding: 2px 8px; }
+.draft-foot button { font-size: 9px; padding: 1px 7px; }
 
 /* ------------------------------------------------------ welcome + org drawer */
 .welcome { flex: 1; display: grid; place-items: center; min-height: 100vh; }
@@ -1125,4 +1128,11 @@ svg.MuiSvgIcon-root {
 .eye-chat { flex: 1; min-width: 0; }
 .eye-chat .cc-head { flex-wrap: nowrap; overflow: hidden; }
 .eye-chat .cc-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.draft-preset { font-size: 10px; padding: 2px 4px; width: 100%; min-width: 0; }
+.draft-preset {
+  font-size: 8px; padding: 1px 3px; width: 100%; min-width: 0; height: 15px;
+  color: var(--dim);
+}
+/* the context wheel as a compact-now button (zoomed desk only) */
+.ctxbtn { background: none; border: none; padding: 0; display: inline-flex; cursor: pointer; }
+.ctxbtn:hover .ctxwheel .fill { filter: drop-shadow(0 0 3px rgba(217, 119, 87, .8)); }
+.ctxbtn:hover { background: none; }

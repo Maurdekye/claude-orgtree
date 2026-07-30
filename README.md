@@ -31,6 +31,73 @@ session sleeps again. A node near its context limit is **compacted by
 splitting**: the successor carries on under the same name while the
 pre-compaction self is archived in place as a consultable *knowledge bearer*.
 
+## What you can do — a tour
+
+**Run an organization from a living canvas.** Each org is an office-room
+canvas: your **eye** at the top (the fixed anchor of the page — it never
+moves), agent cards beneath, curved wires for reporting lines, dotted links
+between peers, glowing bypass lines for audiences, and sparks that travel
+the wires when mail moves. Pan and zoom freely; zoom into any card and it
+becomes a full Claude-Code-style chat desk — transcript, live per-message
+and per-tool feed, markdown rendering, and a composer whose send button
+turns into a red ■ STOP while the agent is responding.
+
+**Hire in one gesture.** Hover any card (or the eye) and pick a tier chip —
+H/S/O/F. A dashed draft appears: name it, drag its credit bar to set the
+grant, optionally give it a **charter** (a standing role card — pick a named
+preset from `docs/charters/`, or write your own), and hire. Your hires
+cascade credits automatically down the chain; agents hire their own reports
+through the same ledger with explicit, no-defaults specs. Drag cards onto
+other cards to re-parent whole subtrees; every hire, retire, move, or grant
+change notifies the agents it affects.
+
+**Talk to anyone — everything is mail.** Message any agent from its desk or
+the switchboard. A busy agent receives your message **mid-task** (delivered
+right after its next tool call, clearly attributed); idle agents wake
+immediately. Every message is persistent mail: you have an inbox on the eye
+(unread glow, per-mail read tracking, sent folder), and every agent has its
+own webmail-style inbox tab. Agents report status with a chip on their card
+and mail you results; top-level agents can always reach you, deeper ones
+need an **audience**.
+
+**The switchboard.** Click the eye and it expands to your screen, opening
+side-by-side live chats with every agent that has a **direct line** to you —
+top-level agents plus any audience holders. Tabs minimize/maximize each
+chat; an audience-granted tab carries an ✕ that closes the line by
+rescinding the grant.
+
+**The coordinator pattern.** The intended everyday shape: one opus
+**coordinator** directly under you (its charter ships in `docs/charters/`),
+every worker flat beneath it. The coordinator decomposes your asks, hires
+per piece, and **delegates a user audience** to each hire — so the
+switchboard fills with direct lines while a single authority below you does
+the routine coordination. Delegated audiences are a first-class mechanic:
+any agent can open any ear within its own reach (its own, a peer's, its
+superior's — the user's, for top-level agents) for any agent in its subtree.
+
+**Context is managed for you.** Each card's wheel shows context occupancy.
+At the configurable threshold (80% by default) a node **splits**: a
+compacted successor carries on under the same name; the predecessor stays
+consultable as a knowledge bearer in its lineage stack. In the zoomed view
+the wheel is also a button — click it to compact **now**.
+
+**Limits and safety valves.** Usage-limit freezes show a 🧊 badge and a
+resume button that stays **red until the reported reset time passes**, with
+an inline **auto** toggle that restarts everyone a minute after the reset.
+There's a per-agent ⏸ interrupt, an org-wide **killswitch** (unlatch, then
+STOP ALL), per-agent rights (folders rw/ro, terminal, web, editing,
+subagents, MCP servers, org visibility) enforced server-side, org-wide hire
+defaults on the eye's gear, and real-dollar tracking per node and per org.
+
+**Share an org with the world — kiosk mode.** Any org can be exposed
+through a **preauthenticated secret URL** on a separate public listener,
+with hard caps on credits, spend, and workspace storage; the admin app
+itself never leaves 127.0.0.1. `expose.ps1` opens a Cloudflare quick tunnel
+so outsiders reach it with zero setup on your router. Details below.
+
+The full interaction manual — every gesture, badge, and panel — is
+[docs/ui-guide.md](docs/ui-guide.md).
+
 ## Requirements
 
 - **[Claude Code](https://claude.com/claude-code)** installed and

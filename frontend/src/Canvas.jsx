@@ -2,9 +2,9 @@ import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  audienceAction, dissolveAll, getCharters, getChat, getHistory, getMcpServers,
-  getNodeInbox, getScratch, interruptNode, reorderNode, saveScope, saveSettings,
-  sendMessage,
+  audienceAction, compactNode, dissolveAll, getCharters, getChat, getHistory,
+  getMcpServers, getNodeInbox, getScratch, interruptNode, reorderNode,
+  saveScope, saveSettings, sendMessage,
 } from './api'
 import { pickFolder } from './picker'
 import {
@@ -662,7 +662,8 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
     setDraft({ parent: parentId === USER ? null : parentId, tier })
     // glide to the draft at a readable zoom — at overview zoom the name entry
     // is a 5px sliver otherwise
-    setTimeout(() => centerOn(DRAFT, Math.max(1.5, viewRef.current.z)), 60)
+    // slightly under the old 1.5 — the draft read as over-magnified (user)
+    setTimeout(() => centerOn(DRAFT, Math.max(1.35, viewRef.current.z)), 60)
   }
   const confirmDraft = (name, grant, charter) => {
     op({ op: 'hire', parent: draft.parent, tier: draft.tier, grant, name,
@@ -772,9 +773,12 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
           if (n.id === USER) {
             const vp = viewportRef.current?.getBoundingClientRect()
             // the eye is the ONLY cell that expands in width to the screen's
-            // aspect ratio when focused (user spec — room for the switchboard)
+            // aspect ratio when focused (user spec — room for the switchboard).
+            // Side gutters stay wide enough that the credit bar remains
+            // visible beside the expanded square (user ruling).
             const eyeW = vp
-              ? Math.round(USER_H * (vp.width - 48) / (vp.height - 48))
+              ? Math.round(USER_H * Math.max(vp.width * 0.5, vp.width - 260)
+                           / (vp.height - 48))
               : Math.round(USER_H * 16 / 9)
             return <UserNode key={USER} pos={p} isDrop={dropId === USER} seats={seats}
               stats={orgStats} mailGlow={mailGlow}
@@ -872,8 +876,10 @@ function UserNode({ pos, isDrop, stats, inboxCount, seats, mailGlow,
       }}>
       {/* the user's pool is infinite, so their bar fades out into the top
           instead of ending; hovering it reports the org's circulation
-          (the tip is a sibling — the fade mask would swallow a child) */}
-      {!focused && (kiosk?.credits
+          (the tip is a sibling — the fade mask would swallow a child).
+          It stays rendered at switchboard focus (user ruling): anchored to
+          the card's left edge, it glides outward as the square expands. */}
+      {kiosk?.credits
         ? /* kiosk: the pool is FINITE — a fixed-size bar with per-child slabs,
              exactly like an agent's (user spec); not draggable */
           <CreditBar seat={0} grant={kiosk.credits} committed={stats.circ}
@@ -885,7 +891,7 @@ function UserNode({ pos, isDrop, stats, inboxCount, seats, mailGlow,
               <div>seats <b className="n-seat">{stats.seats}</b></div>
               <div>free <b className="n-free">{stats.free}</b></div>
             </div>
-          </div>)}
+          </div>}
       <svg className="eye" viewBox="0 0 48 26">
         <path d="M 2 13 C 13 2, 35 2, 46 13 C 35 24, 13 24, 2 13 Z" />
         <circle className="iris" cx="24" cy="13" r="6.5" />
@@ -1587,18 +1593,23 @@ function NodeConfig({ node, map, tree, slug, op, toast, close }) {
   )
 }
 
-function ContextWheel({ occ, cw }) {
+function ContextWheel({ occ, cw, onCompact }) {
   if (!occ || !cw) return null
   const frac = Math.min(1, occ / cw)
   const R = 5.5, C = 2 * Math.PI * R
-  return (
+  const svg = (
     <svg className="ctxwheel" viewBox="0 0 16 16" width="15" height="15">
-      <title>{`context: ${Math.round(occ / 1000)}k / ${Math.round(cw / 1000)}k (${Math.round(frac * 100)}%)`}</title>
+      <title>{`context: ${Math.round(occ / 1000)}k / ${Math.round(cw / 1000)}k (${Math.round(frac * 100)}%)`
+        + (onCompact ? ' — click to compact now' : '')}</title>
       <circle cx="8" cy="8" r={R} className="track" />
       <circle cx="8" cy="8" r={R} className={'fill' + (frac >= 0.8 ? ' hot' : '')}
         strokeDasharray={`${C * frac} ${C}`} transform="rotate(-90 8 8)" />
     </svg>
   )
+  // clickable ONLY where a handler is wired — the zoomed desk (user ruling);
+  // the zoomed-out card wheel stays a passive indicator
+  if (!onCompact) return svg
+  return <button className="ctxbtn" onClick={onCompact}>{svg}</button>
 }
 
 const shortTool = (t) => (t || 'tool').replace(/^mcp__([^_]+)__/, '$1: ')
@@ -1629,6 +1640,7 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
   const [text, setText] = useState('')
   const [pending, setPending] = useState([])   // sent, not yet in the transcript
   const [asking, setAsking] = useState(false)
+  const [askCompact, setAskCompact] = useState(false)
   const [view, setView] = useState('chat')     // chat | history | files | inbox
   const [live_feed, setLiveFeed] = useState([])
   const scroller = useRef(null)
@@ -1704,7 +1716,9 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
       <div className="cc-head">
         <span className={'tier t-' + node.tier}>{TIER_LETTER[node.tier] ?? '?'}</span>
         <span className="cc-name" title={node.purpose ?? node.id}>{node.id}</span>
-        <ContextWheel occ={chat?.occupancy ?? node.occupancy} cw={node.context_window} />
+        <ContextWheel occ={chat?.occupancy ?? node.occupancy} cw={node.context_window}
+          onCompact={live && !node.bearer_state
+            ? () => setAskCompact(true) : undefined} />
         {node.last_status &&
           <span className={'statuschip ' + node.last_status.status}
             title={node.last_status.summary}>{node.last_status.status}</span>}
@@ -1763,6 +1777,15 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
           confirmLabel="dissolve"
           onConfirm={() => op({ op: 'dissolve', node: node.id })}
           close={() => setAsking(false)} />
+      )}
+      {askCompact && (
+        <ConfirmModal title={`compact ${node.id} now?`}
+          body="Same as the automatic split: the session forks and compacts — the successor carries on under this name; the pre-compaction self is archived in place as a consultable knowledge bearer."
+          confirmLabel="compact"
+          onConfirm={() => compactNode(slug, node.id)
+            .then(() => toast([`compaction of ${node.id} started`]))
+            .catch((e) => toast([`error: ${e.message}`]))}
+          close={() => setAskCompact(false)} />
       )}
       {chat?.last_error && <div className="desk-error"><WarnIcon fontSize="inherit" /> {chat.last_error}</div>}
       {view === 'chat' && (

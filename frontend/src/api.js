@@ -42,6 +42,8 @@ export const dissolveAll = (slug) =>
   fetch(u(`/api/orgs/${slug}/dissolve-all`), { method: 'POST' }).then(j)
 export const interruptNode = (slug, nid) =>
   fetch(u(`/api/orgs/${slug}/nodes/${nid}/interrupt`), { method: 'POST' }).then(j)
+export const compactNode = (slug, nid) =>
+  fetch(u(`/api/orgs/${slug}/nodes/${nid}/compact`), { method: 'POST' }).then(j)
 export const creditDecide = (slug, id, action) =>
   fetch(u(`/api/orgs/${slug}/credit-requests`), {
     method: 'POST',

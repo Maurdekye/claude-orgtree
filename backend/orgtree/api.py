@@ -689,6 +689,35 @@ def node_interrupt(slug: str, nid: str):
     return supervisor.interrupt_turn(slug, nid)
 
 
+@app.post("/api/orgs/{slug}/nodes/{nid}/compact")
+def node_compact(slug: str, nid: str):
+    """Manual compaction (user ruling: the context wheel is a BUTTON in the
+    zoomed view): the same §8 split as the automatic threshold — fork, compact
+    the fork into a successor, archive this self as a knowledge bearer."""
+    try:
+        org = store.load_org(slug)
+        n = org.node(nid)
+    except LedgerError as e:
+        raise HTTPException(404, str(e))
+    if n["state"] != "live":
+        raise HTTPException(422, f"{nid} is {n['state']} — rehire it first")
+    if n.get("bearer_state"):
+        raise HTTPException(422, "a knowledge bearer never re-compacts (§8.3)")
+    if not n.get("occupancy"):
+        raise HTTPException(422, "no conversation yet — nothing to compact")
+    if n.get("frozen"):
+        raise HTTPException(409, "frozen by a usage limit — resume it first")
+    if supervisor.state(slug, nid)["busy"]:
+        raise HTTPException(409, "busy — wait for the current turn to finish")
+
+    def run():
+        supervisor._compact_split(slug, nid)
+        supervisor.notify(slug, nid, "compacted")
+
+    threading.Thread(target=run, daemon=True).start()
+    return {"started": True}
+
+
 @app.post("/api/orgs/{slug}/dissolve-all")
 async def org_dissolve_all(slug: str):
     """Dissolve EVERY agent in the org at once (context kept — rehire revives)."""
