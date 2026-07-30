@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { pickFolder } from './api'
 
 // actor sentinels are @-typed — a NODE may legitimately be named "user"/"system"
 export const USER = '@user'
@@ -70,12 +71,22 @@ export function DirList({ dirs, onChange }) {
         <div className="dirrow" key={i}>
           <input placeholder="E:\path\to\existing\folder" value={d}
             onChange={(e) => onChange(dirs.map((x, j) => (j === i ? e.target.value : x)))} />
+          <button type="button" className="iconbtn" title="browse for a folder"
+            onClick={() => pickFolder().then((r) => {
+              if (r.path) onChange(dirs.map((x, j) => (j === i ? r.path : x)))
+            }).catch(() => {})}>📁</button>
           <button type="button" className="iconbtn" title="remove folder"
             onClick={() => onChange(dirs.filter((_, j) => j !== i))}>✕</button>
         </div>
       ))}
-      <button type="button" className="addrow"
-        onClick={() => onChange([...dirs, ''])}>+ add folder</button>
+      <div className="dirrow">
+        <button type="button" className="addrow"
+          onClick={() => onChange([...dirs, ''])}>+ add folder</button>
+        <button type="button" className="addrow" title="browse for a folder to add"
+          onClick={() => pickFolder().then((r) => {
+            if (r.path) onChange([...dirs, r.path])
+          }).catch(() => {})}>📁 browse</button>
+      </div>
     </div>
   )
 }

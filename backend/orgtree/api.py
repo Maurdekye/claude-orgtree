@@ -11,6 +11,9 @@ from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
+import sys
+import threading
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
@@ -251,6 +254,31 @@ async def node_scope(slug: str, nid: str, body: Scope):
         store.save_org(org)
     await hub.changed(slug)
     return result
+
+
+_pick_lock = threading.Lock()
+
+
+@app.post("/api/pick-folder")
+def pick_folder():
+    """Open a NATIVE folder-picker dialog on this machine (the UI is local, so
+    the server's dialog IS the user's dialog — browsers cannot reveal absolute
+    paths themselves) and return the chosen path, or null if cancelled."""
+    if not _pick_lock.acquire(blocking=False):
+        raise HTTPException(409, "a folder picker is already open")
+    try:
+        out = subprocess.run(
+            [sys.executable, "-c",
+             "from tkinter import filedialog, Tk\n"
+             "r = Tk(); r.withdraw(); r.attributes('-topmost', True)\n"
+             "print(filedialog.askdirectory() or '')"],
+            capture_output=True, text=True, timeout=300)
+        path = (out.stdout or "").strip()
+        return {"path": os.path.normpath(path) if path else None}
+    except subprocess.TimeoutExpired:
+        return {"path": None}
+    finally:
+        _pick_lock.release()
 
 
 @app.get("/api/mcp-servers")

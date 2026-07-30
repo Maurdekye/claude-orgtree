@@ -22,6 +22,8 @@ export const runOp = (slug, body) =>
 
 export const getChat = (slug, nid) => fetch(`/api/orgs/${slug}/nodes/${nid}/chat`).then(j)
 export const getMcpServers = () => fetch('/api/mcp-servers').then(j)
+export const pickFolder = () =>
+  fetch('/api/pick-folder', { method: 'POST' }).then(j)
 export const getInbox = (slug) => fetch(`/api/orgs/${slug}/inbox`).then(j)
 export const getNodeInbox = (slug, nid) =>
   fetch(`/api/orgs/${slug}/nodes/${nid}/inbox`).then(j)

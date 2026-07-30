@@ -3,7 +3,8 @@ import { marked } from 'marked'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   audienceAction, dissolveAll, getChat, getHistory, getMcpServers, getNodeInbox,
-  getScratch, interruptNode, reorderNode, saveScope, saveSettings, sendMessage,
+  getScratch, interruptNode, pickFolder, reorderNode, saveScope, saveSettings,
+  sendMessage,
 } from './api'
 
 const TIER_LETTER = { haiku: 'H', sonnet: 'S', opus: 'O', fable: 'F' }
@@ -907,6 +908,10 @@ function UserConfig({ tree, slug, toast, close }) {
           <div className="dirrow">
             <input placeholder="add an absolute path"
               value={newPath} onChange={(e) => setNewPath(e.target.value)} />
+            <button type="button" className="iconbtn" title="browse for a folder"
+              onClick={() => pickFolder().then((r) => {
+                if (r.path) setOrgDirs([...orgDirs, { path: r.path, mode: 'rw' }])
+              }).catch(() => {})}>📁</button>
             <button type="button" className="addrow" onClick={() => {
               if (newPath.trim()) {
                 setOrgDirs([...orgDirs, { path: newPath.trim(), mode: 'rw' }])
@@ -1305,6 +1310,10 @@ function NodeConfig({ node, map, tree, slug, op, toast, close }) {
             <div className="dirrow">
               <input placeholder="or any absolute path (top-level: you grant freely)"
                 value={newPath} onChange={(e) => setNewPath(e.target.value)} />
+              <button type="button" className="iconbtn" title="browse for a folder"
+                onClick={() => pickFolder().then((r) => {
+                  if (r.path) setDirs([...dirs, { path: r.path, mode: 'rw' }])
+                }).catch(() => {})}>📁</button>
               <button type="button" className="addrow" onClick={() => {
                 if (newPath.trim()) { setDirs([...dirs, { path: newPath.trim(), mode: 'rw' }]); setNewPath('') }
               }}>add</button>
