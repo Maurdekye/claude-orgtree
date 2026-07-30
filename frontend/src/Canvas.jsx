@@ -679,6 +679,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
               streamEvt={streamEvt} pxc={pxPerCredit} zoom={view.z} act={activity?.[n.id]}
               onSpawn={(t) => spawn(n.id, t)} onConfig={() => setConfigId(n.id)}
               onInbox={() => setInboxId(n.id)} onLineage={() => setLineageId(n.id)}
+              onRecenter={() => centerOn(n.id, viewRef.current.z)}
               onDragStart={startNodeDrag} onDragMove={moveNodeDrag} onDragEnd={endNodeDrag} />
           )
         })}
@@ -1006,7 +1007,7 @@ function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, zoom, pxc, onCo
 
 function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, map, op, slug,
   pulse, toast, streamEvt, pxc, zoom, act, onSpawn, onConfig, onInbox, onLineage,
-  onDragStart, onDragMove, onDragEnd }) {
+  onRecenter, onDragStart, onDragMove, onDragEnd }) {
   const cls = ['sq', node.state, focused ? 'desk' : lod, 'tier-' + node.tier]
   if (node.busy) cls.push('busy')
   if (dragging) cls.push('lifted')
@@ -1090,7 +1091,8 @@ function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, map, op,
       )}
       {focused && (
         <DeskChat node={node} map={map} op={op} slug={slug} pulse={pulse} toast={toast}
-          streamEvt={streamEvt} onLineage={onLineage} onConfig={onConfig} />
+          streamEvt={streamEvt} onLineage={onLineage} onConfig={onConfig}
+          onRecenter={onRecenter} />
       )}
       {live && !node.isBearerOf && !node.bearer_state &&
         <SpawnChips onSpawn={onSpawn} free={node.free} seats={seats} />}
@@ -1313,7 +1315,8 @@ function Activity({ act, dotOnly }) {
 // The desk is styled as a miniature Claude Code chat window (design ruling):
 // compact one-line chrome, plain assistant text, boxed user turns, ⏺ tool
 // lines, and a bordered composer with the model name in its footer row.
-function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onConfig }) {
+function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onConfig,
+  onRecenter }) {
   const [chat, setChat] = useState(null)
   const [text, setText] = useState('')
   const [pending, setPending] = useState([])   // sent, not yet in the transcript
@@ -1390,7 +1393,15 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
   const liveKids = node.children.some((c) => c.state === 'live')
   return (
     <div className="desk-over" onWheel={(e) => e.stopPropagation()}
-      onPointerDown={(e) => e.stopPropagation()}>
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        // clicking the desk's non-interactive space recenters the camera on
+        // it (user ruling) — but never steal clicks meant for controls, and
+        // never fight an in-progress text selection
+        if (e.target.closest('button, input, textarea, select, a, label, .mailrow')) return
+        if (window.getSelection()?.toString()) return
+        onRecenter?.()
+      }}>
       <div className="desk-inner desk-body">
       <div className="cc-head">
         <span className={'tier t-' + node.tier}>{TIER_LETTER[node.tier] ?? '?'}</span>
