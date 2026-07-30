@@ -49,7 +49,7 @@ aside h1, .welcome-card h1 {
   font-size: 13px; font-weight: 600; margin: 2px 4px 6px; letter-spacing: .08em;
   text-transform: uppercase; color: var(--dim);
 }
-aside h1::before, .welcome-card h1::before { content: '✳ '; color: var(--accent); }
+aside h1 svg, .welcome-card h1 svg { color: var(--accent); }
 aside footer { margin-top: auto; color: #6e6e6e; font-size: 11px; padding: 0 4px; }
 
 nav { display: flex; flex-direction: column; gap: 2px; }
@@ -591,7 +591,7 @@ main {
 .edge.tether { stroke: #5a5a5c; stroke-dasharray: 2 4; stroke-width: 1.3px; opacity: .8; }
 .sq.locked { filter: saturate(.4); }
 .sq.locked::after {
-  content: '🔒'; position: absolute; right: 6px; bottom: 4px; font-size: 11px; opacity: .8;
+  content: none;   /* the lock is a badge icon now (MUI icons — user ruling) */
 }
 
 /* live streaming feed + oracle exchanges
@@ -993,3 +993,11 @@ input:focus, select:focus, textarea:focus, button:focus-visible {
   border-left: 3px solid var(--accent); border-radius: 6px;
   padding: 10px 14px; font-size: 12px; cursor: pointer; box-shadow: var(--shadow);
 }
+
+/* MUI icons everywhere (user ruling: no emojis): inherit size + color, sit
+   on the text baseline like the glyphs they replaced */
+svg.MuiSvgIcon-root {
+  font-size: 1.15em; width: 1em; height: 1em;
+  vertical-align: -0.18em; flex: none;
+}
+.tooldot { font-size: .7em !important; vertical-align: 0.05em !important; }

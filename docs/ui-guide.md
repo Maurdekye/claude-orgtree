@@ -5,6 +5,11 @@ operate it (user ruling, 2026-07-29). Everything the UI used to explain inline
 lives here instead — for an AI assistant to ingest and relay, or for a human to
 read once.
 
+Iconography is Material (MUI) icons throughout — no emojis (user ruling). The
+glyphs in this guide (✉ ⚙ ▶ ⏹ 📁 🗑 🧊 🔒 ≣ ⛶ 👂) are shorthand for the
+corresponding Material icons: mail, settings-gear, play, stop, folder, delete,
+snowflake, lock, layers, fullscreen, hearing.
+
 ## The canvas
 
 - The ☰ drawer lists your organizations; "⌂ all organizations" returns to

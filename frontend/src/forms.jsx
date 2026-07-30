@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { pickFolder } from './api'
+import { CloseIcon, FolderIcon } from './icons'
 
 // actor sentinels are @-typed — a NODE may legitimately be named "user"/"system"
 export const USER = '@user'
@@ -74,9 +75,9 @@ export function DirList({ dirs, onChange }) {
           <button type="button" className="iconbtn" title="browse for a folder"
             onClick={() => pickFolder().then((r) => {
               if (r.path) onChange(dirs.map((x, j) => (j === i ? r.path : x)))
-            }).catch(() => {})}>📁</button>
+            }).catch(() => {})}><FolderIcon fontSize="inherit" /></button>
           <button type="button" className="iconbtn" title="remove folder"
-            onClick={() => onChange(dirs.filter((_, j) => j !== i))}>✕</button>
+            onClick={() => onChange(dirs.filter((_, j) => j !== i))}><CloseIcon fontSize="inherit" /></button>
         </div>
       ))}
       <div className="dirrow">
@@ -85,7 +86,7 @@ export function DirList({ dirs, onChange }) {
         <button type="button" className="addrow" title="browse for a folder to add"
           onClick={() => pickFolder().then((r) => {
             if (r.path) onChange([...dirs, r.path])
-          }).catch(() => {})}>📁 browse</button>
+          }).catch(() => {})}><FolderIcon fontSize="inherit" /> browse</button>
       </div>
     </div>
   )

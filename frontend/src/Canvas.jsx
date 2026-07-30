@@ -6,6 +6,12 @@ import {
   getScratch, interruptNode, pickFolder, reorderNode, saveScope, saveSettings,
   sendMessage,
 } from './api'
+import {
+  AddIcon, ArrowUpIcon, AutorenewIcon, CheckIcon, CloseIcon, DeleteIcon,
+  DotIcon, EditIcon, FileIcon, FolderIcon, FrozenIcon, FullscreenIcon,
+  HearingIcon, LayersIcon, LockIcon, MailIcon, RemoveIcon, SettingsIcon,
+  SparkIcon, StopIcon, WarnIcon,
+} from './icons'
 
 const TIER_LETTER = { haiku: 'H', sonnet: 'S', opus: 'O', fable: 'F' }
 const TIERS = ['haiku', 'sonnet', 'opus', 'fable']
@@ -581,7 +587,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
     const x = springs.current.get(id)?.x ?? 0
     const beforeSib = sibs.find((k) => (targetRef.current.get(k)?.x ?? 0) > x)
     const req = beforeSib ? { before: beforeSib } : { after: sibs[sibs.length - 1] }
-    reorderNode(slug, id, req).catch((err) => toast([`⛔ ${err.message}`])).finally(finish)
+    reorderNode(slug, id, req).catch((err) => toast([`error: ${err.message}`])).finally(finish)
   }
 
   // ------------------------------------------------------- focus (the desk)
@@ -769,9 +775,9 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
       {/* stop pointerdown: the viewport's pan pointer-capture retargets clicks
           and silently kills these buttons */}
       <div className="zoomhud" onPointerDown={(e) => e.stopPropagation()}>
-        <button onClick={() => animateTo({ ...viewRef.current, z: Math.min(Z_MAX, viewRef.current.z * 1.3) }, 220)}>+</button>
-        <button onClick={() => animateTo({ ...viewRef.current, z: Math.max(0.24, viewRef.current.z / 1.3) }, 220)}>−</button>
-        <button title="fit the whole org" onClick={() => fitAll()}>⛶</button>
+        <button onClick={() => animateTo({ ...viewRef.current, z: Math.min(Z_MAX, viewRef.current.z * 1.3) }, 220)}><AddIcon fontSize="inherit" /></button>
+        <button onClick={() => animateTo({ ...viewRef.current, z: Math.max(0.24, viewRef.current.z / 1.3) }, 220)}><RemoveIcon fontSize="inherit" /></button>
+        <button title="fit the whole org" onClick={() => fitAll()}><FullscreenIcon fontSize="inherit" /></button>
       </div>
       {configId && map.get(configId) && (
         <NodeConfig node={map.get(configId)} map={map} tree={tree} slug={slug}
@@ -821,11 +827,11 @@ function UserNode({ pos, isDrop, stats, inboxCount, seats, mailGlow,
       <button className="eye-inbox"
         onPointerDown={(e) => e.stopPropagation()}
         onClick={(e) => { e.stopPropagation(); onInbox?.() }}>
-        ✉{inboxCount > 0 && <span className="count">{inboxCount}</span>}
+        <MailIcon fontSize="inherit" />{inboxCount > 0 && <span className="count">{inboxCount}</span>}
       </button>
       <button className="eye-gear" title="agent-hire defaults"
         onPointerDown={(e) => e.stopPropagation()}
-        onClick={(e) => { e.stopPropagation(); onGear?.() }}>⚙</button>
+        onClick={(e) => { e.stopPropagation(); onGear?.() }}><SettingsIcon fontSize="inherit" /></button>
       {/* real seat costs in the hover hints — a literal 0 was technically true
           (infinite pool) but read as wrong next to every other card */}
       <SpawnChips onSpawn={onSpawn} free={Infinity} seats={seats} />
@@ -876,7 +882,7 @@ function UserConfig({ tree, slug, toast, close }) {
   return (
     <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
       <div className="settings" onClick={(e) => e.stopPropagation()}>
-        <h3>⚙ you <span className="dim">· configuration</span></h3>
+        <h3><SettingsIcon fontSize="inherit" /> you <span className="dim">· configuration</span></h3>
         <div className="row">
           <button className="danger" onClick={() => setAsking(true)}>
             dissolve all agents</button>
@@ -902,7 +908,7 @@ function UserConfig({ tree, slug, toast, close }) {
               </button>
               <button type="button" className="iconbtn"
                 title="remove from the org (revokes everywhere)"
-                onClick={() => setOrgDirs(orgDirs.filter((_, j) => j !== i))}>✕</button>
+                onClick={() => setOrgDirs(orgDirs.filter((_, j) => j !== i))}><CloseIcon fontSize="inherit" /></button>
             </div>
           ))}
           <div className="dirrow">
@@ -911,7 +917,7 @@ function UserConfig({ tree, slug, toast, close }) {
             <button type="button" className="iconbtn" title="browse for a folder"
               onClick={() => pickFolder().then((r) => {
                 if (r.path) setOrgDirs([...orgDirs, { path: r.path, mode: 'rw' }])
-              }).catch(() => {})}>📁</button>
+              }).catch(() => {})}><FolderIcon fontSize="inherit" /></button>
             <button type="button" className="addrow" onClick={() => {
               if (newPath.trim()) {
                 setOrgDirs([...orgDirs, { path: newPath.trim(), mode: 'rw' }])
@@ -959,7 +965,7 @@ function UserConfig({ tree, slug, toast, close }) {
               org_dirs: orgDirs,
             })
               .then((r) => { toast(r.warnings); close() })
-              .catch((e) => toast([`⛔ ${e.message}`]))}>save</button>
+              .catch((e) => toast([`error: ${e.message}`]))}>save</button>
           <button onClick={close}>cancel</button>
         </div>
       </div>
@@ -969,7 +975,7 @@ function UserConfig({ tree, slug, toast, close }) {
           confirmLabel="dissolve all"
           onConfirm={() => dissolveAll(slug)
             .then((r) => { toast([`dissolved ${r.nodes} node(s), freed ${r.freed} credits`]); close() })
-            .catch((e) => toast([`⛔ ${e.message}`]))}
+            .catch((e) => toast([`error: ${e.message}`]))}
           close={() => setAsking(false)} />
       )}
     </div>
@@ -1112,8 +1118,8 @@ function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, zoom, pxc, onCo
         onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && ok) { e.preventDefault(); onConfirm(name.trim(), grant, charter) } }} />
       <div className="draft-foot">
         <button className="primary" disabled={!ok}
-          onClick={() => onConfirm(name.trim(), grant, charter)}>✓ hire</button>
-        <button onClick={onCancel}>✕</button>
+          onClick={() => onConfirm(name.trim(), grant, charter)}><CheckIcon fontSize="inherit" /> hire</button>
+        <button onClick={onCancel}><CloseIcon fontSize="inherit" /></button>
       </div>
     </div>
   )
@@ -1168,11 +1174,11 @@ function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, map, op,
         <button className={'mailbtn' + (node.mail_pending > 0 ? ' has' : '')}
           onPointerDown={(e) => e.stopPropagation()}
           onClick={(e) => { e.stopPropagation(); onInbox() }}>
-          ✉{node.mail_pending > 0 && <span className="count">{node.mail_pending}</span>}
+          <MailIcon fontSize="inherit" />{node.mail_pending > 0 && <span className="count">{node.mail_pending}</span>}
         </button>
         <button className="gearbtn"
           onPointerDown={(e) => e.stopPropagation()}
-          onClick={(e) => { e.stopPropagation(); onConfig() }}>⚙</button>
+          onClick={(e) => { e.stopPropagation(); onConfig() }}><SettingsIcon fontSize="inherit" /></button>
         <ContextWheel occ={node.occupancy} cw={node.context_window} />
         {lod === 'mini' && node.last_status &&
           <span className={'statusdot ' + node.last_status.status}
@@ -1195,12 +1201,12 @@ function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, map, op,
               title={node.last_status.summary}>{node.last_status.status}</span>}
           {node.frozen &&
             <span className="badge frozen"
-              title={node.frozen.error}>🧊 limit</span>}
-          {node.limit_locked && <span className="badge dim">🔒 limit</span>}
+              title={node.frozen.error}><FrozenIcon fontSize="inherit" /> limit</span>}
+          {node.limit_locked && <span className="badge dim"><LockIcon fontSize="inherit" /> limit</span>}
           {stackN > 0 &&
             <button className="badge stackbadge"
               onPointerDown={(e) => e.stopPropagation()}
-              onClick={(e) => { e.stopPropagation(); onLineage() }}>≣ {stackN}</button>}
+              onClick={(e) => { e.stopPropagation(); onLineage() }}><LayersIcon fontSize="inherit" /> {stackN}</button>}
         </div>
       )}
       {focused && (
@@ -1261,7 +1267,7 @@ function NodeConfig({ node, map, tree, slug, op, toast, close }) {
     // the click, so backdrop-close and every button in here silently broke
     <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
       <div className="settings" onClick={(e) => e.stopPropagation()}>
-        <h3>⚙ {node.id} <span className="dim">· {node.tier} · configuration</span></h3>
+        <h3><SettingsIcon fontSize="inherit" /> {node.id} <span className="dim">· {node.tier} · configuration</span></h3>
 
         <div className="row">
           {node.state === 'live' && !node.children.some((c) => c.state !== 'archived') &&
@@ -1277,7 +1283,7 @@ function NodeConfig({ node, map, tree, slug, op, toast, close }) {
               rehire (context intact)</button>}
           <span style={{ flex: 1 }} />
           <button className="danger delete"
-            onClick={() => setAsking('delete')}>🗑 delete permanently</button>
+            onClick={() => setAsking('delete')}><DeleteIcon fontSize="inherit" /> delete permanently</button>
         </div>
 
         <div className="field-label">folder access</div>
@@ -1292,7 +1298,7 @@ function NodeConfig({ node, map, tree, slug, op, toast, close }) {
                 {d.mode === 'rw' ? 'RW' : 'RO'}
               </button>
               <button type="button" className="iconbtn" title="revoke"
-                onClick={() => setDirs(dirs.filter((_, j) => j !== i))}>✕</button>
+                onClick={() => setDirs(dirs.filter((_, j) => j !== i))}><CloseIcon fontSize="inherit" /></button>
             </div>
           ))}
           {addable.length > 0 && (
@@ -1313,7 +1319,7 @@ function NodeConfig({ node, map, tree, slug, op, toast, close }) {
               <button type="button" className="iconbtn" title="browse for a folder"
                 onClick={() => pickFolder().then((r) => {
                   if (r.path) setDirs([...dirs, { path: r.path, mode: 'rw' }])
-                }).catch(() => {})}>📁</button>
+                }).catch(() => {})}><FolderIcon fontSize="inherit" /></button>
               <button type="button" className="addrow" onClick={() => {
                 if (newPath.trim()) { setDirs([...dirs, { path: newPath.trim(), mode: 'rw' }]); setNewPath('') }
               }}>add</button>
@@ -1368,7 +1374,7 @@ function NodeConfig({ node, map, tree, slug, op, toast, close }) {
             saveScope(slug, node.id, { add_dirs: dirs, tools, org_visibility: vis,
               charter, team_charter: teamCharter })
               .then((r) => { toast(r.warnings); close() })
-              .catch((e) => toast([`⛔ ${e.message}`]))}>save</button>
+              .catch((e) => toast([`error: ${e.message}`]))}>save</button>
           <button onClick={close}>cancel</button>
         </div>
       </div>
@@ -1417,14 +1423,14 @@ function Activity({ act, dotOnly }) {
   const phase = act?.phase ?? 'thinking'
   if (dotOnly) {
     return phase === 'tool'
-      ? <span className="actgear" title={`running ${shortTool(act?.tool)}`}>⚙</span>
+      ? <span className="actgear" title={`running ${shortTool(act?.tool)}`}><SettingsIcon fontSize="inherit" /></span>
       : <span className="busydot" title={phase} />
   }
   return (
     <div className="actlabel">
       {phase === 'tool'
-        ? <><span className="actgear">⚙</span> {shortTool(act?.tool)}</>
-        : phase === 'writing' ? <>✍ writing</> : <>✳ thinking</>}
+        ? <><span className="actgear"><SettingsIcon fontSize="inherit" /></span> {shortTool(act?.tool)}</>
+        : phase === 'writing' ? <><EditIcon fontSize="inherit" /> writing</> : <><AutorenewIcon fontSize="inherit" className="cc-spin" /> thinking</>}
       <span className="actdots" />
     </div>
   )
@@ -1505,7 +1511,7 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
     setChat((c) => c && ({ ...c, busy: true }))
     toBottom()
     sendMessage(slug, node.id, t).then(() => refresh(true))
-      .catch((e) => toast([`⛔ ${e.message}`]))
+      .catch((e) => toast([`error: ${e.message}`]))
   }
 
   const liveKids = node.children.some((c) => c.state === 'live')
@@ -1531,25 +1537,25 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
         {/* one row for everything (user ruling — the 900px panel has room);
             interruption lives on the composer's stop button, not up here */}
         {chat?.busy &&
-          <span className="cc-working"><span className="cc-spin">✳</span> working</span>}
+          <span className="cc-working"><AutorenewIcon fontSize="inherit" className="cc-spin" /> working</span>}
         {node.frozen &&
           <span className="badge frozen" title={node.frozen.error}>
-            🧊 usage limit{node.frozen.until ? ` · resumes ${node.frozen.until}` : ''}</span>}
+            <FrozenIcon fontSize="inherit" /> usage limit{node.frozen.until ? ` · resumes ${node.frozen.until}` : ''}</span>}
         {node.limit_locked &&
-          <span className="badge dim">🔒 limit</span>}
+          <span className="badge dim"><LockIcon fontSize="inherit" /> limit</span>}
         {node.generation > 0 &&
           <button className="badge stackbadge"
-            onClick={onLineage}>gen {node.generation} ≣</button>}
+            onClick={onLineage}>gen {node.generation} <LayersIcon fontSize="inherit" /></button>}
         {node.bearer_state &&
           <span className={'badge ' + (node.bearer_state === 'preserving' ? 'dim' : '')}>
             {node.bearer_state}</span>}
         {node.audiences_held?.map((g) => (
           <span key={g} className={'badge ' + (g === USER ? 'free' : '')}>
-            👂{g === USER ? 'user' : g}
+            <HearingIcon fontSize="inherit" />{g === USER ? 'user' : g}
             <button className="chip-x"
               onClick={() => audienceAction(slug, 'revoke', node.id)
                 .then(() => toast([`audience ${node.id}→${g} rescinded`]))
-                .catch((e) => toast([`⛔ ${e.message}`]))}>✕</button>
+                .catch((e) => toast([`error: ${e.message}`]))}><CloseIcon fontSize="inherit" /></button>
           </span>
         ))}
         {node.cost_usd > 0 && <span className="badge dim">${node.cost_usd.toFixed(2)}</span>}
@@ -1573,7 +1579,7 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
             </button>
           ))}
         </span>
-        <button className="cc-icon" onClick={onConfig}>⚙</button>
+        <button className="cc-icon" onClick={onConfig}><SettingsIcon fontSize="inherit" /></button>
       </div>
       {asking && (
         <ConfirmModal title={`dissolve ${node.id}?`}
@@ -1582,7 +1588,7 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
           onConfirm={() => op({ op: 'dissolve', node: node.id })}
           close={() => setAsking(false)} />
       )}
-      {chat?.last_error && <div className="desk-error">⚠ {chat.last_error}</div>}
+      {chat?.last_error && <div className="desk-error"><WarnIcon fontSize="inherit" /> {chat.last_error}</div>}
       {view === 'chat' && (
         <>
           <div className="msgs" ref={scroller}>
@@ -1592,7 +1598,7 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
             {chat?.messages.map((m, i) => <Msg key={i} m={m} />)}
             {live_feed.map((f, i) => (
               f.kind === 'tool'
-                ? <div key={'f' + i} className="msg live tools">⏺ {f.text}</div>
+                ? <div key={'f' + i} className="msg live tools"><DotIcon fontSize="inherit" className="tooldot" /> {f.text}</div>
                 : f.kind === 'steered'
                   ? <div key={'f' + i} className="msg user live md"
                       dangerouslySetInnerHTML={md(stripEnvelope(f.text))} />
@@ -1603,7 +1609,7 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
               <div key={'q' + i} className="msg user pending md"
                 dangerouslySetInnerHTML={md(p)} />
             ))}
-            {chat?.busy && <div className="working"><span className="cc-spin">✳</span> working<span className="actdots" /></div>}
+            {chat?.busy && <div className="working"><AutorenewIcon fontSize="inherit" className="cc-spin" /> working<span className="actdots" /></div>}
           </div>
           {/* send sits BESIDE the input; no model-name footer row (the tier
               chip in the header already says it) — reclaimed vertical space */}
@@ -1619,10 +1625,10 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
             {chat?.busy
               ? <button className="cc-send stop" title="interrupt the current response"
                   onClick={() => interruptNode(slug, node.id)
-                    .then((r) => { if (!r.interrupted) toast([`⛔ ${r.reason}`]) })
-                    .catch((e) => toast([`⛔ ${e.message}`]))}>■</button>
+                    .then((r) => { if (!r.interrupted) toast([`error: ${r.reason}`]) })
+                    .catch((e) => toast([`error: ${e.message}`]))}><StopIcon fontSize="inherit" /></button>
               : <button className="cc-send" disabled={!live || !text.trim()}
-                  onClick={send}>↑</button>}
+                  onClick={send}><ArrowUpIcon fontSize="inherit" /></button>}
           </div>
         </>
       )}
@@ -1746,7 +1752,7 @@ function NodeInboxModal({ node, slug, pulse, close }) {
   return (
     <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
       <div className="settings wide" onClick={(e) => e.stopPropagation()}>
-        <h3>✉ {node.id} <span className="dim">· inbox</span></h3>
+        <h3><MailIcon fontSize="inherit" /> {node.id} <span className="dim">· inbox</span></h3>
         <InboxView slug={slug} nid={node.id} pulse={pulse} />
         <div className="row">
           <button className="primary" onClick={close}>close</button>
@@ -1785,15 +1791,15 @@ function FilesView({ slug, nid }) {
     <div className="msgs files">
       <div className="hist-row">
         <button onClick={() => setPath('')}>scratch</button>
-        {path && <button onClick={up}>↑ up</button>}
+        {path && <button onClick={up}><ArrowUpIcon fontSize="inherit" /> up</button>}
         <span className="dim mono">/{path}</span>
       </div>
       {!data && <div className="dim pad">empty or unreadable</div>}
       {data?.entries?.map((e) => (
         <div key={e.name} className="hist-row">
           {e.dir
-            ? <button onClick={() => setPath(path ? `${path}/${e.name}` : e.name)}>📁 {e.name}</button>
-            : <button onClick={() => setPath(path ? `${path}/${e.name}` : e.name)}>📄 {e.name}</button>}
+            ? <button onClick={() => setPath(path ? `${path}/${e.name}` : e.name)}><FolderIcon fontSize="inherit" /> {e.name}</button>
+            : <button onClick={() => setPath(path ? `${path}/${e.name}` : e.name)}><FileIcon fontSize="inherit" /> {e.name}</button>}
           {!e.dir && <span className="dim">{e.size} B</span>}
         </div>
       ))}
@@ -1808,7 +1814,7 @@ function LineagePanel({ node, op, close }) {
   return (
     <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
       <div className="settings" onClick={(e) => e.stopPropagation()}>
-        <h3>≣ {node.id} — lineage</h3>
+        <h3><LayersIcon fontSize="inherit" /> {node.id} — lineage</h3>
         {(node.lineage ?? []).map((b) => (
           <div key={b.id} className="hist-row">
             <b className="mono">{b.id}</b>
@@ -1856,9 +1862,9 @@ function Msg({ m }) {
   const text = m.role === 'user' ? stripEnvelope(m.text) : m.text
   return (
     <div className={'msg ' + m.role + (m.oracle ? ' oracle' : '')}>
-      {m.tools?.length > 0 && <div className="tools">⏺ {m.tools.join(' · ')}</div>}
+      {m.tools?.length > 0 && <div className="tools"><DotIcon fontSize="inherit" className="tooldot" /> {m.tools.join(' · ')}</div>}
       {text && <div className="msgtext md" dangerouslySetInnerHTML={md(text)} />}
-      {m.oracle && <div className="tools">◇ oracle exchange — not retained by the node</div>}
+      {m.oracle && <div className="tools"><SparkIcon fontSize="inherit" /> oracle exchange — not retained by the node</div>}
     </div>
   )
 }

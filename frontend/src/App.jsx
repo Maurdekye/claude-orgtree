@@ -5,6 +5,11 @@ import {
   resumeFrozen, runOp, saveSettings,
 } from './api'
 import { ConfirmModal, MailFolders, MailList, OrgCanvas, useEsc } from './Canvas'
+import {
+  BlockIcon, ChevronRightIcon, CloseIcon, DeleteIcon, ExpandMoreIcon,
+  HearingIcon, HomeIcon, LockIcon, LockOpenIcon, MailIcon, MenuIcon,
+  PlayIcon, SettingsIcon, SparkIcon, StopIcon, WarnIcon,
+} from './icons'
 import { DirList } from './forms'
 
 const TIER_LETTER = { haiku: 'H', sonnet: 'S', opus: 'O', fable: 'F' }
@@ -99,7 +104,7 @@ export default function App() {
       if (data?.type === 'node_event') {
         setPulse({ node: data.node, event: data.event, t: Date.now() })
         if (data.event === 'frozen') {   // usage-limit popup (user ruling)
-          toast([`🧊 ${data.node} hit a usage limit and is FROZEN — use ▶ in the top bar to resume when the limit resets`])
+          toast([`${data.node} hit a usage limit and is FROZEN — use the resume button in the top bar when the limit resets`])
           refreshTree(slug)
         }
         if (data.event === 'resumed') refreshTree(slug)
@@ -118,7 +123,7 @@ export default function App() {
   const op = useCallback((body) =>
     runOp(slug, body)
       .then((r) => { toast(r.warnings); refreshTree(slug); refreshOrgs(); return r })
-      .catch((e) => { toast([`⛔ ${e.message}`]); throw e }),
+      .catch((e) => { toast([`error: ${e.message}`]); throw e }),
     [slug, toast, refreshTree, refreshOrgs])
 
   const pick = (s) => { setSlug(s); setShowSettings(false); setDrawer(false) }
@@ -126,8 +131,8 @@ export default function App() {
 
   const orgPanel = (
     <>
-      <h1>orgtree</h1>
-      {slug && <button className="home" onClick={goHome}>⌂ all organizations</button>}
+      <h1><SparkIcon fontSize="inherit" /> orgtree</h1>
+      {slug && <button className="home" onClick={goHome}><HomeIcon fontSize="inherit" /> all organizations</button>}
       <nav>
         {orgs.map((o) => (
           <div key={o.slug} role="button" tabIndex={0}
@@ -138,14 +143,14 @@ export default function App() {
             <span className="spacer" />
             <span className="dim">{o.live}/{o.nodes} live</span>
             <button className="org-del"
-              onClick={(e) => { e.stopPropagation(); setDoomedOrg(o) }}>🗑</button>
+              onClick={(e) => { e.stopPropagation(); setDoomedOrg(o) }}><DeleteIcon fontSize="inherit" /></button>
           </div>
         ))}
         {!orgs.length && <div className="dim pad">no organizations yet</div>}
       </nav>
       <NewOrg onCreate={(name, dirs) =>
         createOrg(name, dirs).then((r) => { refreshOrgs(); pick(r.slug) })
-          .catch((e) => toast([`⛔ ${e.message}`]))} />
+          .catch((e) => toast([`error: ${e.message}`]))} />
     </>
   )
 
@@ -165,12 +170,12 @@ export default function App() {
           {tree ? (
             <>
               <header className="orgbar">
-                <button className="iconbtn" onClick={() => setDrawer(true)}>☰</button>
+                <button className="iconbtn" onClick={() => setDrawer(true)}><MenuIcon fontSize="inherit" /></button>
                 <h2>{tree.name}</h2>
                 {/* the ledger self-audit only speaks when something is wrong;
                     credit totals live on the eye's bar */}
                 {!tree.audit.no_overdraft &&
-                  <span className="chip bad">⚠ {tree.audit.problems.join(', ')}</span>}
+                  <span className="chip bad"><WarnIcon fontSize="inherit" /> {tree.audit.problems.join(', ')}</span>}
                 {(() => {   // active-agent summary: total · working · per-model
                   const ns = [...flatNodes(tree).values()].filter((n) => n.state === 'live')
                   const busy = ns.filter((n) => n.busy).length
@@ -189,7 +194,7 @@ export default function App() {
                 {tree.cost_usd_total > 0 &&
                   <span className="chip">${tree.cost_usd_total.toFixed(2)}</span>}
                 {tree.fable_lock &&
-                  <span className="chip bad" title={tree.fable_lock.at}>⛔ fable limit</span>}
+                  <span className="chip bad" title={tree.fable_lock.at}><BlockIcon fontSize="inherit" /> fable limit</span>}
                 {(() => {   // usage-limit freeze: ▶ restarts every frozen agent
                   const frozen = [...flatNodes(tree).values()].filter((n) => n.frozen)
                   if (!frozen.length) return null
@@ -198,9 +203,9 @@ export default function App() {
                     <>
                       <button className="resume-all" title={frozen.map((n) => n.id).join(', ')}
                         onClick={() => resumeFrozen(slug)
-                          .then((r) => { toast([`▶ resumed ${r.resumed.length} agent(s)`]); refreshTree(slug) })
-                          .catch((e) => toast([`⛔ ${e.message}`]))}>
-                        ▶ resume {frozen.length}
+                          .then((r) => { toast([`resumed ${r.resumed.length} agent(s)`]); refreshTree(slug) })
+                          .catch((e) => toast([`error: ${e.message}`]))}>
+                        <PlayIcon fontSize="inherit" /> resume {frozen.length}
                       </button>
                       <span className="resume-note">
                         usage limit hit — {frozen.length} agent{frozen.length > 1 ? 's' : ''} frozen
@@ -216,17 +221,17 @@ export default function App() {
                   <button className={'kill-latch' + (killArmed ? ' open' : '')}
                     title={killArmed ? 're-latch' : 'unlatch the killswitch'}
                     onClick={() => setKillArmed((a) => !a)}>
-                    {killArmed ? '🔓' : '🔒'}</button>
+                    {killArmed ? <LockOpenIcon fontSize="inherit" /> : <LockIcon fontSize="inherit" />}</button>
                   <button className="kill-btn" disabled={!killArmed}
                     title="interrupt every active agent at once"
                     onClick={() => {
                       setKillArmed(false)
                       killAll(slug)
-                        .then((r) => { toast([`⏹ interrupted ${r.interrupted.length} agent(s); queues cleared`]); refreshTree(slug) })
-                        .catch((e) => toast([`⛔ ${e.message}`]))
-                    }}>⏹ STOP ALL</button>
+                        .then((r) => { toast([`interrupted ${r.interrupted.length} agent(s); queues cleared`]); refreshTree(slug) })
+                        .catch((e) => toast([`error: ${e.message}`]))
+                    }}><StopIcon fontSize="inherit" /> STOP ALL</button>
                 </span>
-                <button onClick={() => setShowSettings(true)}>⚙ settings</button>
+                <button onClick={() => setShowSettings(true)}><SettingsIcon fontSize="inherit" /> settings</button>
               </header>
               <OrgCanvas tree={tree} op={op} slug={slug} pulse={pulse} toast={toast}
                 streamEvt={streamEvt} activity={activity} mailEvt={mailEvt}
@@ -259,7 +264,7 @@ export default function App() {
           confirmLabel="delete organization"
           onConfirm={() => deleteOrg(doomedOrg.slug)
             .then(() => { if (slug === doomedOrg.slug) setSlug(null); refreshOrgs() })
-            .catch((e) => toast([`⛔ ${e.message}`]))}
+            .catch((e) => toast([`error: ${e.message}`]))}
           close={() => setDoomedOrg(null)} />
       )}
 
@@ -292,7 +297,7 @@ function NewOrg({ onCreate }) {
         onChange={(e) => setName(e.target.value)} required />
       <button type="button" className="disclosure" aria-expanded={advanced}
         onClick={() => setAdvanced(!advanced)}>
-        {advanced ? '▼' : '▶'} advanced
+        {advanced ? <ExpandMoreIcon fontSize="inherit" /> : <ChevronRightIcon fontSize="inherit" />} advanced
       </button>
       {advanced && (
         <div className="advanced">
@@ -335,18 +340,18 @@ function InboxPanel({ slug, tree, toast, refresh, close }) {
   const [folder, setFolder] = useState('inbox')
   const nodes = flatNodes(tree)
   const reload = useCallback(() => {
-    getInbox(slug).then(setBox).catch((e) => toast([`⛔ ${e.message}`]))
+    getInbox(slug).then(setBox).catch((e) => toast([`error: ${e.message}`]))
     getAudiences(slug).then(setAud).catch(() => {})
   }, [slug, toast])
   useEffect(() => { reload() }, [reload])
   const userAud = aud?.audiences.filter((a) => a.grantor === USER) ?? []
   const userReqs = aud?.requests.filter((r) => r.target === USER && r.currently_at === USER) ?? []
   const act = (action, node, target) =>
-    audienceAction(slug, action, node, target).then(reload).catch((e) => toast([`⛔ ${e.message}`]))
+    audienceAction(slug, action, node, target).then(reload).catch((e) => toast([`error: ${e.message}`]))
   return (
     <div className="overlay" onClick={close}>
       <div className="settings wide" onClick={(e) => e.stopPropagation()}>
-        <h3>✉ your inbox</h3>
+        <h3><MailIcon fontSize="inherit" /> your inbox</h3>
         {(tree.credit_requests ?? []).length > 0 && (
           <>
             <div className="field-label">credit requests</div>
@@ -362,12 +367,12 @@ function InboxPanel({ slug, tree, toast, refresh, close }) {
                 <div className="row">
                   <button className="primary" onClick={() =>
                     creditDecide(slug, r.id, 'approve')
-                      .then(() => { toast([`✓ approved — ${r.node}'s grant is now ${r.new}`]); refresh?.() })
-                      .catch((e) => toast([`⛔ ${e.message}`]))}>approve</button>
+                      .then(() => { toast([`approved — ${r.node}'s grant is now ${r.new}`]); refresh?.() })
+                      .catch((e) => toast([`error: ${e.message}`]))}>approve</button>
                   <button onClick={() =>
                     creditDecide(slug, r.id, 'deny')
-                      .then(() => { toast([`✗ denied ${r.node}'s request`]); refresh?.() })
-                      .catch((e) => toast([`⛔ ${e.message}`]))}>deny</button>
+                      .then(() => { toast([`denied ${r.node}'s request`]); refresh?.() })
+                      .catch((e) => toast([`error: ${e.message}`]))}>deny</button>
                 </div>
               </div>
             ))}
@@ -392,9 +397,9 @@ function InboxPanel({ slug, tree, toast, refresh, close }) {
             <div className="row" style={{ flexWrap: 'wrap' }}>
               {userAud.map((a) => (
                 <span key={a.grantee} className="badge free">
-                  👂 {a.grantee}
+                  <HearingIcon fontSize="inherit" /> {a.grantee}
                   <button className="chip-x" title="rescind"
-                    onClick={() => act('revoke', a.grantee)}>✕</button>
+                    onClick={() => act('revoke', a.grantee)}><CloseIcon fontSize="inherit" /></button>
                 </span>
               ))}
             </div>
@@ -416,7 +421,7 @@ function InboxPanel({ slug, tree, toast, refresh, close }) {
         </div>
         <div className="row">
           {folder === 'inbox' && box?.pending.length > 0 && <button onClick={() =>
-            clearInbox(slug).then(reload).catch((e) => toast([`⛔ ${e.message}`]))}>mark all read</button>}
+            clearInbox(slug).then(reload).catch((e) => toast([`error: ${e.message}`]))}>mark all read</button>}
           <button className="primary" onClick={close}>close</button>
         </div>
       </div>
@@ -437,7 +442,7 @@ function SettingsPanel({ tree, toast, close }) {
   return (
     <div className="overlay" onClick={close}>
       <div className="settings" onClick={(e) => e.stopPropagation()}>
-        <h3>⚙ {tree.name} — settings</h3>
+        <h3><SettingsIcon fontSize="inherit" /> {tree.name} — settings</h3>
         {/* folder access lives on the eye's ⚙ gear panel (user ruling) */}
         <div className="field-label">top-level grant cap</div>
         <input type="number" min="1" step="1" value={maxTop} style={{ width: '8em' }}
@@ -463,8 +468,8 @@ function SettingsPanel({ tree, toast, close }) {
           <button className="danger" onClick={() =>
             saveSettings(tree.slug, { clear_fable_lock: true })
               .then((r) => { toast(r.warnings); close() })
-              .catch((e) => toast([`⛔ ${e.message}`]))}>
-            ⛔ clear the fable weekly-limit lock (your decree)</button>
+              .catch((e) => toast([`error: ${e.message}`]))}>
+            <BlockIcon fontSize="inherit" /> clear the fable weekly-limit lock (your decree)</button>
         )}
         <div className="row">
           <button className="primary" onClick={() =>
@@ -476,7 +481,7 @@ function SettingsPanel({ tree, toast, close }) {
                   fable_limit_policy: fablePolicy }),
               orgMd != null ? putOrgMd(tree.slug, orgMd) : Promise.resolve({}),
             ]).then(([r]) => { toast(r.warnings); close() })
-              .catch((e) => toast([`⛔ ${e.message}`]))}>save</button>
+              .catch((e) => toast([`error: ${e.message}`]))}>save</button>
           <button onClick={close}>cancel</button>
         </div>
       </div>
