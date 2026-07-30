@@ -296,19 +296,28 @@ async def node_steer(slug: str, nid: str):
 
 @app.get("/api/orgs/{slug}/inbox")
 def user_inbox(slug: str):
+    """Same shape as a node's inbox (user ruling — the two interfaces function
+    identically): unread mail + the read archive."""
     try:
-        return {"inbox": store.load_org(slug).d.get("user_inbox", [])}
+        d = store.load_org(slug).d
     except LedgerError as e:
         raise HTTPException(404, str(e))
+    return {"pending": d.get("user_inbox", []),
+            "delivered": d.get("user_mail_log", [])[-50:]}
 
 
 @app.post("/api/orgs/{slug}/inbox/clear")
 async def user_inbox_clear(slug: str):
+    """Mark-all-read: archives into the read log (mirror of a node's mail_log)
+    rather than deleting."""
     with store.DOC_LOCK:
         try:
             org = store.load_org(slug)
         except LedgerError as e:
             raise HTTPException(404, str(e))
+        log = org.d.setdefault("user_mail_log", [])
+        log.extend(org.d.get("user_inbox", []))
+        del log[:-100]
         org.d["user_inbox"] = []
         store.save_org(org)
     await hub.changed(slug)

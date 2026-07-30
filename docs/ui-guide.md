@@ -138,14 +138,24 @@ summary flattened). When its own headroom runs out it becomes a **preserving
 oracle**: still answers, retains nothing. Live bearers float tethered above
 their successor. A predecessor is NOT an org child — it holds no authority.
 
-## Inbox (✉ on the eye)
+## Inboxes (✉ on the eye AND on every card)
 
-Agents write to you asynchronously here; it enters no context and interrupts
-nobody. Top-level agents can always write; deeper agents only while holding
-your audience. **Audience requests** climb the chain hop-by-hop — grant or
-deny; **audience holders** may message you directly until rescinded (✕).
-Sender chips render the sender's CURRENT state — a message from a
-since-retired agent looks retired.
+The eye's ✉ and each card's ✉ open the SAME interface (user ruling): unread /
+not-yet-delivered mail highlighted on top, then the read / delivered archive,
+newest first. A count badge shows while mail waits (a card's ✉ stays visible
+whenever it has waiting mail; otherwise it appears on hover, next to ⚙). The
+desk's inbox tab is the same view inline.
+
+- **Yours (the eye):** agents write to you asynchronously here; it enters no
+  context and interrupts nobody. "Mark all read" archives (nothing is
+  deleted). Top-level agents can always write; deeper agents only while
+  holding your audience. **Audience requests** climb the chain hop-by-hop —
+  grant or deny; **audience holders** may message you directly until
+  rescinded (✕). Sender chips render the sender's CURRENT state — a message
+  from a since-retired agent looks retired.
+- **An agent's (its card):** "awaiting next turn" mail is delivered
+  automatically (mid-task via steering, or on its next turn) — delivery is
+  the agent's mark-as-read. The archive keeps the last 100 full bodies.
 
 ## Per-agent configuration (⚙ on a card)
 

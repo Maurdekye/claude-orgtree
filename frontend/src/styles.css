@@ -151,6 +151,19 @@ main {
 }
 .sq:hover .gearbtn { opacity: .8; }
 .gearbtn:hover { opacity: 1 !important; color: var(--ink-strong); background: none; }
+/* ✉ on every card — same interface as the eye's; always visible while mail waits */
+.mailbtn {
+  position: absolute; top: 6px; right: 24px; z-index: 3;
+  border: none; background: none; padding: 0 2px; font-size: 12px;
+  color: var(--dim); opacity: 0; transition: opacity .15s; line-height: 1;
+}
+.sq:hover .mailbtn { opacity: .8; }
+.mailbtn.has { opacity: .9; }
+.mailbtn:hover { opacity: 1 !important; color: var(--ink-strong); background: none; }
+.mailbtn .count {
+  position: absolute; top: -5px; right: -7px; background: var(--accent);
+  color: #fff; border-radius: 8px; font-size: 9.5px; padding: 0 4px; font-weight: 700;
+}
 .sq:hover { border-color: #4a4a4a; }
 .sq.archived { opacity: .5; }
 .sq.unrecoverable { border-color: var(--bad); opacity: .8; }

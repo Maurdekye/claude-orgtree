@@ -1299,6 +1299,7 @@ class Org:
                 "context_window": n.get("context_window"),
                 "charter": n.get("charter"),
                 "team_charter": n.get("team_charter"),
+                "mail_pending": len((self.d.get("mail") or {}).get(nid, [])),
                 "limit_locked": bool(n.get("limit_locked")),
                 "audiences_held": [a["grantor"] for a in self.d["audiences"]
                                    if a["grantee"] == nid],

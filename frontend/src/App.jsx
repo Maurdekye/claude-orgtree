@@ -3,7 +3,7 @@ import {
   audienceAction, clearInbox, createOrg, deleteOrg, getAudiences, getInbox,
   getOrgMd, getTree, listOrgs, openWs, putOrgMd, runOp, saveSettings,
 } from './api'
-import { ConfirmModal, OrgCanvas, useEsc } from './Canvas'
+import { ConfirmModal, MailList, OrgCanvas, useEsc } from './Canvas'
 import { DirList } from './forms'
 
 const TIER_LETTER = { haiku: 'H', sonnet: 'S', opus: 'O', fable: 'F' }
@@ -257,11 +257,11 @@ function SenderChip({ id, nodes }) {
 
 function InboxPanel({ slug, tree, toast, close }) {
   useEsc(close)
-  const [msgs, setMsgs] = useState(null)
+  const [box, setBox] = useState(null)
   const [aud, setAud] = useState(null)
   const nodes = flatNodes(tree)
   const reload = useCallback(() => {
-    getInbox(slug).then((r) => setMsgs(r.inbox)).catch((e) => toast([`⛔ ${e.message}`]))
+    getInbox(slug).then(setBox).catch((e) => toast([`⛔ ${e.message}`]))
     getAudiences(slug).then(setAud).catch(() => {})
   }, [slug, toast])
   useEffect(() => { reload() }, [reload])
@@ -301,21 +301,15 @@ function InboxPanel({ slug, tree, toast, close }) {
           </>
         )}
         <div className="inbox-list">
-          {msgs == null && <div className="dim">loading…</div>}
-          {msgs?.length === 0 && <div className="dim">empty</div>}
-          {msgs?.map((m, i) => (
-            <div className="inbox-msg" key={i}>
-              <div className="meta">
-                <SenderChip id={m.from} nodes={nodes} />
-                <span>{m.kind}</span><span>{m.at}</span>
-              </div>
-              <div className="body">{m.body}</div>
-            </div>
-          ))}
+          {box == null
+            ? <div className="dim">loading…</div>
+            : <MailList pending={box.pending} delivered={box.delivered}
+                waitLabel="unread"
+                sender={(id) => <SenderChip id={id} nodes={nodes} />} />}
         </div>
         <div className="row">
-          {msgs?.length > 0 && <button onClick={() =>
-            clearInbox(slug).then(() => setMsgs([])).catch((e) => toast([`⛔ ${e.message}`]))}>clear all</button>}
+          {box?.pending.length > 0 && <button onClick={() =>
+            clearInbox(slug).then(reload).catch((e) => toast([`⛔ ${e.message}`]))}>mark all read</button>}
           <button className="primary" onClick={close}>close</button>
         </div>
       </div>

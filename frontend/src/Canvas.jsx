@@ -143,6 +143,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
   const [configId, setConfigId] = useState(null)
   const [lineageId, setLineageId] = useState(null)
   const [userCfg, setUserCfg] = useState(false)
+  const [inboxId, setInboxId] = useState(null)
   const seats = tree.tiers ?? { haiku: 1, sonnet: 3, opus: 5, fable: 10 }
   const vroot = useMemo(() => withDraftTree(tree, draft), [tree, draft])
   const map = useMemo(() => flatten(vroot, seats), [vroot])   // eslint-disable-line
@@ -687,7 +688,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
               seats={seats} map={map} op={op} slug={slug} pulse={pulse} toast={toast}
               streamEvt={streamEvt} pxc={pxPerCredit} zoom={view.z} act={activity?.[n.id]}
               onSpawn={(t) => spawn(n.id, t)} onConfig={() => setConfigId(n.id)}
-              onLineage={() => setLineageId(n.id)}
+              onInbox={() => setInboxId(n.id)} onLineage={() => setLineageId(n.id)}
               onDragStart={startNodeDrag} onDragMove={moveNodeDrag} onDragEnd={endNodeDrag} />
           )
         })}
@@ -710,6 +711,10 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
       {userCfg && (
         <UserConfig tree={tree} slug={slug} toast={toast}
           close={() => setUserCfg(false)} />
+      )}
+      {inboxId && map.get(inboxId) && (
+        <NodeInboxModal node={map.get(inboxId)} slug={slug} pulse={pulse}
+          close={() => setInboxId(null)} />
       )}
     </div>
   )
@@ -959,7 +964,8 @@ function DraftNode({ pos, draft, map, seats, maxTop, zoom, pxc, onConfirm, onCan
 }
 
 function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, map, op, slug,
-  pulse, toast, streamEvt, pxc, zoom, act, onSpawn, onConfig, onLineage, onDragStart, onDragMove, onDragEnd }) {
+  pulse, toast, streamEvt, pxc, zoom, act, onSpawn, onConfig, onInbox, onLineage,
+  onDragStart, onDragMove, onDragEnd }) {
   const cls = ['sq', node.state, focused ? 'desk' : lod, 'tier-' + node.tier]
   if (node.busy) cls.push('busy')
   if (dragging) cls.push('lifted')
@@ -1002,6 +1008,11 @@ function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, map, op,
       {!focused && <div className="sq-head">
         <span className={'tier t-' + node.tier}>{TIER_LETTER[node.tier] ?? '?'}</span>
         <span className="name" title={node.id}>{node.id}</span>
+        <button className={'mailbtn' + (node.mail_pending > 0 ? ' has' : '')}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => { e.stopPropagation(); onInbox() }}>
+          ✉{node.mail_pending > 0 && <span className="count">{node.mail_pending}</span>}
+        </button>
         <button className="gearbtn"
           onPointerDown={(e) => e.stopPropagation()}
           onClick={(e) => { e.stopPropagation(); onConfig() }}>⚙</button>
@@ -1444,33 +1455,62 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
   )
 }
 
-// The node's own mailbox (user ruling: its own tab, separate from history):
-// mail still waiting for the node's next turn, then delivered mail, newest first.
-function InboxView({ slug, nid, pulse }) {
-  const [box, setBox] = useState(null)
-  useEffect(() => {
-    getNodeInbox(slug, nid).then(setBox)
-      .catch(() => setBox({ pending: [], delivered: [] }))
-  }, [slug, nid, pulse])
+// One mail list, everywhere (user ruling: the user's and the agents' inboxes
+// function identically): waiting/unread mail highlighted on top, then the
+// delivered/read archive, newest first.
+export function MailList({ pending = [], delivered = [], waitLabel, sender }) {
+  const S = sender ?? ((id) => <span>{id === USER ? '@user' : id}</span>)
   const Mail = ({ m, wait }) => (
     <div className={'inbox-msg' + (wait ? ' waiting' : '')}>
       <div className="meta">
-        <span>{m.from === USER ? '@user' : m.from}</span>
+        {S(m.from)}
         <span>{m.kind}</span>
         {m.relationship && <span>{m.relationship}</span>}
         <span>{m.at}</span>
-        {wait && <span className="wait">awaiting next turn</span>}
+        {wait && <span className="wait">{waitLabel}</span>}
       </div>
       <div className="body">{m.body}</div>
     </div>
   )
   return (
-    <div className="msgs inbox-list">
-      {box == null && <div className="dim pad">loading…</div>}
-      {box && !box.pending.length && !box.delivered.length &&
-        <div className="dim pad">no mail yet</div>}
-      {box?.pending.map((m, i) => <Mail key={'p' + i} m={m} wait />)}
-      {[...(box?.delivered ?? [])].reverse().map((m, i) => <Mail key={'d' + i} m={m} />)}
+    <>
+      {!pending.length && !delivered.length && <div className="dim pad">no mail yet</div>}
+      {pending.map((m, i) => <Mail key={'p' + i} m={m} wait />)}
+      {[...delivered].reverse().map((m, i) => <Mail key={'d' + i} m={m} />)}
+    </>
+  )
+}
+
+// The node's own mailbox (user ruling: its own tab, separate from history).
+function InboxView({ slug, nid, pulse, className = 'msgs inbox-list' }) {
+  const [box, setBox] = useState(null)
+  useEffect(() => {
+    getNodeInbox(slug, nid).then(setBox)
+      .catch(() => setBox({ pending: [], delivered: [] }))
+  }, [slug, nid, pulse])
+  return (
+    <div className={className}>
+      {box == null
+        ? <div className="dim pad">loading…</div>
+        : <MailList pending={box.pending} delivered={box.delivered}
+            waitLabel="awaiting next turn" />}
+    </div>
+  )
+}
+
+// ✉ on a card — the node's inbox as a modal, the same interface the eye's
+// ✉ opens for the user's own inbox.
+function NodeInboxModal({ node, slug, pulse, close }) {
+  useEsc(close)
+  return (
+    <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
+      <div className="settings" onClick={(e) => e.stopPropagation()}>
+        <h3>✉ {node.id} <span className="dim">· inbox</span></h3>
+        <InboxView slug={slug} nid={node.id} pulse={pulse} className="inbox-list" />
+        <div className="row">
+          <button className="primary" onClick={close}>close</button>
+        </div>
+      </div>
     </div>
   )
 }
