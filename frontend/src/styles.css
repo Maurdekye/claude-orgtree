@@ -291,10 +291,15 @@ main {
 @keyframes deskfade { from { opacity: 0; } }
 /* ⚠ .desk-inner and .desk-body sit on the SAME div — heights must not fight
    (a height:100% here once collapsed the flex column entirely). */
+/* INVERTED scale regime (user ruling): the desk is authored at natural screen
+   scale — 900px virtual panel pre-scaled to fit the 120px card interior, so
+   at desk-fill zoom (z ≈ 7.5) authored px ≈ screen px (0.1333 × 7.5 ≈ 1.0).
+   Zooming out only scales DOWN, so the browser's ≥10px minimum-font clamp
+   never forces text larger than authored. */
 .desk-inner {
-  width: 400px; height: 400px;
-  transform: scale(0.3); transform-origin: 0 0;
-  padding: 7px 9px 8px;
+  width: 900px; height: 900px;
+  transform: scale(0.13333); transform-origin: 0 0;
+  padding: 12px 14px 13px;
 }
 .desk-body {
   display: flex; flex-direction: column; gap: 6px; min-height: 0;
@@ -348,7 +353,7 @@ main {
 .cc-composer.off { opacity: .6; }
 .cc-composer textarea {
   border: none; background: none; padding: 0; resize: none;
-  font-size: 12px; line-height: 1.4; font-family: inherit; color: var(--ink-strong);
+  font-size: 13px; line-height: 1.4; font-family: inherit; color: var(--ink-strong);
 }
 .cc-composer textarea:focus { outline: none; }
 .cc-composer-row { display: flex; align-items: center; gap: 8px; font-size: 10px; color: var(--dim); }
@@ -373,9 +378,9 @@ main {
   flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column;
   gap: 7px; padding: 3px 2px;
 }
-.desk-over .msgs::-webkit-scrollbar { width: 6px; }
+.desk-over .msgs::-webkit-scrollbar { width: 8px; }
 .msg {
-  max-width: 100%; font-size: 11.5px;
+  max-width: 100%; font-size: 12.5px;
   line-height: 1.45; white-space: pre-wrap; overflow-wrap: break-word;
 }
 .msg.assistant { align-self: stretch; background: none; border: none; padding: 1px 2px; }
@@ -390,34 +395,34 @@ main {
 .md p { margin: 0 0 6px; }
 .md p:last-child { margin-bottom: 0; }
 .md code {
-  font-family: var(--mono); font-size: 10.5px; background: var(--bg);
+  font-family: var(--mono); font-size: 11.5px; background: var(--bg);
   border: 1px solid var(--line-soft); border-radius: 3px; padding: 0 4px;
 }
 .md pre {
   background: var(--bg); border: 1px solid var(--line-soft); border-radius: 4px;
   padding: 6px 9px; margin: 4px 0; overflow-x: auto;
 }
-.md pre code { border: none; background: none; padding: 0; font-size: 10px; }
+.md pre code { border: none; background: none; padding: 0; font-size: 11px; }
 .md ul, .md ol { margin: 4px 0; padding-left: 20px; }
 .md li { margin: 2px 0; }
 .md h1, .md h2, .md h3, .md h4 {
-  margin: 8px 0 4px; font-size: 12px; color: var(--ink-strong);
+  margin: 8px 0 4px; font-size: 13.5px; color: var(--ink-strong);
 }
-.md h1 { font-size: 13px; }
+.md h1 { font-size: 14.5px; }
 .md a { color: var(--accent); }
 .md blockquote {
   margin: 4px 0; padding: 2px 0 2px 9px; border-left: 2px solid var(--line);
   color: var(--dim);
 }
-.md table { border-collapse: collapse; margin: 4px 0; font-size: 10.5px; }
+.md table { border-collapse: collapse; margin: 4px 0; font-size: 11.5px; }
 .md th, .md td { border: 1px solid var(--line-soft); padding: 2px 7px; }
 .md hr { border: none; border-top: 1px solid var(--line-soft); margin: 8px 0; }
 .md strong { color: var(--ink-strong); }
-.msg .tools { color: var(--dim); font-size: 10px; margin-bottom: 2px; font-family: var(--mono); }
+.msg .tools { color: var(--dim); font-size: 11px; margin-bottom: 2px; font-family: var(--mono); }
 .working { color: var(--accent); font-size: 10.5px; display: flex; gap: 5px; align-items: center; }
-.msg.live.tools { font-size: 10px; padding: 1px 4px; }
-.hist-row { font-size: 10.5px; gap: 6px; padding: 2.5px 3px; }
-.filepre { font-size: 10px; padding: 5px 7px; margin: 3px 0; }
+.msg.live.tools { font-size: 11px; padding: 1px 4px; }
+.hist-row { font-size: 11.5px; gap: 6px; padding: 2.5px 3px; }
+.filepre { font-size: 11px; padding: 5px 7px; margin: 3px 0; }
 
 /* ----------------------------------------------- the five channels (§9.3–9.6)
    hue = tier · fill = lifecycle · border style = permission · glow = audience ·
@@ -523,8 +528,8 @@ main {
 .mailer-head .wait { color: var(--accent); font-weight: 700; }
 .mailer-body { font-size: 12.5px; line-height: 1.55; }
 /* ...and compact inside the desk (virtual-scaled) so more fits on screen */
-.desk-body .mailrow .l1, .desk-body .mailrow .l2, .desk-body .mailer-head { font-size: 10px; }
-.desk-body .mailer-body { font-size: 11px; }
+.desk-body .mailrow .l1, .desk-body .mailrow .l2, .desk-body .mailer-head { font-size: 11px; }
+.desk-body .mailer-body { font-size: 12px; }
 
 /* ------------------------------------------------------- lineage stacks (§8.7) */
 .sq.stack1 { box-shadow: 5px -5px 0 -1px #232325, 5px -5px 0 0 var(--line-soft); }
@@ -552,7 +557,7 @@ main {
 /* streaming text is just dimmer — a dashed border here resurrects a `medium`
    border on the borderless assistant style (thick marching-ants box) */
 .msg.live { opacity: .75; }
-.msg.live.tools { align-self: flex-start; background: none; border: none; color: var(--dim); font-family: var(--mono); font-size: 10px; padding: 1px 4px; }
+.msg.live.tools { align-self: flex-start; background: none; border: none; color: var(--dim); font-family: var(--mono); font-size: 11px; padding: 1px 4px; }
 .msg.oracle { border-color: #4a4a55; background: #232328; }
 
 /* desk tabs, history, files */
