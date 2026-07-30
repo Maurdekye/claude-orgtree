@@ -234,9 +234,14 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
   const audSeg = (gId, eId) => {
     const a = posOf(gId), b = posOf(eId)
     const ga = sizeOf(gId), gb = sizeOf(eId)
-    const x1 = a.x + ga.w, y1 = a.y + ga.h / 2
-    const x2 = b.x + gb.w, y2 = b.y + gb.h / 2
-    const bulge = 64 + Math.abs(y2 - y1) * 0.12
+    // symmetrical about the grantor (user ruling, made for the overseer):
+    // the line leaves the LEFT flank for grantees left of it and the RIGHT
+    // flank for grantees right of it — no more always-rightward bulge
+    const left = (b.x + gb.w / 2) < (a.x + ga.w / 2)
+    const x1 = left ? a.x : a.x + ga.w
+    const x2 = left ? b.x : b.x + gb.w
+    const y1 = a.y + ga.h / 2, y2 = b.y + gb.h / 2
+    const bulge = (64 + Math.abs(y2 - y1) * 0.12) * (left ? -1 : 1)
     return { kind: 'c', pts: [
       { x: x1, y: y1 }, { x: x1 + bulge, y: y1 },
       { x: x2 + bulge, y: y2 }, { x: x2, y: y2 }] }
