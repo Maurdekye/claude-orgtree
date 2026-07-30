@@ -29,6 +29,8 @@ export const resumeFrozen = (slug) =>
   fetch(`/api/orgs/${slug}/resume`, { method: 'POST' }).then(j)
 export const killAll = (slug) =>
   fetch(`/api/orgs/${slug}/killswitch`, { method: 'POST' }).then(j)
+export const dissolveAll = (slug) =>
+  fetch(`/api/orgs/${slug}/dissolve-all`, { method: 'POST' }).then(j)
 export const interruptNode = (slug, nid) =>
   fetch(`/api/orgs/${slug}/nodes/${nid}/interrupt`, { method: 'POST' }).then(j)
 export const creditDecide = (slug, id, action) =>

@@ -332,6 +332,24 @@ def node_interrupt(slug: str, nid: str):
     return supervisor.interrupt_turn(slug, nid)
 
 
+@app.post("/api/orgs/{slug}/dissolve-all")
+async def org_dissolve_all(slug: str):
+    """Dissolve EVERY agent in the org at once (context kept — rehire revives)."""
+    with store.DOC_LOCK:
+        try:
+            org = store.load_org(slug)
+            freed = nodes = 0
+            for root in list(org.children(None)):
+                r = org.dissolve(USER, root)
+                freed += r["freed"]
+                nodes += len(r["nodes"])
+            store.save_org(org)
+        except LedgerError as e:
+            raise HTTPException(422, str(e))
+    await hub.changed(slug)
+    return {"freed": freed, "nodes": nodes}
+
+
 @app.post("/api/orgs/{slug}/killswitch")
 async def org_killswitch(slug: str):
     """⏹ STOP ALL: interrupt every active agent and clear pending queues."""

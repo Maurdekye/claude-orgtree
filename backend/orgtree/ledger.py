@@ -709,14 +709,16 @@ class Org:
             warnings.append(f"tool grants clamped to the parent's own: {tlost}")
         nid = self._new_node(tier, parent, int(grant), name, dirs, tset, vis,
                              str(purpose).strip() if purpose else None)
-        if actor == USER:
-            why = f' Purpose: {purpose}.' if purpose else ""
-            self._notify([parent],
-                         f'The user hired "{nid}" ({tier}, grant {int(grant)}) '
-                         f'under you.{why}')
-            self._notify(self._peers_of(parent, nid),
-                         f'The user hired "{nid}" ({tier}) alongside you, under '
-                         f'{parent or "the top level"}.{why}')
+        # every affected agent is told, WHOEVER acted (user ruling) — the actor
+        # itself is skipped (it made the call and got the result)
+        why = f' Purpose: {purpose}.' if purpose else ""
+        who = "the user" if actor == USER else f'"{actor}"'
+        self._notify([p for p in [parent] if p != actor],
+                     f'{who.capitalize()} hired "{nid}" ({tier}, grant {int(grant)}) '
+                     f'under you.{why}')
+        self._notify([p for p in self._peers_of(parent, nid) if p != actor],
+                     f'{who.capitalize()} hired "{nid}" ({tier}) alongside you, under '
+                     f'{parent or "the top level"}.{why}')
         self._log("hire", actor, {"node": nid, "parent": parent, "tier": tier,
                                   "grant": int(grant), "purpose": purpose}, warnings)
         return {"node": nid, "warnings": warnings}
@@ -782,11 +784,12 @@ class Org:
         n["state"] = "archived"
         n["archived_at"] = now()
         self._revoke_audiences_of(nid, reason="grantee retired")
-        if actor == USER:
-            self._notify([n["parent"]],
-                         f'The user retired your report "{nid}" (freed {freed} credits).')
-            self._notify(self._peers_of(n["parent"], nid),
-                         f'Your peer "{nid}" was retired by the user.')
+        who = ("the user" if actor == USER
+               else "itself (self-retirement)" if actor == nid else f'"{actor}"')
+        self._notify([p for p in [n["parent"]] if p != actor],
+                     f'Your report "{nid}" was retired by {who} (freed {freed} credits).')
+        self._notify([p for p in self._peers_of(n["parent"], nid) if p != actor],
+                     f'Your peer "{nid}" was retired by {who}.')
         self._log("retire", actor, {"node": nid, "freed": freed}, [])
         return {"freed": freed, "warnings": []}
 
@@ -837,13 +840,13 @@ class Org:
         n["state"] = "live"
         n["grant"] = grant
         n["archived_at"] = None
-        if actor == USER:
-            self._notify([parent],
-                         f'The user rehired your report "{nid}" (grant {grant}).')
-            self._notify(self._peers_of(parent, nid),
-                         f'Your peer "{nid}" was rehired by the user.')
-            self._notify([nid], "The user rehired you. You are live again; your "
-                                "prior context is intact.")
+        who = "the user" if actor == USER else f'"{actor}"'
+        self._notify([p for p in [parent] if p != actor],
+                     f'Your report "{nid}" was rehired by {who} (grant {grant}).')
+        self._notify([p for p in self._peers_of(parent, nid) if p != actor],
+                     f'Your peer "{nid}" was rehired by {who}.')
+        self._notify([nid], f"{who.capitalize()} rehired you. You are live again; "
+                            f"your prior context is intact.")
         self._log("rehire", actor, {"node": nid, "grant": grant}, warnings)
         return {"cost": need, "warnings": warnings}
 
@@ -866,13 +869,13 @@ class Org:
                 n["state"] = "archived"
                 n["archived_at"] = now()
             self._revoke_audiences_of(k, reason="dissolved")
-        if actor == USER:
-            self._notify([parent],
-                         f'The user dissolved your report "{nid}" and its whole '
-                         f'suborganization ({len(order)} node(s), freed {freed} credits).')
-            self._notify(self._peers_of(parent, nid),
-                         f'Your peer "{nid}" and its suborganization were dissolved '
-                         f'by the user.')
+        who = "the user" if actor == USER else f'"{actor}"'
+        self._notify([p for p in [parent] if p != actor],
+                     f'{who.capitalize()} dissolved your report "{nid}" and its whole '
+                     f'suborganization ({len(order)} node(s), freed {freed} credits).')
+        self._notify([p for p in self._peers_of(parent, nid) if p != actor],
+                     f'Your peer "{nid}" and its suborganization were dissolved '
+                     f'by {who}.')
         self._log("dissolve", actor, {"node": nid, "freed": freed,
                                       "count": len(order)}, [])
         return {"freed": freed, "nodes": order, "warnings": []}
@@ -937,12 +940,13 @@ class Org:
             warnings += self._stranding_warnings(
                 nid, self.free(nid), self.free(nid) + delta)
         n["grant"] += delta
-        if actor == USER and delta != 0:
-            self._notify([nid],
-                         f"The user adjusted your grant by {delta:+d} "
+        if delta != 0:
+            who = "the user" if actor == USER else f'"{actor}"'
+            self._notify([x for x in [nid] if x != actor],
+                         f"{who.capitalize()} adjusted your grant by {delta:+d} "
                          f"(now {n['grant']}, free {self.free(nid):g}).")
-            self._notify([n["parent"]],
-                         f'The user adjusted "{nid}"\'s grant by {delta:+d}.')
+            self._notify([x for x in [n["parent"]] if x != actor],
+                         f'{who.capitalize()} adjusted "{nid}"\'s grant by {delta:+d}.')
         self._log("reallocate", actor, {"node": nid, "delta": delta}, warnings)
         return {"grant": n["grant"], "warnings": warnings}
 
@@ -1010,22 +1014,23 @@ class Org:
         dropped = self._sweep_dirs(nid)
         if dropped:
             warnings.append(f"dirs not held by the new chain were dropped (№30): {dropped}")
-        if actor == USER:
-            subtree = len(self.descendants(nid, live_only=False))
-            tail = f" Its suborganization ({subtree} node(s)) moved with it." if subtree else ""
-            frm, to = p_old or "the top level", new_parent or "the top level"
-            self._notify([p_old],
-                         f'The user moved your report "{nid}" away — it now reports '
-                         f'to {to}.{tail}')
-            self._notify(prior_peers,
-                         f'Your peer "{nid}" was moved by the user to under {to}.{tail}')
-            self._notify([new_parent],
-                         f'The user moved "{nid}" (from {frm}) to report to you.{tail}')
-            self._notify(self._peers_of(new_parent, nid),
-                         f'"{nid}" joined your team (moved by the user from {frm}).{tail}')
-            self._notify([nid],
-                         f"The user moved you: you now report to {to} (you were under "
-                         f"{frm}). Your entire suborganization moved with you.")
+        who = "the user" if actor == USER else f'"{actor}"'
+        subtree = len(self.descendants(nid, live_only=False))
+        tail = f" Its suborganization ({subtree} node(s)) moved with it." if subtree else ""
+        frm, to = p_old or "the top level", new_parent or "the top level"
+        self._notify([p for p in [p_old] if p != actor],
+                     f'{who.capitalize()} moved your report "{nid}" away — it now '
+                     f'reports to {to}.{tail}')
+        self._notify([p for p in prior_peers if p != actor],
+                     f'Your peer "{nid}" was moved by {who} to under {to}.{tail}')
+        self._notify([p for p in [new_parent] if p != actor],
+                     f'{who.capitalize()} moved "{nid}" (from {frm}) to report to '
+                     f'you.{tail}')
+        self._notify([p for p in self._peers_of(new_parent, nid) if p != actor],
+                     f'"{nid}" joined your team (moved by {who} from {frm}).{tail}')
+        self._notify([nid],
+                     f"{who.capitalize()} moved you: you now report to {to} (you were "
+                     f"under {frm}). Your entire suborganization moved with you.")
         self._log(op, actor, {"node": nid, "from": p_old, "to": new_parent}, warnings)
         return {"warnings": warnings}
 

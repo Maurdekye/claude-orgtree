@@ -38,7 +38,10 @@ read once.
   role notes, injected into the agent's prompt every turn; Shift+Enter for
   newlines), and set its grant by dragging the draft's credit bar.
 - **The overseer's ⚙ (on the eye, top-right like every card's gear)** is
-  YOUR configuration panel, mirroring the agents' own. It holds:
+  YOUR configuration panel, mirroring the agents' own — sections in the same
+  order as a card's (folder access first). It also carries a **dissolve all
+  agents** button: after an in-page confirmation, every agent in the org is
+  retired at once (context kept — rehire revives any of them). It holds:
   - **folder access** — the org's folder holdings, in the same UI as a
     card's: the permanent RW workspace, each external folder with an RW/RO
     toggle, ✕ to remove (removal revokes the folder from every agent

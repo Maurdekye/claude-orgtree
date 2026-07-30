@@ -227,12 +227,16 @@ def main():
         org7.reallocate(USER, "boss", -5),
         None if any("adjusted your grant by -5" in t for t in nbox("boss"))
         else (_ for _ in ()).throw(AssertionError(nbox("boss"))))[-1])
-    check("agent-initiated ops emit NO notices", lambda: (
-        lambda before: (
+    # user ruling (2026-07-30): agent-initiated ops DO notify affected parties,
+    # attributed to the acting agent — but never the actor itself
+    check("agent hire notifies affected peers, never the actor", lambda: (
+        lambda before_actor: (
             org7.hire("boss", "boss", "haiku", 0, "quiet", **spec()),
-            None if sum(len(v) for v in org7.d.get("notices", {}).values()) == before
-            else (_ for _ in ()).throw(AssertionError("agent hire produced notices")))[-1]
-    )(sum(len(v) for v in org7.d.get("notices", {}).values())))
+            None if (any('"boss" hired "quiet"' in t for t in nbox("b"))
+                     and len(nbox("boss")) == before_actor)
+            else (_ for _ in ()).throw(AssertionError(
+                (nbox("b"), nbox("boss")))))[-1]
+    )(len(nbox("boss"))))
 
     print("mail + addressing (§7.2/§7.3/§7.5):")
     org8 = Org.create("mailorg")

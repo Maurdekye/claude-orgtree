@@ -2,7 +2,7 @@ import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  audienceAction, getChat, getHistory, getMcpServers, getNodeInbox,
+  audienceAction, dissolveAll, getChat, getHistory, getMcpServers, getNodeInbox,
   getScratch, interruptNode, reorderNode, saveScope, saveSettings, sendMessage,
 } from './api'
 
@@ -789,6 +789,7 @@ function SpawnChips({ onSpawn, free, seats }) {
 // server, present and future.
 function UserConfig({ tree, slug, toast, close }) {
   useEsc(close)
+  const [asking, setAsking] = useState(false)   // dissolve-all confirmation
   const [defTools, setDefTools] = useState({
     bash: true, web: true, edit: true, subagents: true,
     ...(tree.default_tools ?? {}),
@@ -807,33 +808,11 @@ function UserConfig({ tree, slug, toast, close }) {
     <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
       <div className="settings" onClick={(e) => e.stopPropagation()}>
         <h3>⚙ you <span className="dim">· configuration</span></h3>
-        <div className="field-label">tools</div>
-        {TOOL_LABELS.map(([k, label]) => (
-          <label className="checkline" key={k}>
-            <input type="checkbox" checked={!!defTools[k]}
-              onChange={(e) => setDefTools({ ...defTools, [k]: e.target.checked })} />
-            {label}
-          </label>
-        ))}
-        <div className="field-label">MCP servers</div>
-        <label className="checkline">
-          <input type="checkbox" checked={allMcp}
-            onChange={(e) => setDefTools({
-              ...defTools, mcp: e.target.checked ? ['*'] : [...servers] })} />
-          all registered servers (current and future)
-        </label>
-        {!allMcp && servers.map((s) => (
-          <label className="checkline" key={s}>
-            <input type="checkbox" checked={defTools.mcp.includes(s)}
-              onChange={(e) => setDefTools({
-                ...defTools,
-                mcp: e.target.checked
-                  ? [...defTools.mcp, s]
-                  : defTools.mcp.filter((x) => x !== s),
-              })} />
-            <span className="mono">{s}</span>
-          </label>
-        ))}
+        <div className="row">
+          <button className="danger" onClick={() => setAsking(true)}>
+            dissolve all agents</button>
+        </div>
+        {/* folder access FIRST — same order as the per-agent config (user ruling) */}
         <div className="field-label">folder access</div>
         <div className="dirlist">
           {tree.workspace && (
@@ -868,6 +847,33 @@ function UserConfig({ tree, slug, toast, close }) {
             }}>add</button>
           </div>
         </div>
+        <div className="field-label">tools</div>
+        {TOOL_LABELS.map(([k, label]) => (
+          <label className="checkline" key={k}>
+            <input type="checkbox" checked={!!defTools[k]}
+              onChange={(e) => setDefTools({ ...defTools, [k]: e.target.checked })} />
+            {label}
+          </label>
+        ))}
+        <div className="field-label">MCP servers</div>
+        <label className="checkline">
+          <input type="checkbox" checked={allMcp}
+            onChange={(e) => setDefTools({
+              ...defTools, mcp: e.target.checked ? ['*'] : [...servers] })} />
+          all registered servers (current and future)
+        </label>
+        {!allMcp && servers.map((s) => (
+          <label className="checkline" key={s}>
+            <input type="checkbox" checked={defTools.mcp.includes(s)}
+              onChange={(e) => setDefTools({
+                ...defTools,
+                mcp: e.target.checked
+                  ? [...defTools.mcp, s]
+                  : defTools.mcp.filter((x) => x !== s),
+              })} />
+            <span className="mono">{s}</span>
+          </label>
+        ))}
         <div className="field-label">org-structure visibility</div>
         <select value={vis} onChange={(e) => setVis(e.target.value)}>
           {VIS_OPTIONS.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
@@ -884,6 +890,15 @@ function UserConfig({ tree, slug, toast, close }) {
           <button onClick={close}>cancel</button>
         </div>
       </div>
+      {asking && (
+        <ConfirmModal title="dissolve ALL agents?"
+          body="Every agent in the entire org is retired at once. Context is kept; rehire brings any of them back."
+          confirmLabel="dissolve all"
+          onConfirm={() => dissolveAll(slug)
+            .then((r) => { toast([`dissolved ${r.nodes} node(s), freed ${r.freed} credits`]); close() })
+            .catch((e) => toast([`⛔ ${e.message}`]))}
+          close={() => setAsking(false)} />
+      )}
     </div>
   )
 }
