@@ -773,12 +773,11 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
           if (n.id === USER) {
             const vp = viewportRef.current?.getBoundingClientRect()
             // the eye is the ONLY cell that expands in width to the screen's
-            // aspect ratio when focused (user spec — room for the switchboard).
-            // Side gutters stay wide enough that the credit bar remains
-            // visible beside the expanded square (user ruling).
+            // FULL aspect ratio when focused (user spec — room for the
+            // switchboard). The credit bar rides along by sliding to just
+            // inside the card's left edge (CSS), staying visible at the side.
             const eyeW = vp
-              ? Math.round(USER_H * Math.max(vp.width * 0.5, vp.width - 260)
-                           / (vp.height - 48))
+              ? Math.round(USER_H * (vp.width - 48) / (vp.height - 48))
               : Math.round(USER_H * 16 / 9)
             return <UserNode key={USER} pos={p} isDrop={dropId === USER} seats={seats}
               stats={orgStats} mailGlow={mailGlow}

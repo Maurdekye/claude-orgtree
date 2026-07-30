@@ -157,11 +157,11 @@ above the panels is always visible — click a tab to minimize or reopen its
 chat (the set is remembered per org). A line that exists via an **audience
 grant** carries an ✕ on its tab: closing it **rescinds that grant** (only
 that one — other audiences the agent holds are untouched). Top-level lines
-are intrinsic and have no ✕. The eye's credit bar stays beside the square
-and glides outward as it expands — the side gutters are sized so it remains
-visible. The eye never moves and is never draggable: it is the fixed anchor
-of the coordinate space, so it sits in the same spot in every org regardless
-of tree shape.
+are intrinsic and have no ✕. The square expands to the FULL screen aspect;
+the eye's credit bar stays visible by sliding to just inside its left edge
+(the panels pad around it), gliding back out as you leave. The eye never
+moves and is never draggable: it is the fixed anchor of the coordinate
+space, so it sits in the same spot in every org regardless of tree shape.
 
 ## The top bar
 
