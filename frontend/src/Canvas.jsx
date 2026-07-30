@@ -1496,6 +1496,8 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
             ))}
             {chat?.busy && <div className="working"><span className="cc-spin">✳</span> working<span className="actdots" /></div>}
           </div>
+          {/* send sits BESIDE the input; no model-name footer row (the tier
+              chip in the header already says it) — reclaimed vertical space */}
           <div className={'cc-composer' + (live ? '' : ' off')}>
             <textarea rows={2} value={text} disabled={!live}
               placeholder={live ? `message ${node.id}…` : node.state}
@@ -1503,12 +1505,8 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() }
               }} />
-            <div className="cc-composer-row">
-              <span className="dim mono">{node.model_id}</span>
-              <span className="spacer" />
-              <button className="cc-send" disabled={!live || !text.trim()}
-                onClick={send}>↑</button>
-            </div>
+            <button className="cc-send" disabled={!live || !text.trim()}
+              onClick={send}>↑</button>
           </div>
         </>
       )}

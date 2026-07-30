@@ -344,20 +344,20 @@ main {
   gap: 4px; align-items: center; flex: none;
 }
 /* -- composer: the Claude Code input box -- */
+/* send beside the input, no footer row (user ruling: reclaim vertical space) */
 .cc-composer {
-  display: flex; flex-direction: column; gap: 4px; flex: none;
+  display: flex; align-items: flex-end; gap: 8px; flex: none;
   border: 1px solid var(--line); border-radius: 8px; background: var(--input);
-  padding: 8px 10px 6px;
+  padding: 7px 9px;
 }
 .cc-composer:focus-within { border-color: var(--accent); }
 .cc-composer.off { opacity: .6; }
 .cc-composer textarea {
+  flex: 1; min-width: 0;
   border: none; background: none; padding: 0; resize: none;
   font-size: 13px; line-height: 1.4; font-family: inherit; color: var(--ink-strong);
 }
 .cc-composer textarea:focus { outline: none; }
-.cc-composer-row { display: flex; align-items: center; gap: 8px; font-size: 10px; color: var(--dim); }
-.cc-composer-row .mono { font-family: var(--mono); }
 .cc-hint { color: #6e6e6e; margin-left: auto; }
 .cc-send {
   width: 22px; height: 22px; border-radius: 50%; padding: 0; flex: none;
