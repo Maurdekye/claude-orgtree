@@ -240,13 +240,36 @@ the admin side, keep full rights in the same org — visit it like any other):
   enforced at the OS level with delete rights kept) until enough files are
   deleted — the block lifts automatically.
 
-⚠ Kiosk bounds *configuration and money*, not *capability*: visitors can
-still make agents do anything the fixed rights allow. For anything
-internet-facing, give the kiosk org **no bash**, workspace-only folders, and
-deliberate web access. The secret URL is a capability: anyone holding it is
-that kiosk's visitor, so share deliberately and rotate freely — and prefer
-serving it through an HTTPS tunnel (set `ORGTREE_PUBLIC_ORIGIN`) so tokens
-aren't sniffable in transit.
+Kiosk orgs are a **distinct type**: born as kiosks with their limits set at
+creation (the dashboard's new-kiosk form), never converted to or from normal
+orgs. You visit them with full admin rights; URL visitors get the locked
+view. The URL can be paused and reactivated; the limits always bind.
+
+### Sandboxed kiosks (Docker)
+
+A kiosk created with **sandboxed** on (the default) runs all its agents'
+turns inside one dedicated **Docker container** — real terminal use with no
+view of your machine: no host filesystem, no host processes, per-container
+CPU/memory caps, and a hard storage ceiling. The org workspace is the one
+deliberately mounted window; session transcripts persist under
+`<data>/sandboxes/<slug>/` so resume, chat views, and read-down keep working.
+The container reaches the backend only through a **bridge listener**
+(`ORGTREE_BRIDGE_PORT`, default 7362) gated by a per-org secret that exists
+nowhere but inside that container. Requires Docker Desktop running; the
+image builds automatically on first use (`sandbox/Dockerfile`).
+
+Sandbox auth: give the kiosk an **Anthropic API key** at creation (or set
+`ORGTREE_SANDBOX_API_KEY`). Entering the literal word `subscription` copies
+this machine's Claude subscription credentials into the sandbox instead —
+convenient for private kiosks, **not recommended for internet-facing ones**
+(the sandbox then holds a credential for your whole account).
+
+⚠ An *unsandboxed* kiosk bounds *configuration and money*, not *capability*:
+visitors can make agents do anything the fixed rights allow, so give such
+orgs no bash and workspace-only folders. The secret URL is a capability:
+anyone holding it is that kiosk's visitor, so share deliberately and rotate
+freely — and prefer serving it through an HTTPS tunnel (`expose.ps1`) so
+tokens aren't sniffable in transit.
 
 ## A word on safety and cost
 

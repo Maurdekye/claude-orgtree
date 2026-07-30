@@ -18,6 +18,10 @@ import urllib.request
 ORG = os.environ.get("ORGTREE_ORG", "")
 NODE = os.environ.get("ORGTREE_NODE", "")
 PORT = os.environ.get("ORGTREE_PORT", "7360")
+# sandboxed kiosk orgs (containers) reach the backend through the bridge
+# listener instead of loopback: an explicit base URL + the org's secret
+BASE = os.environ.get("ORGTREE_BASE") or f"http://127.0.0.1:{PORT}"
+BRIDGE_SECRET = os.environ.get("ORGTREE_BRIDGE_SECRET", "")
 
 TOOLS_SCHEMA = {
     "type": "object",
@@ -240,10 +244,13 @@ TOOLS = [
 
 
 def call_api(tool: str, args: dict) -> str:
+    headers = {"Content-Type": "application/json"}
+    if BRIDGE_SECRET:
+        headers["X-Orgtree-Bridge"] = BRIDGE_SECRET
     req = urllib.request.Request(
-        f"http://127.0.0.1:{PORT}/api/agent",
+        f"{BASE}/api/agent",
         data=json.dumps({"org": ORG, "node": NODE, "tool": tool, "args": args}).encode(),
-        headers={"Content-Type": "application/json"}, method="POST")
+        headers=headers, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
             return r.read().decode("utf-8", "replace")

@@ -24,7 +24,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import store, supervisor
+from . import sandbox, store, supervisor
 from .ledger import LedgerError, USER, VIS_LEVELS, norm_dirs, norm_tools
 
 app = FastAPI(title="orgtree", version="1.0.0")
@@ -134,6 +134,69 @@ class PublicGateway:
 
 def _public_slug(request) -> str | None:
     return getattr(request.state, "public_slug", None)
+
+
+# ---- the sandbox bridge: the ONE door out of a kiosk container. Serves only
+# the agent gateway + the steering fetch, gated by the org's sandbox secret
+# (which exists nowhere but inside that org's container and its org doc).
+_bridge_cache: dict = {"at": 0.0, "map": {}}
+_STEER_RE = re.compile(r"^/api/orgs/([a-z0-9@-]+)/nodes/[^/]+/steer$")
+
+
+def _bridge_secret_map() -> dict:
+    if time.time() - _bridge_cache["at"] > 5:
+        m = {}
+        for o in store.list_orgs():
+            try:
+                k = store.load_org(o["slug"]).d.get("kiosk") or {}
+            except LedgerError:
+                continue
+            if k.get("sandbox_secret"):
+                m[k["sandbox_secret"]] = o["slug"]
+        _bridge_cache.update(at=time.time(), map=m)
+    return _bridge_cache["map"]
+
+
+class BridgeGateway:
+    """ASGI wrapper served ONLY on the bridge port (containers reach it via
+    host.docker.internal): everything except the two sanctioned paths is a
+    bare 403, and the secret pins the caller to its own org."""
+
+    def __init__(self, inner):
+        self.inner = inner
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "lifespan":
+            while True:                      # the admin server owns app lifespan
+                msg = await receive()
+                if msg["type"] == "lifespan.startup":
+                    await send({"type": "lifespan.startup.complete"})
+                elif msg["type"] == "lifespan.shutdown":
+                    await send({"type": "lifespan.shutdown.complete"})
+                    return
+        if scope["type"] != "http":
+            body = json.dumps({"detail": "forbidden"}).encode()
+            await send({"type": "websocket.close", "code": 4403})
+            return
+        secret = ""
+        for hk, hv in scope.get("headers") or []:
+            if hk == b"x-orgtree-bridge":
+                secret = hv.decode("latin1")
+        slug = _bridge_secret_map().get(secret) if secret else None
+        path, method = scope.get("path", ""), scope.get("method", "GET")
+        m = _STEER_RE.match(path)
+        allowed = slug and method == "POST" and (
+            path == "/api/agent" or (m and m.group(1) == slug))
+        if not allowed:
+            body = json.dumps({"detail": "forbidden"}).encode()
+            await send({"type": "http.response.start", "status": 403,
+                        "headers": [(b"content-type", b"application/json"),
+                                    (b"content-length", str(len(body)).encode())]})
+            await send({"type": "http.response.body", "body": body})
+            return
+        scope = dict(scope)
+        scope["state"] = {**(scope.get("state") or {}), "bridge_slug": slug}
+        await self.inner(scope, receive, send)
 
 
 _LAN_IP: str | None = None
@@ -293,10 +356,19 @@ hub = Hub()
 
 
 # ---------------------------------------------------------------------- orgs
+class KioskSpec(BaseModel):
+    credits: int = 40                 # top-level holdings cap
+    spend_limit: float = 5.0          # USD hard limit
+    storage_limit_mb: int = 500       # workspace-dir cap
+    api_key: str | None = None        # sandbox auth (never echoed back)
+    sandbox: bool = True              # run agent turns in a Docker container
+
+
 class OrgCreate(BaseModel):
     name: str
     dirs: list[str] = []
     permission_mode: str = "acceptEdits"
+    kiosk: KioskSpec | None = None    # present = the org is BORN a kiosk
 
 
 @app.get("/api/orgs")
@@ -327,6 +399,7 @@ def orgs_list(request: Request):
                 "storage_limit_mb": int(k.get("storage_limit_mb") or 0),
                 "spend_frozen": bool(org.d.get("spend_frozen")),
                 "storage_blocked": bool(org.d.get("storage_blocked")),
+                "sandbox": bool(k.get("sandbox")),
                 "held": org.audit()["top_level_holds"],
                 "storage_mb": round(
                     supervisor.workspace_usage_bytes(org, 15) / 1048576, 2),
@@ -342,6 +415,28 @@ def orgs_create(body: OrgCreate):
         org = store.create_org(body.name, body.dirs, body.permission_mode)
     except LedgerError as e:
         raise HTTPException(400, str(e))
+    if body.kiosk is not None:
+        # kiosk orgs are a DISTINCT TYPE, born as kiosks with their limits
+        # defined at creation (user ruling) — never converted from a normal
+        # org. Token + sandbox secret are minted with the org.
+        with store.DOC_LOCK:
+            o = store.load_org(org.d["slug"])
+            o.d["kiosk"] = {
+                "enabled": True,
+                "token": secrets.token_hex(16),
+                "credits": max(0, int(body.kiosk.credits)),
+                "spend_limit": max(0.0, float(body.kiosk.spend_limit)),
+                "storage_limit_mb": max(0, int(body.kiosk.storage_limit_mb)),
+                "sandbox": bool(body.kiosk.sandbox),
+                "sandbox_secret": secrets.token_hex(16),
+                **({"api_key": body.kiosk.api_key.strip()}
+                   if body.kiosk.api_key and body.kiosk.api_key.strip() else {}),
+            }
+            store.save_org(o)
+            if o.d["kiosk"]["sandbox"]:
+                sandbox.warm(o)        # prebuild image+container in background
+        _token_cache["at"] = 0.0
+        _bridge_cache["at"] = 0.0
     return {"slug": org.d["slug"]}
 
 
@@ -351,6 +446,7 @@ def orgs_delete(slug: str):
         store.delete_org(slug)
     except LedgerError as e:
         raise HTTPException(404, str(e))
+    sandbox.remove(slug)            # container down; files stay (like scratch)
     return {"ok": True}
 
 
@@ -488,7 +584,12 @@ async def org_kiosk(slug: str, body: KioskCfg):
             org = store.load_org(slug)
         except LedgerError as e:
             raise HTTPException(404, str(e))
-        k = org.d.get("kiosk") or {}
+        if not org.d.get("kiosk"):
+            # kiosk is a creation-time TYPE (user ruling) — no conversion
+            raise HTTPException(
+                422, "not a kiosk org — kiosks are created as kiosks (from "
+                     "the dashboard's new-kiosk form), never converted")
+        k = org.d["kiosk"]
         if body.enabled is not None:
             k["enabled"] = bool(body.enabled)
         if body.credits is not None:
@@ -527,7 +628,9 @@ async def org_kiosk(slug: str, body: KioskCfg):
         cleared.append("storage")
     _token_cache["at"] = 0.0             # rotation/enable takes effect now
     await hub.changed(slug)
-    return {"kiosk": dict(k), "share_url": _share_url(k.get("token")),
+    safe = {kk: v for kk, v in k.items()
+            if kk not in ("api_key", "sandbox_secret")}
+    return {"kiosk": safe, "share_url": _share_url(k.get("token")),
             "freezes_cleared": cleared}
 
 
@@ -998,10 +1101,15 @@ class AgentCall(BaseModel):
 
 
 @app.post("/api/agent")
-async def agent_call(body: AgentCall):
+async def agent_call(body: AgentCall, request: Request):
     """Backend for the orgtree MCP server every node loads. The calling NODE is the
     actor — the ledger enforces authority, budgets, capability subsets, addressing,
     and the no-defaults hire rule."""
+    # a sandboxed container's secret pins it to its OWN org — a compromised
+    # sandbox cannot act as another org's agents
+    bridge_slug = getattr(request.state, "bridge_slug", None)
+    if bridge_slug and body.org != bridge_slug:
+        raise HTTPException(403, "bridge secret is scoped to its own org")
     a = body.args
     drive: list[str] = []      # nodes whose turn should run after we release the lock
     with store.DOC_LOCK:
@@ -1277,20 +1385,26 @@ if os.path.isdir(FRONTEND_DIST):
 
 def main():
     import uvicorn
-    if not PUBLIC_PORT:
+
+    # three listeners, three trust levels: the admin app stays LOOPBACK-ONLY
+    # (user vision: root access never reaches the wider web); the public
+    # listener serves nothing but preauthenticated /k/<token> URLs; the
+    # bridge listener serves nothing but secret-gated sandbox traffic
+    servers = [uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=PORT))]
+    if PUBLIC_PORT:
+        servers.append(uvicorn.Server(uvicorn.Config(
+            PublicGateway(app), host="0.0.0.0", port=PUBLIC_PORT)))
+    if sandbox.BRIDGE_PORT:
+        servers.append(uvicorn.Server(uvicorn.Config(
+            BridgeGateway(app), host="0.0.0.0", port=sandbox.BRIDGE_PORT)))
+    if len(servers) == 1:
         uvicorn.run(app, host="127.0.0.1", port=PORT)
         return
 
-    async def serve_both():
-        # the admin app stays LOOPBACK-ONLY (user vision: root access never
-        # reaches the wider web); the public listener binds all interfaces but
-        # serves nothing except preauthenticated /k/<token> URLs
-        admin = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=PORT))
-        public = uvicorn.Server(uvicorn.Config(
-            PublicGateway(app), host="0.0.0.0", port=PUBLIC_PORT))
-        await asyncio.gather(admin.serve(), public.serve())
+    async def serve_all():
+        await asyncio.gather(*(s.serve() for s in servers))
 
-    asyncio.run(serve_both())
+    asyncio.run(serve_all())
 
 
 if __name__ == "__main__":

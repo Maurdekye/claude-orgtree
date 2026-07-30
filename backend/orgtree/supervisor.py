@@ -28,7 +28,7 @@ import sys
 import threading
 import time
 
-from . import store
+from . import sandbox as sbx, store
 from .ledger import USER, Org, now as now_iso
 
 # ---- kiosk v2 (user vision): per-org public exposure behind a secret-URL
@@ -36,8 +36,10 @@ from .ledger import USER, Org, now as now_iso
 # `kiosk: {enabled, token, credits, spend_limit, storage_limit_mb}`; the old
 # ORGTREE_KIOSK env vars migrate into the doc at startup (api.py).
 def kiosk_cfg(org: Org) -> dict | None:
-    k = org.d.get("kiosk")
-    return k if (k and k.get("enabled")) else None
+    """The org's kiosk config, or None for normal orgs. Kiosk is a TYPE
+    (user ruling): limits bind whether or not the public URL is currently
+    enabled — `enabled` only gates the token gateway."""
+    return org.d.get("kiosk") or None
 
 
 _ws_usage_cache: dict[str, tuple[float, int]] = {}
@@ -132,10 +134,18 @@ def scratch_dir(slug: str, nid: str) -> str:
     return p
 
 
-def transcript_path(session_id: str) -> str | None:
-    hits = glob.glob(os.path.join(
-        os.path.expanduser("~/.claude"), "projects", "*", session_id + ".jsonl"))
+def transcript_path(session_id: str, root: str | None = None) -> str | None:
+    base = root or os.path.expanduser("~/.claude")
+    hits = glob.glob(os.path.join(base, "projects", "*", session_id + ".jsonl"))
     return hits[0] if hits else None
+
+
+def _transcript_root(org: Org) -> str | None:
+    """Sandboxed kiosk orgs write transcripts inside the container's home,
+    which is bind-mounted from the host sandbox dir — readable natively."""
+    if sbx.is_sandboxed(org):
+        return os.path.join(sbx.sandbox_home(org.d["slug"]), ".claude")
+    return None
 
 
 def clean_env() -> dict:
@@ -387,9 +397,13 @@ def _build_cmd(org: Org, nid: str) -> list[str]:
     n = org.node(nid)
     slug = org.d["slug"]
     sid = n["session_id"]
-    first = transcript_path(sid) is None
+    first = transcript_path(sid, _transcript_root(org)) is None
     model = org.d["models"].get(n["model"], n["model"])
     sc = n["scope"]
+    # kiosk sandbox (user spec): the whole turn — CLI, bash, file I/O, web —
+    # runs inside the org's container; paths below become container paths and
+    # the orgtree tools reach the host only via the secret-gated bridge
+    sandboxed = sbx.is_sandboxed(org)
     # isolation by default: the user's global hooks must not leak into agents.
     # ⚠ CLI <= 2.1.31 does not run TOOL hooks headless at all (live-tested at
     # --settings, project and user-global levels — only lifecycle hooks fire),
@@ -400,9 +414,16 @@ def _build_cmd(org: Org, nid: str) -> list[str]:
     # fold — the soonest non-interrupting delivery this CLI permits.
     steer_capable = (CLAUDE == _PIN
                      or os.environ.get("ORGTREE_STEER_HOOK") == "1")
-    if steer_capable and os.environ.get("ORGTREE_STEER_HOOK") != "0":
-        steer_py = os.path.join(BACKEND_DIR, "orgtree", "steer.py")
+    if sandboxed:
+        # the in-container CLI is current (hooks fire headless); steer.py runs
+        # from the read-only backend mount and finds the bridge via .bridge
         settings: dict = {"hooks": {"PostToolUse": [{"hooks": [
+            {"type": "command",
+             "command": "python3 /opt/orgtree-backend/orgtree/steer.py",
+             "shell": "bash", "timeout": 8}]}]}}
+    elif steer_capable and os.environ.get("ORGTREE_STEER_HOOK") != "0":
+        steer_py = os.path.join(BACKEND_DIR, "orgtree", "steer.py")
+        settings = {"hooks": {"PostToolUse": [{"hooks": [
             {"type": "command",
              "command": '"{}" "{}"'.format(
                  sys.executable.replace("\\", "/"),
@@ -410,7 +431,17 @@ def _build_cmd(org: Org, nid: str) -> list[str]:
              "shell": "bash", "timeout": 8}]}]}}
     else:
         settings = {"disableAllHooks": True}
-    ro_paths = [d["path"] for d in sc["add_dirs"] if d["mode"] == "ro"]
+    if sandboxed:
+        # the workspace is the sandbox's ONE mounted window — external folder
+        # grants cannot follow into the container and are dropped
+        ws = os.path.normpath(org.d.get("workspace") or "")
+        ws_mode = next((d["mode"] for d in sc["add_dirs"]
+                        if os.path.normpath(d["path"]) == ws), None)
+        grant_dirs = ([(sbx.cpath_workspace(slug), ws_mode)]
+                      if ws_mode else [])
+    else:
+        grant_dirs = [(d["path"], d["mode"]) for d in sc["add_dirs"]]
+    ro_paths = [p for p, m in grant_dirs if m == "ro"]
     if ro_paths:
         # read-only enforcement: permission deny rules on the writing tools
         deny = []
@@ -418,7 +449,10 @@ def _build_cmd(org: Org, nid: str) -> list[str]:
             p = p.replace("\\", "/").rstrip("/")
             deny += [f"Edit({p}/**)", f"Write({p}/**)", f"NotebookEdit({p}/**)"]
         settings["permissions"] = {"deny": deny}
-    cmd = _claude_argv() + ["-p",
+    head = ((sbx.exec_argv(sbx.container_name(slug),
+                           sbx.cpath_scratch(slug, nid)) + ["claude"])
+            if sandboxed else _claude_argv())
+    cmd = head + ["-p",
            "--output-format", "stream-json", "--input-format", "stream-json",
            "--verbose",
            "--model", model,
@@ -446,14 +480,28 @@ def _build_cmd(org: Org, nid: str) -> list[str]:
     granted = tools.get("mcp") or []
     if "*" in granted:        # "*" = every registered server, present and future
         granted = sorted(registry)
-    chosen = {k: registry[k] for k in granted if k in registry}
-    chosen["orgtree"] = {
-        "command": sys.executable,
-        "args": ["-m", "orgtree.mcptool"],
-        "env": {"ORGTREE_ORG": slug, "ORGTREE_NODE": nid,
-                "ORGTREE_PORT": os.environ.get("ORGTREE_PORT", "7360"),
-                "PYTHONPATH": BACKEND_DIR},
-    }
+    if sandboxed:
+        # host-registered MCP servers are HOST processes — they cannot run in
+        # the container; the sandbox gets exactly one server: orgtree, via
+        # the bridge
+        chosen = {}
+        chosen["orgtree"] = {
+            "command": "python3",
+            "args": ["/opt/orgtree-backend/orgtree/mcptool.py"],
+            "env": {"ORGTREE_ORG": slug, "ORGTREE_NODE": nid,
+                    "ORGTREE_BASE": sbx.bridge_url(),
+                    "ORGTREE_BRIDGE_SECRET":
+                        (org.d.get("kiosk") or {}).get("sandbox_secret", "")},
+        }
+    else:
+        chosen = {k: registry[k] for k in granted if k in registry}
+        chosen["orgtree"] = {
+            "command": sys.executable,
+            "args": ["-m", "orgtree.mcptool"],
+            "env": {"ORGTREE_ORG": slug, "ORGTREE_NODE": nid,
+                    "ORGTREE_PORT": os.environ.get("ORGTREE_PORT", "7360"),
+                    "PYTHONPATH": BACKEND_DIR},
+        }
     cmd += ["--mcp-config", json.dumps({"mcpServers": chosen})]
     # Headless permission reality: acceptEdits auto-approves FILE tools only.
     # Bash, the web tools and MCP tools all prompt — and a headless prompt is
@@ -469,13 +517,14 @@ def _build_cmd(org: Org, nid: str) -> list[str]:
         # Monitor permission its listener needs; subagents are prompt-banned
         allowed += ["Monitor", "TaskStop"]
     cmd += ["--allowedTools", ",".join(allowed)]
-    for d in sc["add_dirs"]:
-        cmd += ["--add-dir", d["path"]]
+    for p, _m in grant_dirs:
+        cmd += ["--add-dir", p]
     # §7.6 read-down: a node's file tools reach its own scratch (cwd) plus every
     # descendant's — regenerated per turn, so re-parenting never leaves stale access
     seen = set()
     for k in org.descendants(nid, live_only=False):
-        p = scratch_dir(org.d["slug"], k)
+        host_p = scratch_dir(org.d["slug"], k)      # host dir must exist (mount)
+        p = sbx.cpath_scratch(slug, k) if sandboxed else host_p
         if p not in seen:
             seen.add(p)
             cmd += ["--add-dir", p]
@@ -540,6 +589,11 @@ def _run_turn(slug: str, nid: str, text: str):
                     o2.node(nid).pop("last_status", None)
                     store.save_org(o2)
             notify(slug, nid, "turn_started")
+            sandbox_name = None
+            if sbx.is_sandboxed(org):
+                # actionable RuntimeError (no Docker / no API key) surfaces as
+                # the node's last_error through the except path below
+                sandbox_name = sbx.ensure_container(org)
             env = clean_env()
             env["ORGTREE_ORG"], env["ORGTREE_NODE"] = slug, nid
             env["ORGTREE_PORT"] = os.environ.get("ORGTREE_PORT", "7360")
@@ -555,6 +609,10 @@ def _run_turn(slug: str, nid: str, text: str):
             def _expire():
                 timed_out.set()
                 proc.kill()
+                if sandbox_name:
+                    # killing the docker-exec client leaves the in-container
+                    # process alive — reap it
+                    sbx.kill_claude(sandbox_name)
             timer = threading.Timer(TURN_TIMEOUT, _expire)
             timer.start()
             with _state_lock:
@@ -796,11 +854,21 @@ def _compact_split(slug: str, nid: str):
         n = org.node(nid)
         old_sid = n["session_id"]
         model = org.d["models"].get(n["model"], n["model"])
-    argv = _claude_argv() + ["-p", "--output-format", "json",
-                             "--resume", old_sid, "--fork-session",
-                             "--model", model,
-                             "--settings", json.dumps({"disableAllHooks": True}),
-                             "--strict-mcp-config"]
+    if sbx.is_sandboxed(org):
+        # the session lives inside the org's container — fork it there too
+        try:
+            name = sbx.ensure_container(org)
+        except RuntimeError as e:
+            state(slug, nid)["last_error"] = f"compaction split failed: {e}"
+            return
+        head = sbx.exec_argv(name, sbx.cpath_scratch(slug, nid)) + ["claude"]
+    else:
+        head = _claude_argv()
+    argv = head + ["-p", "--output-format", "json",
+                   "--resume", old_sid, "--fork-session",
+                   "--model", model,
+                   "--settings", json.dumps({"disableAllHooks": True}),
+                   "--strict-mcp-config"]
     try:
         proc = subprocess.Popen(argv, cwd=scratch_dir(slug, nid), env=clean_env(),
                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -1208,7 +1276,7 @@ def read_chat(org: Org, nid: str) -> dict:
     st = state(org.d["slug"], nid)
     out = {"busy": st["busy"], "queued": len(st["queue"]),
            "last_error": st["last_error"], "occupancy": None, "messages": []}
-    tpath = transcript_path(n["session_id"])
+    tpath = transcript_path(n["session_id"], _transcript_root(org))
     if not tpath:
         return out
     msgs = []

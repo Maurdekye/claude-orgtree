@@ -19,16 +19,26 @@ import urllib.request
 
 
 def identity():
-    """(org, node, port) from cwd + the backend's port file."""
+    """(org, node, base_url, secret) from cwd + the backend's port file.
+
+    Sandboxed kiosk containers mirror the host layout at ~/orgtree, so the
+    cwd derivation is identical there; a `.bridge` file in the data root
+    (written by the host into the mounted sandbox home) carries the
+    off-container backend URL + the org's bridge secret."""
     cwd = os.path.realpath(os.getcwd())
     data_root = os.path.realpath(
         os.environ.get("ORGTREE_DATA", os.path.expanduser("~/orgtree")))
     scratch = os.path.join(data_root, "scratch")
     if not cwd.startswith(scratch + os.sep):
-        return None, None, None
+        return None, None, None, None
     parts = cwd[len(scratch) + 1:].split(os.sep)
     if len(parts) < 2:
-        return None, None, None
+        return None, None, None, None
+    try:
+        b = json.load(open(os.path.join(data_root, ".bridge"), encoding="utf-8"))
+        return parts[0], parts[1], b["url"].rstrip("/"), b.get("secret", "")
+    except (OSError, ValueError, KeyError):
+        pass
     port = os.environ.get("ORGTREE_PORT")
     if not port:
         try:
@@ -36,7 +46,7 @@ def identity():
                         encoding="utf-8").read().strip()
         except OSError:
             port = "7360"
-    return parts[0], parts[1], port
+    return parts[0], parts[1], f"http://127.0.0.1:{port}", ""
 
 
 def main():
@@ -44,13 +54,14 @@ def main():
         sys.stdin.read()          # drain the hook payload
     except Exception:             # noqa: BLE001
         pass
-    org, node, port = identity()
+    org, node, base, secret = identity()
     if not org:
         return
     try:
         req = urllib.request.Request(
-            f"http://127.0.0.1:{port}/api/orgs/{org}/nodes/{node}/steer",
-            method="POST")
+            f"{base}/api/orgs/{org}/nodes/{node}/steer", method="POST")
+        if secret:
+            req.add_header("X-Orgtree-Bridge", secret)
         with urllib.request.urlopen(req, timeout=5) as r:
             data = json.load(r)
     except Exception:             # noqa: BLE001 — backend down = nothing to say

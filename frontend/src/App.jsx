@@ -166,12 +166,12 @@ export default function App() {
         {orgs.map((o) => (
           <div key={o.slug} role="button" tabIndex={0}
             className={'org' + (o.slug === slug ? ' current' : '')
-              + (o.kiosk_cfg?.enabled || o.kiosk ? ' kiosk-org' : '')}
+              + (o.kiosk_cfg || o.kiosk ? ' kiosk-org' : '')}
             onClick={() => pick(o.slug)}
             onKeyDown={(e) => { if (e.key === 'Enter') pick(o.slug) }}>
             <span>{o.name}</span>
-            {o.kiosk_cfg?.enabled &&
-              <span className="kiosk-badge" title="exposed as a public kiosk"><PublicIcon fontSize="inherit" /></span>}
+            {(o.kiosk_cfg || o.kiosk) &&
+              <span className="kiosk-badge" title="kiosk org"><PublicIcon fontSize="inherit" /></span>}
             <span className="spacer" />
             <span className="dim">{o.live}/{o.nodes} live</span>
             {!o.kiosk && <button className="org-del"
@@ -387,48 +387,61 @@ function NewOrg({ onCreate }) {
 // kiosk dashboard (user vision): every kiosk session at a glance — spend,
 // credits held, storage — with inline cap edits, the preauthenticated share
 // URL (copy + rotate), and enable/disable. Loopback-only by construction.
-const KIOSK_DEFAULTS = { enabled: true, credits: 40, spend_limit: 5, storage_limit_mb: 500 }
-
+// kiosk orgs are a DISTINCT TYPE (user ruling): born as kiosks with their
+// limits defined at creation — never converted from (or back to) a normal
+// org. The URL can be paused; the limits always bind.
 function KioskDash({ orgs, refresh, toast, pick }) {
-  const [sel, setSel] = useState('')
   const [newName, setNewName] = useState('')
-  const kiosks = orgs.filter((o) => o.kiosk_cfg?.enabled)
-  const others = orgs.filter((o) => !o.kiosk_cfg?.enabled)
+  const [credits, setCredits] = useState(40)
+  const [spend, setSpend] = useState(5)
+  const [storage, setStorage] = useState(500)
+  const [apiKey, setApiKey] = useState('')
+  const [sandboxed, setSandboxed] = useState(true)
+  const kiosks = orgs.filter((o) => o.kiosk_cfg)
   return (
     <div className="kiosk-dash">
       <h3><PublicIcon fontSize="inherit" /> public kiosks</h3>
       {kiosks.map((o) => (
         <KioskRow key={o.slug + ':' + o.kiosk_cfg.token + ':' + o.kiosk_cfg.credits
-          + ':' + o.kiosk_cfg.spend_limit + ':' + o.kiosk_cfg.storage_limit_mb}
+          + ':' + o.kiosk_cfg.spend_limit + ':' + o.kiosk_cfg.storage_limit_mb
+          + ':' + o.kiosk_cfg.enabled}
           org={o} refresh={refresh} toast={toast} pick={pick} />
       ))}
       {!kiosks.length &&
-        <div className="dim pad">no orgs are exposed yet — expose one below, or mint a fresh kiosk org</div>}
-      {others.length > 0 && (
-        <div className="row kiosk-new">
-          <select value={sel} onChange={(e) => setSel(e.target.value)}>
-            <option value="">expose an org as a kiosk…</option>
-            {others.map((o) => <option key={o.slug} value={o.slug}>{o.name}</option>)}
-          </select>
-          <button disabled={!sel} onClick={() =>
-            saveKiosk(sel, KIOSK_DEFAULTS)
-              .then(() => { setSel(''); refresh() })
-              .catch((e) => toast([`error: ${e.message}`]))}>enable</button>
-        </div>
-      )}
-      {/* one step: mint the org AND its secret URL together (user ruling) */}
-      <form className="row kiosk-new" onSubmit={(e) => {
+        <div className="dim pad">no kiosk orgs yet — mint one below (limits are set at birth)</div>}
+      <form className="stack kiosk-new" onSubmit={(e) => {
         e.preventDefault()
         const name = newName.trim()
         if (!name) return
-        createOrg(name, [])
-          .then((r) => saveKiosk(r.slug, KIOSK_DEFAULTS))
-          .then(() => { setNewName(''); refresh() })
+        createOrg(name, [], {
+          credits: +credits || 0, spend_limit: +spend || 0,
+          storage_limit_mb: +storage || 0, sandbox: sandboxed,
+          ...(apiKey.trim() ? { api_key: apiKey.trim() } : {}),
+        })
+          .then(() => { setNewName(''); setApiKey(''); refresh() })
           .catch((err) => toast([`error: ${err.message}`]))
       }}>
-        <input placeholder="new kiosk org name…" value={newName}
-          onChange={(e) => setNewName(e.target.value)} />
-        <button type="submit" disabled={!newName.trim()}>create</button>
+        <div className="row">
+          <input placeholder="new kiosk org name…" value={newName}
+            onChange={(e) => setNewName(e.target.value)} />
+          <button type="submit" className="primary" disabled={!newName.trim()}>create</button>
+        </div>
+        <div className="row kiosk-caps">
+          <label>credits <input type="number" min="0" value={credits}
+            onChange={(e) => setCredits(e.target.value)} /></label>
+          <label>spend $ <input type="number" min="0" step="0.5" value={spend}
+            onChange={(e) => setSpend(e.target.value)} /></label>
+          <label>storage MB <input type="number" min="0" value={storage}
+            onChange={(e) => setStorage(e.target.value)} /></label>
+        </div>
+        <label className="row kiosk-sbx">
+          <input type="checkbox" checked={sandboxed}
+            onChange={(e) => setSandboxed(e.target.checked)} />
+          sandboxed — agents run in a Docker container, isolated from this PC
+        </label>
+        {sandboxed &&
+          <input type="password" placeholder="sandbox API key (or ORGTREE_SANDBOX_API_KEY)"
+            value={apiKey} onChange={(e) => setApiKey(e.target.value)} />}
       </form>
     </div>
   )
@@ -452,11 +465,16 @@ function KioskRow({ org, refresh, toast, pick }) {
         <b className="kiosk-name" role="button" tabIndex={0} title="open this org (full admin rights)"
           onClick={() => pick(org.slug)}
           onKeyDown={(e) => { if (e.key === 'Enter') pick(org.slug) }}>{org.name}</b>
+        {k.sandbox && <span className="chip" title="agent turns run in a Docker container">sandboxed</span>}
         {k.spend_frozen && <span className="chip bad">spend frozen</span>}
         {k.storage_blocked && <span className="chip bad">writes blocked</span>}
+        {!k.enabled && <span className="chip">URL paused</span>}
         <span className="spacer" />
-        <button title="stop exposing this org (its URL stops working; caps lift)"
-          onClick={() => save({ enabled: false })}><BlockIcon fontSize="inherit" /></button>
+        {/* pause/unpause the PUBLIC URL — the org stays a kiosk (its limits
+            always bind); only the token gateway is gated */}
+        <button title={k.enabled ? 'pause the public URL' : 'reactivate the public URL'}
+          onClick={() => save({ enabled: !k.enabled })}>
+          {k.enabled ? <BlockIcon fontSize="inherit" /> : <PlayIcon fontSize="inherit" />}</button>
       </div>
       <div className="dim kiosk-stats">
         ${(org.cost_usd_total ?? 0).toFixed(2)}{k.spend_limit ? ` / $${k.spend_limit.toFixed(2)}` : ''} spent

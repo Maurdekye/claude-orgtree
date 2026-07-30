@@ -113,13 +113,19 @@ snowflake, lock, layers, fullscreen, hearing.
 
 Any org can be exposed to others through a **preauthenticated secret URL**
 (see the README): the **public kiosks** panel at the bottom of the org list
-is the admin dashboard. Each kiosk row shows spend / credits held / workspace
-storage against their caps, inline inputs to change the caps (a ✓ appears
-when edited; the credit cap refuses to go below what the org already holds —
-retire or dissolve agents first), the share URL with copy and **rotate**
-buttons (rotation revokes the old link instantly), and a ⃠ button to stop
-exposing the org. The name field at the bottom mints a **fresh kiosk org in
-one step** — created and exposed with default caps in a single action.
+is the admin dashboard. Kiosk orgs are a **distinct type, born as kiosks**:
+the creation form at the bottom takes the name, the three limits (credits /
+spend / storage), a **sandboxed** toggle (default on — agents run in a
+Docker container, isolated from this PC; give it an API key, or type
+`subscription` to copy this machine's Claude credentials in for private
+use), and mints the org with its secret URL in one step. Existing orgs are
+never converted. Each kiosk row shows spend / credits held / workspace
+storage against their caps, a `sandboxed` chip, inline inputs to change the
+caps (a ✓ appears when edited; the credit cap refuses to go below what the
+org already holds — retire or dissolve agents first), the share URL with
+copy and **rotate** buttons (rotation revokes the old link instantly), and a
+pause/reactivate button for the URL — pausing kills the link but the org
+stays a kiosk and its limits keep binding.
 Kiosk orgs are highlighted **teal** in the org list (border, tint, and globe
 badge) — deliberately a different hue from the terracotta selection, so
 "exposed to the public" reads at a glance; you still open and manage them
