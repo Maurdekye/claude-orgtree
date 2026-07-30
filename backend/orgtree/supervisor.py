@@ -159,6 +159,31 @@ def _parse_limit_reset(blob: str) -> str | None:
     return m.group(1).strip() if m else None
 
 
+def _parse_limit_reset_ts(blob: str) -> float | None:
+    """Machine-readable reset time (epoch seconds), best-effort. The CLI's
+    limit errors usually carry one verbatim ('…limit reached|1753898400');
+    clock-time and try-again-in phrasings are the fallbacks."""
+    m = re.search(r"\|\s*(\d{9,11})\b", blob)
+    if m:
+        return float(m.group(1))
+    m = re.search(r"(?:reset\w*|try again)\s*(?:at\s+)?(\d{1,2})(?::(\d{2}))?"
+                  r"\s*(am|pm)\b", blob, re.IGNORECASE)
+    if m:
+        import datetime as _dt
+        h = int(m.group(1)) % 12 + (12 if m.group(3).lower() == "pm" else 0)
+        t = _dt.datetime.now().replace(hour=h, minute=int(m.group(2) or 0),
+                                       second=0, microsecond=0)
+        if t <= _dt.datetime.now():
+            t += _dt.timedelta(days=1)
+        return t.timestamp()
+    m = re.search(r"try again in\s+(\d+)\s*(hour|minute|min\b|h\b|m\b)",
+                  blob, re.IGNORECASE)
+    if m:
+        unit = 3600 if m.group(2).lower().startswith("h") else 60
+        return time.time() + int(m.group(1)) * unit
+    return None
+
+
 def registered_mcp_servers() -> dict:
     """The user's globally registered MCP servers (~/.claude.json → mcpServers)."""
     try:
@@ -644,6 +669,8 @@ def _run_turn(slug: str, nid: str, text: str):
                             fz = o2.node(nid).setdefault(
                                 "frozen", {"at": now_iso(), "resume_texts": []})
                             fz["until"] = _parse_limit_reset(err_blob) or fz.get("until")
+                            fz["until_ts"] = (_parse_limit_reset_ts(err_blob)
+                                              or fz.get("until_ts"))
                             fz["error"] = err_blob[:300]
                             fz.setdefault("resume_texts", []).append(text[-8000:])
                             if o2.node(nid)["model"] == "fable":
@@ -1016,6 +1043,53 @@ def resume_frozen(slug: str) -> list[str]:
                              daemon=True).start()
         notify(slug, nid, "resumed")
     return [nid for nid, _ in resumed]
+
+
+_auto_resume_started = False
+
+
+def start_auto_resume_loop() -> None:
+    """Background timer for the inline org toggle (user spec): when
+    `auto_resume` is on, usage-limit-frozen agents restart on their own ONE
+    MINUTE after the latest reported reset time. Freezes with no parseable
+    reset time stay manual; a failed attempt (limit still live) re-freezes
+    with a fresh time and is retried no sooner than 5 minutes later."""
+    global _auto_resume_started
+    if _auto_resume_started:
+        return
+    _auto_resume_started = True
+
+    def loop():
+        while True:
+            time.sleep(30)
+            try:
+                for o in store.list_orgs():
+                    slug = o["slug"]
+                    with store.DOC_LOCK:
+                        org = store.load_org(slug)
+                        if not org.d.get("auto_resume") or org.d.get("spend_frozen"):
+                            continue
+                        tss = [n["frozen"].get("until_ts")
+                               for n in org.nodes.values()
+                               if n["state"] == "live" and n.get("frozen")]
+                        last = float(org.d.get("auto_resume_last") or 0)
+                    known = [t for t in tss if t]
+                    if not tss or not known:
+                        continue
+                    if time.time() < max(known) + 60 or time.time() - last < 300:
+                        continue
+                    with store.DOC_LOCK:
+                        org = store.load_org(slug)
+                        org.d["auto_resume_last"] = time.time()
+                        store.save_org(org)
+                    try:
+                        resume_frozen(slug)
+                    except RuntimeError:
+                        pass
+            except Exception:
+                pass    # the timer must survive anything — next tick retries
+
+    threading.Thread(target=loop, daemon=True).start()
 
 
 def pop_steer(slug: str, nid: str) -> list[str]:

@@ -142,7 +142,13 @@ The agents chip summarizes the org at a glance: total live agents, how many
 are working right now, and a per-model breakdown (H/S/O/F counts in their
 tier colors). Beside it: cumulative cost, the ledger self-audit (only speaks
 when something is wrong), the fable-limit chip, and ▶ resume when agents are
-frozen. On the right sits the **killswitch**: unlatch the 🔒, then press the
+frozen by a usage limit. The resume button is **red** while the reported
+reset time is still ahead (pressing it would just re-hit the limit) and
+returns to normal once the time passes. The inline **auto** toggle beside it
+arms unattended recovery: all frozen agents restart on their own one minute
+after the latest reported reset time (it stays on for the org until toggled
+off; freezes whose error carried no parseable reset time still need the
+manual button). On the right sits the **killswitch**: unlatch the 🔒, then press the
 red ⏹ STOP ALL — every active agent is interrupted at once and pending
 queues are cleared (undelivered mail stays safe in their mailboxes). The
 latch re-closes by itself after a few seconds if unused.

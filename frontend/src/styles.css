@@ -170,7 +170,14 @@ main {
   border: 1px solid color-mix(in srgb, var(--tier-haiku) 45%, var(--line));
   color: var(--ink-strong); font-weight: 700;
 }
+/* the reported reset time hasn't passed yet — resuming would just re-freeze */
+.resume-all.notyet {
+  background: rgba(241, 76, 76, .16); border-color: var(--bad);
+  color: var(--bad);
+}
 .resume-note { font-size: 11.5px; color: var(--dim); max-width: 34em; }
+.auto-resume { font-size: 11px; color: var(--dim); padding: 3px 8px; }
+.auto-resume.on { color: var(--ok); border-color: rgba(137, 209, 133, .5); }
 /* the killswitch: a latch you must open, then a big red STOP ALL */
 .kill { display: inline-flex; gap: 0; align-items: stretch; }
 .kill-latch {

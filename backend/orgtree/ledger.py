@@ -1396,7 +1396,8 @@ class Org:
                 "mail_pending": len((self.d.get("mail") or {}).get(nid, [])),
                 "limit_locked": bool(n.get("limit_locked")),
                 "last_status": n.get("last_status"),
-                "frozen": ({k: n["frozen"].get(k) for k in ("at", "until", "error")}
+                "frozen": ({k: n["frozen"].get(k)
+                            for k in ("at", "until", "until_ts", "error")}
                            if n.get("frozen") else None),
                 "audiences_held": [a["grantor"] for a in self.d["audiences"]
                                    if a["grantee"] == nid],
@@ -1434,6 +1435,7 @@ class Org:
             "fable_lock": self.d.get("fable_lock"),
             "spend_frozen": bool(self.d.get("spend_frozen")),
             "storage_blocked": bool(self.d.get("storage_blocked")),
+            "auto_resume": bool(self.d.get("auto_resume")),
             "fable_limit_policy": self.d.get("fable_limit_policy", "halt"),
             "audience_requests": self.d.get("audience_requests", []),
         }

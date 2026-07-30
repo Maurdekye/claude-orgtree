@@ -39,7 +39,12 @@ export default function App() {
   const [drawer, setDrawer] = useState(false)
   const [doomedOrg, setDoomedOrg] = useState(null)   // org row pending deletion
   const [killArmed, setKillArmed] = useState(false)  // the killswitch latch
+  const [nowTick, setNowTick] = useState(Date.now()) // drives the resume-red clock
   const wsRef = useRef(null)
+  useEffect(() => {
+    const t = setInterval(() => setNowTick(Date.now()), 15000)
+    return () => clearInterval(t)
+  }, [])
   useEffect(() => {           // an unlatched killswitch re-latches on its own
     if (!killArmed) return
     const t = setTimeout(() => setKillArmed(false), 6000)
@@ -248,9 +253,15 @@ export default function App() {
                   const frozen = [...flatNodes(tree).values()].filter((n) => n.frozen)
                   if (!frozen.length) return null
                   const until = frozen.map((n) => n.frozen.until).find(Boolean)
+                  // RED while the reported reset time is still ahead (resuming
+                  // would just re-hit the limit); normal once it has passed
+                  const untilTs = Math.max(0, ...frozen.map((n) => n.frozen.until_ts || 0))
+                  const notYet = untilTs > 0 && nowTick < untilTs * 1000
                   return (
                     <>
-                      <button className="resume-all" title={frozen.map((n) => n.id).join(', ')}
+                      <button className={'resume-all' + (notYet ? ' notyet' : '')}
+                        title={frozen.map((n) => n.id).join(', ')
+                          + (notYet ? ' — the limit has not reset yet' : '')}
                         onClick={() => resumeFrozen(slug)
                           .then((r) => { toast([`resumed ${r.resumed.length} agent(s)`]); refreshTree(slug) })
                           .catch((e) => toast([`error: ${e.message}`]))}>
@@ -260,6 +271,14 @@ export default function App() {
                         usage limit hit — {frozen.length} agent{frozen.length > 1 ? 's' : ''} frozen
                         {until ? ` · resumable ${until}` : ''}
                       </span>
+                      {!tree.public &&
+                        <button className={'auto-resume' + (tree.auto_resume ? ' on' : '')}
+                          title="auto-resume all frozen agents one minute after the reported reset time"
+                          onClick={() => saveSettings(slug, { auto_resume: !tree.auto_resume })
+                            .then(() => refreshTree(slug))
+                            .catch((e) => toast([`error: ${e.message}`]))}>
+                          <AutorenewIcon fontSize="inherit" /> auto{tree.auto_resume ? ' on' : ''}
+                        </button>}
                     </>
                   )
                 })()}

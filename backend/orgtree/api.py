@@ -206,6 +206,7 @@ async def _wire_notify():
 
     supervisor.notify = notify
     supervisor.stream = stream
+    supervisor.start_auto_resume_loop()
     # one-time migration of the retired v1 env-var kiosk mode into the org doc
     legacy = os.environ.get("ORGTREE_KIOSK")
     if legacy:
@@ -385,6 +386,7 @@ class Settings(BaseModel):
     fable_limit_policy: str | None = None   # halt | opus | dissolve
     default_tools: dict | None = None       # {bash, web, edit, subagents, mcp: []|["*"]}
     default_visibility: str | None = None   # self|team|subtree|full
+    auto_resume: bool | None = None         # restart limit-frozen agents at reset+1min
 
 
 @app.post("/api/orgs/{slug}/settings")
@@ -443,6 +445,8 @@ async def _org_settings_locked(slug: str, body: Settings):
         org.d["default_tools"] = norm_tools(body.default_tools)
     if body.default_visibility in VIS_LEVELS:
         org.d["default_visibility"] = body.default_visibility
+    if body.auto_resume is not None:
+        org.d["auto_resume"] = bool(body.auto_resume)
     store.save_org(org)
     await hub.changed(slug)
     return {"dirs": org.d["dirs"], "warnings": warnings}
