@@ -168,6 +168,13 @@ main {
   color: var(--ink-strong); font-weight: 700;
 }
 .resume-note { font-size: 11.5px; color: var(--dim); max-width: 34em; }
+/* the active-agent summary chip: total · working · per-model counts */
+.chip.agents { display: inline-flex; gap: 7px; align-items: baseline; }
+.chip.agents b { font-family: var(--mono); font-weight: 700; }
+.chip.agents b.t-haiku { color: var(--tier-haiku); }
+.chip.agents b.t-sonnet { color: var(--tier-sonnet); }
+.chip.agents b.t-opus { color: var(--tier-opus); }
+.chip.agents b.t-fable { color: var(--tier-fable); }
 /* credit requests (inbox panel): old → new (+Δ), reason, one-click verdict */
 .credreq {
   background: var(--bg); border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line-soft));

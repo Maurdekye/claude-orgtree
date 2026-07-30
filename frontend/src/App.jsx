@@ -154,7 +154,21 @@ export default function App() {
                     credit totals live on the eye's bar */}
                 {!tree.audit.no_overdraft &&
                   <span className="chip bad">⚠ {tree.audit.problems.join(', ')}</span>}
-                <span className="chip">{tree.audit.live_nodes} live</span>
+                {(() => {   // active-agent summary: total · working · per-model
+                  const ns = [...flatNodes(tree).values()].filter((n) => n.state === 'live')
+                  const busy = ns.filter((n) => n.busy).length
+                  const byTier = {}
+                  for (const n of ns) byTier[n.tier] = (byTier[n.tier] ?? 0) + 1
+                  return (
+                    <span className="chip agents"
+                      title="live agents · currently working · breakdown by model">
+                      {ns.length} live{busy > 0 ? ` · ${busy} working` : ''}
+                      {['haiku', 'sonnet', 'opus', 'fable']
+                        .filter((t) => byTier[t])
+                        .map((t) => <b key={t} className={'t-' + t}>{TIER_LETTER[t]}{byTier[t]}</b>)}
+                    </span>
+                  )
+                })()}
                 {tree.cost_usd_total > 0 &&
                   <span className="chip">${tree.cost_usd_total.toFixed(2)}</span>}
                 {tree.fable_lock &&

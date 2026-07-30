@@ -462,6 +462,14 @@ def _run_turn(slug: str, nid: str, text: str):
                                + "\n---\n".join(blocks) + "\n[END MAIL]")
             if prelude:
                 text = "\n\n".join(prelude) + "\n\n" + text
+            # persist the in-flight turn: if orgtree dies mid-turn, reconcile()
+            # auto-resumes this node with the interrupted text (user ruling)
+            with store.DOC_LOCK:
+                o2 = store.load_org(slug)
+                if nid in o2.nodes:
+                    o2.node(nid)["inflight"] = {"at": now_iso(),
+                                                "text": text[-8000:]}
+                    store.save_org(o2)
             notify(slug, nid, "turn_started")
             env = clean_env()
             env["ORGTREE_ORG"], env["ORGTREE_NODE"] = slug, nid
@@ -531,6 +539,19 @@ def _run_turn(slug: str, nid: str, text: str):
                                 nxt = st["queue"].pop(0)
                                 st["responding"] = True
                         if nxt is not None:
+                            # queued texts are RAW (mail stays in the doc until
+                            # delivery — restart durability): envelope now,
+                            # and track it as the in-flight turn
+                            nxt = _envelope(slug, nid, nxt)
+                            try:
+                                with store.DOC_LOCK:
+                                    o2 = store.load_org(slug)
+                                    if nid in o2.nodes:
+                                        o2.node(nid)["inflight"] = {
+                                            "at": now_iso(), "text": nxt[-8000:]}
+                                        store.save_org(o2)
+                            except Exception:                # noqa: BLE001
+                                pass
                             try:
                                 proc.stdin.write(_user_event(nxt))
                                 proc.stdin.flush()
@@ -602,6 +623,14 @@ def _run_turn(slug: str, nid: str, text: str):
     except Exception as e:                                  # noqa: BLE001
         st["last_error"] = str(e)
     finally:
+        # the turn is over one way or another — it is no longer in-flight
+        try:
+            with store.DOC_LOCK:
+                o2 = store.load_org(slug)
+                if nid in o2.nodes and o2.node(nid).pop("inflight", None) is not None:
+                    store.save_org(o2)
+        except Exception:                                    # noqa: BLE001
+            pass
         nxt = None
         with _state_lock:
             if st["queue"]:
@@ -722,23 +751,28 @@ def send_message(slug: str, nid: str, text: str) -> dict:
         _o = store.load_org(slug)
         if nid in _o.nodes and _o.node(nid).get("frozen"):
             return {"accepted": True, "queued": 0, "frozen": True}
-    text = _envelope(slug, nid, text)     # mail/notices ride along
+    # Mail is drained from the doc only AT DELIVERY (steer now, boundary feed,
+    # or turn start) — a queued text is just a raw nudge, so a crash between
+    # queue and delivery loses nothing (restart durability, user ruling).
+    with _state_lock:
+        maybe_steer = (st["busy"] and st.get("responding")
+                       and not st.get("attached"))
+    if maybe_steer:
+        etext = _envelope(slug, nid, text)   # ⚠ outside _state_lock (DOC_LOCK order)
+        with _state_lock:
+            if st.get("responding"):
+                st.setdefault("steer", []).append(etext)
+                return {"accepted": True, "queued": 0, "steering": True}
+            # raced past the boundary — fall through with the drained text
+            text = etext
     with _state_lock:
         if st.get("attached"):
             st["queue"].append(text)
-            out = {"accepted": True, "queued": len(st["queue"]), "attached": True}
-        elif st["busy"]:
-            if st.get("responding"):
-                st.setdefault("steer", []).append(text)
-                out = {"accepted": True, "queued": 0, "steering": True}
-            else:
-                st["queue"].append(text)
-                out = {"accepted": True, "queued": len(st["queue"])}
-        else:
-            st["busy"] = True
-            out = None
-    if out is not None:
-        return out
+            return {"accepted": True, "queued": len(st["queue"]), "attached": True}
+        if st["busy"]:
+            st["queue"].append(text)
+            return {"accepted": True, "queued": len(st["queue"])}
+        st["busy"] = True
     threading.Thread(target=_run_turn, args=(slug, nid, text), daemon=True).start()
     return {"accepted": True, "queued": 0}
 
@@ -854,12 +888,34 @@ def reconcile(slug: str) -> list[str]:
                 marked.append(nid)
         if marked:
             store.save_org(org)
+        # agents that were MID-TURN when orgtree went down auto-resume from
+        # where they left off (user ruling) — the interrupted turn text was
+        # persisted at turn start
+        inflight = []
+        for nid, n in org.nodes.items():
+            if n["state"] == "live" and nid not in marked and not n.get("frozen"):
+                inf = n.pop("inflight", None)
+                if inf:
+                    inflight.append((nid, inf))
+        if inflight:
+            store.save_org(org)
         # drain-on-start: undelivered mail persists in the org doc (messages
         # ARE mail — user ruling), so any live node with a waiting mailbox
         # simply gets driven again. No shadow queue to mirror or replay.
+        resumed = {k for k, _ in inflight}
         revive = [nid for nid, n in org.nodes.items()
                   if n["state"] == "live" and nid not in marked
+                  and nid not in resumed and not n.get("frozen")
                   and (org.d.get("mail") or {}).get(nid)]
+    for nid, inf in inflight:
+        print(f"[orgtree] {slug}/{nid}: resuming the turn interrupted by shutdown")
+        send_message(slug, nid,
+                     "[ORGTREE RESTART] orgtree shut down while you were mid-turn "
+                     "and is back up. The message that drove your interrupted "
+                     "turn is repeated below — you may have already completed "
+                     "part of it; check your recent work and CONTINUE from where "
+                     "you left off (do not redo finished steps).\n\n"
+                     + (inf.get("text") or ""))
     for nid in revive:
         print(f"[orgtree] {slug}/{nid}: driving mail that waited across restart")
         send_message(slug, nid,

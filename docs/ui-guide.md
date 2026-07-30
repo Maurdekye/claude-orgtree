@@ -88,6 +88,14 @@ read once.
   seats or committed to grants) and how much sits **free**. The org-settings
   "top-level grant cap" only bounds the hire slider.
 
+## The top bar
+
+The agents chip summarizes the org at a glance: total live agents, how many
+are working right now, and a per-model breakdown (H/S/O/F counts in their
+tier colors). Beside it: cumulative cost, the ledger self-audit (only speaks
+when something is wrong), the fable-limit chip, and ▶ resume when agents are
+frozen.
+
 ## Wires
 
 - Curved edges = the org tree (reporting lines). Faint dotted horizontal
@@ -142,7 +150,9 @@ ledger self-audit chip appears ONLY if the credit invariants are ever violated
   mail outranks the chain, agent mail has its normal standing).
   Undelivered mail persists in the org document, so it survives server
   restarts inherently — on startup any node with waiting mail is driven
-  again. The chat view hides the mail-envelope chrome and shows just the
+  again, and any agent that was MID-TURN when orgtree shut down is
+  automatically resumed from where it left off (the interrupted turn's text
+  is replayed with a continue-don't-redo instruction). The chat view hides the mail-envelope chrome and shows just the
   sender and body. A `preserving` bearer answers through a discarded fork — it
   retains nothing of the exchange.
 
