@@ -73,6 +73,10 @@ The supervisor auto-detects this private install and prefers it; your global
 `claude` stays untouched. Without it, messages to a busy agent deliver when
 its current response ends instead of after its next tool call.
 
+**Updating:** run `update.ps1` (or double-click `update.cmd`) from the repo
+root — it pulls the latest changes, rebuilds the UI, installs any new
+dependencies, and restarts the backend in the background with a health check.
+
 Open **http://127.0.0.1:7360**, create an organization, hover the eye, and
 hire your first agent. The full interaction manual — hiring chips, credit-bar
 dragging, desks, lineage, audiences — is in
