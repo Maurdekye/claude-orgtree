@@ -790,20 +790,17 @@ function UserConfig({ tree, slug, toast, close }) {
   })
   const [servers, setServers] = useState([])
   const [vis, setVis] = useState(tree.default_visibility ?? 'full')
-  // folder access: null = all org folders, present and future
-  const orgDirs = [...(tree.workspace ? [tree.workspace] : []),
-                   ...tree.dirs.filter((d) => d !== tree.workspace)]
-  const [allDirs, setAllDirs] = useState(tree.default_dirs == null)
-  const [defDirs, setDefDirs] = useState(
-    tree.default_dirs ?? orgDirs.map((p) => ({ path: p, mode: 'rw' })))
+  // the org's folder holdings (workspace excluded — it is permanent RW).
+  // These double as the folder defaults for every hire.
+  const [orgDirs, setOrgDirs] = useState(
+    (tree.dirs ?? []).filter((d) => d.path !== tree.workspace).map((d) => ({ ...d })))
+  const [newPath, setNewPath] = useState('')
   useEffect(() => { getMcpServers().then((r) => setServers(r.servers)).catch(() => {}) }, [])
   const allMcp = defTools.mcp.includes('*')
-  const dirOn = (p) => defDirs.some((d) => d.path === p)
-  const dirMode = (p) => defDirs.find((d) => d.path === p)?.mode ?? 'rw'
   return (
     <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
       <div className="settings" onClick={(e) => e.stopPropagation()}>
-        <h3>⚙ you <span className="dim">· agent-hire defaults</span></h3>
+        <h3>⚙ you <span className="dim">· configuration</span></h3>
         <div className="field-label">tools</div>
         {TOOL_LABELS.map(([k, label]) => (
           <label className="checkline" key={k}>
@@ -832,40 +829,49 @@ function UserConfig({ tree, slug, toast, close }) {
           </label>
         ))}
         <div className="field-label">folder access</div>
-        <label className="checkline">
-          <input type="checkbox" checked={allDirs}
-            onChange={(e) => setAllDirs(e.target.checked)} />
-          all org folders (current and future)
-        </label>
-        {!allDirs && orgDirs.map((p) => (
-          <div className="dirrow" key={p}>
-            <label className="checkline grow" style={{ margin: 0 }}>
-              <input type="checkbox" checked={dirOn(p)}
-                onChange={(e) => setDefDirs(e.target.checked
-                  ? [...defDirs, { path: p, mode: 'rw' }]
-                  : defDirs.filter((d) => d.path !== p))} />
-              <span className="chip mono grow">{p}</span>
-            </label>
-            {dirOn(p) &&
-              <button type="button" className={'modebtn ' + dirMode(p)}
+        <div className="dirlist">
+          {tree.workspace && (
+            <div className="dirrow">
+              <span className="chip mono grow">{tree.workspace}</span>
+              <span className="modebtn rw"
+                title="the org workspace — permanent, always read/write">RW</span>
+            </div>
+          )}
+          {orgDirs.map((d, i) => (
+            <div className="dirrow" key={d.path}>
+              <span className="chip mono grow">{d.path}</span>
+              <button type="button" className={'modebtn ' + d.mode}
                 title="toggle read/write vs read-only"
-                onClick={() => setDefDirs(defDirs.map((d) =>
-                  d.path === p ? { ...d, mode: d.mode === 'rw' ? 'ro' : 'rw' } : d))}>
-                {dirMode(p) === 'rw' ? 'RW' : 'RO'}
-              </button>}
+                onClick={() => setOrgDirs(orgDirs.map((x, j) =>
+                  j === i ? { ...x, mode: x.mode === 'rw' ? 'ro' : 'rw' } : x))}>
+                {d.mode === 'rw' ? 'RW' : 'RO'}
+              </button>
+              <button type="button" className="iconbtn"
+                title="remove from the org (revokes everywhere)"
+                onClick={() => setOrgDirs(orgDirs.filter((_, j) => j !== i))}>✕</button>
+            </div>
+          ))}
+          <div className="dirrow">
+            <input placeholder="add an absolute path"
+              value={newPath} onChange={(e) => setNewPath(e.target.value)} />
+            <button type="button" className="addrow" onClick={() => {
+              if (newPath.trim()) {
+                setOrgDirs([...orgDirs, { path: newPath.trim(), mode: 'rw' }])
+                setNewPath('')
+              }
+            }}>add</button>
           </div>
-        ))}
+        </div>
         <div className="field-label">org-structure visibility</div>
         <select value={vis} onChange={(e) => setVis(e.target.value)}>
           {VIS_OPTIONS.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
         </select>
         <div className="row">
           <button className="primary" onClick={() =>
-            saveSettings(slug, tree.dirs.filter((d) => d !== tree.workspace), {
+            saveSettings(slug, {
               default_tools: defTools,
               default_visibility: vis,
-              default_dirs_all: allDirs,
-              default_dirs: allDirs ? undefined : defDirs,
+              org_dirs: orgDirs,
             })
               .then((r) => { toast(r.warnings); close() })
               .catch((e) => toast([`⛔ ${e.message}`]))}>save</button>
@@ -1131,8 +1137,7 @@ function NodeConfig({ node, map, tree, slug, op, toast, close }) {
   const parentTools = parentNode?.scope?.tools ?? null   // null = the user: everything
   const parentDirs = parentNode
     ? (parentNode.scope?.add_dirs ?? [])
-    : [...(tree.workspace ? [{ path: tree.workspace, mode: 'rw' }] : []),
-       ...tree.dirs.filter((d) => d !== tree.workspace).map((p) => ({ path: p, mode: 'rw' }))]
+    : (tree.dirs ?? []).map((d) => ({ ...d }))   // org holdings carry modes now
   const addable = parentDirs.filter((pd) => !dirs.some((d) => d.path === pd.path))
   const parentHolds = (k) => parentTools == null || parentTools[k] !== false
   // "*" = every registered server, present and future

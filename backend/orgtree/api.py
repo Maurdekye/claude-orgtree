@@ -159,20 +159,19 @@ def org_tree(slug: str):
 
 
 class Settings(BaseModel):
-    extra_dirs: list[str]
+    org_dirs: list | None = None            # external folders [{path, mode}] (ws excluded)
     max_top_grant: int | None = None
     clear_fable_lock: bool = False
     fable_limit_policy: str | None = None   # halt | opus | dissolve
     default_tools: dict | None = None       # {bash, web, edit, subagents, mcp: []|["*"]}
     default_visibility: str | None = None   # self|team|subtree|full
-    default_dirs: list | None = None        # [{path, mode}] — with default_dirs_all False
-    default_dirs_all: bool | None = None    # True = all org folders, present & future
 
 
 @app.post("/api/orgs/{slug}/settings")
 async def org_settings(slug: str, body: Settings):
-    """Post-creation folder config: the workspace is permanent; the extra (existing)
-    dirs are editable. Additions apply to FUTURE hires; removals revoke everywhere."""
+    """Org-level knobs. Folder holdings (org_dirs) are edited from the eye's
+    gear panel: the workspace is permanent; additions apply to FUTURE hires;
+    removals revoke everywhere; rw→ro downgrades propagate to every grant."""
     with store.DOC_LOCK:
         return await _org_settings_locked(slug, body)
 
@@ -183,15 +182,29 @@ async def _org_settings_locked(slug: str, body: Settings):
     except LedgerError as e:
         raise HTTPException(404, str(e))
     ws = org.d.get("workspace")
-    old_extra = [d for d in org.d["dirs"] if d != ws]
-    new_extra = [os.path.normpath(d) for d in body.extra_dirs if d.strip()]
     warnings = []
-    for gone in [d for d in old_extra if d not in new_extra]:
-        for root in org.children(None, live_only=False):
-            r = org.revoke_dir(USER, root, gone)
-            for nid in r["removed_from"]:
-                warnings.append(f"revoked {gone} from {nid}")
-    org.d["dirs"] = ([ws] if ws else []) + new_extra
+    if body.org_dirs is not None:
+        # org folder holdings live on the eye's gear (user ruling). Removals
+        # revoke everywhere; an rw→ro downgrade propagates to every node's
+        # grant (upgrades don't auto-propagate — grant per node deliberately).
+        new = [{**d, "path": os.path.normpath(d["path"])}
+               for d in norm_dirs(body.org_dirs)
+               if os.path.normpath(d["path"]) != ws]
+        old = {d["path"]: d["mode"] for d in org.d["dirs"] if d["path"] != ws}
+        newmap = {d["path"]: d["mode"] for d in new}
+        for gone in [p for p in old if p not in newmap]:
+            for root in org.children(None, live_only=False):
+                r = org.revoke_dir(USER, root, gone)
+                for nid in r["removed_from"]:
+                    warnings.append(f"revoked {gone} from {nid}")
+        for p, mode in newmap.items():
+            if mode == "ro" and old.get(p) == "rw":
+                for nid, n in org.nodes.items():
+                    for d in n["scope"]["add_dirs"]:
+                        if d["path"] == p and d["mode"] == "rw":
+                            d["mode"] = "ro"
+                            warnings.append(f"downgraded {p} to read-only for {nid}")
+        org.d["dirs"] = ([{"path": ws, "mode": "rw"}] if ws else []) + new
     if body.max_top_grant is not None and body.max_top_grant > 0:
         org.d["max_top_grant"] = int(body.max_top_grant)
     if body.clear_fable_lock and org.d.get("fable_lock"):
@@ -205,10 +218,6 @@ async def _org_settings_locked(slug: str, body: Settings):
         org.d["default_tools"] = norm_tools(body.default_tools)
     if body.default_visibility in VIS_LEVELS:
         org.d["default_visibility"] = body.default_visibility
-    if body.default_dirs_all:
-        org.d["default_dirs"] = None        # all org folders, present & future
-    elif body.default_dirs is not None:
-        org.d["default_dirs"] = norm_dirs(body.default_dirs)
     store.save_org(org)
     await hub.changed(slug)
     return {"dirs": org.d["dirs"], "warnings": warnings}

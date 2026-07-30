@@ -325,7 +325,6 @@ function InboxPanel({ slug, tree, toast, close }) {
 
 function SettingsPanel({ tree, toast, close }) {
   useEsc(close)
-  const [dirs, setDirs] = useState(tree.dirs.filter((d) => d !== tree.workspace))
   const [maxTop, setMaxTop] = useState(tree.max_top_grant ?? 1000)
   const [orgMd, setOrgMd] = useState(null)
   const [fablePolicy, setFablePolicy] = useState(tree.fable_limit_policy ?? 'halt')
@@ -336,10 +335,7 @@ function SettingsPanel({ tree, toast, close }) {
     <div className="overlay" onClick={close}>
       <div className="settings" onClick={(e) => e.stopPropagation()}>
         <h3>⚙ {tree.name} — settings</h3>
-        <div className="field-label">workspace</div>
-        <div className="chip mono block">{tree.workspace}</div>
-        <div className="field-label">external folders</div>
-        <DirList dirs={dirs} onChange={setDirs} />
+        {/* folder access lives on the eye's ⚙ gear panel (user ruling) */}
         <div className="field-label">top-level grant cap</div>
         <input type="number" min="1" step="1" value={maxTop} style={{ width: '8em' }}
           onChange={(e) => setMaxTop(e.target.value)} />
@@ -354,8 +350,7 @@ function SettingsPanel({ tree, toast, close }) {
           onChange={(e) => setOrgMd(e.target.value)} />
         {tree.fable_lock && (
           <button className="danger" onClick={() =>
-            saveSettings(tree.slug, dirs.map((s) => s.trim()).filter(Boolean),
-              { clear_fable_lock: true })
+            saveSettings(tree.slug, { clear_fable_lock: true })
               .then((r) => { toast(r.warnings); close() })
               .catch((e) => toast([`⛔ ${e.message}`]))}>
             ⛔ clear the fable weekly-limit lock (your decree)</button>
@@ -363,7 +358,7 @@ function SettingsPanel({ tree, toast, close }) {
         <div className="row">
           <button className="primary" onClick={() =>
             Promise.all([
-              saveSettings(tree.slug, dirs.map((s) => s.trim()).filter(Boolean),
+              saveSettings(tree.slug,
                 { max_top_grant: +maxTop || undefined, fable_limit_policy: fablePolicy }),
               orgMd != null ? putOrgMd(tree.slug, orgMd) : Promise.resolve({}),
             ]).then(([r]) => { toast(r.warnings); close() })

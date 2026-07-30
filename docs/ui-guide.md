@@ -36,18 +36,24 @@ read once.
 - A dashed **uninitialized** draft box appears; type a name (1–2 words,
   Enter or ✓ hires, Esc discards) and set its grant by dragging the draft's
   credit bar.
-- **Agent-hire defaults (⚙ on the eye, top-right like every card's gear).**
-  Hires made from the chips don't ask about capabilities — they take the
-  org's defaults, which start with EVERYTHING enabled: all four tool
-  switches, all registered MCP servers ("all registered servers" tracks
-  servers you register later, too), all org folders read/write ("all org
-  folders" likewise tracks future ones; or pick folders individually with
-  RW/RO), and full org-structure visibility. Top-level agents get the
-  defaults exactly; deeper hires get the intersection of the defaults with
-  their superior's capabilities (an agent can never beget a capability or
-  folder it doesn't hold). Agents hiring through orgtree_hire still state
-  everything explicitly — defaults never apply to them. Adjust any
-  individual agent afterward via its own ⚙ config.
+- **The overseer's ⚙ (on the eye, top-right like every card's gear)** is
+  YOUR configuration panel, mirroring the agents' own. It holds:
+  - **folder access** — the org's folder holdings, in the same UI as a
+    card's: the permanent RW workspace, each external folder with an RW/RO
+    toggle, ✕ to remove (removal revokes the folder from every agent
+    immediately; an RW→RO downgrade likewise downgrades every agent's
+    grant), and an add row for any absolute path. These holdings are what
+    new hires receive by default.
+  - **agent-hire defaults** — hires made from the chips don't ask about
+    capabilities; they take these defaults, which start with EVERYTHING
+    enabled: all four tool switches, all registered MCP servers ("all
+    registered servers" tracks servers you register later, too), the org's
+    folders at their configured modes, and full org-structure visibility.
+    Top-level agents get the defaults exactly; deeper hires get the
+    intersection with their superior's capabilities (an agent can never
+    beget a capability or folder it doesn't hold). Agents hiring through
+    orgtree_hire still state everything explicitly — defaults never apply
+    to them. Adjust any individual agent afterward via its own ⚙ config.
 
 ## Credit bars (the left-edge bar on every live card)
 
@@ -195,8 +201,8 @@ it appears on hover, next to ⚙). The desk's inbox tab is the same view inline.
 
 ## Org settings (⚙ in the top bar)
 
-- **workspace**: minted with the org, permanent. **external folders**: added
-  ones apply to future hires; removed ones are revoked everywhere immediately.
+- Folder access is NOT here — it lives on the eye's ⚙ gear panel (user
+  ruling), alongside the agent-hire defaults.
 - **top-level grant cap**: bounds only the hire slider under you.
 - **fable weekly-limit policy** — what happens when the shared Fable quota
   exhausts: **halt** (default: fable agents freeze visibly, keep their seats,

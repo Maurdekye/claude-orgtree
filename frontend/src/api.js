@@ -69,11 +69,11 @@ export const sendMessage = (slug, nid, text) =>
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text }),
   }).then(j)
-export const saveSettings = (slug, extra_dirs, opts = {}) =>
+export const saveSettings = (slug, opts = {}) =>
   fetch(`/api/orgs/${slug}/settings`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ extra_dirs, ...opts }),
+    body: JSON.stringify(opts),
   }).then(j)
 
 export function openWs(slug, onChanged) {
