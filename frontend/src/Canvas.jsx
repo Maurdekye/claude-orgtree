@@ -405,26 +405,14 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
     const el = viewportRef.current
     if (!el) return
     const onWheel = (e) => {
-      // wheel inside a modal always scrolls the modal. Inside a desk it
-      // scrolls only if something under the cursor CAN scroll that way —
-      // otherwise it falls through to camera zoom (intuitive-UX ruling).
+      // wheel inside a modal always scrolls the modal. Inside a desk it NEVER
+      // zooms (user ruling, reversing the earlier fall-through-to-zoom): the
+      // wheel is scroll-only there, even when nothing can scroll — zoom by
+      // moving the cursor off the desk first.
       // (native listener — it fires before React's delegated handlers, so
       // component-level stopPropagation can't guard it)
       if (e.target.closest?.('.overlay')) return
-      const desk = e.target.closest?.('.desk-over')
-      if (desk) {
-        let el = e.target instanceof Element ? e.target : null
-        while (el && el !== desk.parentElement) {
-          const oy = getComputedStyle(el).overflowY
-          if ((oy === 'auto' || oy === 'scroll')
-              && el.scrollHeight > el.clientHeight + 1) {
-            const down = e.deltaY > 0
-            if ((down && el.scrollTop + el.clientHeight < el.scrollHeight - 1)
-                || (!down && el.scrollTop > 0)) return
-          }
-          el = el.parentElement
-        }
-      }
+      if (e.target.closest?.('.desk-over')) return
       e.preventDefault()
       cancelAnimationFrame(animRef.current)
       const v = viewRef.current
