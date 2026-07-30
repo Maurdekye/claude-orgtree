@@ -44,7 +44,10 @@ snowflake, lock, layers, fullscreen, hearing.
 - A dashed **uninitialized** draft box appears; type a name (1–2 words,
   Enter or ✓ hires, Esc discards), optionally a short **charter** (standing
   role notes, injected into the agent's prompt every turn; Shift+Enter for
-  newlines), and set its grant by dragging the draft's credit bar.
+  newlines), and set its grant by dragging the draft's credit bar. The
+  **preset dropdown** above the charter box lists every `.md` in
+  `docs/charters/` (the Coordinator charter ships with the repo) — pick one
+  to fill the box, then edit freely, or write your own.
 - **The overseer's ⚙ (on the eye, top-right like every card's gear)** is
   YOUR configuration panel, mirroring the agents' own — sections in the same
   order as a card's (folder access first). It also carries a **dissolve all
@@ -138,6 +141,23 @@ freeze, after which ▶ resume replays the interrupted turns. The storage chip
 tracks the org workspace against its cap; over the limit, agents keep
 running but workspace writes are blocked (deleting files still works) until
 usage drops back under — the block lifts on its own.
+
+## The eye switchboard
+
+Click the eye and the camera zooms in — and the eye is the ONE cell that
+**expands in width to your screen's aspect ratio** as it focuses, opening the
+**switchboard**: side-by-side live chats with every agent that has a direct
+line to you (top-level agents, plus any agent holding a user audience — a
+coordinator that delegates user audiences to its hires fills this view
+automatically). Each panel is a full chat: live transcript, working
+indicator, composer, and the send-button-becomes-STOP idiom. The **tab bar**
+above the panels is always visible — click a tab to minimize or reopen its
+chat (the set is remembered per org). A line that exists via an **audience
+grant** carries an ✕ on its tab: closing it **rescinds that grant** (only
+that one — other audiences the agent holds are untouched). Top-level lines
+are intrinsic and have no ✕. The eye never moves and is never draggable: it
+is the fixed anchor of the coordinate space, so it sits in the same spot in
+every org regardless of tree shape.
 
 ## The top bar
 

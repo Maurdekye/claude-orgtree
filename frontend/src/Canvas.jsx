@@ -2,8 +2,8 @@ import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  audienceAction, dissolveAll, getChat, getHistory, getMcpServers, getNodeInbox,
-  getScratch, interruptNode, reorderNode, saveScope, saveSettings,
+  audienceAction, dissolveAll, getCharters, getChat, getHistory, getMcpServers,
+  getNodeInbox, getScratch, interruptNode, reorderNode, saveScope, saveSettings,
   sendMessage,
 } from './api'
 import { pickFolder } from './picker'
@@ -22,7 +22,7 @@ const TIERS = ['haiku', 'sonnet', 'opus', 'fable']
 const NODE_W = 124, NODE_H = 124
 const USER_W = 124, USER_H = 124   // the eye is a peer square (user ruling)
 const SX = 186, SY = 200, PAD = 90
-const Z_MAX = 9        // enough for one desk to FILL the screen (124px card ≥ ~1100px)
+const Z_MAX = 12       // enough for one desk to FILL the screen (124px card ≥ ~1450px)
 // LOD thresholds on zoom
 const Z_MINI = 0.55
 const Z_DESK = 2.1
@@ -31,6 +31,9 @@ const SPRING_K = 170, SPRING_C = 15
 
 const DRAFT = '__draft__'
 const USER = '@user'   // actor sentinel — never collides with a node named "user"
+// the eye's fixed world x (see layout()): generous enough that even a very
+// wide left subtree (~32 leaf columns) never crosses into negative space
+const EYE_ANCHOR_X = 6000
 
 function withDraftTree(tree, draft) {
   const draftNode = () => ({
@@ -86,6 +89,15 @@ function layout(root) {
   place(root, 0, 0)
   const out = new Map()
   for (const [id, p] of pos) out.set(id, { x: p.x * SX + PAD, y: p.y * SY + PAD })
+  // The EYE is the page's anchor (user ruling): its world position is a
+  // CONSTANT, independent of tree shape — otherwise the coordinate space
+  // hangs off the tree's left extent and the eye shifts between orgs (and on
+  // every hire that widens the tree).
+  const eye = out.get(USER)
+  if (eye) {
+    const dx = EYE_ANCHOR_X - eye.x, dy = PAD - eye.y
+    for (const p of out.values()) { p.x += dx; p.y += dy }
+  }
   return out
 }
 
@@ -407,9 +419,12 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
     const p = targetRef.current.get(id)
     const vp = viewportRef.current?.getBoundingClientRect()
     if (!p || !vp) return
-    // click-to-focus fills the window with the card, small margin all round
-    const zz = z ?? Math.min(Z_MAX,
-      (Math.min(vp.width, vp.height) - 48) / NODE_H)
+    // click-to-focus fills the window with the card, small margin all round.
+    // The EYE fits by HEIGHT only — it is the one cell that expands in width
+    // to the screen's aspect ratio (the switchboard), so height is the fit.
+    const zz = z ?? (id === USER
+      ? Math.min(Z_MAX, (vp.height - 48) / USER_H)
+      : Math.min(Z_MAX, (Math.min(vp.width, vp.height) - 48) / NODE_H))
     animateTo({
       x: vp.width / 2 - (p.x + NODE_W / 2) * zz,
       y: vp.height / 2 - (p.y + NODE_H / 2) * zz,
@@ -600,7 +615,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
     const cw = vp ? vp.width / 2 : 500, ch = vp ? vp.height / 2 : 350
     let best = null, bestD = Infinity
     for (const [id] of target) {
-      if (id === USER || id === DRAFT) continue
+      if (id === DRAFT) continue         // the EYE can be a desk too (switchboard)
       const p = posOf(id)
       const sx = (p.x + NODE_W / 2) * view.z + view.x
       const sy = (p.y + NODE_H / 2) * view.z + view.y
@@ -748,12 +763,22 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
           const p = posOf(n.id)
           if (!p) return null
           if (n.id === USER) {
+            const vp = viewportRef.current?.getBoundingClientRect()
+            // the eye is the ONLY cell that expands in width to the screen's
+            // aspect ratio when focused (user spec — room for the switchboard)
+            const eyeW = vp
+              ? Math.round(USER_H * (vp.width - 48) / (vp.height - 48))
+              : Math.round(USER_H * 16 / 9)
             return <UserNode key={USER} pos={p} isDrop={dropId === USER} seats={seats}
               stats={orgStats} mailGlow={mailGlow}
               kiosk={tree.kiosk} pub={!!tree.public} kioskRemaining={kioskRemaining}
               kioskSegs={tree.roots.filter((n) => n.state === 'live')
                 .map((n) => ({ seat: n.seat, grant: n.grant }))}
               pxc={pxPerCredit} zoom={view.z}
+              focused={focusId === USER} eyeW={Math.max(eyeW, USER_W)}
+              onFocus={() => centerOn(USER)}
+              map={map} op={op} slug={slug} pulse={pulse} toast={toast}
+              streamEvt={streamEvt}
               inboxCount={(tree.user_inbox_count ?? 0) + (tree.credit_requests?.length ?? 0)}
               onInbox={() => {
                 const nw = tree.user_inbox_newest ?? new Date().toISOString()
@@ -813,16 +838,35 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
 
 // ------------------------------------------------------------- the overseer
 function UserNode({ pos, isDrop, stats, inboxCount, seats, mailGlow,
-  kiosk, pub, kioskRemaining, kioskSegs, pxc, zoom, onInbox, onGear, onSpawn }) {
+  kiosk, pub, kioskRemaining, kioskSegs, pxc, zoom, onInbox, onGear, onSpawn,
+  focused, eyeW, onFocus, map, op, slug, pulse, toast, streamEvt }) {
+  const downRef = useRef(null)
   return (
-    <div className={'sq user' + (isDrop ? ' drop' : '') + (mailGlow ? ' mail-glow' : '')}
+    <div className={'sq user' + (focused ? ' desk eyeboard' : '')
+      + (isDrop ? ' drop' : '') + (mailGlow && !focused ? ' mail-glow' : '')}
       style={{
-      transform: `translate(${pos.x}px, ${pos.y}px)`, width: USER_W, height: USER_H,
-    }}>
+        transform: `translate(${pos.x}px, ${pos.y}px)`,
+        width: focused ? eyeW : USER_W, height: USER_H,
+        // symmetric expansion: the layout slot stays 124 wide, the card grows
+        // both ways so the eye's center (and its edges) never move
+        marginLeft: focused ? -(eyeW - USER_W) / 2 : 0,
+        zIndex: focused ? 5 : undefined,
+      }}
+      onPointerDown={(e) => {
+        if (e.target.closest('button, input, textarea, select, .desk-over')) return
+        e.stopPropagation()
+        downRef.current = { x: e.clientX, y: e.clientY }
+      }}
+      onPointerUp={(e) => {
+        const d = downRef.current
+        downRef.current = null
+        if (d && Math.hypot(e.clientX - d.x, e.clientY - d.y) < 5 && !focused)
+          onFocus?.()
+      }}>
       {/* the user's pool is infinite, so their bar fades out into the top
           instead of ending; hovering it reports the org's circulation
           (the tip is a sibling — the fade mask would swallow a child) */}
-      {kiosk?.credits
+      {!focused && (kiosk?.credits
         ? /* kiosk: the pool is FINITE — a fixed-size bar with per-child slabs,
              exactly like an agent's (user spec); not draggable */
           <CreditBar seat={0} grant={kiosk.credits} committed={stats.circ}
@@ -834,24 +878,114 @@ function UserNode({ pos, isDrop, stats, inboxCount, seats, mailGlow,
               <div>seats <b className="n-seat">{stats.seats}</b></div>
               <div>free <b className="n-free">{stats.free}</b></div>
             </div>
-          </div>}
+          </div>)}
       <svg className="eye" viewBox="0 0 48 26">
         <path d="M 2 13 C 13 2, 35 2, 46 13 C 35 24, 13 24, 2 13 Z" />
         <circle className="iris" cx="24" cy="13" r="6.5" />
         <circle className="pupil" cx="24" cy="13" r="2.6" />
       </svg>
-      <div className="user-label">you</div>
-      <button className="eye-inbox"
+      {!focused && <div className="user-label">you</div>}
+      {!focused && <button className="eye-inbox"
         onPointerDown={(e) => e.stopPropagation()}
         onClick={(e) => { e.stopPropagation(); onInbox?.() }}>
         <MailIcon fontSize="inherit" />{inboxCount > 0 && <span className="count">{inboxCount}</span>}
-      </button>
-      {!pub && <button className="eye-gear" title="agent-hire defaults"
+      </button>}
+      {!focused && !pub && <button className="eye-gear" title="agent-hire defaults"
         onPointerDown={(e) => e.stopPropagation()}
         onClick={(e) => { e.stopPropagation(); onGear?.() }}><SettingsIcon fontSize="inherit" /></button>}
       {/* real seat costs in the hover hints — a literal 0 was technically true
           (infinite pool) but read as wrong next to every other card */}
-      <SpawnChips onSpawn={onSpawn} free={kioskRemaining ?? Infinity} seats={seats} />
+      {!focused &&
+        <SpawnChips onSpawn={onSpawn} free={kioskRemaining ?? Infinity} seats={seats} />}
+      {focused && (
+        <EyeDesk map={map} op={op} slug={slug} pulse={pulse} toast={toast}
+          streamEvt={streamEvt} inboxCount={inboxCount} onInbox={onInbox}
+          onGear={onGear} pub={pub} eyeW={eyeW} />
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------- the switchboard
+// Focusing the eye opens SIDE-BY-SIDE live chats with every agent that has a
+// direct line to the user — top-level agents plus user-audience holders
+// (user spec). Tabs stay visible at all times; chats minimize/maximize to
+// manage crowding. A line that exists via an audience grant carries an ✕:
+// closing that tab RESCINDS the grant (top-level lines are permanent).
+function EyeDesk({ map, op, slug, pulse, toast, streamEvt, inboxCount,
+  onInbox, onGear, pub, eyeW }) {
+  const agents = [...map.values()].filter((n) =>
+    n.id !== USER && n.id !== DRAFT && n.state === 'live' && !n.isBearerOf
+    && (n.parent === USER || n.audiences_held?.includes(USER)))
+  const [minned, setMinned] = useState(() => {
+    try {
+      return new Set(JSON.parse(localStorage.getItem('orgtree-eyemin-' + slug) || '[]'))
+    } catch { return new Set() }
+  })
+  const toggle = (id) => setMinned((s) => {
+    const n = new Set(s)
+    if (n.has(id)) n.delete(id); else n.add(id)
+    localStorage.setItem('orgtree-eyemin-' + slug, JSON.stringify([...n]))
+    return n
+  })
+  const open = agents.filter((a) => !minned.has(a.id))
+  // the inner virtual panel matches the card interior through the desk scale
+  const innerW = Math.round((eyeW - 4) / 0.13333)
+  return (
+    <div className="desk-over eye-desk" onWheel={(e) => e.stopPropagation()}
+      onPointerDown={(e) => e.stopPropagation()}>
+      <div className="desk-inner desk-body eye-inner" style={{ width: innerW }}>
+        <div className="cc-head">
+          <svg className="eye eye-mini" viewBox="0 0 48 26">
+            <path d="M 2 13 C 13 2, 35 2, 46 13 C 35 24, 13 24, 2 13 Z" />
+            <circle className="iris" cx="24" cy="13" r="6.5" />
+            <circle className="pupil" cx="24" cy="13" r="2.6" />
+          </svg>
+          <span className="cc-name">you</span>
+          <span className="dim">{agents.length} direct line{agents.length === 1 ? '' : 's'}</span>
+          <span className="spacer" />
+          <button className="cc-icon" title="your inbox" onClick={() => onInbox?.()}>
+            <MailIcon fontSize="inherit" />{inboxCount > 0 && <b className="eye-count">{inboxCount}</b>}
+          </button>
+          {!pub && <button className="cc-icon" title="agent-hire defaults"
+            onClick={() => onGear?.()}><SettingsIcon fontSize="inherit" /></button>}
+        </div>
+        <div className="eye-tabs">
+          {agents.map((a) => (
+            <span key={a.id} className={'eye-tab' + (minned.has(a.id) ? '' : ' on')}>
+              <button className="eye-tab-main"
+                title={minned.has(a.id) ? 'open this chat' : 'minimize this chat'}
+                onClick={() => toggle(a.id)}>
+                <span className={'tier t-' + a.tier}>{TIER_LETTER[a.tier] ?? '?'}</span>
+                {a.id}
+                {a.busy && <AutorenewIcon fontSize="inherit" className="cc-spin" />}
+                {a.mail_pending > 0 && <b className="eye-count">{a.mail_pending}</b>}
+              </button>
+              {/* ✕ only on audience-granted lines; closing RESCINDS the grant
+                  (user spec) — top-level lines have no ✕, they are intrinsic */}
+              {a.parent !== USER && a.audiences_held?.includes(USER) &&
+                <button className="eye-tab-x"
+                  title="close this line (rescinds its audience with you)"
+                  onClick={() => audienceAction(slug, 'revoke', a.id, USER)
+                    .then(() => toast([`audience ${a.id} → you rescinded`]))
+                    .catch((e) => toast([`error: ${e.message}`]))}>
+                  <CloseIcon fontSize="inherit" /></button>}
+            </span>
+          ))}
+          {!agents.length &&
+            <span className="dim">no direct lines yet — top-level hires and user-audience holders appear here</span>}
+        </div>
+        <div className="eye-panels">
+          {open.map((a) => (
+            <div className="eye-panel" key={a.id}>
+              <DeskChat node={a} map={map} op={op} slug={slug} pulse={pulse}
+                toast={toast} streamEvt={streamEvt} pub={pub} bare compact />
+            </div>
+          ))}
+          {!open.length && agents.length > 0 &&
+            <div className="dim pad">every chat is minimized — click a tab above</div>}
+        </div>
+      </div>
     </div>
   )
 }
@@ -1103,6 +1237,13 @@ function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRemaining,
   zoom, pxc, onConfirm, onCancel }) {
   const [name, setName] = useState('')
   const [charter, setCharter] = useState('')
+  // named charter presets (user ruling): every .md in docs/charters/ — pick
+  // one from the dropdown or just write your own; picking fills the textarea
+  // and stays editable
+  const [presets, setPresets] = useState([])
+  useEffect(() => {
+    getCharters().then((r) => setPresets(r.charters ?? [])).catch(() => {})
+  }, [])
   // top-level drafts pre-fill the org's default grant (50 unless configured)
   const [grant, setGrant] = useState(
     draft.parent == null ? Math.min(defaultTop ?? 50, maxTop) : 0)
@@ -1135,6 +1276,16 @@ function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRemaining,
           onKeyDown={(e) => { if (e.key === 'Enter' && ok) onConfirm(name.trim(), grant, charter) }} />
       </div>
       <div className="draft-tag">uninitialized</div>
+      {presets.length > 0 && (
+        <select className="draft-preset" value=""
+          onChange={(e) => {
+            const p = presets.find((x) => x.name === e.target.value)
+            if (p) setCharter(p.content)
+          }}>
+          <option value="">charter preset…</option>
+          {presets.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
+        </select>
+      )}
       <textarea className="draft-charter" rows={3}
         placeholder="charter (optional): standing role notes…"
         value={charter} onChange={(e) => setCharter(e.target.value)}
@@ -1466,7 +1617,7 @@ function Activity({ act, dotOnly }) {
 // compact one-line chrome, plain assistant text, boxed user turns, ⏺ tool
 // lines, and a bordered composer with the model name in its footer row.
 function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onConfig,
-  onRecenter, pub }) {
+  onRecenter, pub, bare = false, compact = false }) {
   const [chat, setChat] = useState(null)
   const [text, setText] = useState('')
   const [pending, setPending] = useState([])   // sent, not yet in the transcript
@@ -1541,18 +1692,8 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
   }
 
   const liveKids = node.children.some((c) => c.state === 'live')
-  return (
-    <div className="desk-over" onWheel={(e) => e.stopPropagation()}
-      onPointerDown={(e) => e.stopPropagation()}
-      onClick={(e) => {
-        // clicking the desk's non-interactive space recenters the camera on
-        // it (user ruling) — but never steal clicks meant for controls, and
-        // never fight an in-progress text selection
-        if (e.target.closest('button, input, textarea, select, a, label, .mailrow')) return
-        if (window.getSelection()?.toString()) return
-        onRecenter?.()
-      }}>
-      <div className="desk-inner desk-body">
+  const content = (
+    <>
       <div className="cc-head">
         <span className={'tier t-' + node.tier}>{TIER_LETTER[node.tier] ?? '?'}</span>
         <span className="cc-name" title={node.purpose ?? node.id}>{node.id}</span>
@@ -1569,13 +1710,13 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
             <FrozenIcon fontSize="inherit" /> usage limit{node.frozen.until ? ` · resumes ${node.frozen.until}` : ''}</span>}
         {node.limit_locked &&
           <span className="badge dim"><LockIcon fontSize="inherit" /> limit</span>}
-        {node.generation > 0 &&
+        {!compact && node.generation > 0 &&
           <button className="badge stackbadge"
             onClick={onLineage}>gen {node.generation} <LayersIcon fontSize="inherit" /></button>}
-        {node.bearer_state &&
+        {!compact && node.bearer_state &&
           <span className={'badge ' + (node.bearer_state === 'preserving' ? 'dim' : '')}>
             {node.bearer_state}</span>}
-        {node.audiences_held?.map((g) => (
+        {!compact && node.audiences_held?.map((g) => (
           <span key={g} className={'badge ' + (g === USER ? 'free' : '')}>
             <HearingIcon fontSize="inherit" />{g === USER ? 'user' : g}
             <button className="chip-x"
@@ -1584,10 +1725,12 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
                 .catch((e) => toast([`error: ${e.message}`]))}><CloseIcon fontSize="inherit" /></button>
           </span>
         ))}
-        {node.cost_usd > 0 && <span className="badge dim">${node.cost_usd.toFixed(2)}</span>}
+        {!compact && node.cost_usd > 0 && <span className="badge dim">${node.cost_usd.toFixed(2)}</span>}
         {chat?.queued > 0 && <span className="badge">{chat.queued} queued</span>}
         <span className="spacer" />
-        <span className="cc-actions">
+        {/* compact (switchboard panel): chat only — the agent's own desk keeps
+            the full chrome (actions, tabs, gear) */}
+        {!compact && <span className="cc-actions">
           {live && !liveKids &&
             <button className="danger"
               onClick={() => op({ op: 'retire', node: node.id })}>
@@ -1596,16 +1739,16 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
             <button className="danger" onClick={() => setAsking(true)}>
               dissolve · {node.seat + node.grant}</button>}
           {!live && <button onClick={() => op({ op: 'rehire', node: node.id })}>rehire</button>}
-        </span>
-        <span className="cc-tabs">
+        </span>}
+        {!compact && <span className="cc-tabs">
           {['chat', 'history', 'files', 'inbox'].map((v) => (
             <button key={v} className={view === v ? 'on' : ''}
               onClick={() => setView(v)}>
               {v}{v === 'inbox' && chat?.mail_pending > 0 ? ` ${chat.mail_pending}` : ''}
             </button>
           ))}
-        </span>
-        {!pub && <button className="cc-icon" onClick={onConfig}><SettingsIcon fontSize="inherit" /></button>}
+        </span>}
+        {!compact && !pub && <button className="cc-icon" onClick={onConfig}><SettingsIcon fontSize="inherit" /></button>}
       </div>
       {asking && (
         <ConfirmModal title={`dissolve ${node.id}?`}
@@ -1661,7 +1804,24 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
       {view === 'history' && <HistoryView slug={slug} nid={node.id} />}
       {view === 'files' && <FilesView slug={slug} nid={node.id} />}
       {view === 'inbox' && <InboxView slug={slug} nid={node.id} pulse={pulse} />}
-      </div>
+    </>
+  )
+  // bare: the switchboard hosts many chats inside ONE counter-scaled surface —
+  // no overlay wrapper, no second scale (that would double-scale), no
+  // recenter-on-click
+  if (bare) return <div className="desk-body eye-chat">{content}</div>
+  return (
+    <div className="desk-over" onWheel={(e) => e.stopPropagation()}
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        // clicking the desk's non-interactive space recenters the camera on
+        // it (user ruling) — but never steal clicks meant for controls, and
+        // never fight an in-progress text selection
+        if (e.target.closest('button, input, textarea, select, a, label, .mailrow')) return
+        if (window.getSelection()?.toString()) return
+        onRecenter?.()
+      }}>
+      <div className="desk-inner desk-body">{content}</div>
     </div>
   )
 }

@@ -137,17 +137,35 @@ def _public_slug(request) -> str | None:
 
 
 _LAN_IP: str | None = None
+_origin_cache = {"at": 0.0, "val": ""}
+
+
+def _public_origin() -> str:
+    """ORGTREE_PUBLIC_ORIGIN wins; otherwise the live tunnel hostname that
+    expose.ps1 drops into <data>/.public_origin (TryCloudflare quick-tunnel
+    URLs change per run, so this is re-read on a short TTL)."""
+    if PUBLIC_ORIGIN:
+        return PUBLIC_ORIGIN
+    if time.time() - _origin_cache["at"] > 5:
+        _origin_cache["at"] = time.time()
+        try:
+            _origin_cache["val"] = open(
+                os.path.join(store.DATA_ROOT, ".public_origin"),
+                encoding="utf-8").read().strip()
+        except OSError:
+            _origin_cache["val"] = ""
+    return _origin_cache["val"]
 
 
 def _share_url(token: str | None) -> str | None:
-    """The preauthenticated URL for a kiosk token. ORGTREE_PUBLIC_ORIGIN wins
-    (the address visitors actually reach — a tunnel or forwarded host);
-    otherwise best-guess this machine's LAN address."""
+    """The preauthenticated URL for a kiosk token: explicit origin, else the
+    running tunnel's hostname, else best-guess this machine's LAN address."""
     global _LAN_IP
     if not token or not PUBLIC_PORT:
         return None
-    if PUBLIC_ORIGIN:
-        return f"{PUBLIC_ORIGIN.rstrip('/')}/k/{token}"
+    origin = _public_origin()
+    if origin:
+        return f"{origin.rstrip('/')}/k/{token}"
     if _LAN_IP is None:
         import socket
         try:
@@ -568,6 +586,30 @@ def fs_list(path: str = ""):
             "dirs": [{"name": e, "path": os.path.join(p, e)} for e in names]}
 
 
+CHARTERS_DIR = os.path.normpath(os.path.join(
+    os.path.dirname(__file__), "..", "..", "docs", "charters"))
+
+
+@app.get("/api/charters")
+def charters_list():
+    """Named charter presets for the manual hire form (user ruling): every
+    .md in docs/charters/ is a preset. A file may open with an explanatory
+    header ending at a '---' line — only what follows is the charter body."""
+    out = []
+    if os.path.isdir(CHARTERS_DIR):
+        for f in sorted(os.listdir(CHARTERS_DIR)):
+            if not f.endswith(".md"):
+                continue
+            try:
+                text = open(os.path.join(CHARTERS_DIR, f),
+                            encoding="utf-8", errors="replace").read()
+            except OSError:
+                continue
+            body = text.split("\n---\n", 1)[-1].strip()
+            out.append({"name": f[:-3].replace("-", " "), "content": body[:6000]})
+    return {"charters": out}
+
+
 @app.get("/api/mcp-servers")
 def mcp_servers():
     """Names of the user's globally registered MCP servers, grantable per node."""
@@ -896,7 +938,7 @@ async def user_audience(slug: str, body: AudienceAction):
             elif body.action == "deny":
                 result = org.audience_deny(USER, body.node, body.target or USER)
             elif body.action == "revoke":
-                result = org.audience_revoke(USER, body.node)
+                result = org.audience_revoke(USER, body.node, body.target)
             else:
                 raise LedgerError("action must be grant|deny|revoke")
         except LedgerError as e:

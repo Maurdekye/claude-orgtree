@@ -140,8 +140,18 @@ that dashboard: credit cap, spend limit, storage limit, enable/disable, and
 **token rotation** (the old URL stops working the instant you rotate).
 
 ```bash
-ORGTREE_PUBLIC_PORT=7361 python -m orgtree.api
+ORGTREE_PUBLIC_PORT=7361 python -m orgtree.api   # update.ps1 sets this by default
 ```
+
+**Reaching it from the internet — no port forwarding needed:** run
+`expose.ps1`. It downloads `cloudflared` on first use and opens a
+**Cloudflare quick tunnel** to the public listener: you get a random
+`https://….trycloudflare.com` hostname that works from anywhere, over
+HTTPS, for as long as the window stays open — no account, no router
+changes, and dashboard share URLs automatically switch to the live tunnel
+hostname while it runs. Close it and the URL dies. (For a permanent,
+stable hostname later: a named Cloudflare tunnel with your own domain —
+then set `ORGTREE_PUBLIC_ORIGIN`.)
 
 For each kiosk org, enforced **server-side on the public listener** (you, on
 the admin side, keep full rights in the same org — visit it like any other):

@@ -1078,3 +1078,51 @@ svg.MuiSvgIcon-root {
 }
 .kiosk-new { display: flex; gap: 6px; margin-top: 4px; }
 .kiosk-new select { flex: 1; min-width: 0; }
+
+/* ---- the eye switchboard ---------------------------------------------- */
+/* the eye is the ONE cell that expands in width (screen aspect) at focus */
+.sq.user { transition: width .35s ease, margin-left .35s ease; }
+.sq.user.desk .eye { opacity: 0; }
+.eye-mini { width: 34px; height: 19px; flex: none; }
+.eye-mini path { fill: none; stroke: var(--accent); stroke-width: 2.4; }
+.eye-mini .iris { fill: none; stroke: var(--accent); stroke-width: 2; }
+.eye-mini .pupil { fill: var(--accent); }
+.eye-count {
+  font-size: 10.5px; background: var(--accent); color: var(--accent-ink);
+  border-radius: 8px; padding: 0 5px; font-style: normal; line-height: 1.5;
+}
+.eye-tabs {
+  display: flex; gap: 6px; flex-wrap: wrap; flex: none; align-items: center;
+  padding: 2px 0 6px; border-bottom: 1px solid var(--line-soft); font-size: 13px;
+}
+.eye-tab {
+  display: inline-flex; align-items: stretch; overflow: hidden;
+  border: 1px solid var(--line); border-radius: 5px; background: var(--input);
+}
+.eye-tab.on {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+  background: var(--accent-soft);
+}
+.eye-tab-main {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: none; border: none; color: var(--dim);
+  font-size: 13px; padding: 4px 9px;
+}
+.eye-tab.on .eye-tab-main { color: var(--ink-strong); }
+.eye-tab-main .tier { width: 17px; height: 17px; font-size: 10px; }
+.eye-tab-x {
+  background: none; border: none; border-left: 1px solid var(--line-soft);
+  padding: 0 7px; color: var(--dim); font-size: 11px; border-radius: 0;
+}
+.eye-tab-x:hover { color: var(--bad); background: rgba(241, 76, 76, .1); }
+.eye-panels { flex: 1; min-height: 0; display: flex; gap: 10px; }
+.eye-panel {
+  flex: 1; min-width: 0; display: flex;
+  border: 1px solid var(--line-soft); border-radius: 6px;
+  background: color-mix(in srgb, var(--bg) 45%, var(--panel));
+  padding: 6px 9px 8px;
+}
+.eye-chat { flex: 1; min-width: 0; }
+.eye-chat .cc-head { flex-wrap: nowrap; overflow: hidden; }
+.eye-chat .cc-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.draft-preset { font-size: 10px; padding: 2px 4px; width: 100%; min-width: 0; }

@@ -605,19 +605,27 @@ class Org:
         self._log("audience_deny", actor, {"from": frm, "target": target}, [])
         return {"drive": [frm] if actor != USER else [], "warnings": []}
 
-    def audience_revoke(self, actor: str, grantee: str) -> dict:
+    def audience_revoke(self, actor: str, grantee: str,
+                        grantor: str | None = None) -> dict:
         """Rescinding — unilateral and instant (§7.3). Actor must be the grantor
-        (or the user, whose authority is unconditional)."""
+        (or the user, whose authority is unconditional — and who may name a
+        specific grantor to rescind exactly that channel, e.g. the ✕ on a
+        switchboard tab, leaving the grantee's other audiences intact)."""
+        tgt = grantor if (actor == USER and grantor) else None
         before = len(self.d["audiences"])
         self.d["audiences"] = [
             a for a in self.d["audiences"]
-            if not (a["grantee"] == grantee and (a["grantor"] == actor or actor == USER))]
+            if not (a["grantee"] == grantee
+                    and (a["grantor"] == actor or actor == USER)
+                    and (tgt is None or a["grantor"] == tgt))]
         if len(self.d["audiences"]) == before:
             raise LedgerError(f"no audience held by {grantee} that {actor} may revoke")
+        label = tgt if tgt else actor
         self._notify([grantee],
-                     f"Your audience with {actor if actor != USER else 'the user'} was "
+                     f"Your audience with {label if label != USER else 'the user'} was "
                      f"rescinded — fall back to the parent chain.")
-        self._log("audience_revoke", actor, {"grantee": grantee}, [])
+        self._log("audience_revoke", actor,
+                  {"grantee": grantee, **({"grantor": tgt} if tgt else {})}, [])
         return {"warnings": []}
 
     def take_mail(self, nid: str) -> list[dict]:

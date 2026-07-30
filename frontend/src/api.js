@@ -28,6 +28,7 @@ export const runOp = (slug, body) =>
 
 export const getChat = (slug, nid) => fetch(u(`/api/orgs/${slug}/nodes/${nid}/chat`)).then(j)
 export const getMcpServers = () => fetch(u('/api/mcp-servers')).then(j)
+export const getCharters = () => fetch(u('/api/charters')).then(j)
 export const getFs = (path = '') =>
   fetch(u(`/api/fs?path=${encodeURIComponent(path)}`)).then(j)
 export const getInbox = (slug) => fetch(u(`/api/orgs/${slug}/inbox`)).then(j)

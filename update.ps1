@@ -62,6 +62,10 @@ $logDir = $dataRoot
 if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Force $logDir | Out-Null }
 $out = Join-Path $logDir 'backend.log'
 $errLog = Join-Path $logDir 'backend.err.log'
+# the kiosk public listener is on by default (it serves nothing unless a
+# kiosk org exists, and nothing reaches it from outside without a tunnel --
+# run expose.ps1 to open one); set ORGTREE_PUBLIC_PORT yourself to override
+if (-not $env:ORGTREE_PUBLIC_PORT) { $env:ORGTREE_PUBLIC_PORT = '7361' }
 Start-Process -FilePath 'python' -ArgumentList '-m', 'orgtree.api' `
     -WorkingDirectory (Join-Path $root 'backend') -WindowStyle Hidden `
     -RedirectStandardOutput $out -RedirectStandardError $errLog
