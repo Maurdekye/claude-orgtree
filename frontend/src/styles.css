@@ -556,10 +556,17 @@ main {
   background: var(--input); border: 1px solid var(--line); color: var(--ink);
   box-shadow: 0 2px 6px rgba(0, 0, 0, .4);
 }
-.hsof button:hover:not(:disabled) {
-  border-color: var(--accent); color: var(--accent); background: var(--panel-2);
-}
+.hsof button:hover:not(:disabled) { background: var(--panel-2); }
 .hsof button:disabled { opacity: .35; }
+/* each chip wears its model's color (same idiom as the .tier badge) */
+.hsof button.t-haiku { color: var(--tier-haiku); border-color: color-mix(in srgb, var(--tier-haiku) 45%, var(--line)); }
+.hsof button.t-sonnet { color: var(--tier-sonnet); border-color: color-mix(in srgb, var(--tier-sonnet) 45%, var(--line)); }
+.hsof button.t-opus { color: var(--tier-opus); border-color: color-mix(in srgb, var(--tier-opus) 45%, var(--line)); }
+.hsof button.t-fable { color: var(--tier-fable); border-color: color-mix(in srgb, var(--tier-fable) 45%, var(--line)); }
+.hsof button.t-haiku:hover:not(:disabled) { border-color: var(--tier-haiku); }
+.hsof button.t-sonnet:hover:not(:disabled) { border-color: var(--tier-sonnet); }
+.hsof button.t-opus:hover:not(:disabled) { border-color: var(--tier-opus); }
+.hsof button.t-fable:hover:not(:disabled) { border-color: var(--tier-fable); }
 /* (the desk needs no special case — the universal --invz counter-scale keeps
    the chips screen-constant below the card border at any zoom) */
 

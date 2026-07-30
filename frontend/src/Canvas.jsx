@@ -749,7 +749,7 @@ function SpawnChips({ onSpawn, free, seats }) {
         const seat = seats[t] ?? 0
         const cant = Number.isFinite(free) && free < seat
         return (
-          <button key={t} disabled={cant}
+          <button key={t} disabled={cant} className={'t-' + t}
             title={cant ? `${t}: needs ${seat} free (has ${free})` : `hire a ${t} (seat ${seat})`}
             onClick={(e) => { e.stopPropagation(); onSpawn(t) }}>
             {TIER_LETTER[t]}
