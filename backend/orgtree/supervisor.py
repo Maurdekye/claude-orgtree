@@ -490,8 +490,7 @@ def _build_cmd(org: Org, nid: str) -> list[str]:
             "args": ["/opt/orgtree-backend/orgtree/mcptool.py"],
             "env": {"ORGTREE_ORG": slug, "ORGTREE_NODE": nid,
                     "ORGTREE_BASE": sbx.bridge_url(),
-                    "ORGTREE_BRIDGE_SECRET":
-                        (org.d.get("kiosk") or {}).get("sandbox_secret", "")},
+                    "ORGTREE_BRIDGE_SECRET": sbx.sandbox_secret(org)},
         }
     else:
         chosen = {k: registry[k] for k in granted if k in registry}

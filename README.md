@@ -245,12 +245,12 @@ creation (the dashboard's new-kiosk form), never converted to or from normal
 orgs. You visit them with full admin rights; URL visitors get the locked
 view. The URL can be paused and reactivated; the limits always bind.
 
-### Sandboxed kiosks (Docker)
+### Sandboxed orgs (Docker)
 
-A kiosk created with **sandboxed** on (the default) runs all its agents'
-turns inside one dedicated **Docker container** — real terminal use with no
-view of your machine: no host filesystem, no host processes, per-container
-CPU/memory caps, and a hard storage ceiling. The org workspace is the one
+Any org — kiosk or normal — can be created **sandboxed** (kiosks default to
+it): all its agents' turns run inside one dedicated **Docker container** —
+real terminal use with no view of your machine: no host filesystem, no host
+processes, per-container CPU/memory caps. The org workspace is the one
 deliberately mounted window; session transcripts persist under
 `<data>/sandboxes/<slug>/` so resume, chat views, and read-down keep working.
 The container reaches the backend only through a **bridge listener**
@@ -258,11 +258,12 @@ The container reaches the backend only through a **bridge listener**
 nowhere but inside that container. Requires Docker Desktop running; the
 image builds automatically on first use (`sandbox/Dockerfile`).
 
-Sandbox auth: give the kiosk an **Anthropic API key** at creation (or set
-`ORGTREE_SANDBOX_API_KEY`). Entering the literal word `subscription` copies
-this machine's Claude subscription credentials into the sandbox instead —
-convenient for private kiosks, **not recommended for internet-facing ones**
-(the sandbox then holds a credential for your whole account).
+Sandbox auth is the **proxied subscription** and is not configurable in the
+UI: the container's CLI talks to the bridge's Anthropic passthrough, and the
+HOST attaches your subscription's OAuth token (refreshing it in place) — so
+sandboxed agents run on your plan while **no credential of any kind exists
+inside the sandbox**. (`ORGTREE_SANDBOX_API_KEY` remains an env-level escape
+hatch: a real API key, or the word `subscription` to copy credentials in.)
 
 ⚠ An *unsandboxed* kiosk bounds *configuration and money*, not *capability*:
 visitors can make agents do anything the fixed rights allow, so give such

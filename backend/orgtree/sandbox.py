@@ -47,9 +47,24 @@ CPUS = os.environ.get("ORGTREE_SANDBOX_CPUS", "2")
 _build_lock = threading.Lock()
 
 
-def is_sandboxed(org) -> bool:
+def _cfg(org) -> dict | None:
+    """Sandbox config for ANY org (user ruling: not just kiosks): kiosks
+    carry it inside their kiosk dict; normal orgs in a top-level `sandbox`."""
     k = org.d.get("kiosk") or {}
-    return bool(k.get("sandbox"))
+    if k.get("sandbox"):
+        return {"secret": k.get("sandbox_secret", "")}
+    s = org.d.get("sandbox") or {}
+    if s.get("enabled"):
+        return {"secret": s.get("secret", "")}
+    return None
+
+
+def is_sandboxed(org) -> bool:
+    return _cfg(org) is not None
+
+
+def sandbox_secret(org) -> str:
+    return (_cfg(org) or {}).get("secret", "")
 
 
 def container_name(slug: str) -> str:
@@ -120,17 +135,14 @@ def ensure_container(org) -> str:
     if not docker_ok():
         raise RuntimeError("Docker is not running — start Docker Desktop "
                            "(kiosk sandboxes run their turns in containers)")
+    # auth (user ruling): PROXIED SUBSCRIPTION is the default for every kiosk
+    # — the container's CLI talks to the bridge's /anthropic passthrough and
+    # the HOST attaches the OAuth token; no credential ever enters the
+    # sandbox. ORGTREE_SANDBOX_API_KEY remains a hidden escape hatch (a real
+    # API key, or 'subscription' to copy the host credentials in).
     key = (k.get("api_key") or os.environ.get("ORGTREE_SANDBOX_API_KEY")
-           or "").strip()
-    if not key:
-        raise RuntimeError(
-            "the kiosk sandbox needs an Anthropic API key — set one on the "
-            "kiosk (dashboard) or via ORGTREE_SANDBOX_API_KEY (the literal "
-            "word 'subscription' copies this machine's Claude subscription "
-            "credentials in instead — private use only)")
-    # 'subscription' mode: seed the host's Claude credentials into the sandbox
-    # home. Convenient for PRIVATE kiosks; not recommended for internet-facing
-    # ones — the sandbox then holds a credential for your whole account.
+           or "proxied").strip()
+    use_proxy = "prox" in key.lower()
     use_sub = key.lower() == "subscription"
     ensure_image()
     home = sandbox_home(slug)
@@ -155,13 +167,16 @@ def ensure_container(org) -> str:
     # and mcptool.py inside the container
     with open(os.path.join(home, "orgtree", ".bridge"), "w",
               encoding="utf-8") as f:
-        json.dump({"url": bridge_url(),
-                   "secret": k.get("sandbox_secret", "")}, f)
+        json.dump({"url": bridge_url(), "secret": sandbox_secret(org)}, f)
     r = _docker(
         "run", "-d", "--name", name,
         "--memory", MEM, "--cpus", CPUS,
         "--add-host", "host.docker.internal:host-gateway",
-        *([] if use_sub else ["-e", "ANTHROPIC_API_KEY=" + key]),
+        *(["-e", "ANTHROPIC_BASE_URL="
+               f"{bridge_url()}/anthropic/{sandbox_secret(org)}",
+           "-e", "ANTHROPIC_API_KEY=orgtree-proxied"] if use_proxy
+          else [] if use_sub
+          else ["-e", "ANTHROPIC_API_KEY=" + key]),
         "-v", f"{home}:/home/agent",
         "-v", f"{ws}:{cpath_workspace(slug)}",
         "-v", f"{scratch}:{cpath_data()}/scratch/{slug}",

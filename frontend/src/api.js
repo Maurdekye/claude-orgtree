@@ -10,11 +10,14 @@ const j = (r) => {
 }
 
 export const listOrgs = () => fetch(u('/api/orgs')).then(j)
-export const createOrg = (name, dirs, kiosk = null) =>
+export const createOrg = (name, dirs, kiosk = null, sandbox = false) =>
   fetch(u('/api/orgs'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, dirs, ...(kiosk ? { kiosk } : {}) }),
+    body: JSON.stringify({
+      name, dirs, ...(kiosk ? { kiosk } : {}),
+      ...(sandbox && !kiosk ? { sandbox: true } : {}),
+    }),
   }).then(j)
 export const getTree = (slug) => fetch(u(`/api/orgs/${slug}`)).then(j)
 export const deleteOrg = (slug) =>

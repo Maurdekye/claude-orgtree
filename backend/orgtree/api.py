@@ -24,7 +24,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import sandbox, store, supervisor
+from . import sandbox, store, subproxy, supervisor
 from .ledger import LedgerError, USER, VIS_LEVELS, norm_dirs, norm_tools
 
 app = FastAPI(title="orgtree", version="1.0.0")
@@ -148,11 +148,14 @@ def _bridge_secret_map() -> dict:
         m = {}
         for o in store.list_orgs():
             try:
-                k = store.load_org(o["slug"]).d.get("kiosk") or {}
+                d = store.load_org(o["slug"]).d
             except LedgerError:
                 continue
-            if k.get("sandbox_secret"):
-                m[k["sandbox_secret"]] = o["slug"]
+            # kiosk sandboxes and normal-org sandboxes alike (user ruling)
+            for s in ((d.get("kiosk") or {}).get("sandbox_secret"),
+                      (d.get("sandbox") or {}).get("secret")):
+                if s:
+                    m[s] = o["slug"]
         _bridge_cache.update(at=time.time(), map=m)
     return _bridge_cache["map"]
 
@@ -182,11 +185,20 @@ class BridgeGateway:
         for hk, hv in scope.get("headers") or []:
             if hk == b"x-orgtree-bridge":
                 secret = hv.decode("latin1")
-        slug = _bridge_secret_map().get(secret) if secret else None
         path, method = scope.get("path", ""), scope.get("method", "GET")
+        # proxied-subscription traffic carries the secret IN THE PATH — the
+        # CLI can set a base URL but not custom headers we control
+        rewritten = None
+        pm = re.match(r"^/anthropic/([a-f0-9]{32})(/.*)$", path)
+        if pm:
+            secret = pm.group(1)
+            rewritten = "/anthropic" + pm.group(2)
+        slug = _bridge_secret_map().get(secret) if secret else None
         m = _STEER_RE.match(path)
-        allowed = slug and method == "POST" and (
-            path == "/api/agent" or (m and m.group(1) == slug))
+        allowed = slug and (
+            rewritten is not None
+            or (method == "POST"
+                and (path == "/api/agent" or (m and m.group(1) == slug))))
         if not allowed:
             body = json.dumps({"detail": "forbidden"}).encode()
             await send({"type": "http.response.start", "status": 403,
@@ -195,6 +207,9 @@ class BridgeGateway:
             await send({"type": "http.response.body", "body": body})
             return
         scope = dict(scope)
+        if rewritten is not None:
+            scope["path"] = rewritten
+            scope["raw_path"] = rewritten.encode()
         scope["state"] = {**(scope.get("state") or {}), "bridge_slug": slug}
         await self.inner(scope, receive, send)
 
@@ -360,8 +375,9 @@ class KioskSpec(BaseModel):
     credits: int = 40                 # top-level holdings cap
     spend_limit: float = 5.0          # USD hard limit
     storage_limit_mb: int = 500       # workspace-dir cap
-    api_key: str | None = None        # sandbox auth (never echoed back)
     sandbox: bool = True              # run agent turns in a Docker container
+    # auth is NOT configurable (user ruling): every sandbox uses the proxied
+    # subscription — the host attaches the token, the sandbox never sees it
 
 
 class OrgCreate(BaseModel):
@@ -369,6 +385,7 @@ class OrgCreate(BaseModel):
     dirs: list[str] = []
     permission_mode: str = "acceptEdits"
     kiosk: KioskSpec | None = None    # present = the org is BORN a kiosk
+    sandbox: bool = False             # normal orgs may sandbox too (user ruling)
 
 
 @app.get("/api/orgs")
@@ -429,13 +446,20 @@ def orgs_create(body: OrgCreate):
                 "storage_limit_mb": max(0, int(body.kiosk.storage_limit_mb)),
                 "sandbox": bool(body.kiosk.sandbox),
                 "sandbox_secret": secrets.token_hex(16),
-                **({"api_key": body.kiosk.api_key.strip()}
-                   if body.kiosk.api_key and body.kiosk.api_key.strip() else {}),
             }
             store.save_org(o)
             if o.d["kiosk"]["sandbox"]:
                 sandbox.warm(o)        # prebuild image+container in background
         _token_cache["at"] = 0.0
+        _bridge_cache["at"] = 0.0
+    elif body.sandbox:
+        # a sandboxed NORMAL org (user ruling): same container isolation,
+        # no kiosk limits or public URL
+        with store.DOC_LOCK:
+            o = store.load_org(org.d["slug"])
+            o.d["sandbox"] = {"enabled": True, "secret": secrets.token_hex(16)}
+            store.save_org(o)
+            sandbox.warm(o)
         _bridge_cache["at"] = 0.0
     return {"slug": org.d["slug"]}
 
@@ -1090,6 +1114,60 @@ def audiences_list(slug: str):
         raise HTTPException(404, str(e))
     return {"audiences": org.d.get("audiences", []),
             "requests": org.d.get("audience_requests", [])}
+
+
+# ---------------------------------------------- proxied-subscription upstream
+# The sandbox's CLI points ANTHROPIC_BASE_URL here (secret in the path, via
+# the bridge); the HOST attaches the subscription OAuth token — the sandbox
+# never holds a credential (user spec). Streaming passthrough.
+_hx = None
+
+
+def _upstream():
+    global _hx
+    if _hx is None:
+        import httpx
+        _hx = httpx.AsyncClient(base_url="https://api.anthropic.com",
+                                timeout=httpx.Timeout(600.0, connect=30.0))
+    return _hx
+
+
+@app.api_route("/anthropic/{path:path}",
+               methods=["GET", "POST", "HEAD", "PUT", "DELETE"])
+async def anthropic_proxy(path: str, request: Request):
+    from fastapi.concurrency import run_in_threadpool
+    from fastapi.responses import StreamingResponse
+    from starlette.background import BackgroundTask
+    if not getattr(request.state, "bridge_slug", None):
+        raise HTTPException(403, "bridge only")
+    try:
+        token = await run_in_threadpool(subproxy.get_access_token)
+    except RuntimeError as e:
+        raise HTTPException(502, str(e))
+    headers = {}
+    for k, v in request.headers.items():
+        if k.lower() in ("host", "x-api-key", "authorization", "content-length",
+                         "connection", "accept-encoding", "x-orgtree-bridge"):
+            continue
+        headers[k] = v
+    betas = headers.get("anthropic-beta", "")
+    if "oauth-2025-04-20" not in betas:
+        headers["anthropic-beta"] = (betas + "," if betas else "") + "oauth-2025-04-20"
+    headers["Authorization"] = "Bearer " + token
+    # identity only: we stream the body RAW — a gzip upstream response with
+    # the content-encoding header stripped reads as garbage at the CLI
+    headers["Accept-Encoding"] = "identity"
+    body = await request.body()
+    url = "/" + path + (f"?{request.url.query}" if request.url.query else "")
+    req = _upstream().build_request(request.method, url,
+                                    headers=headers, content=body)
+    up = await _upstream().send(req, stream=True)
+    resp_headers = {k: v for k, v in up.headers.items()
+                    if k.lower() not in ("content-length", "transfer-encoding",
+                                         "content-encoding", "connection")}
+    return StreamingResponse(up.aiter_raw(), status_code=up.status_code,
+                             headers=resp_headers,
+                             background=BackgroundTask(up.aclose))
 
 
 # ------------------------------------------------------------- agent gateway

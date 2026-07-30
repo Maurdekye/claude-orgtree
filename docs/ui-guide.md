@@ -114,12 +114,13 @@ snowflake, lock, layers, fullscreen, hearing.
 Any org can be exposed to others through a **preauthenticated secret URL**
 (see the README): the **public kiosks** panel at the bottom of the org list
 is the admin dashboard. Kiosk orgs are a **distinct type, born as kiosks**:
-the creation form at the bottom takes the name, the three limits (credits /
-spend / storage), a **sandboxed** toggle (default on — agents run in a
-Docker container, isolated from this PC; give it an API key, or type
-`subscription` to copy this machine's Claude credentials in for private
-use), and mints the org with its secret URL in one step. Existing orgs are
-never converted. Each kiosk row shows spend / credits held / workspace
+tick **kiosk** in the *new organization* form to reveal the three limits
+(credits / spend / storage) — the org is minted with its secret URL in one
+step, and existing orgs are never converted. The **sandboxed** checkbox in
+the same form applies to ANY org (kiosks default it on): agents run in a
+Docker container, isolated from this PC, authenticated via the **proxied
+subscription** — the host attaches your token per request and no credential
+ever enters the sandbox (nothing to configure). Each kiosk row shows spend / credits held / workspace
 storage against their caps, a `sandboxed` chip, inline inputs to change the
 caps (a ✓ appears when edited; the credit cap refuses to go below what the
 org already holds — retire or dissolve agents first), the share URL with
