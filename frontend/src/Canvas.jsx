@@ -774,8 +774,9 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
             const vp = viewportRef.current?.getBoundingClientRect()
             // the eye is the ONLY cell that expands in width to the screen's
             // FULL aspect ratio when focused (user spec — room for the
-            // switchboard). The credit bar rides along by sliding to just
-            // inside the card's left edge (CSS), staying visible at the side.
+            // switchboard). The credit bar keeps its normal outboard spot:
+            // offscreen at focus, but still rendered — pan sideways and it
+            // is there (user ruling; never force it on screen).
             const eyeW = vp
               ? Math.round(USER_H * (vp.width - 48) / (vp.height - 48))
               : Math.round(USER_H * 16 / 9)

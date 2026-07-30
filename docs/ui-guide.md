@@ -158,8 +158,8 @@ chat (the set is remembered per org). A line that exists via an **audience
 grant** carries an ✕ on its tab: closing it **rescinds that grant** (only
 that one — other audiences the agent holds are untouched). Top-level lines
 are intrinsic and have no ✕. The square expands to the FULL screen aspect;
-the eye's credit bar stays visible by sliding to just inside its left edge
-(the panels pad around it), gliding back out as you leave. The eye never
+the eye's credit bar keeps its usual spot beside the card — just off-screen
+at focus, but still there: pan sideways and you'll see it. The eye never
 moves and is never draggable: it is the fixed anchor of the coordinate
 space, so it sits in the same spot in every org regardless of tree shape.
 

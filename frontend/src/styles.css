@@ -649,12 +649,7 @@ main {
    the org's circulation (tip is a SIBLING: the mask would fade a child). */
 .cbar-inf-wrap {
   position: absolute; left: -22px; bottom: 0; width: 14px; height: 220px;
-  transition: left .35s ease;
 }
-/* switchboard focus: the card expands to the FULL screen aspect, so the bar
-   slides to just inside its left edge and stays visible at the side (user
-   ruling); the eye-inner pads left to clear it */
-.sq.user.desk .cbar-inf-wrap, .sq.user.desk > .cbar { left: 4px; z-index: 3; }
 .cbar-inf-wrap:hover .cbar-tip { opacity: 1; }
 .cbar-infinite {
   position: absolute; inset: 0;
@@ -1141,6 +1136,3 @@ svg.MuiSvgIcon-root {
 .ctxbtn { background: none; border: none; padding: 0; display: inline-flex; cursor: pointer; }
 .ctxbtn:hover .ctxwheel .fill { filter: drop-shadow(0 0 3px rgba(217, 119, 87, .8)); }
 .ctxbtn:hover { background: none; }
-
-.sq.user.desk > .cbar { transition: left .35s ease; }
-.eye-inner { padding-left: 175px; }
