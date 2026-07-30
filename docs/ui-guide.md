@@ -34,8 +34,9 @@ read once.
   costs 1 · 3 · 5 · 10. A disabled chip means the node's free credits don't
   cover that seat (its tooltip shows the arithmetic).
 - A dashed **uninitialized** draft box appears; type a name (1–2 words,
-  Enter or ✓ hires, Esc discards) and set its grant by dragging the draft's
-  credit bar.
+  Enter or ✓ hires, Esc discards), optionally a short **charter** (standing
+  role notes, injected into the agent's prompt every turn; Shift+Enter for
+  newlines), and set its grant by dragging the draft's credit bar.
 - **The overseer's ⚙ (on the eye, top-right like every card's gear)** is
   YOUR configuration panel, mirroring the agents' own. It holds:
   - **folder access** — the org's folder holdings, in the same UI as a

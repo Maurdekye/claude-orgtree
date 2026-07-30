@@ -799,6 +799,14 @@ main {
   font-size: 8.5px; letter-spacing: .12em; text-transform: uppercase;
   color: var(--accent); opacity: .85;
 }
+/* small enough to type AND read at the hire zoom (user ruling) */
+.draft-charter {
+  flex: 1; min-height: 0; resize: none;
+  font-size: 8.5px; line-height: 1.4; font-family: inherit;
+  padding: 3px 5px; border-radius: 3px;
+  background: var(--input); border: 1px solid var(--line); color: var(--ink);
+}
+.draft-charter:focus { outline: none; border-color: var(--accent); }
 .draft-foot { display: flex; gap: 4px; margin-top: auto; }
 .draft-foot button { font-size: 10px; padding: 2px 8px; }
 

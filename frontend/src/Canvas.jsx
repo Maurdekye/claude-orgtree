@@ -593,8 +593,9 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
     // is a 5px sliver otherwise
     setTimeout(() => centerOn(DRAFT, Math.max(1.5, viewRef.current.z)), 60)
   }
-  const confirmDraft = (name, grant) => {
-    op({ op: 'hire', parent: draft.parent, tier: draft.tier, grant, name })
+  const confirmDraft = (name, grant, charter) => {
+    op({ op: 'hire', parent: draft.parent, tier: draft.tier, grant, name,
+         charter: charter?.trim() || undefined })
       .then((r) => {
         // the real card replaces the draft IN PLACE — seed its spring from the
         // draft's so it doesn't glide over from its parent a second time
@@ -989,6 +990,7 @@ function CreditBar({ seat = 0, grant, committed, segments = [], draftMode,
 
 function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, zoom, pxc, onConfirm, onCancel }) {
   const [name, setName] = useState('')
+  const [charter, setCharter] = useState('')
   // top-level drafts pre-fill the org's default grant (50 unless configured)
   const [grant, setGrant] = useState(
     draft.parent == null ? Math.min(defaultTop ?? 50, maxTop) : 0)
@@ -1013,12 +1015,16 @@ function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, zoom, pxc, onCo
         <span className="tier">{TIER_LETTER[draft.tier]}</span>
         <input className="draft-name" autoFocus placeholder="name…" value={name}
           onChange={(e) => setName(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter' && ok) onConfirm(name.trim(), grant) }} />
+          onKeyDown={(e) => { if (e.key === 'Enter' && ok) onConfirm(name.trim(), grant, charter) }} />
       </div>
       <div className="draft-tag">uninitialized</div>
+      <textarea className="draft-charter" rows={3}
+        placeholder="charter (optional): standing role notes…"
+        value={charter} onChange={(e) => setCharter(e.target.value)}
+        onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && ok) { e.preventDefault(); onConfirm(name.trim(), grant, charter) } }} />
       <div className="draft-foot">
         <button className="primary" disabled={!ok}
-          onClick={() => onConfirm(name.trim(), grant)}>✓ hire</button>
+          onClick={() => onConfirm(name.trim(), grant, charter)}>✓ hire</button>
         <button onClick={onCancel}>✕</button>
       </div>
     </div>

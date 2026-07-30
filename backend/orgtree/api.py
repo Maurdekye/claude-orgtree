@@ -771,6 +771,7 @@ class Op(BaseModel):
     tier: str | None = None       # hire
     grant: int | None = None      # hire / rehire / reallocate delta via `delta`
     name: str | None = None       # hire
+    charter: str | None = None    # hire — short standing role card
     add_dirs: list | None = None  # hire — [{path, mode}] or bare paths
     tools: dict | None = None     # hire — {bash, web, edit, subagents, mcp: []}
     org_visibility: str | None = None
@@ -799,6 +800,8 @@ async def _org_op_locked(slug: str, body: Op):
                               body.grant or 0, body.name, body.add_dirs,
                               tools=body.tools, org_visibility=body.org_visibility,
                               purpose=body.purpose)
+            if body.charter and body.charter.strip():
+                org.node(result["node"])["charter"] = body.charter.strip()
         elif body.op == "retire":
             result = org.retire(body.actor, body.node)
         elif body.op == "rehire":
