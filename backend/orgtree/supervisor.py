@@ -469,6 +469,8 @@ def _run_turn(slug: str, nid: str, text: str):
                 if nid in o2.nodes:
                     o2.node(nid)["inflight"] = {"at": now_iso(),
                                                 "text": text[-8000:]}
+                    # new work begins: a lingering done/blocked chip would lie
+                    o2.node(nid).pop("last_status", None)
                     store.save_org(o2)
             notify(slug, nid, "turn_started")
             env = clean_env()

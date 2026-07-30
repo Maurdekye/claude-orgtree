@@ -1381,6 +1381,7 @@ class Org:
                 "team_charter": n.get("team_charter"),
                 "mail_pending": len((self.d.get("mail") or {}).get(nid, [])),
                 "limit_locked": bool(n.get("limit_locked")),
+                "last_status": n.get("last_status"),
                 "frozen": ({k: n["frozen"].get(k) for k in ("at", "until", "error")}
                            if n.get("frozen") else None),
                 "audiences_held": [a["grantor"] for a in self.d["audiences"]

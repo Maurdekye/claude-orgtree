@@ -88,11 +88,11 @@ export const saveSettings = (slug, opts = {}) =>
     body: JSON.stringify(opts),
   }).then(j)
 
-export function openWs(slug, onChanged) {
+export function openWs(slug, onChanged, onClose) {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws'
   const ws = new WebSocket(`${proto}://${location.host}/api/orgs/${slug}/ws`)
   ws.onmessage = onChanged
   const ping = setInterval(() => { if (ws.readyState === 1) ws.send('ping') }, 25000)
-  ws.onclose = () => clearInterval(ping)
+  ws.onclose = () => { clearInterval(ping); onClose?.() }
   return ws
 }

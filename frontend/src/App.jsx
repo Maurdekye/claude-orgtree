@@ -70,9 +70,19 @@ export default function App() {
 
   useEffect(() => {
     if (!slug) return
-    refreshTree(slug)
-    wsRef.current?.close()
-    wsRef.current = openWs(slug, (ev) => {
+    // the WS must SURVIVE backend restarts (updates, redeploys): without
+    // auto-reconnect every state indicator froze at its last value until a
+    // manual page reload — the "states never line up" bug
+    let dead = false
+    let timer = null
+    const connect = () => {
+      if (dead) return
+      refreshTree(slug)
+      setActivity({})                  // drop indicators from before the gap
+      wsRef.current = openWs(slug, handleWs,
+        () => { if (!dead) timer = setTimeout(connect, 1500) })
+    }
+    const handleWs = (ev) => {
       let data = null
       try { data = JSON.parse(ev.data) } catch { /* ignore */ }
       if (data?.type === 'mail') {     // spark on the wire — pure animation
@@ -100,8 +110,9 @@ export default function App() {
         }
       }
       refreshTree(slug)
-    })
-    return () => wsRef.current?.close()
+    }
+    connect()
+    return () => { dead = true; clearTimeout(timer); wsRef.current?.close() }
   }, [slug, refreshTree])
 
   const op = useCallback((body) =>

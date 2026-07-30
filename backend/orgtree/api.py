@@ -144,7 +144,6 @@ def org_tree(slug: str):
         node["busy"] = st["busy"]
         node["queued"] = len(st["queue"])
         node["last_error"] = st["last_error"]
-        node["last_status"] = st.get("last_status")
         if st.get("occupancy"):       # runtime is fresher than the persisted copy
             node["occupancy"] = st["occupancy"]
         if st.get("context_window"):
@@ -607,7 +606,9 @@ async def agent_call(body: AgentCall):
             elif body.tool == "orgtree_status":
                 status = a.get("status", "working")
                 summary = a.get("summary", "")
-                supervisor.state(body.org, body.node)["last_status"] = {
+                # persisted on the node (survives restarts); cleared when a
+                # new turn starts, so a stale "done" never shows over live work
+                org.node(body.node)["last_status"] = {
                     "status": status, "summary": summary}
                 result = {"recorded": status}
                 if status in ("done", "blocked"):
