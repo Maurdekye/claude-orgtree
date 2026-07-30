@@ -350,7 +350,6 @@ main {
 .cc-tabs button:hover { background: var(--panel-2); }
 .cc-icon { background: none; border: none; color: var(--dim); font-size: 12px; padding: 2px 4px; }
 .cc-icon:hover { color: var(--ink-strong); background: none; }
-.cc-bar { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
 .desk-body .badge { font-size: 10px; padding: 1px 6px; }
 .desk-body .statuschip { font-size: 10px; padding: 0 5px; }
 .cc-actions { display: flex; gap: 2px; }
@@ -390,6 +389,9 @@ main {
   background: var(--accent); border: 1px solid var(--accent); color: #fff;
 }
 .cc-send:disabled { background: var(--input); border-color: var(--line); color: var(--dim); }
+/* the send button becomes STOP while responding (Claude Code idiom) */
+.cc-send.stop { background: var(--bad); border-color: var(--bad); font-size: 10px; }
+.cc-send.stop:hover { background: #ff5f5f; }
 .desk-body .inline-form button, .desk-body .inline-form input,
 .desk-body .inline-form select { font-size: 10.5px; padding: 2px 7px; border-radius: 4px; }
 .desk-body .inline-form { margin: 0; padding: 5px 7px; gap: 4px; }

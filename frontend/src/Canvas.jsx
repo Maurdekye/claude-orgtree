@@ -1416,27 +1416,10 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
         {node.last_status &&
           <span className={'statuschip ' + node.last_status.status}
             title={node.last_status.summary}>{node.last_status.status}</span>}
-        <span className="spacer" />
-        <span className="cc-tabs">
-          {['chat', 'history', 'files', 'inbox'].map((v) => (
-            <button key={v} className={view === v ? 'on' : ''}
-              onClick={() => setView(v)}>
-              {v}{v === 'inbox' && chat?.mail_pending > 0 ? ` ${chat.mail_pending}` : ''}
-            </button>
-          ))}
-        </span>
-        <button className="cc-icon" onClick={onConfig}>⚙</button>
-      </div>
-      {/* row 2: working state, badges, cost — and the lifecycle actions
-          (moved here from the header, user ruling) */}
-      <div className="cc-bar">
+        {/* one row for everything (user ruling — the 900px panel has room);
+            interruption lives on the composer's stop button, not up here */}
         {chat?.busy &&
           <span className="cc-working"><span className="cc-spin">✳</span> working</span>}
-        {chat?.busy &&
-          <button className="badge" title="pause: interrupt the current response"
-            onClick={() => interruptNode(slug, node.id)
-              .then((r) => toast([r.interrupted ? `⏸ ${node.id} paused` : `⛔ ${r.reason}`]))
-              .catch((e) => toast([`⛔ ${e.message}`]))}>⏸ pause</button>}
         {node.frozen &&
           <span className="badge frozen" title={node.frozen.error}>
             🧊 usage limit{node.frozen.until ? ` · resumes ${node.frozen.until}` : ''}</span>}
@@ -1470,6 +1453,15 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
               dissolve · {node.seat + node.grant}</button>}
           {!live && <button onClick={() => op({ op: 'rehire', node: node.id })}>rehire</button>}
         </span>
+        <span className="cc-tabs">
+          {['chat', 'history', 'files', 'inbox'].map((v) => (
+            <button key={v} className={view === v ? 'on' : ''}
+              onClick={() => setView(v)}>
+              {v}{v === 'inbox' && chat?.mail_pending > 0 ? ` ${chat.mail_pending}` : ''}
+            </button>
+          ))}
+        </span>
+        <button className="cc-icon" onClick={onConfig}>⚙</button>
       </div>
       {asking && (
         <ConfirmModal title={`dissolve ${node.id}?`}
@@ -1510,8 +1502,15 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() }
               }} />
-            <button className="cc-send" disabled={!live || !text.trim()}
-              onClick={send}>↑</button>
+            {/* while the agent responds the send button becomes a STOP —
+                same as Claude Code; Enter still queues a message */}
+            {chat?.busy
+              ? <button className="cc-send stop" title="interrupt the current response"
+                  onClick={() => interruptNode(slug, node.id)
+                    .then((r) => { if (!r.interrupted) toast([`⛔ ${r.reason}`]) })
+                    .catch((e) => toast([`⛔ ${e.message}`]))}>■</button>
+              : <button className="cc-send" disabled={!live || !text.trim()}
+                  onClick={send}>↑</button>}
           </div>
         </>
       )}

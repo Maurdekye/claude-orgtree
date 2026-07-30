@@ -123,10 +123,12 @@ ledger self-audit chip appears ONLY if the credit invariants are ever violated
 
 ## The desk (zoomed-in chat)
 
-- Header: tier, name (hover for its purpose), context wheel (red ≥ 80% —
-  compaction approaches), status chip. The second row holds the working
-  indicator (✳), ⏸ pause, badges, cost, and the retire/dissolve/rehire
-  action. Tabs: chat · history
+- Header (ONE row): tier, name (hover for its purpose), context wheel
+  (red ≥ 80% — compaction approaches), status chip, working indicator (✳),
+  badges, cost, the retire/dissolve/rehire action, and the tabs. While the
+  agent is responding, the composer's send button becomes a red ■ STOP
+  (Claude Code idiom) that interrupts the current response — Enter still
+  queues a message meanwhile. Tabs: chat · history
   (the node's event log) · files (its scratch space) · inbox (the node's OWN
   mailbox, separate from history: orgtree mail waiting for its next turn is
   highlighted "awaiting next turn"; below that, recently delivered mail with
