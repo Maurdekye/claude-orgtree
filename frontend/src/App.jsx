@@ -271,7 +271,7 @@ function InboxPanel({ slug, tree, toast, close }) {
     audienceAction(slug, action, node, target).then(reload).catch((e) => toast([`⛔ ${e.message}`]))
   return (
     <div className="overlay" onClick={close}>
-      <div className="settings" onClick={(e) => e.stopPropagation()}>
+      <div className="settings wide" onClick={(e) => e.stopPropagation()}>
         <h3>✉ your inbox</h3>
         {userReqs.length > 0 && (
           <>
@@ -300,7 +300,7 @@ function InboxPanel({ slug, tree, toast, close }) {
             </div>
           </>
         )}
-        <div className="inbox-list">
+        <div className="mailpane">
           {box == null
             ? <div className="dim">loading…</div>
             : <MailList pending={box.pending} delivered={box.delivered}

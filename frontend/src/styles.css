@@ -451,17 +451,45 @@ main {
   position: absolute; top: -5px; right: -7px; background: var(--accent);
   color: #fff; border-radius: 8px; font-size: 9.5px; padding: 0 4px; font-weight: 700;
 }
-.inbox-list { display: flex; flex-direction: column; gap: 8px; max-height: 55vh; overflow-y: auto; }
-.inbox-msg {
-  background: var(--bg); border: 1px solid var(--line-soft); border-radius: 6px;
-  padding: 8px 10px; font-size: 12px;
+/* ------------------------------- the mail interface (webmail two-pane layout):
+   list on the left (sender · time · truncated brief), reading pane on the
+   right. One component serves the eye's inbox, card modals and the desk tab. */
+.mailpane { display: flex; flex: 1; min-height: 0; }
+.settings .mailpane { height: 58vh; }
+.mailer {
+  display: flex; flex: 1; min-height: 0;
+  border: 1px solid var(--line-soft); border-radius: 6px; overflow: hidden;
+  background: var(--bg);
 }
-.inbox-msg .meta { display: flex; gap: 8px; color: var(--dim); font-size: 10.5px; margin-bottom: 4px; font-family: var(--mono); }
-.inbox-msg .body { white-space: pre-wrap; }
-/* an agent's own inbox: mail not yet folded into a turn is highlighted */
-.inbox-msg.waiting { border-color: color-mix(in srgb, var(--accent) 45%, var(--line-soft)); }
-.inbox-msg .meta .wait { color: var(--accent); }
-.msgs.inbox-list { padding: 10px; }
+.mailer-list {
+  width: 36%; min-width: 140px; overflow-y: auto;
+  border-right: 1px solid var(--line-soft);
+}
+.mailrow {
+  padding: 7px 10px; border-bottom: 1px solid var(--line-soft); cursor: pointer;
+}
+.mailrow:hover { background: var(--panel-2); }
+.mailrow.on { background: color-mix(in srgb, var(--accent) 13%, var(--bg)); }
+.mailrow .l1 {
+  display: flex; justify-content: space-between; gap: 8px;
+  font-family: var(--mono); font-size: 11px; color: var(--ink);
+}
+.mailrow .l1 .mfrom { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mailrow .l1 .mtime { color: var(--dim); flex-shrink: 0; }
+.mailrow .l2 {
+  margin-top: 2px; font-size: 11px; color: var(--dim);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.mailrow.unread .l1 .mfrom { color: var(--accent); font-weight: 700; }
+.mailrow.unread .l2 { color: var(--ink); }
+.mailer-read { flex: 1; min-width: 0; overflow-y: auto; padding: 10px 14px; }
+.mailer-head {
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline;
+  font-family: var(--mono); font-size: 11px; color: var(--ink);
+  padding-bottom: 8px; margin-bottom: 8px; border-bottom: 1px solid var(--line-soft);
+}
+.mailer-head .wait { color: var(--accent); font-weight: 700; }
+.mailer-body { font-size: 12.5px; line-height: 1.55; }
 
 /* ------------------------------------------------------- lineage stacks (§8.7) */
 .sq.stack1 { box-shadow: 5px -5px 0 -1px #232325, 5px -5px 0 0 var(--line-soft); }
@@ -722,6 +750,7 @@ main.solo { width: 100%; }
   line-height: 1.55;
 }
 .settings h3 { margin: 0 0 4px; font-size: 17px; color: var(--ink-strong); }
+.settings.wide { width: 900px; }   /* mail panels: room for the reading pane */
 .settings .field-label { font-size: 13.5px; color: var(--ink); font-weight: 600; }
 .settings .hint { font-size: 13px; }
 .settings .checkline { font-size: 14.5px; gap: 10px; }

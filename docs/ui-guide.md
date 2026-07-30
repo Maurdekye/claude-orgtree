@@ -140,11 +140,14 @@ their successor. A predecessor is NOT an org child — it holds no authority.
 
 ## Inboxes (✉ on the eye AND on every card)
 
-The eye's ✉ and each card's ✉ open the SAME interface (user ruling): unread /
-not-yet-delivered mail highlighted on top, then the read / delivered archive,
-newest first. A count badge shows while mail waits (a card's ✉ stays visible
-whenever it has waiting mail; otherwise it appears on hover, next to ⚙). The
-desk's inbox tab is the same view inline.
+The eye's ✉ and each card's ✉ open the SAME interface (user ruling), laid out
+like a webmail client: the message list on the left — sender, send time, and a
+truncated brief of the body (mails have no subjects) — and the selected
+message opened full (markdown-rendered) in the reading pane on the right.
+Unread / not-yet-delivered mail sorts on top with the sender highlighted; the
+read / delivered archive follows, newest first. A count badge shows while
+mail waits (a card's ✉ stays visible whenever it has waiting mail; otherwise
+it appears on hover, next to ⚙). The desk's inbox tab is the same view inline.
 
 - **Yours (the eye):** agents write to you asynchronously here; it enters no
   context and interrupts nobody. "Mark all read" archives (nothing is

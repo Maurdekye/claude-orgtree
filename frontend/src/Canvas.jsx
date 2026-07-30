@@ -1455,41 +1455,64 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
   )
 }
 
-// One mail list, everywhere (user ruling: the user's and the agents' inboxes
-// function identically): waiting/unread mail highlighted on top, then the
-// delivered/read archive, newest first.
+// One mail interface, everywhere (user ruling: the user's and the agents'
+// inboxes function identically), laid out like a webmail client: the list on
+// the left (sender · time · truncated brief — mails have no subjects), the
+// selected message opened in the reading pane on the right. Waiting/unread
+// mail sorts on top and is highlighted until read/delivered.
 export function MailList({ pending = [], delivered = [], waitLabel, sender }) {
+  const all = [
+    ...pending.map((m) => ({ ...m, _wait: true })),
+    ...[...delivered].reverse(),
+  ]
+  const [sel, setSel] = useState(0)
   const S = sender ?? ((id) => <span>{id === USER ? '@user' : id}</span>)
-  const Mail = ({ m, wait }) => (
-    <div className={'inbox-msg' + (wait ? ' waiting' : '')}>
-      <div className="meta">
-        {S(m.from)}
-        <span>{m.kind}</span>
-        {m.relationship && <span>{m.relationship}</span>}
-        <span>{m.at}</span>
-        {wait && <span className="wait">{waitLabel}</span>}
-      </div>
-      <div className="body">{m.body}</div>
-    </div>
-  )
+  const cur = all[Math.min(sel, all.length - 1)]
+  const brief = (b) => (b ?? '').trim().replace(/\s+/g, ' ').slice(0, 90)
+  const when = (at) => (at ?? '').slice(5, 16).replace('T', ' ')
+  if (!all.length) return <div className="dim pad">no mail yet</div>
   return (
-    <>
-      {!pending.length && !delivered.length && <div className="dim pad">no mail yet</div>}
-      {pending.map((m, i) => <Mail key={'p' + i} m={m} wait />)}
-      {[...delivered].reverse().map((m, i) => <Mail key={'d' + i} m={m} />)}
-    </>
+    <div className="mailer">
+      <div className="mailer-list">
+        {all.map((m, i) => (
+          <div key={i}
+            className={'mailrow' + (m === cur ? ' on' : '') + (m._wait ? ' unread' : '')}
+            onClick={() => setSel(i)}>
+            <div className="l1">
+              <span className="mfrom">{m.from === USER ? '@user' : m.from}</span>
+              <span className="mtime">{when(m.at)}</span>
+            </div>
+            <div className="l2">{brief(m.body)}</div>
+          </div>
+        ))}
+      </div>
+      <div className="mailer-read">
+        {cur && (
+          <>
+            <div className="mailer-head">
+              {S(cur.from)}
+              <span className="dim">{cur.kind}</span>
+              {cur.relationship && <span className="dim">{cur.relationship}</span>}
+              <span className="dim">{cur.at}</span>
+              {cur._wait && <span className="wait">{waitLabel}</span>}
+            </div>
+            <div className="mailer-body md" dangerouslySetInnerHTML={md(cur.body)} />
+          </>
+        )}
+      </div>
+    </div>
   )
 }
 
 // The node's own mailbox (user ruling: its own tab, separate from history).
-function InboxView({ slug, nid, pulse, className = 'msgs inbox-list' }) {
+function InboxView({ slug, nid, pulse }) {
   const [box, setBox] = useState(null)
   useEffect(() => {
     getNodeInbox(slug, nid).then(setBox)
       .catch(() => setBox({ pending: [], delivered: [] }))
   }, [slug, nid, pulse])
   return (
-    <div className={className}>
+    <div className="mailpane">
       {box == null
         ? <div className="dim pad">loading…</div>
         : <MailList pending={box.pending} delivered={box.delivered}
@@ -1504,9 +1527,9 @@ function NodeInboxModal({ node, slug, pulse, close }) {
   useEsc(close)
   return (
     <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
-      <div className="settings" onClick={(e) => e.stopPropagation()}>
+      <div className="settings wide" onClick={(e) => e.stopPropagation()}>
         <h3>✉ {node.id} <span className="dim">· inbox</span></h3>
-        <InboxView slug={slug} nid={node.id} pulse={pulse} className="inbox-list" />
+        <InboxView slug={slug} nid={node.id} pulse={pulse} />
         <div className="row">
           <button className="primary" onClick={close}>close</button>
         </div>
