@@ -12,9 +12,9 @@ read once.
   ledger, mail, lineage — after an in-page confirmation; workspace and
   scratch folders remain on disk.
 - Pan by dragging empty space; zoom with the wheel. Wheel over an open desk
-  scrolls whatever is under the cursor when it can scroll that way, and falls
-  back to camera zoom when it can't (empty chat, list at its end). Wheel over
-  a modal always scrolls the modal. ⛶ fits the whole org.
+  is SCROLL-ONLY and never zooms — even when nothing under the cursor can
+  scroll (user ruling; move the cursor off the desk, or use the +/− HUD, to
+  zoom). Wheel over a modal always scrolls the modal. ⛶ fits the whole org.
 - **Click a card** to glide in: the node fills the window (small margin) and
   its desk — a miniature Claude Code chat — opens in place. The desk belongs to
   whichever card sits nearest the viewport centre once zoom ≥ 2.1.
