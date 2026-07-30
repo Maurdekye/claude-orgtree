@@ -1070,11 +1070,17 @@ svg.MuiSvgIcon-root {
 .kiosk-name { cursor: pointer; }
 .kiosk-name:hover { color: var(--accent-hover); text-decoration: underline; }
 .kiosk-stats { font-size: 11px; }
-.kiosk-caps label {
-  display: flex; align-items: center; gap: 4px;
-  color: var(--dim); font-size: 11px; min-width: 0;
+/* three tidy columns, label OVER input — the inline row clipped and
+   wrapped in the 264px sidebar (user report) */
+.kiosk-caps {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px; align-items: end;
 }
-.kiosk-caps input { width: 64px; min-width: 0; }
+.kiosk-caps label {
+  display: flex; flex-direction: column; gap: 3px;
+  color: var(--dim); font-size: 11px; min-width: 0; white-space: nowrap;
+}
+.kiosk-caps input { width: 100%; min-width: 0; }
 .kiosk-url input {
   flex: 1; min-width: 0; font-size: 11px;
   color: var(--dim); text-overflow: ellipsis;

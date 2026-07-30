@@ -387,7 +387,7 @@ function NewOrg({ onCreate }) {
         kiosk — publicly shareable via a secret URL, with hard limits
       </label>
       {kiosk && (
-        <div className="row kiosk-caps">
+        <div className="kiosk-caps">
           <label>credits <input type="number" min="0" value={credits}
             onChange={(e) => setCredits(e.target.value)} /></label>
           <label>spend $ <input type="number" min="0" step="0.5" value={spend}
@@ -476,7 +476,7 @@ function KioskRow({ org, refresh, toast, pick }) {
         {' · '}{k.held}{k.credits ? ` / ${k.credits}` : ''} credits held
         {' · '}{k.storage_mb ?? 0}{k.storage_limit_mb ? ` / ${k.storage_limit_mb}` : ''} MB workspace
       </div>
-      <div className="row kiosk-caps">
+      <div className="kiosk-caps">
         <label>credits <input type="number" min="0" value={credits}
           onChange={(e) => setCredits(e.target.value)} /></label>
         <label>spend $ <input type="number" min="0" step="0.5" value={spend}
