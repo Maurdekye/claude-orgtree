@@ -160,7 +160,7 @@ export default function App() {
                 {tree.fable_lock &&
                   <span className="chip bad" title={tree.fable_lock.at}>⛔ fable limit</span>}
                 {(() => {   // usage-limit freeze: ▶ restarts every frozen agent
-                  const frozen = flatNodes(tree).filter((n) => n.frozen)
+                  const frozen = [...flatNodes(tree).values()].filter((n) => n.frozen)
                   if (!frozen.length) return null
                   const until = frozen.map((n) => n.frozen.until).find(Boolean)
                   return (
