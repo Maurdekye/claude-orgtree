@@ -261,6 +261,12 @@ def reply(id_, result=None, error=None):
 
 
 def main():
+    # ⚠ Windows defaults stdio to cp1252 — the CLI speaks UTF-8 JSON-RPC, so
+    # without this every non-ASCII char in mail bodies (em-dashes…) arrived
+    # mojibake'd (observed live: "—" → "â€\"")
+    if hasattr(sys.stdin, "reconfigure"):
+        sys.stdin.reconfigure(encoding="utf-8", errors="replace")
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     for line in sys.stdin:
         line = line.strip()
         if not line:
