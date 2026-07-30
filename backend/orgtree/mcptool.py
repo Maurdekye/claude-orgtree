@@ -54,6 +54,25 @@ TOOLS = [
         },
     },
     {
+        "name": "orgtree_request_credits",
+        "description": (
+            "TOP-LEVEL AGENTS ONLY: ask the user directly for a larger credit "
+            "grant. Not mail — a structured request the user approves or denies "
+            "with one click. State the requested NEW TOTAL grant (not the "
+            "increase) and a concrete reason. One pending request at a time; "
+            "the verdict arrives as a notice in a future turn."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "new_limit": {"type": "integer", "minimum": 1,
+                              "description": "the requested new TOTAL grant"},
+                "reason": {"type": "string",
+                           "description": "why you need it — required"},
+            },
+            "required": ["new_limit", "reason"],
+        },
+    },
+    {
         "name": "orgtree_hire",
         "description": (
             "Hire a subagent under you (or deeper in your subtree). There are NO "

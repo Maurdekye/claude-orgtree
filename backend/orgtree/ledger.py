@@ -133,6 +133,8 @@ class Org:
         if self.d.get("default_visibility") not in VIS_LEVELS:
             self.d["default_visibility"] = "full"
         self.d.pop("default_dirs", None)   # superseded: org dirs carry modes now
+        self.d.setdefault("default_top_grant", 50)   # user ruling: 50 by default
+        self.d.setdefault("credit_requests", [])     # top-level asks to the user
         # org holdings carry RW/RO modes (user ruling — configured on the eye's
         # gear, mirroring per-agent folder access); legacy string lists migrate
         self.d["dirs"] = norm_dirs(self.d.get("dirs"))
@@ -174,6 +176,8 @@ class Org:
             "default_tools": norm_tools({"mcp": ["*"]}),
             "default_visibility": "full",
             "max_top_grant": 1000,                # UI slider cap for user-level hires
+            "default_top_grant": 50,              # pre-filled grant for top-level hires
+            "credit_requests": [],                # §: top-level asks to the user
             "fable_limit_policy": "halt",         # halt | opus | dissolve (user ruling)
             "nodes": {},
             "audiences": [],          # §7.3 — [{grantee, grantor, granted_at, reason}]
@@ -1165,6 +1169,64 @@ class Org:
         return revoked
 
     # --------------------------------------------------- fable limit (user ruling)
+    # ----------------------------------------------------- credit requests
+    def request_credits(self, nid: str, new_limit, reason) -> dict:
+        """A TOP-LEVEL agent asks the user directly for a larger grant. Not mail:
+        a structured request (old → new + reason) the user approves or denies
+        with one click. One pending request per node."""
+        self._require_live(nid)
+        n = self.node(nid)
+        if n["parent"] is not None:
+            raise LedgerError("only top-level agents may ask the user for credits "
+                              "directly — ask your superior to reallocate instead")
+        try:
+            new_limit = int(new_limit)
+        except (TypeError, ValueError):
+            raise LedgerError("new_limit must be an integer (the requested TOTAL grant)")
+        old = n["grant"]
+        if new_limit <= old:
+            raise LedgerError(f"requested limit {new_limit} must exceed the "
+                              f"current grant {old}")
+        if not (reason and str(reason).strip()):
+            raise LedgerError("a reason is required")
+        reqs = self.d.setdefault("credit_requests", [])
+        if any(r["node"] == nid and r["status"] == "pending" for r in reqs):
+            raise LedgerError("you already have a pending credit request — wait "
+                              "for the user's decision")
+        req = {"id": f"cr{len(reqs) + 1}", "node": nid, "old": old,
+               "new": new_limit, "reason": str(reason).strip(),
+               "at": now(), "status": "pending"}
+        reqs.append(req)
+        self._log("credit_request", nid, {"old": old, "new": new_limit}, [])
+        return {"requested": new_limit, "increase": new_limit - old,
+                "status": "pending — the user will approve or deny"}
+
+    def credit_request_action(self, rid: str, action: str) -> dict:
+        req = next((r for r in self.d.get("credit_requests", [])
+                    if r["id"] == rid), None)
+        if req is None or req["status"] != "pending":
+            raise LedgerError(f"no pending credit request {rid!r}")
+        if action not in ("approve", "deny"):
+            raise LedgerError("action must be approve|deny")
+        nid = req["node"]
+        if action == "approve":
+            if nid not in self.nodes or self.node(nid)["state"] != "live":
+                raise LedgerError(f"{nid} is no longer live — request is moot")
+            delta = req["new"] - self.node(nid)["grant"]
+            if delta > 0:
+                self.reallocate(USER, nid, delta)
+            req["status"] = "approved"
+            self._notify([nid], f"The user APPROVED your credit request — your "
+                                f"grant is now {self.node(nid)['grant']:g}.")
+        else:
+            req["status"] = "denied"
+            if nid in self.nodes:
+                self._notify([nid], f"The user DENIED your credit request "
+                                    f"({req['old']} → {req['new']}). Work within "
+                                    f"your current grant or escalate differently.")
+        self._log("credit_" + action, USER, {"node": nid, "new": req["new"]}, [])
+        return req
+
     def fable_limit_hit(self, detecting_node: str | None, detail: str) -> dict:
         """Weekly Fable usage limit exhausted. What happens to live fable agents is
         the org's `fable_limit_policy`:
@@ -1319,6 +1381,8 @@ class Org:
                 "team_charter": n.get("team_charter"),
                 "mail_pending": len((self.d.get("mail") or {}).get(nid, [])),
                 "limit_locked": bool(n.get("limit_locked")),
+                "frozen": ({k: n["frozen"].get(k) for k in ("at", "until", "error")}
+                           if n.get("frozen") else None),
                 "audiences_held": [a["grantor"] for a in self.d["audiences"]
                                    if a["grantee"] == nid],
                 "bearer_state": n["bearer_state"],
@@ -1338,8 +1402,11 @@ class Org:
             "workspace": self.d.get("workspace"),
             "dirs": self.d["dirs"],
             "max_top_grant": self.d.get("max_top_grant", 1000),
+            "default_top_grant": self.d.get("default_top_grant", 50),
             "default_tools": self.d.get("default_tools"),
             "default_visibility": self.d.get("default_visibility", "full"),
+            "credit_requests": [r for r in self.d.get("credit_requests", [])
+                                if r["status"] == "pending"],
             "tiers": self.d["tiers"],
             "audiences": self.d["audiences"],
             "roots": [build(c) for c in self.org_children(None)],

@@ -25,6 +25,16 @@ export const getMcpServers = () => fetch('/api/mcp-servers').then(j)
 export const getInbox = (slug) => fetch(`/api/orgs/${slug}/inbox`).then(j)
 export const getNodeInbox = (slug, nid) =>
   fetch(`/api/orgs/${slug}/nodes/${nid}/inbox`).then(j)
+export const resumeFrozen = (slug) =>
+  fetch(`/api/orgs/${slug}/resume`, { method: 'POST' }).then(j)
+export const interruptNode = (slug, nid) =>
+  fetch(`/api/orgs/${slug}/nodes/${nid}/interrupt`, { method: 'POST' }).then(j)
+export const creditDecide = (slug, id, action) =>
+  fetch(`/api/orgs/${slug}/credit-requests`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id, action }),
+  }).then(j)
 export const clearInbox = (slug) =>
   fetch(`/api/orgs/${slug}/inbox/clear`, { method: 'POST' }).then(j)
 export const getHistory = (slug, nid) =>

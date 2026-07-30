@@ -127,8 +127,8 @@ main {
 .sq {
   position: absolute; left: 0; top: 0;
   background: var(--panel); border: 1px solid var(--line);
-  border-radius: 8px; padding: 8px 10px;
-  display: flex; flex-direction: column; gap: 6px;
+  border-radius: 8px; padding: 7px 7px;
+  display: flex; flex-direction: column; gap: 5px;
   /* position comes from the spring engine per-frame — no transform transition */
   transition: width .4s cubic-bezier(.22, 1, .36, 1),
     height .4s cubic-bezier(.22, 1, .36, 1),
@@ -159,6 +159,23 @@ main {
 }
 .sq:hover .mailbtn { opacity: .8; }
 .mailbtn.has { opacity: .9; }
+/* frozen by a usage limit */
+.sq.frozen { border-color: #4b7f9e; }
+.badge.frozen { color: #7fc4e8; border-color: #365b73; }
+.resume-all {
+  background: color-mix(in srgb, var(--tier-haiku) 22%, var(--input));
+  border: 1px solid color-mix(in srgb, var(--tier-haiku) 45%, var(--line));
+  color: var(--ink-strong); font-weight: 700;
+}
+.resume-note { font-size: 11.5px; color: var(--dim); max-width: 34em; }
+/* credit requests (inbox panel): old → new (+Δ), reason, one-click verdict */
+.credreq {
+  background: var(--bg); border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line-soft));
+  border-radius: 6px; padding: 8px 10px; font-size: 12.5px;
+}
+.credreq .cr-head { display: flex; gap: 8px; align-items: baseline; font-family: var(--mono); }
+.credreq .cr-head b { color: var(--ink-strong); }
+.credreq .cr-reason { margin: 6px 0; white-space: pre-wrap; }
 .mailbtn:hover { opacity: 1 !important; color: var(--ink-strong); background: none; }
 .mailbtn .count {
   position: absolute; top: -5px; right: -7px; background: var(--accent);
@@ -196,17 +213,20 @@ main {
 .statusdot.working { background: var(--accent); }
 .statusdot.idle { background: #7a7a7a; }
 
-.sq-head { display: flex; align-items: center; gap: 7px; min-height: 22px; }
+/* tight head row (user ruling: long names must fit) — small margins, small
+   chrome, the context wheel pushed to the far right */
+.sq-head { display: flex; align-items: center; gap: 4px; min-height: 19px; }
 .sq-head .tier {
-  width: 20px; height: 20px; flex: none; display: grid; place-items: center;
-  border-radius: 4px; font-weight: 700; font-size: 10px; font-family: var(--mono);
+  width: 16px; height: 16px; flex: none; display: grid; place-items: center;
+  border-radius: 4px; font-weight: 700; font-size: 9px; font-family: var(--mono);
   background: var(--input); border: 1px solid var(--line); color: var(--dim);
 }
-.sq-head { padding-right: 14px; }
 .sq-head .name {
-  font-family: var(--mono); font-weight: 600; font-size: 11px;
+  flex: 1; min-width: 0;
+  font-family: var(--mono); font-weight: 600; font-size: 10.5px;
   color: var(--ink-strong); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+.sq-head .ctxwheel { margin-left: auto; flex: none; width: 13px; height: 13px; }
 .busydot {
   width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--accent);
   margin-left: auto; animation: pulse 1.2s ease-in-out infinite;
@@ -313,6 +333,10 @@ main {
 .cc-spin {
   color: var(--accent); display: inline-block; line-height: 1; font-size: 12px;
   animation: actspin 1.6s linear infinite; flex: none;
+}
+.cc-working {
+  color: var(--accent); font-size: 11px; display: inline-flex;
+  gap: 4px; align-items: center; flex: none;
 }
 /* -- composer: the Claude Code input box -- */
 .cc-composer {

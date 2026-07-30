@@ -161,6 +161,7 @@ def org_tree(slug: str):
 class Settings(BaseModel):
     org_dirs: list | None = None            # external folders [{path, mode}] (ws excluded)
     max_top_grant: int | None = None
+    default_top_grant: int | None = None    # pre-filled grant for top-level hires
     clear_fable_lock: bool = False
     fable_limit_policy: str | None = None   # halt | opus | dissolve
     default_tools: dict | None = None       # {bash, web, edit, subagents, mcp: []|["*"]}
@@ -207,6 +208,8 @@ async def _org_settings_locked(slug: str, body: Settings):
         org.d["dirs"] = ([{"path": ws, "mode": "rw"}] if ws else []) + new
     if body.max_top_grant is not None and body.max_top_grant > 0:
         org.d["max_top_grant"] = int(body.max_top_grant)
+    if body.default_top_grant is not None and body.default_top_grant >= 0:
+        org.d["default_top_grant"] = int(body.default_top_grant)
     if body.clear_fable_lock and org.d.get("fable_lock"):
         org.clear_fable_lock()
         warnings.append("fable lock cleared — fable agents may run and be rehired again")
@@ -312,6 +315,54 @@ async def node_steer(slug: str, nid: str):
             await hub._send(slug, {"type": "node_stream", "org": slug,
                                    "node": nid, "kind": "steered", "text": m[:2000]})
     return {"messages": msgs}
+
+
+@app.post("/api/orgs/{slug}/nodes/{nid}/interrupt")
+def node_interrupt(slug: str, nid: str):
+    """Manual ⏸: stop the node's current response (the only sanctioned
+    interrupt — message delivery never interrupts, user ruling)."""
+    try:
+        org = store.load_org(slug)
+        org.node(nid)
+    except LedgerError as e:
+        raise HTTPException(404, str(e))
+    return supervisor.interrupt_turn(slug, nid)
+
+
+@app.post("/api/orgs/{slug}/resume")
+async def org_resume(slug: str):
+    """The ▶ button: restart every usage-limit-frozen agent at once."""
+    try:
+        store.load_org(slug)
+    except LedgerError as e:
+        raise HTTPException(404, str(e))
+    resumed = supervisor.resume_frozen(slug)
+    await hub.changed(slug)
+    return {"resumed": resumed}
+
+
+class CreditDecision(BaseModel):
+    id: str
+    action: str        # approve | deny
+
+
+@app.post("/api/orgs/{slug}/credit-requests")
+async def credit_request_decide(slug: str, body: CreditDecision):
+    """One-click approve/deny of a top-level agent's credit request."""
+    with store.DOC_LOCK:
+        try:
+            org = store.load_org(slug)
+            req = org.credit_request_action(body.id, body.action)
+        except LedgerError as e:
+            raise HTTPException(422, str(e))
+        store.save_org(org)
+    # drive the agent so it learns the verdict promptly (rides the notice)
+    supervisor.send_message(
+        slug, req["node"],
+        "(orgtree) The user has decided on your credit request — see the "
+        "notice above and proceed accordingly.")
+    await hub.changed(slug)
+    return req
 
 
 @app.get("/api/orgs/{slug}/inbox")
@@ -516,6 +567,9 @@ async def agent_call(body: AgentCall):
                                 USER if delivered == "user_inbox" else delivered)
                 if delivered not in (None, "user_inbox"):
                     drive.append(delivered)
+            elif body.tool == "orgtree_request_credits":
+                result = org.request_credits(body.node, a.get("new_limit"),
+                                             a.get("reason"))
             elif body.tool == "orgtree_hire":
                 result = org.hire(body.node, a.get("parent") or body.node,
                                   a.get("tier"), int(a.get("grant") or 0),

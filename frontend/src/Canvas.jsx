@@ -3,7 +3,7 @@ import { marked } from 'marked'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   audienceAction, getChat, getHistory, getMcpServers, getNodeInbox,
-  getScratch, reorderNode, saveScope, saveSettings, sendMessage,
+  getScratch, interruptNode, reorderNode, saveScope, saveSettings, sendMessage,
 } from './api'
 
 const TIER_LETTER = { haiku: 'H', sonnet: 'S', opus: 'O', fable: 'F' }
@@ -672,13 +672,15 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
           if (!p) return null
           if (n.id === USER) {
             return <UserNode key={USER} pos={p} isDrop={dropId === USER} seats={seats}
-              stats={orgStats} inboxCount={tree.user_inbox_count ?? 0}
+              stats={orgStats}
+              inboxCount={(tree.user_inbox_count ?? 0) + (tree.credit_requests?.length ?? 0)}
               onInbox={onInbox} onGear={() => setUserCfg(true)}
               onSpawn={(t) => spawn(USER, t)} />
           }
           if (n.id === DRAFT) {
             return <DraftNode key={DRAFT} pos={p} draft={draft} map={map} seats={seats}
-              maxTop={tree.max_top_grant ?? 1000} zoom={view.z} pxc={pxPerCredit}
+              maxTop={tree.max_top_grant ?? 1000}
+              defaultTop={tree.default_top_grant ?? 50} zoom={view.z} pxc={pxPerCredit}
               onConfirm={confirmDraft} onCancel={() => setDraft(null)} />
           }
           return (
@@ -976,9 +978,11 @@ function CreditBar({ seat = 0, grant, committed, segments = [], draftMode,
   )
 }
 
-function DraftNode({ pos, draft, map, seats, maxTop, zoom, pxc, onConfirm, onCancel }) {
+function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, zoom, pxc, onConfirm, onCancel }) {
   const [name, setName] = useState('')
-  const [grant, setGrant] = useState(0)
+  // top-level drafts pre-fill the org's default grant (50 unless configured)
+  const [grant, setGrant] = useState(
+    draft.parent == null ? Math.min(defaultTop ?? 50, maxTop) : 0)
   const parent = draft.parent ? map.get(draft.parent) : null
   const max = parent == null
     ? maxTop
@@ -1021,6 +1025,7 @@ function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, map, op,
   if (isDrop) cls.push('drop')
   if (node.bearer_state) cls.push('bearer')
   if (node.limit_locked) cls.push('locked')
+  if (node.frozen) cls.push('frozen')
   if (node.scope?.tools?.edit === false) cls.push('ro-agent')
   if (node.audiences_held?.includes(USER)) cls.push('aud-user')
   else if (node.audiences_held?.length) cls.push('aud')
@@ -1085,6 +1090,9 @@ function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, map, op,
           {node.last_status &&
             <span className={'statuschip ' + node.last_status.status}
               title={node.last_status.summary}>{node.last_status.status}</span>}
+          {node.frozen &&
+            <span className="badge frozen"
+              title={node.frozen.error}>🧊 limit</span>}
           {node.limit_locked && <span className="badge dim">🔒 limit</span>}
           {stackN > 0 &&
             <button className="badge stackbadge"
@@ -1392,8 +1400,6 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
   }
 
   const liveKids = node.children.some((c) => c.state === 'live')
-  const hasBadges = node.limit_locked || node.generation > 0 || node.bearer_state
-    || node.audiences_held?.length > 0 || node.cost_usd > 0 || chat?.queued > 0
   return (
     <div className="desk-over" onWheel={(e) => e.stopPropagation()}
       onPointerDown={(e) => e.stopPropagation()}>
@@ -1405,20 +1411,7 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
         {node.last_status &&
           <span className={'statuschip ' + node.last_status.status}
             title={node.last_status.summary}>{node.last_status.status}</span>}
-        {chat?.busy && <span className="cc-spin" title="working">✳</span>}
         <span className="spacer" />
-        {/* the lifecycle action lives in the header — no dedicated row.
-            moving = drag the card; credits = drag the bar (user rulings) */}
-        <span className="cc-actions">
-          {live && !liveKids &&
-            <button className="danger"
-              onClick={() => op({ op: 'retire', node: node.id })}>
-              retire · {node.seat + node.grant}</button>}
-          {live && liveKids &&
-            <button className="danger" onClick={() => setAsking(true)}>
-              dissolve · {node.seat + node.grant}</button>}
-          {!live && <button onClick={() => op({ op: 'rehire', node: node.id })}>rehire</button>}
-        </span>
         <span className="cc-tabs">
           {['chat', 'history', 'files', 'inbox'].map((v) => (
             <button key={v} className={view === v ? 'on' : ''}
@@ -1429,7 +1422,19 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
         </span>
         <button className="cc-icon" onClick={onConfig}>⚙</button>
       </div>
-      {hasBadges && <div className="cc-bar">
+      {/* row 2: working state, badges, cost — and the lifecycle actions
+          (moved here from the header, user ruling) */}
+      <div className="cc-bar">
+        {chat?.busy &&
+          <span className="cc-working"><span className="cc-spin">✳</span> working</span>}
+        {chat?.busy &&
+          <button className="badge" title="pause: interrupt the current response"
+            onClick={() => interruptNode(slug, node.id)
+              .then((r) => toast([r.interrupted ? `⏸ ${node.id} paused` : `⛔ ${r.reason}`]))
+              .catch((e) => toast([`⛔ ${e.message}`]))}>⏸ pause</button>}
+        {node.frozen &&
+          <span className="badge frozen" title={node.frozen.error}>
+            🧊 usage limit{node.frozen.until ? ` · resumes ${node.frozen.until}` : ''}</span>}
         {node.limit_locked &&
           <span className="badge dim">🔒 limit</span>}
         {node.generation > 0 &&
@@ -1449,7 +1454,18 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
         ))}
         {node.cost_usd > 0 && <span className="badge dim">${node.cost_usd.toFixed(2)}</span>}
         {chat?.queued > 0 && <span className="badge">{chat.queued} queued</span>}
-      </div>}
+        <span className="spacer" />
+        <span className="cc-actions">
+          {live && !liveKids &&
+            <button className="danger"
+              onClick={() => op({ op: 'retire', node: node.id })}>
+              retire · {node.seat + node.grant}</button>}
+          {live && liveKids &&
+            <button className="danger" onClick={() => setAsking(true)}>
+              dissolve · {node.seat + node.grant}</button>}
+          {!live && <button onClick={() => op({ op: 'rehire', node: node.id })}>rehire</button>}
+        </span>
+      </div>
       {asking && (
         <ConfirmModal title={`dissolve ${node.id}?`}
           body="Its entire suborganization is retired with it. Context is kept; rehire brings nodes back."

@@ -113,7 +113,9 @@ ledger self-audit chip appears ONLY if the credit invariants are ever violated
 ## The desk (zoomed-in chat)
 
 - Header: tier, name (hover for its purpose), context wheel (red ≥ 80% —
-  compaction approaches), status chip, ✳ = working. Tabs: chat · history
+  compaction approaches), status chip. The second row holds the working
+  indicator (✳), ⏸ pause, badges, cost, and the retire/dissolve/rehire
+  action. Tabs: chat · history
   (the node's event log) · files (its scratch space) · inbox (the node's OWN
   mailbox, separate from history: orgtree mail waiting for its next turn is
   highlighted "awaiting next turn"; below that, recently delivered mail with
@@ -143,6 +145,41 @@ ledger self-audit chip appears ONLY if the credit invariants are ever violated
   again. The chat view hides the mail-envelope chrome and shows just the
   sender and body. A `preserving` bearer answers through a discarded fork — it
   retains nothing of the exchange.
+
+## Usage-limit freezes (🧊) and the ▶ resume button
+
+When ANY agent's model hits a usage limit (5-hour window, weekly cap…), the
+agent FREEZES: a popup announces it, the card shows a 🧊 badge (with the
+reset time when the error revealed one), and the interrupted turn — mail
+included — is kept verbatim. Mail sent to a frozen agent waits safely in its
+mailbox. While at least one agent is frozen, the top bar shows a **▶ resume
+N** button with a note about the limit and when it can be resumed; one click
+restarts every frozen agent at once, replaying exactly what the limit
+interrupted. (Fable's weekly limit additionally applies the org's
+fable-limit policy, as before.)
+
+## Pausing an agent (⏸)
+
+The desk's second row shows **⏸ pause** while an agent is working: it
+interrupts the current response mid-flight (the one sanctioned interrupt —
+message delivery never interrupts). The session stays alive; the next
+message resumes it, and anything queued delivers immediately.
+
+## Credit requests (top-level agents asking you)
+
+A top-level agent can ask YOU directly for a larger grant via
+orgtree_request_credits — not mail, a structured request framed
+**old → new (+increase)** with the agent's reason below and one-click
+**approve / deny** buttons, shown at the top of your ✉ inbox (it counts
+toward the eye's badge). Approve reallocates immediately and notifies the
+agent; deny notifies it to work within its grant. One pending request per
+agent. Deeper agents can't do this — they ask their superior to reallocate.
+
+## chatq policy
+
+Top-level agents (hired directly under you) may use chatq and hold the
+Monitor permission its listener needs. Subagents are banned from chatq by
+their standing prompt — org mail is their only channel.
 
 ## Lineage (the ≣ stack behind a card)
 
@@ -204,6 +241,9 @@ it appears on hover, next to ⚙). The desk's inbox tab is the same view inline.
 - Folder access is NOT here — it lives on the eye's ⚙ gear panel (user
   ruling), alongside the agent-hire defaults.
 - **top-level grant cap**: bounds only the hire slider under you.
+- **default top-level grant** (50 unless changed): pre-fills the draft bar of
+  every new top-level hire — on top of its seat cost; drag to adjust before
+  confirming.
 - **fable weekly-limit policy** — what happens when the shared Fable quota
   exhausts: **halt** (default: fable agents freeze visibly, keep their seats,
   superiors are notified, the org decides) · **switch to opus** (converted

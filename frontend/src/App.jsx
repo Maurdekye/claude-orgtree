@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  audienceAction, clearInbox, createOrg, deleteOrg, getAudiences, getInbox,
-  getOrgMd, getTree, listOrgs, openWs, putOrgMd, runOp, saveSettings,
+  audienceAction, clearInbox, createOrg, creditDecide, deleteOrg, getAudiences,
+  getInbox, getOrgMd, getTree, listOrgs, openWs, putOrgMd, resumeFrozen, runOp,
+  saveSettings,
 } from './api'
 import { ConfirmModal, MailFolders, MailList, OrgCanvas, useEsc } from './Canvas'
 import { DirList } from './forms'
@@ -81,6 +82,11 @@ export default function App() {
       }
       if (data?.type === 'node_event') {
         setPulse({ node: data.node, event: data.event, t: Date.now() })
+        if (data.event === 'frozen') {   // usage-limit popup (user ruling)
+          toast([`🧊 ${data.node} hit a usage limit and is FROZEN — use ▶ in the top bar to resume when the limit resets`])
+          refreshTree(slug)
+        }
+        if (data.event === 'resumed') refreshTree(slug)
         if (data.event === 'turn_started') {
           setActivity((a) => ({ ...a, [data.node]: { phase: 'thinking' } }))
         } else if (data.event === 'turn_done') {
@@ -153,6 +159,25 @@ export default function App() {
                   <span className="chip">${tree.cost_usd_total.toFixed(2)}</span>}
                 {tree.fable_lock &&
                   <span className="chip bad" title={tree.fable_lock.at}>⛔ fable limit</span>}
+                {(() => {   // usage-limit freeze: ▶ restarts every frozen agent
+                  const frozen = flatNodes(tree).filter((n) => n.frozen)
+                  if (!frozen.length) return null
+                  const until = frozen.map((n) => n.frozen.until).find(Boolean)
+                  return (
+                    <>
+                      <button className="resume-all" title={frozen.map((n) => n.id).join(', ')}
+                        onClick={() => resumeFrozen(slug)
+                          .then((r) => { toast([`▶ resumed ${r.resumed.length} agent(s)`]); refreshTree(slug) })
+                          .catch((e) => toast([`⛔ ${e.message}`]))}>
+                        ▶ resume {frozen.length}
+                      </button>
+                      <span className="resume-note">
+                        usage limit hit — {frozen.length} agent{frozen.length > 1 ? 's' : ''} frozen
+                        {until ? ` · resumable ${until}` : ''}
+                      </span>
+                    </>
+                  )
+                })()}
                 <span style={{ flex: 1 }} />
                 <button onClick={() => setShowSettings(true)}>⚙ settings</button>
               </header>
@@ -165,6 +190,7 @@ export default function App() {
               )}
               {showInbox && (
                 <InboxPanel slug={slug} tree={tree} toast={toast}
+                  refresh={() => refreshTree(slug)}
                   close={() => { setShowInbox(false); refreshTree(slug) }} />
               )}
             </>
@@ -255,7 +281,7 @@ function SenderChip({ id, nodes }) {
   )
 }
 
-function InboxPanel({ slug, tree, toast, close }) {
+function InboxPanel({ slug, tree, toast, refresh, close }) {
   useEsc(close)
   const [box, setBox] = useState(null)
   const [aud, setAud] = useState(null)
@@ -274,6 +300,32 @@ function InboxPanel({ slug, tree, toast, close }) {
     <div className="overlay" onClick={close}>
       <div className="settings wide" onClick={(e) => e.stopPropagation()}>
         <h3>✉ your inbox</h3>
+        {(tree.credit_requests ?? []).length > 0 && (
+          <>
+            <div className="field-label">credit requests</div>
+            {tree.credit_requests.map((r) => (
+              <div className="credreq" key={r.id}>
+                <div className="cr-head">
+                  <SenderChip id={r.node} nodes={nodes} />
+                  <b>{r.old} → {r.new}</b>
+                  <span className="dim">(+{r.new - r.old})</span>
+                  <span className="dim">{r.at}</span>
+                </div>
+                <div className="cr-reason">{r.reason}</div>
+                <div className="row">
+                  <button className="primary" onClick={() =>
+                    creditDecide(slug, r.id, 'approve')
+                      .then(() => { toast([`✓ approved — ${r.node}'s grant is now ${r.new}`]); refresh?.() })
+                      .catch((e) => toast([`⛔ ${e.message}`]))}>approve</button>
+                  <button onClick={() =>
+                    creditDecide(slug, r.id, 'deny')
+                      .then(() => { toast([`✗ denied ${r.node}'s request`]); refresh?.() })
+                      .catch((e) => toast([`⛔ ${e.message}`]))}>deny</button>
+                </div>
+              </div>
+            ))}
+          </>
+        )}
         {userReqs.length > 0 && (
           <>
             <div className="field-label">audience requests</div>
@@ -326,6 +378,7 @@ function InboxPanel({ slug, tree, toast, close }) {
 function SettingsPanel({ tree, toast, close }) {
   useEsc(close)
   const [maxTop, setMaxTop] = useState(tree.max_top_grant ?? 1000)
+  const [defTop, setDefTop] = useState(tree.default_top_grant ?? 50)
   const [orgMd, setOrgMd] = useState(null)
   const [fablePolicy, setFablePolicy] = useState(tree.fable_limit_policy ?? 'halt')
   useEffect(() => {
@@ -339,6 +392,9 @@ function SettingsPanel({ tree, toast, close }) {
         <div className="field-label">top-level grant cap</div>
         <input type="number" min="1" step="1" value={maxTop} style={{ width: '8em' }}
           onChange={(e) => setMaxTop(e.target.value)} />
+        <div className="field-label">default top-level grant (pre-filled on new hires)</div>
+        <input type="number" min="0" step="1" value={defTop} style={{ width: '8em' }}
+          onChange={(e) => setDefTop(e.target.value)} />
         <div className="field-label">fable weekly-limit policy</div>
         <select value={fablePolicy} onChange={(e) => setFablePolicy(e.target.value)}>
           <option value="halt">halt (default)</option>
@@ -359,7 +415,9 @@ function SettingsPanel({ tree, toast, close }) {
           <button className="primary" onClick={() =>
             Promise.all([
               saveSettings(tree.slug,
-                { max_top_grant: +maxTop || undefined, fable_limit_policy: fablePolicy }),
+                { max_top_grant: +maxTop || undefined,
+                  default_top_grant: Number.isFinite(+defTop) ? +defTop : undefined,
+                  fable_limit_policy: fablePolicy }),
               orgMd != null ? putOrgMd(tree.slug, orgMd) : Promise.resolve({}),
             ]).then(([r]) => { toast(r.warnings); close() })
               .catch((e) => toast([`⛔ ${e.message}`]))}>save</button>
