@@ -121,6 +121,8 @@ class Org:
             sc.setdefault("permission_mode", self.d.get("permission_mode", "acceptEdits"))
             n.setdefault("ui_order", float(i))
             n.setdefault("purpose", None)
+            # pre-unification relic: queued texts now persist as mailbox mail
+            n.pop("queued_msgs", None)
         if self.d.get("fable_limit_policy") in (None, "retire"):
             self.d["fable_limit_policy"] = "halt"   # 'retire' dropped by user ruling
         # org-wide agent defaults for hires that don't state tools (user hires):
@@ -418,6 +420,12 @@ class Org:
         log = self.d.setdefault("mail_log", {}).setdefault(to, [])
         log.append(dict(entry))
         del log[:-100]
+        if sender == USER:
+            # the user's Sent folder: every user message IS mail (user ruling —
+            # the direct-message channel was folded into the mail system)
+            out = self.d.setdefault("user_outbox", [])
+            out.append({**entry, "to": to})
+            del out[:-100]
         self._log("mail", sender, {"to": to, "kind": kind,
                                    "gist": body.strip().splitlines()[0][:80]}, warnings)
         return {"delivered": to, "warnings": warnings}

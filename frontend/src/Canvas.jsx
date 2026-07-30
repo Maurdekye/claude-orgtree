@@ -1294,9 +1294,10 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
       const stick = force || !loadedRef.current || nearBottom()
       loadedRef.current = true
       setChat(c)
-      // a pending message graduates once the transcript contains it
+      // a pending message graduates once the transcript contains it — by
+      // containment, not equality: the turn text is a mail envelope now
       setPending((p) => p.filter((x) =>
-        !c.messages.slice(-20).some((m) => m.role === 'user' && m.text === x)))
+        !c.messages.slice(-20).some((m) => m.role === 'user' && m.text.includes(x))))
       // the fetched transcript supersedes everything streamed so far — keeping
       // the feed around doubled the whole in-flight turn (transcript copy +
       // live copy). Stream events landing after this fetch re-append.
@@ -1421,7 +1422,7 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
                 ? <div key={'f' + i} className="msg live tools">⏺ {f.text}</div>
                 : f.kind === 'steered'
                   ? <div key={'f' + i} className="msg user live md"
-                      dangerouslySetInnerHTML={md(f.text)} />
+                      dangerouslySetInnerHTML={md(stripEnvelope(f.text))} />
                   : <div key={'f' + i} className="msg assistant live md"
                       dangerouslySetInnerHTML={md(f.text)} />
             ))}
@@ -1460,7 +1461,7 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
 // the left (sender · time · truncated brief — mails have no subjects), the
 // selected message opened in the reading pane on the right. Waiting/unread
 // mail sorts on top and is highlighted until read/delivered.
-export function MailList({ pending = [], delivered = [], waitLabel, sender }) {
+export function MailList({ pending = [], delivered = [], waitLabel, sender, outgoing }) {
   const all = [
     ...pending.map((m) => ({ ...m, _wait: true })),
     ...[...delivered].reverse(),
@@ -1468,6 +1469,7 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender }) {
   const [sel, setSel] = useState(0)
   const S = sender ?? ((id) => <span>{id === USER ? '@user' : id}</span>)
   const cur = all[Math.min(sel, all.length - 1)]
+  const party = (m) => (outgoing ? m.to : m.from)
   const brief = (b) => (b ?? '').trim().replace(/\s+/g, ' ').slice(0, 90)
   const when = (at) => (at ?? '').slice(5, 16).replace('T', ' ')
   if (!all.length) return <div className="dim pad">no mail yet</div>
@@ -1479,7 +1481,9 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender }) {
             className={'mailrow' + (m === cur ? ' on' : '') + (m._wait ? ' unread' : '')}
             onClick={() => setSel(i)}>
             <div className="l1">
-              <span className="mfrom">{m.from === USER ? '@user' : m.from}</span>
+              <span className="mfrom">
+                {outgoing ? '→ ' : ''}{party(m) === USER ? '@user' : party(m)}
+              </span>
               <span className="mtime">{when(m.at)}</span>
             </div>
             <div className="l2">{brief(m.body)}</div>
@@ -1490,7 +1494,8 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender }) {
         {cur && (
           <>
             <div className="mailer-head">
-              {S(cur.from)}
+              {outgoing && <span className="dim">to</span>}
+              {S(party(cur))}
               <span className="dim">{cur.kind}</span>
               {cur.relationship && <span className="dim">{cur.relationship}</span>}
               <span className="dim">{cur.at}</span>
@@ -1504,19 +1509,40 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender }) {
   )
 }
 
-// The node's own mailbox (user ruling: its own tab, separate from history).
+// The node's own mailbox (user ruling: its own tab, separate from history),
+// with the same folders as the user's: inbox + sent.
 function InboxView({ slug, nid, pulse }) {
   const [box, setBox] = useState(null)
+  const [folder, setFolder] = useState('inbox')
   useEffect(() => {
     getNodeInbox(slug, nid).then(setBox)
-      .catch(() => setBox({ pending: [], delivered: [] }))
+      .catch(() => setBox({ pending: [], delivered: [], sent: [] }))
   }, [slug, nid, pulse])
   return (
-    <div className="mailpane">
-      {box == null
-        ? <div className="dim pad">loading…</div>
-        : <MailList pending={box.pending} delivered={box.delivered}
-            waitLabel="awaiting next turn" />}
+    <div className="mailwrap">
+      <MailFolders folder={folder} setFolder={setFolder}
+        unread={box?.pending.length ?? 0} />
+      <div className="mailpane">
+        {box == null
+          ? <div className="dim pad">loading…</div>
+          : folder === 'inbox'
+            ? <MailList pending={box.pending} delivered={box.delivered}
+                waitLabel="awaiting next turn" />
+            : <MailList delivered={box.sent ?? []} outgoing />}
+      </div>
+    </div>
+  )
+}
+
+export function MailFolders({ folder, setFolder, unread }) {
+  return (
+    <div className="mail-folders">
+      {['inbox', 'sent'].map((f) => (
+        <button key={f} className={folder === f ? 'on' : ''}
+          onClick={() => setFolder(f)}>
+          {f}{f === 'inbox' && unread > 0 ? ` ${unread}` : ''}
+        </button>
+      ))}
     </div>
   )
 }
@@ -1621,12 +1647,25 @@ function LineagePanel({ node, op, close }) {
   )
 }
 
+// Incoming turns are mail envelopes (messages ARE mail); for the chat view,
+// hide the machine chrome — [MAIL]/[END MAIL] markers, drive nudges — and
+// render the FROM attribution as a small header instead of body text.
+const stripEnvelope = (t) => (t ?? '')
+  .split('\n')
+  .filter((l) => !/^\[(MAIL — .*|END MAIL)\]$/.test(l.trim())
+    && !l.trim().startsWith('(orgtree) '))
+  .join('\n')
+  .replace(/^FROM (\S+) \([^)]*\) · \S+ · \S+$/gm, '**$1**')
+  .replace(/^FROM (\S+) \([^)]*\)$/gm, '**$1**')
+  .trim()
+
 function Msg({ m }) {
   if (m.role === 'system') return <div className="msg sys">{m.text}</div>
+  const text = m.role === 'user' ? stripEnvelope(m.text) : m.text
   return (
     <div className={'msg ' + m.role + (m.oracle ? ' oracle' : '')}>
       {m.tools?.length > 0 && <div className="tools">⏺ {m.tools.join(' · ')}</div>}
-      {m.text && <div className="msgtext md" dangerouslySetInnerHTML={md(m.text)} />}
+      {text && <div className="msgtext md" dangerouslySetInnerHTML={md(text)} />}
       {m.oracle && <div className="tools">◇ oracle exchange — not retained by the node</div>}
     </div>
   )

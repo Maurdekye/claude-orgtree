@@ -118,7 +118,10 @@ ledger self-audit chip appears ONLY if the credit invariants are ever violated
   is paging, not death). dissolve retires an ENTIRE subtree. rehire brings an
   archived node back at its old seat.
 - Composer: Enter sends, Shift+Enter for a newline. The session starts on the
-  first message. Messages to a BUSY agent deliver **mid-task, right after
+  first message. **Every message you send IS mail** (user ruling — there is no
+  separate direct-message channel): it lands in the agent's mailbox, is
+  recorded in your Sent folder, and the agent is driven to act on it.
+  Messages to a BUSY agent deliver **mid-task, right after
   its next tool call finishes** — never interrupting it (your sent bubble
   shows dimmed until delivered; the agent's system prompt authenticates this
   channel). If the agent makes no further tool calls, delivery falls back to
@@ -126,7 +129,10 @@ ledger self-audit chip appears ONLY if the credit invariants are ever violated
   README). This applies to ALL mail — agent-to-agent messages deliver
   mid-task the same way; each message carries its sender's authority (user
   mail outranks the chain, agent mail has its normal standing).
-  Queued messages survive server restarts. A `preserving` bearer answers through a discarded fork — it
+  Undelivered mail persists in the org document, so it survives server
+  restarts inherently — on startup any node with waiting mail is driven
+  again. The chat view hides the mail-envelope chrome and shows just the
+  sender and body. A `preserving` bearer answers through a discarded fork — it
   retains nothing of the exchange.
 
 ## Lineage (the ≣ stack behind a card)
@@ -141,7 +147,12 @@ their successor. A predecessor is NOT an org child — it holds no authority.
 ## Inboxes (✉ on the eye AND on every card)
 
 The eye's ✉ and each card's ✉ open the SAME interface (user ruling), laid out
-like a webmail client: the message list on the left — sender, send time, and a
+like a webmail client with two folders — **inbox** and **sent**. Everything
+is mail (including your direct messages to agents), so the Sent folder is a
+complete outbox: yours shows every message you've sent to any agent; an
+agent's shows everything it has sent (mirrored from its recipients'
+archives, `→ recipient` in the list). The message list sits on the left —
+sender, send time, and a
 truncated brief of the body (mails have no subjects) — and the selected
 message opened full (markdown-rendered) in the reading pane on the right.
 Unread / not-yet-delivered mail sorts on top with the sender highlighted; the

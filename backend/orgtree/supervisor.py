@@ -301,22 +301,6 @@ def _envelope(slug: str, nid: str, text: str) -> str:
     return ("\n\n".join(prelude) + "\n\n" + text) if prelude else text
 
 
-def _mirror_queue(slug: str, nid: str):
-    """Best-effort persistence of the in-memory queue (№: queued texts used to
-    vanish on restart — silently discarded messages). Called OUTSIDE _state_lock."""
-    st = state(slug, nid)     # ⚠ state() takes _state_lock — never nest it
-    with _state_lock:
-        q = list(st["queue"])
-    try:
-        with store.DOC_LOCK:
-            org = store.load_org(slug)
-            if nid in org.nodes:
-                org.node(nid)["queued_msgs"] = q
-                store.save_org(org)
-    except Exception:                                        # noqa: BLE001
-        pass
-
-
 
 def _build_cmd(org: Org, nid: str) -> list[str]:
     n = org.node(nid)
@@ -526,7 +510,6 @@ def _run_turn(slug: str, nid: str, text: str):
                                 nxt = st["queue"].pop(0)
                                 st["responding"] = True
                         if nxt is not None:
-                            _mirror_queue(slug, nid)
                             try:
                                 proc.stdin.write(_user_event(nxt))
                                 proc.stdin.flush()
@@ -535,7 +518,6 @@ def _run_turn(slug: str, nid: str, text: str):
                                 with _state_lock:
                                     st["queue"].insert(0, nxt)
                                     st["responding"] = False
-                                _mirror_queue(slug, nid)
                         try:
                             proc.stdin.close()
                         except OSError:
@@ -590,7 +572,6 @@ def _run_turn(slug: str, nid: str, text: str):
                 nxt = st["queue"].pop(0)
             else:
                 st["busy"] = False
-        _mirror_queue(slug, nid)
         notify(slug, nid, "turn_done")
         if nxt is not None:
             _run_turn(slug, nid, nxt)
@@ -685,41 +666,35 @@ def _compact_split(slug: str, nid: str):
     notify(slug, pred, "created")
 
 
-def send_message(slug: str, nid: str, text: str, user: bool = False) -> dict:
-    """Queue-or-run; returns immediately. A busy node's queue is drained into
-    the SAME live process at each result boundary (never mid-response — the
-    CLI drops those, live-observed). ANY message to a responding node goes on
-    the STEER list — user AND agent mail alike: the PostToolUse hook delivers
-    it right after the node's next tool call finishes — soonest possible
-    without interrupting (user ruling). Sender attribution travels IN the
-    stored text (user mail gets the FROM @user line here; agent mail already
-    carries FROM lines from the _envelope mailbox drain), so authority is
-    correct on every delivery path — hook, boundary fold, or queue.
-    Attached nodes (№17: open in the user's terminal) only queue."""
+def send_message(slug: str, nid: str, text: str) -> dict:
+    """Drive a node with a nudge; returns immediately. EVERY substantive message
+    — user and agent alike — is MAIL (user ruling: the direct-message channel
+    was folded into the mail system): it already sits persisted in the node's
+    mailbox, and `text` here is only the drive nudge; _envelope drains the
+    mailbox (with per-sender FROM attribution) into the turn. A busy node's
+    queue feeds the SAME live process at each result boundary (never
+    mid-response — the CLI drops those, live-observed); a RESPONDING node
+    steers instead: the PostToolUse hook delivers right after its next tool
+    call — soonest possible without interrupting (user ruling). Restart
+    durability is inherent: undelivered mail lives in the org doc and
+    reconcile() re-drives it. Attached nodes (№17: open in the user's
+    terminal) only queue."""
     st = state(slug, nid)
-    if user:
-        text = ("FROM @user (THE USER — user instructions outrank your chain)\n"
-                + text)
     text = _envelope(slug, nid, text)     # mail/notices ride along
-    queued = False
     with _state_lock:
         if st.get("attached"):
             st["queue"].append(text)
-            n, queued = len(st["queue"]), True
-            out = {"accepted": True, "queued": n, "attached": True}
+            out = {"accepted": True, "queued": len(st["queue"]), "attached": True}
         elif st["busy"]:
             if st.get("responding"):
                 st.setdefault("steer", []).append(text)
                 out = {"accepted": True, "queued": 0, "steering": True}
             else:
                 st["queue"].append(text)
-                n, queued = len(st["queue"]), True
-                out = {"accepted": True, "queued": n}
+                out = {"accepted": True, "queued": len(st["queue"])}
         else:
             st["busy"] = True
             out = None
-    if queued:
-        _mirror_queue(slug, nid)
     if out is not None:
         return out
     threading.Thread(target=_run_turn, args=(slug, nid, text), daemon=True).start()
@@ -779,28 +754,17 @@ def reconcile(slug: str) -> list[str]:
                 marked.append(nid)
         if marked:
             store.save_org(org)
-        # drain-on-start: queued messages persisted in the doc survive restarts
-        # (they used to be memory-only and silently discarded)
-        revive = []
-        for nid, n in org.nodes.items():
-            q = n.get("queued_msgs") or []
-            if q and n["state"] == "live" and nid not in marked:
-                st = state(slug, nid)
-                with _state_lock:
-                    st["queue"].extend(q)
-                revive.append(nid)
+        # drain-on-start: undelivered mail persists in the org doc (messages
+        # ARE mail — user ruling), so any live node with a waiting mailbox
+        # simply gets driven again. No shadow queue to mirror or replay.
+        revive = [nid for nid, n in org.nodes.items()
+                  if n["state"] == "live" and nid not in marked
+                  and (org.d.get("mail") or {}).get(nid)]
     for nid in revive:
-        st = state(slug, nid)
-        kick = None
-        with _state_lock:
-            if not st["busy"] and not st.get("attached") and st["queue"]:
-                st["busy"] = True
-                kick = st["queue"].pop(0)
-        _mirror_queue(slug, nid)
-        if kick is not None:
-            print(f"[orgtree] {slug}/{nid}: draining persisted queue")
-            threading.Thread(target=_run_turn, args=(slug, nid, kick),
-                             daemon=True).start()
+        print(f"[orgtree] {slug}/{nid}: driving mail that waited across restart")
+        send_message(slug, nid,
+                     "(orgtree) You have mail above — some of it waited across "
+                     "an orgtree restart. Handle it as appropriate.")
     return marked
 
 

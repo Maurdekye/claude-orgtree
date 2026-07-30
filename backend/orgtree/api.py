@@ -259,9 +259,11 @@ class Message(BaseModel):
 
 @app.post("/api/orgs/{slug}/nodes/{nid}/message")
 def node_message(slug: str, nid: str, body: Message):
-    """§7.5 channel 1: a real user turn, delivered resume-on-demand. Talking to a
-    non-top-level node notifies its whole superior chain (§7.4 chain notices) and
-    grants the node a user audience."""
+    """A user message IS mail (user ruling — the direct-message channel was
+    folded into the mail system): it lands persisted in the node's mailbox
+    (and in your Sent folder), then the node is driven; a busy node gets it
+    mid-task via steering, never an interrupt. Talking to a non-top-level
+    node notifies its whole superior chain (§7.4) and grants a user audience."""
     if not body.text.strip():
         raise HTTPException(422, "empty message")
     with store.DOC_LOCK:
@@ -269,16 +271,16 @@ def node_message(slug: str, nid: str, body: Message):
             org = store.load_org(slug)
             if org.node(nid)["state"] != "live":
                 raise LedgerError(f"{nid} is {org.node(nid)['state']} — rehire it to talk")
+            org.post_mail(USER, nid, body.text)
+            org.user_deep_reach(nid, body.text.strip().splitlines()[0][:80])
+            store.save_org(org)
         except LedgerError as e:
             raise HTTPException(422, str(e))
-        gist = body.text.strip().splitlines()[0][:80]
-        org.user_deep_reach(nid, gist)
-        store.save_org(org)
     mail_notify(slug, USER, nid)
-    # user=True stamps the FROM @user authority line; delivery is mid-task via
-    # the steering hook (right after the node's next tool call), never an
-    # interrupt — user ruling
-    return supervisor.send_message(slug, nid, body.text, user=True)
+    return supervisor.send_message(
+        slug, nid,
+        "(orgtree) The mail above includes a message from the user, addressed "
+        "to you — act on it now.")
 
 
 @app.post("/api/orgs/{slug}/nodes/{nid}/steer")
@@ -297,13 +299,15 @@ async def node_steer(slug: str, nid: str):
 @app.get("/api/orgs/{slug}/inbox")
 def user_inbox(slug: str):
     """Same shape as a node's inbox (user ruling — the two interfaces function
-    identically): unread mail + the read archive."""
+    identically): unread mail + the read archive + the Sent folder (every user
+    message is mail and gets recorded)."""
     try:
         d = store.load_org(slug).d
     except LedgerError as e:
         raise HTTPException(404, str(e))
     return {"pending": d.get("user_inbox", []),
-            "delivered": d.get("user_mail_log", [])[-50:]}
+            "delivered": d.get("user_mail_log", [])[-50:],
+            "sent": d.get("user_outbox", [])[-50:]}
 
 
 @app.post("/api/orgs/{slug}/inbox/clear")
@@ -622,7 +626,15 @@ def node_inbox(slug: str, nid: str):
     keys = {(m["at"], m["from"], m["body"]) for m in waiting}
     delivered = [m for m in (org.d.get("mail_log") or {}).get(nid, [])
                  if (m["at"], m["from"], m["body"]) not in keys]
-    return {"pending": waiting, "delivered": delivered[-50:]}
+    # the node's Sent folder, mirrored from the recipients' archives
+    sent = []
+    for to, lst in (org.d.get("mail_log") or {}).items():
+        sent += [{**m, "to": to} for m in lst if m["from"] == nid]
+    for m in org.d.get("user_inbox", []) + org.d.get("user_mail_log", []):
+        if m["from"] == nid:
+            sent.append({**m, "to": USER})
+    sent.sort(key=lambda m: m["at"])
+    return {"pending": waiting, "delivered": delivered[-50:], "sent": sent[-50:]}
 
 
 @app.get("/api/orgs/{slug}/events")

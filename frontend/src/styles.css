@@ -455,7 +455,14 @@ main {
    list on the left (sender · time · truncated brief), reading pane on the
    right. One component serves the eye's inbox, card modals and the desk tab. */
 .mailpane { display: flex; flex: 1; min-height: 0; }
-.settings .mailpane { height: 58vh; }
+.settings .mailpane { height: 55vh; }
+.mailwrap { display: flex; flex-direction: column; flex: 1; min-height: 0; gap: 8px; }
+.mail-folders { display: flex; gap: 4px; flex-shrink: 0; }
+.mail-folders button {
+  background: none; border: none; color: var(--dim);
+  font-size: 12px; padding: 2px 10px; border-radius: 4px;
+}
+.mail-folders button.on { color: var(--ink-strong); background: var(--panel-2); }
 .mailer {
   display: flex; flex: 1; min-height: 0;
   border: 1px solid var(--line-soft); border-radius: 6px; overflow: hidden;

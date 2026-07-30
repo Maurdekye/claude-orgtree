@@ -3,7 +3,7 @@ import {
   audienceAction, clearInbox, createOrg, deleteOrg, getAudiences, getInbox,
   getOrgMd, getTree, listOrgs, openWs, putOrgMd, runOp, saveSettings,
 } from './api'
-import { ConfirmModal, MailList, OrgCanvas, useEsc } from './Canvas'
+import { ConfirmModal, MailFolders, MailList, OrgCanvas, useEsc } from './Canvas'
 import { DirList } from './forms'
 
 const TIER_LETTER = { haiku: 'H', sonnet: 'S', opus: 'O', fable: 'F' }
@@ -259,6 +259,7 @@ function InboxPanel({ slug, tree, toast, close }) {
   useEsc(close)
   const [box, setBox] = useState(null)
   const [aud, setAud] = useState(null)
+  const [folder, setFolder] = useState('inbox')
   const nodes = flatNodes(tree)
   const reload = useCallback(() => {
     getInbox(slug).then(setBox).catch((e) => toast([`⛔ ${e.message}`]))
@@ -300,15 +301,20 @@ function InboxPanel({ slug, tree, toast, close }) {
             </div>
           </>
         )}
+        <MailFolders folder={folder} setFolder={setFolder}
+          unread={box?.pending.length ?? 0} />
         <div className="mailpane">
           {box == null
             ? <div className="dim">loading…</div>
-            : <MailList pending={box.pending} delivered={box.delivered}
-                waitLabel="unread"
-                sender={(id) => <SenderChip id={id} nodes={nodes} />} />}
+            : folder === 'inbox'
+              ? <MailList pending={box.pending} delivered={box.delivered}
+                  waitLabel="unread"
+                  sender={(id) => <SenderChip id={id} nodes={nodes} />} />
+              : <MailList delivered={box.sent ?? []} outgoing
+                  sender={(id) => <SenderChip id={id} nodes={nodes} />} />}
         </div>
         <div className="row">
-          {box?.pending.length > 0 && <button onClick={() =>
+          {folder === 'inbox' && box?.pending.length > 0 && <button onClick={() =>
             clearInbox(slug).then(reload).catch((e) => toast([`⛔ ${e.message}`]))}>mark all read</button>}
           <button className="primary" onClick={close}>close</button>
         </div>
