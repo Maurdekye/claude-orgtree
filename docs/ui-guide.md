@@ -22,19 +22,29 @@ read once.
   demote, its whole subtree rides along. Dropping on empty space just reorders
   it among its siblings (cosmetic). There is no move button; dragging IS moving.
 - The terracotta **eye** is you, the overseer. You are the root of the org.
-  Your ✉ inbox opens from the button on the eye itself. Opening an org starts
-  the camera on the eye and drifts out to the full tree — wheel or drag
-  interrupts the glide instantly.
+  Your ✉ inbox opens from the button on the eye itself; the ⚙ gear on the eye
+  opens your **agent-hire defaults** (symmetric with each agent's own ⚙
+  config). Opening an org starts the camera on the eye and drifts out to the
+  full tree — wheel or drag interrupts the glide instantly.
 
 ## Hiring
 
 - Hover any live card (or the eye) and click one of the round **H S O F**
-  chips: haiku · sonnet · opus · fable, seat costs 1 · 3 · 5 · 10. A disabled
-  chip means the node's free credits don't cover that seat (its tooltip shows
-  the arithmetic).
+  chips (tinted in their model's color): haiku · sonnet · opus · fable, seat
+  costs 1 · 3 · 5 · 10. A disabled chip means the node's free credits don't
+  cover that seat (its tooltip shows the arithmetic).
 - A dashed **uninitialized** draft box appears; type a name (1–2 words,
   Enter or ✓ hires, Esc discards) and set its grant by dragging the draft's
   credit bar.
+- **Agent-hire defaults (⚙ on the eye).** Hires made from the chips don't ask
+  about capabilities — they take the org's defaults, which start with EVERY
+  capability enabled: all four tool switches plus all registered MCP servers
+  ("all registered servers" tracks servers you register later, too).
+  Top-level agents get the defaults exactly; deeper hires get the
+  intersection of the defaults with their superior's capabilities (an agent
+  can never beget a capability it doesn't hold). Agents hiring through
+  orgtree_hire still state every switch explicitly — defaults never apply to
+  them. Adjust any individual agent afterward via its own ⚙ config.
 
 ## Credit bars (the left-edge bar on every live card)
 

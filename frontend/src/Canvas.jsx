@@ -3,7 +3,7 @@ import { marked } from 'marked'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   audienceAction, getChat, getHistory, getMcpServers, getScratch,
-  reorderNode, saveScope, sendMessage,
+  reorderNode, saveScope, saveSettings, sendMessage,
 } from './api'
 
 const TIER_LETTER = { haiku: 'H', sonnet: 'S', opus: 'O', fable: 'F' }
@@ -142,6 +142,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
   const [draft, setDraft] = useState(null)
   const [configId, setConfigId] = useState(null)
   const [lineageId, setLineageId] = useState(null)
+  const [userCfg, setUserCfg] = useState(false)
   const seats = tree.tiers ?? { haiku: 1, sonnet: 3, opus: 5, fable: 10 }
   const vroot = useMemo(() => withDraftTree(tree, draft), [tree, draft])
   const map = useMemo(() => flatten(vroot, seats), [vroot])   // eslint-disable-line
@@ -671,7 +672,8 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
           if (n.id === USER) {
             return <UserNode key={USER} pos={p} isDrop={dropId === USER}
               stats={orgStats} inboxCount={tree.user_inbox_count ?? 0}
-              onInbox={onInbox} onSpawn={(t) => spawn(USER, t)} />
+              onInbox={onInbox} onGear={() => setUserCfg(true)}
+              onSpawn={(t) => spawn(USER, t)} />
           }
           if (n.id === DRAFT) {
             return <DraftNode key={DRAFT} pos={p} draft={draft} map={map} seats={seats}
@@ -705,12 +707,16 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
         <LineagePanel node={map.get(lineageId)} op={op}
           close={() => setLineageId(null)} />
       )}
+      {userCfg && (
+        <UserConfig tree={tree} slug={slug} toast={toast}
+          close={() => setUserCfg(false)} />
+      )}
     </div>
   )
 }
 
 // ------------------------------------------------------------- the overseer
-function UserNode({ pos, isDrop, stats, inboxCount, onInbox, onSpawn }) {
+function UserNode({ pos, isDrop, stats, inboxCount, onInbox, onGear, onSpawn }) {
   return (
     <div className={'sq user' + (isDrop ? ' drop' : '')} style={{
       transform: `translate(${pos.x}px, ${pos.y}px)`, width: USER_W, height: USER_H,
@@ -737,6 +743,9 @@ function UserNode({ pos, isDrop, stats, inboxCount, onInbox, onSpawn }) {
         onClick={(e) => { e.stopPropagation(); onInbox?.() }}>
         ✉{inboxCount > 0 && <span className="count">{inboxCount}</span>}
       </button>
+      <button className="eye-gear" title="agent-hire defaults"
+        onPointerDown={(e) => e.stopPropagation()}
+        onClick={(e) => { e.stopPropagation(); onGear?.() }}>⚙</button>
       <SpawnChips onSpawn={onSpawn} free={Infinity} seats={{}} />
     </div>
   )
@@ -756,6 +765,65 @@ function SpawnChips({ onSpawn, free, seats }) {
           </button>
         )
       })}
+    </div>
+  )
+}
+
+// ⚙ on the overseer — the org's agent-hire defaults, symmetric with each
+// agent's own config modal. Granted to hires that don't state tools: top-level
+// agents get exactly this; deeper hires get the ∩ with the superior's
+// capability (clamped server-side at hire time). "*" = every registered MCP
+// server, present and future.
+function UserConfig({ tree, slug, toast, close }) {
+  useEsc(close)
+  const [defTools, setDefTools] = useState({
+    bash: true, web: true, edit: true, subagents: true,
+    ...(tree.default_tools ?? {}),
+    mcp: [...(tree.default_tools?.mcp ?? ['*'])],
+  })
+  const [servers, setServers] = useState([])
+  useEffect(() => { getMcpServers().then((r) => setServers(r.servers)).catch(() => {}) }, [])
+  const allMcp = defTools.mcp.includes('*')
+  return (
+    <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
+      <div className="settings" onClick={(e) => e.stopPropagation()}>
+        <h3>⚙ you <span className="dim">· agent-hire defaults</span></h3>
+        <div className="field-label">tools</div>
+        {TOOL_LABELS.map(([k, label]) => (
+          <label className="checkline" key={k}>
+            <input type="checkbox" checked={!!defTools[k]}
+              onChange={(e) => setDefTools({ ...defTools, [k]: e.target.checked })} />
+            {label}
+          </label>
+        ))}
+        <div className="field-label">MCP servers</div>
+        <label className="checkline">
+          <input type="checkbox" checked={allMcp}
+            onChange={(e) => setDefTools({
+              ...defTools, mcp: e.target.checked ? ['*'] : [...servers] })} />
+          all registered servers (current and future)
+        </label>
+        {!allMcp && servers.map((s) => (
+          <label className="checkline" key={s}>
+            <input type="checkbox" checked={defTools.mcp.includes(s)}
+              onChange={(e) => setDefTools({
+                ...defTools,
+                mcp: e.target.checked
+                  ? [...defTools.mcp, s]
+                  : defTools.mcp.filter((x) => x !== s),
+              })} />
+            <span className="mono">{s}</span>
+          </label>
+        ))}
+        <div className="row">
+          <button className="primary" onClick={() =>
+            saveSettings(slug, tree.dirs.filter((d) => d !== tree.workspace),
+              undefined, false, undefined, defTools)
+              .then((r) => { toast(r.warnings); close() })
+              .catch((e) => toast([`⛔ ${e.message}`]))}>save</button>
+          <button onClick={close}>cancel</button>
+        </div>
+      </div>
     </div>
   )
 }
@@ -1013,7 +1081,10 @@ function NodeConfig({ node, map, tree, slug, op, toast, close }) {
        ...tree.dirs.filter((d) => d !== tree.workspace).map((p) => ({ path: p, mode: 'rw' }))]
   const addable = parentDirs.filter((pd) => !dirs.some((d) => d.path === pd.path))
   const parentHolds = (k) => parentTools == null || parentTools[k] !== false
-  const parentHoldsMcp = (s) => parentTools == null || (parentTools.mcp ?? []).includes(s)
+  // "*" = every registered server, present and future
+  const parentHoldsMcp = (s) => parentTools == null
+    || (parentTools.mcp ?? []).includes('*') || (parentTools.mcp ?? []).includes(s)
+  const holdsAllMcp = tools.mcp.includes('*')
   return (
     // pointerdown must not reach the viewport: its pan pointer-CAPTURE retargets
     // the click, so backdrop-close and every button in here silently broke
@@ -1090,13 +1161,16 @@ function NodeConfig({ node, map, tree, slug, op, toast, close }) {
         {servers.length === 0 && <div className="hint">none registered</div>}
         {servers.map((s) => (
           <label className="checkline" key={s}>
-            <input type="checkbox" checked={tools.mcp.includes(s) && parentHoldsMcp(s)}
+            <input type="checkbox"
+              checked={(holdsAllMcp || tools.mcp.includes(s)) && parentHoldsMcp(s)}
               disabled={!parentHoldsMcp(s)}
               onChange={(e) => setTools({
                 ...tools,
+                // unchecking under "*" materializes the concrete server list
                 mcp: e.target.checked
-                  ? [...tools.mcp, s]
-                  : tools.mcp.filter((x) => x !== s),
+                  ? (holdsAllMcp ? tools.mcp : [...tools.mcp, s])
+                  : (holdsAllMcp ? servers.filter((x) => x !== s)
+                                 : tools.mcp.filter((x) => x !== s)),
               })} />
             <span className="mono">{s}</span>
             {!parentHoldsMcp(s) && <span className="dim"> — parent doesn't hold it</span>}

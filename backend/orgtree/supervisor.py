@@ -217,8 +217,11 @@ def identity_prompt(org: Org, nid: str) -> str:
                                     ("edit", "file editing"), ("subagents", "subagents"))
            if not tools.get(key, True)]
     tool_line = (f"Disabled for you: {', '.join(off)}. " if off else "")
-    if tools.get("mcp"):
-        tool_line += f"MCP servers available to you: {', '.join(tools['mcp'])}. "
+    mcp_names = tools.get("mcp") or []
+    if "*" in mcp_names:      # "*" = every registered server, present and future
+        mcp_names = sorted(registered_mcp_servers())
+    if mcp_names:
+        tool_line += f"MCP servers available to you: {', '.join(mcp_names)}. "
     purpose_line = f"Your purpose: {n['purpose']} " if n.get("purpose") else ""
     fable_line = ""
     if org.d.get("fable_lock"):
@@ -375,7 +378,10 @@ def _build_cmd(org: Org, nid: str) -> list[str]:
     # every node gets the orgtree MCP server — its hands on the org — plus any
     # user-registered servers it was granted; --strict-mcp-config pins the set
     registry = registered_mcp_servers()
-    chosen = {k: registry[k] for k in (tools.get("mcp") or []) if k in registry}
+    granted = tools.get("mcp") or []
+    if "*" in granted:        # "*" = every registered server, present and future
+        granted = sorted(registry)
+    chosen = {k: registry[k] for k in granted if k in registry}
     chosen["orgtree"] = {
         "command": sys.executable,
         "args": ["-m", "orgtree.mcptool"],

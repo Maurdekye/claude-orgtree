@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import store, supervisor
-from .ledger import LedgerError, USER
+from .ledger import LedgerError, USER, norm_tools
 
 app = FastAPI(title="orgtree", version="1.0.0")
 
@@ -163,6 +163,7 @@ class Settings(BaseModel):
     max_top_grant: int | None = None
     clear_fable_lock: bool = False
     fable_limit_policy: str | None = None   # halt | opus | dissolve
+    default_tools: dict | None = None       # {bash, web, edit, subagents, mcp: []|["*"]}
 
 
 @app.post("/api/orgs/{slug}/settings")
@@ -195,6 +196,10 @@ async def _org_settings_locked(slug: str, body: Settings):
         warnings.append("fable lock cleared — fable agents may run and be rehired again")
     if body.fable_limit_policy in ("halt", "opus", "dissolve"):
         org.d["fable_limit_policy"] = body.fable_limit_policy
+    if body.default_tools is not None:
+        # agent defaults: applied to tool-unspecified hires — top level directly,
+        # deeper as ∩ with the superior's capability (clamped at hire time)
+        org.d["default_tools"] = norm_tools(body.default_tools)
     store.save_org(org)
     await hub.changed(slug)
     return {"dirs": org.d["dirs"], "warnings": warnings}

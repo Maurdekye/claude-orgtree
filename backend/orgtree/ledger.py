@@ -58,10 +58,13 @@ TOOL_KEYS = ("bash", "web", "edit", "subagents")   # the built-in tool switches
 
 
 def norm_tools(t) -> dict:
-    """Normalize a tool grant: four built-in switches + an MCP server name list."""
+    """Normalize a tool grant: four built-in switches + an MCP server name list.
+    "*" in mcp = every registered server, present AND future (collapses the list)."""
     t = t or {}
     out = {k: bool(t.get(k, True)) for k in TOOL_KEYS}
     out["mcp"] = sorted({str(s) for s in t.get("mcp", []) if s})
+    if "*" in out["mcp"]:
+        out["mcp"] = ["*"]
     return out
 
 
@@ -120,6 +123,10 @@ class Org:
             n.setdefault("purpose", None)
         if self.d.get("fable_limit_policy") in (None, "retire"):
             self.d["fable_limit_policy"] = "halt"   # 'retire' dropped by user ruling
+        # org-wide agent defaults for hires that don't state tools (user hires):
+        # every capability enabled — all switches + all MCP servers (user ruling)
+        self.d["default_tools"] = norm_tools(
+            self.d.get("default_tools", {"mcp": ["*"]}))
         # migrate pre-typed-actor docs: bare 'user'/'system' sentinels → @-forms
         # (safe exactly once, before any agent may be NAMED user/system)
         if not self.d.get("_actors_typed"):
@@ -153,6 +160,8 @@ class Org:
             # the workspace plus any explicitly granted existing dirs.
             "dirs": list(dirs or []),
             "permission_mode": permission_mode,   # №5: acceptEdits + --add-dir recipe
+            # agent defaults (user hires that don't state tools): everything on
+            "default_tools": norm_tools({"mcp": ["*"]}),
             "max_top_grant": 1000,                # UI slider cap for user-level hires
             "fable_limit_policy": "halt",         # halt | opus | dissolve (user ruling)
             "nodes": {},
@@ -256,13 +265,19 @@ class Org:
                     raise LedgerError(f"parent does not hold {k!r}; cannot grant it")
                 req[k] = False
                 lost.append(k)
-        held = set(parent_tools.get("mcp", []))
-        extra = [s for s in req["mcp"] if s not in held]
-        if extra:
-            if strict:
-                raise LedgerError(f"parent does not hold MCP server(s) {extra}; cannot grant")
-            req["mcp"] = [s for s in req["mcp"] if s in held]
-            lost += [f"mcp:{s}" for s in extra]
+        # "*" = the universal server set: ∩ with a concrete parent list = that list
+        phold = parent_tools.get("mcp", [])
+        if "*" in req["mcp"]:
+            req["mcp"] = ["*"] if "*" in phold else sorted(set(phold))
+        elif "*" not in phold:
+            held = set(phold)
+            extra = [s for s in req["mcp"] if s not in held]
+            if extra:
+                if strict:
+                    raise LedgerError(
+                        f"parent does not hold MCP server(s) {extra}; cannot grant")
+                req["mcp"] = [s for s in req["mcp"] if s in held]
+                lost += [f"mcp:{s}" for s in extra]
         return req, lost
 
     @staticmethod
@@ -626,7 +641,10 @@ class Org:
             dirs, _ = self._clamp_dirs(norm_dirs(add_dirs), parent_map, strict=True)
 
         parent_tools = None if parent is None else self.node(parent)["scope"]["tools"]
-        tset, tlost = self._clamp_tools(tools, parent_tools,
+        # unspecified tools (user hires) fall back to the org's agent defaults —
+        # applied directly at top level, ∩ the superior's capability below
+        requested = tools if tools is not None else self.d.get("default_tools")
+        tset, tlost = self._clamp_tools(requested, parent_tools,
                                         strict=(actor != USER and tools is not None))
 
         warnings: list[str] = []
@@ -1294,6 +1312,7 @@ class Org:
             "workspace": self.d.get("workspace"),
             "dirs": self.d["dirs"],
             "max_top_grant": self.d.get("max_top_grant", 1000),
+            "default_tools": self.d.get("default_tools"),
             "tiers": self.d["tiers"],
             "audiences": self.d["audiences"],
             "roots": [build(c) for c in self.org_children(None)],
