@@ -1144,3 +1144,10 @@ svg.MuiSvgIcon-root {
 .ctxbtn:hover { background: none; }
 .kiosk-sbx { font-size: 11px; color: var(--dim); gap: 6px; align-items: center; }
 .kiosk-sbx input { width: auto; }
+.kiosk-warn { font-size: 10.5px; line-height: 1.45; }
+.kiosk-warn svg { color: var(--bad); vertical-align: -2px; }
+/* the token-streamed growing reply: a typing caret at its end */
+.msg.draft::after {
+  content: "\258D"; color: var(--accent); margin-left: 2px;
+  animation: pulse 1s ease-in-out infinite;
+}

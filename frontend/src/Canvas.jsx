@@ -1643,6 +1643,7 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
   const [askCompact, setAskCompact] = useState(false)
   const [view, setView] = useState('chat')     // chat | history | files | inbox
   const [live_feed, setLiveFeed] = useState([])
+  const [draft, setDraft] = useState('')       // the token-streamed growing reply
   const scroller = useRef(null)
   const loadedRef = useRef(false)     // first load always lands at the bottom
   const live = node.state === 'live'
@@ -1675,17 +1676,25 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
   useEffect(() => { refresh() }, [refresh])
   useEffect(() => {
     if (pulse && pulse.node === node.id) {
-      if (pulse.event === 'turn_done') setLiveFeed([])
+      if (pulse.event === 'turn_done') { setLiveFeed([]); setDraft('') }
       refresh()
     }
   }, [pulse, node.id, refresh])
   useEffect(() => {                       // live per-message feed while working
     if (streamEvt && streamEvt.node === node.id) {
       const stick = nearBottom()
+      if (streamEvt.kind === 'delta') {
+        // token streaming (user spec): the reply grows word-by-word; the
+        // complete message event replaces it when the block finishes
+        setDraft((d) => (d + streamEvt.text).slice(-12000))
+        if (stick) toBottom()
+        return
+      }
       if (streamEvt.kind === 'steered') {
         // a pending user message just got DELIVERED mid-task
         setPending((p) => p.filter((x) => !streamEvt.text.includes(x)))
       }
+      if (streamEvt.kind === 'text') setDraft('')
       setLiveFeed((f) => [...f.slice(-24), streamEvt])
       if (stick) toBottom()
     }
@@ -1804,11 +1813,13 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
                   : <div key={'f' + i} className="msg assistant live md"
                       dangerouslySetInnerHTML={md(f.text)} />
             ))}
+            {draft && <div className="msg assistant live md draft"
+              dangerouslySetInnerHTML={md(draft)} />}
             {pending.map((p, i) => (
               <div key={'q' + i} className="msg user pending md"
                 dangerouslySetInnerHTML={md(p)} />
             ))}
-            {chat?.busy && <div className="working"><AutorenewIcon fontSize="inherit" className="cc-spin" /> working<span className="actdots" /></div>}
+            {chat?.busy && !draft && <div className="working"><AutorenewIcon fontSize="inherit" className="cc-spin" /> working<span className="actdots" /></div>}
           </div>
           {/* send sits BESIDE the input; no model-name footer row (the tier
               chip in the header already says it) — reclaimed vertical space */}

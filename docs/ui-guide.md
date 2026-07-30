@@ -158,8 +158,9 @@ actually approaches **full screen** (it is a full-screen surface by design) —
 at ordinary desk zoom the eye stays a plain card. The switchboard: side-by-side live chats with every agent that has a direct
 line to you (top-level agents, plus any agent holding a user audience — a
 coordinator that delegates user audiences to its hires fills this view
-automatically). Each panel is a full chat: live transcript, working
-indicator, composer, and the send-button-becomes-STOP idiom. The **tab bar**
+automatically). Each panel is a full chat: live transcript with **token-level streaming**
+(the reply grows word-by-word under a pulsing caret), working indicator,
+composer, and the send-button-becomes-STOP idiom. The **tab bar**
 above the panels is always visible — click a tab to minimize or reopen its
 chat (the set is remembered per org). A line that exists via an **audience
 grant** carries an ✕ on its tab: closing it **rescinds that grant** (only
@@ -169,6 +170,16 @@ the eye's credit bar keeps its usual spot beside the card — just off-screen
 at focus, but still there: pan sideways and you'll see it. The eye never
 moves and is never draggable: it is the fixed anchor of the coordinate
 space, so it sits in the same spot in every org regardless of tree shape.
+
+## External sessions (the chatq bridge)
+
+Every org is a **chatq peer** under its slug: any normal Claude Code session
+on this machine can message it (`send.sh <org-slug> <my-chat> "…"`) and the
+message lands as mail to **every live top-level agent**, attributed to
+`@ext:<chat-id>` and marked untrusted. Top-level agents reply with
+`orgtree_message` to the same `@ext:` address; replies arrive in the outside
+session's chatq inbox attributed to the org. If no top-level agents are
+live, the message surfaces in your inbox instead of being lost.
 
 ## The top bar
 
@@ -368,7 +379,9 @@ it appears on hover, next to ⚙). The desk's inbox tab is the same view inline.
   agent's context passes this fraction of its window it compaction-splits
   (successor continues, predecessor archives as a knowledge bearer). The
   95% ceiling is hard — it is not configurable.
-- **fable weekly-limit policy** — what happens when the shared Fable quota
+- **fable weekly-limit policy** and the **fable content-filter policy**
+  (a filter-flagged message either halts the turn — default — or converts
+  the agent to opus and retries it) — what happens when the shared Fable quota
   exhausts: **halt** (default: fable agents freeze visibly, keep their seats,
   superiors are notified, the org decides) · **switch to opus** (converted
   10→5 and keep working; one-way) · **dissolve subtree** (every fable node's

@@ -43,8 +43,10 @@ TOOLS = [
             "Send a message to another agent in your organization. Allowed: any "
             "descendant (any depth — messaging a non-child descendant grants it an "
             "audience to reply), your direct superior, your peers, any superior you "
-            "hold an audience with, or 'user' (top-level agents only). The recipient "
-            "is driven on delivery; replies arrive in your own future turns."),
+            "hold an audience with, 'user' (top-level agents only), or an external "
+            "Claude Code session as '@ext:<chat-id>' (top-level only — replies to "
+            "mail that arrived from one). The recipient is driven on delivery; "
+            "replies arrive in your own future turns."),
         "inputSchema": {
             "type": "object",
             "properties": {

@@ -503,6 +503,36 @@ def main():
                 for a in orgA.d["audiences"])   # №11: user audience never swept
         else (_ for _ in ()).throw(AssertionError(orgA.d["audiences"])))[-1])
 
+    print("fable filter policy (user spec) + external mail (chatq bridge):")
+    orgF = Org.create("filtering")
+    orgF.hire(USER, None, "fable", 5, "seer")
+    check("filter halt: no conversion, user informed", lambda: (
+        lambda p: None if p == "halt" and orgF.nodes["seer"]["model"] == "fable"
+        and any("flagged" in m["body"] for m in orgF.d["user_inbox"])
+        else (_ for _ in ()).throw(AssertionError(p))
+    )(orgF.fable_filter_hit("seer", "Output blocked by content filtering policy")))
+    check("filter opus: converts fable->opus", lambda: (
+        orgF.d.__setitem__("fable_filter_policy", "opus"),
+        (lambda p: None if p == "opus" and orgF.nodes["seer"]["model"] == "opus"
+         else (_ for _ in ()).throw(AssertionError(p))
+         )(orgF.fable_filter_hit("seer", "flagged by content filter")))[-1])
+    orgE = Org.create("external")
+    orgE.hire(USER, None, "haiku", 0, "a")
+    orgE.hire(USER, None, "haiku", 0, "b")
+    orgE.hire(USER, "a", "haiku", 0, "deep2")
+    check("external mail fans to ALL top-level agents", lambda: (
+        lambda tops: None if set(tops) == {"a", "b"}
+        and orgE.d["mail"]["a"][0]["from"] == "@ext:abc123"
+        and "deep2" not in orgE.d.get("mail", {})
+        else (_ for _ in ()).throw(AssertionError(tops))
+    )(orgE.post_external_mail("abc123", "ping from outside")))
+    check("top-level may reply to @ext", lambda: (
+        lambda r: None if r["delivered"] == "@ext:abc123"
+        else (_ for _ in ()).throw(AssertionError(r))
+    )(orgE.post_mail("a", "@ext:abc123", "pong")))
+    check("deep agents may NOT reply to @ext", lambda: expect_error(
+        lambda: orgE.post_mail("deep2", "@ext:abc123", "sneaky"), "TOP-LEVEL"))
+
     print("guards:")
     check("unknown tier refused", lambda: expect_error(
         lambda: org.hire(USER, None, "gpt", 0, "nope"), "unknown tier"))

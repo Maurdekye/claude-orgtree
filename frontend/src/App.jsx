@@ -402,6 +402,11 @@ function NewOrg({ onCreate }) {
           onChange={(e) => setSandboxed(e.target.checked)} />
         sandboxed — agents run in a Docker container, isolated from this PC
       </label>
+      {kiosk && !sandboxed && (
+        <div className="dim kiosk-warn"><WarnIcon fontSize="inherit" /> without
+          a sandbox the storage limit is enforced loosely — usage is checked
+          only between turns, so a single turn can overshoot it</div>
+      )}
       <button type="button" className="disclosure" aria-expanded={advanced}
         onClick={() => setAdvanced(!advanced)}>
         {advanced ? <ExpandMoreIcon fontSize="inherit" /> : <ChevronRightIcon fontSize="inherit" />} advanced
@@ -623,6 +628,7 @@ function SettingsPanel({ tree, toast, close }) {
   const [compactAt, setCompactAt] = useState(Math.round((tree.compact_at ?? 0.8) * 100))
   const [orgMd, setOrgMd] = useState(null)
   const [fablePolicy, setFablePolicy] = useState(tree.fable_limit_policy ?? 'halt')
+  const [filterPolicy, setFilterPolicy] = useState(tree.fable_filter_policy ?? 'halt')
   useEffect(() => {
     getOrgMd(tree.slug).then((r) => setOrgMd(r.content)).catch(() => setOrgMd(''))
   }, [tree.slug])
@@ -648,6 +654,12 @@ function SettingsPanel({ tree, toast, close }) {
           <option value="opus">switch to opus</option>
           <option value="dissolve">dissolve subtree</option>
         </select>
+        <div className="field-label">fable content-filter policy (a flagged message
+          halts the turn, or converts the agent to opus and retries)</div>
+        <select value={filterPolicy} onChange={(e) => setFilterPolicy(e.target.value)}>
+          <option value="halt">halt (default)</option>
+          <option value="opus">switch to opus + retry</option>
+        </select>
         <div className="field-label">org.md</div>
         <textarea rows={6} value={orgMd ?? ''} disabled={orgMd == null}
           onChange={(e) => setOrgMd(e.target.value)} />
@@ -665,7 +677,8 @@ function SettingsPanel({ tree, toast, close }) {
                 { max_top_grant: +maxTop || undefined,
                   default_top_grant: Number.isFinite(+defTop) ? +defTop : undefined,
                   compact_at: Number.isFinite(+compactAt) ? +compactAt : undefined,
-                  fable_limit_policy: fablePolicy }),
+                  fable_limit_policy: fablePolicy,
+                  fable_filter_policy: filterPolicy }),
               orgMd != null ? putOrgMd(tree.slug, orgMd) : Promise.resolve({}),
             ]).then(([r]) => { toast(r.warnings); close() })
               .catch((e) => toast([`error: ${e.message}`]))}>save</button>

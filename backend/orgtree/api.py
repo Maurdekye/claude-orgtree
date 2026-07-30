@@ -303,6 +303,11 @@ async def _wire_notify():
     supervisor.notify = notify
     supervisor.stream = stream
     supervisor.start_auto_resume_loop()
+    # chatq external bridge (user vision): every org is an addressable chatq
+    # peer — external Claude Code sessions message it like any other chat
+    for o in store.list_orgs():
+        supervisor.chatq_register_org(o["slug"])
+    supervisor.start_chatq_bridge()
     # one-time migration of the retired v1 env-var kiosk mode into the org doc
     legacy = os.environ.get("ORGTREE_KIOSK")
     if legacy:
@@ -432,6 +437,7 @@ def orgs_create(body: OrgCreate):
         org = store.create_org(body.name, body.dirs, body.permission_mode)
     except LedgerError as e:
         raise HTTPException(400, str(e))
+    supervisor.chatq_register_org(org.d["slug"])
     if body.kiosk is not None:
         # kiosk orgs are a DISTINCT TYPE, born as kiosks with their limits
         # defined at creation (user ruling) — never converted from a normal
@@ -471,6 +477,7 @@ def orgs_delete(slug: str):
     except LedgerError as e:
         raise HTTPException(404, str(e))
     sandbox.remove(slug)            # container down; files stay (like scratch)
+    supervisor.chatq_deregister_org(slug)
     return {"ok": True}
 
 
@@ -522,6 +529,7 @@ class Settings(BaseModel):
     compact_at: int | None = None           # compaction threshold in percent, 50..95
     clear_fable_lock: bool = False
     fable_limit_policy: str | None = None   # halt | opus | dissolve
+    fable_filter_policy: str | None = None  # halt | opus (content-filter flags)
     default_tools: dict | None = None       # {bash, web, edit, subagents, mcp: []|["*"]}
     default_visibility: str | None = None   # self|team|subtree|full
     auto_resume: bool | None = None         # restart limit-frozen agents at reset+1min
@@ -577,6 +585,8 @@ async def _org_settings_locked(slug: str, body: Settings):
         warnings.append("fable lock cleared — fable agents may run and be rehired again")
     if body.fable_limit_policy in ("halt", "opus", "dissolve"):
         org.d["fable_limit_policy"] = body.fable_limit_policy
+    if body.fable_filter_policy in ("halt", "opus"):
+        org.d["fable_filter_policy"] = body.fable_filter_policy
     if body.default_tools is not None:
         # agent defaults: applied to unspecified hires — top level directly,
         # deeper as ∩ with the superior's capability (clamped at hire time)
@@ -1190,6 +1200,7 @@ async def agent_call(body: AgentCall, request: Request):
         raise HTTPException(403, "bridge secret is scoped to its own org")
     a = body.args
     drive: list[str] = []      # nodes whose turn should run after we release the lock
+    ext_send = None            # (chat-id, body) reply riding the chatq bridge
     with store.DOC_LOCK:
         try:
             org = store.load_org(body.org)
@@ -1198,11 +1209,14 @@ async def agent_call(body: AgentCall, request: Request):
                 result = org.post_mail(body.node, a.get("to", ""), a.get("body", ""),
                                        a.get("kind", "message"))
                 delivered = result.get("delivered")
-                if delivered is not None:
+                if delivered and delivered.startswith("@ext:"):
+                    # reply to an external session — rides the chatq bridge
+                    ext_send = (delivered[5:], a.get("body", ""))
+                elif delivered is not None:
                     mail_notify(body.org, body.node,
                                 USER if delivered == "user_inbox" else delivered)
-                if delivered not in (None, "user_inbox"):
-                    drive.append(delivered)
+                    if delivered != "user_inbox":
+                        drive.append(delivered)
             elif body.tool == "orgtree_request_credits":
                 result = org.request_credits(body.node, a.get("new_limit"),
                                              a.get("reason"))
@@ -1315,6 +1329,15 @@ async def agent_call(body: AgentCall, request: Request):
             body.org, target,
             "(orgtree) You have new mail above — handle it as appropriate, and use "
             "orgtree_status when your own task state changes.")
+    if ext_send is not None:
+        ok = supervisor.chatq_send(
+            body.org, ext_send[0],
+            f"[reply from orgtree org '{body.org}', agent '{body.node}']\n"
+            + ext_send[1])
+        if not ok:
+            result.setdefault("warnings", []).append(
+                f"chatq delivery to {ext_send[0]} failed — is the target "
+                f"chat still registered?")
     await hub.changed(body.org)
     return result
 

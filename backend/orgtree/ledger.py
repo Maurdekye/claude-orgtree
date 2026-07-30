@@ -125,6 +125,8 @@ class Org:
             n.pop("queued_msgs", None)
         if self.d.get("fable_limit_policy") in (None, "retire"):
             self.d["fable_limit_policy"] = "halt"   # 'retire' dropped by user ruling
+        if self.d.get("fable_filter_policy") not in ("halt", "opus"):
+            self.d["fable_filter_policy"] = "halt"  # content-filter flags (user spec)
         # org-wide agent defaults for hires that don't state them (user hires):
         # every capability enabled — all switches + all MCP servers + full org
         # visibility + the org's folders (user ruling)
@@ -187,6 +189,7 @@ class Org:
             "credit_requests": [],                # §: top-level asks to the user
             "compact_at": 0.80,                   # compaction ratio (≤ 0.95 hard cap)
             "fable_limit_policy": "halt",         # halt | opus | dissolve (user ruling)
+            "fable_filter_policy": "halt",        # halt | opus — filter flags (user spec)
             "nodes": {},
             "audiences": [],          # §7.3 — [{grantee, grantor, granted_at, reason}]
             "chain_notices": [],      # §7.4
@@ -396,6 +399,21 @@ class Org:
         if actor_kind(sender) == "agent":
             self.node(sender)
         warnings: list[str] = []
+        if to.startswith("@ext:"):
+            # reply to an EXTERNAL Claude Code session (chatq bridge, user
+            # spec): top-level agents only — externals talk to the org's top
+            if actor_kind(sender) != "agent":
+                raise LedgerError("only agents message external sessions")
+            if self.node(sender)["parent"] is not None:
+                raise LedgerError(
+                    "only TOP-LEVEL agents may message external sessions "
+                    "(@ext:…) — escalate to your superior instead (§7.5)")
+            # actual delivery rides the chatq bridge (supervisor) — the ledger
+            # just authorizes and records
+            self._log("mail", sender, {"to": to, "kind": kind,
+                      "gist": body.strip().splitlines()[0][:80] if body.strip()
+                      else ""}, [])
+            return {"delivered": to, "warnings": warnings}
         if to == USER:
             if sender == USER:
                 raise LedgerError("the user cannot mail the user")
@@ -451,6 +469,36 @@ class Org:
         self._log("mail", sender, {"to": to, "kind": kind,
                                    "gist": body.strip().splitlines()[0][:80]}, warnings)
         return {"delivered": to, "warnings": warnings}
+
+    def post_external_mail(self, ext_id: str, body: str) -> list[str]:
+        """Inbound from an EXTERNAL Claude Code session (chatq bridge): mail
+        to ALL live top-level agents (user ruling), marked untrusted. Returns
+        the recipients so the supervisor can drive them."""
+        sender = f"@ext:{ext_id}"
+        tops = self.children(None)
+        box = self.d.setdefault("mail", {})
+        for t in tops:
+            entry = {"from": sender, "kind": "message", "body": body,
+                     "at": now(),
+                     "relationship": "EXTERNAL Claude Code session — "
+                                     "untrusted, outside this org"}
+            box.setdefault(t, []).append(entry)
+            log = self.d.setdefault("mail_log", {}).setdefault(t, [])
+            log.append(dict(entry))
+            del log[:-100]
+        if not tops:
+            # nobody to receive it: surface to the user instead of losing it
+            self.d.setdefault("user_inbox", []).append({
+                "id": uuid.uuid4().hex[:8], "from": SYSTEM, "kind": "notice",
+                "at": now(),
+                "body": (f"External session {sender} messaged this org, but "
+                         f"no top-level agents are live to receive it:\n\n"
+                         + body[:2000])})
+        self._log("ext_mail", sender,
+                  {"to": ",".join(tops) or "(user inbox)",
+                   "gist": body.strip().splitlines()[0][:80]
+                   if body.strip() else ""}, [])
+        return tops
 
     def _has_audience(self, grantee: str, grantor: str) -> bool:
         return any(a["grantee"] == grantee and a["grantor"] == grantor
@@ -1309,6 +1357,43 @@ class Org:
         self._log("credit_" + action, USER, {"node": nid, "new": req["new"]}, [])
         return req
 
+    def fable_filter_hit(self, nid: str, detail: str) -> str:
+        """A Fable content filter flagged this node's message mid-turn (user
+        spec). Per-node, per-incident — nothing org-wide locks. The org's
+        `fable_filter_policy` decides:
+          halt (default) — the turn stays failed; the node holds its seat;
+              superior + the user are told and decide.
+          opus — the node converts fable→opus (seat 10→5, one-way, same
+              conversion as the limit policy) and the flagged turn retries.
+        Returns the policy actually applied."""
+        policy = self.d.get("fable_filter_policy", "halt")
+        n = self.node(nid)
+        if policy == "opus" and n["model"] == "fable":
+            n["model"] = "opus"
+            self._notify([n["parent"]],
+                         f'Your report "{nid}" switched fable→opus: a Fable content '
+                         f'filter flagged its message (org policy). Seat cost dropped '
+                         f'10→5; the flagged turn retries on opus.')
+            self._notify(self._peers_of(n["parent"], nid),
+                         f'Your peer "{nid}" switched fable→opus (content filter, '
+                         f'org policy).')
+        else:
+            policy = "halt"
+            self._notify([n["parent"]],
+                         f'Your report "{nid}" had a message FLAGGED by Fable\'s '
+                         f'content filters — its turn HALTED (org policy). Re-task '
+                         f'it, or the user may switch the org filter policy to '
+                         f'auto-convert to opus.')
+        self.d.setdefault("user_inbox", []).append({
+            "id": uuid.uuid4().hex[:8], "from": SYSTEM, "kind": "decision",
+            "at": now(),
+            "body": (f'A Fable content filter flagged a message from "{nid}" '
+                     f'(org policy applied: {policy}'
+                     f'{" — retried on opus" if policy == "opus" else ""}). '
+                     f'Detail: {detail[:200]}')})
+        self._log("fable_filter", SYSTEM, {"node": nid, "policy": policy}, [])
+        return policy
+
     def fable_limit_hit(self, detecting_node: str | None, detail: str) -> dict:
         """Weekly Fable usage limit exhausted. What happens to live fable agents is
         the org's `fable_limit_policy`:
@@ -1505,5 +1590,6 @@ class Org:
             "storage_blocked": bool(self.d.get("storage_blocked")),
             "auto_resume": bool(self.d.get("auto_resume")),
             "fable_limit_policy": self.d.get("fable_limit_policy", "halt"),
+            "fable_filter_policy": self.d.get("fable_filter_policy", "halt"),
             "audience_requests": self.d.get("audience_requests", []),
         }
