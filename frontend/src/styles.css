@@ -348,7 +348,7 @@ main {
 .cc-composer.off { opacity: .6; }
 .cc-composer textarea {
   border: none; background: none; padding: 0; resize: none;
-  font-size: 13px; line-height: 1.4; font-family: inherit; color: var(--ink-strong);
+  font-size: 14px; line-height: 1.4; font-family: inherit; color: var(--ink-strong);
 }
 .cc-composer textarea:focus { outline: none; }
 .cc-composer-row { display: flex; align-items: center; gap: 8px; font-size: 10px; color: var(--dim); }
@@ -375,7 +375,7 @@ main {
 }
 .desk-over .msgs::-webkit-scrollbar { width: 6px; }
 .msg {
-  max-width: 100%; font-size: 12.5px;
+  max-width: 100%; font-size: 14px;
   line-height: 1.45; white-space: pre-wrap; overflow-wrap: break-word;
 }
 .msg.assistant { align-self: stretch; background: none; border: none; padding: 1px 2px; }
@@ -384,40 +384,40 @@ main {
   border: 1px solid var(--line-soft); border-radius: 6px; padding: 6px 9px;
 }
 .msg.user.pending { opacity: .65; }   /* sent, waiting for its turn */
-.msg.sys { align-self: center; color: var(--dim); font-size: 10px; background: none; }
+.msg.sys { align-self: center; color: var(--dim); font-size: 11px; background: none; }
 /* markdown inside chat messages */
 .md { white-space: normal; }
 .md p { margin: 0 0 6px; }
 .md p:last-child { margin-bottom: 0; }
 .md code {
-  font-family: var(--mono); font-size: 11.5px; background: var(--bg);
+  font-family: var(--mono); font-size: 12.5px; background: var(--bg);
   border: 1px solid var(--line-soft); border-radius: 3px; padding: 0 4px;
 }
 .md pre {
   background: var(--bg); border: 1px solid var(--line-soft); border-radius: 4px;
   padding: 6px 9px; margin: 4px 0; overflow-x: auto;
 }
-.md pre code { border: none; background: none; padding: 0; font-size: 11px; }
+.md pre code { border: none; background: none; padding: 0; font-size: 12px; }
 .md ul, .md ol { margin: 4px 0; padding-left: 20px; }
 .md li { margin: 2px 0; }
 .md h1, .md h2, .md h3, .md h4 {
-  margin: 8px 0 4px; font-size: 13px; color: var(--ink-strong);
+  margin: 8px 0 4px; font-size: 14.5px; color: var(--ink-strong);
 }
-.md h1 { font-size: 14px; }
+.md h1 { font-size: 15.5px; }
 .md a { color: var(--accent); }
 .md blockquote {
   margin: 4px 0; padding: 2px 0 2px 9px; border-left: 2px solid var(--line);
   color: var(--dim);
 }
-.md table { border-collapse: collapse; margin: 4px 0; font-size: 11.5px; }
+.md table { border-collapse: collapse; margin: 4px 0; font-size: 12.5px; }
 .md th, .md td { border: 1px solid var(--line-soft); padding: 2px 7px; }
 .md hr { border: none; border-top: 1px solid var(--line-soft); margin: 8px 0; }
 .md strong { color: var(--ink-strong); }
-.msg .tools { color: var(--dim); font-size: 10.5px; margin-bottom: 2px; font-family: var(--mono); }
-.working { color: var(--accent); font-size: 11px; display: flex; gap: 5px; align-items: center; }
-.msg.live.tools { font-size: 10.5px; padding: 1px 4px; }
-.hist-row { font-size: 11px; gap: 6px; padding: 2.5px 3px; }
-.filepre { font-size: 10.5px; padding: 5px 7px; margin: 3px 0; }
+.msg .tools { color: var(--dim); font-size: 11.5px; margin-bottom: 2px; font-family: var(--mono); }
+.working { color: var(--accent); font-size: 12px; display: flex; gap: 5px; align-items: center; }
+.msg.live.tools { font-size: 11.5px; padding: 1px 4px; }
+.hist-row { font-size: 12px; gap: 6px; padding: 2.5px 3px; }
+.filepre { font-size: 11.5px; padding: 5px 7px; margin: 3px 0; }
 
 /* ----------------------------------------------- the five channels (§9.3–9.6)
    hue = tier · fill = lifecycle · border style = permission · glow = audience ·
@@ -504,12 +504,12 @@ main {
 .mailrow.on { background: color-mix(in srgb, var(--accent) 13%, var(--bg)); }
 .mailrow .l1 {
   display: flex; justify-content: space-between; gap: 8px;
-  font-family: var(--mono); font-size: 11px; color: var(--ink);
+  font-family: var(--mono); font-size: 12px; color: var(--ink);
 }
 .mailrow .l1 .mfrom { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mailrow .l1 .mtime { color: var(--dim); flex-shrink: 0; }
 .mailrow .l2 {
-  margin-top: 2px; font-size: 11px; color: var(--dim);
+  margin-top: 2px; font-size: 12px; color: var(--dim);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .mailrow.unread .l1 .mfrom { color: var(--accent); font-weight: 700; }
@@ -517,11 +517,11 @@ main {
 .mailer-read { flex: 1; min-width: 0; overflow-y: auto; padding: 10px 14px; }
 .mailer-head {
   display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline;
-  font-family: var(--mono); font-size: 11px; color: var(--ink);
+  font-family: var(--mono); font-size: 12px; color: var(--ink);
   padding-bottom: 8px; margin-bottom: 8px; border-bottom: 1px solid var(--line-soft);
 }
 .mailer-head .wait { color: var(--accent); font-weight: 700; }
-.mailer-body { font-size: 12.5px; line-height: 1.55; }
+.mailer-body { font-size: 13.5px; line-height: 1.55; }
 
 /* ------------------------------------------------------- lineage stacks (§8.7) */
 .sq.stack1 { box-shadow: 5px -5px 0 -1px #232325, 5px -5px 0 0 var(--line-soft); }
@@ -549,7 +549,7 @@ main {
 /* streaming text is just dimmer — a dashed border here resurrects a `medium`
    border on the borderless assistant style (thick marching-ants box) */
 .msg.live { opacity: .75; }
-.msg.live.tools { align-self: flex-start; background: none; border: none; color: var(--dim); font-family: var(--mono); font-size: 10px; padding: 1px 4px; }
+.msg.live.tools { align-self: flex-start; background: none; border: none; color: var(--dim); font-family: var(--mono); font-size: 11.5px; padding: 1px 4px; }
 .msg.oracle { border-color: #4a4a55; background: #232328; }
 
 /* desk tabs, history, files */
