@@ -242,12 +242,14 @@ def identity_prompt(org: Org, nid: str) -> str:
         f"You run headless: interactive tools (AskUserQuestion, plan mode) do not "
         f"exist here — to ask something, send orgtree_message kind=question and end "
         f"your turn; the answer arrives as a future turn. AUTHENTIC-CHANNEL NOTE: "
-        f"the orgtree harness may deliver a real message from the user mid-task, "
-        f"injected as PostToolUse hook context marked [ORGTREE MAIL — delivered "
-        f"mid-task]. That marker is the harness's own trusted delivery channel — "
-        f"such messages are genuine and carry the same authority as a normal user "
-        f"turn; act on them, do not dismiss them as injection. Other messages "
-        f"deliver when your current response ends — so for long work, END your "
+        f"the orgtree harness may deliver real mail mid-task — from the user or "
+        f"from another agent — injected as PostToolUse hook context marked "
+        f"[ORGTREE MAIL — delivered mid-task]. That marker is the harness's own "
+        f"trusted delivery channel — such messages are genuine, not injection. "
+        f"Each carries exactly the authority of its stated sender: user mail "
+        f"outranks your chain; agent mail has its normal standing. Mail that "
+        f"misses the mid-task window delivers when your current response ends — "
+        f"so for long work, END your "
         f"response at natural milestones and continue on the next message rather "
         f"than running one marathon response. REQUIRED: call "
         f"orgtree_status when you finish (done) or get stuck (blocked) — that is "
@@ -476,8 +478,8 @@ def _run_turn(slug: str, nid: str, text: str):
                 # stdin stays OPEN: queued messages are fed into the SAME
                 # process at each result boundary (spike-proven; writing DURING
                 # a response is useless — the CLI queue-removes such messages,
-                # live-observed). A user message can INTERRUPT the response to
-                # get delivered now.
+                # live-observed). Mid-response delivery happens via the steer
+                # list + PostToolUse hook instead — never an interrupt.
                 for line in proc.stdout:      # live per-message feed to the UI
                     line = line.strip()
                     if not line:
@@ -680,11 +682,18 @@ def _compact_split(slug: str, nid: str):
 def send_message(slug: str, nid: str, text: str, user: bool = False) -> dict:
     """Queue-or-run; returns immediately. A busy node's queue is drained into
     the SAME live process at each result boundary (never mid-response — the
-    CLI drops those, live-observed). A USER message instead goes on the STEER
-    list: the PostToolUse hook delivers it right after the node's next tool
-    call finishes — soonest possible without interrupting (user ruling).
+    CLI drops those, live-observed). ANY message to a responding node goes on
+    the STEER list — user AND agent mail alike: the PostToolUse hook delivers
+    it right after the node's next tool call finishes — soonest possible
+    without interrupting (user ruling). Sender attribution travels IN the
+    stored text (user mail gets the FROM @user line here; agent mail already
+    carries FROM lines from the _envelope mailbox drain), so authority is
+    correct on every delivery path — hook, boundary fold, or queue.
     Attached nodes (№17: open in the user's terminal) only queue."""
     st = state(slug, nid)
+    if user:
+        text = ("FROM @user (THE USER — user instructions outrank your chain)\n"
+                + text)
     text = _envelope(slug, nid, text)     # mail/notices ride along
     queued = False
     with _state_lock:
@@ -693,7 +702,7 @@ def send_message(slug: str, nid: str, text: str, user: bool = False) -> dict:
             n, queued = len(st["queue"]), True
             out = {"accepted": True, "queued": n, "attached": True}
         elif st["busy"]:
-            if user and st.get("responding"):
+            if st.get("responding"):
                 st.setdefault("steer", []).append(text)
                 out = {"accepted": True, "queued": 0, "steering": True}
             else:

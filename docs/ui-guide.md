@@ -110,7 +110,9 @@ ledger self-audit chip appears ONLY if the credit invariants are ever violated
   shows dimmed until delivered; the agent's system prompt authenticates this
   channel). If the agent makes no further tool calls, delivery falls back to
   the end of its current response. Requires the private agent CLI (see
-  README); agent-to-agent mail always waits for the response boundary.
+  README). This applies to ALL mail — agent-to-agent messages deliver
+  mid-task the same way; each message carries its sender's authority (user
+  mail outranks the chain, agent mail has its normal standing).
   Queued messages survive server restarts. A `preserving` bearer answers through a discarded fork — it
   retains nothing of the exchange.
 

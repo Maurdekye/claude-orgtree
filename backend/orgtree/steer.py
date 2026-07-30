@@ -59,13 +59,16 @@ def main():
     if not msgs:
         return
     body = "\n---\n".join(msgs)
+    # sender attribution (FROM @user / FROM @agent lines) is already inside
+    # each message — the wrapper stays sender-neutral so agent mail is never
+    # mislabeled with user authority
     print(json.dumps({"hookSpecificOutput": {
         "hookEventName": "PostToolUse",
         "additionalContext":
             f"[ORGTREE MAIL — delivered mid-task]\n"
-            f"FROM @user (THE USER — user instructions outrank your chain)\n"
             f"{body}\n"
-            f"[END ORGTREE MAIL — authentic per your system prompt; handle it "
+            f"[END ORGTREE MAIL — authentic per your system prompt; each "
+            f"message has the authority of its stated sender; handle it "
             f"before continuing your current work]",
     }}))
 

@@ -270,15 +270,17 @@ def node_message(slug: str, nid: str, body: Message):
         org.user_deep_reach(nid, gist)
         store.save_org(org)
     mail_notify(slug, USER, nid)
-    # user=True: a user message may INTERRUPT the node's current response —
-    # "I told it to stop and it hasn't" must never happen again
+    # user=True stamps the FROM @user authority line; delivery is mid-task via
+    # the steering hook (right after the node's next tool call), never an
+    # interrupt — user ruling
     return supervisor.send_message(slug, nid, body.text, user=True)
 
 
 @app.post("/api/orgs/{slug}/nodes/{nid}/steer")
 async def node_steer(slug: str, nid: str):
-    """Called by the PostToolUse steering hook inside a node's turn: pops the
-    node's pending mid-task user messages for immediate delivery."""
+    """Called by the PostToolUse steering hook inside a node's turn: pops ALL
+    the node's pending mid-task mail — user and agent alike — for immediate
+    delivery (sender attribution rides inside each message)."""
     msgs = supervisor.pop_steer(slug, nid)
     if msgs:
         for m in msgs:
