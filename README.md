@@ -62,6 +62,17 @@ cd backend
 python -m orgtree.api
 ```
 
+**Recommended:** give agents their own up-to-date CLI (enables mid-task
+message delivery — older CLIs never run tool hooks headless):
+
+```bash
+npm install --prefix ~/orgtree/cli @anthropic-ai/claude-code@latest
+```
+
+The supervisor auto-detects this private install and prefers it; your global
+`claude` stays untouched. Without it, messages to a busy agent deliver when
+its current response ends instead of after its next tool call.
+
 Open **http://127.0.0.1:7360**, create an organization, hover the eye, and
 hire your first agent. The full interaction manual — hiring chips, credit-bar
 dragging, desks, lineage, audiences — is in

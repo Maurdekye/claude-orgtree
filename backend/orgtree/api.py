@@ -30,6 +30,12 @@ mail_notify = lambda slug, frm, to: None   # wired at startup (thread-safe fanou
 async def _wire_notify():
     global mail_notify
     loop = asyncio.get_running_loop()
+    try:
+        # hook processes get a sanitized env — the steering hook finds us here
+        open(os.path.join(store.DATA_ROOT, ".port"), "w",
+             encoding="utf-8").write(str(PORT))
+    except OSError:
+        pass
 
     def notify(slug: str, node: str, event: str):
         asyncio.run_coroutine_threadsafe(hub.node_event(slug, node, event), loop)
