@@ -662,13 +662,20 @@ async def agent_call(body: AgentCall):
                 result = {"recorded": status}
                 if status in ("done", "blocked"):
                     parent = org.node(body.node)["parent"]
-                    r = org.post_mail(body.node, parent if parent else USER,
-                                      f"[{status.upper()}] {summary}", kind="status")
-                    mail_notify(body.org, body.node, parent if parent else USER)
                     if parent:
+                        r = org.post_mail(body.node, parent,
+                                          f"[{status.upper()}] {summary}", kind="status")
+                        mail_notify(body.org, body.node, parent)
                         drive.append(parent)
-                    result["reported_to"] = parent or "user inbox"
-                    result["warnings"] = r.get("warnings", [])
+                        result["reported_to"] = parent
+                        result["warnings"] = r.get("warnings", [])
+                    else:
+                        # top-level: the user already gets the agent's own reply
+                        # mail — a second [DONE] digest was pure duplication
+                        # (user ruling). The status chip is the record.
+                        result["reported_to"] = ("status chip only — report your "
+                                                 "actual results to the user via "
+                                                 "orgtree_message")
             elif body.tool == "orgtree_chart":
                 result = {"chart": supervisor.identity_prompt(org, body.node)}
             elif body.tool == "orgtree_read_transcript":

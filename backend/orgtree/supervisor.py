@@ -272,9 +272,13 @@ def identity_prompt(org: Org, nid: str) -> str:
         f"so for long work, END your "
         f"response at natural milestones and continue on the next message rather "
         f"than running one marathon response. REQUIRED: call "
-        f"orgtree_status when you finish (done) or get stuck (blocked) — that is "
-        f"how your superior learns of it. "
-        f"Your scratch folder is your own: keep a CLAUDE.md there as standing notes — "
+        f"orgtree_status when you finish (done) or get stuck (blocked)"
+        + (" — it records your status for the user's dashboard; it does NOT "
+           "message the user, so send your actual results in an "
+           "orgtree_message to 'user' (one message — do not duplicate it). "
+           if n["parent"] is None else
+           " — that is how your superior learns of it. ")
+        + f"Your scratch folder is your own: keep a CLAUDE.md there as standing notes — "
         f"it is loaded automatically every turn and survives compaction. "
         + _claudemd_caveat(org, nid)
         + (("\n\n[STANDING INSTRUCTIONS from your granted folders]\n" + cmd_block)
