@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  audienceAction, clearInbox, createOrg, creditDecide, deleteOrg, getAudiences,
-  getInbox, getOrgMd, getTree, killAll, listOrgs, markRead, openWs, putOrgMd,
-  resumeFrozen, runOp, saveSettings,
+  audienceAction, BASE, clearInbox, createOrg, creditDecide, deleteOrg,
+  getAudiences, getInbox, getOrgMd, getTree, killAll, listOrgs, markRead,
+  openWs, putOrgMd, resumeFrozen, runOp, saveKiosk, saveSettings,
 } from './api'
 import { ConfirmModal, MailFolders, MailList, OrgCanvas, useEsc } from './Canvas'
 import {
-  BlockIcon, ChevronRightIcon, CloseIcon, DeleteIcon, ExpandMoreIcon,
-  HearingIcon, HomeIcon, LockIcon, LockOpenIcon, MailIcon, MenuIcon,
-  PlayIcon, SettingsIcon, SparkIcon, StopIcon, WarnIcon,
+  AutorenewIcon, BlockIcon, CheckIcon, ChevronRightIcon, CloseIcon, CopyIcon,
+  DeleteIcon, ExpandMoreIcon, HearingIcon, HomeIcon, LockIcon, LockOpenIcon,
+  MailIcon, MenuIcon, PlayIcon, PublicIcon, SettingsIcon, SparkIcon,
+  StopIcon, StorageIcon, WarnIcon,
 } from './icons'
 import { DirList } from './forms'
 import { FolderPickerHost } from './picker'
@@ -18,7 +19,8 @@ const USER = '@user'       // typed actor sentinels — a node may be NAMED user
 const SYSTEM = '@system'
 
 const slugFromPath = () => {
-  const m = location.pathname.match(/^\/o\/([a-z0-9@-]+)/)
+  // BASE is the /k/<token> prefix when served from a public kiosk URL
+  const m = location.pathname.slice(BASE.length).match(/^\/o\/([a-z0-9@-]+)/)
   return m ? m[1] : null
 }
 
@@ -73,7 +75,7 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey)
   }, [])
   useEffect(() => {                    // the active org lives in the path
-    const want = slug ? `/o/${slug}` : '/'
+    const want = BASE + (slug ? `/o/${slug}` : '/')
     if (location.pathname !== want) history.pushState(null, '', want)
   }, [slug])
 
@@ -113,7 +115,15 @@ export default function App() {
         }
         if (data.event === 'resumed') refreshTree(slug)
         if (data.event === 'spend_frozen') {
-          toast(['SPEND LIMIT REACHED — every agent is frozen; relaunch with a higher limit to resume'])
+          toast(['SPEND LIMIT REACHED — every agent is frozen; raise the limit in the kiosk dashboard to resume'])
+          refreshTree(slug)
+        }
+        if (data.event === 'storage_blocked') {
+          toast(['WORKSPACE STORAGE LIMIT reached — file writes are blocked until enough files are deleted (agents keep running)'])
+          refreshTree(slug)
+        }
+        if (data.event === 'storage_cleared') {
+          toast(['workspace back under its storage limit — writes unblocked'])
           refreshTree(slug)
         }
         if (data.event === 'turn_started') {
@@ -148,6 +158,8 @@ export default function App() {
             onClick={() => pick(o.slug)}
             onKeyDown={(e) => { if (e.key === 'Enter') pick(o.slug) }}>
             <span>{o.name}</span>
+            {o.kiosk_cfg?.enabled &&
+              <span className="kiosk-badge" title="exposed as a public kiosk"><PublicIcon fontSize="inherit" /></span>}
             <span className="spacer" />
             <span className="dim">{o.live}/{o.nodes} live</span>
             {!o.kiosk && <button className="org-del"
@@ -159,6 +171,9 @@ export default function App() {
       {!(orgs.length && orgs[0].kiosk) && <NewOrg onCreate={(name, dirs) =>
         createOrg(name, dirs).then((r) => { refreshOrgs(); pick(r.slug) })
           .catch((e) => toast([`error: ${e.message}`]))} />}
+      {/* kiosk dashboard: admin only — a public visitor never sees this panel
+          (and the server refuses the endpoints regardless) */}
+      {!BASE && <KioskDash orgs={orgs} refresh={refreshOrgs} toast={toast} pick={pick} />}
     </>
   )
 
@@ -178,7 +193,7 @@ export default function App() {
           {tree ? (
             <>
               <header className="orgbar">
-                {!tree.kiosk &&
+                {!tree.public &&
                   <button className="iconbtn" onClick={() => setDrawer(true)}><MenuIcon fontSize="inherit" /></button>}
                 <h2>{tree.name}</h2>
                 {/* the ledger self-audit only speaks when something is wrong;
@@ -209,6 +224,16 @@ export default function App() {
                     ? <span className="chip bad"><BlockIcon fontSize="inherit" /> spend limit reached — agents frozen</span>
                     : <span className={'chip' + (tree.cost_usd_total >= tree.kiosk.spend_limit * 0.9 ? ' bad' : '')}>
                         spend ${tree.cost_usd_total.toFixed(2)} / ${tree.kiosk.spend_limit.toFixed(2)}
+                      </span>
+                )}
+                {tree.kiosk?.storage_limit_mb && (
+                  tree.kiosk.storage_blocked
+                    ? <span className="chip bad" title="over the workspace storage limit — delete files to unblock">
+                        <StorageIcon fontSize="inherit" /> {tree.kiosk.storage_mb ?? '?'} / {tree.kiosk.storage_limit_mb} MB — writes blocked
+                      </span>
+                    : <span className={'chip' + ((tree.kiosk.storage_mb ?? 0) >= tree.kiosk.storage_limit_mb * 0.9 ? ' bad' : '')}
+                        title="workspace storage used / limit">
+                        <StorageIcon fontSize="inherit" /> {tree.kiosk.storage_mb ?? 0} / {tree.kiosk.storage_limit_mb} MB
                       </span>
                 )}
                 {(() => {   // usage-limit freeze: ▶ restarts every frozen agent
@@ -248,7 +273,7 @@ export default function App() {
                         .catch((e) => toast([`error: ${e.message}`]))
                     }}><StopIcon fontSize="inherit" /> STOP ALL</button>
                 </span>
-                {!tree.kiosk &&
+                {!tree.public &&
                   <button onClick={() => setShowSettings(true)}><SettingsIcon fontSize="inherit" /> settings</button>}
               </header>
               <OrgCanvas tree={tree} op={op} slug={slug} pulse={pulse} toast={toast}
@@ -330,6 +355,93 @@ function NewOrg({ onCreate }) {
         <button type="button" onClick={reset}>cancel</button>
       </div>
     </form>
+  )
+}
+
+// kiosk dashboard (user vision): every kiosk session at a glance — spend,
+// credits held, storage — with inline cap edits, the preauthenticated share
+// URL (copy + rotate), and enable/disable. Loopback-only by construction.
+function KioskDash({ orgs, refresh, toast, pick }) {
+  const [sel, setSel] = useState('')
+  const kiosks = orgs.filter((o) => o.kiosk_cfg?.enabled)
+  const others = orgs.filter((o) => !o.kiosk_cfg?.enabled)
+  if (!orgs.length) return null
+  return (
+    <div className="kiosk-dash">
+      <h3><PublicIcon fontSize="inherit" /> public kiosks</h3>
+      {kiosks.map((o) => (
+        <KioskRow key={o.slug + ':' + o.kiosk_cfg.token + ':' + o.kiosk_cfg.credits
+          + ':' + o.kiosk_cfg.spend_limit + ':' + o.kiosk_cfg.storage_limit_mb}
+          org={o} refresh={refresh} toast={toast} pick={pick} />
+      ))}
+      {!kiosks.length &&
+        <div className="dim pad">no orgs are exposed yet — pick one below to mint its secret URL</div>}
+      {others.length > 0 && (
+        <div className="row kiosk-new">
+          <select value={sel} onChange={(e) => setSel(e.target.value)}>
+            <option value="">expose an org as a kiosk…</option>
+            {others.map((o) => <option key={o.slug} value={o.slug}>{o.name}</option>)}
+          </select>
+          <button disabled={!sel} onClick={() =>
+            saveKiosk(sel, { enabled: true, credits: 40, spend_limit: 5, storage_limit_mb: 500 })
+              .then(() => { setSel(''); refresh() })
+              .catch((e) => toast([`error: ${e.message}`]))}>enable</button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function KioskRow({ org, refresh, toast, pick }) {
+  const k = org.kiosk_cfg
+  const [credits, setCredits] = useState(k.credits)
+  const [spend, setSpend] = useState(k.spend_limit)
+  const [storage, setStorage] = useState(k.storage_limit_mb)
+  const save = (patch) => saveKiosk(org.slug, patch)
+    .then((r) => {
+      if (r.freezes_cleared?.length) toast([`limit raised — cleared: ${r.freezes_cleared.join(', ')}`])
+      refresh()
+    })
+    .catch((e) => toast([`error: ${e.message}`]))
+  const dirty = +credits !== k.credits || +spend !== k.spend_limit || +storage !== k.storage_limit_mb
+  return (
+    <div className="kiosk-row">
+      <div className="row kiosk-head">
+        <b className="kiosk-name" role="button" tabIndex={0} title="open this org (full admin rights)"
+          onClick={() => pick(org.slug)}
+          onKeyDown={(e) => { if (e.key === 'Enter') pick(org.slug) }}>{org.name}</b>
+        {k.spend_frozen && <span className="chip bad">spend frozen</span>}
+        {k.storage_blocked && <span className="chip bad">writes blocked</span>}
+        <span className="spacer" />
+        <button title="stop exposing this org (its URL stops working; caps lift)"
+          onClick={() => save({ enabled: false })}><BlockIcon fontSize="inherit" /></button>
+      </div>
+      <div className="dim kiosk-stats">
+        ${(org.cost_usd_total ?? 0).toFixed(2)}{k.spend_limit ? ` / $${k.spend_limit.toFixed(2)}` : ''} spent
+        {' · '}{k.held}{k.credits ? ` / ${k.credits}` : ''} credits held
+        {' · '}{k.storage_mb ?? 0}{k.storage_limit_mb ? ` / ${k.storage_limit_mb}` : ''} MB workspace
+      </div>
+      <div className="row kiosk-caps">
+        <label>credits <input type="number" min="0" value={credits}
+          onChange={(e) => setCredits(e.target.value)} /></label>
+        <label>spend $ <input type="number" min="0" step="0.5" value={spend}
+          onChange={(e) => setSpend(e.target.value)} /></label>
+        <label>storage MB <input type="number" min="0" value={storage}
+          onChange={(e) => setStorage(e.target.value)} /></label>
+        {dirty && <button className="primary" title="apply the new caps"
+          onClick={() => save({ credits: +credits || 0, spend_limit: +spend || 0,
+            storage_limit_mb: +storage || 0 })}><CheckIcon fontSize="inherit" /></button>}
+      </div>
+      <div className="row kiosk-url">
+        <input readOnly value={k.share_url ?? '(set ORGTREE_PUBLIC_PORT to serve public URLs)'}
+          onFocus={(e) => e.target.select()} />
+        <button title="copy the share URL" disabled={!k.share_url}
+          onClick={() => navigator.clipboard.writeText(k.share_url)
+            .then(() => toast(['share URL copied']))}><CopyIcon fontSize="inherit" /></button>
+        <button title="rotate the secret (the old URL stops working immediately)"
+          onClick={() => save({ rotate_token: true })}><AutorenewIcon fontSize="inherit" /></button>
+      </div>
+    </div>
   )
 }
 

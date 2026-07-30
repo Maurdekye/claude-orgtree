@@ -108,15 +108,27 @@ snowflake, lock, layers, fullscreen, hearing.
 
 ## Kiosk mode
 
-When orgtree is launched in kiosk mode (see the README), the UI locks to one
-org: no drawer, no settings, no gear panels anywhere (all rights are fixed at
-launch and the server refuses changes). The eye's bar is FINITE — a fixed
-size set by the credit cap, filled like an agent's bar with per-child slabs —
-and hire chips/draft sliders grey out against the org-wide remainder rather
-than never. The top bar shows total spend against the launch-configured
-limit; when it is breached every agent freezes immediately, the resume
-button disappears, and a red chip says so — only a relaunch with a higher
-limit resumes.
+Any org can be exposed to others through a **preauthenticated secret URL**
+(see the README): the **public kiosks** panel at the bottom of the org list
+is the admin dashboard. Each kiosk row shows spend / credits held / workspace
+storage against their caps, inline inputs to change the caps (a ✓ appears
+when edited), the share URL with copy and **rotate** buttons (rotation
+revokes the old link instantly), and a ⃠ button to stop exposing the org.
+Orgs exposed as kiosks carry a small globe badge in the org list; you still
+open and manage them with full rights — the restrictions apply only to
+visitors arriving through the secret URL.
+
+A **visitor** sees the UI locked to that one org: no drawer, no settings, no
+gear panels anywhere (the server refuses configuration on the public
+listener). The eye's bar is FINITE — a fixed size set by the credit cap,
+filled like an agent's bar with per-child slabs — and hire chips/draft
+sliders grey out against the org-wide remainder rather than never. The top
+bar shows total spend against the limit; breaching it freezes every agent
+and a red chip says so — raising the limit on the dashboard clears the
+freeze, after which ▶ resume replays the interrupted turns. The storage chip
+tracks the org workspace against its cap; over the limit, agents keep
+running but workspace writes are blocked (deleting files still works) until
+usage drops back under — the block lifts on its own.
 
 ## The top bar
 

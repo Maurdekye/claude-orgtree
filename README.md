@@ -118,39 +118,56 @@ No manual wiring is needed; the supervisor does all of it per turn:
 | `ORGTREE_COMPACT_AT` | `0.80` | context occupancy that triggers a compaction split |
 | `ORGTREE_CONTEXT_WINDOWS` | haiku 200k, others 1M | per-tier window override, JSON like `{"opus": 500000}` |
 | `ORGTREE_ORACLE_AT` | `0.92` | bearer occupancy that demotes it to a preserving oracle |
+| `ORGTREE_PUBLIC_PORT` | off | public kiosk listener (serves only `/k/<token>` URLs) |
+| `ORGTREE_PUBLIC_ORIGIN` | LAN-IP guess | origin shown in share URLs (set to your tunnel/forwarded host) |
 
-## Kiosk mode (public exposure)
+## Kiosk mode (preauthenticated public URLs)
 
-Kiosk mode locks orgtree down to **one preconfigured organization** for
-exposing to others (a demo, a shared sandbox). Prepare the org in normal
-mode — hire the seed agents, set folder holdings and tool rights, write
-charters — then relaunch with:
+Kiosk mode exposes **individual organizations** to others through secret
+URLs, while the app itself stays private to your machine:
+
+- the **admin app** (`ORGTREE_PORT`, default 7360) binds **127.0.0.1 only** —
+  root access never reaches the network;
+- the **public listener** (`ORGTREE_PUBLIC_PORT`) binds all interfaces but
+  serves *nothing* except `/k/<token>/…` — each token maps to exactly one
+  kiosk-enabled org; every other path (including `/`) is a bare 404. The
+  URL is the authentication: no org list, no discovery, no admin surface.
+
+Prepare an org normally — hire seed agents, set folder holdings and tool
+rights, write charters — then open the **public kiosks** panel on the org
+list, pick the org, and copy its share URL. Everything is managed live from
+that dashboard: credit cap, spend limit, storage limit, enable/disable, and
+**token rotation** (the old URL stops working the instant you rotate).
 
 ```bash
-ORGTREE_KIOSK=<org-slug>            # the single org to expose
-ORGTREE_KIOSK_CREDITS=40            # hard cap on total credits (fixed bar)
-ORGTREE_KIOSK_SPEND_LIMIT=5.00      # hard USD limit — breach freezes ALL agents
-python -m orgtree.api
+ORGTREE_PUBLIC_PORT=7361 python -m orgtree.api
 ```
 
-In kiosk mode, enforced **server-side**:
+For each kiosk org, enforced **server-side on the public listener** (you, on
+the admin side, keep full rights in the same org — visit it like any other):
 
-- only that org exists — no creating, deleting, or switching orgs;
-- all configuration is frozen at launch: org settings, per-agent rights
-  (folders/tools/visibility), hire defaults, org.md, and the filesystem
-  browser are all refused (403);
-- the overseer's pool is **finite**: a fixed-size credit bar replaces the
-  infinite one, and no operation (hire, cascade, rehire, reallocate,
-  credit-request approval) may push total holdings past the cap;
-- total spend is shown in the top bar; **breaching the limit freezes every
-  agent immediately and permanently** — the resume button is refused; only a
-  relaunch with a higher limit unfreezes.
+- visitors see and reach only that one org;
+- configuration is refused (403): org settings, per-agent rights, hire
+  defaults, org.md, kiosk caps, and the filesystem browser;
+- the overseer's pool is **finite**: a fixed-size credit bar, and no
+  operation (hire, cascade, rehire, reallocate, credit-request approval) may
+  push total holdings past the cap;
+- **spend limit** — total spend shows in the top bar; breaching it freezes
+  every agent; raising the limit on the dashboard clears the freeze and ▶
+  resume replays the interrupted turns;
+- **storage limit** — caps the org's own workspace folder (external folder
+  grants are exempt). Breaching it does *not* freeze anyone: file creation
+  and writes in the workspace are blocked (on Windows, enforced at the OS
+  level with delete rights kept) until enough files are deleted — the block
+  lifts automatically.
 
 ⚠ Kiosk bounds *configuration and money*, not *capability*: visitors can
 still make agents do anything the fixed rights allow. For anything
 internet-facing, give the kiosk org **no bash**, workspace-only folders, and
-deliberate web access — and put real authentication (a reverse proxy with
-auth, Cloudflare Access, a VPN) in front; orgtree itself has none.
+deliberate web access. The secret URL is a capability: anyone holding it is
+that kiosk's visitor, so share deliberately and rotate freely — and prefer
+serving it through an HTTPS tunnel (set `ORGTREE_PUBLIC_ORIGIN`) so tokens
+aren't sniffable in transit.
 
 ## A word on safety and cost
 

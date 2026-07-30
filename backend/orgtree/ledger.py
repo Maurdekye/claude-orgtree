@@ -136,6 +136,10 @@ class Org:
         self.d.setdefault("default_top_grant", 50)   # user ruling: 50 by default
         self.d.setdefault("credit_requests", [])     # top-level asks to the user
         self.d.setdefault("compact_at", 0.80)        # compaction ratio, ≤ 0.95 hard
+        # kiosk v2 (user vision): per-org public exposure via a preauthenticated
+        # secret-URL token; caps live here, not in env vars. None = never a kiosk.
+        self.d.setdefault("kiosk", None)             # {enabled, token, credits,
+                                                     #  spend_limit, storage_limit_mb}
         for m in self.d.get("user_inbox", []):       # per-mail read tracking needs ids
             m.setdefault("id", uuid.uuid4().hex[:8])
         # org holdings carry RW/RO modes (user ruling — configured on the eye's
@@ -1429,6 +1433,7 @@ class Org:
             "user_inbox_newest": (self.d.get("user_inbox") or [{}])[-1].get("at"),
             "fable_lock": self.d.get("fable_lock"),
             "spend_frozen": bool(self.d.get("spend_frozen")),
+            "storage_blocked": bool(self.d.get("storage_blocked")),
             "fable_limit_policy": self.d.get("fable_limit_policy", "halt"),
             "audience_requests": self.d.get("audience_requests", []),
         }

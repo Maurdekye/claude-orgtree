@@ -1032,3 +1032,33 @@ svg.MuiSvgIcon-root {
 .picker-row svg { color: var(--dim); }
 .picker-sel { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .picker-err { color: var(--bad); font-size: 12px; }
+
+/* ---- kiosk dashboard (admin org list) -------------------------------- */
+.kiosk-badge { color: var(--accent); display: inline-flex; margin-left: 6px; font-size: 12px; }
+.kiosk-dash { margin-top: 16px; border-top: 1px solid var(--line-soft); padding-top: 10px; }
+.kiosk-dash h3 {
+  margin: 0 0 8px; font-size: 11px; letter-spacing: .08em;
+  text-transform: uppercase; color: var(--dim);
+  display: flex; align-items: center; gap: 6px;
+}
+.kiosk-dash h3 svg { color: var(--accent); }
+.kiosk-row {
+  border: 1px solid var(--line-soft); border-radius: 6px;
+  padding: 8px 10px; margin-bottom: 8px; background: var(--panel);
+  display: flex; flex-direction: column; gap: 6px; font-size: 12px;
+}
+.kiosk-row .row { display: flex; align-items: center; gap: 6px; }
+.kiosk-name { cursor: pointer; }
+.kiosk-name:hover { color: var(--accent-hover); text-decoration: underline; }
+.kiosk-stats { font-size: 11px; }
+.kiosk-caps label {
+  display: flex; align-items: center; gap: 4px;
+  color: var(--dim); font-size: 11px; min-width: 0;
+}
+.kiosk-caps input { width: 56px; min-width: 0; }
+.kiosk-url input {
+  flex: 1; min-width: 0; font-size: 11px;
+  color: var(--dim); text-overflow: ellipsis;
+}
+.kiosk-new { display: flex; gap: 6px; margin-top: 4px; }
+.kiosk-new select { flex: 1; min-width: 0; }

@@ -26,15 +26,44 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 
 from . import store
 from .ledger import USER, Org, now as now_iso
 
-# ---- kiosk mode (user spec): one fixed org for public exposure — config
-# frozen at launch, credits hard-capped, spend hard-limited.
-KIOSK_SLUG = os.environ.get("ORGTREE_KIOSK") or None
-KIOSK_CREDITS = int(os.environ.get("ORGTREE_KIOSK_CREDITS", "0") or 0)
-KIOSK_SPEND_LIMIT = float(os.environ.get("ORGTREE_KIOSK_SPEND_LIMIT", "0") or 0)
+# ---- kiosk v2 (user vision): per-org public exposure behind a secret-URL
+# token. Caps (credits, spend, workspace storage) live ON THE ORG DOC —
+# `kiosk: {enabled, token, credits, spend_limit, storage_limit_mb}`; the old
+# ORGTREE_KIOSK env vars migrate into the doc at startup (api.py).
+def kiosk_cfg(org: Org) -> dict | None:
+    k = org.d.get("kiosk")
+    return k if (k and k.get("enabled")) else None
+
+
+_ws_usage_cache: dict[str, tuple[float, int]] = {}
+
+
+def workspace_usage_bytes(org: Org, max_age: float = 0.0) -> int:
+    """Size of the org's OWN workspace dir (user spec: the storage limit never
+    covers external folder grants). `max_age` > 0 serves a recent measurement
+    from cache — for UI reads; enforcement paths measure fresh."""
+    ws = org.d.get("workspace")
+    if not ws or not os.path.isdir(ws):
+        return 0
+    slug = org.d["slug"]
+    if max_age > 0:
+        hit = _ws_usage_cache.get(slug)
+        if hit and time.time() - hit[0] < max_age:
+            return hit[1]
+    total = 0
+    for root, _dirs, files in os.walk(ws):
+        for f in files:
+            try:
+                total += os.path.getsize(os.path.join(root, f))
+            except OSError:
+                pass
+    _ws_usage_cache[slug] = (time.time(), total)
+    return total
 
 COMPACT_AT = float(os.environ.get("ORGTREE_COMPACT_AT", "0.80"))   # §8.2
 ORACLE_AT = float(os.environ.get("ORGTREE_ORACLE_AT", "0.92"))     # §8.3 state 2→3
@@ -443,8 +472,8 @@ def _run_turn(slug: str, nid: str, text: str):
                 if org.node(nid)["state"] != "live":
                     raise RuntimeError(f"{nid} is not live")
                 if org.d.get("spend_frozen"):
-                    raise RuntimeError("kiosk spend limit reached — all agents "
-                                       "are frozen until relaunch")
+                    raise RuntimeError("kiosk spend limit reached — frozen "
+                                       "until the limit is raised (admin side)")
                 if org.node(nid).get("limit_locked"):
                     raise RuntimeError(
                         "halted: weekly Fable usage limit exhausted — waiting for the "
@@ -693,12 +722,22 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict, st: dict, occ: int = 0
             store.save_org(o2)
             spend_total = sum(float(v.get("cost_usd") or 0.0)
                               for v in o2.nodes.values())
-    # kiosk spend limit (user spec): breach → freeze everything, permanently.
+            kcfg = kiosk_cfg(o2)
+    else:
+        kcfg = kiosk_cfg(org)
+    # kiosk spend limit (user spec): breach → freeze everything.
     # ⚠ cost is only reported at turn end, so the limit can overshoot by the
     # in-flight turns' cost — an accepted, irreducible window.
-    if (KIOSK_SLUG == slug and KIOSK_SPEND_LIMIT > 0
-            and spend_total is not None and spend_total >= KIOSK_SPEND_LIMIT):
-        spend_freeze(slug)
+    if (kcfg and float(kcfg.get("spend_limit") or 0) > 0
+            and spend_total is not None
+            and spend_total >= float(kcfg["spend_limit"])):
+        hard_freeze(slug, "spend", "kiosk spend limit reached")
+    # kiosk workspace storage limit (user spec): NOT a freeze — over the limit
+    # file creation/writes are blocked while agents keep running (they can
+    # delete files to self-heal). Checked per turn, either direction.
+    if (kcfg and int(kcfg.get("storage_limit_mb") or 0) > 0) \
+            or org.d.get("storage_blocked"):
+        storage_check(slug)
     n = org.node(nid)
     if n.get("bearer_state"):
         # §8.3: a predecessor NEVER re-compacts — it has already been compacted, in
@@ -829,25 +868,98 @@ def interrupt_turn(slug: str, nid: str) -> dict:
         return {"interrupted": False, "reason": str(e)}
 
 
-def spend_freeze(slug: str) -> None:
-    """Kiosk spend limit breached: freeze EVERYTHING, immediately and
-    permanently (user spec — only a relaunch with a higher limit unfreezes).
-    Marks the org spend_frozen, freezes every live node with a spend-tagged
-    freeze, and interrupts all in-flight responses."""
+def hard_freeze(slug: str, kind: str, error: str) -> None:
+    """A kiosk hard limit breached (today only kind='spend'): freeze
+    EVERYTHING immediately. Cleared only from the admin side — raising the
+    limit past current usage — after which the ▶ resume button replays the
+    interrupted turns."""
+    flag = kind + "_frozen"
     with store.DOC_LOCK:
         org = store.load_org(slug)
-        if org.d.get("spend_frozen"):
+        if org.d.get(flag):
             return
-        org.d["spend_frozen"] = True
+        org.d[flag] = True
         for nid, n in org.nodes.items():
             if n["state"] == "live":
                 fz = n.setdefault("frozen", {"at": now_iso(), "resume_texts": []})
-                fz["error"] = "kiosk spend limit reached"
+                fz["error"] = error
                 fz["until"] = None
-                fz["spend"] = True
+                fz[kind] = True
         store.save_org(org)
     interrupt_all(slug)
-    notify(slug, "", "spend_frozen")
+    notify(slug, "", flag)
+
+
+def clear_hard_freeze(org: Org, kind: str) -> int:
+    """The limit was raised past usage: clear the org flag and un-tag node
+    freezes IN PLACE — nodes with an interrupted turn stay frozen so ▶ resume
+    replays it; a freeze that was ONLY the hard limit drops entirely. Caller
+    holds DOC_LOCK and saves."""
+    org.d.pop(kind + "_frozen", None)
+    cleared = 0
+    for nid, n in list(org.nodes.items()):
+        fz = n.get("frozen")
+        if fz and fz.pop(kind, None):
+            cleared += 1
+            fz["error"] = None
+            if not fz.get("resume_texts"):
+                n.pop("frozen", None)
+    return cleared
+
+
+def _workspace_write_acl(org: Org, blocked: bool) -> None:
+    """OS-level enforcement of the storage block (Windows): deny write-data /
+    add-file on the workspace tree while LEAVING DELETE RIGHTS INTACT, so
+    agents can clean up and self-heal. POSIX has no deny-write-but-allow-
+    delete bit (dir -w blocks unlinking too), so there enforcement is the
+    advisory notice + the per-turn recheck only."""
+    ws = org.d.get("workspace")
+    if not ws or not os.path.isdir(ws) or os.name != "nt":
+        return
+    user = os.environ.get("USERNAME") or "*S-1-1-0"
+    try:
+        if blocked:
+            subprocess.run(["icacls", ws, "/deny", f"{user}:(OI)(CI)(WD,AD)"],
+                           capture_output=True, timeout=15)
+        else:
+            subprocess.run(["icacls", ws, "/remove:d", user],
+                           capture_output=True, timeout=15)
+    except OSError:
+        pass
+
+
+def storage_check(slug: str) -> str | None:
+    """Enforce the kiosk workspace storage limit (user spec: never a freeze).
+    Over the limit → block file creation/writes in the workspace and notify
+    the org's agents; back under (files deleted, limit raised, kiosk
+    disabled) → unblock automatically. Returns 'blocked' | 'cleared' | None."""
+    with store.DOC_LOCK:
+        org = store.load_org(slug)
+        k = kiosk_cfg(org)
+        lim_mb = int((k or {}).get("storage_limit_mb") or 0)
+        used = workspace_usage_bytes(org)
+        blocked = bool(org.d.get("storage_blocked"))
+        if k and lim_mb and used > lim_mb * 1048576 and not blocked:
+            org.d["storage_blocked"] = True
+            _workspace_write_acl(org, True)
+            org._notify(org.children(None),
+                        f"The org workspace is over its storage limit "
+                        f"({used / 1048576:.1f} / {lim_mb} MB). File creation "
+                        f"and writes in the workspace are BLOCKED — delete "
+                        f"enough files to get back under the limit and the "
+                        f"block lifts automatically. Pass this on to your "
+                        f"reports as needed.")
+            store.save_org(org)
+            result = "blocked"
+        elif blocked and (not k or not lim_mb or used <= lim_mb * 1048576):
+            org.d.pop("storage_blocked", None)
+            _workspace_write_acl(org, False)
+            store.save_org(org)
+            result = "cleared"
+        else:
+            return None
+    notify(slug, "", "storage_" + result)
+    return result
 
 
 def interrupt_all(slug: str) -> dict:
@@ -872,14 +984,14 @@ def interrupt_all(slug: str) -> dict:
 def resume_frozen(slug: str) -> list[str]:
     """The ▶ button: un-freeze every usage-limit-frozen agent at once and replay
     the turn(s) the limit interrupted; waiting mailbox mail rides along on the
-    turn's own envelope drain. A kiosk SPEND freeze is not resumable (user
-    spec) — only a relaunch with a higher limit clears it."""
+    turn's own envelope drain. A kiosk SPEND freeze blocks resume until the
+    admin raises the limit (the storage limit never freezes — it write-blocks)."""
     resumed: list[tuple[str, list[str]]] = []
     with store.DOC_LOCK:
         org = store.load_org(slug)
         if org.d.get("spend_frozen"):
-            raise RuntimeError("the kiosk spend limit was reached — agents "
-                               "cannot be resumed from the UI")
+            raise RuntimeError("the kiosk spend limit was reached — raise the "
+                               "limit from the admin dashboard to resume")
         for nid, n in org.nodes.items():
             fz = n.pop("frozen", None)
             if fz is not None and n["state"] == "live":

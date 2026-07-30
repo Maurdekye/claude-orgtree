@@ -10,12 +10,16 @@ pings "changed" after every successful op so the UI refreshes. Session spawning 
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import re
+import secrets
 import subprocess
 import sys
 import threading
+import time
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -26,43 +30,148 @@ from .ledger import LedgerError, USER, VIS_LEVELS, norm_dirs, norm_tools
 app = FastAPI(title="orgtree", version="1.0.0")
 
 
-# ---- kiosk mode (user spec): one fixed org for public exposure. The gate is
-# SERVER-SIDE — hiding UI buttons is not enforcement.
-@app.middleware("http")
-async def kiosk_gate(request, call_next):
-    if supervisor.KIOSK_SLUG:
-        p, m = request.url.path, request.method
-        frozen_config = (
-            (m == "POST" and p == "/api/orgs")            # create org
-            or (m == "DELETE" and p.startswith("/api/orgs/"))  # delete org
-            or p.endswith("/settings")                    # org settings
-            or p.endswith("/scope")                       # per-agent rights
-            or p == "/api/fs"                             # filesystem browse
-            or (m == "PUT" and p.endswith("/orgmd"))      # org.md edits
-            or p.endswith("/attach")                      # terminal handoff
-        )
-        if frozen_config:
-            return JSONResponse({"detail": "kiosk mode: configuration is "
-                                           "fixed at launch"}, status_code=403)
-        parts = p.split("/")
-        if (len(parts) > 3 and parts[1] == "api" and parts[2] == "orgs"
-                and parts[3] and parts[3] != supervisor.KIOSK_SLUG):
-            return JSONResponse({"detail": "kiosk mode: a single organization "
-                                           "is exposed"}, status_code=403)
-    return await call_next(request)
+# ---- kiosk v2 (user vision): preauthenticated public URLs. Each kiosk-enabled
+# org carries a secret token; the PUBLIC listener serves nothing but
+# /k/<token>/… — the token IS the authentication and maps to exactly one org.
+# The admin app binds 127.0.0.1 only, so root access never leaves this machine.
+# The gate is SERVER-SIDE — hiding UI buttons is not enforcement.
+_TOKEN_RE = re.compile(r"^/k/([A-Za-z0-9_-]{8,64})(/.*)?$")
+_PUBLIC_STATIC = ("/assets/", "/favicon", "/vite.svg")   # index.html's absolute refs
+_token_cache: dict = {"at": 0.0, "map": {}}
+
+
+def _kiosk_token_map() -> dict:
+    """token → slug for every kiosk-enabled org. Rebuilt on a short TTL and
+    invalidated on any kiosk-config write, so rotation revokes instantly."""
+    if time.time() - _token_cache["at"] > 5:
+        m = {}
+        for o in store.list_orgs():
+            try:
+                k = store.load_org(o["slug"]).d.get("kiosk") or {}
+            except LedgerError:
+                continue
+            if k.get("enabled") and k.get("token"):
+                m[k["token"]] = o["slug"]
+        _token_cache.update(at=time.time(), map=m)
+    return _token_cache["map"]
+
+
+def _public_denied(method: str, rest: str, slug: str) -> tuple[int, str] | None:
+    """The public restriction matrix, applied to the post-token path. Config
+    surfaces are admin-only; all access is scoped to the token's own org."""
+    if not rest.startswith("/api"):
+        return None                              # the SPA itself
+    if rest == "/api/orgs" and method == "GET":
+        return None                              # handler filters to this org
+    frozen_config = (
+        (method == "POST" and rest == "/api/orgs")           # create org
+        or (method == "DELETE" and rest.startswith("/api/orgs/"))  # delete org
+        or rest.endswith("/settings")                        # org settings
+        or rest.endswith("/scope")                           # per-agent rights
+        or rest.endswith("/kiosk")                           # kiosk caps/token
+        or rest == "/api/fs"                                 # filesystem browse
+        or (method == "PUT" and rest.endswith("/orgmd"))     # org.md edits
+        or rest.endswith("/attach")                          # terminal handoff
+        or rest == "/api/agent"                              # node MCP gateway
+        or rest == "/api/mcp-servers"
+    )
+    if frozen_config:
+        return 403, "kiosk: configuration is managed from the admin side"
+    parts = rest.split("/")
+    if not (len(parts) > 3 and parts[2] == "orgs" and parts[3] == slug):
+        return 404, "not found"                  # other orgs, other surfaces
+    return None
+
+
+class PublicGateway:
+    """ASGI wrapper served ONLY on the public port: resolves /k/<token>,
+    rewrites the path so the normal routes handle it, stamps the request state
+    with the org slug, and 404s everything else — no org list, no discovery."""
+
+    def __init__(self, inner):
+        self.inner = inner
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "lifespan":
+            # the admin server owns the app's lifespan — running FastAPI
+            # startup twice would double-wire notify + reconcile
+            while True:
+                msg = await receive()
+                if msg["type"] == "lifespan.startup":
+                    await send({"type": "lifespan.startup.complete"})
+                elif msg["type"] == "lifespan.shutdown":
+                    await send({"type": "lifespan.shutdown.complete"})
+                    return
+        if scope["type"] not in ("http", "websocket"):
+            return await self.inner(scope, receive, send)
+        path = scope.get("path", "")
+        if scope["type"] == "http" and path.startswith(_PUBLIC_STATIC):
+            return await self.inner(scope, receive, send)
+        m = _TOKEN_RE.match(path)
+        slug = _kiosk_token_map().get(m.group(1)) if m else None
+        if not slug:
+            return await self._reject(scope, send, 404, "not found")
+        rest = m.group(2) or "/"
+        deny = _public_denied(scope.get("method", "GET"), rest, slug)
+        if deny:
+            return await self._reject(scope, send, deny[0], deny[1])
+        scope = dict(scope)
+        scope["path"] = rest
+        scope["raw_path"] = rest.encode()
+        scope["state"] = {**(scope.get("state") or {}), "public_slug": slug}
+        await self.inner(scope, receive, send)
+
+    async def _reject(self, scope, send, code: int, detail: str):
+        if scope["type"] == "websocket":
+            await send({"type": "websocket.close", "code": 4000 + code})
+            return
+        body = json.dumps({"detail": detail}).encode()
+        await send({"type": "http.response.start", "status": code,
+                    "headers": [(b"content-type", b"application/json"),
+                                (b"content-length", str(len(body)).encode())]})
+        await send({"type": "http.response.body", "body": body})
+
+
+def _public_slug(request) -> str | None:
+    return getattr(request.state, "public_slug", None)
+
+
+_LAN_IP: str | None = None
+
+
+def _share_url(token: str | None) -> str | None:
+    """The preauthenticated URL for a kiosk token. ORGTREE_PUBLIC_ORIGIN wins
+    (the address visitors actually reach — a tunnel or forwarded host);
+    otherwise best-guess this machine's LAN address."""
+    global _LAN_IP
+    if not token or not PUBLIC_PORT:
+        return None
+    if PUBLIC_ORIGIN:
+        return f"{PUBLIC_ORIGIN.rstrip('/')}/k/{token}"
+    if _LAN_IP is None:
+        import socket
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            _LAN_IP = s.getsockname()[0]
+            s.close()
+        except OSError:
+            _LAN_IP = "127.0.0.1"
+    return f"http://{_LAN_IP}:{PUBLIC_PORT}/k/{token}"
 
 
 def _kiosk_cap_check(org):
     """Kiosk credit cap: NO operation may push total top-level holdings past
     the cap — covers hires, §4.6 cascades, rehires, reallocations and
-    credit-request approvals in one invariant (checked before save)."""
-    if supervisor.KIOSK_SLUG and supervisor.KIOSK_CREDITS > 0:
+    credit-request approvals in one invariant (checked before save). Applies
+    to admin actions too: one invariant, and the admin can raise the cap."""
+    k = supervisor.kiosk_cfg(org)
+    if k and int(k.get("credits") or 0) > 0:
         held = org.audit()["top_level_holds"]
-        if held > supervisor.KIOSK_CREDITS:
+        if held > int(k["credits"]):
             raise LedgerError(
                 f"kiosk credit cap: the org may hold at most "
-                f"{supervisor.KIOSK_CREDITS} credits (this would make it "
-                f"{held:g})")
+                f"{int(k['credits'])} credits (this would make it {held:g})")
 
 
 mail_notify = lambda slug, frm, to: None   # wired at startup (thread-safe fanout)
@@ -97,12 +206,33 @@ async def _wire_notify():
 
     supervisor.notify = notify
     supervisor.stream = stream
+    # one-time migration of the retired v1 env-var kiosk mode into the org doc
+    legacy = os.environ.get("ORGTREE_KIOSK")
+    if legacy:
+        try:
+            with store.DOC_LOCK:
+                org = store.load_org(legacy)
+                if not org.d.get("kiosk"):
+                    org.d["kiosk"] = {
+                        "enabled": True, "token": secrets.token_hex(16),
+                        "credits": int(os.environ.get("ORGTREE_KIOSK_CREDITS", "0") or 0),
+                        "spend_limit": float(os.environ.get("ORGTREE_KIOSK_SPEND_LIMIT", "0") or 0),
+                        "storage_limit_mb": 0,
+                    }
+                    store.save_org(org)
+            print(f"[orgtree] ORGTREE_KIOSK is retired — {legacy!r} is now a kiosk "
+                  f"org (secret URL on the admin dashboard); set "
+                  f"ORGTREE_PUBLIC_PORT to expose it")
+        except LedgerError:
+            print(f"[orgtree] ORGTREE_KIOSK={legacy!r}: no such org — ignored")
     for o in store.list_orgs():                   # №31 eager reconciliation
         marked = supervisor.reconcile(o["slug"])
         if marked:
             print(f"[orgtree] {o['slug']}: marked unrecoverable at startup: {marked}")
 
 PORT = int(os.environ.get("ORGTREE_PORT", "7360"))
+PUBLIC_PORT = int(os.environ.get("ORGTREE_PUBLIC_PORT", "0") or 0)
+PUBLIC_ORIGIN = (os.environ.get("ORGTREE_PUBLIC_ORIGIN") or "").strip()
 FRONTEND_DIST = os.path.normpath(os.path.join(
     os.path.dirname(__file__), "..", "..", "frontend", "dist"))
 
@@ -151,12 +281,40 @@ class OrgCreate(BaseModel):
 
 
 @app.get("/api/orgs")
-def orgs_list():
+def orgs_list(request: Request):
     orgs = store.list_orgs()
-    if supervisor.KIOSK_SLUG:
-        orgs = [{**o, "kiosk": True}
-                for o in orgs if o["slug"] == supervisor.KIOSK_SLUG]
-    return orgs
+    pub = _public_slug(request)
+    if pub:
+        # public visitors see exactly their token's org — nothing to discover
+        return [{**o, "kiosk": True} for o in orgs if o["slug"] == pub]
+    # admin: attach the kiosk dashboard summary (incl. the secret token —
+    # this listener is loopback-only)
+    out = []
+    for o in orgs:
+        try:
+            org = store.load_org(o["slug"])
+        except LedgerError:
+            out.append(o)
+            continue
+        row = {**o, "cost_usd_total": round(
+            sum(float(v.get("cost_usd") or 0.0) for v in org.nodes.values()), 4)}
+        k = org.d.get("kiosk")
+        if k:
+            row["kiosk_cfg"] = {
+                "enabled": bool(k.get("enabled")),
+                "token": k.get("token"),
+                "credits": int(k.get("credits") or 0),
+                "spend_limit": float(k.get("spend_limit") or 0),
+                "storage_limit_mb": int(k.get("storage_limit_mb") or 0),
+                "spend_frozen": bool(org.d.get("spend_frozen")),
+                "storage_blocked": bool(org.d.get("storage_blocked")),
+                "held": org.audit()["top_level_holds"],
+                "storage_mb": round(
+                    supervisor.workspace_usage_bytes(org, 15) / 1048576, 2),
+                "share_url": _share_url(k.get("token")),
+            }
+        out.append(row)
+    return out
 
 
 @app.post("/api/orgs")
@@ -178,7 +336,7 @@ def orgs_delete(slug: str):
 
 
 @app.get("/api/orgs/{slug}")
-def org_tree(slug: str):
+def org_tree(slug: str, request: Request):
     try:
         org = store.load_org(slug)
     except LedgerError as e:
@@ -200,12 +358,21 @@ def org_tree(slug: str):
 
     for r in tree["roots"]:
         annotate(r)
-    if supervisor.KIOSK_SLUG == slug:
+    k = supervisor.kiosk_cfg(org)
+    if k:
         tree["kiosk"] = {
-            "credits": supervisor.KIOSK_CREDITS or None,
-            "spend_limit": supervisor.KIOSK_SPEND_LIMIT or None,
+            "credits": int(k.get("credits") or 0) or None,
+            "spend_limit": float(k.get("spend_limit") or 0) or None,
+            "storage_limit_mb": int(k.get("storage_limit_mb") or 0) or None,
             "spend_frozen": bool(tree.get("spend_frozen")),
+            "storage_blocked": bool(tree.get("storage_blocked")),
         }
+        if k.get("storage_limit_mb"):
+            tree["kiosk"]["storage_mb"] = round(
+                supervisor.workspace_usage_bytes(org, 15) / 1048576, 2)
+    if _public_slug(request):
+        # tells the UI to lock itself down; the SERVER gate is the enforcement
+        tree["public"] = True
     return tree
 
 
@@ -279,6 +446,55 @@ async def _org_settings_locked(slug: str, body: Settings):
     store.save_org(org)
     await hub.changed(slug)
     return {"dirs": org.d["dirs"], "warnings": warnings}
+
+
+class KioskCfg(BaseModel):
+    enabled: bool | None = None
+    credits: int | None = None            # top-level holdings cap (0 = uncapped)
+    spend_limit: float | None = None      # USD hard limit (0 = unlimited)
+    storage_limit_mb: int | None = None   # workspace-dir size cap (0 = unlimited)
+    rotate_token: bool = False            # mint a new secret URL (revokes the old)
+
+
+@app.post("/api/orgs/{slug}/kiosk")
+async def org_kiosk(slug: str, body: KioskCfg):
+    """Admin-only (the public gateway 403s the path): enable/disable an org as
+    a kiosk, adjust its caps, rotate its secret URL. Raising a breached limit
+    clears the matching hard freeze — ▶ resume then replays halted turns."""
+    with store.DOC_LOCK:
+        try:
+            org = store.load_org(slug)
+        except LedgerError as e:
+            raise HTTPException(404, str(e))
+        k = org.d.get("kiosk") or {}
+        if body.enabled is not None:
+            k["enabled"] = bool(body.enabled)
+        if body.credits is not None:
+            k["credits"] = max(0, int(body.credits))
+        if body.spend_limit is not None:
+            k["spend_limit"] = max(0.0, float(body.spend_limit))
+        if body.storage_limit_mb is not None:
+            k["storage_limit_mb"] = max(0, int(body.storage_limit_mb))
+        if (k.get("enabled") and not k.get("token")) or body.rotate_token:
+            k["token"] = secrets.token_hex(16)
+        org.d["kiosk"] = k
+        cleared = []
+        if org.d.get("spend_frozen"):
+            spent = sum(float(v.get("cost_usd") or 0.0)
+                        for v in org.nodes.values())
+            lim = float(k.get("spend_limit") or 0)
+            if not k.get("enabled") or not lim or spent < lim:
+                supervisor.clear_hard_freeze(org, "spend")
+                cleared.append("spend")
+        store.save_org(org)
+    # the storage limit is a write BLOCK, not a freeze — recheck it against
+    # the new limit (applies/lifts the block as needed, takes its own lock)
+    if supervisor.storage_check(slug) == "cleared":
+        cleared.append("storage")
+    _token_cache["at"] = 0.0             # rotation/enable takes effect now
+    await hub.changed(slug)
+    return {"kiosk": dict(k), "share_url": _share_url(k.get("token")),
+            "freezes_cleared": cleared}
 
 
 class Scope(BaseModel):
@@ -973,7 +1189,20 @@ if os.path.isdir(FRONTEND_DIST):
 
 def main():
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=PORT)
+    if not PUBLIC_PORT:
+        uvicorn.run(app, host="127.0.0.1", port=PORT)
+        return
+
+    async def serve_both():
+        # the admin app stays LOOPBACK-ONLY (user vision: root access never
+        # reaches the wider web); the public listener binds all interfaces but
+        # serves nothing except preauthenticated /k/<token> URLs
+        admin = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=PORT))
+        public = uvicorn.Server(uvicorn.Config(
+            PublicGateway(app), host="0.0.0.0", port=PUBLIC_PORT))
+        await asyncio.gather(admin.serve(), public.serve())
+
+    asyncio.run(serve_both())
 
 
 if __name__ == "__main__":

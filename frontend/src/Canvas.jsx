@@ -750,7 +750,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
           if (n.id === USER) {
             return <UserNode key={USER} pos={p} isDrop={dropId === USER} seats={seats}
               stats={orgStats} mailGlow={mailGlow}
-              kiosk={tree.kiosk} kioskRemaining={kioskRemaining}
+              kiosk={tree.kiosk} pub={!!tree.public} kioskRemaining={kioskRemaining}
               kioskSegs={tree.roots.filter((n) => n.state === 'live')
                 .map((n) => ({ seat: n.seat, grant: n.grant }))}
               pxc={pxPerCredit} zoom={view.z}
@@ -779,7 +779,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
               onSpawn={(t) => spawn(n.id, t)} onConfig={() => setConfigId(n.id)}
               onInbox={() => setInboxId(n.id)} onLineage={() => setLineageId(n.id)}
               onRecenter={() => centerOn(n.id)}   /* recenter AND re-zoom to fill */
-              kiosk={!!tree.kiosk} kioskRemaining={kioskRemaining}
+              pub={!!tree.public} kioskRemaining={kioskRemaining}
               onDragStart={startNodeDrag} onDragMove={moveNodeDrag} onDragEnd={endNodeDrag} />
           )
         })}
@@ -813,7 +813,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
 
 // ------------------------------------------------------------- the overseer
 function UserNode({ pos, isDrop, stats, inboxCount, seats, mailGlow,
-  kiosk, kioskRemaining, kioskSegs, pxc, zoom, onInbox, onGear, onSpawn }) {
+  kiosk, pub, kioskRemaining, kioskSegs, pxc, zoom, onInbox, onGear, onSpawn }) {
   return (
     <div className={'sq user' + (isDrop ? ' drop' : '') + (mailGlow ? ' mail-glow' : '')}
       style={{
@@ -846,7 +846,7 @@ function UserNode({ pos, isDrop, stats, inboxCount, seats, mailGlow,
         onClick={(e) => { e.stopPropagation(); onInbox?.() }}>
         <MailIcon fontSize="inherit" />{inboxCount > 0 && <span className="count">{inboxCount}</span>}
       </button>
-      {!kiosk && <button className="eye-gear" title="agent-hire defaults"
+      {!pub && <button className="eye-gear" title="agent-hire defaults"
         onPointerDown={(e) => e.stopPropagation()}
         onClick={(e) => { e.stopPropagation(); onGear?.() }}><SettingsIcon fontSize="inherit" /></button>}
       {/* real seat costs in the hover hints — a literal 0 was technically true
@@ -1150,7 +1150,7 @@ function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRemaining,
 
 function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, map, op, slug,
   pulse, toast, streamEvt, pxc, zoom, act, onSpawn, onConfig, onInbox, onLineage,
-  onRecenter, kiosk, kioskRemaining, onDragStart, onDragMove, onDragEnd }) {
+  onRecenter, pub, kioskRemaining, onDragStart, onDragMove, onDragEnd }) {
   const cls = ['sq', node.state, focused ? 'desk' : lod, 'tier-' + node.tier]
   if (node.busy) cls.push('busy')
   if (dragging) cls.push('lifted')
@@ -1199,7 +1199,7 @@ function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, map, op,
           onClick={(e) => { e.stopPropagation(); onInbox() }}>
           <MailIcon fontSize="inherit" />{node.mail_pending > 0 && <span className="count">{node.mail_pending}</span>}
         </button>
-        {!kiosk && <button className="gearbtn"
+        {!pub && <button className="gearbtn"
           onPointerDown={(e) => e.stopPropagation()}
           onClick={(e) => { e.stopPropagation(); onConfig() }}><SettingsIcon fontSize="inherit" /></button>}
         <ContextWheel occ={node.occupancy} cw={node.context_window} />
@@ -1235,7 +1235,7 @@ function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, map, op,
       {focused && (
         <DeskChat node={node} map={map} op={op} slug={slug} pulse={pulse} toast={toast}
           streamEvt={streamEvt} onLineage={onLineage} onConfig={onConfig}
-          onRecenter={onRecenter} kiosk={kiosk} />
+          onRecenter={onRecenter} pub={pub} />
       )}
       {/* user ruling: chips are NEVER disabled by the node's own free credits —
           a user hire §4.6-cascades, granting the chain whatever it lacks.
@@ -1466,7 +1466,7 @@ function Activity({ act, dotOnly }) {
 // compact one-line chrome, plain assistant text, boxed user turns, ⏺ tool
 // lines, and a bordered composer with the model name in its footer row.
 function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onConfig,
-  onRecenter, kiosk }) {
+  onRecenter, pub }) {
   const [chat, setChat] = useState(null)
   const [text, setText] = useState('')
   const [pending, setPending] = useState([])   // sent, not yet in the transcript
@@ -1605,7 +1605,7 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
             </button>
           ))}
         </span>
-        {!kiosk && <button className="cc-icon" onClick={onConfig}><SettingsIcon fontSize="inherit" /></button>}
+        {!pub && <button className="cc-icon" onClick={onConfig}><SettingsIcon fontSize="inherit" /></button>}
       </div>
       {asking && (
         <ConfirmModal title={`dissolve ${node.id}?`}
