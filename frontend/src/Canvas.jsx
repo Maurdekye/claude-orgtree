@@ -3,9 +3,10 @@ import { marked } from 'marked'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   audienceAction, dissolveAll, getChat, getHistory, getMcpServers, getNodeInbox,
-  getScratch, interruptNode, pickFolder, reorderNode, saveScope, saveSettings,
+  getScratch, interruptNode, reorderNode, saveScope, saveSettings,
   sendMessage,
 } from './api'
+import { pickFolder } from './picker'
 import {
   AddIcon, ArrowUpIcon, AutorenewIcon, CheckIcon, CloseIcon, DeleteIcon,
   DotIcon, EditIcon, FileIcon, FolderIcon, FrozenIcon, FullscreenIcon,

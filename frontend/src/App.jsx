@@ -11,6 +11,7 @@ import {
   PlayIcon, SettingsIcon, SparkIcon, StopIcon, WarnIcon,
 } from './icons'
 import { DirList } from './forms'
+import { FolderPickerHost } from './picker'
 
 const TIER_LETTER = { haiku: 'H', sonnet: 'S', opus: 'O', fable: 'F' }
 const USER = '@user'       // typed actor sentinels — a node may be NAMED user/system
@@ -276,6 +277,8 @@ export default function App() {
           </div>
         ))}
       </div>
+      {/* the in-app folder picker: LAST so it stacks above every modal */}
+      <FolderPickerHost />
     </div>
   )
 }

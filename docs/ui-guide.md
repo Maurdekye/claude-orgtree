@@ -53,8 +53,11 @@ snowflake, lock, layers, fullscreen, hearing.
     immediately; an RW→RO downgrade likewise downgrades every agent's
     grant), and an add row for any absolute path. Every folder-entry point
     in the app (here, a card's ⚙, the new-org form) has a 📁 button that
-    opens a native folder-picker dialog — it appears on THIS machine, since
-    the orgtree UI and backend are local. These holdings are what
+    opens the IN-APP folder picker: a custom dialog listing the server's
+    drives and directories (breadcrumbs, home/drives/up shortcuts,
+    double-click to descend, "select this folder" to choose). Being pure
+    web UI, it works from any browser that can reach orgtree — including
+    remote ones — unlike a native dialog. These holdings are what
     new hires receive by default.
   - **agent-hire defaults** — hires made from the chips don't ask about
     capabilities; they take these defaults, which start with EVERYTHING

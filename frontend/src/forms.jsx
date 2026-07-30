@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { pickFolder } from './api'
+import { pickFolder } from './picker'
 import { CloseIcon, FolderIcon } from './icons'
 
 // actor sentinels are @-typed — a NODE may legitimately be named "user"/"system"

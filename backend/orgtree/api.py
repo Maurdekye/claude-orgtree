@@ -256,29 +256,35 @@ async def node_scope(slug: str, nid: str, body: Scope):
     return result
 
 
-_pick_lock = threading.Lock()
-
-
-@app.post("/api/pick-folder")
-def pick_folder():
-    """Open a NATIVE folder-picker dialog on this machine (the UI is local, so
-    the server's dialog IS the user's dialog — browsers cannot reveal absolute
-    paths themselves) and return the chosen path, or null if cancelled."""
-    if not _pick_lock.acquire(blocking=False):
-        raise HTTPException(409, "a folder picker is already open")
+@app.get("/api/fs")
+def fs_list(path: str = ""):
+    """Directory listing for the IN-APP folder picker (user ruling: a native
+    server-side dialog only works when the browser and server share a desktop;
+    this works from anywhere the UI is reachable). Directories only; an empty
+    path lists the roots (drives on Windows) plus the home shortcut."""
+    if not path:
+        if os.name == "nt":
+            import string as _string
+            roots = [f"{c}:\\" for c in _string.ascii_uppercase
+                     if os.path.exists(f"{c}:\\")]
+        else:
+            roots = ["/"]
+        return {"path": "", "parent": None,
+                "dirs": [{"name": r, "path": r} for r in roots],
+                "home": os.path.expanduser("~")}
+    p = os.path.normpath(path)
+    if not os.path.isdir(p):
+        raise HTTPException(404, f"not a directory: {p}")
     try:
-        out = subprocess.run(
-            [sys.executable, "-c",
-             "from tkinter import filedialog, Tk\n"
-             "r = Tk(); r.withdraw(); r.attributes('-topmost', True)\n"
-             "print(filedialog.askdirectory() or '')"],
-            capture_output=True, text=True, timeout=300)
-        path = (out.stdout or "").strip()
-        return {"path": os.path.normpath(path) if path else None}
-    except subprocess.TimeoutExpired:
-        return {"path": None}
-    finally:
-        _pick_lock.release()
+        names = sorted((e for e in os.listdir(p)
+                        if os.path.isdir(os.path.join(p, e))), key=str.lower)
+    except PermissionError:
+        raise HTTPException(403, f"permission denied: {p}")
+    parent = os.path.dirname(p)
+    if parent == p:
+        parent = ""            # drive/filesystem root → back to the roots list
+    return {"path": p, "parent": parent,
+            "dirs": [{"name": e, "path": os.path.join(p, e)} for e in names]}
 
 
 @app.get("/api/mcp-servers")

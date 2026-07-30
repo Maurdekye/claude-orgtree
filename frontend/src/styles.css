@@ -1001,3 +1001,34 @@ svg.MuiSvgIcon-root {
   vertical-align: -0.18em; flex: none;
 }
 .tooldot { font-size: .7em !important; vertical-align: 0.05em !important; }
+
+/* -------------------------- the in-app folder picker (works remotely too) */
+.picker-overlay { z-index: 60; }
+.settings.picker { width: 560px; }
+.picker-bar {
+  display: flex; gap: 4px; align-items: center; min-width: 0;
+  background: var(--input); border: 1px solid var(--line);
+  border-radius: 5px; padding: 3px 6px;
+}
+.picker-crumbs {
+  min-width: 0; overflow-x: auto; white-space: nowrap;
+  font-size: 12px; scrollbar-width: none;
+}
+.picker-crumbs .crumb {
+  background: none; border: none; padding: 1px 2px; color: var(--ink);
+  font-family: var(--mono); font-size: 12px;
+}
+.picker-crumbs .crumb:hover { color: var(--accent); background: none; }
+.picker-list {
+  height: 44vh; overflow-y: auto; display: flex; flex-direction: column;
+  gap: 1px; background: var(--bg);
+  border: 1px solid var(--line-soft); border-radius: 6px; padding: 4px;
+}
+.picker-row {
+  text-align: left; background: none; border: none; border-radius: 4px;
+  padding: 4px 8px; color: var(--ink); font-size: 13px;
+}
+.picker-row:hover { background: var(--panel-2); }
+.picker-row svg { color: var(--dim); }
+.picker-sel { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.picker-err { color: var(--bad); font-size: 12px; }
