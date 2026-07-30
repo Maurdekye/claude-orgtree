@@ -671,7 +671,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
           const p = posOf(n.id)
           if (!p) return null
           if (n.id === USER) {
-            return <UserNode key={USER} pos={p} isDrop={dropId === USER}
+            return <UserNode key={USER} pos={p} isDrop={dropId === USER} seats={seats}
               stats={orgStats} inboxCount={tree.user_inbox_count ?? 0}
               onInbox={onInbox} onGear={() => setUserCfg(true)}
               onSpawn={(t) => spawn(USER, t)} />
@@ -721,7 +721,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
 }
 
 // ------------------------------------------------------------- the overseer
-function UserNode({ pos, isDrop, stats, inboxCount, onInbox, onGear, onSpawn }) {
+function UserNode({ pos, isDrop, stats, inboxCount, seats, onInbox, onGear, onSpawn }) {
   return (
     <div className={'sq user' + (isDrop ? ' drop' : '')} style={{
       transform: `translate(${pos.x}px, ${pos.y}px)`, width: USER_W, height: USER_H,
@@ -751,7 +751,9 @@ function UserNode({ pos, isDrop, stats, inboxCount, onInbox, onGear, onSpawn }) 
       <button className="eye-gear" title="agent-hire defaults"
         onPointerDown={(e) => e.stopPropagation()}
         onClick={(e) => { e.stopPropagation(); onGear?.() }}>⚙</button>
-      <SpawnChips onSpawn={onSpawn} free={Infinity} seats={{}} />
+      {/* real seat costs in the hover hints — a literal 0 was technically true
+          (infinite pool) but read as wrong next to every other card */}
+      <SpawnChips onSpawn={onSpawn} free={Infinity} seats={seats} />
     </div>
   )
 }
