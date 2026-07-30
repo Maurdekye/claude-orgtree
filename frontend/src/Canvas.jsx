@@ -622,6 +622,13 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
       const d = Math.hypot(sx - cw, sy - ch)
       if (d < bestD) { bestD = d; best = id }
     }
+    // the SWITCHBOARD is a full-screen surface (user ruling): the eye's desk
+    // triggers only when the zoom actually approaches screen-filling — far
+    // later than an agent's desk; below that the eye stays a plain card
+    if (best === USER) {
+      const zFill = Math.min(Z_MAX, vp ? (vp.height - 48) / USER_H : Z_MAX)
+      if (view.z < zFill * 0.85) return null
+    }
     return bestD < NODE_W * 1.6 * view.z ? best : null
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, target])

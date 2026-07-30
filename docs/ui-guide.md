@@ -146,7 +146,9 @@ usage drops back under — the block lifts on its own.
 
 Click the eye and the camera zooms in — and the eye is the ONE cell that
 **expands in width to your screen's aspect ratio** as it focuses, opening the
-**switchboard**: side-by-side live chats with every agent that has a direct
+**switchboard**. Unlike an agent's desk, it triggers only when the zoom
+actually approaches **full screen** (it is a full-screen surface by design) —
+at ordinary desk zoom the eye stays a plain card. The switchboard: side-by-side live chats with every agent that has a direct
 line to you (top-level agents, plus any agent holding a user audience — a
 coordinator that delegates user audiences to its hires fills this view
 automatically). Each panel is a full chat: live transcript, working
