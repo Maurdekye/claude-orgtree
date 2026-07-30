@@ -1089,10 +1089,10 @@ function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, zoom, pxc, onCo
   // top-level drafts pre-fill the org's default grant (50 unless configured)
   const [grant, setGrant] = useState(
     draft.parent == null ? Math.min(defaultTop ?? 50, maxTop) : 0)
-  const parent = draft.parent ? map.get(draft.parent) : null
-  const max = parent == null
-    ? maxTop
-    : Math.max(0, (parent.free ?? 0) - (seats[draft.tier] ?? 0))
+  // user ruling: a user hire cascades grants up the chain (§4.6), so the
+  // draft's ceiling is the org slider cap even DEEP in the tree — the parent's
+  // own free credits are not a limit. (Kiosk mode will cap this instead.)
+  const max = maxTop
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onCancel() }
     window.addEventListener('keydown', onKey)
@@ -1103,8 +1103,11 @@ function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, zoom, pxc, onCo
     <div className="sq draft" style={{
       transform: `translate(${pos.x}px, ${pos.y}px)`, width: NODE_W, height: NODE_H,
     }} onPointerDown={(e) => e.stopPropagation()}>
+      {/* no ghost ceiling: the cascade means the only ceiling is the slider
+          cap itself (the ghost stays meaningful on LIVE bars — reallocate
+          does NOT cascade) */}
       <CreditBar seat={seats[draft.tier] ?? 0} grant={grant} committed={0}
-        draftMode max={max} maxGhost={draft.parent != null}
+        draftMode max={max}
         onDragValue={setGrant} zoom={zoom} pxc={pxc} />
       <div className="sq-head">
         <span className="tier">{TIER_LETTER[draft.tier]}</span>
@@ -1215,8 +1218,11 @@ function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, map, op,
           streamEvt={streamEvt} onLineage={onLineage} onConfig={onConfig}
           onRecenter={onRecenter} />
       )}
+      {/* user ruling: chips are NEVER disabled by the node's own free credits —
+          a user hire §4.6-cascades, granting the chain whatever it lacks.
+          (Kiosk mode will pass the cap remainder here instead.) */}
       {live && !node.isBearerOf && !node.bearer_state &&
-        <SpawnChips onSpawn={onSpawn} free={node.free} seats={seats} />}
+        <SpawnChips onSpawn={onSpawn} free={Infinity} seats={seats} />}
     </div>
   )
 }

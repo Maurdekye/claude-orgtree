@@ -36,8 +36,11 @@ snowflake, lock, layers, fullscreen, hearing.
 
 - Hover any live card (or the eye) and click one of the round **H S O F**
   chips (tinted in their model's color): haiku · sonnet · opus · fable, seat
-  costs 1 · 3 · 5 · 10. A disabled chip means the node's free credits don't
-  cover that seat (its tooltip shows the arithmetic).
+  costs 1 · 3 · 5 · 10. Chips are NEVER disabled by the node's own free
+  credits: a user hire cascades (§4.6), automatically granting every node up
+  the chain whatever it lacks (each inflation is reported as a warning and a
+  notice — reclaim with reallocate when done). The draft's grant slider has
+  the same freedom: its only ceiling is the org's top-level grant cap.
 - A dashed **uninitialized** draft box appears; type a name (1–2 words,
   Enter or ✓ hires, Esc discards), optionally a short **charter** (standing
   role notes, injected into the agent's prompt every turn; Shift+Enter for
