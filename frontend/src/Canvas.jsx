@@ -679,7 +679,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
               streamEvt={streamEvt} pxc={pxPerCredit} zoom={view.z} act={activity?.[n.id]}
               onSpawn={(t) => spawn(n.id, t)} onConfig={() => setConfigId(n.id)}
               onInbox={() => setInboxId(n.id)} onLineage={() => setLineageId(n.id)}
-              onRecenter={() => centerOn(n.id, viewRef.current.z)}
+              onRecenter={() => centerOn(n.id)}   /* recenter AND re-zoom to fill */
               onDragStart={startNodeDrag} onDragMove={moveNodeDrag} onDragEnd={endNodeDrag} />
           )
         })}
@@ -925,7 +925,10 @@ function CreditBar({ seat = 0, grant, committed, segments = [], draftMode,
       {/* inner layers live in a clip so they can never punch through the
           bar's rounded outline (border-box height overhang) */}
       <div className="cbar-clip">
-        <div className="cbar-fill" style={{
+        {/* corner rule (user ruling): square corners ONLY at the seat↔alloc
+            junction — the fill's bottom is square iff a seat sits below it,
+            and the seat's top is rounded iff no alloc sits above it */}
+        <div className={'cbar-fill' + (seatLen > 0 ? '' : ' alone')} style={{
           bottom: seatLen,
           height: draftMode ? cur * pxc : committed * pxc,
         }} />
@@ -945,7 +948,10 @@ function CreditBar({ seat = 0, grant, committed, segments = [], draftMode,
           })
           return out
         })()}
-        {seat > 0 && <div className="cbar-seat" style={{ height: seatLen }} />}
+        {seat > 0 &&
+          <div className={'cbar-seat'
+            + ((draftMode ? cur : committed) > 0 ? '' : ' crown')}
+            style={{ height: seatLen }} />}
         {seat > 0 && cur > 0 && <div className="cbar-div" style={{ bottom: seatLen }} />}
       </div>
       <div className="cbar-tip">

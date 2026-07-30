@@ -802,6 +802,25 @@ def interrupt_turn(slug: str, nid: str) -> dict:
         return {"interrupted": False, "reason": str(e)}
 
 
+def interrupt_all(slug: str) -> dict:
+    """The killswitch: instantly interrupt every active agent at once (user
+    ruling — an unlatch-then-press control). Clears in-memory queues and steer
+    lists too, so nothing chains a new turn; undelivered mail stays safe in
+    the org doc for whenever the user drives agents again."""
+    with store.DOC_LOCK:
+        org = store.load_org(slug)
+        nids = [k for k, v in org.nodes.items() if v["state"] == "live"]
+    stopped = []
+    for nid in nids:
+        st = state(slug, nid)
+        with _state_lock:
+            st["queue"].clear()
+            st["steer"] = []
+        if interrupt_turn(slug, nid).get("interrupted"):
+            stopped.append(nid)
+    return {"interrupted": stopped}
+
+
 def resume_frozen(slug: str) -> list[str]:
     """The ▶ button: un-freeze every usage-limit-frozen agent at once and replay
     the turn(s) the limit interrupted; waiting mailbox mail rides along on the

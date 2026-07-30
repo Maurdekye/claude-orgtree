@@ -329,6 +329,18 @@ def node_interrupt(slug: str, nid: str):
     return supervisor.interrupt_turn(slug, nid)
 
 
+@app.post("/api/orgs/{slug}/killswitch")
+async def org_killswitch(slug: str):
+    """⏹ STOP ALL: interrupt every active agent and clear pending queues."""
+    try:
+        store.load_org(slug)
+    except LedgerError as e:
+        raise HTTPException(404, str(e))
+    result = supervisor.interrupt_all(slug)
+    await hub.changed(slug)
+    return result
+
+
 @app.post("/api/orgs/{slug}/resume")
 async def org_resume(slug: str):
     """The ▶ button: restart every usage-limit-frozen agent at once."""

@@ -168,6 +168,23 @@ main {
   color: var(--ink-strong); font-weight: 700;
 }
 .resume-note { font-size: 11.5px; color: var(--dim); max-width: 34em; }
+/* the killswitch: a latch you must open, then a big red STOP ALL */
+.kill { display: inline-flex; gap: 0; align-items: stretch; }
+.kill-latch {
+  background: var(--input); border: 1px solid var(--line); border-right: none;
+  border-radius: 5px 0 0 5px; padding: 3px 8px; font-size: 12px;
+}
+.kill-latch.open { background: rgba(241, 76, 76, .18); border-color: var(--bad); }
+.kill-btn {
+  border-radius: 0 5px 5px 0; padding: 3px 12px;
+  font-weight: 800; letter-spacing: .06em; font-size: 12px;
+  background: var(--input); border: 1px solid var(--line); color: var(--dim);
+}
+.kill-btn:not(:disabled) {
+  background: var(--bad); border-color: var(--bad); color: #fff;
+  box-shadow: 0 0 10px rgba(241, 76, 76, .5);
+}
+.kill-btn:not(:disabled):hover { background: #ff5f5f; }
 /* the active-agent summary chip: total · working · per-model counts */
 .chip.agents { display: inline-flex; gap: 7px; align-items: baseline; }
 .chip.agents b { font-family: var(--mono); font-weight: 700; }
@@ -196,9 +213,9 @@ main {
   cursor: default; border-color: var(--accent);
   box-shadow: 0 8px 40px rgba(0, 0, 0, .55), 0 0 0 1px rgba(217, 119, 87, .25);
   /* a chat window, not a rounded game tile — under the inverted scale regime
-     even 4px world radius reads ~30px at desk-fill and ate the composer's
-     corner; 1px renders ~7px */
-  border-radius: 1px; border-top-width: 2px;
+     even 4px world radius reads ~30px at desk-fill. 2px keeps a visibly-soft
+     (but very small) corner without eating the composer (user ruling) */
+  border-radius: 2px; border-top-width: 2px;
 }
 /* ---- mini LOD: the card IS the label. The head keeps only the tier chip and
    status dots; the name fills the body large and wrapping (ellipsised 11px names
@@ -293,7 +310,7 @@ main {
    (browser minimum-font-size clamps smaller sizes UP and explodes layout). */
 .desk-over {
   position: absolute; inset: 2px;
-  background: var(--panel); border-radius: 1px;
+  background: var(--panel); border-radius: 1.5px;
   animation: deskfade .28s ease-out; z-index: 2; overflow: hidden;
 }
 @keyframes deskfade { from { opacity: 0; } }
@@ -691,12 +708,14 @@ main {
   border: 1px dashed rgba(34, 211, 238, .38); border-radius: 5px 5px 4px 4px;
   background: rgba(34, 211, 238, .06); pointer-events: none;
 }
+/* corner rule (user ruling): square ONLY at the seat↔alloc junction */
 .cbar-fill {
   position: absolute; left: 0; right: 0;
-  border-radius: 3px;
+  border-radius: 3px 3px 0 0;      /* a seat sits below: square foot */
   background: linear-gradient(to top, #0e7490, #22d3ee 85%, #a5f3fc);
   box-shadow: 0 0 7px rgba(34, 211, 238, .55), inset 0 0 2px rgba(255, 255, 255, .25);
 }
+.cbar-fill.alone { border-radius: 3px; }   /* no seat below (the eye, etc.) */
 /* clips the fill/seat/hairline layers to the bar's rounded outline — without
    it the border-box overhang let the seat block punch through the top */
 .cbar-clip {
@@ -716,10 +735,11 @@ main {
 /* the node's own seat: a solid block at the bar's foot */
 .cbar-seat {
   position: absolute; left: 0; right: 0; bottom: 0;
-  border-radius: 0 0 3px 3px;
+  border-radius: 0 0 3px 3px;      /* alloc above: square crown */
   background: #164e63;
   box-shadow: inset 0 1px 0 rgba(165, 243, 252, .35);
 }
+.cbar-seat.crown { border-radius: 3px; }   /* no alloc: the seat IS the bar top */
 .sq.draft .cbar-fill {
   background: linear-gradient(to top, rgba(34, 211, 238, .25), rgba(34, 211, 238, .55));
   box-shadow: 0 0 7px rgba(34, 211, 238, .35);

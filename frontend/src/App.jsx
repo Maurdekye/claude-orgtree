@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   audienceAction, clearInbox, createOrg, creditDecide, deleteOrg, getAudiences,
-  getInbox, getOrgMd, getTree, listOrgs, openWs, putOrgMd, resumeFrozen, runOp,
-  saveSettings,
+  getInbox, getOrgMd, getTree, killAll, listOrgs, openWs, putOrgMd,
+  resumeFrozen, runOp, saveSettings,
 } from './api'
 import { ConfirmModal, MailFolders, MailList, OrgCanvas, useEsc } from './Canvas'
 import { DirList } from './forms'
@@ -30,7 +30,13 @@ export default function App() {
   const [showInbox, setShowInbox] = useState(false)
   const [drawer, setDrawer] = useState(false)
   const [doomedOrg, setDoomedOrg] = useState(null)   // org row pending deletion
+  const [killArmed, setKillArmed] = useState(false)  // the killswitch latch
   const wsRef = useRef(null)
+  useEffect(() => {           // an unlatched killswitch re-latches on its own
+    if (!killArmed) return
+    const t = setTimeout(() => setKillArmed(false), 6000)
+    return () => clearTimeout(t)
+  }, [killArmed])
 
   const toast = useCallback((lines) => {
     if (!lines || !lines.length) return
@@ -193,6 +199,22 @@ export default function App() {
                   )
                 })()}
                 <span style={{ flex: 1 }} />
+                {/* the killswitch: unlatch, then press — interrupts EVERY
+                    active agent and clears their queues */}
+                <span className="kill">
+                  <button className={'kill-latch' + (killArmed ? ' open' : '')}
+                    title={killArmed ? 're-latch' : 'unlatch the killswitch'}
+                    onClick={() => setKillArmed((a) => !a)}>
+                    {killArmed ? '🔓' : '🔒'}</button>
+                  <button className="kill-btn" disabled={!killArmed}
+                    title="interrupt every active agent at once"
+                    onClick={() => {
+                      setKillArmed(false)
+                      killAll(slug)
+                        .then((r) => { toast([`⏹ interrupted ${r.interrupted.length} agent(s); queues cleared`]); refreshTree(slug) })
+                        .catch((e) => toast([`⛔ ${e.message}`]))
+                    }}>⏹ STOP ALL</button>
+                </span>
                 <button onClick={() => setShowSettings(true)}>⚙ settings</button>
               </header>
               <OrgCanvas tree={tree} op={op} slug={slug} pulse={pulse} toast={toast}
