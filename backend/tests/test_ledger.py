@@ -452,6 +452,57 @@ def main():
     check("children cap enforced", lambda: expect_error(
         lambda: org10.hire(USER, "c1", "haiku", 0, "k3"), "cap"))
 
+    print("delegated audience grants (user ruling — open any ear in your reach):")
+    orgA = Org.create("delegating")
+    orgA.hire(USER, None, "opus", 10, "alpha")
+    orgA.hire(USER, None, "opus", 10, "beta")
+    orgA.hire(USER, "alpha", "haiku", 0, "deep")
+    check("top-level delegates a USER audience to its subagent", lambda: (
+        orgA.audience_grant("alpha", "deep", "user"),
+        None if any(a["grantee"] == "deep" and a["grantor"] == USER
+                    and a.get("delegated_by") == "alpha"
+                    for a in orgA.d["audiences"])
+        and any('granted "deep" a direct audience' in m["body"]
+                for m in orgA.d.get("user_inbox", []))
+        else (_ for _ in ()).throw(AssertionError(orgA.d["audiences"])))[-1])
+    check("delegated user audience lets the subagent mail the user", lambda: (
+        lambda r: None if r["delivered"] == "user_inbox"
+        else (_ for _ in ()).throw(AssertionError(r))
+    )(orgA.post_mail("deep", "user", "hello from the depths")))
+    check("delegate to a live peer's ear works and notifies both", lambda: (
+        orgA.audience_grant("alpha", "deep", "beta"),
+        None if any(a["grantee"] == "deep" and a["grantor"] == "beta"
+                    for a in orgA.d["audiences"])
+        and any("granted" in n["text"] for n in orgA.d["notices"].get("beta", []))
+        else (_ for _ in ()).throw(AssertionError))[-1])
+    check("delegated peer audience authorizes the mail path", lambda: (
+        lambda r: None if r["delivered"] == "beta"
+        else (_ for _ in ()).throw(AssertionError(r))
+    )(orgA.post_mail("deep", "beta", "sideways, sanctioned")))
+    check("grantee outside your purview refused", lambda: expect_error(
+        lambda: orgA.audience_grant("beta", "deep", "alpha"),
+        "purview"))
+    check("target outside your reach refused", lambda: (
+        orgA.hire(USER, "beta", "haiku", 0, "bkid"),
+        expect_error(lambda: orgA.audience_grant("alpha", "deep", "bkid"),
+                     "reach"))[-1])
+    check("peer's ear can revoke a delegated grant itself", lambda: (
+        orgA.audience_revoke("beta", "deep"),
+        None if not any(a["grantee"] == "deep" and a["grantor"] == "beta"
+                        for a in orgA.d["audiences"])
+        else (_ for _ in ()).throw(AssertionError))[-1])
+    check("delegated grant survives sweeps while delegator commands grantee, "
+          "dies when it stops", lambda: (
+        orgA.audience_grant("alpha", "deep", "beta"),
+        None if not orgA._sweep_audiences() else (_ for _ in ()).throw(
+            AssertionError("swept while still in alpha's subtree")),
+        orgA.promote(USER, "deep", None),      # deep leaves alpha's purview
+        None if not any(a["grantee"] == "deep" and a["grantor"] == "beta"
+                        for a in orgA.d["audiences"])
+        and any(a["grantee"] == "deep" and a["grantor"] == USER
+                for a in orgA.d["audiences"])   # №11: user audience never swept
+        else (_ for _ in ()).throw(AssertionError(orgA.d["audiences"])))[-1])
+
     print("guards:")
     check("unknown tier refused", lambda: expect_error(
         lambda: org.hire(USER, None, "gpt", 0, "nope"), "unknown tier"))

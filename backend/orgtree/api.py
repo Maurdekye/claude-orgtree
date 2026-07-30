@@ -892,7 +892,7 @@ async def user_audience(slug: str, body: AudienceAction):
         try:
             org = store.load_org(slug)
             if body.action == "grant":
-                result = org.audience_grant(USER, body.node)
+                result = org.audience_grant(USER, body.node, body.target)
             elif body.action == "deny":
                 result = org.audience_deny(USER, body.node, body.target or USER)
             elif body.action == "revoke":
@@ -1037,7 +1037,8 @@ async def agent_call(body: AgentCall):
                     result = org.audience_forward(body.node, a.get("from", ""),
                                                   a.get("target", ""))
                 elif action == "grant":
-                    result = org.audience_grant(body.node, a.get("from", ""))
+                    result = org.audience_grant(body.node, a.get("from", ""),
+                                                a.get("target") or None)
                 elif action == "deny":
                     result = org.audience_deny(body.node, a.get("from", ""),
                                                a.get("target", "") or body.node)

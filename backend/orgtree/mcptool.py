@@ -218,7 +218,10 @@ TOOLS = [
             "distant superior (or 'user') — it climbs your chain one refusable hop at a "
             "time, starting at your direct superior. action=forward/deny: act on a "
             "request currently awaiting YOU (from= the requester, target= who they "
-            "seek). action=grant: grant a descendant an audience with you (from=). "
+            "seek). action=grant: grant a descendant (from=) an audience — with you "
+            "by default, or DELEGATED to anyone in your own reach via target=: a "
+            "live peer, or your direct superior ('user' if you are top-level, which "
+            "hands the descendant a direct line to the user's inbox). "
             "action=revoke: rescind an audience you granted (grantee=)."),
         "inputSchema": {
             "type": "object",

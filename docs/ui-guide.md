@@ -291,8 +291,14 @@ it appears on hover, next to ⚙). The desk's inbox tab is the same view inline.
   read" archives everything at once (nothing is deleted). Top-level agents can always write; deeper agents only while
   holding your audience. **Audience requests** climb the chain hop-by-hop —
   grant or deny; **audience holders** may message you directly until
-  rescinded (✕). Sender chips render the sender's CURRENT state — a message
-  from a since-retired agent looks retired.
+  rescinded (✕). Audiences can also be **delegated**: an agent may open any
+  ear within its own reach — its own, a live peer's, or its direct
+  superior's — for any agent in its subtree; a top-level agent handing a
+  descendant a direct line to YOU shows up as an inbox notice, and you can
+  rescind it like any other. A delegated audience survives re-parenting only
+  while the delegator still commands the grantee. Sender chips render the
+  sender's CURRENT state — a message from a since-retired agent looks
+  retired.
 - **An agent's (its card):** "awaiting next turn" mail is delivered
   automatically (mid-task via steering, or on its next turn) — delivery is
   the agent's mark-as-read. The archive keeps the last 100 full bodies.

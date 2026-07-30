@@ -519,26 +519,78 @@ class Org:
                 drive.append(nxt)
         return {"currently_at": nxt, "drive": drive, "warnings": []}
 
-    def audience_grant(self, actor: str, frm: str) -> dict:
-        """Grant frm a direct channel to actor. Also resolves any open request."""
-        if actor != USER and not self.is_ancestor(actor, frm):
-            raise LedgerError("only a superior grants an audience with itself")
-        if not self._has_audience(frm, actor):
-            self.d["audiences"].append({"grantee": frm, "grantor": actor,
-                                        "granted_at": now(), "reason": "granted on request"})
+    def audience_grant(self, actor: str, frm: str,
+                       target: str | None = None) -> dict:
+        """Grant frm a direct channel to `target` — the actor itself by default.
+        DELEGATED grants (user ruling): an agent may open the ear of anyone in
+        its OWN messaging reach — itself, a live peer, or its direct superior
+        (the user, for a top-level agent) — for any agent in its purview (its
+        subtree). So a top-level agent can hand any of its descendants a
+        direct line to the user. The ear's owner may rescind at will, and the
+        grant survives re-parenting only while the delegator still commands
+        the grantee. Also resolves any open request frm → target."""
+        target = self._resolve_recipient(target) if target else actor
+        if frm == target:
+            raise LedgerError("an audience with oneself is meaningless")
+        if target == actor:
+            if actor != USER and not self.is_ancestor(actor, frm):
+                raise LedgerError("only a superior grants an audience with itself")
+        elif actor == USER:
+            self.node(frm)                       # user authority: unconditional,
+            if target != USER:                   # both parties must just exist
+                self.node(target)
+        else:
+            if not self.is_ancestor(actor, frm):
+                raise LedgerError("delegated audience grants cover your purview "
+                                  "only — the grantee must be in your subtree")
+            par = self.parent(actor)
+            peers = set(self.children(None if par == USER else par))
+            peers.discard(actor)
+            if target != par and target not in peers:
+                raise LedgerError(
+                    "you may open only ears within your own reach: your own, a "
+                    "live peer's, or your direct superior's"
+                    + (" (the user)" if par == USER else f' ("{par}")'))
+        if not self._has_audience(frm, target):
+            entry = {"grantee": frm, "grantor": target, "granted_at": now(),
+                     "reason": ("granted on request" if target == actor
+                                else f"delegated by {actor}")}
+            if target != actor:
+                entry["delegated_by"] = actor
+            self.d["audiences"].append(entry)
         self.d["audience_requests"] = [
             r for r in self.d["audience_requests"]
-            if not (r["from"] == frm and r["target"] == actor)]
+            if not (r["from"] == frm and r["target"] == target)]
         drive = []
-        if actor == USER:
-            self._notify([frm], "The user granted you a USER AUDIENCE — you may write "
-                                "to them directly until it is rescinded.")
-        else:
+        who = "The user" if actor == USER else f'"{actor}"'
+        if target == USER:
+            if actor == USER:
+                self._notify([frm], "The user granted you a USER AUDIENCE — you may "
+                                    "write to them directly until it is rescinded.")
+            else:
+                self._notify([frm],
+                             f'{who} granted you a direct USER AUDIENCE — you may '
+                             f'write to the user directly until it is rescinded.')
+                self.d.setdefault("user_inbox", []).append({
+                    "id": uuid.uuid4().hex[:8], "from": SYSTEM, "kind": "notice",
+                    "at": now(),
+                    "body": f'{who} granted "{frm}" a direct audience to you — it '
+                            f'may now write to your inbox. Revoke it from the '
+                            f'audience panel at will.'})
+        elif target == actor:
             self.post_mail(actor, frm,
                            f"Audience granted: you may message {actor} directly until "
                            f"it is rescinded.", kind="decision")
             drive.append(frm)
-        self._log("audience_grant", actor, {"grantee": frm}, [])
+        else:
+            self._notify([frm],
+                         f'{who} granted you an audience with "{target}" — you may '
+                         f'message them directly until it is rescinded.')
+            self._notify([target],
+                         f'{who} granted "{frm}" an audience with you — it may now '
+                         f'message you directly; you may revoke it at will.')
+            drive.append(frm)
+        self._log("audience_grant", actor, {"grantee": frm, "grantor": target}, [])
         return {"drive": drive, "warnings": []}
 
     def audience_deny(self, actor: str, frm: str, target: str) -> dict:
@@ -909,7 +961,8 @@ class Org:
             (self.d.get("notices") or {}).pop(k, None)
         self.d["audiences"] = [
             a for a in self.d["audiences"]
-            if a["grantee"] not in doomed_set and a["grantor"] not in doomed_set]
+            if a["grantee"] not in doomed_set and a["grantor"] not in doomed_set
+            and a.get("delegated_by") not in doomed_set]
         self.d["audience_requests"] = [
             r for r in self.d["audience_requests"]
             if r["from"] not in doomed_set and r["target"] not in doomed_set
@@ -1169,13 +1222,20 @@ class Org:
             if a["grantee"] != nid and a["grantor"] != nid]
 
     def _sweep_audiences(self) -> list[tuple[str, str]]:
-        """§7.3 auto-revoke: drop grants whose grantor is no longer an ancestor of the
-        grantee. User audiences are never swept (№11)."""
+        """§7.3 auto-revoke: drop grants whose ANCHOR is no longer an ancestor
+        of the grantee. For a self-grant the anchor is the grantor; for a
+        delegated grant it is the delegator — a deliberately-lateral channel
+        (e.g. to the delegator's peer) survives exactly as long as the
+        authority that opened it still commands the grantee. User audiences
+        are never swept (№11)."""
         kept, revoked = [], []
         for a in self.d["audiences"]:
+            anchor = a.get("delegated_by") or a["grantor"]
             if a["grantor"] == USER or (
-                    a["grantee"] in self.nodes and a["grantor"] in self.nodes
-                    and self.is_ancestor(a["grantor"], a["grantee"])):
+                    a["grantee"] in self.nodes
+                    and a["grantor"] in self.nodes
+                    and (anchor == USER or (anchor in self.nodes
+                         and self.is_ancestor(anchor, a["grantee"])))):
                 kept.append(a)
             else:
                 revoked.append((a["grantee"], a["grantor"]))
