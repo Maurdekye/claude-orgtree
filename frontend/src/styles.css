@@ -445,6 +445,10 @@ main {
 }
 .inbox-msg .meta { display: flex; gap: 8px; color: var(--dim); font-size: 10.5px; margin-bottom: 4px; font-family: var(--mono); }
 .inbox-msg .body { white-space: pre-wrap; }
+/* an agent's own inbox: mail not yet folded into a turn is highlighted */
+.inbox-msg.waiting { border-color: color-mix(in srgb, var(--accent) 45%, var(--line-soft)); }
+.inbox-msg .meta .wait { color: var(--accent); }
+.msgs.inbox-list { padding: 10px; }
 
 /* ------------------------------------------------------- lineage stacks (§8.7) */
 .sq.stack1 { box-shadow: 5px -5px 0 -1px #232325, 5px -5px 0 0 var(--line-soft); }

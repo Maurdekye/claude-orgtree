@@ -2,8 +2,8 @@ import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  audienceAction, getChat, getHistory, getMcpServers, getScratch,
-  reorderNode, saveScope, saveSettings, sendMessage,
+  audienceAction, getChat, getHistory, getMcpServers, getNodeInbox,
+  getScratch, reorderNode, saveScope, saveSettings, sendMessage,
 } from './api'
 
 const TIER_LETTER = { haiku: 'H', sonnet: 'S', opus: 'O', fable: 'F' }
@@ -1263,7 +1263,7 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
   const [text, setText] = useState('')
   const [pending, setPending] = useState([])   // sent, not yet in the transcript
   const [asking, setAsking] = useState(false)
-  const [view, setView] = useState('chat')     // chat | history | files
+  const [view, setView] = useState('chat')     // chat | history | files | inbox
   const [live_feed, setLiveFeed] = useState([])
   const scroller = useRef(null)
   const loadedRef = useRef(false)     // first load always lands at the bottom
@@ -1360,9 +1360,11 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
           {!live && <button onClick={() => op({ op: 'rehire', node: node.id })}>rehire</button>}
         </span>
         <span className="cc-tabs">
-          {['chat', 'history', 'files'].map((v) => (
+          {['chat', 'history', 'files', 'inbox'].map((v) => (
             <button key={v} className={view === v ? 'on' : ''}
-              onClick={() => setView(v)}>{v}</button>
+              onClick={() => setView(v)}>
+              {v}{v === 'inbox' && chat?.mail_pending > 0 ? ` ${chat.mail_pending}` : ''}
+            </button>
           ))}
         </span>
         <button className="cc-icon" onClick={onConfig}>⚙</button>
@@ -1436,7 +1438,39 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
       )}
       {view === 'history' && <HistoryView slug={slug} nid={node.id} />}
       {view === 'files' && <FilesView slug={slug} nid={node.id} />}
+      {view === 'inbox' && <InboxView slug={slug} nid={node.id} pulse={pulse} />}
       </div>
+    </div>
+  )
+}
+
+// The node's own mailbox (user ruling: its own tab, separate from history):
+// mail still waiting for the node's next turn, then delivered mail, newest first.
+function InboxView({ slug, nid, pulse }) {
+  const [box, setBox] = useState(null)
+  useEffect(() => {
+    getNodeInbox(slug, nid).then(setBox)
+      .catch(() => setBox({ pending: [], delivered: [] }))
+  }, [slug, nid, pulse])
+  const Mail = ({ m, wait }) => (
+    <div className={'inbox-msg' + (wait ? ' waiting' : '')}>
+      <div className="meta">
+        <span>{m.from === USER ? '@user' : m.from}</span>
+        <span>{m.kind}</span>
+        {m.relationship && <span>{m.relationship}</span>}
+        <span>{m.at}</span>
+        {wait && <span className="wait">awaiting next turn</span>}
+      </div>
+      <div className="body">{m.body}</div>
+    </div>
+  )
+  return (
+    <div className="msgs inbox-list">
+      {box == null && <div className="dim pad">loading…</div>}
+      {box && !box.pending.length && !box.delivered.length &&
+        <div className="dim pad">no mail yet</div>}
+      {box?.pending.map((m, i) => <Mail key={'p' + i} m={m} wait />)}
+      {[...(box?.delivered ?? [])].reverse().map((m, i) => <Mail key={'d' + i} m={m} />)}
     </div>
   )
 }

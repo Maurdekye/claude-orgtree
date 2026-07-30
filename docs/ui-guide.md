@@ -105,8 +105,11 @@ ledger self-audit chip appears ONLY if the credit invariants are ever violated
 
 - Header: tier, name (hover for its purpose), context wheel (red ≥ 80% —
   compaction approaches), status chip, ✳ = working. Tabs: chat · history
-  (the node's event log) · files (its scratch space). ⚙ opens per-agent
-  configuration.
+  (the node's event log) · files (its scratch space) · inbox (the node's OWN
+  mailbox, separate from history: orgtree mail waiting for its next turn is
+  highlighted "awaiting next turn"; below that, recently delivered mail with
+  full bodies, newest first — the tab shows a count while mail waits). ⚙
+  opens per-agent configuration.
 - Badge row: 🔒 limit = frozen by the fable policy · gen N ≣ opens the
   lineage panel · knowledge / preserving = what kind of bearer this is ·
   👂 chips = audiences held (✕ rescinds) · $ = real dollars burned · queued =

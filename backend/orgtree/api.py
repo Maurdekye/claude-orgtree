@@ -594,7 +594,26 @@ def node_chat(slug: str, nid: str):
         org.node(nid)
     except LedgerError as e:
         raise HTTPException(404, str(e))
-    return supervisor.read_chat(org, nid)
+    out = supervisor.read_chat(org, nid)
+    out["mail_pending"] = len((org.d.get("mail") or {}).get(nid, []))
+    return out
+
+
+@app.get("/api/orgs/{slug}/nodes/{nid}/inbox")
+def node_inbox(slug: str, nid: str):
+    """The node's OWN mailbox (user ruling: separate from the events/history
+    view): mail still waiting for its next turn, plus recently delivered mail
+    with full bodies (the event log keeps only a gist)."""
+    try:
+        org = store.load_org(slug)
+        org.node(nid)
+    except LedgerError as e:
+        raise HTTPException(404, str(e))
+    waiting = (org.d.get("mail") or {}).get(nid, [])
+    keys = {(m["at"], m["from"], m["body"]) for m in waiting}
+    delivered = [m for m in (org.d.get("mail_log") or {}).get(nid, [])
+                 if (m["at"], m["from"], m["body"]) not in keys]
+    return {"pending": waiting, "delivered": delivered[-50:]}
 
 
 @app.get("/api/orgs/{slug}/events")

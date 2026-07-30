@@ -408,10 +408,16 @@ class Org:
                     "reason": f"{sender} messaged directly"})
                 warnings.append(f"audience granted: {to} may now reply to {sender} directly")
         box = self.d.setdefault("mail", {})
-        box.setdefault(to, []).append({
+        entry = {
             "from": sender, "kind": kind, "body": body, "at": now(),
             "relationship": self.relationship(sender, to),
-        })
+        }
+        box.setdefault(to, []).append(entry)
+        # full-body archive for the node's inbox view (the event log keeps only
+        # a gist) — capped per node
+        log = self.d.setdefault("mail_log", {}).setdefault(to, [])
+        log.append(dict(entry))
+        del log[:-100]
         self._log("mail", sender, {"to": to, "kind": kind,
                                    "gist": body.strip().splitlines()[0][:80]}, warnings)
         return {"delivered": to, "warnings": warnings}
@@ -865,6 +871,7 @@ class Org:
         for k in doomed_set:
             self.nodes.pop(k, None)
             (self.d.get("mail") or {}).pop(k, None)
+            (self.d.get("mail_log") or {}).pop(k, None)
             (self.d.get("notices") or {}).pop(k, None)
         self.d["audiences"] = [
             a for a in self.d["audiences"]
