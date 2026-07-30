@@ -226,6 +226,45 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
   const audSetRef = useRef(new Set())
   audSetRef.current = new Set((tree.audiences ?? []).map((a) => a.grantor + '→' + a.grantee))
 
+  // audience-line life cycle (user ruling): a NEW grant draws itself in,
+  // grantor → grantee, over the same 420ms the message spark takes — the two
+  // arrive at the new agent together; a REVOKED grant retracts the same way.
+  const AUD_DUR = 420
+  const audAnimRef = useRef(new Map())    // 'g→e' → {phase:'in'|'out', t0, grantor, grantee}
+  const audPrevRef = useRef(null)         // null until first sync: lines that
+                                          // exist at page load never animate in
+  const audRafRef = useRef(null)
+  const kickAudAnim = useCallback(() => {
+    if (audRafRef.current) return
+    const loop = () => {
+      if (audAnimRef.current.size) {
+        setFrame((f) => f + 1)
+        audRafRef.current = requestAnimationFrame(loop)
+      } else {
+        audRafRef.current = null
+      }
+    }
+    audRafRef.current = requestAnimationFrame(loop)
+  }, [])
+  useEffect(() => {
+    const cur = audSetRef.current
+    if (audPrevRef.current === null) { audPrevRef.current = new Set(cur); return }
+    const prev = audPrevRef.current
+    const anim = audAnimRef.current
+    const now = performance.now()
+    for (const k of cur) {
+      if (!prev.has(k) && anim.get(k)?.phase !== 'in') anim.set(k, { phase: 'in', t0: now })
+    }
+    for (const k of prev) {
+      if (!cur.has(k)) {
+        const [grantor, grantee] = k.split('→')
+        anim.set(k, { phase: 'out', t0: now, grantor, grantee })
+      }
+    }
+    audPrevRef.current = new Set(cur)
+    if (anim.size) kickAudAnim()
+  }, [tree.audiences, kickAudAnim])   // eslint-disable-line react-hooks/exhaustive-deps
+
   // a mail event rides the org's wires: down/up the tree, along the peer line
   // between coworkers, or along a direct audience line when one connects the two
   const launchSpark = useCallback((from, to) => {
@@ -640,12 +679,41 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
             posOf(l) && posOf(r) &&
             <path key={'p' + l + r} d={segD(peerSeg(l, r))} className="edge peer" />
           ))}
-          {audLines.map((a) => (
-            posOf(a.grantor) && posOf(a.grantee) &&
-            <path key={'a' + a.grantor + a.grantee}
-              d={segD(audSeg(a.grantor, a.grantee))}
-              className={'edge aud-line' + (a.grantor === USER ? ' from-user' : '')} />
-          ))}
+          {(() => {
+            const nowT = performance.now()
+            const anim = audAnimRef.current
+            const out = []
+            for (const a of audLines) {
+              if (!posOf(a.grantor) || !posOf(a.grantee)) continue
+              const k = a.grantor + '→' + a.grantee
+              const st = anim.get(k)
+              let dash = null
+              if (st?.phase === 'in') {
+                const t = (nowT - st.t0) / AUD_DUR
+                if (t >= 1) anim.delete(k)
+                else dash = 1 - smooth(Math.max(0, t))   // draw toward the grantee
+              }
+              out.push(<path key={'a' + k} d={segD(audSeg(a.grantor, a.grantee))}
+                pathLength={dash != null ? 1 : undefined}
+                style={dash != null
+                  ? { strokeDasharray: 1, strokeDashoffset: dash } : undefined}
+                className={'edge aud-line' + (a.grantor === USER ? ' from-user' : '')} />)
+            }
+            for (const [k, st] of anim) {
+              if (st.phase !== 'out') continue
+              const t = (nowT - st.t0) / AUD_DUR
+              if (t >= 1 || !posOf(st.grantor) || !posOf(st.grantee)) {
+                anim.delete(k)
+                continue
+              }
+              out.push(<path key={'a' + k} d={segD(audSeg(st.grantor, st.grantee))}
+                pathLength={1}
+                style={{ strokeDasharray: 1, strokeDashoffset: smooth(t) }}
+                className={'edge aud-line'
+                  + (st.grantor === USER ? ' from-user' : '')} />)
+            }
+            return out
+          })()}
           {[...map.values()].filter((n) => n.isBearerOf).map((n) => {
             const a = posOf(n.isBearerOf), b = posOf(n.id)
             if (!a || !b) return null

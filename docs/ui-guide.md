@@ -113,6 +113,10 @@ latch re-closes by itself after a few seconds if unused.
 - A small **spark** runs along the wires whenever a message actually flows:
   down or up the tree, across a peer link, or along an audience line. The
   direction of travel is the direction of the message.
+- A **new audience line draws itself in**, grantor → grantee, over the same
+  420ms the spark takes — line and message arrive at the new agent together.
+  When the grant is revoked, the line retracts the same way before vanishing.
+  Lines that already exist when the page loads appear instantly.
 
 ## The five visual channels on a card
 
