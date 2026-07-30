@@ -135,6 +135,7 @@ class Org:
         self.d.pop("default_dirs", None)   # superseded: org dirs carry modes now
         self.d.setdefault("default_top_grant", 50)   # user ruling: 50 by default
         self.d.setdefault("credit_requests", [])     # top-level asks to the user
+        self.d.setdefault("compact_at", 0.80)        # compaction ratio, ≤ 0.95 hard
         # org holdings carry RW/RO modes (user ruling — configured on the eye's
         # gear, mirroring per-agent folder access); legacy string lists migrate
         self.d["dirs"] = norm_dirs(self.d.get("dirs"))
@@ -178,6 +179,7 @@ class Org:
             "max_top_grant": 1000,                # UI slider cap for user-level hires
             "default_top_grant": 50,              # pre-filled grant for top-level hires
             "credit_requests": [],                # §: top-level asks to the user
+            "compact_at": 0.80,                   # compaction ratio (≤ 0.95 hard cap)
             "fable_limit_policy": "halt",         # halt | opus | dissolve (user ruling)
             "nodes": {},
             "audiences": [],          # §7.3 — [{grantee, grantor, granted_at, reason}]
@@ -1404,6 +1406,7 @@ class Org:
             "dirs": self.d["dirs"],
             "max_top_grant": self.d.get("max_top_grant", 1000),
             "default_top_grant": self.d.get("default_top_grant", 50),
+            "compact_at": self.d.get("compact_at", 0.80),
             "default_tools": self.d.get("default_tools"),
             "default_visibility": self.d.get("default_visibility", "full"),
             "credit_requests": [r for r in self.d.get("credit_requests", [])

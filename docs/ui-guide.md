@@ -259,6 +259,10 @@ it appears on hover, next to ⚙). The desk's inbox tab is the same view inline.
 - **default top-level grant** (50 unless changed): pre-fills the draft bar of
   every new top-level hire — on top of its seat cost; drag to adjust before
   confirming.
+- **compaction threshold** (80% default, configurable 50–95): when an
+  agent's context passes this fraction of its window it compaction-splits
+  (successor continues, predecessor archives as a knowledge bearer). The
+  95% ceiling is hard — it is not configurable.
 - **fable weekly-limit policy** — what happens when the shared Fable quota
   exhausts: **halt** (default: fable agents freeze visibly, keep their seats,
   superiors are notified, the org decides) · **switch to opus** (converted

@@ -161,6 +161,7 @@ class Settings(BaseModel):
     org_dirs: list | None = None            # external folders [{path, mode}] (ws excluded)
     max_top_grant: int | None = None
     default_top_grant: int | None = None    # pre-filled grant for top-level hires
+    compact_at: int | None = None           # compaction threshold in percent, 50..95
     clear_fable_lock: bool = False
     fable_limit_policy: str | None = None   # halt | opus | dissolve
     default_tools: dict | None = None       # {bash, web, edit, subagents, mcp: []|["*"]}
@@ -209,6 +210,9 @@ async def _org_settings_locked(slug: str, body: Settings):
         org.d["max_top_grant"] = int(body.max_top_grant)
     if body.default_top_grant is not None and body.default_top_grant >= 0:
         org.d["default_top_grant"] = int(body.default_top_grant)
+    if body.compact_at is not None:
+        # 50–95%; the 95% ceiling is NOT configurable (user ruling)
+        org.d["compact_at"] = min(95, max(50, int(body.compact_at))) / 100.0
     if body.clear_fable_lock and org.d.get("fable_lock"):
         org.clear_fable_lock()
         warnings.append("fable lock cleared — fable agents may run and be rehired again")

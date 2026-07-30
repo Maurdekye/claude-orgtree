@@ -526,7 +526,7 @@ main {
   background: var(--bg);
 }
 .mailer-list {
-  width: 36%; min-width: 140px; overflow-y: auto;
+  width: 36%; min-width: 140px; max-width: 340px; overflow-y: auto;
   border-right: 1px solid var(--line-soft);
 }
 .mailrow {
@@ -820,7 +820,7 @@ main.solo { width: 100%; }
   line-height: 1.55;
 }
 .settings h3 { margin: 0 0 4px; font-size: 17px; color: var(--ink-strong); }
-.settings.wide { width: 900px; }   /* mail panels: room for the reading pane */
+.settings.wide { width: min(1250px, 96vw); }   /* mail panels: a wide reading pane */
 .settings .field-label { font-size: 13.5px; color: var(--ink); font-weight: 600; }
 .settings .hint { font-size: 13px; }
 .settings .checkline { font-size: 14.5px; gap: 10px; }

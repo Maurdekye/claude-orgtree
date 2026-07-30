@@ -426,6 +426,7 @@ function SettingsPanel({ tree, toast, close }) {
   useEsc(close)
   const [maxTop, setMaxTop] = useState(tree.max_top_grant ?? 1000)
   const [defTop, setDefTop] = useState(tree.default_top_grant ?? 50)
+  const [compactAt, setCompactAt] = useState(Math.round((tree.compact_at ?? 0.8) * 100))
   const [orgMd, setOrgMd] = useState(null)
   const [fablePolicy, setFablePolicy] = useState(tree.fable_limit_policy ?? 'halt')
   useEffect(() => {
@@ -442,6 +443,11 @@ function SettingsPanel({ tree, toast, close }) {
         <div className="field-label">default top-level grant (pre-filled on new hires)</div>
         <input type="number" min="0" step="1" value={defTop} style={{ width: '8em' }}
           onChange={(e) => setDefTop(e.target.value)} />
+        <div className="field-label">compaction threshold % (50–95; splits the agent
+          when its context passes this)</div>
+        <input type="number" min="50" max="95" step="1" value={compactAt}
+          style={{ width: '8em' }}
+          onChange={(e) => setCompactAt(e.target.value)} />
         <div className="field-label">fable weekly-limit policy</div>
         <select value={fablePolicy} onChange={(e) => setFablePolicy(e.target.value)}>
           <option value="halt">halt (default)</option>
@@ -464,6 +470,7 @@ function SettingsPanel({ tree, toast, close }) {
               saveSettings(tree.slug,
                 { max_top_grant: +maxTop || undefined,
                   default_top_grant: Number.isFinite(+defTop) ? +defTop : undefined,
+                  compact_at: Number.isFinite(+compactAt) ? +compactAt : undefined,
                   fable_limit_policy: fablePolicy }),
               orgMd != null ? putOrgMd(tree.slug, orgMd) : Promise.resolve({}),
             ]).then(([r]) => { toast(r.warnings); close() })

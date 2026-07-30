@@ -693,7 +693,10 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict, st: dict, occ: int = 0
                            f'are no longer retained by it.')
                 store.save_org(o2)
         return
-    if occ and cw and occ / cw >= COMPACT_AT:
+    # per-org compaction threshold (user setting, 50–95%); the env default is
+    # the fallback, everything hard-capped at 95%
+    compact_at = min(0.95, float(org.d.get("compact_at") or COMPACT_AT))
+    if occ and cw and occ / cw >= compact_at:
         _compact_split(slug, nid)
 
 
