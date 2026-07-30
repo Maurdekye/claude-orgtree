@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import store, supervisor
-from .ledger import LedgerError, USER, norm_tools
+from .ledger import LedgerError, USER, VIS_LEVELS, norm_dirs, norm_tools
 
 app = FastAPI(title="orgtree", version="1.0.0")
 
@@ -164,6 +164,9 @@ class Settings(BaseModel):
     clear_fable_lock: bool = False
     fable_limit_policy: str | None = None   # halt | opus | dissolve
     default_tools: dict | None = None       # {bash, web, edit, subagents, mcp: []|["*"]}
+    default_visibility: str | None = None   # self|team|subtree|full
+    default_dirs: list | None = None        # [{path, mode}] — with default_dirs_all False
+    default_dirs_all: bool | None = None    # True = all org folders, present & future
 
 
 @app.post("/api/orgs/{slug}/settings")
@@ -197,9 +200,15 @@ async def _org_settings_locked(slug: str, body: Settings):
     if body.fable_limit_policy in ("halt", "opus", "dissolve"):
         org.d["fable_limit_policy"] = body.fable_limit_policy
     if body.default_tools is not None:
-        # agent defaults: applied to tool-unspecified hires — top level directly,
+        # agent defaults: applied to unspecified hires — top level directly,
         # deeper as ∩ with the superior's capability (clamped at hire time)
         org.d["default_tools"] = norm_tools(body.default_tools)
+    if body.default_visibility in VIS_LEVELS:
+        org.d["default_visibility"] = body.default_visibility
+    if body.default_dirs_all:
+        org.d["default_dirs"] = None        # all org folders, present & future
+    elif body.default_dirs is not None:
+        org.d["default_dirs"] = norm_dirs(body.default_dirs)
     store.save_org(org)
     await hub.changed(slug)
     return {"dirs": org.d["dirs"], "warnings": warnings}

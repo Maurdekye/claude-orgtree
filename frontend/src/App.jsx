@@ -354,7 +354,8 @@ function SettingsPanel({ tree, toast, close }) {
           onChange={(e) => setOrgMd(e.target.value)} />
         {tree.fable_lock && (
           <button className="danger" onClick={() =>
-            saveSettings(tree.slug, dirs.map((s) => s.trim()).filter(Boolean), undefined, true)
+            saveSettings(tree.slug, dirs.map((s) => s.trim()).filter(Boolean),
+              { clear_fable_lock: true })
               .then((r) => { toast(r.warnings); close() })
               .catch((e) => toast([`⛔ ${e.message}`]))}>
             ⛔ clear the fable weekly-limit lock (your decree)</button>
@@ -362,8 +363,8 @@ function SettingsPanel({ tree, toast, close }) {
         <div className="row">
           <button className="primary" onClick={() =>
             Promise.all([
-              saveSettings(tree.slug, dirs.map((s) => s.trim()).filter(Boolean), +maxTop || undefined,
-                false, fablePolicy),
+              saveSettings(tree.slug, dirs.map((s) => s.trim()).filter(Boolean),
+                { max_top_grant: +maxTop || undefined, fable_limit_policy: fablePolicy }),
               orgMd != null ? putOrgMd(tree.slug, orgMd) : Promise.resolve({}),
             ]).then(([r]) => { toast(r.warnings); close() })
               .catch((e) => toast([`⛔ ${e.message}`]))}>save</button>

@@ -69,13 +69,11 @@ export const sendMessage = (slug, nid, text) =>
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text }),
   }).then(j)
-export const saveSettings = (slug, extra_dirs, max_top_grant, clear_fable_lock = false,
-  fable_limit_policy = undefined, default_tools = undefined) =>
+export const saveSettings = (slug, extra_dirs, opts = {}) =>
   fetch(`/api/orgs/${slug}/settings`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ extra_dirs, max_top_grant, clear_fable_lock, fable_limit_policy,
-      default_tools }),
+    body: JSON.stringify({ extra_dirs, ...opts }),
   }).then(j)
 
 export function openWs(slug, onChanged) {

@@ -435,14 +435,15 @@ main {
 .statuschip.idle { color: var(--dim); border: 1px solid var(--line); }
 
 /* ---------------------------------------------- user inbox (on the eye) */
+/* the eye mirrors agent cards: ⚙ at the far top-right, ✉ just left of it */
 .eye-inbox {
-  position: absolute; top: 6px; right: 6px;
+  position: absolute; top: 6px; right: 24px;
   background: none; border: none; padding: 2px 4px;
   font-size: 13px; color: var(--dim); line-height: 1;
 }
 .eye-inbox:hover { color: var(--accent); background: none; }
 .eye-gear {
-  position: absolute; top: 6px; left: 6px;
+  position: absolute; top: 6px; right: 6px;
   background: none; border: none; padding: 2px 4px;
   font-size: 13px; color: var(--dim); line-height: 1;
 }

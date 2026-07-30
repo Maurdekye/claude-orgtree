@@ -36,15 +36,18 @@ read once.
 - A dashed **uninitialized** draft box appears; type a name (1–2 words,
   Enter or ✓ hires, Esc discards) and set its grant by dragging the draft's
   credit bar.
-- **Agent-hire defaults (⚙ on the eye).** Hires made from the chips don't ask
-  about capabilities — they take the org's defaults, which start with EVERY
-  capability enabled: all four tool switches plus all registered MCP servers
-  ("all registered servers" tracks servers you register later, too).
-  Top-level agents get the defaults exactly; deeper hires get the
-  intersection of the defaults with their superior's capabilities (an agent
-  can never beget a capability it doesn't hold). Agents hiring through
-  orgtree_hire still state every switch explicitly — defaults never apply to
-  them. Adjust any individual agent afterward via its own ⚙ config.
+- **Agent-hire defaults (⚙ on the eye, top-right like every card's gear).**
+  Hires made from the chips don't ask about capabilities — they take the
+  org's defaults, which start with EVERYTHING enabled: all four tool
+  switches, all registered MCP servers ("all registered servers" tracks
+  servers you register later, too), all org folders read/write ("all org
+  folders" likewise tracks future ones; or pick folders individually with
+  RW/RO), and full org-structure visibility. Top-level agents get the
+  defaults exactly; deeper hires get the intersection of the defaults with
+  their superior's capabilities (an agent can never beget a capability or
+  folder it doesn't hold). Agents hiring through orgtree_hire still state
+  everything explicitly — defaults never apply to them. Adjust any
+  individual agent afterward via its own ⚙ config.
 
 ## Credit bars (the left-edge bar on every live card)
 

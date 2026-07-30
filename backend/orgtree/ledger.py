@@ -125,10 +125,16 @@ class Org:
             n.pop("queued_msgs", None)
         if self.d.get("fable_limit_policy") in (None, "retire"):
             self.d["fable_limit_policy"] = "halt"   # 'retire' dropped by user ruling
-        # org-wide agent defaults for hires that don't state tools (user hires):
-        # every capability enabled — all switches + all MCP servers (user ruling)
+        # org-wide agent defaults for hires that don't state them (user hires):
+        # every capability enabled — all switches + all MCP servers + full org
+        # visibility + all org folders (default_dirs None = track the org's
+        # current dir set) (user ruling)
         self.d["default_tools"] = norm_tools(
             self.d.get("default_tools", {"mcp": ["*"]}))
+        if self.d.get("default_visibility") not in VIS_LEVELS:
+            self.d["default_visibility"] = "full"
+        if self.d.get("default_dirs") is not None:
+            self.d["default_dirs"] = norm_dirs(self.d["default_dirs"])
         # migrate pre-typed-actor docs: bare 'user'/'system' sentinels → @-forms
         # (safe exactly once, before any agent may be NAMED user/system)
         if not self.d.get("_actors_typed"):
@@ -162,8 +168,10 @@ class Org:
             # the workspace plus any explicitly granted existing dirs.
             "dirs": list(dirs or []),
             "permission_mode": permission_mode,   # №5: acceptEdits + --add-dir recipe
-            # agent defaults (user hires that don't state tools): everything on
+            # agent defaults (user hires that don't state them): everything on
             "default_tools": norm_tools({"mcp": ["*"]}),
+            "default_visibility": "full",
+            "default_dirs": None,      # None = all org folders, present & future
             "max_top_grant": 1000,                # UI slider cap for user-level hires
             "fable_limit_policy": "halt",         # halt | opus | dissolve (user ruling)
             "nodes": {},
@@ -627,7 +635,8 @@ class Org:
             if missing:
                 raise LedgerError(
                     "agent hires have no defaults — specify exactly: " + "; ".join(missing))
-        vis = org_visibility if org_visibility is not None else "full"
+        vis = (org_visibility if org_visibility is not None
+               else self.d.get("default_visibility", "full"))
         if vis not in VIS_LEVELS:
             raise LedgerError(f"org_visibility must be one of {VIS_LEVELS}")
 
@@ -649,10 +658,15 @@ class Org:
         else:
             parent_map = self.effective_dirs(parent)
             default = [dict(d) for d in self.node(parent)["scope"]["add_dirs"]]
-        if add_dirs is None:
-            dirs = default
-        else:
+        dd = self.d.get("default_dirs")
+        if add_dirs is not None:
             dirs, _ = self._clamp_dirs(norm_dirs(add_dirs), parent_map, strict=True)
+        elif dd is not None:
+            # a configured folder default: top level gets it exactly, deeper
+            # gets the ∩ with what the parent holds (same rule as tools)
+            dirs, _ = self._clamp_dirs(norm_dirs(dd), parent_map, strict=False)
+        else:
+            dirs = default
 
         parent_tools = None if parent is None else self.node(parent)["scope"]["tools"]
         # unspecified tools (user hires) fall back to the org's agent defaults —
@@ -1329,6 +1343,8 @@ class Org:
             "dirs": self.d["dirs"],
             "max_top_grant": self.d.get("max_top_grant", 1000),
             "default_tools": self.d.get("default_tools"),
+            "default_visibility": self.d.get("default_visibility", "full"),
+            "default_dirs": self.d.get("default_dirs"),
             "tiers": self.d["tiers"],
             "audiences": self.d["audiences"],
             "roots": [build(c) for c in self.org_children(None)],
