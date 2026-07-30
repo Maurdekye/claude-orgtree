@@ -964,9 +964,11 @@ def storage_check(slug: str) -> str | None:
         org = store.load_org(slug)
         k = kiosk_cfg(org)
         lim_mb = int((k or {}).get("storage_limit_mb") or 0)
+        limit = lim_mb * 1048576
         used = workspace_usage_bytes(org)
         blocked = bool(org.d.get("storage_blocked"))
-        if k and lim_mb and used > lim_mb * 1048576 and not blocked:
+        warned = bool(org.d.get("storage_warned"))
+        if k and lim_mb and used > limit and not blocked:
             org.d["storage_blocked"] = True
             _workspace_write_acl(org, True)
             org._notify(org.children(None),
@@ -978,11 +980,29 @@ def storage_check(slug: str) -> str | None:
                         f"reports as needed.")
             store.save_org(org)
             result = "blocked"
-        elif blocked and (not k or not lim_mb or used <= lim_mb * 1048576):
+        elif blocked and (not k or not lim_mb or used <= limit):
             org.d.pop("storage_blocked", None)
+            org.d.pop("storage_warned", None)   # a fresh climb re-warns
             _workspace_write_acl(org, False)
             store.save_org(org)
             result = "cleared"
+        elif (k and lim_mb and not blocked and not warned
+                and used > limit * 0.9):
+            # user ruling: a soft warning inside the last ~10% so agents can
+            # slow down / clean up BEFORE the hard write block lands
+            org.d["storage_warned"] = True
+            org._notify(org.children(None),
+                        f"Heads-up: the org workspace is at "
+                        f"{used / 1048576:.1f} of {lim_mb} MB (past 90% of "
+                        f"the storage limit). Clean up or curb file growth — "
+                        f"at the limit, workspace writes will be BLOCKED. "
+                        f"Pass this on to your reports as needed.")
+            store.save_org(org)
+            result = "warned"
+        elif warned and (not k or not lim_mb or used <= limit * 0.85):
+            org.d.pop("storage_warned", None)   # re-arm below 85%
+            store.save_org(org)
+            return None
         else:
             return None
     notify(slug, "", "storage_" + result)

@@ -387,11 +387,13 @@ function NewOrg({ onCreate }) {
 // kiosk dashboard (user vision): every kiosk session at a glance — spend,
 // credits held, storage — with inline cap edits, the preauthenticated share
 // URL (copy + rotate), and enable/disable. Loopback-only by construction.
+const KIOSK_DEFAULTS = { enabled: true, credits: 40, spend_limit: 5, storage_limit_mb: 500 }
+
 function KioskDash({ orgs, refresh, toast, pick }) {
   const [sel, setSel] = useState('')
+  const [newName, setNewName] = useState('')
   const kiosks = orgs.filter((o) => o.kiosk_cfg?.enabled)
   const others = orgs.filter((o) => !o.kiosk_cfg?.enabled)
-  if (!orgs.length) return null
   return (
     <div className="kiosk-dash">
       <h3><PublicIcon fontSize="inherit" /> public kiosks</h3>
@@ -401,7 +403,7 @@ function KioskDash({ orgs, refresh, toast, pick }) {
           org={o} refresh={refresh} toast={toast} pick={pick} />
       ))}
       {!kiosks.length &&
-        <div className="dim pad">no orgs are exposed yet — pick one below to mint its secret URL</div>}
+        <div className="dim pad">no orgs are exposed yet — expose one below, or mint a fresh kiosk org</div>}
       {others.length > 0 && (
         <div className="row kiosk-new">
           <select value={sel} onChange={(e) => setSel(e.target.value)}>
@@ -409,11 +411,25 @@ function KioskDash({ orgs, refresh, toast, pick }) {
             {others.map((o) => <option key={o.slug} value={o.slug}>{o.name}</option>)}
           </select>
           <button disabled={!sel} onClick={() =>
-            saveKiosk(sel, { enabled: true, credits: 40, spend_limit: 5, storage_limit_mb: 500 })
+            saveKiosk(sel, KIOSK_DEFAULTS)
               .then(() => { setSel(''); refresh() })
               .catch((e) => toast([`error: ${e.message}`]))}>enable</button>
         </div>
       )}
+      {/* one step: mint the org AND its secret URL together (user ruling) */}
+      <form className="row kiosk-new" onSubmit={(e) => {
+        e.preventDefault()
+        const name = newName.trim()
+        if (!name) return
+        createOrg(name, [])
+          .then((r) => saveKiosk(r.slug, KIOSK_DEFAULTS))
+          .then(() => { setNewName(''); refresh() })
+          .catch((err) => toast([`error: ${err.message}`]))
+      }}>
+        <input placeholder="new kiosk org name…" value={newName}
+          onChange={(e) => setNewName(e.target.value)} />
+        <button type="submit" disabled={!newName.trim()}>create</button>
+      </form>
     </div>
   )
 }

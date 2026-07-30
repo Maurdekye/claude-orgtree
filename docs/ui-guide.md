@@ -112,8 +112,11 @@ Any org can be exposed to others through a **preauthenticated secret URL**
 (see the README): the **public kiosks** panel at the bottom of the org list
 is the admin dashboard. Each kiosk row shows spend / credits held / workspace
 storage against their caps, inline inputs to change the caps (a ✓ appears
-when edited), the share URL with copy and **rotate** buttons (rotation
-revokes the old link instantly), and a ⃠ button to stop exposing the org.
+when edited; the credit cap refuses to go below what the org already holds —
+retire or dissolve agents first), the share URL with copy and **rotate**
+buttons (rotation revokes the old link instantly), and a ⃠ button to stop
+exposing the org. The name field at the bottom mints a **fresh kiosk org in
+one step** — created and exposed with default caps in a single action.
 Kiosk orgs are highlighted **teal** in the org list (border, tint, and globe
 badge) — deliberately a different hue from the terracotta selection, so
 "exposed to the public" reads at a glance; you still open and manage them

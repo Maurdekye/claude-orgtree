@@ -481,6 +481,14 @@ async def org_kiosk(slug: str, body: KioskCfg):
             k["storage_limit_mb"] = max(0, int(body.storage_limit_mb))
         if (k.get("enabled") and not k.get("token")) or body.rotate_token:
             k["token"] = secrets.token_hex(16)
+        # user ruling: the cap can never go BELOW what the org already holds —
+        # retire/dissolve agents first, then lower it
+        if k.get("enabled") and int(k.get("credits") or 0):
+            held = org.audit()["top_level_holds"]
+            if int(k["credits"]) < held:
+                raise HTTPException(
+                    422, f"cap below current holdings: the org holds {held:g} "
+                         f"credits — retire or dissolve agents first, then lower it")
         org.d["kiosk"] = k
         cleared = []
         spent = sum(float(v.get("cost_usd") or 0.0)

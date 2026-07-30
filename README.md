@@ -151,15 +151,17 @@ the admin side, keep full rights in the same org — visit it like any other):
   defaults, org.md, kiosk caps, and the filesystem browser;
 - the overseer's pool is **finite**: a fixed-size credit bar, and no
   operation (hire, cascade, rehire, reallocate, credit-request approval) may
-  push total holdings past the cap;
+  push total holdings past the cap — and the cap itself can never be set
+  below what the org already holds (retire or dissolve agents first);
 - **spend limit** — total spend shows in the top bar; breaching it freezes
   every agent; raising the limit on the dashboard clears the freeze and ▶
   resume replays the interrupted turns;
 - **storage limit** — caps the org's own workspace folder (external folder
-  grants are exempt). Breaching it does *not* freeze anyone: file creation
-  and writes in the workspace are blocked (on Windows, enforced at the OS
-  level with delete rights kept) until enough files are deleted — the block
-  lifts automatically.
+  grants are exempt). Past 90% of the limit, agents get a heads-up notice so
+  they can clean up before anything bites. Breaching it does *not* freeze
+  anyone: file creation and writes in the workspace are blocked (on Windows,
+  enforced at the OS level with delete rights kept) until enough files are
+  deleted — the block lifts automatically.
 
 ⚠ Kiosk bounds *configuration and money*, not *capability*: visitors can
 still make agents do anything the fixed rights allow. For anything
