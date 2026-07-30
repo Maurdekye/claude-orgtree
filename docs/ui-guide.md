@@ -222,8 +222,12 @@ mail waits (a card's ✉ stays visible whenever it has waiting mail; otherwise
 it appears on hover, next to ⚙). The desk's inbox tab is the same view inline.
 
 - **Yours (the eye):** agents write to you asynchronously here; it enters no
-  context and interrupts nobody. "Mark all read" archives (nothing is
-  deleted). Top-level agents can always write; deeper agents only while
+  context and interrupts nobody. **Unread attention has two layers**: while
+  you have unseen mail the whole eye glows and pulses — merely OPENING the
+  mailbox clears the glow; the ✉ count badge stays until mails are actually
+  read. A viewed unread mail is marked read the moment you click OFF it
+  (select another mail, switch folders, or close the panel). "Mark all
+  read" archives everything at once (nothing is deleted). Top-level agents can always write; deeper agents only while
   holding your audience. **Audience requests** climb the chain hop-by-hop —
   grant or deny; **audience holders** may message you directly until
   rescinded (✕). Sender chips render the sender's CURRENT state — a message

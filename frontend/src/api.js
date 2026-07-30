@@ -39,6 +39,12 @@ export const creditDecide = (slug, id, action) =>
   }).then(j)
 export const clearInbox = (slug) =>
   fetch(`/api/orgs/${slug}/inbox/clear`, { method: 'POST' }).then(j)
+export const markRead = (slug, ids) =>
+  fetch(`/api/orgs/${slug}/inbox/read`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids }),
+  }).then(j)
 export const getHistory = (slug, nid) =>
   fetch(`/api/orgs/${slug}/nodes/${nid}/history`).then(j)
 export const getScratch = (slug, nid, path = '') =>

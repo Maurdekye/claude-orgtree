@@ -144,6 +144,12 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
   const [lineageId, setLineageId] = useState(null)
   const [userCfg, setUserCfg] = useState(false)
   const [inboxId, setInboxId] = useState(null)
+  // unread-mail attention: the eye glows until the mailbox is OPENED (merely
+  // opening acknowledges the glow; the count badge stays until mails are READ)
+  const [inboxSeen, setInboxSeen] = useState(
+    () => localStorage.getItem('orgtree-inbox-seen-' + slug) ?? '')
+  const mailGlow = (tree.user_inbox_count ?? 0) > 0
+    && (tree.user_inbox_newest ?? '') > inboxSeen
   const seats = tree.tiers ?? { haiku: 1, sonnet: 3, opus: 5, fable: 10 }
   const vroot = useMemo(() => withDraftTree(tree, draft), [tree, draft])
   const map = useMemo(() => flatten(vroot, seats), [vroot])   // eslint-disable-line
@@ -660,9 +666,15 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
           if (!p) return null
           if (n.id === USER) {
             return <UserNode key={USER} pos={p} isDrop={dropId === USER} seats={seats}
-              stats={orgStats}
+              stats={orgStats} mailGlow={mailGlow}
               inboxCount={(tree.user_inbox_count ?? 0) + (tree.credit_requests?.length ?? 0)}
-              onInbox={onInbox} onGear={() => setUserCfg(true)}
+              onInbox={() => {
+                const nw = tree.user_inbox_newest ?? new Date().toISOString()
+                localStorage.setItem('orgtree-inbox-seen-' + slug, nw)
+                setInboxSeen(nw)
+                onInbox?.()
+              }}
+              onGear={() => setUserCfg(true)}
               onSpawn={(t) => spawn(USER, t)} />
           }
           if (n.id === DRAFT) {
@@ -712,9 +724,11 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
 }
 
 // ------------------------------------------------------------- the overseer
-function UserNode({ pos, isDrop, stats, inboxCount, seats, onInbox, onGear, onSpawn }) {
+function UserNode({ pos, isDrop, stats, inboxCount, seats, mailGlow,
+  onInbox, onGear, onSpawn }) {
   return (
-    <div className={'sq user' + (isDrop ? ' drop' : '')} style={{
+    <div className={'sq user' + (isDrop ? ' drop' : '') + (mailGlow ? ' mail-glow' : '')}
+      style={{
       transform: `translate(${pos.x}px, ${pos.y}px)`, width: USER_W, height: USER_H,
     }}>
       {/* the user's pool is infinite, so their bar fades out into the top
@@ -1527,15 +1541,25 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
 // the left (sender · time · truncated brief — mails have no subjects), the
 // selected message opened in the reading pane on the right. Waiting/unread
 // mail sorts on top and is highlighted until read/delivered.
-export function MailList({ pending = [], delivered = [], waitLabel, sender, outgoing }) {
+export function MailList({ pending = [], delivered = [], waitLabel, sender, outgoing,
+  onRead }) {
   // newest first throughout (user ruling) — waiting/unread stays grouped on top
   const all = [
     ...[...pending].reverse().map((m) => ({ ...m, _wait: true })),
     ...[...delivered].reverse(),
   ]
-  const [sel, setSel] = useState(0)
+  // selection is BY IDENTITY, not index — marking a mail read reshuffles the
+  // list, and an index would silently land on a different mail
+  const keyOf = (m) => m?.id ?? `${m?.at}|${m?.from}|${(m?.body ?? '').slice(0, 24)}`
+  const [selId, setSelId] = useState(null)
   const S = sender ?? ((id) => <span>{id === USER ? '@user' : id}</span>)
-  const cur = all[Math.min(sel, all.length - 1)]
+  const cur = all.find((m) => keyOf(m) === selId) ?? all[0]
+  // per-mail read (user ruling): a VIEWED unread mail is marked read the
+  // moment you click OFF it — select another mail, or leave the list
+  const curRef = useRef(null); curRef.current = cur
+  const readRef = useRef(onRead); readRef.current = onRead
+  const leave = (m) => { if (m?._wait && m.id) readRef.current?.(m) }
+  useEffect(() => () => leave(curRef.current), [])
   const party = (m) => (outgoing ? m.to : m.from)
   const brief = (b) => (b ?? '').trim().replace(/\s+/g, ' ').slice(0, 90)
   const when = (at) => (at ?? '').slice(5, 16).replace('T', ' ')
@@ -1544,9 +1568,12 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
     <div className="mailer">
       <div className="mailer-list">
         {all.map((m, i) => (
-          <div key={i}
+          <div key={keyOf(m)}
             className={'mailrow' + (m === cur ? ' on' : '') + (m._wait ? ' unread' : '')}
-            onClick={() => setSel(i)}>
+            onClick={() => {
+              if (keyOf(m) !== keyOf(cur)) leave(cur)
+              setSelId(keyOf(m))
+            }}>
             <div className="l1">
               <span className="mfrom">
                 {outgoing ? '→ ' : ''}{party(m) === USER ? '@user' : party(m)}

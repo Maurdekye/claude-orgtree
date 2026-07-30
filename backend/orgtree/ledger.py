@@ -136,6 +136,8 @@ class Org:
         self.d.setdefault("default_top_grant", 50)   # user ruling: 50 by default
         self.d.setdefault("credit_requests", [])     # top-level asks to the user
         self.d.setdefault("compact_at", 0.80)        # compaction ratio, ≤ 0.95 hard
+        for m in self.d.get("user_inbox", []):       # per-mail read tracking needs ids
+            m.setdefault("id", uuid.uuid4().hex[:8])
         # org holdings carry RW/RO modes (user ruling — configured on the eye's
         # gear, mirroring per-agent folder access); legacy string lists migrate
         self.d["dirs"] = norm_dirs(self.d.get("dirs"))
@@ -398,7 +400,8 @@ class Org:
                     "only top-level agents (or holders of a user audience) may write "
                     "to the user — escalate to your superior instead (§7.5)")
             self.d.setdefault("user_inbox", []).append(
-                {"from": sender, "kind": kind, "body": body, "at": now()})
+                {"id": uuid.uuid4().hex[:8], "from": sender, "kind": kind,
+                 "body": body, "at": now()})
             self._log("mail", sender, {"to": USER, "kind": kind}, [])
             return {"delivered": "user_inbox", "warnings": warnings}
 
@@ -1418,6 +1421,7 @@ class Org:
             "cost_usd_total": round(sum(float(v.get("cost_usd") or 0.0)
                                         for v in self.nodes.values()), 4),
             "user_inbox_count": len(self.d.get("user_inbox", [])),
+            "user_inbox_newest": (self.d.get("user_inbox") or [{}])[-1].get("at"),
             "fable_lock": self.d.get("fable_lock"),
             "fable_limit_policy": self.d.get("fable_limit_policy", "halt"),
             "audience_requests": self.d.get("audience_requests", []),

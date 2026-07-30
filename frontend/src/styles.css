@@ -504,6 +504,22 @@ main {
   font-size: 13px; color: var(--dim); line-height: 1;
 }
 .eye-gear:hover { color: var(--accent); background: none; }
+/* unread mail: the whole eye glows and pulses until the mailbox is opened */
+.sq.user.mail-glow {
+  border-color: color-mix(in srgb, var(--accent) 75%, var(--line));
+  animation: mailglow 2.4s ease-in-out infinite;
+}
+.sq.user.mail-glow .eye-inbox { color: var(--accent); opacity: 1; }
+@keyframes mailglow {
+  0%, 100% {
+    box-shadow: 0 0 8px rgba(217, 119, 87, .3),
+      0 0 0 0 rgba(217, 119, 87, .3);
+  }
+  50% {
+    box-shadow: 0 0 22px rgba(217, 119, 87, .6),
+      0 0 0 7px rgba(217, 119, 87, .12);
+  }
+}
 .eye-inbox .count {
   position: absolute; top: -5px; right: -7px; background: var(--accent);
   color: #fff; border-radius: 8px; font-size: 9.5px; padding: 0 4px; font-weight: 700;

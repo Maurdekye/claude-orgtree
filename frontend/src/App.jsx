@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   audienceAction, clearInbox, createOrg, creditDecide, deleteOrg, getAudiences,
-  getInbox, getOrgMd, getTree, killAll, listOrgs, openWs, putOrgMd,
+  getInbox, getOrgMd, getTree, killAll, listOrgs, markRead, openWs, putOrgMd,
   resumeFrozen, runOp, saveSettings,
 } from './api'
 import { ConfirmModal, MailFolders, MailList, OrgCanvas, useEsc } from './Canvas'
@@ -408,6 +408,8 @@ function InboxPanel({ slug, tree, toast, refresh, close }) {
             : folder === 'inbox'
               ? <MailList pending={box.pending} delivered={box.delivered}
                   waitLabel="unread"
+                  onRead={(m) => markRead(slug, [m.id])
+                    .then(() => { reload(); refresh?.() }).catch(() => {})}
                   sender={(id) => <SenderChip id={id} nodes={nodes} />} />
               : <MailList delivered={box.sent ?? []} outgoing
                   sender={(id) => <SenderChip id={id} nodes={nodes} />} />}

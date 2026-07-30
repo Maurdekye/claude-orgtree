@@ -394,6 +394,33 @@ def user_inbox(slug: str):
             "sent": d.get("user_outbox", [])[-50:]}
 
 
+class InboxRead(BaseModel):
+    ids: list[str]
+
+
+@app.post("/api/orgs/{slug}/inbox/read")
+async def user_inbox_read(slug: str, body: InboxRead):
+    """Per-mail read: a viewed mail is marked read when the user clicks off it
+    (user ruling) — it moves from unread into the read archive."""
+    with store.DOC_LOCK:
+        try:
+            org = store.load_org(slug)
+        except LedgerError as e:
+            raise HTTPException(404, str(e))
+        ids = set(body.ids)
+        keep, read = [], []
+        for m in org.d.get("user_inbox", []):
+            (read if m.get("id") in ids else keep).append(m)
+        if read:
+            org.d["user_inbox"] = keep
+            log = org.d.setdefault("user_mail_log", [])
+            log.extend(read)
+            del log[:-100]
+            store.save_org(org)
+    await hub.changed(slug)
+    return {"read": len(read)}
+
+
 @app.post("/api/orgs/{slug}/inbox/clear")
 async def user_inbox_clear(slug: str):
     """Mark-all-read: archives into the read log (mirror of a node's mail_log)
