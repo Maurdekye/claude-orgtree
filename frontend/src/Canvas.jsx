@@ -1437,6 +1437,7 @@ function NodeConfig({ node, map, tree, slug, op, toast, close }) {
   const [vis, setVis] = useState(node.scope.org_visibility ?? 'full')
   const [charter, setCharter] = useState(node.charter ?? '')
   const [teamCharter, setTeamCharter] = useState(node.team_charter ?? '')
+  const [model, setModel] = useState(node.tier)
   const [newPath, setNewPath] = useState('')
   const [servers, setServers] = useState([])
   useEffect(() => { getMcpServers().then((r) => setServers(r.servers)).catch(() => {}) }, [])
@@ -1548,6 +1549,17 @@ function NodeConfig({ node, map, tree, slug, op, toast, close }) {
           </label>
         ))}
 
+        <div className="field-label">model (switchable on the fly — context
+          survives; cheaper frees the seat difference to the agent, pricier
+          bubbles any shortfall up the chain)</div>
+        <select value={model} onChange={(e) => setModel(e.target.value)}>
+          {['haiku', 'sonnet', 'opus', 'fable'].map((t) => (
+            <option key={t} value={t}>
+              {t} · seat {{ haiku: 1, sonnet: 3, opus: 5, fable: 10 }[t]}
+            </option>
+          ))}
+        </select>
+
         <div className="field-label">org-structure visibility</div>
         <select value={vis} onChange={(e) => setVis(e.target.value)}>
           {VIS_OPTIONS.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
@@ -1561,8 +1573,12 @@ function NodeConfig({ node, map, tree, slug, op, toast, close }) {
           />
         <div className="row">
           <button className="primary" onClick={() =>
-            saveScope(slug, node.id, { add_dirs: dirs, tools, org_visibility: vis,
-              charter, team_charter: teamCharter })
+            (model !== node.tier
+              ? op({ op: 'switch_model', node: node.id, tier: model })
+              : Promise.resolve())
+              .then(() => saveScope(slug, node.id,
+                { add_dirs: dirs, tools, org_visibility: vis,
+                  charter, team_charter: teamCharter }))
               .then((r) => { toast(r.warnings); close() })
               .catch((e) => toast([`error: ${e.message}`]))}>save</button>
           <button onClick={close}>cancel</button>

@@ -740,8 +740,9 @@ main {
 .cbar-fill {
   position: absolute; left: 0; right: 0;
   border-radius: 3px 3px 0 0;      /* a seat sits below: square foot */
-  background: linear-gradient(to top, #0e7490, #22d3ee 85%, #a5f3fc);
-  box-shadow: 0 0 7px rgba(34, 211, 238, .55), inset 0 0 2px rgba(255, 255, 255, .25);
+  /* children's ALLOCATION — the darkest layer (user ruling) */
+  background: linear-gradient(to top, #0c4a6e, #155e75);
+  box-shadow: inset 0 0 2px rgba(255, 255, 255, .12);
 }
 .cbar-fill.alone { border-radius: 3px; }   /* no seat below (the eye, etc.) */
 /* clips the fill/seat/hairline layers to the bar's rounded outline — without
@@ -758,14 +759,18 @@ main {
 }
 .cbar-subseat {
   position: absolute; left: 0; right: 0;
-  background: rgba(8, 51, 68, .34); pointer-events: none;
+  /* children's SEATS — second brightest (user ruling); opaque so the dark
+     alloc beneath never muddies the band */
+  background: #22d3ee; pointer-events: none;
+  box-shadow: inset 0 0 2px rgba(255, 255, 255, .25);
 }
 /* the node's own seat: a solid block at the bar's foot */
 .cbar-seat {
   position: absolute; left: 0; right: 0; bottom: 0;
   border-radius: 0 0 3px 3px;      /* alloc above: square crown */
-  background: #164e63;
-  box-shadow: inset 0 1px 0 rgba(165, 243, 252, .35);
+  /* the node's OWN seat — the brightest layer (user ruling) */
+  background: linear-gradient(to top, #67e8f9, #a5f3fc);
+  box-shadow: 0 0 7px rgba(165, 243, 252, .55);
 }
 .cbar-seat.crown { border-radius: 3px; }   /* no alloc: the seat IS the bar top */
 .sq.draft .cbar-fill {
@@ -787,8 +792,9 @@ main {
 /* numbers wear the color of the bar section they measure: bright fill cyan
    for grant/alloc/circulation, the seat block's darker blue, the empty
    section's grey for free */
-.cbar-tip b.n-fill { color: #22d3ee; }
-.cbar-tip b.n-seat { color: #3d90b0; }
+/* tip colors mirror the swapped bar layers: seat brightest, alloc darker */
+.cbar-tip b.n-fill { color: #67c3d8; }
+.cbar-tip b.n-seat { color: #a5f3fc; }
 .cbar-tip b.n-free { color: #7f7f7f; }
 .cbar-tip .dim { color: var(--dim); }
 /* the hovered card (and its tip) must clear a neighbouring open desk (z 5) */

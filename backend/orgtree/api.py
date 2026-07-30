@@ -1242,6 +1242,9 @@ async def agent_call(body: AgentCall, request: Request):
                 result = org.dissolve(body.node, a.get("node"))
             elif body.tool == "orgtree_reallocate":
                 result = org.reallocate(body.node, a.get("node"), int(a.get("delta") or 0))
+            elif body.tool == "orgtree_switch_model":
+                result = org.switch_model(body.node, a.get("node", ""),
+                                          a.get("tier", ""))
             elif body.tool == "orgtree_status":
                 status = a.get("status", "working")
                 summary = a.get("summary", "")
@@ -1441,6 +1444,10 @@ async def _org_op_locked(slug: str, body: Op):
             if body.delta is None:
                 raise LedgerError("reallocate needs delta")
             result = org.reallocate(body.actor, body.node, body.delta)
+        elif body.op == "switch_model":
+            if body.tier is None:
+                raise LedgerError("switch_model needs tier")
+            result = org.switch_model(body.actor, body.node, body.tier)
         elif body.op == "promote":
             result = org.promote(body.actor, body.node, body.new_parent)
         elif body.op == "demote":

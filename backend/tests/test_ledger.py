@@ -122,18 +122,55 @@ def main():
     check("fully-occupied tree can still reorganize (§4.5 derived result)", lambda: (
         None if org3.audit()["no_overdraft"] else (_ for _ in ()).throw(AssertionError)))
 
-    print("forcible hire at depth (§4.6):")
+    print("forcible hire at depth (§4.6-generalized, user ruling):")
     org4 = build_worked_example()
-    check("user forcible hire cascades grants and never fails", lambda: (
+    check("user forcible hire bubbles the shortfall and never fails", lambda: (
         lambda r: None
         if org4.nodes[r["node"]]["parent"] == "fable-a"
         and org4.nodes["ceo"]["grant"] == 51 and org4.nodes["fable-a"]["grant"] == 16
         and org4.audit()["no_overdraft"]
-        and any("inflation" in w for w in r["warnings"])
+        and any("§4.6" in w for w in r["warnings"])
         else (_ for _ in ()).throw(AssertionError(r))
     )(org4.hire(USER, "fable-a", "haiku", 0, "scout")))
-    check("agent forcible hire needs its OWN free (§4.6)", lambda: expect_error(
-        lambda: org4.hire("ceo", "fable-b", "haiku", 0, "x", **spec()), "free"))
+    check("agent hire refused only when the WHOLE chain lacks free", lambda: expect_error(
+        lambda: org4.hire("ceo", "fable-b", "haiku", 0, "x", **spec()), "chain"))
+
+    print("model switching (user spec):")
+    orgM = Org.create("switching")
+    orgM.hire(USER, None, "opus", 10, "boss")            # seat 5, grant 10
+    orgM.hire("boss", "boss", "opus", 2, "w", **spec())  # boss commits 7, free 3
+    check("cheaper switch melts the seat difference into free grant", lambda: (
+        lambda r: None if r["freed"] == 4
+        and orgM.nodes["w"]["model"] == "haiku" and orgM.nodes["w"]["grant"] == 6
+        and orgM.free("w") == 6 and orgM.free("boss") == 3
+        and orgM.audit()["no_overdraft"]
+        else (_ for _ in ()).throw(AssertionError(r))
+    )(orgM.switch_model("boss", "w", "haiku")))
+    check("pricier switch spends the node's own free first", lambda: (
+        orgM.switch_model("boss", "w", "opus"),
+        None if orgM.nodes["w"]["model"] == "opus" and orgM.nodes["w"]["grant"] == 2
+        and orgM.free("boss") == 3 and orgM.audit()["no_overdraft"]
+        else (_ for _ in ()).throw(AssertionError(orgM.nodes["w"])))[-1])
+    check("shortfall bubbles up the chain to the actor", lambda: (
+        orgM.switch_model("boss", "w", "fable"),   # +5 seat: w free 2 + boss 3
+        None if orgM.nodes["w"]["model"] == "fable"
+        and orgM.free("boss") == 0 and orgM.nodes["w"]["grant"] == 0
+        and orgM.audit()["no_overdraft"]
+        else (_ for _ in ()).throw(AssertionError(
+            (orgM.nodes["w"]["grant"], orgM.free("boss")))))[-1])
+    check("refused when the whole chain lacks it", lambda: expect_error(
+        lambda: orgM.hire("boss", "w", "opus", 0, "toobig", **spec()), "chain"))
+    check("agents cannot switch their OWN model", lambda: expect_error(
+        lambda: orgM.switch_model("w", "w", "haiku"), "OWN"))
+    check("agents cannot switch models outside their subtree", lambda: (
+        orgM.hire(USER, None, "haiku", 0, "outsider"),
+        expect_error(lambda: orgM.switch_model("outsider", "w", "haiku"),
+                     "subtree"))[-1])
+    check("user switches anyone; freed credits stay with the node", lambda: (
+        lambda r: None if r["freed"] == 9 and orgM.nodes["w"]["grant"] == 9
+        and orgM.audit()["no_overdraft"]
+        else (_ for _ in ()).throw(AssertionError(r))
+    )(orgM.switch_model(USER, "w", "haiku")))
 
     print("dirs as capability set (№30):")
     org5 = Org.create("dirs", dirs=["E:/work", "E:/other"])

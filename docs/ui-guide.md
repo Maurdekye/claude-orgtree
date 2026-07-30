@@ -78,10 +78,12 @@ snowflake, lock, layers, fullscreen, hearing.
 
 ## Credit bars (the left-edge bar on every live card)
 
-- A bar shows the node's **whole holding: seat + grant**. The solid block at
-  the foot is the seat itself; above it, the bright fill is what's allocated
-  to children, one slab per hire (each slab = that child's seat + grant, its
-  seat being the darker band at the slab's foot). 1px grey hairlines part the
+- A bar shows the node's **whole holding: seat + grant**. Brightness encodes
+  ownership depth (user ruling): the node's OWN seat at the foot is the
+  **brightest** layer; above it the children's allocation stacks one slab per
+  hire — each child's **seat** is the second-brightest band at its slab's
+  foot, and the credits granted onward as the child's **allocation** are the
+  darkest. 1px grey hairlines part the
   own seat from the slabs and slab from slab — nothing divides a slab
   internally; the wash alone does. The unfilled remainder is free. Ruler
   gradations mark real quantities: one line every 5 credits, or every 25 when
@@ -361,6 +363,12 @@ it appears on hover, next to ⚙). The desk's inbox tab is the same view inline.
   self / team (superior, peers, reports) / subtree / full (default).
   Knowledge only: reading transcripts stays downward-only and messaging stays
   parent-peers-reports regardless.
+- **model**: switchable ON THE FLY, any time — the session and its context
+  survive; the next turn runs the new model. Switching cheaper melts the seat
+  difference into the agent's own free allocation; switching pricier spends
+  the agent's free first and bubbles any shortfall up the chain to you
+  (refused in kiosks when the cap has no room). Agents can switch models
+  anywhere in their own subtree — never their own.
 - **charter**: this agent's standing role card, in its prompt every turn.
   **team charter**: standing instructions cascading into every descendant.
 - **🗑 delete permanently** is user-only and irreversible: takes the subtree,

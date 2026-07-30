@@ -798,24 +798,11 @@ class Org:
             # the seat cannot actually run until the limit resets or the user decrees
             warnings.append("the weekly Fable usage limit is exhausted — this agent "
                             "will not be able to run yet; hiring it now is futile")
-        if actor == USER:
-            pass  # infinite pool — a forcible hire by the user never fails (§4.6)
-        else:
-            free_before = self.free(actor)
-            if free_before < need:
-                raise LedgerError(
-                    f"{actor} has {free_before:g} free, needs {need} "
-                    f"(seat {self.d['tiers'][tier]} + grant {grant})")
-            warnings += self._stranding_warnings(actor, free_before, free_before - need)
-
-        # §4.6 cascade: raise every intermediate grant so each hop's invariant holds.
-        if parent is not None and actor != parent:
-            path = self._path_down(actor, parent)
-            for hop in path:  # actor's child-on-path … parent, inclusive
-                self.nodes[hop]["grant"] += need
-                warnings.append(
-                    f"grant inflation (§4.6): {hop} grant raised by {need}; "
-                    f"reclaim with reallocate when done")
+        # §4.6 generalized (user ruling): the parent pays; any shortfall
+        # bubbles up the chain to the actor (the user's pool is infinite) —
+        # refused only when the WHOLE chain lacks it
+        if parent is not None:
+            self._chain_acquire(actor, parent, need, warnings)
 
         if tlost:
             warnings.append(f"tool grants clamped to the parent's own: {tlost}")
@@ -834,6 +821,55 @@ class Org:
         self._log("hire", actor, {"node": nid, "parent": parent, "tier": tier,
                                   "grant": int(grant), "purpose": purpose}, warnings)
         return {"node": nid, "warnings": warnings}
+
+    def _chain_acquire(self, actor: str, payer: str, need, warnings: list) -> None:
+        """§4.6 GENERALIZED (user ruling): when an action under `payer` costs
+        `need` credits, the shortfall beyond the payer's own free bubbles UP
+        THE CHAIN — each hop contributes what it has free, grants inflating
+        down the path so every hop's invariant holds — refused only when the
+        WHOLE chain up to and including the acting agent lacks it. The user
+        tops an infinite pool: for user actions any remainder lands as
+        top-level grant inflation (kiosk caps still bind via the API check)."""
+        if need <= 0:
+            return
+        chain = [payer]
+        while chain[-1] != actor:
+            p = self.node(chain[-1])["parent"]
+            if p is None:
+                if actor != USER:
+                    raise LedgerError(f"{actor} is not on {payer}'s chain")
+                break
+            chain.append(p)
+        frees = [self.free(k) for k in chain]     # snapshot BEFORE inflating
+        remaining, contrib = need, []
+        for i, k in enumerate(chain):
+            if remaining <= 0:
+                break
+            c = min(frees[i], remaining)
+            if c > 0:
+                contrib.append((i, k, c))
+                remaining -= c
+        if remaining > 0 and actor != USER:
+            raise LedgerError(
+                f"not enough free credits on the chain: {need:g} needed, only "
+                f"{need - remaining:g} free between {payer} and {actor} (§4.6)")
+        # a contribution from chain[i] inflates every grant BELOW it, so the
+        # credits are actually spendable at the payer
+        for i, k, c in contrib:
+            for j in range(i):
+                self.nodes[chain[j]]["grant"] += c
+            warnings += self._stranding_warnings(k, frees[i], frees[i] - c)
+            if i > 0:
+                warnings.append(
+                    f"§4.6: {c:g} credit(s) bubbled up to {k}; grants below it "
+                    f"were inflated to carry them down — reclaim with reallocate")
+        if remaining > 0:             # user actor: the infinite pool absorbs it
+            for k in chain:
+                self.nodes[k]["grant"] += remaining
+            warnings.append(
+                f"§4.6: {remaining:g} credit(s) drawn from your pool — the "
+                f"chain's grants inflated to carry them down; reclaim with "
+                f"reallocate when done")
 
     def _path_down(self, top: str, bottom: str) -> list[str]:
         """Nodes from just below `top` down to `bottom`, inclusive. top may be USER."""
@@ -927,12 +963,10 @@ class Org:
         parent = n["parent"]
         grant = n["grant"] if grant is None else int(grant)
         need = self.seat_cost(nid) + grant
-        payer = USER if parent is None else parent
-        free_before = self.free(payer)
-        if free_before < need:
-            raise LedgerError(
-                f"{payer} has {free_before:g} free, needs {need} to rehire {nid}")
-        warnings = self._stranding_warnings(payer, free_before, free_before - need)
+        warnings: list[str] = []
+        if parent is not None:
+            # §4.6 generalized: the parent pays; shortfall bubbles up to the actor
+            self._chain_acquire(actor, parent, need, warnings)
         if fable_futile:
             warnings.append("the weekly Fable usage limit is exhausted — this agent "
                             "will not be able to run yet; rehiring it now is futile")
@@ -1033,19 +1067,70 @@ class Org:
         return {"deleted": sorted(doomed_set), "warnings": []}
 
     # ------------------------------------------------------------- reallocate
+    def switch_model(self, actor: str, nid: str, tier: str) -> dict:
+        """User spec: swap an agent's model ON THE FLY, mid-life — the session
+        survives (№16: --resume honors a changed --model; the next turn runs
+        the new model). CHEAPER: the seat difference melts into the node's own
+        grant — holding unchanged, free grows. PRICIER: paid from the node's
+        own free first; the shortfall bubbles up the chain to the actor
+        (§4.6-generalized). Agents may switch models anywhere in their
+        SUBTREE, but never their own (user spec); the user switches anyone."""
+        if tier not in self.d["tiers"]:
+            raise LedgerError(f"unknown tier {tier!r}; know {sorted(self.d['tiers'])}")
+        self._require_live(nid)
+        n = self.node(nid)
+        if actor != USER:
+            if actor == nid:
+                raise LedgerError("you cannot switch your OWN model (user "
+                                  "ruling) — your superior or the user can")
+            if not self.is_ancestor(actor, nid):
+                raise LedgerError("model switches cover your own subtree only")
+        old = n["model"]
+        if tier == old:
+            raise LedgerError(f"{nid} already runs {tier}")
+        if tier == "fable" and self.d.get("fable_lock") and actor == USER:
+            self.clear_fable_lock()      # a user fable-switch is the decree
+        delta = self.d["tiers"][tier] - self.d["tiers"][old]
+        warnings: list[str] = []
+        if delta <= 0:
+            # seat shrinks; the difference becomes the node's own free
+            # allocation — its total holding (and the parent's commitment)
+            # never moves
+            n["model"] = tier
+            n["grant"] += -delta
+        else:
+            own = min(self.free(nid), delta)   # the node's own free absorbs first
+            shortfall = delta - own
+            if shortfall > 0:
+                if n["parent"] is None and actor != USER:
+                    raise LedgerError("only the user funds a top-level upgrade")
+                if n["parent"] is not None:
+                    self._chain_acquire(actor, n["parent"], shortfall, warnings)
+            n["model"] = tier
+            n["grant"] -= own      # holding grows by exactly the shortfall
+        who = "the user" if actor == USER else f'"{actor}"'
+        self._notify([x for x in [nid] if x != actor],
+                     f'{who.capitalize()} switched your model {old}→{tier} '
+                     f'(seat {self.d["tiers"][old]}→{self.d["tiers"][tier]}). '
+                     f'Your context is intact — carry on.')
+        self._notify([x for x in [n["parent"]] if x not in (actor, None)],
+                     f'{who.capitalize()} switched "{nid}" {old}→{tier}.')
+        self._log("switch_model", actor,
+                  {"node": nid, "from": old, "to": tier}, warnings)
+        return {"model": tier, "seat": self.d["tiers"][tier],
+                "freed": max(0, -delta), "warnings": warnings}
+
     def reallocate(self, actor: str, nid: str, delta: int) -> dict:
         """±Δ between a node and its parent (§4.2). -Δ is the classic stranding op."""
         self._require_authority(actor, nid)
         self._require_live(nid)
         n = self.node(nid)
         delta = int(delta)
-        payer = USER if n["parent"] is None else n["parent"]
         warnings: list[str] = []
         if delta > 0:
-            if self.free(payer) < delta:
-                raise LedgerError(f"{payer} has only {self.free(payer):g} free")
-            warnings += self._stranding_warnings(
-                payer, self.free(payer), self.free(payer) - delta)
+            if n["parent"] is not None:
+                # §4.6 generalized: shortfall bubbles up the chain to the actor
+                self._chain_acquire(actor, n["parent"], delta, warnings)
         elif delta < 0:
             if self.free(nid) < -delta:
                 raise LedgerError(
@@ -1258,17 +1343,18 @@ class Org:
         self._require_authority(actor, nid)
         n = self.node(nid)
         sibs = [k for k in self.children(n["parent"], live_only=False) if k != nid]
-        order = lambda k: self.nodes[k].get("ui_order", 0)   # noqa: E731
         if before and before in sibs:
-            i = sibs.index(before)
-            lo = order(sibs[i - 1]) if i > 0 else order(before) - 2.0
-            n["ui_order"] = (lo + order(before)) / 2
+            idx = sibs.index(before)
         elif after and after in sibs:
-            i = sibs.index(after)
-            hi = order(sibs[i + 1]) if i + 1 < len(sibs) else order(after) + 2.0
-            n["ui_order"] = (order(after) + hi) / 2
+            idx = sibs.index(after) + 1
         else:
             raise LedgerError("reorder needs a sibling as before= or after=")
+        # FULL sibling reindex (user bug report: "reordering sometimes doesn't
+        # work") — the old midpoint halving converged to float ties after
+        # repeated reorders, and tied ui_orders sort ambiguously. Fresh
+        # integers every time keeps the order deterministic forever.
+        for i, k in enumerate(sibs[:idx] + [nid] + sibs[idx:]):
+            self.nodes[k]["ui_order"] = float(i)
         return {"ui_order": n["ui_order"], "warnings": []}
 
     # -------------------------------------------------------------- audiences

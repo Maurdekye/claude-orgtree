@@ -218,6 +218,22 @@ TOOLS = [
                         "required": ["node"]},
     },
     {
+        "name": "orgtree_switch_model",
+        "description": (
+            "Switch the model of an agent in your SUBTREE on the fly (never your "
+            "own — your superior can). Its session and context survive; the next "
+            "turn runs the new model. Cheaper tier: the seat difference becomes "
+            "the agent's own free allocation. Pricier: paid from its free first, "
+            "any shortfall bubbles up the chain to YOU — refused only if the "
+            "whole chain lacks it. Tiers: haiku 1 · sonnet 3 · opus 5 · fable 10."),
+        "inputSchema": {"type": "object",
+                        "properties": {"node": {"type": "string"},
+                                       "tier": {"type": "string",
+                                                "enum": ["haiku", "sonnet",
+                                                         "opus", "fable"]}},
+                        "required": ["node", "tier"]},
+    },
+    {
         "name": "orgtree_audience",
         "description": (
             "Audience machinery (§7.3). action=request: open a request to speak with a "
