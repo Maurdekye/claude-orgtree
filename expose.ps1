@@ -41,6 +41,13 @@ if (-not $up) {
 
 Write-Host "opening tunnel -> http://localhost:$Port   (Ctrl+C closes it; the URL dies with it)"
 try {
+    # cloudflared logs EVERYTHING to stderr, even its greeting banner. Under
+    # Windows PowerShell 5.1, 2>&1 wraps each stderr line in an ErrorRecord,
+    # and with ErrorActionPreference=Stop the FIRST banner line became a
+    # terminating NativeCommandError that killed the tunnel instantly.
+    # Continue lets the records flow down the pipeline, where "$_" below
+    # stringifies them like any other output line.
+    $ErrorActionPreference = "Continue"
     & $cfd tunnel --url "http://localhost:$Port" 2>&1 | ForEach-Object {
         $line = "$_"
         if ($line -match "https://[a-z0-9-]+\.trycloudflare\.com") {
@@ -57,5 +64,6 @@ try {
         $line
     }
 } finally {
+    $ErrorActionPreference = "Stop"
     Remove-Item -Path $originFile -ErrorAction SilentlyContinue
 }
