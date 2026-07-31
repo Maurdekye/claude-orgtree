@@ -846,7 +846,9 @@ main {
 }
 /* picked charter presets render as CARDS, not text (user spec): click
    removes; hover reveals the source file's path on disk */
-.preset-cards { display: flex; flex-wrap: wrap; gap: 3px; }
+/* the cards never squeeze out the manual-charter box below them (user
+   ruling: you can always type additional text after the cards) */
+.preset-cards { display: flex; flex-wrap: wrap; gap: 3px; flex: none; max-height: 38px; overflow-y: auto; }
 .preset-card {
   display: inline-flex; align-items: center; gap: 3px;
   font-size: 8px; padding: 1px 6px; border-radius: 3px;
@@ -857,7 +859,7 @@ main {
 .preset-card:hover { border-color: var(--bad); color: var(--bad); background: var(--input); }
 /* small enough to type AND read at the hire zoom (user ruling) */
 .draft-charter {
-  flex: 1; min-height: 0; resize: none;
+  flex: 1; min-height: 26px; resize: none;   /* ≥2 typed lines even with cards */
   font-size: 8px; line-height: 1.4; font-family: inherit;
   padding: 3px 5px; border-radius: 3px;
   background: var(--input); border: 1px solid var(--line); color: var(--ink);
