@@ -22,8 +22,14 @@
   --kiosk: #4ba3c7;         /* "exposed to the public" teal */
   --kiosk-soft: rgba(75, 163, 199, .09);
   --kiosk-hover: rgba(75, 163, 199, .16);
-  --ok: #89d185;
+  --ok: #6fd377;            /* == the done status green (one green, one meaning) */
   --bad: #f14c4c;
+  --work: #7cc0ff;          /* task-state "working" (sky). Deliberately NOT the
+                               terracotta accent: the accent pulse means "a turn
+                               is running right now"; this chip means "the task
+                               is in progress" — two different facts. The old
+                               shared terracotta also sat ΔE 8.5 from blocked
+                               red (near-identical even for normal vision). */
   --shadow: 0 2px 8px rgba(0, 0, 0, .36);
   --mono: Consolas, 'Cascadia Mono', 'Courier New', monospace;
 }
@@ -111,10 +117,12 @@ main {
 .edge.draftedge { stroke: var(--accent); stroke-dasharray: 5 4; opacity: .6; }
 /* coworkers: the lateral peer channel between adjacent siblings */
 .edge.peer { stroke: #3e3e42; stroke-dasharray: 2 6; stroke-width: 1.2px; opacity: .65; }
-/* audience: an emphasized direct line BYPASSING the tree (bright = user's ear) */
+/* audience: an emphasized direct line BYPASSING the tree (bright = user's ear).
+   Agent-granted lines are STEEL, not blue — the old #56aef0 was byte-identical
+   to the sonnet tier hue, so "sonnet agent" and "holds an audience" collided */
 .edge.aud-line {
-  stroke: #56aef0; stroke-width: 1.8px; opacity: .5;
-  filter: drop-shadow(0 0 3px rgba(86, 174, 240, .55));
+  stroke: #a9c2d8; stroke-width: 1.8px; opacity: .5;
+  filter: drop-shadow(0 0 3px rgba(169, 194, 216, .5));
 }
 .edge.aud-line.from-user {
   stroke: var(--accent); stroke-width: 2.2px; opacity: .7;
@@ -162,12 +170,15 @@ main {
 }
 .sq:hover .mailbtn { opacity: .8; }
 .mailbtn.has { opacity: .9; }
-/* frozen by a usage limit */
-.sq.frozen { border-color: #4b7f9e; }
-.badge.frozen { color: #7fc4e8; border-color: #365b73; }
+/* frozen by a usage limit — pale ICE (whiter, desaturated) so it never reads
+   as the saturated credit-bar cyan sitting right beside the card */
+.sq.frozen { border-color: #6b93ab; }
+.badge.frozen { color: var(--ice); border-color: #46647a; }
 .resume-all {
-  background: color-mix(in srgb, var(--tier-haiku) 22%, var(--input));
-  border: 1px solid color-mix(in srgb, var(--tier-haiku) 45%, var(--line));
+  /* resume = thaw: ice-tinted, matching what it resumes (was haiku-green,
+     which made a frozen-org control wear a model tier's color) */
+  background: color-mix(in srgb, var(--ice) 20%, var(--input));
+  border: 1px solid color-mix(in srgb, var(--ice) 45%, var(--line));
   color: var(--ink-strong); font-weight: 700;
 }
 /* the reported reset time hasn't passed yet — resuming would just re-freeze */
@@ -177,7 +188,7 @@ main {
 }
 .resume-note { font-size: 11.5px; color: var(--dim); max-width: 34em; }
 .auto-resume { font-size: 11px; color: var(--dim); padding: 3px 8px; }
-.auto-resume.on { color: var(--ok); border-color: rgba(137, 209, 133, .5); }
+.auto-resume.on { color: var(--ok); border-color: rgba(111, 211, 119, .5); }
 /* the killswitch: a latch you must open, then a big red STOP ALL */
 .kill { display: inline-flex; gap: 0; align-items: stretch; }
 .kill-latch {
@@ -242,11 +253,17 @@ main {
 .sq.mini.tier-sonnet { background: color-mix(in srgb, var(--tier-sonnet) 6%, var(--panel)); }
 .sq.mini.tier-opus { background: color-mix(in srgb, var(--tier-opus) 6%, var(--panel)); }
 .sq.mini.tier-fable { background: color-mix(in srgb, var(--tier-fable) 6%, var(--panel)); }
+/* status never rides color alone (dataviz rule): the dots carry a SHAPE
+   channel too — done is a filled circle, working pulses, blocked is a diamond,
+   idle is a hollow ring */
 .statusdot { width: 9px; height: 9px; flex: none; border-radius: 50%; }
 .statusdot.done { background: var(--ok); }
-.statusdot.blocked { background: var(--bad); }
-.statusdot.working { background: var(--accent); }
-.statusdot.idle { background: #7a7a7a; }
+.statusdot.blocked {
+  background: var(--bad); border-radius: 2px; transform: rotate(45deg);
+  width: 8px; height: 8px;
+}
+.statusdot.working { background: var(--work); animation: pulse 2.2s ease-in-out infinite; }
+.statusdot.idle { background: transparent; border: 2px solid #8a8a8a; }
 
 /* tight head row (user ruling: long names must fit) — small margins, small
    chrome, the context wheel pushed to the far right */
@@ -464,11 +481,19 @@ main {
 /* ----------------------------------------------- the five channels (§9.3–9.6)
    hue = tier · fill = lifecycle · border style = permission · glow = audience ·
    the left bar = credits. Letters H/S/O/F stay as the redundant glyph (§9.6). */
+/* Validated 2026-07-31 (dataviz six-checks, dark surface #252526, all pairs):
+   worst CVD ΔE 10.4 (deutan opus↔haiku), normal-vision floor 18.4. The old set
+   failed hard: opus↔sonnet ΔE 0.5 under deuteranopia (indistinguishable),
+   haiku↔fable ΔE 13 for NORMAL vision. Separation is carried by LIGHTNESS as
+   well as hue (lightness survives CVD): sonnet deep, opus pale. The H/S/O/F
+   letter stays the redundant glyph (§9.6). */
 :root {
-  --tier-haiku: #7fbf7f;
-  --tier-sonnet: #56aef0;
-  --tier-opus: #b78af0;
-  --tier-fable: #e0b341;
+  --tier-haiku: #4fd6a3;
+  --tier-sonnet: #3d8ce6;
+  --tier-opus: #dcb0f5;
+  --tier-fable: #e8b04b;
+  --ice: #a8d4ea;           /* frozen (usage limit) — pale ice, deliberately
+                               whiter than the saturated credit-bar cyans */
 }
 .sq { border-top-width: 3px; }
 .sq.tier-haiku { border-top-color: color-mix(in srgb, var(--tier-haiku) 55%, var(--line)); }
@@ -490,14 +515,15 @@ main {
 /* permission border: dashed = cannot edit files (read-only agent); the tier
    edge stays solid — dashing it too read as noise, not as a channel */
 .sq.ro-agent { border-style: dashed; border-top-style: solid; }
-/* audience glow: soft = holds an agent audience · bright = holds the USER's ear */
-.sq.aud { box-shadow: 0 0 10px rgba(86, 174, 240, .28); }
+/* audience glow: soft steel = holds an agent audience · bright terracotta =
+   holds the USER's ear (steel, not sonnet blue — see .edge.aud-line) */
+.sq.aud { box-shadow: 0 0 10px rgba(190, 210, 230, .3); }
 .sq.aud-user { box-shadow: 0 0 14px rgba(217, 119, 87, .5), 0 0 30px rgba(217, 119, 87, .18); }
 /* status chips */
 .statuschip { font-size: 9px; padding: 0 6px; border-radius: 8px; font-family: var(--mono); }
-.statuschip.done { color: var(--ok); border: 1px solid rgba(137, 209, 133, .4); }
+.statuschip.done { color: var(--ok); border: 1px solid rgba(111, 211, 119, .4); }
 .statuschip.blocked { color: var(--bad); border: 1px solid rgba(241, 76, 76, .5); }
-.statuschip.working { color: var(--accent); border: 1px solid rgba(217, 119, 87, .4); }
+.statuschip.working { color: var(--work); border: 1px solid rgba(124, 192, 255, .4); }
 .statuschip.idle { color: var(--dim); border: 1px solid var(--line); }
 
 /* ---------------------------------------------- user inbox (on the eye) */
@@ -884,7 +910,9 @@ main.solo { width: 100%; }
 .chip.block { align-self: flex-start; padding: 4px 10px; border-radius: 4px; }
 .chip.grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .modebtn { font-family: var(--mono); font-size: 10px; font-weight: 700; width: 36px; }
-.modebtn.rw { color: #22d3ee; border-color: rgba(34, 211, 238, .4); }
+/* rw/ro split by INK LIGHTNESS, not hue — the old rw cyan #22d3ee was the
+   credit-bar color on a control that has nothing to do with credits */
+.modebtn.rw { color: var(--ink-strong); border-color: #5a5a5a; }
 .modebtn.ro { color: var(--dim); }
 .checkline {
   display: flex; gap: 8px; align-items: center; font-size: 12.5px; cursor: pointer;
@@ -909,7 +937,7 @@ button.danger.solid:hover { background: rgba(241, 76, 76, .24); }
   font-size: 11px; padding: 2px 9px; border-radius: 10px;
   border: 1px solid var(--line); background: var(--panel); color: var(--dim);
 }
-.chip.ok { color: var(--ok); border-color: rgba(137, 209, 133, .35); }
+.chip.ok { color: var(--ok); border-color: rgba(111, 211, 119, .35); }
 .chip.bad { color: var(--bad); border-color: var(--bad); }
 .chip.mono { font-family: var(--mono); font-size: 10.5px; }
 
@@ -1190,7 +1218,7 @@ svg.MuiSvgIcon-root {
   flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap; font-family: var(--mono);
 }
-.tray-frozen { color: #7fc4e8; font-size: 13px; }
+.tray-frozen { color: var(--ice); font-size: 13px; }
 .eye-tab-jump { color: var(--dim); }
 .eye-tab-jump:hover { color: var(--accent); background: var(--accent-soft); }
 .lineage-panel { min-width: 480px; }
@@ -1200,7 +1228,7 @@ svg.MuiSvgIcon-root {
   padding: 8px 10px; border: 1px solid var(--line-soft); border-radius: 6px;
   background: color-mix(in srgb, var(--bg) 40%, var(--panel));
 }
-.lin-row.live { border-color: rgba(137, 209, 133, .4); }
+.lin-row.live { border-color: rgba(111, 211, 119, .4); }
 .lin-row .tier { flex: none; }
 .lin-id { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .lin-id .dim { font-size: 11px; }
