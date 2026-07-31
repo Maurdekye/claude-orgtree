@@ -856,10 +856,6 @@ main {
 .df-head { display: flex; align-items: center; gap: 5px; min-width: 0; }
 .df-head .tier { width: 15px; height: 15px; font-size: 9px; flex: none; }
 .df-title { font-size: 11px; color: var(--ink-strong); flex: none; }
-.df-head .dim {
-  font-size: 8.5px; min-width: 0; overflow: hidden;
-  white-space: nowrap; text-overflow: ellipsis;
-}
 .df-name { font-family: var(--mono); font-size: 11px; padding: 3px 6px; border-radius: 4px; }
 .df-presets { display: flex; flex-direction: column; gap: 3px; }
 .df-presets .field-label { font-size: 8.5px; }

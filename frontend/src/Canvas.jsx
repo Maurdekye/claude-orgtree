@@ -1450,10 +1450,6 @@ function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRemaining,
           <div className="df-head">
             <span className={'tier t-' + draft.tier}>{TIER_LETTER[draft.tier]}</span>
             <b className="df-title">hire a {draft.tier}</b>
-            <span className="dim">
-              {draft.parent == null ? 'top level — reports to you'
-                : `reports to ${draft.parent}`} · seat {seats[draft.tier] ?? 0}
-            </span>
           </div>
           <input className="df-name" autoFocus placeholder="name…" value={name}
             onChange={(e) => setName(e.target.value)}
