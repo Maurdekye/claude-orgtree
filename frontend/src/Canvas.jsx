@@ -1452,11 +1452,8 @@ function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRemaining,
           <input className="df-name" autoFocus placeholder="name…" value={name}
             onChange={(e) => setName(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter' && ok) hire() }} />
-          {/* grant stays on the BAR (user ruling: drag the credit bar, no
-              slider here) — this line just reports what the bar is set to */}
-          <div className="df-grant dim">
-            grant <b>{grant}</b> · drag the bar to adjust
-          </div>
+          {/* grant lives ONLY on the credit bar (user ruling) — no slider,
+              no readout line; the bar's own tip reports grant + seat */}
           {presets.length > 0 && (
             <div className="df-presets">
               <div className="preset-cards">

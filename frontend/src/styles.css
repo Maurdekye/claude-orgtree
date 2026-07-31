@@ -861,8 +861,6 @@ main {
   white-space: nowrap; text-overflow: ellipsis;
 }
 .df-name { font-family: var(--mono); font-size: 11px; padding: 3px 6px; border-radius: 4px; }
-.df-grant { font-size: 9px; }
-.df-grant b { color: var(--ink); font-family: var(--mono); }
 .df-presets { display: flex; flex-direction: column; gap: 3px; }
 .df-presets .field-label { font-size: 8.5px; }
 /* picked charter presets are CARDS (user spec): click removes; hover shows
