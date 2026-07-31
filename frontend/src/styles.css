@@ -1175,6 +1175,53 @@ input:focus, select:focus, textarea:focus, button:focus-visible {
 .addrow:hover { color: var(--ink); }
 
 /* -------------------------------------------------------------------- toasts */
+/* ------ the org-disk recovery browser + hard-full alert ------ */
+/* the alert is a persistent STATE banner, deliberately not a toast: screen-
+   wide, error-styled, above the canvas and scrims, below toasts (z 100) */
+.disk-alert {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 90;
+  display: flex; align-items: center; gap: 10px; justify-content: center;
+  padding: 10px 16px; font-size: 13px;
+  background: color-mix(in srgb, var(--bad) 18%, var(--panel));
+  border-bottom: 2px solid var(--bad); color: var(--bad);
+}
+.disk-alert b { color: inherit; }
+.disk-alert button {
+  border: 1px solid var(--bad); color: var(--bad); background: none;
+  border-radius: 4px; padding: 3px 12px; font-size: 12px;
+}
+.disk-alert button:hover { background: color-mix(in srgb, var(--bad) 12%, transparent); }
+.disk-overlay { z-index: 55; }   /* above modals (20), below the picker (60) */
+.disk-browser { width: min(760px, 92vw); max-height: 84vh; display: flex; flex-direction: column; }
+.disk-usage { display: flex; align-items: center; gap: 10px; font-size: 12px; padding: 2px 0 8px; }
+.disk-usage.warn { color: var(--work); }
+.disk-usage.bad { color: var(--bad); }
+.disk-bar {
+  flex: 1; height: 8px; border-radius: 4px; background: var(--input);
+  border: 1px solid var(--line); overflow: hidden;
+}
+.disk-bar-fill { height: 100%; background: var(--accent); }
+.disk-usage.warn .disk-bar-fill { background: var(--work); }
+.disk-usage.bad .disk-bar-fill { background: var(--bad); }
+.disk-list { overflow-y: auto; flex: 1; min-height: 120px; border-top: 1px solid var(--line-soft); }
+.disk-row {
+  display: flex; align-items: center; gap: 8px; padding: 3px 6px;
+  font-size: 12px; border-bottom: 1px solid var(--line-soft); cursor: pointer;
+}
+.disk-row:hover { background: var(--panel-2); }
+.disk-row.blocked { opacity: .55; cursor: default; }
+.disk-size { width: 72px; text-align: right; flex: none; }
+.disk-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.disk-cls { font-size: 10.5px; color: var(--dim); flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.disk-cls.ok { color: var(--accent); }
+.disk-del {
+  border: 1px solid var(--bad); color: var(--bad); background: none;
+  border-radius: 4px; padding: 3px 10px; font-size: 12px;
+}
+.disk-del.armed { background: var(--bad); color: var(--panel); }
+.disk-grow { width: 110px; }
+.disk-chip { cursor: pointer; }
+
 /* above every scrim (18-20) and the folder picker (60): a toast's
    click-to-dismiss must stay reachable while a modal is open */
 .toasts {

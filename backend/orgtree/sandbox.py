@@ -109,6 +109,14 @@ def migrate_to_disk(org: Org) -> None:
     size_mb = (int(k.get("storage_limit_mb") or 0)
                or int((org.d.get("sandbox") or {}).get("limit_mb") or 0)
                or DISK_MB)
+    # one-disk semantics: the ~1 GB system seed and transcripts live INSIDE
+    # the cap now — a limit written for the old workspace-only accounting
+    # (e.g. 256 MB) cannot even hold the seed. Floor it.
+    if size_mb < 4096:
+        print(f"[orgtree] org {slug!r}: configured storage limit {size_mb} MB "
+              f"is below the 4096 MB one-disk minimum (the system seed and "
+              f"transcripts count now) — using 4096 MB")
+        size_mb = 4096
     print(f"[orgtree] migrating org {slug!r} onto its {size_mb} MB disk …")
     dsk.create(slug, size_mb)
     _docker("stop", "-t", "20", container_name(slug), timeout=60)

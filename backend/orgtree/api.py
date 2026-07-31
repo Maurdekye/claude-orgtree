@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import posixpath
 import re
 import secrets
 import shutil
@@ -601,6 +602,18 @@ def org_tree(slug: str, request: Request) -> dict[str, Any]:
             u = supervisor.workspace_usage_cached(org)
             if u is not None:
                 tree["kiosk"]["storage_mb"] = round(u / 1048576, 2)
+    if sandbox.is_sandboxed(org) and sandbox.on_disk(slug):
+        # the org disk's headline numbers ride every tree payload: the
+        # persistent hard-full alert is STATE (survives reload), and the
+        # storage chip needs used/total without a second request
+        from . import disk as dsk
+        du = dsk.usage(slug, max_age=15.0)
+        tree["disk"] = {
+            "used_mb": round(du[0] / 1048576, 1) if du else None,
+            "total_mb": round(du[1] / 1048576, 1) if du else None,
+            "blocked": bool(tree.get("storage_blocked")),
+            "full": bool(org.d.get("storage_full")),
+        }
     if _public_slug(request):
         # tells the UI to lock itself down; the SERVER gate is the enforcement
         tree["public"] = True
@@ -2058,6 +2071,189 @@ def node_file(slug: str, nid: str, path: str = "") -> FileResponse:
     if not os.path.isfile(full):
         raise HTTPException(404, f"no such file: {path!r}")
     return FileResponse(full, filename=os.path.basename(full))
+
+
+# ------------------------------------------------ the org disk (recovery browser)
+# The user verdict's built-in file browser over the org's virtual disk — its
+# OWN surface, deliberately NOT /api/fs (that is the HOST browser and stays in
+# the public deny list). Org-scoped routes, so the kiosk gateway's slug check
+# scopes visitors to their own org's disk for free. Reads and deletes go over
+# \\wsl.localhost and work with the container STOPPED and the disk 100% FULL
+# (drilled, not assumed); enumeration runs INSIDE the distro (9p is too slow).
+
+# engine credential/state files on the disk (subscription auth copies the
+# HOST's OAuth credentials into the sandbox home) — never served to visitors
+_PUBLIC_DISK_DENY = (".credentials.json", ".claude.json")
+_SID_FILE = re.compile(r"^home/\.claude/projects/[^/]+/([0-9a-f-]{36})\.jsonl$")
+
+
+def _disk_org(slug: str) -> Org:
+    try:
+        org = store.load_org(slug)
+    except LedgerError as e:
+        raise HTTPException(404, str(e))
+    if not org.d.get("disk"):
+        raise HTTPException(409, "this org has no virtual disk (not sandboxed, "
+                                 "or not yet migrated)")
+    return org
+
+
+def _disk_rel(slug: str, path: str) -> tuple[str, str]:
+    """(relative posix path, absolute windows path) — canonicalized, with
+    containment ASSERTED before any read/download/unlink. A traversal here
+    would reach the host filesystem from a kiosk URL: the worst outcome
+    available in this feature, so both a lexical and a realpath check."""
+    rel = posixpath.normpath((path or "").replace("\\", "/").strip("/"))
+    if not rel or rel == "." or rel == ".." or rel.startswith("../") \
+            or rel.startswith("/") or ":" in rel:
+        raise HTTPException(422, "path escapes the org disk")
+    from . import disk as dsk
+    root = dsk.windows_path(slug)
+    full = os.path.join(root, *rel.split("/"))
+    if os.path.realpath(full) != full and not os.path.realpath(full).startswith(
+            os.path.realpath(root) + os.sep):
+        raise HTTPException(422, "path escapes the org disk")
+    return rel, full
+
+
+def _disk_classify(org: Org, rel: str, public: bool) -> tuple[str, str | None]:
+    """The verdict's deletion policy. reclaimable = freely deletable and
+    POSITIVELY dead weight; blocked = shown, delete refused, with the reason;
+    content = ordinary agent output."""
+    m = _SID_FILE.match(rel)
+    if m:
+        sid = m.group(1)
+        for nid, n in org.nodes.items():
+            if n.get("session_id") == sid:
+                if n.get("bearer_state") == "lost":
+                    return "reclaimable", (f"lost generation {nid} — never "
+                                           f"consultable or rehirable again")
+                if n["state"] == "live":
+                    return "blocked", (f"live session of {nid} — deleting "
+                                       f"breaks its resume")
+                if n.get("bearer_state"):
+                    return "blocked", (f"knowledge bearer {nid} — deleting "
+                                       f"kills its oracle")
+                return "blocked", (f"archived node {nid} — deleting breaks "
+                                   f"its rehire")
+        return "reclaimable", "no node owns this session"
+    if rel.rsplit("/", 1)[-1] in _PUBLIC_DISK_DENY:
+        if public:
+            return "blocked", "engine credential/state file"
+        return "content", "engine state file — admin-side only"
+    return "content", None
+
+
+@app.get("/api/orgs/{slug}/disk")
+def disk_list(slug: str, request: Request, offset: int = 0,
+              limit: int = 200) -> dict[str, Any]:
+    """Files by size DESCENDING (the sort that matters when freeing space
+    fast) + the live usage readout. Paginated — never the whole tree."""
+    org = _disk_org(slug)
+    public = bool(_public_slug(request))
+    from . import disk as dsk
+    try:
+        du = dsk.usage(slug, max_age=5.0)
+        files = dsk.enumerate_by_size(slug, limit=max(1, min(limit, 500)),
+                                      offset=max(0, offset))
+    except dsk.DiskError as e:
+        raise HTTPException(503, str(e))
+    for f in files:
+        cls, why = _disk_classify(org, str(f["path"]), public)
+        f["class"] = cls
+        if why:
+            f["reason"] = why
+    return {"used": du[0] if du else None, "total": du[1] if du else None,
+            "blocked": bool(org.d.get("storage_blocked")),
+            "full": bool(org.d.get("storage_full")),
+            "files": files, "offset": max(0, offset),
+            "limit": max(1, min(limit, 500))}
+
+
+@app.get("/api/orgs/{slug}/disk/file")
+def disk_file(slug: str, request: Request, path: str = "") -> FileResponse:
+    """Streaming download (FileResponse streams — a multi-GB file is never
+    buffered). Visitors get everything except the engine credential files."""
+    org = _disk_org(slug)
+    rel, full = _disk_rel(slug, path)
+    cls, why = _disk_classify(org, rel, bool(_public_slug(request)))
+    if cls == "blocked" and rel.rsplit("/", 1)[-1] in _PUBLIC_DISK_DENY:
+        raise HTTPException(403, why or "not served publicly")
+    if not os.path.isfile(full):
+        raise HTTPException(404, f"no such file: {rel!r}")
+    return FileResponse(full, filename=os.path.basename(full))
+
+
+class DiskDelete(BaseModel):
+    paths: list[str]
+
+
+@app.post("/api/orgs/{slug}/disk/delete")
+def disk_delete(slug: str, body: DiskDelete, request: Request) -> dict[str, Any]:
+    """Multi-select delete. Classification is enforced HERE, server-side —
+    the UI's greying is presentation. Works at 100% full (unlink needs no
+    free space on ext4 — drilled). Ends with the recovery loop: re-measure,
+    and the existing storage_check clear path lifts the block/alert."""
+    org = _disk_org(slug)
+    public = bool(_public_slug(request))
+    from . import disk as dsk
+    results: list[dict[str, Any]] = []
+    for p in body.paths[:500]:
+        try:
+            rel, full = _disk_rel(slug, p)
+        except HTTPException as e:
+            results.append({"path": p, "ok": False, "error": e.detail})
+            continue
+        cls, why = _disk_classify(org, rel, public)
+        if cls == "blocked":
+            results.append({"path": rel, "ok": False, "error": why})
+            continue
+        try:
+            os.unlink(full)
+            results.append({"path": rel, "ok": True})
+        except OSError as e:
+            results.append({"path": rel, "ok": False, "error": str(e)})
+    dsk.invalidate(slug)
+    supervisor.storage_check(slug)          # may auto-clear blocked/full
+    du = dsk.usage(slug, max_age=0.0)
+    org = store.load_org(slug)
+    return {"results": results,
+            "used": du[0] if du else None, "total": du[1] if du else None,
+            "blocked": bool(org.d.get("storage_blocked")),
+            "full": bool(org.d.get("storage_full"))}
+
+
+class DiskGrow(BaseModel):
+    size_mb: int
+
+
+@app.post("/api/orgs/{slug}/disk/grow")
+def disk_grow(slug: str, body: DiskGrow, request: Request) -> dict[str, Any]:
+    """Online grow (extend + resize2fs, no container stop). ADMIN-side only:
+    growing spends host disk. Shrink is deliberately absent for now — it is
+    offline and refuses below current usage (stage 5)."""
+    if _public_slug(request):
+        raise HTTPException(403, "admin side only")
+    org = _disk_org(slug)
+    from . import disk as dsk
+    cur = int((org.d.get("disk") or {}).get("size_mb") or 0)
+    if body.size_mb <= cur:
+        raise HTTPException(422, f"grow only: the disk is {cur} MB (shrink "
+                                 f"is an offline operation — not offered yet)")
+    try:
+        dsk.grow(slug, int(body.size_mb))
+    except dsk.DiskError as e:
+        raise HTTPException(503, str(e))
+    with store.DOC_LOCK:
+        o2 = store.load_org(slug)
+        d = dict(o2.d.get("disk") or {})
+        d["size_mb"] = int(body.size_mb)
+        o2.d["disk"] = d
+        store.save_org(o2)
+    supervisor.storage_check(slug)          # a grow may clear blocked/full
+    du = dsk.usage(slug, max_age=0.0)
+    return {"size_mb": int(body.size_mb),
+            "used": du[0] if du else None, "total": du[1] if du else None}
 
 
 @app.get("/api/orgs/{slug}/nodes/{nid}/chat")

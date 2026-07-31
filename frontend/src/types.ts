@@ -203,6 +203,38 @@ export interface AuditReport {
 }
 
 // GET /api/orgs/{slug} — ledger.py tree() + api.py org_tree additions
+export interface TreeDisk {
+  used_mb: number | null
+  total_mb: number | null
+  blocked: boolean
+  full: boolean
+}
+
+export interface DiskFile {
+  path: string
+  bytes: number
+  class: 'content' | 'reclaimable' | 'blocked'
+  reason?: string
+}
+
+export interface DiskPayload {
+  used: number | null
+  total: number | null
+  blocked: boolean
+  full: boolean
+  files: DiskFile[]
+  offset: number
+  limit: number
+}
+
+export interface DiskDeleteResult {
+  results: { path: string; ok: boolean; error?: string }[]
+  used: number | null
+  total: number | null
+  blocked: boolean
+  full: boolean
+}
+
 export interface TreePayload {
   slug: string
   name: string
@@ -224,6 +256,9 @@ export interface TreePayload {
   fable_lock: Record<string, unknown> | null
   spend_frozen: boolean
   storage_blocked: boolean
+  /** the org's virtual disk (sandboxed, migrated orgs only) — the persistent
+   *  hard-full alert and the storage chip render from this state */
+  disk?: TreeDisk
   auto_resume: boolean
   fable_limit_policy: string
   fable_filter_policy: string

@@ -6,6 +6,7 @@ import {
   saveDefaults, saveKiosk, saveSettings, sendMessage,
 } from './api'
 import { ConfirmModal, MailFolders, MailList, OrgCanvas, OrgRecord, useEsc } from './Canvas'
+import { DiskBrowser, DiskFullAlert } from './DiskBrowser'
 import {
   AutorenewIcon, BlockIcon, CheckIcon, ChevronRightIcon, CloseIcon, CopyIcon,
   DeleteIcon, ExpandMoreIcon, GitHubIcon, HearingIcon, HomeIcon, LockIcon,
@@ -36,6 +37,7 @@ export default function App() {
   const [mailEvt, setMailEvt] = useState(null)
   const [activity, setActivity] = useState({})   // node → {phase, tool}
   const [showSettings, setShowSettings] = useState(false)
+  const [showDisk, setShowDisk] = useState(false)   // the recovery browser
   const [showInbox, setShowInbox] = useState(false)
   const [inboxJump, setInboxJump] = useState(null)   // mail id a chat link targets
   const [drawer, setDrawer] = useState(false)
@@ -280,7 +282,18 @@ export default function App() {
                         ${tree.cost_usd_total.toFixed(2)} / ${tree.kiosk.spend_limit.toFixed(2)}
                       </span>
                 )}
-                {tree.kiosk?.storage_limit_mb && (
+                {tree.disk ? (
+                  // the org disk chip (disk-migrated sandboxed orgs): the
+                  // whole footprint against the fs cap; click opens the
+                  // recovery browser (visitors get the full tool — ruled)
+                  <button className={'chip disk-chip'
+                    + ((tree.disk.used_mb ?? 0) >= (tree.disk.total_mb ?? Infinity) * 0.8 || tree.disk.blocked ? ' bad' : '')}
+                    title="org disk used / capacity — click to browse and free space"
+                    onClick={() => setShowDisk(true)}>
+                    <StorageIcon fontSize="inherit" /> {tree.disk.used_mb ?? '?'} / {tree.disk.total_mb ?? '?'} MB
+                    {tree.disk.full ? ' — FULL' : tree.disk.blocked ? ' — turns paused' : ''}
+                  </button>
+                ) : tree.kiosk?.storage_limit_mb && (
                   tree.kiosk.storage_blocked
                     ? <span className="chip bad" title="over the workspace storage limit — delete files to unblock">
                         <StorageIcon fontSize="inherit" /> {tree.kiosk.storage_mb ?? '?'} / {tree.kiosk.storage_limit_mb} MB — writes blocked
@@ -353,6 +366,16 @@ export default function App() {
                   setInboxJump(typeof jump === 'string' ? jump : null)
                   setShowInbox(true)
                 }} />
+              {/* hard-full is a STATE, not an event: the alert persists (and
+                  survives reloads) until usage drops; it never auto-opens
+                  the browser — it carries the button (user refinement) */}
+              {tree.disk?.full && (
+                <DiskFullAlert onOpen={() => setShowDisk(true)} />
+              )}
+              {showDisk && (
+                <DiskBrowser slug={slug} isPublic={!!tree.public} toast={toast}
+                  close={() => { setShowDisk(false); refreshTree(slug) }} />
+              )}
               {showSettings && (
                 <SettingsPanel tree={tree} toast={toast}
                   close={() => { setShowSettings(false); refreshTree(slug) }} />

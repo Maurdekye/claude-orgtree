@@ -234,6 +234,11 @@ def usage(slug: str, max_age: float = 15.0) -> tuple[int, int] | None:
     return out
 
 
+def invalidate(slug: str) -> None:
+    """Drop the cached usage after deletes so the readout moves immediately."""
+    _usage_cache.pop(slug, None)
+
+
 def grow(slug: str, new_size_mb: int) -> None:
     """GROW is online (user-adopted resize rule): extend the sparse file,
     resize2fs while mounted. Shrink is a different, offline operation and is

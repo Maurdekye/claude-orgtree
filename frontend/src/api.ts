@@ -3,7 +3,8 @@
 // the public listener serves nothing outside it.
 import type {
   AudiencesPayload, ChartersPayload, ChatPayload, DefaultsPayload,
-  EventsPayload, FsPayload, HireDefaultsRequest, HistoryPayload, HostPayload,
+  DiskDeleteResult, DiskPayload, EventsPayload, FsPayload,
+  HireDefaultsRequest, HistoryPayload, HostPayload,
   InboxPayload, KioskCfgRequest, KioskSaveResult, KioskSpecRequest,
   McpServersPayload, OpRequest, OpResult, OrgListEntry, OrgMdPayload,
   ReorderRequest, ScopeRequest, ScratchPayload, SendMessageResult,
@@ -172,6 +173,26 @@ export const saveKiosk = (slug: string, opts: KioskCfgRequest = {}): Promise<Kio
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(opts),
   }).then(j)
+
+// the org-disk recovery browser (its own surface, deliberately not /api/fs)
+export const getDisk = (slug: string, offset = 0, limit = 200): Promise<DiskPayload> =>
+  fetch(u(`/api/orgs/${slug}/disk?offset=${offset}&limit=${limit}`)).then(j)
+export const diskDelete = (slug: string, paths: string[]): Promise<DiskDeleteResult> =>
+  fetch(u(`/api/orgs/${slug}/disk/delete`), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ paths }),
+  }).then(j)
+export const diskGrow = (
+  slug: string, size_mb: number,
+): Promise<{ size_mb: number; used: number | null; total: number | null }> =>
+  fetch(u(`/api/orgs/${slug}/disk/grow`), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ size_mb }),
+  }).then(j)
+export const diskFileUrl = (slug: string, path: string): string =>
+  u(`/api/orgs/${slug}/disk/file?path=${encodeURIComponent(path)}`)
 
 export function openWs(
   slug: string,
