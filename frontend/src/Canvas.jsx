@@ -1447,7 +1447,7 @@ function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRemaining,
             <button key={c.name} className="preset-card"
               title={c.path ? `${c.path}\n(click to remove)` : 'click to remove'}
               onClick={() => setChosen((cs) => cs.filter((x) => x.name !== c.name))}>
-              <FileIcon fontSize="inherit" />{c.name}
+              {c.name}
             </button>
           ))}
         </div>

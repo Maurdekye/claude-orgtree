@@ -850,15 +850,14 @@ main {
    ruling: you can always type additional text after the cards) */
 .preset-cards { display: flex; flex-wrap: wrap; gap: 3px; flex: none; max-height: 38px; overflow-y: auto; }
 .preset-card {
-  display: inline-flex; align-items: center; gap: 2px;
-  /* compact enough that two cards share a row in the 124px draft card */
-  font-size: 7px; padding: 0 4px; border-radius: 3px; max-width: 49%;
-  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  /* compact enough that two cards share a row in the 124px draft card
+     (no icon — every pixel goes to the name) */
+  display: inline-block; font-size: 7px; padding: 0 4px; border-radius: 3px;
+  max-width: 49%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
   font-family: var(--mono); font-weight: 600; line-height: 1.7;
   background: var(--input); border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line));
   color: var(--ink);
 }
-.preset-card svg { flex: none; }
 .preset-card:hover { border-color: var(--bad); color: var(--bad); background: var(--input); }
 /* small enough to type AND read at the hire zoom (user ruling) */
 .draft-charter {
