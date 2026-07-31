@@ -962,6 +962,11 @@ def send_message(slug: str, nid: str, text: str) -> dict:
         _o = store.load_org(slug)
         if nid in _o.nodes and _o.node(nid).get("frozen"):
             return {"accepted": True, "queued": 0, "frozen": True}
+        if nid in _o.nodes and _o.node(nid)["state"] != "live":
+            # an archived node receives mail but cannot act (user ruling) —
+            # the mailbox holds it; rehire drives it
+            return {"accepted": True, "queued": 0,
+                    "deferred": _o.node(nid)["state"]}
     # Mail is drained from the doc only AT DELIVERY (steer now, boundary feed,
     # or turn start) — a queued text is just a raw nudge, so a crash between
     # queue and delivery loses nothing (restart durability, user ruling).

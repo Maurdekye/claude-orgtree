@@ -46,7 +46,8 @@ TOOLS = [
             "hold an audience with, 'user' (top-level agents only), or an external "
             "Claude Code session as '@ext:<chat-id>' (top-level only — replies to "
             "mail that arrived from one). The recipient is driven on delivery; "
-            "replies arrive in your own future turns."),
+            "replies arrive in your own future turns. An ARCHIVED recipient still "
+            "receives: the mail waits in its inbox and is acted on when rehired."),
         "inputSchema": {
             "type": "object",
             "properties": {

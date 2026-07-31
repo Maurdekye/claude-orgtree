@@ -428,8 +428,14 @@ class Org:
             return {"delivered": "user_inbox", "warnings": warnings}
 
         target = self.node(to)
-        if target["state"] != "live":
-            raise LedgerError(f"{to} is {target['state']} — it cannot receive mail")
+        if target["state"] == "unrecoverable":
+            raise LedgerError(f"{to} is unrecoverable — it cannot receive mail")
+        deferred = target["state"] != "live"
+        if deferred:
+            # user ruling: archived agents still RECEIVE mail — it waits in
+            # their inbox and is acted on at rehire
+            warnings.append(f"{to} is {target['state']} — the mail is queued in "
+                            f"its inbox and will be acted on when it is rehired")
         if sender != USER:
             s = self.node(sender)
             allowed = (
@@ -468,7 +474,7 @@ class Org:
             del out[:-100]
         self._log("mail", sender, {"to": to, "kind": kind,
                                    "gist": body.strip().splitlines()[0][:80]}, warnings)
-        return {"delivered": to, "warnings": warnings}
+        return {"delivered": to, "deferred": deferred, "warnings": warnings}
 
     def post_external_mail(self, ext_id: str, body: str) -> list[str]:
         """Inbound from an EXTERNAL Claude Code session (chatq bridge): mail
@@ -994,7 +1000,10 @@ class Org:
         self._notify([nid], f"{who.capitalize()} rehired you. You are live again; "
                             f"your prior context is intact.")
         self._log("rehire", actor, {"node": nid, "grant": grant}, warnings)
-        return {"cost": need, "warnings": warnings}
+        # mail that arrived while archived waited in the inbox (user ruling) —
+        # tell the caller to drive the node so it finally acts on it
+        drive = [nid] if (self.d.get("mail") or {}).get(nid) else []
+        return {"cost": need, "warnings": warnings, "drive": drive}
 
     # --------------------------------------------------------------- dissolve
     def dissolve(self, actor: str, nid: str) -> dict:

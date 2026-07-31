@@ -1788,15 +1788,18 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
     return () => clearInterval(t)
   }, [chat?.busy, refresh])
 
+  // an archived agent still RECEIVES mail (user ruling) — it queues in its
+  // inbox and gets acted on at rehire; only unrecoverable nodes refuse
+  const canMail = live || node.state === 'archived'
   const send = () => {
     const t = text.trim()
-    if (!t || !live) return
+    if (!t || !canMail) return
     setText('')
     // NOT an optimistic chat append — while the node is busy the message is
     // only queued, so transcript refreshes would wipe it until the queued
     // turn starts. The pending list survives refreshes.
     setPending((p) => [...p, t])
-    setChat((c) => c && ({ ...c, busy: true }))
+    if (live) setChat((c) => c && ({ ...c, busy: true }))
     toBottom()
     sendMessage(slug, node.id, t).then(() => refresh(true))
       .catch((e) => toast([`error: ${e.message}`]))
@@ -1906,9 +1909,11 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
           </div>
           {/* send sits BESIDE the input; no model-name footer row (the tier
               chip in the header already says it) — reclaimed vertical space */}
-          <div className={'cc-composer' + (live ? '' : ' off')}>
-            <textarea rows={2} value={text} disabled={!live}
-              placeholder={live ? `message ${node.id}…` : node.state}
+          <div className={'cc-composer' + (canMail ? '' : ' off')}>
+            <textarea rows={2} value={text} disabled={!canMail}
+              placeholder={live ? `message ${node.id}…`
+                : node.state === 'archived'
+                  ? `message ${node.id} — queued until rehire…` : node.state}
               onChange={(e) => setText(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() }
@@ -1920,7 +1925,7 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
                   onClick={() => interruptNode(slug, node.id)
                     .then((r) => { if (!r.interrupted) toast([`error: ${r.reason}`]) })
                     .catch((e) => toast([`error: ${e.message}`]))}><StopIcon fontSize="inherit" /></button>
-              : <button className="cc-send" disabled={!live || !text.trim()}
+              : <button className="cc-send" disabled={!canMail || !text.trim()}
                   onClick={send}><ArrowUpIcon fontSize="inherit" /></button>}
           </div>
         </>

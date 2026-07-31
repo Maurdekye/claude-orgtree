@@ -787,14 +787,16 @@ def node_message(slug: str, nid: str, body: Message):
     with store.DOC_LOCK:
         try:
             org = store.load_org(slug)
-            if org.node(nid)["state"] != "live":
-                raise LedgerError(f"{nid} is {org.node(nid)['state']} — rehire it to talk")
-            org.post_mail(USER, nid, body.text)
+            r = org.post_mail(USER, nid, body.text)
             org.user_deep_reach(nid, body.text.strip().splitlines()[0][:80])
             store.save_org(org)
         except LedgerError as e:
             raise HTTPException(422, str(e))
     mail_notify(slug, USER, nid)
+    if r.get("deferred"):
+        # archived recipient (user ruling): the mail waits in its inbox and is
+        # acted on at rehire — nothing to drive now
+        return {"accepted": True, "deferred": True, "queued": 0}
     return supervisor.send_message(
         slug, nid,
         "(orgtree) The mail above includes a message from the user, addressed "
@@ -1215,7 +1217,9 @@ async def agent_call(body: AgentCall, request: Request):
                 elif delivered is not None:
                     mail_notify(body.org, body.node,
                                 USER if delivered == "user_inbox" else delivered)
-                    if delivered != "user_inbox":
+                    # a deferred delivery (archived recipient) queues only —
+                    # the mail is driven when the node is rehired
+                    if delivered != "user_inbox" and not result.get("deferred"):
                         drive.append(delivered)
             elif body.tool == "orgtree_request_credits":
                 result = org.request_credits(body.node, a.get("new_limit"),
@@ -1238,6 +1242,7 @@ async def agent_call(body: AgentCall, request: Request):
                 result = org.retire(body.node, a.get("node"))
             elif body.tool == "orgtree_rehire":
                 result = org.rehire(body.node, a.get("node"), a.get("grant"))
+                drive.extend(result.pop("drive", []))
             elif body.tool == "orgtree_dissolve":
                 result = org.dissolve(body.node, a.get("node"))
             elif body.tool == "orgtree_reallocate":
@@ -1413,7 +1418,15 @@ class Op(BaseModel):
 @app.post("/api/orgs/{slug}/ops")
 async def org_op(slug: str, body: Op):
     with store.DOC_LOCK:
-        return await _org_op_locked(slug, body)
+        result = await _org_op_locked(slug, body)
+    # rehire with a waiting mailbox: the mail queued while archived finally
+    # gets acted on (user ruling) — drive outside the doc lock
+    for t in result.pop("drive", []) if isinstance(result, dict) else []:
+        supervisor.send_message(
+            slug, t,
+            "(orgtree) Mail above arrived while you were archived and waited "
+            "for you — you are live again; handle it as appropriate.")
+    return result
 
 
 async def _org_op_locked(slug: str, body: Op):

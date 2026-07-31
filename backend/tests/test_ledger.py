@@ -570,6 +570,31 @@ def main():
     check("deep agents may NOT reply to @ext", lambda: expect_error(
         lambda: orgE.post_mail("deep2", "@ext:abc123", "sneaky"), "TOP-LEVEL"))
 
+    print("archived mail (user ruling: archived agents still receive):")
+    orgM = Org.create("mailhold")
+    orgM.hire(USER, None, "haiku", 10, "boss")
+    orgM.hire("boss", "boss", "haiku", 0, "kid1", **spec())
+    orgM.hire("boss", "boss", "haiku", 0, "kid2", **spec())
+    orgM.retire("boss", "kid2")
+    check("mail to an archived sibling queues (deferred, warned)", lambda: (
+        lambda r: None if r["deferred"] and r["delivered"] == "kid2"
+        and any("rehired" in w for w in r["warnings"])
+        and orgM.d["mail"]["kid2"][0]["from"] == "kid1"
+        else (_ for _ in ()).throw(AssertionError(r))
+    )(orgM.post_mail("kid1", "kid2", "read this when you're back")))
+    check("rehire returns drive for the waiting mailbox", lambda: (
+        lambda r: None if r["drive"] == ["kid2"]
+        else (_ for _ in ()).throw(AssertionError(r))
+    )(orgM.rehire("boss", "kid2")))
+    orgM.retire("boss", "kid1")
+    check("rehire with an empty mailbox drives nothing", lambda: (
+        lambda r: None if r["drive"] == []
+        else (_ for _ in ()).throw(AssertionError(r))
+    )(orgM.rehire("boss", "kid1")))
+    orgM.mark_unrecoverable("kid1", "test")
+    check("unrecoverable still refuses mail", lambda: expect_error(
+        lambda: orgM.post_mail("kid2", "kid1", "hello?"), "unrecoverable"))
+
     print("guards:")
     check("unknown tier refused", lambda: expect_error(
         lambda: org.hire(USER, None, "gpt", 0, "nope"), "unknown tier"))
