@@ -1623,3 +1623,4 @@ svg.MuiSvgIcon-root {
 .lin-id { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .lin-id .dim { font-size: 11px; }
 .lin-row select { max-width: 11em; }
+.pend-tag { font-size: 10px; font-style: italic; margin-left: 6px; white-space: nowrap; }

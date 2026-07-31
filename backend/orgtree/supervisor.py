@@ -688,6 +688,19 @@ def _journal_drain(org: Org, nid: str, mail, pending) -> str:
     return tok
 
 
+def delivering_mail(org: Org, nid: str) -> list[dict]:
+    """Mail drained for an IN-FLIGHT delivery — steered mid-task or riding a
+    turn that hasn't confirmed yet. The journal holds the only copy, and the
+    UI read it from nowhere (user bug 2026-07-31: messages sent during a
+    long bash command 'didn't appear as queued until the command finished').
+    Surfaced with delivering:True — retraction stays box-only."""
+    out = []
+    for b in (org.d.get("delivering") or {}).get(nid, []):
+        for m in b.get("mail") or []:
+            out.append({**m, "delivering": True})
+    return out
+
+
 def _confirm_delivered(slug: str, nid: str, toks) -> None:
     """The batch reached the agent (stdin write / steer fetch succeeded): the
     transcript holds the mail now, so the journal copy is redundant."""
@@ -2442,6 +2455,10 @@ def read_chat(org: Org, nid: str, last: int | None = None) -> dict:
     n = org.node(nid)
     st = state(org.d["slug"], nid)
     out = {"busy": st["busy"], "queued": len(st["queue"]),
+           # the composer's STOP gates on this — the tree copy goes stale
+           # during a turn (user bug 2026-07-31: no interrupt offered while
+           # a long command ran); the chat payload refreshes on every pulse
+           "responding": bool(st.get("responding")),
            "last_error": st["last_error"], "occupancy": None, "messages": [],
            "init": st.get("init")}
     tpath = transcript_path(n["session_id"], _transcript_root(org))

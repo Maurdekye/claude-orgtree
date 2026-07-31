@@ -2974,12 +2974,16 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
           {(chat?.pending_mail ?? []).filter((m) => m.from === USER).map((m) => (
             <div key={m.id ?? m.at} className="msg user pending pendrow">
               <span className="md" dangerouslySetInnerHTML={md(m.body)} />
-              {m.id && (
-                <button className="chip-x" title="retract (undelivered)"
-                  onClick={() => retractMail(slug, node.id, m.id)
-                    .then(() => refresh(true))
-                    .catch((e) => toast([`error: ${e.message}`]))}>
-                  <CloseIcon fontSize="inherit" /></button>)}
+              {/* journal-riding mail (drained for a mid-task delivery) shows
+                  as queued but is past the point of retraction */}
+              {m.delivering
+                ? <span className="dim pend-tag">delivering mid-task…</span>
+                : m.id && (
+                  <button className="chip-x" title="retract (undelivered)"
+                    onClick={() => retractMail(slug, node.id, m.id)
+                      .then(() => refresh(true))
+                      .catch((e) => toast([`error: ${e.message}`]))}>
+                    <CloseIcon fontSize="inherit" /></button>)}
             </div>
           ))}
           {pending.map((p, i) => (
@@ -3050,9 +3054,12 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
               .catch((e) => toast([`error: ${e.message}`]))} />
         )}
         {/* №3: STOP renders only when an interrupt can actually land —
-            pressing the one red control must never error */}
-        {node.responding
-          ? <button className="cc-send stop" title="interrupt the current response"
+            pressing the one red control must never error. Gate on the CHAT
+            payload's responding (refreshed every pulse + 5 s poll): the tree
+            copy goes stale during a turn and the STOP never appeared while a
+            long command ran (user bug 2026-07-31). Enter still queues. */}
+        {(chat?.responding ?? node.responding)
+          ? <button className="cc-send stop" title="interrupt the current response — Enter still queues your message"
               onClick={() => interruptNode(slug, node.id)
                 .then((r) => { if (!r.interrupted) toast([`error: ${r.reason}`]) })
                 .catch((e) => toast([`error: ${e.message}`]))}><StopIcon fontSize="inherit" /></button>

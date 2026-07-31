@@ -2008,12 +2008,19 @@ def node_chat(slug: str, nid: str, last: int = 300):
     except LedgerError as e:
         raise HTTPException(404, str(e))
     out = supervisor.read_chat(org, nid, last=max(1, min(last, 1000)))
-    pending = (org.d.get("mail") or {}).get(nid, [])
+    # queued = the mail box PLUS the delivery journal's in-flight batches —
+    # a message steered mid-task drains the box instantly, and during a long
+    # tool call it showed NOWHERE (user bug 2026-07-31)
+    pending = sorted(supervisor.delivering_mail(org, nid)
+                     + list((org.d.get("mail") or {}).get(nid, [])),
+                     key=lambda m: m.get("at") or "")
     out["mail_pending"] = len(pending)
     # parity №11: the pending bubble renders from the DURABLE server copy —
     # orgtree's queue is better than Claude Code's and presented as flimsier
     out["pending_mail"] = [{"id": m.get("id"), "from": m["from"],
-                            "body": m["body"][:2000], "at": m["at"]}
+                            "body": m["body"][:2000], "at": m["at"],
+                            **({"delivering": True} if m.get("delivering")
+                               else {})}
                            for m in pending[-20:]]
     return out
 
@@ -2094,7 +2101,9 @@ def node_inbox(slug: str, nid: str):
         org.node(nid)
     except LedgerError as e:
         raise HTTPException(404, str(e))
-    waiting = (org.d.get("mail") or {}).get(nid, [])
+    waiting = sorted(supervisor.delivering_mail(org, nid)
+                     + list((org.d.get("mail") or {}).get(nid, [])),
+                     key=lambda m: m.get("at") or "")
     keys = {(m["at"], m["from"], m["body"]) for m in waiting}
     delivered = [m for m in (org.d.get("mail_log") or {}).get(nid, [])
                  if (m["at"], m["from"], m["body"]) not in keys]
