@@ -325,7 +325,10 @@ main {
   position: absolute; right: 12px; bottom: 12px; display: flex;
   flex-direction: column; gap: 4px; z-index: 6;
 }
-.zoomhud button { width: 30px; height: 28px; padding: 0; font-size: 14px; }
+.zoomhud button {
+  width: 30px; height: 28px; padding: 0; font-size: 14px;
+  display: flex; align-items: center; justify-content: center;
+}
 
 /* ------------------------------------------------------------ the desk chat
    The desk FADES IN OVER the card at the same size (design ruling) and is

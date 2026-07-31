@@ -542,20 +542,27 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
   }, [animateTo])
   // opening an org: wake on the eye, then drift out to the whole tree.
   // Wheel and drag both cancel the shared camera animation, so the intro is
-  // interruptible at any moment.
+  // interruptible at any moment. Keyed on the LOADED org's slug — switching
+  // orgs keeps this component mounted, so a mount-only intro left the camera
+  // wherever the previous org parked it and the drift ran from way off-tree.
   useEffect(() => {
     const vp = viewportRef.current?.getBoundingClientRect()
     const eye = targetRef.current.get(USER)
     if (!vp || !eye) { fitAll(false); return }
     const z0 = 1.6                       // close, but under the desk threshold
-    setView({
+    const v0 = {
       x: vp.width / 2 - (eye.x + USER_W / 2) * z0,
       y: vp.height / 2 - (eye.y + USER_H / 2) * z0,
       z: z0,
-    })
+    }
+    // write the ref FIRST: the rAF'd fitAll reads viewRef for its start frame,
+    // and if it fires before React commits setView the drift would launch
+    // from the stale camera instead of the eye
+    viewRef.current = v0
+    setView(v0)
     const raf = requestAnimationFrame(() => fitAll(true, 1700))
     return () => cancelAnimationFrame(raf)
-  }, [])   // eslint-disable-line react-hooks/exhaustive-deps
+  }, [tree.slug])   // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const el = viewportRef.current
