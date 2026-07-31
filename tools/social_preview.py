@@ -1,10 +1,16 @@
 """Regenerate social-preview.png — THE defined process (user ruling).
 
 Spins an isolated throwaway backend, builds the canonical demo org
-(orchestrator -> implementer + planner -> explorer x2), lets the intro
-animation settle to the full-tree fit, then zooms IN by 1/0.72 about the
-viewport centre — the content fills ~72% more of the frame than a plain fit,
-killing the unnecessary margins — and screenshots at 2560x1280 (GitHub's
+(user ruling 2026-07-31):
+
+    coordinator<opus>
+    ├── implementer<fable>
+    └── researcher<opus>
+        ├── explorer-1<sonnet>
+        └── explorer-2<sonnet>
+
+lets the intro animation settle to the full-tree fit, then zooms about the
+viewport centre to CONTENT_SCALE and screenshots at 2560x1280 (GitHub's
 social-preview aspect). Upload is manual: repo Settings -> Social preview
 (GitHub has no API for it).
 
@@ -25,11 +31,10 @@ BACKEND = os.path.join(REPO, "backend")
 PORT = "7397"
 DATA = os.path.join(tempfile.gettempdir(), "orgtree-social-preview")
 OUT = os.path.join(REPO, "social-preview.png")
-# The ruling asked 72%, but at exactly 0.72 the (portrait) tree overflows the
-# 2:1 frame by ~120px — either the eye or the explorer row clips. 0.77 is the
-# closest scale where everything fits with slim margins; tweak if the cast
-# ever changes shape.
-CONTENT_SCALE = 0.77
+# < 1 zooms IN past the plain fit (kills margin); the user asked for the
+# agents a bit further OUT than the old 0.77 — 0.88 keeps slim margins with
+# visibly smaller cards. Tweak if the cast ever changes shape.
+CONTENT_SCALE = 0.88
 
 
 def call(m, p, b=None):
@@ -55,17 +60,20 @@ try:
         except Exception:
             pass
     call("POST", "/api/orgs", {"name": "acme"})
+    # coordinator holds: own grant 24 = implementer's fable seat 10
+    # + researcher's opus seat 5 + researcher's grant 6 (2 sonnet seats),
+    # leaving 3 free — a small uncommitted sliver so the bar reads live
     call("POST", "/api/orgs/acme/ops",
-         {"op": "hire", "tier": "opus", "name": "orchestrator", "grant": 12})
+         {"op": "hire", "tier": "opus", "name": "coordinator", "grant": 24})
     call("POST", "/api/orgs/acme/ops",
-         {"op": "hire", "parent": "orchestrator", "tier": "sonnet",
-          "name": "implementer", "grant": 4})
+         {"op": "hire", "parent": "coordinator", "tier": "fable",
+          "name": "implementer", "grant": 0})
     call("POST", "/api/orgs/acme/ops",
-         {"op": "hire", "parent": "orchestrator", "tier": "sonnet",
-          "name": "planner", "grant": 2})
-    for nm in ("explorer", "explorer-b"):
+         {"op": "hire", "parent": "coordinator", "tier": "opus",
+          "name": "researcher", "grant": 6})
+    for nm in ("explorer-1", "explorer-2"):
         call("POST", "/api/orgs/acme/ops",
-             {"op": "hire", "parent": "implementer", "tier": "haiku",
+             {"op": "hire", "parent": "researcher", "tier": "sonnet",
               "name": nm, "grant": 0})
 
     from playwright.sync_api import sync_playwright
