@@ -388,9 +388,9 @@ def hub_changed(slug: str) -> None:
 
 # ---------------------------------------------------------------------- orgs
 class KioskSpec(BaseModel):
-    credits: int = 40                 # top-level holdings cap
-    spend_limit: float = 5.0          # USD hard limit
-    storage_limit_mb: int = 500       # workspace-dir cap
+    credits: int = 30                 # top-level holdings cap (user ruling)
+    spend_limit: float = 50.0         # USD hard limit (user ruling 2026-07-31)
+    storage_limit_mb: int = 1024      # workspace+scratch cap (user ruling)
     sandbox: bool = True              # run agent turns in a Docker container
     # ceiling spec §3: the permission ceiling is visible/editable AT CREATION —
     # the default is permissive (mcp "*", user ruling), so narrowing it must

@@ -404,9 +404,10 @@ function NewOrg({ onCreate }) {
   // limit fields; auth is never configurable — sandboxes use the proxied
   // subscription (the host holds the token; the sandbox never sees it)
   const [kiosk, setKiosk] = useState(false)
-  const [credits, setCredits] = useState(40)
-  const [spend, setSpend] = useState(5)
-  const [storage, setStorage] = useState(500)
+  // kiosk cap defaults (user ruling 2026-07-31): 30 credits · $50 · 1 GB
+  const [credits, setCredits] = useState(30)
+  const [spend, setSpend] = useState(50)
+  const [storage, setStorage] = useState(1024)
   // the permission ceiling is visible AT CREATION (ceiling spec §3): the
   // default is permissive (mcp "*", user ruling), so narrowing must be a
   // conscious act here rather than something discovered later
