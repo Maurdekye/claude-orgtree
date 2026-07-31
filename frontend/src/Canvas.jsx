@@ -1172,7 +1172,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
               onRecenter={() => centerOn(n.id)}   /* recenter AND re-zoom to fill */
               pub={!!tree.public} kioskRemaining={kioskRemaining}
               cascadeAlloc={tree.cascade_alloc !== false}
-              maxTop={tree.max_top_grant ?? 1000}
+              maxTop={tree.max_top_grant ?? 1000} maxTier={tree.kiosk?.max_tier}
               pile={pileHere} compactAt={tree.compact_at}
               onDragStart={startNodeDrag} onDragMove={moveNodeDrag} onDragEnd={endNodeDrag} />
           )
@@ -1446,7 +1446,8 @@ function UserNode({ pos, isDrop, stats, inboxCount, seats, mailGlow,
           (infinite pool) but read as wrong next to every other card. The
           chips survive switchboard focus too (user spec) — hiring is never
           out of reach. */}
-      <SpawnChips onSpawn={onSpawn} free={kioskRemaining ?? Infinity} seats={seats} />
+      <SpawnChips onSpawn={onSpawn} free={kioskRemaining ?? Infinity} seats={seats}
+        maxTier={kiosk?.max_tier} />
       {focused && (
         <EyeDesk map={map} op={op} slug={slug} pulse={pulse} toast={toast}
           streamEvt={streamEvt} inboxCount={inboxCount} onInbox={onInbox}
@@ -1582,10 +1583,14 @@ function EyeDesk({ map, op, slug, pulse, toast, streamEvt, inboxCount,
   )
 }
 
-function SpawnChips({ onSpawn, free, seats }) {
+function SpawnChips({ onSpawn, free, seats, maxTier }) {
+  // kiosk tier cap (user spec): tokens above the cap DISAPPEAR entirely —
+  // seat cost doubles as the tier rank, so the cap is a simple cost compare
+  const shown = TIERS.filter((t) =>
+    !maxTier || (seats[t] ?? 0) <= (seats[maxTier] ?? Infinity))
   return (
     <div className="hsof" onPointerDown={(e) => e.stopPropagation()}>
-      {TIERS.map((t) => {
+      {shown.map((t) => {
         const seat = seats[t] ?? 0
         const cant = Number.isFinite(free) && free < seat
         return (
@@ -2115,7 +2120,7 @@ function DraftScopeModal({ draft, map, tree, scope, onSave, close }) {
 
 function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, map, op, slug,
   pulse, toast, streamEvt, pxc, zoom, act, onSpawn, onConfig, onInbox, onLineage,
-  onRecenter, pub, kioskRemaining, cascadeAlloc, maxTop, pile, compactAt,
+  onRecenter, pub, kioskRemaining, cascadeAlloc, maxTop, pile, compactAt, maxTier,
   onDragStart, onDragMove, onDragEnd }) {
   // pile fronts zoom on a plain CENTER click (user spec) — track the
   // pointer-down point so a drag's trailing click doesn't re-zoom
@@ -2237,7 +2242,8 @@ function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, map, op,
           a user hire §4.6-cascades, granting the chain whatever it lacks.
           (Kiosk mode will pass the cap remainder here instead.) */}
       {live && !node.isBearerOf && !node.bearer_state &&
-        <SpawnChips onSpawn={onSpawn} free={kioskRemaining ?? Infinity} seats={seats} />}
+        <SpawnChips onSpawn={onSpawn} free={kioskRemaining ?? Infinity} seats={seats}
+          maxTier={maxTier} />}
     </div>
   )
 }
@@ -2433,7 +2439,13 @@ function NodeConfig({ node, map, tree, slug, op, toast, close }) {
           survives; cheaper frees the seat difference to the agent, pricier
           bubbles any shortfall up the chain)</div>
         <select value={model} onChange={(e) => setModel(e.target.value)}>
-          {['haiku', 'sonnet', 'opus', 'fable'].map((t) => (
+          {/* kiosk tier cap: options above it vanish — but the node's OWN
+              tier stays listed so a pre-cap agent still shows truthfully */}
+          {['haiku', 'sonnet', 'opus', 'fable'].filter((t) => {
+            const rank = { haiku: 1, sonnet: 3, opus: 5, fable: 10 }
+            const cap = tree.kiosk?.max_tier
+            return t === node.tier || !cap || rank[t] <= (rank[cap] ?? Infinity)
+          }).map((t) => (
             <option key={t} value={t}>
               {t} · seat {{ haiku: 1, sonnet: 3, opus: 5, fable: 10 }[t]}
             </option>

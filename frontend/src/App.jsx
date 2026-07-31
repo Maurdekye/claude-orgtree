@@ -414,6 +414,7 @@ function NewOrg({ onCreate }) {
   const [ceil, setCeil] = useState({ bash: true, web: true, edit: true,
                                      subagents: true, mcp: true })
   const [ceilPm, setCeilPm] = useState('acceptEdits')
+  const [ceilTier, setCeilTier] = useState('')   // '' = no tier cap
   const [autoRaise, setAutoRaise] = useState(false)
   // sandbox is OFF by default (user ruling) — and impossible without Docker
   const [sandboxed, setSandboxed] = useState(false)
@@ -437,6 +438,7 @@ function NewOrg({ onCreate }) {
             tools: { bash: ceil.bash, web: ceil.web, edit: ceil.edit,
                      subagents: ceil.subagents, mcp: ceil.mcp ? ['*'] : [] },
             org_visibility: 'full', permission_mode: ceilPm,
+            max_tier: ceilTier || null,
           },
         } : null,
         sandboxed)
@@ -482,6 +484,15 @@ function NewOrg({ onCreate }) {
               <option value="acceptEdits">acceptEdits</option>
               <option value="bypassPermissions">bypassPermissions</option>
             </select></label>
+            <label className="row"
+              title="the highest model tier this kiosk may run — spawn tokens above it disappear and agents cannot hire, rehire or switch above it">
+              tier ≤ <select value={ceilTier}
+                onChange={(e) => setCeilTier(e.target.value)}>
+                <option value="">fable (no cap)</option>
+                <option value="opus">opus</option>
+                <option value="sonnet">sonnet</option>
+                <option value="haiku">haiku</option>
+              </select></label>
           </div>
           <label className="row" title="an over-ceiling grant made by YOU (admin) raises the ceiling to fit instead of clamping — off so nothing lifts it without meaning to; visitors always clamp">
             <input type="checkbox" checked={autoRaise}
@@ -860,6 +871,7 @@ function SettingsPanel({ tree, toast, close }) {
   const [ceilDirs, setCeilDirs] = useState(() => ms?.add_dirs ?? [])
   const [ceilVis, setCeilVis] = useState(ms?.org_visibility ?? 'full')
   const [ceilPm, setCeilPm] = useState(ms?.permission_mode ?? 'acceptEdits')
+  const [ceilTier, setCeilTier] = useState(ms?.max_tier ?? '')
   const [autoRaise, setAutoRaise] = useState(!!tree.kiosk?.auto_raise)
   useEffect(() => {
     getOrgMd(tree.slug).then((r) => setOrgMd(r.content)).catch(() => setOrgMd(''))
@@ -938,6 +950,15 @@ function SettingsPanel({ tree, toast, close }) {
                 <option value="acceptEdits">acceptEdits</option>
                 <option value="bypassPermissions">bypassPermissions</option>
               </select></label>
+              <label className="checkline"
+                title="the highest model tier this kiosk may run — spawn tokens above it disappear; hires, rehires and switches above it are refused (existing over-cap agents stay until you switch or retire them)">
+                tier ≤ <select value={ceilTier}
+                  onChange={(e) => setCeilTier(e.target.value)}>
+                  <option value="">fable (no cap)</option>
+                  <option value="opus">opus</option>
+                  <option value="sonnet">sonnet</option>
+                  <option value="haiku">haiku</option>
+                </select></label>
             </div>
             <label className="checkline"
               title="an over-ceiling grant made by YOU raises the ceiling to fit (logged, named) instead of clamping; visitors always clamp">
@@ -954,6 +975,7 @@ function SettingsPanel({ tree, toast, close }) {
                              .filter(Boolean) },
                   add_dirs: ceilDirs.filter((d) => d.path.trim()),
                   org_visibility: ceilVis, permission_mode: ceilPm,
+                  max_tier: ceilTier || null,
                 } })
                 .then((r) => toast(r.warnings?.length ? r.warnings
                   : ['ceiling saved — nothing needed sweeping']))

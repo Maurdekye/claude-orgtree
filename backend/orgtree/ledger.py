@@ -480,9 +480,28 @@ class Org:
         pm = ms.get("permission_mode", "acceptEdits")
         if pm not in PM_LEVELS:
             raise LedgerError(f"ceiling permission_mode must be one of {PM_LEVELS}")
+        mt = ms.get("max_tier") or None
+        if mt is not None and mt not in TIERS:
+            raise LedgerError(f"ceiling max_tier must be one of {sorted(TIERS)} "
+                              f"(or unset for no cap)")
         return {"tools": norm_tools(ms.get("tools", {"mcp": ["*"]})),
                 "add_dirs": norm_dirs(ms.get("add_dirs")),
-                "org_visibility": vis, "permission_mode": pm}
+                "org_visibility": vis, "permission_mode": pm,
+                "max_tier": mt}
+
+    def _check_tier_ceiling(self, tier: str) -> None:
+        """Kiosk tier cap (user spec 2026-07-31: "no fable agents at all"):
+        a HARD refusal for every actor — agents can't spawn above the cap and
+        neither can direct API calls; the admin changes the cap itself in
+        kiosk settings. No raise_ceiling bridge here: a cost cap should never
+        rise as a side effect of a hire."""
+        mt = (self.kiosk_ceiling() or {}).get("max_tier")
+        if (mt in TIERS and tier in TIERS
+                and TIERS[tier] > TIERS[mt]):
+            raise LedgerError(
+                f"the kiosk ceiling caps agent tier at {mt} — {tier} agents "
+                f"cannot be hired, rehired or switched to in this org "
+                f"(admins change this in kiosk settings)")
 
     def _apply_ceiling(self, tools=None, dirs=None, vis=None, pm=None,
                        raise_ceiling: bool = False, warnings=None):
@@ -620,10 +639,25 @@ class Org:
                                  f"your grants were clamped to fit: "
                                  f"{', '.join(loss)}.")
         self._log("ceiling_set", USER, {"swept": swept}, [])
-        return {"max_scope": ms, "swept": swept,
-                "warnings": ([f"ceiling lowered — {len(swept)} agent(s) "
-                              f"clamped to fit: {sorted(swept)}"]
-                             if swept else [])}
+        warnings = ([f"ceiling lowered — {len(swept)} agent(s) "
+                     f"clamped to fit: {sorted(swept)}"]
+                    if swept else [])
+        # tier cap: no model sweep — downgrading live agents moves seats and
+        # credits around (side effects the admin should choose per agent), so
+        # existing over-cap agents stay and the cap blocks NEW use only. Named
+        # here so nothing is silent.
+        mt = ms.get("max_tier")
+        if mt in TIERS:
+            over = sorted(i for i, n in self.nodes.items()
+                          if n["state"] == "live"
+                          and TIERS.get(n["model"], 0) > TIERS[mt])
+            if over:
+                warnings.append(
+                    f"{len(over)} live agent(s) above the {mt} tier cap "
+                    f"remain ({', '.join(over)}) — the cap blocks new hires, "
+                    f"rehires and switches; switch or retire them as you "
+                    f"see fit")
+        return {"max_scope": ms, "swept": swept, "warnings": warnings}
 
     def set_hire_defaults(self, default_tools=None, default_visibility=None,
                           raise_ceiling: bool = False) -> dict:
@@ -1176,6 +1210,7 @@ class Org:
         statement, editable later via retool, injected into every turn.)"""
         if tier not in self.d["tiers"]:
             raise LedgerError(f"unknown tier {tier!r}; know {sorted(self.d['tiers'])}")
+        self._check_tier_ceiling(tier)
         if grant < 0 or grant != int(grant):
             raise LedgerError("grant must be a non-negative integer (№7)")
         need = self.d["tiers"][tier] + int(grant)
@@ -1472,6 +1507,14 @@ class Org:
             # design motto: asking for what's already true is a no-op, not an error
             return {"cost": 0, "drive": [],
                     "warnings": [f"{nid} is already live — nothing to do"]}
+        # kiosk tier cap: an archived over-cap agent re-entering service is
+        # "using" that tier — blocked like a fresh hire (reseed too). The
+        # EFFECTIVE tier is tested: a rehire that downgrades below the cap
+        # is welcome (motto: permit as much as possible); reseed ignores the
+        # override, so unrecoverable nodes test their own tier.
+        self._check_tier_ceiling(
+            n["model"] if n["state"] == "unrecoverable" or tier not in TIERS
+            else tier)
         if n["state"] == "unrecoverable":
             # motto bridge: the session is dead but the node — name, position,
             # charter, credits, reports, mailbox — is fine. Rehire = re-seed.
@@ -1673,6 +1716,7 @@ class Org:
         SUBTREE, but never their own (user spec); the user switches anyone."""
         if tier not in self.d["tiers"]:
             raise LedgerError(f"unknown tier {tier!r}; know {sorted(self.d['tiers'])}")
+        self._check_tier_ceiling(tier)
         self._require_live(nid)
         n = self.node(nid)
         if actor != USER:

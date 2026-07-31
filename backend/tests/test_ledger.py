@@ -1285,6 +1285,47 @@ def main():
                 "kiosk": {"enabled": True, "token": "t", "credits": 30}}),
            Org({**Org.create("trap3").d, "default_top_grant": 50}))))
 
+    # tier cap (user spec 2026-07-31): "no fable agents at all" — a HARD
+    # refusal at hire, switch AND rehire, for every actor
+    orgT = mk_kiosk("ceil-tier", {"tools": {"mcp": ["*"]}, "max_tier": "opus"})
+    orgT.hire(USER, None, "opus", 5, "chief")
+    check("20 tier cap: fable hire refused (user AND agent), opus fine", lambda: (
+        expect_error(lambda: orgT.hire(USER, None, "fable", 0, "big"),
+                     "caps agent tier"),
+        expect_error(lambda: orgT.hire("chief", "chief", "fable", 0, "big2",
+                                       **spec()), "caps agent tier"))[-1])
+    check("21 tier cap: switch_model above the cap refused; within-cap fine", lambda: (
+        expect_error(lambda: orgT.switch_model(USER, "chief", "fable"),
+                     "caps agent tier"),
+        (lambda r: None if r["model"] == "sonnet"
+         else (_ for _ in ()).throw(AssertionError(r))
+         )(orgT.switch_model(USER, "chief", "sonnet")))[-1])
+    check("22 tier cap: rehire of an over-cap archived agent refused; "
+          "downgrade-on-rehire welcome", lambda: (
+        # a fable hired BEFORE the cap landed (outpaced construction), retired
+        orgT.d["kiosk"]["max_scope"].__setitem__("max_tier", None),
+        orgT.hire(USER, None, "fable", 0, "old-big"),
+        orgT.retire(USER, "old-big"),
+        orgT.d["kiosk"]["max_scope"].__setitem__("max_tier", "opus"),
+        expect_error(lambda: orgT.rehire(USER, "old-big"), "caps agent tier"),
+        (lambda r: None if orgT.nodes["old-big"]["model"] == "opus"
+         and orgT.nodes["old-big"]["state"] == "live"
+         else (_ for _ in ()).throw(AssertionError(r))
+         )(orgT.rehire(USER, "old-big", tier="opus")))[-1])
+    check("23 set_kiosk_ceiling: bogus max_tier refused; lowering names "
+          "surviving over-cap live agents (no model sweep)", lambda: (
+        expect_error(lambda: orgT.set_kiosk_ceiling(
+            {"max_tier": "gpt"}), "max_tier"),
+        orgT.d["kiosk"]["max_scope"].__setitem__("max_tier", None),
+        orgT.hire(USER, None, "fable", 0, "resident"),
+        (lambda r: None
+         if any("above the opus tier cap" in w and "resident" in w
+                for w in r["warnings"])
+         and orgT.nodes["resident"]["model"] == "fable"
+         else (_ for _ in ()).throw(AssertionError(r))
+         )(orgT.set_kiosk_ceiling({"tools": {"mcp": ["*"]},
+                                   "max_tier": "opus"})))[-1])
+
     orgN = Org.create("no-ceiling")
     orgN.hire(USER, None, "haiku", 0, "free1", tools=dict(ALL_TOOLS))
     check("13 normal orgs entirely unaffected — no ceiling, no clamp, no bridge", lambda: (

@@ -563,6 +563,9 @@ def org_tree(slug: str, request: Request):
             # drops it (host paths) for visitors
             "max_scope": k.get("max_scope"),
             "auto_raise": bool(k.get("auto_raise")),
+            # the tier cap rides OUTSIDE max_scope too: it's public-safe (a
+            # tier name) and the visitor UI needs it to hide spawn tokens
+            "max_tier": (k.get("max_scope") or {}).get("max_tier"),
         }
         if k.get("storage_limit_mb"):
             tree["kiosk"]["storage_mb"] = round(
