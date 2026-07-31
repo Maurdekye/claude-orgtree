@@ -139,6 +139,11 @@ class Org:
             self.d["default_visibility"] = "full"
         self.d.pop("default_dirs", None)   # superseded: org dirs carry modes now
         self.d.setdefault("default_top_grant", 50)   # user ruling: 50 by default
+        # §4.6 cost-bubbling toggles (user spec, both ON by default): hires /
+        # allocations may pull shortfalls up the chain; off = the payer must
+        # afford the action from its own free credits
+        self.d.setdefault("cascade_hire", True)
+        self.d.setdefault("cascade_alloc", True)
         self.d.setdefault("credit_requests", [])     # top-level asks to the user
         self.d.setdefault("compact_at", 0.80)        # compaction ratio, ≤ 0.95 hard
         # kiosk v2 (user vision): per-org public exposure via a preauthenticated
@@ -920,7 +925,8 @@ class Org:
         # bubbles up the chain to the actor (the user's pool is infinite) —
         # refused only when the WHOLE chain lacks it
         if parent is not None:
-            self._chain_acquire(actor, parent, need, warnings)
+            self._chain_acquire(actor, parent, need, warnings,
+                                cascade=bool(self.d.get("cascade_hire", True)))
 
         if tlost:
             warnings.append(f"tool grants clamped to the parent's own: {tlost}")
@@ -940,15 +946,28 @@ class Org:
                                   "grant": int(grant), "purpose": purpose}, warnings)
         return {"node": nid, "warnings": warnings}
 
-    def _chain_acquire(self, actor: str, payer: str, need, warnings: list) -> None:
+    def _chain_acquire(self, actor: str, payer: str, need, warnings: list,
+                       cascade: bool = True) -> None:
         """§4.6 GENERALIZED (user ruling): when an action under `payer` costs
         `need` credits, the shortfall beyond the payer's own free bubbles UP
         THE CHAIN — each hop contributes what it has free, grants inflating
         down the path so every hop's invariant holds — refused only when the
         WHOLE chain up to and including the acting agent lacks it. The user
         tops an infinite pool: for user actions any remainder lands as
-        top-level grant inflation (kiosk caps still bind via the API check)."""
+        top-level grant inflation (kiosk caps still bind via the API check).
+        `cascade=False` (the org settings cascade_hire / cascade_alloc, user
+        spec): the payer must afford it from its OWN free credits — nothing
+        bubbles."""
         if need <= 0:
+            return
+        if not cascade:
+            free = self.free(payer)
+            if free < need:
+                raise LedgerError(
+                    f"{payer} has only {free:g} free of the {need:g} needed, and "
+                    f"cost-bubbling is disabled for this action (org setting) — "
+                    f"free credits on {payer} first, or re-enable bubbling in "
+                    f"the org settings")
             return
         chain = [payer]
         while chain[-1] != actor:
@@ -1097,7 +1116,8 @@ class Org:
         warnings: list[str] = []
         if parent is not None:
             # §4.6 generalized: the parent pays; shortfall bubbles up to the actor
-            self._chain_acquire(actor, parent, need, warnings)
+            self._chain_acquire(actor, parent, need, warnings,
+                                cascade=bool(self.d.get("cascade_hire", True)))
         if fable_futile:
             warnings.append("the weekly Fable usage limit is exhausted — this agent "
                             "will not be able to run yet; rehiring it now is futile")
@@ -1241,7 +1261,8 @@ class Org:
                 if n["parent"] is None and actor != USER:
                     raise LedgerError("only the user funds a top-level upgrade")
                 if n["parent"] is not None:
-                    self._chain_acquire(actor, n["parent"], shortfall, warnings)
+                    self._chain_acquire(actor, n["parent"], shortfall, warnings,
+                                        cascade=bool(self.d.get("cascade_alloc", True)))
             n["model"] = tier
             n["grant"] -= own      # holding grows by exactly the shortfall
         who = "the user" if actor == USER else f'"{actor}"'
@@ -1266,7 +1287,8 @@ class Org:
         if delta > 0:
             if n["parent"] is not None:
                 # §4.6 generalized: shortfall bubbles up the chain to the actor
-                self._chain_acquire(actor, n["parent"], delta, warnings)
+                self._chain_acquire(actor, n["parent"], delta, warnings,
+                                    cascade=bool(self.d.get("cascade_alloc", True)))
         elif delta < 0:
             if self.free(nid) < -delta:
                 raise LedgerError(
@@ -1823,6 +1845,8 @@ class Org:
             "auto_resume": bool(self.d.get("auto_resume")),
             "fable_limit_policy": self.d.get("fable_limit_policy", "halt"),
             "fable_filter_policy": self.d.get("fable_filter_policy", "halt"),
+            "cascade_hire": bool(self.d.get("cascade_hire", True)),
+            "cascade_alloc": bool(self.d.get("cascade_alloc", True)),
             "audience_requests": self.d.get("audience_requests", []),
             # the org inbox panel (user spec): hidden until the org receives
             # its first outside mail OR an inbox audience is granted

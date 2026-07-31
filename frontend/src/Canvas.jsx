@@ -866,6 +866,8 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
               onInbox={() => setInboxId(n.id)} onLineage={() => setLineageId(n.id)}
               onRecenter={() => centerOn(n.id)}   /* recenter AND re-zoom to fill */
               pub={!!tree.public} kioskRemaining={kioskRemaining}
+              cascadeAlloc={tree.cascade_alloc !== false}
+              maxTop={tree.max_top_grant ?? 1000}
               onDragStart={startNodeDrag} onDragMove={moveNodeDrag} onDragEnd={endNodeDrag} />
           )
         })}
@@ -1417,11 +1419,14 @@ function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRemaining,
       ? Math.max(0, Math.min(g, kioskRemaining - (seats[draft.tier] ?? 0))) : g
   })
   // user ruling: drag the allocation as high as you want — the cost bubbles
-  // up the chain to you (§4.6; the user is the infinite top). The ONLY cap
-  // is kiosk mode, where total credit allocation is genuinely limited.
+  // up the chain to you (§4.6) — bounded only by the org's GLOBAL grant cap
+  // (settings: top-level grant cap), a kiosk's hard credit cap, or, when the
+  // cascade_hire setting is off, the parent's own free credits.
   const max = kioskRemaining != null
     ? Math.max(0, kioskRemaining - (seats[draft.tier] ?? 0))
-    : Infinity
+    : tree?.cascade_hire === false && draft.parent != null
+      ? (map.get(draft.parent)?.free ?? 0)
+      : maxTop
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onCancel() }
     window.addEventListener('keydown', onKey)
@@ -1618,7 +1623,8 @@ function DraftScopeModal({ draft, map, tree, scope, onSave, close }) {
 
 function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, map, op, slug,
   pulse, toast, streamEvt, pxc, zoom, act, onSpawn, onConfig, onInbox, onLineage,
-  onRecenter, pub, kioskRemaining, onDragStart, onDragMove, onDragEnd }) {
+  onRecenter, pub, kioskRemaining, cascadeAlloc, maxTop,
+  onDragStart, onDragMove, onDragEnd }) {
   const cls = ['sq', node.state, focused ? 'desk' : lod, 'tier-' + node.tier]
   if (node.busy) cls.push('busy')
   if (dragging) cls.push('lifted')
@@ -1649,11 +1655,16 @@ function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, map, op,
           segments={node.children.filter((c) => c.state !== 'archived')
             .map((c) => ({ seat: c.seat, grant: c.grant }))}   /* unrecoverable still holds */
           min={node.grant - node.free}
-          /* unbounded (user ruling): reallocate cascades up the chain since
-             the §4.6 generalization, so the parent's free is NOT a ceiling —
-             only a kiosk's hard credit cap limits the drag */
-          max={kioskRemaining != null ? node.grant + kioskRemaining : Infinity}
-          maxGhost={false}
+          /* reallocate cascades up the chain (§4.6), so the parent's free is
+             not a ceiling — unless the cascade_alloc setting turns that off.
+             Otherwise the org's global grant cap (or a kiosk's hard credit
+             cap) bounds the drag. */
+          max={kioskRemaining != null
+            ? node.grant + kioskRemaining
+            : cascadeAlloc === false && node.parent !== USER
+              ? node.grant + (map.get(node.parent)?.free ?? 0)
+              : maxTop}
+          maxGhost={cascadeAlloc === false && node.parent !== USER}
           onCommit={(delta) => op({ op: 'reallocate', node: node.id, delta })}
           zoom={zoom} pxc={pxc} />
       )}

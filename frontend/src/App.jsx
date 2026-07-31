@@ -629,6 +629,8 @@ function SettingsPanel({ tree, toast, close }) {
   const [orgMd, setOrgMd] = useState(null)
   const [fablePolicy, setFablePolicy] = useState(tree.fable_limit_policy ?? 'halt')
   const [filterPolicy, setFilterPolicy] = useState(tree.fable_filter_policy ?? 'halt')
+  const [cascadeHire, setCascadeHire] = useState(tree.cascade_hire !== false)
+  const [cascadeAlloc, setCascadeAlloc] = useState(tree.cascade_alloc !== false)
   useEffect(() => {
     getOrgMd(tree.slug).then((r) => setOrgMd(r.content)).catch(() => setOrgMd(''))
   }, [tree.slug])
@@ -660,6 +662,20 @@ function SettingsPanel({ tree, toast, close }) {
           <option value="halt">halt (default)</option>
           <option value="opus">switch to opus + retry</option>
         </select>
+        {/* §4.6 cost-bubbling toggles (user spec, both ON by default) */}
+        <div className="field-label">credit cost bubbling</div>
+        <label className="checkline">
+          <input type="checkbox" checked={cascadeHire}
+            onChange={(e) => setCascadeHire(e.target.checked)} />
+          hires bubble their cost up the chain (off: the hiring agent's superior
+          must hold the free credits itself)
+        </label>
+        <label className="checkline">
+          <input type="checkbox" checked={cascadeAlloc}
+            onChange={(e) => setCascadeAlloc(e.target.checked)} />
+          allocations &amp; model upgrades bubble their cost up the chain (off:
+          limited to the superior's own free credits)
+        </label>
         <div className="field-label">org.md</div>
         <textarea rows={6} value={orgMd ?? ''} disabled={orgMd == null}
           onChange={(e) => setOrgMd(e.target.value)} />
@@ -678,7 +694,9 @@ function SettingsPanel({ tree, toast, close }) {
                   default_top_grant: Number.isFinite(+defTop) ? +defTop : undefined,
                   compact_at: Number.isFinite(+compactAt) ? +compactAt : undefined,
                   fable_limit_policy: fablePolicy,
-                  fable_filter_policy: filterPolicy }),
+                  fable_filter_policy: filterPolicy,
+                  cascade_hire: cascadeHire,
+                  cascade_alloc: cascadeAlloc }),
               orgMd != null ? putOrgMd(tree.slug, orgMd) : Promise.resolve({}),
             ]).then(([r]) => { toast(r.warnings); close() })
               .catch((e) => toast([`error: ${e.message}`]))}>save</button>

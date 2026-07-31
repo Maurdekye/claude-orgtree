@@ -684,6 +684,24 @@ def main():
         else (_ for _ in ()).throw(AssertionError(r))
     )(orgM.request_audience("kid2", "user", "need the human, again")))
 
+    print("cost-bubbling toggles (user spec, both default ON):")
+    orgC = Org.create("cascade")
+    orgC.hire(USER, None, "haiku", 3, "boss")
+    orgC.hire("boss", "boss", "haiku", 0, "kid", **spec())     # boss free: 2
+    orgC.d["cascade_hire"] = False
+    check("cascade_hire off: hire beyond the parent's free refused", lambda:
+          expect_error(lambda: orgC.hire(USER, "boss", "haiku", 5, "big"),
+                       "bubbling is disabled"))
+    check("cascade_hire off: an affordable hire still lands", lambda: (
+        orgC.hire(USER, "boss", "haiku", 1, "small"), None)[-1])
+    orgC.d["cascade_alloc"] = False
+    check("cascade_alloc off: reallocate beyond parent free refused", lambda:
+          expect_error(lambda: orgC.reallocate(USER, "kid", 10),
+                       "bubbling is disabled"))
+    orgC.d["cascade_hire"] = True
+    check("cascade_hire back on: the same hire bubbles up to the user", lambda: (
+        orgC.hire(USER, "boss", "haiku", 5, "big"), None)[-1])
+
     print("guards:")
     check("unknown tier refused", lambda: expect_error(
         lambda: org.hire(USER, None, "gpt", 0, "nope"), "unknown tier"))

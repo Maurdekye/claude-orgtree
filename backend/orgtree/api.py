@@ -533,6 +533,8 @@ class Settings(BaseModel):
     default_tools: dict | None = None       # {bash, web, edit, subagents, mcp: []|["*"]}
     default_visibility: str | None = None   # self|team|subtree|full
     auto_resume: bool | None = None         # restart limit-frozen agents at reset+1min
+    cascade_hire: bool | None = None        # hires bubble costs up the chain (§4.6)
+    cascade_alloc: bool | None = None       # allocations/upgrades bubble costs up
 
 
 @app.post("/api/orgs/{slug}/settings")
@@ -595,6 +597,10 @@ async def _org_settings_locked(slug: str, body: Settings):
         org.d["default_visibility"] = body.default_visibility
     if body.auto_resume is not None:
         org.d["auto_resume"] = bool(body.auto_resume)
+    if body.cascade_hire is not None:
+        org.d["cascade_hire"] = bool(body.cascade_hire)
+    if body.cascade_alloc is not None:
+        org.d["cascade_alloc"] = bool(body.cascade_alloc)
     store.save_org(org)
     await hub.changed(slug)
     return {"dirs": org.d["dirs"], "warnings": warnings}
