@@ -81,6 +81,98 @@ def sys_volume(slug: str, d: str) -> str:
     return f"orgtree-sys-{slug}-{d}"
 
 
+# container layout generation — a label on the container; mismatch = recreate
+LAYOUT: str = "disk-v1"
+
+
+def usrlocal_volume(ver: str) -> str:
+    """The version-tagged READ-ONLY /usr/local (user verdict: the CLI stays
+    image-pinned even though /usr rides the org disk). Docker seeds it from
+    the image on first mount; the version in the name is the №44 invariant —
+    a host CLI update moves the name, and the fresh volume seeds from the
+    freshly built image."""
+    return f"orgtree-usrlocal-{ver}-{IMG_REV}"
+
+
+def migrate_to_disk(org: Org) -> None:
+    """One-time move of a sandboxed org onto its virtual disk (user-approved
+    auto-migration): create+mount the disk, copy the org's whole state into
+    it — system dirs from its legacy volumes (preserving installs) or the
+    image, home/workspace/scratch from the host dirs — verify per-tree file
+    counts, then flip the org doc's paths. Old volumes and host dirs are
+    KEPT (rollback: clear org.d['disk'] and restart). The calling turn waits;
+    a multi-GB org takes minutes, once."""
+    from . import disk as dsk
+    from .ledger import now
+    slug = org.d["slug"]
+    k = org.d.get("kiosk") or {}
+    size_mb = (int(k.get("storage_limit_mb") or 0)
+               or int((org.d.get("sandbox") or {}).get("limit_mb") or 0)
+               or DISK_MB)
+    print(f"[orgtree] migrating org {slug!r} onto its {size_mb} MB disk …")
+    dsk.create(slug, size_mb)
+    _docker("stop", "-t", "20", container_name(slug), timeout=60)
+    image_tag = ensure_image()
+    old_home = os.path.join(sandbox_root(slug), "home")
+    old_ws = org.d.get("workspace")
+    old_scratch = store.scratch_root(slug)
+    vols = {d: sys_volume(slug, d)
+            for d in ("usr", "var", "etc", "opt", "root", "srv")
+            if _docker("volume", "inspect", sys_volume(slug, d)).returncode == 0}
+    args: list[str] = ["run", "--rm", "-u", "root",
+                       "-v", f"{dsk.mount_path(slug)}:/dst"]
+    for d, v in vols.items():
+        args += ["-v", f"{v}:/old/{d}:ro"]
+    for sub, host in (("home", old_home), ("workspace", old_ws),
+                      ("scratch", old_scratch)):
+        if host and os.path.isdir(host):
+            args += ["-v", f"{host}:/oldhost/{sub}:ro"]
+    # system dirs seed from the legacy volume when present, else the image's
+    # own rootfs (this helper RUNS that image); host trees copy when present.
+    # cp -a preserves modes/links; each tree is count-verified src vs dst.
+    script = (
+        "set -e; AUID=$(id -u agent); AGID=$(id -g agent); "
+        "for d in usr var etc opt root srv; do "
+        "  mkdir -p /dst/$d; "
+        "  if [ -d /old/$d ]; then S=/old/$d; else S=/$d; fi; "
+        "  cp -a $S/. /dst/$d/; "
+        "  a=$(find $S -type f | wc -l); b=$(find /dst/$d -type f | wc -l); "
+        "  [ \"$a\" = \"$b\" ] || { echo MISMATCH $d $a $b; exit 9; }; "
+        "done; "
+        "for s in home workspace scratch; do "
+        "  mkdir -p /dst/$s; "
+        "  if [ -d /oldhost/$s ]; then "
+        "    cp -a /oldhost/$s/. /dst/$s/; "
+        "    a=$(find /oldhost/$s -type f | wc -l); "
+        "    b=$(find /dst/$s -type f | wc -l); "
+        "    [ \"$a\" = \"$b\" ] || { echo MISMATCH $s $a $b; exit 9; }; "
+        "  fi; "
+        "  chown -R $AUID:$AGID /dst/$s; "
+        "done; echo MIGRATED")
+    r = _docker(*args, image_tag, "sh", "-c", script, timeout=3600)
+    if r.returncode != 0 or "MIGRATED" not in (r.stdout or ""):
+        raise RuntimeError(f"org {slug!r} disk migration failed — nothing "
+                           f"was flipped; old state is untouched: "
+                           + (r.stderr or r.stdout)[-500:])
+    new_ws = dsk.windows_sub(slug, "workspace")
+    with store.DOC_LOCK:
+        o2 = store.load_org(slug)
+        o2.d["disk"] = {"size_mb": size_mb, "migrated_at": now()}
+        if old_ws:
+            for dd in o2.d["dirs"]:
+                if os.path.normpath(dd["path"]) == os.path.normpath(old_ws):
+                    dd["path"] = new_ws
+            for n in o2.nodes.values():
+                for dd in n["scope"]["add_dirs"]:
+                    if os.path.normpath(dd["path"]) == os.path.normpath(old_ws):
+                        dd["path"] = new_ws
+        o2.d["workspace"] = new_ws
+        store.save_org(o2)
+    _disk_flag.pop(slug, None)
+    print(f"[orgtree] org {slug!r} migrated to its disk "
+          f"({size_mb} MB; legacy volumes kept for rollback)")
+
+
 _vm_cap_checked = False
 
 
@@ -155,7 +247,29 @@ def sandbox_root(slug: str) -> str:
     return os.path.join(_DATA, "sandboxes", slug)
 
 
+# virtual-disk pivot (user verdict 2026-07-31): a migrated org's state lives
+# ON its disk; host-side readers must follow it there. The flag is on the org
+# doc — cached briefly so hot paths (usage walks, transcript reads) don't
+# re-load the doc per call.
+_disk_flag: dict[str, tuple[float, bool]] = {}
+
+
+def on_disk(slug: str) -> bool:
+    hit = _disk_flag.get(slug)
+    if hit and time.time() - hit[0] < 10:
+        return hit[1]
+    try:
+        val = bool(store.load_org(slug).d.get("disk"))
+    except Exception:                                    # noqa: BLE001
+        val = False
+    _disk_flag[slug] = (time.time(), val)
+    return val
+
+
 def sandbox_home(slug: str) -> str:
+    if on_disk(slug):
+        from . import disk
+        return disk.windows_sub(slug, "home")
     return os.path.join(sandbox_root(slug), "home")
 
 
@@ -217,34 +331,40 @@ def ensure_container(org: Org) -> str:
     slug = org.d["slug"]
     k = org.d.get("kiosk") or {}
     name = container_name(slug)
-    ins = _docker("container", "inspect", "-f",
-                  "{{.State.Running}} {{.Config.Image}} "
-                  "{{.HostConfig.ReadonlyRootfs}}", name)
-    if ins.returncode == 0:
-        parts = ins.stdout.split()
-        running = parts[0] if parts else ""
-        cur_img = parts[1] if len(parts) > 1 else ""
-        hardened = (parts[2] if len(parts) > 2 else "") == "true"
-        # №44: the host CLI updated → the versioned tag moved → recreate the
-        # container on the new image instead of running the frozen old CLI.
-        # (With the /usr volume the recreate alone no longer moves the CLI —
-        # _sync_cli below updates it IN the volume.) An unhardened container
-        # (pre-disk-bound build) recreates too; its state migrates into the
-        # fresh volumes' image seed, losing only old writable-layer edits.
-        from . import supervisor
-        ver = supervisor.cli_version()
-        want = f"{IMAGE}:{ver}-{IMG_REV}" if ver != "unknown" else IMAGE
-        if (cur_img and cur_img != want) or not hardened:
-            _docker("rm", "-f", name, timeout=60)
-        else:
-            if running != "true":
-                _docker("start", name)
-            _sync_cli(name)
-            return name
     if not docker_ok():
         raise RuntimeError("Docker is not running — start Docker Desktop "
                            "(kiosk sandboxes run their turns in containers)")
     _warn_vm_cap()
+    from . import disk as dsk, supervisor
+    # virtual-disk pivot (user verdict): every sandboxed org rides its own
+    # capped ext4 disk. Legacy (volume-layout) orgs migrate on first need —
+    # user-approved auto-migration; old volumes are KEPT for rollback.
+    if not org.d.get("disk"):
+        migrate_to_disk(org)
+        org = store.load_org(slug)        # workspace/dirs were rewritten
+    # ⚠ mount-verify before EVERY start: /mnt/wsl dies with the WSL VM and
+    # Docker mints an EMPTY DIR for a missing bind source — an org must
+    # hard-refuse to run rather than bind an empty workspace and diverge.
+    dsk.mount(slug)                        # sentinel-verified; raises DiskError
+    ver = supervisor.cli_version()
+    want = f"{IMAGE}:{ver}-{IMG_REV}" if ver != "unknown" else IMAGE
+    ins = _docker("container", "inspect", "-f",
+                  "{{.State.Running}} {{.Config.Image}} "
+                  '{{index .Config.Labels "orgtree.layout"}}', name)
+    if ins.returncode == 0:
+        parts = ins.stdout.split()
+        running = parts[0] if parts else ""
+        cur_img = parts[1] if len(parts) > 1 else ""
+        layout = parts[2] if len(parts) > 2 else ""
+        # №44: the CLI rides the version-tagged read-only /usr/local volume,
+        # so an image move requires a recreate (which re-mounts that volume);
+        # a pre-disk layout recreates too (its state already migrated).
+        if (cur_img and cur_img != want) or layout != LAYOUT:
+            _docker("rm", "-f", name, timeout=60)
+        else:
+            if running != "true":
+                _docker("start", name)
+            return name
     # auth (user ruling): PROXIED SUBSCRIPTION is the default for every kiosk
     # — the container's CLI talks to the bridge's /anthropic passthrough and
     # the HOST attaches the OAuth token; no credential ever enters the
@@ -255,7 +375,7 @@ def ensure_container(org: Org) -> str:
     use_proxy = "prox" in key.lower()
     use_sub = key.lower() == "subscription"
     image_tag = ensure_image()
-    home = sandbox_home(slug)
+    home = sandbox_home(slug)              # on-disk, via the UNC view
     os.makedirs(os.path.join(home, "orgtree"), exist_ok=True)
     if use_sub:
         os.makedirs(os.path.join(home, ".claude"), exist_ok=True)
@@ -269,84 +389,41 @@ def ensure_container(org: Org) -> str:
         if not os.path.exists(cfg):
             with open(cfg, "w", encoding="utf-8") as f:
                 json.dump({"hasCompletedOnboarding": True}, f)
-    ws = org.d.get("workspace")
-    if not ws:
-        # pre-workspace-era org doc: without this, makedirs TypeErrors (or a
-        # literal "None" would be bind-mounted) — say what's wrong instead
-        raise RuntimeError(f"org {slug!r} has no workspace directory recorded "
-                           f"— cannot mount its sandbox container")
-    os.makedirs(ws, exist_ok=True)
-    scratch = store.scratch_root(slug)
-    os.makedirs(scratch, exist_ok=True)
     # the only door out: backend URL + this org's secret, read by steer.py
     # and mcptool.py inside the container
     with open(os.path.join(home, "orgtree", ".bridge"), "w",
               encoding="utf-8") as f:
         json.dump({"url": bridge_url(), "secret": sandbox_secret(org)}, f)
+    mp = dsk.mount_path(slug)
     r = _docker(
         "run", "-d", "--name", name,
+        "--label", f"orgtree.layout={LAYOUT}",
         "--memory", MEM, "--cpus", CPUS,
-        # the disk bound: read-only rootfs + system-dir volumes + RAM tmpfs —
-        # every persistent write lands somewhere measured (see SYS_DIRS note)
+        # ONE capped disk (user verdict): rootfs read-only, every persistent
+        # write — system dirs, home incl. transcripts, workspace, scratch —
+        # lands on the org's ext4 image; ENOSPC is the enforcement. /tmp and
+        # /run are RAM, bounded by --memory. /usr/local is the version-tagged
+        # READ-ONLY volume: the CLI stays image-pinned under the /usr shadow.
         "--read-only",
         "--tmpfs", f"/tmp:rw,size={TMP_SIZE},mode=1777",
         "--tmpfs", f"/run:rw,size={RUN_SIZE}",
-        *[a for d in SYS_DIRS for a in ("-v", f"{sys_volume(slug, d)}:/{d}")],
+        *[a for d in SYS_DIRS for a in ("-v", f"{mp}/{d}:/{d}")],
+        "-v", f"{usrlocal_volume(ver)}:/usr/local:ro",
         "--add-host", "host.docker.internal:host-gateway",
         *(["-e", "ANTHROPIC_BASE_URL="
                f"{bridge_url()}/anthropic/{sandbox_secret(org)}",
            "-e", "ANTHROPIC_API_KEY=orgtree-proxied"] if use_proxy
           else [] if use_sub
           else ["-e", "ANTHROPIC_API_KEY=" + key]),
-        "-v", f"{home}:/home/agent",
-        "-v", f"{ws}:{cpath_workspace(slug)}",
-        "-v", f"{scratch}:{cpath_data()}/scratch/{slug}",
+        "-v", f"{mp}/home:/home/agent",
+        "-v", f"{mp}/workspace:{cpath_workspace(slug)}",
+        "-v", f"{mp}/scratch:{cpath_data()}/scratch/{slug}",
         "-v", f"{BACKEND_DIR}:/opt/orgtree-backend:ro",
         image_tag, "sleep", "infinity", timeout=300)
     if r.returncode != 0:
         raise RuntimeError("sandbox container failed to start: "
                            + (r.stderr or r.stdout)[-500:])
-    _sync_cli(name)
-    # the volumes' IMAGE SEED (~1 GB) is not the org's doing — record it as
-    # the baseline so storage accounting charges only GROWTH (else a small
-    # kiosk storage limit would breach at first boot). Measured after the
-    # CLI sync so a version update isn't billed either.
-    base = sandbox_volumes_bytes(slug, max_age=0.0)
-    if base:
-        with store.DOC_LOCK:
-            o2 = store.load_org(slug)
-            o2.d["sandbox_vols_base"] = base
-            store.save_org(o2)
     return name
-
-
-_cli_synced: set[str] = set()   # "name:ver" pairs verified this process
-
-
-def _sync_cli(name: str) -> None:
-    """№44 under volume shadowing: the /usr volume outlives image rebuilds, so
-    a host CLI update no longer reaches the container via recreation alone.
-    Verify the in-container CLI against the host and npm-update it IN the
-    volume on mismatch (live-verified) — installs and system state survive,
-    and the version invariant stays enforced rather than structural."""
-    from . import supervisor
-    ver = supervisor.cli_version()
-    if ver == "unknown" or f"{name}:{ver}" in _cli_synced:
-        return
-    r = _docker("exec", name, "claude", "--version", timeout=60)
-    have = (r.stdout or "").strip().split(" ")[0] if r.returncode == 0 else ""
-    if have != ver:
-        _docker("exec", "-u", "root", name, "npm", "install", "-g",
-                f"@anthropic-ai/claude-code@{ver}", timeout=600)
-        r2 = _docker("exec", name, "claude", "--version", timeout=60)
-        have2 = (r2.stdout or "").strip().split(" ")[0] if r2.returncode == 0 else ""
-        if have2 != ver:
-            raise RuntimeError(
-                f"sandbox CLI version sync failed for {name}: host {ver}, "
-                f"container {have2 or 'unknown'} — check the container's "
-                f"network/npm access (or remove its orgtree-sys-* volumes to "
-                f"reseed from the image)")
-    _cli_synced.add(f"{name}:{ver}")
 
 
 def stop_container(slug: str) -> None:
@@ -451,6 +528,12 @@ def remove(slug: str) -> None:
                 timeout=60)
     except (OSError, subprocess.TimeoutExpired):
         pass
+    from . import disk as dsk
+    try:
+        dsk.destroy(slug)
+    except Exception:                                    # noqa: BLE001
+        pass
+    _disk_flag.pop(slug, None)
 
 
 def warm(org: Org) -> None:

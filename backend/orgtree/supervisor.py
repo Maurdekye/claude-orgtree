@@ -61,6 +61,16 @@ def workspace_usage_bytes(org: Org, max_age: float = 0.0) -> int:
         hit = _ws_usage_cache.get(slug)
         if hit and time.time() - hit[0] < max_age:
             return hit[1]
+    # a disk-migrated org's entire footprint is its disk: df INSIDE the
+    # distro is exact and instant — never 9p-walk 99k files over UNC
+    if sbx.is_sandboxed(org) and sbx.on_disk(slug):
+        from . import disk as dsk
+        du = dsk.usage(slug, max_age=max(max_age, 5.0))
+        if du is not None:
+            _ws_usage_cache[slug] = (time.time(), du[0])
+            return du[0]
+        hit = _ws_usage_cache.get(slug)
+        return hit[1] if hit else 0
     total = 0
     ws = org.d.get("workspace")
     roots = [p for p in (ws, store.scratch_root(slug))
@@ -129,10 +139,11 @@ def workspace_usage_cached(org: Org, max_age: float = 15.0) -> int | None:
     if hit is None:
         return None
     total = hit[1]
-    if sbx.is_sandboxed(org):
-        # container system-state GROWTH rides the same number the UI shows,
-        # so the wheel matches what enforcement charges (cache-only: the df
-        # walk never runs on a request path; enforcement keeps it warm)
+    if sbx.is_sandboxed(org) and not sbx.on_disk(slug):
+        # legacy volume-layout org: container system-state GROWTH rides the
+        # same number the UI shows (cache-only: the df walk never runs on a
+        # request path; enforcement keeps it warm). Disk-migrated orgs need
+        # nothing here — their cached number IS the whole disk.
         v = sbx.sandbox_volumes_cached(slug)
         if v:
             total += max(0, v - int(org.d.get("sandbox_vols_base") or 0))
@@ -334,8 +345,14 @@ def state(slug: str, nid: str) -> dict[str, Any]:
 
 def scratch_dir(slug: str, nid: str) -> str:
     # lineage nodes ("name@gen") share their successor's scratch — they are the same
-    # self at different times, and the CLAUDE.md self-notes belong to that self
-    p = os.path.join(store.scratch_root(slug), nid.split("@")[0])
+    # self at different times, and the CLAUDE.md self-notes belong to that self.
+    # A disk-migrated org's scratch lives ON the disk (UNC view for the backend).
+    if sbx.on_disk(slug):
+        from . import disk as dsk
+        base = dsk.windows_sub(slug, "scratch")
+    else:
+        base = store.scratch_root(slug)
+    p = os.path.join(base, nid.split("@")[0])
     os.makedirs(p, exist_ok=True)
     return p
 
@@ -1017,6 +1034,13 @@ def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
                         "org storage limit reached — the sandbox container is "
                         "stopped; free space (or raise the limit) and turns "
                         "resume automatically")
+                if org.d.get("storage_blocked") and sbx.on_disk(slug):
+                    # disk-org soft cap (user verdict): the last 10% is the
+                    # journaling reserve — new turns wait it out
+                    raise RuntimeError(
+                        "org disk past its 90% soft cap — turns are paused "
+                        "until usage drops under 85% (delete files, use the "
+                        "recovery browser, or grow the disk)")
                 if org.node(nid).get("limit_locked"):
                     raise RuntimeError(
                         "halted: weekly Fable usage limit exhausted — waiting for the "
@@ -1734,8 +1758,10 @@ def _org_write_acl(org: Org, blocked: bool) -> None:
     enforced by the same ACE — container writes fail, deletes still work.
     The sandbox home is counted but never ACL'd (transcripts/CLI state).
     POSIX has no deny-write-but-allow-delete bit (dir -w blocks unlinking
-    too), so there enforcement is the advisory notice + steer only."""
-    if os.name != "nt":
+    too), so there enforcement is the advisory notice + steer only.
+    Disk-migrated orgs: icacls cannot reach ext4-over-WSL — their soft-cap
+    enforcement is the turn gate in storage_check's disk branch instead."""
+    if os.name != "nt" or sbx.on_disk(org.d["slug"]):
         return
     slug = org.d["slug"]
     ws = org.d.get("workspace")
@@ -1755,6 +1781,83 @@ def _org_write_acl(org: Org, blocked: bool) -> None:
             pass
 
 
+def _storage_check_disk(slug: str, org: Org) -> str | None:
+    """Storage enforcement for a DISK-MIGRATED org (user verdict): the ext4
+    cap itself is the hard limit (ENOSPC — no container stop, no ACL, ever);
+    this check runs the SOFT tiers. 80% warns every live node; 90% BLOCKS NEW
+    TURNS (the enforceable ext4 mapping of "agents blocked, engine keeps
+    journaling" — mail queues, the UI and the recovery path stay live, and
+    the last 10% is the reserve that lets in-flight turns journal their
+    transcripts); ≤85% auto-clears. ≥99% sets the hard-full flag the
+    recovery-browser alert renders persistently."""
+    from . import disk as dsk
+    du = dsk.usage(slug, max_age=5.0)
+    if du is None:
+        return None          # disk unmounted: nothing can write; ensure_container refuses anyway
+    used, total = du
+    frac = used / total if total else 0.0
+    nudge: list[str] = []
+    with store.DOC_LOCK:
+        org = store.load_org(slug)
+        blocked = bool(org.d.get("storage_blocked"))
+        warned = bool(org.d.get("storage_warned"))
+        full = bool(org.d.get("storage_full"))
+        live = [i for i, n in org.nodes.items() if n["state"] == "live"]
+        mb = 1048576
+        result: str | None = None
+        if frac >= 0.99 and not full:
+            org.d["storage_full"] = True     # stage-4 alert state (persistent)
+            result = "full"
+        elif full and frac < 0.99:
+            org.d.pop("storage_full", None)
+            result = result or None
+        if frac >= 0.90 and not blocked:
+            org.d["storage_blocked"] = True
+            org._notify(live,
+                        f"⚠ The org disk is at {used / mb:.0f} of "
+                        f"{total / mb:.0f} MB (past the 90% soft cap). New "
+                        f"turns are PAUSED until usage drops under 85% — "
+                        f"the remaining space is the reserve that keeps "
+                        f"session journaling alive. Delete files (the admin "
+                        f"can also use the recovery browser or grow the "
+                        f"disk); at 100% every write fails with ENOSPC.")
+            nudge = live
+            result = "blocked"
+        elif blocked and frac <= 0.85:
+            org.d.pop("storage_blocked", None)
+            org.d.pop("storage_warned", None)
+            org._notify(live,
+                        f"The org disk is back under the soft cap "
+                        f"({used / mb:.0f} / {total / mb:.0f} MB) — turns "
+                        f"resume.")
+            result = "cleared"
+        elif frac >= 0.80 and not blocked and not warned:
+            org.d["storage_warned"] = True
+            org._notify(live,
+                        f"Heads-up: the org disk is at {used / mb:.0f} of "
+                        f"{total / mb:.0f} MB (past 80%). Clean up or curb "
+                        f"file growth — at 90% new turns pause; at 100% "
+                        f"writes fail with ENOSPC.")
+            nudge = live
+            result = "warned"
+        elif warned and frac < 0.75:
+            org.d.pop("storage_warned", None)   # re-arm below 75%
+        if result:
+            store.save_org(org)
+    if not result:
+        return None
+    for nid in nudge:
+        try:
+            if state(slug, nid)["busy"]:
+                send_message(slug, nid,
+                             "(orgtree) ⚠ Storage notice in your mail above — "
+                             "act on it NOW, mid-task.")
+        except Exception:                       # noqa: BLE001 — best-effort
+            pass
+    notify(slug, "", "storage_" + result)
+    return result
+
+
 def storage_check(slug: str) -> str | None:
     """Enforce the kiosk workspace storage limit (user spec: never a freeze).
     Over the limit → block file creation/writes in the workspace and notify
@@ -1765,6 +1868,8 @@ def storage_check(slug: str) -> str | None:
     # starved the whole turn machinery (and timed out MCP calls into
     # duplicate-mail retries)
     org = store.load_org(slug)
+    if sbx.is_sandboxed(org) and sbx.on_disk(slug):
+        return _storage_check_disk(slug, org)
     used = workspace_usage_bytes(org)
     # bounded persistent sandbox (user hard requirement 2026-07-31): the
     # container's system state lives in named volumes — measured DAEMON-SIDE

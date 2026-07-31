@@ -311,17 +311,21 @@ The container reaches the backend only through a **bridge listener**
 nowhere but inside that container. Requires Docker Desktop running; the
 image builds automatically on first use (`sandbox/Dockerfile`).
 
-**Sandbox storage is disk-bounded.** The container's rootfs is read-only; the
-system dirs agents edit (`/usr`, `/var`, `/etc`, `/opt`, `/root`, `/srv`) are
-per-org Docker volumes seeded from the image — so `sudo apt install`, npm/pip
-globals, and system config edits all work AND survive container restarts and
-recreations — and `/tmp` is RAM (bounded by the memory cap). Every persistent
-write therefore lands somewhere measured. Enforcement is two-layer: past 90%
-of the org's storage limit every agent is warned to clean up; at the limit the
-container is **stopped and the org freezes** until usage drops or the limit is
-raised (temporarily raising it lets agents clean up in-container). Sandboxed
-orgs are never unbounded: without a kiosk storage limit they get
-`ORGTREE_SANDBOX_DISK_MB` (default 20 GB).
+**Every sandboxed org rides ONE virtual disk with a real filesystem cap.**
+The org's whole state — system dirs (`sudo apt install` and config edits work
+and persist), the agent home *including session transcripts*, the workspace,
+and scratch — lives on a fixed-size ext4 image (a loop mount inside Docker
+Desktop's WSL distro; no admin rights involved). The rootfs is read-only,
+`/tmp` is RAM (bounded by the memory cap), and `/usr/local` is a read-only
+version-pinned volume so the CLI can't drift. The cap is the filesystem
+itself: at 100% writes fail with ENOSPC — the container is **never stopped**.
+Soft tiers run underneath: at 80% agents are warned, at 90% new turns pause
+(the last 10% is the reserve that keeps session journaling alive) and resume
+automatically under 85%. Disk size comes from the kiosk storage limit, the
+org's `sandbox.limit_mb`, or `ORGTREE_SANDBOX_DISK_MB` (default 20 GB);
+existing volume-layout orgs auto-migrate on their next turn (old volumes are
+kept for rollback). The backend reads the disk directly (`\\wsl.localhost`) —
+including deletes at 100% full — so recovery never depends on the container.
 
 > ☞ **Set Docker Desktop's disk cap.** Docker volumes have no per-volume quota
 > on Docker Desktop, so the per-org limit is enforced *reactively* (measure →

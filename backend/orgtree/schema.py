@@ -271,8 +271,11 @@ class OrgDoc(TypedDict):
                                             # storage accounting charges growth only
     fable_lock: NotRequired[dict[str, Any] | None]
     spend_frozen: NotRequired[bool]
-    storage_frozen: NotRequired[bool]   # sandboxed storage breach (container stopped)
-    storage_blocked: NotRequired[bool]
+    storage_frozen: NotRequired[bool]   # legacy-layout breach (container stopped)
+    storage_blocked: NotRequired[bool]  # ACL block (legacy) / turn pause (disk ≥90%)
+    storage_full: NotRequired[bool]     # disk ≥99% — the persistent UI alert state
+    disk: NotRequired[dict[str, Any]]   # {size_mb, migrated_at} — org rides its
+                                        # virtual disk (sandbox.migrate_to_disk)
     storage_warned: NotRequired[bool]
     auto_resume: NotRequired[bool]
     auto_resume_last: NotRequired[float]

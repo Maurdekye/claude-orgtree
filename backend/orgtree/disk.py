@@ -122,6 +122,20 @@ def windows_path(slug: str) -> str:
     return rf"\\wsl.localhost\{distro()}{mount_path(slug).replace('/', chr(92))}"
 
 
+# the on-disk layout (one disk, everything on it — user verdict):
+#   home/       the container's /home/agent (transcripts ~/.claude included)
+#   workspace/  the org workspace (container cpath_workspace)
+#   scratch/    node scratch dirs (container <data>/scratch/<slug>)
+#   usr/ var/ etc/ opt/ root/ srv/   system dirs, seeded once
+SUBDIRS = ("home", "workspace", "scratch", "usr", "var", "etc", "opt",
+           "root", "srv")
+
+
+def windows_sub(slug: str, sub: str) -> str:
+    r"""Windows-side path of one on-disk subdir (backend readers/writers)."""
+    return os.path.join(windows_path(slug), sub)
+
+
 def exists(slug: str) -> bool:
     return _sh(f"test -f {_img_path(slug)}").returncode == 0
 
