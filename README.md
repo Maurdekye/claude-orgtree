@@ -17,7 +17,10 @@ organization that improves efficiency on the margin. Asking for what's already
 true is a no-op, not an error; where a refusal would just tell you which other
 command to run, orgtree runs it for you and tells you what it did. Hard "no"s
 are reserved for real resource limits, true impossibilities, and protecting
-the user's data.
+the user's data. Even messaging reach is opt-in structure: siblings always
+talk directly, so a flat org (or the coordinator charter's open-office
+floorplan) is a complete graph — nobody is ever out of reach unless you
+chose the nesting that makes them so.
 
 ## The model in one breath
 

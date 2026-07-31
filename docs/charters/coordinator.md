@@ -5,8 +5,10 @@ recommended). Leave **every tool switch ON**: capabilities flow down, and a
 report can only be granted what its superior holds — the coordinator keeps
 the full set so it can pass tools to its hires, and the charter (not the
 switches) is what keeps it from using them itself. It embodies the flat
-"coordinator stack": one orchestrator under the user, every worker side by
-side beneath it, each with a direct line to the user.
+"coordinator stack" — an **open-office floorplan**: one orchestrator under
+the user, every worker side by side beneath it, each with a direct line to
+the user, and every worker able to talk to every other directly (siblings
+always reach each other — no message between them is ever out of reach).
 
 ---
 
