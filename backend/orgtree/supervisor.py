@@ -2091,6 +2091,53 @@ def _result_text(content) -> str:
     return ""
 
 
+def sandbox_dirs_to_host(org: Org, add_dirs):
+    """Container→host translation for agent-supplied dir grants in SANDBOXED
+    orgs (user bug 2026-07-31): sandboxed agents are deliberately told only
+    container paths (/home/agent/orgtree/...), but the ledger holds host
+    paths — so every folder the system itself said they hold was refused
+    with №30. Workspace-tree paths map onto the host workspace; scratch-tree
+    paths are DROPPED with a warning (scratch is every agent's own cwd —
+    always reachable, never a grant); anything else passes through untouched
+    and meets the honest №30 refusal. Returns (dirs, warnings)."""
+    if add_dirs is None or not sbx.is_sandboxed(org):
+        return add_dirs, []
+    slug = org.d["slug"]
+    cw = sbx.cpath_workspace(slug)
+    cs = f"{sbx.cpath_data()}/scratch/{slug}"
+    host_ws = org.d.get("workspace") or store.workspace_dir(slug)
+    out, warns = [], []
+    for d in add_dirs:
+        if isinstance(d, str):
+            d = {"path": d, "mode": "rw"}
+        p = str(d.get("path", "")).replace("\\", "/").rstrip("/")
+        if p == cw or p.startswith(cw + "/"):
+            out.append({**d, "path": os.path.normpath(host_ws + p[len(cw):])})
+        elif p == cs or p.startswith(cs + "/"):
+            warns.append(f"{d.get('path')}: scratch is each agent's own "
+                         f"working folder — always reachable, never a grant; "
+                         f"dropped from the dir list")
+        else:
+            out.append(dict(d))
+    return out, warns
+
+
+def _ts_gap_secs(a: str | None, b: str | None) -> int | None:
+    """Whole seconds between two ISO timestamps, clamped to a sane turn
+    window — the 'thought for Xs' figure (the gap from the previous record
+    to the thinking message ≈ that API call's pre-output time)."""
+    if not a or not b:
+        return None
+    try:
+        from datetime import datetime
+        s = round((datetime.fromisoformat(b.replace("Z", "+00:00"))
+                   - datetime.fromisoformat(a.replace("Z", "+00:00")))
+                  .total_seconds())
+        return s if 1 <= s <= 3600 else None
+    except ValueError:
+        return None
+
+
 def read_chat(org: Org, nid: str, last: int | None = None) -> dict:
     """Parse the node's transcript into renderable messages + context occupancy.
 
@@ -2111,11 +2158,15 @@ def read_chat(org: Org, nid: str, last: int | None = None) -> dict:
     occupancy = None
     by_tool_id: dict[str, dict] = {}
     after_boundary = False           # the next flagged record is the summary
+    prev_ts = None                   # the preceding record's timestamp
     for line in open(tpath, encoding="utf-8", errors="replace"):
         try:
             rec = json.loads(line)
         except json.JSONDecodeError:
             continue
+        rec_prev_ts = prev_ts
+        if rec.get("timestamp"):
+            prev_ts = rec["timestamp"]
         if rec.get("isSidechain") or rec.get("isMeta"):
             continue
         t = rec.get("type")
@@ -2165,7 +2216,7 @@ def read_chat(org: Org, nid: str, last: int | None = None) -> dict:
             msgs.append({"role": "system", "text": "⚠ " + body.strip()[:300],
                          "ts": rec.get("timestamp")})
             continue
-        texts, tools = [], []
+        texts, tools, thinks = [], [], []
         if isinstance(content, str):
             texts.append(content)
         else:
@@ -2174,7 +2225,12 @@ def read_chat(org: Org, nid: str, last: int | None = None) -> dict:
                 if bt == "text" and block.get("text", "").strip():
                     texts.append(block["text"])
                 elif bt == "thinking":
-                    continue                     # live-only surface (№18)
+                    # №18 evolved (user spec 2026-07-31): thinking IS in the
+                    # CLI transcript — surfaced as a collapsed "thought for
+                    # Xs" line, expandable on click
+                    if block.get("thinking", "").strip():
+                        thinks.append(block["thinking"])
+                    continue
                 elif bt == "tool_use":
                     entry = {"name": block.get("name", "tool"),
                              "arg": _tool_arg(block.get("name", ""),
@@ -2252,14 +2308,22 @@ def read_chat(org: Org, nid: str, last: int | None = None) -> dict:
                 occupancy = occ            # №24: LAST non-synthetic wins
         if t == "user" and tools and not any(texts):
             continue                        # pure tool_result plumbing — skip
-        if not texts and not tools:
+        if not texts and not tools and not thinks:
             continue
-        msgs.append({
+        mrow = {
             "role": t,
             "text": "\n\n".join(texts),
             "tools": [x for x in tools if x],
             "ts": rec.get("timestamp"),
-        })
+        }
+        if thinks:
+            mrow["thinking"] = "\n\n".join(thinks)[:6000]
+            # "thought for Xs" ≈ the gap from the previous record to this
+            # message — the API call's pre-output time
+            secs = _ts_gap_secs(rec_prev_ts, rec.get("timestamp"))
+            if secs:
+                mrow["think_secs"] = secs
+        msgs.append(mrow)
     # pre-slice ordinal: the UI keys rows on it — index keys over a sliding
     # window remounted every chip (collapsing them) each time a message
     # scrolled off the 300-row window (review)

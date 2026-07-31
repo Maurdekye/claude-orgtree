@@ -63,7 +63,10 @@ def load_org(slug: str) -> Org:
     p = org_path(slug)
     if not os.path.exists(p):
         raise LedgerError(f"no such org: {slug!r}")
-    return Org(json.load(open(p, encoding="utf-8")))
+    # deterministic close: a lingering read handle is what makes a concurrent
+    # save's os.replace throw WinError 5 (see save_org)
+    with open(p, encoding="utf-8") as f:
+        return Org(json.load(f))
 
 
 REVISION = 0   # bumped on every save — cheap change detection for pollers
@@ -76,7 +79,19 @@ def save_org(org: Org) -> None:
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(p), suffix=".tmp")
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(org.d, f, indent=2)
-    os.replace(tmp, p)
+    # Windows: os.replace over a file another thread momentarily has OPEN for
+    # reading fails with WinError 5 (read-only endpoints deliberately read
+    # OUTSIDE DOC_LOCK — №22 — so brief collisions are normal under agent
+    # load; user-observed in the wild). Readers close in microseconds: retry
+    # with backoff instead of failing the whole op.
+    for i in range(20):
+        try:
+            os.replace(tmp, p)
+            break
+        except PermissionError:
+            if i == 19:
+                raise
+            time.sleep(0.01 * (i + 1))
     REVISION += 1
 
 

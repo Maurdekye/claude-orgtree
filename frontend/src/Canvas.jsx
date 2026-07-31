@@ -13,8 +13,8 @@ import {
   AddIcon, ArrowUpIcon, AutorenewIcon, CheckIcon, CloseIcon, DeleteIcon,
   DotIcon, EditIcon, FileIcon, FocusIcon, FolderIcon, FrozenIcon,
   FullscreenIcon, HearingIcon, LayersIcon, LockIcon, MailIcon, PlayIcon,
-  PublicIcon, RemoveIcon, SettingsIcon, SparkIcon, StopIcon, ViewListIcon,
-  WarnIcon,
+  PsychologyIcon, PublicIcon, RemoveIcon, SettingsIcon, SparkIcon, StopIcon,
+  ViewListIcon, WarnIcon,
 } from './icons'
 
 const TIER_LETTER = { haiku: 'H', sonnet: 'S', opus: 'O', fable: 'F' }
@@ -1574,7 +1574,12 @@ function SpawnChips({ onSpawn, free, seats }) {
         const cant = Number.isFinite(free) && free < seat
         return (
           <button key={t} disabled={cant} className={'t-' + t}
-            title={cant ? `${t}: needs ${seat} free (has ${free})`
+            title={cant
+              // user report: an exhausted kiosk cap read as an opaque dead
+              // end — the tooltip now carries the REMEDY, not just the number
+              ? `${t}: needs ${seat} free (has ${free}) — the kiosk credit `
+                + 'cap is fully held; drag an agent’s credit bar down '
+                + 'or retire one to free credits'
               : `hire ${/^[aeiou]/.test(t) ? 'an' : 'a'} ${t} (seat ${seat})`}
             onClick={(e) => { e.stopPropagation(); onSpawn(t) }}>
             {TIER_LETTER[t]}
@@ -2588,7 +2593,11 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
   const [view, setView] = useState('chat')     // chat | history | files | inbox
   const [live_feed, setLiveFeed] = useState([])
   const [draft, setDraft] = useState('')       // the token-streamed growing reply
-  const [thinking, setThinking] = useState('') // №18: live-only, never persisted
+  const [thinking, setThinking] = useState('') // №18: the live ribbon (tail)
+  // full thought accumulation + start time: when the reply begins, the ribbon
+  // folds into a clickable "thought for Xs" line (user spec 2026-07-31)
+  const thinkBuf = useRef('')
+  const thinkT0 = useRef(0)
   const scroller = useRef(null)
   const loadedRef = useRef(false)     // first load always lands at the bottom
   const live = node.state === 'live'
@@ -2623,6 +2632,7 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
     if (pulse && pulse.node === node.id) {
       if (pulse.event === 'turn_done') {
         setLiveFeed([]); setDraft(''); setThinking('')
+        thinkBuf.current = ''
       }
       refresh()
     }
@@ -2630,17 +2640,27 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
   useEffect(() => {                       // live per-message feed while working
     if (streamEvt && streamEvt.node === node.id) {
       const stick = nearBottom()
+      // the reply (or a tool call) started: the live ribbon folds into a
+      // clickable "thought for Xs" line that stays in the flow (user spec)
+      const foldThought = () => {
+        if (!thinkBuf.current) return
+        const secs = Math.max(1, Math.round((Date.now() - thinkT0.current) / 1000))
+        const entry = { kind: 'thought', text: thinkBuf.current, secs }
+        thinkBuf.current = ''
+        setThinking('')
+        setLiveFeed((f) => [...f.slice(-24), entry])
+      }
       if (streamEvt.kind === 'delta') {
         // token streaming (user spec): the reply grows word-by-word; the
         // complete message event replaces it when the block finishes
+        foldThought()
         setDraft((d) => (d + streamEvt.text).slice(-12000))
-        setThinking('')
         if (stick) toBottom()
         return
       }
       if (streamEvt.kind === 'thinking') {
-        // №18: live-only ribbon — persisting thinking would be a second
-        // transcript the CLI does not keep
+        if (!thinkBuf.current) thinkT0.current = Date.now()
+        thinkBuf.current = (thinkBuf.current + streamEvt.text).slice(-24000)
         setThinking((t) => (t + streamEvt.text).slice(-2000))
         if (stick) toBottom()
         return
@@ -2649,7 +2669,8 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
         // a pending user message just got DELIVERED mid-task
         setPending((p) => p.filter((x) => !streamEvt.text.includes(x)))
       }
-      if (streamEvt.kind === 'text') { setDraft(''); setThinking('') }
+      foldThought()
+      if (streamEvt.kind === 'text') setDraft('')
       setLiveFeed((f) => [...f.slice(-24), streamEvt])
       if (stick) toBottom()
     }
@@ -2845,13 +2866,16 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
             )
           })}
           {live_feed.map((f, i) => (
-            f.kind === 'tool'
-              ? <div key={'f' + i} className="msg live tools"><DotIcon fontSize="inherit" className="tooldot" /> {f.text}</div>
-              : f.kind === 'steered'
-                ? <div key={'f' + i} className="msg user live md"
-                    dangerouslySetInnerHTML={md(stripEnvelope(f.text))} />
-                : <div key={'f' + i} className="msg assistant live md"
-                    dangerouslySetInnerHTML={md(f.text)} />
+            f.kind === 'thought'
+              ? <div key={'f' + i} className="msg assistant live">
+                  <ThoughtLine text={f.text} secs={f.secs} /></div>
+              : f.kind === 'tool'
+                ? <div key={'f' + i} className="msg live tools"><DotIcon fontSize="inherit" className="tooldot" /> {f.text}</div>
+                : f.kind === 'steered'
+                  ? <div key={'f' + i} className="msg user live md"
+                      dangerouslySetInnerHTML={md(stripEnvelope(f.text))} />
+                  : <div key={'f' + i} className="msg assistant live md"
+                      dangerouslySetInnerHTML={md(f.text)} />
           ))}
           {thinking && chat?.busy && (
             <div className="msg live thinking">{thinking}</div>)}
@@ -3511,6 +3535,7 @@ const Msg = memo(function Msg({ m, slug, nid }) {
   const text = m.role === 'user' ? stripEnvelope(m.text) : m.text
   return (
     <div className={'msg ' + m.role + (m.oracle ? ' oracle' : '')}>
+      {m.thinking && <ThoughtLine text={m.thinking} secs={m.think_secs} />}
       {(m.tools ?? []).map((t, i) => (typeof t === 'string'
         ? <div key={i} className="tools"><DotIcon fontSize="inherit" className="tooldot" /> {t}</div>
         : <ToolChip key={t.id ?? i} t={t} slug={slug} nid={nid} />))}
@@ -3519,6 +3544,24 @@ const Msg = memo(function Msg({ m, slug, nid }) {
     </div>
   )
 })
+
+// №18 evolved (user spec 2026-07-31): after thinking wraps up it folds into a
+// small clickable "thought for Xs" line; the click expands the thought
+// process. Fed live (measured) while the turn runs, and from the transcript's
+// thinking blocks (gap-derived seconds) ever after.
+function ThoughtLine({ text, secs }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="thoughtwrap">
+      <button className="thoughtline" onClick={() => setOpen((o) => !o)}
+        title={open ? 'collapse' : 'read the thought process'}>
+        <PsychologyIcon fontSize="inherit" />
+        {' '}thought for {secs ? `${secs}s` : 'a moment'} {open ? '▾' : '▸'}
+      </button>
+      {open && <div className="thoughtbody">{text}</div>}
+    </div>
+  )
+}
 
 // №5: the compaction boundary carries its summary behind a click — never a
 // 20 KB bubble in the user's voice

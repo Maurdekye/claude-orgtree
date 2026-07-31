@@ -240,9 +240,16 @@ def kill_claude(name: str, match: str = "claude") -> None:
         pass
 
 
+_dead: set[str] = set()   # slugs deleted mid-warm-up (create/delete race)
+
+
 def remove(slug: str) -> None:
     """Org deleted: tear the container down (the sandbox home dir stays on
-    disk beside the workspace, same policy as scratch dirs)."""
+    disk beside the workspace, same policy as scratch dirs). The tombstone
+    closes the warm() race: deleting an org while its background prebuild was
+    still creating the container used to leak it (rm -f fired before the
+    container existed; observed in the wild)."""
+    _dead.add(slug)
     try:
         _docker("rm", "-f", container_name(slug), timeout=60)
     except (OSError, subprocess.TimeoutExpired):
@@ -252,9 +259,17 @@ def remove(slug: str) -> None:
 def warm(org) -> None:
     """Fire-and-forget prebuild at kiosk creation so the first turn is not
     minutes slow (image build + container create)."""
+    slug = org.d["slug"]
+    _dead.discard(slug)          # same-slug re-create un-tombs it
+
     def run():
         try:
             ensure_container(org)
         except Exception as e:              # noqa: BLE001 — surfaced per turn
-            print(f"[orgtree] sandbox warm-up for {org.d['slug']!r}: {e}")
+            print(f"[orgtree] sandbox warm-up for {slug!r}: {e}")
+        if slug in _dead:        # deleted while we were building — tear down
+            try:
+                _docker("rm", "-f", container_name(slug), timeout=60)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
     threading.Thread(target=run, daemon=True).start()

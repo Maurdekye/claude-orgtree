@@ -488,6 +488,10 @@ def orgs_create(body: OrgCreate):
                     prov if prov is not None else o.default_kiosk_ceiling())
             except LedgerError as e:
                 raise HTTPException(422, str(e))
+            # a capped org never inherits the 50-credit hire pre-fill (user
+            # report: the first hire swallowed the whole pool) — grants in a
+            # kiosk are deliberate drags; the admin can set a sub-cap default
+            o.d["default_top_grant"] = 0
             store.save_org(o)
             if o.d["kiosk"]["sandbox"]:
                 sandbox.warm(o)        # prebuild image+container in background
@@ -1677,24 +1681,32 @@ def agent_call(body: AgentCall, request: Request):
                 result = org.request_credits(body.node, a.get("new_limit"),
                                              a.get("reason"))
             elif body.tool == "orgtree_hire":
+                hdirs, dwarns = supervisor.sandbox_dirs_to_host(
+                    org, a.get("add_dirs"))
                 result = org.hire(body.node, a.get("parent") or body.node,
                                   a.get("tier"), int(a.get("grant") or 0),
-                                  a.get("name") or "", add_dirs=a.get("add_dirs"),
+                                  a.get("name") or "", add_dirs=hdirs,
                                   tools=a.get("tools"),
                                   org_visibility=a.get("org_visibility"),
                                   charter=a.get("charter"))
+                if dwarns:
+                    result.setdefault("warnings", []).extend(dwarns)
             elif body.tool == "orgtree_retool":
                 # effort joins retool (ceiling spec §6): a cost dial, so a
                 # superior may set it on REPORTS — never on itself (set_scope's
                 # authority check refuses self). raise_ceiling is deliberately
                 # NOT plumbed: an agent can never raise a kiosk ceiling.
+                rdirs, dwarns = supervisor.sandbox_dirs_to_host(
+                    org, a.get("add_dirs"))
                 result = org.set_scope(body.node, a.get("node", ""),
-                                       add_dirs=a.get("add_dirs"),
+                                       add_dirs=rdirs,
                                        tools=a.get("tools"),
                                        org_visibility=a.get("org_visibility"),
                                        charter=a.get("charter"),
                                        team_charter=a.get("team_charter"),
                                        effort=a.get("effort"))
+                if dwarns:
+                    result.setdefault("warnings", []).extend(dwarns)
             elif body.tool == "orgtree_retire":
                 result = org.retire(body.node, a.get("node"))
             elif body.tool == "orgtree_rehire":

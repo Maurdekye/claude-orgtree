@@ -185,6 +185,15 @@ class Org:
         _k = self.d.get("kiosk")
         if _k is not None:
             _k.setdefault("auto_raise", False)
+            # user report 2026-07-31: the inherited 50-credit default grant,
+            # kiosk-clamped to "everything remaining", made the FIRST hire
+            # swallow the whole pool — no second agent could ever spawn and
+            # the reason was opaque. A default the cap can't even hold was
+            # never a chosen default: zero it. In a capped org, grants are
+            # deliberate drags; a sub-cap default the admin set survives.
+            _cap = int(_k.get("credits") or 0)
+            if _cap and int(self.d.get("default_top_grant") or 0) >= _cap:
+                self.d["default_top_grant"] = 0
             if not _k.get("max_scope"):
                 dt = self.d.get("default_tools") or {}
                 mt = norm_tools(dt)

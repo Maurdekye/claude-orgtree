@@ -1270,6 +1270,21 @@ def main():
          )(orgHD2.set_hire_defaults(default_tools=dict(ALL_TOOLS),
                                     default_visibility="full"))))
 
+    check("18 kiosk zeroes an inherited >=cap hire pre-fill (grant trap)", lambda: (
+        (lambda o2: None
+         if o2.d["default_top_grant"] == 0
+         else (_ for _ in ()).throw(AssertionError(o2.d["default_top_grant"]))
+         )(Org({**Org.create("trap").d, "default_top_grant": 50,
+                "kiosk": {"enabled": True, "token": "t", "credits": 30}}))))
+    check("19 a deliberate sub-cap default survives; normal orgs keep 50", lambda: (
+        (lambda o2, o3: None
+         if o2.d["default_top_grant"] == 5 and o3.d["default_top_grant"] == 50
+         else (_ for _ in ()).throw(AssertionError((o2.d["default_top_grant"],
+                                                    o3.d["default_top_grant"])))
+         )(Org({**Org.create("trap2").d, "default_top_grant": 5,
+                "kiosk": {"enabled": True, "token": "t", "credits": 30}}),
+           Org({**Org.create("trap3").d, "default_top_grant": 50}))))
+
     orgN = Org.create("no-ceiling")
     orgN.hire(USER, None, "haiku", 0, "free1", tools=dict(ALL_TOOLS))
     check("13 normal orgs entirely unaffected — no ceiling, no clamp, no bridge", lambda: (
