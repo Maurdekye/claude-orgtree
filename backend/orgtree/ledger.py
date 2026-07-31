@@ -1687,6 +1687,7 @@ class Org:
             (self.d.get("mail") or {}).pop(k, None)
             (self.d.get("mail_log") or {}).pop(k, None)
             (self.d.get("notices") or {}).pop(k, None)
+            (self.d.get("steered_log") or {}).pop(k, None)
         self.d["audiences"] = [
             a for a in self.d["audiences"]
             if a["grantee"] not in doomed_set and a["grantor"] not in doomed_set

@@ -2227,7 +2227,30 @@ def pop_steer(slug: str, nid: str) -> list[str]:
         st["steer"] = []
     _confirm_delivered(slug, nid, [
         t for m in msgs if isinstance(m, dict) for t in m.get("toks") or []])
-    return [m["text"] if isinstance(m, dict) else m for m in msgs]
+    out = [m["text"] if isinstance(m, dict) else m for m in msgs]
+    if out:
+        # user bug 2026-07-31 ("my prompt vanishes moments after sending"):
+        # steered mail is injected as HOOK CONTEXT, which the CLI never
+        # writes to the transcript — so once the pending row drained and the
+        # live row aged out, the message existed NOWHERE the chat could
+        # show. The steered log is its durable home; read_chat interleaves
+        # it by timestamp. Written off-thread — the steer endpoint is the
+        # per-tool-call hot path and must never wait on a doc save.
+        def record():
+            with store.DOC_LOCK:
+                try:
+                    org = store.load_org(slug)
+                except Exception:               # noqa: BLE001
+                    return
+                if nid not in org.nodes:
+                    return
+                log = org.d.setdefault("steered_log", {}).setdefault(nid, [])
+                for t in out:
+                    log.append({"at": now_iso(), "text": str(t)[:20000]})
+                del log[:-40]
+                store.save_org(org)
+        threading.Thread(target=record, daemon=True).start()
+    return out
 
 
 def forget(slug: str, nids) -> None:
@@ -2647,6 +2670,20 @@ def read_chat(org: Org, nid: str, last: int | None = None) -> dict:
             if secs:
                 mrow["think_secs"] = secs
         msgs.append(mrow)
+    # steered deliveries (user bug 2026-07-31): mid-task mail rides hook
+    # context the CLI never transcripts — without this merge the message
+    # vanished from the chat forever once its live row aged out. The
+    # steered log is the durable copy; interleave by timestamp.
+    for e in (org.d.get("steered_log") or {}).get(nid, []):
+        row = {"role": "user", "text": e.get("text") or "", "tools": [],
+               "ts": e.get("at"), "steered": True}
+        at = e.get("at") or ""
+        pos = len(msgs)
+        for j, m in enumerate(msgs):
+            if (m.get("ts") or "") > at:
+                pos = j
+                break
+        msgs.insert(pos, row)
     # pre-slice ordinal: the UI keys rows on it — index keys over a sliding
     # window remounted every chip (collapsing them) each time a message
     # scrolled off the 300-row window (review)
