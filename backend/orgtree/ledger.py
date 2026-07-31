@@ -402,11 +402,13 @@ class Org:
         if actor_kind(sender) == "agent":
             self.node(sender)
         warnings: list[str] = []
-        if to.startswith("@ext:") or to.startswith("@org:"):
-            # outbound to the OUTSIDE WORLD (a chatq session, or another org's
-            # inbox). Org-inbox model (user spec): the reply speaks for the ORG
-            # as a whole; top-level agents and org-inbox audience holders may
-            # send it, and they are expected to have coordinated internally.
+        if to.startswith(("@ext:", "@org:", "@mcp:")):
+            # outbound to the OUTSIDE WORLD — a chatq session (@ext:), another
+            # org's inbox (@org:), or a polling external chat on the extern MCP
+            # server (@mcp: — no push transport; the peer reads the org inbox).
+            # Org-inbox model (user spec): the reply speaks for the ORG as a
+            # whole; top-level agents and org-inbox audience holders may send
+            # it, and they are expected to have coordinated internally.
             if actor_kind(sender) != "agent":
                 raise LedgerError("only agents message outside parties")
             if self.is_kiosk:

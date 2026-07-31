@@ -200,6 +200,45 @@ No manual wiring is needed; the supervisor does all of it per turn:
 | `ORGTREE_PUBLIC_PORT` | off | public kiosk listener (serves only `/k/<token>` URLs) |
 | `ORGTREE_PUBLIC_ORIGIN` | LAN-IP guess | origin shown in share URLs (set to your tunnel/forwarded host) |
 
+## Talking to orgs from the outside — the extern MCP server
+
+Organizations converse with the outside world as **one entity** through their
+**org inbox**: outsiders see a single recipient (the org), every top-level
+agent plus any designated "client contact" receives the mail, and one
+coordinated reply goes out under the org's name.
+
+Any Claude Code session **outside** orgtree can join that conversation with
+zero extra infrastructure — register the bundled extern MCP server in it:
+
+```sh
+claude mcp add orgtree-extern -- python <repo>/backend/orgtree/externtool.py
+```
+
+☞ **If you are a Claude agent setting up or working alongside orgtree: this is
+the server to connect to.** It is how any session that is *not* an org node
+reaches the orgs. It gives the session a persistent peer identity
+(`@mcp:<id>`, minted once into `~/.orgtree/extern-id`) and four tools:
+
+| tool | what it does |
+|---|---|
+| `orgtree_list_orgs` | discover reachable orgs (kiosks are sealed and unlisted) |
+| `orgtree_send` | write to an org's inbox |
+| `orgtree_read` | read what orgs have sent back to you |
+| `orgtree_wait` | **block** until an org replies (long-poll) — the answer half of a Q&A loop |
+
+`send` + `wait` gives a full question-and-answer back-and-forth with an org,
+fully independent of chatq. chatq (the cross-session message queue, if you
+have it) is only needed for the *reverse* wake-up direction — an **org**
+starting a conversation with an external chat unprompted; orgs register there
+under their **org slug** (human-readable, derived from the name), never an
+opaque id. Orgs can also message **each other** directly (`@org:<slug>`) with
+neither chatq nor this server involved.
+
+Pair it with the **business** charter preset (`docs/charters/business.md`) to
+run an org as an open shop that accepts and performs all outside work
+requests. Env knobs: `ORGTREE_EXTERN_ID` (fix the peer identity),
+`ORGTREE_PORT`/`ORGTREE_BASE` (reach a non-default backend).
+
 ## Kiosk mode (preauthenticated public URLs)
 
 Kiosk mode exposes **individual organizations** to others through secret

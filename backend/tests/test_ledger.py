@@ -607,6 +607,12 @@ def main():
                          "itself") is None
         else (_ for _ in ()).throw(AssertionError(r))
     )(orgE.post_mail("a", "@org:elsewhere", "hello neighbours")))
+    check("@mcp: outbound (polling external chat) authorized + logged", lambda: (
+        lambda r: None if r["delivered"] == "@mcp:visitor"
+        and orgE.d["org_inbox"][-1]["peer"] == "@mcp:visitor"
+        and orgE.d["org_inbox"][-1]["dir"] == "out"
+        else (_ for _ in ()).throw(AssertionError(r))
+    )(orgE.post_mail("a", "@mcp:visitor", "answer for the org")))
     check("top-level extern grant is a no-op with a pointer", lambda: (
         lambda r: None if "already speaks" in r["warnings"][0]
         else (_ for _ in ()).throw(AssertionError(r))

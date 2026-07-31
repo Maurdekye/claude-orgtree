@@ -192,12 +192,13 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
         })
       }
     }
-    // the ORG INBOX panel (user spec): sits ABOVE the overseer, and only
-    // exists once the org has received outside mail or granted an inbox
-    // audience — until then the canvas is unchanged
+    // the ORG INBOX panel (user spec): up and to the RIGHT of the overseer —
+    // "out of the way" of the org structure, not stacked on its axis — and it
+    // only exists once the org has received outside mail or granted an inbox
+    // audience; until then the canvas is unchanged
     if (tree.org_inbox?.visible) {
       const eye = t.get(USER)
-      if (eye) t.set(INBOX, { x: eye.x, y: eye.y - INBOX_H - 72 })
+      if (eye) t.set(INBOX, { x: eye.x + USER_W + 260, y: eye.y - INBOX_H - 96 })
     }
     let minY = Infinity
     for (const p of t.values()) minY = Math.min(minY, p.y)
@@ -780,7 +781,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
           {tree.org_inbox?.visible && posOf(INBOX) && posOf(USER) && (() => {
             const ib = posOf(INBOX), ey = posOf(USER)
             const out = [<path key="oi-tether"
-              d={`M ${ib.x + USER_W / 2} ${ib.y + INBOX_H} L ${ey.x + USER_W / 2} ${ey.y}`}
+              d={`M ${ib.x + 10} ${ib.y + INBOX_H - 6} L ${ey.x + USER_W - 12} ${ey.y + 10}`}
               className="edge tether" />]
             for (const h of tree.org_inbox.holders ?? []) {
               if (!map.has(h) || !posOf(h)) continue
@@ -1412,12 +1413,14 @@ function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRemaining,
       </div>
       <div className="draft-tag">uninitialized</div>
       {presets.length > 0 && (
+        // multi-preset (user spec): each pick APPENDS its charter — stack as
+        // many as you like (e.g. coordinator + business); all stays editable
         <select className="draft-preset" value=""
           onChange={(e) => {
             const p = presets.find((x) => x.name === e.target.value)
-            if (p) setCharter(p.content)
+            if (p) setCharter((c) => (c.trim() ? c.trimEnd() + '\n\n' : '') + p.content)
           }}>
-          <option value="">charter preset…</option>
+          <option value="">add charter preset…</option>
           {presets.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
         </select>
       )}
@@ -2231,8 +2234,10 @@ function OrgInboxModal({ inbox, map, slug, toast, close }) {
               <div className="oi-meta">
                 {e.dir === 'in'
                   ? <>⭠ from <b>{e.peer.replace(/^@/, '')}</b></>
-                  : <>⭢ to <b>{e.peer.replace(/^@/, '')}</b>
-                    {e.by && <span className="dim"> · written by {e.by}</span>}</>}
+                  /* outbound attribution (user spec): @agent as @org → @recipient */
+                  : <><b>{e.by ? `@${e.by}` : '@?'}</b>
+                    <span className="dim"> as </span><b>@{slug}</b>
+                    <span className="dim"> → </span><b>{e.peer}</b></>}
                 <span className="dim oi-time">{(e.at ?? '').replace('T', ' ').replace('Z', '')}</span>
               </div>
               <div className="oi-body md" dangerouslySetInnerHTML={md(e.body)} />

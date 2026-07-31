@@ -968,6 +968,80 @@ async def user_inbox_read(slug: str, body: InboxRead):
     return {"read": len(read)}
 
 
+# ------------------------------------------------ external chats (no chatq)
+# The extern MCP server (externtool.py) gives any outside Claude Code session
+# a peer identity (@mcp:<id>) and three verbs against org inboxes: send, read
+# what's addressed to me, and wait for a response — a full Q&A loop with an
+# org, no chatq required. chatq stays relevant only when the ORG must wake an
+# external chat unprompted.
+_PEER_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
+
+
+class ExternSend(BaseModel):
+    org: str
+    body: str
+
+
+def _extern_peer(peer: str) -> str:
+    if not _PEER_RE.fullmatch(peer):
+        raise HTTPException(422, "peer id must be 1-64 chars of [A-Za-z0-9._-]")
+    return f"@mcp:{peer}"
+
+
+@app.post("/api/extern/{peer}/send")
+def extern_send(peer: str, body: ExternSend):
+    addr = _extern_peer(peer)
+    if not body.body.strip():
+        raise HTTPException(422, "empty message")
+    with store.DOC_LOCK:
+        try:
+            org = store.load_org(body.org)
+        except LedgerError:
+            raise HTTPException(404, f"no organization named {body.org!r}")
+        if org.is_kiosk:
+            raise HTTPException(403, f"organization {body.org!r} is a sealed "
+                                     f"kiosk — unreachable from outside")
+    delivered = supervisor.deliver_org_inbox(body.org, addr, body.body)
+    return {"delivered": delivered or ["(user inbox — no live agents)"]}
+
+
+def _extern_scan(addr: str, org_slug: str | None, after: str | None) -> list[dict]:
+    out = []
+    with store.DOC_LOCK:
+        for o in store.list_orgs():
+            if org_slug and o["slug"] != org_slug:
+                continue
+            try:
+                org = store.load_org(o["slug"])
+            except LedgerError:
+                continue
+            for e in org.d.get("org_inbox", []):
+                if e.get("peer") == addr and e.get("dir") == "out" \
+                        and (not after or e.get("at", "") > after):
+                    out.append({"org": o["slug"], "id": e["id"],
+                                "at": e["at"], "body": e["body"]})
+    out.sort(key=lambda x: x["at"])
+    return out
+
+
+@app.get("/api/extern/{peer}/messages")
+def extern_messages(peer: str, org: str | None = None, after: str | None = None):
+    return {"messages": _extern_scan(_extern_peer(peer), org, after)}
+
+
+@app.get("/api/extern/{peer}/wait")
+async def extern_wait(peer: str, org: str | None = None,
+                      after: str | None = None, timeout: int = 25):
+    """Long-poll: block until an org replies to this peer (or timeout)."""
+    addr = _extern_peer(peer)
+    deadline = time.monotonic() + min(max(timeout, 1), 55)
+    while True:
+        msgs = _extern_scan(addr, org, after)
+        if msgs or time.monotonic() >= deadline:
+            return {"messages": msgs}
+        await asyncio.sleep(1.0)
+
+
 @app.post("/api/orgs/{slug}/org_inbox/read")
 async def org_inbox_read(slug: str):
     """The user opened the org-inbox panel: clear its unread count."""
@@ -1232,6 +1306,10 @@ async def agent_call(body: AgentCall, request: Request):
                 elif delivered and delivered.startswith("@org:"):
                     # outbound to ANOTHER ORG's inbox — direct, no chatq needed
                     org_send = (delivered[5:], a.get("body", ""))
+                elif delivered and delivered.startswith("@mcp:"):
+                    # a polling external chat: the org-inbox entry IS the
+                    # delivery — the peer reads it via the extern MCP server
+                    pass
                 elif delivered is not None:
                     mail_notify(body.org, body.node,
                                 USER if delivered == "user_inbox" else delivered)
