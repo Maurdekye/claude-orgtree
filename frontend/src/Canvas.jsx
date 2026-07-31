@@ -1435,10 +1435,16 @@ function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRemaining,
         draftMode max={max}
         onDragValue={setGrant} zoom={zoom} pxc={pxc} />
       <div className="draft-tag">uninitialized</div>
-      {/* full redesign (user request: the old in-card form was cramped): the
-          form is authored at NATURAL SCREEN SCALE and counter-scaled into the
-          card — the same inverted-scale regime as the desk chat. spawn()
-          glides the camera to screen-fill, where authored px ≈ screen px. */}
+      {/* permissions ride the SAME gear as every agent card, same position
+          (user ruling) — pre-hire it stages the scope applied with the hire */}
+      <button className="gearbtn"
+        title="permissions — folders, tools, MCP, visibility (applied with the hire)"
+        onPointerDown={(e) => e.stopPropagation()}
+        onClick={(e) => { e.stopPropagation(); setPermsOpen(true) }}>
+        <SettingsIcon fontSize="inherit" /></button>
+      {/* the form is authored at natural screen scale and counter-scaled into
+          the card — the desk's inverted-scale regime, on a 200px surface so
+          the whole hiring flow stays near overview zoom */}
       <div className="draft-over" onWheel={(e) => e.stopPropagation()}>
         <div className="draft-inner">
           <div className="df-head">
@@ -1483,9 +1489,6 @@ function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRemaining,
             value={charter} onChange={(e) => setCharter(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && ok) { e.preventDefault(); hire() } }} />
           <div className="df-foot">
-            <button onClick={() => setPermsOpen(true)}
-              title="folders, tool switches, MCP servers, org visibility — set BEFORE hiring">
-              <SettingsIcon fontSize="inherit" /> permissions{scope ? ' ·' : '…'}</button>
             <span className="spacer" />
             <button onClick={onCancel}><CloseIcon fontSize="inherit" /> cancel</button>
             <button className="primary" disabled={!ok} onClick={hire}>
