@@ -429,8 +429,7 @@ def orgs_list(request: Request):
         except LedgerError:
             out.append(o)
             continue
-        row = {**o, "cost_usd_total": round(
-            sum(float(v.get("cost_usd") or 0.0) for v in org.nodes.values()), 4)}
+        row = {**o, "cost_usd_total": org.cost_total()}
         k = org.d.get("kiosk")
         if k:
             row["kiosk_cfg"] = {
@@ -828,8 +827,7 @@ async def org_kiosk(slug: str, body: KioskCfg):
                          f"credits — retire or dissolve agents first, then lower it")
         org.d["kiosk"] = k
         cleared = []
-        spent = sum(float(v.get("cost_usd") or 0.0)
-                    for v in org.nodes.values())
+        spent = org.cost_total()            # incl. deleted agents' burn
         lim = float(k.get("spend_limit") or 0)
         over = k.get("enabled") and lim and spent >= lim
         drive_after = []

@@ -1665,6 +1665,16 @@ class Org:
         return {"freed": freed, "nodes": order, "warnings": []}
 
     # ----------------------------------------------------------------- delete
+    def cost_total(self) -> float:
+        """Org spend INCLUDING deleted agents' burn (user bug 2026-07-31:
+        deleting agents shrank the total — undercounting the dashboard and,
+        worse, walking the enforced kiosk SPEND LIMIT backwards). Cost is
+        history, not a node property; the tombstone accumulator keeps every
+        dollar ever burned."""
+        return round(sum(float(v.get("cost_usd") or 0.0)
+                         for v in self.nodes.values())
+                     + float(self.d.get("deleted_cost_usd") or 0.0), 4)
+
     def delete(self, actor: str, nid: str) -> dict:
         """Permanent removal — USER ONLY (ruling). Agents may at most retire an
         agent and then ask the user if they truly want it deleted. Takes the whole
@@ -1682,6 +1692,12 @@ class Org:
         for k in doomed:
             with_lineage.extend(self.lineage_stack(k))
         doomed_set = set(with_lineage)
+        # bank the burn BEFORE the nodes go — cost is history (see cost_total)
+        lost = round(sum(float((self.nodes.get(k) or {}).get("cost_usd") or 0.0)
+                         for k in doomed_set), 6)
+        if lost:
+            self.d["deleted_cost_usd"] = round(
+                float(self.d.get("deleted_cost_usd") or 0.0) + lost, 6)
         for k in doomed_set:
             self.nodes.pop(k, None)
             (self.d.get("mail") or {}).pop(k, None)
@@ -1708,7 +1724,8 @@ class Org:
                      + (f" and its suborganization ({extra} more node(s))" if extra else "")
                      + ". Its records are gone from the org.")
         self._notify(peers, f'Your peer "{nid}" was permanently deleted by the user.')
-        self._log("delete", actor, {"node": nid, "removed": sorted(doomed_set)}, [])
+        self._log("delete", actor, {"node": nid, "removed": sorted(doomed_set),
+                                    **({"cost_usd": lost} if lost else {})}, [])
         return {"deleted": sorted(doomed_set), "warnings": []}
 
     # ------------------------------------------------------------- reallocate
@@ -2502,8 +2519,7 @@ class Org:
             "audiences": self.d["audiences"],
             "roots": [build(c) for c in self.org_children(None)],
             "audit": self.audit(),
-            "cost_usd_total": round(sum(float(v.get("cost_usd") or 0.0)
-                                        for v in self.nodes.values()), 4),
+            "cost_usd_total": self.cost_total(),
             "user_inbox_count": len(self.d.get("user_inbox", [])),
             "user_inbox_newest": (self.d.get("user_inbox") or [{}])[-1].get("at"),
             "fable_lock": self.d.get("fable_lock"),

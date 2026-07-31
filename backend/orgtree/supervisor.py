@@ -1353,8 +1353,7 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict, st: dict, occ: int = 0
                          "denials": len(denials)})
             del ring[:-20]
             store.save_org(o2)
-            spend_total = sum(float(v.get("cost_usd") or 0.0)
-                              for v in o2.nodes.values())
+            spend_total = o2.cost_total()   # incl. deleted agents' burn
             kcfg = kiosk_cfg(o2)
     else:
         kcfg = kiosk_cfg(org)
@@ -1469,8 +1468,7 @@ def _compact_split_body(slug: str, nid: str):
         # near-full reading kept the wheel hot and let the repeat precheck pass
         n["occupancy"] = None
         store.save_org(org)
-        spend_total = sum(float(v.get("cost_usd") or 0.0)
-                          for v in org.nodes.values())
+        spend_total = org.cost_total()      # incl. deleted agents' burn
         kcfg = kiosk_cfg(org)
     if (kcfg and float(kcfg.get("spend_limit") or 0) > 0
             and spend_total >= float(kcfg["spend_limit"])):

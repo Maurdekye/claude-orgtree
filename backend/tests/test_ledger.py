@@ -1312,6 +1312,20 @@ def main():
          and orgT.nodes["old-big"]["state"] == "live"
          else (_ for _ in ()).throw(AssertionError(r))
          )(orgT.rehire(USER, "old-big", tier="opus")))[-1])
+    check("24 deleted agents keep their cost on the org total (spend limit "
+          "never walks backwards)", lambda: (
+        (lambda o: (
+            o.hire(USER, None, "haiku", 0, "burner"),
+            o.nodes["burner"].__setitem__("cost_usd", 1.25),
+            o.hire(USER, None, "haiku", 0, "keeper"),
+            o.nodes["keeper"].__setitem__("cost_usd", 0.5),
+            o.delete(USER, "burner"),
+            None if abs(o.cost_total() - 1.75) < 1e-9
+            and abs(float(o.d["deleted_cost_usd"]) - 1.25) < 1e-9
+            and "burner" not in o.nodes
+            else (_ for _ in ()).throw(AssertionError(
+                (o.cost_total(), o.d.get("deleted_cost_usd")))))[-1]
+         )(Org.create("cost-keep"))))
     check("23 set_kiosk_ceiling: bogus max_tier refused; lowering names "
           "surviving over-cap live agents (no model sweep)", lambda: (
         expect_error(lambda: orgT.set_kiosk_ceiling(
