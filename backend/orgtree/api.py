@@ -1080,6 +1080,10 @@ def node_message(slug: str, nid: str, body: Message):
                                  "compaction preserves the whole session as "
                                  "a knowledge bearer"]
             return r
+        # /context-class commands (user spec): answered IMMEDIATELY via a
+        # throwaway session fork — works mid-turn, output rides the live feed
+        if supervisor.immediate_command(slug, nid, stripped):
+            return {"accepted": True, "command": True, "immediate": True}
         return supervisor.send_message(slug, nid, stripped, command=True)
     with store.DOC_LOCK:
         try:
@@ -1761,6 +1765,10 @@ def agent_call(body: AgentCall, request: Request):
                         mail_notify(body.org, body.node, parent)
                         drive.append(parent)
                         result["reported_to"] = parent
+                        # id + delivered: the chat chip's inline mailbox link
+                        # (user spec — ALL agent mail sends carry it)
+                        result["delivered"] = parent
+                        result["id"] = r.get("id")
                         result["warnings"] = r.get("warnings", [])
                     else:
                         # top-level: the user already gets the agent's own reply

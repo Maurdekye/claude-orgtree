@@ -1744,6 +1744,98 @@ def maybe_storage_check(slug: str) -> None:
     threading.Thread(target=run, daemon=True).start()
 
 
+# read-only session-introspection commands (user spec 2026-07-31): these
+# answer IMMEDIATELY — even mid-turn — instead of waiting for a turn slot
+IMMEDIATE_CMDS = {"context", "cost", "todos"}
+
+
+def immediate_command(slug: str, nid: str, text: str) -> bool:
+    """/context-class commands answer NOW via a throwaway --fork-session
+    one-shot (the compaction-split idiom): the fork reads the transcript as
+    last written, executes the LOCAL command (no API call, $0) and is
+    discarded — the live session never sees it, so it works mid-turn with
+    zero disturbance. Output rides the live feed (kind:text). Returns True
+    when handled; False falls back to the queued command path (a node with
+    no session yet has nothing to fork — booting one shows the output
+    durably instead). Honest caveat: mid-turn output reflects the last
+    WRITTEN record, excluding the in-flight turn."""
+    word = (text.strip().split()[0].lstrip("/").lower()
+            if text.strip() else "")
+    if word not in IMMEDIATE_CMDS:
+        return False
+    org = store.load_org(slug)
+    n = org.node(nid)
+    sid = n["session_id"]
+    model = org.d["models"].get(n["model"], n["model"])
+    tdir = _transcript_root(org)
+    if not transcript_path(sid, tdir):
+        return False
+
+    def run():
+        fork_sid, out_text = None, ""
+        try:
+            if sbx.is_sandboxed(org):
+                name = sbx.ensure_container(org)
+                head = sbx.exec_argv(name,
+                                     sbx.cpath_scratch(slug, nid)) + ["claude"]
+            else:
+                head = _claude_argv()
+            argv = head + ["-p", "--output-format", "stream-json", "--verbose",
+                           "--resume", sid, "--fork-session",
+                           "--model", model,
+                           "--settings", json.dumps({"disableAllHooks": True}),
+                           "--strict-mcp-config"]
+            proc = subprocess.Popen(argv, cwd=scratch_dir(slug, nid),
+                                    env=clean_env(), stdin=subprocess.PIPE,
+                                    stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, text=True,
+                                    encoding="utf-8", errors="replace")
+            _leash(proc)
+            try:
+                out, _err = proc.communicate(input=text.strip(), timeout=120)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.communicate()
+                raise RuntimeError("timed out after 120s")
+            texts = []
+            for line in out.splitlines():
+                try:
+                    ev = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if ev.get("session_id"):
+                    fork_sid = ev["session_id"]
+                # measured: the fork emits the command output as a SYNTHETIC
+                # assistant message's text blocks (no local_command event on
+                # stdout — that shape exists only in the transcript)
+                if ev.get("type") == "assistant":
+                    for blk in ev.get("message", {}).get("content", []):
+                        if blk.get("type") == "text" and blk.get("text", "").strip():
+                            texts.append(blk["text"])
+                if (ev.get("type") == "system"
+                        and ev.get("subtype") == "local_command"):
+                    body = _cmd_stdout(ev.get("content") or "")
+                    if body:
+                        texts.append(body)
+            out_text = "\n\n".join(texts).strip()
+            if not out_text:
+                out_text = f"(/{word} returned no output)"
+        except Exception as e:                               # noqa: BLE001
+            out_text = f"⚠ /{word} failed: {e}"
+        stream(slug, nid, {"kind": "text", "text": out_text[:20000]})
+        # the fork transcript is a full COPY of the session — delete it, or
+        # every /context banks megabytes (kiosk storage included) for nothing
+        if fork_sid and fork_sid != sid:
+            fp = transcript_path(fork_sid, tdir)
+            if fp:
+                try:
+                    os.remove(fp)
+                except OSError:
+                    pass
+    threading.Thread(target=run, daemon=True).start()
+    return True
+
+
 _watchdog_started = False
 
 
@@ -2433,6 +2525,22 @@ def read_chat(org: Org, nid: str, last: int | None = None) -> dict:
                                 sent = json.loads(body).get("sent")
                                 if isinstance(sent, dict) and sent.get("path"):
                                     entry["file"] = sent
+                            except (ValueError, AttributeError):
+                                pass
+                        # mail sends (user spec 2026-07-31: ALL of them —
+                        # messages and status reports alike) carry an inline
+                        # "open in mailbox" link: the result's id + delivered
+                        # name the exact mail in the exact box
+                        if (entry.get("name") in
+                                ("mcp__orgtree__orgtree_message",
+                                 "mcp__orgtree__orgtree_status")
+                                and not block.get("is_error")):
+                            try:
+                                r = json.loads(body)
+                                if (isinstance(r, dict) and r.get("id")
+                                        and r.get("delivered")):
+                                    entry["mail"] = {"id": r["id"],
+                                                     "to": r["delivered"]}
                             except (ValueError, AttributeError):
                                 pass
                     tools.append(None)   # marker: this user record is plumbing

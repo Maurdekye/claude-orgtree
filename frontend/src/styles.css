@@ -1493,6 +1493,20 @@ svg.MuiSvgIcon-root {
   margin-left: auto; padding: 0 2px;
 }
 .fdl:hover { color: var(--accent); }
+/* inline "open in mailbox" on mail-send chips (user spec 2026-07-31) */
+.maillink {
+  display: inline-flex; align-items: center; gap: 3px; margin-left: 6px;
+  background: none; border: 1px solid var(--line-soft); border-radius: 9px;
+  color: var(--dim); font-size: 10.5px; padding: 0 7px; cursor: pointer;
+  font-family: inherit;
+}
+.maillink:hover { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+/* the jumped-to mail flashes so "took me to it" is unmistakable */
+.mailrow.jflash { animation: jflash 1.6s ease-out 1; }
+@keyframes jflash {
+  0%, 35% { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+  100% { background: transparent; }
+}
 /* "thought for Xs" — the collapsed thinking line + its expansion */
 .thoughtwrap { margin: 1px 0 3px; }
 .thoughtline {

@@ -37,6 +37,7 @@ export default function App() {
   const [activity, setActivity] = useState({})   // node → {phase, tool}
   const [showSettings, setShowSettings] = useState(false)
   const [showInbox, setShowInbox] = useState(false)
+  const [inboxJump, setInboxJump] = useState(null)   // mail id a chat link targets
   const [drawer, setDrawer] = useState(false)
   const [doomedOrg, setDoomedOrg] = useState(null)   // org row pending deletion
   const [showDefaults, setShowDefaults] = useState(false)   // global new-org defaults
@@ -338,15 +339,20 @@ export default function App() {
               </header>
               <OrgCanvas tree={tree} op={op} slug={slug} pulse={pulse} toast={toast}
                 streamEvt={streamEvt} activity={activity} mailEvt={mailEvt}
-                onInbox={() => setShowInbox(true)} />
+                onInbox={(jump) => {
+                  setInboxJump(typeof jump === 'string' ? jump : null)
+                  setShowInbox(true)
+                }} />
               {showSettings && (
                 <SettingsPanel tree={tree} toast={toast}
                   close={() => { setShowSettings(false); refreshTree(slug) }} />
               )}
               {showInbox && (
                 <InboxPanel slug={slug} tree={tree} toast={toast}
-                  refresh={() => refreshTree(slug)}
-                  close={() => { setShowInbox(false); refreshTree(slug) }} />
+                  refresh={() => refreshTree(slug)} jumpTo={inboxJump}
+                  close={() => {
+                    setShowInbox(false); setInboxJump(null); refreshTree(slug)
+                  }} />
               )}
             </>
           ) : <div className="empty">loading {slug}…</div>}
@@ -633,7 +639,7 @@ function SenderChip({ id, nodes }) {
   )
 }
 
-function InboxPanel({ slug, tree, toast, refresh, close }) {
+function InboxPanel({ slug, tree, toast, refresh, close, jumpTo }) {
   useEsc(close)
   const [box, setBox] = useState(null)
   const [aud, setAud] = useState(null)
@@ -721,7 +727,7 @@ function InboxPanel({ slug, tree, toast, refresh, close }) {
             ? <div className="dim">loading…</div>
             : folder === 'inbox'
               ? <MailList pending={box.pending} delivered={box.delivered}
-                  waitLabel="unread"
+                  waitLabel="unread" jumpTo={jumpTo}
                   onRead={(m) => markRead(slug, [m.id])
                     .then(() => { reload(); refresh?.() }).catch(() => {})}
                   onReply={(m, text) => sendMessage(slug, m.from, text)

@@ -249,6 +249,11 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
                                                     // spec: hidden by default)
   const [inboxId, setInboxId] = useState(null)
   const [oiOpen, setOiOpen] = useState(false)       // the ORG-inbox viewer
+  // inline mail links (user spec 2026-07-31): a chat's send chip opens the
+  // box that HOLDS the mail, selected on it — user inbox, a node's inbox, or
+  // the org inbox for outbound. Jump ids clear when the modal closes.
+  const [nodeInboxJump, setNodeInboxJump] = useState(null)
+  const [oiJump, setOiJump] = useState(null)
   // unread-mail attention: the eye glows until the mailbox is OPENED (merely
   // opening acknowledges the glow; the count badge stays until mails are READ)
   const [inboxSeen, setInboxSeen] = useState(
@@ -258,6 +263,25 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
   const seats = tree.tiers ?? { haiku: 1, sonnet: 3, opus: 5, fable: 10 }
   const vroot = useMemo(() => withDraftTree(tree, draft), [tree, draft])
   const map = useMemo(() => flatten(vroot, seats), [vroot])   // eslint-disable-line
+  // the mail-link router — STABLE identity (Msg is memoized on its props;
+  // the ref carries the fresh closure). user_inbox → the eye's mailbox
+  // (marking the glow seen, same as its ✉); @ext:/@org:/@mcp: → the org
+  // inbox; anything else → that node's inbox. Dead targets no-op.
+  const openMailRef = useRef(null)
+  openMailRef.current = (m) => {
+    if (!m?.id || !m?.to) return
+    if (m.to === 'user_inbox') {
+      const nw = tree.user_inbox_newest ?? new Date().toISOString()
+      localStorage.setItem('orgtree-inbox-seen-' + slug, nw)
+      setInboxSeen(nw)
+      onInbox?.(m.id)
+    } else if (String(m.to).startsWith('@')) {
+      setOiJump(m.id); setOiOpen(true)
+    } else if (map.has(m.to)) {
+      setNodeInboxJump(m.id); setInboxId(m.to)
+    }
+  }
+  const openMail = useCallback((m) => openMailRef.current?.(m), [])
   // RETIRED PILE (user spec): archived siblings in a cohort stack into ONE
   // pile so long-running orgs don't fill the canvas with retirees. The FRONT
   // retiree is the interactable card (zoom/desk/inbox/rehire); clicking the
@@ -1150,6 +1174,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
                 onInbox?.()
               }}
               onGear={() => setUserCfg(true)}
+              onMailLink={openMail}
               onSpawn={(t) => spawn(USER, t)} />
           }
           if (n.id === DRAFT) {
@@ -1169,6 +1194,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
               streamEvt={streamEvt} pxc={pxPerCredit} zoom={view.z} act={activity?.[n.id]}
               onSpawn={(t) => spawn(n.id, t)} onConfig={() => setConfigId(n.id)}
               onInbox={() => setInboxId(n.id)} onLineage={() => setLineageId(n.id)}
+              onMailLink={openMail}
               onRecenter={() => centerOn(n.id)}   /* recenter AND re-zoom to fill */
               pub={!!tree.public} kioskRemaining={kioskRemaining}
               cascadeAlloc={tree.cascade_alloc !== false}
@@ -1352,17 +1378,19 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
       )}
       {inboxId && map.get(inboxId) && (
         <NodeInboxModal node={map.get(inboxId)} slug={slug} pulse={pulse}
-          close={() => setInboxId(null)} />
+          jumpTo={nodeInboxJump}
+          close={() => { setInboxId(null); setNodeInboxJump(null) }} />
       )}
       {pileOpen && piles.get(pileOpen) && (
-        <PilePicker pile={piles.get(pileOpen)} map={map}
+        <PilePicker pile={piles.get(pileOpen)} map={map} op={op} toast={toast}
           onPick={(nid) => { setFront(pileOpen, nid); setPileOpen(null) }}
           close={() => setPileOpen(null)} />
       )}
       {oiOpen && (
         <OrgInboxModal inbox={tree.org_inbox} map={map} slug={slug} toast={toast}
+          jumpTo={oiJump}
           close={() => {
-            setOiOpen(false)
+            setOiOpen(false); setOiJump(null)
             // closing the panel acknowledges the whole log (same idiom as the
             // eye's glow: opening acknowledges attention)
             if (tree.org_inbox?.unread) orgInboxRead(slug).catch(() => {})
@@ -1375,6 +1403,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
 // ------------------------------------------------------------- the overseer
 function UserNode({ pos, isDrop, stats, inboxCount, seats, mailGlow,
   kiosk, pub, kioskRemaining, kioskSegs, pxc, zoom, onInbox, onGear, onSpawn,
+  onMailLink,
   focused, eyeW, onFocus, posX, onJump, map, op, slug, pulse, toast,
   streamEvt, compactAt }) {
   const downRef = useRef(null)
@@ -1452,7 +1481,7 @@ function UserNode({ pos, isDrop, stats, inboxCount, seats, mailGlow,
         <EyeDesk map={map} op={op} slug={slug} pulse={pulse} toast={toast}
           streamEvt={streamEvt} inboxCount={inboxCount} onInbox={onInbox}
           onGear={onGear} pub={pub} eyeW={eyeW} posX={posX} onJump={onJump}
-          compactAt={compactAt} />
+          compactAt={compactAt} onMailLink={onMailLink} />
       )}
     </div>
   )
@@ -1465,7 +1494,7 @@ function UserNode({ pos, isDrop, stats, inboxCount, seats, mailGlow,
 // manage crowding. A line that exists via an audience grant carries an ✕:
 // closing that tab RESCINDS the grant (top-level lines are permanent).
 function EyeDesk({ map, op, slug, pulse, toast, streamEvt, inboxCount,
-  onInbox, onGear, pub, eyeW, posX, onJump, compactAt }) {
+  onInbox, onGear, pub, eyeW, posX, onJump, compactAt, onMailLink }) {
   const agents = [...map.values()].filter((n) =>
     n.id !== USER && n.id !== DRAFT && n.state === 'live' && !n.isBearerOf
     && (n.parent === USER || n.audiences_held?.includes(USER)))
@@ -1572,6 +1601,7 @@ function EyeDesk({ map, op, slug, pulse, toast, streamEvt, inboxCount,
             <div className="eye-panel" key={a.id}>
               <DeskChat node={a} map={map} op={op} slug={slug} pulse={pulse}
                 toast={toast} pub={pub} bare compact compactAt={compactAt}
+                onMailLink={onMailLink}
                 streamEvt={streamEvt?.node === a.id ? streamEvt : null} />
             </div>
           ))}
@@ -2121,7 +2151,7 @@ function DraftScopeModal({ draft, map, tree, scope, onSave, close }) {
 function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, map, op, slug,
   pulse, toast, streamEvt, pxc, zoom, act, onSpawn, onConfig, onInbox, onLineage,
   onRecenter, pub, kioskRemaining, cascadeAlloc, maxTop, pile, compactAt, maxTier,
-  onDragStart, onDragMove, onDragEnd }) {
+  onMailLink, onDragStart, onDragMove, onDragEnd }) {
   // pile fronts zoom on a plain CENTER click (user spec) — track the
   // pointer-down point so a drag's trailing click doesn't re-zoom
   const downAt = useRef(null)
@@ -2236,7 +2266,7 @@ function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, map, op,
         <DeskChat node={node} map={map} op={op} slug={slug} pulse={pulse} toast={toast}
           streamEvt={streamEvt?.node === node.id ? streamEvt : null}
           onLineage={onLineage} onConfig={onConfig} compactAt={compactAt}
-          onRecenter={onRecenter} pub={pub} />
+          onRecenter={onRecenter} pub={pub} onMailLink={onMailLink} />
       )}
       {/* user ruling: chips are NEVER disabled by the node's own free credits —
           a user hire §4.6-cascades, granting the chain whatever it lacks.
@@ -2601,7 +2631,7 @@ const DeskChat = memo(DeskChatInner, (p, n) =>
   && p.compactAt === n.compactAt)
 
 function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onConfig,
-  onRecenter, pub, bare = false, compact = false, compactAt }) {
+  onRecenter, pub, bare = false, compact = false, compactAt, onMailLink }) {
   const [chat, setChat] = useState(null)
   // №2: the draft survives the camera — persisted per node on every keystroke
   // (clicking a sibling card unmounts this whole component)
@@ -2892,7 +2922,7 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
                   <div className="msg sys">— {gapMs > 5400e3
                     ? `${Math.round(gapMs / 3600e3)} h`
                     : `${Math.round(gapMs / 60e3)} min`} later —</div>)}
-                <Msg m={m} slug={slug} nid={node.id} />
+                <Msg m={m} slug={slug} nid={node.id} onMailLink={onMailLink} />
               </div>
             )
           })}
@@ -3030,7 +3060,7 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
 // selected message opened in the reading pane on the right. Waiting/unread
 // mail sorts on top and is highlighted until read/delivered.
 export function MailList({ pending = [], delivered = [], waitLabel, sender, outgoing,
-  onRead, onReply, onRetract }) {
+  onRead, onReply, onRetract, jumpTo }) {
   // newest first throughout (user ruling) — waiting/unread stays grouped on top
   const all = [
     ...[...pending].reverse().map((m) => ({ ...m, _wait: true })),
@@ -3039,7 +3069,12 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
   // selection is BY IDENTITY, not index — marking a mail read reshuffles the
   // list, and an index would silently land on a different mail
   const keyOf = (m) => m?.id ?? `${m?.at}|${m?.from}|${(m?.body ?? '').slice(0, 24)}`
-  const [selId, setSelId] = useState(null)
+  // jumpTo (user spec 2026-07-31): a chat's inline mail link opens the box
+  // SELECTED on that mail — identity selection means the reading pane shows
+  // it; the scroll + flash happen on the row ref below. A retracted or
+  // expired id falls back to the newest mail, never an error.
+  const [selId, setSelId] = useState(jumpTo ?? null)
+  const jumpedRef = useRef(false)
   // №26: hunting an hour-old message decayed your unread set click by click —
   // a plain client-side filter over sender+body, no index, no server
   const [q, setQ] = useState('')
@@ -3080,7 +3115,14 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
         {shown.length === 0 && <div className="dim pad">no matches</div>}
         {shown.map((m, i) => (
           <div key={keyOf(m)}
-            className={'mailrow' + (m === cur ? ' on' : '') + (m._wait ? ' unread' : '')}
+            ref={(el) => {
+              if (el && jumpTo && keyOf(m) === jumpTo && !jumpedRef.current) {
+                jumpedRef.current = true
+                el.scrollIntoView({ block: 'center' })
+              }
+            }}
+            className={'mailrow' + (m === cur ? ' on' : '') + (m._wait ? ' unread' : '')
+              + (jumpTo && keyOf(m) === jumpTo ? ' jflash' : '')}
             onClick={() => {
               if (keyOf(m) !== keyOf(cur)) leave(cur)
               setSelId(keyOf(m))
@@ -3138,7 +3180,7 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
 
 // The node's own mailbox (user ruling: its own tab, separate from history),
 // with the same folders as the user's: inbox + sent.
-function InboxView({ slug, nid, pulse, onRetract }) {
+function InboxView({ slug, nid, pulse, onRetract, jumpTo }) {
   const [box, setBox] = useState(null)
   const [folder, setFolder] = useState('inbox')
   useEffect(() => {
@@ -3154,7 +3196,7 @@ function InboxView({ slug, nid, pulse, onRetract }) {
           ? <div className="dim pad">loading…</div>
           : folder === 'inbox'
             ? <MailList pending={box.pending} delivered={box.delivered}
-                waitLabel="awaiting next turn"
+                waitLabel="awaiting next turn" jumpTo={jumpTo}
                 onRetract={onRetract
                   ? (m) => { onRetract(m); setBox((b) => b && ({
                       ...b, pending: b.pending.filter((x) => x.id !== m.id) })) }
@@ -3218,13 +3260,13 @@ export function OrgRecord({ events }) {
 
 // ✉ on a card — the node's inbox as a modal, the same interface the eye's
 // ✉ opens for the user's own inbox.
-function NodeInboxModal({ node, slug, pulse, close }) {
+function NodeInboxModal({ node, slug, pulse, close, jumpTo }) {
   useEsc(close)
   return (
     <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
       <div className="settings wide" onClick={(e) => e.stopPropagation()}>
         <h3><MailIcon fontSize="inherit" /> {node.id} <span className="dim">· inbox</span></h3>
-        <InboxView slug={slug} nid={node.id} pulse={pulse} />
+        <InboxView slug={slug} nid={node.id} pulse={pulse} jumpTo={jumpTo} />
         <div className="row">
           <button className="primary" onClick={close}>close</button>
         </div>
@@ -3286,9 +3328,25 @@ function FilesView({ slug, nid }) {
 // the RETIRED-PILE menu (user spec): pick which retiree sits in front — the
 // front card is the one you zoom in on, message, read and can rehire; the
 // rest wait stacked beneath it. The current front is highlighted.
-function PilePicker({ pile, map, onPick, close }) {
+function PilePicker({ pile, map, onPick, close, op, toast }) {
   useEsc(close)
   const crowd = pile.kind === 'c'
+  const [asking, setAsking] = useState(false)
+  // "delete all" (user spec 2026-07-31): clear the whole retired pile at
+  // once — permanent, so it sits behind the same confirm as any delete.
+  // Sequential ops; each failure is already toasted by op(), the summary
+  // counts what actually went through.
+  const wipeAll = async () => {
+    let ok = 0
+    for (const id of pile.list) {
+      try {
+        await op({ op: 'delete', node: id })
+        ok++
+      } catch { /* op() toasted it */ }
+    }
+    toast?.([`${ok} of ${pile.list.length} archived agent(s) permanently deleted`])
+    close()
+  }
   return (
     <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
       <div className="settings pile-picker" onClick={(e) => e.stopPropagation()}>
@@ -3319,6 +3377,22 @@ function PilePicker({ pile, map, onPick, close }) {
             </button>
           )
         })}
+        {!crowd && op && (
+          <div className="row">
+            <span className="spacer" />
+            <button className="danger" onClick={() => setAsking(true)}>
+              <DeleteIcon fontSize="inherit" /> delete all {pile.list.length}
+            </button>
+          </div>
+        )}
+        {asking && (
+          <ConfirmModal
+            title={`permanently delete all ${pile.list.length} archived agents?`}
+            body="Every agent in this pile is removed for good, along with each one's knowledge-bearer lineage — no rehire, no consulting, records erased from the org. Transcript files on disk are kept. This cannot be undone."
+            confirmLabel="delete all"
+            onConfirm={wipeAll}
+            close={() => setAsking(false)} />
+        )}
       </div>
     </div>
   )
@@ -3328,10 +3402,13 @@ function PilePicker({ pile, map, onPick, close }) {
 // world — chatq sessions and other orgs — as one chronological thread. Also
 // where the user staffs the "client contact" role: grant/revoke org-inbox
 // audiences so chosen sub-agents read and answer outside mail.
-function OrgInboxModal({ inbox, map, slug, toast, close }) {
+function OrgInboxModal({ inbox, map, slug, toast, close, jumpTo }) {
   useEsc(close)
   const [grantee, setGrantee] = useState('')
-  const [folder, setFolder] = useState('inbox')
+  // a jump to an OUTBOUND mail (an agent's @ext:/@org: send) opens on sent
+  const [folder, setFolder] = useState(() =>
+    jumpTo && (inbox?.entries ?? []).some((e) => e.id === jumpTo
+      && e.dir === 'out') ? 'sent' : 'inbox')
   const holders = inbox?.holders ?? []
   const candidates = [...map.values()].filter((n) =>
     n.id !== USER && n.id !== DRAFT && n.state === 'live' && !n.isBearerOf
@@ -3392,8 +3469,8 @@ function OrgInboxModal({ inbox, map, slug, toast, close }) {
             {folder === 'inbox'
               ? <MailList pending={inn.filter((r) => r._wait0)}
                   delivered={inn.filter((r) => !r._wait0)}
-                  waitLabel="unread" onRead={markRead} />
-              : <MailList delivered={out} outgoing
+                  waitLabel="unread" onRead={markRead} jumpTo={jumpTo} />
+              : <MailList delivered={out} outgoing jumpTo={jumpTo}
                   sender={(id, m) => (
                     /* outbound attribution (user spec): @agent as @org → @recipient */
                     <span><b>{m?._by ? `@${m._by}` : '@?'}</b>
@@ -3524,7 +3601,7 @@ const stripEnvelope = (t) => (t ?? '')
 // red bit + first error line on failure, and the RESULT collapsed behind a
 // click (never inline: an always-expanded stream turns the desk into a log
 // tail). Edits expand to their pre-computed hunk.
-function ToolChip({ t, slug, nid }) {
+function ToolChip({ t, slug, nid, onMailLink }) {
   const [open, setOpen] = useState(false)
   const expandable = Boolean(t.result || t.diff || t.images)
   // orgtree_send_file → a DOWNLOAD CARD in place of the chip (user spec
@@ -3559,6 +3636,16 @@ function ToolChip({ t, slug, nid }) {
             {t.task.tokens ? ` · ${Math.round(t.task.tokens / 1000)}k tok` : ''}</span>)}
         {t.images > 0 && <span className="dim"> · {t.images} image{t.images === 1 ? '' : 's'}</span>}
         {t.error && <span className="terrtxt"> ⊘ {t.error}</span>}
+        {/* mail sends carry the inline "open in mailbox" link (user spec):
+            straight to the exact mail in whichever box holds it */}
+        {t.mail && onMailLink && (
+          <button className="maillink"
+            title={t.mail.to === 'user_inbox'
+              ? 'open this mail in your inbox'
+              : `open this mail in ${String(t.mail.to).startsWith('@')
+                ? 'the org inbox' : `${t.mail.to}'s inbox`}`}
+            onClick={(e) => { e.stopPropagation(); onMailLink(t.mail) }}>
+            <MailIcon fontSize="inherit" /> open</button>)}
       </span>
       {open && t.diff && (
         <pre className="filepre diffpre">
@@ -3580,7 +3667,7 @@ function ToolChip({ t, slug, nid }) {
 }
 
 // №21: memoized — rows are static once fetched; only identity changes matter
-const Msg = memo(function Msg({ m, slug, nid }) {
+const Msg = memo(function Msg({ m, slug, nid, onMailLink }) {
   if (m.role === 'system') return <SysLine m={m} />
   const text = m.role === 'user' ? stripEnvelope(m.text) : m.text
   return (
@@ -3588,7 +3675,8 @@ const Msg = memo(function Msg({ m, slug, nid }) {
       {m.thinking && <ThoughtLine text={m.thinking} secs={m.think_secs} />}
       {(m.tools ?? []).map((t, i) => (typeof t === 'string'
         ? <div key={i} className="tools"><DotIcon fontSize="inherit" className="tooldot" /> {t}</div>
-        : <ToolChip key={t.id ?? i} t={t} slug={slug} nid={nid} />))}
+        : <ToolChip key={t.id ?? i} t={t} slug={slug} nid={nid}
+            onMailLink={onMailLink} />))}
       {text && <div className="msgtext md" dangerouslySetInnerHTML={md(text)} />}
       {m.oracle && <div className="tools"><SparkIcon fontSize="inherit" /> oracle exchange — not retained by the node</div>}
     </div>

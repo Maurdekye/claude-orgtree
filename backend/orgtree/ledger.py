@@ -783,11 +783,11 @@ class Org:
                 raise LedgerError("that address is this organization itself")
             # actual delivery rides the bridge (supervisor/api) — the ledger
             # authorizes and records the correspondence
-            self._org_inbox_log("out", to, body, by=sender)
+            oid = self._org_inbox_log("out", to, body, by=sender)
             self._log("mail", sender, {"to": to, "kind": kind,
                       "gist": body.strip().splitlines()[0][:80] if body.strip()
                       else ""}, [])
-            return {"delivered": to, "warnings": warnings}
+            return {"delivered": to, "id": oid, "warnings": warnings}
         if to == USER:
             if sender == USER:
                 raise LedgerError("the user cannot mail the user")
@@ -795,11 +795,14 @@ class Org:
                 raise LedgerError(
                     "only top-level agents (or holders of a user audience) may write "
                     "to the user — escalate to your superior instead (§7.5)")
-            self.d.setdefault("user_inbox", []).append(
-                {"id": uuid.uuid4().hex[:8], "from": sender, "kind": kind,
-                 "body": body, "at": now()})
+            ue = {"id": uuid.uuid4().hex[:8], "from": sender, "kind": kind,
+                  "body": body, "at": now()}
+            self.d.setdefault("user_inbox", []).append(ue)
             self._log("mail", sender, {"to": USER, "kind": kind}, [])
-            return {"delivered": "user_inbox", "warnings": warnings}
+            # the id rides the result → the sender's chat renders an inline
+            # "open in mailbox" link on the send (user spec 2026-07-31)
+            return {"delivered": "user_inbox", "id": ue["id"],
+                    "warnings": warnings}
 
         target = self.node(to)
         if target["state"] == "unrecoverable":
@@ -852,7 +855,8 @@ class Org:
             del out[:-100]
         self._log("mail", sender, {"to": to, "kind": kind,
                                    "gist": body.strip().splitlines()[0][:80]}, warnings)
-        return {"delivered": to, "deferred": deferred, "warnings": warnings}
+        return {"delivered": to, "id": entry["id"], "deferred": deferred,
+                "warnings": warnings}
 
     def post_external_mail(self, peer: str, body: str) -> list[str]:
         """Inbound from OUTSIDE the org — a chatq session (@ext:<id>) or another
@@ -919,7 +923,7 @@ class Org:
         return rec
 
     def _org_inbox_log(self, direction: str, peer: str, body: str,
-                       by: str | None = None) -> None:
+                       by: str | None = None) -> str:
         log = self.d.setdefault("org_inbox", [])
         e = {"id": uuid.uuid4().hex[:8], "dir": direction, "peer": peer,
              "body": body[:20000], "at": now()}
@@ -927,6 +931,7 @@ class Org:
             e["by"] = by      # internal attribution only — outbound speaks as the org
         log.append(e)
         del log[:-200]
+        return e["id"]
 
     def org_inbox_mark_read(self) -> None:
         self.d["org_inbox_read"] = len(self.d.get("org_inbox", []))
