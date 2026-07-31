@@ -752,7 +752,8 @@ class Org:
             return USER
         return to
 
-    def post_mail(self, sender: str, to: str, body: str, kind: str = "message") -> dict:
+    def post_mail(self, sender: str, to: str, body: str, kind: str = "message",
+                  attachments: list | None = None) -> dict:
         """Agent-to-agent (or agent-to-user) mail under the §7.2 addressing rules:
         downward any depth (deep reach implicitly grants the recipient an audience),
         one hop up, siblings, held audiences. Everything else is refused with the
@@ -841,6 +842,12 @@ class Org:
             "from": sender, "kind": kind, "body": body, "at": now(),
             "relationship": self.relationship(sender, to),
         }
+        if attachments:
+            # user spec 2026-07-31: mail carries FILES — [{name, path, bytes}]
+            # where path is relative to the recipient's working folder (the
+            # bytes already landed in its uploads/); the envelope announces
+            # each one at delivery
+            entry["attachments"] = list(attachments)[:10]
         box.setdefault(to, []).append(entry)
         # full-body archive for the node's inbox view (the event log keeps only
         # a gist) — capped per node
@@ -858,7 +865,8 @@ class Org:
         return {"delivered": to, "id": entry["id"], "deferred": deferred,
                 "warnings": warnings}
 
-    def post_external_mail(self, peer: str, body: str) -> list[str]:
+    def post_external_mail(self, peer: str, body: str,
+                           attachments_by_node: dict | None = None) -> list[str]:
         """Inbound from OUTSIDE the org — a chatq session (@ext:<id>) or another
         org (@org:<slug>). Org-inbox model (user spec): the message is addressed
         to the ORGANIZATION, not to any agent. It lands in the org-wide inbox;
@@ -881,6 +889,11 @@ class Org:
                                      "same copy: coordinate internally on who "
                                      "answers (one reply), and the reply "
                                      "speaks for the org as a whole"}
+            # external attachments (user spec 2026-07-31): the caller copied
+            # the files into each recipient's uploads/ — per-node metadata
+            # because collision suffixes may differ per recipient
+            if attachments_by_node and attachments_by_node.get(t):
+                entry["attachments"] = list(attachments_by_node[t])[:10]
             box.setdefault(t, []).append(entry)
             log = self.d.setdefault("mail_log", {}).setdefault(t, [])
             log.append(dict(entry))

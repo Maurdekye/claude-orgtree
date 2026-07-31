@@ -776,16 +776,30 @@ def _envelope(slug: str, nid: str, text: str) -> tuple[str, str | None]:
         prelude.append(f"[ORG NOTICES — {len(pending)} change(s) since your "
                        f"last turn]\n{lines}\n[END NOTICES]")
     if mail:
-        blocks = []
-        for m in mail:
-            tag = " ⚠ THE USER — user instructions outrank your chain" \
-                if m["from"] == USER else ""
-            blocks.append(f"FROM {m['from']} ({m.get('relationship', 'agent')}"
-                          f"{tag}) · {m.get('kind', 'message')} · {m['at']}\n"
-                          f"{m['body']}")
-        prelude.append(f"[MAIL — {len(mail)} message(s)]\n"
-                       + "\n---\n".join(blocks) + "\n[END MAIL]")
+        prelude.append(_mail_block(mail))
     return (("\n\n".join(prelude) + "\n\n" + text) if prelude else text), tok
+
+
+def _mail_block(mail) -> str:
+    """The one [MAIL] formatter — the envelope AND the turn-start feed use it
+    (they diverged once: turn-start mail silently lacked the attachment
+    lines, live-caught 2026-07-31)."""
+    blocks = []
+    for m in mail:
+        tag = " ⚠ THE USER — user instructions outrank your chain" \
+            if m["from"] == USER else ""
+        b = (f"FROM {m['from']} ({m.get('relationship', 'agent')}"
+             f"{tag}) · {m.get('kind', 'message')} · {m['at']}\n"
+             f"{m['body']}")
+        for a in m.get("attachments") or []:
+            # the file already sits in the recipient's uploads/ (its cwd)
+            nb = int(a.get("bytes") or 0)
+            size = f"{nb} B" if nb < 1024 else f"{nb / 1024:.0f} KB"
+            b += (f"\n[ATTACHED FILE: {a.get('path')} ({size}) — in your "
+                  f"working folder]")
+        blocks.append(b)
+    return (f"[MAIL — {len(mail)} message(s)]\n"
+            + "\n---\n".join(blocks) + "\n[END MAIL]")
 
 
 
@@ -997,15 +1011,7 @@ def _run_turn(slug: str, nid: str, text):
                 prelude.append(f"[ORG NOTICES — {len(pending)} change(s) since your "
                                f"last turn]\n{lines}\n[END NOTICES]")
             if mail:
-                blocks = []
-                for m in mail:
-                    tag = " ⚠ THE USER — user instructions outrank your chain" \
-                        if m["from"] == USER else ""
-                    blocks.append(f"FROM {m['from']} ({m.get('relationship', 'agent')}"
-                                  f"{tag}) · {m.get('kind', 'message')} · {m['at']}\n"
-                                  f"{m['body']}")
-                prelude.append(f"[MAIL — {len(mail)} message(s)]\n"
-                               + "\n---\n".join(blocks) + "\n[END MAIL]")
+                prelude.append(_mail_block(mail))
             if prelude:
                 text = "\n\n".join(prelude) + "\n\n" + text
             # persist the in-flight turn: if orgtree dies mid-turn, reconcile()
@@ -2101,13 +2107,42 @@ def _deliver_ext(slug: str, line: str) -> None:
     deliver_org_inbox(slug, f"@ext:{frm}", body)
 
 
-def deliver_org_inbox(slug: str, peer: str, body: str) -> list[str]:
+def deliver_org_inbox(slug: str, peer: str, body: str,
+                      attachments: list[str] | None = None) -> list[str]:
     """Common inbound path for ALL outside mail (chatq sessions and other
     orgs): land it in the org inbox, then drive every recipient with the
-    coordinate-and-speak-for-the-org framing. Returns the recipients."""
+    coordinate-and-speak-for-the-org framing. Returns the recipients.
+    `attachments` (user spec 2026-07-31): absolute host paths — each file is
+    copied into EVERY recipient's uploads/ before the mail posts, so the
+    envelope's [ATTACHED FILE] lines point at real files."""
+    by_node: dict[str, list[dict]] = {}
+    if attachments:
+        with store.DOC_LOCK:
+            org = store.load_org(slug)
+            tops = org.extern_recipients()
+        for nid in tops:
+            updir = os.path.join(scratch_dir(slug, nid), "uploads")
+            metas = []
+            for src in attachments:
+                try:
+                    os.makedirs(updir, exist_ok=True)
+                    safe = re.sub(r"[^\w .()+\-]", "_",
+                                  os.path.basename(src)).strip(" .") or "file.bin"
+                    stem, ext = os.path.splitext(safe)
+                    final, i = safe, 2
+                    while os.path.exists(os.path.join(updir, final)):
+                        final, i = f"{stem}-{i}{ext}", i + 1
+                    shutil.copy2(src, os.path.join(updir, final))
+                    metas.append({"name": final, "path": f"uploads/{final}",
+                                  "bytes": os.path.getsize(src)})
+                except OSError:
+                    pass          # a missing/unreadable file drops silently…
+            if metas:
+                by_node[nid] = metas
     with store.DOC_LOCK:
         org = store.load_org(slug)
-        delivered = org.post_external_mail(peer, body)
+        delivered = org.post_external_mail(peer, body,
+                                           attachments_by_node=by_node or None)
         store.save_org(org)
     for t in delivered:
         send_message(

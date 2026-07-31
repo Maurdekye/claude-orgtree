@@ -113,11 +113,12 @@ export const uploadFile = (slug, nid, file) =>
 // so kiosk visitors download through their token prefix
 export const fileUrl = (slug, nid, path) =>
   u(`/api/orgs/${slug}/nodes/${nid}/file?path=${encodeURIComponent(path)}`)
-export const sendMessage = (slug, nid, text) =>
+export const sendMessage = (slug, nid, text, attachments) =>
   fetch(u(`/api/orgs/${slug}/nodes/${nid}/message`), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text }),
+    body: JSON.stringify({ text,
+      ...(attachments?.length ? { attachments } : {}) }),
   }).then(j)
 export const saveSettings = (slug, opts = {}) =>
   fetch(u(`/api/orgs/${slug}/settings`), {

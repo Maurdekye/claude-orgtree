@@ -1022,6 +1022,9 @@ async def node_reorder(slug: str, nid: str, body: Reorder):
 
 class Message(BaseModel):
     text: str
+    # relative uploads/ paths already landed via the upload endpoint — the
+    # composer stages them and sends them WITH the mail (user spec 2026-07-31)
+    attachments: list[str] = []
 
 
 @app.post("/api/orgs/{slug}/nodes/{nid}/message")
@@ -1094,10 +1097,21 @@ def node_message(slug: str, nid: str, body: Message):
         if supervisor.immediate_command(slug, nid, stripped):
             return {"accepted": True, "command": True, "immediate": True}
         return supervisor.send_message(slug, nid, stripped, command=True)
+    # staged attachments: already-uploaded files in the node's own scratch —
+    # verify each really exists there (traversal-guarded) and ride metadata
+    metas = []
+    if body.attachments:
+        base = os.path.realpath(supervisor.scratch_dir(slug, nid))
+        for rel in body.attachments[:10]:
+            full = os.path.realpath(os.path.join(base, str(rel).lstrip("/\\")))
+            if full.startswith(base + os.sep) and os.path.isfile(full):
+                metas.append({"name": os.path.basename(full),
+                              "path": str(rel).replace("\\", "/"),
+                              "bytes": os.path.getsize(full)})
     with store.DOC_LOCK:
         try:
             org = store.load_org(slug)
-            r = org.post_mail(USER, nid, body.text)
+            r = org.post_mail(USER, nid, body.text, attachments=metas or None)
             org.user_deep_reach(nid, body.text.strip().splitlines()[0][:80])
             store.save_org(org)
         except LedgerError as e:
@@ -1297,6 +1311,7 @@ _PEER_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
 class ExternSend(BaseModel):
     org: str
     body: str
+    attachments: list[str] = []   # absolute local paths (extern peers are local)
 
 
 def _extern_peer(peer: str) -> str:
@@ -1310,6 +1325,17 @@ def extern_send(peer: str, body: ExternSend):
     addr = _extern_peer(peer)
     if not body.body.strip():
         raise HTTPException(422, "empty message")
+    # attachments (user spec 2026-07-31): absolute paths on this machine —
+    # extern peers are local sessions. Validated here; copied into every
+    # recipient's uploads/ by deliver_org_inbox.
+    atts = []
+    for p in (body.attachments or [])[:10]:
+        p = str(p)
+        if not os.path.isfile(p):
+            raise HTTPException(422, f"attachment not found: {p}")
+        if os.path.getsize(p) > 25 * 1048576:
+            raise HTTPException(413, f"attachment over the 25 MB cap: {p}")
+        atts.append(p)
     with store.DOC_LOCK:
         try:
             org = store.load_org(body.org)
@@ -1320,7 +1346,8 @@ def extern_send(peer: str, body: ExternSend):
         # enumerate the kiosk roster the org listing deliberately withholds)
         if org is None or org.is_kiosk:
             raise HTTPException(404, f"no organization named {body.org!r}")
-    delivered = supervisor.deliver_org_inbox(body.org, addr, body.body)
+    delivered = supervisor.deliver_org_inbox(body.org, addr, body.body,
+                                             attachments=atts or None)
     return {"delivered": delivered or ["(user inbox — no live agents)"]}
 
 
@@ -2020,7 +2047,9 @@ def node_chat(slug: str, nid: str, last: int = 300):
     out["pending_mail"] = [{"id": m.get("id"), "from": m["from"],
                             "body": m["body"][:2000], "at": m["at"],
                             **({"delivering": True} if m.get("delivering")
-                               else {})}
+                               else {}),
+                            **({"attachments": m["attachments"]}
+                               if m.get("attachments") else {})}
                            for m in pending[-20:]]
     return out
 

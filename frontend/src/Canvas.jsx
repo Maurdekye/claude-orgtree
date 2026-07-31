@@ -2773,16 +2773,19 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
   // inbox and gets acted on at rehire; only unrecoverable nodes refuse
   const canMail = live || node.state === 'archived'
   const send = () => {
-    const t = text.trim()
-    if (!t || !canMail) return
+    let t = text.trim()
+    if ((!t && !attached.length) || !canMail) return
+    if (!t) t = '(file attached)'
+    const paths = attached.map((a) => a.path)
     setText('')
+    setAttached([])
     // optimistic ghost only until the server confirms — the durable copy
     // then renders from chat.pending_mail (№11); a failed send clears the
     // ghost instead of leaving a dimmed bubble forever
     setPending((p) => [...p, t])
     if (live) setChat((c) => c && ({ ...c, busy: true }))
     toBottom()
-    sendMessage(slug, node.id, t)
+    sendMessage(slug, node.id, t, paths)
       .then((r) => {
         // review C3: name every real outcome — "delivering" as the fallback
         // lied for frozen nodes (mail waits durably; nothing delivers now)
@@ -2806,10 +2809,13 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
   // uploads/ scratch folder — same relative path sandboxed or not, and it
   // works through the public kiosk gateway from the outside internet
   const fileRef = useRef(null)
+  // attachments STAGE onto the next message (user spec 2026-07-31: mail
+  // carries files) — the bytes upload immediately, the mail links them
+  const [attached, setAttached] = useState([])
   const attach = (file) => {
     uploadFile(slug, node.id, file)
-      .then((r) => setText((t) => (t ? t + '\n' : '')
-        + `[file attached: ${r.path} — in your working folder]`))
+      .then((r) => setAttached((a) =>
+        [...a, { name: file.name, path: r.path, bytes: r.bytes }]))
       .catch((e) => toast([`upload error: ${e.message}`]))
   }
   // №13: the composer grows with the draft (2 → ~8 rows); the desk interior
@@ -2974,6 +2980,9 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
           {(chat?.pending_mail ?? []).filter((m) => m.from === USER).map((m) => (
             <div key={m.id ?? m.at} className="msg user pending pendrow">
               <span className="md" dangerouslySetInnerHTML={md(m.body)} />
+              {(m.attachments ?? []).map((a) => (
+                <span key={a.path} className="attach-chip dim">
+                  <FileIcon fontSize="inherit" /> {a.name}</span>))}
               {/* journal-riding mail (drained for a mid-task delivery) shows
                   as queued but is past the point of retraction */}
               {m.delivering
@@ -3009,6 +3018,20 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
       {/* №13: the composer is present under EVERY tab — finding a wrong number
           on the files tab shouldn't cost your place to say so */}
       {sendMode && <div className="sendmode dim">{sendMode}</div>}
+      {/* staged attachments ride the NEXT message as mail attachments */}
+      {attached.length > 0 && (
+        <div className="attach-row">
+          {attached.map((a, i) => (
+            <span key={a.path + i} className="attach-chip">
+              <FileIcon fontSize="inherit" /> {a.name}
+              <span className="dim"> {fmtBytes(a.bytes)}</span>
+              <button className="chip-x" title="remove from this message"
+                onClick={() => setAttached((x) => x.filter((_, j) => j !== i))}>
+                <CloseIcon fontSize="inherit" /></button>
+            </span>
+          ))}
+        </div>
+      )}
       {text.trimStart().startsWith('/') && canMail && (
         <SlashHints text={text} setText={setText} />)}
       <div className={'cc-composer' + (canMail ? '' : ' off')}>
@@ -3094,7 +3117,7 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
 // selected message opened in the reading pane on the right. Waiting/unread
 // mail sorts on top and is highlighted until read/delivered.
 export function MailList({ pending = [], delivered = [], waitLabel, sender, outgoing,
-  onRead, onReply, onRetract, jumpTo }) {
+  onRead, onReply, onRetract, jumpTo, fileHref }) {
   // newest first throughout (user ruling) — waiting/unread stays grouped on top
   const all = [
     ...[...pending].reverse().map((m) => ({ ...m, _wait: true })),
@@ -3187,6 +3210,17 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
               {cur._wait && <span className="wait">{waitLabel}</span>}
             </div>
             <div className="mailer-body md" dangerouslySetInnerHTML={md(cur.body)} />
+            {(cur.attachments ?? []).length > 0 && (
+              <div className="attach-row">
+                {cur.attachments.map((a) => fileHref
+                  ? <a key={a.path} className="attach-chip" title="download"
+                      href={fileHref(a.path)} download={a.name}>
+                      <DownloadIcon fontSize="inherit" /> {a.name}
+                      <span className="dim"> {a.bytes != null ? `${Math.round(a.bytes / 1024)} KB` : ''}</span></a>
+                  : <span key={a.path} className="attach-chip">
+                      <FileIcon fontSize="inherit" /> {a.name}</span>)}
+              </div>
+            )}
             {replyable && (
               <div className="mail-reply">
                 <textarea rows={2} value={draft}
@@ -3231,6 +3265,7 @@ function InboxView({ slug, nid, pulse, onRetract, jumpTo }) {
           : folder === 'inbox'
             ? <MailList pending={box.pending} delivered={box.delivered}
                 waitLabel="awaiting next turn" jumpTo={jumpTo}
+                fileHref={(p) => fileUrl(slug, nid, p)}
                 onRetract={onRetract
                   ? (m) => { onRetract(m); setBox((b) => b && ({
                       ...b, pending: b.pending.filter((x) => x.id !== m.id) })) }

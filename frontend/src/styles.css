@@ -1624,3 +1624,13 @@ svg.MuiSvgIcon-root {
 .lin-id .dim { font-size: 11px; }
 .lin-row select { max-width: 11em; }
 .pend-tag { font-size: 10px; font-style: italic; margin-left: 6px; white-space: nowrap; }
+/* mail attachments (user spec 2026-07-31): staged chips on the composer,
+   ride-along chips on pending bubbles and the inbox reading pane */
+.attach-row { display: flex; flex-wrap: wrap; gap: 5px; padding: 3px 2px; }
+.attach-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  border: 1px solid var(--line); border-radius: 9px; background: var(--input);
+  padding: 1px 8px; font-size: 11px; color: var(--ink);
+  text-decoration: none; max-width: 100%; overflow: hidden;
+}
+a.attach-chip:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); color: var(--accent); }

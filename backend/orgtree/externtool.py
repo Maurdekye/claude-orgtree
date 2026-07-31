@@ -77,6 +77,13 @@ TOOLS = [
             "properties": {
                 "org": {"type": "string", "description": "the org's slug (see orgtree_list_orgs)"},
                 "body": {"type": "string"},
+                "attachments": {"type": "array", "items": {"type": "string"},
+                                "description": "absolute paths of files on this "
+                                               "machine (max 10, 25 MB each) — "
+                                               "each is copied into every "
+                                               "recipient agent's uploads/ "
+                                               "folder and announced in the "
+                                               "mail"},
             },
             "required": ["org", "body"],
         },
@@ -141,7 +148,8 @@ def run_tool(name: str, args: dict) -> tuple[str, bool]:
             return json.dumps({"orgs": rows, "your_peer_id": f"@mcp:{PEER}"}), False
         if name == "orgtree_send":
             out = http("POST", f"/api/extern/{PEER}/send",
-                       {"org": args.get("org", ""), "body": args.get("body", "")})
+                       {"org": args.get("org", ""), "body": args.get("body", ""),
+                        "attachments": args.get("attachments") or []})
             out["your_peer_id"] = f"@mcp:{PEER}"
             return json.dumps(out), False
         if name == "orgtree_read":
