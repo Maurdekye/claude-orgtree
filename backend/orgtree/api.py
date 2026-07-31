@@ -569,6 +569,12 @@ def org_tree(slug: str, request: Request):
             # the tier cap rides OUTSIDE max_scope too: it's public-safe (a
             # tier name) and the visitor UI needs it to hide spawn tokens
             "max_tier": (k.get("max_scope") or {}).get("max_tier"),
+            # per-kiosk admin controls live in the org's own settings panel
+            # (user ruling 2026-07-31 — the all-kiosks dashboard is gone);
+            # share_url is admin-only, _scrub_public pops it
+            "enabled": bool(k.get("enabled")),
+            "sandbox": bool(k.get("sandbox")),
+            "share_url": _share_url(k.get("token")),
         }
         if k.get("storage_limit_mb"):
             u = supervisor.workspace_usage_cached(org)
@@ -600,6 +606,7 @@ def _scrub_public(tree: dict) -> None:
         # naming the ceiling, never the ceiling itself
         tree["kiosk"].pop("max_scope", None)
         tree["kiosk"].pop("auto_raise", None)
+        tree["kiosk"].pop("share_url", None)
 
     def walk(n):
         n.pop("session_id", None)

@@ -1231,25 +1231,10 @@ svg.MuiSvgIcon-root {
 .org.kiosk-org { border-left-color: var(--kiosk); background: var(--kiosk-soft); }
 .org.kiosk-org:hover { background: var(--kiosk-hover); }
 .org.current.kiosk-org { background: var(--accent-soft); }
-.kiosk-dash { margin-top: 16px; border-top: 1px solid var(--line-soft); padding-top: 10px; }
-.kiosk-dash h3 {
-  margin: 0 0 8px; font-size: 11px; letter-spacing: .08em;
-  text-transform: uppercase; color: var(--dim);
-  display: flex; align-items: center; gap: 6px;
-}
-.kiosk-dash h3 svg { color: var(--kiosk); }
-.kiosk-row {
-  border: 1px solid var(--line-soft); border-left: 2px solid var(--kiosk);
-  border-radius: 6px;
-  padding: 8px 10px; margin-bottom: 8px; background: var(--panel);
-  display: flex; flex-direction: column; gap: 6px; font-size: 12px;
-}
-.kiosk-row .row { display: flex; align-items: center; gap: 6px; }
-.kiosk-name { cursor: pointer; }
-.kiosk-name:hover { color: var(--accent-hover); text-decoration: underline; }
-.kiosk-stats { font-size: 11px; }
-/* three tidy columns, label OVER input — the inline row clipped and
-   wrapped in the 264px sidebar (user report) */
+/* (the all-kiosks dashboard was retired 2026-07-31 — per-kiosk controls
+   live in each org's settings panel; .kiosk-caps/.kiosk-url serve there
+   and in the create dialog) */
+/* three tidy columns, label OVER input */
 .kiosk-caps {
   display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 6px; align-items: end;

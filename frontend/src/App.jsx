@@ -224,7 +224,6 @@ export default function App() {
         <SettingsIcon fontSize="inherit" /> default org settings</button>}
       {/* kiosk dashboard: admin only — a public visitor never sees this panel
           (and the server refuses the endpoints regardless) */}
-      {!BASE && <KioskDash orgs={orgs} refresh={refreshOrgs} toast={toast} pick={pick} />}
     </>
   )
 
@@ -563,86 +562,6 @@ function NewOrg({ onCreate }) {
   )
 }
 
-// kiosk dashboard (user vision): every kiosk session at a glance — spend,
-// credits held, storage — with inline cap edits, the preauthenticated share
-// URL (copy + rotate), and enable/disable. Loopback-only by construction.
-// kiosk orgs are a DISTINCT TYPE (user ruling): born as kiosks with their
-// limits defined at creation — never converted from (or back to) a normal
-// org. The URL can be paused; the limits always bind.
-function KioskDash({ orgs, refresh, toast, pick }) {
-  const kiosks = orgs.filter((o) => o.kiosk_cfg)
-  if (!kiosks.length) return null
-  return (
-    <div className="kiosk-dash">
-      <h3><PublicIcon fontSize="inherit" /> public kiosks</h3>
-      {kiosks.map((o) => (
-        <KioskRow key={o.slug + ':' + o.kiosk_cfg.token + ':' + o.kiosk_cfg.credits
-          + ':' + o.kiosk_cfg.spend_limit + ':' + o.kiosk_cfg.storage_limit_mb
-          + ':' + o.kiosk_cfg.enabled}
-          org={o} refresh={refresh} toast={toast} pick={pick} />
-      ))}
-    </div>
-  )
-}
-
-function KioskRow({ org, refresh, toast, pick }) {
-  const k = org.kiosk_cfg
-  const [credits, setCredits] = useState(k.credits)
-  const [spend, setSpend] = useState(k.spend_limit)
-  const [storage, setStorage] = useState(k.storage_limit_mb)
-  const save = (patch) => saveKiosk(org.slug, patch)
-    .then((r) => {
-      if (r.freezes_cleared?.length) toast([`limit raised — cleared: ${r.freezes_cleared.join(', ')}`])
-      refresh()
-    })
-    .catch((e) => toast([`error: ${e.message}`]))
-  const dirty = +credits !== k.credits || +spend !== k.spend_limit || +storage !== k.storage_limit_mb
-  return (
-    <div className="kiosk-row">
-      <div className="row kiosk-head">
-        <b className="kiosk-name" role="button" tabIndex={0} title="open this org (full admin rights)"
-          onClick={() => pick(org.slug)}
-          onKeyDown={(e) => { if (e.key === 'Enter') pick(org.slug) }}>{org.name}</b>
-        {k.sandbox && <span className="chip" title="agent turns run in a Docker container">sandboxed</span>}
-        {k.spend_frozen && <span className="chip bad">spend frozen</span>}
-        {k.storage_blocked && <span className="chip bad">writes blocked</span>}
-        {!k.enabled && <span className="chip">URL paused</span>}
-        <span className="spacer" />
-        {/* pause/unpause the PUBLIC URL — the org stays a kiosk (its limits
-            always bind); only the token gateway is gated */}
-        <button title={k.enabled ? 'pause the public URL' : 'reactivate the public URL'}
-          onClick={() => save({ enabled: !k.enabled })}>
-          {k.enabled ? <BlockIcon fontSize="inherit" /> : <PlayIcon fontSize="inherit" />}</button>
-      </div>
-      <div className="dim kiosk-stats">
-        ${(org.cost_usd_total ?? 0).toFixed(2)}{k.spend_limit ? ` / $${k.spend_limit.toFixed(2)}` : ''} spent
-        {' · '}{k.held}{k.credits ? ` / ${k.credits}` : ''} credits held
-        {' · '}{k.storage_mb ?? 0}{k.storage_limit_mb ? ` / ${k.storage_limit_mb}` : ''} MB workspace
-      </div>
-      <div className="kiosk-caps">
-        <label>credits <input type="number" min="0" value={credits}
-          onChange={(e) => setCredits(e.target.value)} /></label>
-        <label>spend $ <input type="number" min="0" step="0.5" value={spend}
-          onChange={(e) => setSpend(e.target.value)} /></label>
-        <label>storage MB <input type="number" min="0" value={storage}
-          onChange={(e) => setStorage(e.target.value)} /></label>
-        {dirty && <button className="primary" title="apply the new caps"
-          onClick={() => save({ credits: +credits || 0, spend_limit: +spend || 0,
-            storage_limit_mb: +storage || 0 })}><CheckIcon fontSize="inherit" /></button>}
-      </div>
-      <div className="row kiosk-url">
-        <input readOnly value={k.share_url ?? '(set ORGTREE_PUBLIC_PORT to serve public URLs)'}
-          onFocus={(e) => e.target.select()} />
-        <button title="copy the share URL" disabled={!k.share_url}
-          onClick={() => navigator.clipboard.writeText(k.share_url)
-            .then(() => toast(['share URL copied']))}><CopyIcon fontSize="inherit" /></button>
-        <button title="rotate the secret (the old URL stops working immediately)"
-          onClick={() => save({ rotate_token: true })}><AutorenewIcon fontSize="inherit" /></button>
-      </div>
-    </div>
-  )
-}
-
 function flatNodes(tree) {
   const map = new Map()
   const walk = (n) => { map.set(n.id, n); n.children.forEach(walk) }
@@ -903,6 +822,10 @@ function SettingsPanel({ tree, toast, close }) {
   const [ceilPm, setCeilPm] = useState(ms?.permission_mode ?? 'acceptEdits')
   const [ceilTier, setCeilTier] = useState(ms?.max_tier ?? '')
   const [autoRaise, setAutoRaise] = useState(!!tree.kiosk?.auto_raise)
+  // per-kiosk caps (moved here from the retired all-kiosks dashboard)
+  const [kkCredits, setKkCredits] = useState(tree.kiosk?.credits ?? 0)
+  const [kkSpend, setKkSpend] = useState(tree.kiosk?.spend_limit ?? 0)
+  const [kkStorage, setKkStorage] = useState(tree.kiosk?.storage_limit_mb ?? 0)
   useEffect(() => {
     getOrgMd(tree.slug).then((r) => setOrgMd(r.content)).catch(() => setOrgMd(''))
   }, [tree.slug])
@@ -948,6 +871,60 @@ function SettingsPanel({ tree, toast, close }) {
           allocations &amp; model upgrades bubble their cost up the chain (off:
           limited to the superior's own free credits)
         </label>
+        {/* per-kiosk controls (user ruling 2026-07-31): caps, share URL and
+            pause live HERE, in the org's own settings — the all-kiosks
+            dashboard on the welcome panel is gone */}
+        {tree.kiosk && (
+          <>
+            <div className="field-label">kiosk caps
+              {tree.kiosk.sandbox && <span className="dim"> · sandboxed</span>}
+              {!tree.kiosk.enabled && <span className="dim"> · URL paused</span>}
+            </div>
+            <div className="kiosk-caps">
+              <label>credits <input type="number" min="0" value={kkCredits}
+                onChange={(e) => setKkCredits(e.target.value)} /></label>
+              <label>spend $ <input type="number" min="0" step="0.5" value={kkSpend}
+                onChange={(e) => setKkSpend(e.target.value)} /></label>
+              <label>storage MB <input type="number" min="0" value={kkStorage}
+                onChange={(e) => setKkStorage(e.target.value)} /></label>
+              {(+kkCredits !== (tree.kiosk.credits ?? 0)
+                || +kkSpend !== (tree.kiosk.spend_limit ?? 0)
+                || +kkStorage !== (tree.kiosk.storage_limit_mb ?? 0)) && (
+                <button className="primary" title="apply the new caps"
+                  onClick={() => saveKiosk(tree.slug, {
+                    credits: +kkCredits || 0, spend_limit: +kkSpend || 0,
+                    storage_limit_mb: +kkStorage || 0 })
+                    .then((r) => toast(r.freezes_cleared?.length
+                      ? [`limit raised — cleared: ${r.freezes_cleared.join(', ')}`]
+                      : ['kiosk caps saved']))
+                    .catch((e) => toast([`error: ${e.message}`]))}>
+                  <CheckIcon fontSize="inherit" /></button>)}
+            </div>
+            <div className="row kiosk-url">
+              <input readOnly value={tree.kiosk.share_url
+                ?? '(set ORGTREE_PUBLIC_PORT to serve public URLs)'}
+                onFocus={(e) => e.target.select()} />
+              <button title="copy the share URL" disabled={!tree.kiosk.share_url}
+                onClick={() => navigator.clipboard.writeText(tree.kiosk.share_url)
+                  .then(() => toast(['share URL copied']))}>
+                <CopyIcon fontSize="inherit" /></button>
+              <button title="rotate the secret (the old URL stops working immediately)"
+                onClick={() => saveKiosk(tree.slug, { rotate_token: true })
+                  .then(() => toast(['secret rotated — the old URL is dead']))
+                  .catch((e) => toast([`error: ${e.message}`]))}>
+                <AutorenewIcon fontSize="inherit" /></button>
+              <button title={tree.kiosk.enabled
+                ? 'pause the public URL (the org stays a kiosk; limits always bind)'
+                : 'reactivate the public URL'}
+                onClick={() => saveKiosk(tree.slug, { enabled: !tree.kiosk.enabled })
+                  .then(() => toast([tree.kiosk.enabled
+                    ? 'public URL paused' : 'public URL live']))
+                  .catch((e) => toast([`error: ${e.message}`]))}>
+                {tree.kiosk.enabled ? <BlockIcon fontSize="inherit" />
+                  : <PlayIcon fontSize="inherit" />}</button>
+            </div>
+          </>
+        )}
         {ms && ceil && (
           <>
             <div className="field-label"
