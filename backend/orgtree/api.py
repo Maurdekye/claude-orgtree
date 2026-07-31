@@ -306,6 +306,9 @@ async def _wire_notify():
     supervisor.notify = notify
     supervisor.stream = stream
     supervisor.start_auto_resume_loop()
+    # storage watchdog (user spec): catches single long tool calls —
+    # clones/builds/downloads — that balloon past the limit MID-CALL
+    supervisor.start_storage_watchdog()
     # chatq external bridge (user vision): every org is an addressable chatq
     # peer — external Claude Code sessions message it like any other chat
     for o in store.list_orgs():
@@ -1099,6 +1102,9 @@ async def node_steer(slug: str, nid: str):
     """Called by the PostToolUse steering hook inside a node's turn: pops ALL
     the node's pending mid-task mail — user and agent alike — for immediate
     delivery (sender attribution rides inside each message)."""
+    # storage-bypass audit: every tool call gives the storage limit a chance
+    # to land MID-TURN (throttled + backgrounded inside)
+    supervisor.maybe_storage_check(slug)
     msgs = supervisor.pop_steer(slug, nid)
     if msgs:
         for m in msgs:
@@ -1828,6 +1834,10 @@ async def node_upload(slug: str, nid: str, request: Request, name: str = ""):
         org.node(nid)
     except LedgerError as e:
         raise HTTPException(404, str(e))
+    if org.d.get("storage_blocked"):
+        raise HTTPException(413, "the org is over its storage limit — uploads "
+                                 "are paused until files are deleted (the "
+                                 "block lifts automatically)")
     safe = re.sub(r"[^\w .()+\-]", "_",
                   os.path.basename(name or "upload.bin")).strip(" .") or "upload.bin"
     data = await request.body()
@@ -1921,18 +1931,26 @@ def _agent_send_file(org, nid: str, a: dict) -> dict:
     if size > _SENDFILE_MAX:
         raise LedgerError(f"{raw} is {size // 1048576} MB — over the "
                           f"{_SENDFILE_MAX // 1048576} MB send cap")
+    if org.d.get("storage_blocked"):
+        raise LedgerError("the org is over its storage limit — the outbox "
+                          "copy is paused; delete files to lift the block, "
+                          "then re-send")
     outdir = os.path.join(scratch, "outbox")
-    os.makedirs(outdir, exist_ok=True)
-    if src.startswith(os.path.realpath(outdir) + os.sep):
-        final = os.path.relpath(src, outdir).replace("\\", "/")
-    else:
-        safe = re.sub(r"[^\w .()+\-]", "_",
-                      os.path.basename(src)).strip(" .") or "file.bin"
-        stem, ext = os.path.splitext(safe)
-        final, i = safe, 2
-        while os.path.exists(os.path.join(outdir, final)):
-            final, i = f"{stem}-{i}{ext}", i + 1
-        shutil.copy2(src, os.path.join(outdir, final))
+    try:
+        os.makedirs(outdir, exist_ok=True)
+        if src.startswith(os.path.realpath(outdir) + os.sep):
+            final = os.path.relpath(src, outdir).replace("\\", "/")
+        else:
+            safe = re.sub(r"[^\w .()+\-]", "_",
+                          os.path.basename(src)).strip(" .") or "file.bin"
+            stem, ext = os.path.splitext(safe)
+            final, i = safe, 2
+            while os.path.exists(os.path.join(outdir, final)):
+                final, i = f"{stem}-{i}{ext}", i + 1
+            shutil.copy2(src, os.path.join(outdir, final))
+    except OSError as e:
+        # e.g. the storage block's deny-ACE landing between check and copy
+        raise LedgerError(f"outbox copy failed: {e}")
     sent = {"name": os.path.basename(final), "path": f"outbox/{final}",
             "bytes": size}
     note = " ".join(str(a.get("note") or "").split())[:300]

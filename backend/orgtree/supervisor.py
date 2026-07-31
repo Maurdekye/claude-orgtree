@@ -61,6 +61,14 @@ def workspace_usage_bytes(org: Org, max_age: float = 0.0) -> int:
     ws = org.d.get("workspace")
     roots = [p for p in (ws, store.scratch_root(slug))
              if p and os.path.isdir(p)]
+    # sandboxed orgs: the container HOME persists on the host too — in-container
+    # writes outside the workspace/scratch mounts (~/junk, transcripts) are org
+    # disk footprint all the same (storage-bypass audit 2026-07-31). Counted,
+    # but never ACL'd — the CLI's own state must stay writable.
+    if sbx.is_sandboxed(org):
+        hm = sbx.sandbox_home(slug)
+        if os.path.isdir(hm):
+            roots.append(hm)
     for base in roots:
         for root, _dirs, files in os.walk(base):
             for f in files:
@@ -1593,25 +1601,36 @@ def clear_hard_freeze(org: Org, kind: str) -> int:
     return cleared
 
 
-def _workspace_write_acl(org: Org, blocked: bool) -> None:
+def _org_write_acl(org: Org, blocked: bool) -> None:
     """OS-level enforcement of the storage block (Windows): deny write-data /
-    add-file on the workspace tree while LEAVING DELETE RIGHTS INTACT, so
-    agents can clean up and self-heal. POSIX has no deny-write-but-allow-
-    delete bit (dir -w blocks unlinking too), so there enforcement is the
-    advisory notice + the per-turn recheck only."""
-    ws = org.d.get("workspace")
-    if not ws or not os.path.isdir(ws) or os.name != "nt":
+    add-file on the workspace AND the org's scratch tree while LEAVING DELETE
+    RIGHTS INTACT, so agents can clean up and self-heal. The scratch half is
+    the user-observed bypass (2026-07-31): agents' cwd IS their scratch dir,
+    so the old workspace-only deny never touched the tree they naturally
+    write. Measured: the deny ACE binds Docker bind mounts too (Docker
+    Desktop's file sharing writes as the host user), so sandboxed orgs are
+    enforced by the same ACE — container writes fail, deletes still work.
+    The sandbox home is counted but never ACL'd (transcripts/CLI state).
+    POSIX has no deny-write-but-allow-delete bit (dir -w blocks unlinking
+    too), so there enforcement is the advisory notice + steer only."""
+    if os.name != "nt":
         return
+    slug = org.d["slug"]
+    ws = org.d.get("workspace")
+    targets = [p for p in (ws, store.scratch_root(slug))
+               if p and os.path.isdir(p)]
     user = os.environ.get("USERNAME") or "*S-1-1-0"
-    try:
-        if blocked:
-            subprocess.run(["icacls", ws, "/deny", f"{user}:(OI)(CI)(WD,AD)"],
-                           capture_output=True, timeout=15)
-        else:
-            subprocess.run(["icacls", ws, "/remove:d", user],
-                           capture_output=True, timeout=15)
-    except OSError:
-        pass
+    for t in targets:
+        try:
+            if blocked:
+                subprocess.run(["icacls", t, "/deny",
+                                f"{user}:(OI)(CI)(WD,AD)"],
+                               capture_output=True, timeout=15)
+            else:
+                subprocess.run(["icacls", t, "/remove:d", user],
+                               capture_output=True, timeout=15)
+        except OSError:
+            pass
 
 
 def storage_check(slug: str) -> str | None:
@@ -1625,6 +1644,7 @@ def storage_check(slug: str) -> str | None:
     # duplicate-mail retries)
     org = store.load_org(slug)
     used = workspace_usage_bytes(org)
+    nudge: list[str] = []      # live nodes to steer mid-turn after the lock
     with store.DOC_LOCK:
         org = store.load_org(slug)
         k = kiosk_cfg(org)
@@ -1632,23 +1652,35 @@ def storage_check(slug: str) -> str | None:
         limit = lim_mb * 1048576
         blocked = bool(org.d.get("storage_blocked"))
         warned = bool(org.d.get("storage_warned"))
+        # storage-bypass audit (user bug 2026-07-31): notices went to
+        # TOP-LEVELS only ("pass it on") and only as next-turn mail — the
+        # agent doing the writing never heard. Every live node is told, and
+        # busy ones get it STEERED into the running turn below.
+        live = [i for i, n in org.nodes.items() if n["state"] == "live"]
         if k and lim_mb and used > limit and not blocked:
             org.d["storage_blocked"] = True
-            _workspace_write_acl(org, True)
-            org._notify(org.children(None),
-                        f"The org is over its storage limit "
+            _org_write_acl(org, True)
+            org._notify(live,
+                        f"⚠ The org is OVER its storage limit "
                         f"({used / 1048576:.1f} / {lim_mb} MB — workspace + "
-                        f"scratch/uploads together). File creation and writes "
-                        f"in the workspace are BLOCKED — delete files (in the "
-                        f"workspace or your scratch dirs) to get back under "
-                        f"the limit and the block lifts automatically. Pass "
-                        f"this on to your reports as needed.")
+                        f"scratch + uploads together). File creation and "
+                        f"writes in the workspace and every scratch folder "
+                        f"are now BLOCKED at the OS level — new writes will "
+                        f"fail with permission errors. Deleting still works: "
+                        f"remove large files you created and the block lifts "
+                        f"automatically at the next check. Do NOT keep "
+                        f"generating files.")
             store.save_org(org)
+            nudge = live
             result = "blocked"
         elif blocked and (not k or not lim_mb or used <= limit):
             org.d.pop("storage_blocked", None)
             org.d.pop("storage_warned", None)   # a fresh climb re-warns
-            _workspace_write_acl(org, False)
+            _org_write_acl(org, False)
+            org._notify(live,
+                        f"Storage is back under the limit "
+                        f"({used / 1048576:.1f} / {lim_mb or '∞'} MB) — "
+                        f"workspace and scratch writes are unblocked.")
             store.save_org(org)
             result = "cleared"
         elif (k and lim_mb and not blocked and not warned
@@ -1656,13 +1688,13 @@ def storage_check(slug: str) -> str | None:
             # user ruling: a soft warning inside the last ~10% so agents can
             # slow down / clean up BEFORE the hard write block lands
             org.d["storage_warned"] = True
-            org._notify(org.children(None),
-                        f"Heads-up: the org workspace is at "
-                        f"{used / 1048576:.1f} of {lim_mb} MB (past 90% of "
-                        f"the storage limit). Clean up or curb file growth — "
-                        f"at the limit, workspace writes will be BLOCKED. "
-                        f"Pass this on to your reports as needed.")
+            org._notify(live,
+                        f"Heads-up: the org is at {used / 1048576:.1f} of "
+                        f"{lim_mb} MB (past 90% of the storage limit). Clean "
+                        f"up or curb file growth — at the limit, workspace "
+                        f"AND scratch writes are blocked at the OS level.")
             store.save_org(org)
+            nudge = live
             result = "warned"
         elif warned and (not k or not lim_mb or used <= limit * 0.85):
             org.d.pop("storage_warned", None)   # re-arm below 85%
@@ -1670,8 +1702,82 @@ def storage_check(slug: str) -> str | None:
             return None
         else:
             return None
+    # mid-turn awareness: a busy node's steer delivers right after its next
+    # tool call — the writing agent learns DURING the turn, not next turn.
+    # send_message drains the mailbox into the steer, so the notice above is
+    # exactly what arrives. Idle nodes just read it on their next turn.
+    for nid in nudge:
+        try:
+            if state(slug, nid)["busy"]:
+                send_message(slug, nid,
+                             "(orgtree) ⚠ Storage notice in your mail above — "
+                             "act on it NOW, mid-task.")
+        except Exception:                       # noqa: BLE001 — best-effort
+            pass
     notify(slug, "", "storage_" + result)
     return result
+
+
+_storage_check_at: dict[str, float] = {}
+
+
+def maybe_storage_check(slug: str) -> None:
+    """Per-TOOL-CALL storage cadence, throttled (storage-bypass audit: the
+    turn-end-only check let one long turn write unbounded data before anything
+    fired). The steering hook hits /steer after every tool call — this rides
+    that beat: at most one walk per org per 20 s, in a background thread so
+    the hot steer path never waits on a multi-GB walk."""
+    now = time.time()
+    if now - _storage_check_at.get(slug, 0.0) < 20:
+        return
+    _storage_check_at[slug] = now
+
+    def run():
+        try:
+            org = store.load_org(slug)
+            k = kiosk_cfg(org)
+            if (k and int(k.get("storage_limit_mb") or 0) > 0) \
+                    or org.d.get("storage_blocked"):
+                storage_check(slug)
+        except Exception:       # noqa: BLE001 — advisory path, never breaks steering
+            pass
+    threading.Thread(target=run, daemon=True).start()
+
+
+_watchdog_started = False
+
+
+def start_storage_watchdog() -> None:
+    """20 s background sweep while turns are running (user spec 2026-07-31:
+    downloads count too — `git clone`/builds are ONE long bash call, so the
+    per-tool-call beat never fires while they balloon past the limit; the
+    watchdog lands the block MID-CALL, and the download's next file write
+    fails at the OS level). Orgs with no limit, no block and no busy node
+    cost nothing."""
+    global _watchdog_started
+    if _watchdog_started:
+        return
+    _watchdog_started = True
+
+    def run():
+        while True:
+            time.sleep(20)
+            try:
+                for o in store.list_orgs():
+                    slug = o["slug"]
+                    with _state_lock:
+                        busy = any(k[0] == slug and v.get("busy")
+                                   for k, v in _state.items())
+                    if not busy:
+                        continue
+                    org = store.load_org(slug)
+                    k = kiosk_cfg(org)
+                    if (k and int(k.get("storage_limit_mb") or 0) > 0) \
+                            or org.d.get("storage_blocked"):
+                        storage_check(slug)
+            except Exception:   # noqa: BLE001 — the sweep must never die
+                pass
+    threading.Thread(target=run, daemon=True).start()
 
 
 def interrupt_all(slug: str) -> dict:
