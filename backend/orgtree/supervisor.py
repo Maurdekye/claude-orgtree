@@ -1529,7 +1529,11 @@ def reconcile(slug: str) -> list[str]:
         for nid, n in org.nodes.items():
             if (n["state"] == "live" and float(n.get("cost_usd") or 0.0) > 0
                     and not n.get("bearer_state")
-                    and transcript_path(n["session_id"]) is None):
+                    # audit finding: the root MUST be the org's — sandboxed
+                    # transcripts live under <data>/sandboxes/<slug>/home, and
+                    # omitting it condemned every sandboxed node at restart
+                    and transcript_path(n["session_id"],
+                                        _transcript_root(org)) is None):
                 org.mark_unrecoverable(nid, "transcript missing at startup (№31)")
                 marked.append(nid)
         if marked:

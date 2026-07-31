@@ -890,7 +890,10 @@ class Org:
             depth = self.depth(parent) + 1
             if depth >= self.d.get("max_depth", 10):
                 raise LedgerError(f"max org depth {self.d.get('max_depth', 10)} reached")
-            if len(self.children(parent, live_only=False)) >= self.d.get("max_children", 16):
+            # audit finding: count ORG children only — lineage bearers share
+            # the parent slot but are not reports, and counting them let
+            # routine compaction silently eat the hiring cap
+            if len(self.org_children(parent)) >= self.d.get("max_children", 16):
                 raise LedgerError(
                     f"{parent} already has {self.d.get('max_children', 16)} reports (cap)")
 
@@ -1316,6 +1319,11 @@ class Org:
         parent (None = to top level, actor must be USER)."""
         cur = self.parent(nid)
         target = USER if new_parent is None else new_parent
+        # audit finding: the docstring promised this and the code never
+        # enforced it — top level is the privileged class (unbidden user
+        # mail, org voice, extern recipients), so only the user seats it
+        if new_parent is None and actor != USER:
+            raise LedgerError("only the user promotes agents to top level (§7.4)")
         if target != USER and not self.is_ancestor(target, nid):
             raise LedgerError(f"promote target {target} is not above {nid}")
         if target == cur:
@@ -1743,6 +1751,13 @@ class Org:
             "state": "archived", "archived_at": now(), "grant": 0,
             "bearer_state": "knowledge", "successor": nid, "predecessor": n.get("predecessor"),
             "ui_order": n.get("ui_order", 0) + 0.001,
+            # audit finding: dict(n) copied the ACCOUNTING and runtime fields —
+            # a duplicated cost_usd inflated the org total superlinearly with
+            # each compaction generation (kiosk spend caps froze on the false
+            # figure). The bearer starts clean; the successor keeps the real
+            # numbers.
+            "cost_usd": 0.0, "last_status": None, "frozen": None,
+            "inflight": None,
             "scope": {**n["scope"],
                       # deep-copy the dir grants: {**scope} still ALIASES the
                       # live successor's add_dirs list — the first in-place

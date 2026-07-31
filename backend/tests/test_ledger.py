@@ -702,6 +702,31 @@ def main():
     check("cascade_hire back on: the same hire bubbles up to the user", lambda: (
         orgC.hire(USER, "boss", "haiku", 5, "big"), None)[-1])
 
+    print("audit regressions (2026-07-31 gap audit):")
+    orgR = Org.create("audit")
+    orgR.hire(USER, None, "opus", 10, "vp")
+    orgR.nodes["vp"].update({"cost_usd": 3.5, "last_status": "working",
+                             "inflight": {"turn": 1}})
+    check("compact_split bearer starts with clean accounting", lambda: (
+        lambda pred: None
+        if orgR.nodes[pred]["cost_usd"] == 0.0
+        and orgR.nodes[pred]["last_status"] is None
+        and orgR.nodes[pred]["frozen"] is None
+        and orgR.nodes[pred]["inflight"] is None
+        and orgR.nodes["vp"]["cost_usd"] == 3.5
+        else (_ for _ in ()).throw(AssertionError(orgR.nodes[pred]))
+    )(orgR.compact_split("vp", "12121212-3434-5656-7878-909090909090")))
+    orgR.d["max_children"] = 2
+    orgR.hire(USER, "vp", "haiku", 0, "k1", **spec())
+    orgR.compact_split("k1", "13131313-3434-5656-7878-909090909090")
+    check("lineage bearers do not count against max_children", lambda: (
+        orgR.hire(USER, "vp", "haiku", 0, "k2", **spec()),
+        expect_error(lambda: orgR.hire(USER, "vp", "haiku", 0, "k3", **spec()),
+                     "cap"))[-1])
+    orgR.hire(USER, "k2", "haiku", 0, "deep", **spec())
+    check("only the user promotes to top level", lambda: expect_error(
+        lambda: orgR.promote("vp", "deep", None), "top level"))
+
     print("guards:")
     check("unknown tier refused", lambda: expect_error(
         lambda: org.hire(USER, None, "gpt", 0, "nope"), "unknown tier"))
