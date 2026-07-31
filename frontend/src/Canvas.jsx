@@ -1409,15 +1409,19 @@ function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRemaining,
   const finalCharter = () =>
     [...chosen.map((c) => c.content), charter].filter((t) => t.trim())
       .join('\n\n')
-  // top-level drafts pre-fill the org's default grant (50 unless configured)
-  const [grant, setGrant] = useState(
-    draft.parent == null ? Math.min(defaultTop ?? 50, maxTop) : 0)
-  // user ruling: a user hire cascades grants up the chain (§4.6), so the
-  // draft's ceiling is the org slider cap even DEEP in the tree — the parent's
-  // own free credits are not a limit. (Kiosk mode will cap this instead.)
+  // top-level drafts pre-fill the org's default grant (50 unless configured),
+  // clamped only by a kiosk's remaining headroom
+  const [grant, setGrant] = useState(() => {
+    const g = draft.parent == null ? (defaultTop ?? 50) : 0
+    return kioskRemaining != null
+      ? Math.max(0, Math.min(g, kioskRemaining - (seats[draft.tier] ?? 0))) : g
+  })
+  // user ruling: drag the allocation as high as you want — the cost bubbles
+  // up the chain to you (§4.6; the user is the infinite top). The ONLY cap
+  // is kiosk mode, where total credit allocation is genuinely limited.
   const max = kioskRemaining != null
-    ? Math.max(0, Math.min(maxTop, kioskRemaining - (seats[draft.tier] ?? 0)))
-    : maxTop
+    ? Math.max(0, kioskRemaining - (seats[draft.tier] ?? 0))
+    : Infinity
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onCancel() }
     window.addEventListener('keydown', onKey)
@@ -1429,9 +1433,7 @@ function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRemaining,
     <div className="sq draft" style={{
       transform: `translate(${pos.x}px, ${pos.y}px)`, width: NODE_W, height: NODE_H,
     }} onPointerDown={(e) => e.stopPropagation()}>
-      {/* no ghost ceiling: the cascade means the only ceiling is the slider
-          cap itself (the ghost stays meaningful on LIVE bars — reallocate
-          does NOT cascade) */}
+      {/* unbounded drag — the ghost ceiling only exists under a kiosk cap */}
       <CreditBar seat={seats[draft.tier] ?? 0} grant={grant} committed={0}
         draftMode max={max}
         onDragValue={setGrant} zoom={zoom} pxc={pxc} />
@@ -1647,10 +1649,11 @@ function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, map, op,
           segments={node.children.filter((c) => c.state !== 'archived')
             .map((c) => ({ seat: c.seat, grant: c.grant }))}   /* unrecoverable still holds */
           min={node.grant - node.free}
-          max={node.parent === USER
-            ? Infinity
-            : node.grant + (map.get(node.parent)?.free ?? 0)}
-          maxGhost={node.parent !== USER}
+          /* unbounded (user ruling): reallocate cascades up the chain since
+             the §4.6 generalization, so the parent's free is NOT a ceiling —
+             only a kiosk's hard credit cap limits the drag */
+          max={kioskRemaining != null ? node.grant + kioskRemaining : Infinity}
+          maxGhost={false}
           onCommit={(delta) => op({ op: 'reallocate', node: node.id, delta })}
           zoom={zoom} pxc={pxc} />
       )}
