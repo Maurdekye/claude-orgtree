@@ -853,10 +853,15 @@ main {
   transform: scale(0.6); transform-origin: 0 0;
   padding: 9px 10px; display: flex; flex-direction: column; gap: 6px;
 }
-.df-head { display: flex; align-items: center; gap: 5px; min-width: 0; }
+/* top row = tier token + name entry; right gutter clears the gear, which is
+   ALWAYS visible on a draft (user spec) — it stages the pre-hire permissions */
+.df-head { display: flex; align-items: center; gap: 5px; min-width: 0; padding-right: 26px; }
 .df-head .tier { width: 15px; height: 15px; font-size: 9px; flex: none; }
-.df-title { font-size: 11px; color: var(--ink-strong); flex: none; }
-.df-name { font-family: var(--mono); font-size: 11px; padding: 3px 6px; border-radius: 4px; }
+.df-name {
+  flex: 1; min-width: 0;
+  font-family: var(--mono); font-size: 11px; padding: 3px 6px; border-radius: 4px;
+}
+.sq.draft .gearbtn { opacity: .85; }
 .df-presets { display: flex; flex-direction: column; gap: 3px; }
 .df-presets .field-label { font-size: 8.5px; }
 /* picked charter presets are CARDS (user spec): click removes; hover shows

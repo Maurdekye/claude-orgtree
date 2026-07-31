@@ -1447,13 +1447,14 @@ function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRemaining,
           the whole hiring flow stays near overview zoom */}
       <div className="draft-over" onWheel={(e) => e.stopPropagation()}>
         <div className="draft-inner">
+          {/* top row: tier token + name entry, gutter on the right for the
+              (always-visible) gear (user spec) */}
           <div className="df-head">
             <span className={'tier t-' + draft.tier}>{TIER_LETTER[draft.tier]}</span>
-            <b className="df-title">hire a {draft.tier}</b>
+            <input className="df-name" autoFocus placeholder="name…" value={name}
+              onChange={(e) => setName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && ok) hire() }} />
           </div>
-          <input className="df-name" autoFocus placeholder="name…" value={name}
-            onChange={(e) => setName(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter' && ok) hire() }} />
           {/* grant lives ONLY on the credit bar (user ruling) — no slider,
               no readout line; the bar's own tip reports grant + seat */}
           {presets.length > 0 && (
