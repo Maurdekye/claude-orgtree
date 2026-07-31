@@ -656,6 +656,16 @@ main {
   transition: transform .18s ease;
 }
 .pile-stack:hover .pile-count { transform: translate(6px, -6px); color: var(--ink-strong); }
+/* a live CROWD pile (wide team's stacked leaves) reads live, not retired */
+.pile-stack.crowd .pile-layer {
+  border-color: color-mix(in srgb, var(--accent) 26%, var(--line-soft));
+}
+.pile-stack.crowd .pile-layer.l1 { background: #26262c; }
+.pile-stack.crowd .pile-layer.l2 { background: #212127; }
+.pile-stack.crowd .pile-layer.l3 { background: #1c1c22; }
+.pile-stack.crowd .pile-count {
+  color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+}
 /* the picker: current front highlighted */
 .pile-picker { width: 420px; }
 .pile-row {

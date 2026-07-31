@@ -1212,9 +1212,12 @@ class Org:
             # audit finding: count ORG children only — lineage bearers share
             # the parent slot but are not reports, and counting them let
             # routine compaction silently eat the hiring cap
-            if len(self.org_children(parent)) >= self.d.get("max_children", 16):
+            # user ruling 2026-07-31: the cap is runaway INSURANCE, not a shape
+            # constraint — wide flat teams are legitimate (the canvas stacks
+            # leaf crowds), so the default is far above any deliberate org
+            if len(self.org_children(parent)) >= self.d.get("max_children", 256):
                 raise LedgerError(
-                    f"{parent} already has {self.d.get('max_children', 16)} reports (cap)")
+                    f"{parent} already has {self.d.get('max_children', 256)} reports (cap)")
 
         # №30 — dirs default: top level gets the org's dirs; deeper gets what the
         # parent holds. Explicit grants must fit the parent's capability (path AND

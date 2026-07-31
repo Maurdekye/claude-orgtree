@@ -271,25 +271,47 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
       return nf
     })
   }, [slug])
-  const piles = useMemo(() => {          // parent id → {list, front}
+  const piles = useMemo(() => {   // pile key ("<parent>|a"/"<parent>|c") → pile
     const out = new Map()
     const walk = (n) => {
-      const arch = (n.children ?? []).filter((c) => c.state === 'archived')
+      const kids = n.children ?? []
+      const arch = kids.filter((c) => c.state === 'archived')
       if (arch.length >= 2) {
-        const want = pileFront[n.id]
-        out.set(n.id, {
+        const key = n.id + '|a'
+        const want = pileFront[key]
+        out.set(key, {
+          key, parent: n.id, kind: 'a',
           list: arch.map((c) => c.id),
           front: arch.some((c) => c.id === want) ? want : arch[arch.length - 1].id,
         })
       }
-      ;(n.children ?? []).forEach(walk)
+      // CROWD pile (user spec 2026-07-31): a WIDE team — more than 8 active
+      // reports under one agent — stacks its LEAF reports (no subtree of
+      // their own) into one pile, same front/picker mechanics as the retired
+      // pile. Non-leaf reports keep their own columns; the draft card never
+      // stacks (hiring stays visible at any width).
+      const active = kids.filter((c) => c.state !== 'archived' && c.id !== DRAFT)
+      if (active.length > 8) {
+        const leaves = active.filter((c) => !(c.children ?? []).length)
+        if (leaves.length >= 2) {
+          const key = n.id + '|c'
+          const want = pileFront[key]
+          out.set(key, {
+            key, parent: n.id, kind: 'c',
+            list: leaves.map((c) => c.id),
+            front: leaves.some((c) => c.id === want) ? want
+              : leaves[leaves.length - 1].id,
+          })
+        }
+      }
+      kids.forEach(walk)
     }
     walk(vroot)
     return out
   }, [vroot, pileFront])
   const pileByFront = useMemo(() => {
     const out = new Map()
-    for (const [parent, p] of piles) out.set(p.front, { parent, ...p })
+    for (const p of piles.values()) out.set(p.front, p)
     return out
   }, [piles])
   const hidden = useMemo(() => {         // piled-away id → its pile's front id
@@ -299,10 +321,14 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
       ;(n.children ?? []).forEach((c) => bury(c, front))
     }
     const walk = (n) => {
-      const p = piles.get(n.id)
+      const pa = piles.get(n.id + '|a')
+      const pc = piles.get(n.id + '|c')
+      const crowd = pc ? new Set(pc.list) : null
       ;(n.children ?? []).forEach((c) => {
-        if (p && c.state === 'archived' && c.id !== p.front) bury(c, p.front)
-        else walk(c)
+        if (pa && c.state === 'archived' && c.id !== pa.front) bury(c, pa.front)
+        else if (crowd && crowd.has(c.id) && c.id !== pc.front) {
+          out.set(c.id, pc.front)   // leaves by definition: nothing beneath
+        } else walk(c)
       })
     }
     walk(vroot)
@@ -1149,26 +1175,30 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
               onDragStart={startNodeDrag} onDragMove={moveNodeDrag} onDragEnd={endNodeDrag} />
           )
           if (!pileHere) return square
-          // the RETIRED PILE's stack layers render BEHIND the front card as
-          // real elements (box-shadows can't be clicked): the exposed margin
-          // is the hit target that opens the picker, and the whole stack
-          // eases outward slightly on hover (user spec)
+          // the pile's stack layers render BEHIND the front card as real
+          // elements (box-shadows can't be clicked): the exposed margin is
+          // the hit target that opens the picker, and the whole stack eases
+          // outward slightly on hover (user spec). Retired piles and live
+          // CROWD piles share the mechanics; the crowd wears a live tint.
           const layers = Math.min(pileHere.list.length - 1, 3)
+          const pTitle = pileHere.kind === 'c'
+            ? `${pileHere.list.length} teammates stacked — click to choose who's in front`
+            : `${pileHere.list.length} retired here — click to choose who's in front`
           return (
             <span key={n.id}>
-              <div className="pile-stack"
+              <div className={'pile-stack' + (pileHere.kind === 'c' ? ' crowd' : '')}
                 style={{ transform: `translate(${p.x}px, ${p.y}px)`,
                          width: NODE_W, height: NODE_H }}>
                 {Array.from({ length: layers }, (_, i) => layers - i).map((i) => (
                   <button key={i} className={'pile-layer l' + i}
-                    title={`${pileHere.list.length} retired here — click to choose who's in front`}
+                    title={pTitle}
                     onPointerDown={(e) => e.stopPropagation()}
-                    onClick={(e) => { e.stopPropagation(); setPileOpen(pileHere.parent) }} />
+                    onClick={(e) => { e.stopPropagation(); setPileOpen(pileHere.key) }} />
                 ))}
                 <button className="pile-count"
-                  title={`${pileHere.list.length} retired here — click to choose who's in front`}
+                  title={pTitle}
                   onPointerDown={(e) => e.stopPropagation()}
-                  onClick={(e) => { e.stopPropagation(); setPileOpen(pileHere.parent) }}>
+                  onClick={(e) => { e.stopPropagation(); setPileOpen(pileHere.key) }}>
                   {pileHere.list.length}</button>
               </div>
               {square}
@@ -1235,10 +1265,14 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
                 return pa.y - pb.y || pa.x - pb.x
               })
               .map((n) => {
-                // a piled-away retiree comes to the FRONT of its pile when
-                // picked from the tray, then the glide lands on it
+                // a piled-away agent comes to the FRONT of its pile when
+                // picked from the tray, then the glide lands on it — the key
+                // names the pile KIND (retired |a vs live crowd |c)
                 const go = () => {
-                  if (hidden.has(n.id)) setFront(map.get(n.id)?.parent, n.id)
+                  if (hidden.has(n.id)) {
+                    const par = map.get(n.id)?.parent
+                    setFront(par + (n.state === 'archived' ? '|a' : '|c'), n.id)
+                  }
                   centerOn(n.id)
                 }
                 // №13: the status summary is TEXT here, not a tooltip — and a
@@ -3195,14 +3229,20 @@ function FilesView({ slug, nid }) {
 // rest wait stacked beneath it. The current front is highlighted.
 function PilePicker({ pile, map, onPick, close }) {
   useEsc(close)
+  const crowd = pile.kind === 'c'
   return (
     <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
       <div className="settings pile-picker" onClick={(e) => e.stopPropagation()}>
-        <h3><LayersIcon fontSize="inherit" /> retired pile
+        <h3><LayersIcon fontSize="inherit" /> {crowd ? 'team stack' : 'retired pile'}
           <span className="dim"> · {pile.list.length} agents</span></h3>
         <div className="hint">
-          The retiree in front is the one you zoom in on, read, message and can
-          rehire; the rest wait beneath. Pick one to bring it forward.
+          {crowd
+            ? 'A wide team stacks its leaf agents into one place. The one in '
+              + 'front is the one you zoom in on and message; the rest keep '
+              + 'working beneath. Pick one to bring it forward.'
+            : 'The retiree in front is the one you zoom in on, read, message '
+              + 'and can rehire; the rest wait beneath. Pick one to bring it '
+              + 'forward.'}
         </div>
         {[...pile.list].reverse().map((id) => {
           const n = map.get(id)
@@ -3213,6 +3253,9 @@ function PilePicker({ pile, map, onPick, close }) {
               <span className={'tier t-' + n.tier}>{TIER_LETTER[n.tier] ?? '?'}</span>
               <span className="pile-name">{id}</span>
               {n.bearer_state && <span className="badge dim">{n.bearer_state}</span>}
+              {n.busy && <span className="badge">working</span>}
+              {n.state === 'unrecoverable' && <span className="badge dim">unrecoverable</span>}
+              {n.mail_pending > 0 && <span className="badge free">{n.mail_pending} mail</span>}
               {id === pile.front && <span className="badge free">in front</span>}
             </button>
           )
