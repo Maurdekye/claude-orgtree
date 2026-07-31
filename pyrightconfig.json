@@ -1,0 +1,8 @@
+{
+  "include": ["backend"],
+  "exclude": ["**/__pycache__", "**/node_modules", "frontend", "spike", "sandbox", "tools",
+    "backend/tests"],
+  "pythonVersion": "3.10",
+  "typeCheckingMode": "basic",
+  "reportMissingImports": "warning"
+}

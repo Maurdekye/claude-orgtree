@@ -27,15 +27,19 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable, Iterable
+from typing import Any, cast
 
 from . import sandbox as sbx, store
 from .ledger import EXTERN, USER, Org, expand_mcp, now as now_iso
+from .schema import (Denial, FrozenInfo, InflightInfo, KioskCfg, MailEntry,
+                     NoticeEntry)
 
 # ---- kiosk v2 (user vision): per-org public exposure behind a secret-URL
 # token. Caps (credits, spend, workspace storage) live ON THE ORG DOC —
 # `kiosk: {enabled, token, credits, spend_limit, storage_limit_mb}`; the old
 # ORGTREE_KIOSK env vars migrate into the doc at startup (api.py).
-def kiosk_cfg(org: Org) -> dict | None:
+def kiosk_cfg(org: Org) -> KioskCfg | None:
     """The org's kiosk config, or None for normal orgs. Kiosk is a TYPE
     (user ruling): limits bind whether or not the public URL is currently
     enabled — `enabled` only gates the token gateway."""
@@ -113,7 +117,7 @@ def workspace_usage_cached(org: Org, max_age: float = 15.0) -> int | None:
             if due:
                 _ws_walk_inflight.add(slug)
         if due:
-            def run():
+            def run() -> None:
                 try:
                     workspace_usage_bytes(org)
                 except Exception:       # noqa: BLE001 — a failed walk keeps the stale value
@@ -130,8 +134,8 @@ ORACLE_AT = float(os.environ.get("ORGTREE_ORACLE_AT", "0.92"))     # §8.3 state
 # real context windows per tier (user-verified) — the CLI's
 # modelUsage.contextWindow under-reported 1M-window models as 200k.
 # Override with ORGTREE_CONTEXT_WINDOWS='{"opus": 500000, ...}'
-TIER_CONTEXT = {"haiku": 200_000, "sonnet": 1_000_000,
-                "opus": 1_000_000, "fable": 1_000_000}
+TIER_CONTEXT: dict[str, int] = {"haiku": 200_000, "sonnet": 1_000_000,
+                                "opus": 1_000_000, "fable": 1_000_000}
 try:
     TIER_CONTEXT.update(json.loads(os.environ.get("ORGTREE_CONTEXT_WINDOWS") or "{}"))
 except (json.JSONDecodeError, TypeError):
@@ -217,7 +221,9 @@ TURN_TIMEOUT = int(os.environ.get("ORGTREE_TURN_TIMEOUT", "1800"))   # seconds
 MAX_CONCURRENT = int(os.environ.get("ORGTREE_MAX_TURNS", "3"))       # №34
 
 _turn_slots = threading.Semaphore(MAX_CONCURRENT)
-_state: dict[tuple[str, str], dict] = {}
+# per-(slug, nid) in-memory runtime state — see state() for the key set
+# (busy/waiting/queue/steer/proc/responding/…); values are heterogeneous
+_state: dict[tuple[str, str], dict[str, Any]] = {}
 _state_lock = threading.Lock()
 
 
@@ -228,11 +234,11 @@ _state_lock = threading.Lock()
 # two writers, one transcript. On Windows a job object with KILL_ON_JOB_CLOSE
 # makes the OS reap every child the instant the backend process goes away, no
 # matter how it went away; elsewhere an atexit sweep covers graceful exits.
-_JOB = None
-_ORPHANS: set = set()
+_JOB: int | None = None                      # Windows job-object handle
+_ORPHANS: set[subprocess.Popen[str]] = set()
 
 
-def _job_handle():
+def _job_handle() -> int | None:
     global _JOB
     if os.name != "nt":
         return None
@@ -273,7 +279,7 @@ def _job_handle():
     return _JOB
 
 
-def _leash(proc) -> None:
+def _leash(proc: subprocess.Popen[str]) -> None:
     """Tie a spawned CLI child's lifetime to the backend's."""
     try:
         if os.name == "nt":
@@ -281,7 +287,8 @@ def _leash(proc) -> None:
             if h:
                 import ctypes
                 ctypes.windll.kernel32.AssignProcessToJobObject(
-                    h, int(proc._handle))
+                    # Popen's win32-only private process handle (not in typeshed)
+                    h, int(proc._handle))   # pyright: ignore[reportAttributeAccessIssue]
         else:
             _ORPHANS.add(proc)
     except Exception:                                        # noqa: BLE001
@@ -301,11 +308,13 @@ import atexit                                                # noqa: E402
 atexit.register(_reap_orphans)
 
 # set by the API layer so worker threads can push websocket events
-notify = lambda slug, node, event: None   # noqa: E731
-stream = lambda slug, node, payload: None   # noqa: E731 — live per-message feed
+notify: Callable[[str, str, str], None] = \
+    lambda slug, node, event: None   # noqa: E731
+stream: Callable[[str, str, dict[str, Any]], None] = \
+    lambda slug, node, payload: None   # noqa: E731 — live per-message feed
 
 
-def state(slug: str, nid: str) -> dict:
+def state(slug: str, nid: str) -> dict[str, Any]:
     with _state_lock:
         return _state.setdefault((slug, nid), {
             "busy": False, "waiting": False, "queue": [], "last_error": None,
@@ -335,7 +344,7 @@ def _transcript_root(org: Org) -> str | None:
     return None
 
 
-def clean_env() -> dict:
+def clean_env() -> dict[str, str]:
     env = dict(os.environ)
     for k in list(env):
         if k.startswith("CLAUDE_CODE_") or k == "CLAUDECODE":
@@ -395,7 +404,7 @@ def _parse_limit_reset_ts(blob: str) -> float | None:
     return None
 
 
-def registered_mcp_servers() -> dict:
+def registered_mcp_servers() -> dict[str, Any]:
     """The user's globally registered MCP servers (~/.claude.json → mcpServers)."""
     try:
         cfg = json.load(open(os.path.expanduser("~/.claude.json"), encoding="utf-8"))
@@ -414,7 +423,8 @@ def sandbox_mcp_enabled() -> bool:
 _PORTABLE_CMDS = {"npx", "node", "python", "python3", "uvx", "uv"}
 
 
-def sandbox_mcp_passthrough(granted: list, registry: dict) -> dict:
+def sandbox_mcp_passthrough(granted: list[str],
+                            registry: dict[str, Any]) -> dict[str, Any]:
     """The granted servers a SANDBOXED turn may receive. Empty unless
     ORGTREE_SANDBOX_MCP is set; then: URL servers with localhost rewritten to
     the container's host alias, and stdio servers whose command is portable
@@ -676,7 +686,8 @@ def _user_event(text: str) -> str:
         "role": "user", "content": [{"type": "text", "text": text}]}}) + "\n"
 
 
-def _journal_drain(org: Org, nid: str, mail, pending) -> str:
+def _journal_drain(org: Org, nid: str, mail: list[MailEntry] | None,
+                   pending: list[NoticeEntry] | None) -> str:
     """Record a drained-but-not-yet-delivered batch in the org doc (caller
     saves). Draining REMOVES mail from the doc; until the text carrying it
     reaches the agent's process, this journal is the only copy that survives
@@ -688,7 +699,7 @@ def _journal_drain(org: Org, nid: str, mail, pending) -> str:
     return tok
 
 
-def delivering_mail(org: Org, nid: str) -> list[dict]:
+def delivering_mail(org: Org, nid: str) -> list[dict[str, Any]]:
     """Mail drained for an IN-FLIGHT delivery — steered mid-task or riding a
     turn that hasn't confirmed yet. The journal holds the only copy, and the
     UI read it from nowhere (user bug 2026-07-31: messages sent during a
@@ -701,7 +712,7 @@ def delivering_mail(org: Org, nid: str) -> list[dict]:
     return out
 
 
-def _confirm_delivered(slug: str, nid: str, toks) -> None:
+def _confirm_delivered(slug: str, nid: str, toks: Iterable[str]) -> None:
     """The batch reached the agent (stdin write / steer fetch succeeded): the
     transcript holds the mail now, so the journal copy is redundant."""
     if not toks:
@@ -710,22 +721,24 @@ def _confirm_delivered(slug: str, nid: str, toks) -> None:
     try:
         with store.DOC_LOCK:
             org = store.load_org(slug)
-            dl = (org.d.get("delivering") or {}).get(nid)
+            dlmap = org.d.get("delivering") or {}
+            dl = dlmap.get(nid)
             if not dl:
                 return
             keep = [b for b in dl if b.get("tok") not in drop]
             if len(keep) == len(dl):
                 return
             if keep:
-                org.d["delivering"][nid] = keep
+                dlmap[nid] = keep
             else:
-                org.d["delivering"].pop(nid, None)
+                dlmap.pop(nid, None)
             store.save_org(org)
     except Exception:                                        # noqa: BLE001
         pass      # worst case the batch folds back later — duplicate, not loss
 
 
-def _fold_back_undelivered(slug: str, nid: str, keep_toks=()) -> None:
+def _fold_back_undelivered(slug: str, nid: str,
+                           keep_toks: Iterable[str] = ()) -> None:
     """A turn ended without delivering some drained batch(es): put the mail
     and notices back exactly where the drain took them from, so the next
     turn's envelope presents them again. keep_toks = batches whose text is
@@ -734,15 +747,16 @@ def _fold_back_undelivered(slug: str, nid: str, keep_toks=()) -> None:
     try:
         with store.DOC_LOCK:
             org = store.load_org(slug)
-            dl = (org.d.get("delivering") or {}).get(nid) or []
+            dlmap = org.d.get("delivering") or {}
+            dl = dlmap.get(nid) or []
             fold = [b for b in dl if b.get("tok") not in keep]
             if not fold:
                 return
             left = [b for b in dl if b.get("tok") in keep]
             if left:
-                org.d["delivering"][nid] = left
+                dlmap[nid] = left
             else:
-                (org.d.get("delivering") or {}).pop(nid, None)
+                dlmap.pop(nid, None)
             if nid in org.nodes:
                 mails = [m for b in fold for m in b.get("mail") or []]
                 nots = [p for b in fold for p in b.get("notices") or []]
@@ -780,7 +794,7 @@ def _envelope(slug: str, nid: str, text: str) -> tuple[str, str | None]:
     return (("\n\n".join(prelude) + "\n\n" + text) if prelude else text), tok
 
 
-def _mail_block(mail) -> str:
+def _mail_block(mail: list[MailEntry]) -> str:
     """The one [MAIL] formatter — the envelope AND the turn-start feed use it
     (they diverged once: turn-start mail silently lacked the attachment
     lines, live-caught 2026-07-31)."""
@@ -875,11 +889,12 @@ def _build_cmd(org: Org, nid: str) -> list[str]:
            "--append-system-prompt", identity_prompt(org, nid),
            "--settings", json.dumps(settings),
            "--strict-mcp-config"]
-    if sc.get("effort") in Org.EFFORTS:
+    eff = sc.get("effort")
+    if eff and eff in Org.EFFORTS:
         # per-agent thinking effort (user-approved 2026-07-31); unset = CLI
         # default. Org.EFFORTS is the ONE allowlist (review P2) — a literal
         # copy here is how a partial edit silently un-wires a tier.
-        cmd += ["--effort", sc["effort"]]
+        cmd += ["--effort", eff]
     tools = sc.get("tools", {})
     # interactive-only tools cannot work in a headless turn (there is no client
     # to present them) — questions route through orgtree_message instead
@@ -963,7 +978,7 @@ def _build_cmd(org: Org, nid: str) -> list[str]:
     return cmd
 
 
-def _run_turn(slug: str, nid: str, text):
+def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
     st = state(slug, nid)
     # a dict carrier is an already-enveloped text still owing its delivery
     # journal a confirmation (a steer/boundary leftover re-queued for a turn)
@@ -972,6 +987,7 @@ def _run_turn(slug: str, nid: str, text):
     if isinstance(text, dict):
         is_cmd = bool(text.get("cmd"))
         toks, text = list(text.get("toks") or []), text["text"]
+    text = cast(str, text)    # unwrapped above — plain str from here on
     try:
         # blocked on a turn slot is NOT running (№12) — the UI shows it hollow
         st["waiting"] = True
@@ -1023,9 +1039,10 @@ def _run_turn(slug: str, nid: str, text):
                     # (reconcile, ▶ resume) rebuild plain text as prose, which
                     # would bury the "/" mid-string — a command that can't
                     # replay honestly is dropped, not degraded (review)
-                    o2.node(nid)["inflight"] = {
-                        "at": now_iso(), "text": text[-8000:],
-                        **({"cmd": True} if is_cmd else {})}
+                    inf: InflightInfo = {"at": now_iso(), "text": text[-8000:]}
+                    if is_cmd:
+                        inf["cmd"] = True
+                    o2.node(nid)["inflight"] = inf
                     # new work begins: a lingering done/blocked chip would lie —
                     # but the history is kept, not erased (gap audit №13)
                     ls = o2.node(nid).pop("last_status", None)
@@ -1054,7 +1071,7 @@ def _run_turn(slug: str, nid: str, text):
             dbuf, dlast = "", time.time()   # token-stream delta batcher (~8 Hz)
             timed_out = threading.Event()
 
-            def _expire():
+            def _expire() -> None:
                 timed_out.set()
                 proc.kill()
                 if sandbox_name:
@@ -1069,8 +1086,10 @@ def _run_turn(slug: str, nid: str, text):
                 st["proc"] = proc         # for the user-interrupt escape hatch
                 st["responding"] = True
             try:
-                proc.stdin.write(_user_event(text))
-                proc.stdin.flush()
+                # (the pyright ignores below: stdin/stdout/stderr are PIPE ⇒
+                # non-None, which typeshed's Popen cannot express)
+                proc.stdin.write(_user_event(text))   # pyright: ignore[reportOptionalMemberAccess]
+                proc.stdin.flush()                    # pyright: ignore[reportOptionalMemberAccess]
                 # ⚠ a successful write into the 64 KB pipe buffer is NOT
                 # consumption (review C1): a child that dies on argv (unknown
                 # --flag on an older CLI) or on session resume never reads
@@ -1085,7 +1104,7 @@ def _run_turn(slug: str, nid: str, text):
                 # a response is useless — the CLI queue-removes such messages,
                 # live-observed). Mid-response delivery happens via the steer
                 # list + PostToolUse hook instead — never an interrupt.
-                for line in proc.stdout:      # live per-message feed to the UI
+                for line in proc.stdout:      # live per-message feed to the UI  # pyright: ignore[reportOptionalIterable]
                     line = line.strip()
                     if not line:
                         continue
@@ -1185,15 +1204,17 @@ def _run_turn(slug: str, nid: str, text):
                                 with store.DOC_LOCK:
                                     o2 = store.load_org(slug)
                                     if nid in o2.nodes:
-                                        o2.node(nid)["inflight"] = {
-                                            "at": now_iso(), "text": nxt[-8000:],
-                                            **({"cmd": True} if ncmd else {})}
+                                        ninf: InflightInfo = {
+                                            "at": now_iso(), "text": nxt[-8000:]}
+                                        if ncmd:
+                                            ninf["cmd"] = True
+                                        o2.node(nid)["inflight"] = ninf
                                         store.save_org(o2)
                             except Exception:                # noqa: BLE001
                                 pass
                             try:
-                                proc.stdin.write(_user_event(nxt))
-                                proc.stdin.flush()
+                                proc.stdin.write(_user_event(nxt))   # pyright: ignore[reportOptionalMemberAccess]
+                                proc.stdin.flush()                   # pyright: ignore[reportOptionalMemberAccess]
                                 # C1 again: confirmed by the next consuming
                                 # event, not by the pipe write (the prior
                                 # batch's toks were confirmed by THIS result
@@ -1208,10 +1229,10 @@ def _run_turn(slug: str, nid: str, text):
                                         if (ntoks or ncmd) else nxt)
                                     st["responding"] = False
                         try:
-                            proc.stdin.close()
+                            proc.stdin.close()   # pyright: ignore[reportOptionalMemberAccess]
                         except OSError:
                             pass
-                err = proc.stderr.read()
+                err = proc.stderr.read()   # pyright: ignore[reportOptionalMemberAccess]
                 proc.wait()
             finally:
                 timer.cancel()
@@ -1265,8 +1286,12 @@ def _run_turn(slug: str, nid: str, text):
                     with store.DOC_LOCK:
                         o2 = store.load_org(slug)
                         if nid in o2.nodes:
-                            fz = o2.node(nid).setdefault(
-                                "frozen", {"at": now_iso(), "resume_texts": []})
+                            # ⚠ cast hides a LATENT crash pyright found: ledger
+                            # reseed writes frozen=None explicitly, and setdefault
+                            # returns that None untouched (typing wave: reported,
+                            # not fixed — this annotation changes no behavior)
+                            fz = cast(FrozenInfo, o2.node(nid).setdefault(
+                                "frozen", {"at": now_iso(), "resume_texts": []}))
                             fz["until"] = _parse_limit_reset(err_blob) or fz.get("until")
                             fz["until_ts"] = (_parse_limit_reset_ts(err_blob)
                                               or fz.get("until_ts"))
@@ -1325,7 +1350,8 @@ def _run_turn(slug: str, nid: str, text):
             _run_turn(slug, nid, nxt)
 
 
-def _after_turn(slug: str, nid: str, org: Org, res: dict, st: dict, occ: int = 0):
+def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
+                st: dict[str, Any], occ: int = 0) -> None:
     """Post-turn bookkeeping: dollar cost (№32), context occupancy (№24), and the
     §8 compaction split when occupancy crosses the threshold. Tolerates the node
     having been deleted mid-turn.
@@ -1346,9 +1372,10 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict, st: dict, occ: int = 0
     st["occupancy"], st["context_window"] = occ or st["occupancy"], cw or st["context_window"]
     # №7: the CLI reports every headless auto-deny on the result event — the
     # machine truth about the corrections the permission settings made
-    denials = [{"tool": d.get("tool_name", "tool"),
-                "arg": _tool_arg(d.get("tool_name", ""), d.get("tool_input"))}
-               for d in (res.get("permission_denials") or [])][:8]
+    denials: list[Denial] = [
+        {"tool": d.get("tool_name", "tool"),
+         "arg": _tool_arg(d.get("tool_name", ""), d.get("tool_input"))}
+        for d in (res.get("permission_denials") or [])[:8]]
     spend_total = None
     if cost or occ or cw or denials or res:
         with store.DOC_LOCK:
@@ -1381,7 +1408,8 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict, st: dict, occ: int = 0
     # in-flight turns' cost — an accepted, irreducible window.
     if (kcfg and float(kcfg.get("spend_limit") or 0) > 0
             and spend_total is not None
-            and spend_total >= float(kcfg["spend_limit"])):
+            # the .get guard above proves the key is present
+            and spend_total >= float(kcfg["spend_limit"])):   # pyright: ignore[reportTypedDictNotRequiredAccess]
         hard_freeze(slug, "spend", "kiosk spend limit reached")
     # kiosk workspace storage limit (user spec): NOT a freeze — over the limit
     # file creation/writes are blocked while agents keep running (they can
@@ -1415,7 +1443,7 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict, st: dict, occ: int = 0
             _compact_split(slug, nid)
 
 
-def _compact_split(slug: str, nid: str):
+def _compact_split(slug: str, nid: str) -> None:
     """§8/№18: fork the session, /compact the fork (the successor), retire the
     original in place as a knowledge bearer. The predecessor is never written
     again. Wears an explicit `compacting` phase (parity №3): the desk's word
@@ -1428,7 +1456,7 @@ def _compact_split(slug: str, nid: str):
         st0.pop("phase", None)
 
 
-def _compact_split_body(slug: str, nid: str):
+def _compact_split_body(slug: str, nid: str) -> None:
     with store.DOC_LOCK:
         org = store.load_org(slug)
         n = org.node(nid)
@@ -1490,7 +1518,8 @@ def _compact_split_body(slug: str, nid: str):
         spend_total = org.cost_total()      # incl. deleted agents' burn
         kcfg = kiosk_cfg(org)
     if (kcfg and float(kcfg.get("spend_limit") or 0) > 0
-            and spend_total >= float(kcfg["spend_limit"])):
+            # the .get guard above proves the key is present
+            and spend_total >= float(kcfg["spend_limit"])):   # pyright: ignore[reportTypedDictNotRequiredAccess]
         hard_freeze(slug, "spend", "kiosk spend limit reached")
     st = state(slug, nid)
     st["occupancy"] = None
@@ -1523,7 +1552,8 @@ def manual_compact(slug: str, nid: str) -> None:
             _run_turn(slug, nid, nxt)
 
 
-def send_message(slug: str, nid: str, text: str, command: bool = False) -> dict:
+def send_message(slug: str, nid: str, text: str,
+                 command: bool = False) -> dict[str, Any]:
     """Drive a node with a nudge; returns immediately. EVERY substantive message
     — user and agent alike — is MAIL (user ruling: the direct-message channel
     was folded into the mail system): it already sits persisted in the node's
@@ -1575,7 +1605,8 @@ def send_message(slug: str, nid: str, text: str, command: bool = False) -> dict:
                 st.setdefault("steer", []).append(carrier)
                 return {"accepted": True, "queued": 0, "steering": True}
             # raced past the boundary — fall through with the drained text
-            text = carrier
+            # (the carrier may be a journaled dict; _run_turn accepts both)
+            text = carrier   # pyright: ignore[reportAssignmentType]
     with _state_lock:
         if st["busy"]:
             st["queue"].append(text)
@@ -1585,7 +1616,7 @@ def send_message(slug: str, nid: str, text: str, command: bool = False) -> dict:
     return {"accepted": True, "queued": 0}
 
 
-def interrupt_turn(slug: str, nid: str) -> dict:
+def interrupt_turn(slug: str, nid: str) -> dict[str, Any]:
     """Manual ⏸ from the user: stop the node's current response via the CLI's
     control_request interrupt (the ONLY sanctioned interrupt — message delivery
     never interrupts, user ruling). The process stays alive; queued mail
@@ -1623,12 +1654,17 @@ def hard_freeze(slug: str, kind: str, error: str) -> None:
         org.d[flag] = True
         for nid, n in org.nodes.items():
             if n["state"] == "live":
-                fz = n.setdefault("frozen", {"at": now_iso(), "resume_texts": []})
+                # same latent frozen=None caveat as the limit-freeze path above
+                fz = cast(FrozenInfo,
+                          n.setdefault("frozen", {"at": now_iso(), "resume_texts": []}))
                 # №41 (user ruling): freeze kinds are COMMUTATIVE — a spend
                 # freeze landing on a usage-limit freeze must not overwrite
                 # the limit's error/reset info; each kind owns its own keys
-                fz[kind] = True
-                fz[kind + "_error"] = error
+                # dynamic per-kind keys ("spend" / "spend_error") — a TypedDict
+                # can't index by a str variable, so widen for these two writes
+                fzd = cast("dict[str, Any]", fz)
+                fzd[kind] = True
+                fzd[kind + "_error"] = error
                 # review C7: the interrupt below kills these turns and the
                 # finally pops their inflight — capture the text NOW so the
                 # docstring's promise ("▶ replays the interrupted turns")
@@ -1794,7 +1830,7 @@ def maybe_storage_check(slug: str) -> None:
         return
     _storage_check_at[slug] = now
 
-    def run():
+    def run() -> None:
         try:
             org = store.load_org(slug)
             k = kiosk_cfg(org)
@@ -1833,7 +1869,7 @@ def immediate_command(slug: str, nid: str, text: str) -> bool:
     if not transcript_path(sid, tdir):
         return False
 
-    def run():
+    def run() -> None:
         fork_sid, out_text = None, ""
         try:
             if sbx.is_sandboxed(org):
@@ -1916,7 +1952,7 @@ def start_storage_watchdog() -> None:
         return
     _watchdog_started = True
 
-    def run():
+    def run() -> None:
         while True:
             time.sleep(20)
             try:
@@ -1937,7 +1973,7 @@ def start_storage_watchdog() -> None:
     threading.Thread(target=run, daemon=True).start()
 
 
-def interrupt_all(slug: str) -> dict:
+def interrupt_all(slug: str) -> dict[str, Any]:
     """The killswitch: instantly interrupt every active agent at once (user
     ruling — an unlatch-then-press control). Clears in-memory queues and steer
     lists too, so nothing chains a new turn; undelivered mail stays safe in
@@ -2115,7 +2151,7 @@ def deliver_org_inbox(slug: str, peer: str, body: str,
     `attachments` (user spec 2026-07-31): absolute host paths — each file is
     copied into EVERY recipient's uploads/ before the mail posts, so the
     envelope's [ATTACHED FILE] lines point at real files."""
-    by_node: dict[str, list[dict]] = {}
+    by_node: dict[str, list[dict[str, Any]]] = {}
     if attachments:
         with store.DOC_LOCK:
             org = store.load_org(slug)
@@ -2186,7 +2222,7 @@ def start_chatq_bridge() -> None:
         return
     _chatq_started = True
 
-    def loop():
+    def loop() -> None:
         while True:
             time.sleep(3)
             try:
@@ -2230,7 +2266,7 @@ def start_auto_resume_loop() -> None:
         return
     _auto_resume_started = True
 
-    def loop():
+    def loop() -> None:
         while True:
             time.sleep(30)
             try:
@@ -2240,9 +2276,9 @@ def start_auto_resume_loop() -> None:
                         org = store.load_org(slug)
                         if not org.d.get("auto_resume") or org.d.get("spend_frozen"):
                             continue
-                        tss = [n["frozen"].get("until_ts")
+                        tss = [fz.get("until_ts")
                                for n in org.nodes.values()
-                               if n["state"] == "live" and n.get("frozen")]
+                               if n["state"] == "live" and (fz := n.get("frozen"))]
                         last = float(org.d.get("auto_resume_last") or 0)
                     known = [t for t in tss if t]
                     if not tss or not known:
@@ -2282,7 +2318,7 @@ def pop_steer(slug: str, nid: str) -> list[str]:
         # show. The steered log is its durable home; read_chat interleaves
         # it by timestamp. Written off-thread — the steer endpoint is the
         # per-tool-call hot path and must never wait on a doc save.
-        def record():
+        def record() -> None:
             with store.DOC_LOCK:
                 try:
                     org = store.load_org(slug)
@@ -2299,7 +2335,7 @@ def pop_steer(slug: str, nid: str) -> list[str]:
     return out
 
 
-def forget(slug: str, nids) -> None:
+def forget(slug: str, nids: Iterable[str]) -> None:
     """After a user delete: drop runtime state and remove org-owned scratch dirs.
     Lineage ids share their base's scratch, so only base ids delete directories;
     session transcripts under ~/.claude are deliberately left alone."""
@@ -2389,7 +2425,7 @@ def reconcile(slug: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------- chat
-def _tool_arg(name: str, inp) -> str:
+def _tool_arg(name: str, inp: Any) -> str:
     """The most-identifying argument for a tool chip (parity №1): the argument
     IS the content of the line — `Bash ls /e/…` beats a bare noun."""
     if not isinstance(inp, dict):
@@ -2405,7 +2441,7 @@ def _tool_arg(name: str, inp) -> str:
     return ""
 
 
-def _result_text(content) -> str:
+def _result_text(content: Any) -> str:
     """Flatten a tool_result's content to text."""
     if isinstance(content, str):
         return content
@@ -2432,7 +2468,9 @@ def _cmd_stdout(raw: str) -> str:
     return _ANSI_RE.sub("", "\n\n".join(out))[:20000]
 
 
-def sandbox_dirs_to_host(org: Org, add_dirs):
+def sandbox_dirs_to_host(
+        org: Org, add_dirs: list[Any] | None,
+) -> tuple[list[Any] | None, list[str]]:
     """Container→host translation for agent-supplied dir grants in SANDBOXED
     orgs (user bug 2026-07-31): sandboxed agents are deliberately told only
     container paths (/home/agent/orgtree/...), but the ledger holds host
@@ -2479,7 +2517,7 @@ def _ts_gap_secs(a: str | None, b: str | None) -> int | None:
         return None
 
 
-def read_chat(org: Org, nid: str, last: int | None = None) -> dict:
+def read_chat(org: Org, nid: str, last: int | None = None) -> dict[str, Any]:
     """Parse the node's transcript into renderable messages + context occupancy.
 
     Parity waves A+C (2026-07-31): tool chips carry their identifying argument,
@@ -2501,7 +2539,7 @@ def read_chat(org: Org, nid: str, last: int | None = None) -> dict:
         return out
     msgs = []
     occupancy = None
-    by_tool_id: dict[str, dict] = {}
+    by_tool_id: dict[str, dict[str, Any]] = {}
     after_boundary = False           # the next flagged record is the summary
     prev_ts = None                   # the preceding record's timestamp
     for line in open(tpath, encoding="utf-8", errors="replace"):
@@ -2668,10 +2706,11 @@ def read_chat(org: Org, nid: str, last: int | None = None) -> dict:
         # №10: the pre-computed diff rides the parent record's sidecar
         tur = rec.get("toolUseResult")
         if isinstance(tur, dict) and t == "user":
-            entry = next((by_tool_id.get(b.get("tool_use_id"))
+            # (tool_use_id may be absent → a None key simply misses the lookup)
+            entry = next((by_tool_id.get(b.get("tool_use_id"))   # pyright: ignore[reportArgumentType]
                           for b in (content if isinstance(content, list) else [])
                           if isinstance(b, dict) and b.get("type") == "tool_result"
-                          and by_tool_id.get(b.get("tool_use_id"))), None)
+                          and by_tool_id.get(b.get("tool_use_id"))), None)   # pyright: ignore[reportArgumentType]
             if entry is not None:
                 patch = tur.get("structuredPatch")
                 if patch:

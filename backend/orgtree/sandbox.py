@@ -35,26 +35,30 @@ import os
 import shutil
 import subprocess
 import threading
+from typing import TYPE_CHECKING
 
 from . import store
 
-_DATA = os.path.expanduser(os.environ.get("ORGTREE_DATA", "~/orgtree"))
-REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".."))
-BACKEND_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
+if TYPE_CHECKING:
+    from .ledger import Org
 
-IMAGE = os.environ.get("ORGTREE_SANDBOX_IMAGE", "orgtree-sandbox")
+_DATA: str = os.path.expanduser(os.environ.get("ORGTREE_DATA", "~/orgtree"))
+REPO_ROOT: str = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".."))
+BACKEND_DIR: str = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
+
+IMAGE: str = os.environ.get("ORGTREE_SANDBOX_IMAGE", "orgtree-sandbox")
 # bump when sandbox/Dockerfile changes: the tag carries the revision, so
 # existing images rebuild and running containers recreate on their next turn
 # (r2: passwordless sudo — agents hold root inside the container)
-IMG_REV = "r2"
-BRIDGE_PORT = int(os.environ.get("ORGTREE_BRIDGE_PORT", "7362") or 0)
-MEM = os.environ.get("ORGTREE_SANDBOX_MEM", "4g")
-CPUS = os.environ.get("ORGTREE_SANDBOX_CPUS", "2")
+IMG_REV: str = "r2"
+BRIDGE_PORT: int = int(os.environ.get("ORGTREE_BRIDGE_PORT", "7362") or 0)
+MEM: str = os.environ.get("ORGTREE_SANDBOX_MEM", "4g")
+CPUS: str = os.environ.get("ORGTREE_SANDBOX_CPUS", "2")
 
-_build_lock = threading.Lock()
+_build_lock: threading.Lock = threading.Lock()
 
 
-def _cfg(org) -> dict | None:
+def _cfg(org: Org) -> dict[str, str] | None:
     """Sandbox config for ANY org (user ruling: not just kiosks): kiosks
     carry it inside their kiosk dict; normal orgs in a top-level `sandbox`."""
     k = org.d.get("kiosk") or {}
@@ -66,7 +70,7 @@ def _cfg(org) -> dict | None:
     return None
 
 
-def is_sandboxed(org) -> bool:
+def is_sandboxed(org: Org) -> bool:
     return _cfg(org) is not None
 
 
@@ -82,7 +86,7 @@ def docker_available() -> bool:
     return _docker_ok
 
 
-def sandbox_secret(org) -> str:
+def sandbox_secret(org: Org) -> str:
     return (_cfg(org) or {}).get("secret", "")
 
 
@@ -115,7 +119,7 @@ def bridge_url() -> str:
     return f"http://host.docker.internal:{BRIDGE_PORT}"
 
 
-def _docker(*args: str, timeout: int = 120) -> subprocess.CompletedProcess:
+def _docker(*args: str, timeout: int = 120) -> subprocess.CompletedProcess[str]:
     return subprocess.run(["docker", *args], capture_output=True, text=True,
                           timeout=timeout)
 
@@ -150,7 +154,7 @@ def ensure_image() -> str:
     return tag
 
 
-def ensure_container(org) -> str:
+def ensure_container(org: Org) -> str:
     """The org's container, created on first need and restarted if stopped.
     Raises RuntimeError with an actionable message when it cannot run."""
     slug = org.d["slug"]
@@ -199,7 +203,7 @@ def ensure_container(org) -> str:
             with open(cfg, "w", encoding="utf-8") as f:
                 json.dump({"hasCompletedOnboarding": True}, f)
     ws = org.d.get("workspace")
-    os.makedirs(ws, exist_ok=True)
+    os.makedirs(ws, exist_ok=True)   # type: ignore[arg-type]  # schema says workspace can be None — would TypeError here; latent bug reported, not fixed (typing wave = zero behavior change)
     scratch = store.scratch_root(slug)
     os.makedirs(scratch, exist_ok=True)
     # the only door out: backend URL + this org's secret, read by steer.py
@@ -260,13 +264,13 @@ def remove(slug: str) -> None:
         pass
 
 
-def warm(org) -> None:
+def warm(org: Org) -> None:
     """Fire-and-forget prebuild at kiosk creation so the first turn is not
     minutes slow (image build + container create)."""
     slug = org.d["slug"]
     _dead.discard(slug)          # same-slug re-create un-tombs it
 
-    def run():
+    def run() -> None:
         try:
             ensure_container(org)
         except Exception as e:              # noqa: BLE001 — surfaced per turn

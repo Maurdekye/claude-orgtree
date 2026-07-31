@@ -17,10 +17,11 @@ import os
 import tempfile
 import threading
 import time
+from typing import Any
 
 from .ledger import LedgerError, Org, slugify
 
-DATA_ROOT = os.environ.get("ORGTREE_DATA", os.path.expanduser("~/orgtree"))
+DATA_ROOT: str = os.environ.get("ORGTREE_DATA", os.path.expanduser("~/orgtree"))
 
 # Coarse per-process guard around load-modify-save cycles: API ops and the
 # supervisor's notice drain both rewrite org docs; without this a stale copy
@@ -42,8 +43,8 @@ def scratch_root(slug: str) -> str:
     return os.path.join(DATA_ROOT, "scratch", slug)
 
 
-def list_orgs() -> list[dict]:
-    out = []
+def list_orgs() -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
     for f in sorted(os.listdir(_orgs_dir())):
         if not f.endswith(".json"):
             continue
@@ -69,7 +70,7 @@ def load_org(slug: str) -> Org:
         return Org(json.load(f))
 
 
-REVISION = 0   # bumped on every save — cheap change detection for pollers
+REVISION: int = 0   # bumped on every save — cheap change detection for pollers
                # (the extern long-poll gates its full-doc rescans on this)
 
 

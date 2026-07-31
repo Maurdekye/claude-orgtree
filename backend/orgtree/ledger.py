@@ -25,14 +25,19 @@ from __future__ import annotations
 import math
 import re
 import uuid
+from collections.abc import Iterable, Mapping
 from datetime import datetime, timezone
+from typing import Any, Final, Literal, cast
+
+from .schema import (AudienceGrant, DirGrant, MailEntry, NodeDoc,
+                     OrgDoc, OrgInboxEntry, ToolGrant, UserMailEntry)
 
 # §3.1 — derived from published API pricing (output:input is 5:1 for every model, so the
 # scale is not a judgment call). Sonnet is 3, not its introductory 2 (expires 2026-08-31).
-TIERS = {"fable": 10, "opus": 5, "sonnet": 3, "haiku": 1}
+TIERS: Final[dict[str, int]] = {"fable": 10, "opus": 5, "sonnet": 3, "haiku": 1}
 
 # §5 — full model ids only; aliases drift (spike: 'sonnet' resolved to sonnet-4-5).
-MODELS = {
+MODELS: Final[dict[str, str]] = {
     "fable": "claude-fable-5",
     "opus": "claude-opus-5",
     "sonnet": "claude-sonnet-5",
@@ -42,9 +47,9 @@ MODELS = {
 # Actors are one of three KINDS — user, system, agent — not one string namespace.
 # The non-agent kinds use @-prefixed sentinels, which slugify() can never produce,
 # so agent NAMES are fully unrestricted (a node may be called "user" or "system").
-USER = "@user"      # the org root: infinite free, unconditional authority (§7.4)
-SYSTEM = "@system"  # the ledger's own hand (fable-limit policy, reconciliation)
-EXTERN = "@extern"  # the ORG INBOX: the org's single face to the outside world
+USER: Final = "@user"      # the org root: infinite free, unconditional authority (§7.4)
+SYSTEM: Final = "@system"  # the ledger's own hand (fable-limit policy, reconciliation)
+EXTERN: Final = "@extern"  # the ORG INBOX: the org's single face to the outside world
                     # (chatq sessions, other orgs). An audience whose grantor is
                     # EXTERN lets a sub-level agent read/answer outside mail.
 
@@ -56,24 +61,25 @@ def actor_kind(actor: str) -> str:
         return "system"
     return "agent"
 
-VIS_LEVELS = ("self", "team", "subtree", "full")   # org-structure knowledge tiers
-TOOL_KEYS = ("bash", "web", "edit", "subagents")   # the built-in tool switches
+VIS_LEVELS: Final = ("self", "team", "subtree", "full")   # org-structure knowledge tiers
+TOOL_KEYS: Final = ("bash", "web", "edit", "subagents")   # the built-in tool switches
 # permission_mode rank order (kiosk-ceiling spec §2): later = more permissive
-PM_LEVELS = ("default", "acceptEdits", "bypassPermissions")
+PM_LEVELS: Final = ("default", "acceptEdits", "bypassPermissions")
 
 
-def norm_tools(t) -> dict:
+def norm_tools(t: Mapping[str, Any] | None) -> ToolGrant:
     """Normalize a tool grant: four built-in switches + an MCP server name list.
     "*" in mcp = every registered server, present AND future (collapses the list)."""
     t = t or {}
-    out = {k: bool(t.get(k, True)) for k in TOOL_KEYS}
+    out: dict[str, Any] = {k: bool(t.get(k, True)) for k in TOOL_KEYS}
     out["mcp"] = sorted({str(s) for s in t.get("mcp", []) if s})
     if "*" in out["mcp"]:
         out["mcp"] = ["*"]
-    return out
+    return cast(ToolGrant, out)
 
 
-def expand_mcp(granted, ceiling_mcp, registry) -> list[str]:
+def expand_mcp(granted: Iterable[str] | None, ceiling_mcp: Iterable[str] | None,
+               registry: Iterable[str] | None) -> list[str]:
     """Build-time MCP expansion (ceiling spec §6, deliberately PURE — no env,
     no engine — so the suite pins it directly). "*" = the whole registry; the
     effective set is expand(granted) ∩ expand(ceiling). ceiling_mcp None = no
@@ -87,9 +93,10 @@ def expand_mcp(granted, ceiling_mcp, registry) -> list[str]:
     return sorted(g)
 
 
-def norm_dirs(dirs) -> list[dict]:
+def norm_dirs(dirs: Iterable[Any] | None) -> list[DirGrant]:
     """Normalize dir grants to [{path, mode}] — strings default to read/write."""
-    out, seen = [], set()
+    out: list[DirGrant] = []
+    seen: set[str] = set()
     for d in dirs or []:
         if isinstance(d, str):
             d = {"path": d, "mode": "rw"}
@@ -131,10 +138,12 @@ class Org:
     USER) and enforces authority + budget preconditions before touching state.
     """
 
-    def __init__(self, doc: dict):
-        self.d = doc
+    def __init__(self, doc: OrgDoc) -> None:
+        self.d: OrgDoc = doc
         # migrate older docs in place: dir grants gain modes; scopes gain tool sets
-        for i, n in enumerate(self.d.get("nodes", {}).values()):
+        # (pre-schema docs — the loop handles keys NodeDoc no longer declares)
+        for i, n in enumerate(cast("dict[str, dict[str, Any]]",
+                                   self.d.get("nodes", {})).values()):
             sc = n.setdefault("scope", {})
             sc["add_dirs"] = norm_dirs(sc.get("add_dirs"))
             if "tools" not in sc:
@@ -241,7 +250,8 @@ class Org:
         # node mail needs ids too (retraction keys on them); pre-id entries
         # otherwise render with no ✕ and 404 the DELETE with a false excuse
         for box in ("mail", "mail_log"):
-            for ms in (self.d.get(box) or {}).values():
+            # non-literal key → cast; both boxes hold {node: [entry, ...]}
+            for ms in cast("dict[str, list[Any]]", self.d.get(box) or {}).values():
                 for m in ms:
                     if isinstance(m, dict):
                         m.setdefault("id", uuid.uuid4().hex[:12])
@@ -311,10 +321,10 @@ class Org:
 
     # ---------------------------------------------------------------- queries
     @property
-    def nodes(self) -> dict:
+    def nodes(self) -> dict[str, NodeDoc]:
         return self.d["nodes"]
 
-    def node(self, nid: str) -> dict:
+    def node(self, nid: str) -> NodeDoc:
         try:
             return self.nodes[nid]
         except KeyError:
@@ -396,8 +406,9 @@ class Org:
         return {d["path"]: d["mode"] for d in self.node(nid)["scope"]["add_dirs"]}
 
     @staticmethod
-    def _clamp_tools(requested, parent_tools: dict | None,
-                     strict: bool) -> tuple[dict, list[str]]:
+    def _clamp_tools(requested: Mapping[str, Any] | None,
+                     parent_tools: Mapping[str, Any] | None,
+                     strict: bool) -> tuple[ToolGrant, list[str]]:
         """Bound a tool grant by the parent's own: an agent cannot pass on a tool or
         MCP server it does not itself hold. parent_tools None = the user (everything)."""
         req = norm_tools(requested)
@@ -426,13 +437,14 @@ class Org:
         return req, lost
 
     @staticmethod
-    def _clamp_dirs(requested: list[dict], parent_map: dict[str, str] | None,
-                    strict: bool) -> tuple[list[dict], list[str]]:
+    def _clamp_dirs(requested: list[DirGrant], parent_map: Mapping[str, str] | None,
+                    strict: bool) -> tuple[list[DirGrant], list[str]]:
         """Intersect a dir list with a parent capability map, downgrading rw→ro where
         the parent only holds ro. strict=True raises instead of dropping (hire-time)."""
         if parent_map is None:
             return list(requested), []
-        kept, lost = [], []
+        kept: list[DirGrant] = []
+        lost: list[str] = []
         for d in requested:
             held = parent_map.get(d["path"])
             if held is None:
@@ -447,7 +459,7 @@ class Org:
                 kept.append({"path": d["path"], "mode": "ro"})
                 lost.append(f"{d['path']} (downgraded to ro)")
             else:
-                kept.append(dict(d))
+                kept.append(cast(DirGrant, dict(d)))  # dict() copy loses the TypedDict
         return kept, lost
 
     # ----------------------------------------------- kiosk permission ceiling
@@ -459,11 +471,11 @@ class Org:
     # identity): "this call is authorized to, and intends to, raise the
     # ceiling to fit". Fail-closed default; agents can never pass it.
 
-    def kiosk_ceiling(self) -> dict | None:
+    def kiosk_ceiling(self) -> dict[str, Any] | None:
         k = self.d.get("kiosk")
         return (k or {}).get("max_scope") or None
 
-    def default_kiosk_ceiling(self) -> dict:
+    def default_kiosk_ceiling(self) -> dict[str, Any]:
         """Fresh-kiosk ceiling (spec §3): all built-ins ON, mcp "*" (user
         ruling — continuity with default_tools; the create dialog surfaces the
         ceiling so narrowing is a conscious act), the org's own dirs, full
@@ -472,7 +484,7 @@ class Org:
                 "add_dirs": norm_dirs(self.d.get("dirs")),
                 "org_visibility": "full", "permission_mode": "acceptEdits"}
 
-    def _norm_ceiling(self, ms) -> dict:
+    def _norm_ceiling(self, ms: Mapping[str, Any] | None) -> dict[str, Any]:
         ms = ms or {}
         vis = ms.get("org_visibility", "full")
         if vis not in VIS_LEVELS:
@@ -503,8 +515,13 @@ class Org:
                 f"cannot be hired, rehired or switched to in this org "
                 f"(admins change this in kiosk settings)")
 
-    def _apply_ceiling(self, tools=None, dirs=None, vis=None, pm=None,
-                       raise_ceiling: bool = False, warnings=None):
+    def _apply_ceiling(self, tools: ToolGrant | None = None,
+                       dirs: list[DirGrant] | None = None,
+                       vis: str | None = None, pm: str | None = None,
+                       raise_ceiling: bool = False,
+                       warnings: list[str] | None = None,
+                       ) -> tuple[ToolGrant | None, list[DirGrant] | None,
+                                  str | None, str | None, bool]:
         """The second clamp pass, against the kiosk ceiling (parent ∩ ceiling
         at depth — the parent clamp already ran). Returns
         (tools, dirs, vis, pm, bridged): bridged=True means something was
@@ -549,11 +566,14 @@ class Org:
             return tools, dirs, vis, pm, True
         return tools, dirs, vis, pm, False
 
-    def _raise_ceiling_for(self, tools, dirs, vis, pm, warnings) -> None:
+    def _raise_ceiling_for(self, tools: ToolGrant | None,
+                           dirs: list[DirGrant] | None, vis: str | None,
+                           pm: str | None, warnings: list[str] | None) -> None:
         """Grow max_scope to the union of itself and the request — the
         determinate bridge. Logged and returned as a warning NAMING what rose;
         a ceiling must never rise silently."""
-        ms = self.d["kiosk"]["max_scope"]
+        # only reached while a ceiling exists, so kiosk/max_scope are non-None
+        ms: dict[str, Any] = self.d["kiosk"]["max_scope"]  # type: ignore[index]
         rose: list[str] = []
         if tools is not None:
             t = norm_tools(tools)
@@ -595,7 +615,8 @@ class Org:
             if warnings is not None:
                 warnings.append("kiosk ceiling RAISED to fit: " + ", ".join(rose))
 
-    def set_kiosk_ceiling(self, max_scope: dict, auto_raise=None) -> dict:
+    def set_kiosk_ceiling(self, max_scope: dict[str, Any],
+                          auto_raise: bool | None = None) -> dict[str, Any]:
         """Admin sets/lowers the ceiling. Lowering SWEEPS (spec §5): the end
         state is unique — clamp every node's stored scope against the new
         ceiling — so it automates; refusal-with-directions would be the
@@ -659,8 +680,9 @@ class Org:
                     f"see fit")
         return {"max_scope": ms, "swept": swept, "warnings": warnings}
 
-    def set_hire_defaults(self, default_tools=None, default_visibility=None,
-                          raise_ceiling: bool = False) -> dict:
+    def set_hire_defaults(self, default_tools: Mapping[str, Any] | None = None,
+                          default_visibility: str | None = None,
+                          raise_ceiling: bool = False) -> dict[str, Any]:
         """The org's agent-hire defaults (the eye's gear). Kiosk VISITORS may
         set these too (user ruling 2026-07-31) — a default is just a pre-filled
         grant, so the ceiling clamps it with the same machinery as any grant;
@@ -673,7 +695,7 @@ class Org:
             t = norm_tools(default_tools)
             t, _d, _v, _p, b = self._apply_ceiling(
                 tools=t, raise_ceiling=raise_ceiling, warnings=warnings)
-            self.d["default_tools"] = t
+            self.d["default_tools"] = cast(ToolGrant, t)  # tools in ⇒ tools out
             bridged = bridged or b
         if default_visibility is not None:
             if default_visibility not in VIS_LEVELS:
@@ -681,20 +703,21 @@ class Org:
             _t, _d, v2, _p, b = self._apply_ceiling(
                 vis=default_visibility, raise_ceiling=raise_ceiling,
                 warnings=warnings)
-            self.d["default_visibility"] = v2
+            self.d["default_visibility"] = cast(str, v2)  # vis in ⇒ vis out
             bridged = bridged or b
         self._log("set_defaults", USER,
                   {"tools": self.d.get("default_tools"),
                    "visibility": self.d.get("default_visibility")}, warnings)
-        res = {"default_tools": self.d.get("default_tools"),
-               "default_visibility": self.d.get("default_visibility"),
-               "warnings": warnings}
+        res: dict[str, Any] = {"default_tools": self.d.get("default_tools"),
+                               "default_visibility": self.d.get("default_visibility"),
+                               "warnings": warnings}
         if bridged:
             res["bridge"] = {"raise_ceiling": True}
         return res
 
     # ------------------------------------------------------------- validation
-    def _require_authority(self, actor: str, nid: str, allow_self: bool = False):
+    def _require_authority(self, actor: str, nid: str,
+                           allow_self: bool = False) -> None:
         """Actor must be USER/SYSTEM or an ancestor of nid (§7.1); optionally nid
         itself. Actor kinds are typed (@-sentinels), so an AGENT named "user" or
         "system" is just an agent — its name confers nothing."""
@@ -706,7 +729,7 @@ class Org:
             raise LedgerError(
                 f"{actor} has no authority over {nid} — authority is downward only (§7.1)")
 
-    def _require_live(self, nid: str):
+    def _require_live(self, nid: str) -> None:
         if self.node(nid)["state"] != "live":
             raise LedgerError(f"{nid} is {self.node(nid)['state']}, not live")
 
@@ -753,7 +776,7 @@ class Org:
         return to
 
     def post_mail(self, sender: str, to: str, body: str, kind: str = "message",
-                  attachments: list | None = None) -> dict:
+                  attachments: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         """Agent-to-agent (or agent-to-user) mail under the §7.2 addressing rules:
         downward any depth (deep reach implicitly grants the recipient an audience),
         one hop up, siblings, held audiences. Everything else is refused with the
@@ -796,8 +819,8 @@ class Org:
                 raise LedgerError(
                     "only top-level agents (or holders of a user audience) may write "
                     "to the user — escalate to your superior instead (§7.5)")
-            ue = {"id": uuid.uuid4().hex[:8], "from": sender, "kind": kind,
-                  "body": body, "at": now()}
+            ue: UserMailEntry = {"id": uuid.uuid4().hex[:8], "from": sender,
+                                 "kind": kind, "body": body, "at": now()}
             self.d.setdefault("user_inbox", []).append(ue)
             self._log("mail", sender, {"to": USER, "kind": kind}, [])
             # the id rides the result → the sender's chat renders an inline
@@ -834,7 +857,7 @@ class Org:
                     "reason": f"{sender} messaged directly"})
                 warnings.append(f"audience granted: {to} may now reply to {sender} directly")
         box = self.d.setdefault("mail", {})
-        entry = {
+        entry: MailEntry = {
             # parity №11/№17: node mail carries an id — pending bubbles render
             # from the durable server copy, retraction targets one entry, and
             # the per-mail read-marking gate (m._wait && m.id) finally passes
@@ -852,7 +875,7 @@ class Org:
         # full-body archive for the node's inbox view (the event log keeps only
         # a gist) — capped per node
         log = self.d.setdefault("mail_log", {}).setdefault(to, [])
-        log.append(dict(entry))
+        log.append(cast(MailEntry, dict(entry)))  # dict() copy loses the TypedDict
         del log[:-100]
         if sender == USER:
             # the user's Sent folder: every user message IS mail (user ruling —
@@ -866,7 +889,8 @@ class Org:
                 "warnings": warnings}
 
     def post_external_mail(self, peer: str, body: str,
-                           attachments_by_node: dict | None = None) -> list[str]:
+                           attachments_by_node: Mapping[str, list[dict[str, Any]]]
+                           | None = None) -> list[str]:
         """Inbound from OUTSIDE the org — a chatq session (@ext:<id>) or another
         org (@org:<slug>). Org-inbox model (user spec): the message is addressed
         to the ORGANIZATION, not to any agent. It lands in the org-wide inbox;
@@ -880,7 +904,7 @@ class Org:
         tops = self.extern_recipients()
         box = self.d.setdefault("mail", {})
         for t in tops:
-            entry = {"id": uuid.uuid4().hex[:12],
+            entry: MailEntry = {"id": uuid.uuid4().hex[:12],
                      "from": peer, "kind": "message", "body": body,
                      "at": now(),
                      "relationship": "OUTSIDE PARTY writing to the ORG'S SHARED "
@@ -896,7 +920,7 @@ class Org:
                 entry["attachments"] = list(attachments_by_node[t])[:10]
             box.setdefault(t, []).append(entry)
             log = self.d.setdefault("mail_log", {}).setdefault(t, [])
-            log.append(dict(entry))
+            log.append(cast(MailEntry, dict(entry)))  # dict() copy loses the TypedDict
             del log[:-100]
         if not tops:
             # nobody to receive it: surface to the user instead of losing it
@@ -935,11 +959,11 @@ class Org:
         rec += [h for h in self.extern_holders() if h not in rec]
         return rec
 
-    def _org_inbox_log(self, direction: str, peer: str, body: str,
+    def _org_inbox_log(self, direction: Literal["in", "out"], peer: str, body: str,
                        by: str | None = None) -> str:
         log = self.d.setdefault("org_inbox", [])
-        e = {"id": uuid.uuid4().hex[:8], "dir": direction, "peer": peer,
-             "body": body[:20000], "at": now()}
+        e: OrgInboxEntry = {"id": uuid.uuid4().hex[:8], "dir": direction, "peer": peer,
+                            "body": body[:20000], "at": now()}
         if by:
             e["by"] = by      # internal attribution only — outbound speaks as the org
         log.append(e)
@@ -950,7 +974,7 @@ class Org:
         self.d["org_inbox_read"] = len(self.d.get("org_inbox", []))
 
     # -------------------------------------------------- audience requests (§7.3)
-    def request_audience(self, actor: str, target: str, reason: str) -> dict:
+    def request_audience(self, actor: str, target: str, reason: str) -> dict[str, Any]:
         """The slow upward path: a request climbs the actor's chain ONE refusable hop
         at a time. Grants flow down fast; requests climb slowly — by design."""
         self.node(actor)
@@ -985,14 +1009,14 @@ class Org:
         return {"currently_at": par, "drive": [] if par == USER else [par],
                 "warnings": r.get("warnings", [])}
 
-    def _find_request(self, frm: str, target: str) -> dict:
+    def _find_request(self, frm: str, target: str) -> dict[str, Any]:
         req = next((r for r in self.d["audience_requests"]
                     if r["from"] == frm and r["target"] == target), None)
         if not req:
             raise LedgerError(f"no open audience request {frm} → {target}")
         return req
 
-    def audience_forward(self, actor: str, frm: str, target: str) -> dict:
+    def audience_forward(self, actor: str, frm: str, target: str) -> dict[str, Any]:
         req = self._find_request(frm, target)
         if actor != req["currently_at"] and actor != USER:
             raise LedgerError(f"the request currently awaits {req['currently_at']}")
@@ -1023,7 +1047,7 @@ class Org:
         return {"currently_at": nxt, "drive": drive, "warnings": []}
 
     def audience_grant(self, actor: str, frm: str,
-                       target: str | None = None) -> dict:
+                       target: str | None = None) -> dict[str, Any]:
         """Grant frm a direct channel to `target` — the actor itself by default.
         DELEGATED grants (user ruling): an agent may open the ear of anyone in
         its OWN messaging reach — itself, a live peer, or its direct superior
@@ -1057,7 +1081,8 @@ class Org:
                     "live peer's, or your direct superior's"
                     + (" (the user)" if par == USER else f' ("{par}")'))
         if not self._has_audience(frm, target):
-            entry = {"grantee": frm, "grantor": target, "granted_at": now(),
+            entry: AudienceGrant = {
+                     "grantee": frm, "grantor": target, "granted_at": now(),
                      "reason": ("granted on request" if target == actor
                                 else f"delegated by {actor}")}
             if target != actor:
@@ -1098,7 +1123,7 @@ class Org:
         self._log("audience_grant", actor, {"grantee": frm, "grantor": target}, [])
         return {"drive": drive, "warnings": []}
 
-    def _grant_extern(self, actor: str, frm: str) -> dict:
+    def _grant_extern(self, actor: str, frm: str) -> dict[str, Any]:
         """Audience with the ORG INBOX (user spec): the grantee reads outside
         mail addressed to the org and may reply for it — the 'client contact'
         pattern. Granted by the user, or by a top-level agent for its own
@@ -1121,7 +1146,8 @@ class Org:
                                   "purview only — the grantee must be in "
                                   "your subtree")
         if not self._has_audience(frm, EXTERN):
-            entry = {"grantee": frm, "grantor": EXTERN, "granted_at": now(),
+            entry: AudienceGrant = {
+                     "grantee": frm, "grantor": EXTERN, "granted_at": now(),
                      "reason": ("granted by the user" if actor == USER
                                 else f"delegated by {actor}")}
             if actor != USER:
@@ -1138,7 +1164,7 @@ class Org:
         self._log("audience_grant", actor, {"grantee": frm, "grantor": EXTERN}, [])
         return {"drive": [frm], "warnings": []}
 
-    def audience_deny(self, actor: str, frm: str, target: str) -> dict:
+    def audience_deny(self, actor: str, frm: str, target: str) -> dict[str, Any]:
         req = self._find_request(frm, target)
         if actor not in (req["currently_at"], target, USER):
             raise LedgerError(f"the request currently awaits {req['currently_at']}")
@@ -1151,7 +1177,7 @@ class Org:
         return {"drive": [frm] if actor != USER else [], "warnings": []}
 
     def audience_revoke(self, actor: str, grantee: str,
-                        grantor: str | None = None) -> dict:
+                        grantor: str | None = None) -> dict[str, Any]:
         """Rescinding — unilateral and instant (§7.3). Actor must be the grantor
         (or the user, whose authority is unconditional — and who may name a
         specific grantor to rescind exactly that channel, e.g. the ✕ on a
@@ -1176,10 +1202,10 @@ class Org:
                   {"grantee": grantee, **({"grantor": tgt} if tgt else {})}, [])
         return {"warnings": []}
 
-    def take_mail(self, nid: str) -> list[dict]:
+    def take_mail(self, nid: str) -> list[MailEntry]:
         return (self.d.get("mail") or {}).pop(nid, [])
 
-    def user_deep_reach(self, nid: str, gist: str):
+    def user_deep_reach(self, nid: str, gist: str) -> None:
         """§7.4: the user spoke to a non-top-level node — notify every superior up
         the chain (without interruption) and grant the node a user audience."""
         chain = [a for a in self.ancestors(nid) if a != USER]
@@ -1192,7 +1218,7 @@ class Org:
                 "reason": "user messaged directly"})
 
     # --------------------------------------------------------------- notices
-    def _notify(self, nids, text: str):
+    def _notify(self, nids: Iterable[str | None], text: str) -> None:
         """Queue an org-change notice for each node (user ruling: every agent
         affected by a manual action is told). Delivered by the supervisor at the
         node's NEXT turn boundary — never wakes or preempts anyone (§7.4)."""
@@ -1207,7 +1233,8 @@ class Org:
         return [k for k in self.children(parent) if k != excl]
 
     # ---------------------------------------------------------------- events
-    def _log(self, op: str, actor: str, detail: dict, warnings: list[str]):
+    def _log(self, op: str, actor: str, detail: dict[str, Any],
+             warnings: list[str]) -> None:
         self.d["events"].append({
             "op": op, "actor": actor, "at": now(), "detail": detail,
             "warnings": warnings,
@@ -1215,9 +1242,9 @@ class Org:
 
     # ------------------------------------------------------------------ hire
     def hire(self, actor: str, parent: str | None, tier: str, grant: int, name: str,
-             add_dirs: list[str] | None = None, tools: dict | None = None,
+             add_dirs: list[Any] | None = None, tools: Mapping[str, Any] | None = None,
              org_visibility: str | None = None, charter: str | None = None,
-             raise_ceiling: bool = False) -> dict:
+             raise_ceiling: bool = False) -> dict[str, Any]:
         """§4.2 + §4.6. `parent` None = top level (actor must be USER). If actor is a
         strict ancestor of parent, credits cascade down the path (forcible hire).
 
@@ -1289,7 +1316,8 @@ class Org:
             default = norm_dirs(self.d["dirs"])
         else:
             parent_map = self.effective_dirs(parent)
-            default = [dict(d) for d in self.node(parent)["scope"]["add_dirs"]]
+            default = cast("list[DirGrant]",  # dict() copies lose the TypedDict
+                           [dict(d) for d in self.node(parent)["scope"]["add_dirs"]])
         if add_dirs is None:
             dirs = default
         else:
@@ -1320,9 +1348,11 @@ class Org:
         # ceiling spec §2/§4: the ceiling clamp runs AFTER defaults resolve and
         # after the parent clamp (parent ∩ ceiling at depth) — org defaults may
         # exceed the ceiling and must lose on every bare chip-click hire
-        tset, dirs, vis, _pm, bridged = self._apply_ceiling(
-            tools=tset, dirs=dirs, vis=vis,
-            raise_ceiling=raise_ceiling, warnings=warnings)
+        # all three inputs are non-None here ⇒ the pass-through outputs are too
+        tset, dirs, vis, _pm, bridged = cast(
+            "tuple[ToolGrant, list[DirGrant], str, str | None, bool]",
+            self._apply_ceiling(tools=tset, dirs=dirs, vis=vis,
+                                raise_ceiling=raise_ceiling, warnings=warnings))
         nid = self._new_node(tier, parent, int(grant), name, dirs, tset, vis,
                              str(charter).strip() if charter else None)
         # every affected agent is told, WHOEVER acted (user ruling) — the actor
@@ -1338,7 +1368,7 @@ class Org:
                      f'{parent or "the top level"}.{why}')
         self._log("hire", actor, {"node": nid, "parent": parent, "tier": tier,
                                   "grant": int(grant), "charter": gist}, warnings)
-        res = {"node": nid, "warnings": warnings}
+        res: dict[str, Any] = {"node": nid, "warnings": warnings}
         if bridged:
             # the one-action bridge (spec §1): re-send the SAME op with
             # raise_ceiling=true. The API strips this for visitors/agents —
@@ -1346,8 +1376,8 @@ class Org:
             res["bridge"] = {"raise_ceiling": True}
         return res
 
-    def _chain_acquire(self, actor: str, payer: str, need, warnings: list,
-                       cascade: bool = True) -> None:
+    def _chain_acquire(self, actor: str, payer: str, need: float,
+                       warnings: list[str], cascade: bool = True) -> None:
         """§4.6 GENERALIZED (user ruling): when an action under `payer` costs
         `need` credits, the shortfall beyond the payer's own free bubbles UP
         THE CHAIN — each hop contributes what it has free, grants inflating
@@ -1394,7 +1424,9 @@ class Org:
         # credits are actually spendable at the payer
         for i, k, c in contrib:
             for j in range(i):
-                self.nodes[chain[j]]["grant"] += c
+                # runtime int: frees/need are int-valued here (grants and seats
+                # are ints; USER is never on the chain) — float only via free()
+                self.nodes[chain[j]]["grant"] += cast(int, c)
             warnings += self._stranding_warnings(k, frees[i], frees[i] - c)
             if i > 0:
                 warnings.append(
@@ -1402,7 +1434,7 @@ class Org:
                     f"were inflated to carry them down — reclaim with reallocate")
         if remaining > 0:             # user actor: the infinite pool absorbs it
             for k in chain:
-                self.nodes[k]["grant"] += remaining
+                self.nodes[k]["grant"] += cast(int, remaining)  # runtime int, as above
             warnings.append(
                 f"§4.6: {remaining:g} credit(s) drawn from your pool — the "
                 f"chain's grants inflated to carry them down; reclaim with "
@@ -1418,7 +1450,7 @@ class Org:
         return list(reversed(chain))
 
     def _new_node(self, tier: str, parent: str | None, grant: int, name: str,
-                  dirs: list[dict], tools: dict, vis: str,
+                  dirs: list[DirGrant], tools: ToolGrant, vis: str,
                   charter: str | None) -> str:
         base = slugify(name)   # any slug is a legal name — actor kinds are typed,
                                # so even "user" or "system" is just a name here
@@ -1455,7 +1487,7 @@ class Org:
         return nid
 
     # ---------------------------------------------------------------- retire
-    def retire(self, actor: str, nid: str) -> dict:
+    def retire(self, actor: str, nid: str) -> dict[str, Any]:
         """Archive a node, freeing seat+grant. NOT leaf-only anymore (PLAN §4.2
         decision 1 is superseded by the design motto): a superior retiring a
         node with live reports auto-DISSOLVES the subtree, with a warning.
@@ -1497,7 +1529,7 @@ class Org:
 
     # ---------------------------------------------------------------- rehire
     def rehire(self, actor: str, nid: str, grant: int | None = None,
-               tier: str | None = None, raise_ceiling: bool = False) -> dict:
+               tier: str | None = None, raise_ceiling: bool = False) -> dict[str, Any]:
         """§4.2. Parent pays seat + grant; may strand the parent's OTHER archived kids.
         `tier` override (№16, spike-verified): a knowledge bearer answers from context
         and can be consulted at a cheaper tier than it ran at.
@@ -1532,7 +1564,7 @@ class Org:
         # override, so unrecoverable nodes test their own tier.
         self._check_tier_ceiling(
             n["model"] if n["state"] == "unrecoverable" or tier not in TIERS
-            else tier)
+            else cast(str, tier))  # `tier not in TIERS` filtered out None
         if n["state"] == "unrecoverable":
             # motto bridge: the session is dead but the node — name, position,
             # charter, credits, reports, mailbox — is fine. Rehire = re-seed.
@@ -1616,11 +1648,14 @@ class Org:
             warnings.append(f"tool grants adjusted to the parent's capability: {tlost}")
         # kiosk ceiling: №30's revalidation extends to the ceiling — a node
         # archived before the ceiling changed re-enters within it
-        ct, cd, cv, cp, bridged = self._apply_ceiling(
-            tools=n["scope"]["tools"], dirs=n["scope"]["add_dirs"],
-            vis=n["scope"].get("org_visibility"),
-            pm=n["scope"].get("permission_mode"),
-            raise_ceiling=raise_ceiling, warnings=warnings)
+        # tools/dirs inputs are non-None ⇒ their pass-through outputs are too
+        ct, cd, cv, cp, bridged = cast(
+            "tuple[ToolGrant, list[DirGrant], str | None, str | None, bool]",
+            self._apply_ceiling(
+                tools=n["scope"]["tools"], dirs=n["scope"]["add_dirs"],
+                vis=n["scope"].get("org_visibility"),
+                pm=n["scope"].get("permission_mode"),
+                raise_ceiling=raise_ceiling, warnings=warnings))
         n["scope"]["tools"], n["scope"]["add_dirs"] = ct, cd
         if cv is not None:
             n["scope"]["org_visibility"] = cv
@@ -1642,13 +1677,13 @@ class Org:
         # tell the caller to drive the node so it finally acts on it
         if (self.d.get("mail") or {}).get(nid):
             drive.append(nid)
-        res = {"cost": need, "warnings": warnings, "drive": drive}
+        res: dict[str, Any] = {"cost": need, "warnings": warnings, "drive": drive}
         if bridged:
             res["bridge"] = {"raise_ceiling": True}
         return res
 
     # --------------------------------------------------------------- dissolve
-    def dissolve(self, actor: str, nid: str) -> dict:
+    def dissolve(self, actor: str, nid: str) -> dict[str, Any]:
         """Recursive retire, deepest first (§4.2). Takes the whole lineage stack (§8.5)."""
         self._require_authority(actor, nid)
         parent = self.node(nid)["parent"]
@@ -1688,7 +1723,7 @@ class Org:
                          for v in self.nodes.values())
                      + float(self.d.get("deleted_cost_usd") or 0.0), 4)
 
-    def delete(self, actor: str, nid: str) -> dict:
+    def delete(self, actor: str, nid: str) -> dict[str, Any]:
         """Permanent removal — USER ONLY (ruling). Agents may at most retire an
         agent and then ask the user if they truly want it deleted. Takes the whole
         subtree and every lineage stack; erases records, mail and audiences. Session
@@ -1742,7 +1777,7 @@ class Org:
         return {"deleted": sorted(doomed_set), "warnings": []}
 
     # ------------------------------------------------------------- reallocate
-    def switch_model(self, actor: str, nid: str, tier: str) -> dict:
+    def switch_model(self, actor: str, nid: str, tier: str) -> dict[str, Any]:
         """User spec: swap an agent's model ON THE FLY, mid-life — the session
         survives (№16: --resume honors a changed --model; the next turn runs
         the new model). CHEAPER: the seat difference melts into the node's own
@@ -1786,7 +1821,8 @@ class Org:
                     self._chain_acquire(actor, n["parent"], shortfall, warnings,
                                         cascade=bool(self.d.get("cascade_alloc", True)))
             n["model"] = tier
-            n["grant"] -= own      # holding grows by exactly the shortfall
+            # runtime int: own = min(free, delta), both int-valued for a real node
+            n["grant"] -= cast(int, own)   # holding grows by exactly the shortfall
         who = "the user" if actor == USER else f'"{actor}"'
         self._notify([x for x in [nid] if x != actor],
                      f'{who.capitalize()} switched your model {old}→{tier} '
@@ -1799,7 +1835,7 @@ class Org:
         return {"model": tier, "seat": self.d["tiers"][tier],
                 "freed": max(0, -delta), "warnings": warnings}
 
-    def reallocate(self, actor: str, nid: str, delta: int) -> dict:
+    def reallocate(self, actor: str, nid: str, delta: int) -> dict[str, Any]:
         """±Δ between a node and its parent (§4.2). -Δ is the classic stranding op."""
         self._require_authority(actor, nid)
         self._require_live(nid)
@@ -1829,7 +1865,7 @@ class Org:
         return {"grant": n["grant"], "warnings": warnings}
 
     # --------------------------------------------------------- promote/demote
-    def promote(self, actor: str, nid: str, new_parent: str | None) -> dict:
+    def promote(self, actor: str, nid: str, new_parent: str | None) -> dict[str, Any]:
         """Re-parent upward (§4.5): new_parent must be a strict ancestor of the current
         parent (None = to top level, actor must be USER)."""
         cur = self.parent(nid)
@@ -1847,13 +1883,13 @@ class Org:
             raise LedgerError("promote must move the node strictly upward (§4.2)")
         return self._move("promote", actor, nid, new_parent)
 
-    def demote(self, actor: str, nid: str, new_parent: str) -> dict:
+    def demote(self, actor: str, nid: str, new_parent: str) -> dict[str, Any]:
         """Re-parent downward/lateral under another of the actor's descendants (§4.5)."""
         if new_parent == nid or new_parent in self.descendants(nid, live_only=False):
             raise LedgerError("cannot demote a node into its own subtree — cycle (§4.5)")
         return self._move("demote", actor, nid, new_parent)
 
-    def move(self, actor: str, nid: str, new_parent: str | None) -> dict:
+    def move(self, actor: str, nid: str, new_parent: str | None) -> dict[str, Any]:
         """§4.5 unified reorganization verb (gap audit №7): promote or demote,
         decided by direction — the capability the design derived (§4.5: a
         fully-occupied tree can still reorganize) and only the user could
@@ -1871,7 +1907,8 @@ class Org:
             return self.promote(actor, nid, tgt)
         return self.demote(actor, nid, tgt)
 
-    def _move(self, op: str, actor: str, nid: str, new_parent: str | None) -> dict:
+    def _move(self, op: str, actor: str, nid: str,
+              new_parent: str | None) -> dict[str, Any]:
         """§4.5 LCA credit path. Release P_old→L and acquire L→P_new cancel hop by hop,
         so every node's free is unchanged — budget-neutral, cannot fail on credits."""
         self._require_authority(actor, nid)
@@ -1956,7 +1993,7 @@ class Org:
         return None
 
     # ------------------------------------------------------------------ dirs
-    def revoke_dir(self, actor: str, nid: str, dir_: str) -> dict:
+    def revoke_dir(self, actor: str, nid: str, dir_: str) -> dict[str, Any]:
         """№30 explicit revoke — cascades into the subtree (their sets must stay ⊆)."""
         self._require_authority(actor, nid)
         removed = []
@@ -1973,7 +2010,8 @@ class Org:
         parent in turn (№30 — capability sets stay ⊆ all the way down)."""
         dropped: list[str] = []
 
-        def clamp(k: str, allowed: dict[str, str] | None, ptools: dict | None):
+        def clamp(k: str, allowed: dict[str, str] | None,
+                  ptools: ToolGrant | None) -> None:
             sc = self.nodes[k]["scope"]
             kept, lost = self._clamp_dirs(sc["add_dirs"], allowed, strict=False)
             sc["add_dirs"] = kept
@@ -1981,7 +2019,7 @@ class Org:
             tkept, tlost = self._clamp_tools(sc["tools"], ptools, strict=False)
             sc["tools"] = tkept
             dropped.extend(tlost)
-            own = {d["path"]: d["mode"] for d in kept}
+            own: dict[str, str] = {d["path"]: d["mode"] for d in kept}
             for ch in self.children(k, live_only=False):
                 clamp(ch, own, tkept)
 
@@ -1991,12 +2029,15 @@ class Org:
         return sorted(set(dropped))
 
     # ------------------------------------------------------------- node scope
-    EFFORTS = ("low", "medium", "high", "xhigh", "max")
+    EFFORTS: Final = ("low", "medium", "high", "xhigh", "max")
 
-    def set_scope(self, actor: str, nid: str, add_dirs=None, tools=None,
-                  org_visibility=None, permission_mode=None,
-                  charter=None, team_charter=None, effort=None,
-                  raise_ceiling: bool = False) -> dict:
+    def set_scope(self, actor: str, nid: str, add_dirs: list[Any] | None = None,
+                  tools: Mapping[str, Any] | None = None,
+                  org_visibility: str | None = None,
+                  permission_mode: str | None = None,
+                  charter: str | None = None, team_charter: str | None = None,
+                  effort: str | None = None,
+                  raise_ceiling: bool = False) -> dict[str, Any]:
         """Per-node configuration (the ⚙): dir grants with modes, the full tool set
         (built-ins + MCP servers), org-structure visibility. Superior-only.
         Kiosk ceiling (spec §2): permission fields clamp against parent ∩
@@ -2014,7 +2055,7 @@ class Org:
             _t, kept, _v, _p, b = self._apply_ceiling(
                 dirs=kept, raise_ceiling=raise_ceiling, warnings=warnings)
             bridged = bridged or b
-            sc["add_dirs"] = kept
+            sc["add_dirs"] = cast("list[DirGrant]", kept)  # dirs in ⇒ dirs out
             changed_caps = True
         if tools is not None:
             ptools = (None if n["parent"] is None
@@ -2023,7 +2064,7 @@ class Org:
             tset, _d, _v, _p, b = self._apply_ceiling(
                 tools=tset, raise_ceiling=raise_ceiling, warnings=warnings)
             bridged = bridged or b
-            sc["tools"] = tset
+            sc["tools"] = cast(ToolGrant, tset)  # tools in ⇒ tools out
             changed_caps = True
         if changed_caps:
             swept = self._sweep_dirs(nid)
@@ -2035,12 +2076,12 @@ class Org:
             _t, _d, vis2, _p, b = self._apply_ceiling(
                 vis=org_visibility, raise_ceiling=raise_ceiling, warnings=warnings)
             bridged = bridged or b
-            sc["org_visibility"] = vis2
+            sc["org_visibility"] = cast(str, vis2)  # vis in ⇒ vis out
         if permission_mode is not None:
             _t, _d, _v, pm2, b = self._apply_ceiling(
                 pm=permission_mode, raise_ceiling=raise_ceiling, warnings=warnings)
             bridged = bridged or b
-            sc["permission_mode"] = pm2
+            sc["permission_mode"] = cast(str, pm2)  # pm in ⇒ pm out
         if effort is not None:
             # user-approved (2026-07-31): thinking effort as a per-agent
             # setting, adjusted from the gear — never a hire-row control.
@@ -2068,13 +2109,13 @@ class Org:
                                 f'(folders, tools, charter, or org visibility). Your '
                                 f'current scope is stated in your system prompt each turn.')
         self._log("set_scope", actor, {"node": nid, "scope": sc}, warnings)
-        res = {"scope": sc, "warnings": warnings}
+        res: dict[str, Any] = {"scope": sc, "warnings": warnings}
         if bridged:
             res["bridge"] = {"raise_ceiling": True}
         return res
 
     def reorder(self, actor: str, nid: str, before: str | None = None,
-                after: str | None = None) -> dict:
+                after: str | None = None) -> dict[str, Any]:
         """Cosmetic left-to-right position among siblings. No org effect — a UX
         affordance for the managing user (user-ruled); deliberately not logged as
         an authority-bearing operation beyond the ancestry check."""
@@ -2129,7 +2170,7 @@ class Org:
 
     # --------------------------------------------------- fable limit (user ruling)
     # ----------------------------------------------------- credit requests
-    def request_credits(self, nid: str, new_limit, reason) -> dict:
+    def request_credits(self, nid: str, new_limit: Any, reason: Any) -> dict[str, Any]:
         """A TOP-LEVEL agent asks the user directly for a larger grant. Not mail:
         a structured request (old → new + reason) the user approves or denies
         with one click. One pending request per node — but asking again AMENDS
@@ -2178,7 +2219,7 @@ class Org:
         return {"requested": new_limit, "increase": new_limit - old,
                 "status": "pending — the user will approve or deny"}
 
-    def credit_request_action(self, rid: str, action: str) -> dict:
+    def credit_request_action(self, rid: str, action: str) -> dict[str, Any]:
         req = next((r for r in self.d.get("credit_requests", [])
                     if r["id"] == rid), None)
         if req is None or req["status"] != "pending":
@@ -2247,7 +2288,7 @@ class Org:
         self._log("fable_filter", SYSTEM, {"node": nid, "policy": policy}, [])
         return policy
 
-    def fable_limit_hit(self, detecting_node: str | None, detail: str) -> dict:
+    def fable_limit_hit(self, detecting_node: str | None, detail: str) -> dict[str, Any]:
         """Weekly Fable usage limit exhausted. What happens to live fable agents is
         the org's `fable_limit_policy`:
           halt (default) — nobody retires or converts; fable agents simply halt,
@@ -2318,7 +2359,7 @@ class Org:
         return {"policy": policy, "locked": locked, "dissolved": dissolved,
                 "converted": converted}
 
-    def clear_fable_lock(self):
+    def clear_fable_lock(self) -> None:
         self.d.pop("fable_lock", None)
         for v in self.nodes.values():
             v.pop("limit_locked", None)
@@ -2333,7 +2374,7 @@ class Org:
         n = self.node(nid)
         gen = n.get("generation", 0)
         pred_id = f"{nid}@{gen}"
-        pred = dict(n)
+        pred = cast(NodeDoc, dict(n))  # dict() copy loses the TypedDict
         pred.update({
             "state": "archived", "archived_at": now(), "grant": 0,
             "bearer_state": "knowledge", "successor": nid, "predecessor": n.get("predecessor"),
@@ -2350,7 +2391,8 @@ class Org:
                       # live successor's add_dirs list — the first in-place
                       # mutation anyone writes would silently edit every
                       # archived predecessor's grants too (review finding)
-                      "add_dirs": [dict(d) for d in n["scope"].get("add_dirs", [])],
+                      "add_dirs": cast("list[DirGrant]",
+                                       [dict(d) for d in n["scope"].get("add_dirs", [])]),
                       "tools": {"bash": False, "web": False, "edit": False,
                                 "subagents": False, "mcp": []}},
         })
@@ -2365,7 +2407,7 @@ class Org:
         self._log("compact_split", SYSTEM, {"node": nid, "predecessor": pred_id}, [])
         return pred_id
 
-    def mark_unrecoverable(self, nid: str, reason: str):
+    def mark_unrecoverable(self, nid: str, reason: str) -> None:
         """№31: ledger said live, the session cannot actually resume."""
         n = self.node(nid)
         n["state"] = "unrecoverable"
@@ -2376,7 +2418,7 @@ class Org:
                      f'to free the credits.')
         self._log("unrecoverable", SYSTEM, {"node": nid, "reason": reason}, [])
 
-    def reseed(self, actor: str, nid: str, new_session_id: str) -> dict:
+    def reseed(self, actor: str, nid: str, new_session_id: str) -> dict[str, Any]:
         """The №31 exit (gap audit №9): an unrecoverable node's SESSION is gone,
         but the node — name, position, charter, credits, reports, mailbox — is
         fine. Re-seed mints a fresh session and archives the dead one into the
@@ -2419,7 +2461,7 @@ class Org:
                 + ("; its seat freed" if was_live else "")]}
         gen = n.get("generation", 0)
         pred_id = f"{nid}@{gen}"
-        pred = dict(n)
+        pred = cast(NodeDoc, dict(n))  # dict() copy loses the TypedDict
         pred.update({
             "state": "archived", "archived_at": now(), "grant": 0,
             "bearer_state": "lost", "successor": nid,
@@ -2428,7 +2470,8 @@ class Org:
             "cost_usd": 0.0, "last_status": None, "frozen": None,
             "inflight": None,
             "scope": {**n["scope"],
-                      "add_dirs": [dict(d) for d in n["scope"].get("add_dirs", [])],
+                      "add_dirs": cast("list[DirGrant]",
+                                       [dict(d) for d in n["scope"].get("add_dirs", [])]),
                       "tools": {"bash": False, "web": False, "edit": False,
                                 "subagents": False, "mcp": []}},
         })
@@ -2453,7 +2496,7 @@ class Org:
                              f'"{pred_id}" (lost generation, not consultable)']}
 
     # ------------------------------------------------------------------ audit
-    def audit(self) -> dict:
+    def audit(self) -> dict[str, Any]:
         """Global consistency: no overdraft anywhere; per-node free is derivable."""
         live = [k for k, v in self.nodes.items() if v["state"] == "live"]
         problems = [f"{k} free={self.free(k):g}" for k in live if self.free(k) < 0]
@@ -2466,9 +2509,9 @@ class Org:
         }
 
     # ------------------------------------------------------------------- view
-    def tree(self) -> dict:
+    def tree(self) -> dict[str, Any]:
         """Derived view for the API/UI: nested nodes with computed fields."""
-        def build(nid: str) -> dict:
+        def build(nid: str) -> dict[str, Any]:
             n = self.nodes[nid]
             return {
                 "id": nid,
@@ -2494,13 +2537,15 @@ class Org:
                 "inflight_at": (n.get("inflight") or {}).get("at"),
                 "last_denials": n.get("last_denials") or [],
                 "turns": (n.get("turns") or [])[-8:],
-                "frozen": ({**{k: n["frozen"].get(k)
+                # the `if n.get("frozen")` guard proves the key present — the
+                # Any view sidesteps pyright's NotRequired-[] access flag
+                "frozen": ({**{k: cast(Any, n)["frozen"].get(k)
                                for k in ("at", "until", "until_ts")},
                             # №41: freeze kinds are commutative — surface
                             # whichever reason(s) exist without overwriting
                             "error": " · ".join(
-                                x for x in (n["frozen"].get("error"),
-                                            n["frozen"].get("spend_error"))
+                                x for x in (cast(Any, n)["frozen"].get("error"),
+                                            cast(Any, n)["frozen"].get("spend_error"))
                                 if x) or None}
                            if n.get("frozen") else None),
                 "audiences_held": [a["grantor"] for a in self.d["audiences"]

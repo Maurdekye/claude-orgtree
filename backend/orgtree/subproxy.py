@@ -22,6 +22,7 @@ import tempfile
 import threading
 import time
 import urllib.request
+from typing import Any
 
 CREDS = os.path.expanduser("~/.claude/.credentials.json")
 TOKEN_URL = "https://console.anthropic.com/v1/oauth/token"
@@ -33,7 +34,7 @@ def available() -> bool:
     return os.path.isfile(CREDS)
 
 
-def _write(doc: dict) -> None:
+def _write(doc: dict[str, Any]) -> None:
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(CREDS), suffix=".tmp")
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(doc, f)

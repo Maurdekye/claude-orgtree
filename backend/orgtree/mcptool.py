@@ -9,21 +9,25 @@ rule — the schemas here mirror those rules so agents see them up front.
 Run: python -m orgtree.mcptool   (spawned by Claude Code via --mcp-config)
 """
 
+from __future__ import annotations
+
 import json
 import os
 import sys
 import urllib.error
 import urllib.request
+from typing import Any
 
-ORG = os.environ.get("ORGTREE_ORG", "")
-NODE = os.environ.get("ORGTREE_NODE", "")
-PORT = os.environ.get("ORGTREE_PORT", "7360")
+ORG: str = os.environ.get("ORGTREE_ORG", "")
+NODE: str = os.environ.get("ORGTREE_NODE", "")
+PORT: str = os.environ.get("ORGTREE_PORT", "7360")
 # sandboxed kiosk orgs (containers) reach the backend through the bridge
 # listener instead of loopback: an explicit base URL + the org's secret
-BASE = os.environ.get("ORGTREE_BASE") or f"http://127.0.0.1:{PORT}"
-BRIDGE_SECRET = os.environ.get("ORGTREE_BRIDGE_SECRET", "")
+BASE: str = os.environ.get("ORGTREE_BASE") or f"http://127.0.0.1:{PORT}"
+BRIDGE_SECRET: str = os.environ.get("ORGTREE_BRIDGE_SECRET", "")
 
-TOOLS_SCHEMA = {
+# JSON-schema fragments/tool cards for the MCP wire — freeform JSON by nature
+TOOLS_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "bash": {"type": "boolean", "description": "terminal access"},
@@ -36,7 +40,7 @@ TOOLS_SCHEMA = {
     "required": ["bash", "web", "edit", "subagents", "mcp"],
 }
 
-TOOLS = [
+TOOLS: list[dict[str, Any]] = [
     {
         "name": "orgtree_message",
         "description": (
@@ -328,8 +332,8 @@ TOOLS = [
 ]
 
 
-def call_api(tool: str, args: dict) -> str:
-    headers = {"Content-Type": "application/json"}
+def call_api(tool: str, args: dict[str, Any]) -> str:
+    headers: dict[str, str] = {"Content-Type": "application/json"}
     if BRIDGE_SECRET:
         headers["X-Orgtree-Bridge"] = BRIDGE_SECRET
     req = urllib.request.Request(
@@ -345,8 +349,8 @@ def call_api(tool: str, args: dict) -> str:
         return json.dumps({"error": f"orgtree API unreachable: {e}"})
 
 
-def reply(id_, result=None, error=None):
-    msg = {"jsonrpc": "2.0", "id": id_}
+def reply(id_: int | str | None, result: Any = None, error: Any = None) -> None:
+    msg: dict[str, Any] = {"jsonrpc": "2.0", "id": id_}
     if error is not None:
         msg["error"] = {"code": -32000, "message": str(error)}
     else:
@@ -355,13 +359,13 @@ def reply(id_, result=None, error=None):
     sys.stdout.flush()
 
 
-def main():
+def main() -> None:
     # ⚠ Windows defaults stdio to cp1252 — the CLI speaks UTF-8 JSON-RPC, so
     # without this every non-ASCII char in mail bodies (em-dashes…) arrived
     # mojibake'd (observed live: "—" → "â€\"")
     if hasattr(sys.stdin, "reconfigure"):
-        sys.stdin.reconfigure(encoding="utf-8", errors="replace")
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stdin.reconfigure(encoding="utf-8", errors="replace")    # type: ignore[attr-defined]  # TextIO stub lacks reconfigure; runtime TextIOWrapper has it (hasattr-guarded)
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")   # type: ignore[attr-defined]  # ditto
     for line in sys.stdin:
         line = line.strip()
         if not line:

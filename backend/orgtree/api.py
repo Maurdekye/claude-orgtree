@@ -21,13 +21,29 @@ import threading
 import time
 import uuid
 
+# typing wave: Any/Response types must be RUNTIME imports — FastAPI evaluates
+# endpoint annotation strings (PEP 563) at decoration time. Helper-only types
+# stay under TYPE_CHECKING so the runtime import graph is unchanged.
+from typing import TYPE_CHECKING, Any
+
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import sandbox, store, subproxy, supervisor
 from .ledger import LedgerError, USER, VIS_LEVELS, norm_dirs, norm_tools
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    import httpx
+    # aliased: `Scope` is taken by the pydantic body model of the same name
+    from starlette.types import ASGIApp, Receive, Scope as ASGIScope, Send
+
+    from .ledger import Org
+    # aliased: `KioskCfg` is taken by the pydantic body model of the same name
+    from .schema import DirGrant, KioskCfg as KioskDoc
 
 app = FastAPI(title="orgtree", version="1.0.0")
 
@@ -39,21 +55,21 @@ app = FastAPI(title="orgtree", version="1.0.0")
 # The gate is SERVER-SIDE — hiding UI buttons is not enforcement.
 _TOKEN_RE = re.compile(r"^/k/([A-Za-z0-9_-]{8,64})(/.*)?$")
 _PUBLIC_STATIC = ("/assets/", "/favicon", "/vite.svg")   # index.html's absolute refs
-_token_cache: dict = {"at": 0.0, "map": {}}
+_token_cache: dict[str, Any] = {"at": 0.0, "map": {}}
 
 
-def _kiosk_token_map() -> dict:
+def _kiosk_token_map() -> dict[str, str]:
     """token → slug for every kiosk-enabled org. Rebuilt on a short TTL and
     invalidated on any kiosk-config write, so rotation revokes instantly."""
     if time.time() - _token_cache["at"] > 5:
-        m = {}
+        m: dict[str, str] = {}
         for o in store.list_orgs():
             try:
                 k = store.load_org(o["slug"]).d.get("kiosk") or {}
             except LedgerError:
                 continue
             if k.get("enabled") and k.get("token"):
-                m[k["token"]] = o["slug"]
+                m[k["token"]] = o["slug"]  # type: ignore[typeddict-item]  # guard proves the key
         _token_cache.update(at=time.time(), map=m)
     return _token_cache["map"]
 
@@ -91,10 +107,10 @@ class PublicGateway:
     rewrites the path so the normal routes handle it, stamps the request state
     with the org slug, and 404s everything else — no org list, no discovery."""
 
-    def __init__(self, inner):
+    def __init__(self, inner: ASGIApp) -> None:
         self.inner = inner
 
-    async def __call__(self, scope, receive, send):
+    async def __call__(self, scope: ASGIScope, receive: Receive, send: Send) -> None:
         if scope["type"] == "lifespan":
             # the admin server owns the app's lifespan — running FastAPI
             # startup twice would double-wire notify + reconcile
@@ -114,7 +130,7 @@ class PublicGateway:
         slug = _kiosk_token_map().get(m.group(1)) if m else None
         if not slug:
             return await self._reject(scope, send, 404, "not found")
-        rest = m.group(2) or "/"
+        rest = m.group(2) or "/"  # type: ignore[union-attr]  # slug non-None ⇒ m matched
         deny = _public_denied(scope.get("method", "GET"), rest, slug)
         if deny:
             return await self._reject(scope, send, deny[0], deny[1])
@@ -124,7 +140,7 @@ class PublicGateway:
         scope["state"] = {**(scope.get("state") or {}), "public_slug": slug}
         await self.inner(scope, receive, send)
 
-    async def _reject(self, scope, send, code: int, detail: str):
+    async def _reject(self, scope: ASGIScope, send: Send, code: int, detail: str) -> None:
         if scope["type"] == "websocket":
             await send({"type": "websocket.close", "code": 4000 + code})
             return
@@ -135,20 +151,20 @@ class PublicGateway:
         await send({"type": "http.response.body", "body": body})
 
 
-def _public_slug(request) -> str | None:
+def _public_slug(request: Request) -> str | None:
     return getattr(request.state, "public_slug", None)
 
 
 # ---- the sandbox bridge: the ONE door out of a kiosk container. Serves only
 # the agent gateway + the steering fetch, gated by the org's sandbox secret
 # (which exists nowhere but inside that org's container and its org doc).
-_bridge_cache: dict = {"at": 0.0, "map": {}}
+_bridge_cache: dict[str, Any] = {"at": 0.0, "map": {}}
 _STEER_RE = re.compile(r"^/api/orgs/([a-z0-9@-]+)/nodes/[^/]+/steer$")
 
 
-def _bridge_secret_map() -> dict:
+def _bridge_secret_map() -> dict[str, str]:
     if time.time() - _bridge_cache["at"] > 5:
-        m = {}
+        m: dict[str, str] = {}
         for o in store.list_orgs():
             try:
                 d = store.load_org(o["slug"]).d
@@ -168,10 +184,10 @@ class BridgeGateway:
     host.docker.internal): everything except the two sanctioned paths is a
     bare 403, and the secret pins the caller to its own org."""
 
-    def __init__(self, inner):
+    def __init__(self, inner: ASGIApp) -> None:
         self.inner = inner
 
-    async def __call__(self, scope, receive, send):
+    async def __call__(self, scope: ASGIScope, receive: Receive, send: Send) -> None:
         if scope["type"] == "lifespan":
             while True:                      # the admin server owns app lifespan
                 msg = await receive()
@@ -217,7 +233,7 @@ class BridgeGateway:
 
 
 _LAN_IP: str | None = None
-_origin_cache = {"at": 0.0, "val": ""}
+_origin_cache: dict[str, Any] = {"at": 0.0, "val": ""}
 
 
 def _public_origin() -> str:
@@ -258,7 +274,7 @@ def _share_url(token: str | None) -> str | None:
     return f"http://{_LAN_IP}:{PUBLIC_PORT}/k/{token}"
 
 
-def _kiosk_cap_check(org):
+def _kiosk_cap_check(org: Org) -> None:
     """Kiosk credit cap: NO operation may push total top-level holdings past
     the cap — covers hires, §4.6 cascades, rehires, reallocations and
     credit-request approvals in one invariant (checked before save). Applies
@@ -266,17 +282,18 @@ def _kiosk_cap_check(org):
     k = supervisor.kiosk_cfg(org)
     if k and int(k.get("credits") or 0) > 0:
         held = org.audit()["top_level_holds"]
-        if held > int(k["credits"]):
+        if held > int(k["credits"]):  # type: ignore[typeddict-item]  # guard above proves the key
             raise LedgerError(
                 f"kiosk credit cap: the org may hold at most "
-                f"{int(k['credits'])} credits (this would make it {held:g})")
+                f"{int(k['credits'])} credits (this would make it {held:g})")  # type: ignore[typeddict-item]
 
 
-mail_notify = lambda slug, frm, to: None   # wired at startup (thread-safe fanout)
+mail_notify: Callable[[str, str, str], None] = \
+    lambda slug, frm, to: None   # wired at startup (thread-safe fanout)
 
 
 @app.on_event("startup")
-async def _wire_notify():
+async def _wire_notify() -> None:
     global mail_notify, _LOOP
     loop = asyncio.get_running_loop()
     _LOOP = loop
@@ -287,10 +304,10 @@ async def _wire_notify():
     except OSError:
         pass
 
-    def notify(slug: str, node: str, event: str):
+    def notify(slug: str, node: str, event: str) -> None:
         asyncio.run_coroutine_threadsafe(hub.node_event(slug, node, event), loop)
 
-    def _mail(slug: str, frm: str, to: str):
+    def _mail(slug: str, frm: str, to: str) -> None:
         # pure animation signal for the UI (spark on the wire) — no state rides on it
         asyncio.run_coroutine_threadsafe(
             hub._send(slug, {"type": "mail", "org": slug, "from": frm, "to": to}),
@@ -298,7 +315,7 @@ async def _wire_notify():
 
     mail_notify = _mail
 
-    def stream(slug: str, node: str, payload: dict):
+    def stream(slug: str, node: str, payload: dict[str, Any]) -> None:
         asyncio.run_coroutine_threadsafe(
             hub._send(slug, {"type": "node_stream", "org": slug, "node": node,
                              **payload}), loop)
@@ -350,17 +367,17 @@ class Hub:
     """Per-org 'something changed' fanout. Payloads are deliberately dumb — the UI
     refetches the tree; the ledger stays the single source of truth."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.rooms: dict[str, set[WebSocket]] = {}
 
-    async def join(self, slug: str, ws: WebSocket):
+    async def join(self, slug: str, ws: WebSocket) -> None:
         await ws.accept()
         self.rooms.setdefault(slug, set()).add(ws)
 
-    def leave(self, slug: str, ws: WebSocket):
+    def leave(self, slug: str, ws: WebSocket) -> None:
         self.rooms.get(slug, set()).discard(ws)
 
-    async def _send(self, slug: str, payload: dict):
+    async def _send(self, slug: str, payload: dict[str, Any]) -> None:
         dead = []
         for ws in self.rooms.get(slug, set()):
             try:
@@ -370,16 +387,17 @@ class Hub:
         for ws in dead:
             self.leave(slug, ws)
 
-    async def changed(self, slug: str):
+    async def changed(self, slug: str) -> None:
         await self._send(slug, {"type": "changed", "org": slug})
 
-    async def node_event(self, slug: str, node: str, event: str):
+    async def node_event(self, slug: str, node: str, event: str) -> None:
         await self._send(slug, {"type": "node_event", "org": slug,
                                 "node": node, "event": event})
 
 
 hub = Hub()
-_LOOP = None       # captured at startup — threadsafe broadcasts from sync code
+# captured at startup — threadsafe broadcasts from sync code
+_LOOP: asyncio.AbstractEventLoop | None = None
 
 
 def hub_changed(slug: str) -> None:
@@ -414,7 +432,7 @@ class OrgCreate(BaseModel):
 
 
 @app.get("/api/orgs")
-def orgs_list(request: Request):
+def orgs_list(request: Request) -> list[dict[str, Any]]:
     orgs = store.list_orgs()
     pub = _public_slug(request)
     if pub:
@@ -422,7 +440,7 @@ def orgs_list(request: Request):
         return [{**o, "kiosk": True} for o in orgs if o["slug"] == pub]
     # admin: attach the kiosk dashboard summary (incl. the secret token —
     # this listener is loopback-only)
-    out = []
+    out: list[dict[str, Any]] = []
     for o in orgs:
         try:
             org = store.load_org(o["slug"])
@@ -454,7 +472,7 @@ def orgs_list(request: Request):
 
 
 @app.post("/api/orgs")
-def orgs_create(body: OrgCreate):
+def orgs_create(body: OrgCreate) -> dict[str, Any]:
     try:
         org = store.create_org(body.name, body.dirs, body.permission_mode)
     except LedgerError as e:
@@ -463,7 +481,7 @@ def orgs_create(body: OrgCreate):
     dflt = load_org_defaults()
     if dflt:
         with store.DOC_LOCK:
-            org.d.update(dflt)
+            org.d.update(dflt)  # type: ignore[arg-type]  # defaults.json holds org-doc-shaped keys
             store.save_org(org)
     supervisor.chatq_register_org(org.d["slug"])
     if body.kiosk is not None:
@@ -516,7 +534,7 @@ def orgs_create(body: OrgCreate):
 
 
 @app.delete("/api/orgs/{slug}")
-def orgs_delete(slug: str):
+def orgs_delete(slug: str) -> dict[str, Any]:
     try:
         store.delete_org(slug)
     except LedgerError as e:
@@ -527,14 +545,14 @@ def orgs_delete(slug: str):
 
 
 @app.get("/api/orgs/{slug}")
-def org_tree(slug: str, request: Request):
+def org_tree(slug: str, request: Request) -> dict[str, Any]:
     try:
         org = store.load_org(slug)
     except LedgerError as e:
         raise HTTPException(404, str(e))
     tree = org.tree()
 
-    def annotate(node: dict):
+    def annotate(node: dict[str, Any]) -> None:
         st = supervisor.state(slug, node["id"])
         node["busy"] = st["busy"]
         # №12: three states wore one pulse — split them: waiting on a turn
@@ -589,12 +607,12 @@ def org_tree(slug: str, request: Request):
 _WINPATH = re.compile(r"(?:[A-Za-z]:[\\/]|/(?:home|Users|opt|mnt|tmp)/)[^\s'\"]*")
 
 
-def _scrub_public(tree: dict) -> None:
+def _scrub_public(tree: dict[str, Any]) -> None:
     """№18: a kiosk share link served the operator's ABSOLUTE host paths and
     username in every tree payload (workspace, every dir grant, session ids,
     raw error strings). Public visitors get basenames and scrubbed errors —
     they interact with the org, not the operator's filesystem."""
-    def base(p):
+    def base(p: Any) -> str:
         return os.path.basename(str(p).rstrip("/\\")) or "folder"
     if tree.get("workspace"):
         tree["workspace"] = base(tree["workspace"])
@@ -607,7 +625,7 @@ def _scrub_public(tree: dict) -> None:
         tree["kiosk"].pop("auto_raise", None)
         tree["kiosk"].pop("share_url", None)
 
-    def walk(n):
+    def walk(n: dict[str, Any]) -> None:
         n.pop("session_id", None)
         sc = n.get("scope") or {}
         if sc.get("add_dirs"):
@@ -649,7 +667,7 @@ _DEFAULTS_BASE = {
 }
 
 
-def load_org_defaults() -> dict:
+def load_org_defaults() -> dict[str, Any]:
     try:
         d = json.load(open(os.path.join(store.DATA_ROOT, "defaults.json"),
                            encoding="utf-8"))
@@ -659,12 +677,12 @@ def load_org_defaults() -> dict:
 
 
 @app.get("/api/defaults")
-def defaults_get():
+def defaults_get() -> dict[str, Any]:
     return {**_DEFAULTS_BASE, **load_org_defaults()}
 
 
 @app.post("/api/defaults")
-def defaults_set(body: Settings):
+def defaults_set(body: Settings) -> dict[str, Any]:
     d = load_org_defaults()
     if body.max_top_grant is not None and body.max_top_grant > 0:
         d["max_top_grant"] = int(body.max_top_grant)
@@ -693,7 +711,7 @@ def defaults_set(body: Settings):
 
 
 @app.post("/api/orgs/{slug}/settings")
-def org_settings(slug: str, body: Settings):
+def org_settings(slug: str, body: Settings) -> dict[str, Any]:
     """Org-level knobs. Folder holdings (org_dirs) are edited from the eye's
     gear panel: the workspace is permanent; additions apply to FUTURE hires;
     removals revoke everywhere; rw→ro downgrades propagate to every grant."""
@@ -701,20 +719,21 @@ def org_settings(slug: str, body: Settings):
         return _org_settings_locked(slug, body)
 
 
-def _org_settings_locked(slug: str, body: Settings):
+def _org_settings_locked(slug: str, body: Settings) -> dict[str, Any]:
     try:
         org = store.load_org(slug)
     except LedgerError as e:
         raise HTTPException(404, str(e))
     ws = org.d.get("workspace")
-    warnings = []
+    warnings: list[str] = []
     if body.org_dirs is not None:
         # org folder holdings live on the eye's gear (user ruling). Removals
         # revoke everywhere; an rw→ro downgrade propagates to every node's
         # grant (upgrades don't auto-propagate — grant per node deliberately).
-        new = [{**d, "path": os.path.normpath(d["path"])}
-               for d in norm_dirs(body.org_dirs)
-               if os.path.normpath(d["path"]) != ws]
+        new: list[DirGrant] = [
+            {"path": os.path.normpath(d["path"]), "mode": d["mode"]}
+            for d in norm_dirs(body.org_dirs)
+            if os.path.normpath(d["path"]) != ws]
         old = {d["path"]: d["mode"] for d in org.d["dirs"] if d["path"] != ws}
         newmap = {d["path"]: d["mode"] for d in new}
         for gone in [p for p in old if p not in newmap]:
@@ -729,7 +748,8 @@ def _org_settings_locked(slug: str, body: Settings):
                         if d["path"] == p and d["mode"] == "rw":
                             d["mode"] = "ro"
                             warnings.append(f"downgraded {p} to read-only for {nid}")
-        org.d["dirs"] = ([{"path": ws, "mode": "rw"}] if ws else []) + new
+        ws_dir: list[DirGrant] = [{"path": ws, "mode": "rw"}] if ws else []
+        org.d["dirs"] = ws_dir + new
     if body.max_top_grant is not None and body.max_top_grant > 0:
         org.d["max_top_grant"] = int(body.max_top_grant)
     if body.default_top_grant is not None and body.default_top_grant >= 0:
@@ -778,7 +798,7 @@ class KioskCfg(BaseModel):
 
 
 @app.post("/api/orgs/{slug}/kiosk")
-async def org_kiosk(slug: str, body: KioskCfg):
+async def org_kiosk(slug: str, body: KioskCfg) -> dict[str, Any]:
     """Admin-only (the public gateway 403s the path): enable/disable an org as
     a kiosk, adjust its caps, rotate its secret URL. Raising a breached limit
     clears the matching hard freeze — ▶ resume then replays halted turns."""
@@ -792,7 +812,9 @@ async def org_kiosk(slug: str, body: KioskCfg):
             raise HTTPException(
                 422, "not a kiosk org — kiosks are created as kiosks (from "
                      "the dashboard's new-kiosk form), never converted")
-        k = org.d["kiosk"]
+        # the raise-guard above proves the key; declared so the None arm
+        # doesn't cascade through every touch below
+        k: KioskDoc = org.d["kiosk"]  # type: ignore[typeddict-item, assignment]
         if body.enabled is not None:
             k["enabled"] = bool(body.enabled)
         if body.credits is not None:
@@ -806,7 +828,7 @@ async def org_kiosk(slug: str, body: KioskCfg):
         # the permission ceiling (consensus spec): setting it SWEEPS every
         # node's stored scope to fit — determinate, so it automates; affected
         # live agents are notified with what they lost
-        ceiling_warnings: list = []
+        ceiling_warnings: list[str] = []
         if body.max_scope is not None:
             try:
                 r = org.set_kiosk_ceiling(body.max_scope,
@@ -814,14 +836,14 @@ async def org_kiosk(slug: str, body: KioskCfg):
             except LedgerError as e:
                 raise HTTPException(422, str(e))
             ceiling_warnings = r.get("warnings") or []
-            k = org.d["kiosk"]
+            k = org.d["kiosk"]  # type: ignore[typeddict-item, assignment]  # set_kiosk_ceiling keeps the key
         elif body.auto_raise is not None:
             k["auto_raise"] = bool(body.auto_raise)
         # user ruling: the cap can never go BELOW what the org already holds —
         # retire/dissolve agents first, then lower it
         if k.get("enabled") and int(k.get("credits") or 0):
             held = org.audit()["top_level_holds"]
-            if int(k["credits"]) < held:
+            if int(k["credits"]) < held:  # type: ignore[typeddict-item]  # guard above proves the key
                 raise HTTPException(
                     422, f"cap below current holdings: the org holds {held:g} "
                          f"credits — retire or dissolve agents first, then lower it")
@@ -869,7 +891,8 @@ class HireDefaults(BaseModel):
 
 
 @app.post("/api/orgs/{slug}/defaults")
-async def org_hire_defaults(slug: str, body: HireDefaults, request: Request):
+async def org_hire_defaults(slug: str, body: HireDefaults,
+                            request: Request) -> dict[str, Any]:
     """Agent-hire defaults — OPEN to kiosk visitors (user ruling 2026-07-31):
     a default is a pre-filled grant, so the ceiling clamps it like any grant.
     The rest of /settings (org folders, caps, policies) stays admin-only."""
@@ -904,7 +927,8 @@ class Scope(BaseModel):
 
 
 @app.post("/api/orgs/{slug}/nodes/{nid}/scope")
-async def node_scope(slug: str, nid: str, body: Scope, request: Request):
+async def node_scope(slug: str, nid: str, body: Scope,
+                     request: Request) -> dict[str, Any]:
     pub = bool(_public_slug(request))
     with store.DOC_LOCK:
         try:
@@ -927,7 +951,7 @@ async def node_scope(slug: str, nid: str, body: Scope, request: Request):
 
 
 @app.get("/api/fs")
-def fs_list(path: str = ""):
+def fs_list(path: str = "") -> dict[str, Any]:
     """Directory listing for the IN-APP folder picker (user ruling: a native
     server-side dialog only works when the browser and server share a desktop;
     this works from anywhere the UI is reachable). Directories only; an empty
@@ -962,7 +986,7 @@ CHARTERS_DIR = os.path.normpath(os.path.join(
 
 
 @app.get("/api/charters")
-def charters_list():
+def charters_list() -> dict[str, Any]:
     """Named charter presets for the manual hire form (user ruling): every
     .md in docs/charters/ is a preset. A file may open with an explanatory
     header ending at a '---' line — only what follows is the charter body."""
@@ -984,7 +1008,7 @@ def charters_list():
 
 
 @app.get("/api/mcp-servers")
-def mcp_servers():
+def mcp_servers() -> dict[str, Any]:
     """Names of the user's globally registered MCP servers, grantable per node.
     sandbox_mcp = the experimental ORGTREE_SANDBOX_MCP flag: without it, ALL
     servers are excluded from sandboxed orgs (external contact points the
@@ -994,7 +1018,7 @@ def mcp_servers():
 
 
 @app.get("/api/host")
-def host_info():
+def host_info() -> dict[str, Any]:
     """Host capabilities the UI adapts to (e.g. no Docker → the sandbox
     checkbox is disabled at org creation)."""
     return {"docker": sandbox.docker_available(),
@@ -1008,7 +1032,7 @@ class Reorder(BaseModel):
 
 
 @app.post("/api/orgs/{slug}/nodes/{nid}/reorder")
-async def node_reorder(slug: str, nid: str, body: Reorder):
+async def node_reorder(slug: str, nid: str, body: Reorder) -> dict[str, Any]:
     with store.DOC_LOCK:
         try:
             org = store.load_org(slug)
@@ -1028,7 +1052,7 @@ class Message(BaseModel):
 
 
 @app.post("/api/orgs/{slug}/nodes/{nid}/message")
-def node_message(slug: str, nid: str, body: Message):
+def node_message(slug: str, nid: str, body: Message) -> dict[str, Any]:
     """A user message IS mail (user ruling — the direct-message channel was
     folded into the mail system): it lands persisted in the node's mailbox
     (and in your Sent folder), then the node is driven; a busy node gets it
@@ -1079,14 +1103,14 @@ def node_message(slug: str, nid: str, body: Message):
             if supervisor.state(slug, nid)["busy"]:
                 raise HTTPException(409, "busy — wait for the current turn to finish")
 
-            def run():
+            def run() -> None:
                 try:
                     supervisor.manual_compact(slug, nid)
                 except RuntimeError:
                     pass      # raced into busy — the 409 precheck caught most
 
             threading.Thread(target=run, daemon=True).start()
-            r = {"accepted": True, "compacting": True}
+            r: dict[str, Any] = {"accepted": True, "compacting": True}
             if stripped != "/compact":
                 r["warnings"] = ["/compact arguments are ignored — org "
                                  "compaction preserves the whole session as "
@@ -1099,7 +1123,7 @@ def node_message(slug: str, nid: str, body: Message):
         return supervisor.send_message(slug, nid, stripped, command=True)
     # staged attachments: already-uploaded files in the node's own scratch —
     # verify each really exists there (traversal-guarded) and ride metadata
-    metas = []
+    metas: list[dict[str, Any]] = []
     if body.attachments:
         base = os.path.realpath(supervisor.scratch_dir(slug, nid))
         for rel in body.attachments[:10]:
@@ -1128,7 +1152,7 @@ def node_message(slug: str, nid: str, body: Message):
 
 
 @app.post("/api/orgs/{slug}/nodes/{nid}/steer")
-async def node_steer(slug: str, nid: str):
+async def node_steer(slug: str, nid: str) -> dict[str, Any]:
     """Called by the PostToolUse steering hook inside a node's turn: pops ALL
     the node's pending mid-task mail — user and agent alike — for immediate
     delivery (sender attribution rides inside each message)."""
@@ -1144,7 +1168,7 @@ async def node_steer(slug: str, nid: str):
 
 
 @app.post("/api/orgs/{slug}/nodes/{nid}/interrupt")
-def node_interrupt(slug: str, nid: str):
+def node_interrupt(slug: str, nid: str) -> dict[str, Any]:
     """Manual ⏸: stop the node's current response (the only sanctioned
     interrupt — message delivery never interrupts, user ruling)."""
     try:
@@ -1156,7 +1180,7 @@ def node_interrupt(slug: str, nid: str):
 
 
 @app.post("/api/orgs/{slug}/nodes/{nid}/compact")
-def node_compact(slug: str, nid: str):
+def node_compact(slug: str, nid: str) -> dict[str, Any]:
     """Manual compaction (user ruling: the context wheel is a BUTTON in the
     zoomed view): the same §8 split as the automatic threshold — fork, compact
     the fork into a successor, archive this self as a knowledge bearer."""
@@ -1176,7 +1200,7 @@ def node_compact(slug: str, nid: str):
     if supervisor.state(slug, nid)["busy"]:
         raise HTTPException(409, "busy — wait for the current turn to finish")
 
-    def run():
+    def run() -> None:
         # №27: manual_compact latches busy for the whole fork — mail arriving
         # mid-split queues instead of driving the doomed old session
         try:
@@ -1189,7 +1213,7 @@ def node_compact(slug: str, nid: str):
 
 
 @app.post("/api/orgs/{slug}/dissolve-all")
-async def org_dissolve_all(slug: str):
+async def org_dissolve_all(slug: str) -> dict[str, Any]:
     """Dissolve EVERY agent in the org at once (context kept — rehire revives)."""
     with store.DOC_LOCK:
         try:
@@ -1207,7 +1231,7 @@ async def org_dissolve_all(slug: str):
 
 
 @app.post("/api/orgs/{slug}/killswitch")
-async def org_killswitch(slug: str):
+async def org_killswitch(slug: str) -> dict[str, Any]:
     """⏹ STOP ALL: interrupt every active agent and clear pending queues."""
     try:
         store.load_org(slug)
@@ -1219,7 +1243,7 @@ async def org_killswitch(slug: str):
 
 
 @app.post("/api/orgs/{slug}/resume")
-async def org_resume(slug: str):
+async def org_resume(slug: str) -> dict[str, Any]:
     """The ▶ button: restart every usage-limit-frozen agent at once."""
     try:
         store.load_org(slug)
@@ -1239,7 +1263,7 @@ class CreditDecision(BaseModel):
 
 
 @app.post("/api/orgs/{slug}/credit-requests")
-async def credit_request_decide(slug: str, body: CreditDecision):
+async def credit_request_decide(slug: str, body: CreditDecision) -> dict[str, Any]:
     """One-click approve/deny of a top-level agent's credit request."""
     with store.DOC_LOCK:
         try:
@@ -1259,7 +1283,7 @@ async def credit_request_decide(slug: str, body: CreditDecision):
 
 
 @app.get("/api/orgs/{slug}/inbox")
-def user_inbox(slug: str):
+def user_inbox(slug: str) -> dict[str, Any]:
     """Same shape as a node's inbox (user ruling — the two interfaces function
     identically): unread mail + the read archive + the Sent folder (every user
     message is mail and gets recorded)."""
@@ -1277,7 +1301,7 @@ class InboxRead(BaseModel):
 
 
 @app.post("/api/orgs/{slug}/inbox/read")
-async def user_inbox_read(slug: str, body: InboxRead):
+async def user_inbox_read(slug: str, body: InboxRead) -> dict[str, Any]:
     """Per-mail read: a viewed mail is marked read when the user clicks off it
     (user ruling) — it moves from unread into the read archive."""
     with store.DOC_LOCK:
@@ -1321,7 +1345,7 @@ def _extern_peer(peer: str) -> str:
 
 
 @app.post("/api/extern/{peer}/send")
-def extern_send(peer: str, body: ExternSend):
+def extern_send(peer: str, body: ExternSend) -> dict[str, Any]:
     addr = _extern_peer(peer)
     if not body.body.strip():
         raise HTTPException(422, "empty message")
@@ -1352,7 +1376,7 @@ def extern_send(peer: str, body: ExternSend):
 
 
 def _extern_scan(addr: str, org_slug: str | None, after: str | None,
-                 fresh_only: bool = False) -> list[dict]:
+                 fresh_only: bool = False) -> list[dict[str, Any]]:
     """Replies addressed to `addr`. `fresh_only` (the wait path, №5): with no
     explicit cursor, only replies newer than the peer's own LAST message to
     that org count — a wait for question ② must never be satisfied by the
@@ -1396,7 +1420,8 @@ def _extern_scan(addr: str, org_slug: str | None, after: str | None,
 
 
 @app.get("/api/extern/{peer}/messages")
-def extern_messages(peer: str, org: str | None = None, after: str | None = None):
+def extern_messages(peer: str, org: str | None = None,
+                    after: str | None = None) -> dict[str, Any]:
     msgs = _extern_scan(_extern_peer(peer), org, after)
     # the cursor rides every reply (review P1): pass it back as `after` and a
     # repeat wait/read can never re-deliver what this call already handed over
@@ -1405,7 +1430,7 @@ def extern_messages(peer: str, org: str | None = None, after: str | None = None)
 
 @app.get("/api/extern/{peer}/wait")
 async def extern_wait(peer: str, org: str | None = None,
-                      after: str | None = None, timeout: int = 25):
+                      after: str | None = None, timeout: int = 25) -> dict[str, Any]:
     """Long-poll: block until an org replies to this peer (or timeout).
     Rescans (DOC_LOCK + org-doc reads) only when store.REVISION moved —
     review finding: parked waiters were paying a full scan every second
@@ -1425,7 +1450,7 @@ async def extern_wait(peer: str, org: str | None = None,
 
 
 @app.post("/api/orgs/{slug}/org_inbox/read")
-async def org_inbox_read(slug: str):
+async def org_inbox_read(slug: str) -> dict[str, Any]:
     """The user opened the org-inbox panel: clear its unread count."""
     with store.DOC_LOCK:
         try:
@@ -1439,7 +1464,7 @@ async def org_inbox_read(slug: str):
 
 
 @app.post("/api/orgs/{slug}/inbox/clear")
-async def user_inbox_clear(slug: str):
+async def user_inbox_clear(slug: str) -> dict[str, Any]:
     """Mark-all-read: archives into the read log (mirror of a node's mail_log)
     rather than deleting."""
     with store.DOC_LOCK:
@@ -1458,7 +1483,7 @@ async def user_inbox_clear(slug: str):
 
 # --------------------------------------------------------- inspector + admin
 @app.get("/api/orgs/{slug}/nodes/{nid}/history")
-def node_history(slug: str, nid: str, last: int = 80):
+def node_history(slug: str, nid: str, last: int = 80) -> dict[str, Any]:
     """Message history with attribution + delivered notices + ops touching the node."""
     try:
         org = store.load_org(slug)
@@ -1489,7 +1514,7 @@ def node_history(slug: str, nid: str, last: int = 80):
 
 
 @app.get("/api/orgs/{slug}/nodes/{nid}/scratch")
-def node_scratch(slug: str, nid: str, path: str = ""):
+def node_scratch(slug: str, nid: str, path: str = "") -> dict[str, Any]:
     base = os.path.realpath(supervisor.scratch_dir(slug, nid))
     full = os.path.realpath(os.path.join(base, path.lstrip("/\\")))
     if not full.startswith(base):
@@ -1508,7 +1533,7 @@ def node_scratch(slug: str, nid: str, path: str = ""):
 
 
 @app.get("/api/orgs/{slug}/orgmd")
-def orgmd_get(slug: str):
+def orgmd_get(slug: str) -> dict[str, Any]:
     try:
         org = store.load_org(slug)
     except LedgerError as e:
@@ -1526,7 +1551,7 @@ class OrgMd(BaseModel):
 
 
 @app.put("/api/orgs/{slug}/orgmd")
-async def orgmd_put(slug: str, body: OrgMd):
+async def orgmd_put(slug: str, body: OrgMd) -> dict[str, Any]:
     """org.md v1: the workspace CLAUDE.md — injected into every node that holds the
     workspace, which is every node by default."""
     try:
@@ -1551,7 +1576,7 @@ class AudienceAction(BaseModel):
 
 
 @app.post("/api/orgs/{slug}/audiences")
-async def user_audience(slug: str, body: AudienceAction):
+async def user_audience(slug: str, body: AudienceAction) -> dict[str, Any]:
     """User-side audience management: grant/deny requests that reached you, and
     one-click rescind of any audience (your authority is unconditional)."""
     with store.DOC_LOCK:
@@ -1575,7 +1600,7 @@ async def user_audience(slug: str, body: AudienceAction):
 
 
 @app.get("/api/orgs/{slug}/audiences")
-def audiences_list(slug: str):
+def audiences_list(slug: str) -> dict[str, Any]:
     try:
         org = store.load_org(slug)
     except LedgerError as e:
@@ -1588,10 +1613,10 @@ def audiences_list(slug: str):
 # The sandbox's CLI points ANTHROPIC_BASE_URL here (secret in the path, via
 # the bridge); the HOST attaches the subscription OAuth token — the sandbox
 # never holds a credential (user spec). Streaming passthrough.
-_hx = None
+_hx: httpx.AsyncClient | None = None
 
 
-def _upstream():
+def _upstream() -> httpx.AsyncClient:
     global _hx
     if _hx is None:
         import httpx
@@ -1602,7 +1627,7 @@ def _upstream():
 
 @app.api_route("/anthropic/{path:path}",
                methods=["GET", "POST", "HEAD", "PUT", "DELETE"])
-async def anthropic_proxy(path: str, request: Request):
+async def anthropic_proxy(path: str, request: Request) -> StreamingResponse:
     from fastapi.concurrency import run_in_threadpool
     from fastapi.responses import StreamingResponse
     from starlette.background import BackgroundTask
@@ -1647,7 +1672,7 @@ class AgentCall(BaseModel):
 
 
 @app.post("/api/agent")
-def agent_call(body: AgentCall, request: Request):
+def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
     """Backend for the orgtree MCP server every node loads. The calling NODE is the
     actor — the ledger enforces authority, budgets, capability subsets, addressing,
     and the no-defaults hire rule.
@@ -1703,6 +1728,7 @@ def agent_call(body: AgentCall, request: Request):
             return {"error": f"no such path in {target}'s scratch: {rel!r}"}
         except LedgerError as e:
             raise HTTPException(422, str(e))
+    result: dict[str, Any]
     drive: list[str] = []      # nodes whose turn should run after we release the lock
     ext_send = None            # (chat-id, body) outbound riding the chatq bridge
     org_send = None            # (dst-slug, body) outbound to another org's inbox
@@ -1738,7 +1764,7 @@ def agent_call(body: AgentCall, request: Request):
                 hdirs, dwarns = supervisor.sandbox_dirs_to_host(
                     org, a.get("add_dirs"))
                 result = org.hire(body.node, a.get("parent") or body.node,
-                                  a.get("tier"), int(a.get("grant") or 0),
+                                  a.get("tier"), int(a.get("grant") or 0),  # type: ignore[arg-type]  # ledger 422s a missing tier
                                   a.get("name") or "", add_dirs=hdirs,
                                   tools=a.get("tools"),
                                   org_visibility=a.get("org_visibility"),
@@ -1762,9 +1788,9 @@ def agent_call(body: AgentCall, request: Request):
                 if dwarns:
                     result.setdefault("warnings", []).extend(dwarns)
             elif body.tool == "orgtree_retire":
-                result = org.retire(body.node, a.get("node"))
+                result = org.retire(body.node, a.get("node"))  # type: ignore[arg-type]  # node() 422s on None
             elif body.tool == "orgtree_rehire":
-                result = org.rehire(body.node, a.get("node"), a.get("grant"))
+                result = org.rehire(body.node, a.get("node"), a.get("grant"))  # type: ignore[arg-type]  # node() 422s on None
                 drive.extend(result.pop("drive", []))
             elif body.tool == "orgtree_move":
                 result = org.move(body.node, a.get("node", ""),
@@ -1777,9 +1803,9 @@ def agent_call(body: AgentCall, request: Request):
                      "you": o["slug"] == body.org}
                     for o in store.list_orgs() if not o.get("kiosk")]}
             elif body.tool == "orgtree_dissolve":
-                result = org.dissolve(body.node, a.get("node"))
+                result = org.dissolve(body.node, a.get("node"))  # type: ignore[arg-type]  # node() 422s on None
             elif body.tool == "orgtree_reallocate":
-                result = org.reallocate(body.node, a.get("node"), int(a.get("delta") or 0))
+                result = org.reallocate(body.node, a.get("node"), int(a.get("delta") or 0))  # type: ignore[arg-type]  # node() 422s on None
             elif body.tool == "orgtree_switch_model":
                 result = org.switch_model(body.node, a.get("node", ""),
                                           a.get("tier", ""))
@@ -1870,7 +1896,8 @@ _UPLOAD_KIOSK_TOTAL = 256 * 1048576  # per node uploads dir, kiosk orgs
 
 
 @app.post("/api/orgs/{slug}/nodes/{nid}/upload")
-async def node_upload(slug: str, nid: str, request: Request, name: str = ""):
+async def node_upload(slug: str, nid: str, request: Request,
+                      name: str = "") -> dict[str, Any]:
     """Attach a file to a chat (user spec 2026-07-31): the raw request body
     lands in the node's scratch under uploads/ — the one folder every agent,
     sandboxed or not, reaches at the same RELATIVE path (its cwd). Reachable
@@ -1920,7 +1947,7 @@ async def node_upload(slug: str, nid: str, request: Request, name: str = ""):
 _SENDFILE_MAX = 256 * 1048576
 
 
-def _agent_send_file(org, nid: str, a: dict) -> dict:
+def _agent_send_file(org: Org, nid: str, a: dict[str, Any]) -> dict[str, Any]:
     """Copy a file the NODE can legitimately reach into its outbox/ scratch
     folder. Copy, not reference: the card keeps working after the agent edits
     or deletes the original (re-sending an updated file yields report-2.pdf —
@@ -1961,7 +1988,7 @@ def _agent_send_file(org, nid: str, a: dict) -> dict:
     # realpath first, so a symlink cannot smuggle an outside file in.
     roots = [scratch]
     if org.d.get("workspace"):
-        roots.append(os.path.realpath(org.d["workspace"]))
+        roots.append(os.path.realpath(org.d["workspace"]))  # type: ignore[arg-type]  # guard above proves non-None
     for d in org.node(nid)["scope"]["add_dirs"]:
         roots.append(os.path.realpath(d["path"]))
     if sandbox.is_sandboxed(org):
@@ -2009,7 +2036,7 @@ def _agent_send_file(org, nid: str, a: dict) -> dict:
 
 
 @app.get("/api/orgs/{slug}/nodes/{nid}/file")
-def node_file(slug: str, nid: str, path: str = ""):
+def node_file(slug: str, nid: str, path: str = "") -> FileResponse:
     """Raw download of a file in the node's scratch — outbox/ cards, uploads/,
     anything the files tab lists. Org-scoped GET, so the kiosk public gateway
     passes it through: visitors download what agents send back."""
@@ -2028,7 +2055,7 @@ def node_file(slug: str, nid: str, path: str = ""):
 
 
 @app.get("/api/orgs/{slug}/nodes/{nid}/chat")
-def node_chat(slug: str, nid: str, last: int = 300):
+def node_chat(slug: str, nid: str, last: int = 300) -> dict[str, Any]:
     try:
         org = store.load_org(slug)
         org.node(nid)
@@ -2048,14 +2075,14 @@ def node_chat(slug: str, nid: str, last: int = 300):
                             "body": m["body"][:2000], "at": m["at"],
                             **({"delivering": True} if m.get("delivering")
                                else {}),
-                            **({"attachments": m["attachments"]}
+                            **({"attachments": m["attachments"]}  # type: ignore[typeddict-item]  # guard proves the key
                                if m.get("attachments") else {})}
                            for m in pending[-20:]]
     return out
 
 
 @app.delete("/api/orgs/{slug}/nodes/{nid}/mail/{mid}")
-async def node_mail_retract(slug: str, nid: str, mid: str):
+async def node_mail_retract(slug: str, nid: str, mid: str) -> dict[str, Any]:
     """Parity №17: retract one UNDRAINED mail entry — the only correction
     channel for a wrong send, since delivery deliberately never interrupts."""
     with store.DOC_LOCK:
@@ -2069,7 +2096,7 @@ async def node_mail_retract(slug: str, nid: str, mid: str):
         if len(kept) == len(box):
             raise HTTPException(404, "no such pending mail — it may already "
                                      "have been delivered")
-        org.d["mail"][nid] = kept
+        org.d["mail"][nid] = kept  # type: ignore[typeddict-item]  # box non-empty ⇒ the key exists
         # mirror the retraction into the archive so the record stays honest
         log = (org.d.get("mail_log") or {}).get(nid) or []
         for m in log:
@@ -2081,7 +2108,7 @@ async def node_mail_retract(slug: str, nid: str, mid: str):
 
 
 @app.get("/api/orgs/{slug}/nodes/{nid}/toolimg/{tool_use_id}")
-def node_tool_image(slug: str, nid: str, tool_use_id: str, idx: int = 0):
+def node_tool_image(slug: str, nid: str, tool_use_id: str, idx: int = 0) -> Response:
     """Parity №9 (image clause): serve a tool result's image by tool_use_id —
     a separate bounded fetch, never base64 inlined into the 5 s chat poll."""
     try:
@@ -2121,7 +2148,7 @@ def node_tool_image(slug: str, nid: str, tool_use_id: str, idx: int = 0):
 
 
 @app.get("/api/orgs/{slug}/nodes/{nid}/inbox")
-def node_inbox(slug: str, nid: str):
+def node_inbox(slug: str, nid: str) -> dict[str, Any]:
     """The node's OWN mailbox (user ruling: separate from the events/history
     view): mail still waiting for its next turn, plus recently delivered mail
     with full bodies (the event log keeps only a gist)."""
@@ -2148,7 +2175,7 @@ def node_inbox(slug: str, nid: str):
 
 
 @app.get("/api/orgs/{slug}/events")
-def org_events(slug: str, since: int = 0):
+def org_events(slug: str, since: int = 0) -> dict[str, Any]:
     try:
         events = store.load_org(slug).d["events"]
     except LedgerError as e:
@@ -2180,7 +2207,7 @@ class Op(BaseModel):
 
 
 @app.post("/api/orgs/{slug}/ops")
-def org_op(slug: str, body: Op, request: Request):
+def org_op(slug: str, body: Op, request: Request) -> dict[str, Any]:
     pub = bool(_public_slug(request))
     with store.DOC_LOCK:
         result = _org_op_locked(slug, body, allow_raise=not pub)
@@ -2198,7 +2225,7 @@ def org_op(slug: str, body: Op, request: Request):
     return result
 
 
-def _org_op_locked(slug: str, body: Op, allow_raise: bool = False):
+def _org_op_locked(slug: str, body: Op, allow_raise: bool = False) -> dict[str, Any]:
     try:
         org = store.load_org(slug)
     except LedgerError as e:
@@ -2220,38 +2247,41 @@ def _org_op_locked(slug: str, body: Op, allow_raise: bool = False):
                 # gear's effort used to ride a separate /scope call that the
                 # kiosk gateway 403s — a control that could never succeed
                 org.set_scope(body.actor, result["node"], effort=body.effort)
+        # body.node is Optional on the wire (hire has none); the target ops
+        # take str because Org.node(None) already raises LedgerError → 422,
+        # hence the arg-type ignores below rather than a behavior-changing check
         elif body.op == "retire":
-            result = org.retire(body.actor, body.node)
+            result = org.retire(body.actor, body.node)  # type: ignore[arg-type]
         elif body.op == "rehire":
-            result = org.rehire(body.actor, body.node, body.grant, tier=body.tier,
+            result = org.rehire(body.actor, body.node, body.grant, tier=body.tier,  # type: ignore[arg-type]
                                 raise_ceiling=rc)
         elif body.op == "dissolve":
-            result = org.dissolve(body.actor, body.node)
+            result = org.dissolve(body.actor, body.node)  # type: ignore[arg-type]
         elif body.op == "delete":
-            result = org.delete(body.actor, body.node)
+            result = org.delete(body.actor, body.node)  # type: ignore[arg-type]
             supervisor.forget(slug, result["deleted"])
         elif body.op == "reallocate":
             if body.delta is None:
                 raise LedgerError("reallocate needs delta")
-            result = org.reallocate(body.actor, body.node, body.delta)
+            result = org.reallocate(body.actor, body.node, body.delta)  # type: ignore[arg-type]
         elif body.op == "switch_model":
             if body.tier is None:
                 raise LedgerError("switch_model needs tier")
-            result = org.switch_model(body.actor, body.node, body.tier)
+            result = org.switch_model(body.actor, body.node, body.tier)  # type: ignore[arg-type]
         elif body.op == "promote":
-            result = org.promote(body.actor, body.node, body.new_parent)
+            result = org.promote(body.actor, body.node, body.new_parent)  # type: ignore[arg-type]
         elif body.op == "demote":
             if body.new_parent is None:
                 raise LedgerError("demote needs new_parent")
-            result = org.demote(body.actor, body.node, body.new_parent)
+            result = org.demote(body.actor, body.node, body.new_parent)  # type: ignore[arg-type]
         elif body.op == "move":
-            result = org.move(body.actor, body.node, body.new_parent)
+            result = org.move(body.actor, body.node, body.new_parent)  # type: ignore[arg-type]
         elif body.op == "reseed":
-            result = org.reseed(body.actor, body.node, str(uuid.uuid4()))
+            result = org.reseed(body.actor, body.node, str(uuid.uuid4()))  # type: ignore[arg-type]
         elif body.op == "revoke_dir":
             if body.dir is None:
                 raise LedgerError("revoke_dir needs dir")
-            result = org.revoke_dir(body.actor, body.node, body.dir)
+            result = org.revoke_dir(body.actor, body.node, body.dir)  # type: ignore[arg-type]
         else:
             raise LedgerError(f"unknown op {body.op!r}")
         _kiosk_cap_check(org)
@@ -2263,7 +2293,7 @@ def _org_op_locked(slug: str, body: Op, allow_raise: bool = False):
 
 
 @app.websocket("/api/orgs/{slug}/ws")
-async def org_ws(ws: WebSocket, slug: str):
+async def org_ws(ws: WebSocket, slug: str) -> None:
     await hub.join(slug, ws)
     try:
         while True:
@@ -2278,14 +2308,14 @@ if os.path.isdir(FRONTEND_DIST):
               name="assets")
 
     @app.get("/{path:path}")
-    def spa(path: str):
+    def spa(path: str) -> FileResponse:
         full = os.path.normpath(os.path.join(FRONTEND_DIST, path))
         if path and full.startswith(FRONTEND_DIST) and os.path.isfile(full):
             return FileResponse(full)
         return FileResponse(os.path.join(FRONTEND_DIST, "index.html"))
 
 
-def main():
+def main() -> None:
     import uvicorn
 
     # three listeners, three trust levels: the admin app stays LOOPBACK-ONLY
@@ -2303,7 +2333,7 @@ def main():
         uvicorn.run(app, host="127.0.0.1", port=PORT)
         return
 
-    async def serve_all():
+    async def serve_all() -> None:
         await asyncio.gather(*(s.serve() for s in servers))
 
     asyncio.run(serve_all())

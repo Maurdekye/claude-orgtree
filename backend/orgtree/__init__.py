@@ -1,3 +1,5 @@
 """orgtree — hierarchical agent org chart with an occupancy-based credit budget."""
 
-__version__ = "1.0.0"
+from __future__ import annotations
+
+__version__: str = "1.0.0"

@@ -12,13 +12,15 @@ by the backend at startup. Must be fast and silent when there is nothing to
 say.
 """
 
+from __future__ import annotations
+
 import json
 import os
 import sys
 import urllib.request
 
 
-def identity():
+def identity() -> tuple[str | None, str | None, str | None, str | None]:
     """(org, node, base_url, secret) — org+node from argv when the backend
     passed them (it does since review C10), the cwd split as fallback.
 
@@ -59,7 +61,7 @@ def identity():
     return org, node, f"http://127.0.0.1:{port}", ""
 
 
-def main():
+def main() -> None:
     try:
         sys.stdin.read()          # drain the hook payload
     except Exception:             # noqa: BLE001

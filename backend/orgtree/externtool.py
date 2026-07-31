@@ -14,6 +14,8 @@ covers everything else.
 Run: python -m orgtree.externtool   (spawned by Claude Code via mcp config)
 """
 
+from __future__ import annotations
+
 import json
 import os
 import sys
@@ -22,9 +24,10 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from typing import Any
 
-PORT = os.environ.get("ORGTREE_PORT", "7360")
-BASE = os.environ.get("ORGTREE_BASE") or f"http://127.0.0.1:{PORT}"
+PORT: str = os.environ.get("ORGTREE_PORT", "7360")
+BASE: str = os.environ.get("ORGTREE_BASE") or f"http://127.0.0.1:{PORT}"
 
 
 def peer_id() -> str:
@@ -54,9 +57,10 @@ def peer_id() -> str:
     return f"{base}.{uuid.uuid4().hex[:6]}"
 
 
-PEER = peer_id()
+PEER: str = peer_id()
 
-TOOLS = [
+# MCP tool cards for the wire — freeform JSON by nature
+TOOLS: list[dict[str, Any]] = [
     {
         "name": "orgtree_list_orgs",
         "description": ("List the orgtree organizations reachable from outside. "
@@ -130,7 +134,8 @@ TOOLS = [
 ]
 
 
-def http(method: str, path: str, body: dict | None = None, timeout: int = 60):
+def http(method: str, path: str, body: dict[str, Any] | None = None,
+         timeout: int = 60) -> Any:
     req = urllib.request.Request(
         BASE + path,
         data=json.dumps(body).encode() if body is not None else None,
@@ -139,7 +144,7 @@ def http(method: str, path: str, body: dict | None = None, timeout: int = 60):
         return json.loads(r.read().decode("utf-8", "replace"))
 
 
-def run_tool(name: str, args: dict) -> tuple[str, bool]:
+def run_tool(name: str, args: dict[str, Any]) -> tuple[str, bool]:
     try:
         if name == "orgtree_list_orgs":
             orgs = http("GET", "/api/orgs")
@@ -176,15 +181,15 @@ def run_tool(name: str, args: dict) -> tuple[str, bool]:
         return f"orgtree unreachable at {BASE}: {e}", True
 
 
-def reply(id_, result=None):
+def reply(id_: int | str | None, result: Any = None) -> None:
     sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": id_, "result": result}) + "\n")
     sys.stdout.flush()
 
 
-def main():
+def main() -> None:
     if hasattr(sys.stdin, "reconfigure"):
-        sys.stdin.reconfigure(encoding="utf-8", errors="replace")
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stdin.reconfigure(encoding="utf-8", errors="replace")    # type: ignore[attr-defined]  # TextIO stub lacks reconfigure; runtime TextIOWrapper has it (hasattr-guarded)
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")   # type: ignore[attr-defined]  # ditto
     for line in sys.stdin:
         line = line.strip()
         if not line:
