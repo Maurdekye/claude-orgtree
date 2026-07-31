@@ -46,24 +46,28 @@ _ws_usage_cache: dict[str, tuple[float, int]] = {}
 
 
 def workspace_usage_bytes(org: Org, max_age: float = 0.0) -> int:
-    """Size of the org's OWN workspace dir (user spec: the storage limit never
-    covers external folder grants). `max_age` > 0 serves a recent measurement
-    from cache — for UI reads; enforcement paths measure fresh."""
-    ws = org.d.get("workspace")
-    if not ws or not os.path.isdir(ws):
-        return 0
+    """Size of the org's OWN storage: the workspace dir PLUS the org's scratch
+    tree — agents' cwd writes and the public upload endpoint both land in
+    scratch, so a workspace-only walk measured a tree disjoint from what the
+    public write path fills (review X7/C11). External folder grants stay
+    excluded (user spec). `max_age` > 0 serves a recent measurement from
+    cache — for UI reads; enforcement paths measure fresh."""
     slug = org.d["slug"]
     if max_age > 0:
         hit = _ws_usage_cache.get(slug)
         if hit and time.time() - hit[0] < max_age:
             return hit[1]
     total = 0
-    for root, _dirs, files in os.walk(ws):
-        for f in files:
-            try:
-                total += os.path.getsize(os.path.join(root, f))
-            except OSError:
-                pass
+    ws = org.d.get("workspace")
+    roots = [p for p in (ws, store.scratch_root(slug))
+             if p and os.path.isdir(p)]
+    for base in roots:
+        for root, _dirs, files in os.walk(base):
+            for f in files:
+                try:
+                    total += os.path.getsize(os.path.join(root, f))
+                except OSError:
+                    pass
     _ws_usage_cache[slug] = (time.time(), total)
     return total
 
@@ -101,7 +105,7 @@ CLAUDE_CLI_JS = os.environ.get("ORGTREE_CLAUDE_CLI", os.path.join(
     os.path.dirname(CLAUDE), "node_modules", "@anthropic-ai", "claude-code", "cli.js"))
 
 
-_cli_version_cache: str | None = None
+_cli_version_cache: tuple[str, float, str] | None = None   # (pkg_path, mtime, ver)
 
 
 def cli_version() -> str:
@@ -109,34 +113,44 @@ def cli_version() -> str:
     @anthropic-ai/claude-code package.json above cli.js (the npm bin shim
     nests, so walk up), falling back to `claude --version`. Drives
     sandbox-image tagging (host CLI updates → the next sandboxed turn
-    rebuilds the image) and the /api/host report. Cached per process."""
+    rebuilds the image) and the /api/host report. Cached on the resolved
+    package.json's mtime (review X2): a forever-cache froze the versioned
+    image for the backend's lifetime — the one thing it exists to react to
+    is the CLI changing under a running backend."""
     global _cli_version_cache
-    if _cli_version_cache is not None:
-        return _cli_version_cache
-    ver = "unknown"
     probe = os.path.dirname(CLAUDE_CLI_JS)
     for _ in range(6):
         p = os.path.join(probe, "package.json")
         try:
+            mt = os.path.getmtime(p)
+            c = _cli_version_cache
+            if c and c[0] == p and c[1] == mt:
+                return c[2]
             pkg = json.load(open(p, encoding="utf-8"))
             if pkg.get("name") == "@anthropic-ai/claude-code":
                 ver = str(pkg.get("version", "unknown"))
-                break
+                _cli_version_cache = (p, mt, ver)
+                return ver
         except OSError:
             pass
         except json.JSONDecodeError:
             pass
         probe = os.path.dirname(probe)
-    if ver == "unknown":
-        try:
-            r = subprocess.run(_claude_argv() + ["--version"],
-                               capture_output=True, text=True, timeout=30)
-            m = re.search(r"\d+\.\d+\.\d+", r.stdout or "")
-            if m:
-                ver = m.group(0)
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-    _cli_version_cache = ver
+    # no package.json found — subprocess probe, cached for 10 min (path ""
+    # never collides with a real package.json hit)
+    c = _cli_version_cache
+    if c and c[0] == "" and time.time() - c[1] < 600:
+        return c[2]
+    ver = "unknown"
+    try:
+        r = subprocess.run(_claude_argv() + ["--version"],
+                           capture_output=True, text=True, timeout=30)
+        m = re.search(r"\d+\.\d+\.\d+", r.stdout or "")
+        if m:
+            ver = m.group(0)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    _cli_version_cache = ("", time.time(), ver)
     return ver
 
 
@@ -419,7 +433,19 @@ def _render_chart(org: Org, root_ids: list[str], mark: str, indent: int = 0) -> 
     lines = []
     for rid in root_ids:
         n = org.nodes[rid]
-        state = "" if n["state"] == "live" else f" ({n['state']})"
+        # the chart is an agent's ONLY view of the org — bearer markers must
+        # print here (review C2/X4): without them a lost generation is
+        # indistinguishable from a consultable knowledge bearer, and the
+        # rehire tool's own description invites waking it
+        tags = [] if n["state"] == "live" else [n["state"]]
+        bs = n.get("bearer_state")
+        if bs == "knowledge":
+            tags.append("knowledge bearer — consultable")
+        elif bs == "preserving":
+            tags.append("preserving oracle")
+        elif bs == "lost":
+            tags.append("LOST generation — no transcript, not rehirable")
+        state = f" ({', '.join(tags)})" if tags else ""
         star = "  ← you" if rid == mark else ""
         lines.append(f"{'  ' * indent}- {rid} [{n['model']}]{state}{star}")
         lines += _render_chart(org, org.children(rid, live_only=False), mark, indent + 1)
@@ -720,18 +746,22 @@ def _build_cmd(org: Org, nid: str) -> list[str]:
                      or os.environ.get("ORGTREE_STEER_HOOK") == "1")
     if sandboxed:
         # the in-container CLI is current (hooks fire headless); steer.py runs
-        # from the read-only backend mount and finds the bridge via .bridge
+        # from the read-only backend mount and finds the bridge via .bridge.
+        # slug+nid ride argv (review C10): hooks get a sanitized env and the
+        # cwd is SHARED across a lineage (name@gen → base dir), so a live
+        # bearer's hook used to resolve as its successor and eat its mail
         settings: dict = {"hooks": {"PostToolUse": [{"hooks": [
             {"type": "command",
-             "command": "python3 /opt/orgtree-backend/orgtree/steer.py",
+             "command": "python3 /opt/orgtree-backend/orgtree/steer.py "
+                        f'"{slug}" "{nid}"',
              "shell": "bash", "timeout": 8}]}]}}
     elif steer_capable and os.environ.get("ORGTREE_STEER_HOOK") != "0":
         steer_py = os.path.join(BACKEND_DIR, "orgtree", "steer.py")
         settings = {"hooks": {"PostToolUse": [{"hooks": [
             {"type": "command",
-             "command": '"{}" "{}"'.format(
+             "command": '"{}" "{}" "{}" "{}"'.format(
                  sys.executable.replace("\\", "/"),
-                 steer_py.replace("\\", "/")),
+                 steer_py.replace("\\", "/"), slug, nid),
              "shell": "bash", "timeout": 8}]}]}}
     else:
         settings = {"disableAllHooks": True}
@@ -765,8 +795,10 @@ def _build_cmd(org: Org, nid: str) -> list[str]:
            "--append-system-prompt", identity_prompt(org, nid),
            "--settings", json.dumps(settings),
            "--strict-mcp-config"]
-    if sc.get("effort") in ("low", "medium", "high", "xhigh", "max"):
-        # per-agent thinking effort (user-approved 2026-07-31); unset = CLI default
+    if sc.get("effort") in Org.EFFORTS:
+        # per-agent thinking effort (user-approved 2026-07-31); unset = CLI
+        # default. Org.EFFORTS is the ONE allowlist (review P2) — a literal
+        # copy here is how a partial edit silently un-wires a tier.
         cmd += ["--effort", sc["effort"]]
     tools = sc.get("tools", {})
     # interactive-only tools cannot work in a headless turn (there is no client
@@ -910,8 +942,13 @@ def _run_turn(slug: str, nid: str, text):
             with store.DOC_LOCK:
                 o2 = store.load_org(slug)
                 if nid in o2.nodes:
-                    o2.node(nid)["inflight"] = {"at": now_iso(),
-                                                "text": text[-8000:]}
+                    # the cmd marker makes the flag durable: both replayers
+                    # (reconcile, ▶ resume) rebuild plain text as prose, which
+                    # would bury the "/" mid-string — a command that can't
+                    # replay honestly is dropped, not degraded (review)
+                    o2.node(nid)["inflight"] = {
+                        "at": now_iso(), "text": text[-8000:],
+                        **({"cmd": True} if is_cmd else {})}
                     # new work begins: a lingering done/blocked chip would lie —
                     # but the history is kept, not erased (gap audit №13)
                     ls = o2.node(nid).pop("last_status", None)
@@ -935,6 +972,7 @@ def _run_turn(slug: str, nid: str, text):
             _leash(proc)              # dies with the backend (№29)
             sid = org.node(nid)["session_id"]
             res = {}
+            pend_toks: list[str] = []   # journal batches written, not yet consumed (C1)
             turn_occ = 0        # context size = LAST assistant call's usage (№24)
             dbuf, dlast = "", time.time()   # token-stream delta batcher (~8 Hz)
             timed_out = threading.Event()
@@ -956,8 +994,15 @@ def _run_turn(slug: str, nid: str, text):
             try:
                 proc.stdin.write(_user_event(text))
                 proc.stdin.flush()
-                # the mail is in the agent's transcript now — journal done
-                _confirm_delivered(slug, nid, toks)
+                # ⚠ a successful write into the 64 KB pipe buffer is NOT
+                # consumption (review C1): a child that dies on argv (unknown
+                # --flag on an older CLI) or on session resume never reads
+                # stdin, and confirming here shredded the journaled mail. The
+                # confirm waits for the first stdout event the CLI cannot emit
+                # without having read stdin — init arrives BEFORE the read, so
+                # any non-system event is the proof; until then the batch
+                # stays journaled and the finally fold-back restores it.
+                pend_toks = list(toks)
                 # stdin stays OPEN: queued messages are fed into the SAME
                 # process at each result boundary (spike-proven; writing DURING
                 # a response is useless — the CLI queue-removes such messages,
@@ -971,6 +1016,9 @@ def _run_turn(slug: str, nid: str, text):
                         ev = json.loads(line)
                     except json.JSONDecodeError:
                         continue
+                    if pend_toks and ev.get("type") != "system":
+                        _confirm_delivered(slug, nid, pend_toks)
+                        pend_toks = []
                     if ev.get("type") == "stream_event":
                         # partial-message deltas → the UI renders the reply
                         # growing word-by-word (user spec); batched so the WS
@@ -1052,14 +1100,19 @@ def _run_turn(slug: str, nid: str, text):
                                     o2 = store.load_org(slug)
                                     if nid in o2.nodes:
                                         o2.node(nid)["inflight"] = {
-                                            "at": now_iso(), "text": nxt[-8000:]}
+                                            "at": now_iso(), "text": nxt[-8000:],
+                                            **({"cmd": True} if ncmd else {})}
                                         store.save_org(o2)
                             except Exception:                # noqa: BLE001
                                 pass
                             try:
                                 proc.stdin.write(_user_event(nxt))
                                 proc.stdin.flush()
-                                _confirm_delivered(slug, nid, ntoks)
+                                # C1 again: confirmed by the next consuming
+                                # event, not by the pipe write (the prior
+                                # batch's toks were confirmed by THIS result
+                                # event, so pend_toks is free)
+                                pend_toks = list(ntoks)
                                 continue
                             except OSError:
                                 with _state_lock:
@@ -1132,7 +1185,13 @@ def _run_turn(slug: str, nid: str, text):
                             fz["until_ts"] = (_parse_limit_reset_ts(err_blob)
                                               or fz.get("until_ts"))
                             fz["error"] = err_blob[:300]
-                            fz.setdefault("resume_texts", []).append(text[-8000:])
+                            # replay only what the CLI actually consumed: an
+                            # unconsumed batch folds back as MAIL (C1) and
+                            # would arrive twice if also replayed; a command
+                            # can't replay honestly (the "/" must be at
+                            # position 0) so a lost one is lost, not degraded
+                            if not is_cmd and not pend_toks:
+                                fz.setdefault("resume_texts", []).append(text[-8000:])
                             if o2.node(nid)["model"] == "fable":
                                 o2.fable_limit_hit(nid, err_blob)
                             store.save_org(o2)
@@ -1328,10 +1387,27 @@ def _compact_split_body(slug: str, nid: str):
         st["last_error"] = f"compaction split failed: {e}"
         st["compact_retry_at"] = time.time() + 900   # 15-min cooldown (№28)
         return
+    # review C5/X6: the fork is a real API call — often the most expensive one
+    # the system makes — and _after_turn never runs for it, so its cost was
+    # invisible to cost_usd and therefore to the kiosk spend cap (which the
+    # public gateway's compact button can trigger repeatedly)
+    fork_cost = float(res.get("total_cost_usd") or 0.0)
     with store.DOC_LOCK:
         org = store.load_org(slug)
         pred = org.compact_split(nid, new_sid)
+        n = org.node(nid)
+        if fork_cost:
+            n["cost_usd"] = round(float(n.get("cost_usd") or 0.0) + fork_cost, 6)
+        # the successor starts with unknown (post-compact) occupancy — a stale
+        # near-full reading kept the wheel hot and let the repeat precheck pass
+        n["occupancy"] = None
         store.save_org(org)
+        spend_total = sum(float(v.get("cost_usd") or 0.0)
+                          for v in org.nodes.values())
+        kcfg = kiosk_cfg(org)
+    if (kcfg and float(kcfg.get("spend_limit") or 0) > 0
+            and spend_total >= float(kcfg["spend_limit"])):
+        hard_freeze(slug, "spend", "kiosk spend limit reached")
     st = state(slug, nid)
     st["occupancy"] = None
     st.pop("compact_retry_at", None)
@@ -1469,6 +1545,15 @@ def hard_freeze(slug: str, kind: str, error: str) -> None:
                 # the limit's error/reset info; each kind owns its own keys
                 fz[kind] = True
                 fz[kind + "_error"] = error
+                # review C7: the interrupt below kills these turns and the
+                # finally pops their inflight — capture the text NOW so the
+                # docstring's promise ("▶ replays the interrupted turns")
+                # has something to replay. Commands don't replay (honest drop).
+                inf = n.get("inflight")
+                if inf and inf.get("text") and not inf.get("cmd"):
+                    rt = fz.setdefault("resume_texts", [])
+                    if inf["text"][-8000:] not in rt:
+                        rt.append(inf["text"][-8000:])
         store.save_org(org)
     interrupt_all(slug)
     notify(slug, "", flag)
@@ -1537,12 +1622,13 @@ def storage_check(slug: str) -> str | None:
             org.d["storage_blocked"] = True
             _workspace_write_acl(org, True)
             org._notify(org.children(None),
-                        f"The org workspace is over its storage limit "
-                        f"({used / 1048576:.1f} / {lim_mb} MB). File creation "
-                        f"and writes in the workspace are BLOCKED — delete "
-                        f"enough files to get back under the limit and the "
-                        f"block lifts automatically. Pass this on to your "
-                        f"reports as needed.")
+                        f"The org is over its storage limit "
+                        f"({used / 1048576:.1f} / {lim_mb} MB — workspace + "
+                        f"scratch/uploads together). File creation and writes "
+                        f"in the workspace are BLOCKED — delete files (in the "
+                        f"workspace or your scratch dirs) to get back under "
+                        f"the limit and the block lifts automatically. Pass "
+                        f"this on to your reports as needed.")
             store.save_org(org)
             result = "blocked"
         elif blocked and (not k or not lim_mb or used <= limit):
@@ -1605,9 +1691,21 @@ def resume_frozen(slug: str) -> list[str]:
             raise RuntimeError("the kiosk spend limit was reached — raise the "
                                "limit from the admin dashboard to resume")
         for nid, n in org.nodes.items():
-            fz = n.pop("frozen", None)
-            if fz is not None and n["state"] == "live":
-                resumed.append((nid, fz.get("resume_texts") or []))
+            fz = n.get("frozen")
+            if not isinstance(fz, dict):
+                continue
+            # review C6: the old unconditional pop discarded replay texts for
+            # nodes that CANNOT restart. ▶ is now the third participant in the
+            # №41 protocol: it skips nodes another mechanism owns (archived —
+            # nothing runs; limit_locked — only clear_fable_lock releases;
+            # another freeze kind still flagged — that kind's clear owns it),
+            # leaving their record intact for whoever can actually act.
+            if n["state"] != "live" or n.get("limit_locked"):
+                continue
+            if any(v is True for v in fz.values()):
+                continue
+            n.pop("frozen", None)
+            resumed.append((nid, fz.get("resume_texts") or []))
         if resumed:
             store.save_org(org)
     for nid, texts in resumed:
@@ -1912,7 +2010,10 @@ def reconcile(slug: str) -> list[str]:
         for nid, n in org.nodes.items():
             if n["state"] == "live" and nid not in marked and not n.get("frozen"):
                 inf = n.pop("inflight", None)
-                if inf:
+                # a command turn can't replay honestly (the restart preamble
+                # would bury the "/" mid-prose and the CLI would run it as
+                # text) — a lost command is dropped, not degraded (review)
+                if inf and not inf.get("cmd"):
                     inflight.append((nid, inf))
         if inflight:
             store.save_org(org)
@@ -2121,10 +2222,18 @@ def read_chat(org: Org, nid: str, last: int | None = None) -> dict:
                                if l.startswith("+"))
                     minus = sum(1 for h in patch for l in h.get("lines", [])
                                 if l.startswith("-"))
+                    # per-hunk @@ rows keep WHERE visible (multi-hunk edits
+                    # flattened silently before); truncation is declared the
+                    # same way the sibling result path declares it (review C9)
+                    lines = []
+                    for h in patch:
+                        if h.get("oldStart") is not None:
+                            lines.append(f"@@ {h['oldStart']}")
+                        lines.extend(h.get("lines", []))
                     entry["diff"] = {
                         "plus": plus, "minus": minus,
-                        "lines": [l for h in patch
-                                  for l in h.get("lines", [])][:160]}
+                        "lines": lines[:160],
+                        **({"truncated": True} if len(lines) > 160 else {})}
                 if tur.get("totalDurationMs") is not None:
                     entry["task"] = {
                         "tools": tur.get("totalToolUseCount"),
@@ -2146,6 +2255,11 @@ def read_chat(org: Org, nid: str, last: int | None = None) -> dict:
             "tools": [x for x in tools if x],
             "ts": rec.get("timestamp"),
         })
+    # pre-slice ordinal: the UI keys rows on it — index keys over a sliding
+    # window remounted every chip (collapsing them) each time a message
+    # scrolled off the 300-row window (review)
+    for i, m in enumerate(msgs):
+        m["seq"] = i
     if last is not None and last > 0:
         msgs = msgs[-last:]
     out["messages"] = msgs

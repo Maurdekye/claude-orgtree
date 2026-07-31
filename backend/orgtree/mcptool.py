@@ -172,7 +172,10 @@ TOOLS = [
             "whole chain first (costs bubble). You may also rehire YOUR OWN "
             "knowledge bearer (a past generation of yourself) — it then joins "
             "as your own subordinate. An unrecoverable node is re-seeded "
-            "instead: fresh session, same role, credits and reports."),
+            "instead: fresh session, same role, credits and reports. The one "
+            "refusal: a LOST generation (marked so in the chart) has no "
+            "surviving transcript — there is no memory to wake, so it can "
+            "never be rehired or consulted."),
         "inputSchema": {"type": "object",
                         "properties": {"node": {"type": "string"},
                                        "grant": {"type": "integer", "minimum": 0}},

@@ -19,7 +19,13 @@ import urllib.request
 
 
 def identity():
-    """(org, node, base_url, secret) from cwd + the backend's port file.
+    """(org, node, base_url, secret) — org+node from argv when the backend
+    passed them (it does since review C10), the cwd split as fallback.
+
+    ⚠ The cwd is SHARED across a lineage: scratch_dir maps "name@gen" to the
+    base "name" directory, so a live knowledge bearer's hook resolved as its
+    SUCCESSOR and was handed (and confirmed away) the successor's steered
+    mail. argv names the exact node the backend launched.
 
     Sandboxed kiosk containers mirror the host layout at ~/orgtree, so the
     cwd derivation is identical there; a `.bridge` file in the data root
@@ -29,14 +35,18 @@ def identity():
     data_root = os.path.realpath(
         os.environ.get("ORGTREE_DATA", os.path.expanduser("~/orgtree")))
     scratch = os.path.join(data_root, "scratch")
-    if not cwd.startswith(scratch + os.sep):
-        return None, None, None, None
-    parts = cwd[len(scratch) + 1:].split(os.sep)
-    if len(parts) < 2:
-        return None, None, None, None
+    if len(sys.argv) >= 3 and sys.argv[1] and sys.argv[2]:
+        org, node = sys.argv[1], sys.argv[2]
+    else:
+        if not cwd.startswith(scratch + os.sep):
+            return None, None, None, None
+        parts = cwd[len(scratch) + 1:].split(os.sep)
+        if len(parts) < 2:
+            return None, None, None, None
+        org, node = parts[0], parts[1]
     try:
         b = json.load(open(os.path.join(data_root, ".bridge"), encoding="utf-8"))
-        return parts[0], parts[1], b["url"].rstrip("/"), b.get("secret", "")
+        return org, node, b["url"].rstrip("/"), b.get("secret", "")
     except (OSError, ValueError, KeyError):
         pass
     port = os.environ.get("ORGTREE_PORT")
@@ -46,7 +56,7 @@ def identity():
                         encoding="utf-8").read().strip()
         except OSError:
             port = "7360"
-    return parts[0], parts[1], f"http://127.0.0.1:{port}", ""
+    return org, node, f"http://127.0.0.1:{port}", ""
 
 
 def main():

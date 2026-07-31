@@ -5,9 +5,13 @@ corrected stranding semantics. Plain asserts; run with:  python tests/test_ledge
 
 import os
 import sys
+import tempfile
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+# an isolated data root BEFORE any orgtree import: store resolves ORGTREE_DATA
+# at import time, and the journal/freeze sections below save real org docs
+os.environ["ORGTREE_DATA"] = tempfile.mkdtemp(prefix="orgtree-test-")
 
 from orgtree.ledger import LedgerError, Org, USER   # noqa: E402
 
@@ -863,6 +867,229 @@ def main():
         **{k: dict(v) for k, v in orgT.nodes.items()},
         "chief": {**dict(orgT.nodes["chief"]), "charter": None,
                   "purpose": "old purpose text"}}})))
+
+    print("review wave (f2763e8..dd5fe0c) regressions:")
+    import orgtree.store as store_mod                        # noqa: E402
+    import orgtree.supervisor as sup                         # noqa: E402
+
+    # -- the delivery journal (review C1 / test-priority 1): fold-back
+    # restores the exact batch; confirm-then-fold-back is a no-op
+    orgJ = Org.create("journal")
+    orgJ.hire(USER, None, "haiku", 5, "j")
+    orgJ.post_mail(USER, "j", "hello one")
+    orgJ.post_mail(USER, "j", "hello two")
+    store_mod.save_org(orgJ)
+    check("journal fold-back restores the drained batch in order", lambda: (
+        (lambda mail: (
+            sup._journal_drain(orgJ, "j", mail, None),
+            store_mod.save_org(orgJ),
+            sup._fold_back_undelivered("journal", "j"),
+            (lambda o2: None
+             if [m["body"] for m in o2.d["mail"]["j"]] == ["hello one", "hello two"]
+             and not (o2.d.get("delivering") or {})
+             else (_ for _ in ()).throw(AssertionError(o2.d.get("mail"))))(
+                store_mod.load_org("journal")))[-1]
+         )(orgJ.take_mail("j"))))
+    check("journal confirm-then-fold-back is a no-op (no duplicate)", lambda: (
+        (lambda o2: (
+            (lambda mail, tok=None: (
+                (lambda t: (
+                    store_mod.save_org(o2),
+                    sup._confirm_delivered("journal", "j", [t]),
+                    sup._fold_back_undelivered("journal", "j"),
+                    (lambda o3: None
+                     if not (o3.d.get("mail") or {}).get("j")
+                     and not (o3.d.get("delivering") or {})
+                     else (_ for _ in ()).throw(AssertionError(o3.d)))(
+                        store_mod.load_org("journal")))[-1]
+                 )(sup._journal_drain(o2, "j", mail, None)))
+             )(o2.take_mail("j")))
+         )(store_mod.load_org("journal"))))
+
+    # -- the freeze state machine (review C6/C7 / test-priority 2)
+    orgF = Org.create("freeze")
+    orgF.hire(USER, None, "haiku", 5, "fz")
+    orgF.node("fz")["frozen"] = {"at": "t0", "resume_texts": ["replay me"],
+                                 "error": "usage limit", "until": "resets 5pm"}
+    orgF.node("fz")["inflight"] = {"at": "t1", "text": "half-done work"}
+    store_mod.save_org(orgF)
+    sup.hard_freeze("freeze", "spend", "cap hit")
+    orgF = store_mod.load_org("freeze")
+    check("spend freeze is commutative AND captures the in-flight turn (C7)", lambda: (
+        (lambda fz: None
+         if fz["spend"] is True and fz["spend_error"] == "cap hit"
+         and fz["error"] == "usage limit" and fz["until"] == "resets 5pm"
+         and "half-done work" in fz["resume_texts"]
+         and "replay me" in fz["resume_texts"]
+         else (_ for _ in ()).throw(AssertionError(fz))
+         )(orgF.node("fz")["frozen"])))
+    check("clearing spend leaves the usage freeze intact WITH its reason", lambda: (
+        sup.clear_hard_freeze(orgF, "spend"),
+        store_mod.save_org(orgF),
+        (lambda fz: None
+         if "spend" not in fz and "spend_error" not in fz
+         and fz["error"] == "usage limit" and fz["resume_texts"]
+         else (_ for _ in ()).throw(AssertionError(fz))
+         )(store_mod.load_org("freeze").node("fz")["frozen"]))[-1])
+    check("▶ resume leaves a limit_locked node's record untouched (C6)", lambda: (
+        (lambda o2: (
+            o2.node("fz").__setitem__("limit_locked", True),
+            store_mod.save_org(o2),
+            (lambda out: None
+             if out == [] and store_mod.load_org("freeze").node("fz")["frozen"]
+                 ["resume_texts"] == ["replay me", "half-done work"]
+             else (_ for _ in ()).throw(AssertionError(out))
+             )(sup.resume_frozen("freeze")))[-1]
+         )(store_mod.load_org("freeze"))))
+    check("▶ resume leaves an archived node's record untouched (C6)", lambda: (
+        (lambda o2: (
+            o2.node("fz").pop("limit_locked", None),
+            o2.node("fz").__setitem__("state", "archived"),
+            store_mod.save_org(o2),
+            (lambda out: None
+             if out == [] and store_mod.load_org("freeze").node("fz")
+                 .get("frozen") is not None
+             else (_ for _ in ()).throw(AssertionError(out))
+             )(sup.resume_frozen("freeze")))[-1]
+         )(store_mod.load_org("freeze"))))
+    check("legacy spend-freeze dict migrates to the №41 key split", lambda: (
+        (lambda o2: None
+         if o2.nodes["fz"]["frozen"].get("spend") is True
+         and o2.nodes["fz"]["frozen"].get("spend_error") == "old spend reason"
+         and "error" not in o2.nodes["fz"]["frozen"]
+         else (_ for _ in ()).throw(AssertionError(o2.nodes["fz"]["frozen"]))
+         )(Org({**orgF.d, "nodes": {
+             "fz": {**dict(orgF.nodes["fz"]), "state": "live",
+                    "frozen": {"at": "t0", "error": "old spend reason",
+                               "until": None, "resume_texts": []}}}}))))
+
+    # -- lost generations (review C2/C14 / test-priority 3)
+    orgL = Org.create("lost-gen")
+    orgL.hire(USER, None, "opus", 10, "vp")
+    orgL.hire(USER, "vp", "haiku", 2, "kid")
+    orgL.mark_unrecoverable("kid", "gone")
+    check("reseed bridge warns about ignored grant/tier", lambda: (
+        (lambda r: None
+         if any("ignored" in w for w in r["warnings"])
+         and orgL.nodes["kid"]["model"] == "haiku"
+         and orgL.nodes["kid"]["grant"] == 2
+         else (_ for _ in ()).throw(AssertionError(r))
+         )(orgL.rehire(USER, "kid", grant=1, tier="opus"))))
+    check("a LOST generation is NEVER rehirable (ledger-enforced)", lambda:
+          expect_error(lambda: orgL.rehire(USER, "kid@0"), "lost"))
+    check("the agent chart marks a lost generation as such", lambda: (
+        (lambda lines: None
+         if any("kid@0" in l and "LOST generation" in l for l in lines)
+         else (_ for _ in ()).throw(AssertionError(lines))
+         )(sup._render_chart(orgL, orgL.children(None, live_only=False), "vp"))))
+    orgB3 = Org.create("bearer-reseed")
+    orgB3.hire(USER, None, "opus", 10, "vet")
+    orgB3.compact_split("vet", "31313131-4444-5555-6666-777777777777")
+    orgB3.rehire(USER, "vet@0")                  # consultable, live, old slot
+    orgB3.mark_unrecoverable("vet@0", "transcript pruned")
+    check("re-seeding a BEARER demotes it to lost — no empty impostor (C14)", lambda: (
+        (lambda r: None
+         if orgB3.nodes["vet@0"]["state"] == "archived"
+         and orgB3.nodes["vet@0"]["bearer_state"] == "lost"
+         and "vet@0@0" not in orgB3.nodes
+         and any("LOST" in w or "lost" in w for w in r["warnings"])
+         and orgB3.audit()["no_overdraft"]
+         else (_ for _ in ()).throw(AssertionError(r))
+         )(orgB3.rehire(USER, "vet@0"))))
+
+    # -- move() with a top-level source (review C13 / test-priority 4)
+    orgM2 = Org.create("topmove")
+    orgM2.hire(USER, None, "opus", 10, "boss")
+    orgM2.hire(USER, None, "haiku", 2, "side")
+    check("move demotes a TOP-LEVEL node under a peer (no sentinel blowup)", lambda: (
+        orgM2.move(USER, "side", "boss"),
+        None if orgM2.nodes["side"]["parent"] == "boss"
+        and orgM2.audit()["no_overdraft"]
+        else (_ for _ in ()).throw(AssertionError(orgM2.nodes["side"])))[-1])
+    check("move promotes it back to top level", lambda: (
+        orgM2.move(USER, "side", None),
+        None if orgM2.nodes["side"]["parent"] is None
+        else (_ for _ in ()).throw(AssertionError(orgM2.nodes["side"])))[-1])
+    check("top-level same-parent move is a no-op naming no sentinel", lambda: (
+        (lambda r: None
+         if "nothing to do" in r["warnings"][0] and "@user" not in r["warnings"][0]
+         else (_ for _ in ()).throw(AssertionError(r))
+         )(orgM2.move(USER, "side", None))))
+
+    # -- superior-initiated bearer rehire keeps the old slot (test-priority 5)
+    orgB4 = Org.create("bearer-slot")
+    orgB4.hire(USER, None, "opus", 10, "lead")
+    orgB4.hire(USER, "lead", "opus", 5, "work")
+    orgB4.compact_split("work", "41414141-5555-6666-7777-888888888888")
+    check("superior-rehired bearer stays a COWORKER in the old slot", lambda: (
+        orgB4.rehire(USER, "work@0"),
+        None if orgB4.nodes["work@0"]["parent"] == "lead"
+        and orgB4.nodes["work@0"]["state"] == "live"
+        and orgB4.audit()["no_overdraft"]
+        else (_ for _ in ()).throw(AssertionError(orgB4.nodes["work@0"])))[-1])
+
+    # -- chain-rehire stops at an unrecoverable ancestor (review C12)
+    orgC3 = Org.create("chain-stop")
+    orgC3.hire(USER, None, "opus", 20, "mgr")
+    orgC3.hire(USER, "mgr", "sonnet", 5, "sub")
+    orgC3.hire(USER, "sub", "haiku", 0, "leaf")
+    orgC3.dissolve(USER, "mgr")
+    orgC3.mark_unrecoverable("mgr", "gone with the disk")
+    check("chain-rehire refuses to silently re-seed an unrecoverable ancestor", lambda:
+          expect_error(lambda: orgC3.rehire(USER, "leaf"), "unrecoverable"))
+
+    # -- effort (test-priority 6): the one allowlist, round-trip, clear, refuse
+    check("EFFORTS is the pinned five-tier allowlist", lambda: (
+        None if Org.EFFORTS == ("low", "medium", "high", "xhigh", "max")
+        else (_ for _ in ()).throw(AssertionError(Org.EFFORTS))))
+    check("effort round-trips into scope and '' clears it", lambda: (
+        orgM2.set_scope(USER, "boss", effort="xhigh"),
+        (lambda: None if orgM2.nodes["boss"]["scope"]["effort"] == "xhigh"
+         else (_ for _ in ()).throw(AssertionError))(),
+        orgM2.set_scope(USER, "boss", effort=""),
+        None if "effort" not in orgM2.nodes["boss"]["scope"]
+        else (_ for _ in ()).throw(AssertionError))[-1])
+    check("unknown effort refused", lambda: expect_error(
+        lambda: orgM2.set_scope(USER, "boss", effort="ultra"), "effort"))
+
+    # -- audiences survive DISSOLVE (test-priority 7)
+    orgA3 = Org.create("aud-dissolve")
+    orgA3.hire(USER, None, "opus", 10, "vp2")
+    orgA3.hire(USER, "vp2", "haiku", 0, "deep2")
+    orgA3.user_deep_reach("deep2", "hello")
+    orgA3.dissolve(USER, "vp2")
+    check("user audience survives dissolve", lambda: (
+        None if orgA3._has_audience("deep2", USER)
+        else (_ for _ in ()).throw(AssertionError(orgA3.d["audiences"]))))
+
+    # -- credit-request hygiene (review LOW)
+    orgD = Org.create("cred-hygiene")
+    orgD.hire(USER, None, "opus", 10, "chief3")
+    orgD.request_credits("chief3", 30, "expansion")
+    orgD.delete(USER, "chief3")
+    check("delete purges the node's pending credit request", lambda: (
+        None if not any(r["node"] == "chief3" for r in orgD.d["credit_requests"])
+        else (_ for _ in ()).throw(AssertionError(orgD.d["credit_requests"]))))
+    orgD.hire(USER, None, "opus", 10, "chief4")
+    orgD.request_credits("chief4", 30, "expansion")
+    orgD.retire(USER, "chief4")
+    check("approving a dead node's request clears it as moot (not stuck)", lambda: (
+        (lambda rid: (
+            (lambda r: None
+             if r["status"] == "moot"
+             and not any(q["status"] == "pending" for q in orgD.d["credit_requests"])
+             else (_ for _ in ()).throw(AssertionError(r))
+             )(orgD.credit_request_action(rid, "approve")))
+         )(next(r["id"] for r in orgD.d["credit_requests"]
+                if r["node"] == "chief4"))))
+
+    # -- node-mail id backfill (review LOW)
+    check("legacy node mail gets ids on load", lambda: (
+        (lambda o2: None
+         if all(m.get("id") for m in o2.d["mail"]["chief4"])
+         else (_ for _ in ()).throw(AssertionError(o2.d["mail"]))
+         )(Org({**orgD.d, "mail": {"chief4": [
+             {"from": USER, "body": "no id here", "at": "t"}]}}))))
 
     print("guards:")
     check("unknown tier refused", lambda: expect_error(

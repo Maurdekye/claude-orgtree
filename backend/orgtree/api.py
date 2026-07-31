@@ -760,9 +760,16 @@ async def org_kiosk(slug: str, body: KioskCfg):
                     for v in org.nodes.values())
         lim = float(k.get("spend_limit") or 0)
         over = k.get("enabled") and lim and spent >= lim
+        drive_after = []
         if org.d.get("spend_frozen") and not over:
             supervisor.clear_hard_freeze(org, "spend")
             cleared.append("spend")
+            # review C7: nodes whose freeze dropped entirely (no interrupted
+            # turn to replay via ▶) but whose mailbox filled during the freeze
+            # would sit idle until a restart's revive scan — drive them now
+            drive_after = [k for k, v in org.nodes.items()
+                           if v["state"] == "live" and not v.get("frozen")
+                           and (org.d.get("mail") or {}).get(k)]
         store.save_org(org)
         need_freeze = over and not org.d.get("spend_frozen")
     # limits apply in REAL TIME (user ruling), both directions: lowering the
@@ -770,6 +777,10 @@ async def org_kiosk(slug: str, body: KioskCfg):
     # turn's end; the storage recheck applies/lifts the write block likewise
     if need_freeze:
         supervisor.hard_freeze(slug, "spend", "kiosk spend limit reached")
+    for t in drive_after:
+        supervisor.send_message(
+            slug, t, "(orgtree) The spend freeze was lifted — you have mail "
+                     "above that arrived while frozen; handle it now.")
     if supervisor.storage_check(slug) == "cleared":
         cleared.append("storage")
     _token_cache["at"] = 0.0             # rotation/enable takes effect now
@@ -913,12 +924,63 @@ def node_message(slug: str, nid: str, body: Message):
     node notifies its whole superior chain (§7.4) and grants a user audience."""
     if not body.text.strip():
         raise HTTPException(422, "empty message")
-    if body.text.lstrip().startswith("/"):
-        # SLASH COMMAND (user-approved, 2026-07-31): a session command, not
-        # correspondence — no mail entry, and it must reach the CLI with the
-        # "/" at position 0 (the envelope would prepend [MAIL …] otherwise)
-        return supervisor.send_message(slug, nid, body.text.strip(),
-                                       command=True)
+    stripped = body.text.strip()
+    # SLASH COMMAND (user-approved, 2026-07-31): a session command, not
+    # correspondence — no mail entry, and it must reach the CLI with the
+    # "/" at position 0 (the envelope would prepend [MAIL …] otherwise).
+    # Command-SHAPED only (review C3b): "/compact", "/context foo" — a first
+    # token with internal slashes ("/e/Libraries/report.md — pick this up")
+    # is correspondence and keeps full mail semantics (durability, Sent,
+    # chain notices, the user-audience grant).
+    if stripped.startswith("/") \
+            and re.fullmatch(r"/[A-Za-z?][\w-]*", stripped.split()[0]):
+        with store.DOC_LOCK:
+            try:
+                org = store.load_org(slug)
+                n = org.node(nid)
+            except LedgerError as e:
+                raise HTTPException(404, str(e))
+            # review C3a: the old path returned "accepted" for nodes that run
+            # nothing, while the composer printed "delivering"/"deferred —
+            # delivers at rehire" — affirmatively false, since the command
+            # path persists no copy anywhere. Refuse with the real reason
+            # instead (house style: manual_compact's own 409).
+            if n["state"] != "live":
+                raise HTTPException(
+                    409, f"{nid} is {n['state']} — a session command runs "
+                         f"nothing there and is not mail (nothing would "
+                         f"survive to deliver at rehire); rehire first, or "
+                         f"send it as a plain message")
+            if n.get("frozen"):
+                raise HTTPException(
+                    409, "frozen (usage limit) — a session command would be "
+                         "dropped, not queued; ▶ resume the org first")
+        if stripped.split()[0] == "/compact":
+            # review C4: one word, one meaning. The hinted /compact used to
+            # compact the CLI session IN PLACE — same desk, same word as the
+            # compact button, opposite §8 consequence (no knowledge bearer).
+            # It now routes to the same org split the button runs.
+            if n.get("bearer_state"):
+                raise HTTPException(422, "a knowledge bearer never re-compacts (§8.3)")
+            if not n.get("occupancy"):
+                raise HTTPException(422, "no conversation yet — nothing to compact")
+            if supervisor.state(slug, nid)["busy"]:
+                raise HTTPException(409, "busy — wait for the current turn to finish")
+
+            def run():
+                try:
+                    supervisor.manual_compact(slug, nid)
+                except RuntimeError:
+                    pass      # raced into busy — the 409 precheck caught most
+
+            threading.Thread(target=run, daemon=True).start()
+            r = {"accepted": True, "compacting": True}
+            if stripped != "/compact":
+                r["warnings"] = ["/compact arguments are ignored — org "
+                                 "compaction preserves the whole session as "
+                                 "a knowledge bearer"]
+            return r
+        return supervisor.send_message(slug, nid, stripped, command=True)
     with store.DOC_LOCK:
         try:
             org = store.load_org(slug)
@@ -1172,9 +1234,15 @@ def _extern_scan(addr: str, org_slug: str | None, after: str | None,
             if not floor and fresh_only:
                 # timestamps are millisecond-resolution now (user ruling), so
                 # the floor is simply the peer's own latest message to the org
-                floor = max((e.get("at", "") for e in entries
-                             if e.get("peer") == addr
-                             and e.get("dir") == "in"), default="")
+                mine = [e.get("at", "") for e in entries
+                        if e.get("peer") == addr and e.get("dir") == "in"]
+                if not mine:
+                    # the peer's own inbound was trimmed (the 200-entry log
+                    # cap) or never existed — nothing is provably fresh, and
+                    # a collapsed floor would hand back the whole history:
+                    # exactly what fresh_only exists to prevent (review P1)
+                    continue
+                floor = max(mine)
             for e in entries:
                 if e.get("peer") == addr and e.get("dir") == "out" \
                         and (not floor or e.get("at", "") > floor):
@@ -1186,7 +1254,10 @@ def _extern_scan(addr: str, org_slug: str | None, after: str | None,
 
 @app.get("/api/extern/{peer}/messages")
 def extern_messages(peer: str, org: str | None = None, after: str | None = None):
-    return {"messages": _extern_scan(_extern_peer(peer), org, after)}
+    msgs = _extern_scan(_extern_peer(peer), org, after)
+    # the cursor rides every reply (review P1): pass it back as `after` and a
+    # repeat wait/read can never re-deliver what this call already handed over
+    return {"messages": msgs, **({"cursor": msgs[-1]["at"]} if msgs else {})}
 
 
 @app.get("/api/extern/{peer}/wait")
@@ -1204,7 +1275,7 @@ async def extern_wait(peer: str, org: str | None = None,
             rev = store.REVISION
             msgs = _extern_scan(addr, org, after, fresh_only=True)
             if msgs:
-                return {"messages": msgs}
+                return {"messages": msgs, "cursor": msgs[-1]["at"]}
         if time.monotonic() >= deadline:
             return {"messages": []}
         await asyncio.sleep(1.0)
@@ -1802,6 +1873,7 @@ class Op(BaseModel):
     add_dirs: list | None = None  # hire — [{path, mode}] or bare paths
     tools: dict | None = None     # hire — {bash, web, edit, subagents, mcp: []}
     org_visibility: str | None = None
+    effort: str | None = None     # hire — thinking effort, applied WITH the hire
     delta: int | None = None      # reallocate
     new_parent: str | None = None  # promote / demote
     dir: str | None = None        # revoke_dir
@@ -1834,6 +1906,11 @@ def _org_op_locked(slug: str, body: Op):
                               body.grant or 0, body.name, body.add_dirs,
                               tools=body.tools, org_visibility=body.org_visibility,
                               charter=body.charter)
+            if body.effort:
+                # applied WITH the hire, atomically (same save): the draft
+                # gear's effort used to ride a separate /scope call that the
+                # kiosk gateway 403s — a control that could never succeed
+                org.set_scope(body.actor, result["node"], effort=body.effort)
         elif body.op == "retire":
             result = org.retire(body.actor, body.node)
         elif body.op == "rehire":

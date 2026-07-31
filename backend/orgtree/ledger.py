@@ -164,6 +164,24 @@ class Org:
                                                      #  spend_limit, storage_limit_mb}
         for m in self.d.get("user_inbox", []):       # per-mail read tracking needs ids
             m.setdefault("id", uuid.uuid4().hex[:8])
+        # node mail needs ids too (retraction keys on them); pre-id entries
+        # otherwise render with no ✕ and 404 the DELETE with a false excuse
+        for box in ("mail", "mail_log"):
+            for ms in (self.d.get(box) or {}).values():
+                for m in ms:
+                    if isinstance(m, dict):
+                        m.setdefault("id", uuid.uuid4().hex[:12])
+        # pre-№41 spend freezes wrote the usage-limit keys (error, until=None);
+        # re-tag them so clear_hard_freeze("spend") actually clears them
+        # instead of leaving a stale-reason freeze the API reports as cleared
+        for n in self.nodes.values():
+            fz = n.get("frozen")
+            if (isinstance(fz, dict) and fz.get("error") and not fz.get("until")
+                    and not fz.get("resume_texts")
+                    and not any(v is True for v in fz.values())):
+                fz["spend"] = True
+                fz["spend_error"] = fz.pop("error")
+                fz.pop("until", None)
         # org holdings carry RW/RO modes (user ruling — configured on the eye's
         # gear, mirroring per-agent folder access); legacy string lists migrate
         self.d["dirs"] = norm_dirs(self.d.get("dirs"))
@@ -253,7 +271,11 @@ class Org:
         return USER if p is None else p
 
     def ancestors(self, nid: str) -> list[str]:
-        """Ancestor chain from immediate parent up to USER (inclusive)."""
+        """Ancestor chain from immediate parent up to USER (inclusive).
+        Total over the sentinel: ancestors(USER) is [] — callers holding a
+        parent() result can pass it straight back without exploding."""
+        if nid == USER:
+            return []
         out = []
         cur = self.node(nid)["parent"]
         while cur is not None:
@@ -263,7 +285,10 @@ class Org:
         return out
 
     def is_ancestor(self, a: str, nid: str) -> bool:
-        """True if `a` is a strict ancestor of node `nid` (USER is ancestor of all)."""
+        """True if `a` is a strict ancestor of node `nid` (USER is ancestor of all).
+        Total over the sentinel: nothing is a strict ancestor of USER."""
+        if nid == USER:
+            return False
         return a == USER or a in self.ancestors(nid)
 
     def org_children(self, nid: str | None) -> list[str]:
@@ -1135,6 +1160,15 @@ class Org:
         if not own_bearer:
             self._require_authority(actor, nid)
         n = self.node(nid)
+        if n.get("bearer_state") == "lost":
+            # RESEED intent, enforced HERE (not just in the UI): a lost
+            # generation's transcript is GONE — waking it would boot an empty
+            # session under the dead id and present it as institutional
+            # memory. The one true impossibility rehire refuses.
+            raise LedgerError(
+                f"{nid} is a LOST generation — its transcript is gone, so "
+                f"there is nothing to consult or resume; its successor "
+                f"carries the role forward")
         if n["state"] == "live":
             # design motto: asking for what's already true is a no-op, not an error
             return {"cost": 0, "drive": [],
@@ -1143,17 +1177,35 @@ class Org:
             # motto bridge: the session is dead but the node — name, position,
             # charter, credits, reports, mailbox — is fine. Rehire = re-seed.
             r = self.reseed(actor, nid, str(uuid.uuid4()))
+            ignored = [f"grant {grant:g}" if grant is not None else None,
+                       f"tier {tier!r}" if tier is not None else None]
+            if any(ignored):
+                # declared params must never vanish silently (house pattern:
+                # success WITH a warning naming what was ignored)
+                r.setdefault("warnings", []).append(
+                    "re-seed keeps the node's own grant and tier — the "
+                    "requested " + " and ".join(x for x in ignored if x)
+                    + " was ignored")
             r.setdefault("cost", 0)
             r.setdefault("drive", [nid] if (self.d.get("mail") or {}).get(nid) else [])
             return r
         warnings: list[str] = []
         drive: list[str] = []
         # user ruling: a live agent under an archived agent is an invalid tree
-        # state — rehiring a deep node rehires every archived superior between
-        # it and the nearest live one first, costs bubbling like any acquire
+        # state — rehiring a deep node rehires every ARCHIVED superior between
+        # it and the nearest live one first, costs bubbling like any acquire.
+        # An UNRECOVERABLE ancestor stops the walk: silently re-seeding it
+        # would archive a real session as a lost generation as a side effect —
+        # that destruction stays an explicit decision (review C12)
         chain = []
         p = n["parent"]
         while p is not None and self.nodes[p]["state"] != "live":
+            if self.nodes[p]["state"] == "unrecoverable":
+                raise LedgerError(
+                    f'"{p}" above {nid} is UNRECOVERABLE — rehiring {nid} '
+                    f'would silently re-seed it (its dead session would be '
+                    f'archived as a lost generation). Re-seed or retire '
+                    f'"{p}" first, then rehire {nid}.')
             chain.append(p)
             p = self.nodes[p]["parent"]
         for k in reversed(chain):                      # top-most first
@@ -1281,6 +1333,12 @@ class Org:
             r for r in self.d["audience_requests"]
             if r["from"] not in doomed_set and r["target"] not in doomed_set
             and r["currently_at"] not in doomed_set]
+        # a pending credit request must not outlive its node: the freed slug
+        # can be re-minted by a later hire, and a stale approval would re-bind
+        # to the namesake (review: swept-from-three-sites-not-the-fourth)
+        self.d["credit_requests"] = [
+            r for r in self.d.get("credit_requests", [])
+            if r.get("node") not in doomed_set]
         extra = len(doomed) - 1
         self._notify([parent],
                      f'The user permanently DELETED your report "{nid}"'
@@ -1406,11 +1464,14 @@ class Org:
         decided by direction — the capability the design derived (§4.5: a
         fully-occupied tree can still reorganize) and only the user could
         reach until now. Same-parent = success no-op (motto A3)."""
-        cur = self.parent(nid)
+        # the RAW parent slot (None at top level) — parent()'s USER sentinel
+        # made every top-level source blow up downstream (ancestors("@user"))
+        # and leaked the sentinel into user-facing messages
+        cur = self.node(nid)["parent"]
         tgt = None if new_parent in (None, USER) else new_parent
         if tgt == cur:
             return {"warnings": [f"{nid} already reports to "
-                                 f"{new_parent or 'the top level'} — nothing to do"]}
+                                 f"{tgt or 'the top level'} — nothing to do"]}
         if tgt is None or (cur is not None
                            and self.is_ancestor(tgt, cur)):
             return self.promote(actor, nid, tgt)
@@ -1712,7 +1773,13 @@ class Org:
         nid = req["node"]
         if action == "approve":
             if nid not in self.nodes or self.node(nid)["state"] != "live":
-                raise LedgerError(f"{nid} is no longer live — request is moot")
+                # the card clears rather than raising: an approval that can't
+                # apply must not leave the request pending forever (review —
+                # approve was the one action that couldn't dismiss it)
+                req["status"] = "moot"
+                req["note"] = f"{nid} is no longer live — dropped as moot"
+                self._log("credit_moot", USER, {"node": nid}, [])
+                return req
             delta = req["new"] - self.node(nid)["grant"]
             if delta > 0:
                 self.reallocate(USER, nid, delta)
@@ -1908,6 +1975,33 @@ class Org:
         if n["state"] != "unrecoverable":
             return {"warnings": [f"{nid} is {n['state']} and its session works — "
                                  f"nothing to re-seed"]}
+        if n.get("successor"):
+            # review C14: a knowledge bearer whose transcript is gone IS the
+            # lost generation — minting a fresh session would leave a node
+            # badged "knowledge" over empty memory. It archives in place,
+            # marked lost, and the successor (the one agent whose whole
+            # reason to consult it is the context that just vanished) is
+            # told directly.
+            succ = n["successor"]
+            was_live = n["state"] in ("live", "unrecoverable") \
+                and not n.get("archived_at")
+            n["state"] = "archived"
+            n["archived_at"] = now()
+            n["grant"] = 0
+            n["bearer_state"] = "lost"
+            n["frozen"] = None
+            n["inflight"] = None
+            self._notify([t for t in {succ, n["parent"]} if t and t != actor],
+                         f'Knowledge bearer "{nid}" lost its transcript and is '
+                         f'now a LOST generation — it can no longer be '
+                         f'consulted; what it held survives only in what was '
+                         f'already written down.')
+            self._log("reseed", actor, {"node": nid, "lost_bearer": True}, [])
+            return {"warnings": [
+                f'{nid} was a knowledge bearer with no surviving transcript — '
+                f'marked a LOST generation (archived, never consultable); no '
+                f'fresh session was minted'
+                + ("; its seat freed" if was_live else "")]}
         gen = n.get("generation", 0)
         pred_id = f"{nid}@{gen}"
         pred = dict(n)

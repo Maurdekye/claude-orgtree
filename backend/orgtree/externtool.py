@@ -85,8 +85,10 @@ TOOLS = [
         "name": "orgtree_read",
         "description": ("Read messages organizations have sent TO this session "
                         "(replies to your orgtree_send mail). Optionally filter "
-                        "by org, and/or pass `after` (an ISO timestamp from a "
-                        "previous message's `at`) to read only newer mail."),
+                        "by org, and/or pass `after` (an ISO timestamp) to read "
+                        "only newer mail. Every non-empty reply includes "
+                        "`cursor` — pass it back as `after` next time and "
+                        "nothing is ever delivered twice."),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -104,9 +106,11 @@ TOOLS = [
                         "only replies newer than YOUR last message to the org "
                         "count — an old answer never satisfies a new wait. The "
                         "org may reply several times; every new message is "
-                        "returned. Returns an empty list on timeout. Optionally "
-                        "filter by org; `after` as in orgtree_read; timeout_s "
-                        "up to 300 (default 120)."),
+                        "returned, and a non-empty reply includes `cursor` — "
+                        "pass it back as `after` on the NEXT wait so already-"
+                        "delivered replies never satisfy it again. Returns an "
+                        "empty list on timeout. Optionally filter by org; "
+                        "timeout_s up to 300 (default 120)."),
         "inputSchema": {
             "type": "object",
             "properties": {
