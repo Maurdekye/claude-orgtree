@@ -1281,9 +1281,10 @@ function UserNode({ pos, isDrop, stats, inboxCount, seats, mailGlow,
         onPointerDown={(e) => e.stopPropagation()}
         onClick={(e) => { e.stopPropagation(); onGear?.() }}><SettingsIcon fontSize="inherit" /></button>}
       {/* real seat costs in the hover hints — a literal 0 was technically true
-          (infinite pool) but read as wrong next to every other card */}
-      {!focused &&
-        <SpawnChips onSpawn={onSpawn} free={kioskRemaining ?? Infinity} seats={seats} />}
+          (infinite pool) but read as wrong next to every other card. The
+          chips survive switchboard focus too (user spec) — hiring is never
+          out of reach. */}
+      <SpawnChips onSpawn={onSpawn} free={kioskRemaining ?? Infinity} seats={seats} />
       {focused && (
         <EyeDesk map={map} op={op} slug={slug} pulse={pulse} toast={toast}
           streamEvt={streamEvt} inboxCount={inboxCount} onInbox={onInbox}
