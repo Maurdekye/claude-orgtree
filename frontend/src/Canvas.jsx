@@ -3,18 +3,18 @@ import { marked } from 'marked'
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
-  audienceAction, BASE, compactNode, dissolveAll, getCharters, getChat,
-  getHistory, getMcpServers, getNodeInbox, getScratch, interruptNode,
+  audienceAction, BASE, compactNode, dissolveAll, fileUrl, getCharters,
+  getChat, getHistory, getMcpServers, getNodeInbox, getScratch, interruptNode,
   orgInboxRead, reorderNode, retractMail, saveHireDefaults, saveKiosk,
   saveScope, saveSettings, sendMessage, uploadFile,
 } from './api'
 import { pickFolder } from './picker'
 import {
   AddIcon, ArrowUpIcon, AutorenewIcon, CheckIcon, CloseIcon, DeleteIcon,
-  DotIcon, EditIcon, FileIcon, FocusIcon, FolderIcon, FrozenIcon,
-  FullscreenIcon, HearingIcon, LayersIcon, LockIcon, MailIcon, PlayIcon,
-  PsychologyIcon, PublicIcon, RemoveIcon, SettingsIcon, SparkIcon, StopIcon,
-  ViewListIcon, WarnIcon,
+  DotIcon, DownloadIcon, EditIcon, FileIcon, FocusIcon, FolderIcon,
+  FrozenIcon, FullscreenIcon, HearingIcon, LayersIcon, LockIcon, MailIcon,
+  PlayIcon, PsychologyIcon, PublicIcon, RemoveIcon, SettingsIcon, SparkIcon,
+  StopIcon, ViewListIcon, WarnIcon,
 } from './icons'
 
 const TIER_LETTER = { haiku: 'H', sonnet: 'S', opus: 'O', fable: 'F' }
@@ -245,6 +245,8 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
   const [userCfg, setUserCfg] = useState(false)
   const [trayOpen, setTrayOpen] = useState(false)   // the flat agent tray
   const [trayQ, setTrayQ] = useState('')            // №26: tray name filter
+  const [trayArch, setTrayArch] = useState(false)   // archived rows shown (user
+                                                    // spec: hidden by default)
   const [inboxId, setInboxId] = useState(null)
   const [oiOpen, setOiOpen] = useState(false)       // the ORG-inbox viewer
   // unread-mail attention: the eye glows until the mailbox is OPENED (merely
@@ -1255,8 +1257,22 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
           <div className="tray">
             <input className="mail-filter tray-filter" placeholder="filter agents…"
               value={trayQ} onChange={(e) => setTrayQ(e.target.value)} />
+            {/* archived rows are HIDDEN by default (user spec 2026-07-31) —
+                the count row folds them in and out */}
+            {(() => {
+              const archN = [...map.values()].filter((n) =>
+                n.id !== USER && n.id !== DRAFT && !n.isBearerOf
+                && n.state !== 'live').length
+              return archN > 0 && (
+                <button className="tray-arch"
+                  onClick={() => setTrayArch((v) => !v)}>
+                  {trayArch ? '▾ hide' : '▸ show'} {archN} archived
+                </button>
+              )
+            })()}
             {[...map.values()]
               .filter((n) => n.id !== USER && n.id !== DRAFT && !n.isBearerOf)
+              .filter((n) => trayArch || n.state === 'live')
               .filter((n) => !trayQ.trim()
                 || n.id.toLowerCase().includes(trayQ.trim().toLowerCase()))
               .sort((a, b) => {
@@ -2539,6 +2555,9 @@ function ContextWheel({ occ, cw, onCompact, compactAt }) {
 
 const shortTool = (t) => (t || 'tool').replace(/^mcp__([^_]+)__/, '$1: ')
 
+const fmtBytes = (n) => n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB`
+  : n >= 1024 ? `${Math.round(n / 1024)} KB` : `${n ?? 0} B`
+
 function Activity({ act, dotOnly }) {
   const phase = act?.phase ?? 'thinking'
   if (dotOnly) {
@@ -3240,7 +3259,11 @@ function FilesView({ slug, nid }) {
           {e.dir
             ? <button onClick={() => setPath(path ? `${path}/${e.name}` : e.name)}><FolderIcon fontSize="inherit" /> {e.name}</button>
             : <button onClick={() => setPath(path ? `${path}/${e.name}` : e.name)}><FileIcon fontSize="inherit" /> {e.name}</button>}
-          {!e.dir && <span className="dim">{e.size} B</span>}
+          {!e.dir && <span className="dim">{fmtBytes(e.size)}</span>}
+          {!e.dir && (
+            <a className="fdl" title="download"
+              href={fileUrl(slug, nid, path ? `${path}/${e.name}` : e.name)}
+              download={e.name}><DownloadIcon fontSize="inherit" /></a>)}
         </div>
       ))}
       {data?.content != null && <pre className="filepre">{data.content}</pre>}
@@ -3492,6 +3515,21 @@ const stripEnvelope = (t) => (t ?? '')
 function ToolChip({ t, slug, nid }) {
   const [open, setOpen] = useState(false)
   const expandable = Boolean(t.result || t.diff || t.images)
+  // orgtree_send_file → a DOWNLOAD CARD in place of the chip (user spec
+  // 2026-07-31: files flow back — the card sits where the agent sent it)
+  if (t.file) {
+    return (
+      <a className="filecard" href={fileUrl(slug, nid, t.file.path)}
+        download={t.file.name} title="download">
+        <DownloadIcon fontSize="inherit" className="fc-ico" />
+        <span className="fc-body">
+          <span className="fc-name">{t.file.name}</span>
+          <span className="dim"> · {fmtBytes(t.file.bytes)}</span>
+          {t.file.note && <span className="fc-note">{t.file.note}</span>}
+        </span>
+      </a>
+    )
+  }
   return (
     <div className={'tools tchip' + (t.error ? ' terr' : '')}>
       <span className={'tline' + (expandable ? ' click' : '')}
@@ -3567,6 +3605,15 @@ function ThoughtLine({ text, secs }) {
 // 20 KB bubble in the user's voice
 function SysLine({ m }) {
   const [open, setOpen] = useState(false)
+  // slash-command output (/context…): the output IS the point — an always-
+  // visible markdown block, fixed from the flash-then-vanish live-only bug
+  if (m.cmd_out) {
+    return (
+      <div className="msg sys cmdout">
+        <div className="msgtext md" dangerouslySetInnerHTML={md(m.cmd_out)} />
+      </div>
+    )
+  }
   return (
     <div className={'msg sys' + (m.summary ? ' click' : '')}
       onClick={m.summary ? () => setOpen((o) => !o) : undefined}

@@ -14,6 +14,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import subprocess
 import sys
 import threading
@@ -1613,12 +1614,16 @@ def agent_call(body: AgentCall, request: Request):
         raise HTTPException(403, "bridge secret is scoped to its own org")
     a = body.args
     if body.tool in ("orgtree_read_transcript", "orgtree_read_scratch",
-                     "orgtree_chart"):
+                     "orgtree_chart", "orgtree_send_file"):
         try:
             org = store.load_org(body.org)
             org.node(body.node)
             if body.tool == "orgtree_chart":
                 return {"chart": supervisor.identity_prompt(org, body.node)}
+            if body.tool == "orgtree_send_file":
+                # filesystem-only (org doc untouched) — runs outside DOC_LOCK
+                # with the other read-shaped tools
+                return _agent_send_file(org, body.node, a)
             if body.tool == "orgtree_read_transcript":
                 target = a.get("node", "")
                 if target != body.node and not org.is_ancestor(body.node, target):
@@ -1850,6 +1855,111 @@ async def node_upload(slug: str, nid: str, request: Request, name: str = ""):
     with open(os.path.join(updir, final), "wb") as f:
         f.write(data)
     return {"path": f"uploads/{final}", "bytes": len(data)}
+
+
+# the return direction (user spec 2026-07-31): uploads/ is user→agent,
+# outbox/ is agent→user — orgtree_send_file snapshots a file there and the
+# chat renders a download card pointing at the /file endpoint below.
+_SENDFILE_MAX = 256 * 1048576
+
+
+def _agent_send_file(org, nid: str, a: dict) -> dict:
+    """Copy a file the NODE can legitimately reach into its outbox/ scratch
+    folder. Copy, not reference: the card keeps working after the agent edits
+    or deletes the original (re-sending an updated file yields report-2.pdf —
+    both chat cards stay honest). Outbox lives in scratch, so kiosk storage
+    metering already counts it and org deletion sweeps it."""
+    raw = str(a.get("path") or "").strip()
+    if not raw:
+        raise LedgerError("path is required — the file to deliver")
+    slug = org.d["slug"]
+    scratch = os.path.realpath(supervisor.scratch_dir(slug, nid))
+    p = raw.replace("\\", "/").rstrip("/")
+    if sandbox.is_sandboxed(org):
+        # sandboxed agents know only container paths — translate the three
+        # bind-mounted trees (workspace, scratch, the container home);
+        # anything else genuinely does not exist on the host
+        cw = sandbox.cpath_workspace(slug)
+        cs = f"{sandbox.cpath_data()}/scratch/{slug}"
+        ch = "/home/agent"
+        host_ws = org.d.get("workspace") or store.workspace_dir(slug)
+        if p == cw or p.startswith(cw + "/"):
+            src = os.path.normpath(host_ws + p[len(cw):])
+        elif p == cs or p.startswith(cs + "/"):
+            src = os.path.normpath(store.scratch_root(slug) + p[len(cs):])
+        elif p == ch or p.startswith(ch + "/"):
+            src = os.path.normpath(sandbox.sandbox_home(slug) + p[len(ch):])
+        elif not p.startswith("/"):
+            src = os.path.normpath(os.path.join(scratch, p))
+        else:
+            raise LedgerError(
+                f"{raw} exists only inside the container — copy it into your "
+                f"working folder or the workspace first, then send that path")
+    else:
+        src = os.path.normpath(p if os.path.isabs(p)
+                               else os.path.join(scratch, p))
+    src = os.path.realpath(src)
+    # capability honesty (№30's sibling): only trees the node holds are
+    # sendable — its own scratch, the org workspace, its granted folders.
+    # realpath first, so a symlink cannot smuggle an outside file in.
+    roots = [scratch]
+    if org.d.get("workspace"):
+        roots.append(os.path.realpath(org.d["workspace"]))
+    for d in org.node(nid)["scope"]["add_dirs"]:
+        roots.append(os.path.realpath(d["path"]))
+    if sandbox.is_sandboxed(org):
+        roots.append(os.path.realpath(sandbox.sandbox_home(slug)))
+    if not any(src == r or src.startswith(r + os.sep) for r in roots):
+        raise LedgerError(
+            f"cannot send {raw} — only files in your working folder, the "
+            f"workspace, or a folder you hold are sendable")
+    if not os.path.isfile(src):
+        raise LedgerError(f"no such file: {raw}")
+    size = os.path.getsize(src)
+    if size == 0:
+        raise LedgerError(f"{raw} is empty — nothing to send")
+    if size > _SENDFILE_MAX:
+        raise LedgerError(f"{raw} is {size // 1048576} MB — over the "
+                          f"{_SENDFILE_MAX // 1048576} MB send cap")
+    outdir = os.path.join(scratch, "outbox")
+    os.makedirs(outdir, exist_ok=True)
+    if src.startswith(os.path.realpath(outdir) + os.sep):
+        final = os.path.relpath(src, outdir).replace("\\", "/")
+    else:
+        safe = re.sub(r"[^\w .()+\-]", "_",
+                      os.path.basename(src)).strip(" .") or "file.bin"
+        stem, ext = os.path.splitext(safe)
+        final, i = safe, 2
+        while os.path.exists(os.path.join(outdir, final)):
+            final, i = f"{stem}-{i}{ext}", i + 1
+        shutil.copy2(src, os.path.join(outdir, final))
+    sent = {"name": os.path.basename(final), "path": f"outbox/{final}",
+            "bytes": size}
+    note = " ".join(str(a.get("note") or "").split())[:300]
+    if note:
+        sent["note"] = note
+    return {"sent": sent,
+            "hint": "delivered — the user sees a download card in your chat; "
+                    "announce the file in your reply or report"}
+
+
+@app.get("/api/orgs/{slug}/nodes/{nid}/file")
+def node_file(slug: str, nid: str, path: str = ""):
+    """Raw download of a file in the node's scratch — outbox/ cards, uploads/,
+    anything the files tab lists. Org-scoped GET, so the kiosk public gateway
+    passes it through: visitors download what agents send back."""
+    try:
+        org = store.load_org(slug)
+        org.node(nid)
+    except LedgerError as e:
+        raise HTTPException(404, str(e))
+    base = os.path.realpath(supervisor.scratch_dir(slug, nid))
+    full = os.path.realpath(os.path.join(base, path.lstrip("/\\")))
+    if not full.startswith(base + os.sep):
+        raise HTTPException(422, "path escapes the scratch space")
+    if not os.path.isfile(full):
+        raise HTTPException(404, f"no such file: {path!r}")
+    return FileResponse(full, filename=os.path.basename(full))
 
 
 @app.get("/api/orgs/{slug}/nodes/{nid}/chat")

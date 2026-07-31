@@ -255,6 +255,14 @@ ledger self-audit chip appears ONLY if the credit invariants are ever violated
   highlighted "awaiting next turn"; below that, recently delivered mail with
   full bodies, newest first — the tab shows a count while mail waits). ⚙
   opens per-agent configuration.
+- Files flow BOTH ways. 📄 in the composer (or dropping a file on the desk,
+  or pasting one) uploads into the agent's `uploads/` folder; when an agent
+  calls `orgtree_send_file`, the file is snapshotted into its `outbox/` and
+  the chat shows a **download card** at that point in the conversation —
+  click it to save the file. The files tab lists both folders with a ⤓
+  download arrow on every file. All of it works identically through a kiosk
+  link, so outside visitors can hand files to agents and get deliverables
+  back.
 - Badge row: 🔒 limit = frozen by the fable policy · gen N ≣ opens the
   lineage panel · knowledge / preserving = what kind of bearer this is ·
   👂 chips = audiences held (✕ rescinds) · $ = real dollars burned · queued =

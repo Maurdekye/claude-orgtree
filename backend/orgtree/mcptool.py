@@ -264,6 +264,24 @@ TOOLS = [
                         "required": ["node"]},
     },
     {
+        "name": "orgtree_send_file",
+        "description": (
+            "Deliver a FILE to the user as a downloadable attachment: it is "
+            "copied into your outbox/ (in your working folder) and appears in "
+            "your chat as a download card. Sendable paths: files in your "
+            "working folder (relative paths resolve there), the workspace, or "
+            "any folder you hold. Announce the file in your reply or report — "
+            "the card sits at the point in the chat where you sent it."),
+        "inputSchema": {"type": "object",
+                        "properties": {
+                            "path": {"type": "string",
+                                     "description": "the file to deliver"},
+                            "note": {"type": "string",
+                                     "description": "one-line caption shown "
+                                                    "on the download card"}},
+                        "required": ["path"]},
+    },
+    {
         "name": "orgtree_switch_model",
         "description": (
             "Switch the model of an agent in your SUBTREE on the fly (never your "

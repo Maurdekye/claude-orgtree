@@ -1041,6 +1041,15 @@ def _run_turn(slug: str, nid: str, text):
                             stream(slug, nid, {"kind": "thinking",
                                                "text": d["thinking"][:400]})
                         continue
+                    if (ev.get("type") == "system"
+                            and ev.get("subtype") == "local_command"):
+                        # slash-command output (e.g. /context): show it live
+                        # too — the history projection keeps it durable
+                        body = _cmd_stdout(ev.get("content") or "")
+                        if body:
+                            stream(slug, nid, {"kind": "text",
+                                               "text": body[:2000]})
+                        continue
                     if ev.get("type") == "system" and ev.get("subtype") == "init":
                         # №14: the CLI's own resolution of what this turn can
                         # actually do — tools, MCP server health, model, mode
@@ -2091,6 +2100,23 @@ def _result_text(content) -> str:
     return ""
 
 
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _cmd_stdout(raw: str) -> str:
+    """The output of a slash command, out of its <local-command-stdout>
+    wrapper (user bug 2026-07-31: /context flashed live and then vanished —
+    the projection dropped these records, so the turn-end history refetch had
+    nothing). ANSI-stripped; stderr rides along flagged."""
+    out = []
+    for tag in ("local-command-stdout", "local-command-stderr"):
+        m = re.search(f"<{tag}>(.*?)</{tag}>", raw, re.S)
+        if m and m.group(1).strip():
+            out.append(("⚠ " if tag.endswith("stderr") else "")
+                       + m.group(1).strip())
+    return _ANSI_RE.sub("", "\n\n".join(out))[:20000]
+
+
 def sandbox_dirs_to_host(org: Org, add_dirs):
     """Container→host translation for agent-supplied dir grants in SANDBOXED
     orgs (user bug 2026-07-31): sandboxed agents are deliberately told only
@@ -2185,6 +2211,13 @@ def read_chat(org: Org, nid: str, last: int | None = None) -> dict:
                                      + str(rec.get("error") or rec.get("message")
                                            or "retrying")[:300],
                              "ts": rec.get("timestamp")})
+            elif rec.get("subtype") == "local_command":
+                # /context and friends: the output is the POINT — render it
+                # as a durable markdown block, not a live-only flash
+                body = _cmd_stdout(rec.get("content") or "")
+                if body:
+                    msgs.append({"role": "system", "text": "", "cmd_out": body,
+                                 "ts": rec.get("timestamp")})
             continue
         if t not in ("user", "assistant"):
             continue
@@ -2201,11 +2234,27 @@ def read_chat(org: Org, nid: str, last: int | None = None) -> dict:
             continue
         if rec.get("isVisibleInTranscriptOnly"):
             continue
-        if t == "user" and isinstance(content, str) and (
-                content.startswith("<command-name>")
-                or content.startswith("<local-command-stdout>")
-                or content.strip() == "No response requested."):
-            continue
+        if t == "user" and isinstance(content, str):
+            if content.startswith("<command-name>"):
+                # the command the user sent — a durable bubble, so the /context
+                # exchange reads as question-and-answer in the history
+                cm = re.search(r"<command-name>(.*?)</command-name>", content, re.S)
+                ca = re.search(r"<command-args>(.*?)</command-args>", content, re.S)
+                cmd = (cm.group(1).strip() if cm else "/command") \
+                    + ((" " + ca.group(1).strip())
+                       if ca and ca.group(1).strip() else "")
+                msgs.append({"role": "user", "text": cmd, "tools": [],
+                             "ts": rec.get("timestamp")})
+                continue
+            if content.startswith("<local-command-stdout>"):
+                # pre-2.1.x CLIs wrote command output as a user record
+                body = _cmd_stdout(content)
+                if body:
+                    msgs.append({"role": "system", "text": "", "cmd_out": body,
+                                 "ts": rec.get("timestamp")})
+                continue
+            if content.strip() == "No response requested.":
+                continue
         # №8: the engine never speaks in the agent's voice
         if t == "assistant" and (m.get("model") == "<synthetic>"
                                  or rec.get("isApiErrorMessage")):
@@ -2268,6 +2317,18 @@ def read_chat(org: Org, nid: str, last: int | None = None) -> dict:
                             if isinstance(block.get("content"), list) else 0
                         if imgs:
                             entry["images"] = imgs
+                        # orgtree_send_file (user spec 2026-07-31): the chip
+                        # becomes a DOWNLOAD CARD — the result JSON carries
+                        # the outbox path the /file endpoint serves
+                        if (entry.get("name") ==
+                                "mcp__orgtree__orgtree_send_file"
+                                and not block.get("is_error")):
+                            try:
+                                sent = json.loads(body).get("sent")
+                                if isinstance(sent, dict) and sent.get("path"):
+                                    entry["file"] = sent
+                            except (ValueError, AttributeError):
+                                pass
                     tools.append(None)   # marker: this user record is plumbing
         # №10: the pre-computed diff rides the parent record's sidecar
         tur = rec.get("toolUseResult")

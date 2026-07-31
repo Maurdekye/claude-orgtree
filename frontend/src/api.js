@@ -109,6 +109,10 @@ export const uploadFile = (slug, nid, file) =>
   fetch(u(`/api/orgs/${slug}/nodes/${nid}/upload?name=${encodeURIComponent(file.name)}`), {
     method: 'POST', body: file,
   }).then(j)
+// direct <a href> download target (browser handles the transfer) — BASE-aware
+// so kiosk visitors download through their token prefix
+export const fileUrl = (slug, nid, path) =>
+  u(`/api/orgs/${slug}/nodes/${nid}/file?path=${encodeURIComponent(path)}`)
 export const sendMessage = (slug, nid, text) =>
   fetch(u(`/api/orgs/${slug}/nodes/${nid}/message`), {
     method: 'POST',
