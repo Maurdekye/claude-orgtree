@@ -888,13 +888,21 @@ main {
   height: 18px; box-sizing: border-box;
   font-size: 9px; padding: 0 4px; color: var(--dim); width: auto;
 }
-.df-charter {
-  flex: 1; min-height: 28px; resize: none;
-  font-size: 9.5px; line-height: 1.45; font-family: inherit;
-  padding: 4px 6px; border-radius: 4px;
-  background: var(--input); border: 1px solid var(--line); color: var(--ink);
+/* the charter BOX: picked preset cards render inside it, above the typed
+   text — visually part of the charter they compile into at hire (user spec) */
+.df-charter-wrap {
+  flex: 1; min-height: 28px; display: flex; flex-direction: column; gap: 5px;
+  padding: 5px 6px; border-radius: 4px;
+  background: var(--input); border: 1px solid var(--line);
 }
-.df-charter:focus { outline: none; border-color: var(--accent); }
+.df-charter-wrap:focus-within { border-color: var(--accent); }
+.df-charter-wrap .preset-card { background: var(--bg); }
+.df-charter {
+  flex: 1; min-height: 18px; resize: none;
+  font-size: 9.5px; line-height: 1.45; font-family: inherit;
+  padding: 0; border: none; background: none; color: var(--ink);
+}
+.df-charter:focus { outline: none; }
 .df-foot { display: flex; gap: 6px; align-items: center; }
 .df-foot button {
   height: 22px; box-sizing: border-box;

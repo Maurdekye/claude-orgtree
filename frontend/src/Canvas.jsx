@@ -1457,7 +1457,21 @@ function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRemaining,
           {/* grant lives ONLY on the credit bar (user ruling) — no slider,
               no readout line; the bar's own tip reports grant + seat */}
           {presets.length > 0 && (
-            <div className="df-presets">
+            <select className="df-preset-add" value=""
+              onChange={(e) => {
+                const p = presets.find((x) => x.name === e.target.value)
+                if (p && !chosen.some((c) => c.name === p.name))
+                  setChosen((cs) => [...cs, p])
+              }}>
+              <option value="">add charter preset…</option>
+              {presets.filter((p) => !chosen.some((c) => c.name === p.name))
+                .map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
+            </select>
+          )}
+          {/* the picked cards live INSIDE the charter box (user spec) — they
+              visually ARE part of the charter, compiled to text at hire */}
+          <div className="df-charter-wrap">
+            {chosen.length > 0 && (
               <div className="preset-cards">
                 {chosen.map((c) => (
                   <button key={c.name} className="preset-card"
@@ -1466,24 +1480,13 @@ function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRemaining,
                     {c.name} <CloseIcon fontSize="inherit" />
                   </button>
                 ))}
-                <select className="df-preset-add" value=""
-                  onChange={(e) => {
-                    const p = presets.find((x) => x.name === e.target.value)
-                    if (p && !chosen.some((c) => c.name === p.name))
-                      setChosen((cs) => [...cs, p])
-                  }}>
-                  <option value="">add…</option>
-                  {presets.filter((p) => !chosen.some((c) => c.name === p.name))
-                    .map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
-                </select>
               </div>
-            </div>
-          )}
-          <textarea className="df-charter"
-            placeholder={'charter (optional): standing role notes'
-              + (chosen.length ? ' — appended after the preset cards…' : '…')}
-            value={charter} onChange={(e) => setCharter(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && ok) { e.preventDefault(); hire() } }} />
+            )}
+            <textarea className="df-charter"
+              placeholder="charter (optional): standing role notes…"
+              value={charter} onChange={(e) => setCharter(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && ok) { e.preventDefault(); hire() } }} />
+          </div>
           <div className="df-foot">
             <span className="spacer" />
             <button onClick={onCancel}><CloseIcon fontSize="inherit" /> cancel</button>
