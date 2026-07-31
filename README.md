@@ -311,6 +311,26 @@ The container reaches the backend only through a **bridge listener**
 nowhere but inside that container. Requires Docker Desktop running; the
 image builds automatically on first use (`sandbox/Dockerfile`).
 
+**Sandbox storage is disk-bounded.** The container's rootfs is read-only; the
+system dirs agents edit (`/usr`, `/var`, `/etc`, `/opt`, `/root`, `/srv`) are
+per-org Docker volumes seeded from the image — so `sudo apt install`, npm/pip
+globals, and system config edits all work AND survive container restarts and
+recreations — and `/tmp` is RAM (bounded by the memory cap). Every persistent
+write therefore lands somewhere measured. Enforcement is two-layer: past 90%
+of the org's storage limit every agent is warned to clean up; at the limit the
+container is **stopped and the org freezes** until usage drops or the limit is
+raised (temporarily raising it lets agents clean up in-container). Sandboxed
+orgs are never unbounded: without a kiosk storage limit they get
+`ORGTREE_SANDBOX_DISK_MB` (default 20 GB).
+
+> ☞ **Set Docker Desktop's disk cap.** Docker volumes have no per-volume quota
+> on Docker Desktop, so the per-org limit is enforced *reactively* (measure →
+> stop, small overshoot possible), while the **absolute** bound on what any
+> container can ever cost your disk is Docker Desktop → Settings → Resources →
+> *Disk usage limit*. The default is a ~1 TB sparse disk — set it to what you
+> can afford; the backend logs a warning when it's unset. (The WSL2 disk file
+> also does not shrink on its own when content is deleted.)
+
 Sandbox auth is the **proxied subscription** and is not configurable in the
 UI: the container's CLI talks to the bridge's Anthropic passthrough, and the
 HOST attaches your subscription's OAuth token (refreshing it in place) — so

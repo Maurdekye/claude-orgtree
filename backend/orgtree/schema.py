@@ -266,9 +266,12 @@ class OrgDoc(TypedDict):
     org_inbox: NotRequired[list[OrgInboxEntry]]
     org_inbox_read: NotRequired[int]
     kiosk: NotRequired[KioskCfg | None]
-    sandbox: NotRequired[dict[str, Any]]    # api: {enabled, secret} (non-kiosk sandbox)
+    sandbox: NotRequired[dict[str, Any]]    # api: {enabled, secret, limit_mb?}
+    sandbox_vols_base: NotRequired[int]     # system-volume image seed (bytes) —
+                                            # storage accounting charges growth only
     fable_lock: NotRequired[dict[str, Any] | None]
     spend_frozen: NotRequired[bool]
+    storage_frozen: NotRequired[bool]   # sandboxed storage breach (container stopped)
     storage_blocked: NotRequired[bool]
     storage_warned: NotRequired[bool]
     auto_resume: NotRequired[bool]
