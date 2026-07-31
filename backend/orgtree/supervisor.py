@@ -364,7 +364,10 @@ def identity_prompt(org: Org, nid: str) -> str:
                           f"the grant) — they are outside contact points the "
                           f"sandbox restricts. ")
     if mcp_names:
-        tool_line += f"MCP servers available to you: {', '.join(mcp_names)}. "
+        tool_line += (f"MCP servers available to you: {', '.join(mcp_names)} "
+                      f"(their tools are named mcp__<server>__<tool> — under "
+                      f"deferred tools, ToolSearch by that full form or a loose "
+                      f"keyword; a bare tool name will not match). ")
     purpose_line = f"Your purpose: {n['purpose']} " if n.get("purpose") else ""
     fable_line = ""
     if org.d.get("fable_lock"):
@@ -385,8 +388,13 @@ def identity_prompt(org: Org, nid: str) -> str:
            "peer suggests it — the org mail system (orgtree_message) is your "
            "ONLY communication channel. ")
         + f"Escalate decisions to your superior rather than the user unless the user "
-        f"addresses you directly. You act when messaged. Use the orgtree MCP tools "
-        f"to act on the org: orgtree_message (reach your reports at any depth, your "
+        f"addresses you directly. You act when messaged. Act on the org with the "
+        f"orgtree MCP tools. Their full registered names carry the server prefix — "
+        f"mcp__orgtree__orgtree_message and so on; when tools arrive DEFERRED "
+        f"(schemas not loaded), load them by that full form, e.g. ToolSearch "
+        f'"select:mcp__orgtree__orgtree_message" (a loose keyword query like '
+        f'"orgtree" also works — the bare name alone will NOT match). '
+        f"The tools: orgtree_message (reach your reports at any depth, your "
         f"superior, your peers), orgtree_hire (you must state purpose, folders, every "
         f"tool switch and visibility — no defaults), orgtree_retire/rehire/dissolve/"
         f"reallocate, orgtree_retool (re-scope an existing report), orgtree_chart"
@@ -440,16 +448,86 @@ def _user_event(text: str) -> str:
         "role": "user", "content": [{"type": "text", "text": text}]}}) + "\n"
 
 
-def _envelope(slug: str, nid: str, text: str) -> str:
+def _journal_drain(org: Org, nid: str, mail, pending) -> str:
+    """Record a drained-but-not-yet-delivered batch in the org doc (caller
+    saves). Draining REMOVES mail from the doc; until the text carrying it
+    reaches the agent's process, this journal is the only copy that survives
+    a turn that fails to launch or a backend death (gap audit item 1)."""
+    tok = os.urandom(8).hex()
+    org.d.setdefault("delivering", {}).setdefault(nid, []).append(
+        {"tok": tok, "at": now_iso(), "mail": mail or [],
+         "notices": pending or []})
+    return tok
+
+
+def _confirm_delivered(slug: str, nid: str, toks) -> None:
+    """The batch reached the agent (stdin write / steer fetch succeeded): the
+    transcript holds the mail now, so the journal copy is redundant."""
+    if not toks:
+        return
+    drop = set(toks)
+    try:
+        with store.DOC_LOCK:
+            org = store.load_org(slug)
+            dl = (org.d.get("delivering") or {}).get(nid)
+            if not dl:
+                return
+            keep = [b for b in dl if b.get("tok") not in drop]
+            if len(keep) == len(dl):
+                return
+            if keep:
+                org.d["delivering"][nid] = keep
+            else:
+                org.d["delivering"].pop(nid, None)
+            store.save_org(org)
+    except Exception:                                        # noqa: BLE001
+        pass      # worst case the batch folds back later — duplicate, not loss
+
+
+def _fold_back_undelivered(slug: str, nid: str, keep_toks=()) -> None:
+    """A turn ended without delivering some drained batch(es): put the mail
+    and notices back exactly where the drain took them from, so the next
+    turn's envelope presents them again. keep_toks = batches whose text is
+    still riding an in-memory carrier (queue/steer) — they stay journaled."""
+    keep = set(keep_toks)
+    try:
+        with store.DOC_LOCK:
+            org = store.load_org(slug)
+            dl = (org.d.get("delivering") or {}).get(nid) or []
+            fold = [b for b in dl if b.get("tok") not in keep]
+            if not fold:
+                return
+            left = [b for b in dl if b.get("tok") in keep]
+            if left:
+                org.d["delivering"][nid] = left
+            else:
+                (org.d.get("delivering") or {}).pop(nid, None)
+            if nid in org.nodes:
+                mails = [m for b in fold for m in b.get("mail") or []]
+                nots = [p for b in fold for p in b.get("notices") or []]
+                if mails:
+                    org.d.setdefault("mail", {}).setdefault(nid, [])[0:0] = mails
+                if nots:
+                    org.d.setdefault("notices", {}).setdefault(nid, [])[0:0] = nots
+            store.save_org(org)
+    except Exception:                                        # noqa: BLE001
+        pass
+
+
+def _envelope(slug: str, nid: str, text: str) -> tuple[str, str | None]:
     """Drain notices + mail atomically and prepend them (№27 envelope, §7.4).
-    Safe to call repeatedly — a second call finds nothing new."""
+    Safe to call repeatedly — a second call finds nothing new. Returns the
+    enveloped text plus the delivery-journal token when anything was drained
+    (the caller confirms it once the text actually reaches the agent)."""
+    tok = None
     with store.DOC_LOCK:
         org = store.load_org(slug)
         if nid not in org.nodes:
-            return text
+            return text, None
         pending = (org.d.get("notices") or {}).pop(nid, None)
         mail = org.take_mail(nid)
         if pending or mail:
+            tok = _journal_drain(org, nid, mail, pending)
             store.save_org(org)
     prelude = []
     if pending:
@@ -466,7 +544,7 @@ def _envelope(slug: str, nid: str, text: str) -> str:
                           f"{m['body']}")
         prelude.append(f"[MAIL — {len(mail)} message(s)]\n"
                        + "\n---\n".join(blocks) + "\n[END MAIL]")
-    return ("\n\n".join(prelude) + "\n\n" + text) if prelude else text
+    return (("\n\n".join(prelude) + "\n\n" + text) if prelude else text), tok
 
 
 
@@ -616,8 +694,13 @@ def _build_cmd(org: Org, nid: str) -> list[str]:
     return cmd
 
 
-def _run_turn(slug: str, nid: str, text: str):
+def _run_turn(slug: str, nid: str, text):
     st = state(slug, nid)
+    # a dict carrier is an already-enveloped text still owing its delivery
+    # journal a confirmation (a steer/boundary leftover re-queued for a turn)
+    toks: list[str] = []
+    if isinstance(text, dict):
+        toks, text = list(text.get("toks") or []), text["text"]
     try:
         with _turn_slots:
             with store.DOC_LOCK:
@@ -639,6 +722,10 @@ def _run_turn(slug: str, nid: str, text: str):
                 pending = (org.d.get("notices") or {}).pop(nid, None)
                 mail = org.take_mail(nid)
                 if pending or mail:
+                    # journal the batch: if the CLI never launches (bad
+                    # binary, Docker down, timeout) the drained mail would
+                    # die with the turn — the journal folds it back
+                    toks.append(_journal_drain(org, nid, mail, pending))
                     store.save_org(org)
             prelude = []
             if pending:
@@ -701,6 +788,8 @@ def _run_turn(slug: str, nid: str, text: str):
             try:
                 proc.stdin.write(_user_event(text))
                 proc.stdin.flush()
+                # the mail is in the agent's transcript now — journal done
+                _confirm_delivered(slug, nid, toks)
                 # stdin stays OPEN: queued messages are fed into the SAME
                 # process at each result boundary (spike-proven; writing DURING
                 # a response is useless — the CLI queue-removes such messages,
@@ -762,7 +851,12 @@ def _run_turn(slug: str, nid: str, text: str):
                             # queued texts are RAW (mail stays in the doc until
                             # delivery — restart durability): envelope now,
                             # and track it as the in-flight turn
-                            nxt = _envelope(slug, nid, nxt)
+                            ntoks = []
+                            if isinstance(nxt, dict):   # journaled leftover
+                                ntoks, nxt = list(nxt.get("toks") or []), nxt["text"]
+                            nxt, ntok = _envelope(slug, nid, nxt)
+                            if ntok:
+                                ntoks.append(ntok)
                             try:
                                 with store.DOC_LOCK:
                                     o2 = store.load_org(slug)
@@ -775,10 +869,13 @@ def _run_turn(slug: str, nid: str, text: str):
                             try:
                                 proc.stdin.write(_user_event(nxt))
                                 proc.stdin.flush()
+                                _confirm_delivered(slug, nid, ntoks)
                                 continue
                             except OSError:
                                 with _state_lock:
-                                    st["queue"].insert(0, nxt)
+                                    st["queue"].insert(0, {
+                                        "toks": ntoks, "text": nxt}
+                                        if ntoks else nxt)
                                     st["responding"] = False
                         try:
                             proc.stdin.close()
@@ -874,6 +971,13 @@ def _run_turn(slug: str, nid: str, text: str):
                     store.save_org(o2)
         except Exception:                                    # noqa: BLE001
             pass
+        # any drained batch that never reached the process folds back into
+        # the mailbox — mail survives a turn that failed to launch. Batches
+        # whose text still rides an in-memory carrier stay journaled.
+        with _state_lock:
+            alive = [t for x in (st["queue"] + (st.get("steer") or []))
+                     if isinstance(x, dict) for t in x.get("toks") or []]
+        _fold_back_undelivered(slug, nid, keep_toks=alive)
         nxt = None
         with _state_lock:
             if st["queue"]:
@@ -1038,13 +1142,14 @@ def send_message(slug: str, nid: str, text: str) -> dict:
         maybe_steer = (st["busy"] and st.get("responding")
                        and not st.get("attached"))
     if maybe_steer:
-        etext = _envelope(slug, nid, text)   # ⚠ outside _state_lock (DOC_LOCK order)
+        etext, tok = _envelope(slug, nid, text)  # ⚠ outside _state_lock (DOC_LOCK order)
+        carrier = {"toks": [tok], "text": etext} if tok else etext
         with _state_lock:
             if st.get("responding"):
-                st.setdefault("steer", []).append(etext)
+                st.setdefault("steer", []).append(carrier)
                 return {"accepted": True, "queued": 0, "steering": True}
             # raced past the boundary — fall through with the drained text
-            text = etext
+            text = carrier
     with _state_lock:
         if st.get("attached"):
             st["queue"].append(text)
@@ -1482,12 +1587,16 @@ def start_auto_resume_loop() -> None:
 
 
 def pop_steer(slug: str, nid: str) -> list[str]:
-    """The steering hook's fetch: everything pending for this node, atomically."""
+    """The steering hook's fetch: everything pending for this node, atomically.
+    The fetch puts the text into the agent's tool-result context, so it is the
+    delivery-confirmation point for steered mail's journal batches."""
     st = state(slug, nid)
     with _state_lock:
         msgs = st.get("steer") or []
         st["steer"] = []
-    return msgs
+    _confirm_delivered(slug, nid, [
+        t for m in msgs if isinstance(m, dict) for t in m.get("toks") or []])
+    return [m["text"] if isinstance(m, dict) else m for m in msgs]
 
 
 def set_attached(slug: str, nid: str, attached: bool) -> dict:
@@ -1548,6 +1657,23 @@ def reconcile(slug: str) -> list[str]:
                 if inf:
                     inflight.append((nid, inf))
         if inflight:
+            store.save_org(org)
+        # delivery-journal fold-back: batches drained for a turn whose
+        # delivery never confirmed — the backend died in between. The mail
+        # returns to the mailbox and the revive scan below drives it. (An
+        # inflight replay may overlap a batch caught mid-hand-off — that is
+        # a duplicate delivery, never a loss.)
+        dlv = org.d.pop("delivering", None) or {}
+        for dnid, batches in dlv.items():
+            if dnid not in org.nodes:
+                continue
+            mails = [m for b in batches for m in b.get("mail") or []]
+            nots = [p for b in batches for p in b.get("notices") or []]
+            if mails:
+                org.d.setdefault("mail", {}).setdefault(dnid, [])[0:0] = mails
+            if nots:
+                org.d.setdefault("notices", {}).setdefault(dnid, [])[0:0] = nots
+        if dlv:
             store.save_org(org)
         # drain-on-start: undelivered mail persists in the org doc (messages
         # ARE mail — user ruling), so any live node with a waiting mailbox
