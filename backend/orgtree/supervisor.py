@@ -213,6 +213,49 @@ def registered_mcp_servers() -> dict:
         return {}
 
 
+def sandbox_mcp_enabled() -> bool:
+    """EXPERIMENTAL escape hatch (user spec): MCP servers are excluded from
+    sandboxes by design — external contact points the sandbox restricts —
+    unless this env var opts in url-based + portable-stdio passthrough."""
+    return bool(os.environ.get("ORGTREE_SANDBOX_MCP"))
+
+
+_PORTABLE_CMDS = {"npx", "node", "python", "python3", "uvx", "uv"}
+
+
+def sandbox_mcp_passthrough(granted: list, registry: dict) -> dict:
+    """The granted servers a SANDBOXED turn may receive. Empty unless
+    ORGTREE_SANDBOX_MCP is set; then: URL servers with localhost rewritten to
+    the container's host alias, and stdio servers whose command is portable
+    enough to attempt in-container (npx/node/python/uv — Windows `cmd /c`
+    wrappers stripped). Experimental — no guarantee a given server runs."""
+    if not sandbox_mcp_enabled():
+        return {}
+    out = {}
+    for k in granted:
+        srv = registry.get(k)
+        if not isinstance(srv, dict):
+            continue
+        if srv.get("url"):
+            srv = dict(srv)
+            srv["url"] = re.sub(r"\b(localhost|127\.0\.0\.1)\b",
+                                "host.docker.internal", srv["url"], count=1)
+            out[k] = srv
+            continue
+        cmd = srv.get("command", "") or ""
+        args = list(srv.get("args") or [])
+        if os.path.basename(cmd).lower() in ("cmd", "cmd.exe") \
+                and args[:1] == ["/c"] and len(args) > 1:
+            cmd, args = args[1], args[2:]
+        base = os.path.basename(cmd).lower()
+        for suf in (".exe", ".cmd", ".bat"):
+            base = base.removesuffix(suf)
+        if base in _PORTABLE_CMDS:
+            out[k] = {**srv, "command": "python3" if base.startswith("python") else base,
+                      "args": args}
+    return out
+
+
 # ------------------------------------------------------------------ identity
 def _claudemd_block(org: Org, nid: str) -> str:
     """Granted-folder CLAUDE.md files, injected explicitly (spike-verified: headless
@@ -309,17 +352,17 @@ def identity_prompt(org: Org, nid: str) -> str:
     if "*" in mcp_names:      # "*" = every registered server, present and future
         mcp_names = sorted(registered_mcp_servers())
     if sbx.is_sandboxed(org):
-        # never promise servers the sandbox drops: host stdio servers cannot
-        # run in the container — only URL-based ones pass through the bridge
-        reg = registered_mcp_servers()
-        url_ok = [m for m in mcp_names
-                  if isinstance(reg.get(m), dict) and reg[m].get("url")]
-        dropped = [m for m in mcp_names if m not in url_ok]
-        mcp_names = url_ok
+        # never promise servers the sandbox drops: MCP servers are excluded
+        # from sandboxes by design (external contact points), except the
+        # experimental ORGTREE_SANDBOX_MCP passthrough set
+        passed = sandbox_mcp_passthrough(mcp_names, registered_mcp_servers())
+        dropped = [m for m in mcp_names if m not in passed]
+        mcp_names = sorted(passed)
         if dropped:
-            tool_line += (f"Sandboxed: host stdio MCP servers cannot reach your "
-                          f"container — {', '.join(dropped)} are unavailable "
-                          f"despite the grant. ")
+            tool_line += (f"Sandboxed: MCP servers are disabled in your "
+                          f"container ({', '.join(dropped)} unavailable despite "
+                          f"the grant) — they are outside contact points the "
+                          f"sandbox restricts. ")
     if mcp_names:
         tool_line += f"MCP servers available to you: {', '.join(mcp_names)}. "
     purpose_line = f"Your purpose: {n['purpose']} " if n.get("purpose") else ""
@@ -516,18 +559,12 @@ def _build_cmd(org: Org, nid: str) -> list[str]:
     if "*" in granted:        # "*" = every registered server, present and future
         granted = sorted(registry)
     if sandboxed:
-        # host-registered STDIO MCP servers are HOST processes — they cannot
-        # run in the container. URL-based servers (HTTP/SSE) are just
-        # endpoints, so granted ones pass through with localhost rewritten to
-        # the container's host alias; plus orgtree itself via the bridge.
-        chosen = {}
-        for k in granted:
-            srv = registry.get(k)
-            if isinstance(srv, dict) and srv.get("url"):
-                srv = dict(srv)
-                srv["url"] = re.sub(r"\b(localhost|127\.0\.0\.1)\b",
-                                    "host.docker.internal", srv["url"], count=1)
-                chosen[k] = srv
+        # NO MCP servers in the sandbox (user ruling): they are points of
+        # external contact that the sandbox is explicitly designed to
+        # restrict — the container gets exactly one server, orgtree, via the
+        # bridge. ORGTREE_SANDBOX_MCP=1 experimentally re-enables granted
+        # URL-based and portable-stdio servers (no full support).
+        chosen = sandbox_mcp_passthrough(granted, registry)
         chosen["orgtree"] = {
             "command": "python3",
             "args": ["/opt/orgtree-backend/orgtree/mcptool.py"],

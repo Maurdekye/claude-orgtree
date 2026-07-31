@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import threading
 
@@ -61,6 +62,18 @@ def _cfg(org) -> dict | None:
 
 def is_sandboxed(org) -> bool:
     return _cfg(org) is not None
+
+
+_docker_ok: bool | None = None
+
+
+def docker_available() -> bool:
+    """Is a docker CLI on PATH? (cached — the UI disables the sandbox
+    checkbox entirely when it isn't; user ruling)"""
+    global _docker_ok
+    if _docker_ok is None:
+        _docker_ok = shutil.which("docker") is not None
+    return _docker_ok
 
 
 def sandbox_secret(org) -> str:

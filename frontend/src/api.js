@@ -85,6 +85,7 @@ export const audienceAction = (slug, action, node, target) =>
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action, node, target }),
   }).then(j)
+export const getHost = () => fetch(u('/api/host')).then(j)
 export const getDefaults = () => fetch(u('/api/defaults')).then(j)
 export const saveDefaults = (body) =>
   fetch(u('/api/defaults'), {

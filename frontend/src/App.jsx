@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   audienceAction, BASE, clearInbox, createOrg, creditDecide, deleteOrg,
-  getAudiences, getDefaults, getInbox, getOrgMd, getTree, killAll, listOrgs,
-  markRead, openWs, putOrgMd, resumeFrozen, runOp, saveDefaults, saveKiosk,
-  saveSettings,
+  getAudiences, getDefaults, getHost, getInbox, getOrgMd, getTree, killAll,
+  listOrgs, markRead, openWs, putOrgMd, resumeFrozen, runOp, saveDefaults,
+  saveKiosk, saveSettings,
 } from './api'
 import { ConfirmModal, MailFolders, MailList, OrgCanvas, useEsc } from './Canvas'
 import {
@@ -372,7 +372,12 @@ function NewOrg({ onCreate }) {
   const [credits, setCredits] = useState(40)
   const [spend, setSpend] = useState(5)
   const [storage, setStorage] = useState(500)
-  const [sandboxed, setSandboxed] = useState(true)
+  // sandbox is OFF by default (user ruling) — and impossible without Docker
+  const [sandboxed, setSandboxed] = useState(false)
+  const [docker, setDocker] = useState(false)
+  useEffect(() => {
+    getHost().then((h) => setDocker(!!h.docker)).catch(() => {})
+  }, [])
   const reset = () => {
     setOpen(false); setAdvanced(false); setName(''); setDirs([]); setKiosk(false)
   }
@@ -392,7 +397,11 @@ function NewOrg({ onCreate }) {
         onChange={(e) => setName(e.target.value)} required />
       <label className="row kiosk-sbx">
         <input type="checkbox" checked={kiosk}
-          onChange={(e) => { setKiosk(e.target.checked); if (e.target.checked) setSandboxed(true) }} />
+          onChange={(e) => {
+            setKiosk(e.target.checked)
+            // kiosks default the sandbox ON — but only where Docker exists
+            if (e.target.checked && docker) setSandboxed(true)
+          }} />
         kiosk — publicly shareable via a secret URL, with hard limits
       </label>
       {kiosk && (
@@ -405,11 +414,14 @@ function NewOrg({ onCreate }) {
             onChange={(e) => setStorage(e.target.value)} /></label>
         </div>
       )}
-      {/* any org may sandbox (user ruling) — kiosks default it ON */}
-      <label className="row kiosk-sbx">
-        <input type="checkbox" checked={sandboxed}
+      {/* any org may sandbox (user ruling) — OFF by default; the checkbox is
+          disabled entirely when Docker isn't installed */}
+      <label className={'row kiosk-sbx' + (docker ? '' : ' dim')}
+        title={docker ? undefined : 'Docker is not installed — sandboxing unavailable'}>
+        <input type="checkbox" checked={sandboxed && docker} disabled={!docker}
           onChange={(e) => setSandboxed(e.target.checked)} />
         sandboxed — agents run in a Docker container, isolated from this PC
+        {!docker && <span className="dim"> (requires Docker)</span>}
       </label>
       {kiosk && !sandboxed && (
         <div className="dim kiosk-warn"><WarnIcon fontSize="inherit" /> without

@@ -817,12 +817,19 @@ def charters_list():
 @app.get("/api/mcp-servers")
 def mcp_servers():
     """Names of the user's globally registered MCP servers, grantable per node.
-    url_servers = the URL-based (HTTP/SSE) subset — the only class that can
-    reach a SANDBOXED org's container (stdio servers are host processes)."""
-    reg = supervisor.registered_mcp_servers()
-    return {"servers": sorted(reg),
-            "url_servers": sorted(k for k, v in reg.items()
-                                  if isinstance(v, dict) and v.get("url"))}
+    sandbox_mcp = the experimental ORGTREE_SANDBOX_MCP flag: without it, ALL
+    servers are excluded from sandboxed orgs (external contact points the
+    sandbox restricts) and the UI greys them out."""
+    return {"servers": sorted(supervisor.registered_mcp_servers()),
+            "sandbox_mcp": supervisor.sandbox_mcp_enabled()}
+
+
+@app.get("/api/host")
+def host_info():
+    """Host capabilities the UI adapts to (e.g. no Docker → the sandbox
+    checkbox is disabled at org creation)."""
+    return {"docker": sandbox.docker_available(),
+            "sandbox_mcp": supervisor.sandbox_mcp_enabled()}
 
 
 class Reorder(BaseModel):

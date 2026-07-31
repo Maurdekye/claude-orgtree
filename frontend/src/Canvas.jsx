@@ -1179,7 +1179,7 @@ function UserConfig({ tree, slug, toast, close }) {
     mcp: [...(tree.default_tools?.mcp ?? ['*'])],
   })
   const [servers, setServers] = useState([])
-  const [urlServers, setUrlServers] = useState([])
+  const [sandboxMcp, setSandboxMcp] = useState(false)
   const [vis, setVis] = useState(tree.default_visibility ?? 'full')
   // the org's folder holdings (workspace excluded — it is permanent RW).
   // These double as the folder defaults for every hire.
@@ -1188,7 +1188,7 @@ function UserConfig({ tree, slug, toast, close }) {
   const [newPath, setNewPath] = useState('')
   useEffect(() => {
     getMcpServers().then((r) => {
-      setServers(r.servers ?? []); setUrlServers(r.url_servers ?? [])
+      setServers(r.servers ?? []); setSandboxMcp(!!r.sandbox_mcp)
     }).catch(() => {})
   }, [])
   const allMcp = defTools.mcp.includes('*')
@@ -1254,7 +1254,7 @@ function UserConfig({ tree, slug, toast, close }) {
               ...defTools, mcp: e.target.checked ? ['*'] : [...servers] })} />
           all registered servers (current and future)
         </label>
-        {!allMcp && <McpChecklist servers={servers} urlServers={urlServers}
+        {!allMcp && <McpChecklist servers={servers} sandboxMcp={sandboxMcp}
           sandboxed={!!tree.sandboxed}
           checked={(s) => defTools.mcp.includes(s)}
           onToggle={(s, on) => setDefTools({
@@ -1532,10 +1532,10 @@ function DraftScopeModal({ draft, map, tree, scope, onSave, close }) {
   const [vis, setVis] = useState(base.org_visibility)
   const [newPath, setNewPath] = useState('')
   const [servers, setServers] = useState([])
-  const [urlServers, setUrlServers] = useState([])
+  const [sandboxMcp, setSandboxMcp] = useState(false)
   useEffect(() => {
     getMcpServers().then((r) => {
-      setServers(r.servers ?? []); setUrlServers(r.url_servers ?? [])
+      setServers(r.servers ?? []); setSandboxMcp(!!r.sandbox_mcp)
     }).catch(() => {})
   }, [])
   const allMcp = tools.mcp.includes('*')
@@ -1593,7 +1593,7 @@ function DraftScopeModal({ draft, map, tree, scope, onSave, close }) {
               ...tools, mcp: e.target.checked ? ['*'] : [...servers] })} />
           all registered servers (current and future)
         </label>
-        {!allMcp && <McpChecklist servers={servers} urlServers={urlServers}
+        {!allMcp && <McpChecklist servers={servers} sandboxMcp={sandboxMcp}
           sandboxed={!!tree.sandboxed}
           checked={(s) => tools.mcp.includes(s)}
           onToggle={(s, on) => setTools({
@@ -1726,30 +1726,29 @@ function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, map, op,
 
 // ------------------------------------------------------------ node ⚙ config
 // MCP server checklist shared by the org / per-agent / pre-hire scope panels.
-// In a SANDBOXED org, stdio servers grey out: they are host processes and
-// cannot run in the container — only URL-based servers pass through.
-function McpChecklist({ servers, urlServers, sandboxed, checked, onToggle }) {
+// In a SANDBOXED org, ALL servers grey out (user ruling): they are points of
+// external contact the sandbox is explicitly designed to restrict. The
+// experimental ORGTREE_SANDBOX_MCP env var re-enables them (url + portable
+// stdio passthrough, no full support).
+function McpChecklist({ servers, sandboxed, sandboxMcp, checked, onToggle }) {
+  const dead = sandboxed && !sandboxMcp
   return (
     <>
-      {sandboxed && (
+      {dead && (
         <div className="hint">
-          sandboxed org — greyed servers are host stdio processes and cannot
-          run in its container; only URL-based (HTTP/SSE) servers reach its
-          agents
+          sandboxed org — MCP servers are external contact points the sandbox
+          restricts, so none reach its agents (the ORGTREE_SANDBOX_MCP env var
+          enables URL/portable servers experimentally)
         </div>
       )}
-      {servers.map((s) => {
-        const dead = sandboxed && !urlServers.includes(s)
-        return (
-          <label className={'checkline' + (dead ? ' dead' : '')} key={s}
-            title={dead ? 'unavailable in a sandboxed org (host stdio server)'
-              : undefined}>
-            <input type="checkbox" disabled={dead} checked={checked(s)}
-              onChange={(e) => onToggle(s, e.target.checked)} />
-            <span className="mono">{s}</span>
-          </label>
-        )
-      })}
+      {servers.map((s) => (
+        <label className={'checkline' + (dead ? ' dead' : '')} key={s}
+          title={dead ? 'unavailable in a sandboxed org' : undefined}>
+          <input type="checkbox" disabled={dead} checked={checked(s)}
+            onChange={(e) => onToggle(s, e.target.checked)} />
+          <span className="mono">{s}</span>
+        </label>
+      ))}
     </>
   )
 }
@@ -1783,10 +1782,10 @@ function NodeConfig({ node, map, tree, slug, op, toast, close }) {
   const [model, setModel] = useState(node.tier)
   const [newPath, setNewPath] = useState('')
   const [servers, setServers] = useState([])
-  const [urlServers, setUrlServers] = useState([])
+  const [sandboxMcp, setSandboxMcp] = useState(false)
   useEffect(() => {
     getMcpServers().then((r) => {
-      setServers(r.servers ?? []); setUrlServers(r.url_servers ?? [])
+      setServers(r.servers ?? []); setSandboxMcp(!!r.sandbox_mcp)
     }).catch(() => {})
   }, [])
   const parent = map.get(node.id)?.parent
@@ -1879,19 +1878,18 @@ function NodeConfig({ node, map, tree, slug, op, toast, close }) {
 
         <div className="field-label">MCP servers (from your global registry)</div>
         {servers.length === 0 && <div className="hint">none registered</div>}
-        {!!tree.sandboxed && servers.length > 0 && (
+        {!!tree.sandboxed && !sandboxMcp && servers.length > 0 && (
           <div className="hint">
-            sandboxed org — greyed servers are host stdio processes and cannot
-            run in its container; only URL-based (HTTP/SSE) servers reach its
-            agents
+            sandboxed org — MCP servers are external contact points the sandbox
+            restricts, so none reach its agents (the ORGTREE_SANDBOX_MCP env
+            var enables URL/portable servers experimentally)
           </div>
         )}
         {servers.map((s) => {
-          const dead = !!tree.sandboxed && !urlServers.includes(s)
+          const dead = !!tree.sandboxed && !sandboxMcp
           return (
             <label className={'checkline' + (dead ? ' dead' : '')} key={s}
-              title={dead ? 'unavailable in a sandboxed org (host stdio server)'
-                : undefined}>
+              title={dead ? 'unavailable in a sandboxed org' : undefined}>
               <input type="checkbox"
                 checked={(holdsAllMcp || tools.mcp.includes(s)) && parentHoldsMcp(s)}
                 disabled={!parentHoldsMcp(s) || dead}
