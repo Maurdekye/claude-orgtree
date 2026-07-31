@@ -205,8 +205,12 @@ export default function App() {
               <span className="kiosk-badge" title="kiosk org"><PublicIcon fontSize="inherit" /></span>}
             <span className="spacer" />
             <span className="dim">{o.live}/{o.nodes} live</span>
-            {!o.kiosk && <button className="org-del"
-              onClick={(e) => { e.stopPropagation(); setDoomedOrg(o) }}><DeleteIcon fontSize="inherit" /></button>}
+            {/* kiosk orgs delete like any other (user report 2026-07-31: the
+                old !o.kiosk gate left NO UI path at all — the server already
+                refuses public deletes, so hiding the trash from the admin
+                protected nothing) */}
+            <button className="org-del"
+              onClick={(e) => { e.stopPropagation(); setDoomedOrg(o) }}><DeleteIcon fontSize="inherit" /></button>
           </div>
         ))}
         {!orgs.length && <div className="dim pad">no organizations yet</div>}
@@ -375,7 +379,10 @@ export default function App() {
       )}
       {doomedOrg && (
         <ConfirmModal title={`permanently delete ${doomedOrg.name}?`}
-          body={`Erases the organization and its ${doomedOrg.nodes} node(s) — ledger, mail, lineage, audiences. Workspace and scratch folders remain on disk. This cannot be undone.`}
+          body={`Erases the organization and its ${doomedOrg.nodes} node(s) — ledger, mail, lineage, audiences.${
+            doomedOrg.kiosk_cfg || doomedOrg.kiosk
+              ? ' The public kiosk link dies with it, and its sandbox container is removed.'
+              : ''} Workspace and scratch folders remain on disk. This cannot be undone.`}
           confirmLabel="delete organization"
           onConfirm={() => deleteOrg(doomedOrg.slug)
             .then(() => { if (slug === doomedOrg.slug) setSlug(null); refreshOrgs() })
