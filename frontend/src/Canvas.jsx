@@ -2699,6 +2699,14 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() }
           }} />
+        {!pub && (
+          <EffortSwitch value={node.scope?.effort ?? ''}
+            onSet={(lvl) => saveScope(slug, node.id, { effort: lvl })
+              .then(() => toast([lvl
+                ? `${node.id} thinking effort: ${lvl}`
+                : `${node.id} thinking effort: CLI default`]))
+              .catch((e) => toast([`error: ${e.message}`]))} />
+        )}
         {/* №3: STOP renders only when an interrupt can actually land —
             pressing the one red control must never error */}
         {node.responding
@@ -3275,6 +3283,32 @@ function SysLine({ m }) {
       {m.text}{m.summary && !open ? ' · summary ▶' : ''}
       {open && m.summary && <pre className="filepre">{m.summary}</pre>}
     </div>
+  )
+}
+
+// Thinking-effort switch in the composer (user spec, Claude Code's control):
+// a five-dot track — click a dot to set low…max, click the active dot to
+// clear back to the CLI default. The permission-mode half of Claude Code's
+// bar is deliberately absent: org permissions decide what agents can do.
+const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max']
+
+function EffortSwitch({ value, onSet }) {
+  const idx = EFFORT_LEVELS.indexOf(value)
+  return (
+    <span className="effort-switch"
+      title={`thinking effort — ${value || 'CLI default'}; click a dot to set,`
+        + ' click the active dot to clear'}>
+      <span className="eff-label">Effort{value ? ` (${value})` : ''}</span>
+      <span className="eff-track">
+        {EFFORT_LEVELS.map((l, i) => (
+          <button key={l} type="button"
+            className={'eff-dot' + (i === idx ? ' on' : '')
+              + (idx >= 0 && i < idx ? ' below' : '')}
+            title={l}
+            onClick={() => onSet(i === idx ? '' : l)} />
+        ))}
+      </span>
+    </span>
   )
 }
 

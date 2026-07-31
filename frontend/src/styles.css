@@ -1473,6 +1473,25 @@ svg.MuiSvgIcon-root {
 }
 .mcpdot.ok { background: var(--ok); }
 .mcpdot.bad { background: var(--bad); }
+/* the composer's thinking-effort switch (Claude Code's five-dot control) */
+.effort-switch {
+  display: inline-flex; align-items: center; gap: 8px; flex: none;
+  padding: 4px 9px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--input); align-self: center;
+}
+.eff-label { font-size: 11px; color: var(--dim); white-space: nowrap; }
+.eff-track { display: inline-flex; align-items: center; gap: 5px; }
+.eff-dot {
+  width: 7px; height: 7px; border-radius: 50%; padding: 0; border: none;
+  background: #4d4d4d; cursor: pointer; flex: none;
+}
+.eff-dot.below { background: #6e6e6e; }
+.eff-dot:hover { background: var(--ink); }
+.eff-dot.on {
+  width: 13px; height: 13px; background: #d9d9e8;
+  box-shadow: 0 0 0 1px var(--line);
+}
+
 /* №12: read-only bearer transcript inside the lineage panel */
 .lin-read {
   max-height: 300px; overflow-y: auto; margin: 2px 0 10px;
