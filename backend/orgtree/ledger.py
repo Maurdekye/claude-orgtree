@@ -1056,7 +1056,11 @@ class Org:
 
     # ---------------------------------------------------------------- retire
     def retire(self, actor: str, nid: str) -> dict:
-        """Leaf-only (§4.2 decision 1). Self-retirement allowed for leaves (№26)."""
+        """Archive a node, freeing seat+grant. NOT leaf-only anymore (PLAN §4.2
+        decision 1 is superseded by the design motto): a superior retiring a
+        node with live reports auto-DISSOLVES the subtree, with a warning.
+        Self-retirement stays allowed for leaves only (№26 — an agent has no
+        dissolve authority over itself). Already-archived → success no-op."""
         self._require_authority(actor, nid, allow_self=True)
         if self.node(nid)["state"] == "archived":
             # design motto: asking for what's already true is a no-op, not an error
@@ -1740,6 +1744,11 @@ class Org:
             "bearer_state": "knowledge", "successor": nid, "predecessor": n.get("predecessor"),
             "ui_order": n.get("ui_order", 0) + 0.001,
             "scope": {**n["scope"],
+                      # deep-copy the dir grants: {**scope} still ALIASES the
+                      # live successor's add_dirs list — the first in-place
+                      # mutation anyone writes would silently edit every
+                      # archived predecessor's grants too (review finding)
+                      "add_dirs": [dict(d) for d in n["scope"].get("add_dirs", [])],
                       "tools": {"bash": False, "web": False, "edit": False,
                                 "subagents": False, "mcp": []}},
         })

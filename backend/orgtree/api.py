@@ -178,7 +178,6 @@ class BridgeGateway:
                     await send({"type": "lifespan.shutdown.complete"})
                     return
         if scope["type"] != "http":
-            body = json.dumps({"detail": "forbidden"}).encode()
             await send({"type": "websocket.close", "code": 4403})
             return
         secret = ""
@@ -1076,10 +1075,12 @@ def extern_send(peer: str, body: ExternSend):
         try:
             org = store.load_org(body.org)
         except LedgerError:
+            org = None
+        # sealed kiosks must be INDISTINGUISHABLE from nonexistent orgs out
+        # here (review finding: a 403 vs 404 split let an outside peer
+        # enumerate the kiosk roster the org listing deliberately withholds)
+        if org is None or org.is_kiosk:
             raise HTTPException(404, f"no organization named {body.org!r}")
-        if org.is_kiosk:
-            raise HTTPException(403, f"organization {body.org!r} is a sealed "
-                                     f"kiosk — unreachable from outside")
     delivered = supervisor.deliver_org_inbox(body.org, addr, body.body)
     return {"delivered": delivered or ["(user inbox — no live agents)"]}
 
@@ -1093,6 +1094,11 @@ def _extern_scan(addr: str, org_slug: str | None, after: str | None) -> list[dic
             try:
                 org = store.load_org(o["slug"])
             except LedgerError:
+                continue
+            if org.is_kiosk:
+                # unreachable today (kiosk inboxes can hold no "out" entries —
+                # the ledger seals every inbound/outbound path), but the seal
+                # belongs on THIS path too, locally, not as a 3-file argument
                 continue
             for e in org.d.get("org_inbox", []):
                 if e.get("peer") == addr and e.get("dir") == "out" \
@@ -1111,13 +1117,21 @@ def extern_messages(peer: str, org: str | None = None, after: str | None = None)
 @app.get("/api/extern/{peer}/wait")
 async def extern_wait(peer: str, org: str | None = None,
                       after: str | None = None, timeout: int = 25):
-    """Long-poll: block until an org replies to this peer (or timeout)."""
+    """Long-poll: block until an org replies to this peer (or timeout).
+    Rescans (DOC_LOCK + org-doc reads) only when store.REVISION moved —
+    review finding: parked waiters were paying a full scan every second
+    under the same lock the turn machinery serialises on."""
     addr = _extern_peer(peer)
     deadline = time.monotonic() + min(max(timeout, 1), 55)
+    rev = None
     while True:
-        msgs = _extern_scan(addr, org, after)
-        if msgs or time.monotonic() >= deadline:
-            return {"messages": msgs}
+        if rev != store.REVISION:
+            rev = store.REVISION
+            msgs = _extern_scan(addr, org, after)
+            if msgs:
+                return {"messages": msgs}
+        if time.monotonic() >= deadline:
+            return {"messages": []}
         await asyncio.sleep(1.0)
 
 

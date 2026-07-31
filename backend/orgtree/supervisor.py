@@ -1384,7 +1384,9 @@ def interorg_send(src_slug: str, dst_slug: str, body: str) -> str | None:
         with store.DOC_LOCK:
             dst = store.load_org(dst_slug)
             if dst.is_kiosk:
-                return f"organization '{dst_slug}' is a sealed kiosk — unreachable"
+                # sealed kiosks answer exactly like nonexistent orgs — the
+                # split wording let a sender enumerate the kiosk roster
+                return f"no organization named '{dst_slug}'"
     except Exception:                        # noqa: BLE001 — unknown slug
         return f"no organization named '{dst_slug}'"
     deliver_org_inbox(dst_slug, f"@org:{src_slug}", body)

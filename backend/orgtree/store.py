@@ -64,12 +64,18 @@ def load_org(slug: str) -> Org:
     return Org(json.load(open(p, encoding="utf-8")))
 
 
+REVISION = 0   # bumped on every save — cheap change detection for pollers
+               # (the extern long-poll gates its full-doc rescans on this)
+
+
 def save_org(org: Org) -> None:
+    global REVISION
     p = org_path(org.d["slug"])
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(p), suffix=".tmp")
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(org.d, f, indent=2)
     os.replace(tmp, p)
+    REVISION += 1
 
 
 def workspace_dir(slug: str) -> str:
