@@ -33,7 +33,7 @@ from typing import Any, cast
 from . import sandbox as sbx, store
 from .ledger import EXTERN, USER, Org, expand_mcp, now as now_iso
 from .schema import (Denial, FrozenInfo, InflightInfo, KioskCfg, MailEntry,
-                     NoticeEntry)
+                     NodeDoc, NoticeEntry)
 
 # ---- kiosk v2 (user vision): per-org public exposure behind a secret-URL
 # token. Caps (credits, spend, workspace storage) live ON THE ORG DOC —
@@ -1303,12 +1303,7 @@ def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
                     with store.DOC_LOCK:
                         o2 = store.load_org(slug)
                         if nid in o2.nodes:
-                            # ⚠ cast hides a LATENT crash pyright found: ledger
-                            # reseed writes frozen=None explicitly, and setdefault
-                            # returns that None untouched (typing wave: reported,
-                            # not fixed — this annotation changes no behavior)
-                            fz = cast(FrozenInfo, o2.node(nid).setdefault(
-                                "frozen", {"at": now_iso(), "resume_texts": []}))
+                            fz = _ensure_frozen(o2.node(nid))
                             fz["until"] = _parse_limit_reset(err_blob) or fz.get("until")
                             fz["until_ts"] = (_parse_limit_reset_ts(err_blob)
                                               or fz.get("until_ts"))
@@ -1659,6 +1654,19 @@ def interrupt_turn(slug: str, nid: str) -> dict[str, Any]:
         return {"interrupted": False, "reason": str(e)}
 
 
+def _ensure_frozen(n: NodeDoc) -> FrozenInfo:
+    """The freeze record, minted if absent. NOT setdefault: ledger's reseed and
+    compact_split write `frozen: None` explicitly, and setdefault hands that
+    None straight back — the next usage-limit freeze on such a node crashed on
+    fz["until"] (latent bug found by the typing wave, pyright basic)."""
+    fz = n.get("frozen")
+    if fz is None:
+        fresh: FrozenInfo = {"at": now_iso(), "resume_texts": []}
+        n["frozen"] = fresh
+        return fresh
+    return fz
+
+
 def hard_freeze(slug: str, kind: str, error: str) -> None:
     """A kiosk hard limit breached (today only kind='spend'): freeze
     EVERYTHING immediately. Cleared only from the admin side — raising the
@@ -1672,9 +1680,7 @@ def hard_freeze(slug: str, kind: str, error: str) -> None:
         org.d[flag] = True
         for nid, n in org.nodes.items():
             if n["state"] == "live":
-                # same latent frozen=None caveat as the limit-freeze path above
-                fz = cast(FrozenInfo,
-                          n.setdefault("frozen", {"at": now_iso(), "resume_texts": []}))
+                fz = _ensure_frozen(n)
                 # №41 (user ruling): freeze kinds are COMMUTATIVE — a spend
                 # freeze landing on a usage-limit freeze must not overwrite
                 # the limit's error/reset info; each kind owns its own keys

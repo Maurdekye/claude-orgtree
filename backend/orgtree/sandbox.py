@@ -270,7 +270,12 @@ def ensure_container(org: Org) -> str:
             with open(cfg, "w", encoding="utf-8") as f:
                 json.dump({"hasCompletedOnboarding": True}, f)
     ws = org.d.get("workspace")
-    os.makedirs(ws, exist_ok=True)   # type: ignore[arg-type]  # schema says workspace can be None — would TypeError here; latent bug reported, not fixed (typing wave = zero behavior change)
+    if not ws:
+        # pre-workspace-era org doc: without this, makedirs TypeErrors (or a
+        # literal "None" would be bind-mounted) — say what's wrong instead
+        raise RuntimeError(f"org {slug!r} has no workspace directory recorded "
+                           f"— cannot mount its sandbox container")
+    os.makedirs(ws, exist_ok=True)
     scratch = store.scratch_root(slug)
     os.makedirs(scratch, exist_ok=True)
     # the only door out: backend URL + this org's secret, read by steer.py

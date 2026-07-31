@@ -511,6 +511,10 @@ def orgs_create(body: OrgCreate) -> dict[str, Any]:
                 o.d["kiosk"]["max_scope"] = o._norm_ceiling(
                     prov if prov is not None else o.default_kiosk_ceiling())
             except LedgerError as e:
+                # unwind: without this, the org survived its own failed
+                # creation as a non-kiosk org (registered + saved above)
+                # while the 422 told the caller nothing was made
+                store.delete_org(org.d["slug"])
                 raise HTTPException(422, str(e))
             # a capped org never inherits the 50-credit hire pre-fill (user
             # report: the first hire swallowed the whole pool) — grants in a
@@ -1517,7 +1521,8 @@ def node_history(slug: str, nid: str, last: int = 80) -> dict[str, Any]:
 def node_scratch(slug: str, nid: str, path: str = "") -> dict[str, Any]:
     base = os.path.realpath(supervisor.scratch_dir(slug, nid))
     full = os.path.realpath(os.path.join(base, path.lstrip("/\\")))
-    if not full.startswith(base):
+    # separator-anchored: a bare prefix test admits sibling dirs (<base>-x)
+    if full != base and not full.startswith(base + os.sep):
         raise HTTPException(422, "path escapes the scratch space")
     if os.path.isdir(full):
         out = []
@@ -1717,7 +1722,8 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
             base = os.path.realpath(supervisor.scratch_dir(body.org, target))
             rel = (a.get("path") or "").strip().lstrip("/\\")
             full = os.path.realpath(os.path.join(base, rel))
-            if not full.startswith(base):
+            # separator-anchored: a bare prefix test admits sibling dirs
+            if full != base and not full.startswith(base + os.sep):
                 raise LedgerError("path escapes the scratch space")
             if os.path.isdir(full):
                 return {"dir": rel or ".", "entries": sorted(os.listdir(full))[:200]}
@@ -2310,7 +2316,8 @@ if os.path.isdir(FRONTEND_DIST):
     @app.get("/{path:path}")
     def spa(path: str) -> FileResponse:
         full = os.path.normpath(os.path.join(FRONTEND_DIST, path))
-        if path and full.startswith(FRONTEND_DIST) and os.path.isfile(full):
+        if path and full.startswith(FRONTEND_DIST + os.sep) \
+                and os.path.isfile(full):
             return FileResponse(full)
         return FileResponse(os.path.join(FRONTEND_DIST, "index.html"))
 
