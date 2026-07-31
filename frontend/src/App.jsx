@@ -266,7 +266,10 @@ export default function App() {
                     </span>
                   )
                 })()}
-                {tree.cost_usd_total > 0 &&
+                {/* the bare cost chip is redundant when the kiosk spend chip
+                    already shows the same figure against its limit (user
+                    spec 2026-07-31) — limitless orgs keep it */}
+                {tree.cost_usd_total > 0 && !tree.kiosk?.spend_limit &&
                   <span className="chip">${tree.cost_usd_total.toFixed(2)}</span>}
                 {tree.fable_lock &&
                   <span className="chip bad" title={tree.fable_lock.at}><BlockIcon fontSize="inherit" /> fable limit</span>}
