@@ -1876,6 +1876,8 @@ function DraftScopeModal({ draft, map, tree, scope, onSave, close }) {
           <option value="low">low</option>
           <option value="medium">medium</option>
           <option value="high">high</option>
+          <option value="xhigh">xhigh</option>
+          <option value="max">max</option>
         </select>
         <div className="hint">
           Grants clamp to what the parent holds (№30) — anything beyond its
@@ -2104,7 +2106,7 @@ function NodeConfig({ node, map, tree, slug, op, toast, close }) {
     // pointerdown must not reach the viewport: its pan pointer-CAPTURE retargets
     // the click, so backdrop-close and every button in here silently broke
     <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
-      <div className="settings" onClick={(e) => e.stopPropagation()}>
+      <div className="settings cfg" onClick={(e) => e.stopPropagation()}>
         <h3><SettingsIcon fontSize="inherit" /> {node.id} <span className="dim">· {node.tier} · configuration</span></h3>
 
         <div className="row">
@@ -2230,14 +2232,16 @@ function NodeConfig({ node, map, tree, slug, op, toast, close }) {
           <option value="low">low</option>
           <option value="medium">medium</option>
           <option value="high">high</option>
+          <option value="xhigh">xhigh</option>
+          <option value="max">max</option>
         </select>
 
         <div className="field-label">charter</div>
-        <textarea rows={3} value={charter} onChange={(e) => setCharter(e.target.value)}
-          />
+        <textarea rows={10} className="charterbox" value={charter}
+          onChange={(e) => setCharter(e.target.value)} />
         <div className="field-label">team charter</div>
-        <textarea rows={3} value={teamCharter} onChange={(e) => setTeamCharter(e.target.value)}
-          />
+        <textarea rows={10} className="charterbox" value={teamCharter}
+          onChange={(e) => setTeamCharter(e.target.value)} />
         {initInfo && (
           <>
             <div className="field-label">this turn, as the CLI resolved it (№14)</div>

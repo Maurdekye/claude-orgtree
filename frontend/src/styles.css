@@ -986,11 +986,20 @@ main.solo { width: 100%; }
 }
 .settings {
   width: 660px; max-width: 94vw; max-height: 88vh; overflow-y: auto;
+  /* no horizontal scrollbar, ever — wide children shrink or ellipsize */
+  overflow-x: hidden;
   background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
   padding: 22px 26px; display: flex; flex-direction: column; gap: 14px;
   box-shadow: var(--shadow);
   font-size: 14.5px;   /* screen-space panel — never inherits desk world-sizing */
   line-height: 1.55;
+}
+.settings > * { min-width: 0; }
+/* the agent ⚙ panel: wider, with room to actually write charters */
+.settings.cfg { width: min(880px, 94vw); }
+.settings .charterbox { min-height: 220px; resize: vertical; }
+.settings .chip.grow {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
 }
 .settings h3 { margin: 0 0 4px; font-size: 17px; color: var(--ink-strong); }
 .settings.wide { width: min(1250px, 96vw); }   /* mail panels: a wide reading pane */
@@ -1004,6 +1013,7 @@ main.solo { width: 100%; }
 .settings .iconbtn { padding: 7px 11px; }
 .settings input, .settings select, .settings textarea {
   font-size: 14.5px; padding: 8px 11px; border-radius: 6px;
+  min-width: 0; max-width: 100%; box-sizing: border-box;
 }
 .settings textarea { line-height: 1.5; min-height: 70px; }
 .settings .dirrow input { font-size: 13.5px; }

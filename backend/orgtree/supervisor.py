@@ -765,7 +765,7 @@ def _build_cmd(org: Org, nid: str) -> list[str]:
            "--append-system-prompt", identity_prompt(org, nid),
            "--settings", json.dumps(settings),
            "--strict-mcp-config"]
-    if sc.get("effort") in ("low", "medium", "high"):
+    if sc.get("effort") in ("low", "medium", "high", "xhigh", "max"):
         # per-agent thinking effort (user-approved 2026-07-31); unset = CLI default
         cmd += ["--effort", sc["effort"]]
     tools = sc.get("tools", {})

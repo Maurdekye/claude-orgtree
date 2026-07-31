@@ -1536,7 +1536,7 @@ class Org:
         return sorted(set(dropped))
 
     # ------------------------------------------------------------- node scope
-    EFFORTS = ("low", "medium", "high")
+    EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
     def set_scope(self, actor: str, nid: str, add_dirs=None, tools=None,
                   org_visibility=None, permission_mode=None,
