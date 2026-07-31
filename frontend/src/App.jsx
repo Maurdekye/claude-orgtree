@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   audienceAction, BASE, clearInbox, createOrg, creditDecide, deleteOrg,
-  getAudiences, getDefaults, getHost, getInbox, getOrgMd, getTree, killAll,
-  listOrgs, markRead, openWs, putOrgMd, resumeFrozen, runOp, saveDefaults,
-  saveKiosk, saveSettings,
+  getAudiences, getDefaults, getEvents, getHost, getInbox, getOrgMd, getTree,
+  killAll, listOrgs, markRead, openWs, putOrgMd, resumeFrozen, runOp,
+  saveDefaults, saveKiosk, saveSettings, sendMessage,
 } from './api'
-import { ConfirmModal, MailFolders, MailList, OrgCanvas, useEsc } from './Canvas'
+import { ConfirmModal, MailFolders, MailList, OrgCanvas, OrgRecord, useEsc } from './Canvas'
 import {
   AutorenewIcon, BlockIcon, CheckIcon, ChevronRightIcon, CloseIcon, CopyIcon,
   DeleteIcon, ExpandMoreIcon, HearingIcon, HomeIcon, LockIcon, LockOpenIcon,
@@ -53,10 +53,12 @@ export default function App() {
     return () => clearTimeout(t)
   }, [killArmed])
 
-  const toast = useCallback((lines) => {
+  // №17: a toast may carry an UNDO — a 12-second reverse on the gesture just
+  // made (mis-drag reorders, accidental promotes, one-click retires)
+  const toast = useCallback((lines, undo = null) => {
     if (!lines || !lines.length) return
     const id = Date.now() + Math.random()
-    setToasts((t) => [...t, { id, lines }])
+    setToasts((t) => [...t, { id, lines, undo }])
     setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 12000)
   }, [])
 
@@ -91,6 +93,11 @@ export default function App() {
     const want = BASE + (slug ? `/o/${slug}` : '/')
     if (location.pathname !== want) history.pushState(null, '', want)
   }, [slug])
+  useEffect(() => {                    // №38: the tab title carries the unread
+    const n = (tree?.user_inbox_count ?? 0) + (tree?.org_inbox?.unread ?? 0)
+    document.title = (n > 0 ? `(${n}) ` : '')
+      + (tree?.name ? `${tree.name} — orgtree` : 'orgtree')
+  }, [tree])
 
   useEffect(() => {
     if (!slug) return
@@ -351,6 +358,13 @@ export default function App() {
           <div key={t.id} className="toast" onClick={() =>
             setToasts((x) => x.filter((y) => y.id !== t.id))}>
             {t.lines.map((l, i) => <div key={i}>{l}</div>)}
+            {t.undo && (
+              <button className="toast-undo" onClick={(e) => {
+                e.stopPropagation()
+                setToasts((x) => x.filter((y) => y.id !== t.id))
+                t.undo()
+              }}>undo</button>
+            )}
           </div>
         ))}
       </div>
@@ -551,12 +565,18 @@ function InboxPanel({ slug, tree, toast, refresh, close }) {
   const [box, setBox] = useState(null)
   const [aud, setAud] = useState(null)
   const [folder, setFolder] = useState('inbox')
+  const [events, setEvents] = useState(null)
   const nodes = flatNodes(tree)
   const reload = useCallback(() => {
     getInbox(slug).then(setBox).catch((e) => toast([`error: ${e.message}`]))
     getAudiences(slug).then(setAud).catch(() => {})
   }, [slug, toast])
   useEffect(() => { reload() }, [reload])
+  useEffect(() => {          // №10: the record loads on demand
+    if (folder === 'record') {
+      getEvents(slug).then((r) => setEvents(r.events)).catch(() => setEvents([]))
+    }
+  }, [folder, slug])
   const userAud = aud?.audiences.filter((a) => a.grantor === USER) ?? []
   const userReqs = aud?.requests.filter((r) => r.target === USER && r.currently_at === USER) ?? []
   const act = (action, node, target) =>
@@ -619,15 +639,21 @@ function InboxPanel({ slug, tree, toast, refresh, close }) {
           </>
         )}
         <MailFolders folder={folder} setFolder={setFolder}
+          folders={['inbox', 'sent', 'record']}
           unread={box?.pending.length ?? 0} />
         <div className="mailpane">
-          {box == null
+          {folder === 'record'
+            ? <OrgRecord events={events} />
+            : box == null
             ? <div className="dim">loading…</div>
             : folder === 'inbox'
               ? <MailList pending={box.pending} delivered={box.delivered}
                   waitLabel="unread"
                   onRead={(m) => markRead(slug, [m.id])
                     .then(() => { reload(); refresh?.() }).catch(() => {})}
+                  onReply={(m, text) => sendMessage(slug, m.from, text)
+                    .then(() => toast([`sent to ${m.from}`]))
+                    .catch((e) => toast([`error: ${e.message}`]))}
                   sender={(id) => <SenderChip id={id} nodes={nodes} />} />
               : <MailList delivered={box.sent ?? []} outgoing
                   sender={(id) => <SenderChip id={id} nodes={nodes} />} />}

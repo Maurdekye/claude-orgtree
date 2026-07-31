@@ -1,11 +1,11 @@
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
   audienceAction, compactNode, dissolveAll, getCharters, getChat, getHistory,
   getMcpServers, getNodeInbox, getScratch, interruptNode, orgInboxRead,
-  reorderNode, saveScope, saveSettings, sendMessage,
+  reorderNode, saveScope, saveSettings, sendMessage, uploadFile,
 } from './api'
 import { pickFolder } from './picker'
 import {
@@ -121,10 +121,28 @@ function sizeOf(id) {
 
 const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2)
 
-// chat markdown: gfm + hard line breaks, sanitized (agents echo web content)
-const md = (text) => ({
-  __html: DOMPurify.sanitize(marked.parse(text ?? '', { gfm: true, breaks: true, async: false })),
-})
+const ago = (at) => {
+  if (!at) return ''
+  const s = Math.max(0, (Date.now() - Date.parse(at)) / 1000)
+  return s < 90 ? `${Math.round(s)}s`
+    : s < 5400 ? `${Math.round(s / 60)}m` : `${Math.round(s / 3600)}h`
+}
+
+// chat markdown: gfm + hard line breaks, sanitized (agents echo web content).
+// №21: cached by text identity — every streamed token used to re-parse the
+// ENTIRE visible transcript (~8 Hz × every message × every open panel)
+const _mdCache = new Map()
+const md = (text) => {
+  const key = text ?? ''
+  let hit = _mdCache.get(key)
+  if (hit === undefined) {
+    hit = { __html: DOMPurify.sanitize(
+      marked.parse(key, { gfm: true, breaks: true, async: false })) }
+    if (_mdCache.size > 800) _mdCache.clear()   // bounded; refills on demand
+    _mdCache.set(key, hit)
+  }
+  return hit
+}
 const smooth = (t) => t * t * (3 - 2 * t)
 
 // ---- connection segments (world space). kind 'c' = cubic bezier, 'l' = line.
@@ -177,6 +195,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
   const [lineageId, setLineageId] = useState(null)
   const [userCfg, setUserCfg] = useState(false)
   const [trayOpen, setTrayOpen] = useState(false)   // the flat agent tray
+  const [trayQ, setTrayQ] = useState('')            // №26: tray name filter
   const [inboxId, setInboxId] = useState(null)
   const [oiOpen, setOiOpen] = useState(false)       // the ORG-inbox viewer
   // unread-mail attention: the eye glows until the mailbox is OPENED (merely
@@ -287,6 +306,9 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
   const viewportRef = useRef(null)
   const viewRef = useRef(view); viewRef.current = view
   const animRef = useRef(null)
+  const animBusyRef = useRef(false)  // a camera animation owns the view
+  const focusRef = useRef(null)      // №25: the desk the camera rides with
+  const followRef = useRef(null)
   const panRef = useRef(null)
   const springs = useRef(new Map())
   const targetRef = useRef(target); targetRef.current = target
@@ -471,6 +493,28 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
       for (const id of [...springs.current.keys()]) {
         if (!targetRef.current.has(id)) springs.current.delete(id)
       }
+      // №25: the camera rides the focused desk. A hire ANYWHERE re-anchors
+      // the whole layout (eye at x=6000), which used to slide the desk you
+      // were typing into ~1000 screen px out of the window — follow the
+      // focused node's per-frame spring delta instead. Camera animations and
+      // manual pans own the view; the follow yields to them.
+      const fid = focusRef.current
+      if (fid && !animBusyRef.current && !panRef.current) {
+        const s = springs.current.get(fid)
+        if (s) {
+          const prev = followRef.current
+          if (prev && prev.id === fid) {
+            const dx = s.x - prev.x, dy = s.y - prev.y
+            if (dx || dy) {
+              const z = viewRef.current.z
+              setView((v) => ({ ...v, x: v.x - dx * z, y: v.y - dy * z }))
+            }
+          }
+          followRef.current = { id: fid, x: s.x, y: s.y }
+        }
+      } else {
+        followRef.current = null
+      }
       if (sparksRef.current.length) {
         const now = performance.now()
         sparksRef.current = sparksRef.current.filter(
@@ -487,6 +531,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
   // ------------------------------------------------------------- camera math
   const animateTo = useCallback((to, ms = 460) => {
     cancelAnimationFrame(animRef.current)
+    animBusyRef.current = true
     const from = { ...viewRef.current }
     const t0 = performance.now()
     const step = (t) => {
@@ -497,6 +542,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
         z: from.z + (to.z - from.z) * e,
       })
       if (k < 1) animRef.current = requestAnimationFrame(step)
+      else animBusyRef.current = false
     }
     animRef.current = requestAnimationFrame(step)
   }, [])
@@ -528,8 +574,11 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
       maxX = Math.max(maxX, p.x + NODE_W + 40); maxY = Math.max(maxY, p.y + NODE_H + 40)
     }
     if (!isFinite(minX)) return
-    // extra top margin: the eye's infinite bar fades 110px above its card
-    minX = Math.max(0, minX - 60); minY = Math.max(0, minY - 130)
+    // extra top margin: the eye's infinite bar fades 110px above its card.
+    // №23: NO zero-clamp — past ~64 leaf columns the leftmost nodes go
+    // negative (the eye is pinned at x=6000) and a clamp silently cut them
+    // out of "fit all"
+    minX -= 60; minY -= 130
     const z = Math.min(1.3, Math.max(0.24,
       Math.min((vp.width - 48) / (maxX - minX), (vp.height - 48) / (maxY - minY))))
     const to = {
@@ -578,6 +627,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
       if (e.target.closest?.('.desk-over')) return
       e.preventDefault()
       cancelAnimationFrame(animRef.current)
+      animBusyRef.current = false
       const v = viewRef.current
       const factor = Math.exp(-e.deltaY * 0.0012)
       const z = Math.min(Z_MAX, Math.max(0.24, v.z * factor))
@@ -600,6 +650,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
   const onPointerDown = (e) => {
     if (e.button !== 0) return
     cancelAnimationFrame(animRef.current)
+    animBusyRef.current = false
     panRef.current = { sx: e.clientX, sy: e.clientY, ox: viewRef.current.x, oy: viewRef.current.y, moved: false }
     e.currentTarget.setPointerCapture(e.pointerId)
   }
@@ -656,6 +707,23 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
     const d = nodeDrag.current
     if (!d || d.id !== id) return
     const z = viewRef.current.z
+    // №23: edge-pan — in a wide org, drag source and target don't fit one
+    // screen and the drag used to dead-stop at the window edge. Nearing an
+    // edge pans the camera; the pan shifts the world under the cursor, so
+    // it also counts into the node's drag delta (sx/sy compensate).
+    const vp = viewportRef.current?.getBoundingClientRect()
+    if (vp) {
+      const M = 48, SPEED = 14
+      let px = 0, py = 0
+      if (e.clientX < vp.left + M) px = SPEED
+      else if (e.clientX > vp.right - M) px = -SPEED
+      if (e.clientY < vp.top + M) py = SPEED
+      else if (e.clientY > vp.bottom - M) py = -SPEED
+      if (px || py) {
+        setView((v) => ({ ...v, x: v.x + px, y: v.y + py }))
+        d.sx += px; d.sy += py
+      }
+    }
     const dx = (e.clientX - d.sx) / z, dy = (e.clientY - d.sy) / z
     if (Math.abs(dx) + Math.abs(dy) > 5 / z) d.moved = true
     if (!d.moved) return
@@ -688,17 +756,30 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
         : ancestors.includes(drop)
           ? { op: 'promote', node: id, new_parent: drop }
           : { op: 'demote', node: id, new_parent: drop }
-      op(body).catch(() => {}).finally(finish)
+      // №17: a re-parent is one mis-drag away — the toast carries the reverse
+      op(body).then(() => toast(
+        [`${id} now reports to ${drop === USER ? 'you' : drop}`],
+        () => op({ op: 'move', node: id, new_parent: parent ?? null })
+          .catch(() => {})))
+        .catch(() => {}).finally(finish)
       return
     }
     // no (new) target → cosmetic reorder among the current cohort by dropped x
-    const sibs = (mapRef.current.get(parent)?.children ?? [])
-      .map((c) => c.id).filter((k) => k !== id && k !== DRAFT)
+    const cohort = (mapRef.current.get(parent)?.children ?? [])
+      .map((c) => c.id).filter((k) => k !== DRAFT)
+    const sibs = cohort.filter((k) => k !== id)
     if (!sibs.length) { finish(); return }
+    const oldIdx = cohort.indexOf(id)
+    const oldReq = oldIdx > 0 ? { after: cohort[oldIdx - 1] }
+      : { before: cohort[1] }
     const x = springs.current.get(id)?.x ?? 0
     const beforeSib = sibs.find((k) => (targetRef.current.get(k)?.x ?? 0) > x)
     const req = beforeSib ? { before: beforeSib } : { after: sibs[sibs.length - 1] }
-    reorderNode(slug, id, req).catch((err) => toast([`error: ${err.message}`])).finally(finish)
+    // №17: a successful accidental reorder used to be completely silent
+    reorderNode(slug, id, req)
+      .then(() => toast([`${id} reordered`],
+        () => reorderNode(slug, id, oldReq).catch(() => {})))
+      .catch((err) => toast([`error: ${err.message}`])).finally(finish)
   }
 
   // ------------------------------------------------------- focus (the desk)
@@ -726,6 +807,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
     return bestD < NODE_W * 1.6 * view.z ? best : null
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, target, hidden])
+  focusRef.current = focusId
 
   const lod = view.z < Z_MINI ? 'mini' : 'norm'
 
@@ -1022,8 +1104,12 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
       <div className="tray-wrap" onPointerDown={(e) => e.stopPropagation()}>
         {trayOpen && (
           <div className="tray">
+            <input className="mail-filter tray-filter" placeholder="filter agents…"
+              value={trayQ} onChange={(e) => setTrayQ(e.target.value)} />
             {[...map.values()]
               .filter((n) => n.id !== USER && n.id !== DRAFT && !n.isBearerOf)
+              .filter((n) => !trayQ.trim()
+                || n.id.toLowerCase().includes(trayQ.trim().toLowerCase()))
               .sort((a, b) => {
                 const pa = posOf(a.id) ?? { x: 0, y: 0 }
                 const pb = posOf(b.id) ?? { x: 0, y: 0 }
@@ -1036,23 +1122,41 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
                   if (hidden.has(n.id)) setFront(map.get(n.id)?.parent, n.id)
                   centerOn(n.id)
                 }
+                // №13: the status summary is TEXT here, not a tooltip — and a
+                // finished status survives the next turn as prev_status (dim)
+                const stat = n.last_status
+                  ?? (n.prev_status ? { ...n.prev_status, _stale: true } : null)
                 return (
                 <div key={n.id} role="button" tabIndex={0}
                   className={'tray-row' + (n.state !== 'live' ? ' off' : '')}
                   onClick={go}
                   onKeyDown={(e) => { if (e.key === 'Enter') go() }}>
-                  <span className={'tier t-' + n.tier}>{TIER_LETTER[n.tier] ?? '?'}</span>
-                  <span className="tray-name" title={n.purpose ?? n.id}>{n.id}</span>
-                  <ContextWheel occ={n.occupancy} cw={n.context_window} />
-                  {n.busy ? <Activity act={activity?.[n.id]} dotOnly />
-                    : n.frozen
-                      ? <FrozenIcon fontSize="inherit" className="tray-frozen" />
-                      : n.state !== 'live'
-                        ? <span className="dim">{n.state}</span>
-                        : n.last_status
-                          ? <span className={'statusdot ' + n.last_status.status}
-                              title={n.last_status.summary} />
-                          : <span className="statusdot idle" title="idle" />}
+                  <div className="tray-main">
+                    <span className={'tier t-' + n.tier}>{TIER_LETTER[n.tier] ?? '?'}</span>
+                    <span className="tray-name" title={n.purpose ?? n.id}>{n.id}</span>
+                    <ContextWheel occ={n.occupancy} cw={n.context_window} />
+                    {n.busy ? (n.waiting
+                      ? <span className="statusdot waiting"
+                          title="queued — waiting for a free turn slot (№12)" />
+                      : <span title={n.inflight_at
+                          ? `running for ${ago(n.inflight_at)}` : 'working'}>
+                          <Activity act={activity?.[n.id]} dotOnly />
+                        </span>)
+                      : n.frozen
+                        ? <FrozenIcon fontSize="inherit" className="tray-frozen" />
+                        : n.state !== 'live'
+                          ? <span className="dim">{n.state}</span>
+                          : n.last_status
+                            ? <span className={'statusdot ' + n.last_status.status}
+                                title={n.last_status.summary} />
+                            : <span className="statusdot idle" title="idle" />}
+                  </div>
+                  {stat?.summary && (
+                    <div className={'tray-sum' + (stat._stale ? ' stale' : '')}>
+                      {stat.status}: {stat.summary.slice(0, 70)}
+                      {stat.at ? ` · ${ago(stat.at)} ago` : ''}
+                    </div>
+                  )}
                 </div>
                 )
               })}
@@ -1194,6 +1298,26 @@ function EyeDesk({ map, op, slug, pulse, toast, streamEvt, inboxCount,
     localStorage.setItem('orgtree-eyemin-' + slug, JSON.stringify([...n]))
     return n
   })
+  // №24: a NEW direct line arrives MINIMIZED with its tab lit — the shipped
+  // coordinator charter grants an audience after every hire, and each grant
+  // used to shove another full-width panel into the row automatically
+  const seenIds = useRef(null)
+  const idsKey = agents.map((a) => a.id).join(',')
+  useEffect(() => {
+    const ids = new Set(idsKey ? idsKey.split(',') : [])
+    if (seenIds.current) {
+      const fresh = [...ids].filter((id) => !seenIds.current.has(id))
+      if (fresh.length) {
+        setMinned((s) => {
+          const n = new Set(s)
+          fresh.forEach((id) => n.add(id))
+          localStorage.setItem('orgtree-eyemin-' + slug, JSON.stringify([...n]))
+          return n
+        })
+      }
+    }
+    seenIds.current = ids
+  }, [idsKey, slug])
   const open = agents.filter((a) => !minned.has(a.id))
   // the inner virtual panel matches the card interior through the desk scale
   const innerW = Math.round((eyeW - 4) / 0.13333)
@@ -1251,7 +1375,8 @@ function EyeDesk({ map, op, slug, pulse, toast, streamEvt, inboxCount,
           {open.map((a) => (
             <div className="eye-panel" key={a.id}>
               <DeskChat node={a} map={map} op={op} slug={slug} pulse={pulse}
-                toast={toast} streamEvt={streamEvt} pub={pub} bare compact />
+                toast={toast} pub={pub} bare compact
+                streamEvt={streamEvt?.node === a.id ? streamEvt : null} />
             </div>
           ))}
           {!open.length && agents.length > 0 &&
@@ -1794,7 +1919,12 @@ function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, map, op,
               ? node.grant + (map.get(node.parent)?.free ?? 0)
               : maxTop}
           maxGhost={cascadeAlloc === false && node.parent !== USER}
-          onCommit={(delta) => op({ op: 'reallocate', node: node.id, delta })}
+          onCommit={(delta) => op({ op: 'reallocate', node: node.id, delta })
+            .then(() => toast(
+              [`${node.id} grant ${delta > 0 ? '+' : ''}${delta}`],
+              () => op({ op: 'reallocate', node: node.id, delta: -delta })
+                .catch(() => {})))
+            .catch(() => {})}
           zoom={zoom} pxc={pxc} />
       )}
       {/* the whole world-scaled head disappears at focus — the desk renders its
@@ -1843,7 +1973,8 @@ function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, map, op,
       )}
       {focused && (
         <DeskChat node={node} map={map} op={op} slug={slug} pulse={pulse} toast={toast}
-          streamEvt={streamEvt} onLineage={onLineage} onConfig={onConfig}
+          streamEvt={streamEvt?.node === node.id ? streamEvt : null}
+          onLineage={onLineage} onConfig={onConfig}
           onRecenter={onRecenter} pub={pub} />
       )}
       {/* user ruling: chips are NEVER disabled by the node's own free credits —
@@ -2139,7 +2270,16 @@ function Activity({ act, dotOnly }) {
 // The desk is styled as a miniature Claude Code chat window (design ruling):
 // compact one-line chrome, plain assistant text, boxed user turns, ⏺ tool
 // lines, and a bordered composer with the model name in its footer row.
-function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onConfig,
+// №21: memoized — the spring engine re-renders the whole canvas every
+// animation frame, and each open desk re-parsed its full transcript each
+// time. The comparator checks the DATA props only; the callback props close
+// over stable setters, so their per-render identities are ignorable.
+const DeskChat = memo(DeskChatInner, (p, n) =>
+  p.node === n.node && p.map === n.map && p.slug === n.slug
+  && p.pulse === n.pulse && p.streamEvt === n.streamEvt
+  && p.pub === n.pub && p.bare === n.bare && p.compact === n.compact)
+
+function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onConfig,
   onRecenter, pub, bare = false, compact = false }) {
   const [chat, setChat] = useState(null)
   const [text, setText] = useState('')
@@ -2227,6 +2367,17 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
       .catch((e) => toast([`error: ${e.message}`]))
   }
 
+  // file uploads (user spec 2026-07-31): the file lands in the agent's own
+  // uploads/ scratch folder — same relative path sandboxed or not, and it
+  // works through the public kiosk gateway from the outside internet
+  const fileRef = useRef(null)
+  const attach = (file) => {
+    uploadFile(slug, node.id, file)
+      .then((r) => setText((t) => (t ? t + '\n' : '')
+        + `[file attached: ${r.path} — in your working folder]`))
+      .catch((e) => toast([`upload error: ${e.message}`]))
+  }
+
   const liveKids = node.children.some((c) => c.state === 'live')
   const content = (
     <>
@@ -2272,7 +2423,10 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
         {!compact && <span className="cc-actions">
           {live && !liveKids &&
             <button className="danger"
-              onClick={() => op({ op: 'retire', node: node.id })}>
+              onClick={() => op({ op: 'retire', node: node.id }).then(() =>
+                toast([`${node.id} retired`],
+                  () => op({ op: 'rehire', node: node.id }).catch(() => {})))
+                .catch(() => {})}>
               retire · {node.seat + node.grant}</button>}
           {live && liveKids &&
             <button className="danger" onClick={() => setAsking(true)}>
@@ -2333,6 +2487,15 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
           {/* send sits BESIDE the input; no model-name footer row (the tier
               chip in the header already says it) — reclaimed vertical space */}
           <div className={'cc-composer' + (canMail ? '' : ' off')}>
+            <button className="cc-attach" disabled={!canMail}
+              title="attach a file — it lands in the agent's uploads/ folder"
+              onClick={() => fileRef.current?.click()}>
+              <FileIcon fontSize="inherit" /></button>
+            <input type="file" ref={fileRef} style={{ display: 'none' }} multiple
+              onChange={(e) => {
+                [...e.target.files].forEach(attach)
+                e.target.value = ''
+              }} />
             <textarea rows={2} value={text} disabled={!canMail}
               placeholder={live ? `message ${node.id}…`
                 : node.state === 'archived'
@@ -2384,7 +2547,7 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
 // selected message opened in the reading pane on the right. Waiting/unread
 // mail sorts on top and is highlighted until read/delivered.
 export function MailList({ pending = [], delivered = [], waitLabel, sender, outgoing,
-  onRead }) {
+  onRead, onReply }) {
   // newest first throughout (user ruling) — waiting/unread stays grouped on top
   const all = [
     ...[...pending].reverse().map((m) => ({ ...m, _wait: true })),
@@ -2394,25 +2557,45 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
   // list, and an index would silently land on a different mail
   const keyOf = (m) => m?.id ?? `${m?.at}|${m?.from}|${(m?.body ?? '').slice(0, 24)}`
   const [selId, setSelId] = useState(null)
+  // №26: hunting an hour-old message decayed your unread set click by click —
+  // a plain client-side filter over sender+body, no index, no server
+  const [q, setQ] = useState('')
+  const [draft, setDraft] = useState('')
   const S = sender ?? ((id) => <span>{id === USER ? '@user' : id}</span>)
-  const cur = all.find((m) => keyOf(m) === selId) ?? all[0]
+  const partyOf = (m) => (outgoing ? m.to : m.from)
+  const qn = q.trim().toLowerCase()
+  const shown = qn
+    ? all.filter((m) => String(partyOf(m) ?? '').toLowerCase().includes(qn)
+      || String(m.body ?? '').toLowerCase().includes(qn))
+    : all
+  const cur = shown.find((m) => keyOf(m) === selId) ?? shown[0]
   // per-mail read (user ruling): a VIEWED unread mail is marked read the
   // moment you click OFF it — select another mail, or leave the list
   const curRef = useRef(null); curRef.current = cur
   const readRef = useRef(onRead); readRef.current = onRead
   const leave = (m) => { if (m?._wait && m.id) readRef.current?.(m) }
   useEffect(() => () => leave(curRef.current), [])
-  const party = (m) => (outgoing ? m.to : m.from)
+  const party = partyOf
   // a custom sender renderer owns the whole head identity (it receives the
   // mail too — the org inbox uses this for "@agent as @org → @recipient")
   const customS = outgoing && sender != null
   const brief = (b) => (b ?? '').trim().replace(/\s+/g, ' ').slice(0, 90)
   const when = (at) => (at ?? '').slice(5, 16).replace('T', ' ')
+  // reply from where you read (№11): only for incoming mail whose sender is a
+  // plain agent id — @-sentinels (@user/@system/@ext:/@org:/@mcp:) route
+  // elsewhere, and slugify guarantees no agent name starts with '@'
+  const replyable = Boolean(onReply && cur && !outgoing
+    && !String(party(cur) ?? '').startsWith('@'))
   if (!all.length) return <div className="dim pad">no mail yet</div>
   return (
     <div className="mailer">
       <div className="mailer-list">
-        {all.map((m, i) => (
+        {all.length > 4 && (
+          <input className="mail-filter" placeholder="filter…" value={q}
+            onChange={(e) => setQ(e.target.value)} />
+        )}
+        {shown.length === 0 && <div className="dim pad">no matches</div>}
+        {shown.map((m, i) => (
           <div key={keyOf(m)}
             className={'mailrow' + (m === cur ? ' on' : '') + (m._wait ? ' unread' : '')}
             onClick={() => {
@@ -2441,6 +2624,24 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
               {cur._wait && <span className="wait">{waitLabel}</span>}
             </div>
             <div className="mailer-body md" dangerouslySetInnerHTML={md(cur.body)} />
+            {replyable && (
+              <div className="mail-reply">
+                <textarea rows={2} value={draft}
+                  placeholder={`reply to ${party(cur)}…`}
+                  onChange={(e) => setDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey && draft.trim()) {
+                      e.preventDefault()
+                      onReply(cur, draft.trim())
+                      setDraft('')
+                    }
+                  }} />
+                <button disabled={!draft.trim()}
+                  onClick={() => { onReply(cur, draft.trim()); setDraft('') }}>
+                  reply
+                </button>
+              </div>
+            )}
           </>
         )}
       </div>
@@ -2473,14 +2674,52 @@ function InboxView({ slug, nid, pulse }) {
   )
 }
 
-export function MailFolders({ folder, setFolder, unread }) {
+export function MailFolders({ folder, setFolder, unread, folders }) {
   return (
     <div className="mail-folders">
-      {['inbox', 'sent'].map((f) => (
+      {(folders ?? ['inbox', 'sent']).map((f) => (
         <button key={f} className={folder === f ? 'on' : ''}
           onClick={() => setFolder(f)}>
           {f}{f === 'inbox' && unread > 0 ? ` ${unread}` : ''}
         </button>
+      ))}
+    </div>
+  )
+}
+
+// №10: the org record — every ledger operation (the overseer was the only
+// node never told what changed). Renders the events log the server has kept
+// all along; the §4.6 cascade warnings ride each row.
+export function OrgRecord({ events }) {
+  const [q, setQ] = useState('')
+  const qn = q.trim().toLowerCase()
+  const rows = [...(events ?? [])].reverse().filter((ev) => !qn
+    || JSON.stringify(ev).toLowerCase().includes(qn))
+  const when = (at) => (at ?? '').slice(5, 16).replace('T', ' ')
+  const gist = (ev) => {
+    const d = ev.detail || {}
+    const bits = [d.node, d.from != null || d.to != null
+      ? `${d.from ?? 'top'} → ${d.to ?? 'top'}` : null,
+    d.freed != null ? `freed ${d.freed}` : null,
+    d.grant != null ? `grant ${d.grant}` : null,
+    d.reason, d.predecessor].filter(Boolean)
+    return bits.join(' · ')
+  }
+  if (!rows.length && !qn) return <div className="dim pad">nothing yet</div>
+  return (
+    <div className="record">
+      <input className="mail-filter" placeholder="filter…" value={q}
+        onChange={(e) => setQ(e.target.value)} />
+      {rows.slice(0, 200).map((ev, i) => (
+        <div className="rec-row" key={i}>
+          <span className="mtime">{when(ev.at)}</span>
+          <b className="rec-kind">{ev.op}</b>
+          <span className="rec-actor">{ev.actor === USER ? 'you' : ev.actor}</span>
+          <span className="dim">{gist(ev)}</span>
+          {(ev.warnings ?? []).map((w, k) => (
+            <div className="rec-warn" key={k}>⚠ {w}</div>
+          ))}
+        </div>
       ))}
     </div>
   )
@@ -2742,7 +2981,8 @@ const stripEnvelope = (t) => (t ?? '')
   .replace(/^FROM (\S+) \([^)]*\)$/gm, '**$1**')
   .trim()
 
-function Msg({ m }) {
+// №21: memoized — rows are static once fetched; only identity changes matter
+const Msg = memo(function Msg({ m }) {
   if (m.role === 'system') return <div className="msg sys">{m.text}</div>
   const text = m.role === 'user' ? stripEnvelope(m.text) : m.text
   return (
@@ -2752,4 +2992,4 @@ function Msg({ m }) {
       {m.oracle && <div className="tools"><SparkIcon fontSize="inherit" /> oracle exchange — not retained by the node</div>}
     </div>
   )
-}
+})

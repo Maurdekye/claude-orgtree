@@ -1158,14 +1158,19 @@ def _extern_scan(addr: str, org_slug: str | None, after: str | None,
                 # the ledger seals every inbound/outbound path), but the seal
                 # belongs on THIS path too, locally, not as a 3-file argument
                 continue
-            floor = after
-            if not floor and fresh_only:
-                floor = max((e.get("at", "") for e in org.d.get("org_inbox", [])
-                             if e.get("peer") == addr and e.get("dir") == "in"),
-                            default="")
-            for e in org.d.get("org_inbox", []):
+            entries = org.d.get("org_inbox", [])
+            if not after and fresh_only:
+                # position, not timestamp: at-stamps have second resolution,
+                # so a same-second question/answer pair is untellable by time.
+                # The inbox is append-ordered — everything AFTER the peer's
+                # own last message is fresh by construction.
+                last_in = max((i for i, e in enumerate(entries)
+                               if e.get("peer") == addr
+                               and e.get("dir") == "in"), default=-1)
+                entries = entries[last_in + 1:]
+            for e in entries:
                 if e.get("peer") == addr and e.get("dir") == "out" \
-                        and (not floor or e.get("at", "") > floor):
+                        and (not after or e.get("at", "") > after):
                     out.append({"org": o["slug"], "id": e["id"],
                                 "at": e["at"], "body": e["body"]})
     out.sort(key=lambda x: x["at"])

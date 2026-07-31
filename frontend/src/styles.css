@@ -264,6 +264,11 @@ main {
 }
 .statusdot.working { background: var(--work); animation: pulse 2.2s ease-in-out infinite; }
 .statusdot.idle { background: transparent; border: 2px solid #8a8a8a; }
+/* №12: queued behind the turn-slot cap — busy but NOT running */
+.statusdot.waiting {
+  background: transparent; border: 2px dashed var(--work);
+  animation: pulse 2.2s ease-in-out infinite;
+}
 
 /* tight head row (user ruling: long names must fit) — small margins, small
    chrome, the context wheel pushed to the far right */
@@ -1260,9 +1265,11 @@ svg.MuiSvgIcon-root {
   padding: 0 7px; color: var(--dim); font-size: 11px; border-radius: 0;
 }
 .eye-tab-x:hover { color: var(--bad); background: rgba(241, 76, 76, .1); }
-.eye-panels { flex: 1; min-height: 0; display: flex; gap: 10px; }
+/* №24: panels keep a readable minimum and the row scrolls — eight direct
+   lines used to split into eight ~150px slivers, each with a composer */
+.eye-panels { flex: 1; min-height: 0; display: flex; gap: 10px; overflow-x: auto; }
 .eye-panel {
-  flex: 1; min-width: 0; display: flex;
+  flex: 1; min-width: 420px; display: flex;
   border: 1px solid var(--line-soft); border-radius: 6px;
   background: color-mix(in srgb, var(--bg) 45%, var(--panel));
   padding: 6px 9px 8px;
@@ -1343,6 +1350,60 @@ svg.MuiSvgIcon-root {
   white-space: nowrap; font-family: var(--mono);
 }
 .tray-frozen { color: var(--ice); font-size: 13px; }
+/* №13/№26: rows carry the status summary as text; a filter heads the tray */
+.tray-row { flex-direction: column; align-items: stretch; gap: 2px; }
+.tray-main { display: flex; align-items: center; gap: 8px; }
+.tray-sum {
+  font-size: 10.5px; color: var(--dim); padding-left: 26px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tray-sum.stale { opacity: .55; font-style: italic; }
+.tray-filter { margin: 2px 4px 6px; }
+
+/* №26: the shared mail filter input */
+.mail-filter {
+  display: block; width: calc(100% - 8px); margin: 0 4px 6px;
+  background: var(--input); border: 1px solid var(--line); border-radius: 4px;
+  color: var(--ink-strong); font-size: 12px; padding: 4px 8px;
+}
+.mail-filter:focus { outline: none; border-color: var(--accent); }
+
+/* №11: reply from the reading pane */
+.mail-reply {
+  display: flex; gap: 6px; align-items: flex-end; margin-top: 8px;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--input);
+  padding: 6px 8px;
+}
+.mail-reply:focus-within { border-color: var(--accent); }
+.mail-reply textarea {
+  flex: 1; min-width: 0; border: none; background: none; resize: none;
+  font-size: 12.5px; font-family: inherit; color: var(--ink-strong); padding: 0;
+}
+.mail-reply textarea:focus { outline: none; }
+
+/* №17: the undo button inside a toast */
+.toast-undo {
+  margin-top: 6px; font-size: 11px; padding: 2px 10px;
+  border: 1px solid var(--accent); color: var(--accent); background: none;
+  border-radius: 4px;
+}
+.toast-undo:hover { background: var(--accent-soft); }
+
+/* №10: the org record folder */
+.record { overflow-y: auto; max-height: 46vh; font-size: 12px; }
+.rec-row { padding: 4px 8px; border-bottom: 1px solid var(--line-soft); }
+.rec-row .mtime { color: var(--dim); font-family: var(--mono); margin-right: 8px; }
+.rec-kind { margin-right: 8px; }
+.rec-actor { color: var(--dim); margin-right: 8px; }
+.rec-warn { color: var(--work); font-size: 11px; padding-left: 14px; }
+
+/* file attach in the composer */
+.cc-attach {
+  width: 22px; height: 22px; padding: 0; flex: none; border-radius: 4px;
+  background: none; border: 1px solid var(--line); color: var(--dim);
+  display: flex; align-items: center; justify-content: center;
+}
+.cc-attach:hover { color: var(--accent); border-color: var(--accent); }
 .eye-tab-jump { color: var(--dim); }
 .eye-tab-jump:hover { color: var(--accent); background: var(--accent-soft); }
 .lineage-panel { min-width: 480px; }

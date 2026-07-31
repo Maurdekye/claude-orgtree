@@ -107,6 +107,11 @@ export const reorderNode = (slug, nid, body) =>
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   }).then(j)
+export const getEvents = (slug) => fetch(u(`/api/orgs/${slug}/events`)).then(j)
+export const uploadFile = (slug, nid, file) =>
+  fetch(u(`/api/orgs/${slug}/nodes/${nid}/upload?name=${encodeURIComponent(file.name)}`), {
+    method: 'POST', body: file,
+  }).then(j)
 export const sendMessage = (slug, nid, text) =>
   fetch(u(`/api/orgs/${slug}/nodes/${nid}/message`), {
     method: 'POST',
