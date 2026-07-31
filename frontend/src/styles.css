@@ -610,6 +610,47 @@ main {
 .desk-body .mailrow .l1, .desk-body .mailrow .l2, .desk-body .mailer-head { font-size: 12px; }
 .desk-body .mailer-body { font-size: 13.5px; }
 
+/* --------------------------------------------------- the retired pile
+   Archived siblings collapse into ONE pile (user spec). The stack layers are
+   REAL elements behind the front card (box-shadows can't be clicked): the
+   exposed up-right margin opens the picker, and the whole stack eases
+   outward slightly on hover. Layer colors match the lineage-stack idiom. */
+.pile-stack { position: absolute; left: 0; top: 0; pointer-events: none; }
+.pile-layer {
+  position: absolute; inset: 0; pointer-events: auto; cursor: pointer;
+  padding: 0; border-radius: 8px; border: 1px solid var(--line-soft);
+  transition: transform .18s ease;
+}
+.pile-layer.l1 { background: #232325; transform: translate(5px, -5px); }
+.pile-layer.l2 { background: #1e1e20; transform: translate(10px, -10px); }
+.pile-layer.l3 { background: #1a1a1c; transform: translate(15px, -15px); }
+.pile-stack:hover .pile-layer.l1 { transform: translate(9px, -9px); }
+.pile-stack:hover .pile-layer.l2 { transform: translate(18px, -18px); }
+.pile-stack:hover .pile-layer.l3 { transform: translate(27px, -27px); }
+.pile-layer:hover { border-color: var(--line); }
+.pile-count {
+  position: absolute; top: -9px; right: -11px; pointer-events: auto;
+  cursor: pointer; font-family: var(--mono); font-weight: 700; font-size: 9px;
+  color: var(--dim); background: var(--input); border: 1px solid var(--line);
+  border-radius: 8px; padding: 0 5px; line-height: 1.6;
+  transition: transform .18s ease;
+}
+.pile-stack:hover .pile-count { transform: translate(6px, -6px); color: var(--ink-strong); }
+/* the picker: current front highlighted */
+.pile-picker { width: 420px; }
+.pile-row {
+  display: flex; align-items: center; gap: 10px; text-align: left;
+  padding: 7px 10px; border: 1px solid var(--line-soft); border-radius: 6px;
+  background: color-mix(in srgb, var(--bg) 40%, var(--panel)); color: var(--ink);
+}
+.pile-row:hover { border-color: var(--line); background: var(--panel-2); }
+.pile-row.on { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); }
+.pile-row .tier { flex: none; }
+.pile-row .pile-name {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; font-family: var(--mono); font-weight: 600;
+}
+
 /* ------------------------------------------------------- lineage stacks (§8.7) */
 .sq.stack1 { box-shadow: 5px -5px 0 -1px #232325, 5px -5px 0 0 var(--line-soft); }
 .sq.stack2 {

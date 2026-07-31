@@ -80,14 +80,21 @@ function flatten(root, seats) {
   return map
 }
 
-function layout(root) {
+function layout(root, hidden = new Map()) {
+  // `hidden`: piled-away retirees (and their subtrees) — they take NO layout
+  // space; their positions are assigned afterwards onto their pile's front
   const pos = new Map()
-  const width = (n) => (n.children.length ? n.children.reduce((a, c) => a + width(c), 0) : 1)
+  const vis = (n) => !hidden.has(n.id)
+  const width = (n) => {
+    const kids = n.children.filter(vis)
+    return kids.length ? kids.reduce((a, c) => a + width(c), 0) : 1
+  }
   const place = (n, x0, depth) => {
     let cx = x0
-    n.children.forEach((c) => { place(c, cx, depth + 1); cx += width(c) })
-    const x = n.children.length
-      ? (pos.get(n.children[0].id).x + pos.get(n.children[n.children.length - 1].id).x) / 2
+    const kids = n.children.filter(vis)
+    kids.forEach((c) => { place(c, cx, depth + 1); cx += width(c) })
+    const x = kids.length
+      ? (pos.get(kids[0].id).x + pos.get(kids[kids.length - 1].id).x) / 2
       : x0
     pos.set(n.id, { x, y: depth })
   }
@@ -181,8 +188,60 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
   const seats = tree.tiers ?? { haiku: 1, sonnet: 3, opus: 5, fable: 10 }
   const vroot = useMemo(() => withDraftTree(tree, draft), [tree, draft])
   const map = useMemo(() => flatten(vroot, seats), [vroot])   // eslint-disable-line
+  // RETIRED PILE (user spec): archived siblings in a cohort stack into ONE
+  // pile so long-running orgs don't fill the canvas with retirees. The FRONT
+  // retiree is the interactable card (zoom/desk/inbox/rehire); clicking the
+  // visible stack margin opens a picker to bring another to the front.
+  const [pileFront, setPileFront] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('orgtree-pile-' + slug) || '{}') } catch { return {} }
+  })
+  const [pileOpen, setPileOpen] = useState(null)  // parent id whose menu is open
+  const setFront = useCallback((parent, nid) => {
+    setPileFront((pf) => {
+      const nf = { ...pf, [parent]: nid }
+      localStorage.setItem('orgtree-pile-' + slug, JSON.stringify(nf))
+      return nf
+    })
+  }, [slug])
+  const piles = useMemo(() => {          // parent id → {list, front}
+    const out = new Map()
+    const walk = (n) => {
+      const arch = (n.children ?? []).filter((c) => c.state === 'archived')
+      if (arch.length >= 2) {
+        const want = pileFront[n.id]
+        out.set(n.id, {
+          list: arch.map((c) => c.id),
+          front: arch.some((c) => c.id === want) ? want : arch[arch.length - 1].id,
+        })
+      }
+      ;(n.children ?? []).forEach(walk)
+    }
+    walk(vroot)
+    return out
+  }, [vroot, pileFront])
+  const pileByFront = useMemo(() => {
+    const out = new Map()
+    for (const [parent, p] of piles) out.set(p.front, { parent, ...p })
+    return out
+  }, [piles])
+  const hidden = useMemo(() => {         // piled-away id → its pile's front id
+    const out = new Map()
+    const bury = (n, front) => {
+      out.set(n.id, front)
+      ;(n.children ?? []).forEach((c) => bury(c, front))
+    }
+    const walk = (n) => {
+      const p = piles.get(n.id)
+      ;(n.children ?? []).forEach((c) => {
+        if (p && c.state === 'archived' && c.id !== p.front) bury(c, p.front)
+        else walk(c)
+      })
+    }
+    walk(vroot)
+    return out
+  }, [vroot, piles])
   const target = useMemo(() => {
-    const t = layout(vroot)
+    const t = layout(vroot, hidden)
     for (const n of map.values()) {           // live bearers float ABOVE the successor
       // (clear of its card — overlap made both unclickable)
       if (n.isBearerOf && t.has(n.isBearerOf)) {
@@ -205,8 +264,14 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
     for (const p of t.values()) minY = Math.min(minY, p.y)
     // headroom for the eye's infinite bar (2× the eye card, fading upward)
     if (minY < 140) for (const p of t.values()) p.y += 140 - minY
+    // piled-away retirees sit exactly under their pile's front card (they
+    // aren't rendered, but wires/sparks/centerOn need a sane position)
+    for (const [hid, front] of hidden) {
+      const fp = t.get(front)
+      if (fp) t.set(hid, { x: fp.x, y: fp.y })
+    }
     return t
-  }, [vroot, map, tree.org_inbox?.visible])
+  }, [vroot, map, tree.org_inbox?.visible, hidden])
   const [view, setView] = useState(() => {
     // fit-on-load: center the initial tree in a typical viewport (re-fit against
     // the REAL viewport once mounted — see the mount effect below)
@@ -637,6 +702,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
     let best = null, bestD = Infinity
     for (const [id] of target) {
       if (id === DRAFT) continue         // the EYE can be a desk too (switchboard)
+      if (hidden.has(id)) continue       // piled-away retirees never take focus
       const p = posOf(id)
       const sx = (p.x + NODE_W / 2) * view.z + view.x
       const sy = (p.y + NODE_H / 2) * view.z + view.y
@@ -652,7 +718,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
     }
     return bestD < NODE_W * 1.6 * view.z ? best : null
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, target])
+  }, [view, target, hidden])
 
   const lod = view.z < Z_MINI ? 'mini' : 'norm'
 
@@ -731,7 +797,8 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
         '--invz': Math.min(2.4, Math.max(1 / Z_MAX, 1 / view.z)).toFixed(3),
       }}>
         <svg className="edges" width={bounds.w} height={bounds.h}>
-          {[...map.values()].filter((n) => n.parent && !n.isBearerOf).map((n) => {
+          {[...map.values()].filter((n) => n.parent && !n.isBearerOf
+            && !hidden.has(n.id)).map((n) => {
             if (!posOf(n.parent) || !posOf(n.id)) return null
             return <path key={n.id} d={segD(treeSeg(n.parent, n.id))}
               className={'edge' + (n.state === 'archived' ? ' faded' : '')
@@ -856,7 +923,9 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
               zoom={view.z} pxc={pxPerCredit}
               onConfirm={confirmDraft} onCancel={() => setDraft(null)} />
           }
-          return (
+          if (hidden.has(n.id)) return null   // piled-away: no card, no space
+          const pileHere = pileByFront.get(n.id)
+          const square = (
             <NodeSquare key={n.id} node={n} pos={p} lod={lod} focused={n.id === focusId}
               dragging={nodeDrag.current?.id === n.id && nodeDrag.current.moved}
               isDrop={dropId === n.id}
@@ -868,7 +937,34 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
               pub={!!tree.public} kioskRemaining={kioskRemaining}
               cascadeAlloc={tree.cascade_alloc !== false}
               maxTop={tree.max_top_grant ?? 1000}
+              pile={pileHere}
               onDragStart={startNodeDrag} onDragMove={moveNodeDrag} onDragEnd={endNodeDrag} />
+          )
+          if (!pileHere) return square
+          // the RETIRED PILE's stack layers render BEHIND the front card as
+          // real elements (box-shadows can't be clicked): the exposed margin
+          // is the hit target that opens the picker, and the whole stack
+          // eases outward slightly on hover (user spec)
+          const layers = Math.min(pileHere.list.length - 1, 3)
+          return (
+            <span key={n.id}>
+              <div className="pile-stack"
+                style={{ transform: `translate(${p.x}px, ${p.y}px)`,
+                         width: NODE_W, height: NODE_H }}>
+                {Array.from({ length: layers }, (_, i) => layers - i).map((i) => (
+                  <button key={i} className={'pile-layer l' + i}
+                    title={`${pileHere.list.length} retired here — click to choose who's in front`}
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onClick={(e) => { e.stopPropagation(); setPileOpen(pileHere.parent) }} />
+                ))}
+                <button className="pile-count"
+                  title={`${pileHere.list.length} retired here — click to choose who's in front`}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={(e) => { e.stopPropagation(); setPileOpen(pileHere.parent) }}>
+                  {pileHere.list.length}</button>
+              </div>
+              {square}
+            </span>
           )
         })}
         {tree.org_inbox?.visible && posOf(INBOX) && (
@@ -926,11 +1022,18 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
                 const pb = posOf(b.id) ?? { x: 0, y: 0 }
                 return pa.y - pb.y || pa.x - pb.x
               })
-              .map((n) => (
+              .map((n) => {
+                // a piled-away retiree comes to the FRONT of its pile when
+                // picked from the tray, then the glide lands on it
+                const go = () => {
+                  if (hidden.has(n.id)) setFront(map.get(n.id)?.parent, n.id)
+                  centerOn(n.id)
+                }
+                return (
                 <div key={n.id} role="button" tabIndex={0}
                   className={'tray-row' + (n.state !== 'live' ? ' off' : '')}
-                  onClick={() => centerOn(n.id)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') centerOn(n.id) }}>
+                  onClick={go}
+                  onKeyDown={(e) => { if (e.key === 'Enter') go() }}>
                   <span className={'tier t-' + n.tier}>{TIER_LETTER[n.tier] ?? '?'}</span>
                   <span className="tray-name" title={n.purpose ?? n.id}>{n.id}</span>
                   <ContextWheel occ={n.occupancy} cw={n.context_window} />
@@ -944,7 +1047,8 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
                               title={n.last_status.summary} />
                           : <span className="statusdot idle" title="idle" />}
                 </div>
-              ))}
+                )
+              })}
           </div>
         )}
         <button className="tray-toggle" title="every agent, flat"
@@ -967,6 +1071,11 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
       {inboxId && map.get(inboxId) && (
         <NodeInboxModal node={map.get(inboxId)} slug={slug} pulse={pulse}
           close={() => setInboxId(null)} />
+      )}
+      {pileOpen && piles.get(pileOpen) && (
+        <PilePicker pile={piles.get(pileOpen)} map={map}
+          onPick={(nid) => { setFront(pileOpen, nid); setPileOpen(null) }}
+          close={() => setPileOpen(null)} />
       )}
       {oiOpen && (
         <OrgInboxModal inbox={tree.org_inbox} map={map} slug={slug} toast={toast}
@@ -1621,8 +1730,11 @@ function DraftScopeModal({ draft, map, tree, scope, onSave, close }) {
 
 function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, map, op, slug,
   pulse, toast, streamEvt, pxc, zoom, act, onSpawn, onConfig, onInbox, onLineage,
-  onRecenter, pub, kioskRemaining, cascadeAlloc, maxTop,
+  onRecenter, pub, kioskRemaining, cascadeAlloc, maxTop, pile,
   onDragStart, onDragMove, onDragEnd }) {
+  // pile fronts zoom on a plain CENTER click (user spec) — track the
+  // pointer-down point so a drag's trailing click doesn't re-zoom
+  const downAt = useRef(null)
   const cls = ['sq', node.state, focused ? 'desk' : lod, 'tier-' + node.tier]
   if (node.busy) cls.push('busy')
   if (dragging) cls.push('lifted')
@@ -1644,10 +1756,22 @@ function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, map, op,
   }
   return (
     <div className={cls.join(' ')} style={style}
-      onPointerDown={(e) => { if (!focused) onDragStart(e, node.id) }}
+      onPointerDown={(e) => {
+        downAt.current = { x: e.clientX, y: e.clientY }
+        if (!focused) onDragStart(e, node.id)
+      }}
       onPointerMove={(e) => onDragMove(e, node.id)}
       onPointerUp={(e) => onDragEnd(e, node.id, node, focused)}
-      onPointerCancel={(e) => onDragEnd(e, node.id, node, focused)}>
+      onPointerCancel={(e) => onDragEnd(e, node.id, node, focused)}
+      onClick={(e) => {
+        // pile front: center click = zoom onto the focused retiree (user
+        // spec); margin clicks (the stack) are handled by the layers behind
+        if (!pile || focused) return
+        if (e.target.closest('button, input, textarea, select')) return
+        const d = downAt.current
+        if (d && Math.hypot(e.clientX - d.x, e.clientY - d.y) > 5) return
+        onRecenter?.()
+      }}>
       {live && !node.isBearerOf && (
         <CreditBar seat={node.seat} grant={node.grant} committed={node.grant - node.free}
           segments={node.children.filter((c) => c.state !== 'archived')
@@ -2414,6 +2538,38 @@ function FilesView({ slug, nid }) {
         </div>
       ))}
       {data?.content != null && <pre className="filepre">{data.content}</pre>}
+    </div>
+  )
+}
+
+// the RETIRED-PILE menu (user spec): pick which retiree sits in front — the
+// front card is the one you zoom in on, message, read and can rehire; the
+// rest wait stacked beneath it. The current front is highlighted.
+function PilePicker({ pile, map, onPick, close }) {
+  useEsc(close)
+  return (
+    <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
+      <div className="settings pile-picker" onClick={(e) => e.stopPropagation()}>
+        <h3><LayersIcon fontSize="inherit" /> retired pile
+          <span className="dim"> · {pile.list.length} agents</span></h3>
+        <div className="hint">
+          The retiree in front is the one you zoom in on, read, message and can
+          rehire; the rest wait beneath. Pick one to bring it forward.
+        </div>
+        {[...pile.list].reverse().map((id) => {
+          const n = map.get(id)
+          if (!n) return null
+          return (
+            <button key={id} className={'pile-row' + (id === pile.front ? ' on' : '')}
+              onClick={() => onPick(id)}>
+              <span className={'tier t-' + n.tier}>{TIER_LETTER[n.tier] ?? '?'}</span>
+              <span className="pile-name">{id}</span>
+              {n.bearer_state && <span className="badge dim">{n.bearer_state}</span>}
+              {id === pile.front && <span className="badge free">in front</span>}
+            </button>
+          )
+        })}
+      </div>
     </div>
   )
 }
