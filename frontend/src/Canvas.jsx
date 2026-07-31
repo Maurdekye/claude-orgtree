@@ -1,6 +1,7 @@
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import {
   audienceAction, compactNode, dissolveAll, getCharters, getChat, getHistory,
   getMcpServers, getNodeInbox, getScratch, interruptNode, orgInboxRead,
@@ -680,13 +681,18 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
 
   const spawn = (parentId, tier) => {
     setDraft({ parent: parentId === USER ? null : parentId, tier })
-    // the redesigned form is authored at screen scale inside the card (desk
-    // regime) — glide to SCREEN-FILL, where it reads like a normal dialog
-    setTimeout(() => centerOn(DRAFT), 60)
+    // roughly OVERVIEW scale start to finish (user ruling): the form is
+    // authored on a 200px virtual surface (scale .6 into the card), so
+    // z ≈ 1.7 already renders authored px ≈ screen px — no screen-fill dive
+    setTimeout(() => centerOn(DRAFT, Math.max(1.7, viewRef.current.z)), 60)
   }
-  const confirmDraft = (name, grant, charter) => {
+  const confirmDraft = (name, grant, charter, scope) => {
     op({ op: 'hire', parent: draft.parent, tier: draft.tier, grant, name,
-         charter: charter?.trim() || undefined })
+         charter: charter?.trim() || undefined,
+         // pre-hire permissions (user spec): staged in the draft's modal,
+         // applied atomically with the hire
+         ...(scope ? { add_dirs: scope.add_dirs, tools: scope.tools,
+                       org_visibility: scope.org_visibility } : {}) })
       .then((r) => {
         // the real card replaces the draft IN PLACE — seed its spring from the
         // draft's so it doesn't glide over from its parent a second time
@@ -846,7 +852,8 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
           if (n.id === DRAFT) {
             return <DraftNode key={DRAFT} pos={p} draft={draft} map={map} seats={seats}
               maxTop={tree.max_top_grant ?? 1000} kioskRemaining={kioskRemaining}
-              defaultTop={tree.default_top_grant ?? 50} zoom={view.z} pxc={pxPerCredit}
+              defaultTop={tree.default_top_grant ?? 50} tree={tree}
+              zoom={view.z} pxc={pxPerCredit}
               onConfirm={confirmDraft} onCancel={() => setDraft(null)} />
           }
           return (
@@ -1381,9 +1388,14 @@ function CreditBar({ seat = 0, grant, committed, segments = [], draftMode,
 }
 
 function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRemaining,
-  zoom, pxc, onConfirm, onCancel }) {
+  tree, zoom, pxc, onConfirm, onCancel }) {
   const [name, setName] = useState('')
   const [charter, setCharter] = useState('')
+  // pre-hire permissions (user spec): configure the agent's dirs, tool
+  // switches, MCP grants and visibility BEFORE hiring — no post-hire
+  // adjustment needed. null = the org/parent defaults, untouched.
+  const [scope, setScope] = useState(null)
+  const [permsOpen, setPermsOpen] = useState(false)
   // named charter presets (user ruling): every .md in docs/charters/. Picked
   // presets appear as CARDS, not text (user spec) — click removes, hover
   // shows the source file's path on disk; only finalizing the hire turns
@@ -1411,7 +1423,7 @@ function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRemaining,
     return () => window.removeEventListener('keydown', onKey)
   }, [onCancel])
   const ok = name.trim().length > 0
-  const hire = () => { if (ok) onConfirm(name.trim(), grant, finalCharter()) }
+  const hire = () => { if (ok) onConfirm(name.trim(), grant, finalCharter(), scope) }
   return (
     <div className="sq draft" style={{
       transform: `translate(${pos.x}px, ${pos.y}px)`, width: NODE_W, height: NODE_H,
@@ -1440,17 +1452,13 @@ function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRemaining,
           <input className="df-name" autoFocus placeholder="name…" value={name}
             onChange={(e) => setName(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter' && ok) hire() }} />
-          <div className="df-grant">
-            <span className="field-label">credit grant</span>
-            <input type="range" min={0} max={max} value={Math.min(grant, max)}
-              onChange={(e) => setGrant(+e.target.value)} />
-            <input type="number" className="df-grant-n" min={0} max={max}
-              value={grant}
-              onChange={(e) => setGrant(Math.max(0, Math.min(max, +e.target.value || 0)))} />
+          {/* grant stays on the BAR (user ruling: drag the credit bar, no
+              slider here) — this line just reports what the bar is set to */}
+          <div className="df-grant dim">
+            grant <b>{grant}</b> · drag the bar to adjust
           </div>
           {presets.length > 0 && (
             <div className="df-presets">
-              <span className="field-label">charter presets</span>
               <div className="preset-cards">
                 {chosen.map((c) => (
                   <button key={c.name} className="preset-card"
@@ -1478,13 +1486,132 @@ function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRemaining,
             value={charter} onChange={(e) => setCharter(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && ok) { e.preventDefault(); hire() } }} />
           <div className="df-foot">
+            <button onClick={() => setPermsOpen(true)}
+              title="folders, tool switches, MCP servers, org visibility — set BEFORE hiring">
+              <SettingsIcon fontSize="inherit" /> permissions{scope ? ' ·' : '…'}</button>
+            <span className="spacer" />
             <button onClick={onCancel}><CloseIcon fontSize="inherit" /> cancel</button>
             <button className="primary" disabled={!ok} onClick={hire}>
               <CheckIcon fontSize="inherit" /> hire</button>
           </div>
         </div>
       </div>
+      {permsOpen && (
+        <DraftScopeModal draft={draft} map={map} tree={tree} scope={scope}
+          onSave={(s) => { setScope(s); setPermsOpen(false) }}
+          close={() => setPermsOpen(false)} />
+      )}
     </div>
+  )
+}
+
+// Pre-hire permissions (user spec): the same scope surface as the per-agent
+// ⚙ panel — folders with RW/RO, tool switches, MCP grants, org visibility —
+// but staged locally and applied WITH the hire, so nothing needs adjusting
+// after the agent exists. Prefilled from what the hire would inherit anyway.
+function DraftScopeModal({ draft, map, tree, scope, onSave, close }) {
+  useEsc(close)
+  const parent = draft.parent ? map.get(draft.parent) : null
+  const inherited = () => ({
+    add_dirs: (parent ? parent.scope?.add_dirs : tree.dirs) ?? [],
+    tools: parent?.scope?.tools
+      ?? tree.default_tools
+      ?? { bash: true, web: true, edit: true, subagents: true, mcp: ['*'] },
+    org_visibility: parent?.scope?.org_visibility
+      ?? tree.default_visibility ?? 'full',
+  })
+  const base = scope ?? inherited()
+  const [dirs, setDirs] = useState(base.add_dirs.map((d) => ({ ...d })))
+  const [tools, setTools] = useState({ ...base.tools, mcp: [...(base.tools.mcp ?? [])] })
+  const [vis, setVis] = useState(base.org_visibility)
+  const [newPath, setNewPath] = useState('')
+  const [servers, setServers] = useState([])
+  useEffect(() => {
+    getMcpServers().then((r) => setServers(r.servers ?? [])).catch(() => {})
+  }, [])
+  const allMcp = tools.mcp.includes('*')
+  // portal to <body>: the draft card lives inside the world transform, where
+  // position:fixed would resolve against the SCALED ancestor (giant modal)
+  return createPortal(
+    <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}
+      onWheel={(e) => e.stopPropagation()}>
+      <div className="settings" onClick={(e) => e.stopPropagation()}>
+        <h3><SettingsIcon fontSize="inherit" /> permissions <span className="dim">
+          · applied with the hire</span></h3>
+        <div className="field-label">folder access</div>
+        <div className="dirlist">
+          {dirs.map((d, i) => (
+            <div className="dirrow" key={d.path}>
+              <span className="chip mono grow">{d.path}</span>
+              <button type="button" className={'modebtn ' + d.mode}
+                title="toggle read/write vs read-only"
+                onClick={() => setDirs(dirs.map((x, j) =>
+                  j === i ? { ...x, mode: x.mode === 'rw' ? 'ro' : 'rw' } : x))}>
+                {d.mode === 'rw' ? 'RW' : 'RO'}
+              </button>
+              <button type="button" className="iconbtn"
+                onClick={() => setDirs(dirs.filter((_, j) => j !== i))}>
+                <CloseIcon fontSize="inherit" /></button>
+            </div>
+          ))}
+          <div className="dirrow">
+            <input placeholder="add an absolute path"
+              value={newPath} onChange={(e) => setNewPath(e.target.value)} />
+            <button type="button" className="iconbtn" title="browse for a folder"
+              onClick={() => pickFolder().then((r) => {
+                if (r.path) setDirs([...dirs, { path: r.path, mode: 'rw' }])
+              }).catch(() => {})}><FolderIcon fontSize="inherit" /></button>
+            <button type="button" className="addrow" onClick={() => {
+              if (newPath.trim()) {
+                setDirs([...dirs, { path: newPath.trim(), mode: 'rw' }])
+                setNewPath('')
+              }
+            }}>add</button>
+          </div>
+        </div>
+        <div className="field-label">tools</div>
+        {TOOL_LABELS.map(([k, label]) => (
+          <label className="checkline" key={k}>
+            <input type="checkbox" checked={!!tools[k]}
+              onChange={(e) => setTools({ ...tools, [k]: e.target.checked })} />
+            {label}
+          </label>
+        ))}
+        <div className="field-label">MCP servers</div>
+        <label className="checkline">
+          <input type="checkbox" checked={allMcp}
+            onChange={(e) => setTools({
+              ...tools, mcp: e.target.checked ? ['*'] : [...servers] })} />
+          all registered servers (current and future)
+        </label>
+        {!allMcp && servers.map((s) => (
+          <label className="checkline" key={s}>
+            <input type="checkbox" checked={tools.mcp.includes(s)}
+              onChange={(e) => setTools({
+                ...tools,
+                mcp: e.target.checked
+                  ? [...tools.mcp, s]
+                  : tools.mcp.filter((x) => x !== s),
+              })} />
+            <span className="mono">{s}</span>
+          </label>
+        ))}
+        <div className="field-label">org-structure visibility</div>
+        <select value={vis} onChange={(e) => setVis(e.target.value)}>
+          {VIS_OPTIONS.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
+        </select>
+        <div className="hint">
+          Grants clamp to what the parent holds (№30) — anything beyond its
+          capability is trimmed at hire with a warning.
+        </div>
+        <div className="row">
+          <button className="primary" onClick={() =>
+            onSave({ add_dirs: dirs, tools, org_visibility: vis })}>apply</button>
+          <button onClick={close}>cancel</button>
+        </div>
+      </div>
+    </div>,
+    document.body
   )
 }
 
