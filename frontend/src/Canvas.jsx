@@ -5,7 +5,7 @@ import { createPortal } from 'react-dom'
 import {
   audienceAction, BASE, compactNode, dissolveAll, getCharters, getChat,
   getHistory, getMcpServers, getNodeInbox, getScratch, interruptNode,
-  orgInboxRead, reorderNode, retractMail, saveScope, saveSettings,
+  orgInboxRead, reorderNode, retractMail, saveKiosk, saveScope, saveSettings,
   sendMessage, uploadFile,
 } from './api'
 import { pickFolder } from './picker'
@@ -137,12 +137,49 @@ const _mdCache = new Map()
 // tag — DOMPurify then strips it and keeps only the inner text, so
 // `Sync<float3>` silently became `Sync` and changed the sentence's meaning.
 // Escape `<` in plain prose; fenced/inline code is already safe.
+// Review C8: the old closed-fence regex OVER-escaped inside every block it
+// didn't recognise — an UNTERMINATED fence (every streaming code block, on
+// every delta until the closing ``` arrives), ~~~ fences, and 4-space
+// indented blocks all rendered a literal "&lt;". Line-walk instead: one
+// inCode flag, an unterminated opener stays open to EOF, and only prose
+// lines are escaped (inline `spans` protected within them).
 const escapeAngles = (src) => {
-  const parts = src.split(/(```[\s\S]*?```|`[^`\n]*`)/)
-  for (let i = 0; i < parts.length; i += 2) {
-    parts[i] = parts[i].replace(/</g, '&lt;')
+  const lines = src.split('\n')
+  let fence = null                       // {ch, len} of the open fence
+  let indented = false                   // inside a 4-space indented block
+  let prevBlank = true                   // indented blocks open after a blank
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i]
+    const m = /^ {0,3}(`{3,}|~{3,})/.exec(l)
+    if (fence) {
+      // closed only by a run of the SAME char, at least as long as the opener
+      if (m && m[1][0] === fence.ch && m[1].length >= fence.len) fence = null
+      prevBlank = false
+      continue
+    }
+    if (m) {
+      fence = { ch: m[1][0], len: m[1].length }
+      prevBlank = false
+      continue
+    }
+    const blank = /^\s*$/.test(l)
+    if (indented) {
+      if (!blank && !/^(?: {4}|\t)/.test(l)) indented = false
+      else { prevBlank = blank; continue }
+    } else if (prevBlank && /^(?: {4}|\t)/.test(l) && !blank) {
+      indented = true
+      prevBlank = false
+      continue
+    }
+    prevBlank = blank
+    // prose line: escape < outside inline `spans`
+    const parts = l.split(/(`[^`\n]*`)/)
+    for (let j = 0; j < parts.length; j += 2) {
+      parts[j] = parts[j].replace(/</g, '&lt;')
+    }
+    lines[i] = parts.join('')
   }
-  return parts.join('')
+  return lines.join('\n')
 }
 const md = (text) => {
   const key = text ?? ''
@@ -482,6 +519,22 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
     const max = Math.max(...holds)
     return Math.min((NODE_H * 1.25) / avg, (NODE_H * 1.6) / max)
   }, [tree])
+
+  // composer drafts are keyed per node id and freed slugs are re-minted by
+  // later hires (review): sweep drafts whose node no longer exists at all,
+  // so a namesake never inherits a dead agent's unsent instruction.
+  // Archived nodes stay in `map` — their queued-until-rehire drafts survive.
+  useEffect(() => {
+    try {
+      const pre = `orgtree-draft-${slug}-`
+      for (let i = localStorage.length - 1; i >= 0; i--) {
+        const k = localStorage.key(i)
+        if (k && k.startsWith(pre) && !map.has(k.slice(pre.length))) {
+          localStorage.removeItem(k)
+        }
+      }
+    } catch { /* private mode */ }
+  }, [map, slug])
 
   // ------------------------------------------------------- the spring engine
   useEffect(() => {
@@ -894,9 +947,12 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
     op({ op: 'hire', parent: draft.parent, tier: draft.tier, grant, name,
          charter: charter?.trim() || undefined,
          // pre-hire permissions (user spec): staged in the draft's modal,
-         // applied atomically with the hire
+         // applied atomically WITH the hire — effort included (review: the
+         // old post-hire /scope call is 403'd through the kiosk gateway,
+         // and its failure was swallowed silently)
          ...(scope ? { add_dirs: scope.add_dirs, tools: scope.tools,
-                       org_visibility: scope.org_visibility } : {}) })
+                       org_visibility: scope.org_visibility,
+                       effort: scope.effort || undefined } : {}) })
       .then((r) => {
         // the real card replaces the draft IN PLACE — seed its birth position
         // from the draft's spring. Via seedRef, NOT a direct springs.set: the
@@ -907,13 +963,8 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
         if (r?.node && ds) {
           seedRef.current.set(r.node, { x: ds.x, y: ds.y, at: performance.now() })
         }
-        // thinking effort (user-approved): a deep-config setting, applied
-        // right after the hire lands
-        if (r?.node && scope?.effort) {
-          saveScope(slug, r.node, { effort: scope.effort }).catch(() => {})
-        }
         setDraft(null)
-      }).catch(() => {})
+      }).catch((e) => toast([`hire failed: ${e.message}`]))
   }
 
   // the eye's bar on hover. Every credit in circulation is, recursively,
@@ -1306,9 +1357,17 @@ function UserNode({ pos, isDrop, stats, inboxCount, seats, mailGlow,
           the card's left edge, it glides outward as the square expands. */}
       {kiosk?.credits
         ? /* kiosk: the pool is FINITE — a fixed-size bar with per-child slabs,
-             exactly like an agent's (user spec); not draggable */
+             exactly like an agent's, and (user spec 2026-07-31) draggable BY
+             THE ADMIN to adjust the org's total credit cap; the public
+             gateway never gets the handle (and the /kiosk endpoint it would
+             need is deny-listed anyway) */
           <CreditBar seat={0} grant={kiosk.credits} committed={stats.circ}
-            segments={kioskSegs ?? []} zoom={zoom} pxc={pxc} />
+            segments={kioskSegs ?? []} zoom={zoom} pxc={pxc} capMode
+            min={stats.circ}
+            onCommit={pub ? undefined : (delta) =>
+              saveKiosk(slug, { credits: kiosk.credits + delta })
+                .then(() => toast?.([`kiosk credit cap: ${kiosk.credits + delta}`]))
+                .catch((e) => toast?.([`error: ${e.message}`]))} />
         : <div className="cbar-inf-wrap">
             <div className="cbar-infinite" />
             <div className="cbar-tip">
@@ -1372,8 +1431,17 @@ function EyeDesk({ map, op, slug, pulse, toast, streamEvt, inboxCount,
   })
   // №24: a NEW direct line arrives MINIMIZED with its tab lit — the shipped
   // coordinator charter grants an audience after every hire, and each grant
-  // used to shove another full-width panel into the row automatically
+  // used to shove another full-width panel into the row automatically.
+  // `seen` persists beside `min` (review): a bare ref only worked while
+  // EyeDesk stayed mounted, so any grant landing with the camera away
+  // rendered open anyway
   const seenIds = useRef(null)
+  if (seenIds.current === null) {
+    try {
+      const stored = localStorage.getItem('orgtree-eyeseen-' + slug)
+      seenIds.current = stored ? new Set(JSON.parse(stored)) : null
+    } catch { seenIds.current = null }
+  }
   const idsKey = agents.map((a) => a.id).join(',')
   useEffect(() => {
     const ids = new Set(idsKey ? idsKey.split(',') : [])
@@ -1389,6 +1457,9 @@ function EyeDesk({ map, op, slug, pulse, toast, streamEvt, inboxCount,
       }
     }
     seenIds.current = ids
+    try {
+      localStorage.setItem('orgtree-eyeseen-' + slug, JSON.stringify([...ids]))
+    } catch { /* private mode */ }
   }, [idsKey, slug])
   const open = agents.filter((a) => !minned.has(a.id))
   // the inner virtual panel matches the card interior through the desk scale
@@ -1609,7 +1680,7 @@ function UserConfig({ tree, slug, toast, close }) {
 // The bar spans seat+grant; the SEAT block sits at its foot (credits are
 // incompressible — a node's whole holding is visible mass).
 function CreditBar({ seat = 0, grant, committed, segments = [], draftMode,
-  min = 0, max, maxGhost, onDragValue, onCommit, zoom, pxc }) {
+  min = 0, max, maxGhost, onDragValue, onCommit, zoom, pxc, capMode }) {
   const [drag, setDrag] = useState(null)          // {y0, g0, val}
   const cur = drag && !draftMode ? drag.val : grant
   const seatLen = seat * pxc
@@ -1689,6 +1760,13 @@ function CreditBar({ seat = 0, grant, committed, segments = [], draftMode,
           <>
             <div>grant <b className="n-fill">{grant}</b></div>
             <div className="dim">seat <b className="n-seat">{seat}</b></div>
+          </>
+        ) : capMode ? (
+          /* the eye's kiosk bar: the same numbers wear their org-level names */
+          <>
+            <div>cap <b className="n-fill">{cur}</b>{delta !== 0 && <span className="dim"> ({delta > 0 ? '+' : ''}{delta})</span>}</div>
+            <div>circulation <b className="n-fill">{committed}</b></div>
+            <div>free <b className="n-free">{cur - committed}</b></div>
           </>
         ) : (
           <>
@@ -2522,10 +2600,15 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
     toBottom()
     sendMessage(slug, node.id, t)
       .then((r) => {
-        setSendMode(r.command ? 'command sent'
-          : r.steering ? 'steering in mid-task'
-            : r.deferred ? 'deferred — delivers at rehire'
-              : r.queued > 0 ? `queued (${r.queued} ahead)` : 'delivering')
+        // review C3: name every real outcome — "delivering" as the fallback
+        // lied for frozen nodes (mail waits durably; nothing delivers now)
+        setSendMode(r.compacting ? 'compacting — the org way (§8)'
+          : r.command ? 'command sent'
+            : r.steering ? 'steering in mid-task'
+              : r.frozen ? 'frozen — mail waits for ▶ resume'
+                : r.deferred ? 'deferred — delivers at rehire'
+                  : r.queued > 0 ? `queued (${r.queued} ahead)` : 'delivering')
+        if (r.warnings?.length) toast(r.warnings)
         return refresh(true)
       })
       .then(() => setPending((p) => p.filter((x) => x !== t)))
@@ -2674,7 +2757,10 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
             const gapMs = prev?.ts && m.ts
               ? Date.parse(m.ts) - Date.parse(prev.ts) : 0
             return (
-              <div key={i}>
+              // seq = the server's pre-slice ordinal: index keys over the
+              // sliding 300-row window remounted every row (and collapsed
+              // every open ToolChip) each time one message scrolled off
+              <div key={m.seq ?? i}>
                 {gapMs > 5 * 60e3 && (
                   <div className="msg sys">— {gapMs > 5400e3
                     ? `${Math.round(gapMs / 3600e3)} h`
@@ -3190,11 +3276,18 @@ function LineagePanel({ node, op, slug, close }) {
   // asking it questions, not for looking at what it holds
   const [reading, setReading] = useState(null)     // bearer id being read
   const [readChat, setReadChat] = useState(null)
+  const readingRef = useRef(null)
   const openRead = (bid) => {
-    if (reading === bid) { setReading(null); return }
+    if (reading === bid) { setReading(null); readingRef.current = null; return }
     setReading(bid); setReadChat(null)
-    getChat(slug, bid).then(setReadChat)
-      .catch(() => setReadChat({ messages: [] }))
+    readingRef.current = bid
+    // request guard (review): read_chat parses the whole transcript, so a
+    // slow gen-3 landing after a fast gen-1 rendered under the wrong header
+    getChat(slug, bid)
+      .then((c) => { if (readingRef.current === bid) setReadChat(c) })
+      .catch(() => {
+        if (readingRef.current === bid) setReadChat({ messages: [] })
+      })
   }
   const SEAT = { haiku: 1, sonnet: 3, opus: 5, fable: 10 }
   const gens = [...(node.lineage ?? [])].sort(
@@ -3312,8 +3405,10 @@ function ToolChip({ t, slug, nid }) {
       {open && t.diff && (
         <pre className="filepre diffpre">
           {t.diff.lines.map((l, i) => (
-            <div key={i} className={l.startsWith('+') ? 'dplus'
+            <div key={i} className={l.startsWith('@@') ? 'dhunk'
+              : l.startsWith('+') ? 'dplus'
               : l.startsWith('-') ? 'dminus' : ''}>{l}</div>))}
+          {t.diff.truncated && <div className="dim">… truncated</div>}
         </pre>)}
       {open && !t.diff && t.result && (
         <pre className="filepre respre">
@@ -3414,7 +3509,10 @@ function EffortSwitch({ value, onSet }) {
 // starts with "/" — a curated list of commands known to work headless, not a
 // clickable palette. Sent verbatim as a session command (no mail envelope).
 const SLASH_COMMANDS = [
-  ['/compact', 'summarize + free context (the org also does this automatically)'],
+  // review C4: /compact routes to the SAME §8 org split as the compact
+  // button (fork → compact → knowledge bearer) — the hint must not describe
+  // a bearer-less in-place compaction as "what the org does automatically"
+  ['/compact', 'compact the org way (§8): the pre-compaction self is kept as a knowledge bearer'],
   ['/context', 'show what is using the context window'],
   ['/cost', 'token + cost usage for this session'],
 ]

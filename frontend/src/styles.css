@@ -421,8 +421,9 @@ main {
 .cc-composer textarea:focus { outline: none; }
 .cc-hint { color: #6e6e6e; margin-left: auto; }
 .cc-send {
-  width: 22px; height: 22px; border-radius: 50%; padding: 0; flex: none;
+  width: 24px; height: 24px; border-radius: 50%; padding: 0; flex: none;
   font-size: 13px; font-weight: 700; line-height: 1;
+  display: flex; align-items: center; justify-content: center;
   background: var(--accent); border: 1px solid var(--accent); color: #fff;
 }
 .cc-send:disabled { background: var(--input); border-color: var(--line); color: var(--dim); }
@@ -1414,11 +1415,12 @@ svg.MuiSvgIcon-root {
 .rec-actor { color: var(--dim); margin-right: 8px; }
 .rec-warn { color: var(--work); font-size: 11px; padding-left: 14px; }
 
-/* file attach in the composer */
+/* file attach in the composer — same 24px circle family as send, so the
+   row's controls read as one aligned set (user design pass) */
 .cc-attach {
-  width: 22px; height: 22px; padding: 0; flex: none; border-radius: 4px;
+  width: 24px; height: 24px; padding: 0; flex: none; border-radius: 50%;
   background: none; border: 1px solid var(--line); color: var(--dim);
-  display: flex; align-items: center; justify-content: center;
+  display: flex; align-items: center; justify-content: center; font-size: 12px;
 }
 .cc-attach:hover { color: var(--accent); border-color: var(--accent); }
 
@@ -1437,6 +1439,7 @@ svg.MuiSvgIcon-root {
 }
 .diffpre .dplus { color: var(--ok); background: color-mix(in srgb, var(--ok) 10%, transparent); }
 .diffpre .dminus { color: var(--bad); background: color-mix(in srgb, var(--bad) 10%, transparent); }
+.diffpre .dhunk { color: var(--dim); opacity: .85; margin-top: 3px; }
 .toolimg {
   display: block; max-width: 90%; max-height: 260px; margin: 4px 0 4px 18px;
   border: 1px solid var(--line); border-radius: 4px;
@@ -1481,11 +1484,15 @@ svg.MuiSvgIcon-root {
 .mcpdot.ok { background: var(--ok); }
 .mcpdot.bad { background: var(--bad); }
 /* the composer's thinking-effort control: a small button that opens the
-   five-dot switch (Claude Code's control) in a popover above it */
-.eff-wrap { position: relative; display: inline-flex; flex: none; align-self: center; }
+   five-dot switch (Claude Code's control) in a popover above it. The chip
+   shares the 24px control line with attach + send (user design pass) —
+   everything bottom-aligns on one row, no floating tokens. */
+.eff-wrap { position: relative; display: inline-flex; flex: none; }
 .cc-eff {
-  font-size: 10px; padding: 3px 8px; border-radius: 9px; flex: none;
-  background: none; border: 1px solid var(--line); color: var(--dim);
+  height: 24px; padding: 0 10px; border-radius: 12px; flex: none;
+  display: inline-flex; align-items: center;
+  font-size: 10.5px; background: none;
+  border: 1px solid var(--line); color: var(--dim);
   line-height: 1; white-space: nowrap;
 }
 .cc-eff:hover { border-color: var(--accent); color: var(--ink); }
