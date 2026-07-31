@@ -1550,22 +1550,15 @@ function EyeDesk({ map, op, slug, pulse, toast, streamEvt, inboxCount,
     <div className="desk-over eye-desk" onWheel={(e) => e.stopPropagation()}
       onPointerDown={(e) => e.stopPropagation()}>
       <div className="desk-inner desk-body eye-inner" style={{ width: innerW }}>
-        <div className="cc-head">
+        {/* one row (user spec 2026-07-31): the "you · N direct lines" label
+            was dead space — the TABS live in the head now, beside the eye */}
+        <div className="cc-head eye-head">
           <svg className="eye eye-mini" viewBox="0 0 48 26">
             <path d="M 2 13 C 13 2, 35 2, 46 13 C 35 24, 13 24, 2 13 Z" />
             <circle className="iris" cx="24" cy="13" r="6.5" />
             <circle className="pupil" cx="24" cy="13" r="2.6" />
           </svg>
-          <span className="cc-name">you</span>
-          <span className="dim">{agents.length} direct line{agents.length === 1 ? '' : 's'}</span>
-          <span className="spacer" />
-          <button className="cc-icon" title="your inbox" onClick={() => onInbox?.()}>
-            <MailIcon fontSize="inherit" />{inboxCount > 0 && <b className="eye-count">{inboxCount}</b>}
-          </button>
-          <button className="cc-icon" title="agent-hire defaults"
-            onClick={() => onGear?.()}><SettingsIcon fontSize="inherit" /></button>
-        </div>
-        <div className="eye-tabs">
+          <div className="eye-tabs">
           {agents.map((a) => (
             <span key={a.id} className={'eye-tab' + (minned.has(a.id) ? '' : ' on')}>
               <button className="eye-tab-main"
@@ -1595,6 +1588,13 @@ function EyeDesk({ map, op, slug, pulse, toast, streamEvt, inboxCount,
           ))}
           {!agents.length &&
             <span className="dim">no direct lines yet — top-level hires and user-audience holders appear here</span>}
+          </div>
+          <span className="spacer" />
+          <button className="cc-icon" title="your inbox" onClick={() => onInbox?.()}>
+            <MailIcon fontSize="inherit" />{inboxCount > 0 && <b className="eye-count">{inboxCount}</b>}
+          </button>
+          <button className="cc-icon" title="agent-hire defaults"
+            onClick={() => onGear?.()}><SettingsIcon fontSize="inherit" /></button>
         </div>
         <div className="eye-panels">
           {open.map((a) => (

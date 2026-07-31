@@ -1281,6 +1281,10 @@ svg.MuiSvgIcon-root {
 /* the eye is the ONE cell that expands in width (screen aspect) at focus */
 .sq.user { transition: width .35s ease, margin-left .35s ease; }
 .sq.user.desk .eye { opacity: 0; }
+/* …but the HEAD's mini eye is the switchboard's identity — keep it visible
+   (it also matched the big-eye fade above; masked before 2026-07-31 by the
+   since-removed "you · N direct lines" label) */
+.sq.user.desk .eye-mini { opacity: 1; }
 .eye-mini { width: 34px; height: 19px; flex: none; }
 .eye-mini path { fill: none; stroke: var(--accent); stroke-width: 2.4; }
 .eye-mini .iris { fill: none; stroke: var(--accent); stroke-width: 2; }
@@ -1289,10 +1293,14 @@ svg.MuiSvgIcon-root {
   font-size: 10.5px; background: var(--accent); color: var(--accent-ink);
   border-radius: 8px; padding: 0 5px; font-style: normal; line-height: 1.5;
 }
+/* tabs live IN the head row beside the eye (user spec 2026-07-31 — the old
+   "you · N direct lines" label wasted the line); they wrap when crowded and
+   the row grows only as needed */
 .eye-tabs {
-  display: flex; gap: 6px; flex-wrap: wrap; flex: none; align-items: center;
-  padding: 2px 0 6px; border-bottom: 1px solid var(--line-soft); font-size: 13px;
+  display: flex; gap: 6px; flex-wrap: wrap; align-items: center;
+  flex: 1; min-width: 0; font-size: 13px;
 }
+.eye-head { border-bottom: 1px solid var(--line-soft); padding-bottom: 5px; }
 .eye-tab {
   display: inline-flex; align-items: stretch; overflow: hidden;
   border: 1px solid var(--line); border-radius: 5px; background: var(--input);
