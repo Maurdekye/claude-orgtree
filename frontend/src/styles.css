@@ -1480,11 +1480,25 @@ svg.MuiSvgIcon-root {
 }
 .mcpdot.ok { background: var(--ok); }
 .mcpdot.bad { background: var(--bad); }
-/* the composer's thinking-effort switch (Claude Code's five-dot control) */
+/* the composer's thinking-effort control: a small button that opens the
+   five-dot switch (Claude Code's control) in a popover above it */
+.eff-wrap { position: relative; display: inline-flex; flex: none; align-self: center; }
+.cc-eff {
+  font-size: 10px; padding: 3px 8px; border-radius: 9px; flex: none;
+  background: none; border: 1px solid var(--line); color: var(--dim);
+  line-height: 1; white-space: nowrap;
+}
+.cc-eff:hover { border-color: var(--accent); color: var(--ink); }
+.cc-eff.set { color: var(--accent); border-color: var(--accent); }
+.eff-pop {
+  position: absolute; bottom: calc(100% + 8px); right: 0; z-index: 30;
+  background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: 8px; padding: 8px 11px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .45);
+}
 .effort-switch {
   display: inline-flex; align-items: center; gap: 8px; flex: none;
-  padding: 4px 9px; border: 1px solid var(--line); border-radius: 6px;
-  background: var(--input); align-self: center;
+  align-self: center;
 }
 .eff-label { font-size: 11px; color: var(--dim); white-space: nowrap; }
 .eff-track { display: inline-flex; align-items: center; gap: 5px; }

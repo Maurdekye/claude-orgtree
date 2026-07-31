@@ -323,6 +323,12 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
   const followRef = useRef(null)
   const panRef = useRef(null)
   const springs = useRef(new Map())
+  // id → {x,y,at}: a node that should MATERIALIZE at a specific spot (a hire
+  // replacing its draft card) instead of gliding over from its parent. Lives
+  // outside springs because the reaper below deletes any spring whose id the
+  // layout doesn't know yet — and the hire response lands frames before the
+  // refreshed tree does
+  const seedRef = useRef(new Map())
   const targetRef = useRef(target); targetRef.current = target
   const mapRef = useRef(map); mapRef.current = map
   const nodeDrag = useRef(null)     // {id, sx, sy, ox, oy, moved}
@@ -486,9 +492,12 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
       for (const [id, tgt] of targetRef.current) {
         let s = springs.current.get(id)
         if (!s) {
+          const seed = seedRef.current.get(id)
+          if (seed) seedRef.current.delete(id)
           const par = mapRef.current.get(id)?.parent
-          const ps = par && springs.current.get(par)
-          s = ps ? { x: ps.x, y: ps.y, vx: 0, vy: 0 }
+          const ps = !seed && par && springs.current.get(par)
+          s = seed ? { x: seed.x, y: seed.y, vx: 0, vy: 0 }
+            : ps ? { x: ps.x, y: ps.y, vx: 0, vy: 0 }
                  : { x: tgt.x, y: tgt.y, vx: 0, vy: 0 }
           springs.current.set(id, s)
           active = true
@@ -504,6 +513,9 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
       }
       for (const id of [...springs.current.keys()]) {
         if (!targetRef.current.has(id)) springs.current.delete(id)
+      }
+      for (const [id, sd] of seedRef.current) {   // a hire that never landed
+        if (t - sd.at > 10000) seedRef.current.delete(id)
       }
       // self-heal native scroll: the viewport pans by transform only, but
       // focusing an off-screen element (a spawned draft's name input) makes
@@ -886,10 +898,15 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
          ...(scope ? { add_dirs: scope.add_dirs, tools: scope.tools,
                        org_visibility: scope.org_visibility } : {}) })
       .then((r) => {
-        // the real card replaces the draft IN PLACE — seed its spring from the
-        // draft's so it doesn't glide over from its parent a second time
+        // the real card replaces the draft IN PLACE — seed its birth position
+        // from the draft's spring. Via seedRef, NOT a direct springs.set: the
+        // reaper deletes unknown-id springs every tick, and the refreshed tree
+        // (which makes the id known) lands frames after this response — a
+        // direct set died instantly and the node glided in from its parent
         const ds = springs.current.get(DRAFT)
-        if (r?.node && ds) springs.current.set(r.node, { ...ds, vx: 0, vy: 0 })
+        if (r?.node && ds) {
+          seedRef.current.set(r.node, { x: ds.x, y: ds.y, at: performance.now() })
+        }
         // thinking effort (user-approved): a deep-config setting, applied
         // right after the hire lands
         if (r?.node && scope?.effort) {
@@ -2752,7 +2769,7 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
             if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() }
           }} />
         {!pub && (
-          <EffortSwitch value={node.scope?.effort ?? ''}
+          <EffortButton value={node.scope?.effort ?? ''}
             onSet={(lvl) => saveScope(slug, node.id, { effort: lvl })
               .then(() => toast([lvl
                 ? `${node.id} thinking effort: ${lvl}`
@@ -2782,7 +2799,7 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
         // clicking the desk's non-interactive space recenters the camera on
         // it (user ruling) — but never steal clicks meant for controls, and
         // never fight an in-progress text selection
-        if (e.target.closest('button, input, textarea, select, a, label, .mailrow')) return
+        if (e.target.closest('button, input, textarea, select, a, label, .mailrow, .eff-pop')) return
         if (window.getSelection()?.toString()) return
         onRecenter?.()
       }}>
@@ -3338,11 +3355,40 @@ function SysLine({ m }) {
   )
 }
 
-// Thinking-effort switch in the composer (user spec, Claude Code's control):
-// a five-dot track — click a dot to set low…max, click the active dot to
-// clear back to the CLI default. The permission-mode half of Claude Code's
-// bar is deliberately absent: org permissions decide what agents can do.
+// Thinking-effort control in the composer (user spec): a SMALL button beside
+// send; the five-dot track (Claude Code's control) lives in a popover it
+// opens — never inline in the entry row. Click a dot to set low…max, click
+// the active dot to clear back to the CLI default. The permission-mode half
+// of Claude Code's bar is deliberately absent: org permissions decide what
+// agents can do.
 const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max']
+
+function EffortButton({ value, onSet }) {
+  const [open, setOpen] = useState(false)
+  const wrapRef = useRef(null)
+  useEffect(() => {
+    if (!open) return
+    // capture-phase on window: fires before the desk's stopPropagation walls
+    const away = (e) => { if (!wrapRef.current?.contains(e.target)) setOpen(false) }
+    window.addEventListener('pointerdown', away, true)
+    return () => window.removeEventListener('pointerdown', away, true)
+  }, [open])
+  return (
+    <span className="eff-wrap" ref={wrapRef}>
+      <button type="button" className={'cc-eff' + (value ? ' set' : '')}
+        title={`thinking effort — ${value || 'CLI default'}`}
+        onClick={() => setOpen((o) => !o)}>
+        {value || 'effort'}
+      </button>
+      {open && (
+        <span className="eff-pop">
+          <EffortSwitch value={value}
+            onSet={(lvl) => { onSet(lvl); setOpen(false) }} />
+        </span>
+      )}
+    </span>
+  )
+}
 
 function EffortSwitch({ value, onSet }) {
   const idx = EFFORT_LEVELS.indexOf(value)
