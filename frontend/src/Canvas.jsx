@@ -2652,6 +2652,19 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
   const [asking, setAsking] = useState(false)
   const [askCompact, setAskCompact] = useState(false)
   const [view, setView] = useState('chat')     // chat | history | files | inbox
+  // №7 denials are per-turn server state — only the NEXT turn clears them, so
+  // the panel needs its own × (user report 2026-07-31). Dismissal is keyed to
+  // the turn that produced the batch (a fresh batch always shows) and rides
+  // localStorage like the draft, since clicking a sibling unmounts this.
+  const denialsKey = `${((node.turns ?? [])[node.turns?.length - 1] ?? {}).at ?? ''}·${node.last_denials?.length ?? 0}`
+  const denialsLsKey = `orgtree-denials-${slug}-${node.id}`
+  const [denialsHidden, setDenialsHidden] = useState(() => {
+    try { return localStorage.getItem(denialsLsKey) } catch { return null }
+  })
+  const hideDenials = () => {
+    setDenialsHidden(denialsKey)
+    try { localStorage.setItem(denialsLsKey, denialsKey) } catch { /* private mode */ }
+  }
   const [live_feed, setLiveFeed] = useState([])
   const [draft, setDraft] = useState('')       // the token-streamed growing reply
   const [thinking, setThinking] = useState('') // №18: the live ribbon (tail)
@@ -3001,8 +3014,10 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
           ))}
           {/* №7: the machine truth about headless auto-denies — the agent
               was corrected and nothing showed it */}
-          {node.last_denials?.length > 0 && (
+          {node.last_denials?.length > 0 && denialsHidden !== denialsKey && (
             <div className="denials">
+              <button className="chip-x denials-x" title="dismiss"
+                onClick={hideDenials}><CloseIcon fontSize="inherit" /></button>
               {node.last_denials.map((d, i) => (
                 <div key={i}>⊘ denied · {d.tool}{d.arg ? `(${d.arg})` : ''}</div>))}
               <span className="dim">last turn — the ⚙ folder grants decide this</span>

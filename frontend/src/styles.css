@@ -1175,9 +1175,11 @@ input:focus, select:focus, textarea:focus, button:focus-visible {
 .addrow:hover { color: var(--ink); }
 
 /* -------------------------------------------------------------------- toasts */
+/* above every scrim (18-20) and the folder picker (60): a toast's
+   click-to-dismiss must stay reachable while a modal is open */
 .toasts {
   position: fixed; right: 16px; bottom: 16px; display: flex;
-  flex-direction: column; gap: 8px; max-width: 460px; z-index: 10;
+  flex-direction: column; gap: 8px; max-width: 460px; z-index: 100;
 }
 .toast {
   background: var(--panel); border: 1px solid var(--line);
@@ -1545,6 +1547,7 @@ svg.MuiSvgIcon-root {
   margin: 6px 0 2px; padding: 6px 10px; font-size: 11.5px;
   color: var(--bad); border-left: 2px solid var(--bad);
 }
+.denials-x { float: right; }
 .denials .dim { color: var(--dim); }
 /* slash-command hints (user-approved: hinting, not a palette) */
 .slash-hints {
