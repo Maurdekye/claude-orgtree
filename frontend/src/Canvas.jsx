@@ -505,6 +505,15 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
       for (const id of [...springs.current.keys()]) {
         if (!targetRef.current.has(id)) springs.current.delete(id)
       }
+      // self-heal native scroll: the viewport pans by transform only, but
+      // focusing an off-screen element (a spawned draft's name input) makes
+      // the browser scroll the overflow:hidden box — which shears the HUD and
+      // tray off the canvas and corrupts every centerOn until reload
+      const vpEl = viewportRef.current
+      if (vpEl && (vpEl.scrollLeft || vpEl.scrollTop)) {
+        vpEl.scrollLeft = 0
+        vpEl.scrollTop = 0
+      }
       // №25: the camera rides the focused desk. A hire ANYWHERE re-anchors
       // the whole layout (eye at x=6000), which used to slide the desk you
       // were typing into ~1000 screen px out of the window — follow the
@@ -558,6 +567,19 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
     }
     animRef.current = requestAnimationFrame(step)
   }, [])
+
+  // the HUD ± buttons zoom about the SCREEN CENTER — changing z with x/y
+  // held fixed anchors the world origin instead, which (with the eye parked
+  // at world x=6000) read as a violent sideways pan, not a zoom
+  const zoomStep = useCallback((factor) => {
+    const vp = viewportRef.current?.getBoundingClientRect()
+    const v = viewRef.current
+    const z = Math.min(Z_MAX, Math.max(0.24, v.z * factor))
+    if (!vp || z === v.z) return
+    const cx = vp.width / 2, cy = vp.height / 2
+    const wx = (cx - v.x) / v.z, wy = (cy - v.y) / v.z
+    animateTo({ x: cx - wx * z, y: cy - wy * z, z }, 220)
+  }, [animateTo])
 
   const centerOn = useCallback((id, z = null) => {
     const p = targetRef.current.get(id)
@@ -850,8 +872,11 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
     setDraft({ parent: parentId === USER ? null : parentId, tier })
     // roughly OVERVIEW scale start to finish (user ruling): the form is
     // authored on a 200px virtual surface (scale .6 into the card), so
-    // z ≈ 1.7 already renders authored px ≈ screen px — no screen-fill dive
-    setTimeout(() => centerOn(DRAFT, Math.max(1.7, viewRef.current.z)), 60)
+    // z ≈ 1.7 already renders authored px ≈ screen px — no screen-fill dive.
+    // Clamped from ABOVE too: spawning from a desk (chips live there now)
+    // must glide OUT to overview, not render the form at desk fill
+    setTimeout(() => centerOn(
+      DRAFT, Math.min(2.05, Math.max(1.7, viewRef.current.z))), 60)
   }
   const confirmDraft = (name, grant, charter, scope) => {
     op({ op: 'hire', parent: draft.parent, tier: draft.tier, grant, name,
@@ -896,7 +921,16 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
   return (
     <div className="viewport" ref={viewportRef}
       onPointerDown={onPointerDown} onPointerMove={onPointerMove}
-      onPointerUp={onPointerUp} onPointerCancel={onPointerUp}>
+      onPointerUp={onPointerUp} onPointerCancel={onPointerUp}
+      onScroll={(e) => {
+        // the viewport pans by TRANSFORM only — any native scroll is the
+        // browser force-scrolling an overflow:hidden box to reach a focused
+        // element (the draft's name input, off-screen when spawning from a
+        // desk). A real scrollLeft/Top here shears every screen-space anchor
+        // (HUD, tray) off the canvas and corrupts centerOn math; zero it.
+        e.currentTarget.scrollLeft = 0
+        e.currentTarget.scrollTop = 0
+      }}>
       <div className="space" style={{
         width: bounds.w, height: bounds.h,
         transform: `translate(${view.x}px, ${view.y}px) scale(${view.z})`,
@@ -1099,10 +1133,10 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
       </div>
       {/* stop pointerdown: the viewport's pan pointer-capture retargets clicks
           and silently kills these buttons */}
+      {/* nav cluster (user spec): bottom-LEFT beside the agents tray, so
+          every zoom target lives in one stack — ordered top to bottom:
+          switchboard · full view · zoom in · zoom out */}
       <div className="zoomhud" onPointerDown={(e) => e.stopPropagation()}>
-        {/* jump to the SWITCHBOARD from anywhere (user spec) — the same glide
-            as clicking the eye; pairs with the per-tab jump buttons for fast
-            board ↔ agent hopping */}
         <button className="hud-eye" title="jump to the switchboard"
           onClick={() => centerOn(USER)}>
           <svg viewBox="0 0 48 26">
@@ -1111,9 +1145,9 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
             <circle className="pupil" cx="24" cy="13" r="2.6" />
           </svg>
         </button>
-        <button onClick={() => animateTo({ ...viewRef.current, z: Math.min(Z_MAX, viewRef.current.z * 1.3) }, 220)}><AddIcon fontSize="inherit" /></button>
-        <button onClick={() => animateTo({ ...viewRef.current, z: Math.max(0.24, viewRef.current.z / 1.3) }, 220)}><RemoveIcon fontSize="inherit" /></button>
         <button title="fit the whole org" onClick={() => fitAll()}><FullscreenIcon fontSize="inherit" /></button>
+        <button title="zoom in" onClick={() => zoomStep(1.3)}><AddIcon fontSize="inherit" /></button>
+        <button title="zoom out" onClick={() => zoomStep(1 / 1.3)}><RemoveIcon fontSize="inherit" /></button>
       </div>
       {/* the agent TRAY (user spec): a flat list of every agent — tier token,
           name, context wheel, working state — in the nodes' own visual
@@ -1715,7 +1749,16 @@ function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRemaining,
               always visible and stages the pre-hire permissions */}
           <div className="df-head">
             <span className={'tier t-' + draft.tier}>{TIER_LETTER[draft.tier]}</span>
-            <input className="df-name" autoFocus placeholder="name…" value={name}
+            <input className="df-name" placeholder="name…" value={name}
+              // focus WITHOUT scroll: autoFocus on an element inside the
+              // world transform made the browser scroll the overflow:hidden
+              // viewport when the draft spawned off-screen (from a desk)
+              ref={(el) => {
+                if (el && !el.dataset.f) {
+                  el.dataset.f = '1'
+                  el.focus({ preventScroll: true })
+                }
+              }}
               onChange={(e) => setName(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter' && ok) hire() }} />
             <button className="df-gear"
@@ -2684,8 +2727,16 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
             [...e.target.files].forEach(attach)
             e.target.value = ''
           }} />
-        <textarea rows={2} value={text} disabled={!canMail} ref={taRef}
-          autoFocus={!bare && !compact}
+        <textarea rows={2} value={text} disabled={!canMail}
+          ref={(el) => {
+            taRef.current = el
+            // autofocus single-desk only, and never let focus scroll the
+            // transform-panned viewport (same hazard as the draft input)
+            if (el && !bare && !compact && !el.dataset.f) {
+              el.dataset.f = '1'
+              el.focus({ preventScroll: true })
+            }
+          }}
           placeholder={live ? `message ${node.id}…`
             : node.state === 'archived'
               ? `message ${node.id} — queued until rehire…` : node.state}
