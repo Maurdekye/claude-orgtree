@@ -1152,7 +1152,8 @@ function SpawnChips({ onSpawn, free, seats }) {
         const cant = Number.isFinite(free) && free < seat
         return (
           <button key={t} disabled={cant} className={'t-' + t}
-            title={cant ? `${t}: needs ${seat} free (has ${free})` : `hire a ${t} (seat ${seat})`}
+            title={cant ? `${t}: needs ${seat} free (has ${free})`
+              : `hire ${/^[aeiou]/.test(t) ? 'an' : 'a'} ${t} (seat ${seat})`}
             onClick={(e) => { e.stopPropagation(); onSpawn(t) }}>
             {TIER_LETTER[t]}
           </button>
@@ -1435,25 +1436,23 @@ function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRemaining,
         draftMode max={max}
         onDragValue={setGrant} zoom={zoom} pxc={pxc} />
       <div className="draft-tag">uninitialized</div>
-      {/* permissions ride the SAME gear as every agent card, same position
-          (user ruling) — pre-hire it stages the scope applied with the hire */}
-      <button className="gearbtn"
-        title="permissions — folders, tools, MCP, visibility (applied with the hire)"
-        onPointerDown={(e) => e.stopPropagation()}
-        onClick={(e) => { e.stopPropagation(); setPermsOpen(true) }}>
-        <SettingsIcon fontSize="inherit" /></button>
       {/* the form is authored at natural screen scale and counter-scaled into
           the card — the desk's inverted-scale regime, on a 200px surface so
           the whole hiring flow stays near overview zoom */}
       <div className="draft-over" onWheel={(e) => e.stopPropagation()}>
         <div className="draft-inner">
-          {/* top row: tier token + name entry, gutter on the right for the
-              (always-visible) gear (user spec) */}
+          {/* top row: tier token · name entry · gear — one flex row, all three
+              the same height with equal gaps (user ruling); the gear is
+              always visible and stages the pre-hire permissions */}
           <div className="df-head">
             <span className={'tier t-' + draft.tier}>{TIER_LETTER[draft.tier]}</span>
             <input className="df-name" autoFocus placeholder="name…" value={name}
               onChange={(e) => setName(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter' && ok) hire() }} />
+            <button className="df-gear"
+              title="permissions — folders, tools, MCP, visibility (applied with the hire)"
+              onClick={() => setPermsOpen(true)}>
+              <SettingsIcon fontSize="inherit" /></button>
           </div>
           {/* grant lives ONLY on the credit bar (user ruling) — no slider,
               no readout line; the bar's own tip reports grant + seat */}

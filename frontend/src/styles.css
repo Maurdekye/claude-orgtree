@@ -851,31 +851,43 @@ main {
 .draft-inner {
   width: 200px; height: 200px;
   transform: scale(0.6); transform-origin: 0 0;
-  padding: 9px 10px; display: flex; flex-direction: column; gap: 6px;
+  padding: 10px; display: flex; flex-direction: column; gap: 7px;
 }
-/* top row = tier token + name entry; right gutter clears the gear, which is
-   ALWAYS visible on a draft (user spec) — it stages the pre-hire permissions */
-.df-head { display: flex; align-items: center; gap: 5px; min-width: 0; padding-right: 26px; }
-.df-head .tier { width: 15px; height: 15px; font-size: 9px; flex: none; }
+/* top row = tier token · name entry · gear: ONE flex row, all three exactly
+   the same height (20px) with equal 6px gaps (user ruling); the gear is
+   always visible — it stages the pre-hire permissions */
+.df-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.df-head .tier {
+  width: 20px; height: 20px; font-size: 10px; flex: none; box-sizing: border-box;
+}
 .df-name {
-  flex: 1; min-width: 0;
-  font-family: var(--mono); font-size: 11px; padding: 3px 6px; border-radius: 4px;
+  flex: 1; min-width: 0; height: 20px; box-sizing: border-box;
+  font-family: var(--mono); font-size: 11px; padding: 0 6px; border-radius: 4px;
 }
-.sq.draft .gearbtn { opacity: .85; }
+.df-gear {
+  width: 20px; height: 20px; flex: none; box-sizing: border-box;
+  display: grid; place-items: center; padding: 0; font-size: 13px;
+  background: none; border: none; color: var(--dim); line-height: 1;
+}
+.df-gear:hover { color: var(--ink-strong); background: none; }
 .df-presets { display: flex; flex-direction: column; gap: 3px; }
 .df-presets .field-label { font-size: 8.5px; }
 /* picked charter presets are CARDS (user spec): click removes; hover shows
    the source file's path on disk; hiring compiles them into charter text */
-.preset-cards { display: flex; flex-wrap: wrap; gap: 3px; align-items: center; }
+.preset-cards { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
 .preset-card {
   display: inline-flex; align-items: center; gap: 3px;
-  font-size: 9px; padding: 1px 5px; border-radius: 3px;
+  height: 18px; box-sizing: border-box;
+  font-size: 9px; padding: 0 6px; border-radius: 3px;
   font-family: var(--mono); font-weight: 600;
   background: var(--input); border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line));
   color: var(--ink);
 }
 .preset-card:hover { border-color: var(--bad); color: var(--bad); background: var(--input); }
-.df-preset-add { font-size: 9px; padding: 1px 4px; color: var(--dim); width: auto; }
+.df-preset-add {
+  height: 18px; box-sizing: border-box;
+  font-size: 9px; padding: 0 4px; color: var(--dim); width: auto;
+}
 .df-charter {
   flex: 1; min-height: 28px; resize: none;
   font-size: 9.5px; line-height: 1.45; font-family: inherit;
@@ -883,8 +895,12 @@ main {
   background: var(--input); border: 1px solid var(--line); color: var(--ink);
 }
 .df-charter:focus { outline: none; border-color: var(--accent); }
-.df-foot { display: flex; gap: 4px; align-items: center; }
-.df-foot button { font-size: 9.5px; padding: 2px 7px; border-radius: 4px; }
+.df-foot { display: flex; gap: 6px; align-items: center; }
+.df-foot button {
+  height: 22px; box-sizing: border-box;
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 9.5px; padding: 0 9px; border-radius: 4px;
+}
 
 /* ------------------------------------------------------ welcome + org drawer */
 .welcome { flex: 1; display: grid; place-items: center; min-height: 100vh; }
