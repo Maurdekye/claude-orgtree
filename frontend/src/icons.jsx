@@ -18,6 +18,7 @@ export { default as FileIcon } from '@mui/icons-material/InsertDriveFileOutlined
 export { default as FolderIcon } from '@mui/icons-material/FolderOpen'
 export { default as FrozenIcon } from '@mui/icons-material/AcUnit'
 export { default as FullscreenIcon } from '@mui/icons-material/Fullscreen'
+export { default as GitHubIcon } from '@mui/icons-material/GitHub'
 export { default as HearingIcon } from '@mui/icons-material/Hearing'
 export { default as HomeIcon } from '@mui/icons-material/HomeOutlined'
 export { default as LayersIcon } from '@mui/icons-material/Layers'

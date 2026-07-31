@@ -57,8 +57,17 @@ aside {
 aside h1, .welcome-card h1 {
   font-size: 13px; font-weight: 600; margin: 2px 4px 6px; letter-spacing: .08em;
   text-transform: uppercase; color: var(--dim);
+  display: flex; align-items: center; gap: 5px;
 }
 aside h1 svg, .welcome-card h1 svg { color: var(--accent); }
+/* the repo link — lives in the orgbar and beside the brand */
+.gh-link {
+  display: inline-flex; align-items: center; color: var(--dim);
+  font-size: 15px; line-height: 1;
+}
+.gh-link:hover { color: var(--ink-strong); }
+.gh-link svg { color: inherit; }
+.h1-gh { margin-left: auto; font-size: 14px; }
 aside footer { margin-top: auto; color: #6e6e6e; font-size: 11px; padding: 0 4px; }
 
 nav { display: flex; flex-direction: column; gap: 2px; }

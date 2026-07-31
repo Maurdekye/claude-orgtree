@@ -8,9 +8,9 @@ import {
 import { ConfirmModal, MailFolders, MailList, OrgCanvas, OrgRecord, useEsc } from './Canvas'
 import {
   AutorenewIcon, BlockIcon, CheckIcon, ChevronRightIcon, CloseIcon, CopyIcon,
-  DeleteIcon, ExpandMoreIcon, HearingIcon, HomeIcon, LockIcon, LockOpenIcon,
-  MailIcon, MenuIcon, PlayIcon, PublicIcon, SettingsIcon, SparkIcon,
-  StopIcon, StorageIcon, WarnIcon,
+  DeleteIcon, ExpandMoreIcon, GitHubIcon, HearingIcon, HomeIcon, LockIcon,
+  LockOpenIcon, MailIcon, MenuIcon, PlayIcon, PublicIcon, SettingsIcon,
+  SparkIcon, StopIcon, StorageIcon, WarnIcon,
 } from './icons'
 import { DirList } from './forms'
 import { FolderPickerHost } from './picker'
@@ -75,8 +75,11 @@ export default function App() {
     const t = setInterval(refreshOrgs, 3000)
     return () => clearInterval(t)
   }, [slug, drawer, refreshOrgs])
-  useEffect(() => {          // kiosk: the single org IS the app
-    if (!slug && orgs.length && orgs[0].kiosk) setSlug(orgs[0].slug)
+  useEffect(() => {          // kiosk: the single org IS the app — PUBLIC
+    // builds only (BASE = /k/<token>). On the admin side orgs[0] can be a
+    // kiosk org too (list_orgs carries the flag now), and a kiosk sorting
+    // first hijacked the whole welcome screen into it
+    if (BASE && !slug && orgs.length) setSlug(orgs[0].slug)
   }, [orgs, slug])
 
   useEffect(() => {                    // back/forward keep working
@@ -181,7 +184,10 @@ export default function App() {
 
   const orgPanel = (
     <>
-      <h1><SparkIcon fontSize="inherit" /> orgtree</h1>
+      <h1><SparkIcon fontSize="inherit" /> orgtree
+        <a className="gh-link h1-gh" href="https://github.com/Maurdekye/claude-orgtree"
+          target="_blank" rel="noreferrer" title="orgtree on GitHub">
+          <GitHubIcon fontSize="inherit" /></a></h1>
       {slug && <button className="home" onClick={goHome}><HomeIcon fontSize="inherit" /> all organizations</button>}
       <nav>
         {orgs.map((o) => (
@@ -201,7 +207,7 @@ export default function App() {
         ))}
         {!orgs.length && <div className="dim pad">no organizations yet</div>}
       </nav>
-      {!(orgs.length && orgs[0].kiosk) && <NewOrg onCreate={(name, dirs, kiosk, sandbox) =>
+      {!BASE && <NewOrg onCreate={(name, dirs, kiosk, sandbox) =>
         createOrg(name, dirs, kiosk, sandbox).then((r) => { refreshOrgs(); pick(r.slug) })
           .catch((e) => toast([`error: ${e.message}`]))} />}
       {/* global default org settings (user spec): every NEW org is born with
@@ -326,6 +332,9 @@ export default function App() {
                 </span>
                 {!tree.public &&
                   <button onClick={() => setShowSettings(true)}><SettingsIcon fontSize="inherit" /> settings</button>}
+                <a className="gh-link" href="https://github.com/Maurdekye/claude-orgtree"
+                  target="_blank" rel="noreferrer" title="orgtree on GitHub">
+                  <GitHubIcon fontSize="inherit" /></a>
               </header>
               <OrgCanvas tree={tree} op={op} slug={slug} pulse={pulse} toast={toast}
                 streamEvt={streamEvt} activity={activity} mailEvt={mailEvt}
