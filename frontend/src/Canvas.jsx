@@ -5,8 +5,8 @@ import { createPortal } from 'react-dom'
 import {
   audienceAction, BASE, compactNode, dissolveAll, getCharters, getChat,
   getHistory, getMcpServers, getNodeInbox, getScratch, interruptNode,
-  orgInboxRead, reorderNode, retractMail, saveKiosk, saveScope, saveSettings,
-  sendMessage, uploadFile,
+  orgInboxRead, reorderNode, retractMail, saveHireDefaults, saveKiosk,
+  saveScope, saveSettings, sendMessage, uploadFile,
 } from './api'
 import { pickFolder } from './picker'
 import {
@@ -1387,7 +1387,9 @@ function UserNode({ pos, isDrop, stats, inboxCount, seats, mailGlow,
         onClick={(e) => { e.stopPropagation(); onInbox?.() }}>
         <MailIcon fontSize="inherit" />{inboxCount > 0 && <span className="count">{inboxCount}</span>}
       </button>}
-      {!focused && !pub && <button className="eye-gear" title="agent-hire defaults"
+      {/* open to visitors too (user ruling): agent-hire defaults are
+          configurable by anyone, ceiling-clamped like any grant */}
+      {!focused && <button className="eye-gear" title="agent-hire defaults"
         onPointerDown={(e) => e.stopPropagation()}
         onClick={(e) => { e.stopPropagation(); onGear?.() }}><SettingsIcon fontSize="inherit" /></button>}
       {/* real seat costs in the hover hints — a literal 0 was technically true
@@ -1480,8 +1482,8 @@ function EyeDesk({ map, op, slug, pulse, toast, streamEvt, inboxCount,
           <button className="cc-icon" title="your inbox" onClick={() => onInbox?.()}>
             <MailIcon fontSize="inherit" />{inboxCount > 0 && <b className="eye-count">{inboxCount}</b>}
           </button>
-          {!pub && <button className="cc-icon" title="agent-hire defaults"
-            onClick={() => onGear?.()}><SettingsIcon fontSize="inherit" /></button>}
+          <button className="cc-icon" title="agent-hire defaults"
+            onClick={() => onGear?.()}><SettingsIcon fontSize="inherit" /></button>
         </div>
         <div className="eye-tabs">
           {agents.map((a) => (
@@ -1556,6 +1558,10 @@ function SpawnChips({ onSpawn, free, seats }) {
 // server, present and future.
 function UserConfig({ tree, slug, toast, close }) {
   useEsc(close)
+  // visitors configure the HIRE DEFAULTS too (user ruling 2026-07-31),
+  // ceiling-clamped server-side; the org folder holdings stay admin-only
+  // (host paths — the public payload only carries basenames anyway)
+  const pub = !!tree.public
   const [asking, setAsking] = useState(false)   // dissolve-all confirmation
   const [defTools, setDefTools] = useState({
     bash: true, web: true, edit: true, subagents: true,
@@ -1585,7 +1591,7 @@ function UserConfig({ tree, slug, toast, close }) {
             dissolve all agents</button>
         </div>
         {/* folder access FIRST — same order as the per-agent config (user ruling) */}
-        <div className="field-label">folder access</div>
+        {!pub && <><div className="field-label">folder access</div>
         <div className="dirlist">
           {tree.workspace && (
             <div className="dirrow">
@@ -1622,7 +1628,7 @@ function UserConfig({ tree, slug, toast, close }) {
               }
             }}>add</button>
           </div>
-        </div>
+        </div></>}
         <div className="field-label">tools</div>
         {TOOL_LABELS.map(([k, label]) => (
           <label className="checkline" key={k}>
@@ -1638,25 +1644,43 @@ function UserConfig({ tree, slug, toast, close }) {
               ...defTools, mcp: e.target.checked ? ['*'] : [...servers] })} />
           all registered servers (current and future)
         </label>
-        {!allMcp && <McpChecklist servers={servers} sandboxMcp={sandboxMcp}
+        {!allMcp && !pub && <McpChecklist servers={servers} sandboxMcp={sandboxMcp}
           sandboxed={!!tree.sandboxed}
           checked={(s) => defTools.mcp.includes(s)}
           onToggle={(s, on) => setDefTools({
             ...defTools,
             mcp: on ? [...defTools.mcp, s] : defTools.mcp.filter((x) => x !== s),
           })} />}
+        {!allMcp && pub && <div className="dim">
+          individual server names are admin-side — off means none</div>}
         <div className="field-label">org-structure visibility</div>
         <select value={vis} onChange={(e) => setVis(e.target.value)}>
           {VIS_OPTIONS.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
         </select>
         <div className="row">
           <button className="primary" onClick={() =>
-            saveSettings(slug, {
-              default_tools: defTools,
-              default_visibility: vis,
-              org_dirs: orgDirs,
-            })
-              .then((r) => { toast(r.warnings); close() })
+            // defaults ride their own visitor-open, ceiling-clamped endpoint;
+            // the org folder holdings stay on the admin-only /settings
+            Promise.all([
+              saveHireDefaults(slug, { default_tools: defTools,
+                                       default_visibility: vis }),
+              pub ? Promise.resolve({}) : saveSettings(slug, { org_dirs: orgDirs }),
+            ])
+              .then(([r, r2]) => {
+                const warns = [...(r.warnings ?? []), ...(r2.warnings ?? [])]
+                if (r?.bridge?.raise_ceiling) {
+                  toast(warns.length ? warns
+                    : ['clamped to the kiosk permission ceiling'],
+                  { label: 'raise ceiling & apply',
+                    fn: () => saveHireDefaults(slug,
+                      { default_tools: defTools, default_visibility: vis,
+                        raise_ceiling: true })
+                      .then((r3) => toast(r3.warnings?.length ? r3.warnings
+                        : ['ceiling raised — defaults applied']))
+                      .catch((e) => toast([`error: ${e.message}`])) })
+                } else toast(warns)
+                close()
+              })
               .catch((e) => toast([`error: ${e.message}`]))}>save</button>
           <button onClick={close}>cancel</button>
         </div>

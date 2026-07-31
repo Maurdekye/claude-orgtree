@@ -723,12 +723,18 @@ def _org_settings_locked(slug: str, body: Settings):
         org.d["fable_limit_policy"] = body.fable_limit_policy
     if body.fable_filter_policy in ("halt", "opus"):
         org.d["fable_filter_policy"] = body.fable_filter_policy
-    if body.default_tools is not None:
+    if body.default_tools is not None or body.default_visibility in VIS_LEVELS:
         # agent defaults: applied to unspecified hires — top level directly,
-        # deeper as ∩ with the superior's capability (clamped at hire time)
-        org.d["default_tools"] = norm_tools(body.default_tools)
-    if body.default_visibility in VIS_LEVELS:
-        org.d["default_visibility"] = body.default_visibility
+        # deeper as ∩ with the superior's capability (clamped at hire time).
+        # Routed through the ledger so the kiosk ceiling clamps stored
+        # defaults too (admin surface → auto_raise applies)
+        r = org.set_hire_defaults(
+            default_tools=body.default_tools,
+            default_visibility=(body.default_visibility
+                                if body.default_visibility in VIS_LEVELS
+                                else None),
+            raise_ceiling=bool((org.d.get("kiosk") or {}).get("auto_raise")))
+        warnings.extend(r.get("warnings") or [])
     if body.auto_resume is not None:
         org.d["auto_resume"] = bool(body.auto_resume)
     if body.cascade_hire is not None:
@@ -834,6 +840,36 @@ async def org_kiosk(slug: str, body: KioskCfg):
     return {"kiosk": safe, "share_url": _share_url(k.get("token")),
             "freezes_cleared": cleared,
             **({"warnings": ceiling_warnings} if ceiling_warnings else {})}
+
+
+class HireDefaults(BaseModel):
+    default_tools: dict | None = None       # {bash, web, edit, subagents, mcp}
+    default_visibility: str | None = None   # self|team|subtree|full
+    raise_ceiling: bool = False             # admin bridge (ignored for visitors)
+
+
+@app.post("/api/orgs/{slug}/defaults")
+async def org_hire_defaults(slug: str, body: HireDefaults, request: Request):
+    """Agent-hire defaults — OPEN to kiosk visitors (user ruling 2026-07-31):
+    a default is a pre-filled grant, so the ceiling clamps it like any grant.
+    The rest of /settings (org folders, caps, policies) stays admin-only."""
+    pub = bool(_public_slug(request))
+    with store.DOC_LOCK:
+        try:
+            org = store.load_org(slug)
+            rc = (not pub) and (bool((org.d.get("kiosk") or {}).get("auto_raise"))
+                                or body.raise_ceiling)
+            result = org.set_hire_defaults(
+                default_tools=body.default_tools,
+                default_visibility=body.default_visibility,
+                raise_ceiling=rc)
+        except LedgerError as e:
+            raise HTTPException(422, str(e))
+        store.save_org(org)
+    if pub and isinstance(result, dict):
+        result.pop("bridge", None)
+    await hub.changed(slug)
+    return result
 
 
 class Scope(BaseModel):

@@ -616,6 +616,40 @@ class Org:
                               f"clamped to fit: {sorted(swept)}"]
                              if swept else [])}
 
+    def set_hire_defaults(self, default_tools=None, default_visibility=None,
+                          raise_ceiling: bool = False) -> dict:
+        """The org's agent-hire defaults (the eye's gear). Kiosk VISITORS may
+        set these too (user ruling 2026-07-31) — a default is just a pre-filled
+        grant, so the ceiling clamps it with the same machinery as any grant;
+        admins get the bridge/auto-raise semantics. Hire-time still re-clamps
+        (defaults resolve THEN clamp), so this is honesty, not enforcement:
+        the stored default must never show a capability no hire can receive."""
+        warnings: list[str] = []
+        bridged = False
+        if default_tools is not None:
+            t = norm_tools(default_tools)
+            t, _d, _v, _p, b = self._apply_ceiling(
+                tools=t, raise_ceiling=raise_ceiling, warnings=warnings)
+            self.d["default_tools"] = t
+            bridged = bridged or b
+        if default_visibility is not None:
+            if default_visibility not in VIS_LEVELS:
+                raise LedgerError(f"default_visibility must be one of {VIS_LEVELS}")
+            _t, _d, v2, _p, b = self._apply_ceiling(
+                vis=default_visibility, raise_ceiling=raise_ceiling,
+                warnings=warnings)
+            self.d["default_visibility"] = v2
+            bridged = bridged or b
+        self._log("set_defaults", USER,
+                  {"tools": self.d.get("default_tools"),
+                   "visibility": self.d.get("default_visibility")}, warnings)
+        res = {"default_tools": self.d.get("default_tools"),
+               "default_visibility": self.d.get("default_visibility"),
+               "warnings": warnings}
+        if bridged:
+            res["bridge"] = {"raise_ceiling": True}
+        return res
+
     # ------------------------------------------------------------- validation
     def _require_authority(self, actor: str, nid: str, allow_self: bool = False):
         """Actor must be USER/SYSTEM or an ancestor of nid (§7.1); optionally nid

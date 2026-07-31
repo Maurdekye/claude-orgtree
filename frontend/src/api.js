@@ -121,6 +121,12 @@ export const saveSettings = (slug, opts = {}) =>
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(opts),
   }).then(j)
+export const saveHireDefaults = (slug, opts = {}) =>
+  fetch(u(`/api/orgs/${slug}/defaults`), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(opts),
+  }).then(j)
 export const saveKiosk = (slug, opts = {}) =>
   fetch(u(`/api/orgs/${slug}/kiosk`), {
     method: 'POST',

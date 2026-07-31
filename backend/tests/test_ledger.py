@@ -1239,6 +1239,37 @@ def main():
         None if orgE.nodes["e1"]["scope"]["effort"] == "max"
         else (_ for _ in ()).throw(AssertionError))[-1])
 
+    orgHD = mk_kiosk("ceil-defaults2", NO_BASH)
+    check("14 visitor-set hire defaults clamp to the ceiling (no raise)", lambda: (
+        (lambda r: None
+         if orgHD.d["default_tools"]["bash"] is False
+         and r.get("bridge") == {"raise_ceiling": True}
+         and orgHD.d["kiosk"]["max_scope"]["tools"]["bash"] is False
+         else (_ for _ in ()).throw(AssertionError(r))
+         )(orgHD.set_hire_defaults(default_tools=dict(ALL_TOOLS)))))
+    check("15 admin raise_ceiling on defaults raises and applies", lambda: (
+        (lambda r: None
+         if orgHD.d["default_tools"]["bash"] is True
+         and orgHD.d["kiosk"]["max_scope"]["tools"]["bash"] is True
+         and any("RAISED" in w for w in r["warnings"])
+         else (_ for _ in ()).throw(AssertionError(r))
+         )(orgHD.set_hire_defaults(default_tools=dict(ALL_TOOLS),
+                                   raise_ceiling=True))))
+    check("16 default_visibility rank-clamps to the ceiling", lambda: (
+        orgHD.set_kiosk_ceiling({"tools": {"mcp": ["*"]},
+                                 "org_visibility": "team"}),
+        (lambda r: None
+         if orgHD.d["default_visibility"] == "team"
+         else (_ for _ in ()).throw(AssertionError(r))
+         )(orgHD.set_hire_defaults(default_visibility="full")))[-1])
+    orgHD2 = Org.create("no-ceiling-defaults")
+    check("17 normal-org defaults pass through unclamped", lambda: (
+        (lambda r: None
+         if orgHD2.d["default_tools"]["bash"] is True and "bridge" not in r
+         else (_ for _ in ()).throw(AssertionError(r))
+         )(orgHD2.set_hire_defaults(default_tools=dict(ALL_TOOLS),
+                                    default_visibility="full"))))
+
     orgN = Org.create("no-ceiling")
     orgN.hire(USER, None, "haiku", 0, "free1", tools=dict(ALL_TOOLS))
     check("13 normal orgs entirely unaffected — no ceiling, no clamp, no bridge", lambda: (
