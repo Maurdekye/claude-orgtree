@@ -276,8 +276,9 @@ export default function App() {
                 {tree.kiosk?.spend_limit && (
                   tree.spend_frozen
                     ? <span className="chip bad"><BlockIcon fontSize="inherit" /> spend limit reached — agents frozen</span>
-                    : <span className={'chip' + (tree.cost_usd_total >= tree.kiosk.spend_limit * 0.9 ? ' bad' : '')}>
-                        spend ${tree.cost_usd_total.toFixed(2)} / ${tree.kiosk.spend_limit.toFixed(2)}
+                    : <span className={'chip' + (tree.cost_usd_total >= tree.kiosk.spend_limit * 0.9 ? ' bad' : '')}
+                        title="spend / limit">
+                        ${tree.cost_usd_total.toFixed(2)} / ${tree.kiosk.spend_limit.toFixed(2)}
                       </span>
                 )}
                 {tree.kiosk?.storage_limit_mb && (
