@@ -29,7 +29,7 @@ import threading
 import time
 
 from . import sandbox as sbx, store
-from .ledger import EXTERN, USER, Org, now as now_iso
+from .ledger import EXTERN, USER, Org, expand_mcp, now as now_iso
 
 # ---- kiosk v2 (user vision): per-org public exposure behind a secret-URL
 # token. Caps (credits, spend, workspace storage) live ON THE ORG DOC —
@@ -815,11 +815,16 @@ def _build_cmd(org: Org, nid: str) -> list[str]:
     if disallowed:
         cmd += ["--disallowed-tools", ",".join(disallowed)]
     # every node gets the orgtree MCP server — its hands on the org — plus any
-    # user-registered servers it was granted; --strict-mcp-config pins the set
+    # user-registered servers it was granted; --strict-mcp-config pins the set.
+    # Expansion is expand(granted) ∩ expand(ceiling) via the pure helper
+    # (ceiling spec §6): "*" under a list ceiling must yield the ceiling's
+    # servers, never the whole registry
     registry = registered_mcp_servers()
-    granted = tools.get("mcp") or []
-    if "*" in granted:        # "*" = every registered server, present and future
-        granted = sorted(registry)
+    ceil = org.kiosk_ceiling()
+    granted = expand_mcp(tools.get("mcp") or [],
+                         (ceil or {}).get("tools", {}).get("mcp")
+                         if ceil else None,
+                         sorted(registry))
     if sandboxed:
         # NO MCP servers in the sandbox (user ruling): they are points of
         # external contact that the sandbox is explicitly designed to

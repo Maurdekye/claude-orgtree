@@ -160,7 +160,19 @@ export default function App() {
 
   const op = useCallback((body) =>
     runOp(slug, body)
-      .then((r) => { toast(r.warnings); refreshTree(slug); refreshOrgs(); return r })
+      .then((r) => {
+        if (r?.bridge?.raise_ceiling) {
+          // the one-action bridge (ceiling spec §1): the same op, re-sent
+          // with the flag — auto_raise OFF never means "go navigate"
+          toast(r.warnings?.length ? r.warnings
+            : ['clamped to the kiosk permission ceiling'],
+          { label: 'raise ceiling & apply',
+            fn: () => runOp(slug, { ...body, raise_ceiling: true })
+              .then((r2) => { toast(r2.warnings); refreshTree(slug); refreshOrgs() })
+              .catch((e) => toast([`error: ${e.message}`])) })
+        } else toast(r.warnings)
+        refreshTree(slug); refreshOrgs(); return r
+      })
       .catch((e) => { toast([`error: ${e.message}`]); throw e }),
     [slug, toast, refreshTree, refreshOrgs])
 
@@ -362,8 +374,8 @@ export default function App() {
               <button className="toast-undo" onClick={(e) => {
                 e.stopPropagation()
                 setToasts((x) => x.filter((y) => y.id !== t.id))
-                t.undo()
-              }}>undo</button>
+                ;(typeof t.undo === 'function' ? t.undo : t.undo.fn)()
+              }}>{typeof t.undo === 'function' ? 'undo' : t.undo.label}</button>
             )}
           </div>
         ))}
@@ -386,6 +398,13 @@ function NewOrg({ onCreate }) {
   const [credits, setCredits] = useState(40)
   const [spend, setSpend] = useState(5)
   const [storage, setStorage] = useState(500)
+  // the permission ceiling is visible AT CREATION (ceiling spec §3): the
+  // default is permissive (mcp "*", user ruling), so narrowing must be a
+  // conscious act here rather than something discovered later
+  const [ceil, setCeil] = useState({ bash: true, web: true, edit: true,
+                                     subagents: true, mcp: true })
+  const [ceilPm, setCeilPm] = useState('acceptEdits')
+  const [autoRaise, setAutoRaise] = useState(false)
   // sandbox is OFF by default (user ruling) — and impossible without Docker
   const [sandboxed, setSandboxed] = useState(false)
   const [docker, setDocker] = useState(false)
@@ -403,6 +422,12 @@ function NewOrg({ onCreate }) {
         kiosk ? {
           credits: +credits || 0, spend_limit: +spend || 0,
           storage_limit_mb: +storage || 0, sandbox: sandboxed,
+          auto_raise: autoRaise,
+          max_scope: {
+            tools: { bash: ceil.bash, web: ceil.web, edit: ceil.edit,
+                     subagents: ceil.subagents, mcp: ceil.mcp ? ['*'] : [] },
+            org_visibility: 'full', permission_mode: ceilPm,
+          },
         } : null,
         sandboxed)
       reset()
@@ -426,6 +451,33 @@ function NewOrg({ onCreate }) {
             onChange={(e) => setSpend(e.target.value)} /></label>
           <label>storage MB <input type="number" min="0" value={storage}
             onChange={(e) => setStorage(e.target.value)} /></label>
+        </div>
+      )}
+      {kiosk && (
+        <div className="kiosk-ceil">
+          <div className="field-label"
+            title="the MAXIMUM grantable to any agent in this kiosk — visitors retool freely within it; folders bound to the org's own">
+            permission ceiling</div>
+          <div className="ceil-tools">
+            {['bash', 'web', 'edit', 'subagents', 'mcp'].map((k) => (
+              <label key={k} className="row">
+                <input type="checkbox" checked={ceil[k]}
+                  onChange={(e) => setCeil((c) => ({ ...c, [k]: e.target.checked }))} />
+                {k === 'mcp' ? 'MCP servers' : k}
+              </label>
+            ))}
+            <label className="row">mode <select value={ceilPm}
+              onChange={(e) => setCeilPm(e.target.value)}>
+              <option value="default">default (asks)</option>
+              <option value="acceptEdits">acceptEdits</option>
+              <option value="bypassPermissions">bypassPermissions</option>
+            </select></label>
+          </div>
+          <label className="row" title="an over-ceiling grant made by YOU (admin) raises the ceiling to fit instead of clamping — off so nothing lifts it without meaning to; visitors always clamp">
+            <input type="checkbox" checked={autoRaise}
+              onChange={(e) => setAutoRaise(e.target.checked)} />
+            auto-raise on my own over-ceiling grants
+          </label>
         </div>
       )}
       {/* any org may sandbox (user ruling) — OFF by default; the checkbox is
@@ -753,6 +805,31 @@ function DefaultsPanel({ toast, close }) {
   )
 }
 
+// mode-aware folder rows for the kiosk ceiling (DirList is string-only)
+function CeilDirs({ dirs, onChange }) {
+  return (
+    <div className="dirlist">
+      {dirs.map((d, i) => (
+        <div className="dirrow" key={i}>
+          <input placeholder="E:\path\to\folder" value={d.path}
+            onChange={(e) => onChange(dirs.map((x, j) =>
+              (j === i ? { ...x, path: e.target.value } : x)))} />
+          <select value={d.mode} onChange={(e) => onChange(dirs.map((x, j) =>
+            (j === i ? { ...x, mode: e.target.value } : x)))}>
+            <option value="rw">rw</option><option value="ro">ro</option>
+          </select>
+          <button type="button" className="iconbtn" title="remove"
+            onClick={() => onChange(dirs.filter((_, j) => j !== i))}>✕</button>
+        </div>
+      ))}
+      <div className="dirrow">
+        <button type="button" className="addrow"
+          onClick={() => onChange([...dirs, { path: '', mode: 'rw' }])}>+ add folder</button>
+      </div>
+    </div>
+  )
+}
+
 function SettingsPanel({ tree, toast, close }) {
   useEsc(close)
   const [maxTop, setMaxTop] = useState(tree.max_top_grant ?? 1000)
@@ -763,6 +840,17 @@ function SettingsPanel({ tree, toast, close }) {
   const [filterPolicy, setFilterPolicy] = useState(tree.fable_filter_policy ?? 'halt')
   const [cascadeHire, setCascadeHire] = useState(tree.cascade_hire !== false)
   const [cascadeAlloc, setCascadeAlloc] = useState(tree.cascade_alloc !== false)
+  // kiosk permission ceiling (consensus spec): admin payload only — the
+  // public tree never carries max_scope
+  const ms = tree.kiosk?.max_scope
+  const [ceil, setCeil] = useState(() => (ms ? {
+    bash: !!ms.tools?.bash, web: !!ms.tools?.web, edit: !!ms.tools?.edit,
+    subagents: !!ms.tools?.subagents } : null))
+  const [ceilMcp, setCeilMcp] = useState(() => (ms?.tools?.mcp ?? []).join(', '))
+  const [ceilDirs, setCeilDirs] = useState(() => ms?.add_dirs ?? [])
+  const [ceilVis, setCeilVis] = useState(ms?.org_visibility ?? 'full')
+  const [ceilPm, setCeilPm] = useState(ms?.permission_mode ?? 'acceptEdits')
+  const [autoRaise, setAutoRaise] = useState(!!tree.kiosk?.auto_raise)
   useEffect(() => {
     getOrgMd(tree.slug).then((r) => setOrgMd(r.content)).catch(() => setOrgMd(''))
   }, [tree.slug])
@@ -808,6 +896,61 @@ function SettingsPanel({ tree, toast, close }) {
           allocations &amp; model upgrades bubble their cost up the chain (off:
           limited to the superior's own free credits)
         </label>
+        {ms && ceil && (
+          <>
+            <div className="field-label"
+              title="visitors and agents retool freely WITHIN it (clamped, never refused); lowering it sweeps every agent's grants to fit">
+              kiosk permission ceiling — the maximum grantable to any agent</div>
+            <div className="ceil-tools">
+              {['bash', 'web', 'edit', 'subagents'].map((k) => (
+                <label key={k} className="checkline">
+                  <input type="checkbox" checked={ceil[k]}
+                    onChange={(e) => setCeil((c) => ({ ...c, [k]: e.target.checked }))} />
+                  {k}
+                </label>
+              ))}
+            </div>
+            <div className="field-label">MCP servers ("*" = all, empty = none,
+              or a comma-separated list)</div>
+            <input value={ceilMcp} placeholder="*"
+              onChange={(e) => setCeilMcp(e.target.value)} />
+            <div className="field-label">folder bounds (grants clamp into these)</div>
+            <CeilDirs dirs={ceilDirs} onChange={setCeilDirs} />
+            <div className="row">
+              <label className="checkline">org visibility ≤ <select value={ceilVis}
+                onChange={(e) => setCeilVis(e.target.value)}>
+                {['self', 'team', 'subtree', 'full'].map((v) =>
+                  <option key={v} value={v}>{v}</option>)}
+              </select></label>
+              <label className="checkline">mode ≤ <select value={ceilPm}
+                onChange={(e) => setCeilPm(e.target.value)}>
+                <option value="default">default</option>
+                <option value="acceptEdits">acceptEdits</option>
+                <option value="bypassPermissions">bypassPermissions</option>
+              </select></label>
+            </div>
+            <label className="checkline"
+              title="an over-ceiling grant made by YOU raises the ceiling to fit (logged, named) instead of clamping; visitors always clamp">
+              <input type="checkbox" checked={autoRaise}
+                onChange={(e) => setAutoRaise(e.target.checked)} />
+              auto-raise the ceiling on my own over-ceiling grants
+            </label>
+            <button onClick={() =>
+              saveKiosk(tree.slug, {
+                auto_raise: autoRaise,
+                max_scope: {
+                  tools: { ...ceil,
+                           mcp: ceilMcp.split(',').map((s) => s.trim())
+                             .filter(Boolean) },
+                  add_dirs: ceilDirs.filter((d) => d.path.trim()),
+                  org_visibility: ceilVis, permission_mode: ceilPm,
+                } })
+                .then((r) => toast(r.warnings?.length ? r.warnings
+                  : ['ceiling saved — nothing needed sweeping']))
+                .catch((e) => toast([`error: ${e.message}`]))}>
+              apply ceiling{ceilMcp.trim() === '' ? ' (MCP: none)' : ''}</button>
+          </>
+        )}
         <div className="field-label">org.md</div>
         <textarea rows={6} value={orgMd ?? ''} disabled={orgMd == null}
           onChange={(e) => setOrgMd(e.target.value)} />

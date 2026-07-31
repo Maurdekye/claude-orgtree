@@ -58,6 +58,8 @@ def actor_kind(actor: str) -> str:
 
 VIS_LEVELS = ("self", "team", "subtree", "full")   # org-structure knowledge tiers
 TOOL_KEYS = ("bash", "web", "edit", "subagents")   # the built-in tool switches
+# permission_mode rank order (kiosk-ceiling spec §2): later = more permissive
+PM_LEVELS = ("default", "acceptEdits", "bypassPermissions")
 
 
 def norm_tools(t) -> dict:
@@ -69,6 +71,20 @@ def norm_tools(t) -> dict:
     if "*" in out["mcp"]:
         out["mcp"] = ["*"]
     return out
+
+
+def expand_mcp(granted, ceiling_mcp, registry) -> list[str]:
+    """Build-time MCP expansion (ceiling spec §6, deliberately PURE — no env,
+    no engine — so the suite pins it directly). "*" = the whole registry; the
+    effective set is expand(granted) ∩ expand(ceiling). ceiling_mcp None = no
+    ceiling (a normal org). Miss the intersection and a kiosk with a list
+    ceiling still hands over every server through the "*" default path."""
+    reg = set(registry or [])
+    g = reg if "*" in (granted or []) else set(granted or []) & reg
+    if ceiling_mcp is not None:
+        c = reg if "*" in ceiling_mcp else set(ceiling_mcp) & reg
+        g = g & c
+    return sorted(g)
 
 
 def norm_dirs(dirs) -> list[dict]:
@@ -162,6 +178,55 @@ class Org:
         # secret-URL token; caps live here, not in env vars. None = never a kiosk.
         self.d.setdefault("kiosk", None)             # {enabled, token, credits,
                                                      #  spend_limit, storage_limit_mb}
+        # kiosk permission ceiling (consensus spec §3): pre-ceiling kiosk docs
+        # get one MINTED = "what this org already does" — the union of every
+        # node's scope ∪ the org's dirs ∪ default_tools. Nothing running is
+        # swept; future escalation caps at the status quo; the admin is told.
+        _k = self.d.get("kiosk")
+        if _k is not None:
+            _k.setdefault("auto_raise", False)
+            if not _k.get("max_scope"):
+                dt = self.d.get("default_tools") or {}
+                mt = norm_tools(dt)
+                md = {d["path"]: d["mode"] for d in norm_dirs(self.d.get("dirs"))}
+                dv = self.d.get("default_visibility", "full")
+                vr = VIS_LEVELS.index(dv) if dv in VIS_LEVELS else len(VIS_LEVELS) - 1
+                pr = PM_LEVELS.index("acceptEdits")
+                for n in self.nodes.values():
+                    sc = n.get("scope") or {}
+                    t = sc.get("tools") or {}
+                    for key in TOOL_KEYS:
+                        if t.get(key, True):
+                            mt[key] = True
+                    mcp = t.get("mcp") or []
+                    if "*" in mcp or "*" in mt["mcp"]:
+                        mt["mcp"] = ["*"]
+                    else:
+                        mt["mcp"] = sorted(set(mt["mcp"]) | set(mcp))
+                    for d in sc.get("add_dirs") or []:
+                        cur = md.get(d["path"])
+                        if cur is None or (cur == "ro" and d["mode"] == "rw"):
+                            md[d["path"]] = d["mode"]
+                    v = sc.get("org_visibility")
+                    if v in VIS_LEVELS:
+                        vr = max(vr, VIS_LEVELS.index(v))
+                    p = sc.get("permission_mode")
+                    if p in PM_LEVELS:
+                        pr = max(pr, PM_LEVELS.index(p))
+                _k["max_scope"] = {
+                    "tools": mt,
+                    "add_dirs": [{"path": p, "mode": m} for p, m in md.items()],
+                    "org_visibility": VIS_LEVELS[vr],
+                    "permission_mode": PM_LEVELS[pr]}
+                self.d.setdefault("user_inbox", []).append({
+                    "id": uuid.uuid4().hex[:8], "from": SYSTEM,
+                    "kind": "notice", "at": now(),
+                    "body": ("This kiosk now carries a PERMISSION CEILING — the "
+                             "maximum layer grantable to any agent in it. It was "
+                             "minted from what the org already does, so nothing "
+                             "changed today; review and tighten it in the kiosk "
+                             "panel. Retooling within the ceiling is now open to "
+                             "visitors (the /scope freeze is lifted).")})
         for m in self.d.get("user_inbox", []):       # per-mail read tracking needs ids
             m.setdefault("id", uuid.uuid4().hex[:8])
         # node mail needs ids too (retraction keys on them); pre-id entries
@@ -375,6 +440,181 @@ class Org:
             else:
                 kept.append(dict(d))
         return kept, lost
+
+    # ----------------------------------------------- kiosk permission ceiling
+    # Consensus spec 2026-07-31: a kiosk carries the MAXIMUM permission layer
+    # grantable to any agent in it; within it, all retooling/hiring permission
+    # ops are permitted (visitors clamp-with-warning, never a 403). Normal
+    # orgs have no ceiling — the top-level agent's own layer already is one.
+    # `raise_ceiling` threads the one gateway-conferred CAPABILITY (not an
+    # identity): "this call is authorized to, and intends to, raise the
+    # ceiling to fit". Fail-closed default; agents can never pass it.
+
+    def kiosk_ceiling(self) -> dict | None:
+        k = self.d.get("kiosk")
+        return (k or {}).get("max_scope") or None
+
+    def default_kiosk_ceiling(self) -> dict:
+        """Fresh-kiosk ceiling (spec §3): all built-ins ON, mcp "*" (user
+        ruling — continuity with default_tools; the create dialog surfaces the
+        ceiling so narrowing is a conscious act), the org's own dirs, full
+        visibility, acceptEdits."""
+        return {"tools": norm_tools({"mcp": ["*"]}),
+                "add_dirs": norm_dirs(self.d.get("dirs")),
+                "org_visibility": "full", "permission_mode": "acceptEdits"}
+
+    def _norm_ceiling(self, ms) -> dict:
+        ms = ms or {}
+        vis = ms.get("org_visibility", "full")
+        if vis not in VIS_LEVELS:
+            raise LedgerError(f"ceiling org_visibility must be one of {VIS_LEVELS}")
+        pm = ms.get("permission_mode", "acceptEdits")
+        if pm not in PM_LEVELS:
+            raise LedgerError(f"ceiling permission_mode must be one of {PM_LEVELS}")
+        return {"tools": norm_tools(ms.get("tools", {"mcp": ["*"]})),
+                "add_dirs": norm_dirs(ms.get("add_dirs")),
+                "org_visibility": vis, "permission_mode": pm}
+
+    def _apply_ceiling(self, tools=None, dirs=None, vis=None, pm=None,
+                       raise_ceiling: bool = False, warnings=None):
+        """The second clamp pass, against the kiosk ceiling (parent ∩ ceiling
+        at depth — the parent clamp already ran). Returns
+        (tools, dirs, vis, pm, bridged): bridged=True means something was
+        clamped that raise_ceiling=True would have admitted — the caller
+        surfaces the one-action bridge. With raise_ceiling, the ceiling grows
+        to the union instead (determinate), logged and named, never silent."""
+        ceil = self.kiosk_ceiling()
+        if ceil is None:
+            return tools, dirs, vis, pm, False
+        if raise_ceiling:
+            self._raise_ceiling_for(tools, dirs, vis, pm, warnings)
+            return tools, dirs, vis, pm, False
+        lost_all: list[str] = []
+        if tools is not None:
+            had_star = "*" in (norm_tools(tools).get("mcp") or [])
+            tools, tl = self._clamp_tools(tools, ceil["tools"], strict=False)
+            lost_all += tl
+            if had_star and "*" not in tools["mcp"]:
+                # §6: "*" may survive only under a "*" ceiling; a list ceiling
+                # materializes it — name the semantic change (future registry
+                # additions will NOT auto-flow to this agent)
+                lost_all.append("mcp:* (materialized to the ceiling's list)")
+        if dirs is not None:
+            cmap = {d["path"]: d["mode"] for d in ceil.get("add_dirs", [])}
+            dirs, dl = self._clamp_dirs(dirs, cmap, strict=False)
+            lost_all += [str(x) for x in dl]
+        if vis is not None and vis in VIS_LEVELS:
+            cv = ceil.get("org_visibility", "full")
+            if cv in VIS_LEVELS and VIS_LEVELS.index(vis) > VIS_LEVELS.index(cv):
+                lost_all.append(f"org_visibility {vis}→{cv}")
+                vis = cv
+        if pm is not None and pm in PM_LEVELS:
+            cp = ceil.get("permission_mode", "acceptEdits")
+            if cp in PM_LEVELS and PM_LEVELS.index(pm) > PM_LEVELS.index(cp):
+                lost_all.append(f"permission_mode {pm}→{cp}")
+                pm = cp
+        if lost_all:
+            if warnings is not None:
+                warnings.append(
+                    "clamped to the kiosk permission ceiling: "
+                    + ", ".join(lost_all))
+            return tools, dirs, vis, pm, True
+        return tools, dirs, vis, pm, False
+
+    def _raise_ceiling_for(self, tools, dirs, vis, pm, warnings) -> None:
+        """Grow max_scope to the union of itself and the request — the
+        determinate bridge. Logged and returned as a warning NAMING what rose;
+        a ceiling must never rise silently."""
+        ms = self.d["kiosk"]["max_scope"]
+        rose: list[str] = []
+        if tools is not None:
+            t = norm_tools(tools)
+            ct = ms["tools"]
+            for key in TOOL_KEYS:
+                if t[key] and not ct.get(key, True):
+                    ct[key] = True
+                    rose.append(key)
+            if "*" in t["mcp"] and "*" not in ct["mcp"]:
+                ct["mcp"] = ["*"]
+                rose.append("mcp:*")
+            elif "*" not in ct["mcp"]:
+                extra = [s for s in t["mcp"] if s not in ct["mcp"]]
+                if extra:
+                    ct["mcp"] = sorted(set(ct["mcp"]) | set(extra))
+                    rose += [f"mcp:{s}" for s in extra]
+        if dirs is not None:
+            held = {d["path"]: d for d in ms["add_dirs"]}
+            for d in dirs:
+                cur = held.get(d["path"])
+                if cur is None:
+                    ms["add_dirs"].append({"path": d["path"], "mode": d["mode"]})
+                    rose.append(d["path"])
+                elif cur["mode"] == "ro" and d["mode"] == "rw":
+                    cur["mode"] = "rw"
+                    rose.append(f"{d['path']} (rw)")
+        if vis in VIS_LEVELS:
+            cv = ms.get("org_visibility", "full")
+            if cv in VIS_LEVELS and VIS_LEVELS.index(vis) > VIS_LEVELS.index(cv):
+                ms["org_visibility"] = vis
+                rose.append(f"org_visibility {vis}")
+        if pm in PM_LEVELS:
+            cp = ms.get("permission_mode", "acceptEdits")
+            if cp in PM_LEVELS and PM_LEVELS.index(pm) > PM_LEVELS.index(cp):
+                ms["permission_mode"] = pm
+                rose.append(f"permission_mode {pm}")
+        if rose:
+            self._log("ceiling_raise", USER, {"raised": rose}, [])
+            if warnings is not None:
+                warnings.append("kiosk ceiling RAISED to fit: " + ", ".join(rose))
+
+    def set_kiosk_ceiling(self, max_scope: dict, auto_raise=None) -> dict:
+        """Admin sets/lowers the ceiling. Lowering SWEEPS (spec §5): the end
+        state is unique — clamp every node's stored scope against the new
+        ceiling — so it automates; refusal-with-directions would be the
+        anti-pattern the bypass principle names. Affected live agents are told
+        what they lost and why."""
+        k = self.d.get("kiosk")
+        if k is None:
+            raise LedgerError(
+                "this org is not a kiosk — normal orgs have no ceiling (the "
+                "top-level agent's own layer already bounds its subtree)")
+        ms = self._norm_ceiling(max_scope)
+        k["max_scope"] = ms
+        if auto_raise is not None:
+            k["auto_raise"] = bool(auto_raise)
+        swept: dict[str, list[str]] = {}
+        cmap = {d["path"]: d["mode"] for d in ms["add_dirs"]}
+        for nid, n in self.nodes.items():
+            sc = n.get("scope") or {}
+            loss: list[str] = []
+            had_star = "*" in (sc.get("tools", {}).get("mcp") or [])
+            t2, tl = self._clamp_tools(sc.get("tools"), ms["tools"], strict=False)
+            loss += tl
+            if had_star and "*" not in t2["mcp"]:
+                loss.append("mcp:* (materialized)")
+            d2, dl = self._clamp_dirs(sc.get("add_dirs") or [], cmap, strict=False)
+            loss += [str(x) for x in dl]
+            sc["tools"], sc["add_dirs"] = t2, d2
+            v = sc.get("org_visibility")
+            if v in VIS_LEVELS and VIS_LEVELS.index(v) > VIS_LEVELS.index(ms["org_visibility"]):
+                sc["org_visibility"] = ms["org_visibility"]
+                loss.append(f"org_visibility {v}→{ms['org_visibility']}")
+            p = sc.get("permission_mode")
+            if p in PM_LEVELS and PM_LEVELS.index(p) > PM_LEVELS.index(ms["permission_mode"]):
+                sc["permission_mode"] = ms["permission_mode"]
+                loss.append(f"permission_mode {p}→{ms['permission_mode']}")
+            if loss:
+                swept[nid] = loss
+                if n["state"] == "live" and not n.get("successor"):
+                    self._notify([nid],
+                                 f"The kiosk permission ceiling was adjusted; "
+                                 f"your grants were clamped to fit: "
+                                 f"{', '.join(loss)}.")
+        self._log("ceiling_set", USER, {"swept": swept}, [])
+        return {"max_scope": ms, "swept": swept,
+                "warnings": ([f"ceiling lowered — {len(swept)} agent(s) "
+                              f"clamped to fit: {sorted(swept)}"]
+                             if swept else [])}
 
     # ------------------------------------------------------------- validation
     def _require_authority(self, actor: str, nid: str, allow_self: bool = False):
@@ -881,7 +1121,8 @@ class Org:
     # ------------------------------------------------------------------ hire
     def hire(self, actor: str, parent: str | None, tier: str, grant: int, name: str,
              add_dirs: list[str] | None = None, tools: dict | None = None,
-             org_visibility: str | None = None, charter: str | None = None) -> dict:
+             org_visibility: str | None = None, charter: str | None = None,
+             raise_ceiling: bool = False) -> dict:
         """§4.2 + §4.6. `parent` None = top level (actor must be USER). If actor is a
         strict ancestor of parent, credits cascade down the path (forcible hire).
 
@@ -977,6 +1218,12 @@ class Org:
 
         if tlost:
             warnings.append(f"tool grants clamped to the parent's own: {tlost}")
+        # ceiling spec §2/§4: the ceiling clamp runs AFTER defaults resolve and
+        # after the parent clamp (parent ∩ ceiling at depth) — org defaults may
+        # exceed the ceiling and must lose on every bare chip-click hire
+        tset, dirs, vis, _pm, bridged = self._apply_ceiling(
+            tools=tset, dirs=dirs, vis=vis,
+            raise_ceiling=raise_ceiling, warnings=warnings)
         nid = self._new_node(tier, parent, int(grant), name, dirs, tset, vis,
                              str(charter).strip() if charter else None)
         # every affected agent is told, WHOEVER acted (user ruling) — the actor
@@ -992,7 +1239,13 @@ class Org:
                      f'{parent or "the top level"}.{why}')
         self._log("hire", actor, {"node": nid, "parent": parent, "tier": tier,
                                   "grant": int(grant), "charter": gist}, warnings)
-        return {"node": nid, "warnings": warnings}
+        res = {"node": nid, "warnings": warnings}
+        if bridged:
+            # the one-action bridge (spec §1): re-send the SAME op with
+            # raise_ceiling=true. The API strips this for visitors/agents —
+            # no legal raise path exists for them, so no dangling offer.
+            res["bridge"] = {"raise_ceiling": True}
+        return res
 
     def _chain_acquire(self, actor: str, payer: str, need, warnings: list,
                        cascade: bool = True) -> None:
@@ -1145,7 +1398,7 @@ class Org:
 
     # ---------------------------------------------------------------- rehire
     def rehire(self, actor: str, nid: str, grant: int | None = None,
-               tier: str | None = None) -> dict:
+               tier: str | None = None, raise_ceiling: bool = False) -> dict:
         """§4.2. Parent pays seat + grant; may strand the parent's OTHER archived kids.
         `tier` override (№16, spike-verified): a knowledge bearer answers from context
         and can be consulted at a cheaper tier than it ran at.
@@ -1251,9 +1504,21 @@ class Org:
             warnings.append(f"dir grants adjusted to the parent's capability (№30): {lost}")
         ptools = None if parent is None else self.node(parent)["scope"]["tools"]
         tkept, tlost = self._clamp_tools(n["scope"]["tools"], ptools, strict=False)
+        n["scope"]["tools"] = tkept
         if tlost:
-            n["scope"]["tools"] = tkept
             warnings.append(f"tool grants adjusted to the parent's capability: {tlost}")
+        # kiosk ceiling: №30's revalidation extends to the ceiling — a node
+        # archived before the ceiling changed re-enters within it
+        ct, cd, cv, cp, bridged = self._apply_ceiling(
+            tools=n["scope"]["tools"], dirs=n["scope"]["add_dirs"],
+            vis=n["scope"].get("org_visibility"),
+            pm=n["scope"].get("permission_mode"),
+            raise_ceiling=raise_ceiling, warnings=warnings)
+        n["scope"]["tools"], n["scope"]["add_dirs"] = ct, cd
+        if cv is not None:
+            n["scope"]["org_visibility"] = cv
+        if cp is not None:
+            n["scope"]["permission_mode"] = cp
 
         n["state"] = "live"
         n["grant"] = grant
@@ -1270,7 +1535,10 @@ class Org:
         # tell the caller to drive the node so it finally acts on it
         if (self.d.get("mail") or {}).get(nid):
             drive.append(nid)
-        return {"cost": need, "warnings": warnings, "drive": drive}
+        res = {"cost": need, "warnings": warnings, "drive": drive}
+        if bridged:
+            res["bridge"] = {"raise_ceiling": True}
+        return res
 
     # --------------------------------------------------------------- dissolve
     def dissolve(self, actor: str, nid: str) -> dict:
@@ -1601,23 +1869,35 @@ class Org:
 
     def set_scope(self, actor: str, nid: str, add_dirs=None, tools=None,
                   org_visibility=None, permission_mode=None,
-                  charter=None, team_charter=None, effort=None) -> dict:
+                  charter=None, team_charter=None, effort=None,
+                  raise_ceiling: bool = False) -> dict:
         """Per-node configuration (the ⚙): dir grants with modes, the full tool set
-        (built-ins + MCP servers), org-structure visibility. Superior-only."""
+        (built-ins + MCP servers), org-structure visibility. Superior-only.
+        Kiosk ceiling (spec §2): permission fields clamp against parent ∩
+        ceiling; charter/team_charter/effort pass unclamped (not permissions —
+        effort is a cost dial by user ruling and applies under any ceiling)."""
         self._require_authority(actor, nid)
         n = self.node(nid)
         sc = n["scope"]
         warnings: list[str] = []
         changed_caps = False
+        bridged = False
         if add_dirs is not None:
             req = norm_dirs(add_dirs)
             kept, _ = self._clamp_dirs(req, self.effective_dirs(n["parent"]), strict=True)
+            _t, kept, _v, _p, b = self._apply_ceiling(
+                dirs=kept, raise_ceiling=raise_ceiling, warnings=warnings)
+            bridged = bridged or b
             sc["add_dirs"] = kept
             changed_caps = True
         if tools is not None:
             ptools = (None if n["parent"] is None
                       else self.node(n["parent"])["scope"]["tools"])
-            sc["tools"], _ = self._clamp_tools(tools, ptools, strict=True)
+            tset, _ = self._clamp_tools(tools, ptools, strict=True)
+            tset, _d, _v, _p, b = self._apply_ceiling(
+                tools=tset, raise_ceiling=raise_ceiling, warnings=warnings)
+            bridged = bridged or b
+            sc["tools"] = tset
             changed_caps = True
         if changed_caps:
             swept = self._sweep_dirs(nid)
@@ -1626,9 +1906,15 @@ class Org:
         if org_visibility is not None:
             if org_visibility not in VIS_LEVELS:
                 raise LedgerError(f"org_visibility must be one of {VIS_LEVELS}")
-            sc["org_visibility"] = org_visibility
+            _t, _d, vis2, _p, b = self._apply_ceiling(
+                vis=org_visibility, raise_ceiling=raise_ceiling, warnings=warnings)
+            bridged = bridged or b
+            sc["org_visibility"] = vis2
         if permission_mode is not None:
-            sc["permission_mode"] = permission_mode
+            _t, _d, _v, pm2, b = self._apply_ceiling(
+                pm=permission_mode, raise_ceiling=raise_ceiling, warnings=warnings)
+            bridged = bridged or b
+            sc["permission_mode"] = pm2
         if effort is not None:
             # user-approved (2026-07-31): thinking effort as a per-agent
             # setting, adjusted from the gear — never a hire-row control.
@@ -1656,7 +1942,10 @@ class Org:
                                 f'(folders, tools, charter, or org visibility). Your '
                                 f'current scope is stated in your system prompt each turn.')
         self._log("set_scope", actor, {"node": nid, "scope": sc}, warnings)
-        return {"scope": sc, "warnings": warnings}
+        res = {"scope": sc, "warnings": warnings}
+        if bridged:
+            res["bridge"] = {"raise_ceiling": True}
+        return res
 
     def reorder(self, actor: str, nid: str, before: str | None = None,
                 after: str | None = None) -> dict:

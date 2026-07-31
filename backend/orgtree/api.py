@@ -68,8 +68,9 @@ def _public_denied(method: str, rest: str, slug: str) -> tuple[int, str] | None:
         (method == "POST" and rest == "/api/orgs")           # create org
         or (method == "DELETE" and rest.startswith("/api/orgs/"))  # delete org
         or rest.endswith("/settings")                        # org settings
-        or rest.endswith("/scope")                           # per-agent rights
-        or rest.endswith("/kiosk")                           # kiosk caps/token
+        # /scope is OPEN (ceiling spec §2): visitors retool freely WITHIN the
+        # kiosk permission ceiling — the ledger clamps, never a 403 here
+        or rest.endswith("/kiosk")                           # kiosk caps/token/ceiling
         or rest == "/api/fs"                                 # filesystem browse
         or (method == "PUT" and rest.endswith("/orgmd"))     # org.md edits
         or rest.endswith("/attach")                          # terminal handoff
@@ -391,6 +392,11 @@ class KioskSpec(BaseModel):
     spend_limit: float = 5.0          # USD hard limit
     storage_limit_mb: int = 500       # workspace-dir cap
     sandbox: bool = True              # run agent turns in a Docker container
+    # ceiling spec §3: the permission ceiling is visible/editable AT CREATION —
+    # the default is permissive (mcp "*", user ruling), so narrowing it must
+    # be a conscious act rather than something discovered later
+    max_scope: dict | None = None     # None = the default ceiling
+    auto_raise: bool = False          # admin over-ceiling grants auto-raise it
     # auth is NOT configurable (user ruling): every sandbox uses the proxied
     # subscription — the host attaches the token, the sandbox never sees it
 
@@ -468,7 +474,20 @@ def orgs_create(body: OrgCreate):
                 "storage_limit_mb": max(0, int(body.kiosk.storage_limit_mb)),
                 "sandbox": bool(body.kiosk.sandbox),
                 "sandbox_secret": secrets.token_hex(16),
+                "auto_raise": bool(body.kiosk.auto_raise),
+                "max_scope": None,     # set via the normalizer just below
             }
+            try:
+                prov = body.kiosk.max_scope
+                if prov is not None and "add_dirs" not in prov:
+                    # the create dialog edits tools/vis/pm; dir bounds default
+                    # to the org's own folders unless explicitly stated
+                    prov = {**prov,
+                            "add_dirs": o.default_kiosk_ceiling()["add_dirs"]}
+                o.d["kiosk"]["max_scope"] = o._norm_ceiling(
+                    prov if prov is not None else o.default_kiosk_ceiling())
+            except LedgerError as e:
+                raise HTTPException(422, str(e))
             store.save_org(o)
             if o.d["kiosk"]["sandbox"]:
                 sandbox.warm(o)        # prebuild image+container in background
@@ -532,6 +551,10 @@ def org_tree(slug: str, request: Request):
             "storage_limit_mb": int(k.get("storage_limit_mb") or 0) or None,
             "spend_frozen": bool(tree.get("spend_frozen")),
             "storage_blocked": bool(tree.get("storage_blocked")),
+            # the permission ceiling — the admin gear edits it; _scrub_public
+            # drops it (host paths) for visitors
+            "max_scope": k.get("max_scope"),
+            "auto_raise": bool(k.get("auto_raise")),
         }
         if k.get("storage_limit_mb"):
             tree["kiosk"]["storage_mb"] = round(
@@ -557,6 +580,11 @@ def _scrub_public(tree: dict) -> None:
         tree["workspace"] = base(tree["workspace"])
     tree["dirs"] = [{**d, "path": base(d.get("path", ""))}
                     for d in tree.get("dirs") or []]
+    if isinstance(tree.get("kiosk"), dict):
+        # the ceiling's add_dirs are host paths; visitors see clamp warnings
+        # naming the ceiling, never the ceiling itself
+        tree["kiosk"].pop("max_scope", None)
+        tree["kiosk"].pop("auto_raise", None)
 
     def walk(n):
         n.pop("session_id", None)
@@ -718,6 +746,8 @@ class KioskCfg(BaseModel):
     spend_limit: float | None = None      # USD hard limit (0 = unlimited)
     storage_limit_mb: int | None = None   # workspace-dir size cap (0 = unlimited)
     rotate_token: bool = False            # mint a new secret URL (revokes the old)
+    max_scope: dict | None = None         # the permission ceiling; setting it SWEEPS
+    auto_raise: bool | None = None        # admin over-ceiling grants auto-raise it
 
 
 @app.post("/api/orgs/{slug}/kiosk")
@@ -746,6 +776,20 @@ async def org_kiosk(slug: str, body: KioskCfg):
             k["storage_limit_mb"] = max(0, int(body.storage_limit_mb))
         if (k.get("enabled") and not k.get("token")) or body.rotate_token:
             k["token"] = secrets.token_hex(16)
+        # the permission ceiling (consensus spec): setting it SWEEPS every
+        # node's stored scope to fit — determinate, so it automates; affected
+        # live agents are notified with what they lost
+        ceiling_warnings: list = []
+        if body.max_scope is not None:
+            try:
+                r = org.set_kiosk_ceiling(body.max_scope,
+                                          auto_raise=body.auto_raise)
+            except LedgerError as e:
+                raise HTTPException(422, str(e))
+            ceiling_warnings = r.get("warnings") or []
+            k = org.d["kiosk"]
+        elif body.auto_raise is not None:
+            k["auto_raise"] = bool(body.auto_raise)
         # user ruling: the cap can never go BELOW what the org already holds —
         # retire/dissolve agents first, then lower it
         if k.get("enabled") and int(k.get("credits") or 0):
@@ -788,31 +832,40 @@ async def org_kiosk(slug: str, body: KioskCfg):
     safe = {kk: v for kk, v in k.items()
             if kk not in ("api_key", "sandbox_secret")}
     return {"kiosk": safe, "share_url": _share_url(k.get("token")),
-            "freezes_cleared": cleared}
+            "freezes_cleared": cleared,
+            **({"warnings": ceiling_warnings} if ceiling_warnings else {})}
 
 
 class Scope(BaseModel):
     add_dirs: list[dict] | None = None      # [{path, mode: rw|ro}]
     tools: dict | None = None               # {bash, web, edit, subagents, mcp: []}
     org_visibility: str | None = None
+    permission_mode: str | None = None      # rides the ceiling (spec §2)
     charter: str | None = None              # §15: this node's role card
     team_charter: str | None = None         # §15: binds this node's whole subtree
     effort: str | None = None               # thinking effort: low|medium|high|"" clears
+    raise_ceiling: bool = False             # the one-action bridge (spec §1)
 
 
 @app.post("/api/orgs/{slug}/nodes/{nid}/scope")
-async def node_scope(slug: str, nid: str, body: Scope):
+async def node_scope(slug: str, nid: str, body: Scope, request: Request):
+    pub = bool(_public_slug(request))
     with store.DOC_LOCK:
         try:
             org = store.load_org(slug)
+            rc = (not pub) and (bool((org.d.get("kiosk") or {}).get("auto_raise"))
+                                or body.raise_ceiling)
             result = org.set_scope(USER, nid, add_dirs=body.add_dirs, tools=body.tools,
                                    org_visibility=body.org_visibility,
+                                   permission_mode=body.permission_mode,
                                    charter=body.charter,
                                    team_charter=body.team_charter,
-                                   effort=body.effort)
+                                   effort=body.effort, raise_ceiling=rc)
         except LedgerError as e:
             raise HTTPException(422, str(e))
         store.save_org(org)
+    if pub and isinstance(result, dict):
+        result.pop("bridge", None)
     await hub.changed(slug)
     return result
 
@@ -1595,12 +1648,17 @@ def agent_call(body: AgentCall, request: Request):
                                   org_visibility=a.get("org_visibility"),
                                   charter=a.get("charter"))
             elif body.tool == "orgtree_retool":
+                # effort joins retool (ceiling spec §6): a cost dial, so a
+                # superior may set it on REPORTS — never on itself (set_scope's
+                # authority check refuses self). raise_ceiling is deliberately
+                # NOT plumbed: an agent can never raise a kiosk ceiling.
                 result = org.set_scope(body.node, a.get("node", ""),
                                        add_dirs=a.get("add_dirs"),
                                        tools=a.get("tools"),
                                        org_visibility=a.get("org_visibility"),
                                        charter=a.get("charter"),
-                                       team_charter=a.get("team_charter"))
+                                       team_charter=a.get("team_charter"),
+                                       effort=a.get("effort"))
             elif body.tool == "orgtree_retire":
                 result = org.retire(body.node, a.get("node"))
             elif body.tool == "orgtree_rehire":
@@ -1693,6 +1751,10 @@ def agent_call(body: AgentCall, request: Request):
         err = supervisor.interorg_send(body.org, org_send[0], org_send[1])
         if err:
             result.setdefault("warnings", []).append(f"not delivered: {err}")
+    if isinstance(result, dict):
+        # the bridge is an ADMIN affordance (ceiling spec §1) — an agent has
+        # no path to raise the ceiling, so the offer never reaches one
+        result.pop("bridge", None)
     hub_changed(body.org)
     return result
 
@@ -1877,12 +1939,21 @@ class Op(BaseModel):
     delta: int | None = None      # reallocate
     new_parent: str | None = None  # promote / demote
     dir: str | None = None        # revoke_dir
+    # ceiling spec §1: the one-action bridge — re-send the same op with this
+    # set and an over-ceiling admin grant raises the ceiling to fit (logged,
+    # named, never silent). Ignored for visitors: no legal raise path exists.
+    raise_ceiling: bool = False
 
 
 @app.post("/api/orgs/{slug}/ops")
-def org_op(slug: str, body: Op):
+def org_op(slug: str, body: Op, request: Request):
+    pub = bool(_public_slug(request))
     with store.DOC_LOCK:
-        result = _org_op_locked(slug, body)
+        result = _org_op_locked(slug, body, allow_raise=not pub)
+    if pub and isinstance(result, dict):
+        # the bridge is the ADMIN affordance — a visitor has no legal path to
+        # raise the ceiling, so the offer must not dangle
+        result.pop("bridge", None)
     # rehire with a waiting mailbox: the mail queued while archived finally
     # gets acted on (user ruling) — drive outside the doc lock
     for t in result.pop("drive", []) if isinstance(result, dict) else []:
@@ -1893,11 +1964,15 @@ def org_op(slug: str, body: Op):
     return result
 
 
-def _org_op_locked(slug: str, body: Op):
+def _org_op_locked(slug: str, body: Op, allow_raise: bool = False):
     try:
         org = store.load_org(slug)
     except LedgerError as e:
         raise HTTPException(404, str(e))
+    # ceiling spec §1, computed in exactly one place:
+    # raise_ceiling = not public and (kiosk.auto_raise or the explicit ask)
+    rc = allow_raise and (bool((org.d.get("kiosk") or {}).get("auto_raise"))
+                          or body.raise_ceiling)
     try:
         if body.op == "hire":
             if body.tier is None or body.name is None:
@@ -1905,7 +1980,7 @@ def _org_op_locked(slug: str, body: Op):
             result = org.hire(body.actor, body.parent, body.tier,
                               body.grant or 0, body.name, body.add_dirs,
                               tools=body.tools, org_visibility=body.org_visibility,
-                              charter=body.charter)
+                              charter=body.charter, raise_ceiling=rc)
             if body.effort:
                 # applied WITH the hire, atomically (same save): the draft
                 # gear's effort used to ride a separate /scope call that the
@@ -1914,7 +1989,8 @@ def _org_op_locked(slug: str, body: Op):
         elif body.op == "retire":
             result = org.retire(body.actor, body.node)
         elif body.op == "rehire":
-            result = org.rehire(body.actor, body.node, body.grant, tier=body.tier)
+            result = org.rehire(body.actor, body.node, body.grant, tier=body.tier,
+                                raise_ceiling=rc)
         elif body.op == "dissolve":
             result = org.dissolve(body.actor, body.node)
         elif body.op == "delete":

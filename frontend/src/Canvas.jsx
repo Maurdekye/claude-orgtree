@@ -2112,9 +2112,11 @@ function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, map, op,
           onClick={(e) => { e.stopPropagation(); onInbox() }}>
           <MailIcon fontSize="inherit" />{node.mail_pending > 0 && <span className="count">{node.mail_pending}</span>}
         </button>
-        {!pub && <button className="gearbtn"
+        {/* ceiling spec §2: visitors retool freely WITHIN the kiosk ceiling —
+            the gear is theirs too; the ledger clamps, never a 403 */}
+        <button className="gearbtn"
           onPointerDown={(e) => e.stopPropagation()}
-          onClick={(e) => { e.stopPropagation(); onConfig() }}><SettingsIcon fontSize="inherit" /></button>}
+          onClick={(e) => { e.stopPropagation(); onConfig() }}><SettingsIcon fontSize="inherit" /></button>
         <ContextWheel occ={node.occupancy} cw={node.context_window}
           compactAt={compactAt} />
         {lod === 'mini' && node.last_status &&
@@ -2403,7 +2405,22 @@ function NodeConfig({ node, map, tree, slug, op, toast, close }) {
               .then(() => saveScope(slug, node.id,
                 { add_dirs: dirs, tools, org_visibility: vis,
                   charter, team_charter: teamCharter, effort }))
-              .then((r) => { toast(r.warnings); close() })
+              .then((r) => {
+                if (r?.bridge?.raise_ceiling) {
+                  // one-action bridge (ceiling spec §1): same save, flag set
+                  toast(r.warnings?.length ? r.warnings
+                    : ['clamped to the kiosk permission ceiling'],
+                  { label: 'raise ceiling & apply',
+                    fn: () => saveScope(slug, node.id,
+                      { add_dirs: dirs, tools, org_visibility: vis,
+                        charter, team_charter: teamCharter, effort,
+                        raise_ceiling: true })
+                      .then((r2) => toast(r2.warnings?.length ? r2.warnings
+                        : ['ceiling raised — applied']))
+                      .catch((e) => toast([`error: ${e.message}`])) })
+                } else toast(r.warnings)
+                close()
+              })
               .catch((e) => toast([`error: ${e.message}`]))}>save</button>
           <button onClick={close}>cancel</button>
         </div>
@@ -2727,7 +2744,7 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
             </button>
           ))}
         </span>}
-        {!compact && !pub && <button className="cc-icon" onClick={onConfig}><SettingsIcon fontSize="inherit" /></button>}
+        {!compact && <button className="cc-icon" onClick={onConfig}><SettingsIcon fontSize="inherit" /></button>}
       </div>
       {asking && (
         <ConfirmModal title={`dissolve ${node.id}?`}

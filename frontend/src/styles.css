@@ -1244,6 +1244,17 @@ svg.MuiSvgIcon-root {
   flex: 1; min-width: 0; font-size: 11px;
   color: var(--dim); text-overflow: ellipsis;
 }
+/* the kiosk permission ceiling (create dialog + settings) */
+.kiosk-ceil {
+  border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px;
+  display: flex; flex-direction: column; gap: 5px;
+}
+.ceil-tools {
+  display: flex; flex-wrap: wrap; gap: 4px 14px;
+  color: var(--dim); font-size: 11.5px;
+}
+.ceil-tools label { display: inline-flex; align-items: center; gap: 5px; }
+.ceil-tools select { font-size: 11px; }
 .kiosk-new { display: flex; gap: 6px; margin-top: 4px; }
 .kiosk-new select { flex: 1; min-width: 0; }
 

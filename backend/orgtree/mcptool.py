@@ -124,10 +124,11 @@ TOOLS = [
         "name": "orgtree_retool",
         "description": (
             "Re-scope an existing agent in your subtree: change its folder grants, "
-            "tool set, MCP servers, org visibility, charter or team charter. Only "
-            "the fields you pass change. The capability rule still binds — you "
-            "cannot grant anything you do not hold yourself, and shrinking a grant "
-            "clamps everything beneath the target too."),
+            "tool set, MCP servers, org visibility, charter, team charter, or its "
+            "thinking effort (a cost/quality dial for your REPORTS — you never set "
+            "your own). Only the fields you pass change. The capability rule still "
+            "binds — you cannot grant anything you do not hold yourself, and "
+            "shrinking a grant clamps everything beneath the target too."),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -146,6 +147,10 @@ TOOLS = [
                             "description": "its standing role card (every turn)"},
                 "team_charter": {"type": "string",
                                  "description": "standing instructions binding its whole subtree"},
+                "effort": {"type": "string",
+                           "enum": ["low", "medium", "high", "xhigh", "max", ""],
+                           "description": "thinking effort for this report "
+                                          "('' clears to the CLI default)"},
             },
             "required": ["node"],
         },

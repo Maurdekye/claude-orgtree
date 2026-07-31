@@ -1091,6 +1091,164 @@ def main():
          )(Org({**orgD.d, "mail": {"chief4": [
              {"from": USER, "body": "no id here", "at": "t"}]}}))))
 
+    print("kiosk permission ceiling (consensus spec 2026-07-31):")
+    from orgtree.ledger import expand_mcp
+
+    def mk_kiosk(name, ceiling=None, auto_raise=False, dirs=None):
+        o = Org.create(name, dirs=dirs or [])
+        o.d["kiosk"] = {"enabled": True, "token": "t", "credits": 40,
+                        "spend_limit": 0.0, "storage_limit_mb": 0,
+                        "auto_raise": auto_raise, "max_scope": None}
+        o.d["kiosk"]["max_scope"] = o._norm_ceiling(
+            ceiling if ceiling is not None else o.default_kiosk_ceiling())
+        return o
+
+    NO_BASH = {"tools": {"bash": False, "web": True, "edit": True,
+                         "subagents": True, "mcp": ["*"]}}
+    orgK = mk_kiosk("ceil-top", NO_BASH)
+    check("1 top-level hire clamps to the ceiling (bridge offered)", lambda: (
+        (lambda r: None
+         if orgK.nodes["v1"]["scope"]["tools"]["bash"] is False
+         and any("kiosk permission ceiling" in w for w in r["warnings"])
+         and r.get("bridge") == {"raise_ceiling": True}
+         else (_ for _ in ()).throw(AssertionError(r))
+         )(orgK.hire(USER, None, "haiku", 0, "v1",
+                     tools=dict(ALL_TOOLS)))))
+    check("2 deep hire clamps to parent ∩ ceiling (outpaced-sweep case)", lambda: (
+        # simulate a ceiling change that outpaced a sweep: the parent's stored
+        # scope exceeds the ceiling; the ceiling still clamps the child
+        orgK.nodes["v1"]["scope"]["tools"].__setitem__("bash", True),
+        (lambda r: None
+         if orgK.nodes["v2"]["scope"]["tools"]["bash"] is False
+         else (_ for _ in ()).throw(AssertionError(r))
+         )(orgK.hire(USER, "v1", "haiku", 0, "v2", **spec())))[-1])
+    check("3 retool clamps to the ceiling (bridge offered)", lambda: (
+        (lambda r: None
+         if orgK.nodes["v2"]["scope"]["tools"]["bash"] is False
+         and r.get("bridge") == {"raise_ceiling": True}
+         else (_ for _ in ()).throw(AssertionError(r))
+         )(orgK.set_scope(USER, "v2", tools=dict(ALL_TOOLS)))))
+
+    orgM3 = mk_kiosk("ceil-mcp", {"tools": {"bash": True, "web": True,
+                                            "edit": True, "subagents": True,
+                                            "mcp": ["alpha", "beta"]}})
+    check("4a '*' MATERIALIZES to a list ceiling at grant time", lambda: (
+        orgM3.hire(USER, None, "haiku", 0, "m1",
+                   tools={**ALL_TOOLS, "mcp": ["*"]}),
+        (lambda t: None
+         if t["mcp"] == ["alpha", "beta"]
+         else (_ for _ in ()).throw(AssertionError(t))
+         )(orgM3.nodes["m1"]["scope"]["tools"]))[-1])
+    REG = ["alpha", "beta", "gamma"]
+    check("4b expand_mcp: pure expansion is expand(node) ∩ expand(ceiling)", lambda: (
+        None if expand_mcp(["*"], None, REG) == REG
+        and expand_mcp(["*"], ["alpha"], REG) == ["alpha"]
+        and expand_mcp(["alpha", "gamma"], ["alpha", "beta"], REG) == ["alpha"]
+        and expand_mcp([], ["*"], REG) == []
+        and expand_mcp(["*"], ["*"], REG) == REG
+        and expand_mcp(["ghost"], None, REG) == []
+        else (_ for _ in ()).throw(AssertionError)))
+
+    orgR3 = mk_kiosk("ceil-raise", NO_BASH)
+    check("5 raise_ceiling=True raises to the union, logs, no bridge", lambda: (
+        (lambda r: None
+         if orgR3.nodes["r1"]["scope"]["tools"]["bash"] is True
+         and orgR3.d["kiosk"]["max_scope"]["tools"]["bash"] is True
+         and any("RAISED" in w for w in r["warnings"])
+         and "bridge" not in r
+         and any(e["op"] == "ceiling_raise" for e in orgR3.d["events"])
+         else (_ for _ in ()).throw(AssertionError(r))
+         )(orgR3.hire(USER, None, "haiku", 0, "r1",
+                      tools=dict(ALL_TOOLS), raise_ceiling=True))))
+    orgR4 = mk_kiosk("ceil-agent", NO_BASH, auto_raise=True)
+    orgR4.hire(USER, None, "opus", 10, "boss2", raise_ceiling=False)
+    # outpaced-sweep setup: the parent's stored scope exceeds the ceiling, so
+    # the agent's request PASSES the strict parent clamp and only the ceiling
+    # stands between it and bash
+    orgR4.nodes["boss2"]["scope"]["tools"]["bash"] = True
+    check("6 the agent path can never raise (fail-closed default), even with "
+          "auto_raise ON", lambda: (
+        orgR4.hire("boss2", "boss2", "haiku", 0, "kid2", **spec()),
+        (lambda t: None
+         if t["bash"] is False
+         and orgR4.d["kiosk"]["max_scope"]["tools"]["bash"] is False
+         else (_ for _ in ()).throw(AssertionError(t))
+         )(orgR4.nodes["kid2"]["scope"]["tools"]))[-1])
+    check("7 a visitor-shaped call (no flag) clamps, never raises", lambda: (
+        None if orgK.d["kiosk"]["max_scope"]["tools"]["bash"] is False
+        else (_ for _ in ()).throw(AssertionError)))
+
+    orgV = mk_kiosk("ceil-rank", {"tools": {"mcp": ["*"]},
+                                  "org_visibility": "team",
+                                  "permission_mode": "acceptEdits"})
+    orgV.hire(USER, None, "haiku", 0, "rk")
+    check("8 org_visibility and permission_mode clamp by rank", lambda: (
+        orgV.set_scope(USER, "rk", org_visibility="full",
+                       permission_mode="bypassPermissions"),
+        (lambda sc: None
+         if sc["org_visibility"] == "team"
+         and sc["permission_mode"] == "acceptEdits"
+         else (_ for _ in ()).throw(AssertionError(sc))
+         )(orgV.nodes["rk"]["scope"]))[-1])
+
+    orgD2 = mk_kiosk("ceil-defaults", NO_BASH)
+    check("9 bare hire resolves org defaults THEN clamps (defaults lose)", lambda: (
+        orgD2.hire(USER, None, "haiku", 0, "d1"),      # tools=None → defaults
+        (lambda t: None
+         if t["bash"] is False and t["web"] is True
+         else (_ for _ in ()).throw(AssertionError(t))
+         )(orgD2.nodes["d1"]["scope"]["tools"]))[-1])
+
+    orgL2 = mk_kiosk("ceil-lower")
+    orgL2.hire(USER, None, "haiku", 2, "w1")
+    orgL2.hire(USER, "w1", "haiku", 0, "w2", **spec())
+    check("10 lowering the ceiling SWEEPS the whole tree + notifies", lambda: (
+        (lambda r: None
+         if orgL2.nodes["w1"]["scope"]["tools"]["bash"] is False
+         and orgL2.nodes["w2"]["scope"]["tools"]["bash"] is False
+         and set(r["swept"]) == {"w1", "w2"}
+         and orgL2.audit()["no_overdraft"]
+         and (orgL2.d.get("notices") or {}).get("w1")
+         else (_ for _ in ()).throw(AssertionError(r))
+         )(orgL2.set_kiosk_ceiling(
+             {"tools": {"bash": False, "mcp": ["*"]}}))))
+
+    _mig = Org.create("ceil-mig")
+    _mig.d["default_tools"] = {"bash": True, "web": True, "edit": True,
+                               "subagents": True, "mcp": []}
+    _mig.hire(USER, None, "haiku", 0, "seed",
+              tools={**ALL_TOOLS, "mcp": ["x"]})
+    _mig.d["kiosk"] = {"enabled": True, "token": "t", "credits": 10}
+    check("11 migration mints a ceiling for a pre-feature kiosk doc + notice", lambda: (
+        (lambda o2: None
+         if o2.d["kiosk"]["max_scope"] is not None
+         and o2.d["kiosk"]["max_scope"]["tools"]["mcp"] == ["x"]
+         and o2.d["kiosk"]["max_scope"]["tools"]["bash"] is True
+         and o2.d["kiosk"]["auto_raise"] is False
+         and any("PERMISSION CEILING" in m["body"]
+                 for m in o2.d.get("user_inbox", []))
+         else (_ for _ in ()).throw(AssertionError(o2.d["kiosk"]))
+         )(Org(_mig.d))))
+
+    orgE = mk_kiosk("ceil-effort", {"tools": {"bash": False, "web": False,
+                                              "edit": False, "subagents": False,
+                                              "mcp": []}})
+    orgE.hire(USER, None, "haiku", 0, "e1")
+    check("12 effort applies even under a deny-all ceiling (cost dial ruling)", lambda: (
+        orgE.set_scope(USER, "e1", effort="max"),
+        None if orgE.nodes["e1"]["scope"]["effort"] == "max"
+        else (_ for _ in ()).throw(AssertionError))[-1])
+
+    orgN = Org.create("no-ceiling")
+    orgN.hire(USER, None, "haiku", 0, "free1", tools=dict(ALL_TOOLS))
+    check("13 normal orgs entirely unaffected — no ceiling, no clamp, no bridge", lambda: (
+        (lambda r: None
+         if orgN.kiosk_ceiling() is None
+         and orgN.nodes["free2"]["scope"]["tools"]["bash"] is True
+         and "bridge" not in r
+         else (_ for _ in ()).throw(AssertionError(r))
+         )(orgN.hire(USER, None, "haiku", 0, "free2", tools=dict(ALL_TOOLS)))))
+
     print("guards:")
     check("unknown tier refused", lambda: expect_error(
         lambda: org.hire(USER, None, "gpt", 0, "nope"), "unknown tier"))
