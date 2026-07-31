@@ -43,6 +43,10 @@ REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..")
 BACKEND_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
 
 IMAGE = os.environ.get("ORGTREE_SANDBOX_IMAGE", "orgtree-sandbox")
+# bump when sandbox/Dockerfile changes: the tag carries the revision, so
+# existing images rebuild and running containers recreate on their next turn
+# (r2: passwordless sudo — agents hold root inside the container)
+IMG_REV = "r2"
 BRIDGE_PORT = int(os.environ.get("ORGTREE_BRIDGE_PORT", "7362") or 0)
 MEM = os.environ.get("ORGTREE_SANDBOX_MEM", "4g")
 CPUS = os.environ.get("ORGTREE_SANDBOX_CPUS", "2")
@@ -130,7 +134,7 @@ def ensure_image() -> str:
     Returns the tag to run."""
     from . import supervisor        # lazy — supervisor imports this module
     ver = supervisor.cli_version()
-    tag = f"{IMAGE}:{ver}" if ver != "unknown" else IMAGE
+    tag = f"{IMAGE}:{ver}-{IMG_REV}" if ver != "unknown" else IMAGE
     if _docker("image", "inspect", tag).returncode == 0:
         return tag
     with _build_lock:
@@ -160,7 +164,7 @@ def ensure_container(org) -> str:
         # container on the new image instead of running the frozen old CLI
         from . import supervisor
         ver = supervisor.cli_version()
-        want = f"{IMAGE}:{ver}" if ver != "unknown" else IMAGE
+        want = f"{IMAGE}:{ver}-{IMG_REV}" if ver != "unknown" else IMAGE
         if cur_img and cur_img != want:
             _docker("rm", "-f", name, timeout=60)
         else:
