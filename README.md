@@ -339,7 +339,7 @@ capacity*, not dollars.
 ## Development
 
 ```bash
-cd backend && python tests/test_ledger.py   # ledger invariants (65 checks)
+cd backend && python tests/test_ledger.py   # ledger invariants (all checks must pass)
 cd frontend && npm run dev                  # vite dev server w/ API proxy
 python tools/ui_probe.py sweep <org> out/   # headless UI screenshot sweep
 ```
