@@ -18,6 +18,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
@@ -1432,6 +1433,9 @@ async def agent_call(body: AgentCall, request: Request):
             elif body.tool == "orgtree_rehire":
                 result = org.rehire(body.node, a.get("node"), a.get("grant"))
                 drive.extend(result.pop("drive", []))
+            elif body.tool == "orgtree_move":
+                result = org.move(body.node, a.get("node", ""),
+                                  a.get("new_parent") or None)
             elif body.tool == "orgtree_dissolve":
                 result = org.dissolve(body.node, a.get("node"))
             elif body.tool == "orgtree_reallocate":
@@ -1442,10 +1446,12 @@ async def agent_call(body: AgentCall, request: Request):
             elif body.tool == "orgtree_status":
                 status = a.get("status", "working")
                 summary = a.get("summary", "")
-                # persisted on the node (survives restarts); cleared when a
-                # new turn starts, so a stale "done" never shows over live work
+                # persisted on the node (survives restarts); a new turn moves
+                # it to prev_status, so a stale "done" never shows over live
+                # work but the history is not erased (gap audit №13)
                 org.node(body.node)["last_status"] = {
-                    "status": status, "summary": summary}
+                    "status": status, "summary": summary,
+                    "at": supervisor.now_iso()}
                 result = {"recorded": status}
                 if status in ("done", "blocked"):
                     parent = org.node(body.node)["parent"]
@@ -1661,6 +1667,10 @@ async def _org_op_locked(slug: str, body: Op):
             if body.new_parent is None:
                 raise LedgerError("demote needs new_parent")
             result = org.demote(body.actor, body.node, body.new_parent)
+        elif body.op == "move":
+            result = org.move(body.actor, body.node, body.new_parent)
+        elif body.op == "reseed":
+            result = org.reseed(body.actor, body.node, str(uuid.uuid4()))
         elif body.op == "revoke_dir":
             if body.dir is None:
                 raise LedgerError("revoke_dir needs dir")

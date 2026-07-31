@@ -162,11 +162,30 @@ TOOLS = [
     },
     {
         "name": "orgtree_rehire",
-        "description": "Rehire an archived node in your subtree; it resumes with its full prior context.",
+        "description": (
+            "Rehire an archived node in your subtree; it resumes with its full "
+            "prior context. Rehiring under an archived superior rehires the "
+            "whole chain first (costs bubble). You may also rehire YOUR OWN "
+            "knowledge bearer (a past generation of yourself) — it then joins "
+            "as your own subordinate. An unrecoverable node is re-seeded "
+            "instead: fresh session, same role, credits and reports."),
         "inputSchema": {"type": "object",
                         "properties": {"node": {"type": "string"},
                                        "grant": {"type": "integer", "minimum": 0}},
                         "required": ["node"]},
+    },
+    {
+        "name": "orgtree_move",
+        "description": (
+            "Reorganize: re-parent a node in your subtree under another node "
+            "in your reach (promote toward you or demote under a descendant). "
+            "Budget-neutral along the chain — a fully occupied tree can still "
+            "reorganize (§4.5). The node's whole suborganization moves with "
+            "it. Only the user can seat agents at top level."),
+        "inputSchema": {"type": "object",
+                        "properties": {"node": {"type": "string"},
+                                       "new_parent": {"type": "string"}},
+                        "required": ["node", "new_parent"]},
     },
     {
         "name": "orgtree_dissolve",

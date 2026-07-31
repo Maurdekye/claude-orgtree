@@ -1086,7 +1086,9 @@ class Org:
         freed = self.seat_cost(nid) + n["grant"]
         n["state"] = "archived"
         n["archived_at"] = now()
-        self._revoke_audiences_of(nid, reason="grantee retired")
+        # user ruling (2026-07-31): retire is PAGING (§4.3) — audiences survive
+        # it, exactly like dirs and tools, and come back live on rehire. Only
+        # delete destroys them. (The UI filters archived holders at render.)
         who = ("the user" if actor == USER
                else "itself (self-retirement)" if actor == nid else f'"{actor}"')
         self._notify([p for p in [n["parent"]] if p != actor],
@@ -1101,13 +1103,46 @@ class Org:
                tier: str | None = None) -> dict:
         """§4.2. Parent pays seat + grant; may strand the parent's OTHER archived kids.
         `tier` override (№16, spike-verified): a knowledge bearer answers from context
-        and can be consulted at a cheaper tier than it ran at."""
-        self._require_authority(actor, nid)
+        and can be consulted at a cheaper tier than it ran at.
+
+        Motto bridges (user rulings 2026-07-31):
+        - a node may rehire ITS OWN knowledge bearer, which then joins as the
+          node's own SUBORDINATE (superior-rehired bearers stay coworkers);
+        - rehire under an archived superior rehires the whole chain first
+          (a live agent under an archived one is an invalid tree state);
+        - rehire of an unrecoverable node becomes a re-seed (fresh session)."""
+        own_bearer = (self.nodes.get(nid) or {}).get("successor") == actor
+        if not own_bearer:
+            self._require_authority(actor, nid)
         n = self.node(nid)
         if n["state"] == "live":
             # design motto: asking for what's already true is a no-op, not an error
             return {"cost": 0, "drive": [],
                     "warnings": [f"{nid} is already live — nothing to do"]}
+        if n["state"] == "unrecoverable":
+            # motto bridge: the session is dead but the node — name, position,
+            # charter, credits, reports, mailbox — is fine. Rehire = re-seed.
+            r = self.reseed(actor, nid, str(uuid.uuid4()))
+            r.setdefault("cost", 0)
+            r.setdefault("drive", [nid] if (self.d.get("mail") or {}).get(nid) else [])
+            return r
+        warnings: list[str] = []
+        drive: list[str] = []
+        # user ruling: a live agent under an archived agent is an invalid tree
+        # state — rehiring a deep node rehires every archived superior between
+        # it and the nearest live one first, costs bubbling like any acquire
+        chain = []
+        p = n["parent"]
+        while p is not None and self.nodes[p]["state"] != "live":
+            chain.append(p)
+            p = self.nodes[p]["parent"]
+        for k in reversed(chain):                      # top-most first
+            r = self.rehire(actor, k)
+            warnings += r.get("warnings", [])
+            drive += r.get("drive", [])
+            warnings.append(
+                f'"{k}" was archived above {nid} — rehired first, so the '
+                f'chain of command is whole')
         fable_futile = (n["model"] == "fable" or tier == "fable") \
             and bool(self.d.get("fable_lock"))
         if fable_futile and actor == USER:
@@ -1117,10 +1152,17 @@ class Org:
             if tier not in self.d["tiers"]:
                 raise LedgerError(f"unknown tier {tier!r}")
             n["model"] = tier
+        if own_bearer and n["parent"] != actor:
+            # user ruling: a self-hired bearer is the node's OWN subordinate —
+            # the successor commands it (and pays its seat), unlike a
+            # superior-rehired bearer, which stays a coworker in the old slot
+            n["parent"] = actor
+            warnings.append(
+                f'{nid} joins as YOUR subordinate (you woke your own '
+                f'predecessor) — you command it and pay its seat')
         parent = n["parent"]
         grant = n["grant"] if grant is None else int(grant)
         need = self.seat_cost(nid) + grant
-        warnings: list[str] = []
         if parent is not None:
             # §4.6 generalized: the parent pays; shortfall bubbles up to the actor
             self._chain_acquire(actor, parent, need, warnings,
@@ -1154,7 +1196,8 @@ class Org:
         self._log("rehire", actor, {"node": nid, "grant": grant}, warnings)
         # mail that arrived while archived waited in the inbox (user ruling) —
         # tell the caller to drive the node so it finally acts on it
-        drive = [nid] if (self.d.get("mail") or {}).get(nid) else []
+        if (self.d.get("mail") or {}).get(nid):
+            drive.append(nid)
         return {"cost": need, "warnings": warnings, "drive": drive}
 
     # --------------------------------------------------------------- dissolve
@@ -1175,7 +1218,7 @@ class Org:
                 freed += self.seat_cost(k) + n["grant"]
                 n["state"] = "archived"
                 n["archived_at"] = now()
-            self._revoke_audiences_of(k, reason="dissolved")
+            # audiences survive dissolve too (paging, user ruling) — see retire
         who = "the user" if actor == USER else f'"{actor}"'
         self._notify([p for p in [parent] if p != actor],
                      f'{who.capitalize()} dissolved your report "{nid}" and its whole '
@@ -1337,6 +1380,21 @@ class Org:
         if new_parent == nid or new_parent in self.descendants(nid, live_only=False):
             raise LedgerError("cannot demote a node into its own subtree — cycle (§4.5)")
         return self._move("demote", actor, nid, new_parent)
+
+    def move(self, actor: str, nid: str, new_parent: str | None) -> dict:
+        """§4.5 unified reorganization verb (gap audit №7): promote or demote,
+        decided by direction — the capability the design derived (§4.5: a
+        fully-occupied tree can still reorganize) and only the user could
+        reach until now. Same-parent = success no-op (motto A3)."""
+        cur = self.parent(nid)
+        tgt = None if new_parent in (None, USER) else new_parent
+        if tgt == cur:
+            return {"warnings": [f"{nid} already reports to "
+                                 f"{new_parent or 'the top level'} — nothing to do"]}
+        if tgt is None or (cur is not None
+                           and self.is_ancestor(tgt, cur)):
+            return self.promote(actor, nid, tgt)
+        return self.demote(actor, nid, tgt)
 
     def _move(self, op: str, actor: str, nid: str, new_parent: str | None) -> dict:
         """§4.5 LCA credit path. Release P_old→L and acquire L→P_new cancel hop by hop,
@@ -1528,11 +1586,6 @@ class Org:
         return {"ui_order": n["ui_order"], "warnings": []}
 
     # -------------------------------------------------------------- audiences
-    def _revoke_audiences_of(self, nid: str, reason: str):
-        self.d["audiences"] = [
-            a for a in self.d["audiences"]
-            if a["grantee"] != nid and a["grantor"] != nid]
-
     def _sweep_audiences(self) -> list[tuple[str, str]]:
         """§7.3 auto-revoke: drop grants whose ANCHOR is no longer an ancestor
         of the grantee. For a self-grant the anchor is the grantor; for a
@@ -1784,9 +1837,59 @@ class Org:
         n["state"] = "unrecoverable"
         self._notify([n["parent"]],
                      f'⚠ Your report "{nid}" is UNRECOVERABLE — its session failed to '
-                     f'resume ({reason}). Its seat is still held; retire or dissolve it '
+                     f'resume ({reason}). Its seat is still held; rehire it to RE-SEED '
+                     f'it (fresh session, same identity and credits), or retire it '
                      f'to free the credits.')
         self._log("unrecoverable", SYSTEM, {"node": nid, "reason": reason}, [])
+
+    def reseed(self, actor: str, nid: str, new_session_id: str) -> dict:
+        """The №31 exit (gap audit №9): an unrecoverable node's SESSION is gone,
+        but the node — name, position, charter, credits, reports, mailbox — is
+        fine. Re-seed mints a fresh session and archives the dead one into the
+        lineage stack as a LOST generation (bearer_state="lost": kept for the
+        record, never consultable — its transcript is missing). Budget-neutral:
+        same node, same seat, no new charge."""
+        self._require_authority(actor, nid, allow_self=True)
+        n = self.node(nid)
+        if n["state"] == "archived":
+            raise LedgerError(f"{nid} is archived — rehire it instead")
+        if n["state"] != "unrecoverable":
+            return {"warnings": [f"{nid} is {n['state']} and its session works — "
+                                 f"nothing to re-seed"]}
+        gen = n.get("generation", 0)
+        pred_id = f"{nid}@{gen}"
+        pred = dict(n)
+        pred.update({
+            "state": "archived", "archived_at": now(), "grant": 0,
+            "bearer_state": "lost", "successor": nid,
+            "predecessor": n.get("predecessor"),
+            "ui_order": n.get("ui_order", 0) + 0.001,
+            "cost_usd": 0.0, "last_status": None, "frozen": None,
+            "inflight": None,
+            "scope": {**n["scope"],
+                      "add_dirs": [dict(d) for d in n["scope"].get("add_dirs", [])],
+                      "tools": {"bash": False, "web": False, "edit": False,
+                                "subagents": False, "mcp": []}},
+        })
+        self.nodes[pred_id] = pred
+        n["session_id"] = new_session_id
+        n["generation"] = gen + 1
+        n["predecessor"] = pred_id
+        n["state"] = "live"
+        who = "the user" if actor == USER else f'"{actor}"'
+        self._notify([p for p in [n["parent"]] if p and p != actor],
+                     f'Your report "{nid}" was RE-SEEDED by {who}: its dead session '
+                     f'is archived as "{pred_id}" (a lost generation) and it starts '
+                     f'fresh — same role, credits and reports, empty memory.')
+        self._notify([nid],
+                     f"{who.capitalize()} re-seeded you after your previous session "
+                     f"was lost. Your role, charter, credits and reports are intact, "
+                     f"but your memory starts fresh — check your scratch CLAUDE.md "
+                     f"and ask your chain to re-orient you.")
+        self._log("reseed", actor, {"node": nid, "predecessor": pred_id}, [])
+        return {"predecessor": pred_id,
+                "warnings": [f'{nid} re-seeded — the dead session is archived as '
+                             f'"{pred_id}" (lost generation, not consultable)']}
 
     # ------------------------------------------------------------------ audit
     def audit(self) -> dict:
@@ -1827,6 +1930,8 @@ class Org:
                 "mail_pending": len((self.d.get("mail") or {}).get(nid, [])),
                 "limit_locked": bool(n.get("limit_locked")),
                 "last_status": n.get("last_status"),
+                "prev_status": n.get("prev_status"),
+                "inflight_at": (n.get("inflight") or {}).get("at"),
                 "frozen": ({k: n["frozen"].get(k)
                             for k in ("at", "until", "until_ts", "error")}
                            if n.get("frozen") else None),

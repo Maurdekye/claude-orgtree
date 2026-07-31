@@ -727,6 +727,93 @@ def main():
     check("only the user promotes to top level", lambda: expect_error(
         lambda: orgR.promote("vp", "deep", None), "top level"))
 
+    print("reorganization + repair (user rulings 2026-07-31):")
+    orgM = Org.create("moves")
+    orgM.hire(USER, None, "opus", 20, "boss")
+    orgM.hire(USER, "boss", "sonnet", 6, "mid")
+    orgM.hire(USER, "mid", "haiku", 0, "leaf")
+    check("move verb: agent promotes a grandchild into its own team", lambda: (
+        orgM.move("boss", "leaf", "boss"),
+        None if orgM.parent("leaf") == "boss"
+        else (_ for _ in ()).throw(AssertionError))[-1])
+    check("move to the current parent is a no-op", lambda: (
+        lambda r: None if any("nothing to do" in w for w in r["warnings"])
+        else (_ for _ in ()).throw(AssertionError(r))
+    )(orgM.move("boss", "leaf", "boss")))
+    check("move demotes back down; budget unchanged", lambda: (
+        lambda before: (
+            orgM.move("boss", "leaf", "mid"),
+            None if orgM.parent("leaf") == "mid" and orgM.audit() == before
+            else (_ for _ in ()).throw(AssertionError))[-1]
+    )(orgM.audit()))
+    check("agent move to top level refused", lambda: expect_error(
+        lambda: orgM.move("boss", "mid", None), "top level"))
+
+    orgR2 = Org.create("repair")
+    orgR2.hire(USER, None, "opus", 10, "vp")
+    orgR2.hire(USER, "vp", "haiku", 2, "kid")
+    old_sid2 = orgR2.nodes["kid"]["session_id"]
+    orgR2.mark_unrecoverable("kid", "transcript gone")
+    check("rehire of an unrecoverable node = re-seed, no double charge", lambda: (
+        lambda free_before: (
+            orgR2.rehire(USER, "kid"),
+            None if orgR2.nodes["kid"]["state"] == "live"
+            and orgR2.free("vp") == free_before
+            and orgR2.nodes["kid"]["generation"] == 1
+            and orgR2.nodes["kid"]["session_id"] != old_sid2
+            and orgR2.nodes["kid@0"]["bearer_state"] == "lost"
+            and orgR2.nodes["kid@0"]["session_id"] == old_sid2
+            and orgR2.audit()["no_overdraft"]
+            else (_ for _ in ()).throw(AssertionError(orgR2.nodes["kid"])))[-1]
+    )(orgR2.free("vp")))
+
+    orgC2 = Org.create("chains")
+    orgC2.hire(USER, None, "opus", 20, "mgr")
+    orgC2.hire(USER, "mgr", "sonnet", 5, "sub")
+    orgC2.hire(USER, "sub", "haiku", 0, "leaf")
+    orgC2.dissolve(USER, "mgr")
+    check("rehire under an archived chain rehires the whole chain", lambda: (
+        lambda r: None
+        if all(orgC2.nodes[k]["state"] == "live" for k in ("mgr", "sub", "leaf"))
+        and any("archived above" in w for w in r["warnings"])
+        and orgC2.audit()["no_overdraft"]
+        else (_ for _ in ()).throw(AssertionError(r))
+    )(orgC2.rehire(USER, "leaf")))
+    check("agent chain-rehire works and bubbles costs", lambda: (
+        orgC2.retire("mgr", "sub"),          # auto-dissolves sub+leaf
+        (lambda r: None
+         if all(orgC2.nodes[k]["state"] == "live" for k in ("sub", "leaf"))
+         else (_ for _ in ()).throw(AssertionError(r))
+         )(orgC2.rehire("mgr", "leaf")))[-1])
+
+    orgB = Org.create("bearer-hire")
+    orgB.hire(USER, None, "opus", 10, "vet")
+    orgB.compact_split("vet", "21212121-3434-5656-7878-909090909090")
+    check("a node rehires ITS OWN bearer as its own subordinate", lambda: (
+        lambda r: None
+        if orgB.nodes["vet@0"]["state"] == "live"
+        and orgB.nodes["vet@0"]["parent"] == "vet"
+        and orgB.free("vet") == 5              # opus seat paid from vet's grant
+        and any("subordinate" in w for w in r["warnings"])
+        and orgB.audit()["no_overdraft"]
+        else (_ for _ in ()).throw(AssertionError(r))
+    )(orgB.rehire("vet", "vet@0", 0)))
+
+    print("audiences survive paging (user ruling 2026-07-31):")
+    orgA2 = Org.create("aud-paging")
+    orgA2.hire(USER, None, "opus", 10, "vp")
+    orgA2.hire(USER, "vp", "haiku", 0, "deep")
+    orgA2.user_deep_reach("deep", "hello down there")
+    orgA2.retire(USER, "deep")
+    check("user audience survives retire", lambda: (
+        None if orgA2._has_audience("deep", USER)
+        else (_ for _ in ()).throw(AssertionError(orgA2.d["audiences"]))))
+    check("rehired agent still holds the audience and the mail path", lambda: (
+        orgA2.rehire(USER, "deep"),
+        (lambda r: None if r["delivered"] == "user_inbox"
+         else (_ for _ in ()).throw(AssertionError(r))
+         )(orgA2.post_mail("deep", "user", "still have your ear")))[-1])
+
     print("guards:")
     check("unknown tier refused", lambda: expect_error(
         lambda: org.hire(USER, None, "gpt", 0, "nope"), "unknown tier"))

@@ -751,8 +751,11 @@ def _run_turn(slug: str, nid: str, text):
                 if nid in o2.nodes:
                     o2.node(nid)["inflight"] = {"at": now_iso(),
                                                 "text": text[-8000:]}
-                    # new work begins: a lingering done/blocked chip would lie
-                    o2.node(nid).pop("last_status", None)
+                    # new work begins: a lingering done/blocked chip would lie —
+                    # but the history is kept, not erased (gap audit №13)
+                    ls = o2.node(nid).pop("last_status", None)
+                    if ls:
+                        o2.node(nid)["prev_status"] = ls
                     store.save_org(o2)
             notify(slug, nid, "turn_started")
             sandbox_name = None
