@@ -1259,6 +1259,9 @@ svg.MuiSvgIcon-root {
   color: var(--dim); font-size: 11px; min-width: 0; white-space: nowrap;
 }
 .kiosk-caps input { width: 100%; min-width: 0; }
+/* the ceiling's visibility/mode/tier selects share the caps presentation
+   (user spec 2026-07-31) */
+.kiosk-caps select { width: 100%; min-width: 0; font-size: 12px; }
 .kiosk-url input {
   flex: 1; min-width: 0; font-size: 11px;
   color: var(--dim); text-overflow: ellipsis;

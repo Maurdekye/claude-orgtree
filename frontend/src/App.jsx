@@ -430,6 +430,7 @@ function NewOrg({ onCreate }) {
   const [ceil, setCeil] = useState({ bash: true, web: true, edit: true,
                                      subagents: true, mcp: true })
   const [ceilPm, setCeilPm] = useState('acceptEdits')
+  const [ceilVis, setCeilVis] = useState('full')
   const [ceilTier, setCeilTier] = useState('')   // '' = no tier cap
   const [autoRaise, setAutoRaise] = useState(false)
   // sandbox is OFF by default (user ruling) — and impossible without Docker
@@ -453,7 +454,7 @@ function NewOrg({ onCreate }) {
           max_scope: {
             tools: { bash: ceil.bash, web: ceil.web, edit: ceil.edit,
                      subagents: ceil.subagents, mcp: ceil.mcp ? ['*'] : [] },
-            org_visibility: 'full', permission_mode: ceilPm,
+            org_visibility: ceilVis, permission_mode: ceilPm,
             max_tier: ceilTier || null,
           },
         } : null,
@@ -494,17 +495,26 @@ function NewOrg({ onCreate }) {
                 {k === 'mcp' ? 'MCP servers' : k}
               </label>
             ))}
-            <label className="row">mode <select value={ceilPm}
+          </div>
+          {/* the rank ceilings — styled like the credits/spend/storage caps
+              (user spec 2026-07-31): stacked label, three columns */}
+          <div className="kiosk-caps">
+            <label>visibility ≤ <select value={ceilVis}
+              onChange={(e) => setCeilVis(e.target.value)}>
+              {['self', 'team', 'subtree', 'full'].map((v) =>
+                <option key={v} value={v}>{v}</option>)}
+            </select></label>
+            <label>mode ≤ <select value={ceilPm}
               onChange={(e) => setCeilPm(e.target.value)}>
               <option value="default">default (asks)</option>
               <option value="acceptEdits">acceptEdits</option>
               <option value="bypassPermissions">bypassPermissions</option>
             </select></label>
-            <label className="row"
+            <label
               title="the highest model tier this kiosk may run — spawn tokens above it disappear and agents cannot hire, rehire or switch above it">
               tier ≤ <select value={ceilTier}
                 onChange={(e) => setCeilTier(e.target.value)}>
-                <option value="">fable (no cap)</option>
+                <option value="">fable</option>
                 <option value="opus">opus</option>
                 <option value="sonnet">sonnet</option>
                 <option value="haiku">haiku</option>
@@ -954,23 +964,24 @@ function SettingsPanel({ tree, toast, close }) {
               onChange={(e) => setCeilMcp(e.target.value)} />
             <div className="field-label">folder bounds (grants clamp into these)</div>
             <CeilDirs dirs={ceilDirs} onChange={setCeilDirs} />
-            <div className="row">
-              <label className="checkline">org visibility ≤ <select value={ceilVis}
+            {/* styled like the credits/spend/storage caps (user spec) */}
+            <div className="kiosk-caps">
+              <label>visibility ≤ <select value={ceilVis}
                 onChange={(e) => setCeilVis(e.target.value)}>
                 {['self', 'team', 'subtree', 'full'].map((v) =>
                   <option key={v} value={v}>{v}</option>)}
               </select></label>
-              <label className="checkline">mode ≤ <select value={ceilPm}
+              <label>mode ≤ <select value={ceilPm}
                 onChange={(e) => setCeilPm(e.target.value)}>
                 <option value="default">default</option>
                 <option value="acceptEdits">acceptEdits</option>
                 <option value="bypassPermissions">bypassPermissions</option>
               </select></label>
-              <label className="checkline"
+              <label
                 title="the highest model tier this kiosk may run — spawn tokens above it disappear; hires, rehires and switches above it are refused (existing over-cap agents stay until you switch or retire them)">
                 tier ≤ <select value={ceilTier}
                   onChange={(e) => setCeilTier(e.target.value)}>
-                  <option value="">fable (no cap)</option>
+                  <option value="">fable</option>
                   <option value="opus">opus</option>
                   <option value="sonnet">sonnet</option>
                   <option value="haiku">haiku</option>
