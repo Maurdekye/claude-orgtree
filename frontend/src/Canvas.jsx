@@ -680,10 +680,9 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
 
   const spawn = (parentId, tier) => {
     setDraft({ parent: parentId === USER ? null : parentId, tier })
-    // glide to the draft at a readable zoom — at overview zoom the name entry
-    // is a 5px sliver otherwise
-    // slightly under the old 1.5 — the draft read as over-magnified (user)
-    setTimeout(() => centerOn(DRAFT, Math.max(1.35, viewRef.current.z)), 60)
+    // the redesigned form is authored at screen scale inside the card (desk
+    // regime) — glide to SCREEN-FILL, where it reads like a normal dialog
+    setTimeout(() => centerOn(DRAFT), 60)
   }
   const confirmDraft = (name, grant, charter) => {
     op({ op: 'hire', parent: draft.parent, tier: draft.tier, grant, name,
@@ -1412,6 +1411,7 @@ function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRemaining,
     return () => window.removeEventListener('keydown', onKey)
   }, [onCancel])
   const ok = name.trim().length > 0
+  const hire = () => { if (ok) onConfirm(name.trim(), grant, finalCharter()) }
   return (
     <div className="sq draft" style={{
       transform: `translate(${pos.x}px, ${pos.y}px)`, width: NODE_W, height: NODE_H,
@@ -1422,44 +1422,67 @@ function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRemaining,
       <CreditBar seat={seats[draft.tier] ?? 0} grant={grant} committed={0}
         draftMode max={max}
         onDragValue={setGrant} zoom={zoom} pxc={pxc} />
-      <div className="sq-head">
-        <span className="tier">{TIER_LETTER[draft.tier]}</span>
-        <input className="draft-name" autoFocus placeholder="name…" value={name}
-          onChange={(e) => setName(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter' && ok) onConfirm(name.trim(), grant, finalCharter()) }} />
-      </div>
       <div className="draft-tag">uninitialized</div>
-      {presets.length > 0 && (
-        <select className="draft-preset" value=""
-          onChange={(e) => {
-            const p = presets.find((x) => x.name === e.target.value)
-            if (p && !chosen.some((c) => c.name === p.name))
-              setChosen((cs) => [...cs, p])
-          }}>
-          <option value="">add charter preset…</option>
-          {presets.filter((p) => !chosen.some((c) => c.name === p.name))
-            .map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
-        </select>
-      )}
-      {chosen.length > 0 && (
-        <div className="preset-cards">
-          {chosen.map((c) => (
-            <button key={c.name} className="preset-card"
-              title={c.path ? `${c.path}\n(click to remove)` : 'click to remove'}
-              onClick={() => setChosen((cs) => cs.filter((x) => x.name !== c.name))}>
-              {c.name}
-            </button>
-          ))}
+      {/* full redesign (user request: the old in-card form was cramped): the
+          form is authored at NATURAL SCREEN SCALE and counter-scaled into the
+          card — the same inverted-scale regime as the desk chat. spawn()
+          glides the camera to screen-fill, where authored px ≈ screen px. */}
+      <div className="draft-over" onWheel={(e) => e.stopPropagation()}>
+        <div className="draft-inner">
+          <div className="df-head">
+            <span className={'tier t-' + draft.tier}>{TIER_LETTER[draft.tier]}</span>
+            <b className="df-title">hire a {draft.tier}</b>
+            <span className="dim">
+              {draft.parent == null ? 'top level — reports to you'
+                : `reports to ${draft.parent}`} · seat {seats[draft.tier] ?? 0}
+            </span>
+          </div>
+          <input className="df-name" autoFocus placeholder="name…" value={name}
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter' && ok) hire() }} />
+          <div className="df-grant">
+            <span className="field-label">credit grant</span>
+            <input type="range" min={0} max={max} value={Math.min(grant, max)}
+              onChange={(e) => setGrant(+e.target.value)} />
+            <input type="number" className="df-grant-n" min={0} max={max}
+              value={grant}
+              onChange={(e) => setGrant(Math.max(0, Math.min(max, +e.target.value || 0)))} />
+          </div>
+          {presets.length > 0 && (
+            <div className="df-presets">
+              <span className="field-label">charter presets</span>
+              <div className="preset-cards">
+                {chosen.map((c) => (
+                  <button key={c.name} className="preset-card"
+                    title={c.path ? `${c.path}\n(click to remove)` : 'click to remove'}
+                    onClick={() => setChosen((cs) => cs.filter((x) => x.name !== c.name))}>
+                    {c.name} <CloseIcon fontSize="inherit" />
+                  </button>
+                ))}
+                <select className="df-preset-add" value=""
+                  onChange={(e) => {
+                    const p = presets.find((x) => x.name === e.target.value)
+                    if (p && !chosen.some((c) => c.name === p.name))
+                      setChosen((cs) => [...cs, p])
+                  }}>
+                  <option value="">add…</option>
+                  {presets.filter((p) => !chosen.some((c) => c.name === p.name))
+                    .map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
+                </select>
+              </div>
+            </div>
+          )}
+          <textarea className="df-charter"
+            placeholder={'charter (optional): standing role notes'
+              + (chosen.length ? ' — appended after the preset cards…' : '…')}
+            value={charter} onChange={(e) => setCharter(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && ok) { e.preventDefault(); hire() } }} />
+          <div className="df-foot">
+            <button onClick={onCancel}><CloseIcon fontSize="inherit" /> cancel</button>
+            <button className="primary" disabled={!ok} onClick={hire}>
+              <CheckIcon fontSize="inherit" /> hire</button>
+          </div>
         </div>
-      )}
-      <textarea className="draft-charter" rows={3}
-        placeholder="charter (optional): standing role notes…"
-        value={charter} onChange={(e) => setCharter(e.target.value)}
-        onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && ok) { e.preventDefault(); onConfirm(name.trim(), grant, finalCharter()) } }} />
-      <div className="draft-foot">
-        <button className="primary" disabled={!ok}
-          onClick={() => onConfirm(name.trim(), grant, finalCharter())}><CheckIcon fontSize="inherit" /> hire</button>
-        <button onClick={onCancel}><CloseIcon fontSize="inherit" /></button>
       </div>
     </div>
   )

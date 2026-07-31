@@ -833,42 +833,57 @@ main {
   background: repeating-linear-gradient(135deg,
     var(--panel) 0, var(--panel) 9px, #27272a 9px, #27272a 10px);
 }
-.draft-name {
-  /* matches the square tier token's height exactly (user ruling) */
-  flex: 1; min-width: 0; height: 22px; font-family: var(--mono);
-  font-size: 9.5px; padding: 2px 5px; border-radius: 3px;
-}
-/* floats ABOVE the box (user ruling) — frees a row inside the cramped card */
+/* floats ABOVE the box (user ruling) — frees a row inside the card */
 .draft-tag {
   position: absolute; top: -14px; left: 2px;
   font-size: 8px; letter-spacing: .12em; text-transform: uppercase;
   color: var(--accent); opacity: .85; pointer-events: none;
 }
-/* picked charter presets render as CARDS, not text (user spec): click
-   removes; hover reveals the source file's path on disk */
-/* the cards never squeeze out the manual-charter box below them (user
-   ruling: you can always type additional text after the cards) */
-.preset-cards { display: flex; flex-wrap: wrap; gap: 3px; flex: none; max-height: 38px; overflow-y: auto; }
+/* ---- the redesigned hire form (user request: full redesign — the in-card
+   form was cramped). Desk regime: authored at 900×900 natural screen scale,
+   counter-scaled into the 124px card; spawn() glides to screen-fill where
+   authored px ≈ screen px. The dashed striped .sq.draft frame peeks around
+   the 2px inset, keeping the draft identity. */
+.draft-over {
+  position: absolute; inset: 2px; background: var(--panel);
+  border-radius: 5px; overflow: hidden; z-index: 2; cursor: default;
+}
+.draft-inner {
+  width: 900px; height: 900px;
+  transform: scale(0.13333); transform-origin: 0 0;
+  padding: 30px 34px; display: flex; flex-direction: column; gap: 16px;
+}
+.df-head { display: flex; align-items: baseline; gap: 12px; font-size: 14px; }
+.df-head .tier { width: 26px; height: 26px; font-size: 13px; align-self: center; }
+.df-title { font-size: 17px; color: var(--ink-strong); }
+.df-name { font-family: var(--mono); font-size: 16px; padding: 9px 12px; border-radius: 6px; }
+.df-grant { display: flex; align-items: center; gap: 12px; }
+.df-grant .field-label { font-size: 13px; flex: none; }
+.df-grant input[type="range"] { flex: 1; accent-color: var(--accent); padding: 0; }
+.df-grant-n { width: 80px; font-family: var(--mono); font-size: 14px; }
+.df-presets { display: flex; flex-direction: column; gap: 8px; }
+.df-presets .field-label { font-size: 13px; }
+/* picked charter presets are CARDS (user spec): click removes; hover shows
+   the source file's path on disk; hiring compiles them into charter text */
+.preset-cards { display: flex; flex-wrap: wrap; gap: 7px; align-items: center; }
 .preset-card {
-  /* compact enough that two cards share a row in the 124px draft card
-     (no icon — every pixel goes to the name) */
-  display: inline-block; font-size: 7px; padding: 0 4px; border-radius: 3px;
-  max-width: 49%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
-  font-family: var(--mono); font-weight: 600; line-height: 1.7;
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 13px; padding: 4px 11px; border-radius: 5px;
+  font-family: var(--mono); font-weight: 600;
   background: var(--input); border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line));
   color: var(--ink);
 }
 .preset-card:hover { border-color: var(--bad); color: var(--bad); background: var(--input); }
-/* small enough to type AND read at the hire zoom (user ruling) */
-.draft-charter {
-  flex: 1; min-height: 26px; resize: none;   /* ≥2 typed lines even with cards */
-  font-size: 8px; line-height: 1.4; font-family: inherit;
-  padding: 3px 5px; border-radius: 3px;
+.df-preset-add { font-size: 13px; padding: 4px 8px; color: var(--dim); width: auto; }
+.df-charter {
+  flex: 1; min-height: 90px; resize: none;
+  font-size: 14px; line-height: 1.5; font-family: inherit;
+  padding: 10px 12px; border-radius: 6px;
   background: var(--input); border: 1px solid var(--line); color: var(--ink);
 }
-.draft-charter:focus { outline: none; border-color: var(--accent); }
-.draft-foot { display: flex; gap: 4px; margin-top: auto; }
-.draft-foot button { font-size: 9px; padding: 1px 7px; }
+.df-charter:focus { outline: none; border-color: var(--accent); }
+.df-foot { display: flex; gap: 10px; justify-content: flex-end; }
+.df-foot button { font-size: 14px; padding: 8px 18px; border-radius: 6px; }
 
 /* ------------------------------------------------------ welcome + org drawer */
 .welcome { flex: 1; display: grid; place-items: center; min-height: 100vh; }
@@ -1183,10 +1198,6 @@ svg.MuiSvgIcon-root {
 .eye-chat { flex: 1; min-width: 0; }
 .eye-chat .cc-head { flex-wrap: nowrap; overflow: hidden; }
 .eye-chat .cc-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.draft-preset {
-  font-size: 9.5px; padding: 1px 4px; width: 100%; min-width: 0; height: 18px;
-  color: var(--dim);
-}
 /* the context wheel as a compact-now button (zoomed desk only) */
 .ctxbtn { background: none; border: none; padding: 0; display: inline-flex; cursor: pointer; }
 .ctxbtn:hover .ctxwheel .fill { filter: drop-shadow(0 0 3px rgba(217, 119, 87, .8)); }
