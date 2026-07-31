@@ -518,7 +518,6 @@ def org_tree(slug: str, request: Request):
             node["occupancy"] = st["occupancy"]
         if st.get("context_window"):
             node["context_window"] = st["context_window"]
-        node["attached"] = bool(st.get("attached"))
         for c in node["children"]:
             annotate(c)
 
@@ -876,7 +875,8 @@ def host_info():
     """Host capabilities the UI adapts to (e.g. no Docker → the sandbox
     checkbox is disabled at org creation)."""
     return {"docker": sandbox.docker_available(),
-            "sandbox_mcp": supervisor.sandbox_mcp_enabled()}
+            "sandbox_mcp": supervisor.sandbox_mcp_enabled(),
+            "cli_version": supervisor.cli_version()}
 
 
 class Reorder(BaseModel):
@@ -1159,18 +1159,16 @@ def _extern_scan(addr: str, org_slug: str | None, after: str | None,
                 # belongs on THIS path too, locally, not as a 3-file argument
                 continue
             entries = org.d.get("org_inbox", [])
-            if not after and fresh_only:
-                # position, not timestamp: at-stamps have second resolution,
-                # so a same-second question/answer pair is untellable by time.
-                # The inbox is append-ordered — everything AFTER the peer's
-                # own last message is fresh by construction.
-                last_in = max((i for i, e in enumerate(entries)
-                               if e.get("peer") == addr
-                               and e.get("dir") == "in"), default=-1)
-                entries = entries[last_in + 1:]
+            floor = after
+            if not floor and fresh_only:
+                # timestamps are millisecond-resolution now (user ruling), so
+                # the floor is simply the peer's own latest message to the org
+                floor = max((e.get("at", "") for e in entries
+                             if e.get("peer") == addr
+                             and e.get("dir") == "in"), default="")
             for e in entries:
                 if e.get("peer") == addr and e.get("dir") == "out" \
-                        and (not after or e.get("at", "") > after):
+                        and (not floor or e.get("at", "") > floor):
                     out.append({"org": o["slug"], "id": e["id"],
                                 "at": e["at"], "body": e["body"]})
     out.sort(key=lambda x: x["at"])
@@ -1321,25 +1319,6 @@ async def orgmd_put(slug: str, body: OrgMd):
         f.write(body.content)
     await hub.changed(slug)
     return {"path": p, "bytes": len(body.content)}
-
-
-class Attach(BaseModel):
-    attached: bool
-
-
-@app.post("/api/orgs/{slug}/nodes/{nid}/attach")
-def node_attach(slug: str, nid: str, body: Attach):
-    """№17 handoff: attach releases the node to your terminal (mail queues, turns
-    pause); release resumes management and drains the queue."""
-    try:
-        org = store.load_org(slug)
-        n = org.node(nid)
-    except LedgerError as e:
-        raise HTTPException(404, str(e))
-    r = supervisor.set_attached(slug, nid, body.attached)
-    r["command"] = (f"cd {supervisor.scratch_dir(slug, nid)} && "
-                    f"claude --resume {n['session_id']}")
-    return r
 
 
 class AudienceAction(BaseModel):
@@ -1534,7 +1513,7 @@ def agent_call(body: AgentCall, request: Request):
                                   a.get("name") or "", add_dirs=a.get("add_dirs"),
                                   tools=a.get("tools"),
                                   org_visibility=a.get("org_visibility"),
-                                  purpose=a.get("purpose"))
+                                  charter=a.get("charter"))
             elif body.tool == "orgtree_retool":
                 result = org.set_scope(body.node, a.get("node", ""),
                                        add_dirs=a.get("add_dirs"),
@@ -1550,6 +1529,13 @@ def agent_call(body: AgentCall, request: Request):
             elif body.tool == "orgtree_move":
                 result = org.move(body.node, a.get("node", ""),
                                   a.get("new_parent") or None)
+            elif body.tool == "orgtree_list_orgs":
+                # №43 (user-approved): the @org: channel was advertised but
+                # undiscoverable from inside — agents had no org listing
+                result = {"orgs": [
+                    {"slug": o["slug"], "name": o.get("name", o["slug"]),
+                     "you": o["slug"] == body.org}
+                    for o in store.list_orgs() if not o.get("kiosk")]}
             elif body.tool == "orgtree_dissolve":
                 result = org.dissolve(body.node, a.get("node"))
             elif body.tool == "orgtree_reallocate":
@@ -1735,7 +1721,6 @@ class Op(BaseModel):
     add_dirs: list | None = None  # hire — [{path, mode}] or bare paths
     tools: dict | None = None     # hire — {bash, web, edit, subagents, mcp: []}
     org_visibility: str | None = None
-    purpose: str | None = None
     delta: int | None = None      # reallocate
     new_parent: str | None = None  # promote / demote
     dir: str | None = None        # revoke_dir
@@ -1767,9 +1752,7 @@ def _org_op_locked(slug: str, body: Op):
             result = org.hire(body.actor, body.parent, body.tier,
                               body.grant or 0, body.name, body.add_dirs,
                               tools=body.tools, org_visibility=body.org_visibility,
-                              purpose=body.purpose)
-            if body.charter and body.charter.strip():
-                org.node(result["node"])["charter"] = body.charter.strip()
+                              charter=body.charter)
         elif body.op == "retire":
             result = org.retire(body.actor, body.node)
         elif body.op == "rehire":

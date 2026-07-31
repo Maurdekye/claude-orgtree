@@ -86,9 +86,11 @@ TOOLS = [
         "name": "orgtree_hire",
         "description": (
             "Hire a subagent under you (or deeper in your subtree). There are NO "
-            "defaults for you: state exactly what you are hiring for (purpose), and "
-            "exactly which folders, tools and org visibility it needs — you cannot "
-            "grant anything you do not hold yourself. Seat costs: haiku 1, sonnet 3, "
+            "defaults for you: write the hire's CHARTER in full (its role and "
+            "standing instructions — injected into every one of its turns, "
+            "editable later via orgtree_retool), and state exactly which "
+            "folders, tools and org visibility it needs — you cannot grant "
+            "anything you do not hold yourself. Seat costs: haiku 1, sonnet 3, "
             "opus 5, fable 10; seat + grant must fit within YOUR free credits."),
         "inputSchema": {
             "type": "object",
@@ -97,8 +99,10 @@ TOOLS = [
                 "tier": {"type": "string", "enum": ["haiku", "sonnet", "opus", "fable"]},
                 "grant": {"type": "integer", "minimum": 0,
                           "description": "credits it may spend on ITS OWN hires"},
-                "purpose": {"type": "string",
-                            "description": "what this hire is for — required"},
+                "charter": {"type": "string",
+                            "description": "the hire's role + standing "
+                                           "instructions, written in full — "
+                                           "required"},
                 "add_dirs": {"type": "array",
                              "items": {"type": "object",
                                        "properties": {"path": {"type": "string"},
@@ -112,7 +116,7 @@ TOOLS = [
                 "parent": {"type": "string",
                            "description": "omit to hire directly under yourself"},
             },
-            "required": ["name", "tier", "grant", "purpose", "add_dirs", "tools",
+            "required": ["name", "tier", "grant", "charter", "add_dirs", "tools",
                          "org_visibility"],
         },
     },
@@ -173,6 +177,15 @@ TOOLS = [
                         "properties": {"node": {"type": "string"},
                                        "grant": {"type": "integer", "minimum": 0}},
                         "required": ["node"]},
+    },
+    {
+        "name": "orgtree_list_orgs",
+        "description": (
+            "List the OTHER orgtree organizations on this backend — the "
+            "reachable @org:<slug> peers for inter-org mail (top-level agents "
+            "and org-inbox audience holders may write to them via "
+            "orgtree_message). Sealed kiosk orgs are not listed."),
+        "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "orgtree_move",

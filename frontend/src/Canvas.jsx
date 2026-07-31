@@ -1133,7 +1133,8 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
                   onKeyDown={(e) => { if (e.key === 'Enter') go() }}>
                   <div className="tray-main">
                     <span className={'tier t-' + n.tier}>{TIER_LETTER[n.tier] ?? '?'}</span>
-                    <span className="tray-name" title={n.purpose ?? n.id}>{n.id}</span>
+                    <span className="tray-name"
+                      title={(n.charter || '').split('\n')[0] || n.id}>{n.id}</span>
                     <ContextWheel occ={n.occupancy} cw={n.context_window} />
                     {n.busy ? (n.waiting
                       ? <span className="statusdot waiting"
@@ -2383,7 +2384,8 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
     <>
       <div className="cc-head">
         <span className={'tier t-' + node.tier}>{TIER_LETTER[node.tier] ?? '?'}</span>
-        <span className="cc-name" title={node.purpose ?? node.id}>{node.id}</span>
+        <span className="cc-name"
+          title={(node.charter || '').split('\n')[0] || node.id}>{node.id}</span>
         <ContextWheel occ={chat?.occupancy ?? node.occupancy} cw={node.context_window}
           onCompact={live && !node.bearer_state
             ? () => setAskCompact(true) : undefined} />

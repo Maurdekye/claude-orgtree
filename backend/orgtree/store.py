@@ -54,6 +54,7 @@ def list_orgs() -> list[dict]:
         live = sum(1 for n in doc.get("nodes", {}).values() if n.get("state") == "live")
         out.append({"slug": doc.get("slug", f[:-5]), "name": doc.get("name", f[:-5]),
                     "nodes": len(doc.get("nodes", {})), "live": live,
+                    "kiosk": doc.get("kiosk") is not None,
                     "created": doc.get("created")})
     return out
 

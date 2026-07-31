@@ -123,17 +123,27 @@ def docker_ok() -> bool:
         return False
 
 
-def ensure_image() -> None:
-    if _docker("image", "inspect", IMAGE).returncode == 0:
-        return
+def ensure_image() -> str:
+    """№44 (user-approved): the image is TAGGED with the host CLI's version
+    and pins the same version inside — when the host CLI updates, the next
+    sandboxed turn rebuilds instead of running a CLI frozen at first-build.
+    Returns the tag to run."""
+    from . import supervisor        # lazy — supervisor imports this module
+    ver = supervisor.cli_version()
+    tag = f"{IMAGE}:{ver}" if ver != "unknown" else IMAGE
+    if _docker("image", "inspect", tag).returncode == 0:
+        return tag
     with _build_lock:
-        if _docker("image", "inspect", IMAGE).returncode == 0:
-            return
-        r = _docker("build", "-t", IMAGE, os.path.join(REPO_ROOT, "sandbox"),
-                    timeout=1200)
+        if _docker("image", "inspect", tag).returncode == 0:
+            return tag
+        args = ["build", "-t", tag]
+        if ver != "unknown":
+            args += ["--build-arg", f"CLAUDE_VERSION={ver}"]
+        r = _docker(*args, os.path.join(REPO_ROOT, "sandbox"), timeout=1200)
         if r.returncode != 0:
             raise RuntimeError("sandbox image build failed: "
                                + (r.stderr or r.stdout)[-500:])
+    return tag
 
 
 def ensure_container(org) -> str:
@@ -142,11 +152,21 @@ def ensure_container(org) -> str:
     slug = org.d["slug"]
     k = org.d.get("kiosk") or {}
     name = container_name(slug)
-    ins = _docker("container", "inspect", "-f", "{{.State.Running}}", name)
+    ins = _docker("container", "inspect", "-f",
+                  "{{.State.Running}} {{.Config.Image}}", name)
     if ins.returncode == 0:
-        if ins.stdout.strip() != "true":
-            _docker("start", name)
-        return name
+        running, _, cur_img = ins.stdout.strip().partition(" ")
+        # №44: the host CLI updated → the versioned tag moved → recreate the
+        # container on the new image instead of running the frozen old CLI
+        from . import supervisor
+        ver = supervisor.cli_version()
+        want = f"{IMAGE}:{ver}" if ver != "unknown" else IMAGE
+        if cur_img and cur_img != want:
+            _docker("rm", "-f", name, timeout=60)
+        else:
+            if running != "true":
+                _docker("start", name)
+            return name
     if not docker_ok():
         raise RuntimeError("Docker is not running — start Docker Desktop "
                            "(kiosk sandboxes run their turns in containers)")
@@ -159,7 +179,7 @@ def ensure_container(org) -> str:
            or "proxied").strip()
     use_proxy = "prox" in key.lower()
     use_sub = key.lower() == "subscription"
-    ensure_image()
+    image_tag = ensure_image()
     home = sandbox_home(slug)
     os.makedirs(os.path.join(home, "orgtree"), exist_ok=True)
     if use_sub:
@@ -196,7 +216,7 @@ def ensure_container(org) -> str:
         "-v", f"{ws}:{cpath_workspace(slug)}",
         "-v", f"{scratch}:{cpath_data()}/scratch/{slug}",
         "-v", f"{BACKEND_DIR}:/opt/orgtree-backend:ro",
-        IMAGE, "sleep", "infinity", timeout=300)
+        image_tag, "sleep", "infinity", timeout=300)
     if r.returncode != 0:
         raise RuntimeError("sandbox container failed to start: "
                            + (r.stderr or r.stdout)[-500:])

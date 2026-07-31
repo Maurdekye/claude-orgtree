@@ -91,7 +91,13 @@ class LedgerError(ValueError):
 
 
 def now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # millisecond resolution (user ruling 2026-07-31): second-resolution stamps
+    # made same-second events unorderable — the extern reply cursor had to fall
+    # back to inbox position. String comparison still works: same format, more
+    # digits. (Transient quirk: within one second, OLD "…:00Z" stamps sort
+    # AFTER new "…:00.123Z" ones — harmless across the format transition.)
+    d = datetime.now(timezone.utc)
+    return d.strftime("%Y-%m-%dT%H:%M:%S.") + f"{d.microsecond // 1000:03d}Z"
 
 
 def slugify(name: str) -> str:
@@ -123,7 +129,13 @@ class Org:
             sc.setdefault("org_visibility", "full")
             sc.setdefault("permission_mode", self.d.get("permission_mode", "acceptEdits"))
             n.setdefault("ui_order", float(i))
-            n.setdefault("purpose", None)
+            # user ruling 2026-07-31: `purpose` is dropped — charter is the one
+            # role statement. Migration folds an old purpose into an empty
+            # charter (dropping it silently would strip live agents' identity)
+            old_purpose = n.pop("purpose", None)
+            if old_purpose and not n.get("charter"):
+                n["charter"] = old_purpose
+            n.setdefault("charter", None)
             # pre-unification relic: queued texts now persist as mailbox mail
             n.pop("queued_msgs", None)
         if self.d.get("fable_limit_policy") in (None, "retire"):
@@ -839,14 +851,15 @@ class Org:
     # ------------------------------------------------------------------ hire
     def hire(self, actor: str, parent: str | None, tier: str, grant: int, name: str,
              add_dirs: list[str] | None = None, tools: dict | None = None,
-             org_visibility: str | None = None, purpose: str | None = None) -> dict:
+             org_visibility: str | None = None, charter: str | None = None) -> dict:
         """§4.2 + §4.6. `parent` None = top level (actor must be USER). If actor is a
         strict ancestor of parent, credits cascade down the path (forcible hire).
 
         ⚠️ No defaults for agent actors (user ruling): the USER hires from sensible
         defaults, but an agent must state every permission — dirs, every tool switch,
-        the MCP list, org visibility — and the hire's purpose, explicitly. An agent
-        must know exactly what it is hiring for and what that hire requires."""
+        the MCP list, org visibility — and the hire's CHARTER, explicitly. (User
+        ruling 2026-07-31: `purpose` is dropped — charter is the one role
+        statement, editable later via retool, injected into every turn.)"""
         if tier not in self.d["tiers"]:
             raise LedgerError(f"unknown tier {tier!r}; know {sorted(self.d['tiers'])}")
         if grant < 0 or grant != int(grant):
@@ -875,8 +888,9 @@ class Org:
                 missing.append("tools (bash, web, edit, subagents, mcp — each stated explicitly)")
             if org_visibility is None:
                 missing.append("org_visibility (self|team|subtree|full)")
-            if not (purpose and str(purpose).strip()):
-                missing.append("purpose (what this hire is for)")
+            if not (charter and str(charter).strip()):
+                missing.append("charter (the hire's role and standing "
+                               "instructions — write it in full)")
             if missing:
                 raise LedgerError(
                     "agent hires have no defaults — specify exactly: " + "; ".join(missing))
@@ -934,10 +948,11 @@ class Org:
         if tlost:
             warnings.append(f"tool grants clamped to the parent's own: {tlost}")
         nid = self._new_node(tier, parent, int(grant), name, dirs, tset, vis,
-                             str(purpose).strip() if purpose else None)
+                             str(charter).strip() if charter else None)
         # every affected agent is told, WHOEVER acted (user ruling) — the actor
         # itself is skipped (it made the call and got the result)
-        why = f' Purpose: {purpose}.' if purpose else ""
+        gist = (str(charter).strip().splitlines() or [""])[0][:120] if charter else ""
+        why = f' Role: {gist}' if gist else ""
         who = "the user" if actor == USER else f'"{actor}"'
         self._notify([p for p in [parent] if p != actor],
                      f'{who.capitalize()} hired "{nid}" ({tier}, grant {int(grant)}) '
@@ -946,7 +961,7 @@ class Org:
                      f'{who.capitalize()} hired "{nid}" ({tier}) alongside you, under '
                      f'{parent or "the top level"}.{why}')
         self._log("hire", actor, {"node": nid, "parent": parent, "tier": tier,
-                                  "grant": int(grant), "purpose": purpose}, warnings)
+                                  "grant": int(grant), "charter": gist}, warnings)
         return {"node": nid, "warnings": warnings}
 
     def _chain_acquire(self, actor: str, payer: str, need, warnings: list,
@@ -1022,7 +1037,7 @@ class Org:
 
     def _new_node(self, tier: str, parent: str | None, grant: int, name: str,
                   dirs: list[dict], tools: dict, vis: str,
-                  purpose: str | None) -> str:
+                  charter: str | None) -> str:
         base = slugify(name)   # any slug is a legal name — actor kinds are typed,
                                # so even "user" or "system" is just a name here
         nid, i = base, 2
@@ -1036,7 +1051,7 @@ class Org:
             "grant": grant,
             "state": "live",           # live | archived | unrecoverable (№31)
             "title": name,
-            "purpose": purpose,
+            "charter": charter,
             "created": now(),
             "archived_at": None,
             "pid": None,
@@ -1622,7 +1637,9 @@ class Org:
     def request_credits(self, nid: str, new_limit, reason) -> dict:
         """A TOP-LEVEL agent asks the user directly for a larger grant. Not mail:
         a structured request (old → new + reason) the user approves or denies
-        with one click. One pending request per node."""
+        with one click. One pending request per node — but asking again AMENDS
+        it (gap audit №34, user-approved): this was the only ask-verb that
+        hard-errored on an idempotent ask, against the ratified pattern."""
         self._require_live(nid)
         n = self.node(nid)
         if n["parent"] is not None:
@@ -1633,15 +1650,31 @@ class Org:
         except (TypeError, ValueError):
             raise LedgerError("new_limit must be an integer (the requested TOTAL grant)")
         old = n["grant"]
+        reqs = self.d.setdefault("credit_requests", [])
+        pending = next((r for r in reqs
+                        if r["node"] == nid and r["status"] == "pending"), None)
         if new_limit <= old:
-            raise LedgerError(f"requested limit {new_limit} must exceed the "
-                              f"current grant {old}")
+            # motto A3: asking for what you already have is a no-op — and it
+            # WITHDRAWS a pending request (the ask is "I need no more")
+            if pending is not None:
+                pending["status"] = "withdrawn"
+                self._log("credit_request_withdrawn", nid,
+                          {"id": pending["id"]}, [])
+                return {"status": f"your grant is already {old} — the pending "
+                                  f"request was withdrawn"}
+            return {"status": f"your grant is already {old} — nothing to request"}
         if not (reason and str(reason).strip()):
             raise LedgerError("a reason is required")
-        reqs = self.d.setdefault("credit_requests", [])
-        if any(r["node"] == nid and r["status"] == "pending" for r in reqs):
-            raise LedgerError("you already have a pending credit request — wait "
-                              "for the user's decision")
+        if pending is not None:
+            # amend in place: the card the user eventually clicks always
+            # shows the CURRENT figure, never a stale one
+            pending.update({"old": old, "new": new_limit,
+                            "reason": str(reason).strip(), "at": now()})
+            self._log("credit_request", nid,
+                      {"old": old, "new": new_limit, "amended": pending["id"]}, [])
+            return {"requested": new_limit, "increase": new_limit - old,
+                    "status": "pending (amended your earlier request) — the "
+                              "user will approve or deny"}
         req = {"id": f"cr{len(reqs) + 1}", "node": nid, "old": old,
                "new": new_limit, "reason": str(reason).strip(),
                "at": now(), "status": "pending"}
@@ -1912,7 +1945,6 @@ class Org:
             return {
                 "id": nid,
                 "title": n["title"],
-                "purpose": n.get("purpose"),
                 "tier": n["model"],
                 "model_id": self.d["models"].get(n["model"], n["model"]),
                 "state": n["state"],
@@ -1932,8 +1964,14 @@ class Org:
                 "last_status": n.get("last_status"),
                 "prev_status": n.get("prev_status"),
                 "inflight_at": (n.get("inflight") or {}).get("at"),
-                "frozen": ({k: n["frozen"].get(k)
-                            for k in ("at", "until", "until_ts", "error")}
+                "frozen": ({**{k: n["frozen"].get(k)
+                               for k in ("at", "until", "until_ts")},
+                            # №41: freeze kinds are commutative — surface
+                            # whichever reason(s) exist without overwriting
+                            "error": " · ".join(
+                                x for x in (n["frozen"].get("error"),
+                                            n["frozen"].get("spend_error"))
+                                if x) or None}
                            if n.get("frozen") else None),
                 "audiences_held": [a["grantor"] for a in self.d["audiences"]
                                    if a["grantee"] == nid],

@@ -40,6 +40,14 @@ Write-Host "`n== python deps =="
 python -m pip install -q -r requirements.txt
 if ($LASTEXITCODE -ne 0) { Write-Host "pip install failed" -ForegroundColor Red; exit 1 }
 
+# -- 3b - CLI version (No.44) ----------------------------------------------
+# Sandbox images are tagged with the host CLI's version and rebuild on demand
+# when it changes -- nothing to do here beyond reporting it.
+try {
+    $cliVer = (& claude --version 2>$null | Select-Object -First 1)
+    if ($cliVer) { Write-Host "Claude CLI: $cliVer (sandbox images rebuild automatically when this changes)" }
+} catch {}
+
 # -- 4 - restart the backend ------------------------------------------------
 $dataRoot = $env:ORGTREE_DATA
 if (-not $dataRoot) { $dataRoot = Join-Path $env:USERPROFILE 'orgtree' }

@@ -1115,7 +1115,7 @@ Confirmed working:
 | 14 | Does the active node have authority over its own lineage? (§8.5) | **Yes** — the node that lost the context is the one most likely to need it, and it is the same agent. Without it, remembering requires asking your parent |
 | 15 | Are predecessors ever pruned? | No automatic pruning — they cost 0 credits and only disk. Manual prune available; `dissolve` takes the whole stack |
 | 16 | Can a knowledge bearer be rehired at a **cheaper tier** than it ran at? (§8.6) | ✅ **VERIFIED 2026-07-29 (spike C)** — `--resume` honors a changed `--model`: haiku session resumed on sonnet, transcript confirms the new model served the turn. Knowledge bearers can be consulted at haiku price regardless of original tier |
-| 17 | Managed↔attached handoff protocol (§6.4) | Orchestrator releases on request; node marked `attached` in the ledger and excluded from routing until released. One driver at a time is non-negotiable |
+| 17 | Managed↔attached handoff protocol (§6.4) | ~~Orchestrator releases on request; node marked `attached` in the ledger and excluded from routing until released.~~ **DROPPED (user ruling 2026-07-31): the feature was cut from the spec earlier; the vestigial flag, endpoint and branches are removed. orgtree is the one driver.** |
 | 38 | CLAUDE.md reinterpretation by depth (§15) | ✅ **RULED + IMPLEMENTED + LIVE-VERIFIED 2026-07-29** — top-level literal · deeper verbatim-with-redirect-to-superior · user-audience exception |
 | 39 | Granted-folder CLAUDE.md delivery | ✅ **Implemented** — explicit injection (native discovery doesn't reach them headless, spiked); ≤6 KB per folder |
 | 40 | `org.md` | **Docket.** v0 works today via `<workspace>/CLAUDE.md`; UI editor in ⚙ settings later |

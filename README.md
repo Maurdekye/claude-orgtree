@@ -173,8 +173,7 @@ No manual wiring is needed; the supervisor does all of it per turn:
   Windows the supervisor invokes `node …/cli.js` directly rather than the
   `.CMD` shim, because `cmd.exe` truncates multiline arguments.
 - Each node is a normal Claude Code **session UUID**. Turns run headless via
-  `claude -p` with `--session-id` (first turn) / `--resume` (after), so you
-  can even open a node's session yourself with `claude --resume <id>`.
+  `claude -p` with `--session-id` (first turn) / `--resume` (after).
 - Every node loads a per-org **MCP server** (`backend/orgtree/mcptool.py`, a
   dependency-free stdio bridge back to the running backend) that provides the
   `orgtree_*` tools: message, hire, retire/rehire/dissolve, reallocate,

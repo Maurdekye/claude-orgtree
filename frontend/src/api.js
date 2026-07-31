@@ -72,12 +72,6 @@ export const putOrgMd = (slug, content) =>
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ content }),
   }).then(j)
-export const setAttached = (slug, nid, attached) =>
-  fetch(u(`/api/orgs/${slug}/nodes/${nid}/attach`), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ attached }),
-  }).then(j)
 export const getAudiences = (slug) => fetch(u(`/api/orgs/${slug}/audiences`)).then(j)
 export const audienceAction = (slug, action, node, target) =>
   fetch(u(`/api/orgs/${slug}/audiences`), {

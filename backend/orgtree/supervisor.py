@@ -101,6 +101,17 @@ CLAUDE_CLI_JS = os.environ.get("ORGTREE_CLAUDE_CLI", os.path.join(
     os.path.dirname(CLAUDE), "node_modules", "@anthropic-ai", "claude-code", "cli.js"))
 
 
+def cli_version() -> str:
+    """The resolved Claude CLI's version (№44): read from the package.json
+    beside cli.js. Drives sandbox-image tagging (host CLI updates → the next
+    sandboxed turn rebuilds the image) and the /api/host report."""
+    try:
+        p = os.path.join(os.path.dirname(CLAUDE_CLI_JS), "package.json")
+        return str(json.load(open(p, encoding="utf-8")).get("version", "unknown"))
+    except Exception:                                        # noqa: BLE001
+        return "unknown"
+
+
 def _claude_argv() -> list[str]:
     if os.path.exists(CLAUDE_CLI_JS):
         return ["node", CLAUDE_CLI_JS]
@@ -474,7 +485,7 @@ def identity_prompt(org: Org, nid: str) -> str:
                       f"(their tools are named mcp__<server>__<tool> — under "
                       f"deferred tools, ToolSearch by that full form or a loose "
                       f"keyword; a bare tool name will not match). ")
-    purpose_line = f"Your purpose: {n['purpose']} " if n.get("purpose") else ""
+    purpose_line = ""   # `purpose` dropped (user ruling) — the charter is the role
     fable_line = ""
     if org.d.get("fable_lock"):
         fable_line = ("Note: the weekly Fable usage limit is exhausted — fable agents "
@@ -501,7 +512,7 @@ def identity_prompt(org: Org, nid: str) -> str:
         f'"select:mcp__orgtree__orgtree_message" (a loose keyword query like '
         f'"orgtree" also works — the bare name alone will NOT match). '
         f"The tools: orgtree_message (reach your reports at any depth, your "
-        f"superior, your peers), orgtree_hire (you must state purpose, folders, every "
+        f"superior, your peers), orgtree_hire (you must state a charter, folders, every "
         f"tool switch and visibility — no defaults), orgtree_retire/rehire/dissolve/"
         f"reallocate, orgtree_retool (re-scope an existing report), orgtree_chart"
         + (", orgtree_request_credits (top-level privilege: ask the user directly "
@@ -1293,8 +1304,7 @@ def send_message(slug: str, nid: str, text: str) -> dict:
     # or turn start) — a queued text is just a raw nudge, so a crash between
     # queue and delivery loses nothing (restart durability, user ruling).
     with _state_lock:
-        maybe_steer = (st["busy"] and st.get("responding")
-                       and not st.get("attached"))
+        maybe_steer = st["busy"] and st.get("responding")
     if maybe_steer:
         etext, tok = _envelope(slug, nid, text)  # ⚠ outside _state_lock (DOC_LOCK order)
         carrier = {"toks": [tok], "text": etext} if tok else etext
@@ -1305,9 +1315,6 @@ def send_message(slug: str, nid: str, text: str) -> dict:
             # raced past the boundary — fall through with the drained text
             text = carrier
     with _state_lock:
-        if st.get("attached"):
-            st["queue"].append(text)
-            return {"accepted": True, "queued": len(st["queue"]), "attached": True}
         if st["busy"]:
             st["queue"].append(text)
             return {"accepted": True, "queued": len(st["queue"])}
@@ -1355,9 +1362,11 @@ def hard_freeze(slug: str, kind: str, error: str) -> None:
         for nid, n in org.nodes.items():
             if n["state"] == "live":
                 fz = n.setdefault("frozen", {"at": now_iso(), "resume_texts": []})
-                fz["error"] = error
-                fz["until"] = None
+                # №41 (user ruling): freeze kinds are COMMUTATIVE — a spend
+                # freeze landing on a usage-limit freeze must not overwrite
+                # the limit's error/reset info; each kind owns its own keys
                 fz[kind] = True
+                fz[kind + "_error"] = error
         store.save_org(org)
     interrupt_all(slug)
     notify(slug, "", flag)
@@ -1374,8 +1383,11 @@ def clear_hard_freeze(org: Org, kind: str) -> int:
         fz = n.get("frozen")
         if fz and fz.pop(kind, None):
             cleared += 1
-            fz["error"] = None
-            if not fz.get("resume_texts"):
+            # №41: remove ONLY this kind's record — a concurrent usage-limit
+            # freeze keeps its error/until untouched and the node stays frozen
+            fz.pop(kind + "_error", None)
+            if not fz.get("resume_texts") and not fz.get("error") \
+                    and not fz.get("until"):
                 n.pop("frozen", None)
     return cleared
 
@@ -1504,7 +1516,7 @@ def resume_frozen(slug: str) -> list[str]:
         first = None
         with _state_lock:
             st["queue"].extend(texts[1:])
-            if not st["busy"] and not st.get("attached"):
+            if not st["busy"]:
                 st["busy"] = True
                 first = texts[0]
             else:
@@ -1756,21 +1768,6 @@ def pop_steer(slug: str, nid: str) -> list[str]:
     _confirm_delivered(slug, nid, [
         t for m in msgs if isinstance(m, dict) for t in m.get("toks") or []])
     return [m["text"] if isinstance(m, dict) else m for m in msgs]
-
-
-def set_attached(slug: str, nid: str, attached: bool) -> dict:
-    """№17 managed↔attached handoff: while attached, the orchestrator releases the
-    session — mail queues, turns do not run. Releasing drains the queue."""
-    st = state(slug, nid)
-    kick = None
-    with _state_lock:
-        st["attached"] = attached
-        if not attached and st["queue"] and not st["busy"]:
-            st["busy"] = True
-            kick = st["queue"].pop(0)
-    if kick is not None:
-        threading.Thread(target=_run_turn, args=(slug, nid, kick), daemon=True).start()
-    return {"attached": attached, "queued": len(st["queue"])}
 
 
 def forget(slug: str, nids) -> None:

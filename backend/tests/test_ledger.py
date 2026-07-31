@@ -19,7 +19,7 @@ ALL_TOOLS = {"bash": True, "web": True, "edit": True, "subagents": True, "mcp": 
 def spec(**over):
     """Full explicit hire spec — agent actors have no defaults (user ruling)."""
     s = dict(add_dirs=[], tools=dict(ALL_TOOLS), org_visibility="team",
-             purpose="test hire")
+             charter="test hire — do test things")
     s.update(over)
     return s
 
@@ -813,6 +813,56 @@ def main():
         (lambda r: None if r["delivered"] == "user_inbox"
          else (_ for _ in ()).throw(AssertionError(r))
          )(orgA2.post_mail("deep", "user", "still have your ear")))[-1])
+
+    print("rulings 2026-07-31 (batch 3):")
+    orgT = Org.create("rulings3")
+    orgT.hire(USER, None, "opus", 20, "chief")
+    check("timestamps are millisecond resolution", lambda: (
+        None if len(orgT.d["events"][-1]["at"]) == 24
+        and "." in orgT.d["events"][-1]["at"]
+        else (_ for _ in ()).throw(AssertionError(orgT.d["events"][-1]["at"]))))
+    check("agent hire requires a CHARTER (purpose is dropped)", lambda:
+          expect_error(lambda: orgT.hire("chief", "chief", "haiku", 0, "x",
+                                         add_dirs=[], tools=dict(ALL_TOOLS),
+                                         org_visibility="team"), "charter"))
+    check("charter lands on the node at hire", lambda: (
+        orgT.hire("chief", "chief", "haiku", 0, "scribe",
+                  **spec(charter="write the minutes")),
+        None if orgT.nodes["scribe"]["charter"] == "write the minutes"
+        and "purpose" not in orgT.nodes["scribe"]
+        else (_ for _ in ()).throw(AssertionError(orgT.nodes["scribe"])))[-1])
+    check("seat always equals the running model's cost (no discounts)", lambda: (
+        None if all(orgT.seat_cost(k) == orgT.d["tiers"][orgT.nodes[k]["model"]]
+                    for k in orgT.nodes)
+        else (_ for _ in ()).throw(AssertionError)))
+    check("request_credits: asking for ≤ current is a no-op", lambda: (
+        lambda r: None if "nothing to request" in r["status"]
+        else (_ for _ in ()).throw(AssertionError(r))
+    )(orgT.request_credits("chief", 20, "no-op")))
+    check("request_credits: a second ask AMENDS the pending request", lambda: (
+        orgT.request_credits("chief", 30, "first ask"),
+        (lambda r: None if "amended" in r["status"]
+         and sum(1 for q in orgT.d["credit_requests"]
+                 if q["node"] == "chief" and q["status"] == "pending") == 1
+         and next(q for q in orgT.d["credit_requests"]
+                  if q["node"] == "chief" and q["status"] == "pending")["new"] == 40
+         else (_ for _ in ()).throw(AssertionError(r))
+         )(orgT.request_credits("chief", 40, "actually more")))[-1])
+    check("request_credits: asking for ≤ current WITHDRAWS the pending ask", lambda: (
+        lambda r: None if "withdrawn" in r["status"]
+        and not any(q["node"] == "chief" and q["status"] == "pending"
+                    for q in orgT.d["credit_requests"])
+        else (_ for _ in ()).throw(AssertionError(r))
+    )(orgT.request_credits("chief", 20, "never mind")))
+    check("old docs migrate purpose into an empty charter", lambda: (
+        lambda o2: None
+        if o2.nodes["chief"]["charter"] == "old purpose text"
+        and "purpose" not in o2.nodes["chief"]
+        else (_ for _ in ()).throw(AssertionError(o2.nodes["chief"]))
+    )(Org({**orgT.d, "nodes": {
+        **{k: dict(v) for k, v in orgT.nodes.items()},
+        "chief": {**dict(orgT.nodes["chief"]), "charter": None,
+                  "purpose": "old purpose text"}}})))
 
     print("guards:")
     check("unknown tier refused", lambda: expect_error(
