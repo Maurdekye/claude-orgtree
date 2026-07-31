@@ -574,13 +574,61 @@ def main():
         and orgE.d["mail"]["a"][0]["from"] == "@ext:abc123"
         and "deep2" not in orgE.d.get("mail", {})
         else (_ for _ in ()).throw(AssertionError(tops))
-    )(orgE.post_external_mail("abc123", "ping from outside")))
-    check("top-level may reply to @ext", lambda: (
+    )(orgE.post_external_mail("@ext:abc123", "ping from outside")))
+    check("inbound lands in the ORG INBOX (dir=in, peer kept)", lambda: (
+        lambda log: None if len(log) == 1 and log[0]["dir"] == "in"
+        and log[0]["peer"] == "@ext:abc123"
+        else (_ for _ in ()).throw(AssertionError(log))
+    )(orgE.d["org_inbox"]))
+    check("top-level may reply to @ext (logged as outbound)", lambda: (
         lambda r: None if r["delivered"] == "@ext:abc123"
+        and orgE.d["org_inbox"][-1]["dir"] == "out"
+        and orgE.d["org_inbox"][-1]["by"] == "a"
         else (_ for _ in ()).throw(AssertionError(r))
     )(orgE.post_mail("a", "@ext:abc123", "pong")))
     check("deep agents may NOT reply to @ext", lambda: expect_error(
         lambda: orgE.post_mail("deep2", "@ext:abc123", "sneaky"), "TOP-LEVEL"))
+
+    print("org inbox (user spec: the org converses as ONE entity):")
+    check("inbox audience grant makes deep2 a recipient + responder", lambda: (
+        lambda r: None if r["drive"] == ["deep2"]
+        and orgE.extern_holders() == ["deep2"]
+        and set(orgE.post_external_mail("@ext:abc123", "second ping"))
+        == {"a", "b", "deep2"}
+        and orgE.post_mail("deep2", "@ext:abc123",
+                           "org reply from the client contact")["delivered"]
+        == "@ext:abc123"
+        else (_ for _ in ()).throw(AssertionError(r))
+    )(orgE.audience_grant("a", "deep2", "extern")))
+    check("inter-org outbound authorized + logged; self-address refused", lambda: (
+        lambda r: None if r["delivered"] == "@org:elsewhere"
+        and orgE.d["org_inbox"][-1]["peer"] == "@org:elsewhere"
+        and expect_error(lambda: orgE.post_mail("a", "@org:external", "loop"),
+                         "itself") is None
+        else (_ for _ in ()).throw(AssertionError(r))
+    )(orgE.post_mail("a", "@org:elsewhere", "hello neighbours")))
+    check("top-level extern grant is a no-op with a pointer", lambda: (
+        lambda r: None if "already speaks" in r["warnings"][0]
+        else (_ for _ in ()).throw(AssertionError(r))
+    )(orgE.audience_grant(USER, "b", "extern")))
+    check("tree exposes the inbox (visible, holders, unread)", lambda: (
+        lambda t: None if t["org_inbox"]["visible"]
+        and t["org_inbox"]["holders"] == ["deep2"]
+        and t["org_inbox"]["unread"] == len(orgE.d["org_inbox"])
+        and (orgE.org_inbox_mark_read(),
+             orgE.tree()["org_inbox"]["unread"])[-1] == 0
+        else (_ for _ in ()).throw(AssertionError(t["org_inbox"]))
+    )(orgE.tree()))
+    orgK = Org.create("sealed")
+    orgK.d["kiosk"] = {"enabled": True, "token": "t", "credits": 10}
+    orgK.hire(USER, None, "haiku", 0, "clerk")
+    check("kiosk orgs are sealed: no outbound, inbound dropped", lambda: (
+        expect_error(lambda: orgK.post_mail("clerk", "@ext:abc123", "hi"), "kiosk"),
+        expect_error(lambda: orgK.post_mail("clerk", "@org:external", "hi"), "kiosk"),
+        None if orgK.post_external_mail("@org:external", "knock knock") == []
+        and not orgK.d.get("org_inbox")
+        and not orgK.tree()["org_inbox"]["visible"]
+        else (_ for _ in ()).throw(AssertionError))[-1])
 
     print("archived mail (user ruling: archived agents still receive):")
     orgM = Org.create("mailhold")

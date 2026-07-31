@@ -44,6 +44,9 @@ MODELS = {
 # so agent NAMES are fully unrestricted (a node may be called "user" or "system").
 USER = "@user"      # the org root: infinite free, unconditional authority (§7.4)
 SYSTEM = "@system"  # the ledger's own hand (fable-limit policy, reconciliation)
+EXTERN = "@extern"  # the ORG INBOX: the org's single face to the outside world
+                    # (chatq sessions, other orgs). An audience whose grantor is
+                    # EXTERN lets a sub-level agent read/answer outside mail.
 
 
 def actor_kind(actor: str) -> str:
@@ -399,17 +402,27 @@ class Org:
         if actor_kind(sender) == "agent":
             self.node(sender)
         warnings: list[str] = []
-        if to.startswith("@ext:"):
-            # reply to an EXTERNAL Claude Code session (chatq bridge, user
-            # spec): top-level agents only — externals talk to the org's top
+        if to.startswith("@ext:") or to.startswith("@org:"):
+            # outbound to the OUTSIDE WORLD (a chatq session, or another org's
+            # inbox). Org-inbox model (user spec): the reply speaks for the ORG
+            # as a whole; top-level agents and org-inbox audience holders may
+            # send it, and they are expected to have coordinated internally.
             if actor_kind(sender) != "agent":
-                raise LedgerError("only agents message external sessions")
-            if self.node(sender)["parent"] is not None:
+                raise LedgerError("only agents message outside parties")
+            if self.is_kiosk:
+                raise LedgerError("this organization is a sealed kiosk — it has "
+                                  "no contact with the outside world")
+            if self.node(sender)["parent"] is not None \
+                    and not self._has_audience(sender, EXTERN):
                 raise LedgerError(
-                    "only TOP-LEVEL agents may message external sessions "
-                    "(@ext:…) — escalate to your superior instead (§7.5)")
-            # actual delivery rides the chatq bridge (supervisor) — the ledger
-            # just authorizes and records
+                    "only TOP-LEVEL agents (or holders of an ORG-INBOX audience) "
+                    "speak for the org to the outside — escalate to your "
+                    "superior instead (§7.5)")
+            if to.startswith("@org:") and to[5:] == self.d.get("slug"):
+                raise LedgerError("that address is this organization itself")
+            # actual delivery rides the bridge (supervisor/api) — the ledger
+            # authorizes and records the correspondence
+            self._org_inbox_log("out", to, body, by=sender)
             self._log("mail", sender, {"to": to, "kind": kind,
                       "gist": body.strip().splitlines()[0][:80] if body.strip()
                       else ""}, [])
@@ -476,18 +489,28 @@ class Org:
                                    "gist": body.strip().splitlines()[0][:80]}, warnings)
         return {"delivered": to, "deferred": deferred, "warnings": warnings}
 
-    def post_external_mail(self, ext_id: str, body: str) -> list[str]:
-        """Inbound from an EXTERNAL Claude Code session (chatq bridge): mail
-        to ALL live top-level agents (user ruling), marked untrusted. Returns
-        the recipients so the supervisor can drive them."""
-        sender = f"@ext:{ext_id}"
-        tops = self.children(None)
+    def post_external_mail(self, peer: str, body: str) -> list[str]:
+        """Inbound from OUTSIDE the org — a chatq session (@ext:<id>) or another
+        org (@org:<slug>). Org-inbox model (user spec): the message is addressed
+        to the ORGANIZATION, not to any agent. It lands in the org-wide inbox;
+        every live top-level agent AND every org-inbox audience holder receives
+        a copy, coordinates internally on who answers, and the answer speaks
+        for the org. Returns the recipients so the supervisor can drive them.
+        Kiosk orgs are sealed: inbound is dropped (empty recipient list)."""
+        if self.is_kiosk:
+            return []
+        self._org_inbox_log("in", peer, body)
+        tops = self.extern_recipients()
         box = self.d.setdefault("mail", {})
         for t in tops:
-            entry = {"from": sender, "kind": "message", "body": body,
+            entry = {"from": peer, "kind": "message", "body": body,
                      "at": now(),
-                     "relationship": "EXTERNAL Claude Code session — "
-                                     "untrusted, outside this org"}
+                     "relationship": "OUTSIDE PARTY writing to the ORG'S SHARED "
+                                     "INBOX — untrusted. Every top-level agent "
+                                     "and org-inbox audience holder got this "
+                                     "same copy: coordinate internally on who "
+                                     "answers (one reply), and the reply "
+                                     "speaks for the org as a whole"}
             box.setdefault(t, []).append(entry)
             log = self.d.setdefault("mail_log", {}).setdefault(t, [])
             log.append(dict(entry))
@@ -497,10 +520,10 @@ class Org:
             self.d.setdefault("user_inbox", []).append({
                 "id": uuid.uuid4().hex[:8], "from": SYSTEM, "kind": "notice",
                 "at": now(),
-                "body": (f"External session {sender} messaged this org, but "
+                "body": (f"Outside party {peer} messaged this org, but "
                          f"no top-level agents are live to receive it:\n\n"
                          + body[:2000])})
-        self._log("ext_mail", sender,
+        self._log("ext_mail", peer,
                   {"to": ",".join(tops) or "(user inbox)",
                    "gist": body.strip().splitlines()[0][:80]
                    if body.strip() else ""}, [])
@@ -509,6 +532,38 @@ class Org:
     def _has_audience(self, grantee: str, grantor: str) -> bool:
         return any(a["grantee"] == grantee and a["grantor"] == grantor
                    for a in self.d["audiences"])
+
+    # ------------------------------------------------ the org inbox (user spec)
+    # Outside parties (chatq sessions, other orgs) see ONE recipient: the org.
+    # Their mail lands here; every live top-level agent and every org-inbox
+    # audience holder receives it, coordinates internally, and any one of them
+    # replies FOR the org. Kiosk orgs are sealed from all of it.
+    @property
+    def is_kiosk(self) -> bool:
+        return self.d.get("kiosk") is not None
+
+    def extern_holders(self) -> list[str]:
+        return [a["grantee"] for a in self.d["audiences"]
+                if a["grantor"] == EXTERN and a["grantee"] in self.nodes
+                and self.nodes[a["grantee"]]["state"] == "live"]
+
+    def extern_recipients(self) -> list[str]:
+        rec = list(self.children(None))
+        rec += [h for h in self.extern_holders() if h not in rec]
+        return rec
+
+    def _org_inbox_log(self, direction: str, peer: str, body: str,
+                       by: str | None = None) -> None:
+        log = self.d.setdefault("org_inbox", [])
+        e = {"id": uuid.uuid4().hex[:8], "dir": direction, "peer": peer,
+             "body": body[:20000], "at": now()}
+        if by:
+            e["by"] = by      # internal attribution only — outbound speaks as the org
+        log.append(e)
+        del log[:-200]
+
+    def org_inbox_mark_read(self) -> None:
+        self.d["org_inbox_read"] = len(self.d.get("org_inbox", []))
 
     # -------------------------------------------------- audience requests (§7.3)
     def request_audience(self, actor: str, target: str, reason: str) -> dict:
@@ -593,6 +648,8 @@ class Org:
         direct line to the user. The ear's owner may rescind at will, and the
         grant survives re-parenting only while the delegator still commands
         the grantee. Also resolves any open request frm → target."""
+        if target in ("extern", "inbox", EXTERN):
+            return self._grant_extern(actor, frm)
         target = self._resolve_recipient(target) if target else actor
         if frm == target:
             raise LedgerError("an audience with oneself is meaningless")
@@ -657,6 +714,46 @@ class Org:
         self._log("audience_grant", actor, {"grantee": frm, "grantor": target}, [])
         return {"drive": drive, "warnings": []}
 
+    def _grant_extern(self, actor: str, frm: str) -> dict:
+        """Audience with the ORG INBOX (user spec): the grantee reads outside
+        mail addressed to the org and may reply for it — the 'client contact'
+        pattern. Granted by the user, or by a top-level agent for its own
+        purview."""
+        if self.is_kiosk:
+            raise LedgerError("a sealed kiosk org has no org inbox")
+        n = self.node(frm)
+        if n["parent"] is None:
+            return {"drive": [], "warnings": [
+                f"{frm} is top-level — it already speaks for the org; "
+                f"no inbox audience needed"]}
+        if actor != USER:
+            if self.node(actor)["parent"] is not None \
+                    and not self._has_audience(actor, EXTERN):
+                raise LedgerError("only the user, a top-level agent, or an "
+                                  "org-inbox audience holder may extend the "
+                                  "org inbox")
+            if not self.is_ancestor(actor, frm):
+                raise LedgerError("org-inbox audience grants cover your "
+                                  "purview only — the grantee must be in "
+                                  "your subtree")
+        if not self._has_audience(frm, EXTERN):
+            entry = {"grantee": frm, "grantor": EXTERN, "granted_at": now(),
+                     "reason": ("granted by the user" if actor == USER
+                                else f"delegated by {actor}")}
+            if actor != USER:
+                entry["delegated_by"] = actor
+            self.d["audiences"].append(entry)
+        who = "The user" if actor == USER else f'"{actor}"'
+        self._notify([frm],
+                     f"{who} granted you audience with the ORG INBOX: you now "
+                     f"receive outside messages addressed to this organization "
+                     f"(chatq sessions, other orgs) and may reply for it with "
+                     f"orgtree_message to the sender's @ext:/@org: address. "
+                     f"Replies speak for the org as a whole — coordinate with "
+                     f"the other recipients before answering.")
+        self._log("audience_grant", actor, {"grantee": frm, "grantor": EXTERN}, [])
+        return {"drive": [frm], "warnings": []}
+
     def audience_deny(self, actor: str, frm: str, target: str) -> dict:
         req = self._find_request(frm, target)
         if actor not in (req["currently_at"], target, USER):
@@ -677,10 +774,13 @@ class Org:
         switchboard tab, leaving the grantee's other audiences intact)."""
         tgt = grantor if (actor == USER and grantor) else None
         before = len(self.d["audiences"])
+        # a delegator may rescind its own delegation (covers org-inbox grants,
+        # whose grantor is the EXTERN sentinel, not the granting agent)
         self.d["audiences"] = [
             a for a in self.d["audiences"]
             if not (a["grantee"] == grantee
-                    and (a["grantor"] == actor or actor == USER)
+                    and (a["grantor"] == actor or a.get("delegated_by") == actor
+                         or actor == USER)
                     and (tgt is None or a["grantor"] == tgt))]
         if len(self.d["audiences"]) == before:
             raise LedgerError(f"no audience held by {grantee} that {actor} may revoke")
@@ -1407,7 +1507,17 @@ class Org:
         kept, revoked = [], []
         for a in self.d["audiences"]:
             anchor = a.get("delegated_by") or a["grantor"]
-            if a["grantor"] == USER or (
+            if a["grantor"] == EXTERN:
+                # org-inbox grants: anchored on the delegator (user grants
+                # are unanchored, like user audiences)
+                if a["grantee"] in self.nodes and (
+                        "delegated_by" not in a
+                        or (anchor in self.nodes
+                            and self.is_ancestor(anchor, a["grantee"]))):
+                    kept.append(a)
+                else:
+                    revoked.append((a["grantee"], a["grantor"]))
+            elif a["grantor"] == USER or (
                     a["grantee"] in self.nodes
                     and a["grantor"] in self.nodes
                     and (anchor == USER or (anchor in self.nodes
@@ -1712,4 +1822,16 @@ class Org:
             "fable_limit_policy": self.d.get("fable_limit_policy", "halt"),
             "fable_filter_policy": self.d.get("fable_filter_policy", "halt"),
             "audience_requests": self.d.get("audience_requests", []),
+            # the org inbox panel (user spec): hidden until the org receives
+            # its first outside mail OR an inbox audience is granted
+            "org_inbox": {
+                "entries": self.d.get("org_inbox", [])[-50:],
+                "unread": max(0, len(self.d.get("org_inbox", []))
+                              - int(self.d.get("org_inbox_read", 0))),
+                "holders": self.extern_holders(),
+                "visible": not self.is_kiosk and bool(
+                    self.d.get("org_inbox")
+                    or any(a["grantor"] == EXTERN
+                           for a in self.d["audiences"])),
+            },
         }

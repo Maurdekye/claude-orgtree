@@ -968,6 +968,20 @@ async def user_inbox_read(slug: str, body: InboxRead):
     return {"read": len(read)}
 
 
+@app.post("/api/orgs/{slug}/org_inbox/read")
+async def org_inbox_read(slug: str):
+    """The user opened the org-inbox panel: clear its unread count."""
+    with store.DOC_LOCK:
+        try:
+            org = store.load_org(slug)
+        except LedgerError as e:
+            raise HTTPException(404, str(e))
+        org.org_inbox_mark_read()
+        store.save_org(org)
+    await hub.changed(slug)
+    return {"ok": True}
+
+
 @app.post("/api/orgs/{slug}/inbox/clear")
 async def user_inbox_clear(slug: str):
     """Mark-all-read: archives into the read log (mirror of a node's mail_log)
@@ -1202,7 +1216,8 @@ async def agent_call(body: AgentCall, request: Request):
         raise HTTPException(403, "bridge secret is scoped to its own org")
     a = body.args
     drive: list[str] = []      # nodes whose turn should run after we release the lock
-    ext_send = None            # (chat-id, body) reply riding the chatq bridge
+    ext_send = None            # (chat-id, body) outbound riding the chatq bridge
+    org_send = None            # (dst-slug, body) outbound to another org's inbox
     with store.DOC_LOCK:
         try:
             org = store.load_org(body.org)
@@ -1212,8 +1227,11 @@ async def agent_call(body: AgentCall, request: Request):
                                        a.get("kind", "message"))
                 delivered = result.get("delivered")
                 if delivered and delivered.startswith("@ext:"):
-                    # reply to an external session — rides the chatq bridge
+                    # outbound to an external session — rides the chatq bridge
                     ext_send = (delivered[5:], a.get("body", ""))
+                elif delivered and delivered.startswith("@org:"):
+                    # outbound to ANOTHER ORG's inbox — direct, no chatq needed
+                    org_send = (delivered[5:], a.get("body", ""))
                 elif delivered is not None:
                     mail_notify(body.org, body.node,
                                 USER if delivered == "user_inbox" else delivered)
@@ -1338,14 +1356,19 @@ async def agent_call(body: AgentCall, request: Request):
             "(orgtree) You have new mail above — handle it as appropriate, and use "
             "orgtree_status when your own task state changes.")
     if ext_send is not None:
+        # org-voice (user spec): the message goes out under the ORG's name,
+        # never the individual agent's
         ok = supervisor.chatq_send(
             body.org, ext_send[0],
-            f"[reply from orgtree org '{body.org}', agent '{body.node}']\n"
-            + ext_send[1])
+            f"[message from orgtree org '{body.org}']\n" + ext_send[1])
         if not ok:
             result.setdefault("warnings", []).append(
                 f"chatq delivery to {ext_send[0]} failed — is the target "
                 f"chat still registered?")
+    if org_send is not None:
+        err = supervisor.interorg_send(body.org, org_send[0], org_send[1])
+        if err:
+            result.setdefault("warnings", []).append(f"not delivered: {err}")
     await hub.changed(body.org)
     return result
 

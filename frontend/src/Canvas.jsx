@@ -3,15 +3,16 @@ import { marked } from 'marked'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   audienceAction, compactNode, dissolveAll, getCharters, getChat, getHistory,
-  getMcpServers, getNodeInbox, getScratch, interruptNode, reorderNode,
-  saveScope, saveSettings, sendMessage,
+  getMcpServers, getNodeInbox, getScratch, interruptNode, orgInboxRead,
+  reorderNode, saveScope, saveSettings, sendMessage,
 } from './api'
 import { pickFolder } from './picker'
 import {
   AddIcon, ArrowUpIcon, AutorenewIcon, CheckIcon, CloseIcon, DeleteIcon,
   DotIcon, EditIcon, FileIcon, FocusIcon, FolderIcon, FrozenIcon,
   FullscreenIcon, HearingIcon, LayersIcon, LockIcon, MailIcon, PlayIcon,
-  RemoveIcon, SettingsIcon, SparkIcon, StopIcon, ViewListIcon, WarnIcon,
+  PublicIcon, RemoveIcon, SettingsIcon, SparkIcon, StopIcon, ViewListIcon,
+  WarnIcon,
 } from './icons'
 
 const TIER_LETTER = { haiku: 'H', sonnet: 'S', opus: 'O', fable: 'F' }
@@ -31,6 +32,9 @@ const SPRING_K = 170, SPRING_C = 15
 
 const DRAFT = '__draft__'
 const USER = '@user'   // actor sentinel — never collides with a node named "user"
+const EXTERN = '@extern'      // the org-inbox audience grantor sentinel
+const INBOX = '__orginbox__'  // the org-inbox panel's layout id
+const INBOX_H = 64
 // the eye's fixed world x (see layout()): generous enough that even a very
 // wide left subtree (~32 leaf columns) never crosses into negative space
 const EYE_ANCHOR_X = 6000
@@ -103,6 +107,7 @@ function layout(root) {
 
 function sizeOf(id) {
   if (id === USER) return { w: USER_W, h: USER_H }
+  if (id === INBOX) return { w: USER_W, h: INBOX_H }
   return { w: NODE_W, h: NODE_H }
 }
 
@@ -165,6 +170,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
   const [userCfg, setUserCfg] = useState(false)
   const [trayOpen, setTrayOpen] = useState(false)   // the flat agent tray
   const [inboxId, setInboxId] = useState(null)
+  const [oiOpen, setOiOpen] = useState(false)       // the ORG-inbox viewer
   // unread-mail attention: the eye glows until the mailbox is OPENED (merely
   // opening acknowledges the glow; the count badge stays until mails are READ)
   const [inboxSeen, setInboxSeen] = useState(
@@ -186,12 +192,19 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
         })
       }
     }
+    // the ORG INBOX panel (user spec): sits ABOVE the overseer, and only
+    // exists once the org has received outside mail or granted an inbox
+    // audience — until then the canvas is unchanged
+    if (tree.org_inbox?.visible) {
+      const eye = t.get(USER)
+      if (eye) t.set(INBOX, { x: eye.x, y: eye.y - INBOX_H - 72 })
+    }
     let minY = Infinity
     for (const p of t.values()) minY = Math.min(minY, p.y)
     // headroom for the eye's infinite bar (2× the eye card, fading upward)
     if (minY < 140) for (const p of t.values()) p.y += 140 - minY
     return t
-  }, [vroot, map])
+  }, [vroot, map, tree.org_inbox?.visible])
   const [view, setView] = useState(() => {
     // fit-on-load: center the initial tree in a typical viewport (re-fit against
     // the REAL viewport once mounted — see the mount effect below)
@@ -764,6 +777,18 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
               d={`M ${a.x + NODE_W - 10} ${a.y + 8} L ${b.x + 10} ${b.y + NODE_H - 8}`}
               className="edge tether" />
           })}
+          {tree.org_inbox?.visible && posOf(INBOX) && posOf(USER) && (() => {
+            const ib = posOf(INBOX), ey = posOf(USER)
+            const out = [<path key="oi-tether"
+              d={`M ${ib.x + USER_W / 2} ${ib.y + INBOX_H} L ${ey.x + USER_W / 2} ${ey.y}`}
+              className="edge tether" />]
+            for (const h of tree.org_inbox.holders ?? []) {
+              if (!map.has(h) || !posOf(h)) continue
+              out.push(<path key={'oi' + h} d={segD(audSeg(INBOX, h))}
+                className="edge aud-line" />)
+            }
+            return out
+          })()}
           {sparksRef.current.map((sp) => {
             const el = (performance.now() - sp.start) / sp.segDur
             const i = Math.max(0, Math.min(sp.segs.length - 1, Math.floor(el)))
@@ -827,6 +852,32 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
               onDragStart={startNodeDrag} onDragMove={moveNodeDrag} onDragEnd={endNodeDrag} />
           )
         })}
+        {tree.org_inbox?.visible && posOf(INBOX) && (
+          <div className="sq orginbox"
+            style={{
+              transform: `translate(${posOf(INBOX).x}px, ${posOf(INBOX).y}px)`,
+              width: USER_W, height: INBOX_H,
+            }}
+            title="the org inbox — outside mail addressed to this organization"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={() => {
+              setOiOpen(true)
+              if (tree.org_inbox.unread) orgInboxRead(slug).catch(() => {})
+            }}>
+            <div className="oi-head">
+              <PublicIcon fontSize="inherit" /> org inbox
+              {tree.org_inbox.unread > 0 &&
+                <b className="count">{tree.org_inbox.unread}</b>}
+            </div>
+            <div className="oi-last">
+              {(() => {
+                const e = tree.org_inbox.entries?.[tree.org_inbox.entries.length - 1]
+                if (!e) return 'no mail yet'
+                return `${e.dir === 'in' ? '⭠' : '⭢'} ${e.peer.replace(/^@/, '')}`
+              })()}
+            </div>
+          </div>
+        )}
       </div>
       {/* stop pointerdown: the viewport's pan pointer-capture retargets clicks
           and silently kills these buttons */}
@@ -900,6 +951,10 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
       {inboxId && map.get(inboxId) && (
         <NodeInboxModal node={map.get(inboxId)} slug={slug} pulse={pulse}
           close={() => setInboxId(null)} />
+      )}
+      {oiOpen && (
+        <OrgInboxModal inbox={tree.org_inbox} map={map} slug={slug} toast={toast}
+          close={() => setOiOpen(false)} />
       )}
     </div>
   )
@@ -1834,9 +1889,10 @@ function DeskChat({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onC
             {node.bearer_state}</span>}
         {!compact && node.audiences_held?.map((g) => (
           <span key={g} className={'badge ' + (g === USER ? 'free' : '')}>
-            <HearingIcon fontSize="inherit" />{g === USER ? 'user' : g}
+            <HearingIcon fontSize="inherit" />
+            {g === USER ? 'user' : g === EXTERN ? 'org inbox' : g}
             <button className="chip-x"
-              onClick={() => audienceAction(slug, 'revoke', node.id)
+              onClick={() => audienceAction(slug, 'revoke', node.id, g)
                 .then(() => toast([`audience ${node.id}→${g} rescinded`]))
                 .catch((e) => toast([`error: ${e.message}`]))}><CloseIcon fontSize="inherit" /></button>
           </span>
@@ -2119,6 +2175,73 @@ function FilesView({ slug, nid }) {
         </div>
       ))}
       {data?.content != null && <pre className="filepre">{data.content}</pre>}
+    </div>
+  )
+}
+
+// the ORG INBOX viewer (user spec): the org's correspondence with the outside
+// world — chatq sessions and other orgs — as one chronological thread. Also
+// where the user staffs the "client contact" role: grant/revoke org-inbox
+// audiences so chosen sub-agents read and answer outside mail.
+function OrgInboxModal({ inbox, map, slug, toast, close }) {
+  useEsc(close)
+  const [grantee, setGrantee] = useState('')
+  const holders = inbox?.holders ?? []
+  const candidates = [...map.values()].filter((n) =>
+    n.id !== USER && n.id !== DRAFT && n.state === 'live' && !n.isBearerOf
+    && n.parent !== USER && !holders.includes(n.id))
+  const entries = inbox?.entries ?? []
+  return (
+    <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
+      <div className="settings" onClick={(e) => e.stopPropagation()}>
+        <h3><PublicIcon fontSize="inherit" /> The org inbox</h3>
+        <div className="hint">
+          Outside parties — external Claude Code sessions (chatq) and other
+          organizations — see this org as a single recipient. Their mail lands
+          here; every top-level agent (and every audience holder below) gets a
+          copy, coordinates internally, and one of them replies for the org.
+        </div>
+        <div className="row" style={{ alignItems: 'center', flexWrap: 'wrap' }}>
+          <span className="field-label">audience holders:</span>
+          {holders.length === 0 && <span className="dim">none — top-level agents only</span>}
+          {holders.map((h) => (
+            <span key={h} className="badge free"><HearingIcon fontSize="inherit" />{h}
+              <button className="chip-x" title="revoke this inbox audience"
+                onClick={() => audienceAction(slug, 'revoke', h, EXTERN)
+                  .then(() => toast([`org-inbox audience for ${h} rescinded`]))
+                  .catch((e) => toast([`error: ${e.message}`]))}>
+                <CloseIcon fontSize="inherit" /></button>
+            </span>
+          ))}
+          {candidates.length > 0 && <>
+            <select value={grantee} onChange={(e) => setGrantee(e.target.value)}>
+              <option value="">grant to…</option>
+              {candidates.map((n) => <option key={n.id} value={n.id}>{n.id}</option>)}
+            </select>
+            <button disabled={!grantee}
+              onClick={() => audienceAction(slug, 'grant', grantee, 'extern')
+                .then(() => { toast([`${grantee} now reads and answers the org inbox`]); setGrantee('') })
+                .catch((e) => toast([`error: ${e.message}`]))}>grant</button>
+          </>}
+        </div>
+        <div className="oi-thread">
+          {entries.length === 0 && <div className="dim pad">no correspondence yet</div>}
+          {entries.map((e) => (
+            <div key={e.id} className={'oi-msg ' + e.dir}>
+              <div className="oi-meta">
+                {e.dir === 'in'
+                  ? <>⭠ from <b>{e.peer.replace(/^@/, '')}</b></>
+                  : <>⭢ to <b>{e.peer.replace(/^@/, '')}</b>
+                    {e.by && <span className="dim"> · written by {e.by}</span>}</>}
+                <span className="dim oi-time">{(e.at ?? '').replace('T', ' ').replace('Z', '')}</span>
+              </div>
+              <div className="oi-body md" dangerouslySetInnerHTML={md(e.body)} />
+            </div>
+          ))}
+        </div>
+        <div className="row"><span className="spacer" />
+          <button onClick={close}>close</button></div>
+      </div>
     </div>
   )
 }

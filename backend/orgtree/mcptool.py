@@ -43,11 +43,14 @@ TOOLS = [
             "Send a message to another agent in your organization. Allowed: any "
             "descendant (any depth — messaging a non-child descendant grants it an "
             "audience to reply), your direct superior, your peers, any superior you "
-            "hold an audience with, 'user' (top-level agents only), or an external "
-            "Claude Code session as '@ext:<chat-id>' (top-level only — replies to "
-            "mail that arrived from one). The recipient is driven on delivery; "
-            "replies arrive in your own future turns. An ARCHIVED recipient still "
-            "receives: the mail waits in its inbox and is acted on when rehired."),
+            "hold an audience with, 'user' (top-level agents only), or an OUTSIDE "
+            "party — '@ext:<chat-id>' (an external Claude Code session) or "
+            "'@org:<slug>' (another organization's shared inbox). Outside mail is "
+            "sent by top-level agents or org-inbox audience holders, goes out AS "
+            "THE ORG (not under your name), and should be a single coordinated "
+            "reply. The recipient is driven on delivery; replies arrive in your "
+            "own future turns. An ARCHIVED recipient still receives: the mail "
+            "waits in its inbox and is acted on when rehired."),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -246,7 +249,10 @@ TOOLS = [
             "seek). action=grant: grant a descendant (from=) an audience — with you "
             "by default, or DELEGATED to anyone in your own reach via target=: a "
             "live peer, or your direct superior ('user' if you are top-level, which "
-            "hands the descendant a direct line to the user's inbox). "
+            "hands the descendant a direct line to the user's inbox), or "
+            "target='extern' — audience with the ORG INBOX, so the descendant "
+            "receives outside mail addressed to the org (@ext:/@org:) and may "
+            "reply for it (the 'client contact' pattern; top-level grantors only). "
             "action=revoke: rescind an audience you granted (grantee=)."),
         "inputSchema": {
             "type": "object",
