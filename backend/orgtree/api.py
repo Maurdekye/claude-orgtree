@@ -743,7 +743,9 @@ def charters_list():
             except OSError:
                 continue
             body = text.split("\n---\n", 1)[-1].strip()
-            out.append({"name": f[:-3].replace("-", " "), "content": body[:6000]})
+            out.append({"name": f[:-3].replace("-", " "), "content": body[:6000],
+                        # shown on hover of a picked preset card (user spec)
+                        "path": os.path.abspath(os.path.join(CHARTERS_DIR, f))})
     return {"charters": out}
 
 

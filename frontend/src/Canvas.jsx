@@ -778,14 +778,24 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
               d={`M ${a.x + NODE_W - 10} ${a.y + 8} L ${b.x + 10} ${b.y + NODE_H - 8}`}
               className="edge tether" />
           })}
-          {tree.org_inbox?.visible && posOf(INBOX) && posOf(USER) && (() => {
-            const ib = posOf(INBOX), ey = posOf(USER)
-            const out = [<path key="oi-tether"
-              d={`M ${ib.x + 10} ${ib.y + INBOX_H - 6} L ${ey.x + USER_W - 12} ${ey.y + 10}`}
-              className="edge tether" />]
+          {tree.org_inbox?.visible && posOf(INBOX) && (() => {
+            // no box↔eye tether (user revision) — the panel stands alone;
+            // only audience lines to its holders. Those connect FACING sides:
+            // an agent left of the box joins from its RIGHT side (user spec),
+            // an agent right of it from its left.
+            const out = []
             for (const h of tree.org_inbox.holders ?? []) {
               if (!map.has(h) || !posOf(h)) continue
-              out.push(<path key={'oi' + h} d={segD(audSeg(INBOX, h))}
+              const a = posOf(INBOX), b = posOf(h)
+              const ga = sizeOf(INBOX), gb = sizeOf(h)
+              const left = (b.x + gb.w / 2) < (a.x + ga.w / 2)
+              const x1 = left ? a.x : a.x + ga.w
+              const x2 = left ? b.x + gb.w : b.x
+              const y1 = a.y + ga.h / 2, y2 = b.y + gb.h / 2
+              const bulge = 64 + Math.abs(y2 - y1) * 0.12
+              out.push(<path key={'oi' + h} d={segD({ kind: 'c', pts: [
+                { x: x1, y: y1 }, { x: x1 + (left ? -bulge : bulge), y: y1 },
+                { x: x2 + (left ? bulge : -bulge), y: y2 }, { x: x2, y: y2 }] })}
                 className="edge aud-line" />)
             }
             return out
@@ -1375,13 +1385,18 @@ function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRemaining,
   zoom, pxc, onConfirm, onCancel }) {
   const [name, setName] = useState('')
   const [charter, setCharter] = useState('')
-  // named charter presets (user ruling): every .md in docs/charters/ — pick
-  // one from the dropdown or just write your own; picking fills the textarea
-  // and stays editable
+  // named charter presets (user ruling): every .md in docs/charters/. Picked
+  // presets appear as CARDS, not text (user spec) — click removes, hover
+  // shows the source file's path on disk; only finalizing the hire turns
+  // them into actual charter text (prepended to any manual entry).
   const [presets, setPresets] = useState([])
+  const [chosen, setChosen] = useState([])
   useEffect(() => {
     getCharters().then((r) => setPresets(r.charters ?? [])).catch(() => {})
   }, [])
+  const finalCharter = () =>
+    [...chosen.map((c) => c.content), charter].filter((t) => t.trim())
+      .join('\n\n')
   // top-level drafts pre-fill the org's default grant (50 unless configured)
   const [grant, setGrant] = useState(
     draft.parent == null ? Math.min(defaultTop ?? 50, maxTop) : 0)
@@ -1411,28 +1426,39 @@ function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRemaining,
         <span className="tier">{TIER_LETTER[draft.tier]}</span>
         <input className="draft-name" autoFocus placeholder="name…" value={name}
           onChange={(e) => setName(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter' && ok) onConfirm(name.trim(), grant, charter) }} />
+          onKeyDown={(e) => { if (e.key === 'Enter' && ok) onConfirm(name.trim(), grant, finalCharter()) }} />
       </div>
       <div className="draft-tag">uninitialized</div>
       {presets.length > 0 && (
-        // multi-preset (user spec): each pick APPENDS its charter — stack as
-        // many as you like (e.g. coordinator + business); all stays editable
         <select className="draft-preset" value=""
           onChange={(e) => {
             const p = presets.find((x) => x.name === e.target.value)
-            if (p) setCharter((c) => (c.trim() ? c.trimEnd() + '\n\n' : '') + p.content)
+            if (p && !chosen.some((c) => c.name === p.name))
+              setChosen((cs) => [...cs, p])
           }}>
           <option value="">add charter preset…</option>
-          {presets.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
+          {presets.filter((p) => !chosen.some((c) => c.name === p.name))
+            .map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
         </select>
+      )}
+      {chosen.length > 0 && (
+        <div className="preset-cards">
+          {chosen.map((c) => (
+            <button key={c.name} className="preset-card"
+              title={c.path ? `${c.path}\n(click to remove)` : 'click to remove'}
+              onClick={() => setChosen((cs) => cs.filter((x) => x.name !== c.name))}>
+              <FileIcon fontSize="inherit" />{c.name}
+            </button>
+          ))}
+        </div>
       )}
       <textarea className="draft-charter" rows={3}
         placeholder="charter (optional): standing role notes…"
         value={charter} onChange={(e) => setCharter(e.target.value)}
-        onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && ok) { e.preventDefault(); onConfirm(name.trim(), grant, charter) } }} />
+        onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && ok) { e.preventDefault(); onConfirm(name.trim(), grant, finalCharter()) } }} />
       <div className="draft-foot">
         <button className="primary" disabled={!ok}
-          onClick={() => onConfirm(name.trim(), grant, charter)}><CheckIcon fontSize="inherit" /> hire</button>
+          onClick={() => onConfirm(name.trim(), grant, finalCharter())}><CheckIcon fontSize="inherit" /> hire</button>
         <button onClick={onCancel}><CloseIcon fontSize="inherit" /></button>
       </div>
     </div>
