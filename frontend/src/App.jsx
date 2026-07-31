@@ -125,7 +125,10 @@ export default function App() {
         return
       }
       if (data?.type === 'node_stream') {
-        setStreamEvt({ node: data.node, kind: data.kind, text: data.text, t: Date.now() })
+        setStreamEvt({ node: data.node, kind: data.kind, text: data.text,
+          // sticky rides through: immediate-command output lives in NO
+          // transcript, so the live-feed reconciliation must never sweep it
+          ...(data.sticky ? { sticky: true } : {}), t: Date.now() })
         setActivity((a) => ({ ...a, [data.node]:
           data.kind === 'tool' ? { phase: 'tool', tool: data.text }
             : { phase: 'writing' } }))

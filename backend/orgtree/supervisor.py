@@ -1822,7 +1822,10 @@ def immediate_command(slug: str, nid: str, text: str) -> bool:
                 out_text = f"(/{word} returned no output)"
         except Exception as e:                               # noqa: BLE001
             out_text = f"⚠ /{word} failed: {e}"
-        stream(slug, nid, {"kind": "text", "text": out_text[:20000]})
+        # sticky: this output exists in NO transcript — the live-feed
+        # reconciliation must never sweep it on a refresh or turn end
+        stream(slug, nid, {"kind": "text", "sticky": True,
+                           "text": out_text[:20000]})
         # the fork transcript is a full COPY of the session — delete it, or
         # every /context banks megabytes (kiosk storage included) for nothing
         if fork_sid and fork_sid != sid:

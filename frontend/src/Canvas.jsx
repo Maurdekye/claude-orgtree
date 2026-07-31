@@ -2681,10 +2681,33 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
       // containment, not equality: the turn text is a mail envelope now
       setPending((p) => p.filter((x) =>
         !c.messages.slice(-20).some((m) => m.role === 'user' && m.text.includes(x))))
-      // the fetched transcript supersedes everything streamed so far — keeping
-      // the feed around doubled the whole in-flight turn (transcript copy +
-      // live copy). Stream events landing after this fetch re-append.
-      setLiveFeed([])
+      // the fetched transcript supersedes what it COVERS — never blindly:
+      // the CLI's file append can lag its own stream event, and a refresh
+      // landing in that gap ate the message (user bug 2026-07-31: replies
+      // flashed, vanished, then reappeared with the next tool use). A live
+      // row survives while it is young or not yet visible in the fetched
+      // tail; covered/old rows drop (keeping everything doubled the whole
+      // in-flight turn). Sticky rows (immediate /context output — in no
+      // transcript, ever) always stay.
+      const now = Date.now()
+      const tail = c.messages.slice(-12)
+      const covered = (r) => {
+        if (r.kind === 'text')
+          return tail.some((m) => m.role === 'assistant'
+            && (m.text || '').startsWith((r.text || '').slice(0, 300)))
+        if (r.kind === 'tool')
+          return tail.some((m) => (m.tools ?? []).some((t) =>
+            r.text === t.name || r.text === `${t.name} · ${t.arg}`))
+        if (r.kind === 'steered')
+          return tail.some((m) => m.role === 'user'
+            && (m.text || '').includes((r.text || '').slice(0, 200)))
+        if (r.kind === 'thought')
+          return tail.some((m) => (m.thinking || '')
+            .includes((r.text || '').slice(0, 120)))
+        return true
+      }
+      setLiveFeed((f) => f.filter((r) => r.sticky
+        || (now - (r._at ?? 0) < 5000 && !covered(r))))
       if (stick) toBottom()
     }).catch(() => {}), [slug, node.id])
 
@@ -2692,7 +2715,10 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
   useEffect(() => {
     if (pulse && pulse.node === node.id) {
       if (pulse.event === 'turn_done') {
-        setLiveFeed([]); setDraft(''); setThinking('')
+        // sticky rows (/context answers) outlive the turn — the user asked
+        // mid-turn precisely to peek; the turn ending must not eat the answer
+        setLiveFeed((f) => f.filter((r) => r.sticky))
+        setDraft(''); setThinking('')
         thinkBuf.current = ''
       }
       refresh()
@@ -2706,7 +2732,8 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
       const foldThought = () => {
         if (!thinkBuf.current) return
         const secs = Math.max(1, Math.round((Date.now() - thinkT0.current) / 1000))
-        const entry = { kind: 'thought', text: thinkBuf.current, secs }
+        const entry = { kind: 'thought', text: thinkBuf.current, secs,
+                        _at: Date.now() }
         thinkBuf.current = ''
         setThinking('')
         setLiveFeed((f) => [...f.slice(-24), entry])
@@ -2732,7 +2759,7 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
       }
       foldThought()
       if (streamEvt.kind === 'text') setDraft('')
-      setLiveFeed((f) => [...f.slice(-24), streamEvt])
+      setLiveFeed((f) => [...f.slice(-24), { ...streamEvt, _at: Date.now() }])
       if (stick) toBottom()
     }
   }, [streamEvt, node.id])   // eslint-disable-line react-hooks/exhaustive-deps
