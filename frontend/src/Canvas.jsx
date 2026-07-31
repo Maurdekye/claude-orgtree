@@ -1728,8 +1728,12 @@ function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRemaining,
             <select className="df-preset-add" value=""
               onChange={(e) => {
                 const p = presets.find((x) => x.name === e.target.value)
-                if (p && !chosen.some((c) => c.name === p.name))
+                if (p && !chosen.some((c) => c.name === p.name)) {
                   setChosen((cs) => [...cs, p])
+                  // user spec: the FIRST chosen preset names a still-unnamed
+                  // agent after itself (typing over it still works)
+                  if (!name.trim()) setName(p.name)
+                }
               }}>
               <option value="">add charter preset…</option>
               {presets.filter((p) => !chosen.some((c) => c.name === p.name))
