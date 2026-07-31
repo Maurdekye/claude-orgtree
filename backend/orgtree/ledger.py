@@ -521,10 +521,20 @@ class Org:
                               "must be one of your superiors (or 'user')")
         par = self.parent(actor)
         if target == par:
-            raise LedgerError("that is your direct superior — just message them")
-        if any(r["from"] == actor and r["target"] == target
-               for r in self.d["audience_requests"]):
-            raise LedgerError("you already have an open request to that target")
+            # design motto: you can already reach them — succeed with a pointer,
+            # don't refuse
+            return {"already_reachable": True, "drive": [], "warnings": [
+                f"{target} is your direct superior — you can already message "
+                f"them with orgtree_message; no audience needed"]}
+        open_req = next((r for r in self.d["audience_requests"]
+                         if r["from"] == actor and r["target"] == target), None)
+        if open_req:
+            # design motto: a duplicate ask reports the existing request's
+            # progress instead of erroring
+            return {"currently_at": open_req["currently_at"], "drive": [],
+                    "warnings": [
+                        f"your request to reach {target} is already open — it "
+                        f"currently awaits {open_req['currently_at']}"]}
         self.d["audience_requests"].append({
             "from": actor, "target": target, "currently_at": par,
             "reason": reason[:300], "opened_at": now()})
@@ -928,11 +938,22 @@ class Org:
         """Leaf-only (§4.2 decision 1). Self-retirement allowed for leaves (№26)."""
         self._require_authority(actor, nid, allow_self=True)
         if self.node(nid)["state"] == "archived":
-            raise LedgerError(f"{nid} is already archived")
+            # design motto: asking for what's already true is a no-op, not an error
+            return {"freed": 0,
+                    "warnings": [f"{nid} was already archived — nothing to do"]}
         live_kids = self.children(nid)
         if live_kids:
-            raise LedgerError(
-                f"{nid} has live reports {live_kids}; retire is leaf-only — use dissolve")
+            if actor == nid:
+                # self-retire has no dissolve authority — the one case that stays
+                raise LedgerError(
+                    f"you have live reports {live_kids}; retire them first, or ask "
+                    f"your superior to dissolve your subtree")
+            # design motto: auto-bridge to what the old refusal told you to do
+            r = self.dissolve(actor, nid)
+            r.setdefault("warnings", []).append(
+                f"{nid} had live reports {live_kids} — retire became dissolve "
+                f"(the whole subtree is archived)")
+            return r
         n = self.node(nid)
         freed = self.seat_cost(nid) + n["grant"]
         n["state"] = "archived"
@@ -956,7 +977,9 @@ class Org:
         self._require_authority(actor, nid)
         n = self.node(nid)
         if n["state"] == "live":
-            raise LedgerError(f"{nid} is already live")
+            # design motto: asking for what's already true is a no-op, not an error
+            return {"cost": 0, "drive": [],
+                    "warnings": [f"{nid} is already live — nothing to do"]}
         fable_futile = (n["model"] == "fable" or tier == "fable") \
             and bool(self.d.get("fable_lock"))
         if fable_futile and actor == USER:
@@ -1096,7 +1119,9 @@ class Org:
                 raise LedgerError("model switches cover your own subtree only")
         old = n["model"]
         if tier == old:
-            raise LedgerError(f"{nid} already runs {tier}")
+            # design motto: asking for what's already true is a no-op, not an error
+            return {"model": tier, "seat": self.d["tiers"][tier], "freed": 0,
+                    "warnings": [f"{nid} already runs {tier} — nothing to do"]}
         if tier == "fable" and self.d.get("fable_lock") and actor == USER:
             self.clear_fable_lock()      # a user fable-switch is the decree
         delta = self.d["tiers"][tier] - self.d["tiers"][old]

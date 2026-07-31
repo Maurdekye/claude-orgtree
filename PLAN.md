@@ -172,8 +172,10 @@ preconditions above are unchanged by depth; only *who may invoke them* widens.
 
 1. **`retire` is leaf-only; `dissolve` is the recursive form.** Retiring a manager with live
    reports would orphan them — nodes whose parent is archived, still holding credits, unreachable.
-   Refusing and pointing at `dissolve` keeps the two acts distinct, matching the stated intent that
-   dissolve is a deliberate separate operation.
+   ~~Refusing and pointing at `dissolve` keeps the two acts distinct.~~ *Superseded 2026-07-31 by
+   the design motto (permit + auto-bridge): retiring a manager now dissolves its subtree with a
+   warning instead of refusing. Self-retire with live reports still refuses (no dissolve authority
+   over oneself).*
 2. **The root's own seat is not charged against its grant.** "Give my CEO 50" reads as 50 *to
    allocate*. A one-line change if the other reading is wanted.
 3. **`rehire` defaults to the node's previous grant.** Explicit grant overrides.

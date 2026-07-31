@@ -145,8 +145,10 @@ TOOLS = [
     },
     {
         "name": "orgtree_retire",
-        "description": ("Retire a LEAF node in your subtree (frees its seat + grant "
+        "description": ("Retire a node in your subtree (frees its seat + grant "
                         "back to its parent), or yourself if you have no live reports. "
+                        "Retiring a node that still has live reports dissolves its whole "
+                        "subtree (you'll be told). "
                         "Its session is preserved and can be rehired with context intact. "
                         "Retirement is the MOST you can do — permanent deletion is the "
                         "user's alone; if you believe an agent should be deleted, retire "

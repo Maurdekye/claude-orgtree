@@ -10,6 +10,15 @@ your existing Claude Code installation and subscription.
 
 Design document: [PLAN.md](PLAN.md) · UI manual: [docs/ui-guide.md](docs/ui-guide.md)
 
+**Design motto:** permit as much as possible; close gaps with minimal-friction
+shortcuts; step out of the way. The tree is not a rigid structure you're
+confined to — it's a **sandbox of capabilities** with a *suggested*
+organization that improves efficiency on the margin. Asking for what's already
+true is a no-op, not an error; where a refusal would just tell you which other
+command to run, orgtree runs it for you and tells you what it did. Hard "no"s
+are reserved for real resource limits, true impossibilities, and protecting
+the user's data.
+
 ## The model in one breath
 
 **You are the root.** You hire top-level agents; agents hire their own reports

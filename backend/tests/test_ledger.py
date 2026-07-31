@@ -62,8 +62,19 @@ def main():
         else (_ for _ in ()).throw(AssertionError(org.audit()))))
     check("overdraft refused with arithmetic", lambda: expect_error(
         lambda: org.hire("ceo", "ceo", "haiku", 0, "extra", **spec()), "free"))
-    check("leaf guard names live reports", lambda: expect_error(
-        lambda: org.retire(USER, "fable-a"), "live reports"))
+    orgR = Org.create("bridge")
+    orgR.hire(USER, None, "haiku", 5, "m")
+    orgR.hire("m", "m", "haiku", 0, "k", **spec())
+    check("retire on a manager auto-dissolves the subtree (motto A2)", lambda: (
+        lambda r: None if "retire became dissolve" in r["warnings"][-1]
+        and orgR.nodes["m"]["state"] == "archived"
+        and orgR.nodes["k"]["state"] == "archived"
+        else (_ for _ in ()).throw(AssertionError(r))
+    )(orgR.retire(USER, "m")))
+    check("retire of an archived node is a no-op, not an error (motto A3)", lambda: (
+        lambda r: None if r["freed"] == 0 and "nothing to do" in r["warnings"][0]
+        else (_ for _ in ()).throw(AssertionError(r))
+    )(orgR.retire(USER, "m")))
 
     print("retire / rehire / dissolve:")
     check("retire frees seat+grant", lambda: (
@@ -81,8 +92,9 @@ def main():
         else (_ for _ in ()).throw(AssertionError)))
     check("self-retire allowed for a leaf (№26)", lambda: (
         org.retire("op-a2", "op-a2"), None)[-1])
-    check("self-retire of a manager refused", lambda: expect_error(
-        lambda: org.retire("fable-a", "fable-a"), "leaf"))
+    check("self-retire of a manager refused (no dissolve authority over self)",
+          lambda: expect_error(
+              lambda: org.retire("fable-a", "fable-a"), "live reports"))
 
     print("stranding (§4.4, corrected semantics):")
     org2 = Org.create("strand")
@@ -594,6 +606,29 @@ def main():
     orgM.mark_unrecoverable("kid1", "test")
     check("unrecoverable still refuses mail", lambda: expect_error(
         lambda: orgM.post_mail("kid2", "kid1", "hello?"), "unrecoverable"))
+
+    print("idempotent no-ops (motto A3):")
+    check("rehire of a live node is a no-op", lambda: (
+        lambda r: None if r["cost"] == 0 and r["drive"] == []
+        and "nothing to do" in r["warnings"][0]
+        else (_ for _ in ()).throw(AssertionError(r))
+    )(orgM.rehire("boss", "kid2")))
+    check("switch_model to the current tier is a no-op", lambda: (
+        lambda r: None if r["freed"] == 0 and "nothing to do" in r["warnings"][0]
+        else (_ for _ in ()).throw(AssertionError(r))
+    )(orgM.switch_model(USER, "kid2", "haiku")))
+    check("audience request for your direct superior succeeds with a pointer",
+          lambda: (
+              lambda r: None if r["already_reachable"]
+              and "orgtree_message" in r["warnings"][0]
+              else (_ for _ in ()).throw(AssertionError(r))
+          )(orgM.request_audience("kid2", "boss", "why not")))
+    orgM.request_audience("kid2", "user", "need the human")
+    check("duplicate audience request reports the open one's progress", lambda: (
+        lambda r: None if r["currently_at"] == "boss"
+        and "already open" in r["warnings"][0]
+        else (_ for _ in ()).throw(AssertionError(r))
+    )(orgM.request_audience("kid2", "user", "need the human, again")))
 
     print("guards:")
     check("unknown tier refused", lambda: expect_error(
