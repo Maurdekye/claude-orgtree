@@ -443,8 +443,11 @@ def orgs_list(request: Request):
                 "storage_blocked": bool(org.d.get("storage_blocked")),
                 "sandbox": bool(k.get("sandbox")),
                 "held": org.audit()["top_level_holds"],
-                "storage_mb": round(
-                    supervisor.workspace_usage_bytes(org, 15) / 1048576, 2),
+                # stale-served + background-refreshed: the walk never runs on
+                # the request path (arti's took ~7 s and stalled every load)
+                "storage_mb": (round(u / 1048576, 2)
+                               if (u := supervisor.workspace_usage_cached(org))
+                               is not None else None),
                 "share_url": _share_url(k.get("token")),
             }
         out.append(row)
@@ -568,8 +571,9 @@ def org_tree(slug: str, request: Request):
             "max_tier": (k.get("max_scope") or {}).get("max_tier"),
         }
         if k.get("storage_limit_mb"):
-            tree["kiosk"]["storage_mb"] = round(
-                supervisor.workspace_usage_bytes(org, 15) / 1048576, 2)
+            u = supervisor.workspace_usage_cached(org)
+            if u is not None:
+                tree["kiosk"]["storage_mb"] = round(u / 1048576, 2)
     if _public_slug(request):
         # tells the UI to lock itself down; the SERVER gate is the enforcement
         tree["public"] = True

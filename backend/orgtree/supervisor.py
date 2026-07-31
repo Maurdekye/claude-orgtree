@@ -61,6 +61,9 @@ def workspace_usage_bytes(org: Org, max_age: float = 0.0) -> int:
     ws = org.d.get("workspace")
     roots = [p for p in (ws, store.scratch_root(slug))
              if p and os.path.isdir(p)]
+    # (perf note: this walk is the EXPENSIVE one — measured 6.9 s / 99k files
+    # on a 3.6 GB sandboxed org. Request paths must use workspace_usage_cached
+    # below; only enforcement threads walk inline.)
     # sandboxed orgs: the container HOME persists on the host too — in-container
     # writes outside the workspace/scratch mounts (~/junk, transcripts) are org
     # disk footprint all the same (storage-bypass audit 2026-07-31). Counted,
@@ -78,6 +81,39 @@ def workspace_usage_bytes(org: Org, max_age: float = 0.0) -> int:
                     pass
     _ws_usage_cache[slug] = (time.time(), total)
     return total
+
+
+_ws_walk_lock = threading.Lock()
+_ws_walk_inflight: set[str] = set()
+
+
+def workspace_usage_cached(org: Org, max_age: float = 15.0) -> int | None:
+    """REQUEST-PATH storage reading (user bug 2026-07-31: selecting arti took
+    ~10 s — the tree AND list endpoints walked its 3.6 GB / 99k-file sandbox
+    home synchronously whenever the 15 s cache had lapsed). Serves the last
+    measurement INSTANTLY and refreshes it in a single-flight background walk
+    when stale; an org never measured this process returns None (the UI shows
+    '?' for a beat) rather than blocking the page. Enforcement paths keep
+    calling workspace_usage_bytes directly — they run in background threads
+    and need the fresh number."""
+    slug = org.d["slug"]
+    hit = _ws_usage_cache.get(slug)
+    if not (hit and time.time() - hit[0] < max_age):
+        with _ws_walk_lock:
+            due = slug not in _ws_walk_inflight
+            if due:
+                _ws_walk_inflight.add(slug)
+        if due:
+            def run():
+                try:
+                    workspace_usage_bytes(org)
+                except Exception:       # noqa: BLE001 — a failed walk keeps the stale value
+                    pass
+                finally:
+                    with _ws_walk_lock:
+                        _ws_walk_inflight.discard(slug)
+            threading.Thread(target=run, daemon=True).start()
+    return hit[1] if hit else None
 
 COMPACT_AT = float(os.environ.get("ORGTREE_COMPACT_AT", "0.80"))   # §8.2
 ORACLE_AT = float(os.environ.get("ORGTREE_ORACLE_AT", "0.92"))     # §8.3 state 2→3
