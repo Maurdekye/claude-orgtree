@@ -861,10 +861,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
             }}
             title="the org inbox — outside mail addressed to this organization"
             onPointerDown={(e) => e.stopPropagation()}
-            onClick={() => {
-              setOiOpen(true)
-              if (tree.org_inbox.unread) orgInboxRead(slug).catch(() => {})
-            }}>
+            onClick={() => setOiOpen(true)}>
             <div className="oi-head">
               <PublicIcon fontSize="inherit" /> org inbox
               {tree.org_inbox.unread > 0 &&
@@ -955,7 +952,12 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
       )}
       {oiOpen && (
         <OrgInboxModal inbox={tree.org_inbox} map={map} slug={slug} toast={toast}
-          close={() => setOiOpen(false)} />
+          close={() => {
+            setOiOpen(false)
+            // closing the panel acknowledges the whole log (same idiom as the
+            // eye's glow: opening acknowledges attention)
+            if (tree.org_inbox?.unread) orgInboxRead(slug).catch(() => {})
+          }} />
       )}
     </div>
   )
@@ -2039,6 +2041,9 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
   const leave = (m) => { if (m?._wait && m.id) readRef.current?.(m) }
   useEffect(() => () => leave(curRef.current), [])
   const party = (m) => (outgoing ? m.to : m.from)
+  // a custom sender renderer owns the whole head identity (it receives the
+  // mail too — the org inbox uses this for "@agent as @org → @recipient")
+  const customS = outgoing && sender != null
   const brief = (b) => (b ?? '').trim().replace(/\s+/g, ' ').slice(0, 90)
   const when = (at) => (at ?? '').slice(5, 16).replace('T', ' ')
   if (!all.length) return <div className="dim pad">no mail yet</div>
@@ -2066,8 +2071,8 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
         {cur && (
           <>
             <div className="mailer-head">
-              {outgoing && <span className="dim">to</span>}
-              {S(party(cur))}
+              {outgoing && !customS && <span className="dim">to</span>}
+              {S(party(cur), cur)}
               <span className="dim">{cur.kind}</span>
               {cur.relationship && <span className="dim">{cur.relationship}</span>}
               <span className="dim">{cur.at}</span>
@@ -2189,14 +2194,27 @@ function FilesView({ slug, nid }) {
 function OrgInboxModal({ inbox, map, slug, toast, close }) {
   useEsc(close)
   const [grantee, setGrantee] = useState('')
+  const [folder, setFolder] = useState('inbox')
   const holders = inbox?.holders ?? []
   const candidates = [...map.values()].filter((n) =>
     n.id !== USER && n.id !== DRAFT && n.state === 'live' && !n.isBearerOf
     && n.parent !== USER && !holders.includes(n.id))
   const entries = inbox?.entries ?? []
+  // the org inbox tracks read state as ONE high-water mark over the log — the
+  // tail beyond it renders as unread; any read action clears the whole mark
+  const readFrom = entries.length - (inbox?.unread ?? 0)
+  const rows = entries.map((e, i) => ({
+    id: e.id, at: e.at, body: e.body, from: e.peer, to: e.peer, _by: e.by,
+    kind: e.dir === 'in' ? 'message' : 'reply', _wait0: i >= readFrom,
+    relationship: e.dir === 'in'
+      ? 'outside party — addressed to the whole org' : undefined,
+  }))
+  const inn = rows.filter((r) => r.kind === 'message')
+  const out = rows.filter((r) => r.kind === 'reply')
+  const markRead = () => { if (inbox?.unread) orgInboxRead(slug).catch(() => {}) }
   return (
     <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
-      <div className="settings" onClick={(e) => e.stopPropagation()}>
+      <div className="settings wide" onClick={(e) => e.stopPropagation()}>
         <h3><PublicIcon fontSize="inherit" /> The org inbox</h3>
         <div className="hint">
           Outside parties — external Claude Code sessions (chatq) and other
@@ -2227,22 +2245,25 @@ function OrgInboxModal({ inbox, map, slug, toast, close }) {
                 .catch((e) => toast([`error: ${e.message}`]))}>grant</button>
           </>}
         </div>
-        <div className="oi-thread">
-          {entries.length === 0 && <div className="dim pad">no correspondence yet</div>}
-          {entries.map((e) => (
-            <div key={e.id} className={'oi-msg ' + e.dir}>
-              <div className="oi-meta">
-                {e.dir === 'in'
-                  ? <>⭠ from <b>{e.peer.replace(/^@/, '')}</b></>
-                  /* outbound attribution (user spec): @agent as @org → @recipient */
-                  : <><b>{e.by ? `@${e.by}` : '@?'}</b>
-                    <span className="dim"> as </span><b>@{slug}</b>
-                    <span className="dim"> → </span><b>{e.peer}</b></>}
-                <span className="dim oi-time">{(e.at ?? '').replace('T', ' ').replace('Z', '')}</span>
-              </div>
-              <div className="oi-body md" dangerouslySetInnerHTML={md(e.body)} />
-            </div>
-          ))}
+        {/* the SAME webmail interface as every other inbox (user ruling) —
+            folders + list + reading pane; only the deviations above (audience
+            granting) and the outbound sender attribution differ */}
+        <div className="mailwrap">
+          <MailFolders folder={folder} setFolder={setFolder}
+            unread={inn.filter((r) => r._wait0).length} />
+          <div className="mailpane">
+            {folder === 'inbox'
+              ? <MailList pending={inn.filter((r) => r._wait0)}
+                  delivered={inn.filter((r) => !r._wait0)}
+                  waitLabel="unread" onRead={markRead} />
+              : <MailList delivered={out} outgoing
+                  sender={(id, m) => (
+                    /* outbound attribution (user spec): @agent as @org → @recipient */
+                    <span><b>{m?._by ? `@${m._by}` : '@?'}</b>
+                      <span className="dim"> as </span><b>@{slug}</b>
+                      <span className="dim"> → </span><b>{id}</b></span>
+                  )} />}
+          </div>
         </div>
         <div className="row"><span className="spacer" />
           <button onClick={close}>close</button></div>

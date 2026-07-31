@@ -1208,19 +1208,9 @@ svg.MuiSvgIcon-root {
   font-family: var(--mono); font-size: 9px; color: var(--dim);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.oi-thread {
-  display: flex; flex-direction: column; gap: 8px; max-height: 46vh;
-  overflow-y: auto; border: 1px solid var(--line-soft); border-radius: 6px;
-  background: var(--bg); padding: 8px 10px;
-}
-.oi-msg { border-left: 2px solid #4e5f6e; padding: 2px 0 2px 10px; }
-.oi-msg.out { border-left-color: var(--accent); }
-.oi-meta {
-  display: flex; gap: 8px; align-items: baseline; font-size: 12px;
-  color: var(--ink); font-family: var(--mono); margin-bottom: 2px;
-}
-.oi-meta .oi-time { margin-left: auto; font-size: 11px; }
-.oi-body { font-size: 12.5px; line-height: 1.5; }
+/* the viewer itself is the SHARED webmail interface (.mailwrap/.mailer) — the
+   org inbox renders no bespoke thread UI (user ruling: identical to every
+   other inbox, deviations only for audience granting + sender attribution) */
 
 /* ---- hud eye + agent tray + lineage polish ---------------------------- */
 .zoomhud .hud-eye svg { width: 22px; height: 12px; display: block; }
