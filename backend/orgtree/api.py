@@ -512,6 +512,7 @@ def org_tree(slug: str, request: Request):
         # slot vs actually responding vs busy-but-between (draining/queued)
         node["waiting"] = bool(st.get("waiting"))
         node["responding"] = bool(st.get("responding"))
+        node["phase"] = st.get("phase")     # e.g. "compacting" (№3)
         node["queued"] = len(st["queue"])
         node["last_error"] = st["last_error"]
         if st.get("occupancy"):       # runtime is fresher than the persisted copy
@@ -785,6 +786,7 @@ class Scope(BaseModel):
     org_visibility: str | None = None
     charter: str | None = None              # §15: this node's role card
     team_charter: str | None = None         # §15: binds this node's whole subtree
+    effort: str | None = None               # thinking effort: low|medium|high|"" clears
 
 
 @app.post("/api/orgs/{slug}/nodes/{nid}/scope")
@@ -795,7 +797,8 @@ async def node_scope(slug: str, nid: str, body: Scope):
             result = org.set_scope(USER, nid, add_dirs=body.add_dirs, tools=body.tools,
                                    org_visibility=body.org_visibility,
                                    charter=body.charter,
-                                   team_charter=body.team_charter)
+                                   team_charter=body.team_charter,
+                                   effort=body.effort)
         except LedgerError as e:
             raise HTTPException(422, str(e))
         store.save_org(org)
@@ -910,6 +913,12 @@ def node_message(slug: str, nid: str, body: Message):
     node notifies its whole superior chain (§7.4) and grants a user audience."""
     if not body.text.strip():
         raise HTTPException(422, "empty message")
+    if body.text.lstrip().startswith("/"):
+        # SLASH COMMAND (user-approved, 2026-07-31): a session command, not
+        # correspondence — no mail entry, and it must reach the CLI with the
+        # "/" at position 0 (the envelope would prepend [MAIL …] otherwise)
+        return supervisor.send_message(slug, nid, body.text.strip(),
+                                       command=True)
     with store.DOC_LOCK:
         try:
             org = store.load_org(slug)
@@ -1663,15 +1672,87 @@ async def node_upload(slug: str, nid: str, request: Request, name: str = ""):
 
 
 @app.get("/api/orgs/{slug}/nodes/{nid}/chat")
-def node_chat(slug: str, nid: str):
+def node_chat(slug: str, nid: str, last: int = 300):
     try:
         org = store.load_org(slug)
         org.node(nid)
     except LedgerError as e:
         raise HTTPException(404, str(e))
-    out = supervisor.read_chat(org, nid)
-    out["mail_pending"] = len((org.d.get("mail") or {}).get(nid, []))
+    out = supervisor.read_chat(org, nid, last=max(1, min(last, 1000)))
+    pending = (org.d.get("mail") or {}).get(nid, [])
+    out["mail_pending"] = len(pending)
+    # parity №11: the pending bubble renders from the DURABLE server copy —
+    # orgtree's queue is better than Claude Code's and presented as flimsier
+    out["pending_mail"] = [{"id": m.get("id"), "from": m["from"],
+                            "body": m["body"][:2000], "at": m["at"]}
+                           for m in pending[-20:]]
     return out
+
+
+@app.delete("/api/orgs/{slug}/nodes/{nid}/mail/{mid}")
+async def node_mail_retract(slug: str, nid: str, mid: str):
+    """Parity №17: retract one UNDRAINED mail entry — the only correction
+    channel for a wrong send, since delivery deliberately never interrupts."""
+    with store.DOC_LOCK:
+        try:
+            org = store.load_org(slug)
+            org.node(nid)
+        except LedgerError as e:
+            raise HTTPException(404, str(e))
+        box = (org.d.get("mail") or {}).get(nid) or []
+        kept = [m for m in box if m.get("id") != mid]
+        if len(kept) == len(box):
+            raise HTTPException(404, "no such pending mail — it may already "
+                                     "have been delivered")
+        org.d["mail"][nid] = kept
+        # mirror the retraction into the archive so the record stays honest
+        log = (org.d.get("mail_log") or {}).get(nid) or []
+        for m in log:
+            if m.get("id") == mid:
+                m["retracted"] = True
+        store.save_org(org)
+    await hub.changed(slug)
+    return {"retracted": mid}
+
+
+@app.get("/api/orgs/{slug}/nodes/{nid}/toolimg/{tool_use_id}")
+def node_tool_image(slug: str, nid: str, tool_use_id: str, idx: int = 0):
+    """Parity №9 (image clause): serve a tool result's image by tool_use_id —
+    a separate bounded fetch, never base64 inlined into the 5 s chat poll."""
+    try:
+        org = store.load_org(slug)
+        n = org.node(nid)
+    except LedgerError as e:
+        raise HTTPException(404, str(e))
+    tpath = supervisor.transcript_path(n["session_id"],
+                                       supervisor._transcript_root(org))
+    if not tpath:
+        raise HTTPException(404, "no transcript")
+    import base64
+    for line in open(tpath, encoding="utf-8", errors="replace"):
+        if tool_use_id not in line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        content = (rec.get("message") or {}).get("content")
+        if not isinstance(content, list):
+            continue
+        for b in content:
+            if not (isinstance(b, dict) and b.get("type") == "tool_result"
+                    and b.get("tool_use_id") == tool_use_id):
+                continue
+            imgs = [x for x in (b.get("content") or [])
+                    if isinstance(x, dict) and x.get("type") == "image"]
+            if idx < len(imgs):
+                src = imgs[idx].get("source") or {}
+                if src.get("type") == "base64" and src.get("data"):
+                    from fastapi.responses import Response
+                    return Response(
+                        content=base64.b64decode(src["data"]),
+                        media_type=src.get("media_type", "image/png"))
+    raise HTTPException(404, "no image on that tool result")
 
 
 @app.get("/api/orgs/{slug}/nodes/{nid}/inbox")

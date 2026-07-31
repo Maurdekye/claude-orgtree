@@ -1404,6 +1404,71 @@ svg.MuiSvgIcon-root {
   display: flex; align-items: center; justify-content: center;
 }
 .cc-attach:hover { color: var(--accent); border-color: var(--accent); }
+
+/* ------------------------------------------------- desk parity (2026-07-31)
+   №1/№9/№10: tool chips carry their argument; results and diffs expand in
+   place, collapsed by default (the clamp rule IS the feature) */
+.tchip .tline.click { cursor: pointer; }
+.tchip .tline.click:hover { color: var(--ink-strong); }
+.tchip .targ { color: var(--ink); }
+.tchip .tdiffn { color: var(--ok); font-family: var(--mono); }
+.tchip.terr .tooldot { color: var(--bad); }
+.terrtxt { color: var(--bad); }
+.respre, .diffpre {
+  max-height: 220px; overflow: auto; margin: 4px 0 4px 18px;
+  font-size: 11.5px;
+}
+.diffpre .dplus { color: var(--ok); background: color-mix(in srgb, var(--ok) 10%, transparent); }
+.diffpre .dminus { color: var(--bad); background: color-mix(in srgb, var(--bad) 10%, transparent); }
+.toolimg {
+  display: block; max-width: 90%; max-height: 260px; margin: 4px 0 4px 18px;
+  border: 1px solid var(--line); border-radius: 4px;
+}
+/* №5: an expandable system line (compaction summary) */
+.msg.sys.click { cursor: pointer; }
+.msg.sys.click:hover { color: var(--ink); }
+.msg.sys .filepre { text-align: left; max-height: 260px; overflow: auto; margin-top: 6px; }
+/* №18: live thinking ribbon — dim italic, live-only */
+.msg.thinking {
+  font-style: italic; color: var(--dim); font-size: 11.5px;
+  white-space: pre-wrap; opacity: .75;
+}
+/* №11/№17: durable pending bubble + retract ✕ */
+.pendrow { display: flex; align-items: flex-start; gap: 6px; }
+.pendrow .md { flex: 1; min-width: 0; }
+.sendmode { font-size: 10.5px; padding: 0 4px 2px; }
+/* №7: last turn's auto-denies */
+.denials {
+  margin: 6px 0 2px; padding: 6px 10px; font-size: 11.5px;
+  color: var(--bad); border-left: 2px solid var(--bad);
+}
+.denials .dim { color: var(--dim); }
+/* slash-command hints (user-approved: hinting, not a palette) */
+.slash-hints {
+  border: 1px solid var(--line); border-radius: 6px; background: var(--panel);
+  margin-bottom: 4px; padding: 4px; display: flex; flex-direction: column; gap: 2px;
+}
+.slash-row {
+  text-align: left; background: none; border: none; padding: 3px 8px;
+  border-radius: 4px; font-size: 12px;
+}
+.slash-row:hover { background: var(--panel-2); }
+.slash-row b { font-family: var(--mono); margin-right: 8px; }
+.slash-note { font-size: 10.5px; padding: 2px 8px; }
+/* №14: the CLI's own per-turn resolution in the ⚙ panel */
+.initblock { font-size: 11.5px; line-height: 1.6; padding: 2px 4px; }
+.mcpdot {
+  display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+  margin-right: 5px;
+}
+.mcpdot.ok { background: var(--ok); }
+.mcpdot.bad { background: var(--bad); }
+/* №12: read-only bearer transcript inside the lineage panel */
+.lin-read {
+  max-height: 300px; overflow-y: auto; margin: 2px 0 10px;
+  border: 1px solid var(--line-soft); border-radius: 6px; padding: 8px 10px;
+  font-size: 12px;
+}
 .eye-tab-jump { color: var(--dim); }
 .eye-tab-jump:hover { color: var(--accent); background: var(--accent-soft); }
 .lineage-panel { min-width: 480px; }

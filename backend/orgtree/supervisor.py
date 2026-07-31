@@ -101,15 +101,43 @@ CLAUDE_CLI_JS = os.environ.get("ORGTREE_CLAUDE_CLI", os.path.join(
     os.path.dirname(CLAUDE), "node_modules", "@anthropic-ai", "claude-code", "cli.js"))
 
 
+_cli_version_cache: str | None = None
+
+
 def cli_version() -> str:
-    """The resolved Claude CLI's version (№44): read from the package.json
-    beside cli.js. Drives sandbox-image tagging (host CLI updates → the next
-    sandboxed turn rebuilds the image) and the /api/host report."""
-    try:
-        p = os.path.join(os.path.dirname(CLAUDE_CLI_JS), "package.json")
-        return str(json.load(open(p, encoding="utf-8")).get("version", "unknown"))
-    except Exception:                                        # noqa: BLE001
-        return "unknown"
+    """The resolved Claude CLI's version (№44): from the nearest
+    @anthropic-ai/claude-code package.json above cli.js (the npm bin shim
+    nests, so walk up), falling back to `claude --version`. Drives
+    sandbox-image tagging (host CLI updates → the next sandboxed turn
+    rebuilds the image) and the /api/host report. Cached per process."""
+    global _cli_version_cache
+    if _cli_version_cache is not None:
+        return _cli_version_cache
+    ver = "unknown"
+    probe = os.path.dirname(CLAUDE_CLI_JS)
+    for _ in range(6):
+        p = os.path.join(probe, "package.json")
+        try:
+            pkg = json.load(open(p, encoding="utf-8"))
+            if pkg.get("name") == "@anthropic-ai/claude-code":
+                ver = str(pkg.get("version", "unknown"))
+                break
+        except OSError:
+            pass
+        except json.JSONDecodeError:
+            pass
+        probe = os.path.dirname(probe)
+    if ver == "unknown":
+        try:
+            r = subprocess.run(_claude_argv() + ["--version"],
+                               capture_output=True, text=True, timeout=30)
+            m = re.search(r"\d+\.\d+\.\d+", r.stdout or "")
+            if m:
+                ver = m.group(0)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    _cli_version_cache = ver
+    return ver
 
 
 def _claude_argv() -> list[str]:
@@ -249,9 +277,13 @@ def clean_env() -> dict:
 
 
 def _looks_like_usage_limit(blob: str) -> bool:
+    # №8 adjacent fix: the CLI's session-limit phrasing is "You've hit your
+    # session limit — resets 1:40pm", which matched NONE of the original
+    # second set — the freeze machinery never fired for exactly that case
     b = blob.lower()
     return ("limit" in b and any(w in b for w in
-                                 ("usage", "weekly", "reached", "exceeded", "quota")))
+                                 ("usage", "weekly", "reached", "exceeded",
+                                  "quota", "hit your", "resets", "session")))
 
 
 def _looks_like_filtered(blob: str) -> bool:
@@ -733,6 +765,9 @@ def _build_cmd(org: Org, nid: str) -> list[str]:
            "--append-system-prompt", identity_prompt(org, nid),
            "--settings", json.dumps(settings),
            "--strict-mcp-config"]
+    if sc.get("effort") in ("low", "medium", "high"):
+        # per-agent thinking effort (user-approved 2026-07-31); unset = CLI default
+        cmd += ["--effort", sc["effort"]]
     tools = sc.get("tools", {})
     # interactive-only tools cannot work in a headless turn (there is no client
     # to present them) — questions route through orgtree_message instead
@@ -816,7 +851,9 @@ def _run_turn(slug: str, nid: str, text):
     # a dict carrier is an already-enveloped text still owing its delivery
     # journal a confirmation (a steer/boundary leftover re-queued for a turn)
     toks: list[str] = []
+    is_cmd = False
     if isinstance(text, dict):
+        is_cmd = bool(text.get("cmd"))
         toks, text = list(text.get("toks") or []), text["text"]
     try:
         # blocked on a turn slot is NOT running (№12) — the UI shows it hollow
@@ -839,8 +876,12 @@ def _run_turn(slug: str, nid: str, text):
                 # the gate is a suggestion, reality is the enforcement)
                 # drain notices + mail atomically — the №27 envelope, delivered at
                 # the turn boundary (§7.4); nothing wakes anyone, nothing arrives twice
-                pending = (org.d.get("notices") or {}).pop(nid, None)
-                mail = org.take_mail(nid)
+                # a slash command skips the drain entirely: the "/" must be
+                # the first character the CLI sees, and the mail stays boxed
+                # for the next normal turn (user-approved 2026-07-31)
+                pending = None if is_cmd \
+                    else (org.d.get("notices") or {}).pop(nid, None)
+                mail = [] if is_cmd else org.take_mail(nid)
                 if pending or mail:
                     # journal the batch: if the CLI never launches (bad
                     # binary, Docker down, timeout) the drained mail would
@@ -941,6 +982,22 @@ def _run_turn(slug: str, nid: str, text):
                                 stream(slug, nid, {"kind": "delta",
                                                    "text": dbuf[:2000]})
                                 dbuf, dlast = "", time.time()
+                        elif d.get("type") == "thinking_delta" and d.get("thinking"):
+                            # №18 (live-only, never persisted): a dimmed
+                            # italic ribbon above the growing draft
+                            stream(slug, nid, {"kind": "thinking",
+                                               "text": d["thinking"][:400]})
+                        continue
+                    if ev.get("type") == "system" and ev.get("subtype") == "init":
+                        # №14: the CLI's own resolution of what this turn can
+                        # actually do — tools, MCP server health, model, mode
+                        st["init"] = {
+                            "model": ev.get("model"),
+                            "permissionMode": ev.get("permissionMode"),
+                            "cwd": ev.get("cwd"),
+                            "tools": len(ev.get("tools") or []),
+                            "mcp_servers": ev.get("mcp_servers") or [],
+                        }
                         continue
                     if ev.get("type") == "assistant":
                         dbuf = ""     # the full message supersedes the draft
@@ -955,8 +1012,11 @@ def _run_turn(slug: str, nid: str, text):
                                 stream(slug, nid, {"kind": "text",
                                                    "text": b["text"][:2000]})
                             elif b.get("type") == "tool_use":
-                                stream(slug, nid, {"kind": "tool",
-                                                   "text": b.get("name", "tool")})
+                                arg = _tool_arg(b.get("name", ""), b.get("input"))
+                                stream(slug, nid, {
+                                    "kind": "tool",
+                                    "text": (b.get("name", "tool")
+                                             + (f" · {arg}" if arg else ""))})
                     elif ev.get("type") == "result":
                         res = ev
                         timer.cancel()                    # fresh budget per message
@@ -979,11 +1039,14 @@ def _run_turn(slug: str, nid: str, text):
                             # delivery — restart durability): envelope now,
                             # and track it as the in-flight turn
                             ntoks = []
-                            if isinstance(nxt, dict):   # journaled leftover
+                            ncmd = False
+                            if isinstance(nxt, dict):   # journaled leftover / cmd
+                                ncmd = bool(nxt.get("cmd"))
                                 ntoks, nxt = list(nxt.get("toks") or []), nxt["text"]
-                            nxt, ntok = _envelope(slug, nid, nxt)
-                            if ntok:
-                                ntoks.append(ntok)
+                            if not ncmd:      # a slash command goes verbatim
+                                nxt, ntok = _envelope(slug, nid, nxt)
+                                if ntok:
+                                    ntoks.append(ntok)
                             try:
                                 with store.DOC_LOCK:
                                     o2 = store.load_org(slug)
@@ -1001,8 +1064,9 @@ def _run_turn(slug: str, nid: str, text):
                             except OSError:
                                 with _state_lock:
                                     st["queue"].insert(0, {
-                                        "toks": ntoks, "text": nxt}
-                                        if ntoks else nxt)
+                                        "toks": ntoks, "text": nxt,
+                                        **({"cmd": True} if ncmd else {})}
+                                        if (ntoks or ncmd) else nxt)
                                     st["responding"] = False
                         try:
                             proc.stdin.close()
@@ -1135,8 +1199,13 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict, st: dict, occ: int = 0
         for mu in (res.get("modelUsage") or {}).values():
             cw = mu.get("contextWindow") or cw
     st["occupancy"], st["context_window"] = occ or st["occupancy"], cw or st["context_window"]
+    # №7: the CLI reports every headless auto-deny on the result event — the
+    # machine truth about the corrections the permission settings made
+    denials = [{"tool": d.get("tool_name", "tool"),
+                "arg": _tool_arg(d.get("tool_name", ""), d.get("tool_input"))}
+               for d in (res.get("permission_denials") or [])][:8]
     spend_total = None
-    if cost or occ or cw:
+    if cost or occ or cw or denials or res:
         with store.DOC_LOCK:
             o2 = store.load_org(slug)
             if nid not in o2.nodes:
@@ -1149,6 +1218,14 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict, st: dict, occ: int = 0
                 n["occupancy"] = occ
             if cw:
                 n["context_window"] = cw
+            n["last_denials"] = denials
+            # №15: a small per-turn ring — cost + duration + denial count —
+            # surfaced as a tooltip on the $ badge, never a new chip
+            ring = n.setdefault("turns", [])
+            ring.append({"at": now_iso(), "cost": round(cost, 6),
+                         "ms": res.get("duration_ms"),
+                         "denials": len(denials)})
+            del ring[:-20]
             store.save_org(o2)
             spend_total = sum(float(v.get("cost_usd") or 0.0)
                               for v in o2.nodes.values())
@@ -1196,7 +1273,18 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict, st: dict, occ: int = 0
 
 def _compact_split(slug: str, nid: str):
     """§8/№18: fork the session, /compact the fork (the successor), retire the
-    original in place as a knowledge bearer. The predecessor is never written again."""
+    original in place as a knowledge bearer. The predecessor is never written
+    again. Wears an explicit `compacting` phase (parity №3): the desk's word
+    for these up-to-600 s is "compacting", not a lying "working"."""
+    st0 = state(slug, nid)
+    st0["phase"] = "compacting"
+    try:
+        _compact_split_body(slug, nid)
+    finally:
+        st0.pop("phase", None)
+
+
+def _compact_split_body(slug: str, nid: str):
     with store.DOC_LOCK:
         org = store.load_org(slug)
         n = org.node(nid)
@@ -1275,7 +1363,7 @@ def manual_compact(slug: str, nid: str) -> None:
             _run_turn(slug, nid, nxt)
 
 
-def send_message(slug: str, nid: str, text: str) -> dict:
+def send_message(slug: str, nid: str, text: str, command: bool = False) -> dict:
     """Drive a node with a nudge; returns immediately. EVERY substantive message
     — user and agent alike — is MAIL (user ruling: the direct-message channel
     was folded into the mail system): it already sits persisted in the node's
@@ -1303,6 +1391,20 @@ def send_message(slug: str, nid: str, text: str) -> dict:
     # Mail is drained from the doc only AT DELIVERY (steer now, boundary feed,
     # or turn start) — a queued text is just a raw nudge, so a crash between
     # queue and delivery loses nothing (restart durability, user ruling).
+    if command:
+        # slash command (user-approved): delivered VERBATIM as its own user
+        # event — no envelope, no steering (only meaningful at a boundary);
+        # any waiting mail stays boxed for the next normal turn
+        carrier = {"cmd": True, "text": text}
+        with _state_lock:
+            if st["busy"]:
+                st["queue"].append(carrier)
+                return {"accepted": True, "queued": len(st["queue"]),
+                        "command": True}
+            st["busy"] = True
+        threading.Thread(target=_run_turn, args=(slug, nid, carrier),
+                         daemon=True).start()
+        return {"accepted": True, "queued": 0, "command": True}
     with _state_lock:
         maybe_steer = st["busy"] and st.get("responding")
     if maybe_steer:
@@ -1857,17 +1959,52 @@ def reconcile(slug: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------- chat
-def read_chat(org: Org, nid: str) -> dict:
-    """Parse the node's transcript into renderable messages + context occupancy."""
+def _tool_arg(name: str, inp) -> str:
+    """The most-identifying argument for a tool chip (parity №1): the argument
+    IS the content of the line — `Bash ls /e/…` beats a bare noun."""
+    if not isinstance(inp, dict):
+        return ""
+    for k in ("command", "file_path", "path", "pattern", "query", "url",
+              "description", "prompt", "name", "text", "to", "body"):
+        v = inp.get(k)
+        if isinstance(v, str) and v.strip():
+            return " ".join(v.strip().split())[:90]
+    for v in inp.values():
+        if isinstance(v, str) and v.strip():
+            return " ".join(v.strip().split())[:90]
+    return ""
+
+
+def _result_text(content) -> str:
+    """Flatten a tool_result's content to text."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(b.get("text", "") for b in content
+                         if isinstance(b, dict) and b.get("type") == "text")
+    return ""
+
+
+def read_chat(org: Org, nid: str, last: int | None = None) -> dict:
+    """Parse the node's transcript into renderable messages + context occupancy.
+
+    Parity waves A+C (2026-07-31): tool chips carry their identifying argument,
+    error bit and a COLLAPSED result body (correlated by tool_use_id, capped);
+    Edit chips carry the pre-computed structuredPatch; compaction renders as a
+    boundary with the summary attached (not a 20 KB user bubble); synthetic /
+    api-error records speak as the SYSTEM, never in the agent's voice."""
     n = org.node(nid)
     st = state(org.d["slug"], nid)
     out = {"busy": st["busy"], "queued": len(st["queue"]),
-           "last_error": st["last_error"], "occupancy": None, "messages": []}
+           "last_error": st["last_error"], "occupancy": None, "messages": [],
+           "init": st.get("init")}
     tpath = transcript_path(n["session_id"], _transcript_root(org))
     if not tpath:
         return out
     msgs = []
     occupancy = None
+    by_tool_id: dict[str, dict] = {}
+    after_boundary = False           # the next flagged record is the summary
     for line in open(tpath, encoding="utf-8", errors="replace"):
         try:
             rec = json.loads(line)
@@ -1876,14 +2013,52 @@ def read_chat(org: Org, nid: str) -> dict:
         if rec.get("isSidechain") or rec.get("isMeta"):
             continue
         t = rec.get("type")
-        if t == "system" and rec.get("subtype") == "compact_boundary":
-            msgs.append({"role": "system", "text": "— context compacted —",
-                         "ts": rec.get("timestamp")})
+        if t == "system":
+            if rec.get("subtype") == "compact_boundary":
+                meta = rec.get("compactMetadata") or {}
+                pre = meta.get("preTokens")
+                msgs.append({"role": "system",
+                             "text": "— context compacted —"
+                                     + (f" · {pre / 1000:.1f}k tokens" if pre else ""),
+                             "ts": rec.get("timestamp")})
+                after_boundary = True
+            elif rec.get("subtype") == "api_error":
+                msgs.append({"role": "system",
+                             "text": "⚠ API error — "
+                                     + str(rec.get("error") or rec.get("message")
+                                           or "retrying")[:300],
+                             "ts": rec.get("timestamp")})
             continue
         if t not in ("user", "assistant"):
             continue
         m = rec.get("message", {})
         content = m.get("content", "")
+        # №5: the compaction summary attaches to the boundary line (expand to
+        # read), and the /compact command echoes are dropped like isMeta
+        if t == "user" and after_boundary and rec.get("isCompactSummary"):
+            if msgs and msgs[-1]["role"] == "system":
+                msgs[-1]["summary"] = (_result_text(content)
+                                       if not isinstance(content, str)
+                                       else content)[:40000]
+            after_boundary = False
+            continue
+        if rec.get("isVisibleInTranscriptOnly"):
+            continue
+        if t == "user" and isinstance(content, str) and (
+                content.startswith("<command-name>")
+                or content.startswith("<local-command-stdout>")
+                or content.strip() == "No response requested."):
+            continue
+        # №8: the engine never speaks in the agent's voice
+        if t == "assistant" and (m.get("model") == "<synthetic>"
+                                 or rec.get("isApiErrorMessage")):
+            body = content if isinstance(content, str) else _result_text(content)
+            if not body and isinstance(content, list):
+                body = "\n".join(b.get("text", "") for b in content
+                                 if isinstance(b, dict))
+            msgs.append({"role": "system", "text": "⚠ " + body.strip()[:300],
+                         "ts": rec.get("timestamp")})
+            continue
         texts, tools = [], []
         if isinstance(content, str):
             texts.append(content)
@@ -1892,10 +2067,69 @@ def read_chat(org: Org, nid: str) -> dict:
                 bt = block.get("type")
                 if bt == "text" and block.get("text", "").strip():
                     texts.append(block["text"])
+                elif bt == "thinking":
+                    continue                     # live-only surface (№18)
                 elif bt == "tool_use":
-                    tools.append(block.get("name", "tool"))
+                    entry = {"name": block.get("name", "tool"),
+                             "arg": _tool_arg(block.get("name", ""),
+                                              block.get("input")),
+                             "id": block.get("id")}
+                    if block.get("name") == "TodoWrite":
+                        todos = (block.get("input") or {}).get("todos") or []
+                        entry["result"] = "\n".join(
+                            ("☑ " if td.get("status") == "completed" else
+                             "◐ " if td.get("status") == "in_progress" else "☐ ")
+                            + str(td.get("content", ""))
+                            for td in todos[:40])
+                        entry["result_lines"] = len(todos)
+                    tools.append(entry)
+                    if block.get("id"):
+                        by_tool_id[block["id"]] = entry
                 elif bt == "tool_result":
-                    tools.append(None)   # marker: this user record is tool plumbing
+                    # №1/№9: correlate back to the chip — error bit, collapsed
+                    # body, image count
+                    entry = by_tool_id.get(block.get("tool_use_id"))
+                    if entry is not None:
+                        body = _result_text(block.get("content"))
+                        if block.get("is_error"):
+                            entry["error"] = " ".join(
+                                body.strip().split())[:200] or "error"
+                        if body.strip() and "result" not in entry:
+                            lines = body.strip().splitlines()
+                            entry["result_lines"] = len(lines)
+                            entry["result"] = "\n".join(lines[:60])[:2000]
+                            entry["truncated"] = (len(lines) > 60
+                                                  or len(body) > 2000)
+                        imgs = sum(1 for b in (block.get("content") or [])
+                                   if isinstance(b, dict)
+                                   and b.get("type") == "image") \
+                            if isinstance(block.get("content"), list) else 0
+                        if imgs:
+                            entry["images"] = imgs
+                    tools.append(None)   # marker: this user record is plumbing
+        # №10: the pre-computed diff rides the parent record's sidecar
+        tur = rec.get("toolUseResult")
+        if isinstance(tur, dict) and t == "user":
+            entry = next((by_tool_id.get(b.get("tool_use_id"))
+                          for b in (content if isinstance(content, list) else [])
+                          if isinstance(b, dict) and b.get("type") == "tool_result"
+                          and by_tool_id.get(b.get("tool_use_id"))), None)
+            if entry is not None:
+                patch = tur.get("structuredPatch")
+                if patch:
+                    plus = sum(1 for h in patch for l in h.get("lines", [])
+                               if l.startswith("+"))
+                    minus = sum(1 for h in patch for l in h.get("lines", [])
+                                if l.startswith("-"))
+                    entry["diff"] = {
+                        "plus": plus, "minus": minus,
+                        "lines": [l for h in patch
+                                  for l in h.get("lines", [])][:160]}
+                if tur.get("totalDurationMs") is not None:
+                    entry["task"] = {
+                        "tools": tur.get("totalToolUseCount"),
+                        "ms": tur.get("totalDurationMs"),
+                        "tokens": tur.get("totalTokens")}
         if t == "assistant":
             u = m.get("usage") or {}
             occ = (u.get("input_tokens", 0) + u.get("cache_read_input_tokens", 0)
@@ -1912,6 +2146,8 @@ def read_chat(org: Org, nid: str) -> dict:
             "tools": [x for x in tools if x],
             "ts": rec.get("timestamp"),
         })
+    if last is not None and last > 0:
+        msgs = msgs[-last:]
     out["messages"] = msgs
     out["occupancy"] = occupancy
     if n.get("bearer_state") == "preserving":

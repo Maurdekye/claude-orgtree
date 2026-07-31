@@ -29,7 +29,8 @@ export const runOp = (slug, body) =>
     body: JSON.stringify(body),
   }).then(j)
 
-export const getChat = (slug, nid) => fetch(u(`/api/orgs/${slug}/nodes/${nid}/chat`)).then(j)
+export const getChat = (slug, nid, last) =>
+  fetch(u(`/api/orgs/${slug}/nodes/${nid}/chat${last ? `?last=${last}` : ''}`)).then(j)
 export const getMcpServers = () => fetch(u('/api/mcp-servers')).then(j)
 export const getCharters = () => fetch(u('/api/charters')).then(j)
 export const getFs = (path = '') =>
@@ -102,6 +103,8 @@ export const reorderNode = (slug, nid, body) =>
     body: JSON.stringify(body),
   }).then(j)
 export const getEvents = (slug) => fetch(u(`/api/orgs/${slug}/events`)).then(j)
+export const retractMail = (slug, nid, mid) =>
+  fetch(u(`/api/orgs/${slug}/nodes/${nid}/mail/${mid}`), { method: 'DELETE' }).then(j)
 export const uploadFile = (slug, nid, file) =>
   fetch(u(`/api/orgs/${slug}/nodes/${nid}/upload?name=${encodeURIComponent(file.name)}`), {
     method: 'POST', body: file,

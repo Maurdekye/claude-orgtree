@@ -3,9 +3,10 @@ import { marked } from 'marked'
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
-  audienceAction, compactNode, dissolveAll, getCharters, getChat, getHistory,
-  getMcpServers, getNodeInbox, getScratch, interruptNode, orgInboxRead,
-  reorderNode, saveScope, saveSettings, sendMessage, uploadFile,
+  audienceAction, BASE, compactNode, dissolveAll, getCharters, getChat,
+  getHistory, getMcpServers, getNodeInbox, getScratch, interruptNode,
+  orgInboxRead, reorderNode, retractMail, saveScope, saveSettings,
+  sendMessage, uploadFile,
 } from './api'
 import { pickFolder } from './picker'
 import {
@@ -132,12 +133,23 @@ const ago = (at) => {
 // №21: cached by text identity — every streamed token used to re-parse the
 // ENTIRE visible transcript (~8 Hz × every message × every open panel)
 const _mdCache = new Map()
+// №16: outside code fences and inline code, a bare <Token> parses as an HTML
+// tag — DOMPurify then strips it and keeps only the inner text, so
+// `Sync<float3>` silently became `Sync` and changed the sentence's meaning.
+// Escape `<` in plain prose; fenced/inline code is already safe.
+const escapeAngles = (src) => {
+  const parts = src.split(/(```[\s\S]*?```|`[^`\n]*`)/)
+  for (let i = 0; i < parts.length; i += 2) {
+    parts[i] = parts[i].replace(/</g, '&lt;')
+  }
+  return parts.join('')
+}
 const md = (text) => {
   const key = text ?? ''
   let hit = _mdCache.get(key)
   if (hit === undefined) {
     hit = { __html: DOMPurify.sanitize(
-      marked.parse(key, { gfm: true, breaks: true, async: false })) }
+      marked.parse(escapeAngles(key), { gfm: true, breaks: true, async: false })) }
     if (_mdCache.size > 800) _mdCache.clear()   // bounded; refills on demand
     _mdCache.set(key, hit)
   }
@@ -853,6 +865,11 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
         // draft's so it doesn't glide over from its parent a second time
         const ds = springs.current.get(DRAFT)
         if (r?.node && ds) springs.current.set(r.node, { ...ds, vx: 0, vy: 0 })
+        // thinking effort (user-approved): a deep-config setting, applied
+        // right after the hire lands
+        if (r?.node && scope?.effort) {
+          saveScope(slug, r.node, { effort: scope.effort }).catch(() => {})
+        }
         setDraft(null)
       }).catch(() => {})
   }
@@ -994,7 +1011,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
               posX={(id) => posOf(id)?.x ?? 0}
               onJump={(id) => centerOn(id)}
               map={map} op={op} slug={slug} pulse={pulse} toast={toast}
-              streamEvt={streamEvt}
+              streamEvt={streamEvt} compactAt={tree.compact_at}
               inboxCount={(tree.user_inbox_count ?? 0) + (tree.credit_requests?.length ?? 0)}
               onInbox={() => {
                 const nw = tree.user_inbox_newest ?? new Date().toISOString()
@@ -1026,7 +1043,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
               pub={!!tree.public} kioskRemaining={kioskRemaining}
               cascadeAlloc={tree.cascade_alloc !== false}
               maxTop={tree.max_top_grant ?? 1000}
-              pile={pileHere}
+              pile={pileHere} compactAt={tree.compact_at}
               onDragStart={startNodeDrag} onDragMove={moveNodeDrag} onDragEnd={endNodeDrag} />
           )
           if (!pileHere) return square
@@ -1135,7 +1152,8 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
                     <span className={'tier t-' + n.tier}>{TIER_LETTER[n.tier] ?? '?'}</span>
                     <span className="tray-name"
                       title={(n.charter || '').split('\n')[0] || n.id}>{n.id}</span>
-                    <ContextWheel occ={n.occupancy} cw={n.context_window} />
+                    <ContextWheel occ={n.occupancy} cw={n.context_window}
+                      compactAt={tree.compact_at} />
                     {n.busy ? (n.waiting
                       ? <span className="statusdot waiting"
                           title="queued — waiting for a free turn slot (№12)" />
@@ -1173,7 +1191,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
           op={op} toast={toast} close={() => setConfigId(null)} />
       )}
       {lineageId && map.get(lineageId) && (
-        <LineagePanel node={map.get(lineageId)} op={op}
+        <LineagePanel node={map.get(lineageId)} op={op} slug={slug}
           close={() => setLineageId(null)} />
       )}
       {userCfg && (
@@ -1206,7 +1224,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
 function UserNode({ pos, isDrop, stats, inboxCount, seats, mailGlow,
   kiosk, pub, kioskRemaining, kioskSegs, pxc, zoom, onInbox, onGear, onSpawn,
   focused, eyeW, onFocus, posX, onJump, map, op, slug, pulse, toast,
-  streamEvt }) {
+  streamEvt, compactAt }) {
   const downRef = useRef(null)
   return (
     <div className={'sq user' + (focused ? ' desk eyeboard' : '')
@@ -1269,7 +1287,8 @@ function UserNode({ pos, isDrop, stats, inboxCount, seats, mailGlow,
       {focused && (
         <EyeDesk map={map} op={op} slug={slug} pulse={pulse} toast={toast}
           streamEvt={streamEvt} inboxCount={inboxCount} onInbox={onInbox}
-          onGear={onGear} pub={pub} eyeW={eyeW} posX={posX} onJump={onJump} />
+          onGear={onGear} pub={pub} eyeW={eyeW} posX={posX} onJump={onJump}
+          compactAt={compactAt} />
       )}
     </div>
   )
@@ -1282,7 +1301,7 @@ function UserNode({ pos, isDrop, stats, inboxCount, seats, mailGlow,
 // manage crowding. A line that exists via an audience grant carries an ✕:
 // closing that tab RESCINDS the grant (top-level lines are permanent).
 function EyeDesk({ map, op, slug, pulse, toast, streamEvt, inboxCount,
-  onInbox, onGear, pub, eyeW, posX, onJump }) {
+  onInbox, onGear, pub, eyeW, posX, onJump, compactAt }) {
   const agents = [...map.values()].filter((n) =>
     n.id !== USER && n.id !== DRAFT && n.state === 'live' && !n.isBearerOf
     && (n.parent === USER || n.audiences_held?.includes(USER)))
@@ -1376,7 +1395,7 @@ function EyeDesk({ map, op, slug, pulse, toast, streamEvt, inboxCount,
           {open.map((a) => (
             <div className="eye-panel" key={a.id}>
               <DeskChat node={a} map={map} op={op} slug={slug} pulse={pulse}
-                toast={toast} pub={pub} bare compact
+                toast={toast} pub={pub} bare compact compactAt={compactAt}
                 streamEvt={streamEvt?.node === a.id ? streamEvt : null} />
             </div>
           ))}
@@ -1772,6 +1791,7 @@ function DraftScopeModal({ draft, map, tree, scope, onSave, close }) {
   const [dirs, setDirs] = useState(base.add_dirs.map((d) => ({ ...d })))
   const [tools, setTools] = useState({ ...base.tools, mcp: [...(base.tools.mcp ?? [])] })
   const [vis, setVis] = useState(base.org_visibility)
+  const [effort, setEffort] = useState(base.effort ?? '')
   const [newPath, setNewPath] = useState('')
   const [servers, setServers] = useState([])
   const [sandboxMcp, setSandboxMcp] = useState(false)
@@ -1846,13 +1866,21 @@ function DraftScopeModal({ draft, map, tree, scope, onSave, close }) {
         <select value={vis} onChange={(e) => setVis(e.target.value)}>
           {VIS_OPTIONS.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
         </select>
+        <div className="field-label">thinking effort</div>
+        <select value={effort} onChange={(e) => setEffort(e.target.value)}>
+          <option value="">CLI default</option>
+          <option value="low">low</option>
+          <option value="medium">medium</option>
+          <option value="high">high</option>
+        </select>
         <div className="hint">
           Grants clamp to what the parent holds (№30) — anything beyond its
           capability is trimmed at hire with a warning.
         </div>
         <div className="row">
           <button className="primary" onClick={() =>
-            onSave({ add_dirs: dirs, tools, org_visibility: vis })}>apply</button>
+            onSave({ add_dirs: dirs, tools, org_visibility: vis,
+              ...(effort ? { effort } : {}) })}>apply</button>
           <button onClick={close}>cancel</button>
         </div>
       </div>
@@ -1863,7 +1891,7 @@ function DraftScopeModal({ draft, map, tree, scope, onSave, close }) {
 
 function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, map, op, slug,
   pulse, toast, streamEvt, pxc, zoom, act, onSpawn, onConfig, onInbox, onLineage,
-  onRecenter, pub, kioskRemaining, cascadeAlloc, maxTop, pile,
+  onRecenter, pub, kioskRemaining, cascadeAlloc, maxTop, pile, compactAt,
   onDragStart, onDragMove, onDragEnd }) {
   // pile fronts zoom on a plain CENTER click (user spec) — track the
   // pointer-down point so a drag's trailing click doesn't re-zoom
@@ -1942,7 +1970,8 @@ function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, map, op,
         {!pub && <button className="gearbtn"
           onPointerDown={(e) => e.stopPropagation()}
           onClick={(e) => { e.stopPropagation(); onConfig() }}><SettingsIcon fontSize="inherit" /></button>}
-        <ContextWheel occ={node.occupancy} cw={node.context_window} />
+        <ContextWheel occ={node.occupancy} cw={node.context_window}
+          compactAt={compactAt} />
         {lod === 'mini' && node.last_status &&
           <span className={'statusdot ' + node.last_status.status}
             title={`${node.last_status.status} — ${node.last_status.summary ?? ''}`} />}
@@ -1975,7 +2004,7 @@ function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, map, op,
       {focused && (
         <DeskChat node={node} map={map} op={op} slug={slug} pulse={pulse} toast={toast}
           streamEvt={streamEvt?.node === node.id ? streamEvt : null}
-          onLineage={onLineage} onConfig={onConfig}
+          onLineage={onLineage} onConfig={onConfig} compactAt={compactAt}
           onRecenter={onRecenter} pub={pub} />
       )}
       {/* user ruling: chips are NEVER disabled by the node's own free credits —
@@ -2043,14 +2072,18 @@ function NodeConfig({ node, map, tree, slug, op, toast, close }) {
   const [charter, setCharter] = useState(node.charter ?? '')
   const [teamCharter, setTeamCharter] = useState(node.team_charter ?? '')
   const [model, setModel] = useState(node.tier)
+  const [effort, setEffort] = useState(node.scope.effort ?? '')
   const [newPath, setNewPath] = useState('')
   const [servers, setServers] = useState([])
   const [sandboxMcp, setSandboxMcp] = useState(false)
+  const [initInfo, setInitInfo] = useState(null)   // №14: the CLI's own resolution
   useEffect(() => {
     getMcpServers().then((r) => {
       setServers(r.servers ?? []); setSandboxMcp(!!r.sandbox_mcp)
     }).catch(() => {})
-  }, [])
+    getChat(slug, node.id, 1).then((c) => setInitInfo(c.init ?? null))
+      .catch(() => {})
+  }, [slug, node.id])
   const parent = map.get(node.id)?.parent
   const parentNode = parent && parent !== USER ? map.get(parent) : null
   const parentTools = parentNode?.scope?.tools ?? null   // null = the user: everything
@@ -2186,12 +2219,35 @@ function NodeConfig({ node, map, tree, slug, op, toast, close }) {
           {VIS_OPTIONS.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
         </select>
 
+        <div className="field-label">thinking effort (user-approved: a deep
+          setting, never a hire-row control)</div>
+        <select value={effort} onChange={(e) => setEffort(e.target.value)}>
+          <option value="">CLI default</option>
+          <option value="low">low</option>
+          <option value="medium">medium</option>
+          <option value="high">high</option>
+        </select>
+
         <div className="field-label">charter</div>
         <textarea rows={3} value={charter} onChange={(e) => setCharter(e.target.value)}
           />
         <div className="field-label">team charter</div>
         <textarea rows={3} value={teamCharter} onChange={(e) => setTeamCharter(e.target.value)}
           />
+        {initInfo && (
+          <>
+            <div className="field-label">this turn, as the CLI resolved it (№14)</div>
+            <div className="initblock dim">
+              <div>model {initInfo.model ?? '?'} · {initInfo.permissionMode ?? '?'}
+                {' · '}{initInfo.tools ?? '?'} tools</div>
+              {(initInfo.mcp_servers ?? []).map((s) => (
+                <div key={s.name}>
+                  <span className={'mcpdot ' + (s.status === 'connected'
+                    ? 'ok' : 'bad')} /> {s.name} · {s.status}
+                </div>))}
+            </div>
+          </>
+        )}
         <div className="row">
           <button className="primary" onClick={() =>
             (model !== node.tier
@@ -2199,7 +2255,7 @@ function NodeConfig({ node, map, tree, slug, op, toast, close }) {
               : Promise.resolve())
               .then(() => saveScope(slug, node.id,
                 { add_dirs: dirs, tools, org_visibility: vis,
-                  charter, team_charter: teamCharter }))
+                  charter, team_charter: teamCharter, effort }))
               .then((r) => { toast(r.warnings); close() })
               .catch((e) => toast([`error: ${e.message}`]))}>save</button>
           <button onClick={close}>cancel</button>
@@ -2230,16 +2286,21 @@ function NodeConfig({ node, map, tree, slug, op, toast, close }) {
   )
 }
 
-function ContextWheel({ occ, cw, onCompact }) {
+function ContextWheel({ occ, cw, onCompact, compactAt }) {
   if (!occ || !cw) return null
   const frac = Math.min(1, occ / cw)
+  // №19: the red ring means "about to split" — the ORG'S configured
+  // threshold, not a literal 0.8 (an org set to 50% got a ring that turned
+  // red 30 points after its agents had already forked)
+  const hot = frac >= (compactAt || 0.8)
   const R = 5.5, C = 2 * Math.PI * R
   const svg = (
     <svg className="ctxwheel" viewBox="0 0 16 16" width="15" height="15">
       <title>{`context: ${Math.round(occ / 1000)}k / ${Math.round(cw / 1000)}k (${Math.round(frac * 100)}%)`
+        + ` — auto-compacts at ${Math.round((compactAt || 0.8) * 100)}%`
         + (onCompact ? ' — click to compact now' : '')}</title>
       <circle cx="8" cy="8" r={R} className="track" />
-      <circle cx="8" cy="8" r={R} className={'fill' + (frac >= 0.8 ? ' hot' : '')}
+      <circle cx="8" cy="8" r={R} className={'fill' + (hot ? ' hot' : '')}
         strokeDasharray={`${C * frac} ${C}`} transform="rotate(-90 8 8)" />
     </svg>
   )
@@ -2278,18 +2339,34 @@ function Activity({ act, dotOnly }) {
 const DeskChat = memo(DeskChatInner, (p, n) =>
   p.node === n.node && p.map === n.map && p.slug === n.slug
   && p.pulse === n.pulse && p.streamEvt === n.streamEvt
-  && p.pub === n.pub && p.bare === n.bare && p.compact === n.compact)
+  && p.pub === n.pub && p.bare === n.bare && p.compact === n.compact
+  && p.compactAt === n.compactAt)
 
 function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onConfig,
-  onRecenter, pub, bare = false, compact = false }) {
+  onRecenter, pub, bare = false, compact = false, compactAt }) {
   const [chat, setChat] = useState(null)
-  const [text, setText] = useState('')
-  const [pending, setPending] = useState([])   // sent, not yet in the transcript
+  // №2: the draft survives the camera — persisted per node on every keystroke
+  // (clicking a sibling card unmounts this whole component)
+  const draftKey = `orgtree-draft-${slug}-${node.id}`
+  const [text, setTextRaw] = useState(() => {
+    try { return localStorage.getItem(draftKey) || '' } catch { return '' }
+  })
+  const setText = useCallback((v) => setTextRaw((prev) => {
+    const next = typeof v === 'function' ? v(prev) : v
+    try {
+      if (next) localStorage.setItem(draftKey, next)
+      else localStorage.removeItem(draftKey)
+    } catch { /* private mode */ }
+    return next
+  }), [draftKey])
+  const [pending, setPending] = useState([])   // optimistic, until the server copy lands
+  const [sendMode, setSendMode] = useState('') // №11: which door the send went through
   const [asking, setAsking] = useState(false)
   const [askCompact, setAskCompact] = useState(false)
   const [view, setView] = useState('chat')     // chat | history | files | inbox
   const [live_feed, setLiveFeed] = useState([])
   const [draft, setDraft] = useState('')       // the token-streamed growing reply
+  const [thinking, setThinking] = useState('') // №18: live-only, never persisted
   const scroller = useRef(null)
   const loadedRef = useRef(false)     // first load always lands at the bottom
   const live = node.state === 'live'
@@ -2322,7 +2399,9 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
   useEffect(() => { refresh() }, [refresh])
   useEffect(() => {
     if (pulse && pulse.node === node.id) {
-      if (pulse.event === 'turn_done') { setLiveFeed([]); setDraft('') }
+      if (pulse.event === 'turn_done') {
+        setLiveFeed([]); setDraft(''); setThinking('')
+      }
       refresh()
     }
   }, [pulse, node.id, refresh])
@@ -2333,6 +2412,14 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
         // token streaming (user spec): the reply grows word-by-word; the
         // complete message event replaces it when the block finishes
         setDraft((d) => (d + streamEvt.text).slice(-12000))
+        setThinking('')
+        if (stick) toBottom()
+        return
+      }
+      if (streamEvt.kind === 'thinking') {
+        // №18: live-only ribbon — persisting thinking would be a second
+        // transcript the CLI does not keep
+        setThinking((t) => (t + streamEvt.text).slice(-2000))
         if (stick) toBottom()
         return
       }
@@ -2340,7 +2427,7 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
         // a pending user message just got DELIVERED mid-task
         setPending((p) => p.filter((x) => !streamEvt.text.includes(x)))
       }
-      if (streamEvt.kind === 'text') setDraft('')
+      if (streamEvt.kind === 'text') { setDraft(''); setThinking('') }
       setLiveFeed((f) => [...f.slice(-24), streamEvt])
       if (stick) toBottom()
     }
@@ -2358,14 +2445,25 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
     const t = text.trim()
     if (!t || !canMail) return
     setText('')
-    // NOT an optimistic chat append — while the node is busy the message is
-    // only queued, so transcript refreshes would wipe it until the queued
-    // turn starts. The pending list survives refreshes.
+    // optimistic ghost only until the server confirms — the durable copy
+    // then renders from chat.pending_mail (№11); a failed send clears the
+    // ghost instead of leaving a dimmed bubble forever
     setPending((p) => [...p, t])
     if (live) setChat((c) => c && ({ ...c, busy: true }))
     toBottom()
-    sendMessage(slug, node.id, t).then(() => refresh(true))
-      .catch((e) => toast([`error: ${e.message}`]))
+    sendMessage(slug, node.id, t)
+      .then((r) => {
+        setSendMode(r.command ? 'command sent'
+          : r.steering ? 'steering in mid-task'
+            : r.deferred ? 'deferred — delivers at rehire'
+              : r.queued > 0 ? `queued (${r.queued} ahead)` : 'delivering')
+        return refresh(true)
+      })
+      .then(() => setPending((p) => p.filter((x) => x !== t)))
+      .catch((e) => {
+        setPending((p) => p.filter((x) => x !== t))
+        toast([`error: ${e.message}`])
+      })
   }
 
   // file uploads (user spec 2026-07-31): the file lands in the agent's own
@@ -2378,6 +2476,26 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
         + `[file attached: ${r.path} — in your working folder]`))
       .catch((e) => toast([`upload error: ${e.message}`]))
   }
+  // №13: the composer grows with the draft (2 → ~8 rows); the desk interior
+  // is a fixed 900px virtual panel, so .msgs absorbs the difference
+  const taRef = useRef(null)
+  const grow = () => {
+    const el = taRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = Math.min(el.scrollHeight, 160) + 'px'
+  }
+  // №6: dropping a file anywhere on the desk uploads it (and prevents the
+  // browser's default navigate-away, which would also eat the draft)
+  const dropProps = {
+    onDragOver: (e) => e.preventDefault(),
+    onDrop: (e) => {
+      e.preventDefault()
+      if (e.dataTransfer?.files?.length) {
+        [...e.dataTransfer.files].forEach(attach)
+      }
+    },
+  }
 
   const liveKids = node.children.some((c) => c.state === 'live')
   const content = (
@@ -2387,15 +2505,22 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
         <span className="cc-name"
           title={(node.charter || '').split('\n')[0] || node.id}>{node.id}</span>
         <ContextWheel occ={chat?.occupancy ?? node.occupancy} cw={node.context_window}
+          compactAt={compactAt}
           onCompact={live && !node.bearer_state
             ? () => setAskCompact(true) : undefined} />
         {node.last_status &&
           <span className={'statuschip ' + node.last_status.status}
             title={node.last_status.summary}>{node.last_status.status}</span>}
-        {/* one row for everything (user ruling — the 900px panel has room);
-            interruption lives on the composer's stop button, not up here */}
-        {chat?.busy &&
-          <span className="cc-working"><AutorenewIcon fontSize="inherit" className="cc-spin" /> working</span>}
+        {/* №3: the word is the STATE, not a blanket "working" — compacting,
+            queued behind the slot cap, and actually responding are different
+            things and the backend already splits them */}
+        {(node.busy || node.phase === 'compacting' || chat?.busy) &&
+          <span className="cc-working">
+            {node.phase === 'compacting' ? <>compacting…</>
+              : node.waiting ? <>queued for a turn slot…</>
+                : <><AutorenewIcon fontSize="inherit" className="cc-spin" /> working
+                  {node.inflight_at ? <span className="dim"> · {ago(node.inflight_at)}</span> : null}</>}
+          </span>}
         {node.frozen &&
           <span className="badge frozen" title={node.frozen.error}>
             <FrozenIcon fontSize="inherit" /> usage limit{node.frozen.until ? ` · resumes ${node.frozen.until}` : ''}</span>}
@@ -2417,7 +2542,14 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
                 .catch((e) => toast([`error: ${e.message}`]))}><CloseIcon fontSize="inherit" /></button>
           </span>
         ))}
-        {!compact && node.cost_usd > 0 && <span className="badge dim">${node.cost_usd.toFixed(2)}</span>}
+        {!compact && node.cost_usd > 0 && (
+          <span className="badge dim"
+            title={(node.turns ?? []).slice(-5).reverse().map((t) =>
+              `${t.at?.slice(5, 16).replace('T', ' ')} · $${(t.cost ?? 0).toFixed(2)}`
+              + (t.ms ? ` · ${Math.round(t.ms / 1000)}s` : '')
+              + (t.denials ? ` · ${t.denials} denied` : '')).join('\n')
+              || 'per-turn detail appears after the next turn'}>
+            ${node.cost_usd.toFixed(2)}</span>)}
         {chat?.queued > 0 && <span className="badge">{chat.queued} queued</span>}
         <span className="spacer" />
         {/* compact (switchboard panel): chat only — the agent's own desk keeps
@@ -2463,73 +2595,121 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
       )}
       {chat?.last_error && <div className="desk-error"><WarnIcon fontSize="inherit" /> {chat.last_error}</div>}
       {view === 'chat' && (
-        <>
-          <div className="msgs" ref={scroller}>
-            {!chat && <div className="dim pad">loading…</div>}
-            {chat && !chat.messages.length && !live_feed.length &&
-              <div className="dim pad">no conversation yet</div>}
-            {chat?.messages.map((m, i) => <Msg key={i} m={m} />)}
-            {live_feed.map((f, i) => (
-              f.kind === 'tool'
-                ? <div key={'f' + i} className="msg live tools"><DotIcon fontSize="inherit" className="tooldot" /> {f.text}</div>
-                : f.kind === 'steered'
-                  ? <div key={'f' + i} className="msg user live md"
-                      dangerouslySetInnerHTML={md(stripEnvelope(f.text))} />
-                  : <div key={'f' + i} className="msg assistant live md"
-                      dangerouslySetInnerHTML={md(f.text)} />
-            ))}
-            {draft && <div className="msg assistant live md draft"
-              dangerouslySetInnerHTML={md(draft)} />}
-            {pending.map((p, i) => (
-              <div key={'q' + i} className="msg user pending md"
-                dangerouslySetInnerHTML={md(p)} />
-            ))}
-            {chat?.busy && !draft && <div className="working"><AutorenewIcon fontSize="inherit" className="cc-spin" /> working<span className="actdots" /></div>}
-          </div>
-          {/* send sits BESIDE the input; no model-name footer row (the tier
-              chip in the header already says it) — reclaimed vertical space */}
-          <div className={'cc-composer' + (canMail ? '' : ' off')}>
-            <button className="cc-attach" disabled={!canMail}
-              title="attach a file — it lands in the agent's uploads/ folder"
-              onClick={() => fileRef.current?.click()}>
-              <FileIcon fontSize="inherit" /></button>
-            <input type="file" ref={fileRef} style={{ display: 'none' }} multiple
-              onChange={(e) => {
-                [...e.target.files].forEach(attach)
-                e.target.value = ''
-              }} />
-            <textarea rows={2} value={text} disabled={!canMail}
-              placeholder={live ? `message ${node.id}…`
-                : node.state === 'archived'
-                  ? `message ${node.id} — queued until rehire…` : node.state}
-              onChange={(e) => setText(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() }
-              }} />
-            {/* while the agent responds the send button becomes a STOP —
-                same as Claude Code; Enter still queues a message */}
-            {chat?.busy
-              ? <button className="cc-send stop" title="interrupt the current response"
-                  onClick={() => interruptNode(slug, node.id)
-                    .then((r) => { if (!r.interrupted) toast([`error: ${r.reason}`]) })
-                    .catch((e) => toast([`error: ${e.message}`]))}><StopIcon fontSize="inherit" /></button>
-              : <button className="cc-send" disabled={!canMail || !text.trim()}
-                  onClick={send}><ArrowUpIcon fontSize="inherit" /></button>}
-          </div>
-        </>
+        <div className="msgs" ref={scroller}>
+          {!chat && <div className="dim pad">loading…</div>}
+          {chat && !chat.messages.length && !live_feed.length &&
+            <div className="dim pad">no conversation yet</div>}
+          {chat?.messages.map((m, i) => {
+            // №15: one dim divider per idle gap — never per-message timestamps
+            const prev = chat.messages[i - 1]
+            const gapMs = prev?.ts && m.ts
+              ? Date.parse(m.ts) - Date.parse(prev.ts) : 0
+            return (
+              <div key={i}>
+                {gapMs > 5 * 60e3 && (
+                  <div className="msg sys">— {gapMs > 5400e3
+                    ? `${Math.round(gapMs / 3600e3)} h`
+                    : `${Math.round(gapMs / 60e3)} min`} later —</div>)}
+                <Msg m={m} slug={slug} nid={node.id} />
+              </div>
+            )
+          })}
+          {live_feed.map((f, i) => (
+            f.kind === 'tool'
+              ? <div key={'f' + i} className="msg live tools"><DotIcon fontSize="inherit" className="tooldot" /> {f.text}</div>
+              : f.kind === 'steered'
+                ? <div key={'f' + i} className="msg user live md"
+                    dangerouslySetInnerHTML={md(stripEnvelope(f.text))} />
+                : <div key={'f' + i} className="msg assistant live md"
+                    dangerouslySetInnerHTML={md(f.text)} />
+          ))}
+          {thinking && chat?.busy && (
+            <div className="msg live thinking">{thinking}</div>)}
+          {draft && <div className="msg assistant live md draft"
+            dangerouslySetInnerHTML={md(draft)} />}
+          {/* №11: pending bubbles render from the DURABLE server copy, each
+              retractable until delivery (№17) */}
+          {(chat?.pending_mail ?? []).filter((m) => m.from === USER).map((m) => (
+            <div key={m.id ?? m.at} className="msg user pending pendrow">
+              <span className="md" dangerouslySetInnerHTML={md(m.body)} />
+              {m.id && (
+                <button className="chip-x" title="retract (undelivered)"
+                  onClick={() => retractMail(slug, node.id, m.id)
+                    .then(() => refresh(true))
+                    .catch((e) => toast([`error: ${e.message}`]))}>
+                  <CloseIcon fontSize="inherit" /></button>)}
+            </div>
+          ))}
+          {pending.map((p, i) => (
+            <div key={'q' + i} className="msg user pending md"
+              dangerouslySetInnerHTML={md(p)} />
+          ))}
+          {/* №7: the machine truth about headless auto-denies — the agent
+              was corrected and nothing showed it */}
+          {node.last_denials?.length > 0 && (
+            <div className="denials">
+              {node.last_denials.map((d, i) => (
+                <div key={i}>⊘ denied · {d.tool}{d.arg ? `(${d.arg})` : ''}</div>))}
+              <span className="dim">last turn — the ⚙ folder grants decide this</span>
+            </div>)}
+        </div>
       )}
       {view === 'history' && <HistoryView slug={slug} nid={node.id} />}
       {view === 'files' && <FilesView slug={slug} nid={node.id} />}
-      {view === 'inbox' && <InboxView slug={slug} nid={node.id} pulse={pulse} />}
+      {view === 'inbox' && <InboxView slug={slug} nid={node.id} pulse={pulse}
+        onRetract={(m) => retractMail(slug, node.id, m.id)
+          .then(() => refresh(true))
+          .catch((e) => toast([`error: ${e.message}`]))} />}
+      {/* №13: the composer is present under EVERY tab — finding a wrong number
+          on the files tab shouldn't cost your place to say so */}
+      {sendMode && <div className="sendmode dim">{sendMode}</div>}
+      {text.trimStart().startsWith('/') && canMail && (
+        <SlashHints text={text} setText={setText} />)}
+      <div className={'cc-composer' + (canMail ? '' : ' off')}>
+        <button className="cc-attach" disabled={!canMail}
+          title="attach a file — it lands in the agent's uploads/ folder"
+          onClick={() => fileRef.current?.click()}>
+          <FileIcon fontSize="inherit" /></button>
+        <input type="file" ref={fileRef} style={{ display: 'none' }} multiple
+          onChange={(e) => {
+            [...e.target.files].forEach(attach)
+            e.target.value = ''
+          }} />
+        <textarea rows={2} value={text} disabled={!canMail} ref={taRef}
+          autoFocus={!bare && !compact}
+          placeholder={live ? `message ${node.id}…`
+            : node.state === 'archived'
+              ? `message ${node.id} — queued until rehire…` : node.state}
+          onChange={(e) => { setSendMode(''); setText(e.target.value); grow() }}
+          onPaste={(e) => {
+            // №6: Ctrl+V of an image/file auto-bridges to a real upload
+            if (e.clipboardData?.files?.length) {
+              e.preventDefault()
+              ;[...e.clipboardData.files].forEach(attach)
+            }
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() }
+          }} />
+        {/* №3: STOP renders only when an interrupt can actually land —
+            pressing the one red control must never error */}
+        {node.responding
+          ? <button className="cc-send stop" title="interrupt the current response"
+              onClick={() => interruptNode(slug, node.id)
+                .then((r) => { if (!r.interrupted) toast([`error: ${r.reason}`]) })
+                .catch((e) => toast([`error: ${e.message}`]))}><StopIcon fontSize="inherit" /></button>
+          : <button className="cc-send" disabled={!canMail || !text.trim()}
+              onClick={send}><ArrowUpIcon fontSize="inherit" /></button>}
+      </div>
     </>
   )
   // bare: the switchboard hosts many chats inside ONE counter-scaled surface —
   // no overlay wrapper, no second scale (that would double-scale), no
   // recenter-on-click
-  if (bare) return <div className="desk-body eye-chat">{content}</div>
+  if (bare) return <div className="desk-body eye-chat" {...dropProps}>{content}</div>
   return (
     <div className="desk-over" onWheel={(e) => e.stopPropagation()}
-      onPointerDown={(e) => e.stopPropagation()}
+      onPointerDown={(e) => e.stopPropagation()} {...dropProps}
       onClick={(e) => {
         // clicking the desk's non-interactive space recenters the camera on
         // it (user ruling) — but never steal clicks meant for controls, and
@@ -2549,7 +2729,7 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
 // selected message opened in the reading pane on the right. Waiting/unread
 // mail sorts on top and is highlighted until read/delivered.
 export function MailList({ pending = [], delivered = [], waitLabel, sender, outgoing,
-  onRead, onReply }) {
+  onRead, onReply, onRetract }) {
   // newest first throughout (user ruling) — waiting/unread stays grouped on top
   const all = [
     ...[...pending].reverse().map((m) => ({ ...m, _wait: true })),
@@ -2609,6 +2789,10 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
                 {outgoing ? '→ ' : ''}{party(m) === USER ? '@user' : party(m)}
               </span>
               <span className="mtime">{when(m.at)}</span>
+              {m._wait && m.id && onRetract && (
+                <button className="chip-x" title="retract (undelivered)"
+                  onClick={(e) => { e.stopPropagation(); onRetract(m) }}>
+                  <CloseIcon fontSize="inherit" /></button>)}
             </div>
             <div className="l2">{brief(m.body)}</div>
           </div>
@@ -2653,7 +2837,7 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
 
 // The node's own mailbox (user ruling: its own tab, separate from history),
 // with the same folders as the user's: inbox + sent.
-function InboxView({ slug, nid, pulse }) {
+function InboxView({ slug, nid, pulse, onRetract }) {
   const [box, setBox] = useState(null)
   const [folder, setFolder] = useState('inbox')
   useEffect(() => {
@@ -2669,7 +2853,11 @@ function InboxView({ slug, nid, pulse }) {
           ? <div className="dim pad">loading…</div>
           : folder === 'inbox'
             ? <MailList pending={box.pending} delivered={box.delivered}
-                waitLabel="awaiting next turn" />
+                waitLabel="awaiting next turn"
+                onRetract={onRetract
+                  ? (m) => { onRetract(m); setBox((b) => b && ({
+                      ...b, pending: b.pending.filter((x) => x.id !== m.id) })) }
+                  : undefined} />
             : <MailList delivered={box.sent ?? []} outgoing />}
       </div>
     </div>
@@ -2907,12 +3095,22 @@ function OrgInboxModal({ inbox, map, slug, toast, close }) {
   )
 }
 
-function LineagePanel({ node, op, close }) {
+function LineagePanel({ node, op, slug, close }) {
   // spitshined (user request): generation cards in the app's current visual
   // language — tier token, per-generation consult-tier picker (№16: a bearer
   // answers from context, so any tier serves), live bearers marked green
   useEsc(close)
   const [tiers, setTiers] = useState({})       // per-generation tier override
+  // №12: READING an archived bearer's transcript is free — rehiring is for
+  // asking it questions, not for looking at what it holds
+  const [reading, setReading] = useState(null)     // bearer id being read
+  const [readChat, setReadChat] = useState(null)
+  const openRead = (bid) => {
+    if (reading === bid) { setReading(null); return }
+    setReading(bid); setReadChat(null)
+    getChat(slug, bid).then(setReadChat)
+      .catch(() => setReadChat({ messages: [] }))
+  }
   const SEAT = { haiku: 1, sonnet: 3, opus: 5, fable: 10 }
   const gens = [...(node.lineage ?? [])].sort(
     (a, b) => (b.generation ?? 0) - (a.generation ?? 0))
@@ -2927,40 +3125,58 @@ function LineagePanel({ node, op, close }) {
           cheaper tiers consult for fewer credits.
         </div>
         {gens.map((b) => (
-          <div key={b.id}
-            className={'lin-row' + (b.state === 'archived' ? '' : ' live')}>
-            <span className={'tier t-' + b.tier}>{TIER_LETTER[b.tier] ?? '?'}</span>
-            <div className="lin-id">
-              <b className="mono">{b.id}</b>
-              <span className="dim">
-                generation {b.generation}
-                {b.bearer_state ? ` · ${b.bearer_state} bearer` : ''}
-              </span>
+          <div key={b.id}>
+            <div className={'lin-row' + (b.state === 'archived' ? '' : ' live')}>
+              <span className={'tier t-' + b.tier}>{TIER_LETTER[b.tier] ?? '?'}</span>
+              <div className="lin-id">
+                <b className="mono">{b.id}</b>
+                <span className="dim">
+                  generation {b.generation}
+                  {b.bearer_state ? ` · ${b.bearer_state} bearer` : ''}
+                </span>
+              </div>
+              {b.bearer_state !== 'lost' && (
+                <button className={reading === b.id ? 'on' : ''}
+                  title="read this generation's transcript — free, no seat"
+                  onClick={() => openRead(b.id)}>read</button>)}
+              {b.state === 'archived' && b.bearer_state !== 'lost' ? (
+                <>
+                  <select value={tiers[b.id] ?? ''} onChange={(e) =>
+                    setTiers((t) => ({ ...t, [b.id]: e.target.value }))}>
+                    <option value="">as {b.tier} · seat {SEAT[b.tier]}</option>
+                    {['haiku', 'sonnet', 'opus'].filter((t) => t !== b.tier)
+                      .map((t) => (
+                        <option key={t} value={t}>as {t} · seat {SEAT[t]}</option>
+                      ))}
+                  </select>
+                  <button className="primary" onClick={() =>
+                    op({ op: 'rehire', node: b.id, grant: 0,
+                         ...(tiers[b.id] ? { tier: tiers[b.id] } : {}) })
+                      .then(close).catch(() => {})}>
+                    <PlayIcon fontSize="inherit" /> rehire</button>
+                </>
+              ) : b.bearer_state === 'lost' ? (
+                <span className="badge dim"
+                  title="its session was lost — kept for the record, not consultable">
+                  lost generation</span>
+              ) : (
+                <>
+                  <span className="badge free">consultable</span>
+                  <button className="danger" onClick={() =>
+                    op({ op: 'retire', node: b.id }).then(close).catch(() => {})}>
+                    retire · frees {SEAT[b.tier]}</button>
+                </>
+              )}
             </div>
-            {b.state === 'archived' ? (
-              <>
-                <select value={tiers[b.id] ?? ''} onChange={(e) =>
-                  setTiers((t) => ({ ...t, [b.id]: e.target.value }))}>
-                  <option value="">as {b.tier} · seat {SEAT[b.tier]}</option>
-                  {['haiku', 'sonnet', 'opus'].filter((t) => t !== b.tier)
-                    .map((t) => (
-                      <option key={t} value={t}>as {t} · seat {SEAT[t]}</option>
-                    ))}
-                </select>
-                <button className="primary" onClick={() =>
-                  op({ op: 'rehire', node: b.id, grant: 0,
-                       ...(tiers[b.id] ? { tier: tiers[b.id] } : {}) })
-                    .then(close).catch(() => {})}>
-                  <PlayIcon fontSize="inherit" /> rehire</button>
-              </>
-            ) : (
-              <>
-                <span className="badge free">consultable</span>
-                <button className="danger" onClick={() =>
-                  op({ op: 'retire', node: b.id }).then(close).catch(() => {})}>
-                  retire · frees {SEAT[b.tier]}</button>
-              </>
-            )}
+            {reading === b.id && (
+              <div className="lin-read">
+                {readChat == null
+                  ? <div className="dim pad">loading transcript…</div>
+                  : readChat.messages.length
+                    ? readChat.messages.slice(-80).map((m, i) => (
+                        <Msg key={i} m={m} slug={slug} nid={b.id} />))
+                    : <div className="dim pad">no transcript found</div>}
+              </div>)}
           </div>
         ))}
         {!gens.length &&
@@ -2983,15 +3199,100 @@ const stripEnvelope = (t) => (t ?? '')
   .replace(/^FROM (\S+) \([^)]*\)$/gm, '**$1**')
   .trim()
 
+// Parity №1/№9/№10: the tool line says what it did — argument on the chip, a
+// red bit + first error line on failure, and the RESULT collapsed behind a
+// click (never inline: an always-expanded stream turns the desk into a log
+// tail). Edits expand to their pre-computed hunk.
+function ToolChip({ t, slug, nid }) {
+  const [open, setOpen] = useState(false)
+  const expandable = Boolean(t.result || t.diff || t.images)
+  return (
+    <div className={'tools tchip' + (t.error ? ' terr' : '')}>
+      <span className={'tline' + (expandable ? ' click' : '')}
+        onClick={expandable ? () => setOpen((o) => !o) : undefined}
+        title={expandable ? (open ? 'collapse' : 'expand') : undefined}>
+        <DotIcon fontSize="inherit" className="tooldot" />
+        {' '}{shortTool(t.name)}
+        {t.arg ? <span className="targ"> {t.arg}</span> : null}
+        {t.diff && <span className="tdiffn"> +{t.diff.plus} −{t.diff.minus}</span>}
+        {!t.diff && !t.error && t.result_lines > 0 && (
+          <span className="dim"> · {t.result_lines} line{t.result_lines === 1 ? '' : 's'}</span>)}
+        {t.task && (
+          <span className="dim"> · {t.task.tools ?? '?'} tools
+            {t.task.ms ? ` · ${Math.round(t.task.ms / 1000)}s` : ''}
+            {t.task.tokens ? ` · ${Math.round(t.task.tokens / 1000)}k tok` : ''}</span>)}
+        {t.images > 0 && <span className="dim"> · {t.images} image{t.images === 1 ? '' : 's'}</span>}
+        {t.error && <span className="terrtxt"> ⊘ {t.error}</span>}
+      </span>
+      {open && t.diff && (
+        <pre className="filepre diffpre">
+          {t.diff.lines.map((l, i) => (
+            <div key={i} className={l.startsWith('+') ? 'dplus'
+              : l.startsWith('-') ? 'dminus' : ''}>{l}</div>))}
+        </pre>)}
+      {open && !t.diff && t.result && (
+        <pre className="filepre respre">
+          {t.result}{t.truncated ? '\n… truncated' : ''}
+        </pre>)}
+      {open && t.images > 0 && t.id && Array.from({ length: t.images }).map((_, i) => (
+        <img key={i} className="toolimg" alt="tool result"
+          src={`${BASE}/api/orgs/${slug}/nodes/${nid}/toolimg/${t.id}?idx=${i}`} />))}
+    </div>
+  )
+}
+
 // №21: memoized — rows are static once fetched; only identity changes matter
-const Msg = memo(function Msg({ m }) {
-  if (m.role === 'system') return <div className="msg sys">{m.text}</div>
+const Msg = memo(function Msg({ m, slug, nid }) {
+  if (m.role === 'system') return <SysLine m={m} />
   const text = m.role === 'user' ? stripEnvelope(m.text) : m.text
   return (
     <div className={'msg ' + m.role + (m.oracle ? ' oracle' : '')}>
-      {m.tools?.length > 0 && <div className="tools"><DotIcon fontSize="inherit" className="tooldot" /> {m.tools.join(' · ')}</div>}
+      {(m.tools ?? []).map((t, i) => (typeof t === 'string'
+        ? <div key={i} className="tools"><DotIcon fontSize="inherit" className="tooldot" /> {t}</div>
+        : <ToolChip key={t.id ?? i} t={t} slug={slug} nid={nid} />))}
       {text && <div className="msgtext md" dangerouslySetInnerHTML={md(text)} />}
       {m.oracle && <div className="tools"><SparkIcon fontSize="inherit" /> oracle exchange — not retained by the node</div>}
     </div>
   )
 })
+
+// №5: the compaction boundary carries its summary behind a click — never a
+// 20 KB bubble in the user's voice
+function SysLine({ m }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className={'msg sys' + (m.summary ? ' click' : '')}
+      onClick={m.summary ? () => setOpen((o) => !o) : undefined}
+      title={m.summary ? (open ? 'collapse' : 'read the compaction summary') : undefined}>
+      {m.text}{m.summary && !open ? ' · summary ▶' : ''}
+      {open && m.summary && <pre className="filepre">{m.summary}</pre>}
+    </div>
+  )
+}
+
+// Slash commands (user-approved 2026-07-31): light HINTING when the draft
+// starts with "/" — a curated list of commands known to work headless, not a
+// clickable palette. Sent verbatim as a session command (no mail envelope).
+const SLASH_COMMANDS = [
+  ['/compact', 'summarize + free context (the org also does this automatically)'],
+  ['/context', 'show what is using the context window'],
+  ['/cost', 'token + cost usage for this session'],
+]
+
+function SlashHints({ text, setText }) {
+  const head = text.trim().split(/\s/)[0]
+  const rows = SLASH_COMMANDS.filter(([c]) => c.startsWith(head))
+  return (
+    <div className="slash-hints">
+      {rows.map(([c, d]) => (
+        <button key={c} className="slash-row" onClick={() => setText(c)}>
+          <b>{c}</b> <span className="dim">{d}</span>
+        </button>
+      ))}
+      <span className="dim slash-note">
+        sent as a session command, not mail — other CLI commands may work; the
+        interactive-only ones will not
+      </span>
+    </div>
+  )
+}
