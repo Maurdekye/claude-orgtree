@@ -973,6 +973,9 @@ main.solo { width: 100%; }
   display: flex; gap: 8px; align-items: center; font-size: 12.5px; cursor: pointer;
 }
 .checkline input { accent-color: var(--accent); }
+/* greyed capability: exists but cannot reach this org (e.g. a host stdio MCP
+   server granted to a sandboxed org) */
+.checkline.dead { opacity: .45; cursor: default; }
 
 /* in-page confirmation (never a native OS dialog — user ruling) */
 .confirm-box { width: 430px; gap: 12px; }

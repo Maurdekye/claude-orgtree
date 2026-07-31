@@ -816,8 +816,13 @@ def charters_list():
 
 @app.get("/api/mcp-servers")
 def mcp_servers():
-    """Names of the user's globally registered MCP servers, grantable per node."""
-    return {"servers": sorted(supervisor.registered_mcp_servers().keys())}
+    """Names of the user's globally registered MCP servers, grantable per node.
+    url_servers = the URL-based (HTTP/SSE) subset — the only class that can
+    reach a SANDBOXED org's container (stdio servers are host processes)."""
+    reg = supervisor.registered_mcp_servers()
+    return {"servers": sorted(reg),
+            "url_servers": sorted(k for k, v in reg.items()
+                                  if isinstance(v, dict) and v.get("url"))}
 
 
 class Reorder(BaseModel):

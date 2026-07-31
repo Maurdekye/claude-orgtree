@@ -1179,13 +1179,18 @@ function UserConfig({ tree, slug, toast, close }) {
     mcp: [...(tree.default_tools?.mcp ?? ['*'])],
   })
   const [servers, setServers] = useState([])
+  const [urlServers, setUrlServers] = useState([])
   const [vis, setVis] = useState(tree.default_visibility ?? 'full')
   // the org's folder holdings (workspace excluded — it is permanent RW).
   // These double as the folder defaults for every hire.
   const [orgDirs, setOrgDirs] = useState(
     (tree.dirs ?? []).filter((d) => d.path !== tree.workspace).map((d) => ({ ...d })))
   const [newPath, setNewPath] = useState('')
-  useEffect(() => { getMcpServers().then((r) => setServers(r.servers)).catch(() => {}) }, [])
+  useEffect(() => {
+    getMcpServers().then((r) => {
+      setServers(r.servers ?? []); setUrlServers(r.url_servers ?? [])
+    }).catch(() => {})
+  }, [])
   const allMcp = defTools.mcp.includes('*')
   return (
     <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
@@ -1249,18 +1254,13 @@ function UserConfig({ tree, slug, toast, close }) {
               ...defTools, mcp: e.target.checked ? ['*'] : [...servers] })} />
           all registered servers (current and future)
         </label>
-        {!allMcp && servers.map((s) => (
-          <label className="checkline" key={s}>
-            <input type="checkbox" checked={defTools.mcp.includes(s)}
-              onChange={(e) => setDefTools({
-                ...defTools,
-                mcp: e.target.checked
-                  ? [...defTools.mcp, s]
-                  : defTools.mcp.filter((x) => x !== s),
-              })} />
-            <span className="mono">{s}</span>
-          </label>
-        ))}
+        {!allMcp && <McpChecklist servers={servers} urlServers={urlServers}
+          sandboxed={!!tree.sandboxed}
+          checked={(s) => defTools.mcp.includes(s)}
+          onToggle={(s, on) => setDefTools({
+            ...defTools,
+            mcp: on ? [...defTools.mcp, s] : defTools.mcp.filter((x) => x !== s),
+          })} />}
         <div className="field-label">org-structure visibility</div>
         <select value={vis} onChange={(e) => setVis(e.target.value)}>
           {VIS_OPTIONS.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
@@ -1532,8 +1532,11 @@ function DraftScopeModal({ draft, map, tree, scope, onSave, close }) {
   const [vis, setVis] = useState(base.org_visibility)
   const [newPath, setNewPath] = useState('')
   const [servers, setServers] = useState([])
+  const [urlServers, setUrlServers] = useState([])
   useEffect(() => {
-    getMcpServers().then((r) => setServers(r.servers ?? [])).catch(() => {})
+    getMcpServers().then((r) => {
+      setServers(r.servers ?? []); setUrlServers(r.url_servers ?? [])
+    }).catch(() => {})
   }, [])
   const allMcp = tools.mcp.includes('*')
   // portal to <body>: the draft card lives inside the world transform, where
@@ -1590,18 +1593,13 @@ function DraftScopeModal({ draft, map, tree, scope, onSave, close }) {
               ...tools, mcp: e.target.checked ? ['*'] : [...servers] })} />
           all registered servers (current and future)
         </label>
-        {!allMcp && servers.map((s) => (
-          <label className="checkline" key={s}>
-            <input type="checkbox" checked={tools.mcp.includes(s)}
-              onChange={(e) => setTools({
-                ...tools,
-                mcp: e.target.checked
-                  ? [...tools.mcp, s]
-                  : tools.mcp.filter((x) => x !== s),
-              })} />
-            <span className="mono">{s}</span>
-          </label>
-        ))}
+        {!allMcp && <McpChecklist servers={servers} urlServers={urlServers}
+          sandboxed={!!tree.sandboxed}
+          checked={(s) => tools.mcp.includes(s)}
+          onToggle={(s, on) => setTools({
+            ...tools,
+            mcp: on ? [...tools.mcp, s] : tools.mcp.filter((x) => x !== s),
+          })} />}
         <div className="field-label">org-structure visibility</div>
         <select value={vis} onChange={(e) => setVis(e.target.value)}>
           {VIS_OPTIONS.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
@@ -1727,6 +1725,35 @@ function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, map, op,
 }
 
 // ------------------------------------------------------------ node ⚙ config
+// MCP server checklist shared by the org / per-agent / pre-hire scope panels.
+// In a SANDBOXED org, stdio servers grey out: they are host processes and
+// cannot run in the container — only URL-based servers pass through.
+function McpChecklist({ servers, urlServers, sandboxed, checked, onToggle }) {
+  return (
+    <>
+      {sandboxed && (
+        <div className="hint">
+          sandboxed org — greyed servers are host stdio processes and cannot
+          run in its container; only URL-based (HTTP/SSE) servers reach its
+          agents
+        </div>
+      )}
+      {servers.map((s) => {
+        const dead = sandboxed && !urlServers.includes(s)
+        return (
+          <label className={'checkline' + (dead ? ' dead' : '')} key={s}
+            title={dead ? 'unavailable in a sandboxed org (host stdio server)'
+              : undefined}>
+            <input type="checkbox" disabled={dead} checked={checked(s)}
+              onChange={(e) => onToggle(s, e.target.checked)} />
+            <span className="mono">{s}</span>
+          </label>
+        )
+      })}
+    </>
+  )
+}
+
 const VIS_OPTIONS = [
   ['self', 'self'],
   ['team', 'team'],
@@ -1756,7 +1783,12 @@ function NodeConfig({ node, map, tree, slug, op, toast, close }) {
   const [model, setModel] = useState(node.tier)
   const [newPath, setNewPath] = useState('')
   const [servers, setServers] = useState([])
-  useEffect(() => { getMcpServers().then((r) => setServers(r.servers)).catch(() => {}) }, [])
+  const [urlServers, setUrlServers] = useState([])
+  useEffect(() => {
+    getMcpServers().then((r) => {
+      setServers(r.servers ?? []); setUrlServers(r.url_servers ?? [])
+    }).catch(() => {})
+  }, [])
   const parent = map.get(node.id)?.parent
   const parentNode = parent && parent !== USER ? map.get(parent) : null
   const parentTools = parentNode?.scope?.tools ?? null   // null = the user: everything
@@ -1847,23 +1879,35 @@ function NodeConfig({ node, map, tree, slug, op, toast, close }) {
 
         <div className="field-label">MCP servers (from your global registry)</div>
         {servers.length === 0 && <div className="hint">none registered</div>}
-        {servers.map((s) => (
-          <label className="checkline" key={s}>
-            <input type="checkbox"
-              checked={(holdsAllMcp || tools.mcp.includes(s)) && parentHoldsMcp(s)}
-              disabled={!parentHoldsMcp(s)}
-              onChange={(e) => setTools({
-                ...tools,
-                // unchecking under "*" materializes the concrete server list
-                mcp: e.target.checked
-                  ? (holdsAllMcp ? tools.mcp : [...tools.mcp, s])
-                  : (holdsAllMcp ? servers.filter((x) => x !== s)
-                                 : tools.mcp.filter((x) => x !== s)),
-              })} />
-            <span className="mono">{s}</span>
-            {!parentHoldsMcp(s) && <span className="dim"> — parent doesn't hold it</span>}
-          </label>
-        ))}
+        {!!tree.sandboxed && servers.length > 0 && (
+          <div className="hint">
+            sandboxed org — greyed servers are host stdio processes and cannot
+            run in its container; only URL-based (HTTP/SSE) servers reach its
+            agents
+          </div>
+        )}
+        {servers.map((s) => {
+          const dead = !!tree.sandboxed && !urlServers.includes(s)
+          return (
+            <label className={'checkline' + (dead ? ' dead' : '')} key={s}
+              title={dead ? 'unavailable in a sandboxed org (host stdio server)'
+                : undefined}>
+              <input type="checkbox"
+                checked={(holdsAllMcp || tools.mcp.includes(s)) && parentHoldsMcp(s)}
+                disabled={!parentHoldsMcp(s) || dead}
+                onChange={(e) => setTools({
+                  ...tools,
+                  // unchecking under "*" materializes the concrete server list
+                  mcp: e.target.checked
+                    ? (holdsAllMcp ? tools.mcp : [...tools.mcp, s])
+                    : (holdsAllMcp ? servers.filter((x) => x !== s)
+                                   : tools.mcp.filter((x) => x !== s)),
+                })} />
+              <span className="mono">{s}</span>
+              {!parentHoldsMcp(s) && <span className="dim"> — parent doesn't hold it</span>}
+            </label>
+          )
+        })}
 
         <div className="field-label">model (switchable on the fly — context
           survives; cheaper frees the seat difference to the agent, pricier

@@ -1847,6 +1847,8 @@ class Org:
             "fable_filter_policy": self.d.get("fable_filter_policy", "halt"),
             "cascade_hire": bool(self.d.get("cascade_hire", True)),
             "cascade_alloc": bool(self.d.get("cascade_alloc", True)),
+            "sandboxed": bool((self.d.get("kiosk") or {}).get("sandbox")
+                             or (self.d.get("sandbox") or {}).get("enabled")),
             "audience_requests": self.d.get("audience_requests", []),
             # the org inbox panel (user spec): hidden until the org receives
             # its first outside mail OR an inbox audience is granted

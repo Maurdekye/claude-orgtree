@@ -308,6 +308,18 @@ def identity_prompt(org: Org, nid: str) -> str:
     mcp_names = tools.get("mcp") or []
     if "*" in mcp_names:      # "*" = every registered server, present and future
         mcp_names = sorted(registered_mcp_servers())
+    if sbx.is_sandboxed(org):
+        # never promise servers the sandbox drops: host stdio servers cannot
+        # run in the container — only URL-based ones pass through the bridge
+        reg = registered_mcp_servers()
+        url_ok = [m for m in mcp_names
+                  if isinstance(reg.get(m), dict) and reg[m].get("url")]
+        dropped = [m for m in mcp_names if m not in url_ok]
+        mcp_names = url_ok
+        if dropped:
+            tool_line += (f"Sandboxed: host stdio MCP servers cannot reach your "
+                          f"container — {', '.join(dropped)} are unavailable "
+                          f"despite the grant. ")
     if mcp_names:
         tool_line += f"MCP servers available to you: {', '.join(mcp_names)}. "
     purpose_line = f"Your purpose: {n['purpose']} " if n.get("purpose") else ""
@@ -504,10 +516,18 @@ def _build_cmd(org: Org, nid: str) -> list[str]:
     if "*" in granted:        # "*" = every registered server, present and future
         granted = sorted(registry)
     if sandboxed:
-        # host-registered MCP servers are HOST processes — they cannot run in
-        # the container; the sandbox gets exactly one server: orgtree, via
-        # the bridge
+        # host-registered STDIO MCP servers are HOST processes — they cannot
+        # run in the container. URL-based servers (HTTP/SSE) are just
+        # endpoints, so granted ones pass through with localhost rewritten to
+        # the container's host alias; plus orgtree itself via the bridge.
         chosen = {}
+        for k in granted:
+            srv = registry.get(k)
+            if isinstance(srv, dict) and srv.get("url"):
+                srv = dict(srv)
+                srv["url"] = re.sub(r"\b(localhost|127\.0\.0\.1)\b",
+                                    "host.docker.internal", srv["url"], count=1)
+                chosen[k] = srv
         chosen["orgtree"] = {
             "command": "python3",
             "args": ["/opt/orgtree-backend/orgtree/mcptool.py"],
