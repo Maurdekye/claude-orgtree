@@ -275,8 +275,9 @@ mail_notify = lambda slug, frm, to: None   # wired at startup (thread-safe fanou
 
 @app.on_event("startup")
 async def _wire_notify():
-    global mail_notify
+    global mail_notify, _LOOP
     loop = asyncio.get_running_loop()
+    _LOOP = loop
     try:
         # hook processes get a sanitized env — the steering hook finds us here
         open(os.path.join(store.DATA_ROOT, ".port"), "w",
@@ -373,6 +374,15 @@ class Hub:
 
 
 hub = Hub()
+_LOOP = None       # captured at startup — threadsafe broadcasts from sync code
+
+
+def hub_changed(slug: str) -> None:
+    """Schedule a 'changed' broadcast from any thread (№22: the heavyweight
+    endpoints are plain `def` now — they run in the threadpool and can't
+    await)."""
+    if _LOOP is not None:
+        asyncio.run_coroutine_threadsafe(hub.changed(slug), _LOOP)
 
 
 # ---------------------------------------------------------------------- orgs
@@ -498,6 +508,10 @@ def org_tree(slug: str, request: Request):
     def annotate(node: dict):
         st = supervisor.state(slug, node["id"])
         node["busy"] = st["busy"]
+        # №12: three states wore one pulse — split them: waiting on a turn
+        # slot vs actually responding vs busy-but-between (draining/queued)
+        node["waiting"] = bool(st.get("waiting"))
+        node["responding"] = bool(st.get("responding"))
         node["queued"] = len(st["queue"])
         node["last_error"] = st["last_error"]
         if st.get("occupancy"):       # runtime is fresher than the persisted copy
@@ -525,7 +539,40 @@ def org_tree(slug: str, request: Request):
     if _public_slug(request):
         # tells the UI to lock itself down; the SERVER gate is the enforcement
         tree["public"] = True
+        _scrub_public(tree)
     return tree
+
+
+_WINPATH = re.compile(r"(?:[A-Za-z]:[\\/]|/(?:home|Users|opt|mnt|tmp)/)[^\s'\"]*")
+
+
+def _scrub_public(tree: dict) -> None:
+    """№18: a kiosk share link served the operator's ABSOLUTE host paths and
+    username in every tree payload (workspace, every dir grant, session ids,
+    raw error strings). Public visitors get basenames and scrubbed errors —
+    they interact with the org, not the operator's filesystem."""
+    def base(p):
+        return os.path.basename(str(p).rstrip("/\\")) or "folder"
+    if tree.get("workspace"):
+        tree["workspace"] = base(tree["workspace"])
+    tree["dirs"] = [{**d, "path": base(d.get("path", ""))}
+                    for d in tree.get("dirs") or []]
+
+    def walk(n):
+        n.pop("session_id", None)
+        sc = n.get("scope") or {}
+        if sc.get("add_dirs"):
+            sc["add_dirs"] = [{**d, "path": base(d.get("path", ""))}
+                              for d in sc["add_dirs"]]
+        if n.get("last_error"):
+            n["last_error"] = _WINPATH.sub("<path>", str(n["last_error"]))
+        for c in n.get("children") or []:
+            walk(c)
+        for ln in n.get("lineage") or []:
+            if isinstance(ln, dict):
+                ln.pop("session_id", None)
+    for r in tree.get("roots") or []:
+        walk(r)
 
 
 class Settings(BaseModel):
@@ -597,15 +644,15 @@ def defaults_set(body: Settings):
 
 
 @app.post("/api/orgs/{slug}/settings")
-async def org_settings(slug: str, body: Settings):
+def org_settings(slug: str, body: Settings):
     """Org-level knobs. Folder holdings (org_dirs) are edited from the eye's
     gear panel: the workspace is permanent; additions apply to FUTURE hires;
     removals revoke everywhere; rw→ro downgrades propagate to every grant."""
     with store.DOC_LOCK:
-        return await _org_settings_locked(slug, body)
+        return _org_settings_locked(slug, body)
 
 
-async def _org_settings_locked(slug: str, body: Settings):
+def _org_settings_locked(slug: str, body: Settings):
     try:
         org = store.load_org(slug)
     except LedgerError as e:
@@ -661,7 +708,7 @@ async def _org_settings_locked(slug: str, body: Settings):
     if body.cascade_alloc is not None:
         org.d["cascade_alloc"] = bool(body.cascade_alloc)
     store.save_org(org)
-    await hub.changed(slug)
+    hub_changed(slug)
     return {"dirs": org.d["dirs"], "warnings": warnings}
 
 
@@ -929,8 +976,12 @@ def node_compact(slug: str, nid: str):
         raise HTTPException(409, "busy — wait for the current turn to finish")
 
     def run():
-        supervisor._compact_split(slug, nid)
-        supervisor.notify(slug, nid, "compacted")
+        # №27: manual_compact latches busy for the whole fork — mail arriving
+        # mid-split queues instead of driving the doomed old session
+        try:
+            supervisor.manual_compact(slug, nid)
+        except RuntimeError:
+            pass          # raced into busy — the 409 precheck caught most; harmless
 
     threading.Thread(target=run, daemon=True).start()
     return {"started": True}
@@ -1086,7 +1137,13 @@ def extern_send(peer: str, body: ExternSend):
     return {"delivered": delivered or ["(user inbox — no live agents)"]}
 
 
-def _extern_scan(addr: str, org_slug: str | None, after: str | None) -> list[dict]:
+def _extern_scan(addr: str, org_slug: str | None, after: str | None,
+                 fresh_only: bool = False) -> list[dict]:
+    """Replies addressed to `addr`. `fresh_only` (the wait path, №5): with no
+    explicit cursor, only replies newer than the peer's own LAST message to
+    that org count — a wait for question ② must never be satisfied by the
+    answer to question ①. The read path stays full-history (freeform flow:
+    the org may reply any time, any number of times)."""
     out = []
     with store.DOC_LOCK:
         for o in store.list_orgs():
@@ -1101,9 +1158,14 @@ def _extern_scan(addr: str, org_slug: str | None, after: str | None) -> list[dic
                 # the ledger seals every inbound/outbound path), but the seal
                 # belongs on THIS path too, locally, not as a 3-file argument
                 continue
+            floor = after
+            if not floor and fresh_only:
+                floor = max((e.get("at", "") for e in org.d.get("org_inbox", [])
+                             if e.get("peer") == addr and e.get("dir") == "in"),
+                            default="")
             for e in org.d.get("org_inbox", []):
                 if e.get("peer") == addr and e.get("dir") == "out" \
-                        and (not after or e.get("at", "") > after):
+                        and (not floor or e.get("at", "") > floor):
                     out.append({"org": o["slug"], "id": e["id"],
                                 "at": e["at"], "body": e["body"]})
     out.sort(key=lambda x: x["at"])
@@ -1128,7 +1190,7 @@ async def extern_wait(peer: str, org: str | None = None,
     while True:
         if rev != store.REVISION:
             rev = store.REVISION
-            msgs = _extern_scan(addr, org, after)
+            msgs = _extern_scan(addr, org, after, fresh_only=True)
             if msgs:
                 return {"messages": msgs}
         if time.monotonic() >= deadline:
@@ -1184,9 +1246,14 @@ def node_history(slug: str, nid: str, last: int = 80):
                    or ev.get("actor") == nid or det.get("grantee") == nid
                    or det.get("from") == nid)
         if touches:
+            # №10: keep warning LISTS too — the scalar filter silently dropped
+            # the §4.6 cascade warnings from the only log that had them
             items.append({"at": ev["at"], "kind": ev["op"], "actor": ev["actor"],
-                          "detail": {k: v for k, v in det.items()
-                                     if isinstance(v, (str, int, float))} })
+                          "detail": {k: (v if isinstance(v, (str, int, float))
+                                         else [str(x) for x in v])
+                                     for k, v in det.items()
+                                     if isinstance(v, (str, int, float, list))},
+                          "warnings": [str(w) for w in ev.get("warnings") or []]})
     for n in org.d.get("notice_log", []):
         if n["node"] == nid:
             items.append({"at": n["at"], "kind": "notice", "actor": "system",
@@ -1373,16 +1440,58 @@ class AgentCall(BaseModel):
 
 
 @app.post("/api/agent")
-async def agent_call(body: AgentCall, request: Request):
+def agent_call(body: AgentCall, request: Request):
     """Backend for the orgtree MCP server every node loads. The calling NODE is the
     actor — the ledger enforces authority, budgets, capability subsets, addressing,
-    and the no-defaults hire rule."""
+    and the no-defaults hire rule.
+
+    №22: plain `def` (threadpooled) — this endpoint parses transcripts and
+    walks scratch dirs, and as `async def` it did that ON the event loop
+    while holding DOC_LOCK. The read-only tools also run outside the lock
+    entirely: they read the filesystem, not the doc."""
     # a sandboxed container's secret pins it to its OWN org — a compromised
     # sandbox cannot act as another org's agents
     bridge_slug = getattr(request.state, "bridge_slug", None)
     if bridge_slug and body.org != bridge_slug:
         raise HTTPException(403, "bridge secret is scoped to its own org")
     a = body.args
+    if body.tool in ("orgtree_read_transcript", "orgtree_read_scratch",
+                     "orgtree_chart"):
+        try:
+            org = store.load_org(body.org)
+            org.node(body.node)
+            if body.tool == "orgtree_chart":
+                return {"chart": supervisor.identity_prompt(org, body.node)}
+            if body.tool == "orgtree_read_transcript":
+                target = a.get("node", "")
+                if target != body.node and not org.is_ancestor(body.node, target):
+                    raise LedgerError("read access is strictly DOWNWARD (§7.6) — you "
+                                      "may read yourself and your descendants only")
+                chat = supervisor.read_chat(org, target)
+                last = max(1, min(int(a.get("last") or 30), 80))
+                msgs = chat["messages"][-last:]
+                return {"node": target, "busy": chat["busy"],
+                        "occupancy": chat["occupancy"],
+                        "messages": [{"role": m["role"],
+                                      "text": (m.get("text") or "")[:1200],
+                                      "tools": m.get("tools", [])} for m in msgs]}
+            target = a.get("node", "")
+            if target != body.node and not org.is_ancestor(body.node, target):
+                raise LedgerError("read access is strictly DOWNWARD (§7.6)")
+            base = os.path.realpath(supervisor.scratch_dir(body.org, target))
+            rel = (a.get("path") or "").strip().lstrip("/\\")
+            full = os.path.realpath(os.path.join(base, rel))
+            if not full.startswith(base):
+                raise LedgerError("path escapes the scratch space")
+            if os.path.isdir(full):
+                return {"dir": rel or ".", "entries": sorted(os.listdir(full))[:200]}
+            if os.path.isfile(full):
+                return {"file": rel,
+                        "content": open(full, encoding="utf-8",
+                                        errors="replace").read()[:20000]}
+            return {"error": f"no such path in {target}'s scratch: {rel!r}"}
+        except LedgerError as e:
+            raise HTTPException(422, str(e))
     drive: list[str] = []      # nodes whose turn should run after we release the lock
     ext_send = None            # (chat-id, body) outbound riding the chatq bridge
     org_send = None            # (dst-slug, body) outbound to another org's inbox
@@ -1469,39 +1578,6 @@ async def agent_call(body: AgentCall, request: Request):
                         result["reported_to"] = ("status chip only — report your "
                                                  "actual results to the user via "
                                                  "orgtree_message")
-            elif body.tool == "orgtree_chart":
-                result = {"chart": supervisor.identity_prompt(org, body.node)}
-            elif body.tool == "orgtree_read_transcript":
-                target = a.get("node", "")
-                if target != body.node and not org.is_ancestor(body.node, target):
-                    raise LedgerError("read access is strictly DOWNWARD (§7.6) — you "
-                                      "may read yourself and your descendants only")
-                chat = supervisor.read_chat(org, target)
-                last = max(1, min(int(a.get("last") or 30), 80))
-                msgs = chat["messages"][-last:]
-                result = {"node": target, "busy": chat["busy"],
-                          "occupancy": chat["occupancy"],
-                          "messages": [{"role": m["role"],
-                                        "text": (m.get("text") or "")[:1200],
-                                        "tools": m.get("tools", [])} for m in msgs]}
-            elif body.tool == "orgtree_read_scratch":
-                target = a.get("node", "")
-                if target != body.node and not org.is_ancestor(body.node, target):
-                    raise LedgerError("read access is strictly DOWNWARD (§7.6)")
-                base = os.path.realpath(supervisor.scratch_dir(body.org, target))
-                rel = (a.get("path") or "").strip().lstrip("/\\")
-                full = os.path.realpath(os.path.join(base, rel))
-                if not full.startswith(base):
-                    raise LedgerError("path escapes the scratch space")
-                if os.path.isdir(full):
-                    entries = sorted(os.listdir(full))[:200]
-                    result = {"dir": rel or ".", "entries": entries}
-                elif os.path.isfile(full):
-                    result = {"file": rel,
-                              "content": open(full, encoding="utf-8",
-                                              errors="replace").read()[:20000]}
-                else:
-                    result = {"error": f"no such path in {target}'s scratch: {rel!r}"}
             elif body.tool == "orgtree_audience":
                 action = a.get("action", "")
                 if action == "request":
@@ -1546,8 +1622,53 @@ async def agent_call(body: AgentCall, request: Request):
         err = supervisor.interorg_send(body.org, org_send[0], org_send[1])
         if err:
             result.setdefault("warnings", []).append(f"not delivered: {err}")
-    await hub.changed(body.org)
+    hub_changed(body.org)
     return result
+
+
+_UPLOAD_MAX = 25 * 1048576          # per file
+_UPLOAD_KIOSK_TOTAL = 256 * 1048576  # per node uploads dir, kiosk orgs
+
+
+@app.post("/api/orgs/{slug}/nodes/{nid}/upload")
+async def node_upload(slug: str, nid: str, request: Request, name: str = ""):
+    """Attach a file to a chat (user spec 2026-07-31): the raw request body
+    lands in the node's scratch under uploads/ — the one folder every agent,
+    sandboxed or not, reaches at the same RELATIVE path (its cwd). Reachable
+    through the public kiosk gateway too: outside-internet visitors can hand
+    files to a kiosk org's agents. No multipart dependency — body is the file."""
+    try:
+        org = store.load_org(slug)
+        org.node(nid)
+    except LedgerError as e:
+        raise HTTPException(404, str(e))
+    safe = re.sub(r"[^\w .()+\-]", "_",
+                  os.path.basename(name or "upload.bin")).strip(" .") or "upload.bin"
+    data = await request.body()
+    if not data:
+        raise HTTPException(422, "empty upload")
+    if len(data) > _UPLOAD_MAX:
+        raise HTTPException(413, f"file exceeds the {_UPLOAD_MAX // 1048576} MB "
+                                 f"upload cap")
+    updir = os.path.join(supervisor.scratch_dir(slug, nid), "uploads")
+    os.makedirs(updir, exist_ok=True)
+    if supervisor.kiosk_cfg(org):
+        total = 0
+        for f in os.listdir(updir):
+            try:
+                total += os.path.getsize(os.path.join(updir, f))
+            except OSError:
+                pass
+        if total + len(data) > _UPLOAD_KIOSK_TOTAL:
+            raise HTTPException(413, "this agent's upload space is full — ask "
+                                     "it to clean up uploads/ first")
+    stem, ext = os.path.splitext(safe)
+    final, i = safe, 2
+    while os.path.exists(os.path.join(updir, final)):
+        final, i = f"{stem}-{i}{ext}", i + 1
+    with open(os.path.join(updir, final), "wb") as f:
+        f.write(data)
+    return {"path": f"uploads/{final}", "bytes": len(data)}
 
 
 @app.get("/api/orgs/{slug}/nodes/{nid}/chat")
@@ -1616,9 +1737,9 @@ class Op(BaseModel):
 
 
 @app.post("/api/orgs/{slug}/ops")
-async def org_op(slug: str, body: Op):
+def org_op(slug: str, body: Op):
     with store.DOC_LOCK:
-        result = await _org_op_locked(slug, body)
+        result = _org_op_locked(slug, body)
     # rehire with a waiting mailbox: the mail queued while archived finally
     # gets acted on (user ruling) — drive outside the doc lock
     for t in result.pop("drive", []) if isinstance(result, dict) else []:
@@ -1629,7 +1750,7 @@ async def org_op(slug: str, body: Op):
     return result
 
 
-async def _org_op_locked(slug: str, body: Op):
+def _org_op_locked(slug: str, body: Op):
     try:
         org = store.load_org(slug)
     except LedgerError as e:
@@ -1681,7 +1802,7 @@ async def _org_op_locked(slug: str, body: Op):
     except LedgerError as e:
         raise HTTPException(422, str(e))
     store.save_org(org)
-    await hub.changed(slug)
+    hub_changed(slug)
     return result
 
 

@@ -16,6 +16,7 @@ import json
 import os
 import tempfile
 import threading
+import time
 
 from .ledger import LedgerError, Org, slugify
 
@@ -99,7 +100,14 @@ def create_org(name: str, extra_dirs: list[str] | None = None,
 
 
 def delete_org(slug: str) -> None:
+    """Gap audit №16: one confirmed hover-click used to `os.remove` the whole
+    org — structure, charters, mailboxes, event history. The motto reserves
+    hard stops for protecting the user's data, so delete is now a RENAME into
+    <data>/deleted/; putting the file back in orgs/ IS the restore."""
     p = org_path(slug)
     if not os.path.exists(p):
         raise LedgerError(f"no such org: {slug!r}")
-    os.remove(p)
+    trash = os.path.join(DATA_ROOT, "deleted")
+    os.makedirs(trash, exist_ok=True)
+    stamp = time.strftime("%Y%m%dT%H%M%S")
+    os.replace(p, os.path.join(trash, f"{slug}-{stamp}.json"))

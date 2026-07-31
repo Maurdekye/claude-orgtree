@@ -28,24 +28,30 @@ BASE = os.environ.get("ORGTREE_BASE") or f"http://127.0.0.1:{PORT}"
 
 
 def peer_id() -> str:
+    """Peer identity = <machine-stable base>.<per-session suffix>. The suffix
+    (№5, user ruling): every Claude session on a machine used to share ONE
+    peer id, so two concurrently-waiting sessions were indistinguishable and
+    either could be woken by the other's reply. The MCP server process lives
+    exactly as long as its session, so a per-process suffix IS a session id.
+    An explicit ORGTREE_EXTERN_ID is used verbatim (pinned identities/tests)."""
     pid = os.environ.get("ORGTREE_EXTERN_ID", "").strip()
     if pid:
         return pid
     path = os.path.join(os.path.expanduser("~"), ".orgtree", "extern-id")
+    base = ""
     try:
-        pid = open(path, encoding="utf-8").read().strip()
-        if pid:
-            return pid
+        base = open(path, encoding="utf-8").read().strip()
     except OSError:
         pass
-    pid = uuid.uuid4().hex[:12]
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(pid)
-    except OSError:
-        pass
-    return pid
+    if not base:
+        base = uuid.uuid4().hex[:12]
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(base)
+        except OSError:
+            pass
+    return f"{base}.{uuid.uuid4().hex[:6]}"
 
 
 PEER = peer_id()
@@ -93,11 +99,14 @@ TOOLS = [
         "name": "orgtree_wait",
         "description": ("BLOCK until an organization sends this session a "
                         "message (or the timeout passes) — the receiving half "
-                        "of a Q&A loop: orgtree_send a question, then "
-                        "orgtree_wait for the answer. Returns the new messages, "
-                        "or an empty list on timeout. Optionally filter by org; "
-                        "`after` as in orgtree_read; timeout_s up to 300 "
-                        "(default 120)."),
+                        "of a freeform conversation: orgtree_send, then "
+                        "orgtree_wait for whatever comes back. With no `after`, "
+                        "only replies newer than YOUR last message to the org "
+                        "count — an old answer never satisfies a new wait. The "
+                        "org may reply several times; every new message is "
+                        "returned. Returns an empty list on timeout. Optionally "
+                        "filter by org; `after` as in orgtree_read; timeout_s "
+                        "up to 300 (default 120)."),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -129,6 +138,7 @@ def run_tool(name: str, args: dict) -> tuple[str, bool]:
         if name == "orgtree_send":
             out = http("POST", f"/api/extern/{PEER}/send",
                        {"org": args.get("org", ""), "body": args.get("body", "")})
+            out["your_peer_id"] = f"@mcp:{PEER}"
             return json.dumps(out), False
         if name == "orgtree_read":
             q = {k: v for k, v in (("org", args.get("org")),

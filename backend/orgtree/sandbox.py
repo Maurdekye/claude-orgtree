@@ -20,10 +20,12 @@ steer.py's cwd-derived identity and its ~/orgtree fallback work unchanged.
 (host.docker.internal:<bridge port>) + the org's sandbox secret — the only
 door out, gated by api.BridgeGateway to /api/agent and the steer fetch.
 
-Auth: the container gets ANTHROPIC_API_KEY from the kiosk's `api_key`
-(set at creation / on the dashboard) or ORGTREE_SANDBOX_API_KEY. Deliberately
-NOT the host's subscription credentials — a sandbox holding your account
-credential would defeat the point of sandboxing.
+Auth: the default is the PROXIED SUBSCRIPTION — the container's CLI points at
+the bridge's /anthropic/<secret> proxy (host-side OAuth, no credential file
+ever enters the sandbox); a kiosk `api_key` (creation form / dashboard) or
+ORGTREE_SANDBOX_API_KEY overrides it with a plain env key. The literal value
+'subscription' copies the host credentials into the sandbox home — private
+single-user installs only.
 """
 
 from __future__ import annotations
@@ -206,11 +208,14 @@ def exec_argv(name: str, cwd: str) -> list[str]:
     return ["docker", "exec", "-i", "-w", cwd, name]
 
 
-def kill_claude(name: str) -> None:
+def kill_claude(name: str, match: str = "claude") -> None:
     """Timeout hammer: killing the `docker exec` client on the host leaves the
-    in-container process alive — reap it explicitly."""
+    in-container process alive — reap it explicitly. `match` narrows the kill
+    to one turn's process (its session id appears in the argv); the container
+    is shared org-wide, so a blanket "claude" match would SIGKILL every other
+    agent's turn too (gap audit №40)."""
     try:
-        _docker("exec", name, "pkill", "-9", "-f", "claude", timeout=20)
+        _docker("exec", name, "pkill", "-9", "-f", match, timeout=20)
     except (OSError, subprocess.TimeoutExpired):
         pass
 

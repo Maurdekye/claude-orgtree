@@ -114,6 +114,86 @@ _turn_slots = threading.Semaphore(MAX_CONCURRENT)
 _state: dict[tuple[str, str], dict] = {}
 _state_lock = threading.Lock()
 
+
+# ---------------------------------------------------------- child-process leash
+# Gap audit №29: nothing killed the CLI children when the backend died — and
+# update.ps1 force-kills the backend by design. Orphaned CLIs kept appending to
+# their transcripts while a restarted backend ALSO resumed the same session ids:
+# two writers, one transcript. On Windows a job object with KILL_ON_JOB_CLOSE
+# makes the OS reap every child the instant the backend process goes away, no
+# matter how it went away; elsewhere an atexit sweep covers graceful exits.
+_JOB = None
+_ORPHANS: set = set()
+
+
+def _job_handle():
+    global _JOB
+    if os.name != "nt":
+        return None
+    if _JOB is not None:
+        return _JOB
+    import ctypes
+    k32 = ctypes.windll.kernel32
+
+    class _BASIC(ctypes.Structure):
+        _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64),
+                    ("PerJobUserTimeLimit", ctypes.c_int64),
+                    ("LimitFlags", ctypes.c_uint32),
+                    ("MinimumWorkingSetSize", ctypes.c_size_t),
+                    ("MaximumWorkingSetSize", ctypes.c_size_t),
+                    ("ActiveProcessLimit", ctypes.c_uint32),
+                    ("Affinity", ctypes.c_size_t),
+                    ("PriorityClass", ctypes.c_uint32),
+                    ("SchedulingClass", ctypes.c_uint32)]
+
+    class _IO(ctypes.Structure):
+        _fields_ = [(f, ctypes.c_uint64) for f in (
+            "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+            "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
+
+    class _EXT(ctypes.Structure):
+        _fields_ = [("BasicLimitInformation", _BASIC), ("IoInfo", _IO),
+                    ("ProcessMemoryLimit", ctypes.c_size_t),
+                    ("JobMemoryLimit", ctypes.c_size_t),
+                    ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                    ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+    h = k32.CreateJobObjectW(None, None)
+    if h:
+        info = _EXT()
+        info.BasicLimitInformation.LimitFlags = 0x2000   # KILL_ON_JOB_CLOSE
+        k32.SetInformationJobObject(h, 9, ctypes.byref(info), ctypes.sizeof(info))
+    _JOB = h or None
+    return _JOB
+
+
+def _leash(proc) -> None:
+    """Tie a spawned CLI child's lifetime to the backend's."""
+    try:
+        if os.name == "nt":
+            h = _job_handle()
+            if h:
+                import ctypes
+                ctypes.windll.kernel32.AssignProcessToJobObject(
+                    h, int(proc._handle))
+        else:
+            _ORPHANS.add(proc)
+    except Exception:                                        # noqa: BLE001
+        pass
+
+
+def _reap_orphans() -> None:
+    for p in list(_ORPHANS):
+        try:
+            if p.poll() is None:
+                p.kill()
+        except Exception:                                    # noqa: BLE001
+            pass
+
+
+import atexit                                                # noqa: E402
+atexit.register(_reap_orphans)
+
 # set by the API layer so worker threads can push websocket events
 notify = lambda slug, node, event: None   # noqa: E731
 stream = lambda slug, node, payload: None   # noqa: E731 — live per-message feed
@@ -122,8 +202,9 @@ stream = lambda slug, node, payload: None   # noqa: E731 — live per-message fe
 def state(slug: str, nid: str) -> dict:
     with _state_lock:
         return _state.setdefault((slug, nid), {
-            "busy": False, "queue": [], "last_error": None, "turns_run": 0,
-            "last_status": None, "occupancy": None, "context_window": None})
+            "busy": False, "waiting": False, "queue": [], "last_error": None,
+            "turns_run": 0, "last_status": None, "occupancy": None,
+            "context_window": None})
 
 
 def scratch_dir(slug: str, nid: str) -> str:
@@ -340,9 +421,34 @@ def identity_prompt(org: Org, nid: str) -> str:
 
     dirs = sc.get("add_dirs", [])
     ro = [d["path"] for d in dirs if d["mode"] == "ro"]
-    dir_line = ("Folders you may work in: "
-                + (", ".join(d["path"] for d in dirs) or "only your own scratch folder")
-                + (f". Read-only: {', '.join(ro)}" if ro else "") + ". ")
+    if sbx.is_sandboxed(org):
+        # №19 + user ruling: a sandboxed agent lives in its container and must
+        # be told ONLY paths that exist there — host-absolute grants named
+        # here used to contradict the mounts one paragraph later, and agents
+        # debugged the contradiction on the operator's dime. Everything it
+        # can reach is at a stable relative shape from its cwd (its scratch).
+        ws = org.d.get("workspace")
+        mounted = [d for d in dirs if ws and os.path.normpath(d["path"]) ==
+                   os.path.normpath(ws)]
+        outside = [d["path"] for d in dirs if d not in mounted]
+        dir_line = ("You run inside this org's sandbox container. Folders you "
+                    "may work in: your scratch folder (your cwd) and the org "
+                    f"workspace at {sbx.cpath_workspace(org.d['slug'])}"
+                    + (" (read-only)" if any(d["mode"] == "ro"
+                                             for d in mounted) else "")
+                    + ". Use those paths only — host paths do not exist here. "
+                    if mounted else
+                    "You run inside this org's sandbox container. Folders you "
+                    "may work in: only your scratch folder (your cwd). ")
+        if outside:
+            dir_line += (f"({len(outside)} external folder grant(s) exist on "
+                         f"the host but are NOT mounted in the sandbox — "
+                         f"they are unreachable from here.) ")
+    else:
+        dir_line = ("Folders you may work in: "
+                    + (", ".join(d["path"] for d in dirs)
+                       or "only your own scratch folder")
+                    + (f". Read-only: {', '.join(ro)}" if ro else "") + ". ")
     tools = sc.get("tools", {})
     off = [label for key, label in (("bash", "the terminal"), ("web", "web access"),
                                     ("edit", "file editing"), ("subagents", "subagents"))
@@ -702,7 +808,10 @@ def _run_turn(slug: str, nid: str, text):
     if isinstance(text, dict):
         toks, text = list(text.get("toks") or []), text["text"]
     try:
+        # blocked on a turn slot is NOT running (№12) — the UI shows it hollow
+        st["waiting"] = True
         with _turn_slots:
+            st["waiting"] = False
             with store.DOC_LOCK:
                 org = store.load_org(slug)
                 if org.node(nid)["state"] != "live":
@@ -771,6 +880,8 @@ def _run_turn(slug: str, nid: str, text):
                 _build_cmd(org, nid), cwd=scratch_dir(slug, nid), env=env,
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, encoding="utf-8", errors="replace")
+            _leash(proc)              # dies with the backend (№29)
+            sid = org.node(nid)["session_id"]
             res = {}
             turn_occ = 0        # context size = LAST assistant call's usage (№24)
             dbuf, dlast = "", time.time()   # token-stream delta batcher (~8 Hz)
@@ -781,8 +892,10 @@ def _run_turn(slug: str, nid: str, text):
                 proc.kill()
                 if sandbox_name:
                     # killing the docker-exec client leaves the in-container
-                    # process alive — reap it
-                    sbx.kill_claude(sandbox_name)
+                    # process alive — reap it, and ONLY it: the container is
+                    # shared by every agent in the org, and a blanket
+                    # `pkill -f claude` SIGKILLed unrelated turns (№40)
+                    sbx.kill_claude(sandbox_name, sid)
             timer = threading.Timer(TURN_TIMEOUT, _expire)
             timer.start()
             with _state_lock:
@@ -1064,7 +1177,10 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict, st: dict, occ: int = 0
     # the fallback, everything hard-capped at 95%
     compact_at = min(0.95, float(org.d.get("compact_at") or COMPACT_AT))
     if occ and cw and occ / cw >= compact_at:
-        _compact_split(slug, nid)
+        # №28: a failing compaction used to re-fire after EVERY turn, holding
+        # a turn slot for up to 10 minutes each time — cool down between tries
+        if time.time() >= state(slug, nid).get("compact_retry_at", 0):
+            _compact_split(slug, nid)
 
 
 def _compact_split(slug: str, nid: str):
@@ -1095,13 +1211,23 @@ def _compact_split(slug: str, nid: str):
                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, text=True, encoding="utf-8",
                                 errors="replace")
-        out, _err = proc.communicate(input="/compact", timeout=600)
+        _leash(proc)
+        try:
+            out, _err = proc.communicate(input="/compact", timeout=600)
+        except subprocess.TimeoutExpired:
+            # №28: never leave the child running — it held one of the 3 turn
+            # slots invisible and burned real cost on every retry
+            proc.kill()
+            proc.communicate()
+            raise RuntimeError("fork/compact timed out after 600s (child killed)")
         res = json.loads(out) if out.strip() else {}
         new_sid = res.get("session_id")
         if proc.returncode != 0 or not new_sid or new_sid == old_sid:
             raise RuntimeError(f"fork/compact failed (rc={proc.returncode})")
     except Exception as e:                                   # noqa: BLE001
-        state(slug, nid)["last_error"] = f"compaction split failed: {e}"
+        st = state(slug, nid)
+        st["last_error"] = f"compaction split failed: {e}"
+        st["compact_retry_at"] = time.time() + 900   # 15-min cooldown (№28)
         return
     with store.DOC_LOCK:
         org = store.load_org(slug)
@@ -1109,8 +1235,33 @@ def _compact_split(slug: str, nid: str):
         store.save_org(org)
     st = state(slug, nid)
     st["occupancy"] = None
+    st.pop("compact_retry_at", None)
     notify(slug, nid, "compacted")
     notify(slug, pred, "created")
+
+
+def manual_compact(slug: str, nid: str) -> None:
+    """The desk's compact button (№27): latch busy for the whole fork, so mail
+    arriving during the up-to-10-minute split QUEUES instead of running a turn
+    against the OLD session id — that work would have been archived into the
+    bearer and the successor would not remember it."""
+    st = state(slug, nid)
+    with _state_lock:
+        if st["busy"]:
+            raise RuntimeError("busy — wait for the current turn to finish")
+        st["busy"] = True
+    try:
+        _compact_split(slug, nid)
+    finally:
+        nxt = None
+        with _state_lock:
+            if st["queue"]:
+                nxt = st["queue"].pop(0)
+            else:
+                st["busy"] = False
+        notify(slug, nid, "turn_done")
+        if nxt is not None:
+            _run_turn(slug, nid, nxt)
 
 
 def send_message(slug: str, nid: str, text: str) -> dict:
@@ -1255,12 +1406,17 @@ def storage_check(slug: str) -> str | None:
     Over the limit → block file creation/writes in the workspace and notify
     the org's agents; back under (files deleted, limit raised, kiosk
     disabled) → unblock automatically. Returns 'blocked' | 'cleared' | None."""
+    # №22: the full workspace walk runs OUTSIDE the doc lock — it reads the
+    # filesystem, not the doc, and holding DOC_LOCK across a multi-GB walk
+    # starved the whole turn machinery (and timed out MCP calls into
+    # duplicate-mail retries)
+    org = store.load_org(slug)
+    used = workspace_usage_bytes(org)
     with store.DOC_LOCK:
         org = store.load_org(slug)
         k = kiosk_cfg(org)
         lim_mb = int((k or {}).get("storage_limit_mb") or 0)
         limit = lim_mb * 1048576
-        used = workspace_usage_bytes(org)
         blocked = bool(org.d.get("storage_blocked"))
         warned = bool(org.d.get("storage_warned"))
         if k and lim_mb and used > limit and not blocked:
