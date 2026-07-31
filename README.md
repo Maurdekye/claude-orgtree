@@ -10,7 +10,10 @@ your existing Claude Code installation and subscription.
 
 Design document: [PLAN.md](PLAN.md) · UI manual: [docs/ui-guide.md](docs/ui-guide.md)
 
-**Design motto:** permit as much as possible; close gaps with minimal-friction
+**Design motto:** one thing, done very very well. orgtree is a simple idea —
+a persistent, visual organization of Claude agents — refined meticulously and
+taken to its logical conclusion, not a feature jamboree. And within that one
+thing: permit as much as possible; close gaps with minimal-friction
 shortcuts; step out of the way. The tree is not a rigid structure you're
 confined to — it's a **sandbox of capabilities** with a *suggested*
 organization that improves efficiency on the margin. Asking for what's already
