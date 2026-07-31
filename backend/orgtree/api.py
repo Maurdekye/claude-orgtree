@@ -840,6 +840,16 @@ async def org_kiosk(slug: str, body: KioskCfg) -> dict[str, Any]:
             k["spend_limit"] = max(0.0, float(body.spend_limit))
         if body.storage_limit_mb is not None:
             k["storage_limit_mb"] = max(0, int(body.storage_limit_mb))
+        # security review 2026-08-01: subscription-auth (copied host OAuth
+        # credentials ON the org disk) and a public kiosk URL are mutually
+        # exclusive — structurally, not by filename filter (root-in-container
+        # can copy the token anywhere the recovery browser serves)
+        if k.get("enabled") and k.get("sandbox") \
+                and sandbox.uses_subscription_auth(dict(k)):
+            raise HTTPException(
+                422, "this org's sandbox runs on COPIED host credentials "
+                     "(subscription auth) — a public kiosk URL would let "
+                     "visitors reach them. Switch to proxied auth first.")
         if (k.get("enabled") and not k.get("token")) or body.rotate_token:
             k["token"] = secrets.token_hex(16)
         # the permission ceiling (consensus spec): setting it SWEEPS every

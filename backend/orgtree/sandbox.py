@@ -36,7 +36,8 @@ import shutil
 import subprocess
 import threading
 import time
-from typing import TYPE_CHECKING
+import uuid
+from typing import TYPE_CHECKING, Any
 
 from . import store
 
@@ -103,7 +104,7 @@ def migrate_to_disk(org: Org) -> None:
     KEPT (rollback: clear org.d['disk'] and restart). The calling turn waits;
     a multi-GB org takes minutes, once."""
     from . import disk as dsk
-    from .ledger import now
+    from .ledger import SYSTEM, now
     slug = org.d["slug"]
     k = org.d.get("kiosk") or {}
     size_mb = (int(k.get("storage_limit_mb") or 0)
@@ -112,7 +113,9 @@ def migrate_to_disk(org: Org) -> None:
     # one-disk semantics: the ~1 GB system seed and transcripts live INSIDE
     # the cap now — a limit written for the old workspace-only accounting
     # (e.g. 256 MB) cannot even hold the seed. Floor it.
+    floored_from = 0
     if size_mb < 4096:
+        floored_from = size_mb
         print(f"[orgtree] org {slug!r}: configured storage limit {size_mb} MB "
               f"is below the 4096 MB one-disk minimum (the system seed and "
               f"transcripts count now) — using 4096 MB")
@@ -175,6 +178,18 @@ def migrate_to_disk(org: Org) -> None:
                     if os.path.normpath(dd["path"]) == os.path.normpath(old_ws):
                         dd["path"] = new_ws
         o2.d["workspace"] = new_ws
+        if floored_from:
+            # review 2026-08-01: flooring RAISES a cap the operator
+            # deliberately set — that change belongs in their inbox, not
+            # only the backend log
+            o2.d.setdefault("user_inbox", []).append({
+                "id": uuid.uuid4().hex[:12], "from": SYSTEM, "kind": "notice",
+                "at": now(),
+                "body": f"Storage migration: this org's {floored_from} MB "
+                        f"limit was raised to the 4096 MB one-disk minimum "
+                        f"(system seed + transcripts now count inside the "
+                        f"cap). Its agents may consume up to 4 GB; shrink "
+                        f"is not offered yet — retire the org to reclaim."})
         store.save_org(o2)
     _disk_flag.pop(slug, None)
     print(f"[orgtree] org {slug!r} migrated to its disk "
@@ -245,6 +260,19 @@ def docker_available() -> bool:
 
 def sandbox_secret(org: Org) -> str:
     return (_cfg(org) or {}).get("secret", "")
+
+
+def uses_subscription_auth(k: dict[str, Any] | None) -> bool:
+    """True when the org's sandbox would run on COPIED host credentials
+    (the 'subscription' escape hatch — docstring: private single-user
+    installs only). Security review 2026-08-01: this mode and a PUBLIC
+    kiosk URL are mutually exclusive STRUCTURALLY — the OAuth token lands
+    on the org disk, root-in-container can copy it to any path, and the
+    recovery browser serves the disk to visitors; no filename denylist can
+    be a boundary. Both enable-orderings are refused."""
+    key = ((k or {}).get("api_key")
+           or os.environ.get("ORGTREE_SANDBOX_API_KEY") or "proxied")
+    return str(key).strip().lower() == "subscription"
 
 
 def container_name(slug: str) -> str:
@@ -382,6 +410,12 @@ def ensure_container(org: Org) -> str:
            or "proxied").strip()
     use_proxy = "prox" in key.lower()
     use_sub = key.lower() == "subscription"
+    if use_sub and k.get("enabled") and k.get("token"):
+        # structural, not a filter: see uses_subscription_auth
+        raise RuntimeError(
+            "subscription-auth sandbox with a PUBLIC kiosk URL is refused — "
+            "the copied host credentials live on the org disk visitors can "
+            "browse. Disable the kiosk URL or switch to proxied auth.")
     image_tag = ensure_image()
     home = sandbox_home(slug)              # on-disk, via the UNC view
     os.makedirs(os.path.join(home, "orgtree"), exist_ok=True)

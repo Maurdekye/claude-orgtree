@@ -327,13 +327,14 @@ existing volume-layout orgs auto-migrate on their next turn (old volumes are
 kept for rollback). The backend reads the disk directly (`\\wsl.localhost`) —
 including deletes at 100% full — so recovery never depends on the container.
 
-> ☞ **Set Docker Desktop's disk cap.** Docker volumes have no per-volume quota
-> on Docker Desktop, so the per-org limit is enforced *reactively* (measure →
-> stop, small overshoot possible), while the **absolute** bound on what any
-> container can ever cost your disk is Docker Desktop → Settings → Resources →
-> *Disk usage limit*. The default is a ~1 TB sparse disk — set it to what you
-> can afford; the backend logs a warning when it's unset. (The WSL2 disk file
-> also does not shrink on its own when content is deleted.)
+> ☞ **Set Docker Desktop's disk cap.** Org disks are SPARSE: a 20 GB cap costs
+> the host only what's actually written, which keeps generosity free — but it
+> also means N orgs can overcommit the host in aggregate. Each org's own cap
+> is absolute (its ext4 size), while the **aggregate** bound is Docker
+> Desktop → Settings → Resources → *Disk usage limit*. The default is a
+> ~1 TB sparse disk — set it to what you can afford; the backend logs a
+> warning when it's unset. (The WSL2 disk file also does not shrink on its
+> own when content is deleted.)
 
 Sandbox auth is the **proxied subscription** and is not configurable in the
 UI: the container's CLI talks to the bridge's Anthropic passthrough, and the
