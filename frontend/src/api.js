@@ -85,6 +85,13 @@ export const audienceAction = (slug, action, node, target) =>
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action, node, target }),
   }).then(j)
+export const getDefaults = () => fetch(u('/api/defaults')).then(j)
+export const saveDefaults = (body) =>
+  fetch(u('/api/defaults'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(j)
 export const orgInboxRead = (slug) =>
   fetch(u(`/api/orgs/${slug}/org_inbox/read`), { method: 'POST' }).then(j)
 export const saveScope = (slug, nid, scope) =>

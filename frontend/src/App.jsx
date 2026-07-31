@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   audienceAction, BASE, clearInbox, createOrg, creditDecide, deleteOrg,
-  getAudiences, getInbox, getOrgMd, getTree, killAll, listOrgs, markRead,
-  openWs, putOrgMd, resumeFrozen, runOp, saveKiosk, saveSettings,
+  getAudiences, getDefaults, getInbox, getOrgMd, getTree, killAll, listOrgs,
+  markRead, openWs, putOrgMd, resumeFrozen, runOp, saveDefaults, saveKiosk,
+  saveSettings,
 } from './api'
 import { ConfirmModal, MailFolders, MailList, OrgCanvas, useEsc } from './Canvas'
 import {
@@ -38,6 +39,7 @@ export default function App() {
   const [showInbox, setShowInbox] = useState(false)
   const [drawer, setDrawer] = useState(false)
   const [doomedOrg, setDoomedOrg] = useState(null)   // org row pending deletion
+  const [showDefaults, setShowDefaults] = useState(false)   // global new-org defaults
   const [killArmed, setKillArmed] = useState(false)  // the killswitch latch
   const [nowTick, setNowTick] = useState(Date.now()) // drives the resume-red clock
   const wsRef = useRef(null)
@@ -183,6 +185,10 @@ export default function App() {
       {!(orgs.length && orgs[0].kiosk) && <NewOrg onCreate={(name, dirs, kiosk, sandbox) =>
         createOrg(name, dirs, kiosk, sandbox).then((r) => { refreshOrgs(); pick(r.slug) })
           .catch((e) => toast([`error: ${e.message}`]))} />}
+      {/* global default org settings (user spec): every NEW org is born with
+          these — admin only */}
+      {!BASE && <button className="home" onClick={() => setShowDefaults(true)}>
+        <SettingsIcon fontSize="inherit" /> default org settings</button>}
       {/* kiosk dashboard: admin only — a public visitor never sees this panel
           (and the server refuses the endpoints regardless) */}
       {!BASE && <KioskDash orgs={orgs} refresh={refreshOrgs} toast={toast} pick={pick} />}
@@ -327,6 +333,9 @@ export default function App() {
         </div>
       )}
 
+      {showDefaults && (
+        <DefaultsPanel toast={toast} close={() => setShowDefaults(false)} />
+      )}
       {doomedOrg && (
         <ConfirmModal title={`permanently delete ${doomedOrg.name}?`}
           body={`Erases the organization and its ${doomedOrg.nodes} node(s) — ledger, mail, lineage, audiences. Workspace and scratch folders remain on disk. This cannot be undone.`}
@@ -615,6 +624,91 @@ function InboxPanel({ slug, tree, toast, refresh, close }) {
           {folder === 'inbox' && box?.pending.length > 0 && <button onClick={() =>
             clearInbox(slug).then(reload).catch((e) => toast([`error: ${e.message}`]))}>mark all read</button>}
           <button className="primary" onClick={close}>close</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Global DEFAULT org settings (user spec, root page): every newly created
+// org is born with these values — the same knobs as a single org's settings
+// panel, saved once in <data>/defaults.json.
+function DefaultsPanel({ toast, close }) {
+  useEsc(close)
+  const [d, setD] = useState(null)
+  useEffect(() => { getDefaults().then(setD).catch(() => setD({})) }, [])
+  if (d == null) {
+    return (
+      <div className="overlay" onClick={close}>
+        <div className="settings"><div className="dim pad">loading…</div></div>
+      </div>
+    )
+  }
+  const set = (k, v) => setD({ ...d, [k]: v })
+  return (
+    <div className="overlay" onClick={close}>
+      <div className="settings" onClick={(e) => e.stopPropagation()}>
+        <h3><SettingsIcon fontSize="inherit" /> default org settings
+          <span className="dim"> · applied to every NEW organization</span></h3>
+        <div className="field-label">top-level grant cap</div>
+        <input type="number" min="1" step="1" style={{ width: '8em' }}
+          value={d.max_top_grant ?? 1000}
+          onChange={(e) => set('max_top_grant', +e.target.value)} />
+        <div className="field-label">default top-level grant (pre-filled on new hires)</div>
+        <input type="number" min="0" step="1" style={{ width: '8em' }}
+          value={d.default_top_grant ?? 50}
+          onChange={(e) => set('default_top_grant', +e.target.value)} />
+        <div className="field-label">compaction threshold % (50–95)</div>
+        <input type="number" min="50" max="95" step="1" style={{ width: '8em' }}
+          value={Math.round((d.compact_at ?? 0.8) * 100)}
+          onChange={(e) => set('compact_at', (+e.target.value || 80) / 100)} />
+        <div className="field-label">fable weekly-limit policy</div>
+        <select value={d.fable_limit_policy ?? 'halt'}
+          onChange={(e) => set('fable_limit_policy', e.target.value)}>
+          <option value="halt">halt (default)</option>
+          <option value="opus">switch to opus</option>
+          <option value="dissolve">dissolve subtree</option>
+        </select>
+        <div className="field-label">fable content-filter policy</div>
+        <select value={d.fable_filter_policy ?? 'halt'}
+          onChange={(e) => set('fable_filter_policy', e.target.value)}>
+          <option value="halt">halt (default)</option>
+          <option value="opus">switch to opus + retry</option>
+        </select>
+        <div className="field-label">credit cost bubbling</div>
+        <label className="checkline">
+          <input type="checkbox" checked={d.cascade_hire !== false}
+            onChange={(e) => set('cascade_hire', e.target.checked)} />
+          hires bubble their cost up the chain
+        </label>
+        <label className="checkline">
+          <input type="checkbox" checked={d.cascade_alloc !== false}
+            onChange={(e) => set('cascade_alloc', e.target.checked)} />
+          allocations &amp; model upgrades bubble their cost up the chain
+        </label>
+        <label className="checkline">
+          <input type="checkbox" checked={!!d.auto_resume}
+            onChange={(e) => set('auto_resume', e.target.checked)} />
+          auto-resume usage-limit-frozen agents after the reset time
+        </label>
+        <div className="hint">
+          Existing organizations keep their own settings — these apply only at
+          creation.
+        </div>
+        <div className="row">
+          <button className="primary" onClick={() =>
+            saveDefaults({
+              max_top_grant: d.max_top_grant,
+              default_top_grant: d.default_top_grant,
+              compact_at: Math.round((d.compact_at ?? 0.8) * 100),
+              fable_limit_policy: d.fable_limit_policy,
+              fable_filter_policy: d.fable_filter_policy,
+              cascade_hire: d.cascade_hire !== false,
+              cascade_alloc: d.cascade_alloc !== false,
+              auto_resume: !!d.auto_resume,
+            }).then(() => { toast(['default org settings saved']); close() })
+              .catch((e) => toast([`error: ${e.message}`]))}>save</button>
+          <button onClick={close}>cancel</button>
         </div>
       </div>
     </div>

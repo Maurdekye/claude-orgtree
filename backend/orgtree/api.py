@@ -437,6 +437,12 @@ def orgs_create(body: OrgCreate):
         org = store.create_org(body.name, body.dirs, body.permission_mode)
     except LedgerError as e:
         raise HTTPException(400, str(e))
+    # global default org settings (user spec): every new org is born with them
+    dflt = load_org_defaults()
+    if dflt:
+        with store.DOC_LOCK:
+            org.d.update(dflt)
+            store.save_org(org)
     supervisor.chatq_register_org(org.d["slug"])
     if body.kiosk is not None:
         # kiosk orgs are a DISTINCT TYPE, born as kiosks with their limits
@@ -535,6 +541,59 @@ class Settings(BaseModel):
     auto_resume: bool | None = None         # restart limit-frozen agents at reset+1min
     cascade_hire: bool | None = None        # hires bubble costs up the chain (§4.6)
     cascade_alloc: bool | None = None       # allocations/upgrades bubble costs up
+
+
+# ------------------------------------------- global default org settings
+# (user spec): configured from the root page; every NEWLY created org is
+# born with these values. Stored org-doc-shaped in <data>/defaults.json.
+_DEFAULTS_BASE = {
+    "max_top_grant": 1000, "default_top_grant": 50, "compact_at": 0.80,
+    "fable_limit_policy": "halt", "fable_filter_policy": "halt",
+    "cascade_hire": True, "cascade_alloc": True, "auto_resume": False,
+}
+
+
+def load_org_defaults() -> dict:
+    try:
+        d = json.load(open(os.path.join(store.DATA_ROOT, "defaults.json"),
+                           encoding="utf-8"))
+        return d if isinstance(d, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+@app.get("/api/defaults")
+def defaults_get():
+    return {**_DEFAULTS_BASE, **load_org_defaults()}
+
+
+@app.post("/api/defaults")
+def defaults_set(body: Settings):
+    d = load_org_defaults()
+    if body.max_top_grant is not None and body.max_top_grant > 0:
+        d["max_top_grant"] = int(body.max_top_grant)
+    if body.default_top_grant is not None and body.default_top_grant >= 0:
+        d["default_top_grant"] = int(body.default_top_grant)
+    if body.compact_at is not None:
+        d["compact_at"] = min(95, max(50, int(body.compact_at))) / 100.0
+    if body.fable_limit_policy in ("halt", "opus", "dissolve"):
+        d["fable_limit_policy"] = body.fable_limit_policy
+    if body.fable_filter_policy in ("halt", "opus"):
+        d["fable_filter_policy"] = body.fable_filter_policy
+    if body.default_tools is not None:
+        d["default_tools"] = norm_tools(body.default_tools)
+    if body.default_visibility in VIS_LEVELS:
+        d["default_visibility"] = body.default_visibility
+    if body.auto_resume is not None:
+        d["auto_resume"] = bool(body.auto_resume)
+    if body.cascade_hire is not None:
+        d["cascade_hire"] = bool(body.cascade_hire)
+    if body.cascade_alloc is not None:
+        d["cascade_alloc"] = bool(body.cascade_alloc)
+    with open(os.path.join(store.DATA_ROOT, "defaults.json"), "w",
+              encoding="utf-8") as f:
+        json.dump(d, f, indent=1)
+    return defaults_get()
 
 
 @app.post("/api/orgs/{slug}/settings")
