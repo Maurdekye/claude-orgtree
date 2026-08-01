@@ -25,7 +25,7 @@ import uuid
 # typing wave: Any/Response types must be RUNTIME imports — FastAPI evaluates
 # endpoint annotation strings (PEP 563) at decoration time. Helper-only types
 # stay under TYPE_CHECKING so the runtime import graph is unchanged.
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
@@ -90,7 +90,6 @@ def _public_denied(method: str, rest: str, slug: str) -> tuple[int, str] | None:
         or rest.endswith("/kiosk")                           # kiosk caps/token/ceiling
         or rest == "/api/fs"                                 # filesystem browse
         or (method == "PUT" and rest.endswith("/orgmd"))     # org.md edits
-        or rest.endswith("/attach")                          # terminal handoff
         or rest == "/api/agent"                              # node MCP gateway
         or rest == "/api/mcp-servers"
     )
@@ -678,6 +677,21 @@ def _scrub_public(tree: dict[str, Any]) -> None:
                 ln.pop("session_id", None)
     for r in tree.get("roots") or []:
         walk(r)
+
+
+def _scrub_events(evts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Public callers (audit 2026-08-01): event details and warnings can embed
+    host paths — dir revokes, scope dumps, clamp warnings — so every string
+    leaf is regex-scrubbed. Returns scrubbed COPIES; the doc is untouched."""
+    def scrub(v: Any) -> Any:
+        if isinstance(v, str):
+            return _WINPATH.sub("<path>", v)
+        if isinstance(v, list):
+            return [scrub(x) for x in v]
+        if isinstance(v, dict):
+            return {k: scrub(x) for k, x in v.items()}
+        return v
+    return [cast("dict[str, Any]", scrub(e)) for e in evts]
 
 
 class Settings(BaseModel):
@@ -1556,7 +1570,8 @@ async def user_inbox_clear(slug: str) -> dict[str, Any]:
 
 # --------------------------------------------------------- inspector + admin
 @app.get("/api/orgs/{slug}/nodes/{nid}/history")
-def node_history(slug: str, nid: str, last: int = 80) -> dict[str, Any]:
+def node_history(slug: str, nid: str, request: Request,
+                 last: int = 80) -> dict[str, Any]:
     """Message history with attribution + delivered notices + ops touching the node."""
     try:
         org = store.load_org(slug)
@@ -1583,7 +1598,10 @@ def node_history(slug: str, nid: str, last: int = 80) -> dict[str, Any]:
             items.append({"at": n["at"], "kind": "notice", "actor": "system",
                           "detail": {"text": n["text"]}})
     items.sort(key=lambda x: x["at"])
-    return {"items": items[-last:]}
+    out = items[-last:]
+    if _public_slug(request):
+        out = _scrub_events(out)     # e.g. revoke_dir carries the host path
+    return {"items": out}
 
 
 @app.get("/api/orgs/{slug}/nodes/{nid}/scratch")
@@ -1607,7 +1625,7 @@ def node_scratch(slug: str, nid: str, path: str = "") -> dict[str, Any]:
 
 
 @app.get("/api/orgs/{slug}/orgmd")
-def orgmd_get(slug: str) -> dict[str, Any]:
+def orgmd_get(slug: str, request: Request) -> dict[str, Any]:
     try:
         org = store.load_org(slug)
     except LedgerError as e:
@@ -1617,6 +1635,8 @@ def orgmd_get(slug: str) -> dict[str, Any]:
     content = ""
     if p and os.path.isfile(p):
         content = open(p, encoding="utf-8", errors="replace").read()[:60000]
+    if _public_slug(request) and p:
+        p = os.path.basename(p)      # the host path is the operator's, not the org's
     return {"path": p, "content": content}
 
 
@@ -2684,12 +2704,15 @@ def node_inbox(slug: str, nid: str) -> dict[str, Any]:
 
 
 @app.get("/api/orgs/{slug}/events")
-def org_events(slug: str, since: int = 0) -> dict[str, Any]:
+def org_events(slug: str, request: Request, since: int = 0) -> dict[str, Any]:
     try:
         events = store.load_org(slug).d["events"]
     except LedgerError as e:
         raise HTTPException(404, str(e))
-    return {"total": len(events), "events": events[since:]}
+    out = list(events[since:])
+    if _public_slug(request):
+        out = _scrub_events(out)     # host paths ride event details/warnings
+    return {"total": len(events), "events": out}
 
 
 # ----------------------------------------------------------------------- ops

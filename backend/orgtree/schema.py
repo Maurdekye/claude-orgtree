@@ -109,7 +109,7 @@ class InflightInfo(TypedDict):
 
 
 class NodeDoc(TypedDict):
-    """One agent seat. Created by Org._mint_node (hire); the NotRequired tail
+    """One agent seat. Created by Org._new_node (hire); the NotRequired tail
     is runtime bookkeeping the supervisor adds as turns happen."""
     session_id: str
     model: str                      # tier key into OrgDoc["tiers"]

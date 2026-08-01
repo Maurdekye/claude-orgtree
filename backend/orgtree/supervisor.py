@@ -732,8 +732,10 @@ def delivering_mail(org: Org, nid: str) -> list[dict[str, Any]]:
 
 
 def _confirm_delivered(slug: str, nid: str, toks: Iterable[str]) -> None:
-    """The batch reached the agent (stdin write / steer fetch succeeded): the
-    transcript holds the mail now, so the journal copy is redundant."""
+    """Drop confirmed journal batches. WHEN to confirm is the callers' rule
+    (review C1): the turn path confirms on the first non-`system` stdout
+    event — a successful stdin/pipe write is NOT consumption — and the steer
+    path confirms at the hook's fetch (the ratified trade, D-045 Bounds)."""
     if not toks:
         return
     drop = set(toks)

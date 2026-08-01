@@ -13,7 +13,7 @@ Stranding (§4.4, corrected during implementation): a warning fires whenever an 
 REDUCES a node's free across an archived dependent's rehire cost. Promote/demote leave every
 free unchanged (the release and acquire paths cancel hop by hop), so moves cannot strand —
 the ops that can are hire (the payer), forcible hire (the actor), rehire (the parent, for its
-other archived children), and reallocate(-Δ).
+other archived children), reallocate(-Δ), and switch_model to a pricier tier (the chain).
 
 Directory access (№30) is an inherited capability set, NOT a budget: a node may hold only
 dirs its parent holds (top-level nodes are user-granted and unconstrained). Nothing conserves;
@@ -289,6 +289,10 @@ class Org:
     def create(name: str, dirs: list[str] | None = None,
                permission_mode: str = "acceptEdits",
                workspace: str | None = None) -> "Org":
+        # D-030 hardening: an arbitrary string here used to reach
+        # --permission-mode verbatim
+        if permission_mode not in PM_LEVELS:
+            raise LedgerError(f"permission_mode must be one of {PM_LEVELS}")
         return Org({
             "version": 1,
             "slug": slugify(name),
@@ -1372,6 +1376,14 @@ class Org:
                                 raise_ceiling=raise_ceiling, warnings=warnings))
         nid = self._new_node(tier, parent, int(grant), name, dirs, tset, vis,
                              str(charter).strip() if charter else None)
+        # D-030 hardening: the fresh node inherits the ORG-wide
+        # permission_mode — clamp it against the kiosk ceiling like set_scope
+        # does, or a "default"-ceiling kiosk hires above its own ceiling
+        _t3, _d3, _v3, pm3, _b3 = self._apply_ceiling(
+            pm=self.nodes[nid]["scope"].get("permission_mode"),
+            warnings=warnings)
+        if pm3 is not None:
+            self.nodes[nid]["scope"]["permission_mode"] = pm3
         # every affected agent is told, WHOEVER acted (user ruling) — the actor
         # itself is skipped (it made the call and got the result)
         gist = (str(charter).strip().splitlines() or [""])[0][:120] if charter else ""
@@ -2167,6 +2179,9 @@ class Org:
             if swept:
                 warnings.append(f"subtree grants clamped to the new set (№30): {swept}")
         if permission_mode is not None:
+            if permission_mode not in PM_LEVELS:   # D-030 hardening
+                raise LedgerError(
+                    f"permission_mode must be one of {PM_LEVELS}")
             _t, _d, _v, pm2, b = self._apply_ceiling(
                 pm=permission_mode, raise_ceiling=raise_ceiling, warnings=warnings)
             bridged = bridged or b

@@ -333,8 +333,9 @@ def subtree_files(slug: str, rel: str,
 
 def grow(slug: str, new_size_mb: int) -> None:
     """GROW is online (user-adopted resize rule): extend the sparse file,
-    resize2fs while mounted. Shrink is a different, offline operation and is
-    deliberately NOT offered here yet (stage 5)."""
+    resize2fs while mounted. Shrink is a different, OFFLINE operation —
+    shrink_image below, reached via the staged pending-shrink flow (applied
+    only when the org's container is down); this function refuses it."""
     u = usage(slug, max_age=0.0)
     if u and new_size_mb * 1048576 < u[1]:
         raise DiskError("grow() cannot shrink — the disk is "

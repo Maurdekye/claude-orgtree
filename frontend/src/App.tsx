@@ -170,7 +170,7 @@ export default function App() {
         }
         if (data.event === 'resumed') refreshTree(slug)
         if (data.event === 'spend_frozen') {
-          toast(['SPEND LIMIT REACHED — every agent is frozen; raise the limit in the kiosk dashboard to resume'])
+          toast(['SPEND LIMIT REACHED — every agent is frozen; raise the limit in the org’s settings (⚙) to resume'])
           refreshTree(slug)
         }
         if (data.event === 'storage_blocked') {
