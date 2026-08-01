@@ -16,7 +16,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import {
-  diskDelete, diskFileUrl, diskGrow, getDisk, getDiskDir,
+  diskDelete, diskFileUrl, diskResize, diskResizeApply, diskResizeCancel,
+  getDisk, getDiskDir,
 } from './api'
 import type {
   DiskDirEntry, DiskDirPayload, DiskFile, DiskPayload, ToastFn,
@@ -223,24 +224,56 @@ export function DiskBrowser({ slug, isPublic, toast, close, initialMode }: {
           <span className="spacer" />
           {!isPublic && (
             <>
-              {/* grow-only (user ruling): say it up front rather than let
-                  the 422 teach it. Shrink is docketed as a pending-restart
-                  design; reclaiming space is deletion, above. */}
+              {/* pending-shrink divergence (user's design): the amber chip
+                  shows requested vs actual until the org's container is
+                  next down — or the bridge applies it now */}
+              {live?.pending_mb != null && (
+                <span className="disk-pending" title={
+                  'a shrink is staged: it applies when this org\'s container '
+                  + 'is next down (never the backend), or apply it now — '
+                  + 'briefly stops this org\'s agents'}>
+                  {live.size_mb} MB → {live.pending_mb} MB pending
+                  <button disabled={busy} title="briefly stops this org's agents"
+                    onClick={() => {
+                      setBusy(true)
+                      diskResizeApply(slug)
+                        .then((r) => { toast([`disk is now ${r.size_mb} MB`]); refresh() })
+                        .catch((e: Error) => toast([`error: ${e.message}`]))
+                        .finally(() => setBusy(false))
+                    }}>apply now</button>
+                  <button disabled={busy} title="cancel the staged shrink"
+                    onClick={() => {
+                      setBusy(true)
+                      diskResizeCancel(slug)
+                        .then(() => { toast(['staged shrink cancelled']); refresh() })
+                        .catch((e: Error) => toast([`error: ${e.message}`]))
+                        .finally(() => setBusy(false))
+                    }}><CloseIcon fontSize="inherit" /></button>
+                </span>
+              )}
               <span className="dim disk-grow-note">
-                storage only grows — reclaim space by deleting files above
+                grow applies instantly; a shrink stages until this org's
+                container is next down
               </span>
               <input className="disk-grow" type="number" min="1"
-                placeholder="grow to MB" value={growTo}
+                placeholder="resize to MB" value={growTo}
                 onChange={(e) => setGrowTo(e.target.value)} />
               <button disabled={busy || !growTo}
-                title="online grow — extends the disk without stopping anything"
+                title="grow: online, instant · shrink: staged (refused below current usage)"
                 onClick={() => {
                   setBusy(true)
-                  diskGrow(slug, parseInt(growTo, 10))
-                    .then((r) => { toast([`disk grown to ${r.size_mb} MB`]); setGrowTo(''); refresh() })
+                  diskResize(slug, parseInt(growTo, 10))
+                    .then((r) => {
+                      toast([r.pending_mb != null
+                        ? `shrink to ${r.pending_mb} MB staged — applies when `
+                          + 'the container is next down (or use apply now)'
+                        : `disk is now ${r.size_mb} MB`])
+                      setGrowTo('')
+                      refresh()
+                    })
                     .catch((e: Error) => toast([`error: ${e.message}`]))
                     .finally(() => setBusy(false))
-                }}>grow</button>
+                }}>resize</button>
             </>
           )}
         </div>

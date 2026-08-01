@@ -395,6 +395,18 @@ def ensure_container(org: Org) -> str:
     if not org.d.get("disk"):
         migrate_to_disk(org)
         org = store.load_org(slug)        # workspace/dirs were rewritten
+    ins0 = _docker("container", "inspect", "-f", "{{.State.Running}}", name)
+    if ins0.returncode != 0 or ins0.stdout.strip() != "true":
+        # a natural container-down moment — the RULED trigger for a pending
+        # shrink (it needs THIS org's container down, never the backend).
+        # Best-effort: a refusal keeps the request pending, logged; the UI's
+        # divergence chip keeps showing intent vs reality.
+        try:
+            note = try_apply_pending_resize(org)
+            if note:
+                print(f"[orgtree] org {slug!r}: {note}")
+        except Exception as e:                          # noqa: BLE001
+            print(f"[orgtree] org {slug!r}: pending-shrink attempt failed: {e}")
     # ⚠ mount-verify before EVERY start: /mnt/wsl dies with the WSL VM and
     # Docker mints an EMPTY DIR for a missing bind source — an org must
     # hard-refuse to run rather than bind an empty workspace and diverge.
@@ -483,6 +495,41 @@ def ensure_container(org: Org) -> str:
         raise RuntimeError("sandbox container failed to start: "
                            + (r.stderr or r.stdout)[-500:])
     return name
+
+
+def try_apply_pending_resize(org: Org) -> str | None:
+    """Apply a doc-persisted pending shrink (user design: record the request,
+    apply when the org's container is down anyway, show the divergence until
+    then). CALLER guarantees the container is down. Returns None when there
+    was nothing pending or it applied; a human-readable reason when the
+    shrink was KEPT PENDING (refuse-not-guess: usage may have outgrown the
+    target while it waited — never partially apply, say how many MB to free)."""
+    from . import disk as dsk
+    slug = org.d["slug"]
+    d = dict(org.d.get("disk") or {})
+    pend = int(d.get("pending_size_mb") or 0)
+    if not pend:
+        return None
+    dsk.mount(slug)                      # need a fresh usage reading
+    du = dsk.usage(slug, max_age=0.0)
+    # ~90% fit: resize2fs needs working room, and landing at 100% would be
+    # an instant hard-full
+    if du and du[0] > pend * 1048576 * 0.9:
+        need = int((du[0] - pend * 1048576 * 0.9) / 1048576) + 1
+        return (f"pending shrink to {pend} MB not applied: usage is "
+                f"{du[0] // 1048576} MB — free about {need} MB first")
+    dsk.shrink_image(slug, pend)
+    dsk.mount(slug)
+    with store.DOC_LOCK:
+        o2 = store.load_org(slug)
+        d2 = dict(o2.d.get("disk") or {})
+        d2["size_mb"] = pend
+        d2.pop("pending_size_mb", None)
+        o2.d["disk"] = d2
+        store.save_org(o2)
+    print(f"[orgtree] org {slug!r}: pending shrink applied — disk is now "
+          f"{pend} MB")
+    return None
 
 
 def stop_container(slug: str) -> None:

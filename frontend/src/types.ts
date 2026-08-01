@@ -222,6 +222,8 @@ export interface TreeDisk {
   total_mb: number | null
   blocked: boolean
   full: boolean
+  /** staged shrink target — the yellow divergence: requested vs actual */
+  pending_mb?: number | null
 }
 
 export interface DiskFile {
@@ -238,6 +240,9 @@ export interface DiskPayload {
   full: boolean
   /** admin only; null = Docker Desktop's VM disk cap is UNSET on the host */
   vm_cap_mib?: number | null
+  /** admin only: configured size + staged shrink target (null = none) */
+  size_mb?: number
+  pending_mb?: number | null
   files: DiskFile[]
   offset: number
   limit: number
@@ -273,6 +278,24 @@ export interface DiskDirPayload {
   full: boolean
   /** admin only; null = Docker Desktop's VM disk cap is UNSET on the host */
   vm_cap_mib?: number | null
+  /** admin only: configured size + staged shrink target (null = none) */
+  size_mb?: number
+  pending_mb?: number | null
+}
+
+/** pre-migration backup accounting (admin sweep) */
+export interface SweepPreview {
+  volumes: string[]
+  volumes_bytes: number
+  host_dirs: string[]
+  host_bytes: number
+  total_bytes: number
+}
+
+export interface SweepResult {
+  removed_volumes: string[]
+  removed_dirs: string[]
+  failures: string[]
 }
 
 export interface TreePayload {

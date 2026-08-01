@@ -612,6 +612,8 @@ def org_tree(slug: str, request: Request) -> dict[str, Any]:
             "total_mb": round(du[1] / 1048576, 1) if du else None,
             "blocked": bool(tree.get("storage_blocked")),
             "full": bool(org.d.get("storage_full")),
+            # the yellow divergence (pending shrink): requested vs actual
+            "pending_mb": (org.d.get("disk") or {}).get("pending_size_mb"),
         }
     if _public_slug(request):
         # tells the UI to lock itself down; the SERVER gate is the enforcement
@@ -2194,7 +2196,11 @@ def disk_list(slug: str, request: Request, offset: int = 0,
             "full": bool(org.d.get("storage_full")),
             # admin-only nudge: org disks are SPARSE, the VM cap is the
             # aggregate wall — None = unset on the host
-            **({} if public else {"vm_cap_mib": sandbox.vm_disk_cap_mib()}),
+            **({} if public else {
+                "vm_cap_mib": sandbox.vm_disk_cap_mib(),
+                "size_mb": int((org.d.get("disk") or {}).get("size_mb") or 0),
+                "pending_mb": (org.d.get("disk") or {}).get("pending_size_mb"),
+            }),
             "files": files, "offset": max(0, offset),
             "limit": max(1, min(limit, 500))}
 
@@ -2250,7 +2256,11 @@ def disk_dir(slug: str, request: Request, path: str = "") -> dict[str, Any]:
             "used": du[0] if du else None, "total": du[1] if du else None,
             "blocked": bool(org.d.get("storage_blocked")),
             "full": bool(org.d.get("storage_full")),
-            **({} if public else {"vm_cap_mib": sandbox.vm_disk_cap_mib()})}
+            **({} if public else {
+                "vm_cap_mib": sandbox.vm_disk_cap_mib(),
+                "size_mb": int((org.d.get("disk") or {}).get("size_mb") or 0),
+                "pending_mb": (org.d.get("disk") or {}).get("pending_size_mb"),
+            })}
 
 
 @app.get("/api/orgs/{slug}/disk/file")
@@ -2339,37 +2349,182 @@ def disk_delete(slug: str, body: DiskDelete, request: Request) -> dict[str, Any]
             "full": bool(org.d.get("storage_full"))}
 
 
-class DiskGrow(BaseModel):
-    size_mb: int
+class DiskResize(BaseModel):
+    size_mb: int | None = None
+    cancel: bool = False       # one-click cancel of a pending shrink (ruled)
 
 
-@app.post("/api/orgs/{slug}/disk/grow")
-def disk_grow(slug: str, body: DiskGrow, request: Request) -> dict[str, Any]:
-    """Online grow (extend + resize2fs, no container stop). ADMIN-side only:
-    growing spends host disk. Shrink is deliberately absent for now — it is
-    offline and refuses below current usage (stage 5)."""
+def _disk_doc_update(slug: str, **kv: Any) -> None:
+    with store.DOC_LOCK:
+        o2 = store.load_org(slug)
+        d = dict(o2.d.get("disk") or {})
+        for k, v in kv.items():
+            if v is None:
+                d.pop(k, None)
+            else:
+                d[k] = v
+        o2.d["disk"] = d
+        store.save_org(o2)
+
+
+@app.post("/api/orgs/{slug}/disk/resize")
+def disk_resize(slug: str, body: DiskResize, request: Request) -> dict[str, Any]:
+    """Resize, ADMIN only (it spends/reshapes host disk). GROW applies
+    online, immediately, and CLEARS any pending shrink outright (ruled — a
+    grow can always apply now). SHRINK becomes a PENDING request persisted
+    in the org doc: it applies at the next moment this org's container is
+    down (or via /disk/resize/apply), and the UI shows requested vs actual
+    until then. A shrink below current usage is refused HERE with the MB to
+    free — the same refuse-not-guess rule the apply path enforces."""
     if _public_slug(request):
         raise HTTPException(403, "admin side only")
     org = _disk_org(slug)
     from . import disk as dsk
-    cur = int((org.d.get("disk") or {}).get("size_mb") or 0)
-    if body.size_mb <= cur:
-        raise HTTPException(422, f"grow only: the disk is {cur} MB (shrink "
-                                 f"is an offline operation — not offered yet)")
-    try:
-        dsk.grow(slug, int(body.size_mb))
-    except dsk.DiskError as e:
-        raise HTTPException(503, str(e))
-    with store.DOC_LOCK:
-        o2 = store.load_org(slug)
-        d = dict(o2.d.get("disk") or {})
-        d["size_mb"] = int(body.size_mb)
-        o2.d["disk"] = d
-        store.save_org(o2)
-    supervisor.storage_check(slug)          # a grow may clear blocked/full
+    d = dict(org.d.get("disk") or {})
+    cur = int(d.get("size_mb") or 0)
+    if body.cancel:
+        _disk_doc_update(slug, pending_size_mb=None)
+        return {"size_mb": cur, "pending_mb": None}
+    if body.size_mb is None:
+        raise HTTPException(422, "size_mb required (or cancel: true)")
+    want = int(body.size_mb)
+    if want == cur:
+        _disk_doc_update(slug, pending_size_mb=None)   # replace/no-op clears
+        return {"size_mb": cur, "pending_mb": None}
+    if want > cur:
+        try:
+            dsk.grow(slug, want)
+        except dsk.DiskError as e:
+            raise HTTPException(503, str(e))
+        _disk_doc_update(slug, size_mb=want, pending_size_mb=None)
+        supervisor.storage_check(slug)      # a grow may clear blocked/full
+        du = dsk.usage(slug, max_age=0.0)
+        return {"size_mb": want, "pending_mb": None,
+                "used": du[0] if du else None, "total": du[1] if du else None}
+    # shrink request: floor + live usage refusal, then stage it
+    if want < 4096:
+        raise HTTPException(422, "org disks have a 4096 MB minimum (the "
+                                 "system seed and transcripts live inside "
+                                 "the cap)")
     du = dsk.usage(slug, max_age=0.0)
-    return {"size_mb": int(body.size_mb),
+    if du and du[0] > want * 1048576 * 0.9:
+        need = int((du[0] - want * 1048576 * 0.9) / 1048576) + 1
+        raise HTTPException(422, f"usage is {du[0] // 1048576} MB — free "
+                                 f"about {need} MB before shrinking to "
+                                 f"{want} MB")
+    # a new request supersedes any earlier one (ruled: replaceable)
+    _disk_doc_update(slug, pending_size_mb=want)
+    return {"size_mb": cur, "pending_mb": want}
+
+
+@app.post("/api/orgs/{slug}/disk/resize/apply")
+def disk_resize_apply(slug: str, request: Request) -> dict[str, Any]:
+    """The BRIDGE (ruled — a pending shrink the operator cannot trigger is a
+    wall with a legal sequence behind it): briefly stops THIS org's agents,
+    applies the pending shrink, and lets the container restart on the next
+    turn. Never touches the backend or other orgs."""
+    if _public_slug(request):
+        raise HTTPException(403, "admin side only")
+    org = _disk_org(slug)
+    if not int((org.d.get("disk") or {}).get("pending_size_mb") or 0):
+        raise HTTPException(422, "no pending resize")
+    from . import disk as dsk
+    sandbox.stop_container(slug)
+    try:
+        note = sandbox.try_apply_pending_resize(org)
+    except (dsk.DiskError, RuntimeError) as e:
+        raise HTTPException(503, str(e))
+    if note:
+        raise HTTPException(422, note)     # kept pending — says what to free
+    org = store.load_org(slug)
+    d = dict(org.d.get("disk") or {})
+    du = dsk.usage(slug, max_age=0.0)
+    return {"size_mb": int(d.get("size_mb") or 0), "pending_mb": None,
             "used": du[0] if du else None, "total": du[1] if du else None}
+
+
+# ------------------------------------------- pre-migration backup sweep
+def _du_native(path: str) -> int:
+    """Host-dir size (native paths only — never point this at UNC)."""
+    total = 0
+    stack = [path]
+    while stack:
+        d = stack.pop()
+        try:
+            with os.scandir(d) as it:
+                for e in it:
+                    try:
+                        if e.is_dir(follow_symlinks=False):
+                            stack.append(e.path)
+                        elif e.is_file(follow_symlinks=False):
+                            total += e.stat(follow_symlinks=False).st_size
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+    return total
+
+
+def _legacy_targets(slug: str) -> tuple[list[str], list[str]]:
+    """(existing legacy volume names, existing host-dir copies) — the state
+    the disk migration copied FROM and kept for rollback."""
+    vols = [sandbox.sys_volume(slug, d)
+            for d in ("usr", "var", "etc", "opt", "root", "srv")
+            if subprocess.run(["docker", "volume", "inspect",
+                               sandbox.sys_volume(slug, d)],
+                              capture_output=True).returncode == 0]
+    dirs = [p for p in (sandbox.sandbox_root(slug),
+                        store.workspace_dir(slug), store.scratch_root(slug))
+            if os.path.isdir(p)]
+    return vols, dirs
+
+
+@app.get("/api/orgs/{slug}/sweep-legacy")
+def sweep_legacy_preview(slug: str, request: Request) -> dict[str, Any]:
+    """What the pre-migration backup still costs — admin decides whether to
+    drop the rollback. Refuses unless the org's disk is mounted and healthy
+    (never delete the backup of a disk that can't prove it's alive)."""
+    if _public_slug(request):
+        raise HTTPException(403, "admin side only")
+    org = _disk_org(slug)
+    from . import disk as dsk
+    if not dsk.is_mounted(org.d["slug"]):
+        raise HTTPException(503, "the org disk is not mounted — not touching "
+                                 "its rollback backup")
+    vols, dirs = _legacy_targets(slug)
+    vol_bytes = sandbox.sandbox_volumes_bytes(slug, max_age=0.0) or 0
+    host_bytes = sum(_du_native(p) for p in dirs)
+    return {"volumes": vols, "volumes_bytes": vol_bytes,
+            "host_dirs": dirs, "host_bytes": host_bytes,
+            "total_bytes": vol_bytes + host_bytes}
+
+
+@app.post("/api/orgs/{slug}/sweep-legacy")
+def sweep_legacy(slug: str, request: Request) -> dict[str, Any]:
+    """Drop the rollback: legacy volumes + host-dir copies. Explicit admin
+    action behind a preview + armed click in the UI — the data lives ON the
+    org disk now; this deletes only the pre-migration copies."""
+    if _public_slug(request):
+        raise HTTPException(403, "admin side only")
+    org = _disk_org(slug)
+    from . import disk as dsk
+    if not dsk.is_mounted(org.d["slug"]):
+        raise HTTPException(503, "the org disk is not mounted — not touching "
+                                 "its rollback backup")
+    vols, dirs = _legacy_targets(slug)
+    failures: list[str] = []
+    if vols:
+        r = subprocess.run(["docker", "volume", "rm", "-f", *vols],
+                           capture_output=True, text=True, timeout=120)
+        if r.returncode != 0:
+            failures.append((r.stderr or r.stdout)[-200:])
+    for p in dirs:
+        try:
+            shutil.rmtree(p)
+        except OSError as e:
+            failures.append(f"{p}: {e}")
+    return {"removed_volumes": vols, "removed_dirs": dirs,
+            "failures": failures}
 
 
 @app.get("/api/orgs/{slug}/nodes/{nid}/chat")

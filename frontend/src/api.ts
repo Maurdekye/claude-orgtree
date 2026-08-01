@@ -8,7 +8,8 @@ import type {
   InboxPayload, KioskCfgRequest, KioskSaveResult, KioskSpecRequest,
   McpServersPayload, OpRequest, OpResult, OrgListEntry, OrgMdPayload,
   ReorderRequest, ScopeRequest, ScratchPayload, SendMessageResult,
-  SettingsRequest, SettingsResult, TreePayload, UploadResult,
+  SettingsRequest, SettingsResult, SweepPreview, SweepResult, TreePayload,
+  UploadResult,
 } from './types'
 
 export const BASE = (location.pathname.match(/^\/k\/[A-Za-z0-9_-]+/) || [''])[0]
@@ -191,16 +192,34 @@ export const diskDelete = (slug: string, paths: string[]): Promise<DiskDeleteRes
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ paths }),
   })
-export const diskGrow = (
-  slug: string, size_mb: number,
-): Promise<{ size_mb: number; used: number | null; total: number | null }> =>
-  req(`/api/orgs/${slug}/disk/grow`, {
+export interface DiskResizeResult {
+  size_mb: number
+  pending_mb: number | null
+  used?: number | null
+  total?: number | null
+}
+// grow applies online immediately (and clears any pending shrink); a shrink
+// stages a PENDING request applied when the org's container is next down
+export const diskResize = (slug: string, size_mb: number): Promise<DiskResizeResult> =>
+  req(`/api/orgs/${slug}/disk/resize`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ size_mb }),
   })
+export const diskResizeCancel = (slug: string): Promise<DiskResizeResult> =>
+  req(`/api/orgs/${slug}/disk/resize`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ cancel: true }),
+  })
+export const diskResizeApply = (slug: string): Promise<DiskResizeResult> =>
+  req(`/api/orgs/${slug}/disk/resize/apply`, { method: 'POST' })
 export const getDiskDir = (slug: string, path = ''): Promise<DiskDirPayload> =>
   req(`/api/orgs/${slug}/disk/dir?path=${encodeURIComponent(path)}`)
+export const getSweepPreview = (slug: string): Promise<SweepPreview> =>
+  req(`/api/orgs/${slug}/sweep-legacy`)
+export const sweepLegacy = (slug: string): Promise<SweepResult> =>
+  req(`/api/orgs/${slug}/sweep-legacy`, { method: 'POST' })
 export const diskFileUrl = (slug: string, path: string): string =>
   u(`/api/orgs/${slug}/disk/file?path=${encodeURIComponent(path)}`)
 

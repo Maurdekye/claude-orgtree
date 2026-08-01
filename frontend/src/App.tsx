@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   audienceAction, BASE, clearInbox, createOrg, creditDecide, deleteOrg,
-  getAudiences, getDefaults, getEvents, getHost, getInbox, getOrgMd, getTree,
-  killAll, listOrgs, markRead, openWs, putOrgMd, resumeFrozen, runOp,
-  saveDefaults, saveKiosk, saveSettings, sendMessage,
+  getAudiences, getDefaults, getEvents, getHost, getInbox, getOrgMd,
+  getSweepPreview, getTree, killAll, listOrgs, markRead, openWs, putOrgMd,
+  resumeFrozen, runOp, saveDefaults, saveKiosk, saveSettings, sendMessage,
+  sweepLegacy,
 } from './api'
 import { ConfirmModal, MailFolders, MailList, OrgCanvas, OrgRecord, useEsc } from './Canvas'
 import { DiskBrowser, DiskFullAlert } from './DiskBrowser'
@@ -17,8 +18,8 @@ import { DirList } from './forms'
 import { FolderPickerHost } from './picker'
 import type {
   AudiencesPayload, DefaultsPayload, InboxPayload, KioskSpecRequest,
-  MailEntry, OpRequest, OrgEvent, OrgListEntry, ToastFn, ToastUndo,
-  TreeFrozen, TreeNode, TreePayload,
+  MailEntry, OpRequest, OrgEvent, OrgListEntry, SweepPreview, ToastFn,
+  ToastUndo, TreeFrozen, TreeNode, TreePayload,
 } from './types'
 
 const TIER_LETTER: Record<string, string> = { haiku: 'H', sonnet: 'S', opus: 'O', fable: 'F' }
@@ -316,10 +317,14 @@ export default function App() {
                   // whole footprint against the fs cap; click opens the
                   // recovery browser (visitors get the full tool — ruled)
                   <button className={'chip disk-chip'
-                    + ((tree.disk.used_mb ?? 0) >= (tree.disk.total_mb ?? Infinity) * 0.8 || tree.disk.blocked ? ' bad' : '')}
-                    title="org disk used / capacity — click to browse and free space"
+                    + ((tree.disk.used_mb ?? 0) >= (tree.disk.total_mb ?? Infinity) * 0.8 || tree.disk.blocked ? ' bad' : '')
+                    + (tree.disk.pending_mb != null ? ' pend' : '')}
+                    title={'org disk used / capacity — click to browse and free space'
+                      + (tree.disk.pending_mb != null
+                        ? ` · shrink to ${tree.disk.pending_mb} MB is staged` : '')}
                     onClick={() => setShowDisk('last')}>
                     <StorageIcon fontSize="inherit" /> {tree.disk.used_mb ?? '?'} / {tree.disk.total_mb ?? '?'} MB
+                    {tree.disk.pending_mb != null ? ` → ${tree.disk.pending_mb} MB pending` : ''}
                     {tree.disk.full ? ' — FULL' : tree.disk.blocked ? ' — turns paused' : ''}
                   </button>
                 ) : tree.kiosk?.storage_limit_mb && (
@@ -913,6 +918,51 @@ function CeilDirs({ dirs, onChange }: {
   )
 }
 
+// The pre-migration backup sweep (disk orgs): the migration kept the legacy
+// volumes and host-dir copies for rollback — this shows their cost and drops
+// them behind an armed click. Renders nothing once the backup is gone.
+function SweepBlock({ slug, toast }: { slug: string; toast: ToastFn }) {
+  const [prev, setPrev] = useState<SweepPreview | null>(null)
+  const [armed, setArmed] = useState(false)
+  const [busy, setBusy] = useState(false)
+  useEffect(() => {
+    getSweepPreview(slug).then(setPrev).catch(() => setPrev(null))
+  }, [slug])
+  if (!prev || (!prev.volumes.length && !prev.host_dirs.length)) return null
+  const mb = (b: number) => `${Math.round(b / 1048576)} MB`
+  return (
+    <>
+      <div className="field-label">pre-migration backup (rollback for the
+        disk migration)</div>
+      <div className="hint">
+        {prev.volumes.length} legacy volume(s) ({mb(prev.volumes_bytes)}) +
+        host copies ({mb(prev.host_bytes)}) = {mb(prev.total_bytes)} held
+        only for rollback — the live data is on the org disk.
+      </div>
+      <button className={'disk-del' + (armed ? ' armed' : '')} disabled={busy}
+        onMouseLeave={() => setArmed(false)}
+        onClick={() => {
+          if (!armed) { setArmed(true); return }
+          setArmed(false)
+          setBusy(true)
+          sweepLegacy(slug)
+            .then((r) => {
+              toast(r.failures.length
+                ? [`swept with ${r.failures.length} failure(s): ${r.failures[0]}`]
+                : [`rollback backup deleted — freed ~${mb(prev.total_bytes)}`])
+              setPrev(null)
+            })
+            .catch((e: Error) => toast([`error: ${e.message}`]))
+            .finally(() => setBusy(false))
+        }}>
+        <DeleteIcon fontSize="inherit" />
+        {armed ? `really delete the rollback (~${mb(prev.total_bytes)})?`
+          : 'delete the pre-migration backup'}
+      </button>
+    </>
+  )
+}
+
 function SettingsPanel({ tree, toast, close }: {
   tree: TreePayload
   toast: ToastFn
@@ -1134,6 +1184,7 @@ function SettingsPanel({ tree, toast, close }: {
               .catch((e: Error) => toast([`error: ${e.message}`]))}>
             <BlockIcon fontSize="inherit" /> clear the fable weekly-limit lock (your decree)</button>
         )}
+        {tree.disk && <SweepBlock slug={tree.slug} toast={toast} />}
         <div className="row">
           <button className="primary" onClick={() =>
             Promise.all([

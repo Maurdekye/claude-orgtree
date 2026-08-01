@@ -277,8 +277,11 @@ class OrgDoc(TypedDict):
     storage_frozen: NotRequired[bool]   # legacy-layout breach (container stopped)
     storage_blocked: NotRequired[bool]  # ACL block (legacy) / turn pause (disk ≥90%)
     storage_full: NotRequired[bool]     # disk ≥99% — the persistent UI alert state
-    disk: NotRequired[dict[str, Any]]   # {size_mb, migrated_at} — org rides its
-                                        # virtual disk (sandbox.migrate_to_disk)
+    disk: NotRequired[dict[str, Any]]   # {size_mb, migrated_at,
+                                        #  pending_size_mb?} — org rides its
+                                        # virtual disk (sandbox.migrate_to_disk);
+                                        # pending = staged shrink, applied when
+                                        # the org's container is next down
     storage_warned: NotRequired[bool]
     auto_resume: NotRequired[bool]
     auto_resume_last: NotRequired[float]

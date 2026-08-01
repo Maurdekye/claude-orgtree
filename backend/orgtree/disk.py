@@ -351,6 +351,28 @@ def grow(slug: str, new_size_mb: int) -> None:
     _usage_cache.pop(slug, None)
 
 
+def shrink_image(slug: str, new_size_mb: int) -> None:
+    """OFFLINE shrink (pending-shrink design, user-ruled): the CALLER
+    guarantees the org's container is down — only that org's agents pause,
+    never the backend (each org's mount is independent and the backend reads
+    over UNC with transient handles). Sequence: unmount → forced fsck →
+    resize2fs to the target → truncate the sparse file down → caller
+    remounts. Usage-fit is the CALLER's check (refuse-not-guess: never
+    partially apply)."""
+    img = _img_path(slug)
+    with _lock:
+        r = _sh(f"umount {mount_path(slug)} 2>/dev/null; "
+                f"e2fsck -fy {img} >/dev/null && "
+                f"resize2fs {img} {new_size_mb}M && "
+                f"truncate -s {new_size_mb}M {img}", timeout=600)
+        if r.returncode != 0:
+            raise DiskError("org disk shrink failed (nothing was truncated "
+                            "unless resize2fs succeeded): "
+                            + (r.stderr or r.stdout)[-300:])
+    _usage_cache.pop(slug, None)
+    _tree_cache.pop(slug, None)
+
+
 def enumerate_by_size(slug: str, limit: int = 500,
                       offset: int = 0) -> list[dict[str, object]]:
     """Recovery-browser listing: files by size DESCENDING, computed INSIDE

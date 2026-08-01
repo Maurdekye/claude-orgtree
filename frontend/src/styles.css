@@ -1221,6 +1221,18 @@ input:focus, select:focus, textarea:focus, button:focus-visible {
 .disk-del.armed { background: var(--bad); color: var(--panel); }
 .disk-grow { width: 110px; }
 .disk-grow-note { font-size: 10.5px; }
+/* the pending-shrink divergence chip — amber from the existing warn hue
+   (var(--work), the validated palette), both numbers visible at a glance */
+.disk-pending {
+  display: inline-flex; align-items: center; gap: 6px; font-size: 11px;
+  padding: 2px 8px; border: 1px solid var(--work); color: var(--work);
+  border-radius: 4px; background: color-mix(in srgb, var(--work) 10%, transparent);
+}
+.disk-pending button {
+  border: 1px solid var(--work); color: var(--work); background: none;
+  border-radius: 3px; padding: 1px 6px; font-size: 10.5px;
+}
+.disk-pending button:hover { background: color-mix(in srgb, var(--work) 15%, transparent); }
 .disk-vmcap {
   font-size: 11px; padding: 4px 8px; margin-bottom: 6px;
   border-left: 2px solid var(--work); background: var(--panel-2);
@@ -1247,6 +1259,7 @@ input:focus, select:focus, textarea:focus, button:focus-visible {
 }
 .disk-dirlink:hover { color: var(--accent); }
 .disk-chip { cursor: pointer; }
+.disk-chip.pend { border-color: var(--work); color: var(--work); }
 
 /* above every scrim (18-20) and the folder picker (60): a toast's
    click-to-dismiss must stay reachable while a modal is open */
