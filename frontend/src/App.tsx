@@ -1219,8 +1219,13 @@ function SettingsPanel({ tree, toast, close }: {
         )}
         {tree.disk && <SweepBlock slug={tree.slug} toast={toast} />}
         <div className="row">
-          <button className="primary" onClick={() =>
-            Promise.all([
+          <button className="primary" onClick={() => {
+            // the bottom save applies the WHOLE panel: the kiosk caps and
+            // the permission ceiling have their own inline buttons, but a
+            // ceiling change followed by "save" used to silently revert
+            // (user report 2026-08-01) — so any dirty group rides along here
+            const jobs: Promise<{ warnings?: string[]
+                                  freezes_cleared?: string[] }>[] = [
               saveSettings(tree.slug,
                 { max_top_grant: +maxTop || undefined,
                   default_top_grant: Number.isFinite(+defTop) ? +defTop : undefined,
@@ -1230,9 +1235,52 @@ function SettingsPanel({ tree, toast, close }: {
                   default_effort: defEffort,
                   cascade_hire: cascadeHire,
                   cascade_alloc: cascadeAlloc }),
-              orgMd != null ? putOrgMd(tree.slug, orgMd) : Promise.resolve({}),
-            ]).then(([r]) => { toast(r.warnings); close() })
-              .catch((e: Error) => toast([`error: ${e.message}`]))}>save</button>
+              orgMd != null ? putOrgMd(tree.slug, orgMd).then(() => ({}))
+                : Promise.resolve({}),
+            ]
+            if (kk && (+kkCredits !== (kk.credits ?? 0)
+                || +kkSpend !== (kk.spend_limit ?? 0)
+                || +kkStorage !== (kk.storage_limit_mb ?? 0)))
+              jobs.push(saveKiosk(tree.slug, {
+                credits: +kkCredits || 0, spend_limit: +kkSpend || 0,
+                storage_limit_mb: kk.sandbox
+                  ? Math.max(4096, +kkStorage || 4096) : +kkStorage || 0 }))
+            if (ms && ceil) {
+              const scope = {
+                tools: { ...ceil,
+                         mcp: ceilMcp.split(',').map((s) => s.trim())
+                           .filter(Boolean) },
+                add_dirs: ceilDirs.filter((d) => d.path.trim()),
+                org_visibility: ceilVis, permission_mode: ceilPm,
+                max_tier: ceilTier || null,
+              }
+              // dirty check against the stored (normalized) ceiling — same
+              // key order on both sides makes stringify a faithful compare
+              const cur = {
+                tools: { bash: !!ms.tools?.bash, web: !!ms.tools?.web,
+                         edit: !!ms.tools?.edit, subagents: !!ms.tools?.subagents,
+                         mcp: ms.tools?.mcp ?? [] },
+                add_dirs: ms.add_dirs ?? [],
+                org_visibility: ms.org_visibility ?? 'full',
+                permission_mode: ms.permission_mode ?? 'acceptEdits',
+                max_tier: ms.max_tier ?? null,
+              }
+              if (JSON.stringify(scope) !== JSON.stringify(cur)
+                  || autoRaise !== !!kk?.auto_raise)
+                jobs.push(saveKiosk(tree.slug,
+                  { auto_raise: autoRaise, max_scope: scope }))
+            }
+            Promise.all(jobs).then((rs) => {
+              const cleared = rs.flatMap((r) => r.freezes_cleared ?? [])
+              const lines = [
+                ...(cleared.length
+                  ? [`limit raised — cleared: ${cleared.join(', ')}`] : []),
+                ...rs.flatMap((r) => r.warnings ?? []),
+              ]
+              toast(lines.length ? lines : ['settings saved'])
+              close()
+            }).catch((e: Error) => toast([`error: ${e.message}`]))
+          }}>save</button>
           <button onClick={close}>cancel</button>
         </div>
       </div>
