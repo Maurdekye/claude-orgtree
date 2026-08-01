@@ -518,7 +518,12 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
     // click-to-focus fills the window with the card, small margin all round.
     // The EYE fits by HEIGHT only — it is the one cell that expands in width
     // to the screen's aspect ratio (the switchboard), so height is the fit.
-    const zz = z ?? (id === USER
+    // audit 2026-08-01 (found by the mobile sweep, but a live DESKTOP bug):
+    // on short/narrow windows the fit-derived zoom lands BELOW Z_DESK — the
+    // camera animates and no desk (or switchboard) ever opens, silently.
+    // Floor the focus zoom at the desk threshold: overflowing the viewport
+    // beats a focus gesture that cannot focus.
+    const zz = z ?? Math.max(Z_DESK, id === USER
       ? Math.min(Z_MAX, (vp.height - 48) / USER_H)
       : Math.min(Z_MAX, (Math.min(vp.width, vp.height) - 48) / NODE_H))
     animateTo({
@@ -696,6 +701,20 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
       if (s) { s.x = b.x + dx; s.y = b.y + dy; s.vx = 0; s.vy = 0 }
     }
     setDropId(dropTargetAt(toWorld(e), id))
+  }
+  const abortNodeDrag = (_e: React.PointerEvent<HTMLDivElement>, id: string) => {
+    // pointercancel path: restore the recorded bases and commit NOTHING —
+    // see the NodeSquare comment (a cancel routed through endNodeDrag's
+    // no-drop branch issued an unconditional reorder POST)
+    const d = nodeDrag.current
+    if (!d || d.id !== id) return
+    nodeDrag.current = null
+    setDropId(null)
+    for (const [k, b] of d.bases) {
+      const s = springs.current.get(k)
+      if (s) { s.x = b.x; s.y = b.y; s.vx = 0; s.vy = 0 }
+    }
+    setFrame((f) => f + 1)
   }
   const endNodeDrag = (e: React.PointerEvent<HTMLDivElement>, id: string,
     node: CanvasNode, focused: boolean) => {
@@ -1019,7 +1038,8 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
               cascadeAlloc={tree.cascade_alloc !== false}
               maxTop={tree.max_top_grant ?? 1000} maxTier={tree.kiosk?.max_tier}
               pile={pileHere} compactAt={tree.compact_at}
-              onDragStart={startNodeDrag} onDragMove={moveNodeDrag} onDragEnd={endNodeDrag} />
+              onDragStart={startNodeDrag} onDragMove={moveNodeDrag}
+              onDragEnd={endNodeDrag} onDragCancel={abortNodeDrag} />
           )
           if (!pileHere) return square
           // the pile's stack layers render BEHIND the front card as real

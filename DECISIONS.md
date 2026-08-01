@@ -1254,12 +1254,19 @@ the ruling recorded.
 
 ## Open — awaiting a ruling
 
-*(empty — all seven items were ruled by the user on 2026-08-01; each ruling
-now lives in its domain entry: D-021 Bounds (visibility clamp), D-014
-Load-bearing (`max_top_grant` enforced), D-063 (legacy path retired), D-023
-(no audience expiry), D-071 (channels compose), D-069 (typing phase 3).
-The mobile-responsiveness wave was released the same day — a project-state
-fact, tracked outside the register per the reverse razor.)*
+- **The compact-screen desk: sheet or card?** D-073 rules the desk fades in
+  OVER the card at the same size — the chat living inside the tree is the
+  card metaphor's point. The mobile spec (docs/mobile-spec.md, held)
+  concludes by arithmetic that no zoom makes a world-scaled desk both
+  legible and framed on a phone (desk text ≈4.4 px at 375 px width), and
+  proposes a full-screen 1:1 sheet on compact screens ONLY, keeping D-073
+  on desktop. That contradicts a written ruling, so it needs the user's
+  decision before the mobile wave builds — recorded here so an implementer
+  does not read the sheet as a bug and revert it.
+
+*(The seven items ruled 2026-08-01 live in their domain entries: D-021
+Bounds, D-014 Load-bearing, D-063, D-023, D-071, D-069; the mobile wave's
+hold/release state is project-state, tracked outside the register.)*
 
 ---
 

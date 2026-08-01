@@ -630,12 +630,13 @@ interface NodeSquareProps {
   onDragMove: (e: React.PointerEvent<HTMLDivElement>, id: string) => void
   onDragEnd: (e: React.PointerEvent<HTMLDivElement>, id: string,
     node: CanvasNode, focused: boolean) => void
+  onDragCancel: (e: React.PointerEvent<HTMLDivElement>, id: string) => void
 }
 
 export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, map, op, slug,
   pulse, toast, streamEvt, pxc, zoom, act, onSpawn, onConfig, onInbox, onLineage,
   onRecenter, pub, kioskRemaining, cascadeAlloc, maxTop, pile, compactAt, maxTier,
-  onMailLink, onDragStart, onDragMove, onDragEnd }: NodeSquareProps) {
+  onMailLink, onDragStart, onDragMove, onDragEnd, onDragCancel }: NodeSquareProps) {
   // pile fronts zoom on a plain CENTER click (user spec) — track the
   // pointer-down point so a drag's trailing click doesn't re-zoom
   const downAt = useRef<Pt | null>(null)
@@ -669,7 +670,11 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, m
       }}
       onPointerMove={(e) => onDragMove(e, node.id)}
       onPointerUp={(e) => onDragEnd(e, node.id, node, focused)}
-      onPointerCancel={(e) => onDragEnd(e, node.id, node, focused)}
+      /* a UA-initiated cancel (touch arbitration, capture loss) must ABORT
+         the drag — the end path's no-drop branch commits a reorder POST, so
+         routing cancel through it turned a browser gesture cancellation
+         into a live org restructure (mobile audit §0; fixed 2026-08-01) */
+      onPointerCancel={(e) => onDragCancel(e, node.id)}
       onClick={(e) => {
         // pile front: center click = zoom onto the focused retiree (user
         // spec); margin clicks (the stack) are handled by the layers behind
