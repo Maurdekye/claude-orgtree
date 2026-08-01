@@ -136,6 +136,12 @@ export function DiskBrowser({ slug, isPublic, toast, close }: {
           <span className="spacer" />
           {!isPublic && (
             <>
+              {/* grow-only (user ruling): say it up front rather than let
+                  the 422 teach it. Shrink is docketed as a pending-restart
+                  design; reclaiming space is deletion, above. */}
+              <span className="dim disk-grow-note">
+                storage only grows — reclaim space by deleting files above
+              </span>
               <input className="disk-grow" type="number" min="1"
                 placeholder="grow to MB" value={growTo}
                 onChange={(e) => setGrowTo(e.target.value)} />

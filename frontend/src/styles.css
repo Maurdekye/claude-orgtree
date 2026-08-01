@@ -1220,6 +1220,7 @@ input:focus, select:focus, textarea:focus, button:focus-visible {
 }
 .disk-del.armed { background: var(--bad); color: var(--panel); }
 .disk-grow { width: 110px; }
+.disk-grow-note { font-size: 10.5px; }
 .disk-chip { cursor: pointer; }
 
 /* above every scrim (18-20) and the folder picker (60): a toast's

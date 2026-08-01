@@ -42,16 +42,21 @@ scope; check items off as they land.
       tree payload, chat, inbox, org list. The API seam is where silent shape
       drift between backend and frontend actually bites.
 - [x] `src/api.js` → `src/api.ts` with typed request/response signatures.
-- [ ] Convert leaf files: `forms.jsx`, `icons.jsx`, `picker.jsx`, `main.jsx`.
-- [ ] Convert `App.jsx`.
-- [ ] Convert `Canvas.jsx` LAST, splitting it into modules as it converts
-      (3.9 kLOC, ~40 components — the risk concentration; the prop-threading
-      chains are what TS helps most with and where a rushed conversion would
-      cause regressions). One module per commit.
+- [x] Convert leaf files: `forms`, `icons`, `picker`, `main`, `DiskBrowser`.
+- [x] Convert `App.jsx` (runtime equivalence proven by esbuild-stripped diff).
+- [x] Convert `Canvas.jsx` LAST (converted in place, NOT split — the user's
+      strict-conversion directive superseded the split-as-it-converts idea;
+      splitting remains available as pure-refactor follow-up work).
+- [x] `allowJs: false` — nothing unconverted can hide.
+- [x] STRICT no-`any` sweep (user directive 2026-08-01): zero type-position
+      `any` in the frontend outside exception-handler error params; the one
+      wire-boundary cast lives in api.ts `req<T>()`, and JSON.parse /
+      localStorage sites carry stated-shape casts only.
 
 ## Phase 3 — tighten (optional, needs its own green light)
 
 - [ ] pyright strict mode module-by-module.
 - [ ] `noUncheckedIndexedAccess` in tsconfig.
+- [ ] Split Canvas.tsx into modules (pure refactor, deferred from phase 2).
 - [ ] Shared codegen for the seam types (schema.py → types.ts) if drift ever
       bites in practice; hand-mirrored until then.

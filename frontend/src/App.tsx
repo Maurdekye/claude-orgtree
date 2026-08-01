@@ -15,10 +15,33 @@ import {
 } from './icons'
 import { DirList } from './forms'
 import { FolderPickerHost } from './picker'
+import type {
+  AudiencesPayload, DefaultsPayload, InboxPayload, KioskSpecRequest,
+  MailEntry, OpRequest, OrgEvent, OrgListEntry, ToastFn, ToastUndo,
+  TreeFrozen, TreeNode, TreePayload,
+} from './types'
 
-const TIER_LETTER = { haiku: 'H', sonnet: 'S', opus: 'O', fable: 'F' }
+const TIER_LETTER: Record<string, string> = { haiku: 'H', sonnet: 'S', opus: 'O', fable: 'F' }
 const USER = '@user'       // typed actor sentinels — a node may be NAMED user/system
 const SYSTEM = '@system'
+
+// the WS broadcast shapes the handler actually reads (any other event type
+// only triggers the tree refetch) — cast once at the JSON.parse boundary
+type WsEvent =
+  | { type: 'mail'; from: string; to: string }
+  | { type: 'node_stream'; node: string; kind: string; text?: string; sticky?: boolean }
+  | { type: 'node_event'; node: string; event: string }
+
+// live-feed state threaded into OrgCanvas (boundary shapes — Canvas declares
+// its own; reconcile if they drift)
+interface PulseEvt { node: string; event: string; t: number }
+// text is required on the OUT side: the backend sends it on every stream()
+// emit (supervisor stream plumbing) — the `?? ''` at the construction site
+// is the wire-boundary guard, not a real case
+interface StreamEvt { node: string; kind: string; text: string; sticky?: boolean; t: number }
+interface MailEvt { from: string; to: string; t: number }
+interface NodeActivity { phase: string; tool?: string }
+interface Toast { id: number; lines: string[]; undo: ToastUndo | null }
 
 const slugFromPath = () => {
   // BASE is the /k/<token> prefix when served from a public kiosk URL
@@ -27,25 +50,25 @@ const slugFromPath = () => {
 }
 
 export default function App() {
-  const [orgs, setOrgs] = useState([])
-  const [slug, setSlug] = useState(slugFromPath)   // /o/<slug> survives refresh
-  const [tree, setTree] = useState(null)
-  const [toasts, setToasts] = useState([])
-  const [error, setError] = useState(null)
-  const [pulse, setPulse] = useState(null)
-  const [streamEvt, setStreamEvt] = useState(null)
-  const [mailEvt, setMailEvt] = useState(null)
-  const [activity, setActivity] = useState({})   // node → {phase, tool}
+  const [orgs, setOrgs] = useState<OrgListEntry[]>([])
+  const [slug, setSlug] = useState<string | null>(slugFromPath)   // /o/<slug> survives refresh
+  const [tree, setTree] = useState<TreePayload | null>(null)
+  const [toasts, setToasts] = useState<Toast[]>([])
+  const [error, setError] = useState<string | null>(null)
+  const [pulse, setPulse] = useState<PulseEvt | null>(null)
+  const [streamEvt, setStreamEvt] = useState<StreamEvt | null>(null)
+  const [mailEvt, setMailEvt] = useState<MailEvt | null>(null)
+  const [activity, setActivity] = useState<Record<string, NodeActivity>>({})   // node → {phase, tool}
   const [showSettings, setShowSettings] = useState(false)
   const [showDisk, setShowDisk] = useState(false)   // the recovery browser
   const [showInbox, setShowInbox] = useState(false)
-  const [inboxJump, setInboxJump] = useState(null)   // mail id a chat link targets
+  const [inboxJump, setInboxJump] = useState<string | null>(null)   // mail id a chat link targets
   const [drawer, setDrawer] = useState(false)
-  const [doomedOrg, setDoomedOrg] = useState(null)   // org row pending deletion
+  const [doomedOrg, setDoomedOrg] = useState<OrgListEntry | null>(null)   // org row pending deletion
   const [showDefaults, setShowDefaults] = useState(false)   // global new-org defaults
   const [killArmed, setKillArmed] = useState(false)  // the killswitch latch
   const [nowTick, setNowTick] = useState(Date.now()) // drives the resume-red clock
-  const wsRef = useRef(null)
+  const wsRef = useRef<WebSocket | null>(null)
   useEffect(() => {
     const t = setInterval(() => setNowTick(Date.now()), 15000)
     return () => clearInterval(t)
@@ -58,17 +81,17 @@ export default function App() {
 
   // №17: a toast may carry an UNDO — a 12-second reverse on the gesture just
   // made (mis-drag reorders, accidental promotes, one-click retires)
-  const toast = useCallback((lines, undo = null) => {
+  const toast = useCallback((lines?: string[] | null, undo: ToastUndo | null = null) => {
     if (!lines || !lines.length) return
     const id = Date.now() + Math.random()
     setToasts((t) => [...t, { id, lines, undo }])
     setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 12000)
   }, [])
 
-  const refreshOrgs = useCallback(() => listOrgs().then(setOrgs).catch((e) => setError(e.message)), [])
-  const refreshTree = useCallback((s) => {
+  const refreshOrgs = useCallback(() => listOrgs().then(setOrgs).catch((e: Error) => setError(e.message)), [])
+  const refreshTree = useCallback((s: string | null) => {
     if (!s) return
-    getTree(s).then(setTree).catch((e) => setError(e.message))
+    getTree(s).then(setTree).catch((e: Error) => setError(e.message))
   }, [])
 
   useEffect(() => { refreshOrgs() }, [refreshOrgs])
@@ -91,7 +114,7 @@ export default function App() {
     return () => window.removeEventListener('popstate', onPop)
   }, [])
   useEffect(() => {                    // Escape dismisses the org drawer
-    const onKey = (e) => { if (e.key === 'Escape') setDrawer(false) }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setDrawer(false) }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [])
@@ -111,7 +134,7 @@ export default function App() {
     // auto-reconnect every state indicator froze at its last value until a
     // manual page reload — the "states never line up" bug
     let dead = false
-    let timer = null
+    let timer: ReturnType<typeof setTimeout> | null = null
     const connect = () => {
       if (dead) return
       refreshTree(slug)
@@ -119,15 +142,15 @@ export default function App() {
       wsRef.current = openWs(slug, handleWs,
         () => { if (!dead) timer = setTimeout(connect, 1500) })
     }
-    const handleWs = (ev) => {
-      let data = null
-      try { data = JSON.parse(ev.data) } catch { /* ignore */ }
+    const handleWs = (ev: MessageEvent<string>) => {
+      let data: WsEvent | null = null
+      try { data = JSON.parse(ev.data) as WsEvent } catch { /* ignore */ }
       if (data?.type === 'mail') {     // spark on the wire — pure animation
         setMailEvt({ from: data.from, to: data.to, t: Date.now() })
         return
       }
       if (data?.type === 'node_stream') {
-        setStreamEvt({ node: data.node, kind: data.kind, text: data.text,
+        setStreamEvt({ node: data.node, kind: data.kind, text: data.text ?? '',
           // sticky rides through: immediate-command output lives in NO
           // transcript, so the live-feed reconciliation must never sweep it
           ...(data.sticky ? { sticky: true } : {}), t: Date.now() })
@@ -164,28 +187,32 @@ export default function App() {
       refreshTree(slug)
     }
     connect()
-    return () => { dead = true; clearTimeout(timer); wsRef.current?.close() }
+    return () => { dead = true; clearTimeout(timer!); wsRef.current?.close() }
   }, [slug, refreshTree])
 
-  const op = useCallback((body) =>
-    runOp(slug, body)
+  // op fires only from the active-org canvas — slug is set there (hence !)
+  const op = useCallback((body: OpRequest) =>
+    runOp(slug!, body)
       .then((r) => {
-        if (r?.bridge?.raise_ceiling) {
+        // op-specific result field (OpResult is open in types.ts) — the
+        // ceiling-bridge marker, stated at the wire boundary
+        const bridge = (r as { bridge?: { raise_ceiling?: boolean } } | null)?.bridge
+        if (bridge?.raise_ceiling) {
           // the one-action bridge (ceiling spec §1): the same op, re-sent
           // with the flag — auto_raise OFF never means "go navigate"
           toast(r.warnings?.length ? r.warnings
             : ['clamped to the kiosk permission ceiling'],
           { label: 'raise ceiling & apply',
-            fn: () => runOp(slug, { ...body, raise_ceiling: true })
+            fn: () => runOp(slug!, { ...body, raise_ceiling: true })
               .then((r2) => { toast(r2.warnings); refreshTree(slug); refreshOrgs() })
-              .catch((e) => toast([`error: ${e.message}`])) })
+              .catch((e: Error) => toast([`error: ${e.message}`])) })
         } else toast(r.warnings)
         refreshTree(slug); refreshOrgs(); return r
       })
-      .catch((e) => { toast([`error: ${e.message}`]); throw e }),
+      .catch((e: Error) => { toast([`error: ${e.message}`]); throw e }),
     [slug, toast, refreshTree, refreshOrgs])
 
-  const pick = (s) => { setSlug(s); setShowSettings(false); setDrawer(false) }
+  const pick = (s: string) => { setSlug(s); setShowSettings(false); setDrawer(false) }
   const goHome = () => { setSlug(null); setDrawer(false) }
 
   const orgPanel = (
@@ -219,7 +246,7 @@ export default function App() {
       </nav>
       {!BASE && <NewOrg onCreate={(name, dirs, kiosk, sandbox) =>
         createOrg(name, dirs, kiosk, sandbox).then((r) => { refreshOrgs(); pick(r.slug) })
-          .catch((e) => toast([`error: ${e.message}`]))} />}
+          .catch((e: Error) => toast([`error: ${e.message}`]))} />}
       {/* global default org settings (user spec): every NEW org is born with
           these — admin only */}
       {!BASE && <button className="home" onClick={() => setShowDefaults(true)}>
@@ -255,7 +282,7 @@ export default function App() {
                 {(() => {   // active-agent summary: total · working · per-model
                   const ns = [...flatNodes(tree).values()].filter((n) => n.state === 'live')
                   const busy = ns.filter((n) => n.busy).length
-                  const byTier = {}
+                  const byTier: Record<string, number> = {}
                   for (const n of ns) byTier[n.tier] = (byTier[n.tier] ?? 0) + 1
                   return (
                     <span className="chip agents"
@@ -273,7 +300,7 @@ export default function App() {
                 {tree.cost_usd_total > 0 && !tree.kiosk?.spend_limit &&
                   <span className="chip">${tree.cost_usd_total.toFixed(2)}</span>}
                 {tree.fable_lock &&
-                  <span className="chip bad" title={tree.fable_lock.at}><BlockIcon fontSize="inherit" /> fable limit</span>}
+                  <span className="chip bad" title={tree.fable_lock.at as string | undefined}><BlockIcon fontSize="inherit" /> fable limit</span>}
                 {tree.kiosk?.spend_limit && (
                   tree.spend_frozen
                     ? <span className="chip bad"><BlockIcon fontSize="inherit" /> spend limit reached — agents frozen</span>
@@ -305,7 +332,8 @@ export default function App() {
                 )}
                 {(() => {   // usage-limit freeze: ▶ restarts every frozen agent
                   if (tree.spend_frozen) return null
-                  const frozen = [...flatNodes(tree).values()].filter((n) => n.frozen)
+                  const frozen = [...flatNodes(tree).values()]
+                    .filter((n): n is TreeNode & { frozen: TreeFrozen } => n.frozen != null)
                   if (!frozen.length) return null
                   const until = frozen.map((n) => n.frozen.until).find(Boolean)
                   // RED while the reported reset time is still ahead (resuming
@@ -319,7 +347,7 @@ export default function App() {
                           + (notYet ? ' — the limit has not reset yet' : '')}
                         onClick={() => resumeFrozen(slug)
                           .then((r) => { toast([`resumed ${r.resumed.length} agent(s)`]); refreshTree(slug) })
-                          .catch((e) => toast([`error: ${e.message}`]))}>
+                          .catch((e: Error) => toast([`error: ${e.message}`]))}>
                         <PlayIcon fontSize="inherit" /> resume {frozen.length}
                       </button>
                       <span className="resume-note">
@@ -331,7 +359,7 @@ export default function App() {
                           title="auto-resume all frozen agents one minute after the reported reset time"
                           onClick={() => saveSettings(slug, { auto_resume: !tree.auto_resume })
                             .then(() => refreshTree(slug))
-                            .catch((e) => toast([`error: ${e.message}`]))}>
+                            .catch((e: Error) => toast([`error: ${e.message}`]))}>
                           <AutorenewIcon fontSize="inherit" /> auto{tree.auto_resume ? ' on' : ''}
                         </button>}
                     </>
@@ -351,7 +379,7 @@ export default function App() {
                       setKillArmed(false)
                       killAll(slug)
                         .then((r) => { toast([`interrupted ${r.interrupted.length} agent(s); queues cleared`]); refreshTree(slug) })
-                        .catch((e) => toast([`error: ${e.message}`]))
+                        .catch((e: Error) => toast([`error: ${e.message}`]))
                     }}><StopIcon fontSize="inherit" /> STOP ALL</button>
                 </span>
                 {!tree.public &&
@@ -362,7 +390,7 @@ export default function App() {
               </header>
               <OrgCanvas tree={tree} op={op} slug={slug} pulse={pulse} toast={toast}
                 streamEvt={streamEvt} activity={activity} mailEvt={mailEvt}
-                onInbox={(jump) => {
+                onInbox={(jump: unknown) => {
                   setInboxJump(typeof jump === 'string' ? jump : null)
                   setShowInbox(true)
                 }} />
@@ -412,7 +440,7 @@ export default function App() {
           confirmLabel="delete organization"
           onConfirm={() => deleteOrg(doomedOrg.slug)
             .then(() => { if (slug === doomedOrg.slug) setSlug(null); refreshOrgs() })
-            .catch((e) => toast([`error: ${e.message}`]))}
+            .catch((e: Error) => toast([`error: ${e.message}`]))}
           close={() => setDoomedOrg(null)} />
       )}
 
@@ -425,7 +453,7 @@ export default function App() {
               <button className="toast-undo" onClick={(e) => {
                 e.stopPropagation()
                 setToasts((x) => x.filter((y) => y.id !== t.id))
-                ;(typeof t.undo === 'function' ? t.undo : t.undo.fn)()
+                ;(typeof t.undo === 'function' ? t.undo : t.undo!.fn)()
               }}>{typeof t.undo === 'function' ? 'undo' : t.undo.label}</button>
             )}
           </div>
@@ -437,19 +465,21 @@ export default function App() {
   )
 }
 
-function NewOrg({ onCreate }) {
+function NewOrg({ onCreate }: {
+  onCreate: (name: string, dirs: string[], kiosk: KioskSpecRequest | null, sandbox: boolean) => void
+}) {
   const [open, setOpen] = useState(false)
   const [advanced, setAdvanced] = useState(false)
   const [name, setName] = useState('')
-  const [dirs, setDirs] = useState([])
+  const [dirs, setDirs] = useState<string[]>([])
   // kiosk is a CREATION-TIME type (user ruling): a checkbox here reveals its
   // limit fields; auth is never configurable — sandboxes use the proxied
   // subscription (the host holds the token; the sandbox never sees it)
   const [kiosk, setKiosk] = useState(false)
   // kiosk cap defaults (user ruling 2026-07-31): 30 credits · $50 · 1 GB
-  const [credits, setCredits] = useState(30)
-  const [spend, setSpend] = useState(50)
-  const [storage, setStorage] = useState(1024)
+  const [credits, setCredits] = useState<number | string>(30)
+  const [spend, setSpend] = useState<number | string>(50)
+  const [storage, setStorage] = useState<number | string>(1024)
   // the permission ceiling is visible AT CREATION (ceiling spec §3): the
   // default is permissive (mcp "*", user ruling), so narrowing must be a
   // conscious act here rather than something discovered later
@@ -514,7 +544,7 @@ function NewOrg({ onCreate }) {
             title="the MAXIMUM grantable to any agent in this kiosk — visitors retool freely within it; folders bound to the org's own">
             permission ceiling</div>
           <div className="ceil-tools">
-            {['bash', 'web', 'edit', 'subagents', 'mcp'].map((k) => (
+            {(['bash', 'web', 'edit', 'subagents', 'mcp'] as const).map((k) => (
               <label key={k} className="row">
                 <input type="checkbox" checked={ceil[k]}
                   onChange={(e) => setCeil((c) => ({ ...c, [k]: e.target.checked }))} />
@@ -585,14 +615,14 @@ function NewOrg({ onCreate }) {
   )
 }
 
-function flatNodes(tree) {
-  const map = new Map()
-  const walk = (n) => { map.set(n.id, n); n.children.forEach(walk) }
+function flatNodes(tree: TreePayload): Map<string, TreeNode> {
+  const map = new Map<string, TreeNode>()
+  const walk = (n: TreeNode) => { map.set(n.id, n); n.children.forEach(walk) }
   tree.roots.forEach(walk)
   return map
 }
 
-function SenderChip({ id, nodes }) {
+function SenderChip({ id, nodes }: { id: string; nodes: Map<string, TreeNode> }) {
   if (id === SYSTEM || id === 'system') return <b className="dim">system</b>
   if (id === USER) return <b>you</b>
   const n = nodes.get(id)
@@ -605,15 +635,42 @@ function SenderChip({ id, nodes }) {
   )
 }
 
-function InboxPanel({ slug, tree, toast, refresh, close, jumpTo }) {
+// the credit-request fields the inbox renders — CreditRequest is an open
+// ledger dict in types.ts; this states the shape at the same wire boundary
+interface CreditReqView {
+  id: string
+  node: string
+  old: number
+  new: number
+  at?: string
+  reason?: string
+  [k: string]: unknown
+}
+
+// audience requests parked at the user (fields the inbox reads) —
+// AudienceRequest is an open dict in types.ts
+interface UserAudReq {
+  from: string
+  reason?: string
+  [k: string]: unknown
+}
+
+function InboxPanel({ slug, tree, toast, refresh, close, jumpTo }: {
+  slug: string
+  tree: TreePayload
+  toast: ToastFn
+  refresh?: () => void
+  close: () => void
+  jumpTo: string | null
+}) {
   useEsc(close)
-  const [box, setBox] = useState(null)
-  const [aud, setAud] = useState(null)
+  const [box, setBox] = useState<InboxPayload | null>(null)
+  const [aud, setAud] = useState<AudiencesPayload | null>(null)
   const [folder, setFolder] = useState('inbox')
-  const [events, setEvents] = useState(null)
+  const [events, setEvents] = useState<OrgEvent[] | null>(null)
   const nodes = flatNodes(tree)
   const reload = useCallback(() => {
-    getInbox(slug).then(setBox).catch((e) => toast([`error: ${e.message}`]))
+    getInbox(slug).then(setBox).catch((e: Error) => toast([`error: ${e.message}`]))
     getAudiences(slug).then(setAud).catch(() => {})
   }, [slug, toast])
   useEffect(() => { reload() }, [reload])
@@ -623,9 +680,9 @@ function InboxPanel({ slug, tree, toast, refresh, close, jumpTo }) {
     }
   }, [folder, slug])
   const userAud = aud?.audiences.filter((a) => a.grantor === USER) ?? []
-  const userReqs = aud?.requests.filter((r) => r.target === USER && r.currently_at === USER) ?? []
-  const act = (action, node, target) =>
-    audienceAction(slug, action, node, target).then(reload).catch((e) => toast([`error: ${e.message}`]))
+  const userReqs = (aud?.requests.filter((r) => r.target === USER && r.currently_at === USER) ?? []) as UserAudReq[]
+  const act = (action: string, node: string, target?: string | null) =>
+    audienceAction(slug, action, node, target).then(reload).catch((e: Error) => toast([`error: ${e.message}`]))
   return (
     <div className="overlay" onClick={close}>
       <div className="settings wide" onClick={(e) => e.stopPropagation()}>
@@ -633,7 +690,7 @@ function InboxPanel({ slug, tree, toast, refresh, close, jumpTo }) {
         {(tree.credit_requests ?? []).length > 0 && (
           <>
             <div className="field-label">credit requests</div>
-            {tree.credit_requests.map((r) => (
+            {(tree.credit_requests as CreditReqView[]).map((r) => (
               <div className="credreq" key={r.id}>
                 <div className="cr-head">
                   <SenderChip id={r.node} nodes={nodes} />
@@ -646,11 +703,11 @@ function InboxPanel({ slug, tree, toast, refresh, close, jumpTo }) {
                   <button className="primary" onClick={() =>
                     creditDecide(slug, r.id, 'approve')
                       .then(() => { toast([`approved — ${r.node}'s grant is now ${r.new}`]); refresh?.() })
-                      .catch((e) => toast([`error: ${e.message}`]))}>approve</button>
+                      .catch((e: Error) => toast([`error: ${e.message}`]))}>approve</button>
                   <button onClick={() =>
                     creditDecide(slug, r.id, 'deny')
                       .then(() => { toast([`denied ${r.node}'s request`]); refresh?.() })
-                      .catch((e) => toast([`error: ${e.message}`]))}>deny</button>
+                      .catch((e: Error) => toast([`error: ${e.message}`]))}>deny</button>
                 </div>
               </div>
             ))}
@@ -694,18 +751,18 @@ function InboxPanel({ slug, tree, toast, refresh, close, jumpTo }) {
             : folder === 'inbox'
               ? <MailList pending={box.pending} delivered={box.delivered}
                   waitLabel="unread" jumpTo={jumpTo}
-                  onRead={(m) => markRead(slug, [m.id])
+                  onRead={(m: MailEntry) => markRead(slug, [m.id])
                     .then(() => { reload(); refresh?.() }).catch(() => {})}
-                  onReply={(m, text) => sendMessage(slug, m.from, text)
+                  onReply={(m: MailEntry, text: string) => sendMessage(slug, m.from, text)
                     .then(() => toast([`sent to ${m.from}`]))
-                    .catch((e) => toast([`error: ${e.message}`]))}
-                  sender={(id) => <SenderChip id={id} nodes={nodes} />} />
+                    .catch((e: Error) => toast([`error: ${e.message}`]))}
+                  sender={(id: string) => <SenderChip id={id} nodes={nodes} />} />
               : <MailList delivered={box.sent ?? []} outgoing
-                  sender={(id) => <SenderChip id={id} nodes={nodes} />} />}
+                  sender={(id: string) => <SenderChip id={id} nodes={nodes} />} />}
         </div>
         <div className="row">
-          {folder === 'inbox' && box?.pending.length > 0 && <button onClick={() =>
-            clearInbox(slug).then(reload).catch((e) => toast([`error: ${e.message}`]))}>mark all read</button>}
+          {folder === 'inbox' && (box?.pending.length ?? 0) > 0 && <button onClick={() =>
+            clearInbox(slug).then(reload).catch((e: Error) => toast([`error: ${e.message}`]))}>mark all read</button>}
           <button className="primary" onClick={close}>close</button>
         </div>
       </div>
@@ -716,9 +773,10 @@ function InboxPanel({ slug, tree, toast, refresh, close, jumpTo }) {
 // Global DEFAULT org settings (user spec, root page): every newly created
 // org is born with these values — the same knobs as a single org's settings
 // panel, saved once in <data>/defaults.json.
-function DefaultsPanel({ toast, close }) {
+function DefaultsPanel({ toast, close }: { toast: ToastFn; close: () => void }) {
   useEsc(close)
-  const [d, setD] = useState(null)
+  // Partial: the error fallback seeds {} and every read has its own default
+  const [d, setD] = useState<Partial<DefaultsPayload> | null>(null)
   useEffect(() => { getDefaults().then(setD).catch(() => setD({})) }, [])
   if (d == null) {
     return (
@@ -727,7 +785,7 @@ function DefaultsPanel({ toast, close }) {
       </div>
     )
   }
-  const set = (k, v) => setD({ ...d, [k]: v })
+  const set = (k: string, v: unknown) => setD({ ...d, [k]: v })
   return (
     <div className="overlay" onClick={close}>
       <div className="settings" onClick={(e) => e.stopPropagation()}>
@@ -790,7 +848,7 @@ function DefaultsPanel({ toast, close }) {
               cascade_alloc: d.cascade_alloc !== false,
               auto_resume: !!d.auto_resume,
             }).then(() => { toast(['default org settings saved']); close() })
-              .catch((e) => toast([`error: ${e.message}`]))}>save</button>
+              .catch((e: Error) => toast([`error: ${e.message}`]))}>save</button>
           <button onClick={close}>cancel</button>
         </div>
       </div>
@@ -798,8 +856,25 @@ function DefaultsPanel({ toast, close }) {
   )
 }
 
+// a ceiling folder row — mode stays `string`: the row is round-tripped from
+// the open max_scope dict, and the selects constrain it to rw/ro anyway
+interface CeilDir { path: string; mode: string }
+
+// the ceiling document the settings panel edits — max_scope is an open dict
+// in types.ts (TreeKiosk); this states the fields read/written here
+interface MaxScope {
+  tools?: { bash?: boolean; web?: boolean; edit?: boolean; subagents?: boolean; mcp?: string[] } | null
+  add_dirs?: CeilDir[] | null
+  org_visibility?: string | null
+  permission_mode?: string | null
+  max_tier?: string | null
+}
+
 // mode-aware folder rows for the kiosk ceiling (DirList is string-only)
-function CeilDirs({ dirs, onChange }) {
+function CeilDirs({ dirs, onChange }: {
+  dirs: CeilDir[]
+  onChange: (dirs: CeilDir[]) => void
+}) {
   return (
     <div className="dirlist">
       {dirs.map((d, i) => (
@@ -823,32 +898,38 @@ function CeilDirs({ dirs, onChange }) {
   )
 }
 
-function SettingsPanel({ tree, toast, close }) {
+function SettingsPanel({ tree, toast, close }: {
+  tree: TreePayload
+  toast: ToastFn
+  close: () => void
+}) {
   useEsc(close)
-  const [maxTop, setMaxTop] = useState(tree.max_top_grant ?? 1000)
-  const [defTop, setDefTop] = useState(tree.default_top_grant ?? 50)
-  const [compactAt, setCompactAt] = useState(Math.round((tree.compact_at ?? 0.8) * 100))
-  const [orgMd, setOrgMd] = useState(null)
+  const [maxTop, setMaxTop] = useState<number | string>(tree.max_top_grant ?? 1000)
+  const [defTop, setDefTop] = useState<number | string>(tree.default_top_grant ?? 50)
+  const [compactAt, setCompactAt] = useState<number | string>(Math.round((tree.compact_at ?? 0.8) * 100))
+  const [orgMd, setOrgMd] = useState<string | null>(null)
   const [fablePolicy, setFablePolicy] = useState(tree.fable_limit_policy ?? 'halt')
   const [filterPolicy, setFilterPolicy] = useState(tree.fable_filter_policy ?? 'halt')
   const [cascadeHire, setCascadeHire] = useState(tree.cascade_hire !== false)
   const [cascadeAlloc, setCascadeAlloc] = useState(tree.cascade_alloc !== false)
   // kiosk permission ceiling (consensus spec): admin payload only — the
   // public tree never carries max_scope
-  const ms = tree.kiosk?.max_scope
+  const ms = tree.kiosk?.max_scope as MaxScope | null | undefined
+  // const extraction so the kiosk narrowing survives the click closures
+  const kk = tree.kiosk
   const [ceil, setCeil] = useState(() => (ms ? {
     bash: !!ms.tools?.bash, web: !!ms.tools?.web, edit: !!ms.tools?.edit,
     subagents: !!ms.tools?.subagents } : null))
   const [ceilMcp, setCeilMcp] = useState(() => (ms?.tools?.mcp ?? []).join(', '))
-  const [ceilDirs, setCeilDirs] = useState(() => ms?.add_dirs ?? [])
+  const [ceilDirs, setCeilDirs] = useState<CeilDir[]>(() => ms?.add_dirs ?? [])
   const [ceilVis, setCeilVis] = useState(ms?.org_visibility ?? 'full')
   const [ceilPm, setCeilPm] = useState(ms?.permission_mode ?? 'acceptEdits')
   const [ceilTier, setCeilTier] = useState(ms?.max_tier ?? '')
   const [autoRaise, setAutoRaise] = useState(!!tree.kiosk?.auto_raise)
   // per-kiosk caps (moved here from the retired all-kiosks dashboard)
-  const [kkCredits, setKkCredits] = useState(tree.kiosk?.credits ?? 0)
-  const [kkSpend, setKkSpend] = useState(tree.kiosk?.spend_limit ?? 0)
-  const [kkStorage, setKkStorage] = useState(tree.kiosk?.storage_limit_mb ?? 0)
+  const [kkCredits, setKkCredits] = useState<number | string>(tree.kiosk?.credits ?? 0)
+  const [kkSpend, setKkSpend] = useState<number | string>(tree.kiosk?.spend_limit ?? 0)
+  const [kkStorage, setKkStorage] = useState<number | string>(tree.kiosk?.storage_limit_mb ?? 0)
   useEffect(() => {
     getOrgMd(tree.slug).then((r) => setOrgMd(r.content)).catch(() => setOrgMd(''))
   }, [tree.slug])
@@ -897,11 +978,11 @@ function SettingsPanel({ tree, toast, close }) {
         {/* per-kiosk controls (user ruling 2026-07-31): caps, share URL and
             pause live HERE, in the org's own settings — the all-kiosks
             dashboard on the welcome panel is gone */}
-        {tree.kiosk && (
+        {kk && (
           <>
             <div className="field-label">kiosk caps
-              {tree.kiosk.sandbox && <span className="dim"> · sandboxed</span>}
-              {!tree.kiosk.enabled && <span className="dim"> · URL paused</span>}
+              {kk.sandbox && <span className="dim"> · sandboxed</span>}
+              {!kk.enabled && <span className="dim"> · URL paused</span>}
             </div>
             <div className="kiosk-caps">
               <label>credits <input type="number" min="0" value={kkCredits}
@@ -910,9 +991,9 @@ function SettingsPanel({ tree, toast, close }) {
                 onChange={(e) => setKkSpend(e.target.value)} /></label>
               <label>storage MB <input type="number" min="0" value={kkStorage}
                 onChange={(e) => setKkStorage(e.target.value)} /></label>
-              {(+kkCredits !== (tree.kiosk.credits ?? 0)
-                || +kkSpend !== (tree.kiosk.spend_limit ?? 0)
-                || +kkStorage !== (tree.kiosk.storage_limit_mb ?? 0)) && (
+              {(+kkCredits !== (kk.credits ?? 0)
+                || +kkSpend !== (kk.spend_limit ?? 0)
+                || +kkStorage !== (kk.storage_limit_mb ?? 0)) && (
                 <button className="primary" title="apply the new caps"
                   onClick={() => saveKiosk(tree.slug, {
                     credits: +kkCredits || 0, spend_limit: +kkSpend || 0,
@@ -920,30 +1001,30 @@ function SettingsPanel({ tree, toast, close }) {
                     .then((r) => toast(r.freezes_cleared?.length
                       ? [`limit raised — cleared: ${r.freezes_cleared.join(', ')}`]
                       : ['kiosk caps saved']))
-                    .catch((e) => toast([`error: ${e.message}`]))}>
+                    .catch((e: Error) => toast([`error: ${e.message}`]))}>
                   <CheckIcon fontSize="inherit" /></button>)}
             </div>
             <div className="row kiosk-url">
-              <input readOnly value={tree.kiosk.share_url
+              <input readOnly value={kk.share_url
                 ?? '(set ORGTREE_PUBLIC_PORT to serve public URLs)'}
                 onFocus={(e) => e.target.select()} />
-              <button title="copy the share URL" disabled={!tree.kiosk.share_url}
-                onClick={() => navigator.clipboard.writeText(tree.kiosk.share_url)
+              <button title="copy the share URL" disabled={!kk.share_url}
+                onClick={() => navigator.clipboard.writeText(kk.share_url!)
                   .then(() => toast(['share URL copied']))}>
                 <CopyIcon fontSize="inherit" /></button>
               <button title="rotate the secret (the old URL stops working immediately)"
                 onClick={() => saveKiosk(tree.slug, { rotate_token: true })
                   .then(() => toast(['secret rotated — the old URL is dead']))
-                  .catch((e) => toast([`error: ${e.message}`]))}>
+                  .catch((e: Error) => toast([`error: ${e.message}`]))}>
                 <AutorenewIcon fontSize="inherit" /></button>
-              <button title={tree.kiosk.enabled
+              <button title={kk.enabled
                 ? 'pause the public URL (the org stays a kiosk; limits always bind)'
                 : 'reactivate the public URL'}
-                onClick={() => saveKiosk(tree.slug, { enabled: !tree.kiosk.enabled })
-                  .then(() => toast([tree.kiosk.enabled
+                onClick={() => saveKiosk(tree.slug, { enabled: !kk.enabled })
+                  .then(() => toast([kk.enabled
                     ? 'public URL paused' : 'public URL live']))
-                  .catch((e) => toast([`error: ${e.message}`]))}>
-                {tree.kiosk.enabled ? <BlockIcon fontSize="inherit" />
+                  .catch((e: Error) => toast([`error: ${e.message}`]))}>
+                {kk.enabled ? <BlockIcon fontSize="inherit" />
                   : <PlayIcon fontSize="inherit" />}</button>
             </div>
           </>
@@ -954,10 +1035,10 @@ function SettingsPanel({ tree, toast, close }) {
               title="visitors and agents retool freely WITHIN it (clamped, never refused); lowering it sweeps every agent's grants to fit">
               kiosk permission ceiling — the maximum grantable to any agent</div>
             <div className="ceil-tools">
-              {['bash', 'web', 'edit', 'subagents'].map((k) => (
+              {(['bash', 'web', 'edit', 'subagents'] as const).map((k) => (
                 <label key={k} className="checkline">
                   <input type="checkbox" checked={ceil[k]}
-                    onChange={(e) => setCeil((c) => ({ ...c, [k]: e.target.checked }))} />
+                    onChange={(e) => setCeil((c) => ({ ...c!, [k]: e.target.checked }))} />
                   {k}
                 </label>
               ))}
@@ -1010,7 +1091,7 @@ function SettingsPanel({ tree, toast, close }) {
                 } })
                 .then((r) => toast(r.warnings?.length ? r.warnings
                   : ['ceiling saved — nothing needed sweeping']))
-                .catch((e) => toast([`error: ${e.message}`]))}>
+                .catch((e: Error) => toast([`error: ${e.message}`]))}>
               apply ceiling{ceilMcp.trim() === '' ? ' (MCP: none)' : ''}</button>
           </>
         )}
@@ -1021,7 +1102,7 @@ function SettingsPanel({ tree, toast, close }) {
           <button className="danger" onClick={() =>
             saveSettings(tree.slug, { clear_fable_lock: true })
               .then((r) => { toast(r.warnings); close() })
-              .catch((e) => toast([`error: ${e.message}`]))}>
+              .catch((e: Error) => toast([`error: ${e.message}`]))}>
             <BlockIcon fontSize="inherit" /> clear the fable weekly-limit lock (your decree)</button>
         )}
         <div className="row">
@@ -1037,7 +1118,7 @@ function SettingsPanel({ tree, toast, close }) {
                   cascade_alloc: cascadeAlloc }),
               orgMd != null ? putOrgMd(tree.slug, orgMd) : Promise.resolve({}),
             ]).then(([r]) => { toast(r.warnings); close() })
-              .catch((e) => toast([`error: ${e.message}`]))}>save</button>
+              .catch((e: Error) => toast([`error: ${e.message}`]))}>save</button>
           <button onClick={close}>cancel</button>
         </div>
       </div>

@@ -1,7 +1,14 @@
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 import { createPortal } from 'react-dom'
+import type {
+  ChatInit, ChatMessage, ChatPayload, DirGrant, HistoryItem, InboxPayload,
+  MailEntry, NodeState, NodeStatus, OpRequest, OpResult, OrgEvent,
+  ScratchPayload, ToolChip as ToolChipData, ToolGrant, ToastFn, TreeNode,
+  TreePayload,
+} from './types'
 import {
   audienceAction, BASE, compactNode, dissolveAll, fileUrl, getCharters,
   getChat, getHistory, getMcpServers, getNodeInbox, getScratch, interruptNode,
@@ -17,8 +24,137 @@ import {
   StopIcon, ViewListIcon, WarnIcon,
 } from './icons'
 
-const TIER_LETTER = { haiku: 'H', sonnet: 'S', opus: 'O', fable: 'F' }
+const TIER_LETTER: Record<string, string> = { haiku: 'H', sonnet: 'S', opus: 'O', fable: 'F' }
 const TIERS = ['haiku', 'sonnet', 'opus', 'fable']
+
+// ---------------------------------------------------------------- view types
+// The canvas overlays the payload's TreeNode with synthetic cards — the eye
+// root, the draft card, live lineage bearers — plus flatten()'s plumbing.
+// One structural type covers every card; fields absent on some card kinds
+// are optional and consumers guard (or assert) exactly where the JS did.
+export interface CanvasNode {
+  id: string
+  state: NodeState | 'draft' | 'user'
+  /** null only on the eye root */
+  tier: string | null
+  children: CanvasNode[]
+  title?: string
+  /** set by flatten(): the parent card's id (null on the eye root) */
+  parent?: string | null
+  /** lineage pseudo-cards: the successor node this bearer floats beside */
+  isBearerOf?: string
+  bearerIndex?: number
+  // --- the TreeNode surface the canvas reads (synthetic cards carry a subset)
+  seat?: number
+  grant?: number
+  free?: number | null
+  model_id?: string
+  scope?: CanvasScope
+  cost_usd?: number
+  occupancy?: number | null
+  context_window?: number | null
+  charter?: string | null
+  team_charter?: string | null
+  mail_pending?: number
+  limit_locked?: boolean
+  last_status?: NodeStatus | null
+  prev_status?: NodeStatus | null
+  inflight_at?: string | null
+  last_denials?: TreeNode['last_denials']
+  turns?: TreeNode['turns']
+  frozen?: TreeNode['frozen']
+  audiences_held?: string[]
+  bearer_state?: TreeNode['bearer_state']
+  generation?: number
+  lineage?: TreeNode['lineage']
+  busy?: boolean
+  waiting?: boolean
+  responding?: boolean
+  phase?: string | null
+  queued?: number
+  last_error?: string | null
+}
+
+/** a bearer pseudo-card carries a stub scope ({tools:{}, add_dirs:[]}),
+ *  so the canvas-side scope is NodeScope with everything but the two
+ *  always-present lists optional */
+export interface CanvasScope {
+  add_dirs: DirGrant[]
+  tools: Partial<ToolGrant>
+  permission_mode?: string
+  org_visibility?: string
+  effort?: string
+}
+
+/** the app-level event feeds OrgCanvas rides (produced by App's WS handler) */
+export interface PulseEvent { node: string; event: string; t: number }
+export interface StreamEvent {
+  node: string
+  /** 'delta' | 'thinking' | 'text' | 'tool' (supervisor.py stream(),
+   *  №1167-1211) + 'steered' (api.py:1193) — open: built from untyped WS JSON */
+  kind: string
+  text: string
+  sticky?: boolean
+  t: number
+}
+export interface MailEvent { from: string; to: string; t: number }
+/** 'thinking' | 'writing' | 'tool' — open for the same WS-JSON reason */
+export interface ActivityInfo { phase: string; tool?: string }
+export type OpFn = (body: OpRequest) => Promise<OpResult>
+/** a chat chip's mail pointer — routed to whichever box holds the mail */
+export type MailLinkFn = (
+  m: { id?: string | null; to?: string | null } | null | undefined,
+) => void
+/** the webmail row: MailEntry plus the decorations MailList's callers add */
+export type MailRow = MailEntry & {
+  to?: string                   // outgoing rows
+  _wait?: boolean               // decorated inside MailList (pending group)
+  _wait0?: boolean              // org-inbox pre-split unread flag
+  _by?: string                  // org-inbox outbound attribution
+}
+
+// world-space geometry primitives
+interface Pt { x: number; y: number }
+interface Spring extends Pt { vx: number; vy: number }
+interface View { x: number; y: number; z: number }
+interface DraftState { parent: string | null; tier: string }
+/** the staged pre-hire permissions (DraftScopeModal → confirmDraft); also
+ *  the shape of the would-inherit prefill, whose tools may lack mcp */
+interface DraftScope {
+  add_dirs: DirGrant[]
+  tools: Partial<ToolGrant>
+  org_visibility: string
+  effort?: string
+}
+interface Pile {
+  key: string
+  parent: string
+  kind: 'a' | 'c'
+  list: string[]
+  front: string
+}
+/** a live-feed row: a StreamEvent copy or a folded thought line */
+interface LiveRow {
+  kind: string
+  text: string
+  secs?: number
+  sticky?: boolean
+  _at?: number
+  node?: string
+  t?: number
+}
+
+// the canvas exposes its inverse-zoom to CSS; React's CSSProperties has no
+// custom-property indexer, so declare the one we use (type-only)
+declare module 'react' {
+  interface CSSProperties {
+    '--invz'?: string
+  }
+}
+// dev/demo hook (see the launchSpark effect)
+declare global {
+  interface Window { __spark?: (from: string, to: string) => void }
+}
 
 // world-space geometry (px at zoom 1). Cards are SQUARE (design ruling) and never
 // change size — the desk chat fades in OVER the card; you zoom to read it.
@@ -41,12 +177,12 @@ const INBOX_H = 64
 // wide left subtree (~32 leaf columns) never crosses into negative space
 const EYE_ANCHOR_X = 6000
 
-function withDraftTree(tree, draft) {
-  const draftNode = () => ({
-    id: DRAFT, title: '', tier: draft.tier, state: 'draft', children: [],
+function withDraftTree(tree: TreePayload, draft: DraftState | null): CanvasNode {
+  const draftNode = (): CanvasNode => ({
+    id: DRAFT, title: '', tier: draft!.tier, state: 'draft', children: [],
     seat: 0, grant: 0, free: 0,
   })
-  const mk = (n) => ({
+  const mk = (n: TreeNode): CanvasNode => ({
     ...n,
     children: [...n.children.map(mk),
       ...(draft && draft.parent === n.id ? [draftNode()] : [])],
@@ -58,9 +194,9 @@ function withDraftTree(tree, draft) {
   }
 }
 
-function flatten(root, seats) {
-  const map = new Map()
-  const walk = (n, parent) => {
+function flatten(root: CanvasNode, seats: Record<string, number>): Map<string, CanvasNode> {
+  const map = new Map<string, CanvasNode>()
+  const walk = (n: CanvasNode, parent: string | null) => {
     map.set(n.id, { ...n, parent })
     // live (rehired) lineage bearers surface as consultable cards beside their
     // successor — never as org children (§8.5)
@@ -81,26 +217,26 @@ function flatten(root, seats) {
   return map
 }
 
-function layout(root, hidden = new Map()) {
+function layout(root: CanvasNode, hidden: Map<string, string> = new Map()): Map<string, Pt> {
   // `hidden`: piled-away retirees (and their subtrees) — they take NO layout
   // space; their positions are assigned afterwards onto their pile's front
-  const pos = new Map()
-  const vis = (n) => !hidden.has(n.id)
-  const width = (n) => {
+  const pos = new Map<string, Pt>()
+  const vis = (n: CanvasNode) => !hidden.has(n.id)
+  const width = (n: CanvasNode): number => {
     const kids = n.children.filter(vis)
     return kids.length ? kids.reduce((a, c) => a + width(c), 0) : 1
   }
-  const place = (n, x0, depth) => {
+  const place = (n: CanvasNode, x0: number, depth: number) => {
     let cx = x0
     const kids = n.children.filter(vis)
     kids.forEach((c) => { place(c, cx, depth + 1); cx += width(c) })
     const x = kids.length
-      ? (pos.get(kids[0].id).x + pos.get(kids[kids.length - 1].id).x) / 2
+      ? (pos.get(kids[0].id)!.x + pos.get(kids[kids.length - 1].id)!.x) / 2
       : x0
     pos.set(n.id, { x, y: depth })
   }
   place(root, 0, 0)
-  const out = new Map()
+  const out = new Map<string, Pt>()
   for (const [id, p] of pos) out.set(id, { x: p.x * SX + PAD, y: p.y * SY + PAD })
   // The EYE is the page's anchor (user ruling): its world position is a
   // CONSTANT, independent of tree shape — otherwise the coordinate space
@@ -114,15 +250,15 @@ function layout(root, hidden = new Map()) {
   return out
 }
 
-function sizeOf(id) {
+function sizeOf(id: string): { w: number; h: number } {
   if (id === USER) return { w: USER_W, h: USER_H }
   if (id === INBOX) return { w: USER_W, h: INBOX_H }
   return { w: NODE_W, h: NODE_H }
 }
 
-const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2)
+const ease = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2)
 
-const ago = (at) => {
+const ago = (at: string | null | undefined) => {
   if (!at) return ''
   const s = Math.max(0, (Date.now() - Date.parse(at)) / 1000)
   return s < 90 ? `${Math.round(s)}s`
@@ -132,7 +268,7 @@ const ago = (at) => {
 // chat markdown: gfm + hard line breaks, sanitized (agents echo web content).
 // №21: cached by text identity — every streamed token used to re-parse the
 // ENTIRE visible transcript (~8 Hz × every message × every open panel)
-const _mdCache = new Map()
+const _mdCache = new Map<string, { __html: string }>()
 // №16: outside code fences and inline code, a bare <Token> parses as an HTML
 // tag — DOMPurify then strips it and keeps only the inner text, so
 // `Sync<float3>` silently became `Sync` and changed the sentence's meaning.
@@ -143,9 +279,9 @@ const _mdCache = new Map()
 // indented blocks all rendered a literal "&lt;". Line-walk instead: one
 // inCode flag, an unterminated opener stays open to EOF, and only prose
 // lines are escaped (inline `spans` protected within them).
-const escapeAngles = (src) => {
+const escapeAngles = (src: string) => {
   const lines = src.split('\n')
-  let fence = null                       // {ch, len} of the open fence
+  let fence: { ch: string; len: number } | null = null   // {ch, len} of the open fence
   let indented = false                   // inside a 4-space indented block
   let prevBlank = true                   // indented blocks open after a blank
   for (let i = 0; i < lines.length; i++) {
@@ -181,7 +317,7 @@ const escapeAngles = (src) => {
   }
   return lines.join('\n')
 }
-const md = (text) => {
+const md = (text: string | null | undefined): { __html: string } => {
   const key = text ?? ''
   let hit = _mdCache.get(key)
   if (hit === undefined) {
@@ -192,14 +328,17 @@ const md = (text) => {
   }
   return hit
 }
-const smooth = (t) => t * t * (3 - 2 * t)
+const smooth = (t: number) => t * t * (3 - 2 * t)
 
 // ---- connection segments (world space). kind 'c' = cubic bezier, 'l' = line.
-const segD = (s) => (s.kind === 'l'
+type Seg =
+  | { kind: 'l'; pts: [Pt, Pt] }
+  | { kind: 'c'; pts: [Pt, Pt, Pt, Pt] }
+const segD = (s: Seg) => (s.kind === 'l'
   ? `M ${s.pts[0].x} ${s.pts[0].y} L ${s.pts[1].x} ${s.pts[1].y}`
   : `M ${s.pts[0].x} ${s.pts[0].y} C ${s.pts[1].x} ${s.pts[1].y}, `
     + `${s.pts[2].x} ${s.pts[2].y}, ${s.pts[3].x} ${s.pts[3].y}`)
-const segPoint = (s, t) => {
+const segPoint = (s: Seg, t: number): Pt => {
   if (s.kind === 'l') {
     const [p, q] = s.pts
     return { x: p.x + (q.x - p.x) * t, y: p.y + (q.y - p.y) * t }
@@ -212,16 +351,24 @@ const segPoint = (s, t) => {
 }
 
 // Escape closes any overlay panel (they had no keyboard exit at all)
-export function useEsc(close) {
+export function useEsc(close: () => void) {
   useEffect(() => {
-    const onKey = (e) => { if (e.key === 'Escape') close() }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close() }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [close])
 }
 
+export interface ConfirmModalProps {
+  title: ReactNode
+  body?: ReactNode
+  confirmLabel: ReactNode
+  onConfirm: () => void
+  close: () => void
+}
+
 // in-page confirmation (user ruling: never a native OS dialog)
-export function ConfirmModal({ title, body, confirmLabel, onConfirm, close }) {
+export function ConfirmModal({ title, body, confirmLabel, onConfirm, close }: ConfirmModalProps) {
   useEsc(close)
   return (
     <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
@@ -238,22 +385,35 @@ export function ConfirmModal({ title, body, confirmLabel, onConfirm, close }) {
   )
 }
 
-export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, mailEvt, onInbox }) {
-  const [draft, setDraft] = useState(null)
-  const [configId, setConfigId] = useState(null)
-  const [lineageId, setLineageId] = useState(null)
+export interface OrgCanvasProps {
+  tree: TreePayload
+  op: OpFn
+  slug: string
+  pulse: PulseEvent | null
+  toast: ToastFn
+  streamEvt: StreamEvent | null
+  activity?: Record<string, ActivityInfo | undefined>
+  mailEvt: MailEvent | null
+  /** open the user's inbox, optionally jumped to a specific mail id */
+  onInbox?: (jump?: string) => void
+}
+
+export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, mailEvt, onInbox }: OrgCanvasProps) {
+  const [draft, setDraft] = useState<DraftState | null>(null)
+  const [configId, setConfigId] = useState<string | null>(null)
+  const [lineageId, setLineageId] = useState<string | null>(null)
   const [userCfg, setUserCfg] = useState(false)
   const [trayOpen, setTrayOpen] = useState(false)   // the flat agent tray
   const [trayQ, setTrayQ] = useState('')            // №26: tray name filter
   const [trayArch, setTrayArch] = useState(false)   // archived rows shown (user
                                                     // spec: hidden by default)
-  const [inboxId, setInboxId] = useState(null)
+  const [inboxId, setInboxId] = useState<string | null>(null)
   const [oiOpen, setOiOpen] = useState(false)       // the ORG-inbox viewer
   // inline mail links (user spec 2026-07-31): a chat's send chip opens the
   // box that HOLDS the mail, selected on it — user inbox, a node's inbox, or
   // the org inbox for outbound. Jump ids clear when the modal closes.
-  const [nodeInboxJump, setNodeInboxJump] = useState(null)
-  const [oiJump, setOiJump] = useState(null)
+  const [nodeInboxJump, setNodeInboxJump] = useState<string | null>(null)
+  const [oiJump, setOiJump] = useState<string | null>(null)
   // unread-mail attention: the eye glows until the mailbox is OPENED (merely
   // opening acknowledges the glow; the count badge stays until mails are READ)
   const [inboxSeen, setInboxSeen] = useState(
@@ -267,7 +427,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
   // the ref carries the fresh closure). user_inbox → the eye's mailbox
   // (marking the glow seen, same as its ✉); @ext:/@org:/@mcp: → the org
   // inbox; anything else → that node's inbox. Dead targets no-op.
-  const openMailRef = useRef(null)
+  const openMailRef = useRef<MailLinkFn | null>(null)
   openMailRef.current = (m) => {
     if (!m?.id || !m?.to) return
     if (m.to === 'user_inbox') {
@@ -281,16 +441,19 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
       setNodeInboxJump(m.id); setInboxId(m.to)
     }
   }
-  const openMail = useCallback((m) => openMailRef.current?.(m), [])
+  const openMail = useCallback<MailLinkFn>((m) => openMailRef.current?.(m), [])
   // RETIRED PILE (user spec): archived siblings in a cohort stack into ONE
   // pile so long-running orgs don't fill the canvas with retirees. The FRONT
   // retiree is the interactable card (zoom/desk/inbox/rehire); clicking the
   // visible stack margin opens a picker to bring another to the front.
-  const [pileFront, setPileFront] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('orgtree-pile-' + slug) || '{}') } catch { return {} }
+  const [pileFront, setPileFront] = useState<Record<string, string>>(() => {
+    try {
+      return JSON.parse(localStorage.getItem('orgtree-pile-' + slug)
+        || '{}') as Record<string, string>
+    } catch { return {} }
   })
-  const [pileOpen, setPileOpen] = useState(null)  // parent id whose menu is open
-  const setFront = useCallback((parent, nid) => {
+  const [pileOpen, setPileOpen] = useState<string | null>(null)  // parent id whose menu is open
+  const setFront = useCallback((parent: string, nid: string) => {
     setPileFront((pf) => {
       const nf = { ...pf, [parent]: nid }
       localStorage.setItem('orgtree-pile-' + slug, JSON.stringify(nf))
@@ -298,8 +461,8 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
     })
   }, [slug])
   const piles = useMemo(() => {   // pile key ("<parent>|a"/"<parent>|c") → pile
-    const out = new Map()
-    const walk = (n) => {
+    const out = new Map<string, Pile>()
+    const walk = (n: CanvasNode) => {
       const kids = n.children ?? []
       const arch = kids.filter((c) => c.state === 'archived')
       if (arch.length >= 2) {
@@ -336,24 +499,24 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
     return out
   }, [vroot, pileFront])
   const pileByFront = useMemo(() => {
-    const out = new Map()
+    const out = new Map<string, Pile>()
     for (const p of piles.values()) out.set(p.front, p)
     return out
   }, [piles])
   const hidden = useMemo(() => {         // piled-away id → its pile's front id
-    const out = new Map()
-    const bury = (n, front) => {
+    const out = new Map<string, string>()
+    const bury = (n: CanvasNode, front: string) => {
       out.set(n.id, front)
       ;(n.children ?? []).forEach((c) => bury(c, front))
     }
-    const walk = (n) => {
+    const walk = (n: CanvasNode) => {
       const pa = piles.get(n.id + '|a')
       const pc = piles.get(n.id + '|c')
       const crowd = pc ? new Set(pc.list) : null
       ;(n.children ?? []).forEach((c) => {
         if (pa && c.state === 'archived' && c.id !== pa.front) bury(c, pa.front)
-        else if (crowd && crowd.has(c.id) && c.id !== pc.front) {
-          out.set(c.id, pc.front)   // leaves by definition: nothing beneath
+        else if (crowd && crowd.has(c.id) && c.id !== pc!.front) {
+          out.set(c.id, pc!.front)   // leaves by definition: nothing beneath
         } else walk(c)
       })
     }
@@ -365,10 +528,10 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
     for (const n of map.values()) {           // live bearers float ABOVE the successor
       // (clear of its card — overlap made both unclickable)
       if (n.isBearerOf && t.has(n.isBearerOf)) {
-        const p = t.get(n.isBearerOf)
+        const p = t.get(n.isBearerOf)!
         t.set(n.id, {
-          x: p.x + 42 + 18 * n.bearerIndex,
-          y: p.y - (NODE_H + 26) - 20 * n.bearerIndex,
+          x: p.x + 42 + 18 * n.bearerIndex!,
+          y: p.y - (NODE_H + 26) - 20 * n.bearerIndex!,
         })
       }
     }
@@ -392,7 +555,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
     }
     return t
   }, [vroot, map, tree.org_inbox?.visible, hidden])
-  const [view, setView] = useState(() => {
+  const [view, setView] = useState<View>(() => {
     // fit-on-load: center the initial tree in a typical viewport (re-fit against
     // the REAL viewport once mounted — see the mount effect below)
     const t = layout(withDraftTree(tree, null))
@@ -402,31 +565,36 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
     return { x: Math.max(24, (1400 - maxX * z) / 2), y: 24, z }
   })
   const [, setFrame] = useState(0)
-  const [dropId, setDropId] = useState(null)
+  const [dropId, setDropId] = useState<string | null>(null)
 
-  const viewportRef = useRef(null)
+  const viewportRef = useRef<HTMLDivElement | null>(null)
   const viewRef = useRef(view); viewRef.current = view
-  const animRef = useRef(null)
+  const animRef = useRef<number | null>(null)
   const animBusyRef = useRef(false)  // a camera animation owns the view
-  const focusRef = useRef(null)      // №25: the desk the camera rides with
-  const followRef = useRef(null)
-  const panRef = useRef(null)
-  const springs = useRef(new Map())
+  const focusRef = useRef<string | null>(null)   // №25: the desk the camera rides with
+  const followRef = useRef<{ id: string; x: number; y: number } | null>(null)
+  const panRef = useRef<{ sx: number; sy: number; ox: number; oy: number; moved: boolean } | null>(null)
+  const springs = useRef(new Map<string, Spring>())
   // id → {x,y,at}: a node that should MATERIALIZE at a specific spot (a hire
   // replacing its draft card) instead of gliding over from its parent. Lives
   // outside springs because the reaper below deletes any spring whose id the
   // layout doesn't know yet — and the hire response lands frames before the
   // refreshed tree does
-  const seedRef = useRef(new Map())
+  const seedRef = useRef(new Map<string, { x: number; y: number; at: number }>())
   const targetRef = useRef(target); targetRef.current = target
   const mapRef = useRef(map); mapRef.current = map
-  const nodeDrag = useRef(null)     // {id, sx, sy, ox, oy, moved}
+  const nodeDrag = useRef<{
+    id: string; sx: number; sy: number
+    bases: Map<string, Pt>; moved: boolean
+  } | null>(null)     // {id, sx, sy, ox, oy, moved}
 
-  const posOf = (id) => springs.current.get(id) ?? targetRef.current.get(id)
+  const posOf = (id: string): Pt | undefined =>
+    springs.current.get(id) ?? targetRef.current.get(id)
 
   // ---------------------------------------------- wires: geometry + sparks
-  const treeSeg = (parentId, childId) => {
-    const a = posOf(parentId), b = posOf(childId)
+  // (the seg builders assert posOf: every caller pre-checks both endpoints)
+  const treeSeg = (parentId: string, childId: string): Seg => {
+    const a = posOf(parentId)!, b = posOf(childId)!
     const ps = sizeOf(parentId)
     return { kind: 'c', pts: [
       { x: a.x + ps.w / 2, y: a.y + ps.h },
@@ -434,14 +602,14 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
       { x: b.x + NODE_W / 2, y: b.y - 52 },
       { x: b.x + NODE_W / 2, y: b.y }] }
   }
-  const peerSeg = (lId, rId) => {
-    const a = posOf(lId), b = posOf(rId)
+  const peerSeg = (lId: string, rId: string): Seg => {
+    const a = posOf(lId)!, b = posOf(rId)!
     return { kind: 'l', pts: [
       { x: a.x + sizeOf(lId).w, y: a.y + sizeOf(lId).h * 0.55 },
       { x: b.x, y: b.y + sizeOf(rId).h * 0.55 }] }
   }
-  const audSeg = (gId, eId) => {
-    const a = posOf(gId), b = posOf(eId)
+  const audSeg = (gId: string, eId: string): Seg => {
+    const a = posOf(gId)!, b = posOf(eId)!
     const ga = sizeOf(gId), gb = sizeOf(eId)
     // symmetrical about the grantor (user ruling, made for the overseer):
     // the line leaves the LEFT flank for grantees left of it and the RIGHT
@@ -456,19 +624,24 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
       { x: x2 + bulge, y: y2 }, { x: x2, y: y2 }] }
   }
 
-  const sparksRef = useRef([])
+  const sparksRef = useRef<{
+    id: number; segs: (Seg & { rev: boolean })[]; start: number; segDur: number
+  }[]>([])
   const sparkId = useRef(0)
-  const audSetRef = useRef(new Set())
+  const audSetRef = useRef(new Set<string>())
   audSetRef.current = new Set((tree.audiences ?? []).map((a) => a.grantor + '→' + a.grantee))
 
   // audience-line life cycle (user ruling): a NEW grant draws itself in,
   // grantor → grantee, over the same 420ms the message spark takes — the two
   // arrive at the new agent together; a REVOKED grant retracts the same way.
   const AUD_DUR = 420
-  const audAnimRef = useRef(new Map())    // 'g→e' → {phase:'in'|'out', t0, grantor, grantee}
-  const audPrevRef = useRef(null)         // null until first sync: lines that
+  const audAnimRef = useRef(new Map<string,
+    | { phase: 'in'; t0: number }
+    | { phase: 'out'; t0: number; grantor: string; grantee: string }
+  >())    // 'g→e' → {phase:'in'|'out', t0, grantor, grantee}
+  const audPrevRef = useRef<Set<string> | null>(null)   // null until first sync: lines that
                                           // exist at page load never animate in
-  const audRafRef = useRef(null)
+  const audRafRef = useRef<number | null>(null)
   const kickAudAnim = useCallback(() => {
     if (audRafRef.current) return
     const loop = () => {
@@ -502,18 +675,18 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
 
   // a mail event rides the org's wires: down/up the tree, along the peer line
   // between coworkers, or along a direct audience line when one connects the two
-  const launchSpark = useCallback((from, to) => {
+  const launchSpark = useCallback((from: string, to: string) => {
     const m = mapRef.current
-    const norm = (x) => (!x || x === 'user' || x === 'user_inbox' || x === USER) ? USER : x
+    const norm = (x: string) => (!x || x === 'user' || x === 'user_inbox' || x === USER) ? USER : x
     const a = norm(from), b = norm(to)
     if (a === b || !m.has(a) || !m.has(b)) return
-    const segs = []
+    const segs: (Seg & { rev: boolean })[] = []
     const aud = audSetRef.current
     if (aud.has(a + '→' + b) || aud.has(b + '→' + a)) {
       const [g, e] = aud.has(a + '→' + b) ? [a, b] : [b, a]
       segs.push({ ...audSeg(g, e), rev: g !== a })
     } else if (a !== USER && b !== USER && m.get(a)?.parent === m.get(b)?.parent) {
-      const sibs = (m.get(m.get(a).parent)?.children ?? []).map((c) => c.id)
+      const sibs = (m.get(m.get(a)!.parent!)?.children ?? []).map((c) => c.id)
         .filter((k) => m.has(k) && k !== DRAFT)
         .sort((p, q) => (targetRef.current.get(p)?.x ?? 0) - (targetRef.current.get(q)?.x ?? 0))
       const ia = sibs.indexOf(a), ib = sibs.indexOf(b)
@@ -524,7 +697,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
           rev: step < 0 })
       }
     } else {
-      const chain = (id) => {
+      const chain = (id: string) => {
         const out = [id]
         let c = id
         while (c !== USER) { c = m.get(c)?.parent ?? USER; out.push(c) }
@@ -532,7 +705,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
       }
       const ca = chain(a), cb = chain(b)
       const inB = new Set(cb)
-      const lca = ca.find((k) => inB.has(k))
+      const lca = ca.find((k) => inB.has(k))!   // both chains end at USER
       for (let i = 0; ca[i] !== lca; i++) segs.push({ ...treeSeg(ca[i + 1], ca[i]), rev: true })
       let prev = lca
       for (const k of cb.slice(0, cb.indexOf(lca)).reverse()) {
@@ -590,8 +763,8 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
 
   // ------------------------------------------------------- the spring engine
   useEffect(() => {
-    let raf, last = performance.now()
-    const tick = (t) => {
+    let raf: number, last = performance.now()
+    const tick = (t: number) => {
       const dt = Math.min(0.033, (t - last) / 1000); last = t
       let active = false
       for (const [id, tgt] of targetRef.current) {
@@ -667,12 +840,12 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
   }, [])
 
   // ------------------------------------------------------------- camera math
-  const animateTo = useCallback((to, ms = 460) => {
-    cancelAnimationFrame(animRef.current)
+  const animateTo = useCallback((to: View, ms = 460) => {
+    cancelAnimationFrame(animRef.current!)
     animBusyRef.current = true
     const from = { ...viewRef.current }
     const t0 = performance.now()
-    const step = (t) => {
+    const step = (t: number) => {
       const k = Math.min(1, (t - t0) / ms), e = ease(k)
       setView({
         x: from.x + (to.x - from.x) * e,
@@ -688,7 +861,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
   // the HUD ± buttons zoom about the SCREEN CENTER — changing z with x/y
   // held fixed anchors the world origin instead, which (with the eye parked
   // at world x=6000) read as a violent sideways pan, not a zoom
-  const zoomStep = useCallback((factor) => {
+  const zoomStep = useCallback((factor: number) => {
     const vp = viewportRef.current?.getBoundingClientRect()
     const v = viewRef.current
     const z = Math.min(Z_MAX, Math.max(0.24, v.z * factor))
@@ -698,7 +871,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
     animateTo({ x: cx - wx * z, y: cy - wy * z, z }, 220)
   }, [animateTo])
 
-  const centerOn = useCallback((id, z = null) => {
+  const centerOn = useCallback((id: string, z: number | null = null) => {
     const p = targetRef.current.get(id)
     const vp = viewportRef.current?.getBoundingClientRect()
     if (!p || !vp) return
@@ -767,17 +940,17 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
   useEffect(() => {
     const el = viewportRef.current
     if (!el) return
-    const onWheel = (e) => {
+    const onWheel = (e: WheelEvent) => {
       // wheel inside a modal always scrolls the modal. Inside a desk it NEVER
       // zooms (user ruling, reversing the earlier fall-through-to-zoom): the
       // wheel is scroll-only there, even when nothing can scroll — zoom by
       // moving the cursor off the desk first.
       // (native listener — it fires before React's delegated handlers, so
       // component-level stopPropagation can't guard it)
-      if (e.target.closest?.('.overlay')) return
-      if (e.target.closest?.('.desk-over')) return
+      if ((e.target as Element | null)?.closest?.('.overlay')) return
+      if ((e.target as Element | null)?.closest?.('.desk-over')) return
       e.preventDefault()
-      cancelAnimationFrame(animRef.current)
+      cancelAnimationFrame(animRef.current!)
       animBusyRef.current = false
       const v = viewRef.current
       const factor = Math.exp(-e.deltaY * 0.0012)
@@ -791,21 +964,21 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
     return () => el.removeEventListener('wheel', onWheel)
   }, [])
 
-  const toWorld = (e) => {
-    const r = viewportRef.current.getBoundingClientRect()
+  const toWorld = (e: { clientX: number; clientY: number }): Pt => {
+    const r = viewportRef.current!.getBoundingClientRect()
     const v = viewRef.current
     return { x: (e.clientX - r.left - v.x) / v.z, y: (e.clientY - r.top - v.y) / v.z }
   }
 
   // background pan
-  const onPointerDown = (e) => {
+  const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return
-    cancelAnimationFrame(animRef.current)
+    cancelAnimationFrame(animRef.current!)
     animBusyRef.current = false
     panRef.current = { sx: e.clientX, sy: e.clientY, ox: viewRef.current.x, oy: viewRef.current.y, moved: false }
     e.currentTarget.setPointerCapture(e.pointerId)
   }
-  const onPointerMove = (e) => {
+  const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
     const d = panRef.current
     if (!d) return
     const dx = e.clientX - d.sx, dy = e.clientY - d.sy
@@ -815,29 +988,29 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
   const onPointerUp = () => { panRef.current = null }
 
   // ----------------------------------------------------------- node dragging
-  const descendantsOf = (id) => {
-    const out = new Set()
-    const walk = (k) => mapRef.current.get(k)?.children.forEach((c) => { out.add(c.id); walk(c.id) })
+  const descendantsOf = (id: string) => {
+    const out = new Set<string>()
+    const walk = (k: string) => mapRef.current.get(k)?.children.forEach((c) => { out.add(c.id); walk(c.id) })
     walk(id)
     return out
   }
 
-  const dropTargetAt = (world, dragId) => {
+  const dropTargetAt = (world: Pt, dragId: string): string | null => {
     const banned = descendantsOf(dragId); banned.add(dragId); banned.add(DRAFT)
     for (const [id] of targetRef.current) {
       if (banned.has(id)) continue
       const n = mapRef.current.get(id)
       if (id !== USER && n?.state !== 'live') continue
-      const p = posOf(id)
-      const { w, h } = sizeOf(id, null)
+      const p = posOf(id)!
+      const { w, h } = sizeOf(id)
       if (world.x >= p.x && world.x <= p.x + w && world.y >= p.y && world.y <= p.y + h) return id
     }
     return null
   }
 
-  const startNodeDrag = (e, id) => {
+  const startNodeDrag = (e: React.PointerEvent<HTMLDivElement>, id: string) => {
     if (e.button !== 0) return
-    if (e.target.closest('button, input, textarea, select, .cbar, .desk-body')) return
+    if ((e.target as Element).closest('button, input, textarea, select, .cbar, .desk-body')) return
     if (mapRef.current.get(id)?.isBearerOf) {   // lineage cards are not org nodes
       e.stopPropagation()
       nodeDrag.current = { id, sx: e.clientX, sy: e.clientY, bases: new Map(), moved: false }
@@ -846,7 +1019,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
     e.stopPropagation()
     // the grabbed node carries its FULL subtree (user ruling) — record every
     // member's position so they all move as one rigid group
-    const bases = new Map()
+    const bases = new Map<string, Pt>()
     for (const k of [id, ...descendantsOf(id)]) {
       const p = posOf(k)
       if (p) bases.set(k, { x: p.x, y: p.y })
@@ -854,7 +1027,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
     nodeDrag.current = { id, sx: e.clientX, sy: e.clientY, bases, moved: false }
     e.currentTarget.setPointerCapture(e.pointerId)
   }
-  const moveNodeDrag = (e, id) => {
+  const moveNodeDrag = (e: React.PointerEvent<HTMLDivElement>, id: string) => {
     const d = nodeDrag.current
     if (!d || d.id !== id) return
     const z = viewRef.current.z
@@ -884,7 +1057,8 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
     }
     setDropId(dropTargetAt(toWorld(e), id))
   }
-  const endNodeDrag = (e, id, node, focused) => {
+  const endNodeDrag = (e: React.PointerEvent<HTMLDivElement>, id: string,
+    node: CanvasNode, focused: boolean) => {
     const d = nodeDrag.current
     if (!d || d.id !== id) return
     nodeDrag.current = null
@@ -896,7 +1070,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
     }
     if (node.state === 'draft' || id === USER) return
     const parent = mapRef.current.get(id)?.parent
-    const ancestors = []
+    const ancestors: string[] = []
     let cur = parent
     while (cur != null) { ancestors.push(cur); cur = mapRef.current.get(cur)?.parent }
 
@@ -916,7 +1090,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
       return
     }
     // no (new) target → cosmetic reorder among the current cohort by dropped x
-    const cohort = (mapRef.current.get(parent)?.children ?? [])
+    const cohort = (mapRef.current.get(parent!)?.children ?? [])
       .map((c) => c.id).filter((k) => k !== DRAFT)
     const sibs = cohort.filter((k) => k !== id)
     if (!sibs.length) { finish(); return }
@@ -930,7 +1104,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
     reorderNode(slug, id, req)
       .then(() => toast([`${id} reordered`],
         () => reorderNode(slug, id, oldReq).catch(() => {})))
-      .catch((err) => toast([`error: ${err.message}`])).finally(finish)
+      .catch((err: Error) => toast([`error: ${err.message}`])).finally(finish)
   }
 
   // ------------------------------------------------------- focus (the desk)
@@ -938,11 +1112,11 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
     if (view.z < Z_DESK) return null
     const vp = viewportRef.current?.getBoundingClientRect()
     const cw = vp ? vp.width / 2 : 500, ch = vp ? vp.height / 2 : 350
-    let best = null, bestD = Infinity
+    let best: string | null = null, bestD = Infinity
     for (const [id] of target) {
       if (id === DRAFT) continue         // the EYE can be a desk too (switchboard)
       if (hidden.has(id)) continue       // piled-away retirees never take focus
-      const p = posOf(id)
+      const p = posOf(id)!
       const sx = (p.x + NODE_W / 2) * view.z + view.x
       const sy = (p.y + NODE_H / 2) * view.z + view.y
       const d = Math.hypot(sx - cw, sy - ch)
@@ -971,7 +1145,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
   // coworkers are wired: adjacent live siblings share a lateral line (§7.6
   // peers may message directly)
   const peerLinks = useMemo(() => {
-    const links = []
+    const links: [string, string][] = []
     for (const n of map.values()) {
       if (!n.children || n.children.length < 2 || n.isBearerOf) continue
       const sibs = n.children.map((c) => c.id)
@@ -985,7 +1159,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
   const audLines = (tree.audiences ?? [])
     .filter((a) => map.has(a.grantor) && map.has(a.grantee))
 
-  const spawn = (parentId, tier) => {
+  const spawn = (parentId: string, tier: string) => {
     setDraft({ parent: parentId === USER ? null : parentId, tier })
     // roughly OVERVIEW scale start to finish (user ruling): the form is
     // authored on a 200px virtual surface (scale .6 into the card), so
@@ -995,8 +1169,9 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
     setTimeout(() => centerOn(
       DRAFT, Math.min(2.05, Math.max(1.7, viewRef.current.z))), 60)
   }
-  const confirmDraft = (name, grant, charter, scope) => {
-    op({ op: 'hire', parent: draft.parent, tier: draft.tier, grant, name,
+  const confirmDraft = (name: string, grant: number, charter: string,
+    scope: DraftScope | null) => {
+    op({ op: 'hire', parent: draft!.parent, tier: draft!.tier, grant, name,
          charter: charter?.trim() || undefined,
          // pre-hire permissions (user spec): staged in the draft's modal,
          // applied atomically WITH the hire — effort included (review: the
@@ -1012,11 +1187,13 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
         // (which makes the id known) lands frames after this response — a
         // direct set died instantly and the node glided in from its parent
         const ds = springs.current.get(DRAFT)
-        if (r?.node && ds) {
-          seedRef.current.set(r.node, { x: ds.x, y: ds.y, at: performance.now() })
+        // (typeof-narrows the op result's open dict: hire returns {node: str})
+        const born = r?.node
+        if (typeof born === 'string' && born && ds) {
+          seedRef.current.set(born, { x: ds.x, y: ds.y, at: performance.now() })
         }
         setDraft(null)
-      }).catch((e) => toast([`hire failed: ${e.message}`]))
+      }).catch((e: Error) => toast([`hire failed: ${e.message}`]))
   }
 
   // the eye's bar on hover. Every credit in circulation is, recursively,
@@ -1029,8 +1206,10 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
 
   const orgStats = useMemo(() => {
     let free = 0
-    const walk = (n) => {
-      if (n.state === 'live' && n.free > 0) free += n.free
+    const walk = (n: TreeNode) => {
+      // (const extraction: `free` is null on non-live nodes — ledger.py:2524)
+      const f = n.free
+      if (n.state === 'live' && f != null && f > 0) free += f
       n.children.forEach(walk)
     }
     tree.roots.forEach(walk)
@@ -1059,8 +1238,8 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
         <svg className="edges" width={bounds.w} height={bounds.h}>
           {[...map.values()].filter((n) => n.parent && !n.isBearerOf
             && !hidden.has(n.id)).map((n) => {
-            if (!posOf(n.parent) || !posOf(n.id)) return null
-            return <path key={n.id} d={segD(treeSeg(n.parent, n.id))}
+            if (!posOf(n.parent!) || !posOf(n.id)) return null
+            return <path key={n.id} d={segD(treeSeg(n.parent!, n.id))}
               className={'edge' + (n.state === 'archived' ? ' faded' : '')
                 + (n.state === 'draft' ? ' draftedge' : '')} />
           })}
@@ -1071,12 +1250,12 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
           {(() => {
             const nowT = performance.now()
             const anim = audAnimRef.current
-            const out = []
+            const out: ReactNode[] = []
             for (const a of audLines) {
               if (!posOf(a.grantor) || !posOf(a.grantee)) continue
               const k = a.grantor + '→' + a.grantee
               const st = anim.get(k)
-              let dash = null
+              let dash: number | null = null
               if (st?.phase === 'in') {
                 const t = (nowT - st.t0) / AUD_DUR
                 if (t >= 1) anim.delete(k)
@@ -1104,7 +1283,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
             return out
           })()}
           {[...map.values()].filter((n) => n.isBearerOf).map((n) => {
-            const a = posOf(n.isBearerOf), b = posOf(n.id)
+            const a = posOf(n.isBearerOf!), b = posOf(n.id)
             if (!a || !b) return null
             return <path key={'t' + n.id}
               d={`M ${a.x + NODE_W - 10} ${a.y + 8} L ${b.x + 10} ${b.y + NODE_H - 8}`}
@@ -1115,10 +1294,10 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
             // only audience lines to its holders. Those connect FACING sides:
             // an agent left of the box joins from its RIGHT side (user spec),
             // an agent right of it from its left.
-            const out = []
+            const out: ReactNode[] = []
             for (const h of tree.org_inbox.holders ?? []) {
               if (!map.has(h) || !posOf(h)) continue
-              const a = posOf(INBOX), b = posOf(h)
+              const a = posOf(INBOX)!, b = posOf(h)!
               const ga = sizeOf(INBOX), gb = sizeOf(h)
               const left = (b.x + gb.w / 2) < (a.x + ga.w / 2)
               const x1 = left ? a.x : a.x + ga.w
@@ -1178,7 +1357,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
               onSpawn={(t) => spawn(USER, t)} />
           }
           if (n.id === DRAFT) {
-            return <DraftNode key={DRAFT} pos={p} draft={draft} map={map} seats={seats}
+            return <DraftNode key={DRAFT} pos={p} draft={draft!} map={map} seats={seats}
               maxTop={tree.max_top_grant ?? 1000} kioskRemaining={kioskRemaining}
               defaultTop={tree.default_top_grant ?? 50} tree={tree}
               zoom={view.z} pxc={pxPerCredit}
@@ -1188,7 +1367,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
           const pileHere = pileByFront.get(n.id)
           const square = (
             <NodeSquare key={n.id} node={n} pos={p} lod={lod} focused={n.id === focusId}
-              dragging={nodeDrag.current?.id === n.id && nodeDrag.current.moved}
+              dragging={nodeDrag.current?.id === n.id && nodeDrag.current!.moved}
               isDrop={dropId === n.id}
               seats={seats} map={map} op={op} slug={slug} pulse={pulse} toast={toast}
               streamEvt={streamEvt} pxc={pxPerCredit} zoom={view.z} act={activity?.[n.id]}
@@ -1236,7 +1415,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
         {tree.org_inbox?.visible && posOf(INBOX) && (
           <div className="sq orginbox"
             style={{
-              transform: `translate(${posOf(INBOX).x}px, ${posOf(INBOX).y}px)`,
+              transform: `translate(${posOf(INBOX)!.x}px, ${posOf(INBOX)!.y}px)`,
               width: USER_W, height: INBOX_H,
             }}
             title="the org inbox — outside mail addressed to this organization"
@@ -1313,13 +1492,13 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
                 const go = () => {
                   if (hidden.has(n.id)) {
                     const par = map.get(n.id)?.parent
-                    setFront(par + (n.state === 'archived' ? '|a' : '|c'), n.id)
+                    setFront(par! + (n.state === 'archived' ? '|a' : '|c'), n.id)
                   }
                   centerOn(n.id)
                 }
                 // №13: the status summary is TEXT here, not a tooltip — and a
                 // finished status survives the next turn as prev_status (dim)
-                const stat = n.last_status
+                const stat: (NodeStatus & { _stale?: boolean }) | null = n.last_status
                   ?? (n.prev_status ? { ...n.prev_status, _stale: true } : null)
                 return (
                 <div key={n.id} role="button" tabIndex={0}
@@ -1327,7 +1506,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
                   onClick={go}
                   onKeyDown={(e) => { if (e.key === 'Enter') go() }}>
                   <div className="tray-main">
-                    <span className={'tier t-' + n.tier}>{TIER_LETTER[n.tier] ?? '?'}</span>
+                    <span className={'tier t-' + n.tier}>{TIER_LETTER[n.tier!] ?? '?'}</span>
                     <span className="tray-name"
                       title={(n.charter || '').split('\n')[0] || n.id}>{n.id}</span>
                     <ContextWheel occ={n.occupancy} cw={n.context_window}
@@ -1365,11 +1544,11 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
         </button>
       </div>
       {configId && map.get(configId) && (
-        <NodeConfig node={map.get(configId)} map={map} tree={tree} slug={slug}
+        <NodeConfig node={map.get(configId)!} map={map} tree={tree} slug={slug}
           op={op} toast={toast} close={() => setConfigId(null)} />
       )}
       {lineageId && map.get(lineageId) && (
-        <LineagePanel node={map.get(lineageId)} op={op} slug={slug}
+        <LineagePanel node={map.get(lineageId)!} op={op} slug={slug}
           close={() => setLineageId(null)} />
       )}
       {userCfg && (
@@ -1377,12 +1556,12 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
           close={() => setUserCfg(false)} />
       )}
       {inboxId && map.get(inboxId) && (
-        <NodeInboxModal node={map.get(inboxId)} slug={slug} pulse={pulse}
+        <NodeInboxModal node={map.get(inboxId)!} slug={slug} pulse={pulse}
           jumpTo={nodeInboxJump}
           close={() => { setInboxId(null); setNodeInboxJump(null) }} />
       )}
       {pileOpen && piles.get(pileOpen) && (
-        <PilePicker pile={piles.get(pileOpen)} map={map} op={op} toast={toast}
+        <PilePicker pile={piles.get(pileOpen)!} map={map} op={op} toast={toast}
           onPick={(nid) => { setFront(pileOpen, nid); setPileOpen(null) }}
           close={() => setPileOpen(null)} />
       )}
@@ -1401,12 +1580,46 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
 }
 
 // ------------------------------------------------------------- the overseer
+interface UserNodeProps {
+  pos: Pt
+  isDrop: boolean
+  stats: { circ: number; seats: number; free: number }
+  inboxCount: number
+  seats: Record<string, number>
+  mailGlow: boolean
+  kiosk: TreePayload['kiosk']
+  pub: boolean
+  kioskRemaining: number | null
+  kioskSegs?: { seat: number; grant: number }[]
+  pxc: number
+  zoom: number
+  onInbox?: () => void
+  onGear?: () => void
+  onSpawn: (tier: string) => void
+  onMailLink: MailLinkFn
+  focused: boolean
+  eyeW: number
+  onFocus?: () => void
+  posX: (id: string) => number
+  onJump?: (id: string) => void
+  map: Map<string, CanvasNode>
+  op: OpFn
+  slug: string
+  pulse: PulseEvent | null
+  toast: ToastFn
+  streamEvt: StreamEvent | null
+  compactAt?: number
+}
+
 function UserNode({ pos, isDrop, stats, inboxCount, seats, mailGlow,
   kiosk, pub, kioskRemaining, kioskSegs, pxc, zoom, onInbox, onGear, onSpawn,
   onMailLink,
   focused, eyeW, onFocus, posX, onJump, map, op, slug, pulse, toast,
-  streamEvt, compactAt }) {
-  const downRef = useRef(null)
+  streamEvt, compactAt }: UserNodeProps) {
+  const downRef = useRef<Pt | null>(null)
+  // const extraction: the kiosk-credits narrowing must survive the commit
+  // closure below (a property check alone would not)
+  const kioskCredits = kiosk?.credits
   return (
     <div className={'sq user' + (focused ? ' desk eyeboard' : '')
       + (isDrop ? ' drop' : '') + (mailGlow && !focused ? ' mail-glow' : '')}
@@ -1419,7 +1632,7 @@ function UserNode({ pos, isDrop, stats, inboxCount, seats, mailGlow,
         zIndex: focused ? 5 : undefined,
       }}
       onPointerDown={(e) => {
-        if (e.target.closest('button, input, textarea, select, .desk-over')) return
+        if ((e.target as Element).closest('button, input, textarea, select, .desk-over')) return
         e.stopPropagation()
         downRef.current = { x: e.clientX, y: e.clientY }
       }}
@@ -1434,19 +1647,19 @@ function UserNode({ pos, isDrop, stats, inboxCount, seats, mailGlow,
           (the tip is a sibling — the fade mask would swallow a child).
           It stays rendered at switchboard focus (user ruling): anchored to
           the card's left edge, it glides outward as the square expands. */}
-      {kiosk?.credits
+      {kioskCredits
         ? /* kiosk: the pool is FINITE — a fixed-size bar with per-child slabs,
              exactly like an agent's, and (user spec 2026-07-31) draggable BY
              THE ADMIN to adjust the org's total credit cap; the public
              gateway never gets the handle (and the /kiosk endpoint it would
              need is deny-listed anyway) */
-          <CreditBar seat={0} grant={kiosk.credits} committed={stats.circ}
+          <CreditBar seat={0} grant={kioskCredits} committed={stats.circ}
             segments={kioskSegs ?? []} zoom={zoom} pxc={pxc} capMode
             min={stats.circ}
             onCommit={pub ? undefined : (delta) =>
-              saveKiosk(slug, { credits: kiosk.credits + delta })
-                .then(() => toast?.([`kiosk credit cap: ${kiosk.credits + delta}`]))
-                .catch((e) => toast?.([`error: ${e.message}`]))} />
+              saveKiosk(slug, { credits: kioskCredits + delta })
+                .then(() => toast?.([`kiosk credit cap: ${kioskCredits + delta}`]))
+                .catch((e: Error) => toast?.([`error: ${e.message}`]))} />
         : <div className="cbar-inf-wrap">
             <div className="cbar-infinite" />
             <div className="cbar-tip">
@@ -1493,19 +1706,38 @@ function UserNode({ pos, isDrop, stats, inboxCount, seats, mailGlow,
 // (user spec). Tabs stay visible at all times; chats minimize/maximize to
 // manage crowding. A line that exists via an audience grant carries an ✕:
 // closing that tab RESCINDS the grant (top-level lines are permanent).
+interface EyeDeskProps {
+  map: Map<string, CanvasNode>
+  op: OpFn
+  slug: string
+  pulse: PulseEvent | null
+  toast: ToastFn
+  streamEvt: StreamEvent | null
+  inboxCount: number
+  onInbox?: () => void
+  onGear?: () => void
+  pub: boolean
+  eyeW: number
+  posX: (id: string) => number
+  onJump?: (id: string) => void
+  compactAt?: number
+  onMailLink: MailLinkFn
+}
+
 function EyeDesk({ map, op, slug, pulse, toast, streamEvt, inboxCount,
-  onInbox, onGear, pub, eyeW, posX, onJump, compactAt, onMailLink }) {
+  onInbox, onGear, pub, eyeW, posX, onJump, compactAt, onMailLink }: EyeDeskProps) {
   const agents = [...map.values()].filter((n) =>
     n.id !== USER && n.id !== DRAFT && n.state === 'live' && !n.isBearerOf
     && (n.parent === USER || n.audiences_held?.includes(USER)))
     // tab order mirrors the tree's left→right spatial order (user ruling)
     .sort((a, b) => (posX?.(a.id) ?? 0) - (posX?.(b.id) ?? 0))
-  const [minned, setMinned] = useState(() => {
+  const [minned, setMinned] = useState<Set<string>>(() => {
     try {
-      return new Set(JSON.parse(localStorage.getItem('orgtree-eyemin-' + slug) || '[]'))
+      return new Set(JSON.parse(localStorage.getItem('orgtree-eyemin-' + slug)
+        || '[]') as string[])
     } catch { return new Set() }
   })
-  const toggle = (id) => setMinned((s) => {
+  const toggle = (id: string) => setMinned((s) => {
     const n = new Set(s)
     if (n.has(id)) n.delete(id); else n.add(id)
     localStorage.setItem('orgtree-eyemin-' + slug, JSON.stringify([...n]))
@@ -1517,18 +1749,18 @@ function EyeDesk({ map, op, slug, pulse, toast, streamEvt, inboxCount,
   // `seen` persists beside `min` (review): a bare ref only worked while
   // EyeDesk stayed mounted, so any grant landing with the camera away
   // rendered open anyway
-  const seenIds = useRef(null)
+  const seenIds = useRef<Set<string> | null>(null)
   if (seenIds.current === null) {
     try {
       const stored = localStorage.getItem('orgtree-eyeseen-' + slug)
-      seenIds.current = stored ? new Set(JSON.parse(stored)) : null
+      seenIds.current = stored ? new Set(JSON.parse(stored) as string[]) : null
     } catch { seenIds.current = null }
   }
   const idsKey = agents.map((a) => a.id).join(',')
   useEffect(() => {
     const ids = new Set(idsKey ? idsKey.split(',') : [])
     if (seenIds.current) {
-      const fresh = [...ids].filter((id) => !seenIds.current.has(id))
+      const fresh = [...ids].filter((id) => !seenIds.current!.has(id))
       if (fresh.length) {
         setMinned((s) => {
           const n = new Set(s)
@@ -1564,10 +1796,10 @@ function EyeDesk({ map, op, slug, pulse, toast, streamEvt, inboxCount,
               <button className="eye-tab-main"
                 title={minned.has(a.id) ? 'open this chat' : 'minimize this chat'}
                 onClick={() => toggle(a.id)}>
-                <span className={'tier t-' + a.tier}>{TIER_LETTER[a.tier] ?? '?'}</span>
+                <span className={'tier t-' + a.tier}>{TIER_LETTER[a.tier!] ?? '?'}</span>
                 {a.id}
                 {a.busy && <AutorenewIcon fontSize="inherit" className="cc-spin" />}
-                {a.mail_pending > 0 && <b className="eye-count">{a.mail_pending}</b>}
+                {(a.mail_pending ?? 0) > 0 && <b className="eye-count">{a.mail_pending}</b>}
               </button>
               {/* jump straight to the agent's own node — same glide as
                   clicking its card (user spec) */}
@@ -1582,7 +1814,7 @@ function EyeDesk({ map, op, slug, pulse, toast, streamEvt, inboxCount,
                   title="close this line (rescinds its audience with you)"
                   onClick={() => audienceAction(slug, 'revoke', a.id, USER)
                     .then(() => toast([`audience ${a.id} → you rescinded`]))
-                    .catch((e) => toast([`error: ${e.message}`]))}>
+                    .catch((e: Error) => toast([`error: ${e.message}`]))}>
                   <CloseIcon fontSize="inherit" /></button>}
             </span>
           ))}
@@ -1613,7 +1845,14 @@ function EyeDesk({ map, op, slug, pulse, toast, streamEvt, inboxCount,
   )
 }
 
-function SpawnChips({ onSpawn, free, seats, maxTier }) {
+interface SpawnChipsProps {
+  onSpawn: (tier: string) => void
+  free: number
+  seats: Record<string, number>
+  maxTier?: string | null
+}
+
+function SpawnChips({ onSpawn, free, seats, maxTier }: SpawnChipsProps) {
   // kiosk tier cap (user spec): tokens above the cap DISAPPEAR entirely —
   // seat cost doubles as the tier rank, so the cap is a simple cost compare
   const shown = TIERS.filter((t) =>
@@ -1646,24 +1885,31 @@ function SpawnChips({ onSpawn, free, seats, maxTier }) {
 // agents get exactly this; deeper hires get the ∩ with the superior's
 // capability (clamped server-side at hire time). "*" = every registered MCP
 // server, present and future.
-function UserConfig({ tree, slug, toast, close }) {
+interface UserConfigProps {
+  tree: TreePayload
+  slug: string
+  toast: ToastFn
+  close: () => void
+}
+
+function UserConfig({ tree, slug, toast, close }: UserConfigProps) {
   useEsc(close)
   // visitors configure the HIRE DEFAULTS too (user ruling 2026-07-31),
   // ceiling-clamped server-side; the org folder holdings stay admin-only
   // (host paths — the public payload only carries basenames anyway)
   const pub = !!tree.public
   const [asking, setAsking] = useState(false)   // dissolve-all confirmation
-  const [defTools, setDefTools] = useState({
+  const [defTools, setDefTools] = useState<ToolGrant>({
     bash: true, web: true, edit: true, subagents: true,
     ...(tree.default_tools ?? {}),
     mcp: [...(tree.default_tools?.mcp ?? ['*'])],
   })
-  const [servers, setServers] = useState([])
+  const [servers, setServers] = useState<string[]>([])
   const [sandboxMcp, setSandboxMcp] = useState(false)
   const [vis, setVis] = useState(tree.default_visibility ?? 'full')
   // the org's folder holdings (workspace excluded — it is permanent RW).
   // These double as the folder defaults for every hire.
-  const [orgDirs, setOrgDirs] = useState(
+  const [orgDirs, setOrgDirs] = useState<DirGrant[]>(
     (tree.dirs ?? []).filter((d) => d.path !== tree.workspace).map((d) => ({ ...d })))
   const [newPath, setNewPath] = useState('')
   useEffect(() => {
@@ -1754,7 +2000,8 @@ function UserConfig({ tree, slug, toast, close }) {
             Promise.all([
               saveHireDefaults(slug, { default_tools: defTools,
                                        default_visibility: vis }),
-              pub ? Promise.resolve({}) : saveSettings(slug, { org_dirs: orgDirs }),
+              pub ? Promise.resolve<{ warnings?: string[] }>({})
+                : saveSettings(slug, { org_dirs: orgDirs }),
             ])
               .then(([r, r2]) => {
                 const warns = [...(r.warnings ?? []), ...(r2.warnings ?? [])]
@@ -1767,11 +2014,11 @@ function UserConfig({ tree, slug, toast, close }) {
                         raise_ceiling: true })
                       .then((r3) => toast(r3.warnings?.length ? r3.warnings
                         : ['ceiling raised — defaults applied']))
-                      .catch((e) => toast([`error: ${e.message}`])) })
+                      .catch((e: Error) => toast([`error: ${e.message}`])) })
                 } else toast(warns)
                 close()
               })
-              .catch((e) => toast([`error: ${e.message}`]))}>save</button>
+              .catch((e: Error) => toast([`error: ${e.message}`]))}>save</button>
           <button onClick={close}>cancel</button>
         </div>
       </div>
@@ -1781,7 +2028,7 @@ function UserConfig({ tree, slug, toast, close }) {
           confirmLabel="dissolve all"
           onConfirm={() => dissolveAll(slug)
             .then((r) => { toast([`dissolved ${r.nodes} node(s), freed ${r.freed} credits`]); close() })
-            .catch((e) => toast([`error: ${e.message}`]))}
+            .catch((e: Error) => toast([`error: ${e.message}`]))}
           close={() => setAsking(false)} />
       )}
     </div>
@@ -1793,30 +2040,46 @@ function UserConfig({ tree, slug, toast, close }) {
 // `min` floors a live bar at its committed amount; `max` caps at parent free.
 // The bar spans seat+grant; the SEAT block sits at its foot (credits are
 // incompressible — a node's whole holding is visible mass).
+interface CreditBarProps {
+  seat?: number
+  grant: number
+  committed: number
+  segments?: { seat: number; grant: number }[]
+  draftMode?: boolean
+  min?: number
+  max?: number
+  maxGhost?: boolean
+  onDragValue?: (v: number) => void   // draftMode: the pending grant
+  onCommit?: (delta: number) => void  // live: reallocate on release
+  zoom: number
+  pxc: number
+  capMode?: boolean
+}
+
 function CreditBar({ seat = 0, grant, committed, segments = [], draftMode,
-  min = 0, max, maxGhost, onDragValue, onCommit, zoom, pxc, capMode }) {
-  const [drag, setDrag] = useState(null)          // {y0, g0, val}
+  min = 0, max, maxGhost, onDragValue, onCommit, zoom, pxc, capMode }: CreditBarProps) {
+  const [drag, setDrag] = useState<{ y0: number; g0: number; val: number } | null>(null)          // {y0, g0, val}
   const cur = drag && !draftMode ? drag.val : grant
   const seatLen = seat * pxc
   const len = Math.max(6, (seat + cur) * pxc)
-  const start = (e) => {
+  const start = (e: React.PointerEvent<HTMLDivElement>) => {
     if (!draftMode && !onCommit) return
     e.stopPropagation(); e.preventDefault()
     setDrag({ y0: e.clientY, g0: grant, val: grant })
     e.currentTarget.setPointerCapture(e.pointerId)
   }
-  const move = (e) => {
+  const move = (e: React.PointerEvent<HTMLDivElement>) => {
     if (!drag) return
     const dg = (drag.y0 - e.clientY) / (pxc * zoom)
     const v = Math.round(Math.max(min, Math.min(max ?? Infinity, drag.g0 + dg)))
-    if (draftMode) onDragValue(v)
+    if (draftMode) onDragValue?.(v)
     else setDrag((d) => d && { ...d, val: v })
   }
   const end = () => {
     if (!drag) return
     const v = drag.val
     setDrag(null)
-    if (!draftMode && v !== grant) onCommit(v - grant)
+    if (!draftMode && v !== grant) onCommit?.(v - grant)
   }
   // ruler rungs mark REAL quantities: every 5 credits, or every 25 when the
   // scale is too fine for 5s to resolve (user ruling — never equal-spaced fluff)
@@ -1836,7 +2099,7 @@ function CreditBar({ seat = 0, grant, committed, segments = [], draftMode,
       {/* while adjusting a non-top-level bar, a transparent ghost shows the
           ceiling the drag can reach (seat + grant + the parent's free) */}
       {(draftMode || drag) && maxGhost && Number.isFinite(max) &&
-        <div className="cbar-max" style={{ height: Math.max(6, (seat + max) * pxc) }} />}
+        <div className="cbar-max" style={{ height: Math.max(6, (seat + max!) * pxc) }} />}
       {/* inner layers live in a clip so they can never punch through the
           bar's rounded outline (border-box height overhang) */}
       <div className="cbar-clip">
@@ -1853,7 +2116,7 @@ function CreditBar({ seat = 0, grant, committed, segments = [], draftMode,
             hairlines part the own seat from the slabs, and slab from slab. */}
         {(() => {
           let cum = 0
-          const out = []
+          const out: ReactNode[] = []
           segments.forEach((s, i) => {
             out.push(<div key={'s' + i} className="cbar-subseat"
               style={{ bottom: seatLen + cum * pxc, height: s.seat * pxc }} />)
@@ -1895,21 +2158,39 @@ function CreditBar({ seat = 0, grant, committed, segments = [], draftMode,
   )
 }
 
+interface DraftNodeProps {
+  pos: Pt
+  draft: DraftState
+  map: Map<string, CanvasNode>
+  seats: Record<string, number>
+  maxTop: number
+  defaultTop: number
+  kioskRemaining: number | null
+  tree: TreePayload
+  zoom: number
+  pxc: number
+  onConfirm: (name: string, grant: number, charter: string,
+    scope: DraftScope | null) => void
+  onCancel: () => void
+}
+
+type CharterPreset = { name: string; content: string; path: string }
+
 function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRemaining,
-  tree, zoom, pxc, onConfirm, onCancel }) {
+  tree, zoom, pxc, onConfirm, onCancel }: DraftNodeProps) {
   const [name, setName] = useState('')
   const [charter, setCharter] = useState('')
   // pre-hire permissions (user spec): configure the agent's dirs, tool
   // switches, MCP grants and visibility BEFORE hiring — no post-hire
   // adjustment needed. null = the org/parent defaults, untouched.
-  const [scope, setScope] = useState(null)
+  const [scope, setScope] = useState<DraftScope | null>(null)
   const [permsOpen, setPermsOpen] = useState(false)
   // named charter presets (user ruling): every .md in docs/charters/. Picked
   // presets appear as CARDS, not text (user spec) — click removes, hover
   // shows the source file's path on disk; only finalizing the hire turns
   // them into actual charter text (prepended to any manual entry).
-  const [presets, setPresets] = useState([])
-  const [chosen, setChosen] = useState([])
+  const [presets, setPresets] = useState<CharterPreset[]>([])
+  const [chosen, setChosen] = useState<CharterPreset[]>([])
   useEffect(() => {
     getCharters().then((r) => setPresets(r.charters ?? [])).catch(() => {})
   }, [])
@@ -1933,7 +2214,7 @@ function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRemaining,
       ? (map.get(draft.parent)?.free ?? 0)
       : maxTop
   useEffect(() => {
-    const onKey = (e) => { if (e.key === 'Escape') onCancel() }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onCancel() }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [onCancel])
@@ -2033,10 +2314,19 @@ function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRemaining,
 // ⚙ panel — folders with RW/RO, tool switches, MCP grants, org visibility —
 // but staged locally and applied WITH the hire, so nothing needs adjusting
 // after the agent exists. Prefilled from what the hire would inherit anyway.
-function DraftScopeModal({ draft, map, tree, scope, onSave, close }) {
+interface DraftScopeModalProps {
+  draft: DraftState
+  map: Map<string, CanvasNode>
+  tree: TreePayload
+  scope: DraftScope | null
+  onSave: (scope: DraftScope) => void
+  close: () => void
+}
+
+function DraftScopeModal({ draft, map, tree, scope, onSave, close }: DraftScopeModalProps) {
   useEsc(close)
   const parent = draft.parent ? map.get(draft.parent) : null
-  const inherited = () => ({
+  const inherited = (): DraftScope => ({
     add_dirs: (parent ? parent.scope?.add_dirs : tree.dirs) ?? [],
     tools: parent?.scope?.tools
       ?? tree.default_tools
@@ -2045,12 +2335,13 @@ function DraftScopeModal({ draft, map, tree, scope, onSave, close }) {
       ?? tree.default_visibility ?? 'full',
   })
   const base = scope ?? inherited()
-  const [dirs, setDirs] = useState(base.add_dirs.map((d) => ({ ...d })))
-  const [tools, setTools] = useState({ ...base.tools, mcp: [...(base.tools.mcp ?? [])] })
+  const [dirs, setDirs] = useState<DirGrant[]>(base.add_dirs.map((d) => ({ ...d })))
+  const [tools, setTools] = useState<Partial<ToolGrant> & { mcp: string[] }>(
+    { ...base.tools, mcp: [...(base.tools.mcp ?? [])] })
   const [vis, setVis] = useState(base.org_visibility)
   const [effort, setEffort] = useState(base.effort ?? '')
   const [newPath, setNewPath] = useState('')
-  const [servers, setServers] = useState([])
+  const [servers, setServers] = useState<string[]>([])
   const [sandboxMcp, setSandboxMcp] = useState(false)
   useEffect(() => {
     getMcpServers().then((r) => {
@@ -2148,13 +2439,49 @@ function DraftScopeModal({ draft, map, tree, scope, onSave, close }) {
   )
 }
 
+interface NodeSquareProps {
+  node: CanvasNode
+  pos: Pt
+  lod: 'mini' | 'norm'
+  focused: boolean
+  dragging: boolean
+  isDrop: boolean
+  seats: Record<string, number>
+  map: Map<string, CanvasNode>
+  op: OpFn
+  slug: string
+  pulse: PulseEvent | null
+  toast: ToastFn
+  streamEvt: StreamEvent | null
+  pxc: number
+  zoom: number
+  act?: ActivityInfo
+  onSpawn: (tier: string) => void
+  onConfig: () => void
+  onInbox: () => void
+  onLineage: () => void
+  onRecenter?: () => void
+  pub: boolean
+  kioskRemaining: number | null
+  cascadeAlloc: boolean
+  maxTop: number
+  pile?: Pile
+  compactAt?: number
+  maxTier?: string | null
+  onMailLink: MailLinkFn
+  onDragStart: (e: React.PointerEvent<HTMLDivElement>, id: string) => void
+  onDragMove: (e: React.PointerEvent<HTMLDivElement>, id: string) => void
+  onDragEnd: (e: React.PointerEvent<HTMLDivElement>, id: string,
+    node: CanvasNode, focused: boolean) => void
+}
+
 function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, map, op, slug,
   pulse, toast, streamEvt, pxc, zoom, act, onSpawn, onConfig, onInbox, onLineage,
   onRecenter, pub, kioskRemaining, cascadeAlloc, maxTop, pile, compactAt, maxTier,
-  onMailLink, onDragStart, onDragMove, onDragEnd }) {
+  onMailLink, onDragStart, onDragMove, onDragEnd }: NodeSquareProps) {
   // pile fronts zoom on a plain CENTER click (user spec) — track the
   // pointer-down point so a drag's trailing click doesn't re-zoom
-  const downAt = useRef(null)
+  const downAt = useRef<Pt | null>(null)
   const cls = ['sq', node.state, focused ? 'desk' : lod, 'tier-' + node.tier]
   if (node.busy) cls.push('busy')
   if (dragging) cls.push('lifted')
@@ -2168,8 +2495,11 @@ function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, map, op,
   const stackN = (node.lineage ?? []).length
   if (!focused && stackN) cls.push('stack' + Math.min(stackN, 3))
   const live = node.state === 'live'
-  // the card never changes size or place — the desk fades in over it (design ruling)
-  const style = {
+  // the card never changes size or place — the desk fades in over it (design
+  // ruling). (Every real/bearer card carries the credit trio — only the eye
+  // root omits it, and it never renders through NodeSquare — hence the `!`s.)
+  const seat = node.seat!, grant = node.grant!, free = node.free!
+  const style: React.CSSProperties = {
     transform: `translate(${pos.x}px, ${pos.y}px)`,
     width: NODE_W, height: NODE_H,
     zIndex: focused ? 5 : dragging ? 8 : undefined,
@@ -2187,24 +2517,24 @@ function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, map, op,
         // pile front: center click = zoom onto the focused retiree (user
         // spec); margin clicks (the stack) are handled by the layers behind
         if (!pile || focused) return
-        if (e.target.closest('button, input, textarea, select')) return
+        if ((e.target as Element).closest('button, input, textarea, select')) return
         const d = downAt.current
         if (d && Math.hypot(e.clientX - d.x, e.clientY - d.y) > 5) return
         onRecenter?.()
       }}>
       {live && !node.isBearerOf && (
-        <CreditBar seat={node.seat} grant={node.grant} committed={node.grant - node.free}
+        <CreditBar seat={seat} grant={grant} committed={grant - free}
           segments={node.children.filter((c) => c.state !== 'archived')
-            .map((c) => ({ seat: c.seat, grant: c.grant }))}   /* unrecoverable still holds */
-          min={node.grant - node.free}
+            .map((c) => ({ seat: c.seat!, grant: c.grant! }))}   /* unrecoverable still holds */
+          min={grant - free}
           /* reallocate cascades up the chain (§4.6), so the parent's free is
              not a ceiling — unless the cascade_alloc setting turns that off.
              Otherwise the org's global grant cap (or a kiosk's hard credit
              cap) bounds the drag. */
           max={kioskRemaining != null
-            ? node.grant + kioskRemaining
+            ? grant + kioskRemaining
             : cascadeAlloc === false && node.parent !== USER
-              ? node.grant + (map.get(node.parent)?.free ?? 0)
+              ? grant + (map.get(node.parent!)?.free ?? 0)
               : maxTop}
           maxGhost={cascadeAlloc === false && node.parent !== USER}
           onCommit={(delta) => op({ op: 'reallocate', node: node.id, delta })
@@ -2219,12 +2549,12 @@ function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, map, op,
           own compact chrome inside the counter-scaled panel (a world-scaled name
           and tier chip blow up to poster size at desk zoom) */}
       {!focused && <div className="sq-head">
-        <span className={'tier t-' + node.tier}>{TIER_LETTER[node.tier] ?? '?'}</span>
+        <span className={'tier t-' + node.tier}>{TIER_LETTER[node.tier!] ?? '?'}</span>
         <span className="name" title={node.id}>{node.id}</span>
-        <button className={'mailbtn' + (node.mail_pending > 0 ? ' has' : '')}
+        <button className={'mailbtn' + ((node.mail_pending ?? 0) > 0 ? ' has' : '')}
           onPointerDown={(e) => e.stopPropagation()}
           onClick={(e) => { e.stopPropagation(); onInbox() }}>
-          <MailIcon fontSize="inherit" />{node.mail_pending > 0 && <span className="count">{node.mail_pending}</span>}
+          <MailIcon fontSize="inherit" />{(node.mail_pending ?? 0) > 0 && <span className="count">{node.mail_pending}</span>}
         </button>
         {/* ceiling spec §2: visitors retool freely WITHIN the kiosk ceiling —
             the gear is theirs too; the ledger clamps, never a 403 */}
@@ -2237,7 +2567,7 @@ function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, map, op,
           <span className={'statusdot ' + node.last_status.status}
             title={`${node.last_status.status} — ${node.last_status.summary ?? ''}`} />}
         {node.busy && <Activity act={act} dotOnly />}
-        {node.last_error && <span className="errdot" title={node.last_error} />}
+        {node.last_error && <span className="errdot" title={node.last_error ?? undefined} />}
       </div>}
       {!focused && lod === 'mini' && <div className="mini-name">{node.id}</div>}
       {node.busy && !focused && lod !== 'mini' && <Activity act={act} />}
@@ -2254,7 +2584,7 @@ function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, map, op,
               title={node.last_status.summary}>{node.last_status.status}</span>}
           {node.frozen &&
             <span className="badge frozen"
-              title={node.frozen.error}><FrozenIcon fontSize="inherit" /> limit</span>}
+              title={node.frozen.error ?? undefined}><FrozenIcon fontSize="inherit" /> limit</span>}
           {node.limit_locked && <span className="badge dim"><LockIcon fontSize="inherit" /> limit</span>}
           {stackN > 0 &&
             <button className="badge stackbadge"
@@ -2284,7 +2614,15 @@ function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, map, op,
 // external contact the sandbox is explicitly designed to restrict. The
 // experimental ORGTREE_SANDBOX_MCP env var re-enables them (url + portable
 // stdio passthrough, no full support).
-function McpChecklist({ servers, sandboxed, sandboxMcp, checked, onToggle }) {
+interface McpChecklistProps {
+  servers: string[]
+  sandboxed: boolean
+  sandboxMcp: boolean
+  checked: (s: string) => boolean
+  onToggle: (s: string, on: boolean) => void
+}
+
+function McpChecklist({ servers, sandboxed, sandboxMcp, checked, onToggle }: McpChecklistProps) {
   const dead = sandboxed && !sandboxMcp
   return (
     <>
@@ -2312,33 +2650,46 @@ const VIS_OPTIONS = [
   ['team', 'team'],
   ['subtree', 'subtree'],
   ['full', 'full (default)'],
-]
+] as const
 
 const TOOL_LABELS = [
   ['bash', 'terminal (Bash)'],
   ['web', 'web browsing (search + fetch)'],
   ['edit', 'file editing (Write / Edit / notebooks)'],
   ['subagents', 'ephemeral subagents (Task / Agent tool)'],
-]
+] as const
 
-function NodeConfig({ node, map, tree, slug, op, toast, close }) {
+interface NodeConfigProps {
+  node: CanvasNode
+  map: Map<string, CanvasNode>
+  tree: TreePayload
+  slug: string
+  op: OpFn
+  toast: ToastFn
+  close: () => void
+}
+
+function NodeConfig({ node, map, tree, slug, op, toast, close }: NodeConfigProps) {
   useEsc(close)
-  const [asking, setAsking] = useState(null)   // null | 'delete' | 'dissolve'
-  const [dirs, setDirs] = useState(node.scope.add_dirs.map((d) => ({ ...d })))
-  const [tools, setTools] = useState({
+  const [asking, setAsking] = useState<'delete' | 'dissolve' | null>(null)   // null | 'delete' | 'dissolve'
+  // every card that opens a config panel carries a scope (real nodes and
+  // bearer stubs both) — only the eye root and drafts lack one
+  const scope = node.scope!
+  const [dirs, setDirs] = useState<DirGrant[]>(scope.add_dirs.map((d) => ({ ...d })))
+  const [tools, setTools] = useState<ToolGrant>({
     bash: true, web: true, edit: true, subagents: true,
-    ...(node.scope.tools ?? {}),
-    mcp: [...(node.scope.tools?.mcp ?? [])],
+    ...(scope.tools ?? {}),
+    mcp: [...(scope.tools?.mcp ?? [])],
   })
-  const [vis, setVis] = useState(node.scope.org_visibility ?? 'full')
+  const [vis, setVis] = useState(scope.org_visibility ?? 'full')
   const [charter, setCharter] = useState(node.charter ?? '')
   const [teamCharter, setTeamCharter] = useState(node.team_charter ?? '')
-  const [model, setModel] = useState(node.tier)
-  const [effort, setEffort] = useState(node.scope.effort ?? '')
+  const [model, setModel] = useState(node.tier!)
+  const [effort, setEffort] = useState(scope.effort ?? '')
   const [newPath, setNewPath] = useState('')
-  const [servers, setServers] = useState([])
+  const [servers, setServers] = useState<string[]>([])
   const [sandboxMcp, setSandboxMcp] = useState(false)
-  const [initInfo, setInitInfo] = useState(null)   // №14: the CLI's own resolution
+  const [initInfo, setInitInfo] = useState<ChatInit | null>(null)   // №14: the CLI's own resolution
   useEffect(() => {
     getMcpServers().then((r) => {
       setServers(r.servers ?? []); setSandboxMcp(!!r.sandbox_mcp)
@@ -2353,9 +2704,10 @@ function NodeConfig({ node, map, tree, slug, op, toast, close }) {
     ? (parentNode.scope?.add_dirs ?? [])
     : (tree.dirs ?? []).map((d) => ({ ...d }))   // org holdings carry modes now
   const addable = parentDirs.filter((pd) => !dirs.some((d) => d.path === pd.path))
-  const parentHolds = (k) => parentTools == null || parentTools[k] !== false
+  const parentHolds = (k: 'bash' | 'web' | 'edit' | 'subagents') =>
+    parentTools == null || parentTools[k] !== false
   // "*" = every registered server, present and future
-  const parentHoldsMcp = (s) => parentTools == null
+  const parentHoldsMcp = (s: string) => parentTools == null
     || (parentTools.mcp ?? []).includes('*') || (parentTools.mcp ?? []).includes(s)
   const holdsAllMcp = tools.mcp.includes('*')
   return (
@@ -2369,10 +2721,10 @@ function NodeConfig({ node, map, tree, slug, op, toast, close }) {
           {node.state === 'live' && !node.children.some((c) => c.state !== 'archived') &&
             <button className="danger" onClick={() =>
               op({ op: 'retire', node: node.id }).then(close).catch(() => {})}>
-              retire · {node.seat + node.grant}</button>}
+              retire · {node.seat! + node.grant!}</button>}
           {node.state === 'live' && node.children.some((c) => c.state !== 'archived') &&
             <button className="danger" onClick={() => setAsking('dissolve')}>
-              dissolve subtree · {node.seat + node.grant}</button>}
+              dissolve subtree · {node.seat! + node.grant!}</button>}
           {node.state === 'archived' &&
             <button className="primary" onClick={() =>
               op({ op: 'rehire', node: node.id }).then(close).catch(() => {})}>
@@ -2472,12 +2824,12 @@ function NodeConfig({ node, map, tree, slug, op, toast, close }) {
           {/* kiosk tier cap: options above it vanish — but the node's OWN
               tier stays listed so a pre-cap agent still shows truthfully */}
           {['haiku', 'sonnet', 'opus', 'fable'].filter((t) => {
-            const rank = { haiku: 1, sonnet: 3, opus: 5, fable: 10 }
+            const rank: Record<string, number> = { haiku: 1, sonnet: 3, opus: 5, fable: 10 }
             const cap = tree.kiosk?.max_tier
             return t === node.tier || !cap || rank[t] <= (rank[cap] ?? Infinity)
           }).map((t) => (
             <option key={t} value={t}>
-              {t} · seat {{ haiku: 1, sonnet: 3, opus: 5, fable: 10 }[t]}
+              {t} · seat {({ haiku: 1, sonnet: 3, opus: 5, fable: 10 } as Record<string, number>)[t]}
             </option>
           ))}
         </select>
@@ -2538,11 +2890,11 @@ function NodeConfig({ node, map, tree, slug, op, toast, close }) {
                         raise_ceiling: true })
                       .then((r2) => toast(r2.warnings?.length ? r2.warnings
                         : ['ceiling raised — applied']))
-                      .catch((e) => toast([`error: ${e.message}`])) })
+                      .catch((e: Error) => toast([`error: ${e.message}`])) })
                 } else toast(r.warnings)
                 close()
               })
-              .catch((e) => toast([`error: ${e.message}`]))}>save</button>
+              .catch((e: Error) => toast([`error: ${e.message}`]))}>save</button>
           <button onClick={close}>cancel</button>
         </div>
       </div>
@@ -2554,7 +2906,7 @@ function NodeConfig({ node, map, tree, slug, op, toast, close }) {
           close={() => setAsking(null)} />
       )}
       {asking === 'delete' && (() => {
-        const count = (function c(n) {
+        const count = (function c(n: CanvasNode): number {
           return n.children.reduce((a, k) => a + 1 + c(k), 0)
         })(node)
         const gens = (node.lineage ?? []).length
@@ -2571,7 +2923,14 @@ function NodeConfig({ node, map, tree, slug, op, toast, close }) {
   )
 }
 
-function ContextWheel({ occ, cw, onCompact, compactAt }) {
+interface ContextWheelProps {
+  occ?: number | null
+  cw?: number | null
+  onCompact?: () => void
+  compactAt?: number
+}
+
+function ContextWheel({ occ, cw, onCompact, compactAt }: ContextWheelProps) {
   if (!occ || !cw) return null
   const frac = Math.min(1, occ / cw)
   // №19: the red ring means "about to split" — the ORG'S configured
@@ -2595,12 +2954,12 @@ function ContextWheel({ occ, cw, onCompact, compactAt }) {
   return <button className="ctxbtn" onClick={onCompact}>{svg}</button>
 }
 
-const shortTool = (t) => (t || 'tool').replace(/^mcp__([^_]+)__/, '$1: ')
+const shortTool = (t: string | null | undefined) => (t || 'tool').replace(/^mcp__([^_]+)__/, '$1: ')
 
-const fmtBytes = (n) => n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB`
-  : n >= 1024 ? `${Math.round(n / 1024)} KB` : `${n ?? 0} B`
+const fmtBytes = (n: number | null | undefined) => n! >= 1048576 ? `${(n! / 1048576).toFixed(1)} MB`
+  : n! >= 1024 ? `${Math.round(n! / 1024)} KB` : `${n ?? 0} B`
 
-function Activity({ act, dotOnly }) {
+function Activity({ act, dotOnly }: { act?: ActivityInfo; dotOnly?: boolean }) {
   const phase = act?.phase ?? 'thinking'
   if (dotOnly) {
     return phase === 'tool'
@@ -2630,16 +2989,34 @@ const DeskChat = memo(DeskChatInner, (p, n) =>
   && p.pub === n.pub && p.bare === n.bare && p.compact === n.compact
   && p.compactAt === n.compactAt)
 
+interface DeskChatProps {
+  node: CanvasNode
+  map: Map<string, CanvasNode>
+  op: OpFn
+  slug: string
+  pulse: PulseEvent | null
+  toast: ToastFn
+  streamEvt: StreamEvent | null
+  onLineage?: () => void
+  onConfig?: () => void
+  onRecenter?: () => void
+  pub: boolean
+  bare?: boolean
+  compact?: boolean
+  compactAt?: number
+  onMailLink?: MailLinkFn
+}
+
 function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onConfig,
-  onRecenter, pub, bare = false, compact = false, compactAt, onMailLink }) {
-  const [chat, setChat] = useState(null)
+  onRecenter, pub, bare = false, compact = false, compactAt, onMailLink }: DeskChatProps) {
+  const [chat, setChat] = useState<ChatPayload | null>(null)
   // №2: the draft survives the camera — persisted per node on every keystroke
   // (clicking a sibling card unmounts this whole component)
   const draftKey = `orgtree-draft-${slug}-${node.id}`
   const [text, setTextRaw] = useState(() => {
     try { return localStorage.getItem(draftKey) || '' } catch { return '' }
   })
-  const setText = useCallback((v) => setTextRaw((prev) => {
+  const setText = useCallback((v: string | ((prev: string) => string)) => setTextRaw((prev) => {
     const next = typeof v === 'function' ? v(prev) : v
     try {
       if (next) localStorage.setItem(draftKey, next)
@@ -2647,32 +3024,33 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
     } catch { /* private mode */ }
     return next
   }), [draftKey])
-  const [pending, setPending] = useState([])   // optimistic, until the server copy lands
+  const [pending, setPending] = useState<string[]>([])   // optimistic, until the server copy lands
   const [sendMode, setSendMode] = useState('') // №11: which door the send went through
   const [asking, setAsking] = useState(false)
   const [askCompact, setAskCompact] = useState(false)
-  const [view, setView] = useState('chat')     // chat | history | files | inbox
+  const [view, setView] = useState<'chat' | 'history' | 'files' | 'inbox'>('chat')     // chat | history | files | inbox
   // №7 denials are per-turn server state — only the NEXT turn clears them, so
   // the panel needs its own × (user report 2026-07-31). Dismissal is keyed to
   // the turn that produced the batch (a fresh batch always shows) and rides
   // localStorage like the draft, since clicking a sibling unmounts this.
-  const denialsKey = `${((node.turns ?? [])[node.turns?.length - 1] ?? {}).at ?? ''}·${node.last_denials?.length ?? 0}`
+  const lastTurn = (node.turns ?? [])[(node.turns?.length ?? 0) - 1]
+  const denialsKey = `${lastTurn?.at ?? ''}·${node.last_denials?.length ?? 0}`
   const denialsLsKey = `orgtree-denials-${slug}-${node.id}`
-  const [denialsHidden, setDenialsHidden] = useState(() => {
+  const [denialsHidden, setDenialsHidden] = useState<string | null>(() => {
     try { return localStorage.getItem(denialsLsKey) } catch { return null }
   })
   const hideDenials = () => {
     setDenialsHidden(denialsKey)
     try { localStorage.setItem(denialsLsKey, denialsKey) } catch { /* private mode */ }
   }
-  const [live_feed, setLiveFeed] = useState([])
+  const [live_feed, setLiveFeed] = useState<LiveRow[]>([])
   const [draft, setDraft] = useState('')       // the token-streamed growing reply
   const [thinking, setThinking] = useState('') // №18: the live ribbon (tail)
   // full thought accumulation + start time: when the reply begins, the ribbon
   // folds into a clickable "thought for Xs" line (user spec 2026-07-31)
   const thinkBuf = useRef('')
   const thinkT0 = useRef(0)
-  const scroller = useRef(null)
+  const scroller = useRef<HTMLDivElement | null>(null)
   const loadedRef = useRef(false)     // first load always lands at the bottom
   const live = node.state === 'live'
   const nearBottom = () => {
@@ -2704,13 +3082,15 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
       // transcript, ever) always stay.
       const now = Date.now()
       const tail = c.messages.slice(-12)
-      const covered = (r) => {
+      const covered = (r: LiveRow) => {
         if (r.kind === 'text')
           return tail.some((m) => m.role === 'assistant'
             && (m.text || '').startsWith((r.text || '').slice(0, 300)))
         if (r.kind === 'tool')
+          // (t! — read_chat filters the null plumbing markers out of `tools`
+          // before the payload leaves the server, supervisor.py:2934)
           return tail.some((m) => (m.tools ?? []).some((t) =>
-            r.text === t.name || r.text === `${t.name} · ${t.arg}`))
+            r.text === t!.name || r.text === `${t!.name} · ${t!.arg}`))
         if (r.kind === 'steered')
           return tail.some((m) => m.role === 'user'
             && (m.text || '').includes((r.text || '').slice(0, 200)))
@@ -2745,7 +3125,7 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
       const foldThought = () => {
         if (!thinkBuf.current) return
         const secs = Math.max(1, Math.round((Date.now() - thinkT0.current) / 1000))
-        const entry = { kind: 'thought', text: thinkBuf.current, secs,
+        const entry: LiveRow = { kind: 'thought', text: thinkBuf.current, secs,
                         _at: Date.now() }
         thinkBuf.current = ''
         setThinking('')
@@ -2807,12 +3187,12 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
             : r.steering ? 'steering in mid-task'
               : r.frozen ? 'frozen — mail waits for ▶ resume'
                 : r.deferred ? 'deferred — delivers at rehire'
-                  : r.queued > 0 ? `queued (${r.queued} ahead)` : 'delivering')
+                  : (r.queued ?? 0) > 0 ? `queued (${r.queued} ahead)` : 'delivering')
         if (r.warnings?.length) toast(r.warnings)
         return refresh(true)
       })
       .then(() => setPending((p) => p.filter((x) => x !== t)))
-      .catch((e) => {
+      .catch((e: Error) => {
         setPending((p) => p.filter((x) => x !== t))
         toast([`error: ${e.message}`])
       })
@@ -2821,19 +3201,19 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
   // file uploads (user spec 2026-07-31): the file lands in the agent's own
   // uploads/ scratch folder — same relative path sandboxed or not, and it
   // works through the public kiosk gateway from the outside internet
-  const fileRef = useRef(null)
+  const fileRef = useRef<HTMLInputElement | null>(null)
   // attachments STAGE onto the next message (user spec 2026-07-31: mail
   // carries files) — the bytes upload immediately, the mail links them
-  const [attached, setAttached] = useState([])
-  const attach = (file) => {
+  const [attached, setAttached] = useState<{ name: string; path: string; bytes: number }[]>([])
+  const attach = (file: File) => {
     uploadFile(slug, node.id, file)
       .then((r) => setAttached((a) =>
         [...a, { name: file.name, path: r.path, bytes: r.bytes }]))
-      .catch((e) => toast([`upload error: ${e.message}`]))
+      .catch((e: Error) => toast([`upload error: ${e.message}`]))
   }
   // №13: the composer grows with the draft (2 → ~8 rows); the desk interior
   // is a fixed 900px virtual panel, so .msgs absorbs the difference
-  const taRef = useRef(null)
+  const taRef = useRef<HTMLTextAreaElement | null>(null)
   const grow = () => {
     const el = taRef.current
     if (!el) return
@@ -2843,8 +3223,8 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
   // №6: dropping a file anywhere on the desk uploads it (and prevents the
   // browser's default navigate-away, which would also eat the draft)
   const dropProps = {
-    onDragOver: (e) => e.preventDefault(),
-    onDrop: (e) => {
+    onDragOver: (e: React.DragEvent<HTMLDivElement>) => e.preventDefault(),
+    onDrop: (e: React.DragEvent<HTMLDivElement>) => {
       e.preventDefault()
       if (e.dataTransfer?.files?.length) {
         [...e.dataTransfer.files].forEach(attach)
@@ -2856,7 +3236,7 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
   const content = (
     <>
       <div className="cc-head">
-        <span className={'tier t-' + node.tier}>{TIER_LETTER[node.tier] ?? '?'}</span>
+        <span className={'tier t-' + node.tier}>{TIER_LETTER[node.tier!] ?? '?'}</span>
         <span className="cc-name"
           title={(node.charter || '').split('\n')[0] || node.id}>{node.id}</span>
         <ContextWheel occ={chat?.occupancy ?? node.occupancy} cw={node.context_window}
@@ -2877,11 +3257,11 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
                   {node.inflight_at ? <span className="dim"> · {ago(node.inflight_at)}</span> : null}</>}
           </span>}
         {node.frozen &&
-          <span className="badge frozen" title={node.frozen.error}>
+          <span className="badge frozen" title={node.frozen.error ?? undefined}>
             <FrozenIcon fontSize="inherit" /> usage limit{node.frozen.until ? ` · resumes ${node.frozen.until}` : ''}</span>}
         {node.limit_locked &&
           <span className="badge dim"><LockIcon fontSize="inherit" /> limit</span>}
-        {!compact && node.generation > 0 &&
+        {!compact && (node.generation ?? 0) > 0 &&
           <button className="badge stackbadge"
             onClick={onLineage}>gen {node.generation} <LayersIcon fontSize="inherit" /></button>}
         {!compact && node.bearer_state &&
@@ -2894,18 +3274,18 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
             <button className="chip-x"
               onClick={() => audienceAction(slug, 'revoke', node.id, g)
                 .then(() => toast([`audience ${node.id}→${g} rescinded`]))
-                .catch((e) => toast([`error: ${e.message}`]))}><CloseIcon fontSize="inherit" /></button>
+                .catch((e: Error) => toast([`error: ${e.message}`]))}><CloseIcon fontSize="inherit" /></button>
           </span>
         ))}
-        {!compact && node.cost_usd > 0 && (
+        {!compact && (node.cost_usd ?? 0) > 0 && (
           <span className="badge dim"
             title={(node.turns ?? []).slice(-5).reverse().map((t) =>
               `${t.at?.slice(5, 16).replace('T', ' ')} · $${(t.cost ?? 0).toFixed(2)}`
               + (t.ms ? ` · ${Math.round(t.ms / 1000)}s` : '')
               + (t.denials ? ` · ${t.denials} denied` : '')).join('\n')
               || 'per-turn detail appears after the next turn'}>
-            ${node.cost_usd.toFixed(2)}</span>)}
-        {chat?.queued > 0 && <span className="badge">{chat.queued} queued</span>}
+            ${node.cost_usd!.toFixed(2)}</span>)}
+        {(chat?.queued ?? 0) > 0 && <span className="badge">{chat!.queued} queued</span>}
         <span className="spacer" />
         {/* compact (switchboard panel): chat only — the agent's own desk keeps
             the full chrome (actions, tabs, gear) */}
@@ -2916,17 +3296,17 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
                 toast([`${node.id} retired`],
                   () => op({ op: 'rehire', node: node.id }).catch(() => {})))
                 .catch(() => {})}>
-              retire · {node.seat + node.grant}</button>}
+              retire · {node.seat! + node.grant!}</button>}
           {live && liveKids &&
             <button className="danger" onClick={() => setAsking(true)}>
-              dissolve · {node.seat + node.grant}</button>}
+              dissolve · {node.seat! + node.grant!}</button>}
           {!live && <button onClick={() => op({ op: 'rehire', node: node.id })}>rehire</button>}
         </span>}
         {!compact && <span className="cc-tabs">
-          {['chat', 'history', 'files', 'inbox'].map((v) => (
+          {(['chat', 'history', 'files', 'inbox'] as const).map((v) => (
             <button key={v} className={view === v ? 'on' : ''}
               onClick={() => setView(v)}>
-              {v}{v === 'inbox' && chat?.mail_pending > 0 ? ` ${chat.mail_pending}` : ''}
+              {v}{v === 'inbox' && (chat?.mail_pending ?? 0) > 0 ? ` ${chat!.mail_pending}` : ''}
             </button>
           ))}
         </span>}
@@ -2945,7 +3325,7 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
           confirmLabel="compact"
           onConfirm={() => compactNode(slug, node.id)
             .then(() => toast([`compaction of ${node.id} started`]))
-            .catch((e) => toast([`error: ${e.message}`]))}
+            .catch((e: Error) => toast([`error: ${e.message}`]))}
           close={() => setAskCompact(false)} />
       )}
       {chat?.last_error && <div className="desk-error"><WarnIcon fontSize="inherit" /> {chat.last_error}</div>}
@@ -3002,9 +3382,9 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
                 ? <span className="dim pend-tag">delivering mid-task…</span>
                 : m.id && (
                   <button className="chip-x" title="retract (undelivered)"
-                    onClick={() => retractMail(slug, node.id, m.id)
+                    onClick={() => retractMail(slug, node.id, m.id!)
                       .then(() => refresh(true))
-                      .catch((e) => toast([`error: ${e.message}`]))}>
+                      .catch((e: Error) => toast([`error: ${e.message}`]))}>
                     <CloseIcon fontSize="inherit" /></button>)}
             </div>
           ))}
@@ -3014,11 +3394,11 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
           ))}
           {/* №7: the machine truth about headless auto-denies — the agent
               was corrected and nothing showed it */}
-          {node.last_denials?.length > 0 && denialsHidden !== denialsKey && (
+          {(node.last_denials?.length ?? 0) > 0 && denialsHidden !== denialsKey && (
             <div className="denials">
               <button className="chip-x denials-x" title="dismiss"
                 onClick={hideDenials}><CloseIcon fontSize="inherit" /></button>
-              {node.last_denials.map((d, i) => (
+              {node.last_denials!.map((d, i) => (
                 <div key={i}>⊘ denied · {d.tool}{d.arg ? `(${d.arg})` : ''}</div>))}
               <span className="dim">last turn — the ⚙ folder grants decide this</span>
             </div>)}
@@ -3029,7 +3409,7 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
       {view === 'inbox' && <InboxView slug={slug} nid={node.id} pulse={pulse}
         onRetract={(m) => retractMail(slug, node.id, m.id)
           .then(() => refresh(true))
-          .catch((e) => toast([`error: ${e.message}`]))} />}
+          .catch((e: Error) => toast([`error: ${e.message}`]))} />}
       {/* №13: the composer is present under EVERY tab — finding a wrong number
           on the files tab shouldn't cost your place to say so */}
       {sendMode && <div className="sendmode dim">{sendMode}</div>}
@@ -3056,7 +3436,7 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
           <FileIcon fontSize="inherit" /></button>
         <input type="file" ref={fileRef} style={{ display: 'none' }} multiple
           onChange={(e) => {
-            [...e.target.files].forEach(attach)
+            [...e.target.files!].forEach(attach)
             e.target.value = ''
           }} />
         <textarea rows={2} value={text} disabled={!canMail}
@@ -3089,7 +3469,7 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
               .then(() => toast([lvl
                 ? `${node.id} thinking effort: ${lvl}`
                 : `${node.id} thinking effort: CLI default`]))
-              .catch((e) => toast([`error: ${e.message}`]))} />
+              .catch((e: Error) => toast([`error: ${e.message}`]))} />
         )}
         {/* №3: STOP renders only when an interrupt can actually land —
             pressing the one red control must never error. Gate on the CHAT
@@ -3100,7 +3480,7 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
           ? <button className="cc-send stop" title="interrupt the current response — Enter still queues your message"
               onClick={() => interruptNode(slug, node.id)
                 .then((r) => { if (!r.interrupted) toast([`error: ${r.reason}`]) })
-                .catch((e) => toast([`error: ${e.message}`]))}><StopIcon fontSize="inherit" /></button>
+                .catch((e: Error) => toast([`error: ${e.message}`]))}><StopIcon fontSize="inherit" /></button>
           : <button className="cc-send" disabled={!canMail || !text.trim()}
               onClick={send}><ArrowUpIcon fontSize="inherit" /></button>}
       </div>
@@ -3117,7 +3497,7 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
         // clicking the desk's non-interactive space recenters the camera on
         // it (user ruling) — but never steal clicks meant for controls, and
         // never fight an in-progress text selection
-        if (e.target.closest('button, input, textarea, select, a, label, .mailrow, .eff-pop')) return
+        if ((e.target as Element).closest('button, input, textarea, select, a, label, .mailrow, .eff-pop')) return
         if (window.getSelection()?.toString()) return
         onRecenter?.()
       }}>
@@ -3131,8 +3511,22 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
 // the left (sender · time · truncated brief — mails have no subjects), the
 // selected message opened in the reading pane on the right. Waiting/unread
 // mail sorts on top and is highlighted until read/delivered.
+export interface MailListProps {
+  pending?: MailRow[]
+  delivered?: MailRow[]
+  waitLabel?: ReactNode
+  /** custom head-identity renderer; receives the counterparty id + the mail */
+  sender?: (id: string, m: MailRow) => ReactNode
+  outgoing?: boolean
+  onRead?: (m: MailRow) => void
+  onReply?: (m: MailRow, text: string) => void
+  onRetract?: (m: MailRow) => void
+  jumpTo?: string | null
+  fileHref?: (path: string) => string
+}
+
 export function MailList({ pending = [], delivered = [], waitLabel, sender, outgoing,
-  onRead, onReply, onRetract, jumpTo, fileHref }) {
+  onRead, onReply, onRetract, jumpTo, fileHref }: MailListProps) {
   // newest first throughout (user ruling) — waiting/unread stays grouped on top
   const all = [
     ...[...pending].reverse().map((m) => ({ ...m, _wait: true })),
@@ -3140,19 +3534,21 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
   ]
   // selection is BY IDENTITY, not index — marking a mail read reshuffles the
   // list, and an index would silently land on a different mail
-  const keyOf = (m) => m?.id ?? `${m?.at}|${m?.from}|${(m?.body ?? '').slice(0, 24)}`
+  const keyOf = (m: MailRow | undefined) =>
+    m?.id ?? `${m?.at}|${m?.from}|${(m?.body ?? '').slice(0, 24)}`
   // jumpTo (user spec 2026-07-31): a chat's inline mail link opens the box
   // SELECTED on that mail — identity selection means the reading pane shows
   // it; the scroll + flash happen on the row ref below. A retracted or
   // expired id falls back to the newest mail, never an error.
-  const [selId, setSelId] = useState(jumpTo ?? null)
+  const [selId, setSelId] = useState<string | null>(jumpTo ?? null)
   const jumpedRef = useRef(false)
   // №26: hunting an hour-old message decayed your unread set click by click —
   // a plain client-side filter over sender+body, no index, no server
   const [q, setQ] = useState('')
   const [draft, setDraft] = useState('')
-  const S = sender ?? ((id) => <span>{id === USER ? '@user' : id}</span>)
-  const partyOf = (m) => (outgoing ? m.to : m.from)
+  const S: (id: string, m: MailRow) => ReactNode =
+    sender ?? ((id) => <span>{id === USER ? '@user' : id}</span>)
+  const partyOf = (m: MailRow) => (outgoing ? m.to : m.from)
   const qn = q.trim().toLowerCase()
   const shown = qn
     ? all.filter((m) => String(partyOf(m) ?? '').toLowerCase().includes(qn)
@@ -3161,16 +3557,16 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
   const cur = shown.find((m) => keyOf(m) === selId) ?? shown[0]
   // per-mail read (user ruling): a VIEWED unread mail is marked read the
   // moment you click OFF it — select another mail, or leave the list
-  const curRef = useRef(null); curRef.current = cur
+  const curRef = useRef<MailRow | undefined>(undefined); curRef.current = cur
   const readRef = useRef(onRead); readRef.current = onRead
-  const leave = (m) => { if (m?._wait && m.id) readRef.current?.(m) }
+  const leave = (m: MailRow | undefined) => { if (m?._wait && m.id) readRef.current?.(m) }
   useEffect(() => () => leave(curRef.current), [])
   const party = partyOf
   // a custom sender renderer owns the whole head identity (it receives the
   // mail too — the org inbox uses this for "@agent as @org → @recipient")
   const customS = outgoing && sender != null
-  const brief = (b) => (b ?? '').trim().replace(/\s+/g, ' ').slice(0, 90)
-  const when = (at) => (at ?? '').slice(5, 16).replace('T', ' ')
+  const brief = (b: string | null | undefined) => (b ?? '').trim().replace(/\s+/g, ' ').slice(0, 90)
+  const when = (at: string | null | undefined) => (at ?? '').slice(5, 16).replace('T', ' ')
   // reply from where you read (№11): only for incoming mail whose sender is a
   // plain agent id — @-sentinels (@user/@system/@ext:/@org:/@mcp:) route
   // elsewhere, and slugify guarantees no agent name starts with '@'
@@ -3218,7 +3614,7 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
           <>
             <div className="mailer-head">
               {outgoing && !customS && <span className="dim">to</span>}
-              {S(party(cur), cur)}
+              {S(party(cur)!, cur)}
               <span className="dim">{cur.kind}</span>
               {cur.relationship && <span className="dim">{cur.relationship}</span>}
               <span className="dim">{cur.at}</span>
@@ -3227,9 +3623,9 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
             <div className="mailer-body md" dangerouslySetInnerHTML={md(cur.body)} />
             {(cur.attachments ?? []).length > 0 && (
               <div className="attach-row">
-                {cur.attachments.map((a) => fileHref
+                {cur.attachments!.map((a) => fileHref
                   ? <a key={a.path} className="attach-chip" title="download"
-                      href={fileHref(a.path)} download={a.name}>
+                      href={fileHref(a.path!)} download={a.name}>
                       <DownloadIcon fontSize="inherit" /> {a.name}
                       <span className="dim"> {a.bytes != null ? `${Math.round(a.bytes / 1024)} KB` : ''}</span></a>
                   : <span key={a.path} className="attach-chip">
@@ -3244,12 +3640,12 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && !e.shiftKey && draft.trim()) {
                       e.preventDefault()
-                      onReply(cur, draft.trim())
+                      onReply!(cur, draft.trim())
                       setDraft('')
                     }
                   }} />
                 <button disabled={!draft.trim()}
-                  onClick={() => { onReply(cur, draft.trim()); setDraft('') }}>
+                  onClick={() => { onReply!(cur, draft.trim()); setDraft('') }}>
                   reply
                 </button>
               </div>
@@ -3263,8 +3659,16 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
 
 // The node's own mailbox (user ruling: its own tab, separate from history),
 // with the same folders as the user's: inbox + sent.
-function InboxView({ slug, nid, pulse, onRetract, jumpTo }) {
-  const [box, setBox] = useState(null)
+interface InboxViewProps {
+  slug: string
+  nid: string
+  pulse: PulseEvent | null
+  onRetract?: (m: MailRow) => void
+  jumpTo?: string | null
+}
+
+function InboxView({ slug, nid, pulse, onRetract, jumpTo }: InboxViewProps) {
+  const [box, setBox] = useState<InboxPayload | null>(null)
   const [folder, setFolder] = useState('inbox')
   useEffect(() => {
     getNodeInbox(slug, nid).then(setBox)
@@ -3291,7 +3695,14 @@ function InboxView({ slug, nid, pulse, onRetract, jumpTo }) {
   )
 }
 
-export function MailFolders({ folder, setFolder, unread, folders }) {
+export interface MailFoldersProps {
+  folder: string
+  setFolder: (f: string) => void
+  unread: number
+  folders?: string[]
+}
+
+export function MailFolders({ folder, setFolder, unread, folders }: MailFoldersProps) {
   return (
     <div className="mail-folders">
       {(folders ?? ['inbox', 'sent']).map((f) => (
@@ -3307,13 +3718,15 @@ export function MailFolders({ folder, setFolder, unread, folders }) {
 // №10: the org record — every ledger operation (the overseer was the only
 // node never told what changed). Renders the events log the server has kept
 // all along; the §4.6 cascade warnings ride each row.
-export function OrgRecord({ events }) {
+export interface OrgRecordProps { events?: OrgEvent[] | null }
+
+export function OrgRecord({ events }: OrgRecordProps) {
   const [q, setQ] = useState('')
   const qn = q.trim().toLowerCase()
   const rows = [...(events ?? [])].reverse().filter((ev) => !qn
     || JSON.stringify(ev).toLowerCase().includes(qn))
-  const when = (at) => (at ?? '').slice(5, 16).replace('T', ' ')
-  const gist = (ev) => {
+  const when = (at: string | null | undefined) => (at ?? '').slice(5, 16).replace('T', ' ')
+  const gist = (ev: OrgEvent) => {
     const d = ev.detail || {}
     const bits = [d.node, d.from != null || d.to != null
       ? `${d.from ?? 'top'} → ${d.to ?? 'top'}` : null,
@@ -3344,7 +3757,15 @@ export function OrgRecord({ events }) {
 
 // ✉ on a card — the node's inbox as a modal, the same interface the eye's
 // ✉ opens for the user's own inbox.
-function NodeInboxModal({ node, slug, pulse, close, jumpTo }) {
+interface NodeInboxModalProps {
+  node: CanvasNode
+  slug: string
+  pulse: PulseEvent | null
+  close: () => void
+  jumpTo?: string | null
+}
+
+function NodeInboxModal({ node, slug, pulse, close, jumpTo }: NodeInboxModalProps) {
   useEsc(close)
   return (
     <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
@@ -3359,8 +3780,8 @@ function NodeInboxModal({ node, slug, pulse, close, jumpTo }) {
   )
 }
 
-function HistoryView({ slug, nid }) {
-  const [items, setItems] = useState(null)
+function HistoryView({ slug, nid }: { slug: string; nid: string }) {
+  const [items, setItems] = useState<HistoryItem[] | null>(null)
   useEffect(() => { getHistory(slug, nid).then((r) => setItems(r.items)).catch(() => setItems([])) }, [slug, nid])
   return (
     <div className="msgs">
@@ -3379,11 +3800,15 @@ function HistoryView({ slug, nid }) {
   )
 }
 
-function FilesView({ slug, nid }) {
+function FilesView({ slug, nid }: { slug: string; nid: string }) {
   const [path, setPath] = useState('')
-  const [data, setData] = useState(null)
+  const [data, setData] = useState<ScratchPayload | null>(null)
   useEffect(() => { getScratch(slug, nid, path).then(setData).catch(() => setData(null)) }, [slug, nid, path])
   const up = () => setPath(path.split('/').slice(0, -1).join('/'))
+  // union split (type-only narrowing): a scratch payload is a dir listing OR
+  // a file body — the two reads below each see only their variant
+  const entries = data && 'entries' in data ? data.entries : null
+  const content = data && 'content' in data ? data.content : null
   return (
     <div className="msgs files">
       <div className="hist-row">
@@ -3392,7 +3817,7 @@ function FilesView({ slug, nid }) {
         <span className="dim mono">/{path}</span>
       </div>
       {!data && <div className="dim pad">empty or unreadable</div>}
-      {data?.entries?.map((e) => (
+      {entries?.map((e) => (
         <div key={e.name} className="hist-row">
           {e.dir
             ? <button onClick={() => setPath(path ? `${path}/${e.name}` : e.name)}><FolderIcon fontSize="inherit" /> {e.name}</button>
@@ -3404,7 +3829,7 @@ function FilesView({ slug, nid }) {
               download={e.name}><DownloadIcon fontSize="inherit" /></a>)}
         </div>
       ))}
-      {data?.content != null && <pre className="filepre">{data.content}</pre>}
+      {content != null && <pre className="filepre">{content}</pre>}
     </div>
   )
 }
@@ -3412,7 +3837,17 @@ function FilesView({ slug, nid }) {
 // the RETIRED-PILE menu (user spec): pick which retiree sits in front — the
 // front card is the one you zoom in on, message, read and can rehire; the
 // rest wait stacked beneath it. The current front is highlighted.
-function PilePicker({ pile, map, onPick, close, op, toast }) {
+interface PilePickerProps {
+  pile: Pile
+  map: Map<string, CanvasNode>
+  onPick: (nid: string) => void
+  close: () => void
+  /** optional: the delete-all row only renders when an op channel exists */
+  op?: OpFn
+  toast?: ToastFn
+}
+
+function PilePicker({ pile, map, onPick, close, op, toast }: PilePickerProps) {
   useEsc(close)
   const crowd = pile.kind === 'c'
   const [asking, setAsking] = useState(false)
@@ -3424,7 +3859,7 @@ function PilePicker({ pile, map, onPick, close, op, toast }) {
     let ok = 0
     for (const id of pile.list) {
       try {
-        await op({ op: 'delete', node: id })
+        await op!({ op: 'delete', node: id })   // reachable only via the op-gated row
         ok++
       } catch { /* op() toasted it */ }
     }
@@ -3451,12 +3886,12 @@ function PilePicker({ pile, map, onPick, close, op, toast }) {
           return (
             <button key={id} className={'pile-row' + (id === pile.front ? ' on' : '')}
               onClick={() => onPick(id)}>
-              <span className={'tier t-' + n.tier}>{TIER_LETTER[n.tier] ?? '?'}</span>
+              <span className={'tier t-' + n.tier}>{TIER_LETTER[n.tier!] ?? '?'}</span>
               <span className="pile-name">{id}</span>
               {n.bearer_state && <span className="badge dim">{n.bearer_state}</span>}
               {n.busy && <span className="badge">working</span>}
               {n.state === 'unrecoverable' && <span className="badge dim">unrecoverable</span>}
-              {n.mail_pending > 0 && <span className="badge free">{n.mail_pending} mail</span>}
+              {(n.mail_pending ?? 0) > 0 && <span className="badge free">{n.mail_pending} mail</span>}
               {id === pile.front && <span className="badge free">in front</span>}
             </button>
           )
@@ -3486,7 +3921,16 @@ function PilePicker({ pile, map, onPick, close, op, toast }) {
 // world — chatq sessions and other orgs — as one chronological thread. Also
 // where the user staffs the "client contact" role: grant/revoke org-inbox
 // audiences so chosen sub-agents read and answer outside mail.
-function OrgInboxModal({ inbox, map, slug, toast, close, jumpTo }) {
+interface OrgInboxModalProps {
+  inbox: TreePayload['org_inbox'] | undefined
+  map: Map<string, CanvasNode>
+  slug: string
+  toast: ToastFn
+  close: () => void
+  jumpTo?: string | null
+}
+
+function OrgInboxModal({ inbox, map, slug, toast, close, jumpTo }: OrgInboxModalProps) {
   useEsc(close)
   const [grantee, setGrantee] = useState('')
   // a jump to an OUTBOUND mail (an agent's @ext:/@org: send) opens on sent
@@ -3501,7 +3945,7 @@ function OrgInboxModal({ inbox, map, slug, toast, close, jumpTo }) {
   // the org inbox tracks read state as ONE high-water mark over the log — the
   // tail beyond it renders as unread; any read action clears the whole mark
   const readFrom = entries.length - (inbox?.unread ?? 0)
-  const rows = entries.map((e, i) => ({
+  const rows: MailRow[] = entries.map((e, i) => ({
     id: e.id, at: e.at, body: e.body, from: e.peer, to: e.peer, _by: e.by,
     kind: e.dir === 'in' ? 'message' : 'reply', _wait0: i >= readFrom,
     relationship: e.dir === 'in'
@@ -3528,7 +3972,7 @@ function OrgInboxModal({ inbox, map, slug, toast, close, jumpTo }) {
               <button className="chip-x" title="revoke this inbox audience"
                 onClick={() => audienceAction(slug, 'revoke', h, EXTERN)
                   .then(() => toast([`org-inbox audience for ${h} rescinded`]))
-                  .catch((e) => toast([`error: ${e.message}`]))}>
+                  .catch((e: Error) => toast([`error: ${e.message}`]))}>
                 <CloseIcon fontSize="inherit" /></button>
             </span>
           ))}
@@ -3540,7 +3984,7 @@ function OrgInboxModal({ inbox, map, slug, toast, close, jumpTo }) {
             <button disabled={!grantee}
               onClick={() => audienceAction(slug, 'grant', grantee, 'extern')
                 .then(() => { toast([`${grantee} now reads and answers the org inbox`]); setGrantee('') })
-                .catch((e) => toast([`error: ${e.message}`]))}>grant</button>
+                .catch((e: Error) => toast([`error: ${e.message}`]))}>grant</button>
           </>}
         </div>
         {/* the SAME webmail interface as every other inbox (user ruling) —
@@ -3570,18 +4014,25 @@ function OrgInboxModal({ inbox, map, slug, toast, close, jumpTo }) {
   )
 }
 
-function LineagePanel({ node, op, slug, close }) {
+interface LineagePanelProps {
+  node: CanvasNode
+  op: OpFn
+  slug: string
+  close: () => void
+}
+
+function LineagePanel({ node, op, slug, close }: LineagePanelProps) {
   // spitshined (user request): generation cards in the app's current visual
   // language — tier token, per-generation consult-tier picker (№16: a bearer
   // answers from context, so any tier serves), live bearers marked green
   useEsc(close)
-  const [tiers, setTiers] = useState({})       // per-generation tier override
+  const [tiers, setTiers] = useState<Record<string, string>>({})       // per-generation tier override
   // №12: READING an archived bearer's transcript is free — rehiring is for
   // asking it questions, not for looking at what it holds
-  const [reading, setReading] = useState(null)     // bearer id being read
-  const [readChat, setReadChat] = useState(null)
-  const readingRef = useRef(null)
-  const openRead = (bid) => {
+  const [reading, setReading] = useState<string | null>(null)     // bearer id being read
+  const [readChat, setReadChat] = useState<Pick<ChatPayload, 'messages'> | null>(null)
+  const readingRef = useRef<string | null>(null)
+  const openRead = (bid: string) => {
     if (reading === bid) { setReading(null); readingRef.current = null; return }
     setReading(bid); setReadChat(null)
     readingRef.current = bid
@@ -3593,7 +4044,7 @@ function LineagePanel({ node, op, slug, close }) {
         if (readingRef.current === bid) setReadChat({ messages: [] })
       })
   }
-  const SEAT = { haiku: 1, sonnet: 3, opus: 5, fable: 10 }
+  const SEAT: Record<string, number> = { haiku: 1, sonnet: 3, opus: 5, fable: 10 }
   const gens = [...(node.lineage ?? [])].sort(
     (a, b) => (b.generation ?? 0) - (a.generation ?? 0))
   return (
@@ -3672,7 +4123,7 @@ function LineagePanel({ node, op, slug, close }) {
 // Incoming turns are mail envelopes (messages ARE mail); for the chat view,
 // hide the machine chrome — [MAIL]/[END MAIL] markers, drive nudges — and
 // render the FROM attribution as a small header instead of body text.
-const stripEnvelope = (t) => (t ?? '')
+const stripEnvelope = (t: string | null | undefined) => (t ?? '')
   .split('\n')
   .filter((l) => !/^\[(MAIL — .*|END MAIL)\]$/.test(l.trim())
     && !l.trim().startsWith('(orgtree) '))
@@ -3685,14 +4136,21 @@ const stripEnvelope = (t) => (t ?? '')
 // red bit + first error line on failure, and the RESULT collapsed behind a
 // click (never inline: an always-expanded stream turns the desk into a log
 // tail). Edits expand to their pre-computed hunk.
-function ToolChip({ t, slug, nid, onMailLink }) {
+interface ToolChipProps {
+  t: ToolChipData
+  slug: string
+  nid: string
+  onMailLink?: MailLinkFn
+}
+
+function ToolChip({ t, slug, nid, onMailLink }: ToolChipProps) {
   const [open, setOpen] = useState(false)
   const expandable = Boolean(t.result || t.diff || t.images)
   // orgtree_send_file → a DOWNLOAD CARD in place of the chip (user spec
   // 2026-07-31: files flow back — the card sits where the agent sent it)
   if (t.file) {
     return (
-      <a className="filecard" href={fileUrl(slug, nid, t.file.path)}
+      <a className="filecard" href={fileUrl(slug, nid, t.file.path!)}
         download={t.file.name} title="download">
         <DownloadIcon fontSize="inherit" className="fc-ico" />
         <span className="fc-body">
@@ -3712,13 +4170,13 @@ function ToolChip({ t, slug, nid, onMailLink }) {
         {' '}{shortTool(t.name)}
         {t.arg ? <span className="targ"> {t.arg}</span> : null}
         {t.diff && <span className="tdiffn"> +{t.diff.plus} −{t.diff.minus}</span>}
-        {!t.diff && !t.error && t.result_lines > 0 && (
+        {!t.diff && !t.error && (t.result_lines ?? 0) > 0 && (
           <span className="dim"> · {t.result_lines} line{t.result_lines === 1 ? '' : 's'}</span>)}
         {t.task && (
           <span className="dim"> · {t.task.tools ?? '?'} tools
             {t.task.ms ? ` · ${Math.round(t.task.ms / 1000)}s` : ''}
             {t.task.tokens ? ` · ${Math.round(t.task.tokens / 1000)}k tok` : ''}</span>)}
-        {t.images > 0 && <span className="dim"> · {t.images} image{t.images === 1 ? '' : 's'}</span>}
+        {(t.images ?? 0) > 0 && <span className="dim"> · {t.images} image{t.images === 1 ? '' : 's'}</span>}
         {t.error && <span className="terrtxt"> ⊘ {t.error}</span>}
         {/* mail sends carry the inline "open in mailbox" link (user spec):
             straight to the exact mail in whichever box holds it */}
@@ -3728,7 +4186,7 @@ function ToolChip({ t, slug, nid, onMailLink }) {
               ? 'open this mail in your inbox'
               : `open this mail in ${String(t.mail.to).startsWith('@')
                 ? 'the org inbox' : `${t.mail.to}'s inbox`}`}
-            onClick={(e) => { e.stopPropagation(); onMailLink(t.mail) }}>
+            onClick={(e) => { e.stopPropagation(); onMailLink!(t.mail) }}>
             <MailIcon fontSize="inherit" /> open</button>)}
       </span>
       {open && t.diff && (
@@ -3743,7 +4201,7 @@ function ToolChip({ t, slug, nid, onMailLink }) {
         <pre className="filepre respre">
           {t.result}{t.truncated ? '\n… truncated' : ''}
         </pre>)}
-      {open && t.images > 0 && t.id && Array.from({ length: t.images }).map((_, i) => (
+      {open && (t.images ?? 0) > 0 && t.id && Array.from({ length: t.images! }).map((_, i) => (
         <img key={i} className="toolimg" alt="tool result"
           src={`${BASE}/api/orgs/${slug}/nodes/${nid}/toolimg/${t.id}?idx=${i}`} />))}
     </div>
@@ -3751,15 +4209,19 @@ function ToolChip({ t, slug, nid, onMailLink }) {
 }
 
 // №21: memoized — rows are static once fetched; only identity changes matter
-const Msg = memo(function Msg({ m, slug, nid, onMailLink }) {
+const Msg = memo(function Msg({ m, slug, nid, onMailLink }: {
+  m: ChatMessage; slug: string; nid: string; onMailLink?: MailLinkFn
+}) {
   if (m.role === 'system') return <SysLine m={m} />
   const text = m.role === 'user' ? stripEnvelope(m.text) : m.text
   return (
     <div className={'msg ' + m.role + (m.oracle ? ' oracle' : '')}>
       {m.thinking && <ThoughtLine text={m.thinking} secs={m.think_secs} />}
+      {/* (t! — the payload's tools rows are already null-swept server-side,
+          supervisor.py:2934; the string branch guards legacy live rows) */}
       {(m.tools ?? []).map((t, i) => (typeof t === 'string'
         ? <div key={i} className="tools"><DotIcon fontSize="inherit" className="tooldot" /> {t}</div>
-        : <ToolChip key={t.id ?? i} t={t} slug={slug} nid={nid}
+        : <ToolChip key={t!.id ?? i} t={t!} slug={slug} nid={nid}
             onMailLink={onMailLink} />))}
       {text && <div className="msgtext md" dangerouslySetInnerHTML={md(text)} />}
       {m.oracle && <div className="tools"><SparkIcon fontSize="inherit" /> oracle exchange — not retained by the node</div>}
@@ -3771,7 +4233,7 @@ const Msg = memo(function Msg({ m, slug, nid, onMailLink }) {
 // small clickable "thought for Xs" line; the click expands the thought
 // process. Fed live (measured) while the turn runs, and from the transcript's
 // thinking blocks (gap-derived seconds) ever after.
-function ThoughtLine({ text, secs }) {
+function ThoughtLine({ text, secs }: { text: string; secs?: number }) {
   const [open, setOpen] = useState(false)
   return (
     <div className="thoughtwrap">
@@ -3787,7 +4249,7 @@ function ThoughtLine({ text, secs }) {
 
 // №5: the compaction boundary carries its summary behind a click — never a
 // 20 KB bubble in the user's voice
-function SysLine({ m }) {
+function SysLine({ m }: { m: ChatMessage }) {
   const [open, setOpen] = useState(false)
   // slash-command output (/context…): the output IS the point — an always-
   // visible markdown block, fixed from the flash-then-vanish live-only bug
@@ -3816,13 +4278,15 @@ function SysLine({ m }) {
 // agents can do.
 const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max']
 
-function EffortButton({ value, onSet }) {
+function EffortButton({ value, onSet }: { value: string; onSet: (lvl: string) => void }) {
   const [open, setOpen] = useState(false)
-  const wrapRef = useRef(null)
+  const wrapRef = useRef<HTMLSpanElement | null>(null)
   useEffect(() => {
     if (!open) return
     // capture-phase on window: fires before the desk's stopPropagation walls
-    const away = (e) => { if (!wrapRef.current?.contains(e.target)) setOpen(false) }
+    const away = (e: PointerEvent) => {
+      if (!wrapRef.current?.contains(e.target as Node | null)) setOpen(false)
+    }
     window.addEventListener('pointerdown', away, true)
     return () => window.removeEventListener('pointerdown', away, true)
   }, [open])
@@ -3843,7 +4307,7 @@ function EffortButton({ value, onSet }) {
   )
 }
 
-function EffortSwitch({ value, onSet }) {
+function EffortSwitch({ value, onSet }: { value: string; onSet: (lvl: string) => void }) {
   const idx = EFFORT_LEVELS.indexOf(value)
   return (
     <span className="effort-switch"
@@ -3875,7 +4339,7 @@ const SLASH_COMMANDS = [
   ['/cost', 'token + cost usage for this session'],
 ]
 
-function SlashHints({ text, setText }) {
+function SlashHints({ text, setText }: { text: string; setText: (v: string) => void }) {
   const head = text.trim().split(/\s/)[0]
   const rows = SLASH_COMMANDS.filter(([c]) => c.startsWith(head))
   return (

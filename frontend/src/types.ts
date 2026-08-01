@@ -16,7 +16,8 @@ export type NodeState = 'live' | 'archived' | 'unrecoverable'
 export type DirMode = 'rw' | 'ro'
 export type Visibility = 'self' | 'team' | 'subtree' | 'full'
 export type PermissionMode = 'default' | 'acceptEdits' | 'bypassPermissions'
-export type BearerState = 'knowledge' | 'preserving' | null
+// "lost" = a generation whose transcript is gone (schema.py:34, ledger.py:2448)
+export type BearerState = 'knowledge' | 'preserving' | 'lost' | null
 export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
 // schema.py DirGrant
@@ -41,6 +42,9 @@ export interface NodeScope {
   add_dirs: DirGrant[]
   tools: ToolGrant
   org_visibility: string
+  /** per-agent thinking effort — set/popped by ledger.py update_scope
+   *  (ledger.py:2093-2096); absent = CLI default */
+  effort?: string
 }
 
 // schema.py Denial (№7)
@@ -187,7 +191,9 @@ export interface TreeKiosk {
   storage_blocked: boolean
   max_scope?: Record<string, unknown> | null
   auto_raise?: boolean
-  max_tier: unknown            // (max_scope or {}).get("max_tier") — unproven
+  /** (max_scope or {}).get("max_tier") (api.py:593) — writes are validated
+   *  against TIERS or None (ledger.py:495-502) */
+  max_tier: string | null
   enabled: boolean
   sandbox: boolean
   share_url?: string | null
@@ -203,9 +209,13 @@ export interface AuditReport {
 }
 
 // GET /api/orgs/{slug} — ledger.py tree() + api.py org_tree additions
-/** the toast surface App threads everywhere: lines + an optional 12 s undo */
+/** the toast surface App threads everywhere: lines + an optional 12 s undo.
+ *  Callers pass `r.warnings` straight through, so nullish is accepted — the
+ *  implementation's `if (!lines || !lines.length) return` is the contract */
 export type ToastUndo = (() => void) | { fn: () => void; label: string }
-export type ToastFn = (lines: string[], undo?: ToastUndo | null) => void
+export type ToastFn = (
+  lines: string[] | null | undefined, undo?: ToastUndo | null,
+) => void
 
 export interface TreeDisk {
   used_mb: number | null
@@ -313,7 +323,7 @@ export interface OrgListEntry {
 // supervisor.py read_chat: tool chip (correlated by tool_use_id)
 export interface ToolChip {
   name: string
-  arg?: unknown                // _tool_arg's return — shape varies per tool
+  arg?: string                 // _tool_arg (supervisor.py:2611) -> str
   id?: string | null
   result?: string
   result_lines?: number
@@ -322,26 +332,47 @@ export interface ToolChip {
   images?: number
   file?: MailAttachment & { note?: string }   // orgtree_send_file download card
   mail?: { id: string; to: string }
+  /** Edit chips: the pre-computed structuredPatch (supervisor.py:2912-2915) */
+  diff?: { plus: number; minus: number; lines: string[]; truncated?: boolean }
+  /** Task/subagent sidecar totals (supervisor.py:2917-2920) — tur.get() may
+   *  hand back null for any of them */
+  task?: { tools?: number | null; ms?: number | null; tokens?: number | null }
   [k: string]: unknown
 }
 
-// supervisor.py read_chat message rows — several producers, all optional
-// beyond role; `tools` interleaves nulls (plumbing markers for user records)
+// supervisor.py read_chat message rows — several producers, optional beyond
+// role/text (every producer writes `text`, supervisor.py:2743-2972); `tools`
+// interleaves nulls (plumbing markers for user records)
 export interface ChatMessage {
   role: string
-  text?: string
+  text: string
   ts?: string | null
   tools?: (ToolChip | null)[]
   cmd_out?: string
   summary?: string
+  /** pre-slice ordinal — the UI's stable row key (supervisor.py:2963) */
+  seq?: number
+  /** thinking blocks, joined + capped (supervisor.py:2938) */
+  thinking?: string
+  /** "thought for Xs" — gap-derived seconds (supervisor.py:2941-2943) */
+  think_secs?: number
+  /** preserving-oracle exchange rows (supervisor.py:2969-2973) */
+  oracle?: boolean
+  /** interleaved from the durable steered log (supervisor.py:2951) */
+  steered?: boolean
   [k: string]: unknown
 }
 
-// supervisor.py read_chat st["init"] (system init record excerpt)
+// supervisor.py read_chat st["init"] (system init record excerpt,
+// supervisor.py:1188-1194)
 export interface ChatInit {
   model?: string | null
   permissionMode?: string | null
   cwd?: string | null
+  /** len(ev["tools"]) — the tool COUNT, not a list (supervisor.py:1192) */
+  tools?: number
+  /** CLI stream-json passthrough (supervisor.py:1193) — shape is the CLI's */
+  mcp_servers?: { name?: string; status?: string; [k: string]: unknown }[]
   [k: string]: unknown
 }
 
@@ -386,7 +417,7 @@ export interface OrgEvent {
   op: string
   actor: string
   detail?: Record<string, unknown>
-  warnings?: unknown[]
+  warnings?: string[]          // ledger.py _log (№1236-1241): list[str]
   [k: string]: unknown
 }
 
@@ -562,6 +593,9 @@ export interface ReorderRequest {
 // {freed, nodes}, …) — only `warnings` is a cross-op convention
 export interface OpResult {
   warnings?: string[]
+  /** the one-action kiosk-ceiling bridge (ledger.py:714-715): present when
+   *  something was clamped and re-sending with raise_ceiling would fit it */
+  bridge?: { raise_ceiling?: boolean }
   [k: string]: unknown
 }
 
@@ -589,6 +623,8 @@ export interface SendMessageResult {
   compacting?: boolean
   command?: boolean
   immediate?: boolean
+  /** delivered mid-task via the steering hook (supervisor.py:1643) */
+  steering?: boolean
   warnings?: string[]
   [k: string]: unknown
 }
