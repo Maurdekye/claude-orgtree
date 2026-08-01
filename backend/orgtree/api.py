@@ -2708,6 +2708,15 @@ class Op(BaseModel):
 @app.post("/api/orgs/{slug}/ops")
 def org_op(slug: str, body: Op, request: Request) -> dict[str, Any]:
     pub = bool(_public_slug(request))
+    # INTERIM security gate (audit 2026-08-01 item 1, final ruling pending
+    # with the user): visitors act with @user authority within the ceiling
+    # (ef3f9fd), but `delete` is not a permission op — it permanently
+    # destroys the HOST user's data (nodes, lineage stacks, mail, scratch),
+    # the motto's legitimate-hard-refusal class. Retire stays visitor-open
+    # (reversible). One-line revert if the user rules otherwise.
+    if pub and body.op == "delete":
+        raise HTTPException(403, "kiosk: permanent deletion is admin-only — "
+                                 "retire instead (reversible)")
     with store.DOC_LOCK:
         result = _org_op_locked(slug, body, allow_raise=not pub)
     if pub and isinstance(result, dict):

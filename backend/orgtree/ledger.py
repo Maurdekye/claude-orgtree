@@ -955,7 +955,13 @@ class Org:
                 and self.nodes[a["grantee"]]["state"] == "live"]
 
     def extern_recipients(self) -> list[str]:
-        rec = list(self.children(None))
+        # live-for-budget ≠ live-for-delivery (audit 2026-08-01, item 3):
+        # children() keeps unrecoverable nodes because they still hold their
+        # seat, but mail queued into an unresumable node never drains — and a
+        # lone unrecoverable top-level suppressed the user-inbox rescue in
+        # post_external_mail. Deliver only to the truly live.
+        rec = [c for c in self.children(None)
+               if self.nodes[c]["state"] == "live"]
         rec += [h for h in self.extern_holders() if h not in rec]
         return rec
 

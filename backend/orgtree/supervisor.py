@@ -856,34 +856,46 @@ def _build_cmd(org: Org, nid: str) -> list[str]:
     # the orgtree tools reach the host only via the secret-gated bridge
     sandboxed = sbx.is_sandboxed(org)
     # isolation by default: the user's global hooks must not leak into agents.
-    # ⚠ CLI <= 2.1.31 does not run TOOL hooks headless at all (live-tested at
-    # --settings, project and user-global levels — only lifecycle hooks fire),
-    # so the PostToolUse steering hook cannot work yet. When a future CLI
-    # honors it, set ORGTREE_STEER_HOOK=1: mid-task user messages would then
-    # deliver right after the next tool call (see steer.py). Until then,
-    # steered messages deliver at the next RESPONSE boundary via the queue
-    # fold — the soonest non-interrupting delivery this CLI permits.
+    # The PostToolUse steering hook (mid-task mail delivery, 3f42476) needs
+    # the pinned CLI — CLI <= 2.1.31 runs no TOOL hooks headless (live-tested)
+    # — so steer_capable gates on the pin; ORGTREE_STEER_HOOK=0/1 overrides.
+    # Without steering, messages deliver at the next RESPONSE boundary.
     steer_capable = (CLAUDE == _PIN
                      or os.environ.get("ORGTREE_STEER_HOOK") == "1")
+
+    def _steer_settings(steer_cmd: str) -> dict:
+        # audit 2026-08-01 item 2: a hooks-only --settings MERGES with the
+        # user's global hooks (live-tested: a global SessionStart hook fired
+        # inside an agent), and {"disableAllHooks": true, "hooks": {…}} kills
+        # the steer hook too — the two flags cannot combine. What DOES hold
+        # both invariants (live-tested): an explicit entry per event name —
+        # per-event arrays REPLACE the inherited globals, so empty arrays
+        # suppress them while our own PostToolUse still fires. Defensive,
+        # not guaranteed-total: a hook event name this list misses would
+        # still inherit; extend it when the CLI grows one.
+        evs: dict = {e: [] for e in (
+            "PreToolUse", "PostToolUse", "Notification", "UserPromptSubmit",
+            "Stop", "SubagentStop", "PreCompact", "SessionStart", "SessionEnd")}
+        evs["PostToolUse"] = [{"hooks": [
+            {"type": "command", "command": steer_cmd,
+             "shell": "bash", "timeout": 8}]}]
+        return {"hooks": evs}
+
     if sandboxed:
         # the in-container CLI is current (hooks fire headless); steer.py runs
         # from the read-only backend mount and finds the bridge via .bridge.
         # slug+nid ride argv (review C10): hooks get a sanitized env and the
         # cwd is SHARED across a lineage (name@gen → base dir), so a live
         # bearer's hook used to resolve as its successor and eat its mail
-        settings: dict = {"hooks": {"PostToolUse": [{"hooks": [
-            {"type": "command",
-             "command": "python3 /opt/orgtree-backend/orgtree/steer.py "
-                        f'"{slug}" "{nid}"',
-             "shell": "bash", "timeout": 8}]}]}}
+        settings: dict = _steer_settings(
+            "python3 /opt/orgtree-backend/orgtree/steer.py "
+            f'"{slug}" "{nid}"')
     elif steer_capable and os.environ.get("ORGTREE_STEER_HOOK") != "0":
         steer_py = os.path.join(BACKEND_DIR, "orgtree", "steer.py")
-        settings = {"hooks": {"PostToolUse": [{"hooks": [
-            {"type": "command",
-             "command": '"{}" "{}" "{}" "{}"'.format(
-                 sys.executable.replace("\\", "/"),
-                 steer_py.replace("\\", "/"), slug, nid),
-             "shell": "bash", "timeout": 8}]}]}}
+        settings = _steer_settings(
+            '"{}" "{}" "{}" "{}"'.format(
+                sys.executable.replace("\\", "/"),
+                steer_py.replace("\\", "/"), slug, nid))
     else:
         settings = {"disableAllHooks": True}
     if sandboxed:
