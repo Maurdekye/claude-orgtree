@@ -375,7 +375,9 @@ export interface ChatMessage {
   role: string
   text: string
   ts?: string | null
-  tools?: (ToolChip | null)[]
+  /** null plumbing markers are swept SERVER-side before the payload leaves
+   *  (supervisor.py read_chat: `[x for x in tools if x]`) — never null here */
+  tools?: ToolChip[]
   cmd_out?: string
   summary?: string
   /** pre-slice ordinal — the UI's stable row key (supervisor.py:2963) */

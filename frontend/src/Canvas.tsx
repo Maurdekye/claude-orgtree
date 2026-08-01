@@ -2956,8 +2956,9 @@ function ContextWheel({ occ, cw, onCompact, compactAt }: ContextWheelProps) {
 
 const shortTool = (t: string | null | undefined) => (t || 'tool').replace(/^mcp__([^_]+)__/, '$1: ')
 
-const fmtBytes = (n: number | null | undefined) => n! >= 1048576 ? `${(n! / 1048576).toFixed(1)} MB`
-  : n! >= 1024 ? `${Math.round(n! / 1024)} KB` : `${n ?? 0} B`
+const fmtBytes = (n: number | null | undefined) => (n == null ? '0 B'
+  : n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB`
+  : n >= 1024 ? `${Math.round(n / 1024)} KB` : `${n} B`)
 
 function Activity({ act, dotOnly }: { act?: ActivityInfo; dotOnly?: boolean }) {
   const phase = act?.phase ?? 'thinking'
@@ -3087,10 +3088,8 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
           return tail.some((m) => m.role === 'assistant'
             && (m.text || '').startsWith((r.text || '').slice(0, 300)))
         if (r.kind === 'tool')
-          // (t! — read_chat filters the null plumbing markers out of `tools`
-          // before the payload leaves the server, supervisor.py:2934)
           return tail.some((m) => (m.tools ?? []).some((t) =>
-            r.text === t!.name || r.text === `${t!.name} · ${t!.arg}`))
+            r.text === t.name || r.text === `${t.name} · ${t.arg}`))
         if (r.kind === 'steered')
           return tail.some((m) => m.role === 'user'
             && (m.text || '').includes((r.text || '').slice(0, 200)))
@@ -3623,13 +3622,15 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
             <div className="mailer-body md" dangerouslySetInnerHTML={md(cur.body)} />
             {(cur.attachments ?? []).length > 0 && (
               <div className="attach-row">
-                {cur.attachments!.map((a) => fileHref
+                {/* extern-shaped attachments may lack `path` — a download
+                    link would point at "undefined"; show a plain chip */}
+                {cur.attachments!.map((a) => (fileHref && a.path
                   ? <a key={a.path} className="attach-chip" title="download"
-                      href={fileHref(a.path!)} download={a.name}>
+                      href={fileHref(a.path)} download={a.name}>
                       <DownloadIcon fontSize="inherit" /> {a.name}
                       <span className="dim"> {a.bytes != null ? `${Math.round(a.bytes / 1024)} KB` : ''}</span></a>
-                  : <span key={a.path} className="attach-chip">
-                      <FileIcon fontSize="inherit" /> {a.name}</span>)}
+                  : <span key={a.path ?? a.name} className="attach-chip">
+                      <FileIcon fontSize="inherit" /> {a.name}</span>))}
               </div>
             )}
             {replyable && (
@@ -4217,11 +4218,11 @@ const Msg = memo(function Msg({ m, slug, nid, onMailLink }: {
   return (
     <div className={'msg ' + m.role + (m.oracle ? ' oracle' : '')}>
       {m.thinking && <ThoughtLine text={m.thinking} secs={m.think_secs} />}
-      {/* (t! — the payload's tools rows are already null-swept server-side,
-          supervisor.py:2934; the string branch guards legacy live rows) */}
+      {/* (the string branch guards legacy live rows; the payload's tools
+          rows are null-swept server-side, so no null case exists) */}
       {(m.tools ?? []).map((t, i) => (typeof t === 'string'
         ? <div key={i} className="tools"><DotIcon fontSize="inherit" className="tooldot" /> {t}</div>
-        : <ToolChip key={t!.id ?? i} t={t!} slug={slug} nid={nid}
+        : <ToolChip key={t.id ?? i} t={t} slug={slug} nid={nid}
             onMailLink={onMailLink} />))}
       {text && <div className="msgtext md" dangerouslySetInnerHTML={md(text)} />}
       {m.oracle && <div className="tools"><SparkIcon fontSize="inherit" /> oracle exchange — not retained by the node</div>}
