@@ -99,8 +99,8 @@ the wheel is also a button — click it to compact **now**.
 **Limits and safety valves.** Usage-limit freezes show a 🧊 badge and a
 resume button that stays **red until the reported reset time passes**, with
 an inline **auto** toggle that restarts everyone a minute after the reset.
-There's a per-agent ⏸ interrupt, an org-wide **killswitch** (unlatch, then
-STOP ALL), per-agent rights (folders rw/ro, terminal, web, editing,
+There's a per-agent interrupt (the desk composer's ■ STOP), an org-wide
+**killswitch** (unlatch, then STOP ALL), per-agent rights (folders rw/ro, terminal, web, editing,
 subagents, MCP servers, org visibility) enforced server-side, org-wide hire
 defaults on the eye's gear, and real-dollar tracking per node and per org.
 
@@ -121,8 +121,13 @@ The full interaction manual — every gesture, badge, and panel — is
 - **Python 3.11+**
 - **Node.js 18+** (builds the frontend; also used to invoke the Claude Code
   CLI in a newline-safe way on Windows)
-- Windows, macOS, or Linux. Developed and battle-tested on Windows; POSIX
-  paths are handled but less traveled — issues welcome.
+- Windows, macOS, or Linux for the host-mode core (ledger, turns, canvas,
+  kiosk URLs). Developed and battle-tested on Windows; POSIX paths are
+  handled but less traveled — issues welcome.
+- **Sandboxed orgs** (and kiosks, which default the sandbox on) additionally
+  require **Windows with Docker Desktop's WSL2 backend**: each org's virtual
+  disk is loop-mounted inside the docker-desktop WSL distro and the backend
+  reads it via `\\wsl.localhost`.
 
 ## Installation
 
@@ -219,8 +224,13 @@ claude mcp add orgtree-extern -- python <repo>/backend/orgtree/externtool.py
 
 ☞ **If you are a Claude agent setting up or working alongside orgtree: this is
 the server to connect to.** It is how any session that is *not* an org node
-reaches the orgs. It gives the session a persistent peer identity
-(`@mcp:<id>`, minted once into `~/.orgtree/extern-id`) and four tools:
+reaches the orgs. It gives the session a peer identity
+`@mcp:<id>` — a machine-stable base (minted once into `~/.orgtree/extern-id`)
+plus a fresh per-process suffix, so every Claude session is a distinct peer
+and two concurrently-waiting sessions can never be woken by each other's
+replies. The flip side, by design: an org's later reply does not reach the
+asking session across a restart (set `ORGTREE_EXTERN_ID` to pin a stable
+identity). Four tools:
 
 | tool | what it does |
 |---|---|
@@ -254,11 +264,14 @@ URLs, while the app itself stays private to your machine:
   kiosk-enabled org; every other path (including `/`) is a bare 404. The
   URL is the authentication: no org list, no discovery, no admin surface.
 
-Prepare an org normally — hire seed agents, set folder holdings and tool
-rights, write charters — then open the **public kiosks** panel on the org
-list, pick the org, and copy its share URL. Everything is managed live from
-that dashboard: credit cap, spend limit, storage limit, enable/disable, and
-**token rotation** (the old URL stops working the instant you rotate).
+Kiosk orgs are born as kiosks: tick **kiosk** in the *new organization* form
+to set the limits (and the permission ceiling) at creation. Prepare the org
+normally — hire seed agents, set folder holdings and tool rights, write
+charters. Everything afterwards is managed live from **that org's own ⚙
+settings panel** (admin side — there is no separate all-kiosks dashboard):
+credit cap, spend limit, storage limit, the share URL with **copy** and
+**rotate** buttons (the old URL stops working the instant you rotate), and
+**pause/reactivate** for the URL.
 
 ```bash
 ORGTREE_PUBLIC_PORT=7361 python -m orgtree.api   # update.ps1 sets this by default
@@ -269,7 +282,7 @@ ORGTREE_PUBLIC_PORT=7361 python -m orgtree.api   # update.ps1 sets this by defau
 **Cloudflare quick tunnel** to the public listener: you get a random
 `https://….trycloudflare.com` hostname that works from anywhere, over
 HTTPS, for as long as the window stays open — no account, no router
-changes, and dashboard share URLs automatically switch to the live tunnel
+changes, and the share URLs shown in the app switch to the live tunnel
 hostname while it runs. Close it and the URL dies. (For a permanent,
 stable hostname later: a named Cloudflare tunnel with your own domain —
 then set `ORGTREE_PUBLIC_ORIGIN`.)
@@ -285,18 +298,22 @@ the admin side, keep full rights in the same org — visit it like any other):
   push total holdings past the cap — and the cap itself can never be set
   below what the org already holds (retire or dissolve agents first);
 - **spend limit** — total spend shows in the top bar; breaching it freezes
-  every agent; raising the limit on the dashboard clears the freeze and ▶
-  resume replays the interrupted turns;
+  every agent; raising the limit in the org's settings clears the freeze and
+  ▶ resume replays the interrupted turns;
 - **storage limit** — caps the org's own workspace folder (external folder
   grants are exempt). Past 90% of the limit, agents get a heads-up notice so
   they can clean up before anything bites. Breaching it does *not* freeze
   anyone: file creation and writes in the workspace are blocked (on Windows,
   enforced at the OS level with delete rights kept) until enough files are
-  deleted — the block lifts automatically.
+  deleted — the block lifts automatically. (That is the *unsandboxed*
+  kiosk's loose cap. A sandboxed kiosk's storage limit is the size of its
+  virtual disk: soft tiers warn at 80% and pause new turns at 90%, and at
+  100% writes fail with ENOSPC — disk orgs are never frozen or stopped for
+  storage, and the in-app recovery browser works even then.)
 
 Kiosk orgs are a **distinct type**: born as kiosks with their limits set at
-creation (the dashboard's new-kiosk form), never converted to or from normal
-orgs. You visit them with full admin rights; URL visitors get the locked
+creation (the *new organization* form's kiosk checkbox), never converted to
+or from normal orgs. You visit them with full admin rights; URL visitors get the locked
 view. The URL can be paused and reactivated; the limits always bind.
 
 ### Sandboxed orgs (Docker)
@@ -305,8 +322,12 @@ Any org — kiosk or normal — can be created **sandboxed** (kiosks default to
 it): all its agents' turns run inside one dedicated **Docker container** —
 real terminal use with no view of your machine: no host filesystem, no host
 processes, per-container CPU/memory caps. The org workspace is the one
-deliberately mounted window; session transcripts persist under
-`<data>/sandboxes/<slug>/` so resume, chat views, and read-down keep working.
+deliberately mounted window; session transcripts persist in the agent home
+on the org's virtual disk (next paragraph) so resume, chat views, and
+read-down keep working — for a migrated org, `<data>/sandboxes/<slug>/`
+holds only the frozen pre-migration rollback copy, while the live home
+(transcripts included) rides the disk, reachable via `\\wsl.localhost` and
+the in-app storage browser.
 The container reaches the backend only through a **bridge listener**
 (`ORGTREE_BRIDGE_PORT`, default 7362) gated by a per-org secret that exists
 nowhere but inside that container. Requires Docker Desktop running; the
@@ -372,7 +393,9 @@ python tools/ui_probe.py sweep <org> out/   # headless UI screenshot sweep
 The ledger (`backend/orgtree/ledger.py`) is the single source of truth for
 credits, authority, addressing, and capability subsets; the supervisor
 (`supervisor.py`) owns sessions and turns; `api.py` is a thin FastAPI + WS
-layer; the canvas lives in `frontend/src/Canvas.jsx`.
+layer; the canvas lives in `frontend/src/canvas/` (shared · modals · mail ·
+desk · cards · OrgCanvas) behind the `Canvas.tsx` barrel — the frontend is
+TypeScript throughout.
 
 ## License
 

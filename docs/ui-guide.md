@@ -40,14 +40,23 @@ snowflake, lock, layers, fullscreen, hearing.
   credits: a user hire cascades (§4.6), automatically granting every node up
   the chain whatever it lacks (each inflation is reported as a warning and a
   notice — reclaim with reallocate when done). The draft's grant slider has
-  the same freedom: its only ceiling is the org's top-level grant cap.
+  the same freedom: its ceiling is the org's top-level grant cap (under a
+  kiosk, the credit cap's remaining headroom; with the org-settings
+  hire-bubbling toggle off, a deeper draft caps at the parent's own free
+  credits).
 - A dashed **uninitialized** draft box appears; type a name (1–2 words,
   Enter or ✓ hires, Esc discards), optionally a short **charter** (standing
   role notes, injected into the agent's prompt every turn; Shift+Enter for
   newlines), and set its grant by dragging the draft's credit bar. The
-  **preset dropdown** above the charter box lists every `.md` in
-  `docs/charters/` (the Coordinator charter ships with the repo) — pick one
-  to fill the box, then edit freely, or write your own.
+  **"add charter preset…" dropdown** lists every `.md` in `docs/charters/`
+  (the Coordinator charter ships with the repo); each pick becomes a **card
+  rendered inside the charter box** — several stack, click a card to remove
+  it, hover shows its file path. Cards are compiled into charter text at
+  hire, prepended to anything you typed below them; the first pick also
+  names a still-unnamed agent. A small ⚙ beside the name field opens the
+  **pre-hire scope panel** — the same surface as the per-agent ⚙ (folders
+  RW/RO, tools, MCP, visibility, thinking effort), prefilled with what the
+  hire would inherit anyway, staged locally and applied WITH the hire.
 - **The overseer's ⚙ (on the eye, top-right like every card's gear)** is
   YOUR configuration panel, mirroring the agents' own — sections in the same
   order as a card's (folder access first). It also carries a **dissolve all
@@ -94,9 +103,13 @@ snowflake, lock, layers, fullscreen, hearing.
   section's grey for free. Cards carry no seat/free badges; the bar is the
   single source.
 - **Drag the bar** up or down to reallocate credits directly — no buttons.
-  It floors at the committed amount and caps at grant + the parent's free;
-  while dragging a non-top-level bar, a transparent ghost outline shows that
-  ceiling. Releasing commits one reallocate operation.
+  It floors at the committed amount. The ceiling: under a kiosk, the hard
+  credit cap. Otherwise reallocation cascades up the chain (§4.6) — the
+  parent's free is NOT a limit and the drag is bounded only by the org's
+  top-level grant cap — unless the org-settings "allocations bubble" toggle
+  is off, in which case a non-top-level bar caps at grant + the parent's
+  free, and a transparent ghost outline shows that ceiling while dragging
+  (the ghost draws only then). Releasing commits one reallocate operation.
 - Credits are **occupancy, not spend**: a live node holds its seat like RAM;
   retiring releases it in full. Tokens are free — the $ figures on desks and
   the org bar are real API dollars, a separate axis entirely.
@@ -109,47 +122,114 @@ snowflake, lock, layers, fullscreen, hearing.
   Hovering it reports the org totals: **circulation** (everything you've
   granted out, seats included), how much of that is **alloc**ated (locked in
   seats or committed to grants) and how much sits **free**. The org-settings
-  "top-level grant cap" only bounds the hire slider.
+  "top-level grant cap" bounds the hire slider — and is enforced
+  server-side: no operation may push a top-level grant past it.
 
 ## Kiosk mode
 
 Any org can be exposed to others through a **preauthenticated secret URL**
-(see the README): the **public kiosks** panel at the bottom of the org list
-is the admin dashboard. Kiosk orgs are a **distinct type, born as kiosks**:
-tick **kiosk** in the *new organization* form to reveal the three limits
-(credits / spend / storage) — the org is minted with its secret URL in one
-step, and existing orgs are never converted. The **sandboxed** checkbox in
-the same form applies to ANY org (kiosks default it on): agents run in a
-Docker container, isolated from this PC, authenticated via the **proxied
+(see the README). Kiosk orgs are a **distinct type, born as kiosks**: tick
+**kiosk** in the *new organization* form to reveal the three limits
+(credits / spend / storage-or-disk) and the **permission ceiling** (its own
+section below) — the org is minted with its secret URL in one step, and
+existing orgs are never converted. The **sandboxed** checkbox in the same
+form applies to ANY org (kiosks default it on): agents run in a Docker
+container, isolated from this PC, authenticated via the **proxied
 subscription** — the host attaches your token per request and no credential
-ever enters the sandbox (nothing to configure). Each kiosk row shows spend / credits held / workspace
-storage against their caps, a `sandboxed` chip, inline inputs to change the
-caps (a ✓ appears when edited; the credit cap refuses to go below what the
-org already holds — retire or dissolve agents first), the share URL with
-copy and **rotate** buttons (rotation revokes the old link instantly), and a
-pause/reactivate button for the URL — pausing kills the link but the org
-stays a kiosk and its limits keep binding.
+ever enters the sandbox (nothing to configure).
+
+All per-kiosk management lives in **that org's own ⚙ settings panel** (admin
+side; there is no all-kiosks dashboard): the three cap inputs (the credit
+cap refuses to go below what the org already holds — retire or dissolve
+agents first; a sandboxed kiosk's storage cap is its disk size, 4096 MB
+floor), the share URL with copy and **rotate** buttons (rotation revokes the
+old link instantly), and a pause/reactivate button for the URL — pausing
+kills the link but the org stays a kiosk and its limits keep binding. Like
+everything in that panel, cap edits apply on the single bottom **save** —
+and then in **real time**: lowering the spend limit below what is already
+spent freezes the org immediately (raising it clears the freeze), and
+storage-limit changes apply or lift the write block on the spot — open
+visitor views update over their live connection.
 Kiosk orgs are highlighted **teal** in the org list (border, tint, and globe
 badge) — deliberately a different hue from the terracotta selection, so
 "exposed to the public" reads at a glance; you still open and manage them
 with full rights — the restrictions apply only to visitors arriving through
-the secret URL. The list and dashboard refresh themselves every few seconds
-while visible, and cap changes apply in **real time**: lowering the spend
-limit below what is already spent freezes the org immediately (raising it
-clears the freeze), and storage-limit changes apply or lift the write block
-on the spot — open visitor views update over their live connection.
+the secret URL.
 
-A **visitor** sees the UI locked to that one org: no drawer, no settings, no
-gear panels anywhere (the server refuses configuration on the public
-listener). The eye's bar is FINITE — a fixed size set by the credit cap,
+A **visitor** sees the UI locked to that one org: no drawer, no org
+settings, no filesystem browser (the server refuses org configuration on
+the public listener) — but the per-agent ⚙ and the eye's hire-defaults gear
+stay open: visitors reconfigure agents freely WITHIN the kiosk permission
+ceiling, clamped with warnings (see "The kiosk permission ceiling"). The
+eye's bar is FINITE — a fixed size set by the credit cap,
 filled like an agent's bar with per-child slabs — and hire chips/draft
 sliders grey out against the org-wide remainder rather than never. The top
 bar shows total spend against the limit; breaching it freezes every agent
-and a red chip says so — raising the limit on the dashboard clears the
+and a red chip says so — raising the limit in the org's settings clears the
 freeze, after which ▶ resume replays the interrupted turns. The storage chip
 tracks the org workspace against its cap; over the limit, agents keep
 running but workspace writes are blocked (deleting files still works) until
-usage drops back under — the block lifts on its own.
+usage drops back under — the block lifts on its own. A disk-migrated
+sandboxed kiosk shows the **org-disk chip** instead, which opens the storage
+browser (see "The storage browser") — visitors get the full tool.
+
+## The kiosk permission ceiling
+
+A kiosk carries the MAXIMUM permission layer grantable to any agent in it —
+visible in the creation form (defaults permissive: every tool on, MCP "*",
+mode acceptEdits, visibility full, no tier cap — narrowing is a conscious
+act), edited later in the kiosk org's settings panel: four tool checkboxes
+(terminal / web / edit / subagents), the MCP list ("*" = all, empty = none,
+or a comma-separated list), **folder bounds** (grants clamp into these
+paths), and **visibility ≤ / mode ≤ / tier ≤** selects. Within the ceiling,
+visitors and agents retool and hire freely: over-ceiling grants are
+**clamped with warnings, never refused** (per-agent ⚙ stays open on the
+public listener). The one hard refusal is the **tier cap**: spawn tokens
+above it disappear from the cards, and hires, rehires and model switches
+above it are refused for everyone — the admin included (existing over-cap
+agents stay until you switch or retire them). Lowering the ceiling sweeps
+every existing agent's grants down to fit. The **auto-raise** toggle: an
+over-ceiling grant made by YOU raises the ceiling to fit (logged, named)
+instead of clamping — visitors always clamp; with it off, your own
+over-ceiling save offers a one-click "raise ceiling & apply" bridge.
+Ceiling edits are saved by the settings panel's single bottom **save**.
+
+## The storage browser (the org disk)
+
+A disk-migrated sandboxed org replaces the storage chip with the **org-disk
+chip** in the top bar: used / total MB, a "→ N MB pending" suffix while a
+shrink is staged, and "— FULL" / "— turns paused" states. Clicking it opens
+the browser (the hard-full alert's button opens it too). Two modes, fed by
+the same cached walk:
+
+- **largest files** — a flat triage list, size descending, paginated with
+  "load more". The hard-full alert always opens this mode (the fastest path
+  to freeing space); the chip opens the last-used one.
+- **browse** — a conventional explorer with breadcrumbs; entries are
+  INTERMIXED by size descending (a 900 MB folder outranks a 200 MB file —
+  the view exists for size triage), folders showing recursive size and file
+  count.
+
+Checkbox-select entries; the delete button arms on the first click and shows
+the count and bytes ("really delete N file(s) · X MB?"). What may be deleted
+is **server-enforced**, each row wearing its class and reason: the **system
+seed** (/usr, /var…) is shown — "4 GB cap, 1.2 GB of it /usr" answers "where
+did my space go" — but blocked (deleting it bricks the container);
+transcripts of live sessions, knowledge bearers, and archived (rehirable)
+nodes are blocked; **lost-generation** transcripts and sessions no node owns
+are marked `reclaimable`. Every file carries a ⤓ download link.
+
+The **resize** control (admin only): grow applies instantly, online; a
+shrink stages until the org's container is next down (an amber "A → B MB
+pending" chip appears, with **apply now** — briefly stops the org's
+agents — and a cancel), is refused below current usage, and floors at
+4096 MB. The browser depends on nothing but the backend (reads and deletes
+go over `\\wsl.localhost`), so it works with the container stopped and the
+disk 100% full — the state it exists for. Kiosk visitors get the same tool
+minus resize; engine credential files are excluded for them. Hard-full is
+announced by a screen-wide PERSISTENT alert — state, not a toast: it
+survives reloads, carries the "open the recovery browser" button, and
+dismisses itself when usage drops.
 
 ## The eye switchboard
 
@@ -190,11 +270,13 @@ live, the message surfaces in your inbox instead of being lost.
 ## The agent tray
 
 The **agents** button (bottom-left of the canvas) expands a flat list of
-every agent in the tree — rows in the nodes' own visual language: tier
+the agents in the tree — rows in the nodes' own visual language: tier
 token, mono name, context wheel, and current working state (activity spinner
-while busy, status dot otherwise, snowflake when frozen; archived rows dim).
-Clicking a row glides to that agent. Rows sort in reading order (row by row,
-left to right).
+while busy, status dot otherwise, snowflake when frozen). A **name-filter
+input** sits at the tray's head, and archived agents are hidden by default,
+folded behind a **"▸ show N archived"** toggle (▾ folds them back; shown
+archived rows dim). Clicking a row glides to that agent. Rows sort in
+reading order (row by row, left to right).
 
 ## The top bar
 
@@ -227,6 +309,25 @@ latch re-closes by itself after a few seconds if unused.
   420ms the spark takes — line and message arrive at the new agent together.
   When the grant is revoked, the line retracts the same way before vanishing.
   Lines that already exist when the page loads appear instantly.
+
+## Wide teams (piles)
+
+Sibling crowds collapse into **piles** so wide or long-running orgs don't
+flood the canvas. Both pile kinds share the mechanics: the front card is the
+interactable one (zoom, desk, inbox, rehire); clicking the visible stack
+margin opens a picker to bring another sibling to the front (remembered per
+org).
+
+- **Retired pile**: two or more archived siblings in a cohort stack into one
+  pile of retirees.
+- **Crowd pile**: a team with more than 8 active reports stacks its LEAF
+  reports (those with no subtree of their own) into one pile, wearing a live
+  tint. Non-leaf reports keep their own columns, and the draft card never
+  stacks — hiring stays visible at any width.
+
+The structural limit is a separate thing: **256 reports per parent**
+(compaction generations/bearers don't count) — runaway insurance, not a
+shape rule; wide flat teams are legitimate.
 
 ## The five visual channels on a card
 
@@ -302,12 +403,15 @@ restarts every frozen agent at once, replaying exactly what the limit
 interrupted. (Fable's weekly limit additionally applies the org's
 fable-limit policy, as before.)
 
-## Pausing an agent (⏸)
+## Stopping a response (■)
 
-The desk's second row shows **⏸ pause** while an agent is working: it
-interrupts the current response mid-flight (the one sanctioned interrupt —
-message delivery never interrupts). The session stays alive; the next
-message resumes it, and anything queued delivers immediately.
+While an agent is responding, the desk composer's send button becomes a red
+**■ STOP** (the switchboard panels carry the same idiom) — the one manual
+interrupt; message delivery never interrupts. Pressing it stops the current
+response mid-flight: the session stays alive, and queued mail delivers at
+the now-immediate stop. Enter still queues a message meanwhile. The button
+renders only while an interrupt can actually land, so pressing it never
+errors.
 
 ## Credit requests (top-level agents asking you)
 
@@ -384,6 +488,8 @@ it appears on hover, next to ⚙). The desk's inbox tab is the same view inline.
   self / team (superior, peers, reports) / subtree / full (default).
   Knowledge only: reading transcripts stays downward-only and messaging stays
   parent-peers-reports regardless.
+- **thinking effort**: this agent's effort level, or inherit — see "Thinking
+  effort" below.
 - **model**: switchable ON THE FLY, any time — the session and its context
   survive; the next turn runs the new model. Switching cheaper melts the seat
   difference into the agent's own free allocation; switching pricier spends
@@ -400,7 +506,10 @@ it appears on hover, next to ⚙). The desk's inbox tab is the same view inline.
 
 - Folder access is NOT here — it lives on the eye's ⚙ gear panel (user
   ruling), alongside the agent-hire defaults.
-- **top-level grant cap**: bounds only the hire slider under you.
+- **top-level grant cap**: a real ledger precondition, enforced server-side —
+  no operation (user-actor cascades included) may push a top-level grant past
+  it; existing over-cap grants are grandfathered (only increases are
+  refused). 0/unset = uncapped.
 - **default top-level grant** (50 unless changed): pre-fills the draft bar of
   every new top-level hire — on top of its seat cost; drag to adjust before
   confirming.
@@ -418,8 +527,34 @@ it appears on hover, next to ⚙). The desk's inbox tab is the same view inline.
   and agents are told fable hires are futile until the reset — a suggestion,
   not a hard block. Hiring or rehiring a fable yourself (or the clear button
   in settings) is the decree that lifts the lock.
+- **default thinking effort**: the org-wide effort every agent without its
+  own setting inherits, live — see "Thinking effort" below.
+- **credit cost bubbling**: two toggles, both ON by default — *hires bubble
+  their cost up the chain* and *allocations & model upgrades bubble theirs*.
+  Turning one off limits that operation to the superior's own free credits
+  (this is when the credit-bar drag shows its ghost ceiling).
+- On a kiosk org the panel also carries the kiosk caps, share URL and
+  permission ceiling — see "Kiosk mode" and "The kiosk permission ceiling".
 - **org.md**: the organization's standing instructions — written as the
   workspace CLAUDE.md, injected into every agent that holds the workspace.
+- The panel has ONE **save**, at the bottom: it applies everything dirty at
+  once — settings, kiosk caps, the permission ceiling, org.md. There are no
+  inline apply buttons.
+
+## Thinking effort
+
+A per-agent cost/quality dial with five levels — low · medium · high ·
+xhigh · max — or unset (= the CLI default). It lives DEEP by design, never a
+hire-row control: the node's ⚙ gear carries the select (the pre-hire scope
+panel has the same one), whose unset option reads **"inherit — org default
+(X)"**. The org-wide **default thinking effort** in org settings is a
+visible inherit that resolves LIVE at each turn: changing it reaches every
+unset agent's very next turn, no rehire. The desk composer also carries a
+small **effort** button beside send (admin side only): a five-dot popover —
+click a dot to set low…max, click the active dot to clear back to inherit.
+Agents can set effort on their REPORTS via orgtree_retool but never their
+own — and since it is a cost dial, not a permission, it passes under any
+kiosk ceiling unclamped.
 
 ## Keyboard
 
