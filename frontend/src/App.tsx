@@ -60,7 +60,9 @@ export default function App() {
   const [mailEvt, setMailEvt] = useState<MailEvt | null>(null)
   const [activity, setActivity] = useState<Record<string, NodeActivity>>({})   // node → {phase, tool}
   const [showSettings, setShowSettings] = useState(false)
-  const [showDisk, setShowDisk] = useState(false)   // the recovery browser
+  // the recovery browser: 'largest' = forced triage mode (the alert's path);
+  // 'last' = whatever mode was used last (the header chip's path)
+  const [showDisk, setShowDisk] = useState<false | 'last' | 'largest'>(false)
   const [showInbox, setShowInbox] = useState(false)
   const [inboxJump, setInboxJump] = useState<string | null>(null)   // mail id a chat link targets
   const [drawer, setDrawer] = useState(false)
@@ -316,7 +318,7 @@ export default function App() {
                   <button className={'chip disk-chip'
                     + ((tree.disk.used_mb ?? 0) >= (tree.disk.total_mb ?? Infinity) * 0.8 || tree.disk.blocked ? ' bad' : '')}
                     title="org disk used / capacity — click to browse and free space"
-                    onClick={() => setShowDisk(true)}>
+                    onClick={() => setShowDisk('last')}>
                     <StorageIcon fontSize="inherit" /> {tree.disk.used_mb ?? '?'} / {tree.disk.total_mb ?? '?'} MB
                     {tree.disk.full ? ' — FULL' : tree.disk.blocked ? ' — turns paused' : ''}
                   </button>
@@ -398,10 +400,11 @@ export default function App() {
                   survives reloads) until usage drops; it never auto-opens
                   the browser — it carries the button (user refinement) */}
               {tree.disk?.full && (
-                <DiskFullAlert onOpen={() => setShowDisk(true)} />
+                <DiskFullAlert onOpen={() => setShowDisk('largest')} />
               )}
               {showDisk && (
                 <DiskBrowser slug={slug} isPublic={!!tree.public} toast={toast}
+                  initialMode={showDisk === 'largest' ? 'largest' : undefined}
                   close={() => { setShowDisk(false); refreshTree(slug) }} />
               )}
               {showSettings && (

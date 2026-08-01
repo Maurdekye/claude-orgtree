@@ -237,6 +237,98 @@ def usage(slug: str, max_age: float = 15.0) -> tuple[int, int] | None:
 def invalidate(slug: str) -> None:
     """Drop the cached usage after deletes so the readout moves immediately."""
     _usage_cache.pop(slug, None)
+    _tree_cache.pop(slug, None)
+
+
+# ---- the directory tree (recovery-browser mode 2, user request) -----------
+# ONE walk inside the distro produces both browser views: the flat by-size
+# list and the explorer. The walk yields every file (size) and every dir;
+# aggregates roll up the tree in python and ONE LEVEL is served per request —
+# a measured org holds 99k files and the full tree must never ship to the
+# browser. Cached beside usage (same TTL family, same invalidate on delete).
+# Children map: parent rel-path → {name: (is_dir, bytes, file_count)}.
+_tree_cache: dict[str, tuple[float, dict[str, dict[str, tuple[bool, int, int]]]]] = {}
+
+
+def _dir_children(slug: str, max_age: float = 15.0) \
+        -> dict[str, dict[str, tuple[bool, int, int]]]:
+    hit = _tree_cache.get(slug)
+    if hit and time.time() - hit[0] < max_age:
+        return hit[1]
+    mp = mount_path(slug)
+    if not is_mounted(slug):
+        raise DiskError(f"org {slug!r} disk is not mounted")
+    # one pass: F<size>@<rel> per file, D@<rel> per dir (busybox find:
+    # no -printf, and it exits 0 even on flag errors — trust the parse)
+    r = _sh(f"cd {mp} && find . -type f -exec stat -c 'F%s@%n' {{}} + ; "
+            f"cd {mp} && find . -type d ! -name . | sed 's/^/D@/'",
+            timeout=180)
+    if r.returncode != 0:
+        raise DiskError("disk tree walk failed: "
+                        + (r.stderr or r.stdout)[-300:])
+    kids: dict[str, dict[str, tuple[bool, int, int]]] = {"": {}}
+
+    def norm(rel: str) -> str:
+        return rel[2:] if rel.startswith("./") else rel
+
+    for line in (r.stdout or "").splitlines():
+        if line.startswith("D@"):
+            rel = norm(line[2:])
+            if not rel:
+                continue
+            parent, _, name = rel.rpartition("/")
+            kids.setdefault(parent, {}).setdefault(name, (True, 0, 0))
+            kids.setdefault(rel, {})
+        elif line.startswith("F"):
+            size_s, sep, rel = line[1:].partition("@")
+            rel = norm(rel)
+            if not sep or not size_s.isdigit() or rel == SENTINEL:
+                continue
+            size = int(size_s)
+            parent, _, name = rel.rpartition("/")
+            kids.setdefault(parent, {})[name] = (False, size, 1)
+            # roll the size up every ancestor directory
+            while parent:
+                gp, _, pname = parent.rpartition("/")
+                d = kids.setdefault(gp, {})
+                was = d.get(pname, (True, 0, 0))
+                d[pname] = (True, was[1] + size, was[2] + 1)
+                parent = gp
+    _tree_cache[slug] = (time.time(), kids)
+    return kids
+
+
+def list_dir(slug: str, rel: str = "",
+             max_age: float = 15.0) -> list[dict[str, object]]:
+    """ONE level of the explorer, entries (dirs AND files) INTERMIXED by size
+    descending — deliberate deviation from folders-first convention: the
+    view exists for size triage, so a 900 MB folder outranks a 200 MB file."""
+    kids = _dir_children(slug, max_age=max_age)
+    if rel not in kids:
+        raise DiskError(f"no such directory on the org disk: {rel!r}")
+    out = [{"name": n, "path": f"{rel}/{n}" if rel else n, "dir": is_dir,
+            "bytes": size, "files": count}
+           for n, (is_dir, size, count) in kids[rel].items()]
+    out.sort(key=lambda e: (-int(e["bytes"]), str(e["name"])))
+    return out
+
+
+def subtree_files(slug: str, rel: str,
+                  max_age: float = 15.0) -> list[tuple[str, int]]:
+    """Every file under a directory (for recursive delete classification) —
+    served from the cached walk, no re-walk per subtree."""
+    kids = _dir_children(slug, max_age=max_age)
+    out: list[tuple[str, int]] = []
+    stack = [rel]
+    while stack:
+        d = stack.pop()
+        for n, (is_dir, size, _c) in (kids.get(d) or {}).items():
+            p = f"{d}/{n}" if d else n
+            if is_dir:
+                stack.append(p)
+            else:
+                out.append((p, size))
+    return out
 
 
 def grow(slug: str, new_size_mb: int) -> None:

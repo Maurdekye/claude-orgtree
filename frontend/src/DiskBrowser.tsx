@@ -1,16 +1,29 @@
-// The recovery browser (user verdict 2026-07-31): the org's virtual disk,
-// files by size DESCENDING — the sort that matters when freeing space fast.
+// The recovery browser (user verdict 2026-07-31 + explorer request
+// 2026-08-01): the org's virtual disk in TWO modes — the flat largest-files
+// triage list, and a conventional explorer that descends folders with their
+// recursive sizes, entries INTERMIXED by size descending (deliberate
+// deviation from folders-first: the view exists for size triage, so a
+// 900 MB folder outranks a 200 MB file).
+//
 // It exists for the state nothing else can fix: a hard-full disk, where no
 // turn can run so no agent can delete anything. It therefore depends on
 // NOTHING but the backend (reads/deletes go over \\wsl.localhost — the
-// container can be stopped, the disk 100% full). Kiosk visitors get the
-// full tool (ruled); the server enforces the deletion policy, this UI only
-// mirrors it (blocked rows greyed with the reason).
+// container can be stopped, the disk 100% full; both modes read the same
+// cached single walk). Kiosk visitors get the full tool (ruled); the server
+// enforces the deletion policy, this UI only mirrors it. The system seed is
+// SHOWN, marked non-deletable — "4 GB cap, 1.2 GB of it /usr" answers
+// "where did my space go" better than any text.
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { diskDelete, diskFileUrl, diskGrow, getDisk } from './api'
-import type { DiskPayload, ToastFn } from './types'
+import type { ReactNode } from 'react'
 import {
-  CloseIcon, DeleteIcon, DownloadIcon, StorageIcon, WarnIcon,
+  diskDelete, diskFileUrl, diskGrow, getDisk, getDiskDir,
+} from './api'
+import type {
+  DiskDirEntry, DiskDirPayload, DiskFile, DiskPayload, ToastFn,
+} from './types'
+import {
+  ChevronRightIcon, CloseIcon, DeleteIcon, DownloadIcon, FolderIcon,
+  StorageIcon, WarnIcon,
 } from './icons'
 
 const fmt = (b: number | null | undefined): string => (b == null ? '?'
@@ -18,110 +31,172 @@ const fmt = (b: number | null | undefined): string => (b == null ? '?'
   : b >= 1e6 ? (b / 1e6).toFixed(1) + ' MB'
   : Math.max(1, Math.round(b / 1024)) + ' KB')
 
-export function DiskBrowser({ slug, isPublic, toast, close }: {
+type Mode = 'largest' | 'browse'
+const MODE_KEY = 'orgtree-diskmode'   // last-used mode (header button entry)
+
+// what the delete footer needs to know about a selected path
+interface SelMeta { bytes: number; dir: boolean; files: number }
+
+export function DiskBrowser({ slug, isPublic, toast, close, initialMode }: {
   slug: string
   isPublic: boolean
   toast: ToastFn
   close: () => void
+  /** the hard-full alert always opens 'largest' — the triage view is the
+   *  fastest path to freeing space (ruled); the header button omits this
+   *  and gets the last-used mode */
+  initialMode?: Mode
 }) {
-  const [data, setData] = useState<DiskPayload | null>(null)
-  const [sel, setSel] = useState<Set<string>>(() => new Set())
+  const [mode, setModeRaw] = useState<Mode>(() => initialMode
+    ?? ((localStorage.getItem(MODE_KEY) === 'browse' ? 'browse' : 'largest')))
+  const setMode = (m: Mode) => {
+    setModeRaw(m)
+    try { localStorage.setItem(MODE_KEY, m) } catch { /* private mode */ }
+  }
+  const [flat, setFlat] = useState<DiskPayload | null>(null)
+  const [dirData, setDirData] = useState<DiskDirPayload | null>(null)
+  const [curPath, setCurPath] = useState('')
+  const [sel, setSel] = useState<Map<string, SelMeta>>(() => new Map())
   const [armed, setArmed] = useState(false)   // two-click delete latch
   const [busy, setBusy] = useState(false)
   const [growTo, setGrowTo] = useState('')
   const selRef = useRef(sel)
   selRef.current = sel
 
-  const load = useCallback((offset = 0) =>
+  const loadFlat = useCallback((offset = 0) =>
     getDisk(slug, offset).then((d) => {
-      setData((prev) => (offset && prev
+      setFlat((prev) => (offset && prev
         ? { ...d, files: [...prev.files, ...d.files] } : d))
-      // selection survives refresh; entries that vanished drop out
-      const alive = new Set(d.files.map((f) => f.path))
-      if (!offset) {
-        setSel((s) => new Set([...s].filter((p) => alive.has(p))))
-      }
     }).catch((e: Error) => toast([`error: ${e.message}`])), [slug, toast])
 
-  useEffect(() => { load() }, [load])
+  const loadDir = useCallback((path: string) =>
+    getDiskDir(slug, path).then((d) => { setDirData(d); setCurPath(d.path) })
+      .catch((e: Error) => toast([`error: ${e.message}`])), [slug, toast])
+
+  const refresh = useCallback(() => (mode === 'largest'
+    ? loadFlat(0) : loadDir(curPath)), [mode, curPath, loadFlat, loadDir])
+
+  useEffect(() => { refresh() }, [refresh])
   useEffect(() => {              // the live readout: watch the number come down
-    const t = setInterval(() => load(0), 8000)
+    const t = setInterval(refresh, 8000)
     return () => clearInterval(t)
-  }, [load])
+  }, [refresh])
+
+  const toggle = (path: string, meta: SelMeta, on: boolean) =>
+    setSel((s) => {
+      const n = new Map(s)
+      if (on) n.set(path, meta); else n.delete(path)
+      return n
+    })
 
   const doDelete = () => {
     if (!armed) { setArmed(true); return }
     setArmed(false)
     setBusy(true)
-    diskDelete(slug, [...selRef.current])
+    diskDelete(slug, [...selRef.current.keys()])
       .then((r) => {
         const bad = r.results.filter((x) => !x.ok)
         const ok = r.results.length - bad.length
-        toast([`deleted ${ok} file(s)` + (bad.length
+        toast([`deleted ${ok} item(s)` + (bad.length
           ? ` · ${bad.length} refused (${bad[0].error})` : '')])
-        setSel(new Set())
-        load(0)
+        setSel(new Map())
+        refresh()
       })
       .catch((e: Error) => toast([`error: ${e.message}`]))
       .finally(() => setBusy(false))
   }
 
-  const frac = data?.used != null && data?.total ? data.used / data.total : 0
-  const selBytes = data
-    ? data.files.filter((f) => sel.has(f.path))
-      .reduce((a, f) => a + f.bytes, 0) : 0
+  const live = mode === 'largest' ? flat : dirData
+  const frac = live?.used != null && live?.total ? live.used / live.total : 0
+  let selBytes = 0, selFiles = 0
+  for (const m of sel.values()) { selBytes += m.bytes; selFiles += m.files }
+
+  const crumbs = curPath ? curPath.split('/') : []
+
+  const row = (path: string, meta: SelMeta, cls: string, reason: string | undefined,
+    name: ReactNode, onOpen?: () => void) => (
+    <label key={path}
+      className={'disk-row' + (cls === 'blocked' ? ' blocked' : '')}
+      title={reason || path}>
+      <input type="checkbox" disabled={cls === 'blocked' || busy}
+        checked={sel.has(path)}
+        onChange={(e) => toggle(path, meta, e.target.checked)} />
+      <span className="disk-size mono">{fmt(meta.bytes)}</span>
+      {onOpen
+        ? <button type="button" className="disk-path disk-dirlink mono"
+            onClick={onOpen}>{name}</button>
+        : <span className="disk-path mono">{name}</span>}
+      {cls === 'reclaimable' && <span className="disk-cls ok">reclaimable</span>}
+      {cls === 'blocked' && <span className="disk-cls">{reason}</span>}
+      {!meta.dir && (
+        <a className="iconbtn" href={diskFileUrl(slug, path)}
+          download title="download" onClick={(e) => e.stopPropagation()}>
+          <DownloadIcon fontSize="inherit" /></a>
+      )}
+    </label>
+  )
 
   return (
     <div className="overlay disk-overlay" onClick={close}>
       <div className="settings disk-browser" onClick={(e) => e.stopPropagation()}>
         <h3>
           <StorageIcon fontSize="inherit" /> org disk
+          <span className="disk-tabs">
+            <button className={mode === 'largest' ? 'on' : ''}
+              onClick={() => setMode('largest')}>largest files</button>
+            <button className={mode === 'browse' ? 'on' : ''}
+              onClick={() => setMode('browse')}>browse</button>
+          </span>
           <span className="spacer" />
           <button className="iconbtn" title="close" onClick={close}>
             <CloseIcon fontSize="inherit" /></button>
         </h3>
-        {data && (
+        {live && (
           <div className={'disk-usage' + (frac >= 0.9 ? ' bad'
             : frac >= 0.8 ? ' warn' : '')}>
             <div className="disk-bar">
               <div className="disk-bar-fill"
                 style={{ width: `${Math.min(100, frac * 100)}%` }} />
             </div>
-            <span>{fmt(data.used)} / {fmt(data.total)}
-              {data.full ? ' — FULL (writes are failing)'
-                : data.blocked ? ' — turns paused (soft cap)' : ''}</span>
+            <span>{fmt(live.used)} / {fmt(live.total)}
+              {live.full ? ' — FULL (writes are failing)'
+                : live.blocked ? ' — turns paused (soft cap)' : ''}</span>
+          </div>
+        )}
+        {mode === 'browse' && (
+          <div className="disk-crumbs mono">
+            <button className="crumb" onClick={() => loadDir('')}>disk</button>
+            {crumbs.map((c, i) => (
+              <span key={i}>
+                <ChevronRightIcon fontSize="inherit" />
+                <button className="crumb"
+                  onClick={() => loadDir(crumbs.slice(0, i + 1).join('/'))}>
+                  {c}</button>
+              </span>
+            ))}
           </div>
         )}
         <div className="disk-list">
-          {!data && <div className="dim pad">measuring…</div>}
-          {data?.files.map((f) => (
-            <label key={f.path}
-              className={'disk-row' + (f.class === 'blocked' ? ' blocked' : '')}
-              title={f.reason || f.path}>
-              <input type="checkbox" disabled={f.class === 'blocked' || busy}
-                checked={sel.has(f.path)}
-                onChange={(e) => setSel((s) => {
-                  const n = new Set(s)
-                  if (e.target.checked) n.add(f.path); else n.delete(f.path)
-                  return n
-                })} />
-              <span className="disk-size mono">{fmt(f.bytes)}</span>
-              <span className="disk-path mono">{f.path}</span>
-              {f.class === 'reclaimable' &&
-                <span className="disk-cls ok">reclaimable</span>}
-              {f.class === 'blocked' &&
-                <span className="disk-cls">{f.reason}</span>}
-              <a className="iconbtn" href={diskFileUrl(slug, f.path)}
-                download title="download" onClick={(e) => e.stopPropagation()}>
-                <DownloadIcon fontSize="inherit" /></a>
-            </label>
-          ))}
-          {data && data.files.length >= data.offset + data.limit && (
-            <button className="addrow" onClick={() => load(data.files.length)}>
+          {!live && <div className="dim pad">measuring…</div>}
+          {mode === 'largest' && flat?.files.map((f: DiskFile) =>
+            row(f.path, { bytes: f.bytes, dir: false, files: 1 },
+              f.class, f.reason, f.path))}
+          {mode === 'largest' && flat
+            && flat.files.length >= flat.offset + flat.limit && (
+            <button className="addrow" onClick={() => loadFlat(flat.files.length)}>
               load more…</button>
           )}
-          {data && !data.files.length &&
-            <div className="dim pad">the disk holds no files</div>}
+          {mode === 'browse' && dirData?.entries.map((e: DiskDirEntry) =>
+            row(e.path, { bytes: e.bytes, dir: e.dir, files: e.files },
+              e.class, e.reason,
+              e.dir
+                ? <><FolderIcon fontSize="inherit" /> {e.name}
+                    <span className="dim"> · {e.files} file{e.files === 1 ? '' : 's'}</span></>
+                : e.name,
+              e.dir ? () => loadDir(e.path) : undefined))}
+          {live && (mode === 'largest' ? !flat?.files.length
+            : !dirData?.entries.length) &&
+            <div className="dim pad">nothing here</div>}
         </div>
         <div className="row">
           {sel.size > 0 && (
@@ -129,8 +204,9 @@ export function DiskBrowser({ slug, isPublic, toast, close }: {
               disabled={busy} onClick={doDelete}
               onMouseLeave={() => setArmed(false)}>
               <DeleteIcon fontSize="inherit" />
-              {armed ? `really delete ${sel.size} file(s)?`
-                : `delete ${sel.size} selected (${fmt(selBytes)})`}
+              {armed
+                ? `really delete ${selFiles} file(s) · ${fmt(selBytes)}?`
+                : `delete ${sel.size} selected (${selFiles} file(s) · ${fmt(selBytes)})`}
             </button>
           )}
           <span className="spacer" />
@@ -150,7 +226,7 @@ export function DiskBrowser({ slug, isPublic, toast, close }: {
                 onClick={() => {
                   setBusy(true)
                   diskGrow(slug, parseInt(growTo, 10))
-                    .then((r) => { toast([`disk grown to ${r.size_mb} MB`]); setGrowTo(''); load(0) })
+                    .then((r) => { toast([`disk grown to ${r.size_mb} MB`]); setGrowTo(''); refresh() })
                     .catch((e: Error) => toast([`error: ${e.message}`]))
                     .finally(() => setBusy(false))
                 }}>grow</button>

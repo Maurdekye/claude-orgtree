@@ -2134,10 +2134,18 @@ def _disk_rel(slug: str, path: str) -> tuple[str, str]:
     return rel, full
 
 
+_SEED_ROOTS = ("usr", "var", "etc", "opt", "root", "srv")
+
+
 def _disk_classify(org: Org, rel: str, public: bool) -> tuple[str, str | None]:
     """The verdict's deletion policy. reclaimable = freely deletable and
     POSITIVELY dead weight; blocked = shown, delete refused, with the reason;
-    content = ordinary agent output."""
+    content = ordinary agent output. System-seed paths are blocked in BOTH
+    modes (explorer follow-up): deleting /usr content bricks the container —
+    but they are SHOWN, because '4 GB cap, 1.2 GB of it /usr' answers "where
+    did my space go" better than any text."""
+    if rel.split("/", 1)[0] in _SEED_ROOTS:
+        return "blocked", "system seed — the image's own files"
     m = _SID_FILE.match(rel)
     if m:
         sid = m.group(1)
@@ -2188,6 +2196,59 @@ def disk_list(slug: str, request: Request, offset: int = 0,
             "limit": max(1, min(limit, 500))}
 
 
+def _disk_classify_dir(org: Org, rel: str, public: bool,
+                       protected: list[str]) -> tuple[str, str | None]:
+    """Directory classes for the explorer: seed dirs blocked; a dir whose
+    subtree holds protected transcripts is blocked WHOLE (half-deleting a
+    tree because a protected file sat in it is the worst outcome here)."""
+    if rel.split("/", 1)[0] in _SEED_ROOTS:
+        return "blocked", "system seed — the image's own files"
+    hits = sum(1 for p in protected if p.startswith(rel + "/"))
+    if hits:
+        return "blocked", f"contains {hits} protected session transcript(s)"
+    return "content", None
+
+
+def _protected_transcripts(org: Org, slug: str, public: bool) -> list[str]:
+    """Transcript files whose deletion is refused — from the cached walk, so
+    this costs nothing beyond the walk both views already share."""
+    from . import disk as dsk
+    return [p for p, _sz in dsk.subtree_files(slug, "home")
+            if _SID_FILE.match(p)
+            and _disk_classify(org, p, public)[0] == "blocked"]
+
+
+@app.get("/api/orgs/{slug}/disk/dir")
+def disk_dir(slug: str, request: Request, path: str = "") -> dict[str, Any]:
+    """Explorer mode: ONE directory level, entries intermixed by size
+    descending (deliberate deviation from folders-first — the view exists
+    for size triage). Served from the cached single walk; works with the
+    container stopped, same as everything on this surface."""
+    org = _disk_org(slug)
+    public = bool(_public_slug(request))
+    rel = ""
+    if path.strip("/"):
+        rel, _full = _disk_rel(slug, path)
+    from . import disk as dsk
+    try:
+        entries = dsk.list_dir(slug, rel)
+        protected = _protected_transcripts(org, slug, public)
+        du = dsk.usage(slug, max_age=5.0)
+    except dsk.DiskError as e:
+        raise HTTPException(503, str(e))
+    for e in entries:
+        p = str(e["path"])
+        cls, why = (_disk_classify_dir(org, p, public, protected)
+                    if e["dir"] else _disk_classify(org, p, public))
+        e["class"] = cls
+        if why:
+            e["reason"] = why
+    return {"path": rel, "entries": entries,
+            "used": du[0] if du else None, "total": du[1] if du else None,
+            "blocked": bool(org.d.get("storage_blocked")),
+            "full": bool(org.d.get("storage_full"))}
+
+
 @app.get("/api/orgs/{slug}/disk/file")
 def disk_file(slug: str, request: Request, path: str = "") -> FileResponse:
     """Streaming download (FileResponse streams — a multi-GB file is never
@@ -2221,6 +2282,39 @@ def disk_delete(slug: str, body: DiskDelete, request: Request) -> dict[str, Any]
             rel, full = _disk_rel(slug, p)
         except HTTPException as e:
             results.append({"path": p, "ok": False, "error": e.detail})
+            continue
+        if os.path.isdir(full):
+            # directory delete (explorer mode): the class rules apply to the
+            # WHOLE subtree and the operation is all-or-nothing — a protected
+            # file anywhere in it refuses everything, never a partial delete
+            seed_cls, seed_why = _disk_classify_dir(org, rel, public, [])
+            if seed_cls == "blocked":
+                results.append({"path": rel, "ok": False, "error": seed_why})
+                continue
+            subs = dsk.subtree_files(slug, rel, max_age=0.0)
+            bad = [(sp, _disk_classify(org, sp, public)[1]) for sp, _s in subs
+                   if _disk_classify(org, sp, public)[0] == "blocked"]
+            if bad:
+                results.append({"path": rel, "ok": False,
+                                "error": f"subtree holds {len(bad)} protected "
+                                         f"file(s) — first: {bad[0][1]}"})
+                continue
+            n_files, n_bytes, err = 0, 0, None
+            try:
+                for base, dirs, files in os.walk(full, topdown=False):
+                    for f in files:
+                        fp = os.path.join(base, f)
+                        n_bytes += os.path.getsize(fp)
+                        os.unlink(fp)
+                        n_files += 1
+                    for d in dirs:
+                        os.rmdir(os.path.join(base, d))
+                os.rmdir(full)
+            except OSError as e:
+                err = str(e)
+            results.append({"path": rel, "ok": err is None,
+                            "files": n_files, "bytes": n_bytes,
+                            **({"error": err} if err else {})})
             continue
         cls, why = _disk_classify(org, rel, public)
         if cls == "blocked":

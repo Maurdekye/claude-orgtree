@@ -3,7 +3,7 @@
 // the public listener serves nothing outside it.
 import type {
   AudiencesPayload, ChartersPayload, ChatPayload, DefaultsPayload,
-  DiskDeleteResult, DiskPayload, EventsPayload, FsPayload,
+  DiskDeleteResult, DiskDirPayload, DiskPayload, EventsPayload, FsPayload,
   HireDefaultsRequest, HistoryPayload, HostPayload,
   InboxPayload, KioskCfgRequest, KioskSaveResult, KioskSpecRequest,
   McpServersPayload, OpRequest, OpResult, OrgListEntry, OrgMdPayload,
@@ -199,6 +199,8 @@ export const diskGrow = (
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ size_mb }),
   })
+export const getDiskDir = (slug: string, path = ''): Promise<DiskDirPayload> =>
+  req(`/api/orgs/${slug}/disk/dir?path=${encodeURIComponent(path)}`)
 export const diskFileUrl = (slug: string, path: string): string =>
   u(`/api/orgs/${slug}/disk/file?path=${encodeURIComponent(path)}`)
 

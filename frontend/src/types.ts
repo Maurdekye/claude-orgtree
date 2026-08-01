@@ -242,7 +242,29 @@ export interface DiskPayload {
 }
 
 export interface DiskDeleteResult {
-  results: { path: string; ok: boolean; error?: string }[]
+  /** dir deletes report their subtree tally (files, bytes) */
+  results: { path: string; ok: boolean; error?: string
+             files?: number; bytes?: number }[]
+  used: number | null
+  total: number | null
+  blocked: boolean
+  full: boolean
+}
+
+/** explorer mode: one directory level, intermixed by size descending */
+export interface DiskDirEntry {
+  name: string
+  path: string
+  dir: boolean
+  bytes: number
+  files: number
+  class: 'content' | 'reclaimable' | 'blocked'
+  reason?: string
+}
+
+export interface DiskDirPayload {
+  path: string
+  entries: DiskDirEntry[]
   used: number | null
   total: number | null
   blocked: boolean
