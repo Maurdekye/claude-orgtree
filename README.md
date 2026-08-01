@@ -179,9 +179,10 @@ No manual wiring is needed; the supervisor does all of it per turn:
   `orgtree_*` tools: message, hire, retire/rehire/dissolve, reallocate,
   status, chart, read_transcript, read_scratch, audience.
 - Nodes run with `--permission-mode acceptEdits` plus `--add-dir` for exactly
-  the folders you granted, `--settings '{"disableAllHooks":true}'` and
-  `--strict-mcp-config` — so your personal hooks and MCP servers never leak
-  into agents unless you grant them explicitly in the per-agent ⚙ panel.
+  the folders you granted, an isolating `--settings`, and
+  `--strict-mcp-config` — the contract: **your personal hooks and MCP servers
+  do not run in agent sessions** unless you grant them explicitly in the
+  per-agent ⚙ panel. (Mechanism and its one caveat: docs/ARCHITECTURE.md.)
 - Transcripts live where Claude Code always puts them (`~/.claude/projects`).
   Org state lives in **`~/orgtree/`** (ledger docs, per-org workspaces,
   per-node scratch dirs) — kept outside `~/.claude`, which Claude tools treat
