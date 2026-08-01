@@ -111,6 +111,20 @@ ledger, supervisor, the gateways, or the canvas.
   `identity_prompt` — wired into fewer, the verb half-exists with no error.
 - **`supervisor._bash()` exists because bare `bash` on a Windows host is
   WSL's** and cannot read `C:\` paths. Never shell out to `bash` directly.
+- **Mid-task steering fires only on the pinned CLI** (`~/orgtree/cli`,
+  preferred by the supervisor over the host install) or with
+  `ORGTREE_STEER_HOOK=1` — CLI ≤ 2.1.31 fires no tool hooks headless, and
+  steered mail then silently degrades to response-boundary delivery. Token
+  streaming (`--include-partial-messages`) needs the pin too. Sandboxed
+  turns always steer (the in-container CLI is current).
+- **The two auxiliary fork launches** (compaction split, oracle fork) pass
+  `{"disableAllHooks": true}` while the turn path sends the per-event steer
+  shape — deliberate (no steering is wanted there, and isolation holds);
+  do not "unify" them in either direction without re-reading D-004.
+- **`_confirm_delivered`'s docstring still describes the pre-C1 "stdin
+  write" semantics** — the real rule lives at the call sites: turn path
+  confirms on the first non-`system` stdout event; steer path confirms at
+  the hook's fetch (a ratified trade — D-045 Bounds).
 - **`DOC_LOCK` is a single-process `threading.RLock`.** File writes are
   atomic (tmp + `os.replace`), which makes a concurrent SECOND backend look
   like it works while silently discarding interleaved load-modify-save
@@ -131,6 +145,25 @@ ledger, supervisor, the gateways, or the canvas.
   (tiered: 80 warn / 90 turn-pause / 85 clear / 99 full; ENOSPC is the hard
   cap; NO container stop) and legacy volume-layout orgs (icacls deny +
   stop-and-freeze). Patch the right one; the module comment era matters.
+- **Sandboxed transcripts live ON the org disk**, not under
+  `<data>/sandboxes/` — for any migrated org the agent home (transcripts
+  included) is on the ext4 image via `\\wsl.localhost`;
+  `<data>/sandboxes/<slug>/` is only the frozen pre-migration rollback
+  copy, and reading it yields *silently stale* transcripts — worse than
+  missing.
+- **`disk.py` has no platform guard** — off Windows a sandboxed org dies
+  with an unhandled `FileNotFoundError: 'wsl'` (and kiosks sandbox by
+  default). Host mode is genuinely cross-platform.
+- **The repo path is not the data path**: the repo is the git checkout;
+  `~/orgtree/` is live DATA (org docs, `.port`, the pinned CLI) and must
+  not be "corrected" to match. Commit SHAs predating the clean import
+  `bd45d51` belong to a retired predecessor repo and do not exist here.
+- **The `/anthropic` proxy must force `Accept-Encoding: identity`**
+  upstream and strip content-encoding/length/transfer-encoding, streaming
+  raw — a gzip body with its header stripped reads as garbage at the CLI.
+- **Store writes retry on `PermissionError` by design** — read-only
+  endpoints deliberately read OUTSIDE the doc lock, and Windows fails
+  `os.replace` over a momentarily-open file.
 - **A bare `python -m orgtree.api` silently DROPS the public listener** —
   the 0.0.0.0 gateway starts only when `ORGTREE_PUBLIC_PORT` is set, which
   `update.ps1` does (7361) and a manual restart forgets. Manual restart =
@@ -158,6 +191,15 @@ ledger, supervisor, the gateways, or the canvas.
   credit bar whenever the cascade toggles are on.
 - **`chatq_register_org` is not a pure register** — it self-checks kiosk
   status and *deregisters* sealed orgs.
+- **Known matrix/scrub drift (fixes pending):** `GET …/events` and
+  `GET …/orgmd` are visitor-reachable and can leak host paths/usernames the
+  scrub exists to hide (`…/history` passes `revoke_dir` path strings);
+  `_public_denied` still 403s the dead `/attach` route — the denylist
+  drifts in BOTH directions, not just toward openness.
+- **`permission_mode` is never validated against `PM_LEVELS`** on
+  `set_scope` or org creation (an arbitrary string reaches
+  `--permission-mode` verbatim), and `hire()` skips `_apply_ceiling` for
+  permission_mode in kiosks — both ride D-030 as pending hardening.
 
 ## Frontend
 
@@ -175,6 +217,38 @@ ledger, supervisor, the gateways, or the canvas.
   means unbounded; `maxGhost` renders only when finite.
 - Org docs are re-slugified from **name** — smoke-org names collide only
   when data dirs are shared; always use an isolated `ORGTREE_DATA` in tests.
+- **`vite build` does NOT typecheck** — the frontend gate is
+  `npm run typecheck` (tsc --noEmit); a green build proves nothing about
+  types.
+- **`fitAll()` must not clamp computed bounds at zero** — with the eye
+  pinned at a constant x, leftmost nodes go NEGATIVE in wide orgs, and a
+  zero-clamp silently crops them out of "fit the whole org".
+- **Background pan calls `setPointerCapture`, retargeting subsequent
+  clicks to the viewport** — every screen-space control layered over the
+  canvas must stopPropagation on pointerdown or its clicks silently do
+  nothing.
+- **Never author text below ~10 px inside the counter-scaled virtual
+  panels** — browsers clamp small font sizes UP, exploding the authored
+  layout; shrinking is the scale transform's job.
+- **Counter-scaled hover chrome (`--invz` chips, bar tips) must anchor
+  1 px INSIDE the card border** — any border↔chip gap is a dead zone that
+  hides them before they can be clicked (hit-testable only while hovered).
+- **The viewport must never natively scroll** — zero scrollLeft/scrollTop
+  in the onScroll handler and the spring tick, and always
+  `focus({preventScroll: true})`; one focus of an off-screen input shears
+  the HUD off the canvas until reload.
+- **No CSS transitions on spring-animated geometry** (wire path `d`, node
+  transform, bar height) — an ease on top of per-frame springs makes wires
+  trail and layers poke out of the animating container.
+- **The chat markdown pipeline is constraint-loaded**: gfm + hard breaks,
+  DOMPurify, `<` escaped in PROSE ONLY via a fence-aware line walk
+  (unterminated fences stay open to EOF), parse cache bounded — else
+  `Sync<float3>` silently becomes `Sync` and streaming re-parses the
+  transcript at ~8 Hz.
+- **`.sq.aud` (audience glow) and `.sq.stack1-3` (lineage slabs) both set
+  `box-shadow` at equal specificity** — the later stack rules win
+  wholesale, so a card with both shows only the stack (ruling direction
+  pending: DECISIONS §Open).
 
 ## Testing reality
 
