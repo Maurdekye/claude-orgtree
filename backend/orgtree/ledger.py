@@ -1351,6 +1351,17 @@ class Org:
 
         if tlost:
             warnings.append(f"tool grants clamped to the parent's own: {tlost}")
+        # D-021: visibility clamps like tools — strict for agent-explicit
+        # grants, lenient (warned) for user hires and defaults
+        if parent is not None:
+            vis, vclamped = self._clamp_vis(
+                vis, parent, strict=(actor != USER and org_visibility is not None))
+            if vclamped:
+                warnings.append(
+                    f"org_visibility clamped to the parent's own ({vis})")
+        # D-014: the top-level grant cap binds at the source
+        if parent is None:
+            self._check_top_grant(int(grant), "this hire")
         # ceiling spec §2/§4: the ceiling clamp runs AFTER defaults resolve and
         # after the parent clamp (parent ∩ ceiling at depth) — org defaults may
         # exceed the ceiling and must lose on every bare chip-click hire
@@ -1426,6 +1437,20 @@ class Org:
             raise LedgerError(
                 f"not enough free credits on the chain: {need:g} needed, only "
                 f"{need - remaining:g} free between {payer} and {actor} (§4.6)")
+        # D-014 pre-check, BEFORE any mutation: total the planned inflation
+        # per node and refuse if a TOP-LEVEL grant would cross the cap —
+        # user-actor cascades included (that was the enforcement gap)
+        adds: dict[str, float] = {}
+        for i, _k, c in contrib:
+            for j in range(i):
+                adds[chain[j]] = adds.get(chain[j], 0) + c
+        if remaining > 0:
+            for k in chain:
+                adds[k] = adds.get(k, 0) + remaining
+        for k, extra in adds.items():
+            if self.nodes[k]["parent"] is None:
+                self._check_top_grant(self.nodes[k]["grant"] + extra,
+                                      "carrying these credits down the chain")
         # a contribution from chain[i] inflates every grant BELOW it, so the
         # credits are actually spendable at the payer
         for i, k, c in contrib:
@@ -1632,6 +1657,8 @@ class Org:
                 f'predecessor) — you command it and pay its seat')
         parent = n["parent"]
         grant = n["grant"] if grant is None else int(grant)
+        if parent is None and grant > n["grant"]:
+            self._check_top_grant(grant, "this rehire")   # D-014
         need = self.seat_cost(nid) + grant
         if parent is not None:
             # §4.6 generalized: the parent pays; shortfall bubbles up to the actor
@@ -1652,6 +1679,12 @@ class Org:
         n["scope"]["tools"] = tkept
         if tlost:
             warnings.append(f"tool grants adjusted to the parent's capability: {tlost}")
+        v, vclamped = self._clamp_vis(
+            n["scope"].get("org_visibility", "full"), parent, strict=False)
+        if vclamped:
+            n["scope"]["org_visibility"] = v
+            warnings.append(
+                f"org_visibility adjusted to the parent's capability ({v})")
         # kiosk ceiling: №30's revalidation extends to the ceiling — a node
         # archived before the ceiling changed re-enters within it
         # tools/dirs inputs are non-None ⇒ their pass-through outputs are too
@@ -1815,6 +1848,10 @@ class Org:
             # seat shrinks; the difference becomes the node's own free
             # allocation — its total holding (and the parent's commitment)
             # never moves
+            if n["parent"] is None and delta < 0:
+                # D-014: even the downgrade-melt may not push a top-level
+                # grant past the cap — reallocate the excess down first
+                self._check_top_grant(n["grant"] - delta, "this downgrade")
             n["model"] = tier
             n["grant"] += -delta
         else:
@@ -1849,7 +1886,9 @@ class Org:
         delta = int(delta)
         warnings: list[str] = []
         if delta > 0:
-            if n["parent"] is not None:
+            if n["parent"] is None:
+                self._check_top_grant(n["grant"] + delta, "this allocation")  # D-014
+            else:
                 # §4.6 generalized: shortfall bubbles up the chain to the actor
                 self._chain_acquire(actor, n["parent"], delta, warnings,
                                     cascade=bool(self.d.get("cascade_alloc", True)))
@@ -1881,6 +1920,9 @@ class Org:
         # mail, org voice, extern recipients), so only the user seats it
         if new_parent is None and actor != USER:
             raise LedgerError("only the user promotes agents to top level (§7.4)")
+        if new_parent is None:
+            # D-014: promotion may not seat an over-cap grant at top level
+            self._check_top_grant(self.node(nid)["grant"], "this promotion")
         if target != USER and not self.is_ancestor(target, nid):
             raise LedgerError(f"promote target {target} is not above {nid}")
         if target == cur:
@@ -2011,13 +2053,43 @@ class Org:
         self._log("revoke_dir", actor, {"node": nid, "dir": dir_, "removed": removed}, [])
         return {"removed_from": removed, "warnings": []}
 
+    def _clamp_vis(self, requested: str, parent: str | None,
+                   strict: bool) -> tuple[str, bool]:
+        """D-021 (user ruling 2026-08-01): org_visibility is a CAPABILITY —
+        child ≤ parent, exactly like dirs and tools. Returns (vis, clamped);
+        strict=True raises instead of clamping (agent-explicit grants)."""
+        if parent is None or requested not in VIS_LEVELS:
+            return requested, False
+        pv = self.node(parent)["scope"].get("org_visibility", "full")
+        if pv in VIS_LEVELS and VIS_LEVELS.index(requested) > VIS_LEVELS.index(pv):
+            if strict:
+                raise LedgerError(
+                    f"org_visibility {requested!r} exceeds the parent's own "
+                    f"{pv!r} — visibility is a capability and only shrinks "
+                    f"downward")
+            return pv, True
+        return requested, False
+
+    def _check_top_grant(self, new_grant: float, ctx: str) -> None:
+        """D-014 (user ruling 2026-08-01): `max_top_grant` is a REAL ledger
+        precondition — no op, user-actor cascades included, may push a
+        TOP-LEVEL grant past it. 0/unset = uncapped; existing over-cap
+        grants are grandfathered (only increases are refused)."""
+        cap = int(self.d.get("max_top_grant") or 0)
+        if cap and new_grant > cap:
+            raise LedgerError(
+                f"{ctx} would put a top-level grant at {new_grant:g}, past "
+                f"the org's top-level grant cap of {cap} — raise the cap in "
+                f"the org settings, or lower the ask")
+
     def _sweep_dirs(self, nid: str) -> list[str]:
-        """After a move or scope shrink: clamp the subtree's dirs AND tools to each
-        parent in turn (№30 — capability sets stay ⊆ all the way down)."""
+        """After a move or scope shrink: clamp the subtree's dirs, tools AND
+        visibility to each parent in turn (№30 + D-021 — capability sets stay
+        ⊆ all the way down)."""
         dropped: list[str] = []
 
         def clamp(k: str, allowed: dict[str, str] | None,
-                  ptools: ToolGrant | None) -> None:
+                  ptools: ToolGrant | None, pvis: str | None) -> None:
             sc = self.nodes[k]["scope"]
             kept, lost = self._clamp_dirs(sc["add_dirs"], allowed, strict=False)
             sc["add_dirs"] = kept
@@ -2025,13 +2097,20 @@ class Org:
             tkept, tlost = self._clamp_tools(sc["tools"], ptools, strict=False)
             sc["tools"] = tkept
             dropped.extend(tlost)
+            v = sc.get("org_visibility", "full")
+            if (pvis in VIS_LEVELS and v in VIS_LEVELS
+                    and VIS_LEVELS.index(v) > VIS_LEVELS.index(pvis)):
+                sc["org_visibility"] = pvis
+                dropped.append(f"visibility:{k}→{pvis}")
             own: dict[str, str] = {d["path"]: d["mode"] for d in kept}
             for ch in self.children(k, live_only=False):
-                clamp(ch, own, tkept)
+                clamp(ch, own, tkept, sc.get("org_visibility", "full"))
 
         parent = self.node(nid)["parent"]
         clamp(nid, self.effective_dirs(parent),
-              None if parent is None else self.node(parent)["scope"]["tools"])
+              None if parent is None else self.node(parent)["scope"]["tools"],
+              None if parent is None
+              else self.node(parent)["scope"].get("org_visibility", "full"))
         return sorted(set(dropped))
 
     # ------------------------------------------------------------- node scope
@@ -2072,17 +2151,21 @@ class Org:
             bridged = bridged or b
             sc["tools"] = cast(ToolGrant, tset)  # tools in ⇒ tools out
             changed_caps = True
+        if org_visibility is not None:
+            if org_visibility not in VIS_LEVELS:
+                raise LedgerError(f"org_visibility must be one of {VIS_LEVELS}")
+            # D-021: parent clamp first (strict, like dirs/tools here), then
+            # the kiosk ceiling
+            vis1, _ = self._clamp_vis(org_visibility, n["parent"], strict=True)
+            _t, _d, vis2, _p, b = self._apply_ceiling(
+                vis=vis1, raise_ceiling=raise_ceiling, warnings=warnings)
+            bridged = bridged or b
+            sc["org_visibility"] = cast(str, vis2)  # vis in ⇒ vis out
+            changed_caps = True   # lowering sweeps the subtree like the others
         if changed_caps:
             swept = self._sweep_dirs(nid)
             if swept:
                 warnings.append(f"subtree grants clamped to the new set (№30): {swept}")
-        if org_visibility is not None:
-            if org_visibility not in VIS_LEVELS:
-                raise LedgerError(f"org_visibility must be one of {VIS_LEVELS}")
-            _t, _d, vis2, _p, b = self._apply_ceiling(
-                vis=org_visibility, raise_ceiling=raise_ceiling, warnings=warnings)
-            bridged = bridged or b
-            sc["org_visibility"] = cast(str, vis2)  # vis in ⇒ vis out
         if permission_mode is not None:
             _t, _d, _v, pm2, b = self._apply_ceiling(
                 pm=permission_mode, raise_ceiling=raise_ceiling, warnings=warnings)

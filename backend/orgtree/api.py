@@ -794,6 +794,16 @@ def _org_settings_locked(slug: str, body: Settings) -> dict[str, Any]:
         org.d["dirs"] = ws_dir + new
     if body.max_top_grant is not None and body.max_top_grant > 0:
         org.d["max_top_grant"] = int(body.max_top_grant)
+        # D-014: the cap is a real ledger precondition now. Existing over-cap
+        # grants are grandfathered (no sweep — which agents shrink is the
+        # user's choice, D-003), but lowering past them deserves the truth
+        over = [f'{nid} (grant {org.nodes[nid]["grant"]})'
+                for nid in org.children(None)
+                if org.nodes[nid]["grant"] > int(body.max_top_grant)]
+        if over:
+            warnings.append(
+                "top-level grants already above the new cap (kept as-is; "
+                "the cap binds increases): " + ", ".join(over))
     if body.default_top_grant is not None and body.default_top_grant >= 0:
         org.d["default_top_grant"] = int(body.default_top_grant)
     if body.compact_at is not None:

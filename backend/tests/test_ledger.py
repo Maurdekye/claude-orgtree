@@ -1350,6 +1350,72 @@ def main():
          else (_ for _ in ()).throw(AssertionError(r))
          )(orgN.hire(USER, None, "haiku", 0, "free2", tools=dict(ALL_TOOLS)))))
 
+    print("D-021 visibility clamp / D-014 top-grant cap (user rulings 2026-08-01):")
+    orgV = Org.create("vis-clamp")
+    orgV.hire(USER, None, "opus", 30, "boss", org_visibility="self",
+              tools=dict(ALL_TOOLS))
+    check("agent hire above the parent's visibility refused (strict)", lambda: expect_error(
+        lambda: orgV.hire("boss", "boss", "haiku", 0, "peek",
+                          **spec(org_visibility="full")), "visibility"))
+    check("user hire above the parent's visibility clamps with warning", lambda: (
+        lambda r: None
+        if orgV.nodes["quiet"]["scope"]["org_visibility"] == "self"
+        and any("clamped to the parent" in w for w in r["warnings"])
+        else (_ for _ in ()).throw(AssertionError(r))
+    )(orgV.hire(USER, "boss", "haiku", 0, "quiet",
+                org_visibility="full", tools=dict(ALL_TOOLS))))
+    check("retool above the parent's visibility refused (strict)", lambda: expect_error(
+        lambda: orgV.set_scope(USER, "quiet", org_visibility="subtree"),
+        "visibility"))
+    check("lowering a manager's visibility sweeps the subtree", lambda: (
+        orgV.set_scope(USER, "boss", org_visibility="subtree"),
+        orgV.set_scope(USER, "quiet", org_visibility="subtree"),
+        (lambda r: None
+         if orgV.nodes["quiet"]["scope"]["org_visibility"] == "team"
+         and any("visibility:quiet" in w for w in r["warnings"])
+         else (_ for _ in ()).throw(AssertionError(r))
+         )(orgV.set_scope(USER, "boss", org_visibility="team")))[-1])
+    check("re-parent under a lower-visibility manager clamps the moved node", lambda: (
+        orgV.hire(USER, None, "haiku", 5, "floater", org_visibility="full",
+                  tools=dict(ALL_TOOLS)),
+        (lambda _r: None
+         if orgV.nodes["floater"]["scope"]["org_visibility"] == "team"
+         else (_ for _ in ()).throw(AssertionError(orgV.nodes["floater"]["scope"]))
+         )(orgV.demote(USER, "floater", "boss")))[-1])
+
+    orgC = Org.create("top-cap")
+    orgC.d["max_top_grant"] = 40
+    check("top-level hire above the cap refused naming the setting", lambda: expect_error(
+        lambda: orgC.hire(USER, None, "haiku", 41, "big"), "top-level grant cap"))
+    check("top-level hire at the cap succeeds", lambda: (
+        lambda r: None if r["node"] == "cap"
+        else (_ for _ in ()).throw(AssertionError(r))
+    )(orgC.hire(USER, None, "haiku", 40, "cap")))
+    check("reallocate past the cap refused; back up to it succeeds", lambda: (
+        orgC.reallocate(USER, "cap", -5),
+        expect_error(lambda: orgC.reallocate(USER, "cap", 6), "top-level grant cap"),
+        (lambda r: None if r["grant"] == 40
+         else (_ for _ in ()).throw(AssertionError(r))
+         )(orgC.reallocate(USER, "cap", 5)))[-1])
+    check("user-pool cascade cannot inflate a top-level grant past the cap", lambda: (
+        orgC.hire("cap", "cap", "haiku", 39, "mid", **spec()),   # cap's free → 0
+        expect_error(lambda: orgC.hire(USER, "mid", "haiku", 40, "deep",
+                                       tools=dict(ALL_TOOLS)),
+                     "top-level grant cap"))[-1])
+    check("top-level downgrade melting past the cap refused", lambda: (
+        orgC.hire(USER, None, "opus", 38, "melt"),
+        expect_error(lambda: orgC.switch_model(USER, "melt", "haiku"),
+                     "top-level grant cap"))[-1])
+    check("promotion refuses to seat an over-cap grant at top level", lambda: (
+        orgC.d.__setitem__("max_top_grant", 30),
+        expect_error(lambda: orgC.promote(USER, "mid", None),
+                     "top-level grant cap"))[-1])
+    check("cap 0 = uncapped", lambda: (
+        orgC.d.__setitem__("max_top_grant", 0),
+        (lambda r: None if r["node"] == "wide"
+         else (_ for _ in ()).throw(AssertionError(r))
+         )(orgC.hire(USER, None, "haiku", 5000, "wide")))[-1])
+
     print("guards:")
     check("unknown tier refused", lambda: expect_error(
         lambda: org.hire(USER, None, "gpt", 0, "nope"), "unknown tier"))
