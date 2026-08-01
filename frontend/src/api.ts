@@ -14,132 +14,140 @@ import type {
 export const BASE = (location.pathname.match(/^\/k\/[A-Za-z0-9_-]+/) || [''])[0]
 const u = (p: string) => BASE + p
 
-const j = (r: Response): Promise<any> => {
-  if (!r.ok) return r.json().then((b) => { throw new Error(b.detail || r.statusText) })
-  return r.json()
-}
+// the one wire-boundary cast in the app: runtime JSON is untyped, and each
+// endpoint's declared Promise<T> return type is the contract that types it.
+// T infers from that declared return at every call site - no `any` escapes.
+const req = <T,>(path: string, init?: RequestInit): Promise<T> =>
+  fetch(u(path), init).then((r) => {
+    if (!r.ok) {
+      return r.json().then((b: { detail?: string }) => {
+        throw new Error(b.detail || r.statusText)
+      })
+    }
+    return r.json() as Promise<T>
+  })
 
-export const listOrgs = (): Promise<OrgListEntry[]> => fetch(u('/api/orgs')).then(j)
+export const listOrgs = (): Promise<OrgListEntry[]> => req('/api/orgs')
 export const createOrg = (
   name: string, dirs: string[],
   kiosk: KioskSpecRequest | null = null, sandbox = false,
 ): Promise<{ slug: string }> =>
-  fetch(u('/api/orgs'), {
+  req('/api/orgs', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       name, dirs, ...(kiosk ? { kiosk } : {}),
       ...(sandbox && !kiosk ? { sandbox: true } : {}),
     }),
-  }).then(j)
+  })
 export const getTree = (slug: string): Promise<TreePayload> =>
-  fetch(u(`/api/orgs/${slug}`)).then(j)
+  req(`/api/orgs/${slug}`)
 export const deleteOrg = (slug: string): Promise<{ ok: boolean }> =>
-  fetch(u(`/api/orgs/${slug}`), { method: 'DELETE' }).then(j)
+  req(`/api/orgs/${slug}`, { method: 'DELETE' })
 export const runOp = (slug: string, body: OpRequest): Promise<OpResult> =>
-  fetch(u(`/api/orgs/${slug}/ops`), {
+  req(`/api/orgs/${slug}/ops`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
-  }).then(j)
+  })
 
 export const getChat = (slug: string, nid: string, last?: number): Promise<ChatPayload> =>
-  fetch(u(`/api/orgs/${slug}/nodes/${nid}/chat${last ? `?last=${last}` : ''}`)).then(j)
+  req(`/api/orgs/${slug}/nodes/${nid}/chat${last ? `?last=${last}` : ''}`)
 export const getMcpServers = (): Promise<McpServersPayload> =>
-  fetch(u('/api/mcp-servers')).then(j)
+  req('/api/mcp-servers')
 export const getCharters = (): Promise<ChartersPayload> =>
-  fetch(u('/api/charters')).then(j)
+  req('/api/charters')
 export const getFs = (path = ''): Promise<FsPayload> =>
-  fetch(u(`/api/fs?path=${encodeURIComponent(path)}`)).then(j)
+  req(`/api/fs?path=${encodeURIComponent(path)}`)
 export const getInbox = (slug: string): Promise<InboxPayload> =>
-  fetch(u(`/api/orgs/${slug}/inbox`)).then(j)
+  req(`/api/orgs/${slug}/inbox`)
 export const getNodeInbox = (slug: string, nid: string): Promise<InboxPayload> =>
-  fetch(u(`/api/orgs/${slug}/nodes/${nid}/inbox`)).then(j)
+  req(`/api/orgs/${slug}/nodes/${nid}/inbox`)
 export const resumeFrozen = (slug: string): Promise<{ resumed: string[] }> =>
-  fetch(u(`/api/orgs/${slug}/resume`), { method: 'POST' }).then(j)
+  req(`/api/orgs/${slug}/resume`, { method: 'POST' })
 export const killAll = (slug: string): Promise<{ interrupted: string[] }> =>
-  fetch(u(`/api/orgs/${slug}/killswitch`), { method: 'POST' }).then(j)
+  req(`/api/orgs/${slug}/killswitch`, { method: 'POST' })
 export const dissolveAll = (slug: string): Promise<{ freed: number; nodes: number }> =>
-  fetch(u(`/api/orgs/${slug}/dissolve-all`), { method: 'POST' }).then(j)
+  req(`/api/orgs/${slug}/dissolve-all`, { method: 'POST' })
 export const interruptNode = (
   slug: string, nid: string,
 ): Promise<{ interrupted: boolean; reason?: string }> =>
-  fetch(u(`/api/orgs/${slug}/nodes/${nid}/interrupt`), { method: 'POST' }).then(j)
+  req(`/api/orgs/${slug}/nodes/${nid}/interrupt`, { method: 'POST' })
 export const compactNode = (slug: string, nid: string): Promise<{ started: boolean }> =>
-  fetch(u(`/api/orgs/${slug}/nodes/${nid}/compact`), { method: 'POST' }).then(j)
+  req(`/api/orgs/${slug}/nodes/${nid}/compact`, { method: 'POST' })
 export const creditDecide = (slug: string, id: string, action: string): Promise<OpResult> =>
-  fetch(u(`/api/orgs/${slug}/credit-requests`), {
+  req(`/api/orgs/${slug}/credit-requests`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ id, action }),
-  }).then(j)
+  })
 export const clearInbox = (slug: string): Promise<{ ok: boolean }> =>
-  fetch(u(`/api/orgs/${slug}/inbox/clear`), { method: 'POST' }).then(j)
+  req(`/api/orgs/${slug}/inbox/clear`, { method: 'POST' })
 export const markRead = (slug: string, ids: string[]): Promise<{ read: number }> =>
-  fetch(u(`/api/orgs/${slug}/inbox/read`), {
+  req(`/api/orgs/${slug}/inbox/read`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ids }),
-  }).then(j)
+  })
 export const getHistory = (slug: string, nid: string): Promise<HistoryPayload> =>
-  fetch(u(`/api/orgs/${slug}/nodes/${nid}/history`)).then(j)
+  req(`/api/orgs/${slug}/nodes/${nid}/history`)
 export const getScratch = (slug: string, nid: string, path = ''): Promise<ScratchPayload> =>
-  fetch(u(`/api/orgs/${slug}/nodes/${nid}/scratch?path=${encodeURIComponent(path)}`)).then(j)
+  req(`/api/orgs/${slug}/nodes/${nid}/scratch?path=${encodeURIComponent(path)}`)
 export const getOrgMd = (slug: string): Promise<OrgMdPayload> =>
-  fetch(u(`/api/orgs/${slug}/orgmd`)).then(j)
+  req(`/api/orgs/${slug}/orgmd`)
 export const putOrgMd = (
   slug: string, content: string,
 ): Promise<{ path: string; bytes: number }> =>
-  fetch(u(`/api/orgs/${slug}/orgmd`), {
+  req(`/api/orgs/${slug}/orgmd`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ content }),
-  }).then(j)
+  })
 export const getAudiences = (slug: string): Promise<AudiencesPayload> =>
-  fetch(u(`/api/orgs/${slug}/audiences`)).then(j)
+  req(`/api/orgs/${slug}/audiences`)
 export const audienceAction = (
   slug: string, action: string, node: string, target?: string | null,
 ): Promise<OpResult> =>
-  fetch(u(`/api/orgs/${slug}/audiences`), {
+  req(`/api/orgs/${slug}/audiences`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action, node, target }),
-  }).then(j)
-export const getHost = (): Promise<HostPayload> => fetch(u('/api/host')).then(j)
+  })
+export const getHost = (): Promise<HostPayload> => req('/api/host')
 export const getDefaults = (): Promise<DefaultsPayload> =>
-  fetch(u('/api/defaults')).then(j)
+  req('/api/defaults')
 export const saveDefaults = (body: SettingsRequest): Promise<DefaultsPayload> =>
-  fetch(u('/api/defaults'), {
+  req('/api/defaults', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
-  }).then(j)
+  })
 export const orgInboxRead = (slug: string): Promise<{ ok: boolean }> =>
-  fetch(u(`/api/orgs/${slug}/org_inbox/read`), { method: 'POST' }).then(j)
+  req(`/api/orgs/${slug}/org_inbox/read`, { method: 'POST' })
 export const saveScope = (slug: string, nid: string, scope: ScopeRequest): Promise<OpResult> =>
-  fetch(u(`/api/orgs/${slug}/nodes/${nid}/scope`), {
+  req(`/api/orgs/${slug}/nodes/${nid}/scope`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(scope),
-  }).then(j)
+  })
 export const reorderNode = (
   slug: string, nid: string, body: ReorderRequest,
 ): Promise<OpResult> =>
-  fetch(u(`/api/orgs/${slug}/nodes/${nid}/reorder`), {
+  req(`/api/orgs/${slug}/nodes/${nid}/reorder`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
-  }).then(j)
+  })
 export const getEvents = (slug: string): Promise<EventsPayload> =>
-  fetch(u(`/api/orgs/${slug}/events`)).then(j)
+  req(`/api/orgs/${slug}/events`)
 export const retractMail = (
   slug: string, nid: string, mid: string,
 ): Promise<{ retracted: string }> =>
-  fetch(u(`/api/orgs/${slug}/nodes/${nid}/mail/${mid}`), { method: 'DELETE' }).then(j)
+  req(`/api/orgs/${slug}/nodes/${nid}/mail/${mid}`, { method: 'DELETE' })
 export const uploadFile = (slug: string, nid: string, file: File): Promise<UploadResult> =>
-  fetch(u(`/api/orgs/${slug}/nodes/${nid}/upload?name=${encodeURIComponent(file.name)}`), {
+  req(`/api/orgs/${slug}/nodes/${nid}/upload?name=${encodeURIComponent(file.name)}`, {
     method: 'POST', body: file,
-  }).then(j)
+  })
 // direct <a href> download target (browser handles the transfer) — BASE-aware
 // so kiosk visitors download through their token prefix
 export const fileUrl = (slug: string, nid: string, path: string): string =>
@@ -147,50 +155,50 @@ export const fileUrl = (slug: string, nid: string, path: string): string =>
 export const sendMessage = (
   slug: string, nid: string, text: string, attachments?: string[],
 ): Promise<SendMessageResult> =>
-  fetch(u(`/api/orgs/${slug}/nodes/${nid}/message`), {
+  req(`/api/orgs/${slug}/nodes/${nid}/message`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text,
       ...(attachments?.length ? { attachments } : {}) }),
-  }).then(j)
+  })
 export const saveSettings = (slug: string, opts: SettingsRequest = {}): Promise<SettingsResult> =>
-  fetch(u(`/api/orgs/${slug}/settings`), {
+  req(`/api/orgs/${slug}/settings`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(opts),
-  }).then(j)
+  })
 export const saveHireDefaults = (
   slug: string, opts: HireDefaultsRequest = {},
 ): Promise<OpResult> =>
-  fetch(u(`/api/orgs/${slug}/defaults`), {
+  req(`/api/orgs/${slug}/defaults`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(opts),
-  }).then(j)
+  })
 export const saveKiosk = (slug: string, opts: KioskCfgRequest = {}): Promise<KioskSaveResult> =>
-  fetch(u(`/api/orgs/${slug}/kiosk`), {
+  req(`/api/orgs/${slug}/kiosk`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(opts),
-  }).then(j)
+  })
 
 // the org-disk recovery browser (its own surface, deliberately not /api/fs)
 export const getDisk = (slug: string, offset = 0, limit = 200): Promise<DiskPayload> =>
-  fetch(u(`/api/orgs/${slug}/disk?offset=${offset}&limit=${limit}`)).then(j)
+  req(`/api/orgs/${slug}/disk?offset=${offset}&limit=${limit}`)
 export const diskDelete = (slug: string, paths: string[]): Promise<DiskDeleteResult> =>
-  fetch(u(`/api/orgs/${slug}/disk/delete`), {
+  req(`/api/orgs/${slug}/disk/delete`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ paths }),
-  }).then(j)
+  })
 export const diskGrow = (
   slug: string, size_mb: number,
 ): Promise<{ size_mb: number; used: number | null; total: number | null }> =>
-  fetch(u(`/api/orgs/${slug}/disk/grow`), {
+  req(`/api/orgs/${slug}/disk/grow`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ size_mb }),
-  }).then(j)
+  })
 export const diskFileUrl = (slug: string, path: string): string =>
   u(`/api/orgs/${slug}/disk/file?path=${encodeURIComponent(path)}`)
 

@@ -4,7 +4,10 @@ import { CloseIcon, FolderIcon } from './icons'
 // (№45: HireForm and MoveForm removed — dead since the draft-card hire flow
 // and the drag/orgtree_move gestures replaced them; nothing imported either.)
 
-export function DirList({ dirs, onChange }) {
+export function DirList({ dirs, onChange }: {
+  dirs: string[]
+  onChange: (dirs: string[]) => void
+}) {
   return (
     <div className="dirlist">
       {dirs.map((d, i) => (
@@ -13,7 +16,8 @@ export function DirList({ dirs, onChange }) {
             onChange={(e) => onChange(dirs.map((x, j) => (j === i ? e.target.value : x)))} />
           <button type="button" className="iconbtn" title="browse for a folder"
             onClick={() => pickFolder().then((r) => {
-              if (r.path) onChange(dirs.map((x, j) => (j === i ? r.path : x)))
+              const p = r.path
+              if (p) onChange(dirs.map((x, j) => (j === i ? p : x)))
             }).catch(() => {})}><FolderIcon fontSize="inherit" /></button>
           <button type="button" className="iconbtn" title="remove folder"
             onClick={() => onChange(dirs.filter((_, j) => j !== i))}><CloseIcon fontSize="inherit" /></button>
@@ -24,7 +28,8 @@ export function DirList({ dirs, onChange }) {
           onClick={() => onChange([...dirs, ''])}>+ add folder</button>
         <button type="button" className="addrow" title="browse for a folder to add"
           onClick={() => pickFolder().then((r) => {
-            if (r.path) onChange([...dirs, r.path])
+            const p = r.path
+            if (p) onChange([...dirs, p])
           }).catch(() => {})}><FolderIcon fontSize="inherit" /> browse</button>
       </div>
     </div>

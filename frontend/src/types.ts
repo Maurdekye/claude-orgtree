@@ -203,6 +203,10 @@ export interface AuditReport {
 }
 
 // GET /api/orgs/{slug} — ledger.py tree() + api.py org_tree additions
+/** the toast surface App threads everywhere: lines + an optional 12 s undo */
+export type ToastUndo = (() => void) | { fn: () => void; label: string }
+export type ToastFn = (lines: string[], undo?: ToastUndo | null) => void
+
 export interface TreeDisk {
   used_mb: number | null
   total_mb: number | null

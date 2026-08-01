@@ -8,18 +8,24 @@
 // mirrors it (blocked rows greyed with the reason).
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { diskDelete, diskFileUrl, diskGrow, getDisk } from './api'
+import type { DiskPayload, ToastFn } from './types'
 import {
   CloseIcon, DeleteIcon, DownloadIcon, StorageIcon, WarnIcon,
 } from './icons'
 
-const fmt = (b) => (b == null ? '?'
+const fmt = (b: number | null | undefined): string => (b == null ? '?'
   : b >= 1e9 ? (b / 1e9).toFixed(2) + ' GB'
   : b >= 1e6 ? (b / 1e6).toFixed(1) + ' MB'
   : Math.max(1, Math.round(b / 1024)) + ' KB')
 
-export function DiskBrowser({ slug, isPublic, toast, close }) {
-  const [data, setData] = useState(null)
-  const [sel, setSel] = useState(() => new Set())
+export function DiskBrowser({ slug, isPublic, toast, close }: {
+  slug: string
+  isPublic: boolean
+  toast: ToastFn
+  close: () => void
+}) {
+  const [data, setData] = useState<DiskPayload | null>(null)
+  const [sel, setSel] = useState<Set<string>>(() => new Set())
   const [armed, setArmed] = useState(false)   // two-click delete latch
   const [busy, setBusy] = useState(false)
   const [growTo, setGrowTo] = useState('')
@@ -35,7 +41,7 @@ export function DiskBrowser({ slug, isPublic, toast, close }) {
       if (!offset) {
         setSel((s) => new Set([...s].filter((p) => alive.has(p))))
       }
-    }).catch((e) => toast([`error: ${e.message}`])), [slug, toast])
+    }).catch((e: Error) => toast([`error: ${e.message}`])), [slug, toast])
 
   useEffect(() => { load() }, [load])
   useEffect(() => {              // the live readout: watch the number come down
@@ -56,7 +62,7 @@ export function DiskBrowser({ slug, isPublic, toast, close }) {
         setSel(new Set())
         load(0)
       })
-      .catch((e) => toast([`error: ${e.message}`]))
+      .catch((e: Error) => toast([`error: ${e.message}`]))
       .finally(() => setBusy(false))
   }
 
@@ -139,7 +145,7 @@ export function DiskBrowser({ slug, isPublic, toast, close }) {
                   setBusy(true)
                   diskGrow(slug, parseInt(growTo, 10))
                     .then((r) => { toast([`disk grown to ${r.size_mb} MB`]); setGrowTo(''); load(0) })
-                    .catch((e) => toast([`error: ${e.message}`]))
+                    .catch((e: Error) => toast([`error: ${e.message}`]))
                     .finally(() => setBusy(false))
                 }}>grow</button>
             </>
@@ -155,7 +161,7 @@ export function DiskBrowser({ slug, isPublic, toast, close }) {
 // that requires action). It renders from tree state, so it survives reloads,
 // and dismisses itself when usage drops. It does not auto-open the browser
 // (explicit user refinement) — it carries the button.
-export function DiskFullAlert({ onOpen }) {
+export function DiskFullAlert({ onOpen }: { onOpen: () => void }) {
   return (
     <div className="disk-alert">
       <WarnIcon fontSize="inherit" />
