@@ -236,6 +236,8 @@ export interface DiskPayload {
   total: number | null
   blocked: boolean
   full: boolean
+  /** admin only; null = Docker Desktop's VM disk cap is UNSET on the host */
+  vm_cap_mib?: number | null
   files: DiskFile[]
   offset: number
   limit: number
@@ -269,6 +271,8 @@ export interface DiskDirPayload {
   total: number | null
   blocked: boolean
   full: boolean
+  /** admin only; null = Docker Desktop's VM disk cap is UNSET on the host */
+  vm_cap_mib?: number | null
 }
 
 export interface TreePayload {

@@ -1221,6 +1221,11 @@ input:focus, select:focus, textarea:focus, button:focus-visible {
 .disk-del.armed { background: var(--bad); color: var(--panel); }
 .disk-grow { width: 110px; }
 .disk-grow-note { font-size: 10.5px; }
+.disk-vmcap {
+  font-size: 11px; padding: 4px 8px; margin-bottom: 6px;
+  border-left: 2px solid var(--work); background: var(--panel-2);
+  border-radius: 0 4px 4px 0;
+}
 .disk-tabs { display: inline-flex; gap: 2px; margin-left: 12px; }
 .disk-tabs button {
   border: 1px solid var(--line); background: none; border-radius: 4px;

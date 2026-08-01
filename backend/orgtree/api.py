@@ -2192,6 +2192,9 @@ def disk_list(slug: str, request: Request, offset: int = 0,
     return {"used": du[0] if du else None, "total": du[1] if du else None,
             "blocked": bool(org.d.get("storage_blocked")),
             "full": bool(org.d.get("storage_full")),
+            # admin-only nudge: org disks are SPARSE, the VM cap is the
+            # aggregate wall — None = unset on the host
+            **({} if public else {"vm_cap_mib": sandbox.vm_disk_cap_mib()}),
             "files": files, "offset": max(0, offset),
             "limit": max(1, min(limit, 500))}
 
@@ -2246,7 +2249,8 @@ def disk_dir(slug: str, request: Request, path: str = "") -> dict[str, Any]:
     return {"path": rel, "entries": entries,
             "used": du[0] if du else None, "total": du[1] if du else None,
             "blocked": bool(org.d.get("storage_blocked")),
-            "full": bool(org.d.get("storage_full"))}
+            "full": bool(org.d.get("storage_full")),
+            **({} if public else {"vm_cap_mib": sandbox.vm_disk_cap_mib()})}
 
 
 @app.get("/api/orgs/{slug}/disk/file")

@@ -163,6 +163,17 @@ export function DiskBrowser({ slug, isPublic, toast, close, initialMode }: {
                 : live.blocked ? ' — turns paused (soft cap)' : ''}</span>
           </div>
         )}
+        {/* in-product backstop nudge (review suggestion): org disks are
+            sparse, so their per-org caps don't bound the HOST — only Docker
+            Desktop's own disk limit does, and it ships unset (~1 TB) */}
+        {live && live.vm_cap_mib == null && !isPublic && (
+          <div className="dim disk-vmcap">
+            host backstop unset: Docker Desktop has no disk usage limit
+            (defaults to ~1 TB) — org disks are sparse, so their caps bound
+            each org but not the machine. Docker Desktop → Settings →
+            Resources → disk usage limit.
+          </div>
+        )}
         {mode === 'browse' && (
           <div className="disk-crumbs mono">
             <button className="crumb" onClick={() => loadDir('')}>disk</button>

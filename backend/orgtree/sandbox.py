@@ -196,36 +196,53 @@ def migrate_to_disk(org: Org) -> None:
           f"({size_mb} MB; legacy volumes kept for rollback)")
 
 
-_vm_cap_checked = False
+_vm_cap_cache: tuple[float, int | None] | None = None
+
+
+def vm_disk_cap_mib() -> int | None:
+    """Docker Desktop's VM disk cap in MiB, or None when unset — the ABSOLUTE
+    host bound on every container, image, and (sparse) org disk, no matter
+    what this code does. A host setting we can only read; best-effort, the
+    settings file location/keys are Docker Desktop internals. Surfaced
+    IN-PRODUCT by the recovery browser (review suggestion 2026-08-01: the
+    admin staring at storage is the right audience, not the backend log)."""
+    global _vm_cap_cache
+    if _vm_cap_cache and time.time() - _vm_cap_cache[0] < 300:
+        return _vm_cap_cache[1]
+    cap: int | None = None
+    if os.name == "nt":
+        try:
+            p = os.path.join(os.environ.get("APPDATA", ""), "Docker",
+                             "settings-store.json")
+            cfg = (json.load(open(p, encoding="utf-8"))
+                   if os.path.exists(p) else {})
+            raw = next((v for k, v in cfg.items()
+                        if k.lower() == "disksizemib"), None)
+            cap = int(raw) if raw else None
+        except Exception:                                # noqa: BLE001
+            cap = None
+    _vm_cap_cache = (time.time(), cap)
+    return cap
+
+
+_vm_cap_warned = False
 
 
 def _warn_vm_cap() -> None:
-    """The ABSOLUTE host bound is Docker Desktop's VM disk cap — the one thing
-    that bounds every container, image, and volume no matter what this code
-    does. It is a host setting we can only read: warn once per process when it
-    is unset (the default is a ~1 TB sparse VHDX). Best-effort — the settings
-    file location/keys are Docker Desktop internals."""
-    global _vm_cap_checked
-    if _vm_cap_checked or os.name != "nt":
+    """One startup log line (the browser carries the in-product version)."""
+    global _vm_cap_warned
+    if _vm_cap_warned or os.name != "nt":
         return
-    _vm_cap_checked = True
-    try:
-        p = os.path.join(os.environ.get("APPDATA", ""), "Docker",
-                         "settings-store.json")
-        cfg = json.load(open(p, encoding="utf-8")) if os.path.exists(p) else {}
-        cap = next((v for k, v in cfg.items()
-                    if k.lower() == "disksizemib"), None)
-        if not cap:
-            print("[orgtree] ⚠ Docker Desktop's disk image size is UNSET "
-                  "(defaults to a ~1 TB sparse disk). That cap is the only "
-                  "ABSOLUTE bound on sandbox disk use — set it in Docker "
-                  "Desktop → Settings → Resources (see README, sandbox "
-                  "storage). Per-org limits are enforced reactively on top.")
-        else:
-            print(f"[orgtree] Docker VM disk cap: {int(cap)} MiB "
-                  f"(the absolute sandbox storage backstop)")
-    except Exception:                                    # noqa: BLE001
-        pass
+    _vm_cap_warned = True
+    cap = vm_disk_cap_mib()
+    if cap:
+        print(f"[orgtree] Docker VM disk cap: {cap} MiB "
+              f"(the absolute sandbox storage backstop)")
+    else:
+        print("[orgtree] ⚠ Docker Desktop's disk image size is UNSET "
+              "(defaults to a ~1 TB sparse disk) — the recovery browser "
+              "shows this to the admin; set it in Docker Desktop → "
+              "Settings → Resources.")
 
 _build_lock: threading.Lock = threading.Lock()
 
