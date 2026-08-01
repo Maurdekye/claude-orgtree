@@ -25,6 +25,18 @@ Was. the superseded reading, kept verbatim-in-spirit. Omit for new entries.
 
 Retired decisions move to the `## Retired` tail with their `Was.` intact.
 
+Two conventions the template alone doesn't state:
+- **Reasoning may ride inside the Ruling paragraph** when it is inseparable
+  from the statement ("~80%, not ~95% — the headroom IS the mechanism");
+  the labeled `Why:` slot is for reasoning separable from the decision.
+  Either way the reasoning must be PRESENT — an entry whose ruling cannot
+  be re-derived is incomplete.
+- **The reverse razor**: operator and session workflow (who pushes, which
+  session holds write authority, personal deploy habits) stays OUT of the
+  register even when it is a real standing rule — it is not true for a
+  stranger cloning the repo, and recording it here would fill the register
+  with operator trivia. Working state lives in the operator's own notes.
+
 ---
 
 ## Product thesis
@@ -428,8 +440,10 @@ per node — is a swap, but do not build it"). Tier 1/2 were dropped
 built. PLAN №21/№23 (Tier-2 gating tests) are moot, not pending.
 
 ### D-030 · bypassPermissions is a grantable ceiling rank — ratified
-Ruling (primary maintainer, 2026-08-01, ratifying shipped behavior for the
-user's review): `bypassPermissions` stands as the top `PM_LEVELS` rank,
+Ruling (primary maintainer, 2026-08-01, ratifying shipped behavior; settled
+unless challenged — the user may override at any time, but this entry does
+not sit in §Open awaiting a review nothing would trigger):
+`bypassPermissions` stands as the top `PM_LEVELS` rank,
 selectable in both kiosk-ceiling dropdowns and passed to
 `--permission-mode` when deliberately granted. Every default remains
 `acceptEdits`, so nothing runs bypassed unless a human chose it — which is
