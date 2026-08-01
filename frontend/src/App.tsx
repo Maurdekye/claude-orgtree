@@ -1101,20 +1101,9 @@ function SettingsPanel({ tree, toast, close }: {
                 {kk.sandbox ? 'disk MB' : 'storage MB'}
                 <input type="number" min={kk.sandbox ? 4096 : 0} value={kkStorage}
                 onChange={(e) => setKkStorage(e.target.value)} /></label>
-              {(+kkCredits !== (kk.credits ?? 0)
-                || +kkSpend !== (kk.spend_limit ?? 0)
-                || +kkStorage !== (kk.storage_limit_mb ?? 0)) && (
-                <button className="primary" title="apply the new caps"
-                  onClick={() => saveKiosk(tree.slug, {
-                    credits: +kkCredits || 0, spend_limit: +kkSpend || 0,
-                    // sandboxed = the disk size; clamp to its 4096 MB floor
-                    storage_limit_mb: kk.sandbox
-                      ? Math.max(4096, +kkStorage || 4096) : +kkStorage || 0 })
-                    .then((r) => toast(r.freezes_cleared?.length
-                      ? [`limit raised — cleared: ${r.freezes_cleared.join(', ')}`]
-                      : ['kiosk caps saved']))
-                    .catch((e: Error) => toast([`error: ${e.message}`]))}>
-                  <CheckIcon fontSize="inherit" /></button>)}
+              {/* saved by the panel's bottom "save" — the old inline ✓ (and
+                  the ceiling's own apply button) made three save surfaces
+                  nobody could find (user report 2026-08-01) */}
             </div>
             <div className="row kiosk-url">
               <input readOnly value={kk.share_url
@@ -1190,21 +1179,6 @@ function SettingsPanel({ tree, toast, close }: {
                 onChange={(e) => setAutoRaise(e.target.checked)} />
               auto-raise the ceiling on my own over-ceiling grants
             </label>
-            <button onClick={() =>
-              saveKiosk(tree.slug, {
-                auto_raise: autoRaise,
-                max_scope: {
-                  tools: { ...ceil,
-                           mcp: ceilMcp.split(',').map((s) => s.trim())
-                             .filter(Boolean) },
-                  add_dirs: ceilDirs.filter((d) => d.path.trim()),
-                  org_visibility: ceilVis, permission_mode: ceilPm,
-                  max_tier: ceilTier || null,
-                } })
-                .then((r) => toast(r.warnings?.length ? r.warnings
-                  : ['ceiling saved — nothing needed sweeping']))
-                .catch((e: Error) => toast([`error: ${e.message}`]))}>
-              apply ceiling{ceilMcp.trim() === '' ? ' (MCP: none)' : ''}</button>
           </>
         )}
         <div className="field-label">org.md</div>
