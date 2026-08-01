@@ -259,6 +259,8 @@ export interface TreePayload {
   compact_at: number
   default_tools: ToolGrant | null
   default_visibility: string
+  /** org-wide effort fallback ("" = CLI default) — live inherit for unset nodes */
+  default_effort: string
   credit_requests: CreditRequest[]
   tiers: Record<string, number>
   audiences: AudienceGrant[]
@@ -490,6 +492,7 @@ export interface DefaultsPayload {
   auto_resume: boolean
   default_tools?: ToolGrant
   default_visibility?: string
+  default_effort?: string
   [k: string]: unknown         // defaults.json is stored org-doc-shaped
 }
 
@@ -559,6 +562,7 @@ export interface SettingsRequest {
   fable_filter_policy?: string | null
   default_tools?: Partial<ToolGrant> | null
   default_visibility?: string | null
+  default_effort?: string | null
   auto_resume?: boolean | null
   cascade_hire?: boolean | null
   cascade_alloc?: boolean | null
@@ -568,6 +572,7 @@ export interface SettingsRequest {
 export interface HireDefaultsRequest {
   default_tools?: Partial<ToolGrant> | null
   default_visibility?: string | null
+  default_effort?: string | null
   raise_ceiling?: boolean
 }
 

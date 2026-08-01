@@ -916,11 +916,14 @@ def _build_cmd(org: Org, nid: str) -> list[str]:
            "--append-system-prompt", identity_prompt(org, nid),
            "--settings", json.dumps(settings),
            "--strict-mcp-config"]
-    eff = sc.get("effort")
+    # per-agent thinking effort (user-approved 2026-07-31); an UNSET node
+    # inherits the org's default_effort LIVE at turn time (user ruling
+    # 2026-08-01: visible inherit — a default change reaches unset nodes
+    # without a rehire); "" everywhere = CLI default, no flag. Org.EFFORTS
+    # is the ONE allowlist (review P2) — a literal copy here is how a
+    # partial edit silently un-wires a tier.
+    eff = sc.get("effort") or org.d.get("default_effort")
     if eff and eff in Org.EFFORTS:
-        # per-agent thinking effort (user-approved 2026-07-31); unset = CLI
-        # default. Org.EFFORTS is the ONE allowlist (review P2) — a literal
-        # copy here is how a partial edit silently un-wires a tier.
         cmd += ["--effort", eff]
     tools = sc.get("tools", {})
     # interactive-only tools cannot work in a headless turn (there is no client

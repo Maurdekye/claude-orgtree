@@ -2571,6 +2571,9 @@ class Org:
             "compact_at": self.d.get("compact_at", 0.80),
             "default_tools": self.d.get("default_tools"),
             "default_visibility": self.d.get("default_visibility", "full"),
+            # "" = CLI default (user ruling 2026-08-01: visible inherit — an
+            # unset node effort falls back to this at TURN time, live)
+            "default_effort": self.d.get("default_effort", ""),
             "credit_requests": [r for r in self.d.get("credit_requests", [])
                                 if r["status"] == "pending"],
             "tiers": self.d["tiers"],

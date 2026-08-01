@@ -2416,7 +2416,7 @@ function DraftScopeModal({ draft, map, tree, scope, onSave, close }: DraftScopeM
         </select>
         <div className="field-label">thinking effort</div>
         <select value={effort} onChange={(e) => setEffort(e.target.value)}>
-          <option value="">CLI default</option>
+          <option value="">{`inherit — org default (${tree.default_effort || 'CLI default'})`}</option>
           <option value="low">low</option>
           <option value="medium">medium</option>
           <option value="high">high</option>
@@ -2842,7 +2842,7 @@ function NodeConfig({ node, map, tree, slug, op, toast, close }: NodeConfigProps
         <div className="field-label">thinking effort (user-approved: a deep
           setting, never a hire-row control)</div>
         <select value={effort} onChange={(e) => setEffort(e.target.value)}>
-          <option value="">CLI default</option>
+          <option value="">{`inherit — org default (${tree.default_effort || 'CLI default'})`}</option>
           <option value="low">low</option>
           <option value="medium">medium</option>
           <option value="high">high</option>
@@ -4293,7 +4293,7 @@ function EffortButton({ value, onSet }: { value: string; onSet: (lvl: string) =>
   return (
     <span className="eff-wrap" ref={wrapRef}>
       <button type="button" className={'cc-eff' + (value ? ' set' : '')}
-        title={`thinking effort — ${value || 'CLI default'}`}
+        title={`thinking effort — ${value || 'inherit (org default)'}`}
         onClick={() => setOpen((o) => !o)}>
         {value || 'effort'}
       </button>
@@ -4311,8 +4311,8 @@ function EffortSwitch({ value, onSet }: { value: string; onSet: (lvl: string) =>
   const idx = EFFORT_LEVELS.indexOf(value)
   return (
     <span className="effort-switch"
-      title={`thinking effort — ${value || 'CLI default'}; click a dot to set,`
-        + ' click the active dot to clear'}>
+      title={`thinking effort — ${value || 'inherit (org default)'}; click a`
+        + ' dot to set, click the active dot to clear back to inherit'}>
       <span className="eff-label">Effort{value ? ` (${value})` : ''}</span>
       <span className="eff-track">
         {EFFORT_LEVELS.map((l, i) => (

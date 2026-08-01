@@ -33,7 +33,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import sandbox, store, subproxy, supervisor
-from .ledger import LedgerError, USER, VIS_LEVELS, norm_dirs, norm_tools
+from .ledger import LedgerError, Org, USER, VIS_LEVELS, norm_dirs, norm_tools
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -42,7 +42,6 @@ if TYPE_CHECKING:
     # aliased: `Scope` is taken by the pydantic body model of the same name
     from starlette.types import ASGIApp, Receive, Scope as ASGIScope, Send
 
-    from .ledger import Org
     # aliased: `KioskCfg` is taken by the pydantic body model of the same name
     from .schema import DirGrant, KioskCfg as KioskDoc
 
@@ -669,6 +668,7 @@ class Settings(BaseModel):
     fable_filter_policy: str | None = None  # halt | opus (content-filter flags)
     default_tools: dict | None = None       # {bash, web, edit, subagents, mcp: []|["*"]}
     default_visibility: str | None = None   # self|team|subtree|full
+    default_effort: str | None = None       # ""=CLI default | low..max (live inherit)
     auto_resume: bool | None = None         # restart limit-frozen agents at reset+1min
     cascade_hire: bool | None = None        # hires bubble costs up the chain (§4.6)
     cascade_alloc: bool | None = None       # allocations/upgrades bubble costs up
@@ -715,6 +715,9 @@ def defaults_set(body: Settings) -> dict[str, Any]:
         d["default_tools"] = norm_tools(body.default_tools)
     if body.default_visibility in VIS_LEVELS:
         d["default_visibility"] = body.default_visibility
+    if body.default_effort is not None \
+            and body.default_effort in ("", *Org.EFFORTS):
+        d["default_effort"] = body.default_effort
     if body.auto_resume is not None:
         d["auto_resume"] = bool(body.auto_resume)
     if body.cascade_hire is not None:
@@ -793,6 +796,11 @@ def _org_settings_locked(slug: str, body: Settings) -> dict[str, Any]:
                                 else None),
             raise_ceiling=bool((org.d.get("kiosk") or {}).get("auto_raise")))
         warnings.extend(r.get("warnings") or [])
+    if body.default_effort is not None \
+            and body.default_effort in ("", *Org.EFFORTS):
+        # deliberately outside the ceiling (user cost-dial ruling): no clamp;
+        # "" = CLI default; unset-node efforts inherit this LIVE at turn time
+        org.d["default_effort"] = body.default_effort
     if body.auto_resume is not None:
         org.d["auto_resume"] = bool(body.auto_resume)
     if body.cascade_hire is not None:

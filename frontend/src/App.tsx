@@ -803,6 +803,17 @@ function DefaultsPanel({ toast, close }: { toast: ToastFn; close: () => void }) 
         <input type="number" min="50" max="95" step="1" style={{ width: '8em' }}
           value={Math.round((d.compact_at ?? 0.8) * 100)}
           onChange={(e) => set('compact_at', (+e.target.value || 80) / 100)} />
+        <div className="field-label">default thinking effort (agents without
+          their own setting inherit this, live)</div>
+        <select value={d.default_effort ?? ''}
+          onChange={(e) => set('default_effort', e.target.value)}>
+          <option value="">CLI default (no flag)</option>
+          <option value="low">low</option>
+          <option value="medium">medium</option>
+          <option value="high">high</option>
+          <option value="xhigh">xhigh</option>
+          <option value="max">max</option>
+        </select>
         <div className="field-label">fable weekly-limit policy</div>
         <select value={d.fable_limit_policy ?? 'halt'}
           onChange={(e) => set('fable_limit_policy', e.target.value)}>
@@ -844,6 +855,7 @@ function DefaultsPanel({ toast, close }: { toast: ToastFn; close: () => void }) 
               compact_at: Math.round((d.compact_at ?? 0.8) * 100),
               fable_limit_policy: d.fable_limit_policy,
               fable_filter_policy: d.fable_filter_policy,
+              default_effort: d.default_effort ?? '',
               cascade_hire: d.cascade_hire !== false,
               cascade_alloc: d.cascade_alloc !== false,
               auto_resume: !!d.auto_resume,
@@ -910,6 +922,7 @@ function SettingsPanel({ tree, toast, close }: {
   const [orgMd, setOrgMd] = useState<string | null>(null)
   const [fablePolicy, setFablePolicy] = useState(tree.fable_limit_policy ?? 'halt')
   const [filterPolicy, setFilterPolicy] = useState(tree.fable_filter_policy ?? 'halt')
+  const [defEffort, setDefEffort] = useState(tree.default_effort ?? '')
   const [cascadeHire, setCascadeHire] = useState(tree.cascade_hire !== false)
   const [cascadeAlloc, setCascadeAlloc] = useState(tree.cascade_alloc !== false)
   // kiosk permission ceiling (consensus spec): admin payload only — the
@@ -949,6 +962,19 @@ function SettingsPanel({ tree, toast, close }: {
         <input type="number" min="50" max="95" step="1" value={compactAt}
           style={{ width: '8em' }}
           onChange={(e) => setCompactAt(e.target.value)} />
+        {/* default effort (user req 2026-08-01, visible inherit): agents
+            without their own effort follow this LIVE — changing it here
+            reaches every unset agent's next turn, no rehire */}
+        <div className="field-label">default thinking effort (agents without
+          their own setting inherit this, live)</div>
+        <select value={defEffort} onChange={(e) => setDefEffort(e.target.value)}>
+          <option value="">CLI default (no flag)</option>
+          <option value="low">low</option>
+          <option value="medium">medium</option>
+          <option value="high">high</option>
+          <option value="xhigh">xhigh</option>
+          <option value="max">max</option>
+        </select>
         <div className="field-label">fable weekly-limit policy</div>
         <select value={fablePolicy} onChange={(e) => setFablePolicy(e.target.value)}>
           <option value="halt">halt (default)</option>
@@ -1114,6 +1140,7 @@ function SettingsPanel({ tree, toast, close }: {
                   compact_at: Number.isFinite(+compactAt) ? +compactAt : undefined,
                   fable_limit_policy: fablePolicy,
                   fable_filter_policy: filterPolicy,
+                  default_effort: defEffort,
                   cascade_hire: cascadeHire,
                   cascade_alloc: cascadeAlloc }),
               orgMd != null ? putOrgMd(tree.slug, orgMd) : Promise.resolve({}),

@@ -238,6 +238,9 @@ class OrgDoc(TypedDict):
     permission_mode: str
     default_tools: ToolGrant
     default_visibility: str
+    # org-wide effort fallback for nodes with no scope effort ("" = CLI
+    # default, no flag) — resolved LIVE in supervisor._build_cmd
+    default_effort: NotRequired[str]
     max_top_grant: int
     default_top_grant: int
     credit_requests: list[dict[str, Any]]
