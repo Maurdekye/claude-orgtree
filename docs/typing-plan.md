@@ -57,6 +57,8 @@ scope; check items off as they land.
 
 - [ ] pyright strict mode module-by-module.
 - [ ] `noUncheckedIndexedAccess` in tsconfig.
-- [ ] Split Canvas.tsx into modules (pure refactor, deferred from phase 2).
+- [x] Split Canvas.tsx into modules (canvas/{shared,modals,mail,desk,cards,
+      OrgCanvas} + a 21-line barrel; verbatim-move verified line-by-line,
+      minified bundle byte-count identical).
 - [ ] Shared codegen for the seam types (schema.py → types.ts) if drift ever
       bites in practice; hand-mirrored until then.

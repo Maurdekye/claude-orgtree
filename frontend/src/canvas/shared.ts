@@ -1,0 +1,348 @@
+// canvas/shared.ts — the split Canvas's leaf module: the canvas view types,
+// world-space geometry constants and helpers (layout/flatten/springs math),
+// the chat-markdown pipeline (md), and the small shared hooks. Helpers and
+// types only — this file imports no components. Extracted verbatim from
+// Canvas.tsx in the phase-3 split; all comments ride with their code.
+
+import DOMPurify from 'dompurify'
+import { marked } from 'marked'
+import { useEffect } from 'react'
+import type {
+  DirGrant, MailEntry, NodeState, NodeStatus, OpRequest, OpResult, ToolGrant,
+  TreeNode, TreePayload,
+} from '../types'
+
+export const TIER_LETTER: Record<string, string> = { haiku: 'H', sonnet: 'S', opus: 'O', fable: 'F' }
+export const TIERS = ['haiku', 'sonnet', 'opus', 'fable']
+
+// ---------------------------------------------------------------- view types
+// The canvas overlays the payload's TreeNode with synthetic cards — the eye
+// root, the draft card, live lineage bearers — plus flatten()'s plumbing.
+// One structural type covers every card; fields absent on some card kinds
+// are optional and consumers guard (or assert) exactly where the JS did.
+export interface CanvasNode {
+  id: string
+  state: NodeState | 'draft' | 'user'
+  /** null only on the eye root */
+  tier: string | null
+  children: CanvasNode[]
+  title?: string
+  /** set by flatten(): the parent card's id (null on the eye root) */
+  parent?: string | null
+  /** lineage pseudo-cards: the successor node this bearer floats beside */
+  isBearerOf?: string
+  bearerIndex?: number
+  // --- the TreeNode surface the canvas reads (synthetic cards carry a subset)
+  seat?: number
+  grant?: number
+  free?: number | null
+  model_id?: string
+  scope?: CanvasScope
+  cost_usd?: number
+  occupancy?: number | null
+  context_window?: number | null
+  charter?: string | null
+  team_charter?: string | null
+  mail_pending?: number
+  limit_locked?: boolean
+  last_status?: NodeStatus | null
+  prev_status?: NodeStatus | null
+  inflight_at?: string | null
+  last_denials?: TreeNode['last_denials']
+  turns?: TreeNode['turns']
+  frozen?: TreeNode['frozen']
+  audiences_held?: string[]
+  bearer_state?: TreeNode['bearer_state']
+  generation?: number
+  lineage?: TreeNode['lineage']
+  busy?: boolean
+  waiting?: boolean
+  responding?: boolean
+  phase?: string | null
+  queued?: number
+  last_error?: string | null
+}
+
+/** a bearer pseudo-card carries a stub scope ({tools:{}, add_dirs:[]}),
+ *  so the canvas-side scope is NodeScope with everything but the two
+ *  always-present lists optional */
+export interface CanvasScope {
+  add_dirs: DirGrant[]
+  tools: Partial<ToolGrant>
+  permission_mode?: string
+  org_visibility?: string
+  effort?: string
+}
+
+/** the app-level event feeds OrgCanvas rides (produced by App's WS handler) */
+export interface PulseEvent { node: string; event: string; t: number }
+export interface StreamEvent {
+  node: string
+  /** 'delta' | 'thinking' | 'text' | 'tool' (supervisor.py stream(),
+   *  №1167-1211) + 'steered' (api.py:1193) — open: built from untyped WS JSON */
+  kind: string
+  text: string
+  sticky?: boolean
+  t: number
+}
+export interface MailEvent { from: string; to: string; t: number }
+/** 'thinking' | 'writing' | 'tool' — open for the same WS-JSON reason */
+export interface ActivityInfo { phase: string; tool?: string }
+export type OpFn = (body: OpRequest) => Promise<OpResult>
+/** a chat chip's mail pointer — routed to whichever box holds the mail */
+export type MailLinkFn = (
+  m: { id?: string | null; to?: string | null } | null | undefined,
+) => void
+/** the webmail row: MailEntry plus the decorations MailList's callers add */
+export type MailRow = MailEntry & {
+  to?: string                   // outgoing rows
+  _wait?: boolean               // decorated inside MailList (pending group)
+  _wait0?: boolean              // org-inbox pre-split unread flag
+  _by?: string                  // org-inbox outbound attribution
+}
+
+// world-space geometry primitives
+export interface Pt { x: number; y: number }
+export interface Spring extends Pt { vx: number; vy: number }
+export interface View { x: number; y: number; z: number }
+export interface DraftState { parent: string | null; tier: string }
+/** the staged pre-hire permissions (DraftScopeModal → confirmDraft); also
+ *  the shape of the would-inherit prefill, whose tools may lack mcp */
+export interface DraftScope {
+  add_dirs: DirGrant[]
+  tools: Partial<ToolGrant>
+  org_visibility: string
+  effort?: string
+}
+export interface Pile {
+  key: string
+  parent: string
+  kind: 'a' | 'c'
+  list: string[]
+  front: string
+}
+/** a live-feed row: a StreamEvent copy or a folded thought line */
+export interface LiveRow {
+  kind: string
+  text: string
+  secs?: number
+  sticky?: boolean
+  _at?: number
+  node?: string
+  t?: number
+}
+
+// the canvas exposes its inverse-zoom to CSS; React's CSSProperties has no
+// custom-property indexer, so declare the one we use (type-only)
+declare module 'react' {
+  interface CSSProperties {
+    '--invz'?: string
+  }
+}
+// dev/demo hook (see the launchSpark effect)
+declare global {
+  interface Window { __spark?: (from: string, to: string) => void }
+}
+
+// world-space geometry (px at zoom 1). Cards are SQUARE (design ruling) and never
+// change size — the desk chat fades in OVER the card; you zoom to read it.
+export const NODE_W = 124, NODE_H = 124
+export const USER_W = 124, USER_H = 124   // the eye is a peer square (user ruling)
+const SX = 186, SY = 200, PAD = 90
+export const Z_MAX = 12       // enough for one desk to FILL the screen (124px card ≥ ~1450px)
+// LOD thresholds on zoom
+export const Z_MINI = 0.55
+export const Z_DESK = 2.1
+// dampened spring (underdamped → gentle elastic overshoot)
+export const SPRING_K = 170, SPRING_C = 15
+
+export const DRAFT = '__draft__'
+export const USER = '@user'   // actor sentinel — never collides with a node named "user"
+export const EXTERN = '@extern'      // the org-inbox audience grantor sentinel
+export const INBOX = '__orginbox__'  // the org-inbox panel's layout id
+export const INBOX_H = 64
+// the eye's fixed world x (see layout()): generous enough that even a very
+// wide left subtree (~32 leaf columns) never crosses into negative space
+export const EYE_ANCHOR_X = 6000
+
+export function withDraftTree(tree: TreePayload, draft: DraftState | null): CanvasNode {
+  const draftNode = (): CanvasNode => ({
+    id: DRAFT, title: '', tier: draft!.tier, state: 'draft', children: [],
+    seat: 0, grant: 0, free: 0,
+  })
+  const mk = (n: TreeNode): CanvasNode => ({
+    ...n,
+    children: [...n.children.map(mk),
+      ...(draft && draft.parent === n.id ? [draftNode()] : [])],
+  })
+  return {
+    id: USER, title: 'you', tier: null, state: 'user',
+    children: [...tree.roots.map(mk),
+      ...(draft && draft.parent === null ? [draftNode()] : [])],
+  }
+}
+
+export function flatten(root: CanvasNode, seats: Record<string, number>): Map<string, CanvasNode> {
+  const map = new Map<string, CanvasNode>()
+  const walk = (n: CanvasNode, parent: string | null) => {
+    map.set(n.id, { ...n, parent })
+    // live (rehired) lineage bearers surface as consultable cards beside their
+    // successor — never as org children (§8.5)
+    ;(n.lineage ?? []).forEach((b, i) => {
+      if (b.state !== 'archived') {
+        map.set(b.id, {
+          id: b.id, title: b.id, tier: b.tier, state: b.state,
+          bearer_state: b.bearer_state, generation: b.generation,
+          seat: seats?.[b.tier] ?? 0, grant: 0, free: 0, children: [],
+          lineage: [], parent, model_id: b.tier, scope: { tools: {}, add_dirs: [] },
+          isBearerOf: n.id, bearerIndex: i,
+        })
+      }
+    })
+    n.children.forEach((c) => walk(c, n.id))
+  }
+  walk(root, null)
+  return map
+}
+
+export function layout(root: CanvasNode, hidden: Map<string, string> = new Map()): Map<string, Pt> {
+  // `hidden`: piled-away retirees (and their subtrees) — they take NO layout
+  // space; their positions are assigned afterwards onto their pile's front
+  const pos = new Map<string, Pt>()
+  const vis = (n: CanvasNode) => !hidden.has(n.id)
+  const width = (n: CanvasNode): number => {
+    const kids = n.children.filter(vis)
+    return kids.length ? kids.reduce((a, c) => a + width(c), 0) : 1
+  }
+  const place = (n: CanvasNode, x0: number, depth: number) => {
+    let cx = x0
+    const kids = n.children.filter(vis)
+    kids.forEach((c) => { place(c, cx, depth + 1); cx += width(c) })
+    const x = kids.length
+      ? (pos.get(kids[0].id)!.x + pos.get(kids[kids.length - 1].id)!.x) / 2
+      : x0
+    pos.set(n.id, { x, y: depth })
+  }
+  place(root, 0, 0)
+  const out = new Map<string, Pt>()
+  for (const [id, p] of pos) out.set(id, { x: p.x * SX + PAD, y: p.y * SY + PAD })
+  // The EYE is the page's anchor (user ruling): its world position is a
+  // CONSTANT, independent of tree shape — otherwise the coordinate space
+  // hangs off the tree's left extent and the eye shifts between orgs (and on
+  // every hire that widens the tree).
+  const eye = out.get(USER)
+  if (eye) {
+    const dx = EYE_ANCHOR_X - eye.x, dy = PAD - eye.y
+    for (const p of out.values()) { p.x += dx; p.y += dy }
+  }
+  return out
+}
+
+export function sizeOf(id: string): { w: number; h: number } {
+  if (id === USER) return { w: USER_W, h: USER_H }
+  if (id === INBOX) return { w: USER_W, h: INBOX_H }
+  return { w: NODE_W, h: NODE_H }
+}
+
+export const ease = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2)
+
+export const ago = (at: string | null | undefined) => {
+  if (!at) return ''
+  const s = Math.max(0, (Date.now() - Date.parse(at)) / 1000)
+  return s < 90 ? `${Math.round(s)}s`
+    : s < 5400 ? `${Math.round(s / 60)}m` : `${Math.round(s / 3600)}h`
+}
+
+// chat markdown: gfm + hard line breaks, sanitized (agents echo web content).
+// №21: cached by text identity — every streamed token used to re-parse the
+// ENTIRE visible transcript (~8 Hz × every message × every open panel)
+const _mdCache = new Map<string, { __html: string }>()
+// №16: outside code fences and inline code, a bare <Token> parses as an HTML
+// tag — DOMPurify then strips it and keeps only the inner text, so
+// `Sync<float3>` silently became `Sync` and changed the sentence's meaning.
+// Escape `<` in plain prose; fenced/inline code is already safe.
+// Review C8: the old closed-fence regex OVER-escaped inside every block it
+// didn't recognise — an UNTERMINATED fence (every streaming code block, on
+// every delta until the closing ``` arrives), ~~~ fences, and 4-space
+// indented blocks all rendered a literal "&lt;". Line-walk instead: one
+// inCode flag, an unterminated opener stays open to EOF, and only prose
+// lines are escaped (inline `spans` protected within them).
+const escapeAngles = (src: string) => {
+  const lines = src.split('\n')
+  let fence: { ch: string; len: number } | null = null   // {ch, len} of the open fence
+  let indented = false                   // inside a 4-space indented block
+  let prevBlank = true                   // indented blocks open after a blank
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i]
+    const m = /^ {0,3}(`{3,}|~{3,})/.exec(l)
+    if (fence) {
+      // closed only by a run of the SAME char, at least as long as the opener
+      if (m && m[1][0] === fence.ch && m[1].length >= fence.len) fence = null
+      prevBlank = false
+      continue
+    }
+    if (m) {
+      fence = { ch: m[1][0], len: m[1].length }
+      prevBlank = false
+      continue
+    }
+    const blank = /^\s*$/.test(l)
+    if (indented) {
+      if (!blank && !/^(?: {4}|\t)/.test(l)) indented = false
+      else { prevBlank = blank; continue }
+    } else if (prevBlank && /^(?: {4}|\t)/.test(l) && !blank) {
+      indented = true
+      prevBlank = false
+      continue
+    }
+    prevBlank = blank
+    // prose line: escape < outside inline `spans`
+    const parts = l.split(/(`[^`\n]*`)/)
+    for (let j = 0; j < parts.length; j += 2) {
+      parts[j] = parts[j].replace(/</g, '&lt;')
+    }
+    lines[i] = parts.join('')
+  }
+  return lines.join('\n')
+}
+export const md = (text: string | null | undefined): { __html: string } => {
+  const key = text ?? ''
+  let hit = _mdCache.get(key)
+  if (hit === undefined) {
+    hit = { __html: DOMPurify.sanitize(
+      marked.parse(escapeAngles(key), { gfm: true, breaks: true, async: false })) }
+    if (_mdCache.size > 800) _mdCache.clear()   // bounded; refills on demand
+    _mdCache.set(key, hit)
+  }
+  return hit
+}
+export const smooth = (t: number) => t * t * (3 - 2 * t)
+
+// ---- connection segments (world space). kind 'c' = cubic bezier, 'l' = line.
+export type Seg =
+  | { kind: 'l'; pts: [Pt, Pt] }
+  | { kind: 'c'; pts: [Pt, Pt, Pt, Pt] }
+export const segD = (s: Seg) => (s.kind === 'l'
+  ? `M ${s.pts[0].x} ${s.pts[0].y} L ${s.pts[1].x} ${s.pts[1].y}`
+  : `M ${s.pts[0].x} ${s.pts[0].y} C ${s.pts[1].x} ${s.pts[1].y}, `
+    + `${s.pts[2].x} ${s.pts[2].y}, ${s.pts[3].x} ${s.pts[3].y}`)
+export const segPoint = (s: Seg, t: number): Pt => {
+  if (s.kind === 'l') {
+    const [p, q] = s.pts
+    return { x: p.x + (q.x - p.x) * t, y: p.y + (q.y - p.y) * t }
+  }
+  const [p0, p1, p2, p3] = s.pts, u = 1 - t
+  return {
+    x: u * u * u * p0.x + 3 * u * u * t * p1.x + 3 * u * t * t * p2.x + t * t * t * p3.x,
+    y: u * u * u * p0.y + 3 * u * u * t * p1.y + 3 * u * t * t * p2.y + t * t * t * p3.y,
+  }
+}
+
+// Escape closes any overlay panel (they had no keyboard exit at all)
+export function useEsc(close: () => void) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [close])
+}

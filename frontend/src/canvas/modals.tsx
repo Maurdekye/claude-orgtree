@@ -1,0 +1,725 @@
+// canvas/modals.tsx — the config modals: the in-page ConfirmModal, the org
+// agent-hire defaults panel (UserConfig), the pre-hire permissions modal
+// (DraftScopeModal), the per-node ⚙ config (NodeConfig) with the shared MCP
+// checklist, and the retired/crowd pile picker. Extracted verbatim from
+// Canvas.tsx in the phase-3 split.
+
+import { useEffect, useState } from 'react'
+import type { ReactNode } from 'react'
+import { createPortal } from 'react-dom'
+import type {
+  ChatInit, DirGrant, ToastFn, ToolGrant, TreePayload,
+} from '../types'
+import {
+  dissolveAll, getChat, getMcpServers, saveHireDefaults, saveScope,
+  saveSettings,
+} from '../api'
+import { pickFolder } from '../picker'
+import {
+  CloseIcon, DeleteIcon, FolderIcon, LayersIcon, SettingsIcon,
+} from '../icons'
+import { TIER_LETTER, USER, useEsc } from './shared'
+import type { CanvasNode, DraftScope, DraftState, OpFn, Pile } from './shared'
+
+export interface ConfirmModalProps {
+  title: ReactNode
+  body?: ReactNode
+  confirmLabel: ReactNode
+  onConfirm: () => void
+  close: () => void
+}
+
+// in-page confirmation (user ruling: never a native OS dialog)
+export function ConfirmModal({ title, body, confirmLabel, onConfirm, close }: ConfirmModalProps) {
+  useEsc(close)
+  return (
+    <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
+      <div className="settings confirm-box" onClick={(e) => e.stopPropagation()}>
+        <h3>{title}</h3>
+        {body && <div className="confirm-body">{body}</div>}
+        <div className="row">
+          <button className="danger solid"
+            onClick={() => { close(); onConfirm() }}>{confirmLabel}</button>
+          <button onClick={close}>cancel</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+// ⚙ on the overseer — the org's agent-hire defaults, symmetric with each
+// agent's own config modal. Granted to hires that don't state tools: top-level
+// agents get exactly this; deeper hires get the ∩ with the superior's
+// capability (clamped server-side at hire time). "*" = every registered MCP
+// server, present and future.
+interface UserConfigProps {
+  tree: TreePayload
+  slug: string
+  toast: ToastFn
+  close: () => void
+}
+
+export function UserConfig({ tree, slug, toast, close }: UserConfigProps) {
+  useEsc(close)
+  // visitors configure the HIRE DEFAULTS too (user ruling 2026-07-31),
+  // ceiling-clamped server-side; the org folder holdings stay admin-only
+  // (host paths — the public payload only carries basenames anyway)
+  const pub = !!tree.public
+  const [asking, setAsking] = useState(false)   // dissolve-all confirmation
+  const [defTools, setDefTools] = useState<ToolGrant>({
+    bash: true, web: true, edit: true, subagents: true,
+    ...(tree.default_tools ?? {}),
+    mcp: [...(tree.default_tools?.mcp ?? ['*'])],
+  })
+  const [servers, setServers] = useState<string[]>([])
+  const [sandboxMcp, setSandboxMcp] = useState(false)
+  const [vis, setVis] = useState(tree.default_visibility ?? 'full')
+  // the org's folder holdings (workspace excluded — it is permanent RW).
+  // These double as the folder defaults for every hire.
+  const [orgDirs, setOrgDirs] = useState<DirGrant[]>(
+    (tree.dirs ?? []).filter((d) => d.path !== tree.workspace).map((d) => ({ ...d })))
+  const [newPath, setNewPath] = useState('')
+  useEffect(() => {
+    getMcpServers().then((r) => {
+      setServers(r.servers ?? []); setSandboxMcp(!!r.sandbox_mcp)
+    }).catch(() => {})
+  }, [])
+  const allMcp = defTools.mcp.includes('*')
+  return (
+    <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
+      <div className="settings" onClick={(e) => e.stopPropagation()}>
+        <h3><SettingsIcon fontSize="inherit" /> you <span className="dim">· configuration</span></h3>
+        <div className="row">
+          <button className="danger" onClick={() => setAsking(true)}>
+            dissolve all agents</button>
+        </div>
+        {/* folder access FIRST — same order as the per-agent config (user ruling) */}
+        {!pub && <><div className="field-label">folder access</div>
+        <div className="dirlist">
+          {tree.workspace && (
+            <div className="dirrow">
+              <span className="chip mono grow">{tree.workspace}</span>
+              <span className="modebtn rw"
+                title="the org workspace — permanent, always read/write">RW</span>
+            </div>
+          )}
+          {orgDirs.map((d, i) => (
+            <div className="dirrow" key={d.path}>
+              <span className="chip mono grow">{d.path}</span>
+              <button type="button" className={'modebtn ' + d.mode}
+                title="toggle read/write vs read-only"
+                onClick={() => setOrgDirs(orgDirs.map((x, j) =>
+                  j === i ? { ...x, mode: x.mode === 'rw' ? 'ro' : 'rw' } : x))}>
+                {d.mode === 'rw' ? 'RW' : 'RO'}
+              </button>
+              <button type="button" className="iconbtn"
+                title="remove from the org (revokes everywhere)"
+                onClick={() => setOrgDirs(orgDirs.filter((_, j) => j !== i))}><CloseIcon fontSize="inherit" /></button>
+            </div>
+          ))}
+          <div className="dirrow">
+            <input placeholder="add an absolute path"
+              value={newPath} onChange={(e) => setNewPath(e.target.value)} />
+            <button type="button" className="iconbtn" title="browse for a folder"
+              onClick={() => pickFolder().then((r) => {
+                if (r.path) setOrgDirs([...orgDirs, { path: r.path, mode: 'rw' }])
+              }).catch(() => {})}><FolderIcon fontSize="inherit" /></button>
+            <button type="button" className="addrow" onClick={() => {
+              if (newPath.trim()) {
+                setOrgDirs([...orgDirs, { path: newPath.trim(), mode: 'rw' }])
+                setNewPath('')
+              }
+            }}>add</button>
+          </div>
+        </div></>}
+        <div className="field-label">tools</div>
+        {TOOL_LABELS.map(([k, label]) => (
+          <label className="checkline" key={k}>
+            <input type="checkbox" checked={!!defTools[k]}
+              onChange={(e) => setDefTools({ ...defTools, [k]: e.target.checked })} />
+            {label}
+          </label>
+        ))}
+        <div className="field-label">MCP servers</div>
+        <label className="checkline">
+          <input type="checkbox" checked={allMcp}
+            onChange={(e) => setDefTools({
+              ...defTools, mcp: e.target.checked ? ['*'] : [...servers] })} />
+          all registered servers (current and future)
+        </label>
+        {!allMcp && !pub && <McpChecklist servers={servers} sandboxMcp={sandboxMcp}
+          sandboxed={!!tree.sandboxed}
+          checked={(s) => defTools.mcp.includes(s)}
+          onToggle={(s, on) => setDefTools({
+            ...defTools,
+            mcp: on ? [...defTools.mcp, s] : defTools.mcp.filter((x) => x !== s),
+          })} />}
+        {!allMcp && pub && <div className="dim">
+          individual server names are admin-side — off means none</div>}
+        <div className="field-label">org-structure visibility</div>
+        <select value={vis} onChange={(e) => setVis(e.target.value)}>
+          {VIS_OPTIONS.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
+        </select>
+        <div className="row">
+          <button className="primary" onClick={() =>
+            // defaults ride their own visitor-open, ceiling-clamped endpoint;
+            // the org folder holdings stay on the admin-only /settings
+            Promise.all([
+              saveHireDefaults(slug, { default_tools: defTools,
+                                       default_visibility: vis }),
+              pub ? Promise.resolve<{ warnings?: string[] }>({})
+                : saveSettings(slug, { org_dirs: orgDirs }),
+            ])
+              .then(([r, r2]) => {
+                const warns = [...(r.warnings ?? []), ...(r2.warnings ?? [])]
+                if (r?.bridge?.raise_ceiling) {
+                  toast(warns.length ? warns
+                    : ['clamped to the kiosk permission ceiling'],
+                  { label: 'raise ceiling & apply',
+                    fn: () => saveHireDefaults(slug,
+                      { default_tools: defTools, default_visibility: vis,
+                        raise_ceiling: true })
+                      .then((r3) => toast(r3.warnings?.length ? r3.warnings
+                        : ['ceiling raised — defaults applied']))
+                      .catch((e: Error) => toast([`error: ${e.message}`])) })
+                } else toast(warns)
+                close()
+              })
+              .catch((e: Error) => toast([`error: ${e.message}`]))}>save</button>
+          <button onClick={close}>cancel</button>
+        </div>
+      </div>
+      {asking && (
+        <ConfirmModal title="dissolve ALL agents?"
+          body="Every agent in the entire org is retired at once. Context is kept; rehire brings any of them back."
+          confirmLabel="dissolve all"
+          onConfirm={() => dissolveAll(slug)
+            .then((r) => { toast([`dissolved ${r.nodes} node(s), freed ${r.freed} credits`]); close() })
+            .catch((e: Error) => toast([`error: ${e.message}`]))}
+          close={() => setAsking(false)} />
+      )}
+    </div>
+  )
+}
+// Pre-hire permissions (user spec): the same scope surface as the per-agent
+// ⚙ panel — folders with RW/RO, tool switches, MCP grants, org visibility —
+// but staged locally and applied WITH the hire, so nothing needs adjusting
+// after the agent exists. Prefilled from what the hire would inherit anyway.
+interface DraftScopeModalProps {
+  draft: DraftState
+  map: Map<string, CanvasNode>
+  tree: TreePayload
+  scope: DraftScope | null
+  onSave: (scope: DraftScope) => void
+  close: () => void
+}
+
+export function DraftScopeModal({ draft, map, tree, scope, onSave, close }: DraftScopeModalProps) {
+  useEsc(close)
+  const parent = draft.parent ? map.get(draft.parent) : null
+  const inherited = (): DraftScope => ({
+    add_dirs: (parent ? parent.scope?.add_dirs : tree.dirs) ?? [],
+    tools: parent?.scope?.tools
+      ?? tree.default_tools
+      ?? { bash: true, web: true, edit: true, subagents: true, mcp: ['*'] },
+    org_visibility: parent?.scope?.org_visibility
+      ?? tree.default_visibility ?? 'full',
+  })
+  const base = scope ?? inherited()
+  const [dirs, setDirs] = useState<DirGrant[]>(base.add_dirs.map((d) => ({ ...d })))
+  const [tools, setTools] = useState<Partial<ToolGrant> & { mcp: string[] }>(
+    { ...base.tools, mcp: [...(base.tools.mcp ?? [])] })
+  const [vis, setVis] = useState(base.org_visibility)
+  const [effort, setEffort] = useState(base.effort ?? '')
+  const [newPath, setNewPath] = useState('')
+  const [servers, setServers] = useState<string[]>([])
+  const [sandboxMcp, setSandboxMcp] = useState(false)
+  useEffect(() => {
+    getMcpServers().then((r) => {
+      setServers(r.servers ?? []); setSandboxMcp(!!r.sandbox_mcp)
+    }).catch(() => {})
+  }, [])
+  const allMcp = tools.mcp.includes('*')
+  // portal to <body>: the draft card lives inside the world transform, where
+  // position:fixed would resolve against the SCALED ancestor (giant modal)
+  return createPortal(
+    <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}
+      onWheel={(e) => e.stopPropagation()}>
+      <div className="settings" onClick={(e) => e.stopPropagation()}>
+        <h3><SettingsIcon fontSize="inherit" /> permissions <span className="dim">
+          · applied with the hire</span></h3>
+        <div className="field-label">folder access</div>
+        <div className="dirlist">
+          {dirs.map((d, i) => (
+            <div className="dirrow" key={d.path}>
+              <span className="chip mono grow">{d.path}</span>
+              <button type="button" className={'modebtn ' + d.mode}
+                title="toggle read/write vs read-only"
+                onClick={() => setDirs(dirs.map((x, j) =>
+                  j === i ? { ...x, mode: x.mode === 'rw' ? 'ro' : 'rw' } : x))}>
+                {d.mode === 'rw' ? 'RW' : 'RO'}
+              </button>
+              <button type="button" className="iconbtn"
+                onClick={() => setDirs(dirs.filter((_, j) => j !== i))}>
+                <CloseIcon fontSize="inherit" /></button>
+            </div>
+          ))}
+          <div className="dirrow">
+            <input placeholder="add an absolute path"
+              value={newPath} onChange={(e) => setNewPath(e.target.value)} />
+            <button type="button" className="iconbtn" title="browse for a folder"
+              onClick={() => pickFolder().then((r) => {
+                if (r.path) setDirs([...dirs, { path: r.path, mode: 'rw' }])
+              }).catch(() => {})}><FolderIcon fontSize="inherit" /></button>
+            <button type="button" className="addrow" onClick={() => {
+              if (newPath.trim()) {
+                setDirs([...dirs, { path: newPath.trim(), mode: 'rw' }])
+                setNewPath('')
+              }
+            }}>add</button>
+          </div>
+        </div>
+        <div className="field-label">tools</div>
+        {TOOL_LABELS.map(([k, label]) => (
+          <label className="checkline" key={k}>
+            <input type="checkbox" checked={!!tools[k]}
+              onChange={(e) => setTools({ ...tools, [k]: e.target.checked })} />
+            {label}
+          </label>
+        ))}
+        <div className="field-label">MCP servers</div>
+        <label className="checkline">
+          <input type="checkbox" checked={allMcp}
+            onChange={(e) => setTools({
+              ...tools, mcp: e.target.checked ? ['*'] : [...servers] })} />
+          all registered servers (current and future)
+        </label>
+        {!allMcp && <McpChecklist servers={servers} sandboxMcp={sandboxMcp}
+          sandboxed={!!tree.sandboxed}
+          checked={(s) => tools.mcp.includes(s)}
+          onToggle={(s, on) => setTools({
+            ...tools,
+            mcp: on ? [...tools.mcp, s] : tools.mcp.filter((x) => x !== s),
+          })} />}
+        <div className="field-label">org-structure visibility</div>
+        <select value={vis} onChange={(e) => setVis(e.target.value)}>
+          {VIS_OPTIONS.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
+        </select>
+        <div className="field-label">thinking effort</div>
+        <select value={effort} onChange={(e) => setEffort(e.target.value)}>
+          <option value="">{`inherit — org default (${tree.default_effort || 'CLI default'})`}</option>
+          <option value="low">low</option>
+          <option value="medium">medium</option>
+          <option value="high">high</option>
+          <option value="xhigh">xhigh</option>
+          <option value="max">max</option>
+        </select>
+        <div className="hint">
+          Grants clamp to what the parent holds (№30) — anything beyond its
+          capability is trimmed at hire with a warning.
+        </div>
+        <div className="row">
+          <button className="primary" onClick={() =>
+            onSave({ add_dirs: dirs, tools, org_visibility: vis,
+              ...(effort ? { effort } : {}) })}>apply</button>
+          <button onClick={close}>cancel</button>
+        </div>
+      </div>
+    </div>,
+    document.body
+  )
+}
+// ------------------------------------------------------------ node ⚙ config
+// MCP server checklist shared by the org / per-agent / pre-hire scope panels.
+// In a SANDBOXED org, ALL servers grey out (user ruling): they are points of
+// external contact the sandbox is explicitly designed to restrict. The
+// experimental ORGTREE_SANDBOX_MCP env var re-enables them (url + portable
+// stdio passthrough, no full support).
+interface McpChecklistProps {
+  servers: string[]
+  sandboxed: boolean
+  sandboxMcp: boolean
+  checked: (s: string) => boolean
+  onToggle: (s: string, on: boolean) => void
+}
+
+function McpChecklist({ servers, sandboxed, sandboxMcp, checked, onToggle }: McpChecklistProps) {
+  const dead = sandboxed && !sandboxMcp
+  return (
+    <>
+      {dead && (
+        <div className="hint">
+          sandboxed org — MCP servers are external contact points the sandbox
+          restricts, so none reach its agents (the ORGTREE_SANDBOX_MCP env var
+          enables URL/portable servers experimentally)
+        </div>
+      )}
+      {servers.map((s) => (
+        <label className={'checkline' + (dead ? ' dead' : '')} key={s}
+          title={dead ? 'unavailable in a sandboxed org' : undefined}>
+          <input type="checkbox" disabled={dead} checked={checked(s)}
+            onChange={(e) => onToggle(s, e.target.checked)} />
+          <span className="mono">{s}</span>
+        </label>
+      ))}
+    </>
+  )
+}
+
+const VIS_OPTIONS = [
+  ['self', 'self'],
+  ['team', 'team'],
+  ['subtree', 'subtree'],
+  ['full', 'full (default)'],
+] as const
+
+const TOOL_LABELS = [
+  ['bash', 'terminal (Bash)'],
+  ['web', 'web browsing (search + fetch)'],
+  ['edit', 'file editing (Write / Edit / notebooks)'],
+  ['subagents', 'ephemeral subagents (Task / Agent tool)'],
+] as const
+interface NodeConfigProps {
+  node: CanvasNode
+  map: Map<string, CanvasNode>
+  tree: TreePayload
+  slug: string
+  op: OpFn
+  toast: ToastFn
+  close: () => void
+}
+
+export function NodeConfig({ node, map, tree, slug, op, toast, close }: NodeConfigProps) {
+  useEsc(close)
+  const [asking, setAsking] = useState<'delete' | 'dissolve' | null>(null)   // null | 'delete' | 'dissolve'
+  // every card that opens a config panel carries a scope (real nodes and
+  // bearer stubs both) — only the eye root and drafts lack one
+  const scope = node.scope!
+  const [dirs, setDirs] = useState<DirGrant[]>(scope.add_dirs.map((d) => ({ ...d })))
+  const [tools, setTools] = useState<ToolGrant>({
+    bash: true, web: true, edit: true, subagents: true,
+    ...(scope.tools ?? {}),
+    mcp: [...(scope.tools?.mcp ?? [])],
+  })
+  const [vis, setVis] = useState(scope.org_visibility ?? 'full')
+  const [charter, setCharter] = useState(node.charter ?? '')
+  const [teamCharter, setTeamCharter] = useState(node.team_charter ?? '')
+  const [model, setModel] = useState(node.tier!)
+  const [effort, setEffort] = useState(scope.effort ?? '')
+  const [newPath, setNewPath] = useState('')
+  const [servers, setServers] = useState<string[]>([])
+  const [sandboxMcp, setSandboxMcp] = useState(false)
+  const [initInfo, setInitInfo] = useState<ChatInit | null>(null)   // №14: the CLI's own resolution
+  useEffect(() => {
+    getMcpServers().then((r) => {
+      setServers(r.servers ?? []); setSandboxMcp(!!r.sandbox_mcp)
+    }).catch(() => {})
+    getChat(slug, node.id, 1).then((c) => setInitInfo(c.init ?? null))
+      .catch(() => {})
+  }, [slug, node.id])
+  const parent = map.get(node.id)?.parent
+  const parentNode = parent && parent !== USER ? map.get(parent) : null
+  const parentTools = parentNode?.scope?.tools ?? null   // null = the user: everything
+  const parentDirs = parentNode
+    ? (parentNode.scope?.add_dirs ?? [])
+    : (tree.dirs ?? []).map((d) => ({ ...d }))   // org holdings carry modes now
+  const addable = parentDirs.filter((pd) => !dirs.some((d) => d.path === pd.path))
+  const parentHolds = (k: 'bash' | 'web' | 'edit' | 'subagents') =>
+    parentTools == null || parentTools[k] !== false
+  // "*" = every registered server, present and future
+  const parentHoldsMcp = (s: string) => parentTools == null
+    || (parentTools.mcp ?? []).includes('*') || (parentTools.mcp ?? []).includes(s)
+  const holdsAllMcp = tools.mcp.includes('*')
+  return (
+    // pointerdown must not reach the viewport: its pan pointer-CAPTURE retargets
+    // the click, so backdrop-close and every button in here silently broke
+    <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
+      <div className="settings cfg" onClick={(e) => e.stopPropagation()}>
+        <h3><SettingsIcon fontSize="inherit" /> {node.id} <span className="dim">· {node.tier} · configuration</span></h3>
+
+        <div className="row">
+          {node.state === 'live' && !node.children.some((c) => c.state !== 'archived') &&
+            <button className="danger" onClick={() =>
+              op({ op: 'retire', node: node.id }).then(close).catch(() => {})}>
+              retire · {node.seat! + node.grant!}</button>}
+          {node.state === 'live' && node.children.some((c) => c.state !== 'archived') &&
+            <button className="danger" onClick={() => setAsking('dissolve')}>
+              dissolve subtree · {node.seat! + node.grant!}</button>}
+          {node.state === 'archived' &&
+            <button className="primary" onClick={() =>
+              op({ op: 'rehire', node: node.id }).then(close).catch(() => {})}>
+              rehire (context intact)</button>}
+          <span style={{ flex: 1 }} />
+          <button className="danger delete"
+            onClick={() => setAsking('delete')}><DeleteIcon fontSize="inherit" /> delete permanently</button>
+        </div>
+
+        <div className="field-label">folder access</div>
+        <div className="dirlist">
+          {dirs.map((d, i) => (
+            <div className="dirrow" key={d.path}>
+              <span className="chip mono grow">{d.path}</span>
+              <button type="button" className={'modebtn ' + d.mode}
+                title="toggle read/write vs read-only"
+                onClick={() => setDirs(dirs.map((x, j) =>
+                  j === i ? { ...x, mode: x.mode === 'rw' ? 'ro' : 'rw' } : x))}>
+                {d.mode === 'rw' ? 'RW' : 'RO'}
+              </button>
+              <button type="button" className="iconbtn" title="revoke"
+                onClick={() => setDirs(dirs.filter((_, j) => j !== i))}><CloseIcon fontSize="inherit" /></button>
+            </div>
+          ))}
+          {addable.length > 0 && (
+            <div className="dirrow">
+              <select value="" onChange={(e) => {
+                const pd = addable.find((x) => x.path === e.target.value)
+                if (pd) setDirs([...dirs, { ...pd }])
+              }}>
+                <option value="" disabled>+ grant a folder the {parent && parent !== USER ? 'parent holds' : 'org holds'}…</option>
+                {addable.map((pd) => <option key={pd.path} value={pd.path}>{pd.path} ({pd.mode})</option>)}
+              </select>
+            </div>
+          )}
+          {(!parent || parent === USER) && (
+            <div className="dirrow">
+              <input placeholder="or any absolute path (top-level: you grant freely)"
+                value={newPath} onChange={(e) => setNewPath(e.target.value)} />
+              <button type="button" className="iconbtn" title="browse for a folder"
+                onClick={() => pickFolder().then((r) => {
+                  if (r.path) setDirs([...dirs, { path: r.path, mode: 'rw' }])
+                }).catch(() => {})}><FolderIcon fontSize="inherit" /></button>
+              <button type="button" className="addrow" onClick={() => {
+                if (newPath.trim()) { setDirs([...dirs, { path: newPath.trim(), mode: 'rw' }]); setNewPath('') }
+              }}>add</button>
+            </div>
+          )}
+        </div>
+
+        <div className="field-label">tools</div>
+        {TOOL_LABELS.map(([k, label]) => (
+          <label className="checkline" key={k}>
+            <input type="checkbox" checked={tools[k] && parentHolds(k)}
+              disabled={!parentHolds(k)}
+              onChange={(e) => setTools({ ...tools, [k]: e.target.checked })} />
+            {label}
+            {!parentHolds(k) && <span className="dim"> — parent doesn't hold it</span>}
+          </label>
+        ))}
+
+        <div className="field-label">MCP servers (from your global registry)</div>
+        {servers.length === 0 && <div className="hint">none registered</div>}
+        {!!tree.sandboxed && !sandboxMcp && servers.length > 0 && (
+          <div className="hint">
+            sandboxed org — MCP servers are external contact points the sandbox
+            restricts, so none reach its agents (the ORGTREE_SANDBOX_MCP env
+            var enables URL/portable servers experimentally)
+          </div>
+        )}
+        {servers.map((s) => {
+          const dead = !!tree.sandboxed && !sandboxMcp
+          return (
+            <label className={'checkline' + (dead ? ' dead' : '')} key={s}
+              title={dead ? 'unavailable in a sandboxed org' : undefined}>
+              <input type="checkbox"
+                checked={(holdsAllMcp || tools.mcp.includes(s)) && parentHoldsMcp(s)}
+                disabled={!parentHoldsMcp(s) || dead}
+                onChange={(e) => setTools({
+                  ...tools,
+                  // unchecking under "*" materializes the concrete server list
+                  mcp: e.target.checked
+                    ? (holdsAllMcp ? tools.mcp : [...tools.mcp, s])
+                    : (holdsAllMcp ? servers.filter((x) => x !== s)
+                                   : tools.mcp.filter((x) => x !== s)),
+                })} />
+              <span className="mono">{s}</span>
+              {!parentHoldsMcp(s) && <span className="dim"> — parent doesn't hold it</span>}
+            </label>
+          )
+        })}
+
+        <div className="field-label">model (switchable on the fly — context
+          survives; cheaper frees the seat difference to the agent, pricier
+          bubbles any shortfall up the chain)</div>
+        <select value={model} onChange={(e) => setModel(e.target.value)}>
+          {/* kiosk tier cap: options above it vanish — but the node's OWN
+              tier stays listed so a pre-cap agent still shows truthfully */}
+          {['haiku', 'sonnet', 'opus', 'fable'].filter((t) => {
+            const rank: Record<string, number> = { haiku: 1, sonnet: 3, opus: 5, fable: 10 }
+            const cap = tree.kiosk?.max_tier
+            return t === node.tier || !cap || rank[t] <= (rank[cap] ?? Infinity)
+          }).map((t) => (
+            <option key={t} value={t}>
+              {t} · seat {({ haiku: 1, sonnet: 3, opus: 5, fable: 10 } as Record<string, number>)[t]}
+            </option>
+          ))}
+        </select>
+
+        <div className="field-label">org-structure visibility</div>
+        <select value={vis} onChange={(e) => setVis(e.target.value)}>
+          {VIS_OPTIONS.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
+        </select>
+
+        <div className="field-label">thinking effort (user-approved: a deep
+          setting, never a hire-row control)</div>
+        <select value={effort} onChange={(e) => setEffort(e.target.value)}>
+          <option value="">{`inherit — org default (${tree.default_effort || 'CLI default'})`}</option>
+          <option value="low">low</option>
+          <option value="medium">medium</option>
+          <option value="high">high</option>
+          <option value="xhigh">xhigh</option>
+          <option value="max">max</option>
+        </select>
+
+        <div className="field-label">charter</div>
+        <textarea rows={10} className="charterbox" value={charter}
+          onChange={(e) => setCharter(e.target.value)} />
+        <div className="field-label">team charter</div>
+        <textarea rows={10} className="charterbox" value={teamCharter}
+          onChange={(e) => setTeamCharter(e.target.value)} />
+        {initInfo && (
+          <>
+            <div className="field-label">this turn, as the CLI resolved it (№14)</div>
+            <div className="initblock dim">
+              <div>model {initInfo.model ?? '?'} · {initInfo.permissionMode ?? '?'}
+                {' · '}{initInfo.tools ?? '?'} tools</div>
+              {(initInfo.mcp_servers ?? []).map((s) => (
+                <div key={s.name}>
+                  <span className={'mcpdot ' + (s.status === 'connected'
+                    ? 'ok' : 'bad')} /> {s.name} · {s.status}
+                </div>))}
+            </div>
+          </>
+        )}
+        <div className="row">
+          <button className="primary" onClick={() =>
+            (model !== node.tier
+              ? op({ op: 'switch_model', node: node.id, tier: model })
+              : Promise.resolve())
+              .then(() => saveScope(slug, node.id,
+                { add_dirs: dirs, tools, org_visibility: vis,
+                  charter, team_charter: teamCharter, effort }))
+              .then((r) => {
+                if (r?.bridge?.raise_ceiling) {
+                  // one-action bridge (ceiling spec §1): same save, flag set
+                  toast(r.warnings?.length ? r.warnings
+                    : ['clamped to the kiosk permission ceiling'],
+                  { label: 'raise ceiling & apply',
+                    fn: () => saveScope(slug, node.id,
+                      { add_dirs: dirs, tools, org_visibility: vis,
+                        charter, team_charter: teamCharter, effort,
+                        raise_ceiling: true })
+                      .then((r2) => toast(r2.warnings?.length ? r2.warnings
+                        : ['ceiling raised — applied']))
+                      .catch((e: Error) => toast([`error: ${e.message}`])) })
+                } else toast(r.warnings)
+                close()
+              })
+              .catch((e: Error) => toast([`error: ${e.message}`]))}>save</button>
+          <button onClick={close}>cancel</button>
+        </div>
+      </div>
+      {asking === 'dissolve' && (
+        <ConfirmModal title={`dissolve ${node.id}?`}
+          body="Its entire suborganization is retired with it. Context is kept; rehire brings nodes back."
+          confirmLabel="dissolve"
+          onConfirm={() => op({ op: 'dissolve', node: node.id }).then(close).catch(() => {})}
+          close={() => setAsking(null)} />
+      )}
+      {asking === 'delete' && (() => {
+        const count = (function c(n: CanvasNode): number {
+          return n.children.reduce((a, k) => a + 1 + c(k), 0)
+        })(node)
+        const gens = (node.lineage ?? []).length
+        return <ConfirmModal title={`permanently delete ${node.id}?`}
+          body={'Erased from the organization — seats, records, mail and lineage'
+            + (count ? `, plus ${count} descendant(s)` : '')
+            + (gens ? ` and ${gens} prior generation(s)` : '')
+            + '. Session transcripts remain on disk. This cannot be undone.'}
+          confirmLabel="delete permanently"
+          onConfirm={() => op({ op: 'delete', node: node.id }).then(close).catch(() => {})}
+          close={() => setAsking(null)} />
+      })()}
+    </div>
+  )
+}
+// the RETIRED-PILE menu (user spec): pick which retiree sits in front — the
+// front card is the one you zoom in on, message, read and can rehire; the
+// rest wait stacked beneath it. The current front is highlighted.
+interface PilePickerProps {
+  pile: Pile
+  map: Map<string, CanvasNode>
+  onPick: (nid: string) => void
+  close: () => void
+  /** optional: the delete-all row only renders when an op channel exists */
+  op?: OpFn
+  toast?: ToastFn
+}
+
+export function PilePicker({ pile, map, onPick, close, op, toast }: PilePickerProps) {
+  useEsc(close)
+  const crowd = pile.kind === 'c'
+  const [asking, setAsking] = useState(false)
+  // "delete all" (user spec 2026-07-31): clear the whole retired pile at
+  // once — permanent, so it sits behind the same confirm as any delete.
+  // Sequential ops; each failure is already toasted by op(), the summary
+  // counts what actually went through.
+  const wipeAll = async () => {
+    let ok = 0
+    for (const id of pile.list) {
+      try {
+        await op!({ op: 'delete', node: id })   // reachable only via the op-gated row
+        ok++
+      } catch { /* op() toasted it */ }
+    }
+    toast?.([`${ok} of ${pile.list.length} archived agent(s) permanently deleted`])
+    close()
+  }
+  return (
+    <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
+      <div className="settings pile-picker" onClick={(e) => e.stopPropagation()}>
+        <h3><LayersIcon fontSize="inherit" /> {crowd ? 'team stack' : 'retired pile'}
+          <span className="dim"> · {pile.list.length} agents</span></h3>
+        <div className="hint">
+          {crowd
+            ? 'A wide team stacks its leaf agents into one place. The one in '
+              + 'front is the one you zoom in on and message; the rest keep '
+              + 'working beneath. Pick one to bring it forward.'
+            : 'The retiree in front is the one you zoom in on, read, message '
+              + 'and can rehire; the rest wait beneath. Pick one to bring it '
+              + 'forward.'}
+        </div>
+        {[...pile.list].reverse().map((id) => {
+          const n = map.get(id)
+          if (!n) return null
+          return (
+            <button key={id} className={'pile-row' + (id === pile.front ? ' on' : '')}
+              onClick={() => onPick(id)}>
+              <span className={'tier t-' + n.tier}>{TIER_LETTER[n.tier!] ?? '?'}</span>
+              <span className="pile-name">{id}</span>
+              {n.bearer_state && <span className="badge dim">{n.bearer_state}</span>}
+              {n.busy && <span className="badge">working</span>}
+              {n.state === 'unrecoverable' && <span className="badge dim">unrecoverable</span>}
+              {(n.mail_pending ?? 0) > 0 && <span className="badge free">{n.mail_pending} mail</span>}
+              {id === pile.front && <span className="badge free">in front</span>}
+            </button>
+          )
+        })}
+        {!crowd && op && (
+          <div className="row">
+            <span className="spacer" />
+            <button className="danger" onClick={() => setAsking(true)}>
+              <DeleteIcon fontSize="inherit" /> delete all {pile.list.length}
+            </button>
+          </div>
+        )}
+        {asking && (
+          <ConfirmModal
+            title={`permanently delete all ${pile.list.length} archived agents?`}
+            body="Every agent in this pile is removed for good, along with each one's knowledge-bearer lineage — no rehire, no consulting, records erased from the org. Transcript files on disk are kept. This cannot be undone."
+            confirmLabel="delete all"
+            onConfirm={wipeAll}
+            close={() => setAsking(false)} />
+        )}
+      </div>
+    </div>
+  )
+}
