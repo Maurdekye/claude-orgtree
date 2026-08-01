@@ -99,7 +99,7 @@ export function DiskBrowser({ slug, isPublic, toast, close, initialMode }: {
         const bad = r.results.filter((x) => !x.ok)
         const ok = r.results.length - bad.length
         toast([`deleted ${ok} item(s)` + (bad.length
-          ? ` · ${bad.length} refused (${bad[0].error})` : '')])
+          ? ` · ${bad.length} refused (${bad[0]!.error})` : '')])
         setSel(new Map())
         refresh()
       })

@@ -111,7 +111,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
         out.set(key, {
           key, parent: n.id, kind: 'a',
           list: arch.map((c) => c.id),
-          front: arch.some((c) => c.id === want) ? want : arch[arch.length - 1].id,
+          front: arch.some((c) => c.id === want) ? want! : arch[arch.length - 1]!.id, // nUIA: some() hit ⇒ want defined; length>=2 checked
         })
       }
       // CROWD pile (user spec 2026-07-31): a WIDE team — more than 8 active
@@ -128,8 +128,8 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
           out.set(key, {
             key, parent: n.id, kind: 'c',
             list: leaves.map((c) => c.id),
-            front: leaves.some((c) => c.id === want) ? want
-              : leaves[leaves.length - 1].id,
+            front: leaves.some((c) => c.id === want) ? want! // nUIA: some() hit ⇒ want defined
+              : leaves[leaves.length - 1]!.id,               // nUIA: leaves.length >= 2 checked
           })
         }
       }
@@ -305,7 +305,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
     }
     for (const k of prev) {
       if (!cur.has(k)) {
-        const [grantor, grantee] = k.split('→')
+        const [grantor, grantee] = k.split('→') as [string, string] // nUIA: keys are always built as "<grantor>→<grantee>"
         anim.set(k, { phase: 'out', t0: now, grantor, grantee })
       }
     }
@@ -333,7 +333,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
       if (ia < 0 || ib < 0) return
       const step = ia < ib ? 1 : -1
       for (let i = ia; i !== ib; i += step) {
-        segs.push({ ...peerSeg(sibs[Math.min(i, i + step)], sibs[Math.max(i, i + step)]),
+        segs.push({ ...peerSeg(sibs[Math.min(i, i + step)]!, sibs[Math.max(i, i + step)]!), // nUIA: i walks ia..ib, both valid indices
           rev: step < 0 })
       }
     } else {
@@ -346,7 +346,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
       const ca = chain(a), cb = chain(b)
       const inB = new Set(cb)
       const lca = ca.find((k) => inB.has(k))!   // both chains end at USER
-      for (let i = 0; ca[i] !== lca; i++) segs.push({ ...treeSeg(ca[i + 1], ca[i]), rev: true })
+      for (let i = 0; ca[i] !== lca; i++) segs.push({ ...treeSeg(ca[i + 1]!, ca[i]!), rev: true }) // nUIA: lca ∈ ca ⇒ i+1 stays in range
       let prev = lca
       for (const k of cb.slice(0, cb.indexOf(lca)).reverse()) {
         segs.push({ ...treeSeg(prev, k), rev: false })
@@ -379,7 +379,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
       .filter((n) => n.state === 'live')
       .map((n) => n.seat + n.grant)
     if (!holds.length) return NODE_H / 10
-    if (holds.length === 1) return NODE_H / holds[0]
+    if (holds.length === 1) return NODE_H / holds[0]!
     const avg = holds.reduce((a, b) => a + b, 0) / holds.length
     const max = Math.max(...holds)
     return Math.min((NODE_H * 1.25) / avg, (NODE_H * 1.6) / max)
@@ -810,7 +810,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
       const sibs = n.children.map((c) => c.id)
         .filter((k) => map.get(k)?.state === 'live')
         .sort((p, q) => (target.get(p)?.x ?? 0) - (target.get(q)?.x ?? 0))
-      for (let i = 0; i + 1 < sibs.length; i++) links.push([sibs[i], sibs[i + 1]])
+      for (let i = 0; i + 1 < sibs.length; i++) links.push([sibs[i]!, sibs[i + 1]!])
     }
     return links
   }, [map, target])
@@ -974,7 +974,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
             const el = (performance.now() - sp.start) / sp.segDur
             const i = Math.max(0, Math.min(sp.segs.length - 1, Math.floor(el)))
             const t = smooth(Math.max(0, Math.min(1, el - i)))
-            const seg = sp.segs[i]
+            const seg = sp.segs[i]! // nUIA: i clamped to 0..len-1 and segs is never empty (guarded at push)
             const p = segPoint(seg, seg.rev ? 1 - t : t)
             return <circle key={sp.id} className="spark" cx={p.x} cy={p.y} r="3.4" />
           })}

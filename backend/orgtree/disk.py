@@ -1,3 +1,4 @@
+# pyright: strict
 """Per-org virtual disks (user verdict 2026-07-31): ONE ext4 image per org
 with a FILESYSTEM-level hard cap.
 
@@ -37,6 +38,7 @@ import re
 import subprocess
 import threading
 import time
+from typing import cast
 
 SENTINEL = ".orgtree-disk"
 IMG = "disk.img"
@@ -306,10 +308,11 @@ def list_dir(slug: str, rel: str = "",
     kids = _dir_children(slug, max_age=max_age)
     if rel not in kids:
         raise DiskError(f"no such directory on the org disk: {rel!r}")
-    out = [{"name": n, "path": f"{rel}/{n}" if rel else n, "dir": is_dir,
-            "bytes": size, "files": count}
-           for n, (is_dir, size, count) in kids[rel].items()]
-    out.sort(key=lambda e: (-int(e["bytes"]), str(e["name"])))
+    out: list[dict[str, object]] = [
+        {"name": n, "path": f"{rel}/{n}" if rel else n, "dir": is_dir,
+         "bytes": size, "files": count}
+        for n, (is_dir, size, count) in kids[rel].items()]
+    out.sort(key=lambda e: (-int(cast(int, e["bytes"])), str(e["name"])))
     return out
 
 

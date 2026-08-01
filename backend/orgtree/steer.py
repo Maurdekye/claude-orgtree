@@ -1,3 +1,4 @@
+# pyright: strict
 """PostToolUse steering hook — mid-task delivery without interrupting.
 
 Runs after EVERY tool call of every agent (CLI >= ~2.1.2xx; older CLIs never
@@ -78,7 +79,7 @@ def main() -> None:
             data = json.load(r)
     except Exception:             # noqa: BLE001 — backend down = nothing to say
         return
-    msgs = data.get("messages") or []
+    msgs: list[str] = data.get("messages") or []
     if not msgs:
         return
     body = "\n---\n".join(msgs)

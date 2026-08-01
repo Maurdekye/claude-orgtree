@@ -1,3 +1,4 @@
+# pyright: strict
 """The orgtree MCP server every agent node loads — its hands on the org.
 
 A minimal, dependency-free MCP stdio server (JSON-RPC 2.0). Identity comes from env
@@ -16,7 +17,7 @@ import os
 import sys
 import urllib.error
 import urllib.request
-from typing import Any
+from typing import Any, cast
 
 ORG: str = os.environ.get("ORGTREE_ORG", "")
 NODE: str = os.environ.get("ORGTREE_NODE", "")
@@ -391,8 +392,9 @@ def main() -> None:
             try:
                 parsed = json.loads(out)
                 is_err = isinstance(parsed, dict) and ("error" in parsed or "detail" in parsed)
-                text = parsed.get("error") or parsed.get("detail") or out \
-                    if isinstance(parsed, dict) else out
+                pd = cast("dict[str, Any]", parsed) if isinstance(parsed, dict) else None
+                text = pd.get("error") or pd.get("detail") or out \
+                    if pd is not None else out
             except json.JSONDecodeError:
                 is_err, text = False, out
             reply(id_, {"content": [{"type": "text", "text": str(text)}],

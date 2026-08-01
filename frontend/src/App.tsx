@@ -47,7 +47,7 @@ interface Toast { id: number; lines: string[]; undo: ToastUndo | null }
 const slugFromPath = () => {
   // BASE is the /k/<token> prefix when served from a public kiosk URL
   const m = location.pathname.slice(BASE.length).match(/^\/o\/([a-z0-9@-]+)/)
-  return m ? m[1] : null
+  return m ? m[1]! : null // nUIA: group 1 is unconditional in the regex
 }
 
 export default function App() {
@@ -108,7 +108,7 @@ export default function App() {
     // builds only (BASE = /k/<token>). On the admin side orgs[0] can be a
     // kiosk org too (list_orgs carries the flag now), and a kiosk sorting
     // first hijacked the whole welcome screen into it
-    if (BASE && !slug && orgs.length) setSlug(orgs[0].slug)
+    if (BASE && !slug && orgs.length) setSlug(orgs[0]!.slug)
   }, [orgs, slug])
 
   useEffect(() => {                    // back/forward keep working

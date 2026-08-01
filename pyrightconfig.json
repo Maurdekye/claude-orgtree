@@ -3,6 +3,15 @@
   "exclude": ["**/__pycache__", "**/node_modules", "frontend", "spike", "sandbox", "tools",
     "backend/tests"],
   "pythonVersion": "3.10",
+  // phase 3 (D-069): modules opt into strict via a `# pyright: strict`
+  // first-line comment, module by module; the project default stays basic
+  // until every module carries the header, then flips.
   "typeCheckingMode": "basic",
+  // package-internal _helpers are shared across modules deliberately
+  // (api drives Org internals; the ledger is the authority, not a boundary)
+  "reportPrivateUsage": "none",
+  // runtime isinstance guards on wire/doc data stay even where the types
+  // say they're impossible — deleting a runtime check is a behavior change
+  "reportUnnecessaryIsInstance": "none",
   "reportMissingImports": "warning"
 }

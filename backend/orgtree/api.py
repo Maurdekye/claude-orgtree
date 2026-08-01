@@ -1,3 +1,7 @@
+# pyright: strict, reportPrivateUsage=false, reportUnnecessaryIsInstance=false
+# (the two relaxations restate pyrightconfig.json's project-wide rulings —
+#  cross-module _helpers are deliberate, runtime isinstance guards stay —
+#  which a bare file-level strict comment would otherwise override)
 """FastAPI layer — the UI's backend and (later) the supervisor's host process.
 
 Run:  python -m orgtree.api          (serves API + built frontend on one port)
@@ -17,7 +21,6 @@ import re
 import secrets
 import shutil
 import subprocess
-import sys
 import threading
 import time
 import uuid
@@ -28,7 +31,7 @@ import uuid
 from typing import TYPE_CHECKING, Any, cast
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -43,7 +46,7 @@ if TYPE_CHECKING:
     from starlette.types import ASGIApp, Receive, Scope as ASGIScope, Send
 
     # aliased: `KioskCfg` is taken by the pydantic body model of the same name
-    from .schema import DirGrant, KioskCfg as KioskDoc
+    from .schema import DirGrant, KioskCfg as KioskDoc, MailEntry, UserMailEntry
 
 app = FastAPI(title="orgtree", version="1.0.0")
 
@@ -199,7 +202,8 @@ class BridgeGateway:
             await send({"type": "websocket.close", "code": 4403})
             return
         secret = ""
-        for hk, hv in scope.get("headers") or []:
+        raw_headers: list[tuple[bytes, bytes]] = scope.get("headers") or []
+        for hk, hv in raw_headers:
             if hk == b"x-orgtree-bridge":
                 secret = hv.decode("latin1")
         path, method = scope.get("path", ""), scope.get("method", "GET")
@@ -266,10 +270,10 @@ def _share_url(token: str | None) -> str | None:
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.connect(("8.8.8.8", 80))
-            _LAN_IP = s.getsockname()[0]
+            _LAN_IP = s.getsockname()[0]  # type: ignore[constant-redefinition]  # lazily-computed cache, not a constant
             s.close()
         except OSError:
-            _LAN_IP = "127.0.0.1"
+            _LAN_IP = "127.0.0.1"  # type: ignore[constant-redefinition]  # lazily-computed cache, not a constant
     return f"http://{_LAN_IP}:{PUBLIC_PORT}/k/{token}"
 
 
@@ -291,11 +295,11 @@ mail_notify: Callable[[str, str, str], None] = \
     lambda slug, frm, to: None   # wired at startup (thread-safe fanout)
 
 
-@app.on_event("startup")
-async def _wire_notify() -> None:
+@app.on_event("startup")  # type: ignore[deprecated]  # migrating to lifespan is a runtime change (D-079: inert wave)
+async def _wire_notify() -> None:  # type: ignore[unused-function]  # registered by the decorator
     global mail_notify, _LOOP
     loop = asyncio.get_running_loop()
-    _LOOP = loop
+    _LOOP = loop  # type: ignore[constant-redefinition]  # captured-at-startup cell, not a constant
     try:
         # hook processes get a sanitized env — the steering hook finds us here
         open(os.path.join(store.DATA_ROOT, ".port"), "w",
@@ -377,7 +381,7 @@ class Hub:
         self.rooms.get(slug, set()).discard(ws)
 
     async def _send(self, slug: str, payload: dict[str, Any]) -> None:
-        dead = []
+        dead: list[WebSocket] = []
         for ws in self.rooms.get(slug, set()):
             try:
                 await ws.send_json(payload)
@@ -418,7 +422,7 @@ class KioskSpec(BaseModel):
     # ceiling spec §3: the permission ceiling is visible/editable AT CREATION —
     # the default is permissive (mcp "*", user ruling), so narrowing it must
     # be a conscious act rather than something discovered later
-    max_scope: dict | None = None     # None = the default ceiling
+    max_scope: dict[str, Any] | None = None   # None = the default ceiling
     auto_raise: bool = False          # admin over-ceiling grants auto-raise it
     # auth is NOT configurable (user ruling): every sandbox uses the proxied
     # subscription — the host attaches the token, the sandbox never sees it
@@ -653,8 +657,8 @@ def _scrub_public(tree: dict[str, Any]) -> None:
         return os.path.basename(str(p).rstrip("/\\")) or "folder"
     if tree.get("workspace"):
         tree["workspace"] = base(tree["workspace"])
-    tree["dirs"] = [{**d, "path": base(d.get("path", ""))}
-                    for d in tree.get("dirs") or []]
+    dirs: list[dict[str, Any]] = tree.get("dirs") or []
+    tree["dirs"] = [{**d, "path": base(d.get("path", ""))} for d in dirs]
     if isinstance(tree.get("kiosk"), dict):
         # the ceiling's add_dirs are host paths; visitors see clamp warnings
         # naming the ceiling, never the ceiling itself
@@ -664,18 +668,21 @@ def _scrub_public(tree: dict[str, Any]) -> None:
 
     def walk(n: dict[str, Any]) -> None:
         n.pop("session_id", None)
-        sc = n.get("scope") or {}
+        sc: dict[str, Any] = n.get("scope") or {}
         if sc.get("add_dirs"):
             sc["add_dirs"] = [{**d, "path": base(d.get("path", ""))}
                               for d in sc["add_dirs"]]
         if n.get("last_error"):
             n["last_error"] = _WINPATH.sub("<path>", str(n["last_error"]))
-        for c in n.get("children") or []:
+        children: list[dict[str, Any]] = n.get("children") or []
+        for c in children:
             walk(c)
-        for ln in n.get("lineage") or []:
+        lineage: list[Any] = n.get("lineage") or []
+        for ln in lineage:
             if isinstance(ln, dict):
-                ln.pop("session_id", None)
-    for r in tree.get("roots") or []:
+                cast("dict[str, Any]", ln).pop("session_id", None)
+    roots: list[dict[str, Any]] = tree.get("roots") or []
+    for r in roots:
         walk(r)
 
 
@@ -687,22 +694,22 @@ def _scrub_events(evts: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if isinstance(v, str):
             return _WINPATH.sub("<path>", v)
         if isinstance(v, list):
-            return [scrub(x) for x in v]
+            return [scrub(x) for x in cast("list[Any]", v)]
         if isinstance(v, dict):
-            return {k: scrub(x) for k, x in v.items()}
+            return {k: scrub(x) for k, x in cast("dict[str, Any]", v).items()}
         return v
     return [cast("dict[str, Any]", scrub(e)) for e in evts]
 
 
 class Settings(BaseModel):
-    org_dirs: list | None = None            # external folders [{path, mode}] (ws excluded)
+    org_dirs: list[Any] | None = None       # external folders [{path, mode}] (ws excluded)
     max_top_grant: int | None = None
     default_top_grant: int | None = None    # pre-filled grant for top-level hires
     compact_at: int | None = None           # compaction threshold in percent, 50..95
     clear_fable_lock: bool = False
     fable_limit_policy: str | None = None   # halt | opus | dissolve
     fable_filter_policy: str | None = None  # halt | opus (content-filter flags)
-    default_tools: dict | None = None       # {bash, web, edit, subagents, mcp: []|["*"]}
+    default_tools: dict[str, Any] | None = None  # {bash, web, edit, subagents, mcp: []|["*"]}
     default_visibility: str | None = None   # self|team|subtree|full
     default_effort: str | None = None       # ""=CLI default | low..max (live inherit)
     auto_resume: bool | None = None         # restart limit-frozen agents at reset+1min
@@ -724,7 +731,7 @@ def load_org_defaults() -> dict[str, Any]:
     try:
         d = json.load(open(os.path.join(store.DATA_ROOT, "defaults.json"),
                            encoding="utf-8"))
-        return d if isinstance(d, dict) else {}
+        return cast("dict[str, Any]", d) if isinstance(d, dict) else {}
     except (OSError, json.JSONDecodeError):
         return {}
 
@@ -864,7 +871,7 @@ class KioskCfg(BaseModel):
     spend_limit: float | None = None      # USD hard limit (0 = unlimited)
     storage_limit_mb: int | None = None   # workspace-dir size cap (0 = unlimited)
     rotate_token: bool = False            # mint a new secret URL (revokes the old)
-    max_scope: dict | None = None         # the permission ceiling; setting it SWEEPS
+    max_scope: dict[str, Any] | None = None   # the permission ceiling; setting it SWEEPS
     auto_raise: bool | None = None        # admin over-ceiling grants auto-raise it
 
 
@@ -935,11 +942,11 @@ async def org_kiosk(slug: str, body: KioskCfg) -> dict[str, Any]:
                     422, f"cap below current holdings: the org holds {held:g} "
                          f"credits — retire or dissolve agents first, then lower it")
         org.d["kiosk"] = k
-        cleared = []
+        cleared: list[str] = []
         spent = org.cost_total()            # incl. deleted agents' burn
         lim = float(k.get("spend_limit") or 0)
         over = k.get("enabled") and lim and spent >= lim
-        drive_after = []
+        drive_after: list[str] = []
         if org.d.get("spend_frozen") and not over:
             supervisor.clear_hard_freeze(org, "spend")
             cleared.append("spend")
@@ -972,7 +979,7 @@ async def org_kiosk(slug: str, body: KioskCfg) -> dict[str, Any]:
 
 
 class HireDefaults(BaseModel):
-    default_tools: dict | None = None       # {bash, web, edit, subagents, mcp}
+    default_tools: dict[str, Any] | None = None  # {bash, web, edit, subagents, mcp}
     default_visibility: str | None = None   # self|team|subtree|full
     raise_ceiling: bool = False             # admin bridge (ignored for visitors)
 
@@ -1003,8 +1010,8 @@ async def org_hire_defaults(slug: str, body: HireDefaults,
 
 
 class Scope(BaseModel):
-    add_dirs: list[dict] | None = None      # [{path, mode: rw|ro}]
-    tools: dict | None = None               # {bash, web, edit, subagents, mcp: []}
+    add_dirs: list[dict[str, Any]] | None = None  # [{path, mode: rw|ro}]
+    tools: dict[str, Any] | None = None     # {bash, web, edit, subagents, mcp: []}
     org_visibility: str | None = None
     permission_mode: str | None = None      # rides the ceiling (spec §2)
     charter: str | None = None              # §15: this node's role card
@@ -1077,7 +1084,7 @@ def charters_list() -> dict[str, Any]:
     """Named charter presets for the manual hire form (user ruling): every
     .md in docs/charters/ is a preset. A file may open with an explanatory
     header ending at a '---' line — only what follows is the charter body."""
-    out = []
+    out: list[dict[str, Any]] = []
     if os.path.isdir(CHARTERS_DIR):
         for f in sorted(os.listdir(CHARTERS_DIR)):
             if not f.endswith(".md"):
@@ -1397,7 +1404,8 @@ async def user_inbox_read(slug: str, body: InboxRead) -> dict[str, Any]:
         except LedgerError as e:
             raise HTTPException(404, str(e))
         ids = set(body.ids)
-        keep, read = [], []
+        keep: list[UserMailEntry] = []
+        read: list[UserMailEntry] = []
         for m in org.d.get("user_inbox", []):
             (read if m.get("id") in ids else keep).append(m)
         if read:
@@ -1439,7 +1447,7 @@ def extern_send(peer: str, body: ExternSend) -> dict[str, Any]:
     # attachments (user spec 2026-07-31): absolute paths on this machine —
     # extern peers are local sessions. Validated here; copied into every
     # recipient's uploads/ by deliver_org_inbox.
-    atts = []
+    atts: list[str] = []
     for p in (body.attachments or [])[:10]:
         p = str(p)
         if not os.path.isfile(p):
@@ -1469,7 +1477,7 @@ def _extern_scan(addr: str, org_slug: str | None, after: str | None,
     that org count — a wait for question ② must never be satisfied by the
     answer to question ①. The read path stays full-history (freeform flow:
     the org may reply any time, any number of times)."""
-    out = []
+    out: list[dict[str, Any]] = []
     with store.DOC_LOCK:
         for o in store.list_orgs():
             if org_slug and o["slug"] != org_slug:
@@ -1578,9 +1586,9 @@ def node_history(slug: str, nid: str, request: Request,
         org.node(nid)
     except LedgerError as e:
         raise HTTPException(404, str(e))
-    items = []
+    items: list[dict[str, Any]] = []
     for ev in org.d.get("events", []):
-        det = ev.get("detail", {})
+        det: dict[str, Any] = ev.get("detail", {})
         touches = (det.get("node") == nid or det.get("to") == nid
                    or ev.get("actor") == nid or det.get("grantee") == nid
                    or det.get("from") == nid)
@@ -1589,10 +1597,11 @@ def node_history(slug: str, nid: str, request: Request,
             # the §4.6 cascade warnings from the only log that had them
             items.append({"at": ev["at"], "kind": ev["op"], "actor": ev["actor"],
                           "detail": {k: (v if isinstance(v, (str, int, float))
-                                         else [str(x) for x in v])
+                                         else [str(x) for x in cast("list[Any]", v)])
                                      for k, v in det.items()
                                      if isinstance(v, (str, int, float, list))},
-                          "warnings": [str(w) for w in ev.get("warnings") or []]})
+                          "warnings": [str(w) for w
+                                       in cast("list[Any]", ev.get("warnings") or [])]})
     for n in org.d.get("notice_log", []):
         if n["node"] == nid:
             items.append({"at": n["at"], "kind": "notice", "actor": "system",
@@ -1612,7 +1621,7 @@ def node_scratch(slug: str, nid: str, path: str = "") -> dict[str, Any]:
     if full != base and not full.startswith(base + os.sep):
         raise HTTPException(422, "path escapes the scratch space")
     if os.path.isdir(full):
-        out = []
+        out: list[dict[str, Any]] = []
         for e in sorted(os.listdir(full))[:300]:
             p = os.path.join(full, e)
             out.append({"name": e, "dir": os.path.isdir(p),
@@ -1731,7 +1740,7 @@ async def anthropic_proxy(path: str, request: Request) -> StreamingResponse:
         token = await run_in_threadpool(subproxy.get_access_token)
     except RuntimeError as e:
         raise HTTPException(502, str(e))
-    headers = {}
+    headers: dict[str, str] = {}
     for k, v in request.headers.items():
         if k.lower() in ("host", "x-api-key", "authorization", "content-length",
                          "connection", "accept-encoding", "x-orgtree-bridge"):
@@ -1762,7 +1771,7 @@ class AgentCall(BaseModel):
     org: str
     node: str
     tool: str
-    args: dict = {}
+    args: dict[str, Any] = {}
 
 
 @app.post("/api/agent")
@@ -1825,8 +1834,8 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
             raise HTTPException(422, str(e))
     result: dict[str, Any]
     drive: list[str] = []      # nodes whose turn should run after we release the lock
-    ext_send = None            # (chat-id, body) outbound riding the chatq bridge
-    org_send = None            # (dst-slug, body) outbound to another org's inbox
+    ext_send: tuple[str, str] | None = None   # (chat-id, body) outbound riding the chatq bridge
+    org_send: tuple[str, str] | None = None   # (dst-slug, body) outbound to another org's inbox
     with store.DOC_LOCK:
         try:
             org = store.load_org(body.org)
@@ -2657,17 +2666,21 @@ def node_tool_image(slug: str, nid: str, tool_use_id: str, idx: int = 0) -> Resp
             rec = json.loads(line)
         except json.JSONDecodeError:
             continue
-        content = (rec.get("message") or {}).get("content")
+        msg: dict[str, Any] = rec.get("message") or {}
+        content = msg.get("content")
         if not isinstance(content, list):
             continue
-        for b in content:
-            if not (isinstance(b, dict) and b.get("type") == "tool_result"
-                    and b.get("tool_use_id") == tool_use_id):
+        for b in cast("list[Any]", content):
+            blk = cast("dict[str, Any]", b)   # identity — typing only
+            if not (isinstance(blk, dict) and blk.get("type") == "tool_result"
+                    and blk.get("tool_use_id") == tool_use_id):
                 continue
-            imgs = [x for x in (b.get("content") or [])
-                    if isinstance(x, dict) and x.get("type") == "image"]
+            imgs: list[dict[str, Any]] = [
+                x for x in cast("list[Any]", blk.get("content") or [])
+                if isinstance(x, dict)
+                and cast("dict[str, Any]", x).get("type") == "image"]
             if idx < len(imgs):
-                src = imgs[idx].get("source") or {}
+                src: dict[str, Any] = imgs[idx].get("source") or {}
                 if src.get("type") == "base64" and src.get("data"):
                     from fastapi.responses import Response
                     return Response(
@@ -2693,8 +2706,9 @@ def node_inbox(slug: str, nid: str) -> dict[str, Any]:
     delivered = [m for m in (org.d.get("mail_log") or {}).get(nid, [])
                  if (m["at"], m["from"], m["body"]) not in keys]
     # the node's Sent folder, mirrored from the recipients' archives
-    sent = []
-    for to, lst in (org.d.get("mail_log") or {}).items():
+    sent: list[dict[str, Any]] = []
+    logs: dict[str, list[MailEntry]] = org.d.get("mail_log") or {}
+    for to, lst in logs.items():
         sent += [{**m, "to": to} for m in lst if m["from"] == nid]
     for m in org.d.get("user_inbox", []) + org.d.get("user_mail_log", []):
         if m["from"] == nid:
@@ -2725,8 +2739,8 @@ class Op(BaseModel):
     grant: int | None = None      # hire / rehire / reallocate delta via `delta`
     name: str | None = None       # hire
     charter: str | None = None    # hire — short standing role card
-    add_dirs: list | None = None  # hire — [{path, mode}] or bare paths
-    tools: dict | None = None     # hire — {bash, web, edit, subagents, mcp: []}
+    add_dirs: list[Any] | None = None  # hire — [{path, mode}] or bare paths
+    tools: dict[str, Any] | None = None  # hire — {bash, web, edit, subagents, mcp: []}
     org_visibility: str | None = None
     effort: str | None = None     # hire — thinking effort, applied WITH the hire
     delta: int | None = None      # reallocate
@@ -2755,7 +2769,8 @@ def org_op(slug: str, body: Op, request: Request) -> dict[str, Any]:
         result.pop("bridge", None)
     # rehire with a waiting mailbox: the mail queued while archived finally
     # gets acted on (user ruling) — drive outside the doc lock
-    for t in result.pop("drive", []) if isinstance(result, dict) else []:
+    drive: list[str] = result.pop("drive", []) if isinstance(result, dict) else []
+    for t in drive:
         supervisor.send_message(
             slug, t,
             "(orgtree) Mail above arrived while you were archived and waited "

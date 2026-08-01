@@ -1,3 +1,4 @@
+# pyright: strict
 """Docker sandboxes for kiosk orgs (user spec).
 
 Every kiosk org created with `sandbox: true` runs its agents' turns inside ONE
@@ -228,8 +229,8 @@ def vm_disk_cap_mib() -> int | None:
         try:
             p = os.path.join(os.environ.get("APPDATA", ""), "Docker",
                              "settings-store.json")
-            cfg = (json.load(open(p, encoding="utf-8"))
-                   if os.path.exists(p) else {})
+            cfg: dict[str, Any] = (json.load(open(p, encoding="utf-8"))
+                                   if os.path.exists(p) else {})
             raw = next((v for k, v in cfg.items()
                         if k.lower() == "disksizemib"), None)
             cap = int(raw) if raw else None

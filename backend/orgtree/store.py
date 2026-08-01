@@ -1,3 +1,4 @@
+# pyright: strict
 """Multi-org persistence (№36). One JSON file per org under the DATA root.
 
 Data root is ~/orgtree (NOT ~/.claude — spike finding 4: Claude tools refuse writes into
@@ -93,7 +94,7 @@ def save_org(org: Org) -> None:
             if i == 19:
                 raise
             time.sleep(0.01 * (i + 1))
-    REVISION += 1
+    REVISION += 1  # pyright: ignore[reportConstantRedefinition]  # uppercase mutable counter is the public API; renaming is forbidden this wave
 
 
 def workspace_dir(slug: str) -> str:

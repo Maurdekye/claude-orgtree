@@ -976,7 +976,7 @@ function EffortSwitch({ value, onSet }: { value: string; onSet: (lvl: string) =>
 // Slash commands (user-approved 2026-07-31): light HINTING when the draft
 // starts with "/" — a curated list of commands known to work headless, not a
 // clickable palette. Sent verbatim as a session command (no mail envelope).
-const SLASH_COMMANDS = [
+const SLASH_COMMANDS: [string, string][] = [
   // review C4: /compact routes to the SAME §8 org split as the compact
   // button (fork → compact → knowledge bearer) — the hint must not describe
   // a bearer-less in-place compaction as "what the org does automatically"
@@ -986,7 +986,7 @@ const SLASH_COMMANDS = [
 ]
 
 function SlashHints({ text, setText }: { text: string; setText: (v: string) => void }) {
-  const head = text.trim().split(/\s/)[0]
+  const head = text.trim().split(/\s/)[0]! // nUIA: split always yields at least one element
   const rows = SLASH_COMMANDS.filter(([c]) => c.startsWith(head))
   return (
     <div className="slash-hints">

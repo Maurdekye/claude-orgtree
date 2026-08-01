@@ -1,3 +1,4 @@
+# pyright: strict
 """The EXTERNAL-chat MCP server — how a Claude Code session OUTSIDE orgtree
 talks to organizations, with no chatq required.
 

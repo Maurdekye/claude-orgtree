@@ -219,7 +219,7 @@ export function layout(root: CanvasNode, hidden: Map<string, string> = new Map()
     const kids = n.children.filter(vis)
     kids.forEach((c) => { place(c, cx, depth + 1); cx += width(c) })
     const x = kids.length
-      ? (pos.get(kids[0].id)!.x + pos.get(kids[kids.length - 1].id)!.x) / 2
+      ? (pos.get(kids[0]!.id)!.x + pos.get(kids[kids.length - 1]!.id)!.x) / 2 // nUIA: kids.length checked on this branch
       : x0
     pos.set(n.id, { x, y: depth })
   }
@@ -273,16 +273,16 @@ const escapeAngles = (src: string) => {
   let indented = false                   // inside a 4-space indented block
   let prevBlank = true                   // indented blocks open after a blank
   for (let i = 0; i < lines.length; i++) {
-    const l = lines[i]
+    const l = lines[i]!
     const m = /^ {0,3}(`{3,}|~{3,})/.exec(l)
     if (fence) {
       // closed only by a run of the SAME char, at least as long as the opener
-      if (m && m[1][0] === fence.ch && m[1].length >= fence.len) fence = null
+      if (m && m[1]![0] === fence.ch && m[1]!.length >= fence.len) fence = null // nUIA: group 1 is unconditional in the regex
       prevBlank = false
       continue
     }
     if (m) {
-      fence = { ch: m[1][0], len: m[1].length }
+      fence = { ch: m[1]![0]!, len: m[1]!.length } // nUIA: group 1 is unconditional and non-empty ({3,})
       prevBlank = false
       continue
     }
@@ -299,7 +299,7 @@ const escapeAngles = (src: string) => {
     // prose line: escape < outside inline `spans`
     const parts = l.split(/(`[^`\n]*`)/)
     for (let j = 0; j < parts.length; j += 2) {
-      parts[j] = parts[j].replace(/</g, '&lt;')
+      parts[j] = parts[j]!.replace(/</g, '&lt;')
     }
     lines[i] = parts.join('')
   }

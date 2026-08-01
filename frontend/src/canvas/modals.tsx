@@ -545,7 +545,7 @@ export function NodeConfig({ node, map, tree, slug, op, toast, close }: NodeConf
           {['haiku', 'sonnet', 'opus', 'fable'].filter((t) => {
             const rank: Record<string, number> = { haiku: 1, sonnet: 3, opus: 5, fable: 10 }
             const cap = tree.kiosk?.max_tier
-            return t === node.tier || !cap || rank[t] <= (rank[cap] ?? Infinity)
+            return t === node.tier || !cap || rank[t]! <= (rank[cap] ?? Infinity) // nUIA: t ∈ the literal list, all rank keys
           }).map((t) => (
             <option key={t} value={t}>
               {t} · seat {({ haiku: 1, sonnet: 3, opus: 5, fable: 10 } as Record<string, number>)[t]}

@@ -1,3 +1,4 @@
+# pyright: strict
 """Proxied-subscription auth for sandboxed kiosks (user spec).
 
 The sandbox never holds a credential: the in-container CLI points its
@@ -49,7 +50,7 @@ def get_access_token() -> str:
             doc = json.load(open(CREDS, encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as e:
             raise RuntimeError(f"no readable Claude credentials at {CREDS}: {e}")
-        o = doc.get("claudeAiOauth") or {}
+        o: dict[str, Any] = doc.get("claudeAiOauth") or {}
         if not o.get("accessToken"):
             raise RuntimeError("credentials file has no OAuth access token — "
                                "log in with the Claude Code CLI first")

@@ -1,3 +1,4 @@
+# pyright: strict
 """The credit ledger: nodes, the budget invariant, and the seven operations.
 
 Semantics ratified in PLAN.md (all §-references point there):
@@ -254,7 +255,9 @@ class Org:
             for ms in cast("dict[str, list[Any]]", self.d.get(box) or {}).values():
                 for m in ms:
                     if isinstance(m, dict):
-                        m.setdefault("id", uuid.uuid4().hex[:12])
+                        # cast: isinstance narrows Any to dict[Unknown, Unknown]
+                        cast("dict[str, Any]", m).setdefault(
+                            "id", uuid.uuid4().hex[:12])
         # pre-№41 spend freezes wrote the usage-limit keys (error, until=None);
         # re-tag them so clear_hard_freeze("spend") actually clears them
         # instead of leaving a stale-reason freeze the API reports as cleared
@@ -364,7 +367,7 @@ class Org:
         parent() result can pass it straight back without exploding."""
         if nid == USER:
             return []
-        out = []
+        out: list[str] = []
         cur = self.node(nid)["parent"]
         while cur is not None:
             out.append(cur)
@@ -387,6 +390,7 @@ class Org:
 
     def lineage_stack(self, nid: str) -> list[str]:
         """Predecessor chain of nid, newest first."""
+        out: list[str]
         out, cur = [], self.node(nid).get("predecessor")
         while cur and cur in self.nodes:
             out.append(cur)
@@ -394,7 +398,7 @@ class Org:
         return out
 
     def descendants(self, nid: str, live_only: bool = True) -> list[str]:
-        out = []
+        out: list[str] = []
         for c in self.children(nid, live_only):
             out.append(c)
             out.extend(self.descendants(c, live_only))
@@ -744,7 +748,7 @@ class Org:
         was affordable at free_before but is not at free_after."""
         if payer == USER or free_after >= free_before:
             return []
-        warns = []
+        warns: list[str] = []
         for c in self.children(payer, live_only=False):
             n = self.nodes[c]
             if n["state"] != "archived":
@@ -1032,7 +1036,7 @@ class Org:
             raise LedgerError(f"the request currently awaits {req['currently_at']}")
         nxt = USER if actor == USER else self.parent(actor)
         req["currently_at"] = nxt
-        drive = []
+        drive: list[str] = []
         if nxt == target:
             if target == USER:
                 self.d.setdefault("user_inbox", []).append({
@@ -1101,7 +1105,7 @@ class Org:
         self.d["audience_requests"] = [
             r for r in self.d["audience_requests"]
             if not (r["from"] == frm and r["target"] == target)]
-        drive = []
+        drive: list[str] = []
         who = "The user" if actor == USER else f'"{actor}"'
         if target == USER:
             if actor == USER:
@@ -1285,7 +1289,7 @@ class Org:
             fable_futile = False
 
         if actor != USER:
-            missing = []
+            missing: list[str] = []
             if add_dirs is None:
                 missing.append("add_dirs (explicit list of {path, mode}; [] is valid)")
             if tools is None or any(k not in tools for k in TOOL_KEYS) or "mcp" not in tools:
@@ -1437,6 +1441,7 @@ class Org:
                 break
             chain.append(p)
         frees = [self.free(k) for k in chain]     # snapshot BEFORE inflating
+        contrib: list[tuple[int, str, float]]     # (chain index, node, amount)
         remaining, contrib = need, []
         for i, k in enumerate(chain):
             if remaining <= 0:
@@ -1607,7 +1612,7 @@ class Org:
         # override, so unrecoverable nodes test their own tier.
         self._check_tier_ceiling(
             n["model"] if n["state"] == "unrecoverable" or tier not in TIERS
-            else cast(str, tier))  # `tier not in TIERS` filtered out None
+            else tier)             # `tier not in TIERS` filtered out None
         if n["state"] == "unrecoverable":
             # motto bridge: the session is dead but the node — name, position,
             # charter, credits, reports, mailbox — is fine. Rehire = re-seed.
@@ -1632,7 +1637,7 @@ class Org:
         # An UNRECOVERABLE ancestor stops the walk: silently re-seeding it
         # would archive a real session as a lost generation as a side effect —
         # that destruction stays an explicit decision (review C12)
-        chain = []
+        chain: list[str] = []
         p = n["parent"]
         while p is not None and self.nodes[p]["state"] != "live":
             if self.nodes[p]["state"] == "unrecoverable":
@@ -2034,7 +2039,7 @@ class Org:
 
     def _chain_up(self, frm: str | None, until: str | None) -> list[str]:
         """Node ids from `frm` up to but excluding `until` (None = USER)."""
-        out = []
+        out: list[str] = []
         cur = frm
         while cur is not None and cur != until:
             out.append(cur)
@@ -2056,7 +2061,7 @@ class Org:
     def revoke_dir(self, actor: str, nid: str, dir_: str) -> dict[str, Any]:
         """№30 explicit revoke — cascades into the subtree (their sets must stay ⊆)."""
         self._require_authority(actor, nid)
-        removed = []
+        removed: list[str] = []
         for k in [nid] + self.descendants(nid, live_only=False):
             dirs = self.nodes[k]["scope"]["add_dirs"]
             if any(d["path"] == dir_ for d in dirs):
@@ -2248,6 +2253,8 @@ class Org:
         (e.g. to the delegator's peer) survives exactly as long as the
         authority that opened it still commands the grantee. User audiences
         are never swept (№11)."""
+        kept: list[AudienceGrant]
+        revoked: list[tuple[str, str]]
         kept, revoked = [], []
         for a in self.d["audiences"]:
             anchor = a.get("delegated_by") or a["grantor"]
@@ -2409,6 +2416,9 @@ class Org:
         policy = self.d.get("fable_limit_policy", "halt")
         self.d["fable_lock"] = {"at": now(), "detail": detail[:300],
                                 "detected_by": detecting_node, "policy": policy}
+        locked: list[str]
+        converted: list[str]
+        dissolved: list[str]
         locked, converted, dissolved = [], [], []
         for k in [k for k, v in self.nodes.items()
                   if v["state"] == "live" and v["model"] == "fable"]:
