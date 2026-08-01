@@ -32,6 +32,7 @@ export const listOrgs = (): Promise<OrgListEntry[]> => req('/api/orgs')
 export const createOrg = (
   name: string, dirs: string[],
   kiosk: KioskSpecRequest | null = null, sandbox = false,
+  diskMb: number | null = null,
 ): Promise<{ slug: string }> =>
   req('/api/orgs', {
     method: 'POST',
@@ -39,6 +40,8 @@ export const createOrg = (
     body: JSON.stringify({
       name, dirs, ...(kiosk ? { kiosk } : {}),
       ...(sandbox && !kiosk ? { sandbox: true } : {}),
+      // sandboxed non-kiosk orgs: virtual-disk size (4096 MB minimum)
+      ...(sandbox && !kiosk && diskMb != null ? { disk_mb: diskMb } : {}),
     }),
   })
 export const getTree = (slug: string): Promise<TreePayload> =>

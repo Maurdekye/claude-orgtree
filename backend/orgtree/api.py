@@ -412,7 +412,9 @@ def hub_changed(slug: str) -> None:
 class KioskSpec(BaseModel):
     credits: int = 30                 # top-level holdings cap (user ruling)
     spend_limit: float = 50.0         # USD hard limit (user ruling 2026-07-31)
-    storage_limit_mb: int = 1024      # workspace+scratch cap (user ruling)
+    storage_limit_mb: int = 4096      # sandboxed: the org DISK size (4096 MB
+                                      # floor, user ruling 2026-08-01);
+                                      # unsandboxed: loose workspace+scratch cap
     sandbox: bool = True              # run agent turns in a Docker container
     # ceiling spec §3: the permission ceiling is visible/editable AT CREATION —
     # the default is permissive (mcp "*", user ruling), so narrowing it must
@@ -429,6 +431,8 @@ class OrgCreate(BaseModel):
     permission_mode: str = "acceptEdits"
     kiosk: KioskSpec | None = None    # present = the org is BORN a kiosk
     sandbox: bool = False             # normal orgs may sandbox too (user ruling)
+    disk_mb: int | None = None        # sandboxed non-kiosk orgs: virtual-disk
+                                      # size (≥4096; None = DISK_MB fallback)
 
 
 @app.get("/api/orgs")
@@ -473,6 +477,20 @@ def orgs_list(request: Request) -> list[dict[str, Any]]:
 
 @app.post("/api/orgs")
 def orgs_create(body: OrgCreate) -> dict[str, Any]:
+    # sandboxed orgs ride a fixed-size virtual disk with a 4096 MB minimum
+    # (the system seed and transcripts count inside the cap) — refuse smaller
+    # limits at creation instead of silently flooring them at migration
+    # (user ruling 2026-08-01)
+    if body.kiosk is not None and body.kiosk.sandbox \
+            and int(body.kiosk.storage_limit_mb) < 4096:
+        raise HTTPException(422, "sandboxed orgs ride a fixed-size disk with "
+                                 "a 4096 MB minimum — set storage to at "
+                                 "least 4096 MB")
+    if body.kiosk is None and body.sandbox and body.disk_mb is not None \
+            and int(body.disk_mb) < 4096:
+        raise HTTPException(422, "sandboxed orgs ride a fixed-size disk with "
+                                 "a 4096 MB minimum — set disk_mb to at "
+                                 "least 4096")
     try:
         org = store.create_org(body.name, body.dirs, body.permission_mode)
     except LedgerError as e:
@@ -530,7 +548,9 @@ def orgs_create(body: OrgCreate) -> dict[str, Any]:
         # no kiosk limits or public URL
         with store.DOC_LOCK:
             o = store.load_org(org.d["slug"])
-            o.d["sandbox"] = {"enabled": True, "secret": secrets.token_hex(16)}
+            o.d["sandbox"] = {"enabled": True, "secret": secrets.token_hex(16),
+                              **({"limit_mb": int(body.disk_mb)}
+                                 if body.disk_mb is not None else {})}
             store.save_org(o)
             sandbox.warm(o)
         _bridge_cache["at"] = 0.0
@@ -849,6 +869,12 @@ async def org_kiosk(slug: str, body: KioskCfg) -> dict[str, Any]:
         if body.spend_limit is not None:
             k["spend_limit"] = max(0.0, float(body.spend_limit))
         if body.storage_limit_mb is not None:
+            # sandboxed kiosks: the limit IS the disk size — same 4096 MB
+            # floor as creation, or the migration would silently re-floor it
+            if k.get("sandbox") and int(body.storage_limit_mb) < 4096:
+                raise HTTPException(
+                    422, "sandboxed orgs ride a fixed-size disk with a "
+                         "4096 MB minimum — set storage to at least 4096 MB")
             k["storage_limit_mb"] = max(0, int(body.storage_limit_mb))
         # security review 2026-08-01: subscription-auth (copied host OAuth
         # credentials ON the org disk) and a public kiosk URL are mutually

@@ -247,8 +247,9 @@ export default function App() {
         ))}
         {!orgs.length && <div className="dim pad">no organizations yet</div>}
       </nav>
-      {!BASE && <NewOrg onCreate={(name, dirs, kiosk, sandbox) =>
-        createOrg(name, dirs, kiosk, sandbox).then((r) => { refreshOrgs(); pick(r.slug) })
+      {!BASE && <NewOrg onCreate={(name, dirs, kiosk, sandbox, diskMb) =>
+        createOrg(name, dirs, kiosk, sandbox, diskMb)
+          .then((r) => { refreshOrgs(); pick(r.slug) })
           .catch((e: Error) => toast([`error: ${e.message}`]))} />}
       {/* global default org settings (user spec): every NEW org is born with
           these — admin only */}
@@ -474,7 +475,8 @@ export default function App() {
 }
 
 function NewOrg({ onCreate }: {
-  onCreate: (name: string, dirs: string[], kiosk: KioskSpecRequest | null, sandbox: boolean) => void
+  onCreate: (name: string, dirs: string[], kiosk: KioskSpecRequest | null,
+             sandbox: boolean, diskMb: number | null) => void
 }) {
   const [open, setOpen] = useState(false)
   const [advanced, setAdvanced] = useState(false)
@@ -484,7 +486,9 @@ function NewOrg({ onCreate }: {
   // limit fields; auth is never configurable — sandboxes use the proxied
   // subscription (the host holds the token; the sandbox never sees it)
   const [kiosk, setKiosk] = useState(false)
-  // kiosk cap defaults (user ruling 2026-07-31): 30 credits · $50 · 1 GB
+  // kiosk cap defaults (user ruling 2026-07-31): 30 credits · $50; storage
+  // starts at the 1 GB loose-cap default and is bumped to the 4096 MB disk
+  // minimum whenever the sandbox turns on (user ruling 2026-08-01)
   const [credits, setCredits] = useState<number | string>(30)
   const [spend, setSpend] = useState<number | string>(50)
   const [storage, setStorage] = useState<number | string>(1024)
@@ -513,7 +517,10 @@ function NewOrg({ onCreate }: {
       onCreate(name, dirs.map((s) => s.trim()).filter(Boolean),
         kiosk ? {
           credits: +credits || 0, spend_limit: +spend || 0,
-          storage_limit_mb: +storage || 0, sandbox: sandboxed,
+          // sandboxed = the limit IS the org disk size; clamp to the floor
+          storage_limit_mb: sandboxed
+            ? Math.max(4096, +storage || 4096) : +storage || 0,
+          sandbox: sandboxed,
           auto_raise: autoRaise,
           max_scope: {
             tools: { bash: ceil.bash, web: ceil.web, edit: ceil.edit,
@@ -522,7 +529,8 @@ function NewOrg({ onCreate }: {
             max_tier: ceilTier || null,
           },
         } : null,
-        sandboxed)
+        sandboxed,
+        sandboxed && !kiosk ? Math.max(4096, +storage || 4096) : null)
       reset()
     }}>
       <input autoFocus placeholder="organization name" value={name}
@@ -532,7 +540,10 @@ function NewOrg({ onCreate }: {
           onChange={(e) => {
             setKiosk(e.target.checked)
             // kiosks default the sandbox ON — but only where Docker exists
-            if (e.target.checked && docker) setSandboxed(true)
+            if (e.target.checked && docker) {
+              setSandboxed(true)
+              setStorage((s) => Math.max(4096, +s || 0))
+            }
           }} />
         kiosk — publicly shareable via a secret URL, with hard limits
       </label>
@@ -542,7 +553,11 @@ function NewOrg({ onCreate }: {
             onChange={(e) => setCredits(e.target.value)} /></label>
           <label>spend $ <input type="number" min="0" step="0.5" value={spend}
             onChange={(e) => setSpend(e.target.value)} /></label>
-          <label>storage MB <input type="number" min="0" value={storage}
+          <label title={sandboxed
+            ? 'the org’s fixed-size virtual disk — system dirs and transcripts count inside it; 4096 MB minimum'
+            : 'loose workspace+scratch cap (checked between turns)'}>
+            {sandboxed ? 'disk MB' : 'storage MB'}
+            <input type="number" min={sandboxed ? 4096 : 0} value={storage}
             onChange={(e) => setStorage(e.target.value)} /></label>
         </div>
       )}
@@ -596,10 +611,22 @@ function NewOrg({ onCreate }: {
       <label className={'row kiosk-sbx' + (docker ? '' : ' dim')}
         title={docker ? undefined : 'Docker is not installed — sandboxing unavailable'}>
         <input type="checkbox" checked={sandboxed && docker} disabled={!docker}
-          onChange={(e) => setSandboxed(e.target.checked)} />
+          onChange={(e) => {
+            setSandboxed(e.target.checked)
+            // the sandbox rides a fixed-size disk — bump the storage field
+            // to its 4096 MB minimum (user ruling 2026-08-01)
+            if (e.target.checked) setStorage((s) => Math.max(4096, +s || 0))
+          }} />
         sandboxed — agents run in a Docker container, isolated from this PC
         {!docker && <span className="dim"> (requires Docker)</span>}
       </label>
+      {sandboxed && !kiosk && (
+        <div className="kiosk-caps">
+          <label title="the org&rsquo;s fixed-size virtual disk — system dirs and transcripts count inside it; 4096 MB minimum">
+            disk MB <input type="number" min="4096" value={storage}
+              onChange={(e) => setStorage(e.target.value)} /></label>
+        </div>
+      )}
       {kiosk && !sandboxed && (
         <div className="dim kiosk-warn"><WarnIcon fontSize="inherit" /> without
           a sandbox the storage limit is enforced loosely — usage is checked
@@ -1068,7 +1095,11 @@ function SettingsPanel({ tree, toast, close }: {
                 onChange={(e) => setKkCredits(e.target.value)} /></label>
               <label>spend $ <input type="number" min="0" step="0.5" value={kkSpend}
                 onChange={(e) => setKkSpend(e.target.value)} /></label>
-              <label>storage MB <input type="number" min="0" value={kkStorage}
+              <label title={kk.sandbox
+                ? 'the org’s fixed-size virtual disk — 4096 MB minimum (already-migrated orgs resize via the storage browser)'
+                : 'loose workspace+scratch cap (checked between turns)'}>
+                {kk.sandbox ? 'disk MB' : 'storage MB'}
+                <input type="number" min={kk.sandbox ? 4096 : 0} value={kkStorage}
                 onChange={(e) => setKkStorage(e.target.value)} /></label>
               {(+kkCredits !== (kk.credits ?? 0)
                 || +kkSpend !== (kk.spend_limit ?? 0)
@@ -1076,7 +1107,9 @@ function SettingsPanel({ tree, toast, close }: {
                 <button className="primary" title="apply the new caps"
                   onClick={() => saveKiosk(tree.slug, {
                     credits: +kkCredits || 0, spend_limit: +kkSpend || 0,
-                    storage_limit_mb: +kkStorage || 0 })
+                    // sandboxed = the disk size; clamp to its 4096 MB floor
+                    storage_limit_mb: kk.sandbox
+                      ? Math.max(4096, +kkStorage || 4096) : +kkStorage || 0 })
                     .then((r) => toast(r.freezes_cleared?.length
                       ? [`limit raised — cleared: ${r.freezes_cleared.join(', ')}`]
                       : ['kiosk caps saved']))
