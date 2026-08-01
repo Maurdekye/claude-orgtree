@@ -172,11 +172,15 @@ tier cap removes higher tiers entirely rather than greying them. A disabled
 chip's tooltip states the remedy, not just the number. Drag/slider ceilings
 resolve in order: kiosk hard cap → parent's free (only when the relevant
 cascade toggle is OFF; the ghost outline draws only then) → `max_top_grant`.
-Load-bearing (verified 2026-08-01): server-side, only the kiosk cap and the
-cascade-off parent-free bind. `max_top_grant` is a UI slider/drag bound
-ONLY, by design — no ledger precondition reads it, and user-actor cascades
-inflate top-level grants straight past it. Do not describe it as a binding
-ceiling (rename-or-enforce is an open question below).
+Load-bearing (ruled by the user, 2026-08-01): `max_top_grant` is a REAL
+ledger precondition — no op, user-actor cascades included, may push a
+top-level grant past it; the refusal names the setting so raising it is
+one step away. Server-side ceilings are therefore: kiosk hard cap →
+`max_top_grant` on top-level grants → the parent's free when the relevant
+cascade is off.
+Was. until 2026-08-01 `max_top_grant` was a UI slider/drag bound ONLY — no
+ledger precondition read it, and user-actor cascades inflated top-level
+grants straight past it.
 Was. ① "credit-bar drags are unbounded … the only remaining limit is kiosk
 mode" (true for exactly one commit); ② ui-guide's "a live bar caps at grant
 + the parent's free" — pre-dates the cascade toggles.
@@ -316,12 +320,14 @@ shipped once). The MCP wildcard `"*"` means every registered server, present
 AND future; under a list ceiling the effective set MATERIALIZES into that
 list, and the warning must say so because future registry additions stop
 auto-flowing.
-Bounds (verified 2026-08-01; ruling routed to the user, see Open): today the
-parent clamp is enforced for `add_dirs` and `tools` ONLY. `org_visibility`
-and `permission_mode` clamp against the kiosk ceiling alone — a no-op
-outside kiosks — so a vis="self" manager can hire a vis="full" report
-(live-verified). `permission_mode` is org-wide by construction, so "parent
-clamp" is inapplicable to it; the set_scope docstring overpromises.
+Bounds (ruled by the user, 2026-08-01): `org_visibility` JOINS the parent
+clamp — child ≤ parent, mirroring the tools pattern, with a subtree sweep
+when a manager's visibility is lowered. `permission_mode` remains org-wide
+by construction ("parent clamp" is inapplicable to it; the set_scope
+docstring overpromised and is fix-listed).
+Was. until 2026-08-01 the clamp covered `add_dirs` and `tools` only — a
+vis="self" manager could hire a vis="full" report (live-verified), while
+the agent-facing docs promised the shrink-only rule.
 
 ### D-022 · agent hires have no defaults
 Ruling (user, 2026-07-30): org hire defaults apply to USER hires only. An
@@ -343,6 +349,9 @@ self-grant on its grantor, a delegated grant on the DELEGATOR, and the
 re-parent sweep drops any grant whose anchor no longer commands the grantee.
 User audiences are never swept. Audiences survive retire and dissolve
 (retire is paging) and return live on rehire; only delete destroys them.
+No idle expiry (user, 2026-08-01): revocation stays lifecycle-only — the
+affordance for the scarce human is VISIBILITY of current user-audience
+holders with one-click rescind, never a timer.
 Why: attention is cheap to give and expensive to demand; an un-swept grant
 would be a back-channel between unrelated branches — the exact thing
 addressing forbids.
@@ -919,8 +928,9 @@ Was. two dead designs: ① Windows icacls write-deny on workspace/scratch
 sandboxes; ② d1c3928's "bounded persistent sandbox" (read-only rootfs +
 per-org named volumes + reactive daemon-side measurement → stop + freeze),
 superseded one day later — its weakness was overshoot ≤ write-rate × poll
-interval, which the filesystem cap removes. The legacy branch survives only
-for not-yet-migrated orgs (retirement timing: Open).
+interval, which the filesystem cap removes. The legacy branch is RETIRED
+(user ruling 2026-08-01 — every sandboxed org has migrated; the
+pre-migration rollback copies remain until the admin sweeps them per-org).
 
 ### D-064 · disk resize: grow online, shrink staged, refuse-not-guess
 Ruling (user rulings, 2026-08-01): GROW is online and immediate and clears
@@ -1000,7 +1010,9 @@ re-deriving a dict shape at a use site; never guess narrower than the code
 proves. It stays runtime-inert: TypedDicts, no validation and none wanted.
 Frontend: zero type-position `any` outside exception-handler params; the
 single wire-boundary cast lives in api.ts `req<T>()`; tsconfig strict with
-allowJs:false.
+allowJs:false. Phase 3 green-lit in full (user, 2026-08-01): pyright
+strict module-by-module and `noUncheckedIndexedAccess`, landed with the
+same inert-wave discipline (D-079).
 Why: these shapes previously lived only in people's heads — the exact bug
 class the project's misleading-reads history is made of; the API seam is
 where silent shape drift actually bites.
@@ -1033,7 +1045,9 @@ model tier (+ the mandatory redundant H/S/O/F letter chip), fill =
 lifecycle, dashed side-borders = cannot edit files (tier edge stays solid),
 glow = holds an audience (bright terracotta = the user's ear), left bar =
 credits. A hue carries ONE meaning app-wide; status indicators always carry
-a shape channel besides color. The tier palette (haiku #4fd6a3 · sonnet
+a shape channel besides color. Channels COMPOSE: a card carrying both the
+audience glow and lineage slabs shows both in one shadow list, glow first
+(user, 2026-08-01) — one channel never silently suppresses another. The tier palette (haiku #4fd6a3 · sonnet
 #3d8ce6 · opus #dcb0f5 · fable #e8b04b) is the output of a six-check CVD
 validation on surface #252526 (worst CVD ΔE 10.4) — never re-pick tier
 colors without re-running it.
@@ -1240,33 +1254,12 @@ the ruling recorded.
 
 ## Open — awaiting a ruling
 
-- **org_visibility parent clamp.** The parent clamp covers `add_dirs` and
-  `tools` only (D-021 Bounds); a vis="self" manager can hire a vis="full"
-  report, while mcptool's text promises the shrink-only rule. Either
-  visibility joins the clamp (mirror the tools pattern + a subtree sweep on
-  lowering) or it is struck from the capability lists in README/mcptool
-  text. Product call — routed to the user.
-- **`max_top_grant`.** UI-slider-only by design (D-014). Ruling wanted:
-  promote it to a real ledger precondition (user-actor cascade inflation
-  would need to honor it), or rename it so the UI-only status is
-  unmistakable.
-- **Legacy storage-path retirement.** Unmigrated orgs still run the
-  pre-pivot stack until auto-migration; nothing rules on when the dead
-  branch may be deleted, nor when the rollback volumes/host copies (swept
-  only by an admin-armed click) stop being kept.
-- **Audience idle expiry.** Audiences are revoked only by lifecycle events —
-  no idle expiry. Flagged for revisit specifically for USER audiences: the
-  human is scarce; the UI must show current user-audience holders for
-  one-click pruning. (PLAN №8.)
-- **Audience glow vs lineage stack.** Both are `box-shadow` at equal
-  specificity, so a card holding an audience AND a lineage stack shows only
-  the stack — opposite of the comment's claim. Proposed direction awaiting
-  ratification: compose both in one shadow list (glow first).
-- **Typing-plan phase 3.** Explicitly unratified, each needs its own green
-  light: pyright strict module-by-module; `noUncheckedIndexedAccess`.
-- **Mobile-responsiveness wave.** HELD by direct user instruction
-  (2026-07-31) — do not start until released. The recorded precedent stands
-  regardless: a specific user instruction outranks delegated authority.
+*(empty — all seven items were ruled by the user on 2026-08-01; each ruling
+now lives in its domain entry: D-021 Bounds (visibility clamp), D-014
+Load-bearing (`max_top_grant` enforced), D-063 (legacy path retired), D-023
+(no audience expiry), D-071 (channels compose), D-069 (typing phase 3).
+The mobile-responsiveness wave was released the same day — a project-state
+fact, tracked outside the register per the reverse razor.)*
 
 ---
 

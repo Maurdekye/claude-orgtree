@@ -537,8 +537,8 @@ main {
 .sq.ro-agent { border-style: dashed; border-top-style: solid; }
 /* audience glow: soft steel = holds an agent audience · bright terracotta =
    holds the USER's ear (steel, not sonnet blue — see .edge.aud-line) */
-.sq.aud { box-shadow: 0 0 10px rgba(190, 210, 230, .3); }
-.sq.aud-user { box-shadow: 0 0 14px rgba(217, 119, 87, .5), 0 0 30px rgba(217, 119, 87, .18); }
+.sq.aud { --aud-glow: 0 0 10px rgba(190, 210, 230, .3); box-shadow: var(--aud-glow); }
+.sq.aud-user { --aud-glow: 0 0 14px rgba(217, 119, 87, .5), 0 0 30px rgba(217, 119, 87, .18); box-shadow: var(--aud-glow); }
 /* status chips */
 .statuschip { font-size: 9px; padding: 0 6px; border-radius: 8px; font-family: var(--mono); }
 .statuschip.done { color: var(--ok); border: 1px solid rgba(111, 211, 119, .4); }
@@ -682,17 +682,24 @@ main {
 }
 
 /* ------------------------------------------------------- lineage stacks (§8.7) */
-.sq.stack1 { box-shadow: 5px -5px 0 -1px #232325, 5px -5px 0 0 var(--line-soft); }
+/* channels COMPOSE (user ruling 2026-08-01, D-071): the audience glow rides
+   the same box-shadow list as the slabs — glow first, transparent when no
+   audience is held. One channel never silently suppresses another. */
+.sq.stack1 {
+  box-shadow: var(--aud-glow, 0 0 0 0 transparent),
+    5px -5px 0 -1px #232325, 5px -5px 0 0 var(--line-soft);
+}
 .sq.stack2 {
-  box-shadow: 5px -5px 0 -1px #232325, 5px -5px 0 0 var(--line-soft),
+  box-shadow: var(--aud-glow, 0 0 0 0 transparent),
+    5px -5px 0 -1px #232325, 5px -5px 0 0 var(--line-soft),
     10px -10px 0 -1px #1e1e20, 10px -10px 0 0 var(--line-soft);
 }
 .sq.stack3 {
-  box-shadow: 5px -5px 0 -1px #232325, 5px -5px 0 0 var(--line-soft),
+  box-shadow: var(--aud-glow, 0 0 0 0 transparent),
+    5px -5px 0 -1px #232325, 5px -5px 0 0 var(--line-soft),
     10px -10px 0 -1px #1e1e20, 10px -10px 0 0 var(--line-soft),
     15px -15px 0 -1px #1a1a1c, 15px -15px 0 0 var(--line-soft);
 }
-.sq.aud.stack1, .sq.aud-user.stack1 { /* audience glow still wins visually */ }
 .stackbadge { cursor: pointer; border: 1px solid var(--line); background: var(--input); }
 .stackbadge:hover { border-color: var(--accent); color: var(--accent); }
 .edge.tether { stroke: #5a5a5c; stroke-dasharray: 2 4; stroke-width: 1.3px; opacity: .8; }
