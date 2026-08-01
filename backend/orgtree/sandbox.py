@@ -57,19 +57,21 @@ BRIDGE_PORT: int = int(os.environ.get("ORGTREE_BRIDGE_PORT", "7362") or 0)
 MEM: str = os.environ.get("ORGTREE_SANDBOX_MEM", "4g")
 CPUS: str = os.environ.get("ORGTREE_SANDBOX_CPUS", "2")
 
-# --- bounded persistent sandbox (user hard requirement 2026-07-31: no one in
-# the container may exhaust host disk beyond a fixed limit, while container
-# state stays fully editable and survives restarts) -------------------------
-# The rootfs runs READ-ONLY, so no unmeasured writable surface exists. The
-# system dirs agents legitimately edit are per-org named volumes, auto-seeded
-# from the image on first mount (live-verified: apt install, sudo, and the
-# docker-managed /etc/hosts binds all work; installs now survive container
-# RECREATION, which the old writable layer never did). /tmp and /run are
-# sized RAM tmpfs, already bounded by --memory. Named volumes have no quota
-# on Docker Desktop (overlay2/ext4 — no --storage-opt), so the per-org limit
-# is enforced reactively by storage_check (measure daemon-side → stop the
-# container + freeze); the ABSOLUTE host bound is Docker Desktop's VM disk
-# cap (Settings → Resources → disk image size), see README.
+# --- the one-disk sandbox (user hard requirement 2026-07-31; pivot shipped
+# 2026-08-01, D-063: no one in the container may exhaust host disk beyond a
+# fixed limit, while container state stays fully editable and survives
+# restarts) ------------------------------------------------------------------
+# Every sandboxed org's entire mutable state — system dirs, home incl.
+# transcripts, workspace, scratch — lives on ONE fixed-size ext4 image,
+# loop-mounted by the docker-desktop distro and bind-mounted into the
+# container. The FILESYSTEM is the hard cap (ENOSPC); soft tiers in
+# supervisor._storage_check_disk pause turns near it; the container is never
+# stopped for storage. The rootfs runs READ-ONLY (no unmeasured writable
+# surface); /tmp and /run are sized RAM tmpfs, bounded by --memory.
+# The pre-disk design (per-org named volumes + reactive daemon-side
+# measurement → container stop + freeze) is RETIRED — the SYS_DIRS volume
+# names below survive only as migrate_to_disk's source material and the
+# per-org rollback the admin sweeps from the settings panel.
 SYS_DIRS: tuple[str, ...] = ("usr", "var", "etc", "opt", "root", "srv")
 TMP_SIZE: str = os.environ.get("ORGTREE_SANDBOX_TMP", "1g")
 RUN_SIZE: str = os.environ.get("ORGTREE_SANDBOX_RUN", "64m")
@@ -169,6 +171,17 @@ def migrate_to_disk(org: Org) -> None:
     with store.DOC_LOCK:
         o2 = store.load_org(slug)
         o2.d["disk"] = {"size_mb": size_mb, "migrated_at": now()}
+        # the legacy enforcement is RETIRED (user ruling 2026-08-01, D-063):
+        # clear any pre-migration storage freeze the doc still carries —
+        # nothing sets or clears that flag anymore, so it would stick forever
+        o2.d.pop("storage_frozen", None)
+        for n in o2.nodes.values():
+            fz = n.get("frozen")
+            if isinstance(fz, dict) and fz.pop("storage", None):
+                fz.pop("storage_error", None)
+                if not fz.get("resume_texts") and not fz.get("error") \
+                        and not fz.get("until"):
+                    n.pop("frozen", None)
         if old_ws:
             for dd in o2.d["dirs"]:
                 if os.path.normpath(dd["path"]) == os.path.normpath(old_ws):
@@ -188,8 +201,9 @@ def migrate_to_disk(org: Org) -> None:
                 "body": f"Storage migration: this org's {floored_from} MB "
                         f"limit was raised to the 4096 MB one-disk minimum "
                         f"(system seed + transcripts now count inside the "
-                        f"cap). Its agents may consume up to 4 GB; shrink "
-                        f"is not offered yet — retire the org to reclaim."})
+                        f"cap). Its agents may consume up to 4 GB; the disk "
+                        f"can be grown online or shrunk (staged) from the "
+                        f"storage browser."})
         store.save_org(o2)
     _disk_flag.pop(slug, None)
     print(f"[orgtree] org {slug!r} migrated to its disk "
@@ -589,14 +603,6 @@ def sandbox_volumes_bytes(slug: str, max_age: float = 60.0) -> int | None:
                 if str(v.get("Name", "")).startswith(prefix))
     _vol_usage_cache[slug] = (time.time(), total)
     return total
-
-
-def sandbox_volumes_cached(slug: str) -> int | None:
-    """Cache-only volume reading for REQUEST paths (the df walk can take
-    seconds — same rule as workspace_usage_cached: never walk inline).
-    Enforcement keeps the cache warm; None until the first measurement."""
-    hit = _vol_usage_cache.get(slug)
-    return hit[1] if hit else None
 
 
 def exec_argv(name: str, cwd: str) -> list[str]:

@@ -139,14 +139,6 @@ def workspace_usage_cached(org: Org, max_age: float = 15.0) -> int | None:
     if hit is None:
         return None
     total = hit[1]
-    if sbx.is_sandboxed(org) and not sbx.on_disk(slug):
-        # legacy volume-layout org: container system-state GROWTH rides the
-        # same number the UI shows (cache-only: the df walk never runs on a
-        # request path; enforcement keeps it warm). Disk-migrated orgs need
-        # nothing here — their cached number IS the whole disk.
-        v = sbx.sandbox_volumes_cached(slug)
-        if v:
-            total += max(0, v - int(org.d.get("sandbox_vols_base") or 0))
     return total
 
 COMPACT_AT = float(os.environ.get("ORGTREE_COMPACT_AT", "0.80"))   # §8.2
@@ -1042,13 +1034,6 @@ def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
                 if org.d.get("spend_frozen"):
                     raise RuntimeError("kiosk spend limit reached — frozen "
                                        "until the limit is raised (admin side)")
-                if org.d.get("storage_frozen"):
-                    # a turn would restart the stopped container and resume
-                    # the filling — refuse until storage_check clears the flag
-                    raise RuntimeError(
-                        "org storage limit reached — the sandbox container is "
-                        "stopped; free space (or raise the limit) and turns "
-                        "resume automatically")
                 if org.d.get("storage_blocked") and sbx.on_disk(slug):
                     # disk-org soft cap (user verdict): the last 10% is the
                     # journaling reserve — new turns wait it out
@@ -1874,43 +1859,31 @@ def _storage_check_disk(slug: str, org: Org) -> str | None:
 
 
 def storage_check(slug: str) -> str | None:
-    """Enforce the kiosk workspace storage limit (user spec: never a freeze).
-    Over the limit → block file creation/writes in the workspace and notify
-    the org's agents; back under (files deleted, limit raised, kiosk
-    disabled) → unblock automatically. Returns 'blocked' | 'cleared' | None."""
+    """Storage enforcement dispatch. Disk-migrated sandboxed orgs → the soft
+    tiers over the ext4 cap (_storage_check_disk). Unsandboxed kiosks with a
+    loose cap → the icacls write-block below (D-031: an unsandboxed kiosk
+    bounds configuration and money, not capability — checked between turns).
+    Sandboxed-but-not-yet-migrated orgs enforce nothing here: their disk and
+    its cap arrive with the first container need. The pre-disk sandbox
+    enforcement (volume measurement → container stop → storage freeze) is
+    RETIRED (user ruling 2026-08-01, D-063)."""
     # №22: the full workspace walk runs OUTSIDE the doc lock — it reads the
     # filesystem, not the doc, and holding DOC_LOCK across a multi-GB walk
     # starved the whole turn machinery (and timed out MCP calls into
     # duplicate-mail retries)
     org = store.load_org(slug)
-    if sbx.is_sandboxed(org) and sbx.on_disk(slug):
-        return _storage_check_disk(slug, org)
+    if sbx.is_sandboxed(org):
+        if sbx.on_disk(slug):
+            return _storage_check_disk(slug, org)
+        return None
     used = workspace_usage_bytes(org)
-    # bounded persistent sandbox (user hard requirement 2026-07-31): the
-    # container's system state lives in named volumes — measured DAEMON-SIDE
-    # so the number survives a breach stop (the auto-unblock path needs it).
-    # None = measurement timed out → treated as a breach (fail closed: a
-    # million-tiny-files layout is an attack on the measurement itself).
-    sandboxed = sbx.is_sandboxed(org)
-    vols: int | None = sbx.sandbox_volumes_bytes(slug) if sandboxed else 0
-    meas_timeout = vols is None
-    if vols:
-        # charge growth above the image seed, not the seed itself
-        vols = max(0, vols - int(org.d.get("sandbox_vols_base") or 0))
-    used += vols or 0
     nudge: list[str] = []      # live nodes to steer mid-turn after the lock
-    breach_stop = False        # sandboxed breach → docker stop after the lock
     with store.DOC_LOCK:
         org = store.load_org(slug)
         k = kiosk_cfg(org)
         lim_mb = int((k or {}).get("storage_limit_mb") or 0)
-        if not lim_mb and sandboxed:
-            # a sandboxed org is NEVER unbounded (the requirement): the org's
-            # own sandbox.limit_mb, else the global default
-            lim_mb = int((org.d.get("sandbox") or {}).get("limit_mb")
-                         or sbx.DISK_MB)
         limit = lim_mb * 1048576
-        over = bool(lim_mb) and (used > limit or (sandboxed and meas_timeout))
+        over = bool(lim_mb) and used > limit
         blocked = bool(org.d.get("storage_blocked"))
         warned = bool(org.d.get("storage_warned"))
         # storage-bypass audit (user bug 2026-07-31): notices went to
@@ -1921,29 +1894,16 @@ def storage_check(slug: str) -> str | None:
         if over and not blocked:
             org.d["storage_blocked"] = True
             _org_write_acl(org, True)
-            why = (f"storage measurement timed out — treated as a breach"
-                   if meas_timeout else
-                   f"{used / 1048576:.1f} / {lim_mb} MB — workspace + "
-                   f"scratch + uploads + container system state together")
-            if sandboxed:
-                org._notify(live,
-                            f"⚠ The org is OVER its storage limit ({why}). "
-                            f"The sandbox container is STOPPED and turns are "
-                            f"frozen until usage drops — the admin can delete "
-                            f"files host-side or raise the limit (temporarily "
-                            f"raising it lets you clean up in-container, then "
-                            f"lower it back).")
-                breach_stop = True
-            else:
-                org._notify(live,
-                            f"⚠ The org is OVER its storage limit ({why}). "
-                            f"File creation and writes in the workspace and "
-                            f"every scratch folder are now BLOCKED at the OS "
-                            f"level — new writes will fail with permission "
-                            f"errors. Deleting still works: remove large "
-                            f"files you created and the block lifts "
-                            f"automatically at the next check. Do NOT keep "
-                            f"generating files.")
+            org._notify(live,
+                        f"⚠ The org is OVER its storage limit "
+                        f"({used / 1048576:.1f} / {lim_mb} MB — workspace + "
+                        f"scratch + uploads together). File creation and "
+                        f"writes in the workspace and every scratch folder "
+                        f"are now BLOCKED at the OS level — new writes will "
+                        f"fail with permission errors. Deleting still works: "
+                        f"remove large files you created and the block lifts "
+                        f"automatically at the next check. Do NOT keep "
+                        f"generating files.")
             store.save_org(org)
             nudge = live
             result = "blocked"
@@ -1951,18 +1911,13 @@ def storage_check(slug: str) -> str | None:
             org.d.pop("storage_blocked", None)
             org.d.pop("storage_warned", None)   # a fresh climb re-warns
             _org_write_acl(org, False)
-            if sandboxed:
-                # the breach froze the org (a stopped container can't run
-                # turns anyway) — lift the storage-kind freeze; the container
-                # restarts lazily on the next turn's ensure_container
-                clear_hard_freeze(org, "storage")
             org._notify(live,
                         f"Storage is back under the limit "
                         f"({used / 1048576:.1f} / {lim_mb or '∞'} MB) — "
                         f"writes are unblocked.")
             store.save_org(org)
             result = "cleared"
-        elif (lim_mb and not blocked and not warned and not meas_timeout
+        elif (lim_mb and not blocked and not warned
                 and used > limit * 0.9):
             # user ruling: a soft warning inside the last ~10% so agents can
             # slow down / clean up BEFORE the hard write block lands
@@ -1981,14 +1936,6 @@ def storage_check(slug: str) -> str | None:
             return None
         else:
             return None
-    if breach_stop:
-        # a sandboxed breach: the ACL can't reach the container's volumes, so
-        # the container itself is the lever — freeze first (interrupts turns
-        # gracefully, captures resume texts), then stop the box. The freeze's
-        # storage kind is lifted by the clear branch above once usage drops.
-        hard_freeze(slug, "storage",
-                    "org storage limit reached (sandbox container stopped)")
-        sbx.stop_container(slug)
     # mid-turn awareness: a busy node's steer delivers right after its next
     # tool call — the writing agent learns DURING the turn, not next turn.
     # send_message drains the mailbox into the steer, so the notice above is
@@ -2197,10 +2144,6 @@ def resume_frozen(slug: str) -> list[str]:
         if org.d.get("spend_frozen"):
             raise RuntimeError("the kiosk spend limit was reached — raise the "
                                "limit from the admin dashboard to resume")
-        if org.d.get("storage_frozen"):
-            raise RuntimeError("the org is over its storage limit — free "
-                               "space (or raise the limit); turns resume "
-                               "automatically once usage drops")
         for nid, n in org.nodes.items():
             fz = n.get("frozen")
             if not isinstance(fz, dict):
