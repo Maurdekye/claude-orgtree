@@ -5,7 +5,7 @@
 // ContextWheel/Activity indicators shared with the cards. Extracted verbatim
 // from Canvas.tsx in the phase-3 split.
 
-import { memo, useCallback, useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type {
   ChatMessage, ChatPayload, HistoryItem, ScratchPayload,
   ToolChip as ToolChipData, ToastFn,
@@ -148,19 +148,38 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
   const scroller = useRef<HTMLDivElement | null>(null)
   const loadedRef = useRef(false)     // first load always lands at the bottom
   const live = node.state === 'live'
+  // sticky-bottom, in one place. `stuck` is maintained by the SCROLL EVENT
+  // rather than recomputed at each update: growing content does not move
+  // scrollTop, so a reader sitting at the bottom stays "stuck" and a reader who
+  // scrolled up stays free until they come back down. 40px of slack keeps it
+  // from unsticking on a stray pixel.
+  const stickRef = useRef(true)
+  const [showJump, setShowJump] = useState(false)
   const nearBottom = () => {
     const el = scroller.current
     return !el || el.scrollHeight - el.scrollTop - el.clientHeight < 40
   }
-  const toBottom = () => requestAnimationFrame(() => {
-    if (scroller.current) scroller.current.scrollTop = scroller.current.scrollHeight
-  })
+  const setStuck = (v: boolean) => {
+    stickRef.current = v
+    setShowJump((s) => (s === !v ? s : !v))   // only re-render on a real flip
+  }
+  const pin = () => {
+    const el = scroller.current
+    if (el) el.scrollTop = el.scrollHeight
+  }
+  // AFTER the DOM commit, before paint: a bare requestAnimationFrame scheduled
+  // during an event handler can fire BEFORE React commits the new rows, so it
+  // read the OLD scrollHeight and landed short — that was the "gets left
+  // behind" bug. A layout effect measures post-commit, so it cannot miss.
+  useLayoutEffect(() => { if (stickRef.current) pin() })
+  const toBottom = () => { setStuck(true); pin() }
 
   const refresh = useCallback((force = false) =>
     getChat(slug, node.id).then((c) => {
-      // sticky-bottom: follow new content only if the reader is already at
-      // (or near) the bottom — never yank them out of scrollback
-      const stick = force || !loadedRef.current || nearBottom()
+      // sticky-bottom: the scroll handler already tracks whether the reader is
+      // at the bottom, so an update only has to RE-STICK on an explicit jump or
+      // the first load. Never yank someone out of scrollback.
+      if (force || !loadedRef.current) setStuck(true)
       loadedRef.current = true
       setChat(c)
       // a pending message graduates once the transcript contains it — by
@@ -194,7 +213,6 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
       }
       setLiveFeed((f) => f.filter((r) => r.sticky
         || (now - (r._at ?? 0) < 5000 && !covered(r))))
-      if (stick) toBottom()
     }).catch(() => {}), [slug, node.id])
 
   useEffect(() => { refresh() }, [refresh])
@@ -212,7 +230,9 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
   }, [pulse, node.id, refresh])
   useEffect(() => {                       // live per-message feed while working
     if (streamEvt && streamEvt.node === node.id) {
-      const stick = nearBottom()
+      // no per-event stick check: the layout effect re-pins after every commit
+      // whenever the reader is still at the bottom, so streaming follows without
+      // each call site having to remember to ask
       // the reply (or a tool call) started: the live ribbon folds into a
       // clickable "thought for Xs" line that stays in the flow (user spec)
       const foldThought = () => {
@@ -229,14 +249,12 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
         // complete message event replaces it when the block finishes
         foldThought()
         setDraft((d) => (d + streamEvt.text).slice(-12000))
-        if (stick) toBottom()
         return
       }
       if (streamEvt.kind === 'thinking') {
         if (!thinkBuf.current) thinkT0.current = Date.now()
         thinkBuf.current = (thinkBuf.current + streamEvt.text).slice(-24000)
         setThinking((t) => (t + streamEvt.text).slice(-2000))
-        if (stick) toBottom()
         return
       }
       if (streamEvt.kind === 'steered') {
@@ -246,7 +264,6 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
       foldThought()
       if (streamEvt.kind === 'text') setDraft('')
       setLiveFeed((f) => [...f.slice(-24), { ...streamEvt, _at: Date.now() }])
-      if (stick) toBottom()
     }
   }, [streamEvt, node.id])   // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
@@ -428,7 +445,8 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
       {chat?.last_error && view !== 'chat' && (
         <div className="desk-error"><WarnIcon fontSize="inherit" /> {chat.last_error}</div>)}
       {view === 'chat' && (
-        <div className="msgs" ref={scroller}>
+        <div className="msgs" ref={scroller}
+          onScroll={() => setStuck(nearBottom())}>
           {!chat && <div className="dim pad">loading…</div>}
           {chat && !chat.messages.length && !live_feed.length &&
             <div className="dim pad">no conversation yet</div>}
@@ -506,6 +524,15 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
               permissions to write to …, but you haven't granted it yet").
               The banner restated that, pinned below even undelivered pending
               mail, so a past event sorted under a future one. */}
+          {/* sticky INSIDE the scroller (not a wrapper): the desk's flex chain
+              is documented as fragile, and sticky needs no new layout box. It
+              is the last child, so it rides the bottom edge of the scrollport
+              while the reader is up in the scrollback. */}
+          {showJump && (
+            <button className="jumpbottom" onClick={toBottom}
+              title="jump to the newest message">
+              ↓ jump to bottom
+            </button>)}
         </div>
       )}
       {view === 'history' && <HistoryView slug={slug} nid={node.id} />}
@@ -784,6 +811,15 @@ const splitNotices = (t: string | null | undefined) => {
   return { notices, rest: s.slice(m[0].length) }
 }
 
+// The restart replay (supervisor.reconcile) re-sends the message that drove an
+// interrupted turn, prefixed with this marker. Re-delivery is deliberate and
+// load-bearing — D-045's "worst case a duplicate, never a loss" — but the
+// reader already knows what they typed, so it folds into a one-line marker
+// instead of replaying their own prompt back at them (user, 2026-08-02).
+const RESTART_MARK = '[ORGTREE RESTART]'
+const isRestart = (t: string | null | undefined) =>
+  (t ?? '').trimStart().startsWith(RESTART_MARK)
+
 // hide the machine chrome — [MAIL]/[END MAIL] markers, drive nudges — and
 // render the FROM attribution as a small header instead of body text.
 const stripEnvelope = (t: string | null | undefined) => (t ?? '')
@@ -879,6 +915,16 @@ const Msg = memo(function Msg({ m, slug, nid, onMailLink }: {
   // notices come out BEFORE the envelope strip — they are their own card
   const { notices, rest } = m.role === 'user'
     ? splitNotices(m.text) : { notices: [] as string[], rest: m.text }
+  // a restart replay is machinery, not something the reader said: one line,
+  // with the repeated prompt behind a click for anyone who wants to confirm it
+  if (m.role === 'user' && isRestart(rest)) {
+    return (
+      <div className="msg user restartmsg">
+        {notices.length > 0 && <NoticeLine notices={notices} />}
+        <RestartLine text={stripEnvelope(rest)} />
+      </div>
+    )
+  }
   const text = m.role === 'user' ? stripEnvelope(rest) : m.text
   return (
     <div className={'msg ' + m.role + (m.oracle ? ' oracle' : '')}>
@@ -895,6 +941,23 @@ const Msg = memo(function Msg({ m, slug, nid, onMailLink }: {
     </div>
   )
 })
+
+// "resumed after a restart" — the replayed prompt is hidden by default because
+// the reader typed it and can see it upstream; one click proves what the agent
+// was actually re-sent, which matters when diagnosing a duplicated turn.
+function RestartLine({ text }: { text: string }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="thoughtwrap">
+      <button className="thoughtline noticeline" onClick={() => setOpen((o) => !o)}
+        title={open ? 'collapse' : 'show what was re-sent to the agent'}>
+        <AutorenewIcon fontSize="inherit" />
+        {' '}resumed after an orgtree restart {open ? '▾' : '▸'}
+      </button>
+      {open && <div className="thoughtbody noticebody">{text}</div>}
+    </div>
+  )
+}
 
 // Org-change notices (hire/retire/reallocate/move/scope) ride in on the next
 // turn's message. They are about the ORG, not the conversation, so they fold

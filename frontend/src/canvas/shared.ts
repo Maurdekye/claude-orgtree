@@ -165,6 +165,24 @@ export const INBOX_H = 64
 // wide left subtree (~32 leaf columns) never crosses into negative space
 export const EYE_ANCHOR_X = 6000
 
+// The desk's counter-scale, and the reader's text-size dial over it. Keep this
+// the ONE definition: the factor used to live both here-ish (cards.tsx) and in
+// .desk-inner's transform, which is one equation with no slack —
+// 900 × 0.13333 = 120 = NODE_H − 2×inset.
+export const DESK_SCALE = 0.13333
+export const DESK_DPI_KEY = 'orgtree-desk-dpi'
+// device preference (screen-dependent), so localStorage — never the org doc
+export const deskDpi = (): number => {
+  try {
+    const v = parseFloat(localStorage.getItem(DESK_DPI_KEY) || '1')
+    return Number.isFinite(v) && v >= 0.5 && v <= 3 ? v : 1
+  } catch { return 1 }
+}
+export const setDeskDpi = (v: number) => {
+  try { localStorage.setItem(DESK_DPI_KEY, String(v)) } catch { /* private mode */ }
+  document.documentElement.style.setProperty('--desk-dpi', String(v))
+}
+
 export function withDraftTree(tree: TreePayload, draft: DraftState | null): CanvasNode {
   const draftNode = (): CanvasNode => ({
     id: DRAFT, title: '', tier: draft!.tier, state: 'draft', children: [],

@@ -367,9 +367,19 @@ main {
    at desk-fill zoom (z ≈ 7.5) authored px ≈ screen px (0.1333 × 7.5 ≈ 1.0).
    Zooming out only scales DOWN, so the browser's ≥10px minimum-font clamp
    never forces text larger than authored. */
+/* The desk is authored at 900px and counter-scaled into the 124px card, so
+   on-screen text = authored × 0.13333 × cameraZoom — which is why it turns
+   unreadable on a smaller screen (the camera cannot zoom as far).
+   --desk-dpi is the reader's own text-size dial: it SHRINKS the authored
+   coordinate space and scales up by the same factor, so the panel still lands
+   on exactly 120px of card (900/d × 0.13333d ≡ 120) while every authored px
+   buys more screen. Bigger text, proportionally less of it visible — which is
+   what a font-size control is. Device preference, so it lives in localStorage,
+   never in the org doc. */
 .desk-inner {
-  width: 900px; height: 900px;
-  transform: scale(0.13333); transform-origin: 0 0;
+  width: calc(900px / var(--desk-dpi, 1));
+  height: calc(900px / var(--desk-dpi, 1));
+  transform: scale(calc(0.13333 * var(--desk-dpi, 1))); transform-origin: 0 0;
   padding: 12px 18px 22px 14px;
 }
 .desk-body {
@@ -453,6 +463,18 @@ main {
   gap: 7px; padding: 3px 2px;
 }
 .desk-over .msgs::-webkit-scrollbar { width: 8px; }
+/* "jump to bottom" — appears only once the reader has left the sticky zone.
+   position:sticky keeps it on the bottom edge of the scrollport without a
+   wrapper element (the desk's flex chain is fragile by documented history);
+   align-self keeps it from stretching to the column's full width. */
+.jumpbottom {
+  position: sticky; bottom: 4px; align-self: center; z-index: 3;
+  font-size: 11px; padding: 3px 10px; border-radius: 999px;
+  background: var(--panel); color: var(--ink);
+  border: 1px solid var(--line); box-shadow: var(--shadow); cursor: pointer;
+  opacity: .92;
+}
+.jumpbottom:hover { opacity: 1; border-color: var(--accent); }
 .msg {
   max-width: 100%; font-size: 14px;
   line-height: 1.45; white-space: pre-wrap; overflow-wrap: break-word;

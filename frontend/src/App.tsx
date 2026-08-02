@@ -16,6 +16,7 @@ import {
 } from './icons'
 import { DirList } from './forms'
 import { FolderPickerHost } from './picker'
+import { deskDpi, setDeskDpi } from './canvas/shared'
 import type {
   AudiencesPayload, DefaultsPayload, InboxPayload, KioskSpecRequest,
   MailEntry, OpRequest, OrgEvent, OrgListEntry, SweepPreview, ToastFn,
@@ -51,6 +52,8 @@ const slugFromPath = () => {
 }
 
 export default function App() {
+  // apply the stored desk text size before anything renders a desk
+  useEffect(() => { setDeskDpi(deskDpi()) }, [])
   const [orgs, setOrgs] = useState<OrgListEntry[]>([])
   const [slug, setSlug] = useState<string | null>(slugFromPath)   // /o/<slug> survives refresh
   const [tree, setTree] = useState<TreePayload | null>(null)
@@ -990,6 +993,29 @@ function SweepBlock({ slug, toast }: { slug: string; toast: ToastFn }) {
   )
 }
 
+// Desk text size — a DEVICE preference, never org state: the same org read on a
+// laptop and a 4K monitor wants different values. Applied immediately to the
+// --desk-dpi custom property, so it is not part of the settings save.
+function DeskTextSize() {
+  const [dpi, setDpi] = useState(deskDpi)
+  const apply = (v: number) => {
+    const c = Math.min(2.5, Math.max(0.75, Math.round(v * 100) / 100))
+    setDpi(c); setDeskDpi(c)
+  }
+  return (
+    <>
+      <div className="field-label">desk text size — this browser only (the desk
+        is counter-scaled into the card, so it reads smaller on smaller screens)</div>
+      <div className="row">
+        <button onClick={() => apply(dpi - 0.25)} disabled={dpi <= 0.75}>−</button>
+        <span style={{ minWidth: '4.5em', textAlign: 'center' }}>{Math.round(dpi * 100)}%</span>
+        <button onClick={() => apply(dpi + 0.25)} disabled={dpi >= 2.5}>+</button>
+        <button onClick={() => apply(1)} disabled={dpi === 1}>reset</button>
+      </div>
+    </>
+  )
+}
+
 function SettingsPanel({ tree, toast, close }: {
   tree: TreePayload
   toast: ToastFn
@@ -1030,6 +1056,7 @@ function SettingsPanel({ tree, toast, close }: {
     <div className="overlay" onClick={close}>
       <div className="settings" onClick={(e) => e.stopPropagation()}>
         <h3><SettingsIcon fontSize="inherit" /> {tree.name} — settings</h3>
+        <DeskTextSize />
         {/* folder access lives on the eye's ⚙ gear panel (user ruling) */}
         <div className="field-label">top-level grant cap</div>
         <input type="number" min="1" step="1" value={maxTop} style={{ width: '8em' }}

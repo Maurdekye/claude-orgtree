@@ -13,7 +13,8 @@ import {
   LockIcon, MailIcon, SettingsIcon,
 } from '../icons'
 import {
-  DRAFT, NODE_H, NODE_W, TIER_LETTER, TIERS, USER, USER_H, USER_W,
+  DESK_SCALE, deskDpi, DRAFT, NODE_H, NODE_W, TIER_LETTER, TIERS, USER,
+  USER_H, USER_W,
 } from './shared'
 import type {
   ActivityInfo, CanvasNode, DraftScope, DraftState, MailLinkFn, OpFn, Pile,
@@ -219,8 +220,10 @@ function EyeDesk({ map, op, slug, pulse, toast, streamEvt, inboxCount,
     } catch { /* private mode */ }
   }, [idsKey, slug])
   const open = agents.filter((a) => !minned.has(a.id))
-  // the inner virtual panel matches the card interior through the desk scale
-  const innerW = Math.round((eyeW - 4) / 0.13333)
+  // the inner virtual panel matches the card interior through the desk scale.
+  // DESK_SCALE/deskDpi are shared so this stays in step with .desk-inner's
+  // transform — the same equation used to be written out here AND in the CSS
+  const innerW = Math.round((eyeW - 4) / (DESK_SCALE * deskDpi()))
   return (
     <div className="desk-over eye-desk" onWheel={(e) => e.stopPropagation()}
       onPointerDown={(e) => e.stopPropagation()}>
