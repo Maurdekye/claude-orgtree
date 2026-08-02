@@ -371,12 +371,21 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
   // №13: the composer grows with the draft (2 → ~8 rows); the desk interior
   // is a fixed 900px virtual panel, so .msgs absorbs the difference
   const taRef = useRef<HTMLTextAreaElement | null>(null)
-  const grow = () => {
+  const grow = useCallback(() => {
     const el = taRef.current
     if (!el) return
     el.style.height = 'auto'
     el.style.height = Math.min(el.scrollHeight, 160) + 'px'
-  }
+  }, [])
+  // the height follows the TEXT, not the keystroke. onChange was the only
+  // caller, so every other way the value changes left the inline height
+  // stale: SENDING cleared the draft and the box stayed tall until the desk
+  // remounted (user bug 2026-08-02), a draft restored from localStorage
+  // opened at two rows however long it was, and picking a slash hint did not
+  // resize either. A layout effect measures POST-COMMIT, so the new value is
+  // already in the DOM when this reads scrollHeight — reading it inside the
+  // handler would measure the outgoing text.
+  useLayoutEffect(grow, [text, grow])
   // №6: dropping a file anywhere on the desk uploads it (and prevents the
   // browser's default navigate-away, which would also eat the draft)
   const dropProps = {
