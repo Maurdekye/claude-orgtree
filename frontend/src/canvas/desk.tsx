@@ -112,6 +112,11 @@ interface DeskChatProps {
   onMailLink?: MailLinkFn
 }
 
+// how long the send receipt (§№11) stays up — long enough to read a routing
+// word you were not expecting, short enough that it never describes a message
+// that has already been answered
+const SENDMODE_MS = 6000
+
 function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onConfig,
   onRecenter, pub, bare = false, compact = false, compactAt, onMailLink }: DeskChatProps) {
   const [chat, setChat] = useState<ChatPayload | null>(null)
@@ -130,7 +135,20 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
     return next
   }), [draftKey])
   const [pending, setPending] = useState<string[]>([])   // optimistic, until the server copy lands
-  const [sendMode, setSendMode] = useState('') // №11: which door the send went through
+  // №11: which door the last send went through. It is a RECEIPT, not a state —
+  // it answers "where did that message just go", and that answer goes stale the
+  // moment the queue drains. It had no clear at all (user bug 2026-08-02: the
+  // "delivering" line sat under the composer forever), so it expires. Anything
+  // durable has its own surface: the per-message "delivering mid-task…" tag,
+  // the frozen badge, the mail count.
+  const [sendMode, setSendMode] = useState('')
+  const modeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const flashMode = useCallback((m: string) => {
+    setSendMode(m)
+    if (modeTimer.current) clearTimeout(modeTimer.current)
+    modeTimer.current = m ? setTimeout(() => setSendMode(''), SENDMODE_MS) : null
+  }, [])
+  useEffect(() => () => { if (modeTimer.current) clearTimeout(modeTimer.current) }, [])
   const [asking, setAsking] = useState(false)
   const [askCompact, setAskCompact] = useState(false)
   const [view, setView] = useState<'chat' | 'history' | 'files' | 'inbox'>('chat')     // chat | history | files | inbox
@@ -315,12 +333,13 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
     // ghost instead of leaving a dimmed bubble forever
     setPending((p) => [...p, t])
     if (live) setChat((c) => c && ({ ...c, busy: true }))
+    flashMode('')   // the previous send's receipt must not outlive this one
     toBottom()
     sendMessage(slug, node.id, t, paths)
       .then((r) => {
         // review C3: name every real outcome — "delivering" as the fallback
         // lied for frozen nodes (mail waits durably; nothing delivers now)
-        setSendMode(r.compacting ? 'compacting — the org way (§8)'
+        flashMode(r.compacting ? 'compacting — the org way (§8)'
           : r.command ? 'command sent'
             : r.steering ? 'steering in mid-task'
               : r.frozen ? 'frozen — mail waits for ▶ resume'
@@ -622,7 +641,7 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
           placeholder={live ? `message ${node.id}…`
             : node.state === 'archived'
               ? `message ${node.id} — queued until rehire…` : node.state}
-          onChange={(e) => { setSendMode(''); setText(e.target.value); grow() }}
+          onChange={(e) => { flashMode(''); setText(e.target.value); grow() }}
           onPaste={(e) => {
             // №6: Ctrl+V of an image/file auto-bridges to a real upload
             if (e.clipboardData?.files?.length) {
