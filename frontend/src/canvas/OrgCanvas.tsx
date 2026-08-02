@@ -31,14 +31,13 @@ export interface OrgCanvasProps {
   slug: string
   pulses: Record<string, PulseEvent>
   toast: ToastFn
-  streams: Record<string, StreamEvent>
   activity?: Record<string, ActivityInfo | undefined>
   mailEvt: MailEvent | null
   /** open the user's inbox, optionally jumped to a specific mail id */
   onInbox?: (jump?: string) => void
 }
 
-export function OrgCanvas({ tree, op, slug, pulses, toast, streams, activity, mailEvt, onInbox }: OrgCanvasProps) {
+export function OrgCanvas({ tree, op, slug, pulses, toast, activity, mailEvt, onInbox }: OrgCanvasProps) {
   const [draft, setDraft] = useState<DraftState | null>(null)
   const [configId, setConfigId] = useState<string | null>(null)
   const [lineageId, setLineageId] = useState<string | null>(null)
@@ -1003,7 +1002,7 @@ export function OrgCanvas({ tree, op, slug, pulses, toast, streams, activity, ma
               posX={(id) => posOf(id)?.x ?? 0}
               onJump={(id) => centerOn(id)}
               map={map} op={op} slug={slug} pulses={pulses} toast={toast}
-              streams={streams} compactAt={tree.compact_at}
+              compactAt={tree.compact_at}
               inboxCount={(tree.user_inbox_count ?? 0) + (tree.credit_requests?.length ?? 0)}
               onInbox={() => {
                 const nw = tree.user_inbox_newest ?? new Date().toISOString()
@@ -1029,7 +1028,7 @@ export function OrgCanvas({ tree, op, slug, pulses, toast, streams, activity, ma
               dragging={nodeDrag.current?.id === n.id && nodeDrag.current!.moved}
               isDrop={dropId === n.id}
               seats={seats} map={map} op={op} slug={slug} pulses={pulses} toast={toast}
-              streams={streams} pxc={pxPerCredit} zoom={view.z} act={activity?.[n.id]}
+              pxc={pxPerCredit} zoom={view.z} act={activity?.[n.id]}
               onSpawn={(t) => spawn(n.id, t)} onConfig={() => setConfigId(n.id)}
               onInbox={() => setInboxId(n.id)} onLineage={() => setLineageId(n.id)}
               onMailLink={openMail}

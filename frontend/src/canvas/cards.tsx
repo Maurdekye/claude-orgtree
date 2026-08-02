@@ -18,7 +18,7 @@ import {
 } from './shared'
 import type {
   ActivityInfo, CanvasNode, DraftScope, DraftState, MailLinkFn, OpFn, Pile,
-  Pt, PulseEvent, StreamEvent,
+  Pt, PulseEvent,
 } from './shared'
 import { Activity, ContextWheel, DeskChat } from './desk'
 import { DraftScopeModal } from './modals'
@@ -51,7 +51,6 @@ interface UserNodeProps {
   slug: string
   pulses: Record<string, PulseEvent>
   toast: ToastFn
-  streams: Record<string, StreamEvent>
   compactAt?: number
 }
 
@@ -59,7 +58,7 @@ export function UserNode({ pos, isDrop, stats, inboxCount, seats, mailGlow,
   kiosk, pub, kioskRemaining, kioskSegs, pxc, zoom, onInbox, onGear, onSpawn,
   onMailLink,
   focused, eyeW, onFocus, posX, onJump, map, op, slug, pulses, toast,
-  streams, compactAt }: UserNodeProps) {
+  compactAt }: UserNodeProps) {
   const downRef = useRef<Pt | null>(null)
   // const extraction: the kiosk-credits narrowing must survive the commit
   // closure below (a property check alone would not)
@@ -136,7 +135,7 @@ export function UserNode({ pos, isDrop, stats, inboxCount, seats, mailGlow,
         maxTier={kiosk?.max_tier} />
       {focused && (
         <EyeDesk map={map} op={op} slug={slug} pulses={pulses} toast={toast}
-          streams={streams} inboxCount={inboxCount} onInbox={onInbox}
+          inboxCount={inboxCount} onInbox={onInbox}
           onGear={onGear} pub={pub} eyeW={eyeW} posX={posX} onJump={onJump}
           compactAt={compactAt} onMailLink={onMailLink} />
       )}
@@ -156,7 +155,6 @@ interface EyeDeskProps {
   slug: string
   pulses: Record<string, PulseEvent>
   toast: ToastFn
-  streams: Record<string, StreamEvent>
   inboxCount: number
   onInbox?: () => void
   onGear?: () => void
@@ -168,7 +166,7 @@ interface EyeDeskProps {
   onMailLink: MailLinkFn
 }
 
-function EyeDesk({ map, op, slug, pulses, toast, streams, inboxCount,
+function EyeDesk({ map, op, slug, pulses, toast, inboxCount,
   onInbox, onGear, pub, eyeW, posX, onJump, compactAt, onMailLink }: EyeDeskProps) {
   const agents = [...map.values()].filter((n) =>
     n.id !== USER && n.id !== DRAFT && n.state === 'live' && !n.isBearerOf
@@ -278,7 +276,7 @@ function EyeDesk({ map, op, slug, pulses, toast, streams, inboxCount,
           {open.map((a) => (
             <div className="eye-panel" key={a.id}>
               <DeskChat node={a} map={map} op={op} slug={slug}
-                pulse={pulses[a.id] ?? null} streamEvt={streams[a.id] ?? null}
+                pulse={pulses[a.id] ?? null}
                 toast={toast} pub={pub} bare compact compactAt={compactAt}
                 onMailLink={onMailLink} />
             </div>
@@ -612,7 +610,6 @@ interface NodeSquareProps {
   slug: string
   pulses: Record<string, PulseEvent>
   toast: ToastFn
-  streams: Record<string, StreamEvent>
   pxc: number
   zoom: number
   act?: ActivityInfo
@@ -637,7 +634,7 @@ interface NodeSquareProps {
 }
 
 export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, map, op, slug,
-  pulses, toast, streams, pxc, zoom, act, onSpawn, onConfig, onInbox, onLineage,
+  pulses, toast, pxc, zoom, act, onSpawn, onConfig, onInbox, onLineage,
   onRecenter, pub, kioskRemaining, cascadeAlloc, maxTop, pile, compactAt, maxTier,
   onMailLink, onDragStart, onDragMove, onDragEnd, onDragCancel }: NodeSquareProps) {
   // pile fronts zoom on a plain CENTER click (user spec) — track the
@@ -759,7 +756,7 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, m
       )}
       {focused && (
         <DeskChat node={node} map={map} op={op} slug={slug}
-          pulse={pulses[node.id] ?? null} streamEvt={streams[node.id] ?? null} toast={toast}
+          pulse={pulses[node.id] ?? null} toast={toast}
           onLineage={onLineage} onConfig={onConfig} compactAt={compactAt}
           onRecenter={onRecenter} pub={pub} onMailLink={onMailLink} />
       )}

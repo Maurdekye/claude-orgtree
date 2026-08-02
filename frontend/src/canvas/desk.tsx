@@ -23,11 +23,10 @@ import {
 import { ago, EXTERN, md, TIER_LETTER, USER, useEsc } from './shared'
 import {
   addPending, CHAT_WINDOW, dropPending, loadOlder as storeLoadOlder, markBusy,
-  pollWhileBusy, refreshConvo, useConvo,
+  refreshConvo, useConvo,
 } from '../convo'
 import type {
   ActivityInfo, CanvasNode, LiveRow, MailLinkFn, OpFn, PulseEvent,
-  StreamEvent,
 } from './shared'
 import { ConfirmModal } from './modals'
 import { InboxView } from './mail'
@@ -94,7 +93,7 @@ export function Activity({ act, dotOnly }: { act?: ActivityInfo; dotOnly?: boole
 // over stable setters, so their per-render identities are ignorable.
 export const DeskChat = memo(DeskChatInner, (p, n) =>
   p.node === n.node && p.map === n.map && p.slug === n.slug
-  && p.pulse === n.pulse && p.streamEvt === n.streamEvt
+  && p.pulse === n.pulse
   && p.pub === n.pub && p.bare === n.bare && p.compact === n.compact
   && p.compactAt === n.compactAt)
 
@@ -105,7 +104,6 @@ interface DeskChatProps {
   slug: string
   pulse: PulseEvent | null
   toast: ToastFn
-  streamEvt: StreamEvent | null
   onLineage?: () => void
   onConfig?: () => void
   onRecenter?: () => void
@@ -121,7 +119,7 @@ interface DeskChatProps {
 // that has already been answered
 const SENDMODE_MS = 6000
 
-function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onConfig,
+function DeskChatInner({ node, map, op, slug, pulse, toast, onLineage, onConfig,
   onRecenter, pub, bare = false, compact = false, compactAt, onMailLink }: DeskChatProps) {
   // THE CONVERSATION IS NOT THIS COMPONENT'S. It lives in one per-node store
   // (convo.ts) that every view of this node subscribes to, because a node can
@@ -243,11 +241,11 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
     // store fetched it for us or another view had already loaded it
     if (convo.loaded && !loadedRef.current) { loadedRef.current = true; setStuck(true) }
   }, [convo.loaded])   // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => {
-    // one poller per NODE, owned by the store — not one per mounted view
-    pollWhileBusy(slug, node.id, !!chat?.busy)
-    return () => pollWhileBusy(slug, node.id, false)
-  }, [slug, node.id, chat?.busy])
+  // (the busy-gated poller that lived here is gone. Liveness is now driven by
+  // SUBSCRIPTION inside convo.ts: if a view is watching a node, that node is
+  // polled. Gating it on chat.busy meant the refresh loop depended on a field
+  // that arrives in the payload the loop fetches — so a view that started out
+  // believing "not busy" could never learn otherwise. See convo.beat().)
 
   // an archived agent still RECEIVES mail (user ruling) — it queues in its
   // inbox and gets acted on at rehire; only unrecoverable nodes refuse

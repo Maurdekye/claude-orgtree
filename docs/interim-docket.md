@@ -414,6 +414,53 @@ The reserved org-doc key that was written nowhere and read nowhere, while shadow
 Gone from `ledger._new_doc`, `schema.OrgDoc` and the types comment.
 → `ded9f1a`
 
+## D-34 · Desks go stale until zoomed out or reloaded — THE UNDERLYING CAUSE
+> switchboard *and* individual agent desk view state still sometimes seems to go out of sync with
+> the ground truth; it doesnt update until all desk views are zoomed out or the page is refreshed.
+> there's got to be a more fundamental underlying cause this keeps happening.
+
+There was, and it is worth stating plainly because it had already produced three separate reports
+(D-13, D-30, this one) that each looked like a different bug:
+
+> **Liveness was gated on state that could itself be stale.**
+
+The refresh loop was `pollWhileBusy(slug, nid, !!chat?.busy)` — it polled only while the payload
+said the node was busy, and `busy` **arrives in the payload the poll fetches**. That is a bootstrap
+trap: open a desk whose last payload said `busy:false` while the node was in fact working — a turn
+that began during a websocket gap, an event that never arrived, a view mounted at the wrong moment
+— and the poll never starts, so nothing can ever correct the belief that stopped it from starting.
+The view sits frozen until it is unmounted (zoom out) or the page is reloaded, which is exactly the
+report, word for word.
+
+Every earlier fix had improved the *push* paths — per-node event routing (D-13), then one shared
+store (D-30) — while leaving the *pull* path conditional on the very thing the pull repairs.
+
+**Fix:** liveness is driven by SUBSCRIPTION, not by payload state. `convo.beat()` polls any node
+that has at least one mounted view — a fact known locally that cannot be stale. Cadence still adapts
+(2.5 s while the payload says busy, 7 s otherwise) but the difference is only *how often*, never
+*whether*.
+
+Two accomplices removed in the same pass:
+- **The dead `streams` prop chain.** P2 stopped calling `setStreams`, so `streamEvt` was permanently
+  `null` — yet it was still threaded App → OrgCanvas → UserNode/EyeDesk/NodeSquare → DeskChat and
+  still compared in DeskChat's memo. A prop that *looks* like the update path but can never fire is
+  precisely what made this hard to see. Deleted end to end.
+- **`resetConvos()` could orphan subscribers.** It called `M.clear()`, but a mounted view has
+  already handed its re-render callback to a *specific* Entry object; discarding the map leaves that
+  callback attached to an orphan and every later notify goes to a set nobody is listening to — a
+  permanently deaf view with exactly these symptoms. It now resets entries **in place**. Entry
+  identity is load-bearing, and the comment says so.
+
+**Verified live.** Idle desk, the state that used to wedge: **4 chat fetches in 25 s** where the old
+code fetched once and waited forever. Heartbeat follows the view — focus `hex-red` → 3 fetches for
+it and 0 for `hex-blue`; switch focus → 0 and 4.
+⚠ **Method note, because it nearly produced a false negative:** the first measurement showed *zero*
+fetches and looked like a total failure. Python's `time.sleep` blocks Playwright's event loop, so
+request events were never dispatched — the probe was broken, not the code. In-page logging showed
+the heartbeat ticking normally. Use `page.wait_for_timeout`, never `time.sleep`, when a probe is
+counting events.
+→ `PENDING-COMMIT`
+
 ---
 
 ## Future feature pass — SPECIFIED, NOT BUILT

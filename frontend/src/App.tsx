@@ -41,7 +41,6 @@ interface PulseEvt { node: string; event: string; t: number }
 // text is required on the OUT side: the backend sends it on every stream()
 // emit (supervisor stream plumbing) — the `?? ''` at the construction site
 // is the wire-boundary guard, not a real case
-interface StreamEvt { node: string; kind: string; text: string; sticky?: boolean; t: number; id?: string }
 interface MailEvt { from: string; to: string; t: number }
 interface NodeActivity { phase: string; tool?: string }
 interface Toast { id: number; lines: string[]; undo: ToastUndo | null }
@@ -69,7 +68,6 @@ export default function App() {
   // Functional updates are load-bearing: every queued updater runs, so a batch
   // carrying events for two nodes now keeps both.
   const [pulses, setPulses] = useState<Record<string, PulseEvt>>({})
-  const [streams, setStreams] = useState<Record<string, StreamEvt>>({})
   const [mailEvt, setMailEvt] = useState<MailEvt | null>(null)
   const [activity, setActivity] = useState<Record<string, NodeActivity>>({})   // node → {phase, tool}
   const [showSettings, setShowSettings] = useState(false)
@@ -420,7 +418,7 @@ export default function App() {
                   <GitHubIcon fontSize="inherit" /></a>
               </header>
               <OrgCanvas tree={tree} op={op} slug={slug} pulses={pulses} toast={toast}
-                streams={streams} activity={activity} mailEvt={mailEvt}
+                activity={activity} mailEvt={mailEvt}
                 onInbox={(jump: unknown) => {
                   setInboxJump(typeof jump === 'string' ? jump : null)
                   setShowInbox(true)

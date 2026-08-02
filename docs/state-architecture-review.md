@@ -170,6 +170,18 @@ behind the user's transient "the charter looks empty" report — the panel had s
 that later changed. The latent variant is worse: a panel mounted for node A and shown for node B
 without unmounting would display A's charter *while saving to B*.
 
+### ②a — the deeper form of the same disease: liveness gated on stale state
+
+Found 2026-08-02 after the store landed and the symptom persisted (docket D-34). The client's
+refresh loop ran only while the payload said `busy` — and `busy` arrives *in the payload the loop
+fetches*. A view that started out believing "not busy" could never learn otherwise, so it froze
+until unmounted. Every fix before it had improved the push paths while leaving the pull path
+conditional on the very state the pull exists to repair.
+
+**The rule this yields, and it generalises past this codebase:** a repair mechanism must never be
+gated on the data it repairs. Gate it on something known locally and independently — here, "is any
+view mounted" — so no wrong belief can switch off the thing that would correct it.
+
 ### ③ The backend answers "is this node working?" from memory, not the doc
 
 `supervisor.state()` holds `busy`, `waiting`, `queue`, `last_error`, `turns_run`, `last_status`,
