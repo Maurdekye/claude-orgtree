@@ -2692,6 +2692,13 @@ def read_chat(org: Org, nid: str, last: int | None = None) -> dict[str, Any]:
            # a long command ran); the chat payload refreshes on every pulse
            "responding": bool(st.get("responding")),
            "last_error": st["last_error"], "occupancy": None, "messages": [],
+           # the effort the CLI ACTUALLY resolved for the last turn. With
+           # nothing configured anywhere orgtree passes no --effort flag, so
+           # the level is the CLI's own default — knowable only by observing
+           # it, which is why the ⚙ control said "effort" while the agent had
+           # been running at high all along (user bug 2026-08-02). Absent on
+           # transcripts from before the CLI recorded it (pre-2.1.220).
+           "effort_used": None,
            "init": st.get("init")}
     tpath = transcript_path(n["session_id"], _transcript_root(org))
     if not tpath:
@@ -2709,6 +2716,8 @@ def read_chat(org: Org, nid: str, last: int | None = None) -> dict[str, Any]:
         rec_prev_ts = prev_ts
         if rec.get("timestamp"):
             prev_ts = rec["timestamp"]
+        if isinstance(rec.get("effort"), str) and rec["effort"]:
+            out["effort_used"] = rec["effort"]      # last one wins
         if rec.get("isSidechain") or rec.get("isMeta"):
             continue
         t = rec.get("type")

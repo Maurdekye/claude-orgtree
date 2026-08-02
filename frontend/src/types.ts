@@ -450,6 +450,10 @@ export interface ChatPayload {
   occupancy: number | null
   messages: ChatMessage[]
   init?: ChatInit | null
+  /** the effort the CLI RECORDED for the last turn — the only way to know the
+   *  level when nothing is configured and no --effort flag is passed. Null on
+   *  transcripts written before the CLI recorded it. */
+  effort_used?: string | null
   mail_pending: number
   pending_mail: PendingMail[]
 }

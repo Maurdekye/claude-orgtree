@@ -664,6 +664,7 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
         {!pub && (
           <EffortButton value={node.scope?.effort ?? ''}
             effective={node.effort_effective ?? ''}
+            used={chat?.effort_used ?? ''}
             onSet={(lvl) => saveScope(slug, node.id, { effort: lvl })
               .then(() => toast([lvl
                 ? `${node.id} thinking effort: ${lvl}`
@@ -1116,18 +1117,25 @@ function SysLine({ m }: { m: ChatMessage }) {
 // agents can do.
 const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max']
 
-// `value` = pinned on this agent; `effective` = what a turn actually launches
-// with (the org default fills in when nothing is pinned). Showing only `value`
-// left the control blank on every agent nobody had touched, while its turns ran
-// at the org default — the display disagreed with the runtime (user bug
-// 2026-08-02). Now the level is always visible and the two cases are told apart
-// by weight, not by absence.
-function EffortButton({ value, effective, onSet }:
-{ value: string; effective?: string; onSet: (lvl: string) => void }) {
+// Three sources, because "what effort will this agent respond at" has three
+// possible answers and only the first two are configuration:
+//   value      pinned on this agent
+//   effective  = value, else the org default (resolved server-side)
+//   used       what the CLI RECORDED for the last turn
+// With nothing configured anywhere, orgtree passes no --effort flag and the
+// level is the CLI's own default — not "none", and not knowable except by
+// observing it. Showing only configuration left the control reading "effort"
+// on an agent that had been running at high for 54 turns (user bug
+// 2026-08-02). Configuration wins where it exists (it decides the NEXT turn,
+// while `used` describes the last one); observation fills the gap.
+function EffortButton({ value, effective, used, onSet }:
+{ value: string; effective?: string; used?: string; onSet: (lvl: string) => void }) {
   const [open, setOpen] = useState(false)
-  const shown = value || effective || ''
+  const shown = value || effective || used || ''
   const why = value ? 'set on this agent'
-    : effective ? 'inherited from the org default' : 'the CLI default'
+    : effective ? 'inherited from the org default'
+      : used ? 'the CLI default — observed from the last turn'
+        : 'the CLI default (not observed yet)'
   const wrapRef = useRef<HTMLSpanElement | null>(null)
   useEffect(() => {
     if (!open) return
@@ -1148,7 +1156,7 @@ function EffortButton({ value, effective, onSet }:
       </button>
       {open && (
         <span className="eff-pop">
-          <EffortSwitch value={value} effective={effective}
+          <EffortSwitch value={value} level={shown} why={why}
             onSet={(lvl) => { onSet(lvl); setOpen(false) }} />
         </span>
       )}
@@ -1156,21 +1164,21 @@ function EffortButton({ value, effective, onSet }:
   )
 }
 
-function EffortSwitch({ value, effective, onSet }:
-{ value: string; effective?: string; onSet: (lvl: string) => void }) {
-  // the track lights at the EFFECTIVE level so it always says what will
-  // happen; `pinned` is what a click can clear, which is only the node's own
-  // setting — clicking an inherited dot pins it rather than clearing nothing
+function EffortSwitch({ value, level, why, onSet }:
+{ value: string; level: string; why: string; onSet: (lvl: string) => void }) {
+  // the track lights at the level that will actually be USED so it always says
+  // what will happen; `pinned` is what a click can clear, which is only the
+  // node's own setting — clicking an unpinned dot pins it rather than clearing
+  // nothing. `why` is the caller's one description of where the level came
+  // from, so the button and the popover can never word it differently.
   const pinned = EFFORT_LEVELS.indexOf(value)
-  const idx = pinned >= 0 ? pinned : EFFORT_LEVELS.indexOf(effective ?? '')
-  const shown = value || effective || ''
+  const idx = pinned >= 0 ? pinned : EFFORT_LEVELS.indexOf(level)
   return (
     <span className="effort-switch"
-      title={`thinking effort — ${shown || 'the CLI default'}`
-        + (value ? ' (set here)' : effective ? ' (inherited from the org default)' : '')
+      title={`thinking effort — ${level || 'unset'} (${why})`
         + '; click a dot to set, click the active dot to clear back to inherit'}>
-      <span className="eff-label">Effort{shown
-        ? ` (${shown}${value ? '' : ' — inherited'})` : ''}</span>
+      <span className="eff-label">Effort{level
+        ? ` (${level}${value ? '' : ` — ${why}`})` : ''}</span>
       <span className="eff-track">
         {EFFORT_LEVELS.map((l, i) => (
           <button key={l} type="button"
