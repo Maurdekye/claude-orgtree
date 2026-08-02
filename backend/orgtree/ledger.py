@@ -321,7 +321,11 @@ class Org:
             "fable_filter_policy": "halt",        # halt | opus — filter flags (user spec)
             "nodes": {},
             "audiences": [],          # §7.3 — [{grantee, grantor, granted_at, reason}]
-            "chain_notices": [],      # §7.4
+            # (a "chain_notices" key was seeded here and READ BY NOTHING. §7.4
+            #  chain notices are ledger.user_deep_reach() writing into the
+            #  normal `notices` box. The empty key shadowed the working
+            #  feature well enough to convince one session it was unbuilt,
+            #  so it is gone rather than reserved.)
             "audience_requests": [],  # §7.3
             "events": [],             # audit log of ops
         })

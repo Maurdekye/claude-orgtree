@@ -316,8 +316,12 @@ failure this system already prefers over hiding a message.
 
 ## D-29 · ~6s of blank panel before thinking starts
 ⟨discovered⟩ CLI startup, hooks and `init` occupy roughly six seconds before the thinking block
-opens; the panel shows only the spinner. The D-26 clock cannot cover it because nothing has begun.
-**Status: OPEN, recorded in the review.**
+opens; the panel showed only the spinner in the chrome. The D-26 clock cannot cover it because
+nothing has begun yet.
+**Fix:** a `starting…` line, **derived, not stored** — busy, with nothing live, nothing thinking,
+nothing drafted and nothing pending, *is* starting. No new event, no new state cell.
+Verified live: seen during the launch window of a real turn.
+→ `PENDING-COMMIT`
 
 ## D-30 · Switchboard still out of sync; message still appears twice
 > im still observing the switchboard desk going out of sync with the individual agent desks, so
@@ -363,6 +367,85 @@ fallback. Verified on the agents that were broken rather than the one that worke
 (sonnet), hex-red (sonnet), coordinator (opus) all read `high`.
 → `cb29f59`
 
+## D-32 · The state-duplication programme (P2, P3, P4)
+> implement P2-P4, D-29, and remove chain_notices. we'll leave D-24 for now, if i can find a more
+> consistent reproduction ill let you know (or hopefully the state refactor ties that issue up
+> coincidentally)
+
+The three remaining proposals from [`docs/state-architecture-review.md`](state-architecture-review.md),
+under the standing direction *"prioritize storing less state and deriving it more"*.
+
+**P2 — the server owns the live tail.** `supervisor.live_row()` records every row a view must still
+see after the moment passes (assistant text, tool calls, folded thoughts, sticky command output) in
+`state()["live"]`, and `_sweep_live()` retires each one when the transcript catches up. `read_chat`
+returns the survivors as `chat.live`. The client no longer builds a conversation at all: the whole
+client-side reconciliation is deleted, along with the 300-character prefix matching and the
+5-second expiry that raced the transcript write. A tool row now retires on the CLI's own
+`tool_use_id`; nothing is dropped on a clock. Thought-folding moved server-side too — the server
+sees the thinking block open AND what followed, which the client could only infer. What remains
+client-side is the sub-second scaffolding that would be stale before any fetch returned: the
+token-by-token draft and the thinking clock. Websocket events now schedule a 200 ms-debounced
+refetch instead of assembling rows.
+
+**P3 — 25 prop mirrors become derived.** `useState(tree.x)` snapshots once at mount and never looks
+again; the org settings panel held 17 such copies, the node ⚙ panel 7, the hire-defaults panel 3.
+Each is now ONE edit buffer holding only what has actually been typed, with every value derived from
+the prop each render (`k in edit ? edit[k] : server`) and the buffer cleared on save. Shadowing
+`const`s keep every use site unchanged. ⚠ `DraftScopeModal` was deliberately LEFT as snapshots and
+documented in place: it stages permissions for an agent that does not exist yet, so its `base` is a
+one-time proposal, not a live server value — re-deriving mid-edit would overwrite staged choices.
+
+**P4 — one home for node runtime data.** `occupancy`, `context_window` and `last_status` lived in
+BOTH the in-memory state dict and the org doc. `last_status` had already rotted to zero readers.
+`api.annotate` re-read the in-memory copies believing they were fresher — they were not:
+`_after_turn` wrote both in the same block, so the mirror could only agree or be stale. The doc is
+now the only home; `state()` keeps just what is genuinely process-bound.
+
+**Verified live** on a sonnet agent in a throwaway org: `starting…` seen during the launch window,
+the server live tail peaked at 2 rows and drained to **0** after the turn (so rows are both created
+and retired by the sweep), and two views compared across 27 samples showed **0 divergent**. The org
+settings panel reads its real values (1000 / 50 / 80) and the node ⚙ panel renders fully populated
+from the node it was opened on.
+→ `PENDING-COMMIT`
+
+## D-33 · `chain_notices` removed
+The reserved org-doc key that was written nowhere and read nowhere, while shadowing the working
+`ledger.user_deep_reach()`. It convinced one session (mine) that chain notices were unimplemented.
+Gone from `ledger._new_doc`, `schema.OrgDoc` and the types comment.
+→ `PENDING-COMMIT`
+
+---
+
+## Future feature pass — SPECIFIED, NOT BUILT
+
+User, 2026-08-02: *"add two new features to the docket, but dont implement them: create a new
+section for a future feature pass with them."* Nothing below has been started.
+
+### F-01 · Navigation chips on the desk — jump to superior or subordinate
+> add little clickable cards in the desk view of individual agents to jump directly to any of the
+> agent's subordinates, or to its direct superior (the switchboard if its directly below the user).
+> place the subordinate chips somewhere at the bottom of the ui, and the superior chip at the top.
+
+Small clickable cards inside an agent's desk that move the camera to a related agent:
+- **superior chip at the TOP** of the desk. For a top-level agent the superior is the user, so the
+  chip targets the switchboard (the eye) rather than a node.
+- **subordinate chips at the BOTTOM**, one per direct report.
+
+Notes for whoever builds it: `DeskChat` already receives `map` (id → CanvasNode) and `node.children`,
+so both sets are in hand without a new payload. The jump itself is the existing camera move —
+`onJump`/`centerOn` in `OrgCanvas`, already threaded into the switchboard tabs for exactly this
+purpose. Worth deciding whether a chip carries live state (busy dot, mail count) or stays inert.
+
+### F-02 · `/remote-control`, if feasible
+> potentially enabling /remote-control? if its feasible
+
+Feasibility unknown — **investigate before scoping**. Open questions: what the slash command
+actually does in the pinned CLI; whether it works at all in a headless `-p` session (orgtree already
+strips the interactive-only tools, and a command needing a live client would be inert); and what it
+would mean for an agent inside a sandbox container. orgtree already has a verbatim slash-command
+path (`send_message(command=True)`) that delivers a `/…` as its own user event, so the delivery
+mechanism exists if the command itself turns out to be viable.
+
 ---
 
 ## Carried, not done
@@ -370,10 +453,10 @@ fallback. Verified on the agents that were broken rather than the one that worke
 | item | state |
 |------|-------|
 | D-28 message rendered twice | FIXED (journal `via`) |
-| D-29 ~6s blank before thinking | OPEN — recorded in the review |
+| D-29 ~6s blank before thinking | FIXED (derived `starting…`) |
 | D-30 shared conversation store | FIXED (`convo.ts`) |
-| `chain_notices` dead reserved key shadowing `user_deep_reach()` | should be deleted or wired; it has already misled one session |
+| `chain_notices` dead reserved key | REMOVED (D-33) |
 | `_move` inflates a top-level grant past `max_top_grant` | confirmed in the shelved ledger review, unfixed |
 | `game-master` has an empty charter although `hire` now refuses without one | predates the requirement |
-| P1–P4 of the state review | await a ruling |
+| P1–P5 of the state review | ALL IMPLEMENTED (D-32) |
 | mobile wave | spec at `docs/mobile-spec.md`, held by the user |

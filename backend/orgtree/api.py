@@ -589,10 +589,10 @@ def org_tree(slug: str, request: Request) -> dict[str, Any]:
         node["phase"] = st.get("phase")     # e.g. "compacting" (№3)
         node["queued"] = len(st["queue"])
         node["last_error"] = st["last_error"]
-        if st.get("occupancy"):       # runtime is fresher than the persisted copy
-            node["occupancy"] = st["occupancy"]
-        if st.get("context_window"):
-            node["context_window"] = st["context_window"]
+        # (occupancy / context_window were re-read from the supervisor's
+        # in-memory copy here, on the belief that it was fresher. It was not:
+        # _after_turn wrote both in the same block, so the mirror could only
+        # ever agree or be stale. The doc projection is the answer.)
         for c in node["children"]:
             annotate(c)
 

@@ -492,6 +492,16 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
               </div>)}
           {draft && <div className="msg assistant live md draft"
             dangerouslySetInnerHTML={md(draft)} />}
+          {/* D-29: the turn has begun but the CLI has not produced anything
+              yet — process launch, hooks, `init`, roughly six seconds during
+              which the panel showed nothing but a spinner in the chrome. This
+              is DERIVED, not a new event or a new state cell: busy, with
+              nothing live, nothing thinking and nothing drafted, IS starting. */}
+          {chat?.busy && !live_feed.length && thinkSecs === null && !draft
+            && !pending.length && (
+            <div className="msg live thinking sealed">
+              <AutorenewIcon fontSize="inherit" className="cc-spin" /> starting…
+            </div>)}
           {/* №11: pending bubbles render from the DURABLE server copy, each
               retractable until delivery (№17) */}
           {(chat?.pending_mail ?? []).filter((m) => m.from === USER).map((m) => (

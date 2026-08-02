@@ -4,7 +4,7 @@
 // checklist, and the retired/crowd pile picker. Extracted verbatim from
 // Canvas.tsx in the phase-3 split.
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import type {
@@ -65,18 +65,32 @@ export function UserConfig({ tree, slug, toast, close }: UserConfigProps) {
   // (host paths — the public payload only carries basenames anyway)
   const pub = !!tree.public
   const [asking, setAsking] = useState(false)   // dissolve-all confirmation
-  const [defTools, setDefTools] = useState<ToolGrant>({
+  const [servers, setServers] = useState<string[]>([])
+  const [sandboxMcp, setSandboxMcp] = useState(false)
+  // P3: derived from `tree`, with a buffer holding only what has been edited
+  // — see NodeConfig for the reasoning. These are org DEFAULTS the server
+  // owns, so a snapshot at mount could show yesterday's answer.
+  const [edit, setEdit] = useState<Record<string, unknown>>({})
+  const val = <T,>(k: string, server: T): T => (k in edit ? edit[k] as T : server)
+  const set = <T,>(k: string, cur: T) => (v: T | ((prev: T) => T)) =>
+    setEdit((e) => ({ ...e,
+      [k]: typeof v === 'function' ? (v as (p: T) => T)(cur) : v }))
+  const srvTools = useMemo<ToolGrant>(() => ({
     bash: true, web: true, edit: true, subagents: true,
     ...(tree.default_tools ?? {}),
     mcp: [...(tree.default_tools?.mcp ?? ['*'])],
-  })
-  const [servers, setServers] = useState<string[]>([])
-  const [sandboxMcp, setSandboxMcp] = useState(false)
-  const [vis, setVis] = useState(tree.default_visibility ?? 'full')
+  }), [tree.default_tools])
+  const defTools = val<ToolGrant>('defTools', srvTools)
+  const setDefTools = set<ToolGrant>('defTools', defTools)
+  const vis = val('vis', tree.default_visibility ?? 'full')
+  const setVis = set<string>('vis', vis)
   // the org's folder holdings (workspace excluded — it is permanent RW).
   // These double as the folder defaults for every hire.
-  const [orgDirs, setOrgDirs] = useState<DirGrant[]>(
-    (tree.dirs ?? []).filter((d) => d.path !== tree.workspace).map((d) => ({ ...d })))
+  const srvDirs = useMemo<DirGrant[]>(
+    () => (tree.dirs ?? []).filter((d) => d.path !== tree.workspace)
+      .map((d) => ({ ...d })), [tree.dirs, tree.workspace])
+  const orgDirs = val<DirGrant[]>('orgDirs', srvDirs)
+  const setOrgDirs = set<DirGrant[]>('orgDirs', orgDirs)
   const [newPath, setNewPath] = useState('')
   useEffect(() => {
     getMcpServers().then((r) => {
@@ -225,6 +239,12 @@ export function DraftScopeModal({ draft, map, tree, scope, onSave, close }: Draf
       ?? tree.default_visibility ?? 'full',
   })
   const base = scope ?? inherited()
+  // ⚠ These four ARE useState-from-a-prop and are deliberately left that way.
+  // This modal stages permissions for an agent that DOES NOT EXIST YET: `base`
+  // is a one-time proposal (what the hire would inherit), not a live server
+  // value with an authoritative copy elsewhere. Re-deriving it mid-edit would
+  // overwrite the user's staged choices from a default they were changing.
+  // A snapshot is the correct shape here; the P3 sweep skipped it on purpose.
   const [dirs, setDirs] = useState<DirGrant[]>(base.add_dirs.map((d) => ({ ...d })))
   const [tools, setTools] = useState<Partial<ToolGrant> & { mcp: string[] }>(
     { ...base.tools, mcp: [...(base.tools.mcp ?? [])] })
@@ -394,17 +414,39 @@ export function NodeConfig({ node, map, tree, slug, op, toast, close }: NodeConf
   // every card that opens a config panel carries a scope (real nodes and
   // bearer stubs both) — only the eye root and drafts lack one
   const scope = node.scope!
-  const [dirs, setDirs] = useState<DirGrant[]>(scope.add_dirs.map((d) => ({ ...d })))
-  const [tools, setTools] = useState<ToolGrant>({
+  // P3 — these seven were each a useState SEEDED FROM `node`/`scope`, i.e. a
+  // snapshot taken once at mount that never looked at the prop again. That is
+  // what produced a config panel showing an empty charter: the panel had
+  // captured the node before it carried one. One buffer of ACTUAL EDITS now;
+  // everything else derives from the prop each render, so the panel cannot
+  // drift from the agent it is configuring. The shadowing pairs below keep
+  // every use site below unchanged.
+  const [edit, setEdit] = useState<Record<string, unknown>>({})
+  const val = <T,>(k: string, server: T): T => (k in edit ? edit[k] as T : server)
+  const set = <T,>(k: string, cur: T) => (v: T | ((prev: T) => T)) =>
+    setEdit((e) => ({ ...e,
+      [k]: typeof v === 'function' ? (v as (p: T) => T)(cur) : v }))
+  const srvDirs = useMemo(
+    () => scope.add_dirs.map((d) => ({ ...d })), [scope.add_dirs])
+  const srvTools = useMemo<ToolGrant>(() => ({
     bash: true, web: true, edit: true, subagents: true,
     ...(scope.tools ?? {}),
     mcp: [...(scope.tools?.mcp ?? [])],
-  })
-  const [vis, setVis] = useState(scope.org_visibility ?? 'full')
-  const [charter, setCharter] = useState(node.charter ?? '')
-  const [teamCharter, setTeamCharter] = useState(node.team_charter ?? '')
-  const [model, setModel] = useState(node.tier!)
-  const [effort, setEffort] = useState(scope.effort ?? '')
+  }), [scope.tools])
+  const dirs = val<DirGrant[]>('dirs', srvDirs)
+  const setDirs = set<DirGrant[]>('dirs', dirs)
+  const tools = val<ToolGrant>('tools', srvTools)
+  const setTools = set<ToolGrant>('tools', tools)
+  const vis = val('vis', scope.org_visibility ?? 'full')
+  const setVis = set<string>('vis', vis)
+  const charter = val('charter', node.charter ?? '')
+  const setCharter = set<string>('charter', charter)
+  const teamCharter = val('teamCharter', node.team_charter ?? '')
+  const setTeamCharter = set<string>('teamCharter', teamCharter)
+  const model = val('model', node.tier!)
+  const setModel = set<string>('model', model)
+  const effort = val('effort', scope.effort ?? '')
+  const setEffort = set<string>('effort', effort)
   const [newPath, setNewPath] = useState('')
   const [servers, setServers] = useState<string[]>([])
   const [sandboxMcp, setSandboxMcp] = useState(false)

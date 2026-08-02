@@ -326,13 +326,44 @@ notify: Callable[[str, str, str], None] = \
 stream: Callable[[str, str, dict[str, Any]], None] = \
     lambda slug, node, payload: None   # noqa: E731 — live per-message feed
 
+_LIVE_KEEP = 40           # rows retained per node; the UI renders far fewer
+
+
+def live_row(slug: str, nid: str, payload: dict[str, Any]) -> None:
+    """Stream a row AND record it in the node's live tail (P2).
+
+    Everything a view needs to render an in-flight turn goes through here, so
+    the server holds the authoritative list and read_chat can retire rows the
+    transcript has caught up on. Sub-second scaffolding — token deltas, the
+    thinking clock — deliberately does NOT: it is superseded within the second
+    and would only be noise in a fetched payload."""
+    st = state(slug, nid)
+    with _state_lock:
+        rows = cast("list[dict[str, Any]]", st.setdefault("live", []))
+        rows.append({**payload, "at": now_iso()})
+        del rows[:-_LIVE_KEEP]
+    stream(slug, nid, payload)
+
 
 def state(slug: str, nid: str) -> dict[str, Any]:
     with _state_lock:
         return _state.setdefault((slug, nid), {
+            # ONLY what is genuinely process-bound lives here. `occupancy`,
+            # `context_window` and `last_status` used to be mirrored from the
+            # org doc as well — two homes for one fact, with nothing keeping
+            # them in step (`last_status` had already rotted to zero readers).
+            # The doc is the home; a restart no longer changes the answer.
             "busy": False, "waiting": False, "queue": [], "last_error": None,
-            "turns_run": 0, "last_status": None, "occupancy": None,
-            "context_window": None})
+            "turns_run": 0,
+            # the LIVE TAIL: rows the agent has produced this turn that the
+            # transcript may not carry yet. Server-owned (P2) — the client used
+            # to accumulate its own copy from the websocket and reconcile it
+            # against the transcript by string prefix, which is the machinery
+            # every "message flashed then vanished" bug came out of. Here the
+            # same code sees BOTH sides, so one implementation serves every
+            # view. Bounded; swept in read_chat; cleared at turn end except
+            # sticky rows (immediate command output lives in no transcript).
+            "live": []})
 
 
 def scratch_dir(slug: str, nid: str) -> str:
@@ -1150,6 +1181,19 @@ def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
             pend_toks: list[str] = []   # journal batches written, not yet consumed (C1)
             turn_occ = 0        # context size = LAST assistant call's usage (№24)
             dbuf, dlast = "", time.time()   # token-stream delta batcher (~8 Hz)
+            think_t0, think_buf = 0.0, ""   # the in-progress thought
+
+            def fold_thought() -> None:
+                """The thinking block ended because output began: bank it as a
+                live row. Server-side because the server sees both the opening
+                and what followed — the client only ever inferred it."""
+                nonlocal think_t0, think_buf
+                if not think_t0:
+                    return
+                secs = max(1, round(time.time() - think_t0))
+                text, think_t0, think_buf = think_buf, 0.0, ""
+                live_row(slug, nid, {"kind": "thought", "secs": secs,
+                                     "text": text[:6000]})
             timed_out = threading.Event()
 
             def _expire() -> None:
@@ -1204,6 +1248,7 @@ def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
                         if (sev.get("type") == "content_block_start"
                                 and (sev.get("content_block") or {}).get("type")
                                 == "thinking"):
+                            think_t0 = think_t0 or time.time()
                             # THE START of thinking, which is the only reliable
                             # marker when the reasoning is sealed: opus/sonnet
                             # send thinking_delta with an empty body, and on a
@@ -1226,6 +1271,8 @@ def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
                         elif d.get("type") == "thinking_delta" and d.get("thinking"):
                             # №18 (live-only, never persisted): a dimmed
                             # italic ribbon above the growing draft
+                            think_t0 = think_t0 or time.time()
+                            think_buf = (think_buf + d["thinking"])[-24000:]
                             stream(slug, nid, {"kind": "thinking",
                                                "text": d["thinking"][:400]})
                         continue
@@ -1235,8 +1282,8 @@ def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
                         # too — the history projection keeps it durable
                         body = _cmd_stdout(ev.get("content") or "")
                         if body:
-                            stream(slug, nid, {"kind": "text",
-                                               "text": body[:2000]})
+                            live_row(slug, nid, {"kind": "text",
+                                                 "text": body[:2000]})
                         continue
                     if ev.get("type") == "system" and ev.get("subtype") == "init":
                         # №14: the CLI's own resolution of what this turn can
@@ -1259,11 +1306,13 @@ def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
                             turn_occ = t
                         for b in ev.get("message", {}).get("content", []):
                             if b.get("type") == "text" and b.get("text", "").strip():
-                                stream(slug, nid, {"kind": "text",
-                                                   "text": b["text"][:2000]})
+                                fold_thought()
+                                live_row(slug, nid, {"kind": "text",
+                                                     "text": b["text"][:2000]})
                             elif b.get("type") == "tool_use":
                                 arg = _tool_arg(b.get("name", ""), b.get("input"))
-                                stream(slug, nid, {
+                                fold_thought()
+                                live_row(slug, nid, {
                                     "kind": "tool",
                                     # the tool_use_id rides along: read_chat
                                     # puts the SAME id on the chip, so the
@@ -1442,6 +1491,11 @@ def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
                 nxt = st["queue"].pop(0)
             else:
                 st["busy"] = False
+        with _state_lock:
+            # sticky rows (/context answers) outlive the turn — the reader
+            # asked mid-turn precisely to peek; the turn ending must not eat
+            # the answer
+            st["live"] = [r for r in (st.get("live") or []) if r.get("sticky")]
         notify(slug, nid, "turn_done")
         if nxt is not None:
             _run_turn(slug, nid, nxt)
@@ -1466,7 +1520,6 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
     if not cw:
         for mu in (res.get("modelUsage") or {}).values():
             cw = mu.get("contextWindow") or cw
-    st["occupancy"], st["context_window"] = occ or st["occupancy"], cw or st["context_window"]
     # №7: the CLI reports every headless auto-deny on the result event — the
     # machine truth about the corrections the permission settings made
     denials: list[Denial] = [
@@ -1620,7 +1673,7 @@ def _compact_split_body(slug: str, nid: str) -> None:
             and spend_total >= float(kcfg["spend_limit"])):   # pyright: ignore[reportTypedDictNotRequiredAccess]
         hard_freeze(slug, "spend", "kiosk spend limit reached")
     st = state(slug, nid)
-    st["occupancy"] = None
+    # (the post-compact occupancy reset lives on the doc, written above)
     st.pop("compact_retry_at", None)
     notify(slug, nid, "compacted")
     notify(slug, pred, "created")
@@ -1645,6 +1698,11 @@ def manual_compact(slug: str, nid: str) -> None:
                 nxt = st["queue"].pop(0)
             else:
                 st["busy"] = False
+        with _state_lock:
+            # sticky rows (/context answers) outlive the turn — the reader
+            # asked mid-turn precisely to peek; the turn ending must not eat
+            # the answer
+            st["live"] = [r for r in (st.get("live") or []) if r.get("sticky")]
         notify(slug, nid, "turn_done")
         if nxt is not None:
             _run_turn(slug, nid, nxt)
@@ -2120,8 +2178,8 @@ def immediate_command(slug: str, nid: str, text: str) -> bool:
             out_text = f"⚠ /{word} failed: {e}"
         # sticky: this output exists in NO transcript — the live-feed
         # reconciliation must never sweep it on a refresh or turn end
-        stream(slug, nid, {"kind": "text", "sticky": True,
-                           "text": out_text[:20000]})
+        live_row(slug, nid, {"kind": "text", "sticky": True,
+                             "text": out_text[:20000]})
         # the fork transcript is a full COPY of the session — delete it, or
         # every /context banks megabytes (kiosk storage included) for nothing
         if fork_sid and fork_sid != sid:
@@ -2719,6 +2777,45 @@ def _ts_gap_secs(a: str | None, b: str | None) -> int | None:
         return None
 
 
+def _sweep_live(slug: str, nid: str, msgs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Retire live rows the transcript has caught up on, and return the rest.
+
+    This is the whole live/durable reconciliation, in ONE place that can see
+    both sides. It used to run in the browser, once per mounted view, against
+    a payload the client had assembled itself — matching by 300-character
+    string prefix and expiring on a 5-second timer that raced the transcript
+    write. Here a tool row retires on the CLI's own tool_use_id, and nothing
+    is dropped on a clock: a row survives until its durable twin is visible.
+
+    Sticky rows (immediate /context output) are in no transcript, ever, so
+    they are never swept — only the turn's end clears them."""
+    tail = msgs[-12:]
+
+    def covered(r: dict[str, Any]) -> bool:
+        if r.get("sticky"):
+            return False
+        kind = r.get("kind")
+        if kind == "tool":
+            return any(t.get("id") and t["id"] == r.get("id")
+                       for m in tail for t in (m.get("tools") or []))
+        if kind == "text":
+            head = (r.get("text") or "")[:300]
+            return any(m.get("role") == "assistant"
+                       and (m.get("text") or "").startswith(head) for m in tail)
+        if kind == "thought":
+            body = (r.get("text") or "")[:120]
+            return any((m.get("thinking") or "").startswith(body)
+                       if body else bool(m.get("thinking_sealed")) for m in tail)
+        return True
+
+    st = state(slug, nid)
+    with _state_lock:
+        rows = [r for r in cast("list[dict[str, Any]]", st.get("live") or [])
+                if not covered(r)]
+        st["live"] = rows
+        return [dict(r) for r in rows]
+
+
 def read_chat(org: Org, nid: str, last: int | None = None) -> dict[str, Any]:
     """Parse the node's transcript into renderable messages + context occupancy.
 
@@ -3009,6 +3106,7 @@ def read_chat(org: Org, nid: str, last: int | None = None) -> dict[str, Any]:
         msgs = msgs[-last:]
     out["messages"] = msgs
     out["occupancy"] = occupancy
+    out["live"] = _sweep_live(org.d["slug"], nid, msgs)
     if n.get("bearer_state") == "preserving":
         for ex in n.get("oracle_exchanges", []):
             out["messages"].append({"role": "user", "text": ex["q"], "tools": [],

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   audienceAction, BASE, clearInbox, createOrg, creditDecide, deleteOrg,
   getAudiences, getDefaults, getEvents, getHost, getInbox, getOrgMd,
@@ -1042,33 +1042,72 @@ function SettingsPanel({ tree, toast, close }: {
   close: () => void
 }) {
   useEsc(close)
-  const [maxTop, setMaxTop] = useState<number | string>(tree.max_top_grant ?? 1000)
-  const [defTop, setDefTop] = useState<number | string>(tree.default_top_grant ?? 50)
-  const [compactAt, setCompactAt] = useState<number | string>(Math.round((tree.compact_at ?? 0.8) * 100))
+  // P3 — every field below used to be its own useState SEEDED FROM `tree`.
+  // useState(x) snapshots x once at mount and never looks again, so this panel
+  // held seventeen private copies of server values that could each go stale
+  // silently (the mechanism behind the user's "the charter looks empty"). Now
+  // there is ONE cell: the edits you have actually made. Everything else is
+  // derived from the prop on every render, so a value that changes anywhere
+  // else shows up here, and saving clears the buffer back to server truth.
+  const [edit, setEdit] = useState<Record<string, unknown>>({})
+  // takes the value THIS render derived, so an updater form still works
+  const set = <T,>(k: string, cur: T) => (v: T | ((prev: T) => T)) =>
+    setEdit((e) => ({ ...e,
+      [k]: typeof v === 'function' ? (v as (p: T) => T)(cur) : v }))
+  const val = <T,>(k: string, server: T): T =>
+    (k in edit ? edit[k] as T : server)
+  const clearEdits = () => setEdit({})
   const [orgMd, setOrgMd] = useState<string | null>(null)
-  const [fablePolicy, setFablePolicy] = useState(tree.fable_limit_policy ?? 'halt')
-  const [filterPolicy, setFilterPolicy] = useState(tree.fable_filter_policy ?? 'halt')
-  const [defEffort, setDefEffort] = useState(tree.default_effort ?? '')
-  const [cascadeHire, setCascadeHire] = useState(tree.cascade_hire !== false)
-  const [cascadeAlloc, setCascadeAlloc] = useState(tree.cascade_alloc !== false)
+
   // kiosk permission ceiling (consensus spec): admin payload only — the
   // public tree never carries max_scope
   const ms = tree.kiosk?.max_scope as MaxScope | null | undefined
   // const extraction so the kiosk narrowing survives the click closures
   const kk = tree.kiosk
-  const [ceil, setCeil] = useState(() => (ms ? {
+  // the shadowing pair below keeps every USE SITE unchanged: same name, same
+  // setter signature — only where the value comes from has changed
+  const maxTop = val<number | string>('maxTop', tree.max_top_grant ?? 1000)
+  const setMaxTop = set('maxTop', maxTop)
+  const defTop = val<number | string>('defTop', tree.default_top_grant ?? 50)
+  const setDefTop = set('defTop', defTop)
+  const compactAt = val<number | string>('compactAt',
+    Math.round((tree.compact_at ?? 0.8) * 100))
+  const setCompactAt = set('compactAt', compactAt)
+  const fablePolicy = val('fablePolicy', tree.fable_limit_policy ?? 'halt')
+  const setFablePolicy = set('fablePolicy', fablePolicy)
+  const filterPolicy = val('filterPolicy', tree.fable_filter_policy ?? 'halt')
+  const setFilterPolicy = set('filterPolicy', filterPolicy)
+  const defEffort = val('defEffort', tree.default_effort ?? '')
+  const setDefEffort = set('defEffort', defEffort)
+  const cascadeHire = val('cascadeHire', tree.cascade_hire !== false)
+  const setCascadeHire = set('cascadeHire', cascadeHire)
+  const cascadeAlloc = val('cascadeAlloc', tree.cascade_alloc !== false)
+  const setCascadeAlloc = set('cascadeAlloc', cascadeAlloc)
+  const srvCeil = useMemo(() => (ms ? {
     bash: !!ms.tools?.bash, web: !!ms.tools?.web, edit: !!ms.tools?.edit,
-    subagents: !!ms.tools?.subagents } : null))
-  const [ceilMcp, setCeilMcp] = useState(() => (ms?.tools?.mcp ?? []).join(', '))
-  const [ceilDirs, setCeilDirs] = useState<CeilDir[]>(() => ms?.add_dirs ?? [])
-  const [ceilVis, setCeilVis] = useState(ms?.org_visibility ?? 'full')
-  const [ceilPm, setCeilPm] = useState(ms?.permission_mode ?? 'acceptEdits')
-  const [ceilTier, setCeilTier] = useState(ms?.max_tier ?? '')
-  const [autoRaise, setAutoRaise] = useState(!!tree.kiosk?.auto_raise)
+    subagents: !!ms.tools?.subagents } : null), [ms])
+  const ceil = val('ceil', srvCeil)
+  const setCeil = set('ceil', ceil)
+  const ceilMcp = val('ceilMcp', (ms?.tools?.mcp ?? []).join(', '))
+  const setCeilMcp = set('ceilMcp', ceilMcp)
+  const srvDirs = useMemo(() => ms?.add_dirs ?? [], [ms])
+  const ceilDirs = val<CeilDir[]>('ceilDirs', srvDirs)
+  const setCeilDirs = set('ceilDirs', ceilDirs)
+  const ceilVis = val('ceilVis', ms?.org_visibility ?? 'full')
+  const setCeilVis = set('ceilVis', ceilVis)
+  const ceilPm = val('ceilPm', ms?.permission_mode ?? 'acceptEdits')
+  const setCeilPm = set('ceilPm', ceilPm)
+  const ceilTier = val('ceilTier', ms?.max_tier ?? '')
+  const setCeilTier = set('ceilTier', ceilTier)
+  const autoRaise = val('autoRaise', !!tree.kiosk?.auto_raise)
+  const setAutoRaise = set('autoRaise', autoRaise)
   // per-kiosk caps (moved here from the retired all-kiosks dashboard)
-  const [kkCredits, setKkCredits] = useState<number | string>(tree.kiosk?.credits ?? 0)
-  const [kkSpend, setKkSpend] = useState<number | string>(tree.kiosk?.spend_limit ?? 0)
-  const [kkStorage, setKkStorage] = useState<number | string>(tree.kiosk?.storage_limit_mb ?? 0)
+  const kkCredits = val<number | string>('kkCredits', tree.kiosk?.credits ?? 0)
+  const setKkCredits = set('kkCredits', kkCredits)
+  const kkSpend = val<number | string>('kkSpend', tree.kiosk?.spend_limit ?? 0)
+  const setKkSpend = set('kkSpend', kkSpend)
+  const kkStorage = val<number | string>('kkStorage', tree.kiosk?.storage_limit_mb ?? 0)
+  const setKkStorage = set('kkStorage', kkStorage)
   useEffect(() => {
     getOrgMd(tree.slug).then((r) => setOrgMd(r.content)).catch(() => setOrgMd(''))
   }, [tree.slug])
@@ -1299,6 +1338,9 @@ function SettingsPanel({ tree, toast, close }: {
                 ...rs.flatMap((r) => r.warnings ?? []),
               ]
               toast(lines.length ? lines : ['settings saved'])
+              // the edits are the server's now — drop the buffer so the panel
+              // reads from the tree again rather than from what was typed
+              clearEdits()
               close()
             }).catch((e: Error) => toast([`error: ${e.message}`]))
           }}>save</button>

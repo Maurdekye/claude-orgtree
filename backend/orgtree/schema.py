@@ -249,7 +249,6 @@ class OrgDoc(TypedDict):
     fable_filter_policy: str
     nodes: dict[str, NodeDoc]
     audiences: list[AudienceGrant]
-    chain_notices: list[dict[str, Any]]
     audience_requests: list[dict[str, Any]]
     events: list[dict[str, Any]]
     # ---- setdefault'd / optional org state ----

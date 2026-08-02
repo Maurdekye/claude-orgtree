@@ -171,7 +171,7 @@ export interface TreeNode {
   last_error: string | null
 }
 
-// ledger.py credit_requests / audience_requests / chain_notices are
+// ledger.py credit_requests / audience_requests are
 // dict[str, Any] in schema.py — only `status` is provably read on requests
 export interface CreditRequest {
   status?: string
@@ -445,6 +445,16 @@ export interface PendingMail {
 }
 
 // GET /api/orgs/{slug}/nodes/{nid}/chat — read_chat + node_chat additions
+/** one row of ChatPayload.live — the shape supervisor.live_row records */
+export interface LiveRowPayload {
+  kind: string
+  text?: string
+  id?: string
+  secs?: number
+  sticky?: boolean
+  at?: string
+}
+
 export interface ChatPayload {
   busy: boolean
   queued: number
@@ -452,6 +462,11 @@ export interface ChatPayload {
   last_error: string | null
   occupancy: number | null
   messages: ChatMessage[]
+  /** the server-owned live tail: rows this turn produced that the transcript
+   *  has not caught up on yet, already swept against it server-side
+   *  (supervisor._sweep_live). The client renders these; it does not build
+   *  or retire them. */
+  live?: LiveRowPayload[]
   init?: ChatInit | null
   mail_pending: number
   pending_mail: PendingMail[]
