@@ -276,3 +276,109 @@ copies of one fact, reconciled on a timer. **Not fixed** — it falls under the 
   review, still unfixed.
 - **`game-master` has an empty charter** although `hire` now refuses without one. Predates the
   requirement.
+
+---
+
+## 8. Coverage audit — how much of the state has actually been examined (2026-08-02)
+
+Prompted by the user:
+
+> how thorough of an investigation into what state can be deduplicated have you done? what gaps
+> remain to examine? i want to make this app as stateless internally as possible to isolate as many
+> classes of stale state bugs as we can
+
+**Honest answer: the investigation was bug-led, not systematic.** §4 was written by walking backwards
+from reported symptoms, so it is deep on the *conversation* path and shallow-to-absent everywhere
+else. What follows is the first attempt at a census that does not start from a bug report. Numbers
+are measured at `fab4f04`.
+
+### 8.1 What HAS been examined, and how well
+
+| area | depth | outcome |
+|------|-------|---------|
+| the conversation model (§4①) | exhaustive — transcript census, CLI probe, live Playwright | rebuilt: one store, server-owned live tail, watcher-driven heartbeat |
+| settings/config prop mirrors (§4②) | census of all `useState`-from-prop in `App`/`modals` | 27 mirrors collapsed to 3 `edit` buffers |
+| liveness gating (§4②a) | found only after two failed fixes | rule extracted; applied to the chat path ONLY |
+| backend per-node runtime state (§4③) | reference-counted | `occupancy`/`context_window`/`last_status` moved to the doc |
+
+### 8.2 What has NOT been examined — the gaps, ranked
+
+**G1 — the TREE payload has no heartbeat at all.** This is the same defect class as D-34 and it is
+the larger half of the app. `refreshTree` is called only on WS connect, on a `node_event` frame, and
+in the acting client's own mutation callbacks. There is no timer. Measured: the only intervals in
+`App.tsx` are `refreshOrgs` every 3 s (org list, and only while the drawer/welcome is up) and
+`nowTick` every 15 s (a clock re-render, no fetch). Every card, credit meter, occupancy bar, roster
+entry, resume-red timer and inbox badge is therefore push-only. **Chat now self-heals; the tree
+around it does not.**
+
+**G2 — 14 of 30 mutating endpoints persist without broadcasting.** Measured by parsing `api.py`:
+every route that calls `save_org` was checked for a `hub_changed`. The silent ones:
+
+```
+POST /api/orgs                          POST /api/orgs/{slug}/inbox/read
+POST /api/orgs/{slug}/kiosk             POST /api/orgs/{slug}/org_inbox/read
+POST /api/orgs/{slug}/defaults          POST /api/orgs/{slug}/inbox/clear
+POST /api/orgs/{slug}/nodes/{nid}/scope POST /api/orgs/{slug}/audiences
+POST /api/orgs/{slug}/nodes/{nid}/reorder   POST /api/orgs/{slug}/disk/delete
+POST /api/orgs/{slug}/nodes/{nid}/message   DELETE …/nodes/{nid}/mail/{mid}
+POST /api/orgs/{slug}/dissolve-all      POST /api/orgs/{slug}/credit-requests
+```
+
+The acting client refetches in its own `.then()`, which is exactly why this is invisible in
+single-tab testing — and exactly why a second view (other tab, kiosk, the switchboard beside the
+desk) disagrees. `/nodes/{nid}/scope` is on that list, i.e. the effort/permission surface that was
+reported twice.
+
+**G3 — the `mail` frame deliberately refreshes nothing.** `handleWs` returns early for
+`type: "mail"` (it is documented as "pure animation"). So mail arriving updates no unread badge, no
+tab title, no inbox panel — `InboxView` refetches on `pulse`, and a mail delivery is not a pulse.
+The counts are correctly *derived* server-side (`len(user_inbox)`); nothing tells the client to ask.
+
+**G4 — `activity` and `pulses` are client-side accumulations of server facts.** `activity` is built
+from `node_stream`/`node_event` frames, keyed by node, cleared on `turn_done`. A missed `turn_done`
+strands an indicator until the socket reconnects. Both are derivable now: `busy` is in the tree
+payload and the last tool row is in the server-owned live tail. This is the same shape as the
+`streams` chain that D-34 deleted, still threaded through the same prop path.
+
+**G5 — 18 of 19 read-endpoint call sites are fetch-once.** Only `getChat` (via `convo.ts`) has a
+heartbeat. Of the rest, these display data that mutates while the panel is open: `getInbox`,
+`getNodeInbox`, `getEvents`, `getAudiences`, `getHistory`, `getScratch`, `getDisk`, `getDiskDir`.
+The remainder (`getHost`, `getCharters`, `getMcpServers`, `getDefaults`, `getOrgMd`) are quasi-static
+and probably fine.
+
+**G6 — client state keyed by server ids is never garbage-collected.** `orgtree-eyemin-`,
+`orgtree-eyeseen-`, `orgtree-pile-`, `orgtree-inbox-seen-` all persist node ids in `localStorage`.
+Exactly one sweep exists (`orgtree-draft-`, against `map`). `minned`/`eyeseen` grow monotonically
+across the org's whole hire/fire history; `pileFront` can name a node that no longer exists.
+
+**G7 — the `delivering` journal is a second copy of mail-in-flight** and is reconciled on a timer.
+Already recorded as §①a; still unfixed, still under the ruling.
+
+**G8 — `_ws_usage_cache` is the one backend TTL cache** (`workspace_usage_bytes(max_age>0)`, UI reads
+only; enforcement always measures fresh). Deliberate and correctly scoped — noted so a future audit
+does not rediscover it as a defect.
+
+### 8.3 Where the design is already right (do not "fix" these)
+
+- `store.py` keeps **no** org-doc cache — every read loads from disk under `DOC_LOCK`.
+- `Hub` payloads are deliberately dumb: *"the UI refetches the tree; the ledger stays the single
+  source of truth."* The contract is correct; G1/G2/G3 are failures to honour it, not reasons to
+  change it.
+- Aggregates (`top_level_holds`, unread counts) are computed, not stored.
+- The archived-bearer transcript snapshot (`readChat`) is a snapshot of an **immutable** object.
+
+### 8.4 Recommended order
+
+1. **G1** — one tree heartbeat, gated on "the org view is mounted". Smallest change, largest blast
+   radius, and it makes G2/G3 non-fatal rather than merely rarer.
+2. **G2** — make `hub_changed` structural (broadcast in `save_org`, or one decorator) so a new
+   endpoint cannot forget it. Fixing the 14 by hand recreates the "N writers" problem the review
+   opened with.
+3. **G3** — let the mail frame refresh, or carry the counts on the frame.
+4. **G4** — delete `activity`/`pulses`, derive from tree + live tail.
+5. **G5** — a shared `usePolled(fetch, deps)` for the eight mutable panels.
+6. **G6** — sweep id-keyed `localStorage` against the tree, as drafts already are.
+
+☞ The through-line: **§4 fixed the copies; §8 is about the refresh paths.** Deduplicating state
+removes divergence between two copies. It does nothing for a single copy that is simply old, and
+five of the eight gaps above are that second failure.
