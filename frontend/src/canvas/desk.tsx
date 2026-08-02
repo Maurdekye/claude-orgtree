@@ -171,11 +171,39 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
   // during an event handler can fire BEFORE React commits the new rows, so it
   // read the OLD scrollHeight and landed short — that was the "gets left
   // behind" bug. A layout effect measures post-commit, so it cannot miss.
-  useLayoutEffect(() => { if (stickRef.current) pin() })
+  // Windowed transcript: only the newest CHAT_WINDOW rows are fetched and
+  // rendered; scrolling to the top loads another page. A long-lived agent's
+  // transcript is unbounded, and the cost that actually bites is DOM size —
+  // every row carries markdown and tool chips. The server stamps `seq` as the
+  // PRE-slice ordinal, so messages[0].seq > 0 means older rows exist.
+  const CHAT_WINDOW = 120
+  const [win, setWin] = useState(CHAT_WINDOW)
+  const [loadingOlder, setLoadingOlder] = useState(false)
+  // distance-from-bottom is invariant when older rows are PREPENDED, so it is
+  // the anchor that keeps the reader's place instead of jumping them down
+  const growAnchor = useRef<number | null>(null)
+  useLayoutEffect(() => {
+    const el = scroller.current
+    if (stickRef.current) { pin(); return }
+    if (el && growAnchor.current != null) {
+      el.scrollTop = el.scrollHeight - growAnchor.current
+      growAnchor.current = null
+    }
+  })
+  // seq is the PRE-slice ordinal, so a non-zero first seq means older rows exist
+  const hasOlder = (chat?.messages[0]?.seq ?? 0) > 0
   const toBottom = () => { setStuck(true); pin() }
+  const loadOlder = () => {
+    const el = scroller.current
+    if (!el || loadingOlder || win >= 1000) return   // 1000 = the API's own cap
+    growAnchor.current = el.scrollHeight - el.scrollTop
+    setLoadingOlder(true)
+    setWin((w) => Math.min(1000, w + CHAT_WINDOW))
+  }
 
   const refresh = useCallback((force = false) =>
-    getChat(slug, node.id).then((c) => {
+    getChat(slug, node.id, win).then((c) => {
+      setLoadingOlder(false)
       // sticky-bottom: the scroll handler already tracks whether the reader is
       // at the bottom, so an update only has to RE-STICK on an explicit jump or
       // the first load. Never yank someone out of scrollback.
@@ -213,7 +241,7 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
       }
       setLiveFeed((f) => f.filter((r) => r.sticky
         || (now - (r._at ?? 0) < 5000 && !covered(r))))
-    }).catch(() => {}), [slug, node.id])
+    }).catch(() => setLoadingOlder(false)), [slug, node.id, win])
 
   useEffect(() => { refresh() }, [refresh])
   useEffect(() => {
@@ -446,7 +474,18 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
         <div className="desk-error"><WarnIcon fontSize="inherit" /> {chat.last_error}</div>)}
       {view === 'chat' && (
         <div className="msgs" ref={scroller}
-          onScroll={() => setStuck(nearBottom())}>
+          onScroll={(e) => {
+            setStuck(nearBottom())
+            // within a screen of the top: page in the previous window
+            if (e.currentTarget.scrollTop < 240 && hasOlder) loadOlder()
+          }}>
+          {hasOlder && (
+            <button className="loadolder" onClick={loadOlder} disabled={loadingOlder}>
+              {loadingOlder ? 'loading…'
+                : `load earlier messages (${chat?.messages[0]?.seq ?? 0} above)`}
+            </button>)}
+          {!hasOlder && win > CHAT_WINDOW && chat?.messages.length
+            ? <div className="dim pad loadolder-end">— start of the conversation —</div> : null}
           {!chat && <div className="dim pad">loading…</div>}
           {chat && !chat.messages.length && !live_feed.length &&
             <div className="dim pad">no conversation yet</div>}

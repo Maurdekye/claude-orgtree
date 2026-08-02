@@ -1925,8 +1925,15 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                 # persisted on the node (survives restarts); a new turn moves
                 # it to prev_status, so a stale "done" never shows over live
                 # work but the history is not erased (gap audit №13)
+                # user ruling 2026-08-02: `done` and `idle` are not functionally
+                # distinct — an agent that finished IS idle. The DONE report
+                # still goes to the superior below; the node then simply sits
+                # idle, carrying the summary so the chip still says what it did.
+                # `blocked` is NOT collapsed: it means "stuck, needs a human or
+                # a superior", which idle does not.
+                stored = "idle" if status == "done" else status
                 org.node(body.node)["last_status"] = {
-                    "status": status, "summary": summary,
+                    "status": stored, "summary": summary,
                     "at": supervisor.now_iso()}
                 result = {"recorded": status}
                 if status in ("done", "blocked"):

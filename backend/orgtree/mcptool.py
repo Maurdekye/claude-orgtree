@@ -232,7 +232,10 @@ TOOLS: list[dict[str, Any]] = [
         "name": "orgtree_status",
         "description": ("Report your working status. REQUIRED when you finish or get "
                         "stuck: 'done' and 'blocked' notify your superior with your "
-                        "summary; 'working' and 'idle' just record state."),
+                        "summary; 'working' and 'idle' just record state. Reporting "
+                        "'done' sends that report and then leaves you IDLE — "
+                        "finished and idle are the same resting state, so there is "
+                        "no need to follow a 'done' with an 'idle'."),
         "inputSchema": {
             "type": "object",
             "properties": {

@@ -1531,6 +1531,11 @@ class Org:
             "predecessor": None,
             "successor": None,
             "bearer_state": None,      # None | knowledge | preserving
+            # user ruling 2026-08-02: a new hire is IDLE, not stateless. It has
+            # been created and is waiting for work — which is exactly what idle
+            # means — and a blank chip read as "unknown" rather than "ready".
+            "last_status": {"status": "idle", "summary": "hired — awaiting work",
+                            "at": now()},
         }
         return nid
 

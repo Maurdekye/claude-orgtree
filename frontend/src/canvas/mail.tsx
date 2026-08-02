@@ -34,6 +34,8 @@ export interface MailListProps {
   fileHref?: (path: string) => string
 }
 
+const MAIL_WINDOW = 40
+
 export function MailList({ pending = [], delivered = [], waitLabel, sender, outgoing,
   onRead, onReply, onRetract, jumpTo, fileHref }: MailListProps) {
   // newest first throughout (user ruling) — waiting/unread stays grouped on top.
@@ -62,6 +64,11 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
   // a plain client-side filter over sender+body, no index, no server
   const [q, setQ] = useState('')
   const [draft, setDraft] = useState('')
+  // windowed like the transcript: a long-lived org's folders grow without
+  // bound and every row is a live DOM node. Newest MAIL_WINDOW render, the
+  // rest page in. ⚠ the filter runs over the WHOLE set before the window, so
+  // hunting an old message never depends on how far you have paged.
+  const [vis, setVis] = useState(MAIL_WINDOW)
   const S: (id: string, m: MailRow) => ReactNode =
     sender ?? ((id) => <span>{id === USER ? '@user' : id}</span>)
   const partyOf = (m: MailRow) => (outgoing ? m.to : m.from)
@@ -97,7 +104,12 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
             onChange={(e) => setQ(e.target.value)} />
         )}
         {shown.length === 0 && <div className="dim pad">no matches</div>}
-        {shown.map((m, i) => (
+        {/* windowed like the transcript: a long-lived org's folders grow
+            without bound and every row is a live DOM node. Newest MAIL_WINDOW
+            render; the rest page in on demand. The filter searches the WHOLE
+            set (`shown`), not just the window — hunting an old message must
+            not depend on how far you have paged. */}
+        {shown.slice(0, vis).map((m, i) => (
           <div key={keyOf(m)}
             ref={(el) => {
               if (el && jumpTo && keyOf(m) === jumpTo && !jumpedRef.current) {
@@ -124,6 +136,10 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
             <div className="l2">{brief(m.body)}</div>
           </div>
         ))}
+        {shown.length > vis && (
+          <button className="loadolder" onClick={() => setVis((v) => v + MAIL_WINDOW)}>
+            load earlier ({shown.length - vis} older)
+          </button>)}
       </div>
       <div className="mailer-read">
         {cur && (
