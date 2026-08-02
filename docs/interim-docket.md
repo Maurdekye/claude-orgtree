@@ -479,7 +479,7 @@ Measured cost first: the tree is **~4 KB and answers in 2–12 ms**, so the pull
 
 **Verified live** (`zz-g2-probe`, created and deleted): org view open, nothing happening —
 **3 tree fetches in 20 s at 4.5 / 10.5 / 16.5 s**. Before: zero.
-→ `PENDING-COMMIT`
+→ `524f353`
 
 ---
 
@@ -514,7 +514,7 @@ Because it now fires per SAVE rather than per endpoint, it **coalesces**: the fi
 0.01 s — faster than the 0.4 s coalesce window, i.e. a coincidental heartbeat, not the broadcast.
 Re-measured against the `changed` FRAME itself, which the timer cannot fake. Timing a proxy for the
 thing instead of the thing was also what nearly sank D-34.
-→ `PENDING-COMMIT`
+→ `524f353`
 
 ---
 
