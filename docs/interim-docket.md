@@ -305,7 +305,14 @@ flag does not mean no effort — the CLI picks its own. It IS recorded in the tr
 ⟨discovered — caught in a verification screenshot, never reported⟩ From turn start until the delivery
 journal confirms, the same message is on screen twice: as the transcript's `@user` envelope and as a
 pending bubble tagged *delivering mid-task…*. Up to ~10s. A textbook instance of finding ①.
-**Later reported by the user independently** (D-30). **Status: OPEN.**
+**Later reported by the user independently** (D-30).
+**Fix:** the delivery journal now records HOW its text travels. A `via="turn"` batch is written to
+the CLI as a user event, so the transcript carries it and the chat renders it there — those are no
+longer surfaced as pending. A `via="steer"` batch rides hook context, which the CLI never
+transcripts, so the journal stays its only possible display. Durability is untouched either way;
+this governs display only. Old entries default to `"steer"`, because showing a duplicate is the
+failure this system already prefers over hiding a message.
+→ `PENDING-COMMIT`
 
 ## D-29 · ~6s of blank panel before thinking starts
 ⟨discovered⟩ CLI startup, hooks and `init` occupy roughly six seconds before the thinking block
@@ -322,10 +329,19 @@ D-13 fixed which desk got an event, not the fact that **each desk keeps its own 
 A node is rendered by up to two DeskChat instances (its card and its switchboard panel), each with
 its own fetch, live rows, draft/thinking buffers and busy-gated poller — two independent models of
 one conversation diverge by construction.
-**In progress:** `frontend/src/convo.ts` — one store per node, outside React, subscribed by both
-views via `useSyncExternalStore`; one fetch, one poller, one reconciliation, N views. Also carries a
-self-heal poll so the UI never depends on having caught every websocket event.
-**Status: IN PROGRESS.**
+**Fix:** `frontend/src/convo.ts` — one conversation store per node, outside React, subscribed by
+every view via `useSyncExternalStore`. The desk gave up seven local state cells and two refs
+(`chat`, `pending`, `live_feed`, `draft`, `thinking`, `thinkSecs`, `win`, `loadingOlder`, `thinkBuf`,
+`thinkT0`) plus its own copies of the fetch, the event ingestion, the live/durable reconciliation and
+the busy poller. Ingestion now happens once at the websocket, not once per mounted view. Carries a
+self-heal poll while a node is busy, so the UI never depends on having caught every event — the
+assumption that let one missed pulse stall a desk permanently. Tool rows reconcile by the CLI's
+`tool_use_id` rather than by comparing rendered strings, and a live row may only age out after a
+fetch has actually had the chance to cover it (the 5s timer used to race the transcript write).
+**Verified live** on a sonnet agent: two views through a whole turn, 39 samples compared, **0
+divergent**; and across the user's real motion — switchboard mid-turn, then focus the agent's card —
+the new view mounted showing all 9 rows immediately, with no empty flash and nothing lost.
+→ `PENDING-COMMIT`
 
 ## D-31 · ⚠ The effort tag STILL shows nothing (third report)
 > also the effort tag *still* doesnt show the effort level for an agent when it hasnt been manually
@@ -353,9 +369,9 @@ fallback. Verified on the agents that were broken rather than the one that worke
 
 | item | state |
 |------|-------|
-| D-28 message rendered twice | OPEN — fix planned with D-30 |
+| D-28 message rendered twice | FIXED (journal `via`) |
 | D-29 ~6s blank before thinking | OPEN — recorded in the review |
-| D-30 shared conversation store | IN PROGRESS |
+| D-30 shared conversation store | FIXED (`convo.ts`) |
 | `chain_notices` dead reserved key shadowing `user_deep_reach()` | should be deleted or wired; it has already misled one session |
 | `_move` inflates a top-level grant past `max_top_grant` | confirmed in the shelved ledger review, unfixed |
 | `game-master` has an empty charter although `hire` now refuses without one | predates the requirement |

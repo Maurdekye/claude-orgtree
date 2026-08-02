@@ -17,6 +17,7 @@ import {
 import { DirList } from './forms'
 import { FolderPickerHost } from './picker'
 import { deskDpi, setDeskDpi } from './canvas/shared'
+import { ingestPulse, ingestStream, resetConvos } from './convo'
 import type {
   AudiencesPayload, DefaultsPayload, InboxPayload, KioskSpecRequest,
   MailEntry, OpRequest, OrgEvent, OrgListEntry, SweepPreview, ToastFn,
@@ -142,6 +143,9 @@ export default function App() {
       + (tree?.name ? `${tree.name} — orgtree` : 'orgtree')
   }, [tree])
 
+  // a conversation belongs to ONE org — dropping the store on an org switch
+  // keeps a stale chat from ever being shown under a different tree
+  useEffect(() => { resetConvos() }, [slug])
   useEffect(() => {
     if (!slug) return
     // the WS must SURVIVE backend restarts (updates, redeploys): without
@@ -164,12 +168,16 @@ export default function App() {
         return
       }
       if (data?.type === 'node_stream') {
-        setStreams((s) => ({ ...s, [data.node]: {
+        // the conversation model is fed ONCE here, not once per mounted view:
+        // a node can be on screen twice (its card and its switchboard panel)
+        // and two private copies of one conversation diverge by construction
+        // (user bug 2026-08-02). See convo.ts.
+        ingestStream(slug, {
           node: data.node, kind: data.kind, text: data.text ?? '',
           // sticky rides through: immediate-command output lives in NO
           // transcript, so the live-feed reconciliation must never sweep it
           ...(data.sticky ? { sticky: true } : {}),
-          ...(data.id ? { id: data.id as string } : {}), t: Date.now() } }))
+          ...(data.id ? { id: data.id as string } : {}), t: Date.now() })
         setActivity((a) => ({ ...a, [data.node]:
           data.kind === 'tool' ? { phase: 'tool', tool: data.text }
             : { phase: 'writing' } }))
@@ -178,6 +186,7 @@ export default function App() {
       if (data?.type === 'node_event') {
         setPulses((p) => ({ ...p,
           [data.node]: { node: data.node, event: data.event, t: Date.now() } }))
+        ingestPulse(slug, { node: data.node, event: data.event, t: Date.now() })
         if (data.event === 'frozen') {   // usage-limit popup (user ruling)
           toast([`${data.node} hit a usage limit and is FROZEN — use the resume button in the top bar when the limit resets`])
           refreshTree(slug)

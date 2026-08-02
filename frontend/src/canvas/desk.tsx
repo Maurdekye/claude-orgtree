@@ -21,6 +21,10 @@ import {
   WarnIcon,
 } from '../icons'
 import { ago, EXTERN, md, TIER_LETTER, USER, useEsc } from './shared'
+import {
+  addPending, CHAT_WINDOW, dropPending, loadOlder as storeLoadOlder, markBusy,
+  pollWhileBusy, refreshConvo, useConvo,
+} from '../convo'
 import type {
   ActivityInfo, CanvasNode, LiveRow, MailLinkFn, OpFn, PulseEvent,
   StreamEvent,
@@ -119,7 +123,17 @@ const SENDMODE_MS = 6000
 
 function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onConfig,
   onRecenter, pub, bare = false, compact = false, compactAt, onMailLink }: DeskChatProps) {
-  const [chat, setChat] = useState<ChatPayload | null>(null)
+  // THE CONVERSATION IS NOT THIS COMPONENT'S. It lives in one per-node store
+  // (convo.ts) that every view of this node subscribes to, because a node can
+  // be on screen twice — its card and its switchboard panel — and two private
+  // copies of one conversation diverge by construction (user bug 2026-08-02:
+  // "the switchboard desk going out of sync with the individual agent desks").
+  // What stays local below is only what is genuinely per-VIEW: this desk's
+  // scroll position, its open tab, its composer draft.
+  const convo = useConvo(slug, node.id)
+  const { chat, live_feed, draft, thinking, thinkSecs, pending } = {
+    chat: convo.chat, live_feed: convo.live, draft: convo.draft,
+    thinking: convo.thinking, thinkSecs: convo.thinkSecs, pending: convo.pending }
   // №2: the draft survives the camera — persisted per node on every keystroke
   // (clicking a sibling card unmounts this whole component)
   const draftKey = `orgtree-draft-${slug}-${node.id}`
@@ -134,7 +148,6 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
     } catch { /* private mode */ }
     return next
   }), [draftKey])
-  const [pending, setPending] = useState<string[]>([])   // optimistic, until the server copy lands
   // №11: which door the last send went through. It is a RECEIPT, not a state —
   // it answers "where did that message just go", and that answer goes stale the
   // moment the queue drains. It had no clear at all (user bug 2026-08-02: the
@@ -156,25 +169,9 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
   // 2026-08-02): a denial already renders inline as an errored ToolChip where
   // it happened, so the banner was a duplicate that also sorted a past event
   // below undelivered mail. Nothing needs dismissing that lives in sequence.
-  const [live_feed, setLiveFeed] = useState<LiveRow[]>([])
-  const [draft, setDraft] = useState('')       // the token-streamed growing reply
-  const [thinking, setThinking] = useState('') // №18: the live ribbon (tail)
-  // full thought accumulation + start time: when the reply begins, the ribbon
-  // folds into a clickable "thought for Xs" line (user spec 2026-07-31)
-  const thinkBuf = useRef('')
-  const thinkT0 = useRef(0)
-  // elapsed seconds while thinking is IN PROGRESS; null = not thinking. It is
-  // the whole display when the reasoning is sealed (opus/sonnet): there is no
-  // text to ribbon, but the think is real and can run for many seconds, and
-  // the panel used to show nothing at all for its entire duration (user,
-  // 2026-08-02). One cell, holding exactly what is rendered.
-  const [thinkSecs, setThinkSecs] = useState<number | null>(null)
-  useEffect(() => {
-    if (thinkSecs === null) return
-    const t = setInterval(
-      () => setThinkSecs(Math.round((Date.now() - thinkT0.current) / 1000)), 1000)
-    return () => clearInterval(t)
-  }, [thinkSecs === null])   // eslint-disable-line react-hooks/exhaustive-deps
+  // (live_feed / draft / thinking / thinkSecs / pending all come from the
+  // store above — they were seven local cells and a pair of refs here, which
+  // is exactly how two views of one node ended up with two different answers.)
   const scroller = useRef<HTMLDivElement | null>(null)
   const loadedRef = useRef(false)     // first load always lands at the bottom
   const live = node.state === 'live'
@@ -206,9 +203,7 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
   // transcript is unbounded, and the cost that actually bites is DOM size —
   // every row carries markdown and tool chips. The server stamps `seq` as the
   // PRE-slice ordinal, so messages[0].seq > 0 means older rows exist.
-  const CHAT_WINDOW = 120
-  const [win, setWin] = useState(CHAT_WINDOW)
-  const [loadingOlder, setLoadingOlder] = useState(false)
+  const loadingOlder = convo.loadingOlder
   // distance-from-bottom is invariant when older rows are PREPENDED, so it is
   // the anchor that keeps the reader's place instead of jumping them down
   const growAnchor = useRef<number | null>(null)
@@ -225,127 +220,34 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
   const toBottom = () => { setStuck(true); pin() }
   const loadOlder = () => {
     const el = scroller.current
-    if (!el || loadingOlder || win >= 1000) return   // 1000 = the API's own cap
+    if (!el) return
     growAnchor.current = el.scrollHeight - el.scrollTop
-    setLoadingOlder(true)
-    setWin((w) => Math.min(1000, w + CHAT_WINDOW))
+    if (!storeLoadOlder(slug, node.id)) growAnchor.current = null
   }
 
-  const refresh = useCallback((force = false) =>
-    getChat(slug, node.id, win).then((c) => {
-      setLoadingOlder(false)
-      // sticky-bottom: the scroll handler already tracks whether the reader is
-      // at the bottom, so an update only has to RE-STICK on an explicit jump or
-      // the first load. Never yank someone out of scrollback.
-      if (force || !loadedRef.current) setStuck(true)
-      loadedRef.current = true
-      setChat(c)
-      // a pending message graduates once the transcript contains it — by
-      // containment, not equality: the turn text is a mail envelope now
-      setPending((p) => p.filter((x) =>
-        !c.messages.slice(-20).some((m) => m.role === 'user' && m.text.includes(x))))
-      // the fetched transcript supersedes what it COVERS — never blindly:
-      // the CLI's file append can lag its own stream event, and a refresh
-      // landing in that gap ate the message (user bug 2026-07-31: replies
-      // flashed, vanished, then reappeared with the next tool use). A live
-      // row survives while it is young or not yet visible in the fetched
-      // tail; covered/old rows drop (keeping everything doubled the whole
-      // in-flight turn). Sticky rows (immediate /context output — in no
-      // transcript, ever) always stay.
-      const now = Date.now()
-      const tail = c.messages.slice(-12)
-      const covered = (r: LiveRow) => {
-        if (r.kind === 'text')
-          return tail.some((m) => m.role === 'assistant'
-            && (m.text || '').startsWith((r.text || '').slice(0, 300)))
-        if (r.kind === 'tool')
-          return tail.some((m) => (m.tools ?? []).some((t) =>
-            r.text === t.name || r.text === `${t.name} · ${t.arg}`))
-        if (r.kind === 'steered')
-          return tail.some((m) => m.role === 'user'
-            && (m.text || '').includes((r.text || '').slice(0, 200)))
-        if (r.kind === 'thought')
-          // a SEALED live thought has no body to match on, so it is covered by
-          // the transcript's own sealed row rather than by a string compare
-          // (matching '' would otherwise be true against ANY thinking message)
-          return r.text
-            ? tail.some((m) => (m.thinking || '').includes(r.text.slice(0, 120)))
-            : tail.some((m) => m.thinking_sealed)
-        return true
-      }
-      setLiveFeed((f) => f.filter((r) => r.sticky
-        || (now - (r._at ?? 0) < 5000 && !covered(r))))
-    }).catch(() => setLoadingOlder(false)), [slug, node.id, win])
-
-  useEffect(() => { refresh() }, [refresh])
+  // Ingestion of stream/pulse events, the transcript fetch, the live/durable
+  // reconciliation and the busy poller ALL moved into convo.ts. They used to
+  // live here, which meant every mounted view ran its own copy of each — the
+  // divergence the store exists to make impossible. What is left is this
+  // view's business: ask for a first load, and re-stick the scroll when the
+  // store hands back a payload this view has not seen yet.
+  const refresh = useCallback((force = false) => {
+    if (force) setStuck(true)
+    return refreshConvo(slug, node.id, { force })
+  }, [slug, node.id])
   useEffect(() => {
-    if (pulse && pulse.node === node.id) {
-      if (pulse.event === 'turn_done') {
-        // sticky rows (/context answers) outlive the turn — the user asked
-        // mid-turn precisely to peek; the turn ending must not eat the answer
-        setLiveFeed((f) => f.filter((r) => r.sticky))
-        setDraft(''); setThinking(''); setThinkSecs(null)
-        thinkBuf.current = ''
-        thinkT0.current = 0
-      }
-      refresh()
-    }
-  }, [pulse, node.id, refresh])
-  useEffect(() => {                       // live per-message feed while working
-    if (streamEvt && streamEvt.node === node.id) {
-      // no per-event stick check: the layout effect re-pins after every commit
-      // whenever the reader is still at the bottom, so streaming follows without
-      // each call site having to remember to ask
-      // the reply (or a tool call) started: the live ribbon folds into a
-      // clickable "thought for Xs" line that stays in the flow (user spec)
-      const foldThought = () => {
-        // a SEALED think has no text but is still a real thought that took real
-        // time — it folds into the same line, minus the body
-        if (!thinkBuf.current && !thinkT0.current) return
-        const secs = Math.max(1, Math.round((Date.now() - thinkT0.current) / 1000))
-        const entry: LiveRow = { kind: 'thought', text: thinkBuf.current, secs,
-                        _at: Date.now() }
-        thinkBuf.current = ''
-        thinkT0.current = 0        // 0 = not thinking; the REF is the truth,
-        setThinking('')            // so no handler reads a stale closure
-        setThinkSecs(null)
-        setLiveFeed((f) => [...f.slice(-24), entry])
-      }
-      if (streamEvt.kind === 'delta') {
-        // token streaming (user spec): the reply grows word-by-word; the
-        // complete message event replaces it when the block finishes
-        foldThought()
-        setDraft((d) => (d + streamEvt.text).slice(-12000))
-        return
-      }
-      if (streamEvt.kind === 'thinking_start') {
-        // the block OPENED — the only marker that survives sealing, and the
-        // only one that is early (a sealed think's deltas can all arrive at
-        // the end, which would start the clock as it stops)
-        thinkT0.current = Date.now()
-        setThinkSecs(0)
-        return
-      }
-      if (streamEvt.kind === 'thinking') {
-        if (!thinkT0.current) { thinkT0.current = Date.now(); setThinkSecs(0) }
-        thinkBuf.current = (thinkBuf.current + streamEvt.text).slice(-24000)
-        setThinking((t) => (t + streamEvt.text).slice(-2000))
-        return
-      }
-      if (streamEvt.kind === 'steered') {
-        // a pending user message just got DELIVERED mid-task
-        setPending((p) => p.filter((x) => !streamEvt.text.includes(x)))
-      }
-      foldThought()
-      if (streamEvt.kind === 'text') setDraft('')
-      setLiveFeed((f) => [...f.slice(-24), { ...streamEvt, _at: Date.now() }])
-    }
-  }, [streamEvt, node.id])   // eslint-disable-line react-hooks/exhaustive-deps
+    if (!convo.loaded) void refreshConvo(slug, node.id)
+  }, [slug, node.id, convo.loaded])
   useEffect(() => {
-    if (!chat?.busy) return
-    const t = setInterval(refresh, 5000)
-    return () => clearInterval(t)
-  }, [chat?.busy, refresh])
+    // the FIRST payload this view sees lands it at the bottom, whether the
+    // store fetched it for us or another view had already loaded it
+    if (convo.loaded && !loadedRef.current) { loadedRef.current = true; setStuck(true) }
+  }, [convo.loaded])   // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    // one poller per NODE, owned by the store — not one per mounted view
+    pollWhileBusy(slug, node.id, !!chat?.busy)
+    return () => pollWhileBusy(slug, node.id, false)
+  }, [slug, node.id, chat?.busy])
 
   // an archived agent still RECEIVES mail (user ruling) — it queues in its
   // inbox and gets acted on at rehire; only unrecoverable nodes refuse
@@ -360,8 +262,8 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
     // optimistic ghost only until the server confirms — the durable copy
     // then renders from chat.pending_mail (№11); a failed send clears the
     // ghost instead of leaving a dimmed bubble forever
-    setPending((p) => [...p, t])
-    if (live) setChat((c) => c && ({ ...c, busy: true }))
+    addPending(slug, node.id, t)
+    if (live) markBusy(slug, node.id)
     flashMode('')   // the previous send's receipt must not outlive this one
     toBottom()
     sendMessage(slug, node.id, t, paths)
@@ -377,9 +279,9 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
         if (r.warnings?.length) toast(r.warnings)
         return refresh(true)
       })
-      .then(() => setPending((p) => p.filter((x) => x !== t)))
+      .then(() => dropPending(slug, node.id, t))
       .catch((e: Error) => {
-        setPending((p) => p.filter((x) => x !== t))
+        dropPending(slug, node.id, t)
         toast([`error: ${e.message}`])
       })
   }
@@ -541,7 +443,7 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
               {loadingOlder ? 'loading…'
                 : `load earlier messages (${chat?.messages[0]?.seq ?? 0} above)`}
             </button>)}
-          {!hasOlder && win > CHAT_WINDOW && chat?.messages.length
+          {!hasOlder && convo.win > CHAT_WINDOW && chat?.messages.length
             ? <div className="dim pad loadolder-end">— start of the conversation —</div> : null}
           {!chat && <div className="dim pad">loading…</div>}
           {chat && !chat.messages.length && !live_feed.length &&

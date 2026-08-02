@@ -716,26 +716,44 @@ def _user_event(text: str) -> str:
 
 
 def _journal_drain(org: Org, nid: str, mail: list[MailEntry] | None,
-                   pending: list[NoticeEntry] | None) -> str:
+                   pending: list[NoticeEntry] | None, via: str = "steer") -> str:
     """Record a drained-but-not-yet-delivered batch in the org doc (caller
     saves). Draining REMOVES mail from the doc; until the text carrying it
     reaches the agent's process, this journal is the only copy that survives
-    a turn that fails to launch or a backend death (gap audit item 1)."""
+    a turn that fails to launch or a backend death (gap audit item 1).
+
+    `via` says how the text travels, which decides whether the UI shows it:
+      "turn"  — written to the CLI as a user event, so the TRANSCRIPT will
+                carry it and the chat renders it there
+      "steer" — injected as hook context, which the CLI never transcripts, so
+                the journal is the only thing that can show it
+    Durability is identical either way; this only governs display."""
     tok = os.urandom(8).hex()
     org.d.setdefault("delivering", {}).setdefault(nid, []).append(
         {"tok": tok, "at": now_iso(), "mail": mail or [],
-         "notices": pending or []})
+         "notices": pending or [], "via": via})
     return tok
 
 
 def delivering_mail(org: Org, nid: str) -> list[dict[str, Any]]:
-    """Mail drained for an IN-FLIGHT delivery — steered mid-task or riding a
-    turn that hasn't confirmed yet. The journal holds the only copy, and the
-    UI read it from nowhere (user bug 2026-07-31: messages sent during a
-    long bash command 'didn't appear as queued until the command finished').
-    Surfaced with delivering:True — retraction stays box-only."""
+    """Mail drained for an in-flight delivery that the transcript will NOT
+    show — i.e. steered mid-task. The journal holds the only copy, and the UI
+    read it from nowhere (user bug 2026-07-31: messages sent during a long
+    bash command "didn't appear as queued until the command finished").
+    Surfaced with delivering:True — retraction stays box-only.
+
+    ⚠ `via="turn"` batches are deliberately EXCLUDED. Their text is written to
+    the CLI as a user event, so it is already on screen as the transcript's
+    @user bubble — surfacing them too rendered the user's message TWICE for
+    the whole window between turn start and the journal's confirmation, which
+    on a long think is ~10s (found while verifying the thinking clock,
+    2026-08-02; the user reported it independently the same day). Old entries
+    have no `via` and default to "steer": showing a duplicate is the failure
+    this system already prefers over hiding a message."""
     out = []
     for b in (org.d.get("delivering") or {}).get(nid, []):
+        if b.get("via", "steer") != "steer":
+            continue
         for m in b.get("mail") or []:
             out.append({**m, "delivering": True})
     return out
@@ -800,11 +818,15 @@ def _fold_back_undelivered(slug: str, nid: str,
         pass
 
 
-def _envelope(slug: str, nid: str, text: str) -> tuple[str, str | None]:
+def _envelope(slug: str, nid: str, text: str,
+              via: str = "steer") -> tuple[str, str | None]:
     """Drain notices + mail atomically and prepend them (№27 envelope, §7.4).
     Safe to call repeatedly — a second call finds nothing new. Returns the
     enveloped text plus the delivery-journal token when anything was drained
-    (the caller confirms it once the text actually reaches the agent)."""
+    (the caller confirms it once the text actually reaches the agent).
+
+    `via` is passed straight to the journal — see _journal_drain. The caller
+    knows how its text travels; this function does not."""
     tok = None
     with store.DOC_LOCK:
         org = store.load_org(slug)
@@ -813,7 +835,7 @@ def _envelope(slug: str, nid: str, text: str) -> tuple[str, str | None]:
         pending = (org.d.get("notices") or {}).pop(nid, None)
         mail = org.take_mail(nid)
         if pending or mail:
-            tok = _journal_drain(org, nid, mail, pending)
+            tok = _journal_drain(org, nid, mail, pending, via)
             store.save_org(org)
     prelude = []
     if pending:
@@ -1078,7 +1100,7 @@ def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
                     # journal the batch: if the CLI never launches (bad
                     # binary, Docker down, timeout) the drained mail would
                     # die with the turn — the journal folds it back
-                    toks.append(_journal_drain(org, nid, mail, pending))
+                    toks.append(_journal_drain(org, nid, mail, pending, "turn"))
                     store.save_org(org)
             prelude = []
             if pending:
@@ -1277,7 +1299,7 @@ def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
                                 ncmd = bool(nxt.get("cmd"))
                                 ntoks, nxt = list(nxt.get("toks") or []), nxt["text"]
                             if not ncmd:      # a slash command goes verbatim
-                                nxt, ntok = _envelope(slug, nid, nxt)
+                                nxt, ntok = _envelope(slug, nid, nxt, via="turn")
                                 if ntok:
                                     ntoks.append(ntok)
                             try:
