@@ -1412,6 +1412,12 @@ async def user_inbox_read(slug: str, body: InboxRead) -> dict[str, Any]:
             org.d["user_inbox"] = keep
             log = org.d.setdefault("user_mail_log", [])
             log.extend(read)
+            # the archive is CHRONOLOGICAL, never read-order. extend() appends
+            # in whatever order the user happened to CLICK, and the reader
+            # renders by list position — so without this sort a mail read
+            # second outranks one sent later (user bug 2026-08-02). `at` is
+            # ISO-8601 Z, so a string sort is a time sort.
+            log.sort(key=lambda m: m.get("at") or "")
             del log[:-100]
             store.save_org(org)
     await hub.changed(slug)

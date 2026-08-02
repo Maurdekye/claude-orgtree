@@ -36,10 +36,17 @@ export interface MailListProps {
 
 export function MailList({ pending = [], delivered = [], waitLabel, sender, outgoing,
   onRead, onReply, onRetract, jumpTo, fileHref }: MailListProps) {
-  // newest first throughout (user ruling) — waiting/unread stays grouped on top
+  // newest first throughout (user ruling) — waiting/unread stays grouped on top.
+  // Sort by SEND time rather than trusting list position: the user-mail archive
+  // was appended in READ order, so position was click order, not chronology
+  // (user bug 2026-08-02). Sorting here also repairs archives already written
+  // out of order, which a server-side fix alone cannot. `at` is ISO-8601 Z, so
+  // a plain string compare IS a time compare.
+  const newestFirst = (a: MailRow, b: MailRow) =>
+    (a.at ?? '') < (b.at ?? '') ? 1 : (a.at ?? '') > (b.at ?? '') ? -1 : 0
   const all = [
-    ...[...pending].reverse().map((m) => ({ ...m, _wait: true })),
-    ...[...delivered].reverse(),
+    ...[...pending].sort(newestFirst).map((m) => ({ ...m, _wait: true })),
+    ...[...delivered].sort(newestFirst),
   ]
   // selection is BY IDENTITY, not index — marking a mail read reshuffles the
   // list, and an index would silently land on a different mail

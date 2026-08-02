@@ -605,6 +605,13 @@ def identity_prompt(org: Org, nid: str) -> str:
                                     ("edit", "file editing"), ("subagents", "subagents"))
            if not tools.get(key, True)]
     tool_line = (f"Disabled for you: {', '.join(off)}. " if off else "")
+    if tools.get("bash", True):
+        # keep in step with _build_cmd's allowlist — promising a capability the
+        # config drops is a bug class already hit once here. A Linux sandbox
+        # has Bash only, so never offer PowerShell there.
+        tool_line += ("Terminal: Bash. " if sbx.is_sandboxed(org) else
+                      "Terminal: Bash and PowerShell are both available to "
+                      "you; for a cmd command, run `cmd /c …` from either. ")
     mcp_names = tools.get("mcp") or []
     if "*" in mcp_names:      # "*" = every registered server, present and future
         mcp_names = sorted(registered_mcp_servers())
@@ -936,7 +943,9 @@ def _build_cmd(org: Org, nid: str) -> list[str]:
     # to present them) — questions route through orgtree_message instead
     disallowed = ["AskUserQuestion", "EnterPlanMode", "ExitPlanMode"]
     if not tools.get("bash", True):
-        disallowed += ["Bash"]
+        # the terminal switch covers EVERY shell tool, not just Bash — leaving
+        # PowerShell off this list would hand a "no terminal" agent a shell
+        disallowed += ["Bash", "PowerShell"]
     if not tools.get("web", True):
         disallowed += ["WebSearch", "WebFetch"]
     if not tools.get("edit", True):
@@ -986,7 +995,11 @@ def _build_cmd(org: Org, nid: str) -> list[str]:
     # every granted capability must be explicitly allowlisted.
     allowed = [f"mcp__{k}" for k in sorted(chosen)]
     if tools.get("bash", True):
-        allowed.append("Bash")
+        # both shells the CLI actually exposes (probed on the pinned 2.1.220:
+        # "Bash, PowerShell" — there is no separate cmd tool; cmd is reached as
+        # `cmd /c …` from either, so the terminal switch already covers it).
+        # PowerShell is inert inside a Linux sandbox, which costs nothing.
+        allowed += ["Bash", "PowerShell"]
     if tools.get("web", True):
         allowed += ["WebSearch", "WebFetch"]
     if n["parent"] is None:

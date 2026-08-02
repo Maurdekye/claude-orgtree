@@ -1612,6 +1612,11 @@ svg.MuiSvgIcon-root {
   white-space: pre-wrap; overflow-wrap: anywhere;
   max-height: 320px; overflow-y: auto;
 }
+/* org-change notices reuse the collapse shape but are FACTS, not musings —
+   upright rather than italic so they never read as the agent thinking */
+.noticeline, .noticebody { font-style: normal; }
+.noticebody { white-space: normal; }
+.noticebody > div + div { margin-top: 3px; }
 .toolimg {
   display: block; max-width: 90%; max-height: 260px; margin: 4px 0 4px 18px;
   border: 1px solid var(--line); border-radius: 4px;

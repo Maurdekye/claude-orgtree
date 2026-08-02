@@ -134,20 +134,10 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
   const [asking, setAsking] = useState(false)
   const [askCompact, setAskCompact] = useState(false)
   const [view, setView] = useState<'chat' | 'history' | 'files' | 'inbox'>('chat')     // chat | history | files | inbox
-  // №7 denials are per-turn server state — only the NEXT turn clears them, so
-  // the panel needs its own × (user report 2026-07-31). Dismissal is keyed to
-  // the turn that produced the batch (a fresh batch always shows) and rides
-  // localStorage like the draft, since clicking a sibling unmounts this.
-  const lastTurn = (node.turns ?? [])[(node.turns?.length ?? 0) - 1]
-  const denialsKey = `${lastTurn?.at ?? ''}·${node.last_denials?.length ?? 0}`
-  const denialsLsKey = `orgtree-denials-${slug}-${node.id}`
-  const [denialsHidden, setDenialsHidden] = useState<string | null>(() => {
-    try { return localStorage.getItem(denialsLsKey) } catch { return null }
-  })
-  const hideDenials = () => {
-    setDenialsHidden(denialsKey)
-    try { localStorage.setItem(denialsLsKey, denialsKey) } catch { /* private mode */ }
-  }
+  // №7's denials banner and its dismissal state are gone (user bug
+  // 2026-08-02): a denial already renders inline as an errored ToolChip where
+  // it happened, so the banner was a duplicate that also sorted a past event
+  // below undelivered mail. Nothing needs dismissing that lives in sequence.
   const [live_feed, setLiveFeed] = useState<LiveRow[]>([])
   const [draft, setDraft] = useState('')       // the token-streamed growing reply
   const [thinking, setThinking] = useState('') // №18: the live ribbon (tail)
@@ -431,7 +421,12 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
             .catch((e: Error) => toast([`error: ${e.message}`]))}
           close={() => setAskCompact(false)} />
       )}
-      {chat?.last_error && <div className="desk-error"><WarnIcon fontSize="inherit" /> {chat.last_error}</div>}
+      {/* last_error moved INTO the chat stream (it renders at the end, where
+          it actually occurred). On the non-chat tabs it would otherwise be the
+          only surface showing a failed turn, so it still renders here for
+          those — never on the chat tab, which owns it chronologically. */}
+      {chat?.last_error && view !== 'chat' && (
+        <div className="desk-error"><WarnIcon fontSize="inherit" /> {chat.last_error}</div>)}
       {view === 'chat' && (
         <div className="msgs" ref={scroller}>
           {!chat && <div className="dim pad">loading…</div>}
@@ -462,8 +457,11 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
               : f.kind === 'tool'
                 ? <div key={'f' + i} className="msg live tools"><DotIcon fontSize="inherit" className="tooldot" /> {f.text}</div>
                 : f.kind === 'steered'
+                  // notices are split off here too: the live row would
+                  // otherwise flash raw [ORG NOTICES] chrome for the second
+                  // before the transcript refresh renders them as a card
                   ? <div key={'f' + i} className="msg user live md"
-                      dangerouslySetInnerHTML={md(stripEnvelope(f.text))} />
+                      dangerouslySetInnerHTML={md(stripEnvelope(splitNotices(f.text).rest))} />
                   : <div key={'f' + i} className="msg assistant live md"
                       dangerouslySetInnerHTML={md(f.text)} />
           ))}
@@ -495,16 +493,19 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
             <div key={'q' + i} className="msg user pending md"
               dangerouslySetInnerHTML={md(p)} />
           ))}
-          {/* №7: the machine truth about headless auto-denies — the agent
-              was corrected and nothing showed it */}
-          {(node.last_denials?.length ?? 0) > 0 && denialsHidden !== denialsKey && (
-            <div className="denials">
-              <button className="chip-x denials-x" title="dismiss"
-                onClick={hideDenials}><CloseIcon fontSize="inherit" /></button>
-              {node.last_denials!.map((d, i) => (
-                <div key={i}>⊘ denied · {d.tool}{d.arg ? `(${d.arg})` : ''}</div>))}
-              <span className="dim">last turn — the ⚙ folder grants decide this</span>
-            </div>)}
+          {/* the turn's own failure is the LAST thing that happened, so it
+              reads at the end of the stream. It used to render above the whole
+              transcript, which put the newest event first (user bug
+              2026-08-02: events must appear in the order they occurred). */}
+          {chat?.last_error && (
+            <div className="desk-error"><WarnIcon fontSize="inherit" /> {chat.last_error}</div>)}
+          {/* №7's denials banner is GONE (user bug 2026-08-02). A headless
+              auto-deny already writes a tool_result with is_error, so the
+              denial renders inline as an errored ToolChip at the point it
+              happened — verified in a live transcript ("Claude requested
+              permissions to write to …, but you haven't granted it yet").
+              The banner restated that, pinned below even undelivered pending
+              mail, so a past event sorted under a future one. */}
         </div>
       )}
       {view === 'history' && <HistoryView slug={slug} nid={node.id} />}
@@ -767,6 +768,22 @@ export function LineagePanel({ node, op, slug, close }: LineagePanelProps) {
   )
 }
 // Incoming turns are mail envelopes (messages ARE mail); for the chat view,
+// The envelope also prepends an [ORG NOTICES — n change(s)…] block to the next
+// turn's message (supervisor._envelope). That is machine chrome about the ORG,
+// not part of what the sender wrote, so it is pulled out here and rendered as
+// its own collapsed card rather than sitting inside the bubble (user bug
+// 2026-08-02). Anchored at the start because _envelope builds the prelude
+// notices-first; the trailing \n* eats the blank line before the mail block.
+const NOTICE_RE = /^\s*\[ORG NOTICES[^\]\n]*\]\n([\s\S]*?)\n\[END NOTICES\]\n*/
+const splitNotices = (t: string | null | undefined) => {
+  const s = t ?? ''
+  const m = NOTICE_RE.exec(s)
+  if (!m) return { notices: [] as string[], rest: s }
+  const notices = (m[1] ?? '').split('\n')
+    .map((l) => l.replace(/^\s*-\s*/, '').trim()).filter(Boolean)
+  return { notices, rest: s.slice(m[0].length) }
+}
+
 // hide the machine chrome — [MAIL]/[END MAIL] markers, drive nudges — and
 // render the FROM attribution as a small header instead of body text.
 const stripEnvelope = (t: string | null | undefined) => (t ?? '')
@@ -859,9 +876,13 @@ const Msg = memo(function Msg({ m, slug, nid, onMailLink }: {
   m: ChatMessage; slug: string; nid: string; onMailLink?: MailLinkFn
 }) {
   if (m.role === 'system') return <SysLine m={m} />
-  const text = m.role === 'user' ? stripEnvelope(m.text) : m.text
+  // notices come out BEFORE the envelope strip — they are their own card
+  const { notices, rest } = m.role === 'user'
+    ? splitNotices(m.text) : { notices: [] as string[], rest: m.text }
+  const text = m.role === 'user' ? stripEnvelope(rest) : m.text
   return (
     <div className={'msg ' + m.role + (m.oracle ? ' oracle' : '')}>
+      {notices.length > 0 && <NoticeLine notices={notices} />}
       {m.thinking && <ThoughtLine text={m.thinking} secs={m.think_secs} />}
       {/* (the string branch guards legacy live rows; the payload's tools
           rows are null-swept server-side, so no null case exists) */}
@@ -874,6 +895,28 @@ const Msg = memo(function Msg({ m, slug, nid, onMailLink }: {
     </div>
   )
 })
+
+// Org-change notices (hire/retire/reallocate/move/scope) ride in on the next
+// turn's message. They are about the ORG, not the conversation, so they fold
+// into their own collapsed card — same shape as the thought line, deliberately
+// (one collapse vocabulary in the transcript, not two).
+function NoticeLine({ notices }: { notices: string[] }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="thoughtwrap">
+      <button className="thoughtline noticeline" onClick={() => setOpen((o) => !o)}
+        title={open ? 'collapse' : 'read the org changes delivered with this message'}>
+        <AutorenewIcon fontSize="inherit" />
+        {' '}{notices.length} notice{notices.length === 1 ? '' : 's'} {open ? '▾' : '▸'}
+      </button>
+      {open && (
+        <div className="thoughtbody noticebody">
+          {notices.map((n, i) => <div key={i}>{n}</div>)}
+        </div>
+      )}
+    </div>
+  )
+}
 
 // №18 evolved (user spec 2026-07-31): after thinking wraps up it folds into a
 // small clickable "thought for Xs" line; the click expands the thought

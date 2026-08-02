@@ -1,4 +1,6 @@
 spike/results/
+# the maintainer's working todo list — deliberately local, never published
+docs/todos.md
 __pycache__/
 node_modules/
 dist/
