@@ -38,6 +38,10 @@ export interface CanvasNode {
   free?: number | null
   model_id?: string
   scope?: CanvasScope
+  /** what a turn would ACTUALLY launch with: scope.effort, else the org
+   *  default, else "" (no --effort flag). Derived server-side so the control
+   *  cannot disagree with the runtime — ledger.Org.effective_effort */
+  effort_effective?: string
   cost_usd?: number
   occupancy?: number | null
   context_window?: number | null

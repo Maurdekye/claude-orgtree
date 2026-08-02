@@ -1649,6 +1649,9 @@ svg.MuiSvgIcon-root {
   color: var(--dim); font-style: italic; font-size: 11.5px; cursor: pointer;
 }
 .thoughtline:hover { color: var(--ink); }
+/* signature-only thinking: nothing to open, so nothing invites a click */
+.thoughtline.sealed { cursor: default; opacity: 0.75; }
+.thoughtline.sealed:hover { color: var(--dim); }
 .thoughtbody {
   color: var(--dim); font-style: italic; font-size: 12px; line-height: 1.45;
   border-left: 2px solid var(--line); padding: 4px 10px; margin: 4px 0 6px;
@@ -1724,6 +1727,10 @@ svg.MuiSvgIcon-root {
 }
 .cc-eff:hover { border-color: var(--accent); color: var(--ink); }
 .cc-eff.set { color: var(--accent); border-color: var(--accent); }
+/* inherited from the org default: the level is REAL, so it is shown — but it
+   is not this agent's own setting, so it does not claim the accent */
+.cc-eff.inherited { color: var(--dim); border-style: dashed; }
+.cc-eff.inherited:hover { color: var(--ink); }
 .eff-pop {
   position: absolute; bottom: calc(100% + 8px); right: 0; z-index: 30;
   background: var(--panel-2); border: 1px solid var(--line);
@@ -1746,6 +1753,10 @@ svg.MuiSvgIcon-root {
   width: 13px; height: 13px; background: #d9d9e8;
   box-shadow: 0 0 0 1px var(--line);
 }
+/* the track is lit by INHERITANCE, not by a choice made here — same position,
+   quieter fill, so "this is where you sit" and "you chose this" stay distinct */
+.eff-dot.faint { opacity: 0.55; }
+.eff-dot.faint:hover { opacity: 1; }
 
 /* №12: read-only bearer transcript inside the lineage panel */
 .lin-read {

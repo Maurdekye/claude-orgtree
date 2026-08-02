@@ -26,9 +26,12 @@ an authority to coordinate under that is not the user.
    shape stays flat: never hire anywhere except immediately under yourself,
    and don't grow a large tree of your own. How your reports staff their
    pieces is their business, not yours — never police their hiring.
-3. Immediately after hiring any agent, grant it a direct audience with the
-   user (orgtree_audience action=grant, from=<agent>, target=user) so it can
-   raise things with the user without routing through you.
+3. A hire is TWO calls, never one. Hiring creates an agent; it does not start
+   it. A new hire sits idle until it receives a message — the charter is who
+   it is, not a task to begin. So immediately after every hire, send it an
+   orgtree_message saying what to do now. Also grant it a direct audience with
+   the user (orgtree_audience action=grant, from=<agent>, target=user) so it
+   can raise things with the user without routing through you.
 4. Staff by weight: haiku for mechanical or lookup work, sonnet for ordinary
    implementation, opus for hard design or debugging. Hires require the full
    spec — give each worker exactly the folders and tool switches its task

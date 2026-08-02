@@ -660,7 +660,10 @@ def identity_prompt(org: Org, nid: str) -> str:
         f'"orgtree" also works — the bare name alone will NOT match). '
         f"The tools: orgtree_message (reach your reports at any depth, your "
         f"superior, your peers), orgtree_hire (you must state a charter, folders, every "
-        f"tool switch and visibility — no defaults), orgtree_retire/rehire/dissolve/"
+        f"tool switch and visibility — no defaults; and HIRING DOES NOT START "
+        f"ANYONE — a new hire sits idle until you send it a message, so every "
+        f"hire is TWO calls: hire, then orgtree_message telling it what to do "
+        f"now), orgtree_retire/rehire/dissolve/"
         f"reallocate, orgtree_retool (re-scope an existing report), orgtree_chart"
         + (", orgtree_request_credits (top-level privilege: ask the user directly "
            "for a larger grant — state the new TOTAL and a reason; the user "
@@ -932,11 +935,11 @@ def _build_cmd(org: Org, nid: str) -> list[str]:
     # per-agent thinking effort (user-approved 2026-07-31); an UNSET node
     # inherits the org's default_effort LIVE at turn time (user ruling
     # 2026-08-01: visible inherit — a default change reaches unset nodes
-    # without a rehire); "" everywhere = CLI default, no flag. Org.EFFORTS
-    # is the ONE allowlist (review P2) — a literal copy here is how a
-    # partial edit silently un-wires a tier.
-    eff = sc.get("effort") or org.d.get("default_effort")
-    if eff and eff in Org.EFFORTS:
+    # without a rehire); "" everywhere = CLI default, no flag. The resolution
+    # lives in Org.effective_effort so the ⚙ control can DISPLAY the same
+    # answer this launches with — it used to recompute it here and show
+    # nothing for an unset node (user bug 2026-08-02).
+    if eff := org.effective_effort(nid):
         cmd += ["--effort", eff]
     tools = sc.get("tools", {})
     # interactive-only tools cannot work in a headless turn (there is no client
@@ -2779,6 +2782,7 @@ def read_chat(org: Org, nid: str, last: int | None = None) -> dict[str, Any]:
                          "ts": rec.get("timestamp")})
             continue
         texts, tools, thinks = [], [], []
+        sealed = 0        # thinking blocks that carry a signature but no text
         if isinstance(content, str):
             texts.append(content)
         else:
@@ -2789,9 +2793,21 @@ def read_chat(org: Org, nid: str, last: int | None = None) -> dict[str, Any]:
                 elif bt == "thinking":
                     # №18 evolved (user spec 2026-07-31): thinking IS in the
                     # CLI transcript — surfaced as a collapsed "thought for
-                    # Xs" line, expandable on click
+                    # Xs" line, expandable on click.
+                    # ⚠ Since 2026-08-02 the text is usually NOT there: the
+                    # block arrives as {"signature": …, "thinking": ""} and
+                    # the plaintext never leaves the API. Measured across CLI
+                    # 2.1.31 and 2.1.220, every model, every --effort tier,
+                    # and interactive sessions too — 0 blocks with text out of
+                    # 583. Dropping those silently is what made thinking
+                    # "completely hidden" (user bug): the record holds NOTHING
+                    # else, so the whole row vanished and the agent looked
+                    # like it had stopped thinking. It didn't — so the line
+                    # still renders, minus the body it was never given.
                     if block.get("thinking", "").strip():
                         thinks.append(block["thinking"])
+                    else:
+                        sealed += 1
                     continue
                 elif bt == "tool_use":
                     entry = {"name": block.get("name", "tool"),
@@ -2899,7 +2915,7 @@ def read_chat(org: Org, nid: str, last: int | None = None) -> dict[str, Any]:
                 occupancy = occ            # №24: LAST non-synthetic wins
         if t == "user" and tools and not any(texts):
             continue                        # pure tool_result plumbing — skip
-        if not texts and not tools and not thinks:
+        if not texts and not tools and not thinks and not sealed:
             continue
         mrow = {
             "role": t,
@@ -2907,8 +2923,14 @@ def read_chat(org: Org, nid: str, last: int | None = None) -> dict[str, Any]:
             "tools": [x for x in tools if x],
             "ts": rec.get("timestamp"),
         }
-        if thinks:
-            mrow["thinking"] = "\n\n".join(thinks)[:6000]
+        if thinks or sealed:
+            if thinks:
+                mrow["thinking"] = "\n\n".join(thinks)[:6000]
+            else:
+                # the thought happened and its DURATION is still true — only
+                # the body is missing, so the line says so instead of lying
+                # with an empty expander
+                mrow["thinking_sealed"] = True
             # "thought for Xs" ≈ the gap from the previous record to this
             # message — the API call's pre-output time
             secs = _ts_gap_secs(rec_prev_ts, rec.get("timestamp"))

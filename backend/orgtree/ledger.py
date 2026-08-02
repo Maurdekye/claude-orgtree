@@ -2151,6 +2151,20 @@ class Org:
     # ------------------------------------------------------------- node scope
     EFFORTS: Final = ("low", "medium", "high", "xhigh", "max")
 
+    def effective_effort(self, nid: str) -> str:
+        """The effort a turn would ACTUALLY launch with: the node's own, else
+        the org default, else "" — no --effort flag, i.e. the CLI's own
+        default. The org default is read LIVE at turn time (user ruling
+        2026-08-01: visible inherit), so this is DERIVED and never stored.
+
+        The supervisor asks this instead of recomputing it, because the UI
+        asks it too: an unset node showed a blank effort control while its
+        turns ran at the org default, so the display disagreed with reality
+        (user bug 2026-08-02). One function, so they cannot drift apart."""
+        eff = (self.node(nid)["scope"].get("effort")
+               or self.d.get("default_effort") or "")
+        return eff if eff in self.EFFORTS else ""
+
     def set_scope(self, actor: str, nid: str, add_dirs: list[Any] | None = None,
                   tools: Mapping[str, Any] | None = None,
                   org_visibility: str | None = None,
@@ -2656,6 +2670,9 @@ class Org:
                 "free": None if n["state"] != "live" else self.free(nid),
                 "session_id": n["session_id"],
                 "scope": n["scope"],
+                # what a turn would ACTUALLY launch with — scope.effort is
+                # only half the answer (the org default supplies the rest)
+                "effort_effective": self.effective_effort(nid),
                 "ui_order": n.get("ui_order", 0),
                 "cost_usd": round(float(n.get("cost_usd") or 0.0), 4),
                 "occupancy": n.get("occupancy"),

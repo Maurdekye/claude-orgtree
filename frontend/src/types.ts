@@ -409,6 +409,8 @@ export interface ChatMessage {
   thinking?: string
   /** "thought for Xs" — gap-derived seconds (supervisor.py:2941-2943) */
   think_secs?: number
+  /** the block came signature-only: it thought, the plaintext was withheld */
+  thinking_sealed?: boolean
   /** preserving-oracle exchange rows (supervisor.py:2969-2973) */
   oracle?: boolean
   /** interleaved from the durable steered log (supervisor.py:2951) */

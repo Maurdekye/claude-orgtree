@@ -1883,6 +1883,18 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                                   charter=a.get("charter"))
                 if dwarns:
                     result.setdefault("warnings", []).extend(dwarns)
+                # observed on another install (user report 2026-08-02): an
+                # agent hires, writes a thorough charter, and considers the
+                # delegation DONE — the hire then sits idle forever, because
+                # nothing in the tree self-starts. The charter is identity;
+                # mail is what runs a turn. Said in the RESULT because that is
+                # what the hiring agent reads next, not the tool description
+                # it read once.
+                if result.get("node"):
+                    result["next_step"] = (
+                        f'"{result["node"]}" is hired and IDLE. Hiring does not '
+                        f'start it — send it an orgtree_message now saying what '
+                        f'to do, or it will never run.')
             elif body.tool == "orgtree_retool":
                 # effort joins retool (ceiling spec §6): a cost dial, so a
                 # superior may set it on REPORTS — never on itself (set_scope's

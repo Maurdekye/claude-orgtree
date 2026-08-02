@@ -663,6 +663,7 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
           }} />
         {!pub && (
           <EffortButton value={node.scope?.effort ?? ''}
+            effective={node.effort_effective ?? ''}
             onSet={(lvl) => saveScope(slug, node.id, { effort: lvl })
               .then(() => toast([lvl
                 ? `${node.id} thinking effort: ${lvl}`
@@ -996,7 +997,9 @@ const Msg = memo(function Msg({ m, slug, nid, onMailLink }: {
   return (
     <div className={'msg ' + m.role + (m.oracle ? ' oracle' : '')}>
       {notices.length > 0 && <NoticeLine notices={notices} />}
-      {m.thinking && <ThoughtLine text={m.thinking} secs={m.think_secs} />}
+      {(m.thinking || m.thinking_sealed) &&
+        <ThoughtLine text={m.thinking} secs={m.think_secs}
+          sealed={m.thinking_sealed} />}
       {/* (the string branch guards legacy live rows; the payload's tools
           rows are null-swept server-side, so no null case exists) */}
       {(m.tools ?? []).map((t, i) => (typeof t === 'string'
@@ -1052,14 +1055,30 @@ function NoticeLine({ notices }: { notices: string[] }) {
 // small clickable "thought for Xs" line; the click expands the thought
 // process. Fed live (measured) while the turn runs, and from the transcript's
 // thinking blocks (gap-derived seconds) ever after.
-function ThoughtLine({ text, secs }: { text: string; secs?: number }) {
+// `sealed` = the block arrived signature-only, its plaintext withheld by the
+// API (the normal case since 2026-08-02). The thought and its duration are
+// still real, so the line stays — as a plain marker with no expander, because
+// an expander that opens on nothing is worse than no expander.
+function ThoughtLine({ text, secs, sealed }:
+{ text?: string; secs?: number; sealed?: boolean }) {
   const [open, setOpen] = useState(false)
+  const dur = secs ? `${secs}s` : 'a moment'
+  if (sealed || !text) {
+    return (
+      <div className="thoughtwrap">
+        <span className="thoughtline sealed"
+          title="the model's reasoning was not included in the response — only its duration is known">
+          <PsychologyIcon fontSize="inherit" />{' '}thought for {dur}
+        </span>
+      </div>
+    )
+  }
   return (
     <div className="thoughtwrap">
       <button className="thoughtline" onClick={() => setOpen((o) => !o)}
         title={open ? 'collapse' : 'read the thought process'}>
         <PsychologyIcon fontSize="inherit" />
-        {' '}thought for {secs ? `${secs}s` : 'a moment'} {open ? '▾' : '▸'}
+        {' '}thought for {dur} {open ? '▾' : '▸'}
       </button>
       {open && <div className="thoughtbody">{text}</div>}
     </div>
@@ -1097,8 +1116,18 @@ function SysLine({ m }: { m: ChatMessage }) {
 // agents can do.
 const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max']
 
-function EffortButton({ value, onSet }: { value: string; onSet: (lvl: string) => void }) {
+// `value` = pinned on this agent; `effective` = what a turn actually launches
+// with (the org default fills in when nothing is pinned). Showing only `value`
+// left the control blank on every agent nobody had touched, while its turns ran
+// at the org default — the display disagreed with the runtime (user bug
+// 2026-08-02). Now the level is always visible and the two cases are told apart
+// by weight, not by absence.
+function EffortButton({ value, effective, onSet }:
+{ value: string; effective?: string; onSet: (lvl: string) => void }) {
   const [open, setOpen] = useState(false)
+  const shown = value || effective || ''
+  const why = value ? 'set on this agent'
+    : effective ? 'inherited from the org default' : 'the CLI default'
   const wrapRef = useRef<HTMLSpanElement | null>(null)
   useEffect(() => {
     if (!open) return
@@ -1111,14 +1140,15 @@ function EffortButton({ value, onSet }: { value: string; onSet: (lvl: string) =>
   }, [open])
   return (
     <span className="eff-wrap" ref={wrapRef}>
-      <button type="button" className={'cc-eff' + (value ? ' set' : '')}
-        title={`thinking effort — ${value || 'inherit (org default)'}`}
+      <button type="button"
+        className={'cc-eff' + (value ? ' set' : shown ? ' inherited' : '')}
+        title={`thinking effort — ${shown || 'unset'} (${why})`}
         onClick={() => setOpen((o) => !o)}>
-        {value || 'effort'}
+        {shown || 'effort'}
       </button>
       {open && (
         <span className="eff-pop">
-          <EffortSwitch value={value}
+          <EffortSwitch value={value} effective={effective}
             onSet={(lvl) => { onSet(lvl); setOpen(false) }} />
         </span>
       )}
@@ -1126,20 +1156,29 @@ function EffortButton({ value, onSet }: { value: string; onSet: (lvl: string) =>
   )
 }
 
-function EffortSwitch({ value, onSet }: { value: string; onSet: (lvl: string) => void }) {
-  const idx = EFFORT_LEVELS.indexOf(value)
+function EffortSwitch({ value, effective, onSet }:
+{ value: string; effective?: string; onSet: (lvl: string) => void }) {
+  // the track lights at the EFFECTIVE level so it always says what will
+  // happen; `pinned` is what a click can clear, which is only the node's own
+  // setting — clicking an inherited dot pins it rather than clearing nothing
+  const pinned = EFFORT_LEVELS.indexOf(value)
+  const idx = pinned >= 0 ? pinned : EFFORT_LEVELS.indexOf(effective ?? '')
+  const shown = value || effective || ''
   return (
     <span className="effort-switch"
-      title={`thinking effort — ${value || 'inherit (org default)'}; click a`
-        + ' dot to set, click the active dot to clear back to inherit'}>
-      <span className="eff-label">Effort{value ? ` (${value})` : ''}</span>
+      title={`thinking effort — ${shown || 'the CLI default'}`
+        + (value ? ' (set here)' : effective ? ' (inherited from the org default)' : '')
+        + '; click a dot to set, click the active dot to clear back to inherit'}>
+      <span className="eff-label">Effort{shown
+        ? ` (${shown}${value ? '' : ' — inherited'})` : ''}</span>
       <span className="eff-track">
         {EFFORT_LEVELS.map((l, i) => (
           <button key={l} type="button"
             className={'eff-dot' + (i === idx ? ' on' : '')
-              + (idx >= 0 && i < idx ? ' below' : '')}
+              + (idx >= 0 && i < idx ? ' below' : '')
+              + (pinned < 0 ? ' faint' : '')}
             title={l}
-            onClick={() => onSet(i === idx ? '' : l)} />
+            onClick={() => onSet(i === pinned ? '' : l)} />
         ))}
       </span>
     </span>

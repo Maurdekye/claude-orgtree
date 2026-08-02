@@ -96,7 +96,11 @@ TOOLS: list[dict[str, Any]] = [
             "editable later via orgtree_retool), and state exactly which "
             "folders, tools and org visibility it needs — you cannot grant "
             "anything you do not hold yourself. Seat costs: haiku 1, sonnet 3, "
-            "opus 5, fable 10; seat + grant must fit within YOUR free credits."),
+            "opus 5, fable 10; seat + grant must fit within YOUR free credits. "
+            "⚠ HIRING DOES NOT START ANYONE. A new hire sits IDLE until it "
+            "receives its first message — the charter is who it is, not a task "
+            "to begin. Follow every hire with an orgtree_message to it saying "
+            "what to do now, or it will sit there doing nothing forever."),
         "inputSchema": {
             "type": "object",
             "properties": {
