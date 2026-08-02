@@ -49,17 +49,17 @@ interface UserNodeProps {
   map: Map<string, CanvasNode>
   op: OpFn
   slug: string
-  pulse: PulseEvent | null
+  pulses: Record<string, PulseEvent>
   toast: ToastFn
-  streamEvt: StreamEvent | null
+  streams: Record<string, StreamEvent>
   compactAt?: number
 }
 
 export function UserNode({ pos, isDrop, stats, inboxCount, seats, mailGlow,
   kiosk, pub, kioskRemaining, kioskSegs, pxc, zoom, onInbox, onGear, onSpawn,
   onMailLink,
-  focused, eyeW, onFocus, posX, onJump, map, op, slug, pulse, toast,
-  streamEvt, compactAt }: UserNodeProps) {
+  focused, eyeW, onFocus, posX, onJump, map, op, slug, pulses, toast,
+  streams, compactAt }: UserNodeProps) {
   const downRef = useRef<Pt | null>(null)
   // const extraction: the kiosk-credits narrowing must survive the commit
   // closure below (a property check alone would not)
@@ -135,8 +135,8 @@ export function UserNode({ pos, isDrop, stats, inboxCount, seats, mailGlow,
       <SpawnChips onSpawn={onSpawn} free={kioskRemaining ?? Infinity} seats={seats}
         maxTier={kiosk?.max_tier} />
       {focused && (
-        <EyeDesk map={map} op={op} slug={slug} pulse={pulse} toast={toast}
-          streamEvt={streamEvt} inboxCount={inboxCount} onInbox={onInbox}
+        <EyeDesk map={map} op={op} slug={slug} pulses={pulses} toast={toast}
+          streams={streams} inboxCount={inboxCount} onInbox={onInbox}
           onGear={onGear} pub={pub} eyeW={eyeW} posX={posX} onJump={onJump}
           compactAt={compactAt} onMailLink={onMailLink} />
       )}
@@ -154,9 +154,9 @@ interface EyeDeskProps {
   map: Map<string, CanvasNode>
   op: OpFn
   slug: string
-  pulse: PulseEvent | null
+  pulses: Record<string, PulseEvent>
   toast: ToastFn
-  streamEvt: StreamEvent | null
+  streams: Record<string, StreamEvent>
   inboxCount: number
   onInbox?: () => void
   onGear?: () => void
@@ -168,7 +168,7 @@ interface EyeDeskProps {
   onMailLink: MailLinkFn
 }
 
-function EyeDesk({ map, op, slug, pulse, toast, streamEvt, inboxCount,
+function EyeDesk({ map, op, slug, pulses, toast, streams, inboxCount,
   onInbox, onGear, pub, eyeW, posX, onJump, compactAt, onMailLink }: EyeDeskProps) {
   const agents = [...map.values()].filter((n) =>
     n.id !== USER && n.id !== DRAFT && n.state === 'live' && !n.isBearerOf
@@ -277,10 +277,10 @@ function EyeDesk({ map, op, slug, pulse, toast, streamEvt, inboxCount,
         <div className="eye-panels">
           {open.map((a) => (
             <div className="eye-panel" key={a.id}>
-              <DeskChat node={a} map={map} op={op} slug={slug} pulse={pulse}
+              <DeskChat node={a} map={map} op={op} slug={slug}
+                pulse={pulses[a.id] ?? null} streamEvt={streams[a.id] ?? null}
                 toast={toast} pub={pub} bare compact compactAt={compactAt}
-                onMailLink={onMailLink}
-                streamEvt={streamEvt?.node === a.id ? streamEvt : null} />
+                onMailLink={onMailLink} />
             </div>
           ))}
           {!open.length && agents.length > 0 &&
@@ -610,9 +610,9 @@ interface NodeSquareProps {
   map: Map<string, CanvasNode>
   op: OpFn
   slug: string
-  pulse: PulseEvent | null
+  pulses: Record<string, PulseEvent>
   toast: ToastFn
-  streamEvt: StreamEvent | null
+  streams: Record<string, StreamEvent>
   pxc: number
   zoom: number
   act?: ActivityInfo
@@ -637,7 +637,7 @@ interface NodeSquareProps {
 }
 
 export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, map, op, slug,
-  pulse, toast, streamEvt, pxc, zoom, act, onSpawn, onConfig, onInbox, onLineage,
+  pulses, toast, streams, pxc, zoom, act, onSpawn, onConfig, onInbox, onLineage,
   onRecenter, pub, kioskRemaining, cascadeAlloc, maxTop, pile, compactAt, maxTier,
   onMailLink, onDragStart, onDragMove, onDragEnd, onDragCancel }: NodeSquareProps) {
   // pile fronts zoom on a plain CENTER click (user spec) — track the
@@ -758,8 +758,8 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, m
         </div>
       )}
       {focused && (
-        <DeskChat node={node} map={map} op={op} slug={slug} pulse={pulse} toast={toast}
-          streamEvt={streamEvt?.node === node.id ? streamEvt : null}
+        <DeskChat node={node} map={map} op={op} slug={slug}
+          pulse={pulses[node.id] ?? null} streamEvt={streams[node.id] ?? null} toast={toast}
           onLineage={onLineage} onConfig={onConfig} compactAt={compactAt}
           onRecenter={onRecenter} pub={pub} onMailLink={onMailLink} />
       )}

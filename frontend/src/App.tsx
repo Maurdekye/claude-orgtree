@@ -59,8 +59,16 @@ export default function App() {
   const [tree, setTree] = useState<TreePayload | null>(null)
   const [toasts, setToasts] = useState<Toast[]>([])
   const [error, setError] = useState<string | null>(null)
-  const [pulse, setPulse] = useState<PulseEvt | null>(null)
-  const [streamEvt, setStreamEvt] = useState<StreamEvt | null>(null)
+  // PER-NODE event slots, not one shared slot. Two WS events landing in the
+  // same React batch used to collapse to the last one — and because a desk
+  // only refetches on a pulse addressed to IT, a clobbered pulse meant that
+  // desk never refreshed again (user bug 2026-08-02: a switchboard chat stops
+  // updating while demonstrably producing events; the switchboard is where
+  // several agents stream at once, so collisions are routine there).
+  // Functional updates are load-bearing: every queued updater runs, so a batch
+  // carrying events for two nodes now keeps both.
+  const [pulses, setPulses] = useState<Record<string, PulseEvt>>({})
+  const [streams, setStreams] = useState<Record<string, StreamEvt>>({})
   const [mailEvt, setMailEvt] = useState<MailEvt | null>(null)
   const [activity, setActivity] = useState<Record<string, NodeActivity>>({})   // node → {phase, tool}
   const [showSettings, setShowSettings] = useState(false)
@@ -156,17 +164,19 @@ export default function App() {
         return
       }
       if (data?.type === 'node_stream') {
-        setStreamEvt({ node: data.node, kind: data.kind, text: data.text ?? '',
+        setStreams((s) => ({ ...s, [data.node]: {
+          node: data.node, kind: data.kind, text: data.text ?? '',
           // sticky rides through: immediate-command output lives in NO
           // transcript, so the live-feed reconciliation must never sweep it
-          ...(data.sticky ? { sticky: true } : {}), t: Date.now() })
+          ...(data.sticky ? { sticky: true } : {}), t: Date.now() } }))
         setActivity((a) => ({ ...a, [data.node]:
           data.kind === 'tool' ? { phase: 'tool', tool: data.text }
             : { phase: 'writing' } }))
         return   // live feed only — no tree refetch per message
       }
       if (data?.type === 'node_event') {
-        setPulse({ node: data.node, event: data.event, t: Date.now() })
+        setPulses((p) => ({ ...p,
+          [data.node]: { node: data.node, event: data.event, t: Date.now() } }))
         if (data.event === 'frozen') {   // usage-limit popup (user ruling)
           toast([`${data.node} hit a usage limit and is FROZEN — use the resume button in the top bar when the limit resets`])
           refreshTree(slug)
@@ -399,8 +409,8 @@ export default function App() {
                   target="_blank" rel="noreferrer" title="orgtree on GitHub">
                   <GitHubIcon fontSize="inherit" /></a>
               </header>
-              <OrgCanvas tree={tree} op={op} slug={slug} pulse={pulse} toast={toast}
-                streamEvt={streamEvt} activity={activity} mailEvt={mailEvt}
+              <OrgCanvas tree={tree} op={op} slug={slug} pulses={pulses} toast={toast}
+                streams={streams} activity={activity} mailEvt={mailEvt}
                 onInbox={(jump: unknown) => {
                   setInboxJump(typeof jump === 'string' ? jump : null)
                   setShowInbox(true)

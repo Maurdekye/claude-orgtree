@@ -485,9 +485,11 @@ main {
 }
 .jumpbottom:hover { opacity: 1; border-color: var(--accent); }
 .msg {
-  max-width: 100%; font-size: 14px;
+  max-width: 100%; min-width: 0; font-size: 14px;
   line-height: 1.45; white-space: pre-wrap; overflow-wrap: break-word;
 }
+/* the same containment for the mail reading pane, which shares .md */
+.mailer-body { min-width: 0; max-width: 100%; }
 .msg.assistant { align-self: stretch; background: none; border: none; padding: 1px 2px; }
 .msg.user {
   align-self: stretch; background: var(--input);
@@ -519,7 +521,17 @@ main {
   margin: 4px 0; padding: 2px 0 2px 9px; border-left: 2px solid var(--line);
   color: var(--dim);
 }
-.md table { border-collapse: collapse; margin: 4px 0; font-size: 13px; }
+/* A wide table scrolls INSIDE its own message — it must never stretch the
+   column and put a horizontal scrollbar on the whole chat (user bug
+   2026-08-02). display:block makes the table its own scroll container;
+   width:max-content keeps the columns at their natural width inside it.
+   min-width:0 on the flex children is the half that actually lets a message
+   shrink below its content's intrinsic width — without it the flex column
+   refuses to shrink and the overflow escapes upward. */
+.md table {
+  border-collapse: collapse; margin: 4px 0; font-size: 13px;
+  display: block; width: max-content; max-width: 100%; overflow-x: auto;
+}
 .md th, .md td { border: 1px solid var(--line-soft); padding: 2px 7px; }
 .md hr { border: none; border-top: 1px solid var(--line-soft); margin: 8px 0; }
 .md strong { color: var(--ink-strong); }
