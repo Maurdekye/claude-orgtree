@@ -163,6 +163,18 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
   // folds into a clickable "thought for Xs" line (user spec 2026-07-31)
   const thinkBuf = useRef('')
   const thinkT0 = useRef(0)
+  // elapsed seconds while thinking is IN PROGRESS; null = not thinking. It is
+  // the whole display when the reasoning is sealed (opus/sonnet): there is no
+  // text to ribbon, but the think is real and can run for many seconds, and
+  // the panel used to show nothing at all for its entire duration (user,
+  // 2026-08-02). One cell, holding exactly what is rendered.
+  const [thinkSecs, setThinkSecs] = useState<number | null>(null)
+  useEffect(() => {
+    if (thinkSecs === null) return
+    const t = setInterval(
+      () => setThinkSecs(Math.round((Date.now() - thinkT0.current) / 1000)), 1000)
+    return () => clearInterval(t)
+  }, [thinkSecs === null])   // eslint-disable-line react-hooks/exhaustive-deps
   const scroller = useRef<HTMLDivElement | null>(null)
   const loadedRef = useRef(false)     // first load always lands at the bottom
   const live = node.state === 'live'
@@ -253,8 +265,12 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
           return tail.some((m) => m.role === 'user'
             && (m.text || '').includes((r.text || '').slice(0, 200)))
         if (r.kind === 'thought')
-          return tail.some((m) => (m.thinking || '')
-            .includes((r.text || '').slice(0, 120)))
+          // a SEALED live thought has no body to match on, so it is covered by
+          // the transcript's own sealed row rather than by a string compare
+          // (matching '' would otherwise be true against ANY thinking message)
+          return r.text
+            ? tail.some((m) => (m.thinking || '').includes(r.text.slice(0, 120)))
+            : tail.some((m) => m.thinking_sealed)
         return true
       }
       setLiveFeed((f) => f.filter((r) => r.sticky
@@ -268,8 +284,9 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
         // sticky rows (/context answers) outlive the turn — the user asked
         // mid-turn precisely to peek; the turn ending must not eat the answer
         setLiveFeed((f) => f.filter((r) => r.sticky))
-        setDraft(''); setThinking('')
+        setDraft(''); setThinking(''); setThinkSecs(null)
         thinkBuf.current = ''
+        thinkT0.current = 0
       }
       refresh()
     }
@@ -282,12 +299,16 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
       // the reply (or a tool call) started: the live ribbon folds into a
       // clickable "thought for Xs" line that stays in the flow (user spec)
       const foldThought = () => {
-        if (!thinkBuf.current) return
+        // a SEALED think has no text but is still a real thought that took real
+        // time — it folds into the same line, minus the body
+        if (!thinkBuf.current && !thinkT0.current) return
         const secs = Math.max(1, Math.round((Date.now() - thinkT0.current) / 1000))
         const entry: LiveRow = { kind: 'thought', text: thinkBuf.current, secs,
                         _at: Date.now() }
         thinkBuf.current = ''
-        setThinking('')
+        thinkT0.current = 0        // 0 = not thinking; the REF is the truth,
+        setThinking('')            // so no handler reads a stale closure
+        setThinkSecs(null)
         setLiveFeed((f) => [...f.slice(-24), entry])
       }
       if (streamEvt.kind === 'delta') {
@@ -297,8 +318,16 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
         setDraft((d) => (d + streamEvt.text).slice(-12000))
         return
       }
+      if (streamEvt.kind === 'thinking_start') {
+        // the block OPENED — the only marker that survives sealing, and the
+        // only one that is early (a sealed think's deltas can all arrive at
+        // the end, which would start the clock as it stops)
+        thinkT0.current = Date.now()
+        setThinkSecs(0)
+        return
+      }
       if (streamEvt.kind === 'thinking') {
-        if (!thinkBuf.current) thinkT0.current = Date.now()
+        if (!thinkT0.current) { thinkT0.current = Date.now(); setThinkSecs(0) }
         thinkBuf.current = (thinkBuf.current + streamEvt.text).slice(-24000)
         setThinking((t) => (t + streamEvt.text).slice(-2000))
         return
@@ -550,8 +579,15 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
                   : <div key={'f' + i} className="msg assistant live md"
                       dangerouslySetInnerHTML={md(f.text)} />
           ))}
-          {thinking && chat?.busy && (
-            <div className="msg live thinking">{thinking}</div>)}
+          {thinkSecs !== null && chat?.busy && (thinking
+            // haiku streams its reasoning: the text IS the indicator
+            ? <div className="msg live thinking">{thinking}</div>
+            // opus/sonnet seal it: nothing to show but the fact and the clock,
+            // which beats the blank panel this replaces
+            : <div className="msg live thinking sealed">
+                <PsychologyIcon fontSize="inherit" />{' '}thinking…
+                {thinkSecs > 0 ? ` for ${thinkSecs}s` : ''}
+              </div>)}
           {draft && <div className="msg assistant live md draft"
             dangerouslySetInnerHTML={md(draft)} />}
           {/* №11: pending bubbles render from the DURABLE server copy, each

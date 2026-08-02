@@ -1682,6 +1682,17 @@ svg.MuiSvgIcon-root {
   font-style: italic; color: var(--dim); font-size: 11.5px;
   white-space: pre-wrap; opacity: .75;
 }
+/* sealed reasoning: the clock is the whole message, so it gets the breathing
+   pulse the streaming ribbon does not need — motion is what says "still alive"
+   when the text can never arrive */
+.msg.thinking.sealed {
+  display: inline-flex; align-items: center; gap: 4px;
+  animation: think-breathe 1.8s ease-in-out infinite;
+}
+@keyframes think-breathe { 0%, 100% { opacity: .45 } 50% { opacity: .85 } }
+@media (prefers-reduced-motion: reduce) {
+  .msg.thinking.sealed { animation: none; opacity: .75 }
+}
 /* №11/№17: durable pending bubble + retract ✕ */
 .pendrow { display: flex; align-items: flex-start; gap: 6px; }
 .pendrow .md { flex: 1; min-width: 0; }

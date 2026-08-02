@@ -82,8 +82,10 @@ export interface CanvasScope {
 export interface PulseEvent { node: string; event: string; t: number }
 export interface StreamEvent {
   node: string
-  /** 'delta' | 'thinking' | 'text' | 'tool' (supervisor.py stream(),
-   *  №1167-1211) + 'steered' (api.py:1193) — open: built from untyped WS JSON */
+  /** 'delta' | 'thinking' | 'thinking_start' | 'text' | 'tool' (supervisor.py
+   *  stream()) + 'steered' (api.py) — open: built from untyped WS JSON.
+   *  'thinking_start' carries no text: it marks the block opening, which is
+   *  the only signal that survives when the reasoning is sealed. */
   kind: string
   text: string
   sticky?: boolean

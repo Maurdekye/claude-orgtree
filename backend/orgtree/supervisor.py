@@ -1178,7 +1178,23 @@ def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
                         # partial-message deltas → the UI renders the reply
                         # growing word-by-word (user spec); batched so the WS
                         # is not flooded — ~8 Hz or 400 chars, whichever first
-                        d = (ev.get("event") or {}).get("delta") or {}
+                        sev = ev.get("event") or {}
+                        if (sev.get("type") == "content_block_start"
+                                and (sev.get("content_block") or {}).get("type")
+                                == "thinking"):
+                            # THE START of thinking, which is the only reliable
+                            # marker when the reasoning is sealed: opus/sonnet
+                            # send thinking_delta with an empty body, and on a
+                            # long think the deltas may not arrive until it is
+                            # over — so a client waiting for them would start
+                            # its clock at the end. The panel sat blank for the
+                            # whole think (user bug 2026-08-02: measured 6.4s on
+                            # HAIKU, and haiku is the tier that still streams
+                            # text — a sealed opus think shows nothing at all
+                            # until its first tool call).
+                            stream(slug, nid, {"kind": "thinking_start"})
+                            continue
+                        d = sev.get("delta") or {}
                         if d.get("type") == "text_delta" and d.get("text"):
                             dbuf += d["text"]
                             if len(dbuf) >= 400 or time.time() - dlast >= 0.12:

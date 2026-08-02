@@ -109,10 +109,15 @@ whatever comes after the thinking — very often a tool call, because an agent t
 acts produces `thinking → tool_use` with no text block in between. The user's description is then
 an exact account of what they saw; the cause is §2, not the streaming path.
 
-**Cheap candidate fix (not implemented):** the sealed-thought marker exists only in the transcript
-path, so it appears at the next refresh, not during the gap. Emitting a live marker when
-`thinking_delta` arrives *with empty text* would put a "thinking…" indication in that window
-immediately. This is a display-only change in `supervisor._run_turn` + the desk's stream effect.
+**Fixed 2026-08-02 (P5, user-directed):** the supervisor now emits a `thinking_start` event on the
+thinking block's `content_block_start` — not on `thinking_delta`, because a sealed think's deltas
+can all arrive *after* it finishes, which would start the clock as it stopped. The desk renders a
+live `thinking… for Ns` that folds into the usual `thought for Ns` line. Measured on a sonnet agent
+(sealed tier): the clock appeared and counted 1s → 22s across 23 distinct values, then folded to
+`thought for 27s`. That 22-second window was previously an empty panel.
+
+Residual, unfixed: roughly 6 s still elapse between the turn starting and the thinking block opening
+(CLI startup, hooks, `init`). The panel shows only the `working` spinner in that window.
 
 **Caveats.** Both runs used haiku (cheapest, and the throwaway org was disposable). Haiku's thinking
 is *not* sealed, so run 1's 6.4 s gap is the floor — an opus agent's gap is longer. A confirming run
@@ -235,6 +240,18 @@ for the reported symptom.
 Recommended order: **P5 → P1 → P3 → P4**, with P2 only if P1 proves insufficient.
 
 ---
+
+### ①a — a measured instance: the user's message renders TWICE during a long think
+
+Caught in a screenshot while verifying P5, not previously reported. From turn start until the
+delivery journal is confirmed, the same message is on screen in two places: once as the transcript's
+`@user` mail bubble (the envelope, already drained into the turn) and once as a pending bubble
+tagged *delivering mid-task…* (the journal's copy, `delivering_mail()`).
+
+The journal confirms on the first non-`system` stdout event, and the pending row clears on the next
+5 s chat refresh — so the duplicate window is roughly turn-start → first stream event → next
+refresh, up to ~10 s, and longer if the CLI is slow to start. It is a textbook ① divergence: two
+copies of one fact, reconciled on a timer. **Not fixed** — it falls under the ruling.
 
 ## 7. Loose ends found on the way
 
