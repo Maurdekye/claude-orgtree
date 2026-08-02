@@ -554,7 +554,7 @@ client-owned state that outlives what it refers to is just a slower kind of stal
   after the sweep, `['probe']` and `{}`. Dead ids pruned, the live one kept.
 - G5: node inbox open and idle → **3 refetches in 16 s**; mail sent while it was open appeared in
   **3.5 s**. Both were previously never.
-→ `PENDING-COMMIT`
+→ `2defb56`
 
 ---
 
@@ -597,7 +597,7 @@ checked for pre-existed the run.
 **What it means:** the websocket is now an **optimization**, not a requirement. Nothing on screen
 depends on having caught an event, which is the property every one of D-13, D-24, D-30 and D-34
 turned out to be missing.
-→ `PENDING-COMMIT`
+→ `2defb56`
 
 ---
 
