@@ -312,7 +312,7 @@ longer surfaced as pending. A `via="steer"` batch rides hook context, which the 
 transcripts, so the journal stays its only possible display. Durability is untouched either way;
 this governs display only. Old entries default to `"steer"`, because showing a duplicate is the
 failure this system already prefers over hiding a message.
-→ `PENDING-COMMIT`
+→ `12ccfd5`
 
 ## D-29 · ~6s of blank panel before thinking starts
 ⟨discovered⟩ CLI startup, hooks and `init` occupy roughly six seconds before the thinking block
@@ -341,7 +341,7 @@ fetch has actually had the chance to cover it (the 5s timer used to race the tra
 **Verified live** on a sonnet agent: two views through a whole turn, 39 samples compared, **0
 divergent**; and across the user's real motion — switchboard mid-turn, then focus the agent's card —
 the new view mounted showing all 9 rows immediately, with no empty flash and nothing lost.
-→ `PENDING-COMMIT`
+→ `12ccfd5`
 
 ## D-31 · ⚠ The effort tag STILL shows nothing (third report)
 > also the effort tag *still* doesnt show the effort level for an agent when it hasnt been manually
