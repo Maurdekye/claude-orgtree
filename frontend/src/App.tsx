@@ -45,6 +45,11 @@ interface MailEvt { from: string; to: string; t: number }
 interface NodeActivity { phase: string; tool?: string }
 interface Toast { id: number; lines: string[]; undo: ToastUndo | null }
 
+/** G1: the tree is pulled on a timer as well as pushed. Slow enough to be
+ *  invisible in cost (a ~4 KB payload every 6 s), fast enough that a missed
+ *  push is a blink rather than a wedge. */
+const TREE_POLL_MS = 6000
+
 const slugFromPath = () => {
   // BASE is the /k/<token> prefix when served from a public kiosk URL
   const m = location.pathname.slice(BASE.length).match(/^\/o\/([a-z0-9@-]+)/)
@@ -108,6 +113,25 @@ export default function App() {
   }, [])
 
   useEffect(() => { refreshOrgs() }, [refreshOrgs])
+  // G1 — THE TREE HEARTBEAT. Everything on screen that is not the conversation
+  // — every card, credit meter, occupancy bar, roster row, resume timer and
+  // inbox badge — is rendered from this one payload, and until now it was
+  // PUSH-ONLY: refetched on a websocket frame or in the acting client's own
+  // callback, never on a timer. So any fact that reached the ledger without a
+  // frame reaching THIS browser stayed invisible indefinitely — another tab's
+  // edit, an endpoint that saved without broadcasting, a dropped frame, mail
+  // (whose frame is animation-only and deliberately refetches nothing).
+  //
+  // This is the same lesson as the chat heartbeat (convo.beat, D-34) applied to
+  // the other half of the app: the gate is "an org view is mounted", which is
+  // known LOCALLY and cannot be stale. The payload is ~4 KB and the endpoint
+  // answers in 2-12 ms, so the pull costs nothing worth counting; pushes stay
+  // and simply make it feel instant instead of being the only way to learn.
+  useEffect(() => {
+    if (!slug) return
+    const t = setInterval(() => refreshTree(slug), TREE_POLL_MS)
+    return () => clearInterval(t)
+  }, [slug, refreshTree])
   useEffect(() => {          // the org list/dashboard is LIVE while visible —
     // kiosk spend/storage/caps move under it (agent turns, admin edits)
     if (slug && !drawer) return

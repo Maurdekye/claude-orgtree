@@ -463,6 +463,61 @@ counting events.
 
 ---
 
+## D-35 · The tree payload had no heartbeat (G1) — the other half of D-34
+> proceed  [on the §8 audit's recommended order: G1 then G2]
+
+D-34 gave the CONVERSATION a heartbeat. The audit in `state-architecture-review.md` §8 found the
+same defect untouched on everything else: `refreshTree` fired only on a websocket frame, on socket
+connect, or in the acting client's own mutation callback. Measured — the only intervals in
+`App.tsx` were `refreshOrgs` every 3 s (org list, and only while the welcome/drawer is up) and a
+15 s clock re-render that fetches nothing. Every card, credit meter, occupancy bar, roster row,
+resume timer and inbox badge is drawn from that one push-only payload.
+
+**Fix:** a 6 s `setInterval` gated on `slug` — "an org view is mounted", known locally, cannot be
+stale. Pushes stay; they now make it feel instant rather than being the only way to learn.
+Measured cost first: the tree is **~4 KB and answers in 2–12 ms**, so the pull is not worth counting.
+
+**Verified live** (`zz-g2-probe`, created and deleted): org view open, nothing happening —
+**3 tree fetches in 20 s at 4.5 / 10.5 / 16.5 s**. Before: zero.
+→ `PENDING-COMMIT`
+
+---
+
+## D-36 · 14 of 30 mutating endpoints never told anyone (G2)
+> [same directive]
+
+Measured by parsing `api.py`: every route calling `save_org` checked for a `hub_changed`. Fourteen
+had none — including `/nodes/{nid}/scope` (the effort/permission surface reported twice),
+`/audiences`, `/inbox/read`, `/nodes/{nid}/message` and mail retraction. The acting client refetches
+in its own `.then()`, which is exactly why this never showed up in single-tab testing: only a
+SECOND view (another tab, the kiosk, the switchboard beside a desk) ever saw the stale copy.
+
+**Fix — structural, not fourteen edits.** Fixing them by hand would have rebuilt the very shape this
+programme exists to remove: N writers each responsible for remembering the same side effect. The
+save *is* the change, so `store.save_org` announces it (`store.on_save`, wired to the hub at
+startup). A new endpoint cannot forget. The fanout is wrapped in a `try` — a broadcast failure must
+never fail a write that already reached disk.
+
+Because it now fires per SAVE rather than per endpoint, it **coalesces**: the first save opens a
+0.4 s window and every save inside it rides the same broadcast.
+
+**Verified live:**
+- a scope edit made by a *different HTTP client* → the browser receives `changed` frames
+  (0.01 s and 0.41 s). Before the change that endpoint produced **none**.
+- `/inbox/read`, also formerly silent → 1 frame.
+- **Load, the only real risk:** one real haiku turn, 13 s, 26 stream events → **8 tree refetches
+  = 0.6/s** (~2 KB/s at 4 KB a payload). A turn saves the doc far more often than 8 times, so the
+  coalescing window is doing its job under the load that matters. Serialized saves further apart
+  than 0.4 s each get their own broadcast, which is correct: the window is a ceiling, not a promise.
+
+⚠ **Method note.** The first probe timed *the browser's next tree GET* after a mutation and reported
+0.01 s — faster than the 0.4 s coalesce window, i.e. a coincidental heartbeat, not the broadcast.
+Re-measured against the `changed` FRAME itself, which the timer cannot fake. Timing a proxy for the
+thing instead of the thing was also what nearly sank D-34.
+→ `PENDING-COMMIT`
+
+---
+
 ## Future feature pass — SPECIFIED, NOT BUILT
 
 User, 2026-08-02: *"add two new features to the docket, but dont implement them: create a new

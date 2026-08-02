@@ -325,6 +325,11 @@ async def _wire_notify() -> None:  # type: ignore[unused-function]  # registered
 
     supervisor.notify = notify
     supervisor.stream = stream
+    # G2: every persisted change announces itself, from wherever it was made —
+    # an endpoint, an agent's MCP call, the supervisor's own turn bookkeeping.
+    # The explicit hub_changed() calls left at a few endpoints are now
+    # redundant but harmless (they coalesce into the same window).
+    store.on_save = hub_changed
     supervisor.start_auto_resume_loop()
     # storage watchdog (user spec): catches single long tool calls —
     # clones/builds/downloads — that balloon past the limit MID-CALL
@@ -403,12 +408,38 @@ hub = Hub()
 _LOOP: asyncio.AbstractEventLoop | None = None
 
 
+_BCAST_COALESCE = 0.4      # seconds; see hub_changed
+_bcast_pending: set[str] = set()
+_bcast_lock = threading.Lock()
+
+
 def hub_changed(slug: str) -> None:
     """Schedule a 'changed' broadcast from any thread (№22: the heavyweight
     endpoints are plain `def` now — they run in the threadpool and can't
-    await)."""
-    if _LOOP is not None:
-        asyncio.run_coroutine_threadsafe(hub.changed(slug), _LOOP)
+    await).
+
+    G2: this is now driven by `store.save_org` itself rather than by ~30
+    endpoints remembering to call it, which means it fires far more often —
+    a single turn writes the doc many times (mail drain, budget, status,
+    journal). So it COALESCES: the first save opens a 0.4 s window and every
+    save inside that window rides the same broadcast. The clients refetch a
+    ~4 KB tree, so the worst case is ~2.5 refetches/second/org under sustained
+    writes, and the common case is one broadcast per burst.
+    """
+    if _LOOP is None:
+        return
+    with _bcast_lock:
+        if slug in _bcast_pending:
+            return                      # a broadcast is already coming
+        _bcast_pending.add(slug)
+
+    async def _fire() -> None:
+        await asyncio.sleep(_BCAST_COALESCE)
+        with _bcast_lock:
+            _bcast_pending.discard(slug)
+        await hub.changed(slug)
+
+    asyncio.run_coroutine_threadsafe(_fire(), _LOOP)
 
 
 # ---------------------------------------------------------------------- orgs

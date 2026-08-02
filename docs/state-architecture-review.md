@@ -369,6 +369,11 @@ does not rediscover it as a defect.
 
 ### 8.4 Recommended order
 
+**G1 and G2 are DONE** (docket D-35/D-36) — the user ruled *"proceed"* on this order the same day.
+G3–G6 remain open, and G3 is now non-fatal: the tree heartbeat covers a missing mail refresh within
+6 s, which is a blink rather than a wedge.
+
+
 1. **G1** — one tree heartbeat, gated on "the org view is mounted". Smallest change, largest blast
    radius, and it makes G2/G3 non-fatal rather than merely rarer.
 2. **G2** — make `hub_changed` structural (broadcast in `save_org`, or one decorator) so a new

@@ -18,6 +18,7 @@ import os
 import tempfile
 import threading
 import time
+from collections.abc import Callable
 from typing import Any
 
 from .ledger import LedgerError, Org, slugify
@@ -74,6 +75,21 @@ def load_org(slug: str) -> Org:
 REVISION: int = 0   # bumped on every save — cheap change detection for pollers
                # (the extern long-poll gates its full-doc rescans on this)
 
+# G2 — "the doc changed" fanout, wired to the websocket hub at startup.
+#
+# It lives HERE, on the write itself, rather than at the endpoints, because the
+# endpoint-side version was unenforceable: an audit of every route that calls
+# save_org found 14 of 30 with no broadcast, so a second viewer never learned
+# about a scope edit, an audience grant, a mail retraction or an inbox read.
+# That was invisible in testing because the acting client refetches in its own
+# callback — only a SECOND view (another tab, the kiosk, the switchboard beside
+# a desk) ever saw the stale copy.
+#
+# Fixing the 14 by hand would have recreated the very shape this refactor is
+# about: N writers each responsible for remembering the same side effect. A
+# save IS the change, so the save announces it and a new endpoint cannot forget.
+on_save: Callable[[str], None] = lambda slug: None   # no-op until wired
+
 
 def save_org(org: Org) -> None:
     global REVISION
@@ -95,6 +111,11 @@ def save_org(org: Org) -> None:
                 raise
             time.sleep(0.01 * (i + 1))
     REVISION += 1  # pyright: ignore[reportConstantRedefinition]  # uppercase mutable counter is the public API; renaming is forbidden this wave
+    # never let a fanout failure fail the write — the doc is already on disk
+    try:
+        on_save(org.d["slug"])
+    except Exception:
+        pass
 
 
 def workspace_dir(slug: str) -> str:
