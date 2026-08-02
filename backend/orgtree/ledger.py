@@ -2151,19 +2151,32 @@ class Org:
     # ------------------------------------------------------------- node scope
     EFFORTS: Final = ("low", "medium", "high", "xhigh", "max")
 
-    def effective_effort(self, nid: str) -> str:
-        """The effort a turn would ACTUALLY launch with: the node's own, else
-        the org default, else "" — no --effort flag, i.e. the CLI's own
-        default. The org default is read LIVE at turn time (user ruling
-        2026-08-01: visible inherit), so this is DERIVED and never stored.
+    # What an unconfigured turn runs at. The CLI HAS a default but does not
+    # document it and does not report it (checked: `--help` names no default,
+    # and `system/init` carries no effort field), so the only way for orgtree
+    # to state the level truthfully is to stop depending on an implicit one and
+    # pass --effort on every turn. "high" is what opus resolved to unaided
+    # — measured across 54 records — so this pins existing behaviour rather
+    # than changing it, and makes the other tiers explicit at the same level.
+    DEFAULT_EFFORT: Final = "high"
 
-        The supervisor asks this instead of recomputing it, because the UI
-        asks it too: an unset node showed a blank effort control while its
-        turns ran at the org default, so the display disagreed with reality
-        (user bug 2026-08-02). One function, so they cannot drift apart."""
+    def effective_effort(self, nid: str) -> str:
+        """The effort a turn launches with: the node's own, else the org
+        default, else DEFAULT_EFFORT. NEVER empty — every turn passes an
+        explicit --effort, which is what lets the ⚙ control state a level
+        instead of a shrug.
+
+        The org default is read LIVE at turn time (user ruling 2026-08-01:
+        visible inherit), so this is DERIVED and never stored. The supervisor
+        asks this rather than recomputing it, because the UI asks it too: the
+        control read configuration while the runtime read something else, and
+        an unconfigured agent showed nothing at all (user bug 2026-08-02,
+        reported three times — first fix read only scope.effort, second fell
+        back to a transcript field the CLI stamps on some tiers and not
+        others). One function, one answer, and orgtree causes it."""
         eff = (self.node(nid)["scope"].get("effort")
                or self.d.get("default_effort") or "")
-        return eff if eff in self.EFFORTS else ""
+        return eff if eff in self.EFFORTS else self.DEFAULT_EFFORT
 
     def set_scope(self, actor: str, nid: str, add_dirs: list[Any] | None = None,
                   tools: Mapping[str, Any] | None = None,
@@ -2723,6 +2736,8 @@ class Org:
             # "" = CLI default (user ruling 2026-08-01: visible inherit — an
             # unset node effort falls back to this at TURN time, live)
             "default_effort": self.d.get("default_effort", ""),
+            # what "" resolves to, so no UI string has to hardcode it
+            "effort_default": self.DEFAULT_EFFORT,
             "credit_requests": [r for r in self.d.get("credit_requests", [])
                                 if r["status"] == "pending"],
             "tiers": self.d["tiers"],

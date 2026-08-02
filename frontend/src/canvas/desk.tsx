@@ -700,11 +700,10 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
         {!pub && (
           <EffortButton value={node.scope?.effort ?? ''}
             effective={node.effort_effective ?? ''}
-            used={chat?.effort_used ?? ''}
             onSet={(lvl) => saveScope(slug, node.id, { effort: lvl })
               .then(() => toast([lvl
                 ? `${node.id} thinking effort: ${lvl}`
-                : `${node.id} thinking effort: CLI default`]))
+                : `${node.id} thinking effort: back to the org default`]))
               .catch((e: Error) => toast([`error: ${e.message}`]))} />
         )}
         {/* №3: STOP renders only when an interrupt can actually land —
@@ -1153,25 +1152,22 @@ function SysLine({ m }: { m: ChatMessage }) {
 // agents can do.
 const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max']
 
-// Three sources, because "what effort will this agent respond at" has three
-// possible answers and only the first two are configuration:
-//   value      pinned on this agent
-//   effective  = value, else the org default (resolved server-side)
-//   used       what the CLI RECORDED for the last turn
-// With nothing configured anywhere, orgtree passes no --effort flag and the
-// level is the CLI's own default — not "none", and not knowable except by
-// observing it. Showing only configuration left the control reading "effort"
-// on an agent that had been running at high for 54 turns (user bug
-// 2026-08-02). Configuration wins where it exists (it decides the NEXT turn,
-// while `used` describes the last one); observation fills the gap.
-function EffortButton({ value, effective, used, onSet }:
-{ value: string; effective?: string; used?: string; onSet: (lvl: string) => void }) {
+// `effective` is what the next turn WILL run at, resolved server-side by
+// Org.effective_effort — the same call that builds the --effort flag, so the
+// control and the runtime cannot disagree. It is never empty: orgtree passes
+// the flag on every turn precisely so that this can always name a level.
+// (Reported three times before it was right. Attempt 1 read only
+// node.scope.effort, so an unconfigured agent showed nothing. Attempt 2 fell
+// back to an effort field in the transcript, which the CLI writes for opus and
+// not for haiku — so it worked on the agent I happened to test and nowhere
+// else. The lesson is in §7 of docs/state-architecture-review.md: read the
+// value that CAUSES the behaviour, not one that correlates with it.)
+function EffortButton({ value, effective, onSet }:
+{ value: string; effective?: string; onSet: (lvl: string) => void }) {
   const [open, setOpen] = useState(false)
-  const shown = value || effective || used || ''
+  const shown = value || effective || ''
   const why = value ? 'set on this agent'
-    : effective ? 'inherited from the org default'
-      : used ? 'the CLI default — observed from the last turn'
-        : 'the CLI default (not observed yet)'
+    : 'inherited — change it on this agent, or org-wide in ⚙ settings'
   const wrapRef = useRef<HTMLSpanElement | null>(null)
   useEffect(() => {
     if (!open) return
@@ -1192,7 +1188,7 @@ function EffortButton({ value, effective, used, onSet }:
       </button>
       {open && (
         <span className="eff-pop">
-          <EffortSwitch value={value} level={shown} why={why}
+          <EffortSwitch value={value} level={shown} why={value ? 'set here' : 'inherited'}
             onSet={(lvl) => { onSet(lvl); setOpen(false) }} />
         </span>
       )}

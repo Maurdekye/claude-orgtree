@@ -31,7 +31,7 @@ const SYSTEM = '@system'
 // only triggers the tree refetch) — cast once at the JSON.parse boundary
 type WsEvent =
   | { type: 'mail'; from: string; to: string }
-  | { type: 'node_stream'; node: string; kind: string; text?: string; sticky?: boolean }
+  | { type: 'node_stream'; node: string; kind: string; text?: string; sticky?: boolean; id?: string }
   | { type: 'node_event'; node: string; event: string }
 
 // live-feed state threaded into OrgCanvas (boundary shapes — Canvas declares
@@ -40,7 +40,7 @@ interface PulseEvt { node: string; event: string; t: number }
 // text is required on the OUT side: the backend sends it on every stream()
 // emit (supervisor stream plumbing) — the `?? ''` at the construction site
 // is the wire-boundary guard, not a real case
-interface StreamEvt { node: string; kind: string; text: string; sticky?: boolean; t: number }
+interface StreamEvt { node: string; kind: string; text: string; sticky?: boolean; t: number; id?: string }
 interface MailEvt { from: string; to: string; t: number }
 interface NodeActivity { phase: string; tool?: string }
 interface Toast { id: number; lines: string[]; undo: ToastUndo | null }
@@ -168,7 +168,8 @@ export default function App() {
           node: data.node, kind: data.kind, text: data.text ?? '',
           // sticky rides through: immediate-command output lives in NO
           // transcript, so the live-feed reconciliation must never sweep it
-          ...(data.sticky ? { sticky: true } : {}), t: Date.now() } }))
+          ...(data.sticky ? { sticky: true } : {}),
+          ...(data.id ? { id: data.id as string } : {}), t: Date.now() } }))
         setActivity((a) => ({ ...a, [data.node]:
           data.kind === 'tool' ? { phase: 'tool', tool: data.text }
             : { phase: 'writing' } }))

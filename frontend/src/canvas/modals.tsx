@@ -306,7 +306,7 @@ export function DraftScopeModal({ draft, map, tree, scope, onSave, close }: Draf
         </select>
         <div className="field-label">thinking effort</div>
         <select value={effort} onChange={(e) => setEffort(e.target.value)}>
-          <option value="">{`inherit — org default (${tree.default_effort || 'CLI default'})`}</option>
+          <option value="">{`inherit — org default (${tree.default_effort || tree.effort_default || 'high'})`}</option>
           <option value="low">low</option>
           <option value="medium">medium</option>
           <option value="high">high</option>
@@ -561,7 +561,7 @@ export function NodeConfig({ node, map, tree, slug, op, toast, close }: NodeConf
         <div className="field-label">thinking effort (user-approved: a deep
           setting, never a hire-row control)</div>
         <select value={effort} onChange={(e) => setEffort(e.target.value)}>
-          <option value="">{`inherit — org default (${tree.default_effort || 'CLI default'})`}</option>
+          <option value="">{`inherit — org default (${tree.default_effort || tree.effort_default || 'high'})`}</option>
           <option value="low">low</option>
           <option value="medium">medium</option>
           <option value="high">high</option>

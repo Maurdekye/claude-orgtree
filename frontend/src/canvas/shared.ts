@@ -90,6 +90,8 @@ export interface StreamEvent {
   text: string
   sticky?: boolean
   t: number
+  /** tool_use_id on a 'tool' event — see LiveRow.id */
+  id?: string
 }
 export interface MailEvent { from: string; to: string; t: number }
 /** 'thinking' | 'writing' | 'tool' — open for the same WS-JSON reason */
@@ -136,6 +138,9 @@ export interface LiveRow {
   _at?: number
   node?: string
   t?: number
+  /** the CLI's tool_use_id on a 'tool' row — identity, so reconciliation
+   *  against the transcript's chip does not have to compare rendered strings */
+  id?: string
 }
 
 // the canvas exposes its inverse-zoom to CSS; React's CSSProperties has no

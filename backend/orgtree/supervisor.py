@@ -935,12 +935,12 @@ def _build_cmd(org: Org, nid: str) -> list[str]:
     # per-agent thinking effort (user-approved 2026-07-31); an UNSET node
     # inherits the org's default_effort LIVE at turn time (user ruling
     # 2026-08-01: visible inherit — a default change reaches unset nodes
-    # without a rehire); "" everywhere = CLI default, no flag. The resolution
-    # lives in Org.effective_effort so the ⚙ control can DISPLAY the same
-    # answer this launches with — it used to recompute it here and show
-    # nothing for an unset node (user bug 2026-08-02).
-    if eff := org.effective_effort(nid):
-        cmd += ["--effort", eff]
+    # without a rehire), and an unset ORG falls to Org.DEFAULT_EFFORT.
+    # ALWAYS passed: leaving the flag off delegated the level to an
+    # undocumented, unreported CLI default, which is why the ⚙ control could
+    # not name it (user bug 2026-08-02). Same call the UI displays, so they
+    # cannot disagree.
+    cmd += ["--effort", org.effective_effort(nid)]
     tools = sc.get("tools", {})
     # interactive-only tools cannot work in a headless turn (there is no client
     # to present them) — questions route through orgtree_message instead
@@ -1243,6 +1243,11 @@ def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
                                 arg = _tool_arg(b.get("name", ""), b.get("input"))
                                 stream(slug, nid, {
                                     "kind": "tool",
+                                    # the tool_use_id rides along: read_chat
+                                    # puts the SAME id on the chip, so the
+                                    # client can retire a live row by identity
+                                    # instead of comparing rendered strings
+                                    "id": b.get("id"),
                                     "text": (b.get("name", "tool")
                                              + (f" · {arg}" if arg else ""))})
                     elif ev.get("type") == "result":
@@ -2708,13 +2713,12 @@ def read_chat(org: Org, nid: str, last: int | None = None) -> dict[str, Any]:
            # a long command ran); the chat payload refreshes on every pulse
            "responding": bool(st.get("responding")),
            "last_error": st["last_error"], "occupancy": None, "messages": [],
-           # the effort the CLI ACTUALLY resolved for the last turn. With
-           # nothing configured anywhere orgtree passes no --effort flag, so
-           # the level is the CLI's own default — knowable only by observing
-           # it, which is why the ⚙ control said "effort" while the agent had
-           # been running at high all along (user bug 2026-08-02). Absent on
-           # transcripts from before the CLI recorded it (pre-2.1.220).
-           "effort_used": None,
+           # (an `effort_used` field lived here for one commit, reading the
+           # effort back out of the transcript. It is gone: the CLI stamps
+           # that field on some tiers and not others, so it answered for opus
+           # and shrugged for haiku. orgtree now PASSES --effort on every
+           # turn, so Org.effective_effort is the answer and nothing has to be
+           # observed. Derive, don't store — and better, cause.)
            "init": st.get("init")}
     tpath = transcript_path(n["session_id"], _transcript_root(org))
     if not tpath:
@@ -2732,8 +2736,6 @@ def read_chat(org: Org, nid: str, last: int | None = None) -> dict[str, Any]:
         rec_prev_ts = prev_ts
         if rec.get("timestamp"):
             prev_ts = rec["timestamp"]
-        if isinstance(rec.get("effort"), str) and rec["effort"]:
-            out["effort_used"] = rec["effort"]      # last one wins
         if rec.get("isSidechain") or rec.get("isMeta"):
             continue
         t = rec.get("type")

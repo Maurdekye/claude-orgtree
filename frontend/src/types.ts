@@ -308,8 +308,11 @@ export interface TreePayload {
   compact_at: number
   default_tools: ToolGrant | null
   default_visibility: string
-  /** org-wide effort fallback ("" = CLI default) — live inherit for unset nodes */
+  /** org-wide effort fallback ("" = fall through to effort_default) — live
+   *  inherit for unset nodes */
   default_effort: string
+  /** what "" resolves to, so no UI string hardcodes it (ledger DEFAULT_EFFORT) */
+  effort_default?: string
   credit_requests: CreditRequest[]
   tiers: Record<string, number>
   audiences: AudienceGrant[]
@@ -450,10 +453,6 @@ export interface ChatPayload {
   occupancy: number | null
   messages: ChatMessage[]
   init?: ChatInit | null
-  /** the effort the CLI RECORDED for the last turn — the only way to know the
-   *  level when nothing is configured and no --effort flag is passed. Null on
-   *  transcripts written before the CLI recorded it. */
-  effort_used?: string | null
   mail_pending: number
   pending_mail: PendingMail[]
 }
