@@ -459,7 +459,7 @@ fetches and looked like a total failure. Python's `time.sleep` blocks Playwright
 request events were never dispatched — the probe was broken, not the code. In-page logging showed
 the heartbeat ticking normally. Use `page.wait_for_timeout`, never `time.sleep`, when a probe is
 counting events.
-→ `PENDING-COMMIT`
+→ `47ebd9c`
 
 ---
 
