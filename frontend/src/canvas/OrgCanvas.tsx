@@ -17,8 +17,8 @@ import {
   USER_W, withDraftTree, Z_DESK, Z_MAX, Z_MINI,
 } from './shared'
 import type {
-  ActivityInfo, CanvasNode, DraftScope, DraftState, MailEvent, MailLinkFn,
-  OpFn, Pile, Pt, PulseEvent, Seg, Spring, StreamEvent, View,
+  CanvasNode, DraftScope, DraftState, MailEvent, MailLinkFn,
+  OpFn, Pile, Pt, Seg, Spring, StreamEvent, View,
 } from './shared'
 import { Activity, ContextWheel, LineagePanel } from './desk'
 import { NodeInboxModal, OrgInboxModal } from './mail'
@@ -29,15 +29,13 @@ export interface OrgCanvasProps {
   tree: TreePayload
   op: OpFn
   slug: string
-  pulses: Record<string, PulseEvent>
   toast: ToastFn
-  activity?: Record<string, ActivityInfo | undefined>
   mailEvt: MailEvent | null
   /** open the user's inbox, optionally jumped to a specific mail id */
   onInbox?: (jump?: string) => void
 }
 
-export function OrgCanvas({ tree, op, slug, pulses, toast, activity, mailEvt, onInbox }: OrgCanvasProps) {
+export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvasProps) {
   const [draft, setDraft] = useState<DraftState | null>(null)
   const [configId, setConfigId] = useState<string | null>(null)
   const [lineageId, setLineageId] = useState<string | null>(null)
@@ -398,6 +396,37 @@ export function OrgCanvas({ tree, op, slug, pulses, toast, activity, mailEvt, on
         }
       }
     } catch { /* private mode */ }
+  }, [map, slug])
+
+  // G6: the SAME sweep for every other id-keyed client store. `orgtree-eyemin-`
+  // (which direct lines are collapsed), `-eyeseen-` (which ones have been seen,
+  // so a new one arrives minimized) and `-pile-` (which retiree fronts its
+  // stack) all key on node ids and none of them was ever pruned. They grew
+  // across the org's entire hire/fire history, and a pile front could name a
+  // node that no longer exists. Client-owned state is legitimate — client-owned
+  // state that outlives what it refers to is just a slower kind of stale.
+  useEffect(() => {
+    if (!map.size) return              // never prune against a not-yet-loaded tree
+    try {
+      for (const suffix of ['eyemin', 'eyeseen']) {
+        const k = `orgtree-${suffix}-${slug}`
+        const raw = localStorage.getItem(k)
+        if (!raw) continue
+        const ids = JSON.parse(raw) as string[]
+        const keep = ids.filter((id) => map.has(id))
+        if (keep.length !== ids.length) localStorage.setItem(k, JSON.stringify(keep))
+      }
+      const pk = `orgtree-pile-${slug}`
+      const rawP = localStorage.getItem(pk)
+      if (rawP) {
+        const pf = JSON.parse(rawP) as Record<string, string>
+        const keep = Object.fromEntries(Object.entries(pf)
+          .filter(([parent, front]) => map.has(parent) && map.has(front)))
+        if (Object.keys(keep).length !== Object.keys(pf).length) {
+          localStorage.setItem(pk, JSON.stringify(keep))
+        }
+      }
+    } catch { /* private mode, or a hand-edited value — never fatal */ }
   }, [map, slug])
 
   // ------------------------------------------------------- the spring engine
@@ -1001,7 +1030,7 @@ export function OrgCanvas({ tree, op, slug, pulses, toast, activity, mailEvt, on
               onFocus={() => centerOn(USER)}
               posX={(id) => posOf(id)?.x ?? 0}
               onJump={(id) => centerOn(id)}
-              map={map} op={op} slug={slug} pulses={pulses} toast={toast}
+              map={map} op={op} slug={slug} toast={toast}
               compactAt={tree.compact_at}
               inboxCount={(tree.user_inbox_count ?? 0) + (tree.credit_requests?.length ?? 0)}
               onInbox={() => {
@@ -1027,8 +1056,8 @@ export function OrgCanvas({ tree, op, slug, pulses, toast, activity, mailEvt, on
             <NodeSquare key={n.id} node={n} pos={p} lod={lod} focused={n.id === focusId}
               dragging={nodeDrag.current?.id === n.id && nodeDrag.current!.moved}
               isDrop={dropId === n.id}
-              seats={seats} map={map} op={op} slug={slug} pulses={pulses} toast={toast}
-              pxc={pxPerCredit} zoom={view.z} act={activity?.[n.id]}
+              seats={seats} map={map} op={op} slug={slug} toast={toast}
+              pxc={pxPerCredit} zoom={view.z}
               onSpawn={(t) => spawn(n.id, t)} onConfig={() => setConfigId(n.id)}
               onInbox={() => setInboxId(n.id)} onLineage={() => setLineageId(n.id)}
               onMailLink={openMail}
@@ -1175,7 +1204,7 @@ export function OrgCanvas({ tree, op, slug, pulses, toast, activity, mailEvt, on
                           title="queued — waiting for a free turn slot (№12)" />
                       : <span title={n.inflight_at
                           ? `running for ${ago(n.inflight_at)}` : 'working'}>
-                          <Activity act={activity?.[n.id]} dotOnly />
+                          <Activity act={n.activity} dotOnly />
                         </span>)
                       : n.frozen
                         ? <FrozenIcon fontSize="inherit" className="tray-frozen" />
@@ -1215,7 +1244,7 @@ export function OrgCanvas({ tree, op, slug, pulses, toast, activity, mailEvt, on
           close={() => setUserCfg(false)} />
       )}
       {inboxId && map.get(inboxId) && (
-        <NodeInboxModal node={map.get(inboxId)!} slug={slug} pulse={pulses[inboxId] ?? null}
+        <NodeInboxModal node={map.get(inboxId)!} slug={slug}
           jumpTo={nodeInboxJump}
           close={() => { setInboxId(null); setNodeInboxJump(null) }} />
       )}

@@ -6,10 +6,11 @@
 
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
-import { useEffect } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import type { DependencyList } from 'react'
 import type {
-  DirGrant, MailEntry, NodeState, NodeStatus, OpRequest, OpResult, ToolGrant,
-  TreeNode, TreePayload,
+  ActivityInfo, DirGrant, MailEntry, NodeState, NodeStatus, OpRequest,
+  OpResult, ToolGrant, TreeNode, TreePayload,
 } from '../types'
 
 export const TIER_LETTER: Record<string, string> = { haiku: 'H', sonnet: 'S', opus: 'O', fable: 'F' }
@@ -60,6 +61,9 @@ export interface CanvasNode {
   generation?: number
   lineage?: TreeNode['lineage']
   busy?: boolean
+  /** G4: server-derived, from the supervisor's live tail (absent on the
+   *  synthetic cards — eye root, draft, bearers — which never run turns) */
+  activity?: ActivityInfo
   waiting?: boolean
   responding?: boolean
   phase?: string | null
@@ -94,8 +98,10 @@ export interface StreamEvent {
   id?: string
 }
 export interface MailEvent { from: string; to: string; t: number }
-/** 'thinking' | 'writing' | 'tool' — open for the same WS-JSON reason */
-export interface ActivityInfo { phase: string; tool?: string }
+// ActivityInfo moved to types.ts with G4 — it is a TREE PAYLOAD field now, not
+// a client-side accumulation, and types.ts may not import from here (this file
+// imports from it). Re-exported so existing importers are untouched.
+export type { ActivityInfo } from '../types'
 export type OpFn = (body: OpRequest) => Promise<OpResult>
 /** a chat chip's mail pointer — routed to whichever box holds the mail */
 export type MailLinkFn = (
@@ -374,4 +380,40 @@ export function useEsc(close: () => void) {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [close])
+}
+
+/** G5 — the panel heartbeat.
+ *
+ *  An audit of the read endpoints found 18 of 19 call sites fetching ONCE on
+ *  mount: open a panel, and whatever it showed at that instant is what it
+ *  shows until you close it. Some of those panels display data that changes
+ *  while you are looking at it — mail arriving, an agent writing files, disk
+ *  filling — and the node inbox had a workaround for exactly this, refetching
+ *  when a `pulse` prop changed, which covered turn events and nothing else
+ *  (a mail delivery is not a pulse).
+ *
+ *  Same rule as the tree and the chat: liveness is gated on "this panel is
+ *  mounted", which is known locally and cannot be stale — never on a piece of
+ *  the data being refreshed. The fetcher is held in a ref so an inline arrow
+ *  does not restart the timer on every render; `deps` decides identity.
+ */
+export function usePolled<T>(
+  fetcher: () => Promise<T>, deps: DependencyList, ms = 5000,
+): T | null {
+  const [v, setV] = useState<T | null>(null)
+  const ref = useRef(fetcher)
+  ref.current = fetcher
+  useEffect(() => {
+    let dead = false
+    const tick = () => {
+      void ref.current().then((r) => { if (!dead) setV(r) }).catch(() => {})
+    }
+    tick()
+    const t = setInterval(tick, ms)
+    return () => { dead = true; clearInterval(t) }
+    // the fetcher rides a ref on purpose; `deps` is the identity of the thing
+    // being fetched (slug, node, folder), which is what should restart it
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [...deps, ms])
+  return v
 }

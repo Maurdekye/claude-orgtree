@@ -17,8 +17,8 @@ import {
   USER_H, USER_W,
 } from './shared'
 import type {
-  ActivityInfo, CanvasNode, DraftScope, DraftState, MailLinkFn, OpFn, Pile,
-  Pt, PulseEvent,
+  CanvasNode, DraftScope, DraftState, MailLinkFn, OpFn, Pile,
+  Pt,
 } from './shared'
 import { Activity, ContextWheel, DeskChat } from './desk'
 import { DraftScopeModal } from './modals'
@@ -49,7 +49,6 @@ interface UserNodeProps {
   map: Map<string, CanvasNode>
   op: OpFn
   slug: string
-  pulses: Record<string, PulseEvent>
   toast: ToastFn
   compactAt?: number
 }
@@ -57,7 +56,7 @@ interface UserNodeProps {
 export function UserNode({ pos, isDrop, stats, inboxCount, seats, mailGlow,
   kiosk, pub, kioskRemaining, kioskSegs, pxc, zoom, onInbox, onGear, onSpawn,
   onMailLink,
-  focused, eyeW, onFocus, posX, onJump, map, op, slug, pulses, toast,
+  focused, eyeW, onFocus, posX, onJump, map, op, slug, toast,
   compactAt }: UserNodeProps) {
   const downRef = useRef<Pt | null>(null)
   // const extraction: the kiosk-credits narrowing must survive the commit
@@ -134,7 +133,7 @@ export function UserNode({ pos, isDrop, stats, inboxCount, seats, mailGlow,
       <SpawnChips onSpawn={onSpawn} free={kioskRemaining ?? Infinity} seats={seats}
         maxTier={kiosk?.max_tier} />
       {focused && (
-        <EyeDesk map={map} op={op} slug={slug} pulses={pulses} toast={toast}
+        <EyeDesk map={map} op={op} slug={slug} toast={toast}
           inboxCount={inboxCount} onInbox={onInbox}
           onGear={onGear} pub={pub} eyeW={eyeW} posX={posX} onJump={onJump}
           compactAt={compactAt} onMailLink={onMailLink} />
@@ -153,7 +152,6 @@ interface EyeDeskProps {
   map: Map<string, CanvasNode>
   op: OpFn
   slug: string
-  pulses: Record<string, PulseEvent>
   toast: ToastFn
   inboxCount: number
   onInbox?: () => void
@@ -166,7 +164,7 @@ interface EyeDeskProps {
   onMailLink: MailLinkFn
 }
 
-function EyeDesk({ map, op, slug, pulses, toast, inboxCount,
+function EyeDesk({ map, op, slug, toast, inboxCount,
   onInbox, onGear, pub, eyeW, posX, onJump, compactAt, onMailLink }: EyeDeskProps) {
   const agents = [...map.values()].filter((n) =>
     n.id !== USER && n.id !== DRAFT && n.state === 'live' && !n.isBearerOf
@@ -276,7 +274,6 @@ function EyeDesk({ map, op, slug, pulses, toast, inboxCount,
           {open.map((a) => (
             <div className="eye-panel" key={a.id}>
               <DeskChat node={a} map={map} op={op} slug={slug}
-                pulse={pulses[a.id] ?? null}
                 toast={toast} pub={pub} bare compact compactAt={compactAt}
                 onMailLink={onMailLink} />
             </div>
@@ -608,11 +605,9 @@ interface NodeSquareProps {
   map: Map<string, CanvasNode>
   op: OpFn
   slug: string
-  pulses: Record<string, PulseEvent>
   toast: ToastFn
   pxc: number
   zoom: number
-  act?: ActivityInfo
   onSpawn: (tier: string) => void
   onConfig: () => void
   onInbox: () => void
@@ -634,7 +629,7 @@ interface NodeSquareProps {
 }
 
 export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, map, op, slug,
-  pulses, toast, pxc, zoom, act, onSpawn, onConfig, onInbox, onLineage,
+  toast, pxc, zoom, onSpawn, onConfig, onInbox, onLineage,
   onRecenter, pub, kioskRemaining, cascadeAlloc, maxTop, pile, compactAt, maxTier,
   onMailLink, onDragStart, onDragMove, onDragEnd, onDragCancel }: NodeSquareProps) {
   // pile fronts zoom on a plain CENTER click (user spec) — track the
@@ -728,11 +723,11 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, m
         {lod === 'mini' && node.last_status &&
           <span className={'statusdot ' + node.last_status.status}
             title={`${node.last_status.status} — ${node.last_status.summary ?? ''}`} />}
-        {node.busy && <Activity act={act} dotOnly />}
+        {node.busy && <Activity act={node.activity} dotOnly />}
         {node.last_error && <span className="errdot" title={node.last_error ?? undefined} />}
       </div>}
       {!focused && lod === 'mini' && <div className="mini-name">{node.id}</div>}
-      {node.busy && !focused && lod !== 'mini' && <Activity act={act} />}
+      {node.busy && !focused && lod !== 'mini' && <Activity act={node.activity} />}
       {!focused && lod !== 'mini' && (
         <div className="sq-badges">
           {/* no seat/free badges — the credit bar carries all of that */}
@@ -756,7 +751,7 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, m
       )}
       {focused && (
         <DeskChat node={node} map={map} op={op} slug={slug}
-          pulse={pulses[node.id] ?? null} toast={toast}
+          toast={toast}
           onLineage={onLineage} onConfig={onConfig} compactAt={compactAt}
           onRecenter={onRecenter} pub={pub} onMailLink={onMailLink} />
       )}

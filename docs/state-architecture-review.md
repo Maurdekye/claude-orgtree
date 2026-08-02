@@ -369,9 +369,28 @@ does not rediscover it as a defect.
 
 ### 8.4 Recommended order
 
-**G1 and G2 are DONE** (docket D-35/D-36) — the user ruled *"proceed"* on this order the same day.
-G3–G6 remain open, and G3 is now non-fatal: the tree heartbeat covers a missing mail refresh within
-6 s, which is a blink rather than a wedge.
+**G1, G2, G4, G5 and G6 are DONE** (docket D-35/D-36/D-37) — the user ruled *"proceed"* twice on
+this order. **G3 was absorbed rather than fixed**: the tree heartbeat covers a missing mail refresh
+within 6 s and the inbox panels poll themselves, so the mail frame stays animation-only by design.
+**G7** (the `delivering` journal, §①a) and **G8** (the deliberate usage-cache) remain, both under
+the existing rulings.
+
+### 8.5 The blind spot this census had, and how it was closed
+
+Worth recording because it is a property of the METHOD, not of the codebase. A structural census
+finds state that is duplicated **by shape**. It is blind to a single copy, correctly owned, that is
+simply **old** — and that turned out to be the larger class here: D-34 and G1 are both of it, and
+both were found by a symptom rather than by the census.
+
+The closing move was behavioural: **replace the page's WebSocket with one that connects, stays open
+and swallows every frame, then run a real turn and see whether the UI still converges on the
+ledger.** Whatever fails is a refresh path with no backstop, whatever its code shape. It now passes
+5/5 (docket D-38), and the same probe against the pre-G1 build fails exactly the checks G1+G4
+address, so the test discriminates rather than merely agreeing.
+
+**The invariant to hold going forward, and the one worth testing on every change:** *the websocket
+is an optimization, not a requirement — nothing on screen may depend on having caught an event.*
+That is the positive form of the rule in §②a, and it is cheap to re-check.
 
 
 1. **G1** — one tree heartbeat, gated on "the org view is mounted". Smallest change, largest blast

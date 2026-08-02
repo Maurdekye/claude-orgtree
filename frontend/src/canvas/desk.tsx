@@ -20,13 +20,13 @@ import {
   MailIcon, PlayIcon, PsychologyIcon, SettingsIcon, SparkIcon, StopIcon,
   WarnIcon,
 } from '../icons'
-import { ago, EXTERN, md, TIER_LETTER, USER, useEsc } from './shared'
+import { ago, EXTERN, md, TIER_LETTER, USER, useEsc, usePolled } from './shared'
 import {
   addPending, CHAT_WINDOW, dropPending, loadOlder as storeLoadOlder, markBusy,
   refreshConvo, useConvo,
 } from '../convo'
 import type {
-  ActivityInfo, CanvasNode, LiveRow, MailLinkFn, OpFn, PulseEvent,
+  ActivityInfo, CanvasNode, LiveRow, MailLinkFn, OpFn,
 } from './shared'
 import { ConfirmModal } from './modals'
 import { InboxView } from './mail'
@@ -93,7 +93,6 @@ export function Activity({ act, dotOnly }: { act?: ActivityInfo; dotOnly?: boole
 // over stable setters, so their per-render identities are ignorable.
 export const DeskChat = memo(DeskChatInner, (p, n) =>
   p.node === n.node && p.map === n.map && p.slug === n.slug
-  && p.pulse === n.pulse
   && p.pub === n.pub && p.bare === n.bare && p.compact === n.compact
   && p.compactAt === n.compactAt)
 
@@ -102,7 +101,6 @@ interface DeskChatProps {
   map: Map<string, CanvasNode>
   op: OpFn
   slug: string
-  pulse: PulseEvent | null
   toast: ToastFn
   onLineage?: () => void
   onConfig?: () => void
@@ -119,7 +117,7 @@ interface DeskChatProps {
 // that has already been answered
 const SENDMODE_MS = 6000
 
-function DeskChatInner({ node, map, op, slug, pulse, toast, onLineage, onConfig,
+function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
   onRecenter, pub, bare = false, compact = false, compactAt, onMailLink }: DeskChatProps) {
   // THE CONVERSATION IS NOT THIS COMPONENT'S. It lives in one per-node store
   // (convo.ts) that every view of this node subscribes to, because a node can
@@ -550,7 +548,7 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, onLineage, onConfig,
       )}
       {view === 'history' && <HistoryView slug={slug} nid={node.id} />}
       {view === 'files' && <FilesView slug={slug} nid={node.id} />}
-      {view === 'inbox' && <InboxView slug={slug} nid={node.id} pulse={pulse}
+      {view === 'inbox' && <InboxView slug={slug} nid={node.id}
         onRetract={(m) => retractMail(slug, node.id, m.id)
           .then(() => refresh(true))
           .catch((e: Error) => toast([`error: ${e.message}`]))} />}
@@ -651,8 +649,9 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, onLineage, onConfig,
   )
 }
 function HistoryView({ slug, nid }: { slug: string; nid: string }) {
-  const [items, setItems] = useState<HistoryItem[] | null>(null)
-  useEffect(() => { getHistory(slug, nid).then((r) => setItems(r.items)).catch(() => setItems([])) }, [slug, nid])
+  // G5: the agent keeps acting while this tab is open — a fetch-once list is
+  // a photograph of the moment the tab was clicked
+  const items = usePolled(() => getHistory(slug, nid).then((r) => r.items), [slug, nid])
   return (
     <div className="msgs">
       {items == null && <div className="dim pad">loading…</div>}
@@ -672,8 +671,8 @@ function HistoryView({ slug, nid }: { slug: string; nid: string }) {
 
 function FilesView({ slug, nid }: { slug: string; nid: string }) {
   const [path, setPath] = useState('')
-  const [data, setData] = useState<ScratchPayload | null>(null)
-  useEffect(() => { getScratch(slug, nid, path).then(setData).catch(() => setData(null)) }, [slug, nid, path])
+  // G5: same — the agent writes into this very directory while you browse it
+  const data = usePolled(() => getScratch(slug, nid, path), [slug, nid, path])
   const up = () => setPath(path.split('/').slice(0, -1).join('/'))
   // union split (type-only narrowing): a scratch payload is a dir listing OR
   // a file body — the two reads below each see only their variant

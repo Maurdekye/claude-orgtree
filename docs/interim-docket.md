@@ -518,6 +518,89 @@ thing instead of the thing was also what nearly sank D-34.
 
 ---
 
+## D-37 · The remaining state gaps (G4/G5/G6) — deletions, not additions
+> proceed
+
+Three of the §8 gaps, done together because they are one idea: **client state that mirrors, or
+outlives, something the server already owns.**
+
+**G4 — `activity` and `pulses` deleted.** `activity` was a `Record<node, {phase,tool}>` accumulated
+from websocket frames and cleared on `turn_done`; a missed `turn_done` stranded an indicator until
+the socket reconnected. It is a **tree-payload field** now, derived server-side in `annotate()` from
+the live tail the supervisor already keeps — stored nowhere, recomputed per request. `pulses` was a
+per-node record of the last turn event threaded App → OrgCanvas → EyeDesk/NodeSquare → DeskChat;
+after the node inbox stopped keying off it, **nothing read it** — `DeskChat` still destructured it
+and its memo still compared it, exactly like the dead `streams` chain D-34 removed. A prop that
+looks like an update path but can never fire is the thing that makes staleness hard to see. Deleted
+end to end.
+
+**G5 — `usePolled`, one hook for the panels.** 18 of 19 read-endpoint call sites fetched once on
+mount. The node inbox had a workaround — refetch when a `pulse` prop changed — which covered turn
+events and nothing else, so **the one panel whose whole job is showing mail was the one that never
+learned when mail arrived.** Converted: node inbox, user inbox, audiences, the org record, agent
+history, agent scratch files. Same gate as everywhere else — "is this panel mounted".
+`DiskBrowser` deliberately NOT converted: it is a triage tool with a selection model, and surprise
+re-renders there could re-target a delete.
+The retract path kept one local cell — mails just retracted, held until the server agrees. That is
+an **uncommitted operation**, not a mirror, and the distinction is the whole point.
+
+**G6 — id-keyed `localStorage` is swept.** `orgtree-eyemin-`, `-eyeseen-` and `-pile-` all key on
+node ids and none was ever pruned (only `-draft-` was). They grew across the org's entire hire/fire
+history, and a pile front could name a node that no longer exists. Client-owned state is legitimate;
+client-owned state that outlives what it refers to is just a slower kind of stale.
+
+**Verified live** (`zz-drop-probe`, created and deleted):
+- G6: planted `['probe','long-gone-agent','another-ghost']` + two bogus pile entries before boot →
+  after the sweep, `['probe']` and `{}`. Dead ids pruned, the live one kept.
+- G5: node inbox open and idle → **3 refetches in 16 s**; mail sent while it was open appeared in
+  **3.5 s**. Both were previously never.
+→ `PENDING-COMMIT`
+
+---
+
+## D-38 · THE FRAME-DROP TEST — the UI no longer needs the websocket at all
+> [the investigation's own blind spot, closed]
+
+Every bug here so far was found by a symptom and then explained. The §8 census finds state that is
+duplicated **by shape**; it is blind to a single copy, correctly owned, that is simply **old** —
+which is what D-34 and G1 both turned out to be. So this test looks for that class directly, by
+taking the push channel away entirely and asking whether the UI still converges on the ledger.
+
+**Method.** The page's `WebSocket` is replaced before any app code runs with a subclass that
+connects, stays open — so no reconnect fires and no reconnect-time refetch papers over the result —
+and **swallows every frame**. `api.ts` does `ws.onmessage = handler`, and the subclass drops that
+setter (the `addEventListener` path was instrumented too and stayed at 0, proving which one is
+used). Then a real turn runs, driven over HTTP by a separate client.
+
+**Result — 5/5 converged with a deaf websocket:**
+
+| check | result |
+|---|---|
+| a hire by another client reaches the canvas | PASS |
+| every ledger node is on the canvas | PASS |
+| the UI notices the turn STARTED | PASS — busy dot in 0.5 s |
+| the server-derived activity label renders | PASS — 0.5 s |
+| the busy indicator CLEARS | PASS — 10.6 s |
+| the agent's reply is on screen | PASS — 12.9 s |
+
+**Proven to discriminate.** The same probe against the pre-G1 build (`117f7ca`'s frontend, rebuilt
+and re-run) **fails exactly the two checks G1+G4 address** — the busy dot and the activity label
+never appear at all. The other three passed there for reasons that do not generalise: the reply
+arrives via the D-34 conversation heartbeat, `busy` "clears" trivially because it never showed, and
+the node list happened to be present at page load.
+
+⚠ **Honest limits.** This tests convergence with the socket *fully* dead, which is the strong case;
+it does not test a socket that is alive but dropping a fraction of frames, nor a backend restart
+mid-turn. And "every ledger node is on the canvas" is the weakest assertion in the set — the node it
+checked for pre-existed the run.
+
+**What it means:** the websocket is now an **optimization**, not a requirement. Nothing on screen
+depends on having caught an event, which is the property every one of D-13, D-24, D-30 and D-34
+turned out to be missing.
+→ `PENDING-COMMIT`
+
+---
+
 ## Future feature pass — SPECIFIED, NOT BUILT
 
 User, 2026-08-02: *"add two new features to the docket, but dont implement them: create a new

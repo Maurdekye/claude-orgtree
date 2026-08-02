@@ -169,7 +169,14 @@ export interface TreeNode {
   phase: string | null
   queued: number
   last_error: string | null
+  /** G4: what the agent is doing this instant, derived server-side from the
+   *  live tail. The client used to build this itself from websocket events. */
+  activity: ActivityInfo
 }
+
+/** 'thinking' | 'writing' | 'tool' — a string rather than a union for the same
+ *  reason every other wire enum here is: it arrives as JSON. */
+export interface ActivityInfo { phase: string; tool?: string }
 
 // ledger.py credit_requests / audience_requests are
 // dict[str, Any] in schema.py — only `status` is provably read on requests

@@ -16,7 +16,7 @@ import {
 } from './icons'
 import { DirList } from './forms'
 import { FolderPickerHost } from './picker'
-import { deskDpi, setDeskDpi } from './canvas/shared'
+import { deskDpi, setDeskDpi, usePolled } from './canvas/shared'
 import { ingestPulse, ingestStream, resetConvos } from './convo'
 import type {
   AudiencesPayload, DefaultsPayload, InboxPayload, KioskSpecRequest,
@@ -37,12 +37,10 @@ type WsEvent =
 
 // live-feed state threaded into OrgCanvas (boundary shapes — Canvas declares
 // its own; reconcile if they drift)
-interface PulseEvt { node: string; event: string; t: number }
 // text is required on the OUT side: the backend sends it on every stream()
 // emit (supervisor stream plumbing) — the `?? ''` at the construction site
 // is the wire-boundary guard, not a real case
 interface MailEvt { from: string; to: string; t: number }
-interface NodeActivity { phase: string; tool?: string }
 interface Toast { id: number; lines: string[]; undo: ToastUndo | null }
 
 /** G1: the tree is pulled on a timer as well as pushed. Slow enough to be
@@ -64,17 +62,20 @@ export default function App() {
   const [tree, setTree] = useState<TreePayload | null>(null)
   const [toasts, setToasts] = useState<Toast[]>([])
   const [error, setError] = useState<string | null>(null)
-  // PER-NODE event slots, not one shared slot. Two WS events landing in the
-  // same React batch used to collapse to the last one — and because a desk
-  // only refetches on a pulse addressed to IT, a clobbered pulse meant that
-  // desk never refreshed again (user bug 2026-08-02: a switchboard chat stops
-  // updating while demonstrably producing events; the switchboard is where
-  // several agents stream at once, so collisions are routine there).
-  // Functional updates are load-bearing: every queued updater runs, so a batch
-  // carrying events for two nodes now keeps both.
-  const [pulses, setPulses] = useState<Record<string, PulseEvt>>({})
+  // G4: `pulses` used to live here — a per-node record of the last turn event,
+  // threaded App → OrgCanvas → EyeDesk/NodeSquare → DeskChat. Every consumer
+  // of it is gone: the conversation refetches through convo.ts, and the node
+  // inbox (its last real reader) polls itself now. DeskChat still destructured
+  // it and its memo still compared it, but nothing read it — the same dead
+  // prop chain `streams` was, and dead update paths are what make staleness
+  // hard to see. ingestPulse still runs below; only the mirror is gone.
   const [mailEvt, setMailEvt] = useState<MailEvt | null>(null)
-  const [activity, setActivity] = useState<Record<string, NodeActivity>>({})   // node → {phase, tool}
+  // G4: `activity` used to live here — a Record<node, {phase,tool}> accumulated
+  // from websocket frames and cleared on turn_done, i.e. a client-side copy of
+  // something the supervisor already knows. A missed turn_done stranded an
+  // indicator until the socket reconnected. It is a tree-payload field now
+  // (api.py annotate(), derived from the live tail), so it self-heals on the
+  // same heartbeat as everything else and no event can be missed.
   const [showSettings, setShowSettings] = useState(false)
   // the recovery browser: 'largest' = forced triage mode (the alert's path);
   // 'last' = whatever mode was used last (the header chip's path)
@@ -178,7 +179,6 @@ export default function App() {
     const connect = () => {
       if (dead) return
       refreshTree(slug)
-      setActivity({})                  // drop indicators from before the gap
       wsRef.current = openWs(slug, handleWs,
         () => { if (!dead) timer = setTimeout(connect, 1500) })
     }
@@ -200,14 +200,9 @@ export default function App() {
           // transcript, so the live-feed reconciliation must never sweep it
           ...(data.sticky ? { sticky: true } : {}),
           ...(data.id ? { id: data.id as string } : {}), t: Date.now() })
-        setActivity((a) => ({ ...a, [data.node]:
-          data.kind === 'tool' ? { phase: 'tool', tool: data.text }
-            : { phase: 'writing' } }))
         return   // live feed only — no tree refetch per message
       }
       if (data?.type === 'node_event') {
-        setPulses((p) => ({ ...p,
-          [data.node]: { node: data.node, event: data.event, t: Date.now() } }))
         ingestPulse(slug, { node: data.node, event: data.event, t: Date.now() })
         if (data.event === 'frozen') {   // usage-limit popup (user ruling)
           toast([`${data.node} hit a usage limit and is FROZEN — use the resume button in the top bar when the limit resets`])
@@ -225,11 +220,6 @@ export default function App() {
         if (data.event === 'storage_cleared') {
           toast(['workspace back under its storage limit — writes unblocked'])
           refreshTree(slug)
-        }
-        if (data.event === 'turn_started') {
-          setActivity((a) => ({ ...a, [data.node]: { phase: 'thinking' } }))
-        } else if (data.event === 'turn_done') {
-          setActivity((a) => { const n = { ...a }; delete n[data.node]; return n })
         }
       }
       refreshTree(slug)
@@ -441,8 +431,8 @@ export default function App() {
                   target="_blank" rel="noreferrer" title="orgtree on GitHub">
                   <GitHubIcon fontSize="inherit" /></a>
               </header>
-              <OrgCanvas tree={tree} op={op} slug={slug} pulses={pulses} toast={toast}
-                activity={activity} mailEvt={mailEvt}
+              <OrgCanvas tree={tree} op={op} slug={slug} toast={toast}
+                mailEvt={mailEvt}
                 onInbox={(jump: unknown) => {
                   setInboxJump(typeof jump === 'string' ? jump : null)
                   setShowInbox(true)
@@ -744,25 +734,22 @@ function InboxPanel({ slug, tree, toast, refresh, close, jumpTo }: {
   jumpTo: string | null
 }) {
   useEsc(close)
-  const [box, setBox] = useState<InboxPayload | null>(null)
-  const [aud, setAud] = useState<AudiencesPayload | null>(null)
   const [folder, setFolder] = useState('inbox')
-  const [events, setEvents] = useState<OrgEvent[] | null>(null)
   const nodes = flatNodes(tree)
-  const reload = useCallback(() => {
-    getInbox(slug).then(setBox).catch((e: Error) => toast([`error: ${e.message}`]))
-    getAudiences(slug).then(setAud).catch(() => {})
-  }, [slug, toast])
-  useEffect(() => { reload() }, [reload])
-  useEffect(() => {          // №10: the record loads on demand
-    if (folder === 'record') {
-      getEvents(slug).then((r) => setEvents(r.events)).catch(() => setEvents([]))
-    }
-  }, [folder, slug])
+  // G5: mail arrives, and audience requests are raised by agents, while this
+  // panel sits open. Polled while mounted rather than fetched once — the same
+  // gate as everywhere else: "is anyone looking at this".
+  const box = usePolled(() => getInbox(slug), [slug])
+  const aud = usePolled(() => getAudiences(slug), [slug])
+  // №10: the record loads on demand — and keeps loading while that tab is up
+  const events = usePolled(
+    () => (folder === 'record' ? getEvents(slug).then((r) => r.events)
+      : Promise.resolve(null)), [folder, slug])
   const userAud = aud?.audiences.filter((a) => a.grantor === USER) ?? []
   const userReqs = (aud?.requests.filter((r) => r.target === USER && r.currently_at === USER) ?? []) as UserAudReq[]
   const act = (action: string, node: string, target?: string | null) =>
-    audienceAction(slug, action, node, target).then(reload).catch((e: Error) => toast([`error: ${e.message}`]))
+    audienceAction(slug, action, node, target)
+      .catch((e: Error) => toast([`error: ${e.message}`]))
   return (
     <div className="overlay" onClick={close}>
       <div className="settings wide" onClick={(e) => e.stopPropagation()}>
@@ -832,7 +819,7 @@ function InboxPanel({ slug, tree, toast, refresh, close, jumpTo }: {
               ? <MailList pending={box.pending} delivered={box.delivered}
                   waitLabel="unread" jumpTo={jumpTo}
                   onRead={(m: MailEntry) => markRead(slug, [m.id])
-                    .then(() => { reload(); refresh?.() }).catch(() => {})}
+                    .then(() => { refresh?.() }).catch(() => {})}
                   onReply={(m: MailEntry, text: string) => sendMessage(slug, m.from, text)
                     .then(() => toast([`sent to ${m.from}`]))
                     .catch((e: Error) => toast([`error: ${e.message}`]))}
@@ -842,7 +829,7 @@ function InboxPanel({ slug, tree, toast, refresh, close, jumpTo }: {
         </div>
         <div className="row">
           {folder === 'inbox' && (box?.pending.length ?? 0) > 0 && <button onClick={() =>
-            clearInbox(slug).then(reload).catch((e: Error) => toast([`error: ${e.message}`]))}>mark all read</button>}
+            clearInbox(slug).catch((e: Error) => toast([`error: ${e.message}`]))}>mark all read</button>}
           <button className="primary" onClick={close}>close</button>
         </div>
       </div>

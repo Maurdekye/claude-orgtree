@@ -620,6 +620,20 @@ def org_tree(slug: str, request: Request) -> dict[str, Any]:
         node["phase"] = st.get("phase")     # e.g. "compacting" (№3)
         node["queued"] = len(st["queue"])
         node["last_error"] = st["last_error"]
+        # G4: what the agent is doing RIGHT NOW, derived from the live tail the
+        # supervisor already keeps. The client used to accumulate this itself
+        # from the websocket (`activity`, keyed by node, cleared on turn_done),
+        # which meant a missed `turn_done` stranded an indicator until the
+        # socket reconnected — a second copy of a fact the server already had.
+        # Derived here per request, stored nowhere: the newest row wins, and
+        # `busy` (above) is what decides whether it renders at all.
+        live = cast("list[dict[str, Any]]", st.get("live") or [])
+        last = live[-1] if live else {}
+        kind = last.get("kind")
+        node["activity"] = (
+            {"phase": "tool", "tool": last.get("text")} if kind == "tool"
+            else {"phase": "writing"} if kind == "text"
+            else {"phase": "thinking"})
         # (occupancy / context_window were re-read from the supervisor's
         # in-memory copy here, on the belief that it was fresher. It was not:
         # _after_turn wrote both in the same block, so the mirror could only

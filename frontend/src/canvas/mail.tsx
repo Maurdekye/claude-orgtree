@@ -12,8 +12,8 @@ import { audienceAction, fileUrl, getNodeInbox, orgInboxRead } from '../api'
 import {
   CloseIcon, DownloadIcon, FileIcon, HearingIcon, MailIcon, PublicIcon,
 } from '../icons'
-import { DRAFT, EXTERN, md, USER, useEsc } from './shared'
-import type { CanvasNode, MailRow, PulseEvent } from './shared'
+import { DRAFT, EXTERN, md, USER, useEsc, usePolled } from './shared'
+import type { CanvasNode, MailRow } from './shared'
 
 // One mail interface, everywhere (user ruling: the user's and the agents'
 // inboxes function identically), laid out like a webmail client: the list on
@@ -195,32 +195,39 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
 interface InboxViewProps {
   slug: string
   nid: string
-  pulse: PulseEvent | null
   onRetract?: (m: MailRow) => void
   jumpTo?: string | null
 }
 
-export function InboxView({ slug, nid, pulse, onRetract, jumpTo }: InboxViewProps) {
-  const [box, setBox] = useState<InboxPayload | null>(null)
+export function InboxView({ slug, nid, onRetract, jumpTo }: InboxViewProps) {
   const [folder, setFolder] = useState('inbox')
-  useEffect(() => {
-    getNodeInbox(slug, nid).then(setBox)
-      .catch(() => setBox({ pending: [], delivered: [], sent: [] }))
-  }, [slug, nid, pulse])
+  // G5: was a fetch keyed on the `pulse` prop, which meant it refreshed on turn
+  // events and on nothing else — and a mail DELIVERY is not a turn event, so
+  // the one panel whose whole job is showing mail was the one that did not
+  // learn when mail arrived. Polled while mounted instead.
+  const box = usePolled(() => getNodeInbox(slug, nid), [slug, nid])
+  // the ONE piece of local state left here: mails this user just retracted,
+  // held only until the server's copy agrees. That is an uncommitted operation,
+  // not a mirror of server data — the distinction the whole refactor turns on.
+  const [dropped, setDropped] = useState<string[]>([])
+  const pending = (box?.pending ?? []).filter((m) => !dropped.includes(m.id ?? ''))
+  useEffect(() => {         // let go as soon as the server has caught up
+    if (!box) return
+    setDropped((d) => d.filter((id) => box.pending.some((m) => m.id === id)))
+  }, [box])
   return (
     <div className="mailwrap">
       <MailFolders folder={folder} setFolder={setFolder}
-        unread={box?.pending.length ?? 0} />
+        unread={pending.length} />
       <div className="mailpane">
         {box == null
           ? <div className="dim pad">loading…</div>
           : folder === 'inbox'
-            ? <MailList pending={box.pending} delivered={box.delivered}
+            ? <MailList pending={pending} delivered={box.delivered}
                 waitLabel="awaiting next turn" jumpTo={jumpTo}
                 fileHref={(p) => fileUrl(slug, nid, p)}
                 onRetract={onRetract
-                  ? (m) => { onRetract(m); setBox((b) => b && ({
-                      ...b, pending: b.pending.filter((x) => x.id !== m.id) })) }
+                  ? (m) => { onRetract(m); setDropped((d) => [...d, m.id ?? '']) }
                   : undefined} />
             : <MailList delivered={box.sent ?? []} outgoing />}
       </div>
@@ -290,18 +297,17 @@ export function OrgRecord({ events }: OrgRecordProps) {
 interface NodeInboxModalProps {
   node: CanvasNode
   slug: string
-  pulse: PulseEvent | null
   close: () => void
   jumpTo?: string | null
 }
 
-export function NodeInboxModal({ node, slug, pulse, close, jumpTo }: NodeInboxModalProps) {
+export function NodeInboxModal({ node, slug, close, jumpTo }: NodeInboxModalProps) {
   useEsc(close)
   return (
     <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
       <div className="settings wide" onClick={(e) => e.stopPropagation()}>
         <h3><MailIcon fontSize="inherit" /> {node.id} <span className="dim">· inbox</span></h3>
-        <InboxView slug={slug} nid={node.id} pulse={pulse} jumpTo={jumpTo} />
+        <InboxView slug={slug} nid={node.id} jumpTo={jumpTo} />
         <div className="row">
           <button className="primary" onClick={close}>close</button>
         </div>
