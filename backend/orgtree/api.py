@@ -1230,7 +1230,9 @@ def node_message(slug: str, nid: str, body: Message) -> dict[str, Any]:
         try:
             org = store.load_org(slug)
             r = org.post_mail(USER, nid, body.text, attachments=metas or None)
-            org.user_deep_reach(nid, body.text.strip().splitlines()[0][:80])
+            # 80 chars truncated most instructions mid-clause; the notice is a
+            # gist, but it has to survive being read on its own
+            org.user_deep_reach(nid, body.text.strip().splitlines()[0][:160])
             store.save_org(org)
         except LedgerError as e:
             raise HTTPException(422, str(e))

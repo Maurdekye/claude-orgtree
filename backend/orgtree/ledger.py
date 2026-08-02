@@ -1225,7 +1225,20 @@ class Org:
         chain = [a for a in self.ancestors(nid) if a != USER]
         if not chain:
             return   # top-level: the only superior is the user themself (№12)
-        self._notify(chain, f'The user spoke directly to "{nid}": "{gist}"')
+        # The notice used to state only that the user had spoken. A superior
+        # could read that as gossip and carry on — but the RECIPIENT is
+        # simultaneously told "user instructions outrank your chain" (the
+        # envelope's ⚠ tag), so the two sides disagreed about what had just
+        # happened. Say the authority out loud, and say what to DO about it.
+        # Every direct message, no marking (user ruling 2026-08-02: "requiring
+        # me to manually mark a message as authoritative is costly to my time,
+        # and it doesn't take much to bring this attention to each superior").
+        self._notify(
+            chain,
+            f'The user gave a direct instruction to "{nid}", inside your chain: '
+            f'"{gist}" — it carries the USER\'s authority and outranks anything '
+            f'you have told {nid}. Re-check any plan of yours that depends on '
+            f'it. You are being told, not asked to act.')
         if not self._has_audience(nid, USER):
             self.d["audiences"].append({
                 "grantee": nid, "grantor": USER, "granted_at": now(),
