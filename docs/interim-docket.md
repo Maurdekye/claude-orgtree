@@ -321,7 +321,7 @@ nothing has begun yet.
 **Fix:** a `starting…` line, **derived, not stored** — busy, with nothing live, nothing thinking,
 nothing drafted and nothing pending, *is* starting. No new event, no new state cell.
 Verified live: seen during the launch window of a real turn.
-→ `PENDING-COMMIT`
+→ `ded9f1a`
 
 ## D-30 · Switchboard still out of sync; message still appears twice
 > im still observing the switchboard desk going out of sync with the individual agent desks, so
@@ -406,13 +406,13 @@ the server live tail peaked at 2 rows and drained to **0** after the turn (so ro
 and retired by the sweep), and two views compared across 27 samples showed **0 divergent**. The org
 settings panel reads its real values (1000 / 50 / 80) and the node ⚙ panel renders fully populated
 from the node it was opened on.
-→ `PENDING-COMMIT`
+→ `ded9f1a`
 
 ## D-33 · `chain_notices` removed
 The reserved org-doc key that was written nowhere and read nowhere, while shadowing the working
 `ledger.user_deep_reach()`. It convinced one session (mine) that chain notices were unimplemented.
 Gone from `ledger._new_doc`, `schema.OrgDoc` and the types comment.
-→ `PENDING-COMMIT`
+→ `ded9f1a`
 
 ---
 
