@@ -880,7 +880,7 @@ whose entire install path is `pip install -r requirements.txt` in two deploy scr
 fixed manifest → `101 Switching Protocols`, `/api/host` reports `"websockets"`, no warning.
 Then `pip uninstall websockets` → `200 OK`, `/api/host` reports `null`, **and the startup wall
 fires**. Four assertions, both directions.
-→ `PENDING-COMMIT`
+→ `6cb3fd2`
 
 ---
 
