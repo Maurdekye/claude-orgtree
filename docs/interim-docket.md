@@ -1087,7 +1087,7 @@ indistinguishable from the thing being measured. Unique token per run, always.
 `.includes()` against the last 20 user messages, so **re-sending byte-identical text graduates the
 new ghost against the old message**. Harmless today (the ghost is cosmetic and the mail still sends)
 and fixing it properly needs a per-send id threaded through, so it is recorded rather than patched.
-→ `PENDING-COMMIT`
+→ `8f83b74`
 
 ---
 
