@@ -827,6 +827,63 @@ byte-identical.
 
 ---
 
+## D-46 · The UI lag was a MISSING DEPENDENCY — and the manifest never declared it
+> i discovered what was causing the lag: websocket events were nonfunctional due to there being no
+> websocket library installed on the other machine. does the python backend package a list of its
+> dependencies? if not, can you set up a simple poetry file or even just a pip freeze into
+> requirements.txt?
+
+This closes D-43, where the 3-5 s lag could not be reproduced here. The hypothesis recorded then —
+*"a browser whose websocket was not delivering, leaving the 6 s heartbeat as the only refresh, whose
+average wait is 3 s"* — was right, and the cause was one line of `requirements.txt`.
+
+**Answer to the question: yes, a manifest exists — and it was wrong.** It declared `uvicorn>=0.27`.
+**Plain `uvicorn` ships no WebSocket implementation.**
+
+**The failure mode is the interesting part, and it is a textbook silent degradation.** Reproduced in
+a clean venv installing exactly what the old manifest declared:
+
+| | WebSocket upgrade | `/api/host` | startup |
+|---|---|---|---|
+| old manifest (no ws lib) | **`HTTP/1.1 200 OK`** | — | silent |
+| with `websockets` | **`HTTP/1.1 101 Switching Protocols`** | — | silent |
+
+Not a 500, not a 400 — a **200**. With no WS implementation the upgrade request falls through to the
+SPA catch-all route and the browser is handed `index.html` where it expected a protocol switch. The
+socket never opens, the client reconnect-loops every 1.5 s forever, every HTTP endpoint keeps working
+perfectly, and the only symptom is that the app *feels slow*. ☞ **It was invisible from this machine
+because the dev box has `websockets` installed for unrelated reasons** — the classic shape of a
+dependency bug: it cannot be seen from where the code was written.
+
+⚠ **A static import scan would never have caught it.** Nothing in the backend imports `websockets`;
+uvicorn loads it by name at runtime. An audit of every third-party import (`ast`-walked across
+`backend/` and `tools/`) found `fastapi · httpx · pydantic · starlette · typing_extensions ·
+uvicorn · playwright` — and *not* the one package whose absence broke the app. **A dependency
+nothing imports, whose absence produces no error, is undiscoverable without an explicit check.**
+
+**Fixed:**
+- `websockets>=12` declared, with the whole story in a comment so nobody "tidies" it away as unused.
+- `pydantic`, `starlette`, `typing_extensions` declared too — all three are imported **directly**
+  and were riding in as fastapi's transitive dependencies. A direct import deserves a direct
+  declaration.
+- **A startup wall** when no WS implementation is found, and `_ws_impl()` reported on `/api/host` so
+  a deployment can *say* it is degraded instead of merely feeling slow. (UI banner deliberately not
+  built — that is a design call, and the flag is now one line away for whoever wants it.)
+
+**Not done, deliberately — and the user offered both:** no `pip freeze`, and no poetry file.
+A freeze here would capture the **193** packages of a system-wide Python shared with other projects
+and turn a fresh install into a resolution fight; poetry would add a tool dependency to a project
+whose entire install path is `pip install -r requirements.txt` in two deploy scripts. Floors in
+`requirements.txt` are the right weight for this. Say the word if you want a `pyproject.toml`.
+
+**Verified live, and it discriminates** (clean venv, isolated port and data root):
+fixed manifest → `101 Switching Protocols`, `/api/host` reports `"websockets"`, no warning.
+Then `pip uninstall websockets` → `200 OK`, `/api/host` reports `null`, **and the startup wall
+fires**. Four assertions, both directions.
+→ `PENDING-COMMIT`
+
+---
+
 ## Future feature pass — SPECIFIED, NOT BUILT
 
 User, 2026-08-02: *"add two new features to the docket, but dont implement them: create a new

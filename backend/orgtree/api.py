@@ -14,6 +14,7 @@ pings "changed" after every successful op so the UI refreshes. Session spawning 
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import json
 import os
 import posixpath
@@ -1172,7 +1173,12 @@ def host_info() -> dict[str, Any]:
     checkbox is disabled at org creation)."""
     return {"docker": sandbox.docker_available(),
             "sandbox_mcp": supervisor.sandbox_mcp_enabled(),
-            "cli_version": supervisor.cli_version()}
+            "cli_version": supervisor.cli_version(),
+            # None = uvicorn has no WebSocket implementation, so pushed updates
+            # never reach the browser and the UI is running on its polling
+            # heartbeats alone. Reported here so the deployment can SAY it
+            # rather than just feeling slow (see _ws_impl).
+            "websockets": _ws_impl()}
 
 
 class Reorder(BaseModel):
@@ -2972,8 +2978,38 @@ def _admin_host() -> str:
     return "0.0.0.0" if EXPOSE_FLAG in sys.argv else "127.0.0.1"
 
 
+def _ws_impl() -> str | None:
+    """Which WebSocket implementation uvicorn will find, if any.
+
+    Plain `uvicorn` has none, and the resulting failure is SILENT: an upgrade
+    request falls through to the SPA catch-all and answers 200 OK with HTML, so
+    the browser's socket simply never opens and reconnect-loops forever. Every
+    HTTP route keeps working, the UI falls back to its polling heartbeats, and
+    the only symptom is that everything feels slightly slow — which is exactly
+    how a user lost time to it on a second machine (2026-08-03). A dependency
+    nothing imports, whose absence produces no error, has to be checked for
+    explicitly or it is undiscoverable.
+    """
+    for mod in ("websockets", "wsproto"):
+        if importlib.util.find_spec(mod) is not None:
+            return mod
+    return None
+
+
 def main() -> None:
     import uvicorn
+
+    if _ws_impl() is None:
+        bar = "!" * 74
+        print(f"\n{bar}\n"
+              "  NO WEBSOCKET LIBRARY — the live UI will be DEGRADED, not broken.\n"
+              "\n"
+              "  uvicorn has no WebSocket implementation installed, so pushed\n"
+              "  updates cannot reach the browser. Everything still works; it\n"
+              "  falls back to polling, so every action lags by up to one poll.\n"
+              "\n"
+              "  Fix:  pip install -r requirements.txt      (or: pip install websockets)\n"
+              f"{bar}\n", flush=True)
 
     host = _admin_host()
     if host != "127.0.0.1":
