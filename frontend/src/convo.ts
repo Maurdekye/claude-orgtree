@@ -32,6 +32,23 @@ const BUSY_POLL_MS = 2500      // heartbeat while the payload says busy
 const IDLE_POLL_MS = 7000      // heartbeat otherwise — slower, never off
 const NUDGE_MS = 200           // burst coalescing for the post-event refetch
 
+/** An optimistic ghost, plus HOW MANY copies of its text the server already
+ *  showed when it was created.
+ *
+ *  Graduation used to be "does any of the last 20 user messages contain this
+ *  text" — with no regard for WHEN. Send "continue" twice and the second ghost
+ *  matched the FIRST message and vanished in 30 ms, so the preview never
+ *  appeared (user report 2026-08-03, measured: 2.92 s of ghost on the first
+ *  send, 0.03 s on the second). Short repeated messages are the common case,
+ *  not an edge one.
+ *
+ *  Counting rather than timestamping is deliberate: it needs no clock
+ *  comparison between browser and server, so no skew can retire a ghost early.
+ *  A stale baseline can only over-count what was already there, which keeps a
+ *  ghost a moment longer — erring toward showing the message, which is the
+ *  direction this whole class of bug wants. */
+export interface PendingGhost { text: string; seen: number }
+
 export interface Convo {
   chat: ChatPayload | null
   /** the server's live tail (chat.live), mirrored here so a render need not
@@ -40,7 +57,7 @@ export interface Convo {
    *  survivors, so every view shows the same list by construction. */
   live: LiveRow[]
   /** optimistic sent-message ghosts, until the server copy lands */
-  pending: string[]
+  pending: PendingGhost[]
   draft: string
   thinking: string
   /** elapsed seconds while thinking is in progress; null = not thinking */
@@ -124,6 +141,15 @@ export function useConvo(slug: string, nid: string): Convo {
   return useSyncExternalStore(sub, snap, snap)
 }
 
+/** how many copies of `text` the server is currently showing — the mailbox and
+ *  the transcript both count, since a message passes through them in order */
+function serverCopies(c: ChatPayload | null, text: string): number {
+  if (!c) return 0
+  return c.messages.slice(-20)
+    .filter((m) => m.role === 'user' && (m.text || '').includes(text)).length
+    + (c.pending_mail ?? []).filter((m) => (m.body || '').includes(text)).length
+}
+
 // -------------------------------------------------------------------- fetch
 /** Refresh a node's transcript. Concurrent calls collapse into the in-flight
  *  one — several views, several triggers, ONE request. */
@@ -147,10 +173,10 @@ export function refreshConvo(slug: string, nid: string,
     // the ghost had been dropped, and nothing was on screen (user bug
     // 2026-08-03: "the queued preview never shows up while the agent is
     // starting"). Same rule as everywhere else: retire on evidence.
-    const durable = (c.pending_mail ?? [])
-    const pending = e.s.pending.filter((x) =>
-      !c.messages.slice(-20).some((m) => m.role === 'user' && (m.text || '').includes(x))
-      && !durable.some((m) => (m.body || '').includes(x)))
+    // a ghost graduates when the server shows MORE copies of its text than it
+    // did when the ghost was made — never merely "a copy exists", which an
+    // earlier identical message already satisfies
+    const pending = e.s.pending.filter((g) => serverCopies(c, g.text) <= g.seen)
     // superseded scaffolding retires HERE, with its replacement in hand — one
     // atomic patch, so the draft never blinks out ahead of the durable row
     const retire: Partial<Convo> = {}
@@ -185,12 +211,15 @@ export function loadOlder(slug: string, nid: string): boolean {
 
 export function addPending(slug: string, nid: string, text: string): void {
   const k = key(slug, nid)
-  patch(k, { pending: [...entry(k).s.pending, text] })
+  const e = entry(k)
+  // baseline from the newest payload we hold: whatever is already on screen is
+  // NOT this send
+  patch(k, { pending: [...e.s.pending, { text, seen: serverCopies(e.s.chat, text) }] })
 }
 
 export function dropPending(slug: string, nid: string, text: string): void {
   const k = key(slug, nid)
-  patch(k, { pending: entry(k).s.pending.filter((x) => x !== text) })
+  patch(k, { pending: entry(k).s.pending.filter((g) => g.text !== text) })
 }
 
 /** the composer's optimistic "it is working now", corrected by the next fetch */
@@ -255,7 +284,7 @@ export function ingestStream(slug: string, ev: StreamEvent): void {
   e.staleAt = Date.now()
   if (ev.kind === 'text') e.staleDraft = true
   if (ev.kind === 'steered') {
-    patch(k, { pending: e.s.pending.filter((x) => !ev.text.includes(x)) })
+    patch(k, { pending: e.s.pending.filter((g) => !ev.text.includes(g.text)) })
   }
   nudge(slug, ev.node)
 }

@@ -1091,6 +1091,43 @@ and fixing it properly needs a per-send id threaded through, so it is recorded r
 
 ---
 
+## D-52 · Still happening — the preview dies on a REPEATED message
+> still seems to be happening
+
+D-51 was real and fixed, but it was not the whole bug. The remaining half is the defect D-51
+**recorded and deliberately deferred**, and deferring it was the wrong call: graduation matched by
+`.includes()` against the last 20 user messages **with no regard for when**, so a second send of the
+same text matched the FIRST one and graduated instantly.
+
+Short repeated messages — *"continue"*, *"yes"*, *"go on"* — are the common case in this app, not an
+edge one. That is why the fix looked complete against a probe using unique text and kept failing in
+real use. ⚠ **I had the evidence in hand and filed it as cosmetic.** It was the bug.
+
+**Measured, same probe, same org, sending `"continue"` twice:**
+
+| | before | after |
+|---|---|---|
+| send #1 | ghost 2.92 s | ghost 2.90 s |
+| send #2 (identical text) | ghost **0.03 s** | ghost **4.85 s** |
+
+**Fix: graduate on a COUNT, not on existence.** A ghost records how many copies of its text the
+server was already showing when it was created (`PendingGhost {text, seen}`), and retires only when
+a payload shows **more** than that. `serverCopies()` counts both places a message can be — the
+mailbox (`pending_mail`) and the transcript — since it passes through them in that order.
+
+Counting rather than timestamping is deliberate: it needs **no clock comparison** between browser and
+server, so no skew can retire a ghost early. A stale baseline can only over-count what was already
+there, which keeps a ghost a moment longer — erring toward showing the message, which is the
+direction this entire class of bug wants.
+
+⚠ **Process note.** Line endings bit twice here: `.gitattributes` sets `* text=auto` and
+`core.autocrlf=true`, so a `git stash pop` returns `.ts`/`.tsx` with **CRLF**, and multi-line
+patch patterns silently stop matching. Two edits reported success while changing nothing, and only
+`tsc` caught it. Normalise before patching, and never trust a `.replace()` that is not asserted.
+→ `PENDING-COMMIT`
+
+---
+
 ## Future feature pass — SPECIFIED, NOT BUILT
 
 User, 2026-08-02: *"add two new features to the docket, but dont implement them: create a new

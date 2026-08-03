@@ -525,7 +525,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
           ))}
           {pending.map((p, i) => (
             <div key={'q' + i} className="msg user pending md"
-              dangerouslySetInnerHTML={md(p)} />
+              dangerouslySetInnerHTML={md(p.text)} />
           ))}
           {/* the turn's own failure is the LAST thing that happened, so it
               reads at the end of the stream. It used to render above the whole
