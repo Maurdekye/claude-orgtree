@@ -988,7 +988,7 @@ number, and why the README now carries the per-turn cost so the next person can 
 - **It changes F-04's central tradeoff.** The ask-the-user design was shaped by a waiting agent
   costing a third of the org's capacity; at 1/16 that pressure is largely gone, and a longer wait
   window becomes reasonable. F-04 updated in place rather than left to mislead.
-→ `PENDING-COMMIT`
+→ `7ad33f6`
 
 ---
 
