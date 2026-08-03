@@ -786,6 +786,47 @@ across three consecutive changes, each confirmed by the server's own value after
 
 ---
 
+## D-44 · Coordinator answers status updates and starts a ping-pong loop
+> also, add a note to the coordinator not to respond to status updates from its subordinates unless
+> its work it directly requested from it. subordinates keep talking in a loop as the coordinator
+> goes back and forth with them.
+
+A status report is *information*. The coordinator was treating it as a message to answer, the report
+answered the answer, and two agents burned turns being polite at each other. Added to charter clause
+5 (already the message-discipline clause, so nothing renumbers): reply ONLY if the status concerns
+work you directly asked that agent for **and** the reply changes what someone does next — a
+decision, a correction, or the next piece. Never acknowledge. Named the cost explicitly, because an
+agent that does not know an acknowledgement costs a whole turn will keep sending them. A genuinely
+stuck report is not a status update and still gets answered.
+
+Note `docs/charters/*.md` are live presets served by `/api/charters`, so this reaches the manual
+hire form immediately — no deploy needed beyond the file. Existing coordinators keep their old
+charter text until it is re-pasted.
+→ `PENDING-COMMIT`
+
+## D-45 · Unread mail re-sorted itself as it was read
+> also dont order unread mails at the top by default, that keeps reordering them as i read them
+> which is confusing. keep their order static and based only on send time, dont ever reorder them
+
+Unread mail sorted as its own block on top, so **reading reordered the list under the reader**: each
+mail you opened left the top group and dropped into the body, moving everything around it. Now there
+is ONE order — send time, newest first — and reading is a purely visual change: the row highlights
+and stays put. `pending`/`delivered` still arrive as separate lists (they are different server-side
+facts) and `_wait` still drives the styling; it just no longer drives position.
+
+Sorting by send time rather than list position **stays** and is independent — that was D-01, where
+the archive was appended in READ order so position was click order. This change is only about the
+grouping.
+
+**Verified live** with a synthetic inbox injected in flight (`page.route`, no org touched), built so
+the two orders differ: four mails at 10:00 read / 09:00 unread / 08:00 read / 07:00 unread. Rendered
+`TEN NINE EIGHT SEVEN`, and **a read mail rendering first is itself the discriminating evidence** —
+under the old grouping an unread could never sort below it. Reading the 09:00 mail left the order
+byte-identical.
+→ `PENDING-COMMIT`
+
+---
+
 ## Future feature pass — SPECIFIED, NOT BUILT
 
 User, 2026-08-02: *"add two new features to the docket, but dont implement them: create a new

@@ -18,8 +18,8 @@ import type { CanvasNode, MailRow } from './shared'
 // One mail interface, everywhere (user ruling: the user's and the agents'
 // inboxes function identically), laid out like a webmail client: the list on
 // the left (sender · time · truncated brief — mails have no subjects), the
-// selected message opened in the reading pane on the right. Waiting/unread
-// mail sorts on top and is highlighted until read/delivered.
+// selected message opened in the reading pane on the right. Unread mail is
+// HIGHLIGHTED but never moved.
 export interface MailListProps {
   pending?: MailRow[]
   delivered?: MailRow[]
@@ -38,20 +38,34 @@ const MAIL_WINDOW = 40
 
 export function MailList({ pending = [], delivered = [], waitLabel, sender, outgoing,
   onRead, onReply, onRetract, jumpTo, fileHref }: MailListProps) {
-  // newest first throughout (user ruling) — waiting/unread stays grouped on top.
-  // Sort by SEND time rather than trusting list position: the user-mail archive
-  // was appended in READ order, so position was click order, not chronology
-  // (user bug 2026-08-02). Sorting here also repairs archives already written
-  // out of order, which a server-side fix alone cannot. `at` is ISO-8601 Z, so
-  // a plain string compare IS a time compare.
+  // ONE order, by send time, always — never grouped, never re-grouped.
+  //
+  // Unread used to sort as its own block on top, which meant the list
+  // reordered itself AS YOU READ IT: every mail you opened jumped out of the
+  // top group and down into the body, moving everything around it (user bug
+  // 2026-08-03: "that keeps reordering them as i read them which is
+  // confusing"). Reading is now a purely visual change — the row highlights
+  // and stays exactly where it was.
+  //
+  // Sorting by SEND time rather than trusting list position stays, and matters
+  // independently: the user-mail archive was appended in READ order, so
+  // position was click order, not chronology (user bug 2026-08-02). Sorting
+  // here also repairs archives already written out of order, which a
+  // server-side fix alone cannot. `at` is ISO-8601 Z, so a plain string
+  // compare IS a time compare.
+  //
+  // `pending` and `delivered` still arrive as separate lists because they are
+  // different server-side facts (undelivered vs delivered); `_wait` carries
+  // that distinction into the row's styling, which is now all it drives.
   const newestFirst = (a: MailRow, b: MailRow) =>
     (a.at ?? '') < (b.at ?? '') ? 1 : (a.at ?? '') > (b.at ?? '') ? -1 : 0
   const all = [
-    ...[...pending].sort(newestFirst).map((m) => ({ ...m, _wait: true })),
-    ...[...delivered].sort(newestFirst),
-  ]
-  // selection is BY IDENTITY, not index — marking a mail read reshuffles the
-  // list, and an index would silently land on a different mail
+    ...pending.map((m) => ({ ...m, _wait: true })),
+    ...delivered,
+  ].sort(newestFirst)
+  // selection is BY IDENTITY, not index. The list no longer reshuffles on
+  // read, but identity is still the right key: the window pages, the filter
+  // narrows, and new mail arrives — an index would silently land elsewhere
   const keyOf = (m: MailRow | undefined) =>
     m?.id ?? `${m?.at}|${m?.from}|${(m?.body ?? '').slice(0, 24)}`
   // jumpTo (user spec 2026-07-31): a chat's inline mail link opens the box
