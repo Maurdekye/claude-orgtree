@@ -1182,7 +1182,7 @@ The symptom is intermittent ("sometimes"), and every hypothesis I could construc
 landed within minutes of a deploy — makes me suspect the remaining reports are at least partly a
 stale bundle. But I could not demonstrate it, and I have twice now told the user something was fixed
 when it was not, so this stays open rather than closed with an excuse.
-→ `PENDING-COMMIT`
+→ `6716e13`
 
 ---
 
