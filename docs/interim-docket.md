@@ -924,7 +924,7 @@ Windows makes genuinely hard to answer from outside, as above.
 **Verified live:** first run created `.venv`, installed into it, restarted the backend from it and
 passed the health check; `/api/host` reports `venv: true`, prefix `…\claude-orgtree\.venv`, and
 `websockets`. `update.ps1` re-parses clean under PowerShell 5.1.
-→ `PENDING-COMMIT`
+→ `c04168f`
 
 ---
 
