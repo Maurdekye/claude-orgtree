@@ -625,7 +625,7 @@ under PowerShell 5.1.
 
 ☞ Not built, deliberately: any form of auth on that port. The user asked for the switch and
 accepted the risk; a token gate would be a separate feature and a bigger decision.
-→ `PENDING-COMMIT`
+→ `dc1f0cb`
 
 ## D-40 · kiosk and sandbox move into `advanced`
 > the kiosk and sandbox features can be considered advanced, move them into the dropdown below the
@@ -643,7 +643,7 @@ is set — `advanced · kiosk · sandboxed · 2 folders`.
 **Verified live:** collapsed form carries 4 controls and no kiosk row; expanded shows kiosk +
 sandbox under the folder list; **the form was actually submitted** — `zz-form-check` came back with
 `kiosk=True, credits cap=7, sandboxed=True`, then was deleted. Screenshots reviewed.
-→ `PENDING-COMMIT`
+→ `dc1f0cb`
 
 ## D-41 · ⚠ The npm 11 / esbuild report was a MISDIAGNOSIS
 > another setup on my coworker's computer resulted in the agent responding with this after
@@ -678,7 +678,7 @@ reinstall, re-test, and only then give up with a pointed message about platform 
 opaque build failure into a self-heal.
 **Proven to discriminate:** healthy tree → exit 0; delete `node_modules/@esbuild` to simulate the
 bug → exit **1**; clean reinstall → exit 0 again.
-→ `PENDING-COMMIT`
+→ `dc1f0cb`
 
 ---
 
