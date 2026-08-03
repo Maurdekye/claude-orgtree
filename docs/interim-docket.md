@@ -884,6 +884,50 @@ fires**. Four assertions, both directions.
 
 ---
 
+## D-47 · orgtree now runs from a virtualenv
+> is orgtree built to operate from a python venv? if not, it should be
+
+**It was not.** `.venv/` was already in `.gitignore` — someone anticipated this — but nothing
+created or used one: both deploy scripts installed into whatever `python` was on PATH, which on a
+normal desktop is a system-wide interpreter shared with every other project. That is precisely the
+condition behind D-46: the app worked here and not on another machine because this box happened to
+hold `websockets` for unrelated reasons. **A venv makes "what is installed" equal to "what
+`requirements.txt` says"**, which is the only version of that question worth answering.
+
+Both scripts now resolve the interpreter as: `PYTHON`/`ORGTREE_PYTHON` override → repo-local
+`.venv` → create it → **fall back to the system interpreter with a warning** if creation fails,
+rather than breaking a deployment that was working a minute ago. `ORGTREE_NO_VENV=1` keeps the old
+behaviour. Each run prints which interpreter it chose and labels it `[.venv]` or
+`[system — deps are shared with every other project]`. README documents it, including why it is not
+decoration. `steer.py` is stdlib-only, so the per-turn hook is unaffected by which interpreter runs
+the backend — checked, not assumed.
+
+⚠ ⟨discovered⟩ **"Verified end to end" was weaker than I claimed for `update.sh` on Windows.**
+After the venv landed, the process holding the port was still the *system* `python.exe` while a venv
+process ran beside it — which read exactly like a failed restart. It was not: on Windows a
+venv-created `python.exe` is a launcher that spawns the base interpreter as a child, so the task
+list reports the BASE exe. `sys.prefix` and `site-packages` both resolve inside `.venv`, so the
+backend genuinely runs from it. **Checked before "fixing" it, which is the only reason nothing was
+broken chasing it.**
+
+But the false alarm exposed a real hole: **the health check proved liveness, not replacement.** It
+asked "does something answer on the port", and if the old process were ever left alive that question
+passes against the very code the run was trying to replace — reporting success while serving stale
+code. Both scripts now capture the listening pids *before* the kill and fail loudly if the set
+afterwards is a subset of them. Unit-tested across six cases (old survives · replaced · one of two
+survives · old plus a new one · nothing was running · nothing listening).
+
+Also on the way, `/api/host` now reports `python: {prefix, venv, version}` beside `websockets`, so
+"which environment is this deployment actually running?" needs no process forensics — a question
+Windows makes genuinely hard to answer from outside, as above.
+
+**Verified live:** first run created `.venv`, installed into it, restarted the backend from it and
+passed the health check; `/api/host` reports `venv: true`, prefix `…\claude-orgtree\.venv`, and
+`websockets`. `update.ps1` re-parses clean under PowerShell 5.1.
+→ `PENDING-COMMIT`
+
+---
+
 ## Future feature pass — SPECIFIED, NOT BUILT
 
 User, 2026-08-02: *"add two new features to the docket, but dont implement them: create a new

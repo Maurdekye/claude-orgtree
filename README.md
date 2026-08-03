@@ -131,9 +131,17 @@ The full interaction manual — every gesture, badge, and panel — is
 
 ## Installation
 
+The update scripts below do all of this for you, including creating the
+virtualenv — `./update.sh` (Linux/macOS/Git Bash) or `update.ps1` (Windows) on
+a fresh clone is a complete install. By hand:
+
 ```bash
 git clone https://github.com/Maurdekye/claude-orgtree.git
 cd claude-orgtree
+
+# a virtualenv, so the installed set is exactly what requirements.txt says
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scriptsctivate
 
 # backend dependencies
 pip install -r requirements.txt
@@ -148,6 +156,13 @@ cd ..
 cd backend
 python -m orgtree.api
 ```
+
+The venv is not decoration. `requirements.txt` names a package nothing imports
+(`websockets`, which uvicorn loads by name), and installing into a system-wide
+Python shared with other projects hides whether it is actually present — a
+missing WebSocket library does not error, it answers the upgrade with a plain
+`200 OK` and the UI silently degrades to polling. `/api/host` reports both
+`python.venv` and `websockets` so a deployment can be checked at a glance.
 
 **Recommended:** give agents their own up-to-date CLI (enables mid-task
 message delivery — older CLIs never run tool hooks headless):

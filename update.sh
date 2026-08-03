@@ -9,8 +9,12 @@
 # that cannot be POSIX -- finding and killing the process holding a TCP port --
 # fall back to netstat + taskkill.
 #
-# Steps: git pull -> npm install + build the UI -> pip install -> restart the
-# backend (which serves the built UI) -> health-check.
+# Steps: venv -> git pull -> npm install + build the UI -> pip install ->
+# restart the backend (which serves the built UI) -> health-check.
+#
+# It runs orgtree from a repo-local .venv, created on first use, so the
+# installed dependency set is exactly what requirements.txt says rather than
+# whatever a shared system Python happens to hold.
 #
 # --expose-admin binds the ADMIN api to 0.0.0.0 instead of loopback. The admin
 # api has no password, no token and no login -- reaching the port IS the
@@ -20,7 +24,9 @@
 # which means no agent can either. To share ONE org with someone, make it a
 # kiosk instead (secret URL, hard limits) and open a tunnel to the public port.
 #
-# Environment respected: ORGTREE_DATA, ORGTREE_PUBLIC_PORT, PYTHON.
+# Environment respected: ORGTREE_DATA, ORGTREE_PUBLIC_PORT,
+#   PYTHON=/path/to/python   use exactly that interpreter, skip the venv
+#   ORGTREE_NO_VENV=1        stay on the system interpreter (old behaviour)
 
 set -u
 
@@ -29,7 +35,7 @@ for arg in "$@"; do
   case "$arg" in
     --expose-admin) EXPOSE=1 ;;
     -h|--help)
-      sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
       exit 0 ;;
     *)
       echo "unknown option: $arg (try --help)" >&2
@@ -64,18 +70,63 @@ esac
 # PYTHON overrides, and is validated too: it must be the interpreter that HAS
 # the deps, which is the whole reason the override exists (a venv, normally).
 py_works() { "$1" -c 'import sys; sys.exit(0)' >/dev/null 2>&1; }
+BOOT_PY=''
+for cand in python3 python py; do
+  command -v "$cand" >/dev/null 2>&1 || continue
+  if py_works "$cand"; then BOOT_PY=$cand; break; fi
+done
+
+# Run from a VIRTUALENV by default (repo-local .venv), created on first use.
+#
+# Until now orgtree installed into whatever `python` happened to be on PATH,
+# which on a normal desktop is a system-wide interpreter shared with every
+# other project. That makes the dependency set unknowable -- the exact
+# condition behind the missing-websockets bug, where the app worked here and
+# not on another machine because this box had the library for unrelated
+# reasons. A venv makes "what is installed" equal to "what requirements.txt
+# says", which is the only version of that question worth answering.
+#
+# Escape hatches, in precedence order:
+#   PYTHON=/path/to/python   use exactly that interpreter, no venv logic
+#   ORGTREE_NO_VENV=1        stay on the system interpreter (old behaviour)
+# and if venv creation fails for any reason we warn and carry on rather than
+# breaking a deployment that was working a minute ago.
+VENV_DIR="$ROOT/.venv"
+venv_py() {                      # the interpreter inside $VENV_DIR, if any
+  for c in "$VENV_DIR/bin/python" "$VENV_DIR/Scripts/python.exe"; do
+    [ -x "$c" ] && { echo "$c"; return; }
+  done
+}
+
 PY=''
 if [ -n "${PYTHON:-}" ]; then
   py_works "$PYTHON" || die "PYTHON=$PYTHON does not run -- check the path"
   PY=$PYTHON
+elif [ "${ORGTREE_NO_VENV:-}" = "1" ]; then
+  [ -n "$BOOT_PY" ] || die "no working python found -- install Python 3.11+"
+  PY=$BOOT_PY
 else
-  for cand in python3 python py; do
-    command -v "$cand" >/dev/null 2>&1 || continue
-    if py_works "$cand"; then PY=$cand; break; fi
-  done
-  [ -n "$PY" ] || die "no working python found -- install Python 3.11+ or set PYTHON=/path/to/python"
+  PY=$(venv_py)
+  if [ -z "$PY" ]; then
+    [ -n "$BOOT_PY" ] || die "no working python found -- install Python 3.11+ or set PYTHON=/path/to/python"
+    note "creating the virtualenv at .venv (first run) ..."
+    if "$BOOT_PY" -m venv "$VENV_DIR" >/dev/null 2>&1; then
+      PY=$(venv_py)
+    fi
+    if [ -z "$PY" ] || ! py_works "$PY"; then
+      note "could not create .venv -- falling back to the system interpreter"
+      note "(install the venv module, or set ORGTREE_NO_VENV=1 to silence this)"
+      PY=$BOOT_PY
+      rm -rf "$VENV_DIR" 2>/dev/null
+    fi
+  fi
 fi
-echo "python: $PY ($("$PY" -c 'import sys; print(sys.version.split()[0])'))"
+[ -n "$PY" ] || die "no working python found -- install Python 3.11+ or set PYTHON=/path/to/python"
+case "$PY" in
+  "$VENV_DIR"*) PY_KIND=' [.venv]' ;;
+  *) PY_KIND=' [system -- deps are shared with every other project]' ;;
+esac
+echo "python: $PY ($("$PY" -c 'import sys; print(sys.version.split()[0])'))$PY_KIND"
 
 BEFORE=$(git rev-parse --short HEAD 2>/dev/null) || die "not a git checkout: $ROOT"
 echo "== orgtree update (currently $BEFORE) =="
@@ -163,6 +214,7 @@ listeners() {
 
 printf '\n== restarting the backend (port %s) ==\n' "$PORT"
 PIDS=$(listeners)
+OLD_PIDS=$PIDS
 if [ -n "${PIDS:-}" ]; then
   for pid in $PIDS; do
     echo "stopping old backend (pid $pid)"
@@ -228,6 +280,22 @@ for _ in $(seq 20); do
   sleep 0.5
   if probe; then OK=1; break; fi
 done
+# "something answers on the port" is NOT proof the restart happened: if the old
+# process was never killed the health check passes against the very code we were
+# trying to replace, and the script reports success. So compare pids.
+NEW_PIDS=$(listeners)
+STALE=0
+if [ -n "${OLD_PIDS:-}" ] && [ -n "$NEW_PIDS" ]; then
+  STALE=1
+  for np in $NEW_PIDS; do
+    case " $OLD_PIDS " in *" $np "*) : ;; *) STALE=0 ;; esac
+  done
+fi
+if [ "$OK" = 1 ] && [ "$STALE" = 1 ]; then
+  printf '
+'
+  die "the OLD backend is still serving (pid $NEW_PIDS) -- the restart did not take. Stop it and re-run."
+fi
 if [ "$OK" = 1 ]; then
   printf '\n'
   good "== up: http://localhost:$PORT ($AFTER) =="

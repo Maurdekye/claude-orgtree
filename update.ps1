@@ -38,6 +38,44 @@ if ($after -eq $before) {
     git --no-pager log --oneline "$before..$after"
 }
 
+# -- 1b - the interpreter ---------------------------------------------------
+# Run from a VIRTUALENV by default (repo-local .venv), created on first use.
+# Until now orgtree installed into whatever `python` was on PATH -- a
+# system-wide interpreter shared with every other project, which makes the
+# dependency set unknowable. That is the exact condition behind the
+# missing-websockets bug: the app worked on the dev box and not elsewhere
+# because this box had the library for unrelated reasons. A venv makes "what is
+# installed" equal to "what requirements.txt says".
+#
+# Escape hatches, in precedence order:
+#   $env:ORGTREE_PYTHON = 'C:\path\python.exe'   use exactly that, no venv logic
+#   $env:ORGTREE_NO_VENV = '1'                    stay on the system interpreter
+# A venv that cannot be created warns and falls back rather than breaking a
+# deployment that was working a minute ago.
+$venvDir = Join-Path $root '.venv'
+$venvPy = Join-Path $venvDir 'Scripts\python.exe'
+if ($env:ORGTREE_PYTHON) {
+    $py = $env:ORGTREE_PYTHON
+} elseif ($env:ORGTREE_NO_VENV -eq '1') {
+    $py = 'python'
+} elseif (Test-Path $venvPy) {
+    $py = $venvPy
+} else {
+    Write-Host "creating the virtualenv at .venv (first run) ..." -ForegroundColor Yellow
+    python -m venv $venvDir
+    if ($LASTEXITCODE -eq 0 -and (Test-Path $venvPy)) {
+        $py = $venvPy
+    } else {
+        Write-Host "could not create .venv -- falling back to the system interpreter" -ForegroundColor Yellow
+        Write-Host "(set ORGTREE_NO_VENV=1 to silence this)" -ForegroundColor Yellow
+        if (Test-Path $venvDir) { Remove-Item -Recurse -Force $venvDir -ErrorAction SilentlyContinue }
+        $py = 'python'
+    }
+}
+$pyKind = if ($py -eq $venvPy) { ' [.venv]' } else { ' [system -- deps shared with every other project]' }
+$pyVer = (& $py -c "import sys; print(sys.version.split()[0])")
+Write-Host "python: $py ($pyVer)$pyKind"
+
 # -- 2 - frontend -----------------------------------------------------------
 Write-Host "`n== building the UI =="
 Set-Location (Join-Path $root 'frontend')
@@ -78,7 +116,7 @@ Set-Location $root
 
 # -- 3 - backend deps -------------------------------------------------------
 Write-Host "`n== python deps =="
-python -m pip install -q -r requirements.txt
+& $py -m pip install -q -r requirements.txt
 if ($LASTEXITCODE -ne 0) { Write-Host "pip install failed" -ForegroundColor Red; exit 1 }
 
 # -- 3b - CLI version (No.44) ----------------------------------------------
@@ -98,6 +136,7 @@ if (Test-Path $portFile) { $port = (Get-Content $portFile -Raw).Trim() }
 
 Write-Host "`n== restarting the backend (port $port) =="
 $conn = Get-NetTCPConnection -LocalPort ([int]$port) -State Listen -ErrorAction SilentlyContinue
+$oldPids = @($conn | Select-Object -ExpandProperty OwningProcess -Unique)
 if ($conn) {
     $pids = $conn | Select-Object -ExpandProperty OwningProcess -Unique
     foreach ($p in $pids) {
@@ -126,7 +165,7 @@ if ($ExposeAdmin) {
     Write-Host ''
     $apiArgs += '--expose-admin'
 }
-Start-Process -FilePath 'python' -ArgumentList $apiArgs `
+Start-Process -FilePath $py -ArgumentList $apiArgs `
     -WorkingDirectory (Join-Path $root 'backend') -WindowStyle Hidden `
     -RedirectStandardOutput $out -RedirectStandardError $errLog
 
@@ -138,6 +177,17 @@ foreach ($i in 1..20) {
         $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 "http://127.0.0.1:$port/api/orgs"
         if ($r.StatusCode -eq 200) { $ok = $true; break }
     } catch {}
+}
+# "something answers on the port" is NOT proof the restart happened: if the old
+# process was never killed the health check passes against the very code we were
+# trying to replace, and the script reports success. So compare pids.
+$newPids = @(Get-NetTCPConnection -LocalPort ([int]$port) -State Listen -ErrorAction SilentlyContinue |
+             Select-Object -ExpandProperty OwningProcess -Unique)
+$stale = $ok -and $oldPids.Count -and $newPids.Count -and
+         -not ($newPids | Where-Object { $oldPids -notcontains $_ })
+if ($stale) {
+    Write-Host "`nthe OLD backend is still serving (pid $($newPids -join ',')) -- the restart did not take." -ForegroundColor Red
+    exit 1
 }
 if ($ok) {
     Write-Host "`n== up: http://localhost:$port ($after) ==" -ForegroundColor Green

@@ -1178,7 +1178,17 @@ def host_info() -> dict[str, Any]:
             # never reach the browser and the UI is running on its polling
             # heartbeats alone. Reported here so the deployment can SAY it
             # rather than just feeling slow (see _ws_impl).
-            "websockets": _ws_impl()}
+            "websockets": _ws_impl(),
+            # which interpreter is serving. `venv` false means the deps live in
+            # a system-wide Python shared with every other project, which is
+            # how the missing-websockets bug stayed invisible for so long
+            # (D-46). Reported so the answer needs no process forensics: on
+            # Windows a venv-launched process reports the BASE exe in the task
+            # list, so "which python is this" is genuinely hard to see from
+            # outside.
+            "python": {"prefix": sys.prefix,
+                       "venv": sys.prefix != sys.base_prefix,
+                       "version": sys.version.split()[0]}}
 
 
 class Reorder(BaseModel):
