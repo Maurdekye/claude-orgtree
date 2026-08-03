@@ -964,7 +964,7 @@ changes the agent's session without saying anything about anyone's plan:
 
 The before/after within one run is the discriminating evidence: the audience list went from empty to
 exactly one entry, and the notice appeared, off a single command.
-→ `PENDING-COMMIT`
+→ `b759436`
 
 ---
 
