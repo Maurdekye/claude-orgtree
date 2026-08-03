@@ -1120,6 +1120,51 @@ user and stop. The user replies and the turn resumes. That is questions-without-
 questions-without-blocking — so the feature is really about **structured options** and **not losing
 the turn**, not about making the impossible possible.
 
+### F-05 · counter-offer a credit request by dragging the bar
+> new feature for the docket: allow the user to adjust the amount of credits granted during a credit
+> request by an agent by dragging their bar up or down, which is copied into the dialogue temporarily
+> and shows how much additional credits are being granted with a "+x" value an a I-bar to the side
+> stretching the difference between current and new grant quantity
+
+**NOT BUILT.** Today a credit request is take-it-or-leave-it: the card shows `old → new (+delta)`
+with **approve** and **deny**, and `credit_request_action(rid, action)` grants exactly `req["new"]`.
+There is no way to say "you asked for 12, have 5".
+
+**Most of the machinery already exists**, which is the encouraging part:
+- `CreditBar` (`canvas/cards.tsx`) already does the whole drag: pointer capture, `min`/`max` clamps,
+  a `maxGhost` overlay, ruler rungs at real quantities, `onDragValue` for a live value in draft mode
+  and `onCommit(delta)` otherwise — and it **already computes `delta = drag.val - drag.g0`**, which
+  is the "+x" the request wants.
+- `_kiosk_cap_check` already runs on the decide endpoint, so a counter-offer inherits the kiosk
+  credit cap for free; `max_top_grant` is the other clamp to feed into the bar's `max`.
+
+**What it needs:**
+1. `credit_request_action` takes an optional granted amount instead of implying `req["new"]`, and
+   `CreditDecision` carries it. The delta maths (`req["new"] - grant` → `granted - grant`) is one line.
+2. The agent must be told **honestly**: it asked for X and got Y. Today the notice says
+   *"APPROVED — your grant is now N"*, which would be true but misleading for a counter-offer. A
+   partial grant probably deserves its own status too, so the record does not read as a plain
+   approval.
+3. The UI: the requested value pre-loads the bar, dragging updates a live "+x" in the dialogue, and
+   an **I-bar** alongside spans current→new so the size of the concession is visible rather than
+   arithmetic.
+
+**Open questions — worth settling before anyone builds:**
+- **Where does the drag physically happen?** The request lives in the user-inbox panel, which is a
+  full-screen `.overlay` — it covers the canvas, so the agent's own bar is not reachable while the
+  dialogue is open. Either the dialogue embeds a `CreditBar` of its own (simplest, but then it is
+  not literally "their bar"), or approving switches to a canvas mode with the request docked. The
+  wording asks for the latter; the former is a tenth of the work. **User's call.**
+- **Can the counter-offer go BELOW the current grant** — i.e. is this also a way to claw credits
+  back while answering a request? The bar's `min` decides it.
+- **Above what was asked?** Nothing stops it, and "have more than you asked for" is occasionally
+  right; the cap clamps it anyway.
+- **Does a partial grant re-open?** An agent that asked for 12 and got 5 may immediately request 7
+  more. That is probably fine and self-limiting, but worth deciding rather than discovering.
+
+Note these requests come from **top-level** agents (the credit comes from the user's own pool), so
+`max_top_grant` is the binding clamp on the drag range.
+
 ## Carried, not done
 
 | item | state |
