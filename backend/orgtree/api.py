@@ -21,6 +21,7 @@ import re
 import secrets
 import shutil
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -2941,14 +2942,54 @@ if os.path.isdir(FRONTEND_DIST):
         return FileResponse(os.path.join(FRONTEND_DIST, "index.html"))
 
 
+EXPOSE_FLAG = "--expose-admin"
+
+
+def _admin_host() -> str:
+    """Where the ADMIN listener binds.
+
+    Loopback by design — the admin app has no authentication of any kind,
+    because "you can reach 127.0.0.1" has always been the whole credential.
+    Exposing it hands anyone who finds the port the same powers the owner has:
+    read and write every org, grant any folder on this machine to an agent,
+    and run turns that execute commands on it.
+
+    So the override is COMMAND-LINE ONLY, on purpose (user ruling 2026-08-03).
+    It is deliberately not an env var and not a setting: env vars get inherited
+    by child processes and copied between machines, and a setting can be
+    flipped by anything that can write the doc — including an agent. An argv
+    flag has to be typed by whoever starts the process, every time.
+    """
+    return "0.0.0.0" if EXPOSE_FLAG in sys.argv else "127.0.0.1"
+
+
 def main() -> None:
     import uvicorn
 
-    # three listeners, three trust levels: the admin app stays LOOPBACK-ONLY
-    # (user vision: root access never reaches the wider web); the public
-    # listener serves nothing but preauthenticated /k/<token> URLs; the
-    # bridge listener serves nothing but secret-gated sandbox traffic
-    servers = [uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=PORT))]
+    host = _admin_host()
+    if host != "127.0.0.1":
+        # not a log line — a wall. Whoever typed the flag should see exactly
+        # what they turned off, and anyone reading the console later should be
+        # able to tell at a glance that this process is wide open.
+        bar = "!" * 74
+        print(f"\n{bar}\n"
+              f"  {EXPOSE_FLAG}: THE ADMIN API IS BOUND TO {host}:{PORT}\n"
+              f"\n"
+              f"  It has NO password, NO token and NO login. Anyone who can\n"
+              f"  reach this port has full control of every org and can make\n"
+              f"  agents run commands on this machine.\n"
+              f"\n"
+              f"  Only do this behind a VPN, an SSH tunnel or an authenticating\n"
+              f"  reverse proxy. To share an org with someone instead, make it\n"
+              f"  a kiosk: that serves one org over a secret URL with limits.\n"
+              f"{bar}\n", flush=True)
+
+    # three listeners, three trust levels: the admin app is LOOPBACK-ONLY
+    # unless the operator typed the flag above (user vision: root access never
+    # reaches the wider web); the public listener serves nothing but
+    # preauthenticated /k/<token> URLs; the bridge listener serves nothing but
+    # secret-gated sandbox traffic
+    servers = [uvicorn.Server(uvicorn.Config(app, host=host, port=PORT))]
     if PUBLIC_PORT:
         servers.append(uvicorn.Server(uvicorn.Config(
             PublicGateway(app), host="0.0.0.0", port=PUBLIC_PORT)))
@@ -2956,7 +2997,7 @@ def main() -> None:
         servers.append(uvicorn.Server(uvicorn.Config(
             BridgeGateway(app), host="0.0.0.0", port=sandbox.BRIDGE_PORT)))
     if len(servers) == 1:
-        uvicorn.run(app, host="127.0.0.1", port=PORT)
+        uvicorn.run(app, host=host, port=PORT)
         return
 
     async def serve_all() -> None:

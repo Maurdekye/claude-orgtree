@@ -543,7 +543,8 @@ function NewOrg({ onCreate }: {
     getHost().then((h) => setDocker(!!h.docker)).catch(() => {})
   }, [])
   const reset = () => {
-    setOpen(false); setAdvanced(false); setName(''); setDirs([]); setKiosk(false)
+    setOpen(false); setAdvanced(false); setName(''); setDirs([])
+    setKiosk(false); setSandboxed(false)
   }
   if (!open) return <button className="primary" onClick={() => setOpen(true)}>+ new organization</button>
   return (
@@ -570,111 +571,122 @@ function NewOrg({ onCreate }: {
     }}>
       <input autoFocus placeholder="organization name" value={name}
         onChange={(e) => setName(e.target.value)} required />
-      <label className="row kiosk-sbx">
-        <input type="checkbox" checked={kiosk}
-          onChange={(e) => {
-            setKiosk(e.target.checked)
-            // kiosks default the sandbox ON — but only where Docker exists
-            if (e.target.checked && docker) {
-              setSandboxed(true)
-              setStorage((s) => Math.max(4096, +s || 0))
-            }
-          }} />
-        kiosk — publicly shareable via a secret URL, with hard limits
-      </label>
-      {kiosk && (
-        <div className="kiosk-caps">
-          <label>credits <input type="number" min="0" value={credits}
-            onChange={(e) => setCredits(e.target.value)} /></label>
-          <label>spend $ <input type="number" min="0" step="0.5" value={spend}
-            onChange={(e) => setSpend(e.target.value)} /></label>
-          <label title={sandboxed
-            ? 'the org’s fixed-size virtual disk — system dirs and transcripts count inside it; 4096 MB minimum'
-            : 'loose workspace+scratch cap (checked between turns)'}>
-            {sandboxed ? 'disk MB' : 'storage MB'}
-            <input type="number" min={sandboxed ? 4096 : 0} value={storage}
-            onChange={(e) => setStorage(e.target.value)} /></label>
-        </div>
-      )}
-      {kiosk && (
-        <div className="kiosk-ceil">
-          <div className="field-label"
-            title="the MAXIMUM grantable to any agent in this kiosk — visitors retool freely within it; folders bound to the org's own">
-            permission ceiling</div>
-          <div className="ceil-tools">
-            {(['bash', 'web', 'edit', 'subagents', 'mcp'] as const).map((k) => (
-              <label key={k} className="row">
-                <input type="checkbox" checked={ceil[k]}
-                  onChange={(e) => setCeil((c) => ({ ...c, [k]: e.target.checked }))} />
-                {k === 'mcp' ? 'MCP servers' : k}
-              </label>
-            ))}
-          </div>
-          {/* the rank ceilings — styled like the credits/spend/storage caps
-              (user spec 2026-07-31): stacked label, three columns */}
-          <div className="kiosk-caps">
-            <label>visibility ≤ <select value={ceilVis}
-              onChange={(e) => setCeilVis(e.target.value)}>
-              {['self', 'team', 'subtree', 'full'].map((v) =>
-                <option key={v} value={v}>{v}</option>)}
-            </select></label>
-            <label>mode ≤ <select value={ceilPm}
-              onChange={(e) => setCeilPm(e.target.value)}>
-              <option value="default">default (asks)</option>
-              <option value="acceptEdits">acceptEdits</option>
-              <option value="bypassPermissions">bypassPermissions</option>
-            </select></label>
-            <label
-              title="the highest model tier this kiosk may run — spawn tokens above it disappear and agents cannot hire, rehire or switch above it">
-              tier ≤ <select value={ceilTier}
-                onChange={(e) => setCeilTier(e.target.value)}>
-                <option value="">fable</option>
-                <option value="opus">opus</option>
-                <option value="sonnet">sonnet</option>
-                <option value="haiku">haiku</option>
-              </select></label>
-          </div>
-          <label className="row" title="an over-ceiling grant made by YOU (admin) raises the ceiling to fit instead of clamping — off so nothing lifts it without meaning to; visitors always clamp">
-            <input type="checkbox" checked={autoRaise}
-              onChange={(e) => setAutoRaise(e.target.checked)} />
-            auto-raise on my own over-ceiling grants
-          </label>
-        </div>
-      )}
-      {/* any org may sandbox (user ruling) — OFF by default; the checkbox is
-          disabled entirely when Docker isn't installed */}
-      <label className={'row kiosk-sbx' + (docker ? '' : ' dim')}
-        title={docker ? undefined : 'Docker is not installed — sandboxing unavailable'}>
-        <input type="checkbox" checked={sandboxed && docker} disabled={!docker}
-          onChange={(e) => {
-            setSandboxed(e.target.checked)
-            // the sandbox rides a fixed-size disk — bump the storage field
-            // to its 4096 MB minimum (user ruling 2026-08-01)
-            if (e.target.checked) setStorage((s) => Math.max(4096, +s || 0))
-          }} />
-        sandboxed — agents run in a Docker container, isolated from this PC
-        {!docker && <span className="dim"> (requires Docker)</span>}
-      </label>
-      {sandboxed && !kiosk && (
-        <div className="kiosk-caps">
-          <label title="the org&rsquo;s fixed-size virtual disk — system dirs and transcripts count inside it; 4096 MB minimum">
-            disk MB <input type="number" min="4096" value={storage}
-              onChange={(e) => setStorage(e.target.value)} /></label>
-        </div>
-      )}
-      {kiosk && !sandboxed && (
-        <div className="dim kiosk-warn"><WarnIcon fontSize="inherit" /> without
-          a sandbox the storage limit is enforced loosely — usage is checked
-          only between turns, so a single turn can overshoot it</div>
-      )}
       <button type="button" className="disclosure" aria-expanded={advanced}
         onClick={() => setAdvanced(!advanced)}>
         {advanced ? <ExpandMoreIcon fontSize="inherit" /> : <ChevronRightIcon fontSize="inherit" />} advanced
+        {!advanced && (kiosk || sandboxed || dirs.length > 0) && (
+          <span className="dim adv-sum"> · {[
+            kiosk ? 'kiosk' : '', sandboxed ? 'sandboxed' : '',
+            dirs.length ? `${dirs.length} folder${dirs.length > 1 ? 's' : ''}` : '',
+          ].filter(Boolean).join(' · ')}</span>)}
       </button>
       {advanced && (
         <div className="advanced">
           <div className="field-label">also grant existing folders</div>
           <DirList dirs={dirs} onChange={setDirs} />
+          {/* kiosk and sandbox live here (user ruling 2026-08-03): both are
+              advanced choices — one publishes the org, the other changes where
+              every turn executes — and neither belongs in the two-field path
+              most new orgs take. Below the folder grants, deliberately: the
+              sandbox decides whether those folders are reachable at all. */}
+          <div className="field-label adv-sep">org type</div>
+        <label className="row kiosk-sbx">
+          <input type="checkbox" checked={kiosk}
+            onChange={(e) => {
+              setKiosk(e.target.checked)
+              // kiosks default the sandbox ON — but only where Docker exists
+              if (e.target.checked && docker) {
+                setSandboxed(true)
+                setStorage((s) => Math.max(4096, +s || 0))
+              }
+            }} />
+          kiosk — publicly shareable via a secret URL, with hard limits
+        </label>
+        {kiosk && (
+          <div className="kiosk-caps">
+            <label>credits <input type="number" min="0" value={credits}
+              onChange={(e) => setCredits(e.target.value)} /></label>
+            <label>spend $ <input type="number" min="0" step="0.5" value={spend}
+              onChange={(e) => setSpend(e.target.value)} /></label>
+            <label title={sandboxed
+              ? 'the org’s fixed-size virtual disk — system dirs and transcripts count inside it; 4096 MB minimum'
+              : 'loose workspace+scratch cap (checked between turns)'}>
+              {sandboxed ? 'disk MB' : 'storage MB'}
+              <input type="number" min={sandboxed ? 4096 : 0} value={storage}
+              onChange={(e) => setStorage(e.target.value)} /></label>
+          </div>
+        )}
+        {kiosk && (
+          <div className="kiosk-ceil">
+            <div className="field-label"
+              title="the MAXIMUM grantable to any agent in this kiosk — visitors retool freely within it; folders bound to the org's own">
+              permission ceiling</div>
+            <div className="ceil-tools">
+              {(['bash', 'web', 'edit', 'subagents', 'mcp'] as const).map((k) => (
+                <label key={k} className="row">
+                  <input type="checkbox" checked={ceil[k]}
+                    onChange={(e) => setCeil((c) => ({ ...c, [k]: e.target.checked }))} />
+                  {k === 'mcp' ? 'MCP servers' : k}
+                </label>
+              ))}
+            </div>
+            {/* the rank ceilings — styled like the credits/spend/storage caps
+                (user spec 2026-07-31): stacked label, three columns */}
+            <div className="kiosk-caps">
+              <label>visibility ≤ <select value={ceilVis}
+                onChange={(e) => setCeilVis(e.target.value)}>
+                {['self', 'team', 'subtree', 'full'].map((v) =>
+                  <option key={v} value={v}>{v}</option>)}
+              </select></label>
+              <label>mode ≤ <select value={ceilPm}
+                onChange={(e) => setCeilPm(e.target.value)}>
+                <option value="default">default (asks)</option>
+                <option value="acceptEdits">acceptEdits</option>
+                <option value="bypassPermissions">bypassPermissions</option>
+              </select></label>
+              <label
+                title="the highest model tier this kiosk may run — spawn tokens above it disappear and agents cannot hire, rehire or switch above it">
+                tier ≤ <select value={ceilTier}
+                  onChange={(e) => setCeilTier(e.target.value)}>
+                  <option value="">fable</option>
+                  <option value="opus">opus</option>
+                  <option value="sonnet">sonnet</option>
+                  <option value="haiku">haiku</option>
+                </select></label>
+            </div>
+            <label className="row" title="an over-ceiling grant made by YOU (admin) raises the ceiling to fit instead of clamping — off so nothing lifts it without meaning to; visitors always clamp">
+              <input type="checkbox" checked={autoRaise}
+                onChange={(e) => setAutoRaise(e.target.checked)} />
+              auto-raise on my own over-ceiling grants
+            </label>
+          </div>
+        )}
+        {/* any org may sandbox (user ruling) — OFF by default; the checkbox is
+            disabled entirely when Docker isn't installed */}
+        <label className={'row kiosk-sbx' + (docker ? '' : ' dim')}
+          title={docker ? undefined : 'Docker is not installed — sandboxing unavailable'}>
+          <input type="checkbox" checked={sandboxed && docker} disabled={!docker}
+            onChange={(e) => {
+              setSandboxed(e.target.checked)
+              // the sandbox rides a fixed-size disk — bump the storage field
+              // to its 4096 MB minimum (user ruling 2026-08-01)
+              if (e.target.checked) setStorage((s) => Math.max(4096, +s || 0))
+            }} />
+          sandboxed — agents run in a Docker container, isolated from this PC
+          {!docker && <span className="dim"> (requires Docker)</span>}
+        </label>
+        {sandboxed && !kiosk && (
+          <div className="kiosk-caps">
+            <label title="the org&rsquo;s fixed-size virtual disk — system dirs and transcripts count inside it; 4096 MB minimum">
+              disk MB <input type="number" min="4096" value={storage}
+                onChange={(e) => setStorage(e.target.value)} /></label>
+          </div>
+        )}
+        {kiosk && !sandboxed && (
+          <div className="dim kiosk-warn"><WarnIcon fontSize="inherit" /> without
+            a sandbox the storage limit is enforced loosely — usage is checked
+            only between turns, so a single turn can overshoot it</div>
+        )}
         </div>
       )}
       <div className="row">

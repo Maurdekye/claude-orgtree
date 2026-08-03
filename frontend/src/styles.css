@@ -1215,6 +1215,14 @@ input:focus, select:focus, textarea:focus, button:focus-visible {
   display: flex; flex-direction: column; gap: 6px; padding: 10px;
   background: var(--bg); border: 1px solid var(--line-soft); border-radius: 4px;
 }
+/* kiosk/sandbox moved in under the folder grants — a rule keeps the two
+   halves of the panel from reading as one list */
+.advanced .adv-sep {
+  margin-top: 4px; padding-top: 8px; border-top: 1px solid var(--line-soft);
+}
+/* the collapsed disclosure still names what is switched on inside it: a kiosk
+   must never be created with the evidence folded away */
+.adv-sum { font-size: 11.5px; }
 
 .dirlist { display: flex; flex-direction: column; gap: 6px; }
 .dirrow { display: flex; gap: 6px; }

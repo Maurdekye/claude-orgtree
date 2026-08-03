@@ -601,6 +601,87 @@ turned out to be missing.
 
 ---
 
+## D-39 · `--expose-admin` — a command-line-only way off loopback
+> need a commandline option to expose the main port to the outside internet. dangerous obviously,
+> which is why its commandline-only
+
+The admin listener has always been loopback-only by design, and the reason it has **no
+authentication of any kind** is that "you can reach 127.0.0.1" *was* the credential. Exposing it
+therefore hands whoever finds the port the owner's powers: every org, any folder on the machine
+grantable to an agent, and turns that execute commands.
+
+**Command-line only, and the shape matters.** Not an env var (inherited by child processes, copied
+between machines) and not a setting (anything that can write the doc could flip it — **including an
+agent**). An argv flag has to be typed by whoever starts the process, every time. Startup prints a
+74-column wall, not a log line, naming exactly what was turned off.
+
+`update.ps1` gains a matching `-ExposeAdmin` switch — the deploy script is how the backend actually
+starts, so without it the flag would be unusable in practice — and prints the same warning in red
+before launching.
+
+**Verified live** on an isolated data root + port (the running instance untouched): default →
+`127.0.0.1:7399`, with the flag → `0.0.0.0:7399`, banner printed. `update.ps1` re-parsed clean
+under PowerShell 5.1.
+
+☞ Not built, deliberately: any form of auth on that port. The user asked for the switch and
+accepted the risk; a token gate would be a separate feature and a bigger decision.
+→ `PENDING-COMMIT`
+
+## D-40 · kiosk and sandbox move into `advanced`
+> the kiosk and sandbox features can be considered advanced, move them into the dropdown below the
+> folder selection
+
+Both are advanced choices — one publishes the org, the other changes where every turn executes —
+and neither belonged in the two-field path most new orgs take. Moved inside the disclosure, **below
+the folder grants** as asked, under an `org type` label with a rule separating them from the grants.
+The collapsed form is now name + advanced + create.
+
+⟨discovered⟩ One thing the move introduces: settings that are *on* can be folded out of sight, so a
+kiosk could be created with the evidence hidden. The collapsed disclosure therefore summarises what
+is set — `advanced · kiosk · sandboxed · 2 folders`.
+
+**Verified live:** collapsed form carries 4 controls and no kiosk row; expanded shows kiosk +
+sandbox under the folder list; **the form was actually submitted** — `zz-form-check` came back with
+`kiosk=True, credits cap=7, sandboxed=True`, then was deleted. Screenshots reviewed.
+→ `PENDING-COMMIT`
+
+## D-41 · ⚠ The npm 11 / esbuild report was a MISDIAGNOSIS
+> another setup on my coworker's computer resulted in the agent responding with this after
+> installing the latest version of node via nvm: I modified a tracked file. npm 11 blocks postinstall
+> scripts by default, which left esbuild without its binary and would have broken the Vite build.
+> npm approve-scripts esbuild fixed it but wrote an allowScripts block into frontend/package.json
+> and dropped 10 lines from the lockfile. Both are uncommitted — keep them (helps anyone else on
+> npm 11+) or revert with git checkout … Your call.
+
+**Measured, not reasoned.** On npm 11.6.2 here:
+
+| claim | measurement |
+|---|---|
+| npm 11 blocks postinstall by default | `ignore-scripts` = **false**; `npm approve-scripts` is **not a command** in 11.6.2 |
+| blocked scripts leave esbuild without its binary | **esbuild works with `--ignore-scripts`** — fresh installs of **0.25.12** (our pin) and **0.28.1** both `transformSync` fine |
+
+The binary arrives as an **optional per-platform package** (`@esbuild/win32-x64`), not a postinstall
+download; modern esbuild dropped that years ago. `esbuild` still declares `hasInstallScript: true`
+for a fallback path, which is almost certainly what the diagnosis keyed off — but the script is not
+what installs the binary.
+
+**Verdict: revert both files, do not keep them.** `allowScripts` fixes nothing, and the lockfile
+edit is *actively dangerous* — our lock carries all **26** `@esbuild/*` platform entries, and a
+rewrite that drops entries breaks the machines it was meant to help.
+
+**The real cause is almost certainly npm's optional-dependency bug** (npm/cli#4828), which a fresh
+nvm install invites; the `approve-scripts` run "fixed" it by triggering a reinstall.
+
+**Durable fix, in `update.ps1`:** after `npm install`, actually *run* esbuild
+(`node -e "require('esbuild').transformSync('let x=1')"`). If it fails, wipe `node_modules`,
+reinstall, re-test, and only then give up with a pointed message about platform mismatch. Turns an
+opaque build failure into a self-heal.
+**Proven to discriminate:** healthy tree → exit 0; delete `node_modules/@esbuild` to simulate the
+bug → exit **1**; clean reinstall → exit 0 again.
+→ `PENDING-COMMIT`
+
+---
+
 ## Future feature pass — SPECIFIED, NOT BUILT
 
 User, 2026-08-02: *"add two new features to the docket, but dont implement them: create a new
