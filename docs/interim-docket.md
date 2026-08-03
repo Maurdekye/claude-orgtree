@@ -782,7 +782,7 @@ worth a look; not touched, since they are the user's data.
 
 **Verified live:** a genuine set is visible in **0.09 s** (the probe's own polling granularity)
 across three consecutive changes, each confirmed by the server's own value afterwards.
-→ `PENDING-COMMIT`
+→ `0ee5c28`
 
 ---
 
