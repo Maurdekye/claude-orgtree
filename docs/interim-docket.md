@@ -802,7 +802,7 @@ stuck report is not a status update and still gets answered.
 Note `docs/charters/*.md` are live presets served by `/api/charters`, so this reaches the manual
 hire form immediately — no deploy needed beyond the file. Existing coordinators keep their old
 charter text until it is re-pasted.
-→ `PENDING-COMMIT`
+→ `513b742`
 
 ## D-45 · Unread mail re-sorted itself as it was read
 > also dont order unread mails at the top by default, that keeps reordering them as i read them
@@ -823,7 +823,7 @@ the two orders differ: four mails at 10:00 read / 09:00 unread / 08:00 read / 07
 `TEN NINE EIGHT SEVEN`, and **a read mail rendering first is itself the discriminating evidence** —
 under the old grouping an unread could never sort below it. Reading the 09:00 mail left the order
 byte-identical.
-→ `PENDING-COMMIT`
+→ `513b742`
 
 ---
 
