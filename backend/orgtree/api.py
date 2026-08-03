@@ -1231,8 +1231,11 @@ def node_message(slug: str, nid: str, body: Message) -> dict[str, Any]:
     # "/" at position 0 (the envelope would prepend [MAIL …] otherwise).
     # Command-SHAPED only (review C3b): "/compact", "/context foo" — a first
     # token with internal slashes ("/e/Libraries/report.md — pick this up")
-    # is correspondence and keeps full mail semantics (durability, Sent,
-    # chain notices, the user-audience grant).
+    # is correspondence and keeps full MAIL semantics (durability, a Sent copy,
+    # delivery at rehire). What a command DOES share with a message, since
+    # 2026-08-03, is the two consequences of direct user contact: the superior
+    # chain is notified and the node gains a user audience. Those are about who
+    # the user reached, not about whether a copy was filed.
     if stripped.startswith("/") \
             and re.fullmatch(r"/[A-Za-z?][\w-]*", stripped.split()[0]):
         with store.DOC_LOCK:
@@ -1256,6 +1259,16 @@ def node_message(slug: str, nid: str, body: Message) -> dict[str, Any]:
                 raise HTTPException(
                     409, "frozen (usage limit) — a session command would be "
                          "dropped, not queued; ▶ resume the org first")
+            # A command is direct user contact, so it carries the same two
+            # consequences a message does: the superior chain is told, and the
+            # node gains a user audience (user report 2026-08-03 — running a
+            # command did neither, so the user could `/compact` an agent deep
+            # in a tree and nobody above it would ever know). Done HERE, after
+            # the validity checks and before any of the three command paths
+            # below, so all of them get it from one place — the branch has
+            # several returns and per-return calls would rot apart.
+            org.user_deep_reach(nid, stripped[:160], kind="command")
+            store.save_org(org)
         if stripped.split()[0] == "/compact":
             # review C4: one word, one meaning. The hinted /compact used to
             # compact the CLI session IN PLACE — same desk, same word as the

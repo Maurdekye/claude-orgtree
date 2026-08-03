@@ -928,6 +928,46 @@ passed the health check; `/api/host` reports `venv: true`, prefix `…\claude-or
 
 ---
 
+## D-48 · A slash command was not treated as user contact
+> running a command in a chat doesn't count as a user message it seems: it doesnt grant a user
+> audience, and doesnt cascade the command's execution up the chain
+
+Correct, and it was structural rather than accidental: the `/message` endpoint branches on
+command-shaped input near the top and **returns from one of three places before ever reaching the
+mail block**, where `post_mail` and `user_deep_reach` live. So the user could run `/compact` on an
+agent deep in a tree — splitting its context — and no superior would ever hear, and the agent gained
+no user audience from the interaction. The endpoint's own docstring already claimed both effects, so
+the code and its description had quietly disagreed.
+
+**Fix.** `user_deep_reach` now takes `kind` ("message" | "command"), and the command branch calls it
+**once, after the validity checks and before all three command paths**, rather than at each return —
+the branch has several exits and per-exit calls are exactly the N-writers shape this month has been
+spent removing.
+
+A command stays **not mail**: no envelope, no Sent copy, nothing to deliver at rehire. What it now
+shares is the two consequences of *direct user contact*, which are about who the user reached, not
+about whether a copy was filed.
+
+The notice wording differs because the claims differ. An instruction outranks the chain; a command
+changes the agent's session without saying anything about anyone's plan:
+> The user ran the session command "/context" on "worker", inside your chain. It came from the USER
+> directly, not through you. Re-check any plan of yours that assumes worker's session is unchanged.
+
+**Verified live** on a two-level probe org (`user → boss → worker`), created and deleted:
+
+| case | result |
+|---|---|
+| before | `audiences: []`, only the hire notice |
+| `/context` on the DEEP node | audience granted (`reason: "user ran a command directly"`) **and** boss notified with the command wording |
+| `/context` on a TOP-LEVEL node | accepted, **no** notice and no audience — correct: `user_deep_reach` returns early when the only superior is the user |
+| plain message to the deep node | still the "direct instruction" wording, and the audience is **not** duplicated |
+
+The before/after within one run is the discriminating evidence: the audience list went from empty to
+exactly one entry, and the notice appeared, off a single command.
+→ `PENDING-COMMIT`
+
+---
+
 ## Future feature pass — SPECIFIED, NOT BUILT
 
 User, 2026-08-02: *"add two new features to the docket, but dont implement them: create a new

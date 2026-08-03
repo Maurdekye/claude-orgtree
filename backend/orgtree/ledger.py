@@ -1223,9 +1223,20 @@ class Org:
     def take_mail(self, nid: str) -> list[MailEntry]:
         return (self.d.get("mail") or {}).pop(nid, [])
 
-    def user_deep_reach(self, nid: str, gist: str) -> None:
-        """§7.4: the user spoke to a non-top-level node — notify every superior up
-        the chain (without interruption) and grant the node a user audience."""
+    def user_deep_reach(self, nid: str, gist: str, kind: str = "message") -> None:
+        """§7.4: the user reached a non-top-level node — notify every superior up
+        the chain (without interruption) and grant the node a user audience.
+
+        `kind` is "message" or "command". A SLASH COMMAND used to do NEITHER of
+        these: it returned from the endpoint before the mail path ran, so the
+        user could drive an agent directly — including `/compact`, which splits
+        its context — and the whole superior chain never heard about it, nor did
+        the agent get a user audience out of it (user report 2026-08-03). A
+        command is still not mail (no envelope, no Sent copy, nothing to deliver
+        at rehire), but it IS direct user contact, which is the thing these two
+        effects exist for. The wording differs because the claims differ: an
+        instruction outranks the chain, whereas a command changes the agent's
+        session without saying anything about anyone's plan."""
         chain = [a for a in self.ancestors(nid) if a != USER]
         if not chain:
             return   # top-level: the only superior is the user themself (№12)
@@ -1237,16 +1248,25 @@ class Org:
         # Every direct message, no marking (user ruling 2026-08-02: "requiring
         # me to manually mark a message as authoritative is costly to my time,
         # and it doesn't take much to bring this attention to each superior").
-        self._notify(
-            chain,
-            f'The user gave a direct instruction to "{nid}", inside your chain: '
-            f'"{gist}" — it carries the USER\'s authority and outranks anything '
-            f'you have told {nid}. Re-check any plan of yours that depends on '
-            f'it. You are being told, not asked to act.')
+        if kind == "command":
+            self._notify(
+                chain,
+                f'The user ran the session command "{gist}" on "{nid}", inside '
+                f'your chain. It came from the USER directly, not through you. '
+                f"Re-check any plan of yours that assumes {nid}'s session is "
+                f'unchanged. You are being told, not asked to act.')
+        else:
+            self._notify(
+                chain,
+                f'The user gave a direct instruction to "{nid}", inside your chain: '
+                f'"{gist}" — it carries the USER\'s authority and outranks anything '
+                f'you have told {nid}. Re-check any plan of yours that depends on '
+                f'it. You are being told, not asked to act.')
         if not self._has_audience(nid, USER):
             self.d["audiences"].append({
                 "grantee": nid, "grantor": USER, "granted_at": now(),
-                "reason": "user messaged directly"})
+                "reason": ("user ran a command directly" if kind == "command"
+                           else "user messaged directly")})
 
     # --------------------------------------------------------------- notices
     def _notify(self, nids: Iterable[str | None], text: str) -> None:
