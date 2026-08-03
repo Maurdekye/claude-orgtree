@@ -992,6 +992,56 @@ number, and why the README now carries the per-turn cost so the next person can 
 
 ---
 
+## D-50 · A gap between the grey live row leaving and the real one arriving
+> there appears to be a delay between a temporary grey event disappearing and the final full event
+> taking its place, leaving a gap where messages / tool uses / responses are missing before they
+> reappear
+
+**The same mistake as D-34 and §②a, in its third costume: something on screen was dropped before its
+replacement was in hand.**
+
+The server side was already right — `_sweep_live` retires a live row only when its durable twin is
+in the *same payload*, by `tool_use_id` rather than a timer. The client was not. `ingestStream`
+blanked `draft` and `thinking` the instant the durable `text` event arrived:
+
+```
+patch(k, { thinking: '', thinkSecs: null, ...(ev.kind === 'text' ? { draft: '' } : {}) })
+nudge(slug, ev.node)      // the replacement arrives 200 ms + a round-trip LATER
+```
+
+So the grey streaming text vanished on the event and the durable row appeared on the fetch — with a
+hole in between where the message, tool call or response was simply missing. `turn_done` had the
+identical shape.
+
+**Fix: superseded ≠ replaced.** The durable event now *marks* the scaffolding stale instead of
+blanking it, and the FETCH retires it — in the **same patch** that installs the payload carrying its
+replacement, so there is neither a gap nor a frame showing both. The thinking clock still stops
+immediately, because that is a fact about the world rather than something being rendered.
+
+Three details that are easy to get wrong and are handled:
+- **A new stream must not continue superseded scaffolding.** A fresh `delta`/`thinking` resets
+  rather than appending, so the next message never inherits the last one's tail.
+- **An in-flight fetch may not retire it.** A request issued *before* the event returns a payload
+  from before the durable row existed; honouring it reopens the gap. `staleAt` records when the
+  scaffolding was superseded and only a fetch that STARTED at or after that moment may clear it.
+- `resetConvos` drops the flags with everything else.
+
+**Measured, and the probe discriminates.** An in-page sampler at 20 Hz (a Playwright round-trip per
+sample is far too jittery to see a ~300 ms hole) records per frame whether the grey draft is on
+screen and how many durable rows the transcript shows. A **gap** is `draft` going true→false while
+the row count does *not* increase — the thing on screen left and nothing replaced it.
+
+| build | samples | gaps |
+|---|---|---|
+| pre-fix (`convo.ts` at HEAD, rebuilt) | 900 over 45 s | **1 gap at t+5.85 s, lasting 0.25 s** |
+| fixed | 900 over 45 s | **0** |
+| fixed, second run | 900 over 45 s | **0** |
+
+0.25 s matches the report: brief, real, and exactly long enough to see.
+→ `PENDING-COMMIT`
+
+---
+
 ## Future feature pass — SPECIFIED, NOT BUILT
 
 User, 2026-08-02: *"add two new features to the docket, but dont implement them: create a new

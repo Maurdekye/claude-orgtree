@@ -61,6 +61,16 @@ interface Entry {
   subs: Set<() => void>
   thinkT0: number          // 0 = not thinking (the single is-thinking truth)
   clock: ReturnType<typeof setInterval> | null
+  /** The live scaffolding is SUPERSEDED but not yet replaced. Set when the
+   *  durable event arrives, cleared by the fetch that carries the durable row
+   *  — never before it, which is the whole point (see ingestStream). */
+  staleDraft: boolean
+  staleThink: boolean
+  /** when the scaffolding was superseded. A fetch may only retire it if that
+   *  fetch STARTED after this moment — one already in flight when the event
+   *  fired returns a payload from before the durable row existed, and honouring
+   *  it would reopen the very gap this closes. */
+  staleAt: number
   /** debounce for the post-event refetch */
   nudge: ReturnType<typeof setTimeout> | null
   poll: ReturnType<typeof setTimeout> | null
@@ -78,6 +88,7 @@ function entry(k: string): Entry {
   let e = M.get(k)
   if (!e) {
     e = { s: BLANK, subs: new Set(), thinkT0: 0, clock: null, nudge: null,
+          staleDraft: false, staleThink: false, staleAt: 0,
           poll: null, inflight: false, fetchedAt: 0 }
     M.set(k, e)
   }
@@ -122,6 +133,7 @@ export function refreshConvo(slug: string, nid: string,
   const e = entry(k)
   if (e.inflight && !opts.force) return Promise.resolve()
   e.inflight = true
+  const startedAt = Date.now()
   return getChat(slug, nid, e.s.win).then((c) => {
     e.inflight = false
     e.fetchedAt = Date.now()
@@ -129,8 +141,18 @@ export function refreshConvo(slug: string, nid: string,
     // CONTAINMENT, not equality: the turn text is a mail envelope by then
     const pending = e.s.pending.filter((x) => !c.messages.slice(-20)
       .some((m) => m.role === 'user' && (m.text || '').includes(x)))
+    // superseded scaffolding retires HERE, with its replacement in hand — one
+    // atomic patch, so the draft never blinks out ahead of the durable row
+    const retire: Partial<Convo> = {}
+    const fresh = startedAt >= e.staleAt      // this fetch can SEE the new row
+    if (fresh && e.staleDraft) { retire.draft = ''; e.staleDraft = false }
+    if (fresh && e.staleThink) {
+      retire.thinking = ''
+      retire.thinkSecs = null
+      e.staleThink = false
+    }
     patch(k, { chat: c, loaded: true, loadingOlder: false, pending,
-               live: (c.live ?? []) as LiveRow[] })
+               live: (c.live ?? []) as LiveRow[], ...retire })
   }).catch(() => {
     e.inflight = false
     patch(k, { loadingOlder: false })
@@ -185,24 +207,43 @@ export function ingestStream(slug: string, ev: StreamEvent): void {
     // which would start the clock as it stops)
     e.thinkT0 = Date.now()
     startClock(k, e)
-    patch(k, { thinkSecs: 0 })
+    e.staleThink = false
+    patch(k, { thinking: '', thinkSecs: 0 })
     return
   }
   if (ev.kind === 'thinking') {
     if (!e.thinkT0) { e.thinkT0 = Date.now(); startClock(k, e); patch(k, { thinkSecs: 0 }) }
-    patch(k, { thinking: (e.s.thinking + ev.text).slice(-2000) })
+    // a fresh thought must not continue a superseded one
+    const base = e.staleThink ? '' : e.s.thinking
+    e.staleThink = false
+    patch(k, { thinking: (base + ev.text).slice(-2000) })
     return
   }
   if (ev.kind === 'delta') {
-    patch(k, { draft: (entry(k).s.draft + ev.text).slice(-12000) })
+    const base = e.staleDraft ? '' : entry(k).s.draft
+    e.staleDraft = false
+    patch(k, { draft: (base + ev.text).slice(-12000) })
     return
   }
-  // a durable row landed (text / tool / sticky output): the thinking phase is
-  // over and the draft has been superseded by the real message
+  // A durable row landed (text / tool / sticky output): the thinking phase is
+  // over and the draft has been superseded by the real message.
+  //
+  // SUPERSEDED IS NOT REPLACED. These used to be blanked right here, but the
+  // row that replaces them only arrives with the refetch `nudge()` schedules
+  // below — 200 ms of debounce plus a round-trip later. In between, the grey
+  // live text vanished and nothing stood in its place: the message, tool call
+  // or response simply went missing for a moment and then came back (user bug
+  // 2026-08-03). So mark them stale and let the FETCH clear them, in the same
+  // patch that installs the payload carrying their replacement — atomic, so
+  // there is neither a gap nor a frame where both are on screen.
+  //
+  // The clock stops immediately, because that is a fact about the world rather
+  // than something being rendered: it is no longer thinking.
   e.thinkT0 = 0
   stopClock(e)
-  patch(k, { thinking: '', thinkSecs: null,
-             ...(ev.kind === 'text' ? { draft: '' } : {}) })
+  e.staleThink = true
+  e.staleAt = Date.now()
+  if (ev.kind === 'text') e.staleDraft = true
   if (ev.kind === 'steered') {
     patch(k, { pending: e.s.pending.filter((x) => !ev.text.includes(x)) })
   }
@@ -225,10 +266,14 @@ export function ingestPulse(slug: string, ev: PulseEvent): void {
   const e = entry(k)
   if (ev.event === 'turn_done') {
     // the live tail is cleared server-side (sticky rows survive there); here
-    // only the sub-second scaffolding needs resetting
+    // only the sub-second scaffolding needs resetting — and by the same rule as
+    // ingestStream, it retires on the FETCH below rather than right now, or the
+    // final message blinks out between the turn ending and the payload landing
     e.thinkT0 = 0
     stopClock(e)
-    patch(k, { draft: '', thinking: '', thinkSecs: null })
+    e.staleDraft = true
+    e.staleThink = true
+    e.staleAt = Date.now()
   }
   void refreshConvo(slug, ev.node, { force: true })
 }
@@ -288,6 +333,9 @@ export function resetConvos(): void {
     if (e.poll) { clearTimeout(e.poll); e.poll = null }
     if (e.nudge) { clearTimeout(e.nudge); e.nudge = null }
     e.thinkT0 = 0
+    e.staleDraft = false
+    e.staleThink = false
+    e.staleAt = 0
     e.inflight = false
     e.fetchedAt = 0
     e.s = BLANK
