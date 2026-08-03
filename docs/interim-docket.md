@@ -1124,7 +1124,7 @@ direction this entire class of bug wants.
 `core.autocrlf=true`, so a `git stash pop` returns `.ts`/`.tsx` with **CRLF**, and multi-line
 patch patterns silently stop matching. Two edits reported success while changing nothing, and only
 `tsc` caught it. Normalise before patching, and never trust a `.replace()` that is not asserted.
-→ `PENDING-COMMIT`
+→ `72dfde2`
 
 ---
 
