@@ -1072,9 +1072,27 @@ const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max']
 // else. The lesson is in §7 of docs/state-architecture-review.md: read the
 // value that CAUSES the behaviour, not one that correlates with it.)
 function EffortButton({ value, effective, onSet }:
-{ value: string; effective?: string; onSet: (lvl: string) => void }) {
+{ value: string; effective?: string
+  onSet: (lvl: string) => Promise<unknown> | void }) {
   const [open, setOpen] = useState(false)
-  const shown = value || effective || ''
+  // OPTIMISTIC (user report 2026-08-03: "a lag of around 3-5 seconds when i
+  // change the effort level before it updates visually"). The control used to
+  // render purely from the tree payload, so the click showed nothing until a
+  // refetch landed — which is fast when a broadcast arrives and up to a full
+  // heartbeat when one does not. The click already KNOWS the new level, so
+  // stop making the user wait for the server to say it back.
+  //
+  // `null` = nothing pending, `''` = a pending CLEAR (distinct from null, which
+  // is why this is not just a string). It is uncommitted-operation state, not a
+  // mirror of server data — the same exception the retract path takes — and it
+  // is dropped the moment the payload speaks, whatever the payload says, so a
+  // rejected or clamped write corrects itself rather than sticking.
+  const [pending, setPending] = useState<string | null>(null)
+  useEffect(() => { setPending(null) }, [value, effective])
+  // a pending CLEAR falls back to `effective`, which is still the old level for
+  // one refresh — the org default is not known here. Transient and honest: it
+  // is what the control showed before this change anyway.
+  const shown = (pending || value || effective || '')
   const why = value ? 'set on this agent'
     : 'inherited — change it on this agent, or org-wide in ⚙ settings'
   const wrapRef = useRef<HTMLSpanElement | null>(null)
@@ -1090,15 +1108,23 @@ function EffortButton({ value, effective, onSet }:
   return (
     <span className="eff-wrap" ref={wrapRef}>
       <button type="button"
-        className={'cc-eff' + (value ? ' set' : shown ? ' inherited' : '')}
+        className={'cc-eff' + ((pending ?? value) ? ' set' : shown ? ' inherited' : '')
+          + (pending !== null ? ' saving' : '')}
         title={`thinking effort — ${shown || 'unset'} (${why})`}
         onClick={() => setOpen((o) => !o)}>
         {shown || 'effort'}
       </button>
       {open && (
         <span className="eff-pop">
-          <EffortSwitch value={value} level={shown} why={value ? 'set here' : 'inherited'}
-            onSet={(lvl) => { onSet(lvl); setOpen(false) }} />
+          <EffortSwitch value={pending ?? value} level={shown}
+            why={(pending ?? value) ? 'set here' : 'inherited'}
+            onSet={(lvl) => {
+              setPending(lvl)
+              setOpen(false)
+              // the payload normally lands first and clears this; the catch is
+              // for the write that never lands at all
+              Promise.resolve(onSet(lvl)).catch(() => setPending(null))
+            }} />
         </span>
       )}
     </span>

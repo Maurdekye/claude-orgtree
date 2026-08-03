@@ -731,6 +731,61 @@ README now documents both scripts and the switch.
 
 ---
 
+## D-43 · Effort control lags 3-5 s before it updates visually
+> there's a lag in the ui of around 3-5 seconds when i change the effort level on an agent before
+> it updates visually
+
+**⚠ Not reproduced, and the fix is deliberately cause-independent.** What was measured here:
+
+| suspected cause | measurement | verdict |
+|---|---|---|
+| the desk chip round-trip | click → button text: **0.10 s** | not it |
+| the scope endpoint | POST `/scope`: **3-5 ms** idle, **2-18 ms** during a live turn | not it |
+| big org doc (`arti` is 177 KB vs 13-30 KB) | bloated a probe org to 182 KB: **11-22 ms** | not it |
+| read/write contention (`save_org` retries `os.replace` up to 2.1 s on Windows when a reader holds the file, and G1/G2 added readers) | 0 / 3 / 8 concurrent readers: **max 22 ms** | not it |
+
+So the lag lives somewhere this session could not construct — most likely a browser whose websocket
+was not delivering, leaving the 6 s heartbeat as the only refresh, whose *average* wait is 3 s.
+That fits the reported number almost exactly, but it is a hypothesis, not a measurement.
+
+**Fix: stop depending on the round trip.** The control rendered purely from the tree payload, so a
+click showed nothing until a refetch landed — fast when a broadcast arrives, up to a full heartbeat
+when one does not. **The click already knows the new level.** `EffortButton` now applies it
+optimistically and drops the optimistic value the moment the payload speaks, whatever it says, so a
+rejected or ceiling-clamped write corrects itself instead of sticking. `null` vs `''` are distinct
+(nothing pending vs a pending *clear*), and the chip dims while unacknowledged.
+This is uncommitted-operation state, not a mirror — the same exception the mail-retract path takes.
+
+**Known gap, stated rather than hidden:** a pending *clear* still shows the old level for one
+refresh, because the org default is not known client-side and threading it down is more plumbing
+than the ~0.4 s it saves. A clear behaves exactly as it did before this change; only *sets* became
+instant.
+
+⟨discovered⟩ **16 async routes do blocking doc IO on the event loop.** `node_scope` was one:
+`async def` holding `store.DOC_LOCK` (a *threading* lock) across `load_org` + `save_org`, so while
+it waits for the lock or the disk **every other request and every websocket frame waits with it** —
+precisely the №22 hazard the heavyweight endpoints were converted away from. Converted this one to
+a plain `def` (FastAPI then runs it in the threadpool). Its explicit `await hub.changed(slug)` also
+went: since G2 `save_org` announces every write, so that was a second, uncoalesced copy of one
+signal. **The other 15 are listed below and deliberately NOT swept** — measured at 3-22 ms, so
+nothing is urgent, and 15 route conversions is not a change to make while chasing a symptom:
+`org_kiosk` · `org_hire_defaults` · `node_reorder` · `org_dissolve_all` · `org_killswitch` ·
+`org_resume` · `credit_request_decide` · `user_inbox_read` · `extern_wait` · `org_inbox_read` ·
+`user_inbox_clear` · `orgmd_put` · `user_audience` · `node_upload` · `node_mail_retract`.
+`extern_wait` deserves the first look: it is a long-poll that rescans **every org doc** under
+`DOC_LOCK` whenever `store.REVISION` moves — and since G2 the revision moves on every save.
+
+⟨discovered⟩ **Five orphaned `tmp*.tmp` files** sit in `~/orgtree/orgs/` (20-27 KB, dated Jul 29 and
+Jul 31 — *before* any of this branch's work). They are abandoned `save_org` temp files, so an atomic
+replace has failed at least twice historically. Harmless (`list_orgs` globs `*.json`) but a symptom
+worth a look; not touched, since they are the user's data.
+
+**Verified live:** a genuine set is visible in **0.09 s** (the probe's own polling granularity)
+across three consecutive changes, each confirmed by the server's own value afterwards.
+→ `PENDING-COMMIT`
+
+---
+
 ## Future feature pass — SPECIFIED, NOT BUILT
 
 User, 2026-08-02: *"add two new features to the docket, but dont implement them: create a new
@@ -762,6 +817,24 @@ path (`send_message(command=True)`) that delivers a `/…` as its own user event
 mechanism exists if the command itself turns out to be viable.
 
 ---
+
+### F-03 · side hire buttons — hire a COWORKER, not a report
+> add to the feature docket: separate hire buttons that appear on the left / right sides of an agent
+> that hire a coworker to it underneath the same superior
+>
+> but dont implement that now
+
+Hire chips today spawn a SUBORDINATE (a child of the hovered agent). This adds chips on the LEFT and
+RIGHT edges that hire a **sibling** — same parent, placed to that side. Left/right chooses which
+side of the agent the new hire lands on, which also fixes ordering intent at creation time rather
+than by a later reorder.
+
+Open questions for whoever builds it: what happens on a TOP-LEVEL agent (parent is the user — the
+same grant rules as a top-level hire, presumably, and `max_top_grant` applies); whether the credit
+grant comes from the same place as a subordinate hire; and how the chip behaves on a card inside a
+retired pile or a crowd stack, where "the side of the agent" is not a free position.
+
+**NOT BUILT — the user ruled explicitly.**
 
 ## Carried, not done
 

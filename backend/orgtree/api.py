@@ -1067,8 +1067,16 @@ class Scope(BaseModel):
 
 
 @app.post("/api/orgs/{slug}/nodes/{nid}/scope")
-async def node_scope(slug: str, nid: str, body: Scope,
-                     request: Request) -> dict[str, Any]:
+# plain `def`, not `async` (No.22): the body does load_org + save_org under a
+# THREADING lock, and an `async def` runs that ON THE EVENT LOOP -- so while it
+# waits for the lock or the disk, every other request and every websocket frame
+# waits with it. As a sync def FastAPI runs it in the threadpool and only this
+# request pays. Measured 3-22 ms either way, so this is NOT the cause of the
+# reported effort lag; it is a hazard that sat on the path and cost nothing to
+# remove. 15 other async routes still do doc IO on the loop -- listed in the
+# docket, deliberately not swept here.
+def node_scope(slug: str, nid: str, body: Scope,
+               request: Request) -> dict[str, Any]:
     pub = bool(_public_slug(request))
     with store.DOC_LOCK:
         try:
@@ -1086,7 +1094,8 @@ async def node_scope(slug: str, nid: str, body: Scope,
         store.save_org(org)
     if pub and isinstance(result, dict):
         result.pop("bridge", None)
-    await hub.changed(slug)
+    # (the explicit broadcast is gone: store.save_org announces every write
+    # now -- G2 -- so this was a second, uncoalesced copy of one signal)
     return result
 
 

@@ -1186,6 +1186,10 @@ button:disabled { opacity: .45; cursor: default; }
 }
 .disclosure:hover { background: none; color: var(--ink); }
 
+/* the effort chip while its write is in flight: the new level is already
+   shown (optimistic), this only says it is not acknowledged yet */
+.cc-eff.saving { opacity: 0.72; }
+
 input, select, textarea {
   font: inherit; font-size: 12.5px; padding: 5px 9px; border-radius: 4px;
   border: 1px solid var(--line); background: var(--input); color: var(--ink-strong);
