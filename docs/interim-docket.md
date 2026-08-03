@@ -1128,6 +1128,64 @@ patch patterns silently stop matching. Two edits reported success while changing
 
 ---
 
+## D-53 · ⚑ HANDOFF — the queued preview, still reported, NOT reproduced
+> still happening
+> if you cant fix it after this, then leave it for the implementer to have a proper look at
+
+**Two real bugs were found and fixed on the way (D-51, D-52) and the symptom persists, so at least
+one more cause exists that I could not reach.** Handing over on the user's instruction. This entry
+exists so the next person does not re-run the ground I covered.
+
+#### What is fixed and verified
+
+- **D-51** — `send()` dropped the optimistic ghost unconditionally after the round trip (measured:
+  **50 ms**), leaving **2.88 s** with the message nowhere on screen. Removed; graduation is on
+  evidence.
+- **D-52** — graduation matched by `.includes()` with no regard for *when*, so a repeat of the same
+  text ("continue", "yes") matched the earlier message and graduated in **0.03 s**. Now count-based.
+
+#### What was tested AFTER those fixes — all passing, none reproducing the report
+
+| axis | covered |
+|---|---|
+| surface | zoomed desk · **switchboard panel** (`bare compact`) |
+| agent state | idle (activating) · **busy** (queued behind a turn) |
+| text | unique · **byte-identical repeat** |
+| measurement | element existence · **actual visibility** (rect vs the `.msgs` scroll container) |
+
+Sampled in-page at 40 Hz. Representative: switchboard, idle → ghost first at **0.02 s**, visible
+**2.75 s**, handing over to the durable bubble with no hole; busy → ghost 0.02 s then the `pendrow`
+takes over for 70 samples. **No gap in any combination.**
+
+#### The three leads I would pursue next, in order
+
+1. ☞ **The user's browser may not be running the fixed bundle.** A tab open since before a deploy
+   keeps its old JS — the filename is content-hashed, so nothing re-fetches until a reload. Three
+   "still happening" reports arrived within minutes of three deploys. `index.html` is served by
+   `FileResponse` with an ETag and **no `Cache-Control`**, so a reload revalidates correctly, but a
+   tab that is never reloaded never learns. **Worth proving before touching code**: check the loaded
+   bundle name in devtools against `curl -s localhost:7360/ | grep assets/index-`. A build stamp in
+   `/api/host` compared against the bundle would make this answerable rather than assumable, and is
+   probably worth building regardless.
+2. **A send path with no ghost at all.** `MailList.onReply` (inbox panel) calls `sendMessage`
+   directly and never calls `addPending` — replying there shows nothing until the server copy lands.
+   That is a real hole; it is simply not the path I tested, and "activate the agent with a new
+   message" may well mean it.
+3. **Long real transcripts.** Every probe ran on a fresh org with a handful of messages;
+   `serverCopies` counts within `messages.slice(-20)`. The user's `arti` doc is 177 KB. A baseline
+   computed over a window that later shifts is the kind of thing that would show up only at size.
+
+#### Honest assessment
+
+The symptom is intermittent ("sometimes"), and every hypothesis I could construct I also
+*disproved* by measurement. That combination — plus lead ①, where three fix-report cycles each
+landed within minutes of a deploy — makes me suspect the remaining reports are at least partly a
+stale bundle. But I could not demonstrate it, and I have twice now told the user something was fixed
+when it was not, so this stays open rather than closed with an excuse.
+→ `PENDING-COMMIT`
+
+---
+
 ## Future feature pass — SPECIFIED, NOT BUILT
 
 User, 2026-08-02: *"add two new features to the docket, but dont implement them: create a new
