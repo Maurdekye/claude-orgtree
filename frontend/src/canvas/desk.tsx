@@ -273,9 +273,14 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
                 : r.deferred ? 'deferred — delivers at rehire'
                   : (r.queued ?? 0) > 0 ? `queued (${r.queued} ahead)` : 'delivering')
         if (r.warnings?.length) toast(r.warnings)
+        // A COMMAND is not correspondence: it never enters pending_mail, and an
+        // IMMEDIATE command may never reach this node's transcript either (it
+        // runs in a throwaway fork and its output rides the live feed), so its
+        // ghost has no evidence to graduate against and would sit there
+        // forever. Retire it here — the "command sent" receipt is the feedback.
+        if (r.command) dropPending(slug, node.id, t)
         return refresh(true)
       })
-      .then(() => dropPending(slug, node.id, t))
       .catch((e: Error) => {
         dropPending(slug, node.id, t)
         toast([`error: ${e.message}`])

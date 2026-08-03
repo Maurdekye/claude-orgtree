@@ -137,10 +137,20 @@ export function refreshConvo(slug: string, nid: string,
   return getChat(slug, nid, e.s.win).then((c) => {
     e.inflight = false
     e.fetchedAt = Date.now()
-    // a pending ghost graduates once the transcript contains it — by
-    // CONTAINMENT, not equality: the turn text is a mail envelope by then
-    const pending = e.s.pending.filter((x) => !c.messages.slice(-20)
-      .some((m) => m.role === 'user' && (m.text || '').includes(x)))
+    // A pending ghost graduates once the SERVER'S OWN copy is visible — by
+    // CONTAINMENT, not equality, since the turn text is a mail envelope by
+    // then. Two things count as visible, and both must, because the message
+    // passes through them in order: first it sits in the node's mailbox
+    // (`pending_mail`, which the desk renders as a durable pending bubble),
+    // then a turn drains it into the transcript. Checking only the transcript
+    // left a hole for the whole of CLI startup — the mail was on the server,
+    // the ghost had been dropped, and nothing was on screen (user bug
+    // 2026-08-03: "the queued preview never shows up while the agent is
+    // starting"). Same rule as everywhere else: retire on evidence.
+    const durable = (c.pending_mail ?? [])
+    const pending = e.s.pending.filter((x) =>
+      !c.messages.slice(-20).some((m) => m.role === 'user' && (m.text || '').includes(x))
+      && !durable.some((m) => (m.body || '').includes(x)))
     // superseded scaffolding retires HERE, with its replacement in hand — one
     // atomic patch, so the draft never blinks out ahead of the durable row
     const retire: Partial<Convo> = {}

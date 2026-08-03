@@ -1042,6 +1042,55 @@ the row count does *not* increase — the thing on screen left and nothing repla
 
 ---
 
+## D-51 · The queued preview never appears while the agent is "starting"
+> when i activate the agent with a new message, sometimes the queued preview never shows up while
+> the agent is 'starting', i only see my message once it actually goes through
+
+**The same rule a FOURTH time** (after D-34, D-43, D-50): something was retired before its
+replacement existed. `send()` ended with
+
+```
+.then((r) => { …; return refresh(true) })
+.then(() => dropPending(slug, node.id, t))   // unconditional
+```
+
+so the optimistic ghost died **as soon as the round trip completed** — measured at **50 ms**, which
+is simply POST (~30 ms) + the follow-up GET (~15 ms). The mail is on the server by then, but it is
+in neither place the desk renders: `send_message` drains the mailbox straight into the turn, so
+`pending_mail` is empty, and the transcript will not carry it until the CLI has started (~3 s).
+Between those, nothing on screen.
+
+**Fix, in two parts:**
+- **The unconditional drop is gone.** The ghost now retires only through `refreshConvo`'s
+  graduation check — i.e. on evidence. This is what closes the reported hole.
+- **Graduation checks `pending_mail` as well as the transcript.** A message passes through the
+  mailbox first and the transcript second; checking only the second left the queued/frozen/deferred
+  cases relying on the unconditional drop that just went away.
+- A **command keeps** an explicit drop: it is not correspondence, never enters `pending_mail`, and an
+  *immediate* command may never reach this node's transcript at all (it runs in a throwaway fork,
+  output riding the live feed), so its ghost would have no evidence to graduate against and would
+  sit there forever. The "command sent" receipt is its feedback.
+
+**Measured, apples to apples, unique token per run:**
+
+| build | ghost lifetime | message off screen |
+|---|---|---|
+| pre-fix | t+0.02 → **t+0.07** (50 ms) | **2.88 s** (t+0.07 → t+2.95) |
+| fixed | t+0.03 → **t+2.95** | **never** — hands over the instant the transcript has it |
+
+⚠ **Method note, because the first attempt produced contaminated evidence.** Both runs initially used
+the SAME token, so the previous run's copy was already in the transcript and the containment check
+graduated the new ghost within 20 ms — making the fixed build look broken. A repeated probe token is
+indistinguishable from the thing being measured. Unique token per run, always.
+
+⟨discovered, not fixed⟩ That contamination is also a real if minor defect: graduation matches by
+`.includes()` against the last 20 user messages, so **re-sending byte-identical text graduates the
+new ghost against the old message**. Harmless today (the ghost is cosmetic and the mail still sends)
+and fixing it properly needs a per-send id threaded through, so it is recorded rather than patched.
+→ `PENDING-COMMIT`
+
+---
+
 ## Future feature pass — SPECIFIED, NOT BUILT
 
 User, 2026-08-02: *"add two new features to the docket, but dont implement them: create a new
