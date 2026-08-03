@@ -877,6 +877,83 @@ retired pile or a crowd stack, where "the side of the agent" is not a free posit
 
 **NOT BUILT — the user ruled explicitly.**
 
+### F-04 · agents asking the USER a question
+> i want to discuss a new feature to add to the docket: support for asking the user a question. i
+> know this isnt necessarily possible in headless mode directly with claude code, but perhaps we can
+> mimic it with a bespoke custom implementation instead.
+>
+> dont implement the question asking yet, put it on the feature docket. but do the research on
+> feasibility for now.
+
+**NOT BUILT.** Research only, per the ruling. Everything below marked *measured* was run against the
+pinned CLI on 2026-08-03; everything else is design, and the open questions are genuinely open.
+
+#### What was measured
+
+| question | result |
+|---|---|
+| Is `AskUserQuestion` even present headless? | **Yes** — it is in the headless tool list. |
+| What happens when a headless agent calls it? | **It fails.** The tool returns the error text `Answer questions?` — the permission-prompt title, auto-denied because there is no interactive client to answer it. So the user's instinct was right: the native tool cannot work as-is. |
+| Can an MCP tool call BLOCK long enough to wait for a human? | **Yes, and by a lot.** Purpose-built stdio MCP server with one tool that sleeps: **20 s → works**, **606 s → works** (`exit=0`, the agent received the tool's return value and answered from it). No timeout, no error, no special flags. |
+| Is there hook machinery to intercept the native tool? | **Already wired.** `supervisor._steer_settings` declares an explicit array per hook event, with a live `PostToolUse` (steer.py, `timeout: 8`) and an **empty `PreToolUse`** — the slot exists and is currently unused. |
+| What does a blocking wait cost? | `MAX_CONCURRENT = 3` (`ORGTREE_MAX_TURNS`). A turn holds one slot for its whole life, so **an agent waiting on a human occupies a third of the org's capacity**. This is the binding constraint on the design, not the CLI. |
+| Is there precedent for long-poll Q&A here? | Yes — `externtool.orgtree_wait` (25 s default, deadline-bounded, returns empty so the caller re-waits). Same shape, opposite direction: outsiders waiting on an org rather than an org waiting on the user. |
+
+#### Two viable mechanisms
+
+**① A bespoke MCP tool (`orgtree_ask`) — the recommended primary.** Explicit, returns a real
+*successful* tool result, and every piece it needs already exists: a durable org-doc key for the
+pending question (like `delivering`/`org_inbox`), the user inbox for surfacing, audiences for
+gating, and `orgtree_status` for saying why an agent is idle.
+
+**② PreToolUse interception of the native `AskUserQuestion` — the elegant bonus.** Agents would use
+the tool they already know, and prompts written for interactive Claude Code would just work headless.
+⚠ Unproven: whether a hook can inject a **successful** result or only deny-with-reason (where the
+reason text reaches the model but is framed as a refusal). That is the one experiment left, and it
+should be run before anyone commits to this path.
+
+#### The shape I would build
+
+One tool, **bounded wait that auto-degrades to parking** — the agent should not have to choose:
+
+1. `orgtree_ask(question, options?, multi?, timeout_s?)` writes a pending question to the org doc
+   with an id, sets the node's status to *waiting on the user*, and long-polls.
+2. **Answered inside the window** → the answer comes back as the tool result and the turn continues
+   with full context. This is the case worth building for: quick disambiguation, where ending the
+   turn would throw away momentum and cost a fresh context load.
+3. **Not answered** → the tool returns "no answer yet; it will reach you as mail", the agent wraps up
+   and ends its turn. The question stays pending.
+4. **Answered later** → delivered as mail, which starts a turn as any mail does. The answer is never
+   lost, which is D-045's at-least-once instinct applied to questions.
+
+Because a waiting agent holds one of three slots, the default window should be **short — 30-60 s, not
+600** — even though the CLI would tolerate far more. Long waits want fix ③ below first.
+
+#### Open questions — for the user, not for me to assume
+
+1. **Default wait before parking.** My suggestion: 60 s. Long enough to catch a user who is looking
+   at the screen, short enough that an absent user does not cost a slot.
+2. **Should a waiting agent hold a turn slot at all?** Cleanest is to exclude waiting agents from the
+   concurrency cap, but that is a supervisor change with real deadlock risk (re-acquiring a slot on
+   answer). Ruling needed before anyone builds long waits.
+3. **Who may ask?** Mail to the user is audience-gated. Same gate for questions is the consistent
+   answer — and per the design motto ("auto-bridge instead of refuse"), an agent without a user
+   audience should probably have its question **routed to its superior** rather than refused.
+4. **UI home.** A question is stickier than mail: it stalls an agent. Options are the user inbox with
+   a distinct "needs an answer" state, or its own surface. There is also a tension with D-45 — a
+   question that must not be missed argues for pinning, and pinning is exactly what was just removed
+   from the mail list.
+5. **Answer shape.** Mirror `AskUserQuestion` (a header, 2-4 options, optional multi-select, free-text
+   "Other")? Agents already understand that schema, which is an argument for copying it exactly.
+6. **Kiosk.** May an agent question a public visitor? Probably yes but worth a per-org switch.
+
+#### What already works today, unglamorously
+
+`orgtree_status(blocked, ...)` notifies the superior, and an agent with a user audience can mail the
+user and stop. The user replies and the turn resumes. That is questions-without-options and
+questions-without-blocking — so the feature is really about **structured options** and **not losing
+the turn**, not about making the impossible possible.
+
 ## Carried, not done
 
 | item | state |
