@@ -712,7 +712,8 @@ it costs nothing on Linux/macOS.
 
 ⚠ **CRLF would have made the script unrunnable on Linux.** This repo is developed with
 `core.autocrlf=true`, so every text file checks out CRLF — harmless for `.py`/`.ts`/`.md`, fatal for
-a shell script (`: command not found`). Added `.gitattributes` pinning `*.sh` to `eol=lf`, with
+a shell script (`
+: command not found`). Added `.gitattributes` pinning `*.sh` to `eol=lf`, with
 `*.ps1`/`*.cmd` pinned CRLF and `* text=auto` for the rest. Verified by deleting and re-checking-out
 the file: **0 CR bytes**, executable bit intact, still parses. `git add --renormalize .` touches
 nothing else, so the rule is not a disguised mass rewrite.
@@ -726,7 +727,7 @@ also proved it discriminates — with the fake interpreter serving nothing, the 
 failed with a pointer to the error log instead of claiming success.
 
 README now documents both scripts and the switch.
-→ `PENDING-COMMIT`
+→ `59090a2`
 
 ---
 
