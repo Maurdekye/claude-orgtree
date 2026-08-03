@@ -160,9 +160,19 @@ The supervisor auto-detects this private install and prefers it; your global
 `claude` stays untouched. Without it, messages to a busy agent deliver when
 its current response ends instead of after its next tool call.
 
-**Updating:** run `update.ps1` (or double-click `update.cmd`) from the repo
-root — it pulls the latest changes, rebuilds the UI, installs any new
-dependencies, and restarts the backend in the background with a health check.
+**Updating:** run `update.ps1` (or double-click `update.cmd`) on Windows, or
+`./update.sh` on Linux/macOS — the two are step-for-step equivalents. Either
+pulls the latest changes, rebuilds the UI, installs any new dependencies, and
+restarts the backend in the background with a health check. `update.sh` also
+runs under Git Bash on Windows.
+
+Both accept a deliberately awkward `-ExposeAdmin` / `--expose-admin` switch,
+which binds the **admin** API to `0.0.0.0` instead of loopback. The admin API
+has no password, token or login — reaching the port *is* the credential — so
+only do this behind a VPN, an SSH tunnel, or an authenticating reverse proxy.
+It is command-line only on purpose: no setting, org doc or environment
+variable can turn it on, which means no agent can either. To share one org
+with someone, make it a kiosk instead.
 
 Open **http://127.0.0.1:7360**, create an organization, hover the eye, and
 hire your first agent. The full interaction manual — hiring chips, credit-bar

@@ -1,0 +1,17 @@
+# Line endings.
+#
+# This repo is developed on Windows, where core.autocrlf=true is the norm and
+# every text file is checked out with CRLF. That is harmless for .py/.ts/.md —
+# and fatal for a shell script: bash reads the trailing \r as part of the
+# command and fails with the famously unhelpful "\r: command not found", or
+# "#!/usr/bin/env bash\r: no such file or directory". So shell scripts are
+# pinned to LF no matter what the cloner's autocrlf says.
+*.sh text eol=lf
+
+# The mirror image: PowerShell and the .cmd wrapper are Windows-side tools and
+# stay CRLF, which is what a Windows editor and cmd.exe expect.
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+
+# Everything else: normalise to LF in the repository, let git decide locally.
+* text=auto

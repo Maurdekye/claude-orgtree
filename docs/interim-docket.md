@@ -682,6 +682,54 @@ bug → exit **1**; clean reinstall → exit 0 again.
 
 ---
 
+## D-42 · `update.sh` — a bash deploy script
+> also i need a bash version of the update script
+
+A step-for-step port of `update.ps1`: pull → npm install + esbuild self-heal → build → pip install →
+report the CLI version → stop the old backend → start detached → health-check. Same
+`--expose-admin` switch with the same red wall. Written for Linux/macOS; it also runs under Git Bash
+on Windows, where the two things that cannot be POSIX — finding and killing whoever holds a TCP port
+— fall back to `netstat` + `taskkill`. Port discovery tries `lsof` → `ss` → `fuser` and matches
+**listeners only**, never a client connection, which would kill an innocent process.
+
+**Three real defects found by running it rather than reading it:**
+
+⚠ **`python3` exists here and does not work.** Windows ships an App Execution Alias at
+`~/AppData/Local/Microsoft/WindowsApps/python3` that `command -v` finds happily, then prints
+*"Python was not found"* and fails — while the real 3.10 sits right behind it as `python`. The first
+draft picked the stub and died at `pip install`. Fixed by **running each candidate** rather than
+checking that it exists (`python3` → `python` → `py`, first one that executes wins; `$PYTHON`
+overrides and is validated too). Same lesson as everything else this week: test the thing, not a
+proxy for it.
+
+⚠ **A backgrounded child kept the pipe open under MSYS.** `./update.sh | tee log` hung forever
+*after the script had finished all its work* — the backend restarted correctly and the pipeline
+never closed. Reproduced in isolation: under Git Bash a backgrounded grandchild keeps the parent's
+pipe alive regardless of its own redirections. `disown` does not fix it; `setsid` does not exist
+there (and appeared to "pass" only because that branch started no child at all — a false positive
+worth recording). The fix is to redirect **the subshell's** descriptors as well as the child's, and
+it costs nothing on Linux/macOS.
+
+⚠ **CRLF would have made the script unrunnable on Linux.** This repo is developed with
+`core.autocrlf=true`, so every text file checks out CRLF — harmless for `.py`/`.ts`/`.md`, fatal for
+a shell script (`: command not found`). Added `.gitattributes` pinning `*.sh` to `eol=lf`, with
+`*.ps1`/`*.cmd` pinned CRLF and `* text=auto` for the rest. Verified by deleting and re-checking-out
+the file: **0 CR bytes**, executable bit intact, still parses. `git add --renormalize .` touches
+nothing else, so the rule is not a disguised mass rewrite.
+
+**Verified live, end to end and piped:** a full `bash update.sh` run pulled, rebuilt the UI,
+installed deps with the correct interpreter, reported the CLI version, stopped the old backend by
+pid, started a new one and passed its health check — exit 0. The flag path was checked without ever
+exposing the live instance, by standing a recorder in for python: without the switch the recorded
+argv is `-m orgtree.api`, with it `-m orgtree.api --expose-admin`, banner printed. The health check
+also proved it discriminates — with the fake interpreter serving nothing, the script correctly
+failed with a pointer to the error log instead of claiming success.
+
+README now documents both scripts and the switch.
+→ `PENDING-COMMIT`
+
+---
+
 ## Future feature pass — SPECIFIED, NOT BUILT
 
 User, 2026-08-02: *"add two new features to the docket, but dont implement them: create a new
