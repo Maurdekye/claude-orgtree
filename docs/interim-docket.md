@@ -968,6 +968,30 @@ exactly one entry, and the notice appeared, off a single command.
 
 ---
 
+## D-49 · Concurrent turn cap raised 3 → 16
+> also increase max queued turn slots to 16, unless there's a reason not to
+
+**No reason not to, and one number worth knowing.** The semaphore bounds *resources*, not
+correctness — nothing serialises on it, no invariant depends on the width, and the cap is one
+constant with one reader (`_turn_slots`), one env override and one README row. Grepped: nothing else
+assumes 3.
+
+**Measured before changing it:** a single headless CLI turn holds **~306 MB** resident, so 16
+concurrent is roughly **5 GB** of working set at full tilt. Comfortable on the 32 GB dev box, tight
+on a small VM — which is why it stays an env override (`ORGTREE_MAX_TURNS`) rather than a hardcoded
+number, and why the README now carries the per-turn cost so the next person can size it.
+
+⚠ Two things worth stating rather than discovering later:
+- **The cap is GLOBAL, not per-org.** 16 is shared across every org on the instance, so a busy org
+  can starve a quiet one. Nothing enforces fairness, and that was equally true at 3 — it just
+  matters more now that the number looks generous.
+- **It changes F-04's central tradeoff.** The ask-the-user design was shaped by a waiting agent
+  costing a third of the org's capacity; at 1/16 that pressure is largely gone, and a longer wait
+  window becomes reasonable. F-04 updated in place rather than left to mislead.
+→ `PENDING-COMMIT`
+
+---
+
 ## Future feature pass — SPECIFIED, NOT BUILT
 
 User, 2026-08-02: *"add two new features to the docket, but dont implement them: create a new
@@ -1037,7 +1061,7 @@ pinned CLI on 2026-08-03; everything else is design, and the open questions are 
 | What happens when a headless agent calls it? | **It fails.** The tool returns the error text `Answer questions?` — the permission-prompt title, auto-denied because there is no interactive client to answer it. So the user's instinct was right: the native tool cannot work as-is. |
 | Can an MCP tool call BLOCK long enough to wait for a human? | **Yes, and by a lot.** Purpose-built stdio MCP server with one tool that sleeps: **20 s → works**, **606 s → works** (`exit=0`, the agent received the tool's return value and answered from it). No timeout, no error, no special flags. |
 | Is there hook machinery to intercept the native tool? | **Already wired.** `supervisor._steer_settings` declares an explicit array per hook event, with a live `PostToolUse` (steer.py, `timeout: 8`) and an **empty `PreToolUse`** — the slot exists and is currently unused. |
-| What does a blocking wait cost? | `MAX_CONCURRENT = 3` (`ORGTREE_MAX_TURNS`). A turn holds one slot for its whole life, so **an agent waiting on a human occupies a third of the org's capacity**. This is the binding constraint on the design, not the CLI. |
+| What does a blocking wait cost? | A turn holds one slot for its whole life, so a waiting agent occupies one. **Was** `MAX_CONCURRENT = 3` — a third of the org — which made a blocking wait expensive and drove the "short window, auto-degrade to parking" design below. **Raised to 16 on 2026-08-03 (D-49)**, so a wait now costs 1/16 and the pressure behind that design is largely gone: a longer default window (or not parking at all) is worth reconsidering when this is built. |
 | Is there precedent for long-poll Q&A here? | Yes — `externtool.orgtree_wait` (25 s default, deadline-bounded, returns empty so the caller re-waits). Same shape, opposite direction: outsiders waiting on an org rather than an org waiting on the user. |
 
 #### Two viable mechanisms
@@ -1067,8 +1091,9 @@ One tool, **bounded wait that auto-degrades to parking** — the agent should no
 4. **Answered later** → delivered as mail, which starts a turn as any mail does. The answer is never
    lost, which is D-045's at-least-once instinct applied to questions.
 
-Because a waiting agent holds one of three slots, the default window should be **short — 30-60 s, not
-600** — even though the CLI would tolerate far more. Long waits want fix ③ below first.
+Because a waiting agent held one of **three** slots when this was researched, the default window was
+to be **short — 30-60 s**. With the cap now at **16** (D-49) that pressure is largely gone; revisit
+the window, and open question ② below, before building.
 
 #### Open questions — for the user, not for me to assume
 

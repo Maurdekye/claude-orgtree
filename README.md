@@ -225,7 +225,7 @@ No manual wiring is needed; the supervisor does all of it per turn:
 | `ORGTREE_PORT` | `7360` | API + UI port |
 | `ORGTREE_DATA` | `~/orgtree` | data root (ledgers, workspaces, scratch) |
 | `ORGTREE_CLAUDE` | `claude` on PATH | Claude Code CLI location |
-| `ORGTREE_MAX_TURNS` | `3` | concurrent agent turns |
+| `ORGTREE_MAX_TURNS` | `16` | concurrent agent turns, shared across all orgs (~306 MB resident each) |
 | `ORGTREE_TURN_TIMEOUT` | `1800` | seconds before a turn is abandoned |
 | `ORGTREE_COMPACT_AT` | `0.80` | context occupancy that triggers a compaction split |
 | `ORGTREE_CONTEXT_WINDOWS` | haiku 200k, others 1M | per-tier window override, JSON like `{"opus": 500000}` |

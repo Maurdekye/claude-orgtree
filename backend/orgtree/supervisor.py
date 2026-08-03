@@ -231,7 +231,16 @@ def _claude_argv() -> list[str]:
         return ["cmd", "/c", CLAUDE]
     return [CLAUDE]
 TURN_TIMEOUT = int(os.environ.get("ORGTREE_TURN_TIMEOUT", "1800"))   # seconds
-MAX_CONCURRENT = int(os.environ.get("ORGTREE_MAX_TURNS", "3"))       # №34
+# №34. Raised 3 -> 16 (user ruling 2026-08-03). There is no correctness reason
+# for a low cap — the semaphore exists to bound RESOURCES, not to serialise
+# anything — so the only question is what a turn costs. Measured on the dev
+# box: a single headless CLI turn holds ~306 MB resident, so 16 concurrent is
+# roughly 5 GB of working set at full tilt. Fine on a 32 GB desktop, tight on a
+# small VM, hence the env override rather than a hardcoded number.
+#
+# ⚠ The cap is GLOBAL, not per-org: 16 is shared across every org on the
+# instance, so a busy org can starve a quiet one. Nothing enforces fairness.
+MAX_CONCURRENT = int(os.environ.get("ORGTREE_MAX_TURNS", "16"))
 
 _turn_slots = threading.Semaphore(MAX_CONCURRENT)
 # per-(slug, nid) in-memory runtime state — see state() for the key set
