@@ -1125,45 +1125,62 @@ the turn**, not about making the impossible possible.
 > request by an agent by dragging their bar up or down, which is copied into the dialogue temporarily
 > and shows how much additional credits are being granted with a "+x" value an a I-bar to the side
 > stretching the difference between current and new grant quantity
+>
+> the dialogue should embed its own credit bar inline. the bar can be dragged as high ir low as the
+> user wants: reducing the ask, *increasing* beyond the ask, or even lowering the total credits the
+> agent has, down to its current allocation (why a user would want to do this, who knows). the agent
+> can opt to do whatever it wants immediately after: it can take the user's grant as-is, request
+> more, or find another way around the limitation.
 
 **NOT BUILT.** Today a credit request is take-it-or-leave-it: the card shows `old → new (+delta)`
 with **approve** and **deny**, and `credit_request_action(rid, action)` grants exactly `req["new"]`.
 There is no way to say "you asked for 12, have 5".
 
-**Most of the machinery already exists**, which is the encouraging part:
-- `CreditBar` (`canvas/cards.tsx`) already does the whole drag: pointer capture, `min`/`max` clamps,
-  a `maxGhost` overlay, ruler rungs at real quantities, `onDragValue` for a live value in draft mode
-  and `onCommit(delta)` otherwise — and it **already computes `delta = drag.val - drag.g0`**, which
-  is the "+x" the request wants.
-- `_kiosk_cap_check` already runs on the decide endpoint, so a counter-offer inherits the kiosk
-  credit cap for free; `max_top_grant` is the other clamp to feed into the bar's `max`.
+**Most of the machinery already exists.** `CreditBar` (`canvas/cards.tsx`) does the whole drag —
+pointer capture, `min`/`max` clamps, a `maxGhost` overlay, ruler rungs at real quantities,
+`onDragValue` for live values and `onCommit` otherwise — and it **already computes
+`delta = drag.val - drag.g0`**, which is the "+x" this asks for.
 
-**What it needs:**
+#### Rulings (user, 2026-08-03) — the open questions are closed
+
+**① The dialogue embeds its own `CreditBar` inline.** No canvas mode, no docking; the panel is a
+full-screen overlay and stays one. Cheapest of the two options by roughly an order of magnitude.
+
+**② The bar's range is the full legal range** — reduce the ask, exceed the ask, or reduce the
+agent's grant *below what it already holds*, "down to its current allocation".
+
+☞ **That floor already exists as a ledger invariant, so the bar should mirror it rather than invent
+one.** `reallocate` refuses any `-Δ` larger than `free(nid)`:
+> `{nid} has only {free} unused; the rest is committed`
+
+So the true minimum is **`grant − free(nid)`** — everything unused can be stripped, nothing already
+handed down to subordinates can be. That is almost certainly what "down to its current allocation"
+means; ⚠ if it instead meant "no lower than its existing grant", say so, because it is one number
+and it is the difference between a clawback tool and a decline-politely tool.
+Both ends map onto invariants that already exist, which is the good news:
+`min` ← `grant − free(nid)` · `max` ← `_check_top_grant`/`max_top_grant` and `_kiosk_cap_check`.
+Also: `_stranding_warnings` already fires on a reduction, so the dialogue should **surface those
+warnings before committing** — "this strands 4 credits of work under X" is exactly the thing a user
+dragging downward needs to see.
+
+**③ The agent's move is its own.** After the verdict it may take the grant as-is, request more, or
+route around the limit. So the notice must state the outcome and **not** imply the matter is closed
+— which today's wording does.
+
+#### What it still needs
+
 1. `credit_request_action` takes an optional granted amount instead of implying `req["new"]`, and
-   `CreditDecision` carries it. The delta maths (`req["new"] - grant` → `granted - grant`) is one line.
-2. The agent must be told **honestly**: it asked for X and got Y. Today the notice says
-   *"APPROVED — your grant is now N"*, which would be true but misleading for a counter-offer. A
-   partial grant probably deserves its own status too, so the record does not read as a plain
-   approval.
-3. The UI: the requested value pre-loads the bar, dragging updates a live "+x" in the dialogue, and
-   an **I-bar** alongside spans current→new so the size of the concession is visible rather than
-   arithmetic.
+   `CreditDecision` carries it. The delta maths (`req["new"] - grant` → `granted - grant`) is one
+   line; the *validation* is the real work, and per ② most of it already exists.
+2. **An honest notice.** Today: *"APPROVED — your grant is now N"* — true but misleading for a
+   partial grant, and actively wrong for a reduction. A counter-offer wants its own status so the
+   record does not read as a plain approval, and wording that names what was asked, what was given,
+   and that the agent may come back.
+3. The UI: requested value pre-loaded, live "+x", and the **I-bar** spanning current→new so the size
+   of the concession is visible rather than arithmetic.
 
-**Open questions — worth settling before anyone builds:**
-- **Where does the drag physically happen?** The request lives in the user-inbox panel, which is a
-  full-screen `.overlay` — it covers the canvas, so the agent's own bar is not reachable while the
-  dialogue is open. Either the dialogue embeds a `CreditBar` of its own (simplest, but then it is
-  not literally "their bar"), or approving switches to a canvas mode with the request docked. The
-  wording asks for the latter; the former is a tenth of the work. **User's call.**
-- **Can the counter-offer go BELOW the current grant** — i.e. is this also a way to claw credits
-  back while answering a request? The bar's `min` decides it.
-- **Above what was asked?** Nothing stops it, and "have more than you asked for" is occasionally
-  right; the cap clamps it anyway.
-- **Does a partial grant re-open?** An agent that asked for 12 and got 5 may immediately request 7
-  more. That is probably fine and self-limiting, but worth deciding rather than discovering.
-
-Note these requests come from **top-level** agents (the credit comes from the user's own pool), so
-`max_top_grant` is the binding clamp on the drag range.
+Note these requests come from **top-level** agents (the credit is the user's own pool), so
+`max_top_grant` is the binding upper clamp.
 
 ## Carried, not done
 
