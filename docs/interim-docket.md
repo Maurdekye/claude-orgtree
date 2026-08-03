@@ -1038,7 +1038,7 @@ the row count does *not* increase — the thing on screen left and nothing repla
 | fixed, second run | 900 over 45 s | **0** |
 
 0.25 s matches the report: brief, real, and exactly long enough to see.
-→ `PENDING-COMMIT`
+→ `0f2746b`
 
 ---
 
