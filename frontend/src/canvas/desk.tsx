@@ -610,11 +610,13 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
           .then(() => refresh(true))
           // rethrow: InboxView's optimistic hide rolls back on rejection
           .catch((e: Error) => { toast([`error: ${e.message}`]); throw e })} />}
-      {/* F-04/F-05: the ask card — pinned above the composer so it is visible
-          whatever the scroll position ("a question answering ui should appear
-          on the agent"). Open = interactive; nulled = grey/orange with its
-          reason, until the linger window drops it from the payload. */}
-      {node.ask && (
+      {/* F-04/F-05: the ask card — pinned above the composer ONLY while the
+          ask is open ("a question answering ui should appear on the agent").
+          Once answered it leaves the pin (user ruling 2026-08-04: the answer
+          belongs in the chat scroll, not a bar stuck to the message area) —
+          and it already IS in the scroll, as the answer mail the agent
+          received. Nulled/interrupted states stay visible on the inbox rows. */}
+      {node.ask && (node.ask.status === 'open' || node.ask.status === 'pending') && (
         <AskCard ask={node.ask} slug={slug} toast={toast}
           seat={node.seat ?? 0}
           committed={(node.grant ?? 0) - (node.free ?? 0)}

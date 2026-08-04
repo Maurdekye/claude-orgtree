@@ -32,12 +32,16 @@ export interface MailListProps {
   onRetract?: (m: MailRow) => void
   jumpTo?: string | null
   fileHref?: (path: string) => string
+  /** custom reading-pane body — return non-null to REPLACE the md body AND
+   *  the reply UI (asks: the response form IS the body, user ruling
+   *  2026-08-04). Null falls through to the normal rendering. */
+  renderBody?: (m: MailRow) => ReactNode | null
 }
 
 const MAIL_WINDOW = 40
 
 export function MailList({ pending = [], delivered = [], waitLabel, sender, outgoing,
-  onRead, onReply, onRetract, jumpTo, fileHref }: MailListProps) {
+  onRead, onReply, onRetract, jumpTo, fileHref, renderBody }: MailListProps) {
   // ONE order, by send time, always — never grouped, never re-grouped.
   //
   // Unread used to sort as its own block on top, which meant the list
@@ -105,7 +109,10 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
   // moment you click OFF it — select another mail, or leave the list
   const curRef = useRef<MailRow | undefined>(undefined); curRef.current = cur
   const readRef = useRef(onRead); readRef.current = onRead
-  const leave = (m: MailRow | undefined) => { if (m?._wait && m.id) readRef.current?.(m) }
+  // ask rows are not real mail — their ids must never reach markRead
+  const leave = (m: MailRow | undefined) => {
+    if (m?._wait && m.id && !m._ask) readRef.current?.(m)
+  }
   useEffect(() => () => leave(curRef.current), [])
   const party = partyOf
   // a custom sender renderer owns the whole head identity (it receives the
@@ -116,8 +123,9 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
   // reply from where you read (№11): only for incoming mail whose sender is a
   // plain agent id — @-sentinels (@user/@system/@ext:/@org:/@mcp:) route
   // elsewhere, and slugify guarantees no agent name starts with '@'
-  const replyable = Boolean(onReply && cur && !outgoing
+  const replyable = Boolean(onReply && cur && !outgoing && !cur._ask
     && !String(party(cur) ?? '').startsWith('@'))
+  const custom = cur ? renderBody?.(cur) ?? null : null
   if (!all.length) return <div className="dim pad">no mail yet</div>
   return (
     <div className="mailer">
@@ -189,7 +197,9 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
               <span className="dim">{cur.at}</span>
               {cur._wait && <span className="wait">{waitLabel}</span>}
             </div>
-            <div className="mailer-body md" dangerouslySetInnerHTML={md(cur.body)} />
+            {custom
+              ? <div className="mailer-body">{custom}</div>
+              : <div className="mailer-body md" dangerouslySetInnerHTML={md(cur.body)} />}
             {(cur.attachments ?? []).length > 0 && (
               <div className="attach-row">
                 {/* extern-shaped attachments may lack `path` — a download

@@ -944,6 +944,13 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
         width: bounds.w, height: bounds.h,
         transform: `translate(${view.x}px, ${view.y}px) scale(${view.z})`,
         '--invz': Math.min(2.4, Math.max(1 / Z_MAX, 1 / view.z)).toFixed(3),
+        // UNCLAMPED counter-scale for the hire chips (user report 2026-08-04:
+        // "the chips disappear too soon when zooming out"). The 2.4 clamp let
+        // chips shrink with the world below z≈0.42 while the card was still
+        // usable; the hire gesture stays screen-constant for as long as the
+        // card exists. Other --invz users keep the clamp — a screen-constant
+        // badge on a distant card is noise, a screen-constant CONTROL is not.
+        '--invzf': Math.max(1 / Z_MAX, 1 / view.z).toFixed(3),
       }}>
         <svg className="edges" width={bounds.w} height={bounds.h}>
           {[...map.values()].filter((n) => n.parent && !n.isBearerOf
@@ -1055,7 +1062,9 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
               onJump={(id) => centerOn(id)}
               map={map} op={op} slug={slug} toast={toast}
               compactAt={tree.compact_at} maxTop={tree.max_top_grant ?? 1000}
-              inboxCount={(tree.user_inbox_count ?? 0) + (tree.credit_requests?.length ?? 0)}
+              /* asks_open covers pending credit requests AND open questions —
+                 adding credit_requests too would double-count */
+              inboxCount={(tree.user_inbox_count ?? 0) + (tree.asks_open ?? 0)}
               onInbox={() => {
                 const nw = tree.user_inbox_newest ?? new Date().toISOString()
                 localStorage.setItem('orgtree-inbox-seen-' + slug, nw)

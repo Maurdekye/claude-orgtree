@@ -39,8 +39,10 @@ snowflake, lock, layers, fullscreen, hearing.
   costs 1 · 3 · 5 · 10. The BOTTOM chips hire a subordinate; the LEFT and
   RIGHT edge chips hire a **coworker** — same superior, landing on that side
   of the card (the draft previews the spot, and the ordering is pinned at
-  birth). Side chips don't appear on pile/crowd stacks, where the card's
-  edges belong to the stack's layers. Chips are NEVER disabled by the node's own free
+  birth). Only ONE set shows at a time — the edge your cursor is closest
+  to — and the chips stay screen-sized however far you zoom out, for as
+  long as the card is on screen. Side chips don't appear on pile/crowd
+  stacks, where the card's edges belong to the stack's layers. Chips are NEVER disabled by the node's own free
   credits: a user hire cascades (§4.6), automatically granting every node up
   the chain whatever it lacks (each inflation is reported as a warning and a
   notice — reclaim with reallocate when done). The draft's grant slider has
@@ -434,15 +436,18 @@ errors.
 
 ## Asks (agents asking YOU — questions and credit requests)
 
-An **ask** is an interactive card that appears in TWO places at once: pinned
-above the composer on the asking agent's desk, and in your ✉ inbox. Answer
-from whichever you reach first — the answer is sent to the agent as ordinary
-mail (which wakes it), and the card nulls in both places. If any OTHER mail
-wakes the agent before you answer, the ask is voided everywhere and the
-agent must re-ask. A nulled card stays visible wearing its reason: grey
-**answered**/**denied**, orange **interrupted**. While an ask is open, the
-agent's card wears the bright pulsing aura and the header's second ✉ icon
-glows.
+An **ask** arrives as its OWN mail row in your ✉ inbox, interleaved
+chronologically with ordinary mail and counted in the unread badge — the
+only difference is that the reading pane shows the **response UI as the
+body** instead of a reply box. The same card is also pinned above the
+composer on the asking agent's desk while the ask is open. Answer from
+whichever you reach first — the answer is sent to the agent as ordinary
+mail (which wakes it, and appears in its chat scroll like any message), and
+the ask nulls everywhere: the desk pin disappears, and the inbox row stays
+in the flow wearing its reason — grey **answered**/**denied**, orange
+**interrupted** (other mail woke the agent first; it must re-ask). While an
+ask is open, the agent's card wears the bright pulsing aura and the
+header's second ✉ icon glows.
 
 **Questions** (orgtree_ask) mirror Claude Code's own ask shape: 2–4 option
 buttons (sometimes multi-select) plus a free-text box that always works —

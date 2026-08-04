@@ -905,19 +905,27 @@ main {
 /* ------------------------------------------------- H·S·O·F hover spawn chips */
 .hsof {
   position: absolute; left: 50%;
-  /* counter-scale against zoom (--invz set on .space): the hire chips are THE
-     hire gesture — screen-constant size AND gap at every zoom level */
+  /* counter-scale against zoom (--invzf set on .space, deliberately UNCLAMPED
+     unlike --invz): the hire chips are THE hire gesture — screen-constant
+     size AND gap at every zoom level, for as long as the card exists (user
+     report 2026-08-04: the clamped scale let them shrink away while zoomed
+     far out) */
   /* origin is top-center, so the VISUAL top = the layout top. Anchor that top
      1px INSIDE the card: the chips are only hit-testable while the card is
      hovered, so any gap between border and chips is a dead zone that hides
      them before they can be clicked — the hover region must be contiguous. */
   bottom: -21px;
-  transform: translateX(-50%) scale(var(--invz, 1));
+  transform: translateX(-50%) scale(var(--invzf, 1));
   transform-origin: top center;
   display: flex; gap: 4px; opacity: 0; pointer-events: none;
   transition: opacity .15s; z-index: 3;
 }
-.sq:hover > .hsof { opacity: 1; pointer-events: auto; }
+/* NEAREST-EDGE gating (user ruling 2026-08-04): never all three sets at once —
+   the card tracks which edge the cursor is closest to (edge-b/l/r on .sq) and
+   only that edge's chips show. Same rule with and without the desk. */
+.sq.edge-b:hover > .hsof:not(.side),
+.sq.edge-l:hover > .hsof.side-l,
+.sq.edge-r:hover > .hsof.side-r { opacity: 1; pointer-events: auto; }
 /* F-03 coworker chips: vertical columns riding the card's edges — same hover
    gate and counter-scaling as the bottom row, anchored 1px inside the border
    for the same contiguous-hover reason */
@@ -925,16 +933,19 @@ main {
   left: auto; right: auto; bottom: auto; top: 50%;
   flex-direction: column;
 }
-.hsof.side-l { left: -21px; transform: translateY(-50%) scale(var(--invz, 1)); transform-origin: center right; }
-.hsof.side-r { right: -21px; transform: translateY(-50%) scale(var(--invz, 1)); transform-origin: center left; }
+.hsof.side-l { left: -21px; transform: translateY(-50%) scale(var(--invzf, 1)); transform-origin: center right; }
+.hsof.side-r { right: -21px; transform: translateY(-50%) scale(var(--invzf, 1)); transform-origin: center left; }
 /* at desk fill the panel is opaque — push the columns fully outside */
 .sq.desk > .hsof.side-l { left: -24px; }
 .sq.desk > .hsof.side-r { right: -24px; }
-/* the desk and the switchboard KEEP their hire chips (user spec): always
-   visible — no hover gate — and pushed fully below the border. They were
-   anchored 1px inside the card (right for the hover-region rule at overview
-   zoom), which at desk fill buried them behind the opaque desk panel. */
-.sq.desk > .hsof { opacity: 1; pointer-events: auto; bottom: -24px; }
+/* the desk and the switchboard KEEP their hire chips (user spec): no hover
+   gate — but still one edge at a time, following the cursor. Pushed fully
+   below the border (1px-inside is right at overview zoom but buries the row
+   behind the opaque desk panel). */
+.sq.desk.edge-b > .hsof:not(.side),
+.sq.desk.edge-l > .hsof.side-l,
+.sq.desk.edge-r > .hsof.side-r { opacity: 1; pointer-events: auto; }
+.sq.desk > .hsof:not(.side) { bottom: -24px; }
 .hsof button {
   width: 22px; height: 22px; padding: 0; border-radius: 50%;
   font-family: var(--mono); font-size: 10px; font-weight: 700;

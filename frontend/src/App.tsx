@@ -21,10 +21,11 @@ import { deskDpi, setDeskDpi, usePolled, TIERS } from './canvas/shared'
 import { AskCard } from './canvas/asks'
 import { addPending, dropPending, ingestPulse, ingestStream, resetConvos } from './convo'
 import type {
-  AudiencesPayload, DefaultsPayload, InboxPayload, KioskSpecRequest,
+  AskInfo, AudiencesPayload, DefaultsPayload, InboxPayload, KioskSpecRequest,
   MailEntry, OpRequest, OrgEvent, OrgListEntry, SweepPreview, ToastFn,
   ToastUndo, TreeFrozen, TreeNode, TreePayload,
 } from './types'
+import type { MailRow } from './canvas/shared'
 
 const TIER_LETTER: Record<string, string> = { haiku: 'H', sonnet: 'S', opus: 'O', fable: 'F' }
 const USER = '@user'       // typed actor sentinels — a node may be NAMED user/system
@@ -794,31 +795,32 @@ function InboxPanel({ slug, tree, toast, refresh, close, jumpTo }: {
   const act = (action: string, node: string, target?: string | null) =>
     audienceAction(slug, action, node, target)
       .catch((e: Error) => toast([`error: ${e.message}`]))
+  // Asks ride the inbox as their OWN mail rows (user ruling 2026-08-04),
+  // interleaved chronologically with real mail — the only difference is the
+  // reading pane shows the response UI as the body instead of a reply box.
+  // Open asks join the unread group; resolved ones sit in the flow wearing
+  // their nulled state (grey answered/denied, orange interrupted).
+  const askRow = (a: AskInfo): MailRow => ({
+    id: 'ask:' + a.id, from: a.node, at: a.at,
+    kind: (a.kind === 'credit' || a.old != null) ? 'credit request' : 'question',
+    body: a.question ?? `asks for credits: ${a.old} → ${a.new}`,
+    _ask: a,
+  } as MailRow)
+  const askOpen = (a: AskInfo) => a.status === 'open' || a.status === 'pending'
+  const asks = tree.asks ?? []
+  const askPending = asks.filter(askOpen).map(askRow)
+  const askDone = asks.filter((a) => !askOpen(a)).slice(-8).map(askRow)
+  const renderAskBody = (m: MailRow) => m._ask ? (
+    <AskCard ask={m._ask} slug={slug} toast={toast}
+      seat={nodes.get(m._ask.node)?.seat ?? 0}
+      committed={(nodes.get(m._ask.node)?.grant ?? 0)
+        - (nodes.get(m._ask.node)?.free ?? 0)}
+      maxTop={tree.max_top_grant ?? 1000} />
+  ) : null
   return (
     <div className="overlay" onClick={close}>
       <div className="settings wide" onClick={(e) => e.stopPropagation()}>
         <h3><MailIcon fontSize="inherit" /> your inbox</h3>
-        {/* F-04/F-05: the same ask cards the agents' desks show — answerable
-            from EITHER place; answering (or an interrupt) nulls both. Open
-            cards first, then a short nulled history wearing its reasons. */}
-        {(() => {
-          const all = tree.asks ?? []
-          const live = all.filter((a) => a.status === 'open' || a.status === 'pending')
-          const done = all.filter((a) => !(a.status === 'open' || a.status === 'pending')).slice(-5)
-          if (!live.length && !done.length) return null
-          const nodeOf = (id: string) => nodes.get(id)
-          return (
-            <>
-              <div className="field-label">asks — questions & credit requests</div>
-              {[...live, ...done].map((a) => (
-                <AskCard key={a.id} ask={a} slug={slug} toast={toast}
-                  seat={nodeOf(a.node)?.seat ?? 0}
-                  committed={(nodeOf(a.node)?.grant ?? 0) - (nodeOf(a.node)?.free ?? 0)}
-                  maxTop={tree.max_top_grant ?? 1000} />
-              ))}
-            </>
-          )
-        })()}
         {userReqs.length > 0 && (
           <>
             <div className="field-label">audience requests</div>
@@ -848,14 +850,16 @@ function InboxPanel({ slug, tree, toast, refresh, close, jumpTo }: {
         )}
         <MailFolders folder={folder} setFolder={setFolder}
           folders={['inbox', 'sent', 'record']}
-          unread={box?.pending.length ?? 0} />
+          unread={(box?.pending.length ?? 0) + askPending.length} />
         <div className="mailpane">
           {folder === 'record'
             ? <OrgRecord events={events} />
             : box == null
             ? <div className="dim">loading…</div>
             : folder === 'inbox'
-              ? <MailList pending={box.pending} delivered={box.delivered}
+              ? <MailList pending={[...box.pending, ...askPending]}
+                  delivered={[...box.delivered, ...askDone]}
+                  renderBody={renderAskBody}
                   waitLabel="unread" jumpTo={jumpTo}
                   onRead={(m: MailEntry) => markRead(slug, [m.id])
                     .then(() => { refresh?.() }).catch(() => {})}

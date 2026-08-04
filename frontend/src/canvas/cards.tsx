@@ -66,7 +66,9 @@ export function UserNode({ pos, isDrop, stats, inboxCount, seats,
     // the mail glow is GONE (user ruling 2026-08-04): unread mail keeps its
     // count badge; the only thing that glows anywhere is an agent that needs
     // the user's answer (see .asking), echoed by the header ask icon
-    <div className={'sq user' + (focused ? ' desk eyeboard' : '')
+    // static edge-b: the eye only has bottom chips, so the nearest-edge
+    // gate always resolves to them
+    <div className={'sq user edge-b' + (focused ? ' desk eyeboard' : '')
       + (isDrop ? ' drop' : '')}
       style={{
         transform: `translate(${pos.x}px, ${pos.y}px)`,
@@ -673,7 +675,22 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, m
   // pile fronts zoom on a plain CENTER click (user spec) — track the
   // pointer-down point so a drag's trailing click doesn't re-zoom
   const downAt = useRef<Pt | null>(null)
-  const cls = ['sq', node.state, focused ? 'desk' : lod, 'tier-' + node.tier]
+  // NEAREST-EDGE chip gating (user ruling 2026-08-04): only the set at the
+  // edge the cursor is closest to shows — bottom hires a report, left/right
+  // hire a coworker. Tracked here from the card's own pointer moves;
+  // normalized distances so the card's aspect ratio doesn't bias the pick.
+  const [edge, setEdge] = useState<'b' | 'l' | 'r'>('b')
+  const trackEdge = (e: React.PointerEvent<HTMLDivElement>) => {
+    const r = e.currentTarget.getBoundingClientRect()
+    if (!r.width || !r.height) return
+    const x = (e.clientX - r.left) / r.width
+    const y = (e.clientY - r.top) / r.height
+    const d = Math.min(x, 1 - x, 1 - y)
+    const next = d === 1 - y ? 'b' : d === x ? 'l' : 'r'
+    setEdge((cur) => (cur === next ? cur : next))
+  }
+  const cls = ['sq', node.state, focused ? 'desk' : lod, 'tier-' + node.tier,
+               'edge-' + edge]
   if (node.busy) cls.push('busy')
   if (dragging) cls.push('lifted')
   if (isDrop) cls.push('drop')
@@ -707,7 +724,7 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, m
         downAt.current = { x: e.clientX, y: e.clientY }
         if (!focused) onDragStart(e, node.id)
       }}
-      onPointerMove={(e) => onDragMove(e, node.id)}
+      onPointerMove={(e) => { trackEdge(e); onDragMove(e, node.id) }}
       onPointerUp={(e) => onDragEnd(e, node.id, node, focused)}
       /* a UA-initiated cancel (touch arbitration, capture loss) must ABORT
          the drag — the end path's no-drop branch commits a reorder POST, so
