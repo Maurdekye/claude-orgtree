@@ -291,6 +291,24 @@ machines"); the user reversed the mechanism one day later for the
 unattended-host case, and the inheritance objection is handled by the strip
 rather than dismissed.
 
+### D-096 · rename is full identity, and the old name BOUNCES
+Ruling (user, 2026-08-05): the user, the superior, or any ancestor —
+never the agent itself — may rename an agent. Rename is FULL identity:
+the id re-keys everywhere (lineage generations, pointers, audiences,
+mailbox and per-node records, open asks), the scratch dir and the CLI
+project dir move with it (resume is project-scoped — without the move
+the agent loses its session), and it is refused mid-turn. Historical
+mail/archives/the event log keep the old name — warn, don't rewrite.
+Mail addressed to the old name BOUNCES; no alias auto-bridge (user: a
+same-named successor would silently inherit redirected mail).
+The ask form mirrors Claude Code's AskUserQuestion exactly (same-day
+ruling from a side-by-side): header tab + ✕ (dismiss = a real verb,
+nulled grey, agent told), option rows {label, description} radio/
+checkbox, Other with free text, submit bar; asks ride the user inbox as
+their OWN mail rows with the response UI as the body; the credit card is
+the same form family with the agent's REAL bar (org scale, seat + child
+slabs, rungs) whose height is the staged offer.
+
 ### D-095 · moves never touch a user audience — promotion leaves it dormant
 Ruling (user, 2026-08-05): an agent holding a user audience KEEPS it when
 dragged to top level, and keeps it back down. An audience is an explicit,

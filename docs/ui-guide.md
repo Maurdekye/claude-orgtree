@@ -521,6 +521,11 @@ it appears on hover, next to ⚙). The desk's inbox tab is the same view inline.
 
 ## Per-agent configuration (⚙ on a card)
 
+The top row RENAMES the agent (you, or via orgtree_rename any of its
+ancestors): full identity — id, mailbox, working folder and session all
+move. History keeps the old name and mail sent to it bounces, so the
+toast repeats that warning. Refused while the agent is mid-turn.
+
 - **folder access**: the working directories this agent may touch; click
   RW/RO to toggle write access (RO is enforced via permission rules). Agents
   can only be granted folders their parent holds; shrinking a grant clamps the

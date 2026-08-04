@@ -1198,7 +1198,10 @@ when it was not, so this stays open rather than closed with an excuse.
 
 ---
 
-## Future feature pass — SPECIFIED, NOT BUILT
+## Future feature pass — status 2026-08-05: F-01, F-03, F-04+F-05 (as the
+## unified ask system), and F-07 are BUILT (see DECISIONS D-090..D-094,
+## D-096 and the ui-guide); F-02 is investigated-only; F-06 is next; F-08
+## stays HELD. Entries below are kept as the original specs.
 
 User, 2026-08-02: *"add two new features to the docket, but dont implement them: create a new
 section for a future feature pass with them."* Nothing below has been started.

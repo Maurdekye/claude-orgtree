@@ -1,3 +1,5 @@
+<!-- RETIRED 2026-08-05 (doc sweep): P1-P5 are fully implemented (D-032);
+     this analysis is historical. Current truth: DECISIONS.md + the code. -->
 # State architecture review — why the bugs feel like whack-a-mole
 
 **Status: FINDINGS ONLY. Nothing in this document has been implemented.** The user asked for an
