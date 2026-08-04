@@ -1794,6 +1794,68 @@ Both pagers become status lines rather than controls.
 `tsc` clean. ⚠ Not verified live: the running deployment carries the D-55 agent's rebuild, and
 re-verifying the scroll behaviour needs a fresh build — worth a look on the next deploy.
 
+## D-57 · The message-visibility suite — seven more defects, all reproduced first
+> okay you know what i want to be absolutely certain this bug is completely squashed well and good.
+> spawn a subagent to design a massive test suite purely centered around this issue … do whatever
+> you have to do in order to completely destroy this bug.
+
+**The suite was not a formality: it found seven defects, and every one was reproduced before it was
+fixed.** Write-up at `docs/message-visibility-suite.md`.
+
+**The invariant:** a sent message is on screen continuously — `pending_mail` ∪ transcript ∪ the
+client ghost — **and never appears twice**. Both directions asserted, after *every* world step
+rather than by a poller.
+
+| | defect | before → after |
+|---|---|---|
+| ① | `_in_transcript` matched a **stripped** body against a transcript that stores it raw ⇒ any message starting with whitespace rendered twice for the whole first response (median **2.4 s**, max **137 s**) | 6/6 configs duplicated → 0 |
+| ② | `pending_mail[-20:]` ⇒ the **21st queued message pushed the 1st off the payload**, after its ghost had graduated against the row that just vanished | msg #0 gone at send #21 → all 25 visible |
+| ③ | `serverCopies` searched for the ghost's **full** text inside bodies the server truncates to 2000 chars ⇒ any message >2 kB duplicated until the transcript caught up — forever if queued/frozen/archived | 14 configs → 0 |
+| ④ | `serverCopies`' **20-row window is smaller than a turn** (real max gap between user messages: **138 rows**) ⇒ ghost stranded for the session — this is D-53's lead 3, which D-55 flagged and did not claim | 6 configs stranded → 0 |
+| ⑤ | `pop_steer` **confirmed the journal synchronously and wrote its replacement on a daemon thread** — the message in no carrier in between | 1 of 6 live runs gapped → 12/12 clean |
+| ⑥ | `load_org` had **no retry where `save_org` has one** ⇒ `GET /chat` returning **HTTP 500** at random under agent load | **3 of 123 live turns (2.4 %)** → retried |
+| ⑦ | a whitespace-only body crashed `post_mail` (`"".splitlines()[0]` is an IndexError) | 500 → posts |
+
+☞ **⑥ is the one to notice.** It is not this bug family at all — the desk's own refresh was failing
+outright ~2.4 % of the time while an agent worked, and nobody had reported it. `save_org` retries
+`os.replace` because a reader may hold the file open; the collision is symmetric and read-only
+endpoints deliberately read **outside** `DOC_LOCK` (№22), so only one side was ever defended.
+
+**Scale actually run:** 183 hermetic checks over **187 lifecycle configurations** · **99 live turns
+/ 6 824 scored payload samples** against the fake CLI · **10 real-CLI turns / 1 654 samples**
+(haiku — never fable, per the user) · 4 DOM runs × 360 samples at 40 Hz.
+
+**The rig.** `ORGTREE_CLAUDE_CLI` (`supervisor.py:174`) is the seam: `backend/tests/fakecli.js` is a
+Claude Code stand-in with **programmable timing**, which turns D-55's race into a dial. Real-CLI runs
+measured the true window at **~1.0–1.2 s** (cold and warm alike; 0.46–1.24 s steered) — the pending
+row now covers all of it and hands over inside one 50 ms sample.
+`backend/tests/msgvis.py` ports `convo.ts`'s graduation rule into Python and carries a **drift
+guard**: it greps the four source files for the nine expressions it mirrors and fails loudly if any
+change. `--legacy-client` restores the pre-fix client rules and still fails exactly the 20
+configurations ③ and ④ describe, so those stay re-measurable without git.
+
+**Reported, not fixed — one measured exception.** If the CLI dies *after* writing the user record
+and *before* its first stdout event, `_fold_back_undelivered` re-queues a message the transcript
+already shows (22 of 32 samples, indefinitely). That is at-least-once delivery working as designed,
+not this family; the principled fix is to apply the same transcript-evidence test `node_chat` uses.
+The suite prints it as an exception on every run rather than hiding it.
+
+**Known-fragile, by design.** 9–10 cases print on every run where the invariant holds only because
+of a CLI behaviour measured not to occur (115/115 real echoes are plain user records preceding the
+first assistant record). The `fragile()` helper **requires the unreachability claim to name a
+measurement**. They become live bugs the day the CLI changes.
+
+**Not covered:** the DOM continuously (one scenario; Playwright is not a dependency) · the websocket
+(polled, not subscribed) · multi-view agreement · the inbox-reply path (audited and reasoned, not
+measured) · sandboxed orgs (container start stands in as a shim dial) · compaction live · beyond 800
+queued mails or a 200-row burial. ☞ The durable cure for the window class is **a per-send id
+threaded through the POST** — D-51 proposed it, nobody has built it.
+
+**Gates, re-run independently by the branch owner:** ledger **186/186** · hermetic **183/183** · live
+**40/40** (`--quick`) · pyright **0 errors** · `tsc` clean. Throwaway orgs deleted, org list verified
+back to `game-club` + `resonite`. ⚠ `frontend/dist` was rebuilt, so the served bundle now carries
+both the `convo.ts` fixes and D-56's paging changes — a page reload picks up both.
+
 ## Carried, not done
 
 | item | state |
