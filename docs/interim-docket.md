@@ -1478,7 +1478,7 @@ Boot-start is the easy half. Three measured findings shape the rest:
 - ⚠ **Authentication expires, and that is the ceiling on "fully autonomous."** Measured from the
   credentials file: the access token lasts ~8 h (refreshed automatically, not a concern), but
   `refreshTokenExpiresAt` is **~15 days out**, and re-auth is interactive. Whether the CLI rolls
-  the refresh token forward was **not** verified — it is spec §11 №2 and one experiment settles it.
+  the refresh token forward was **not** verified — it is spec §12 №1 and one experiment settles it.
   Either way the cheap fix is the same and is worth building **before** the mailserver, since it
   applies to any unattended orgtree: read those two timestamps, and mail the user days before they
   lapse. Finding out from a pile of failed 3am turns is the worst available outcome.
@@ -1525,7 +1525,26 @@ user-bound requests auto-denied and org mail as its only channel. Two findings:
 ⚠ Headless is **not** kiosk: a kiosk is sealed from the outside world, headless *depends* on it.
 An org that is both cannot communicate at all.
 
-**⑨ The six build questions — ANSWERED (user, 2026-08-04).** Full table at spec §11: built by the
+**⑩ Inbox scoping + read receipts** (user, 2026-08-04). Spec §10.
+
+- **Scoping:** every hub read is authenticated by the org secret and returns only that org's mail;
+  no endpoint exposes another org's queue, including to the hub UI. ⚠ This constrains the broadcast
+  idea — a group address must **fan out into per-org copies at the hub**, not create a shared
+  thread. It also means the hub's "mimic of the mail UI" is per-org and behind the secret; an
+  operator dashboard listing all traffic would be the shared mailbox this rules out. Unchanged
+  inside an org: inbound mail still reaches every live top-level agent and inbox-audience holder
+  (`ledger.py:969`).
+- **Read receipts:** orgtree can report something better than "delivered". `_confirm_delivered`
+  (`supervisor.py:1250`) fires only once the CLI emits a real event after mail was drained into a
+  turn envelope — a **true read signal**, not a transport ack, and the same journal whose
+  unconfirmed batches fold back on restart. Five states: `queued` → `sent` → `fetched` →
+  `delivered` → `read`. Receipts ride the existing long poll, and `fetched` without `read` is the
+  useful diagnostic (recipient frozen, out of credits, or no live top-level agent). ☞ Surface
+  `read` to the sending agent — "delivered but unread for six hours" is what stops a re-send loop
+  between two unattended orgs. ⚠ Receipts leak when an org is running; acceptable on the closed
+  network ruled for, revisit if that boundary ever changes.
+
+**⑨ The six build questions — ANSWERED (user, 2026-08-04).** Full table at spec §12: built by the
 **implementer**; orgs may join a hub **after creation**; **10+** participants; the hub runs on
 **Linux**; `net_wake` ships **`auto` only** (`notify`/`curated` documented but not built); and the
 hub carries **strictly org-to-org** mail.

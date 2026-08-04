@@ -1,7 +1,7 @@
 <!-- ⚠ EXPLORATION ONLY — the user asked for design and documentation, NOT
      implementation ("as usual don't implement, just explore and document",
-     2026-08-04). Nothing here is built. Several open questions at §10 need a
-     user ruling before anyone starts. Author: session 4f69f83a. -->
+     2026-08-04). Nothing here is built. Open questions at §12 need a user
+     ruling before anyone starts. Author: session 4f69f83a. -->
 
 # orgtree mailserver — a public hub for org-to-org mail across machines
 
@@ -577,7 +577,73 @@ org mail is its only channel. An org that is both is an org that cannot communic
 
 ---
 
-## 10. Further suggestions
+## 10. Inbox scoping and read receipts (user, 2026-08-04)
+
+> an orgs inbox should only show mail directed to it. also for this cross server boundary we
+> probably want read receipts.
+
+### 10.1 Scoping — the hub is not a shared mailbox
+
+**Every read is scoped to the authenticated org.** The org secret (§3) authenticates the poll; the
+hub returns only rows addressed to that org, and there is **no endpoint that returns another org's
+queue** — not for admins, not for the hub UI. The roster carries addresses, presence, and the
+directory blurb only; never message content or counts of who is talking to whom.
+
+⚠ **This constrains the broadcast idea (§11 №1).** A group address must **fan out into per-org
+copies at the hub**, each one directed at its recipient, rather than creating a shared thread
+everyone reads. Same visible feature, and the invariant survives.
+
+⚠ **It also constrains the hub's own UI.** "A mimic of the mail UI" must be per-org and behind the
+org's secret — an operator dashboard that lists all traffic would be exactly the shared mailbox
+this rules out. The hub operator can of course read the database; that is a property of hosting it
+(§7 №7), and the answer is that the UI should not make it casual.
+
+Note this is about the **hub**. Inside an org, inbound mail still reaches every live top-level agent
+and every org-inbox audience holder — that is the org-inbox model as specified, and it is unchanged
+(`ledger.py:969`).
+
+### 10.2 Read receipts — orgtree can report something better than "delivered"
+
+Most systems can only say a message was fetched. Here the delivery journal already knows when an
+agent **actually received** it: `_journal_drain` writes a token when mail is drained into a turn
+envelope, and `_confirm_delivered` (`supervisor.py:1250`) fires only once the CLI emits a real event
+afterwards — the same machinery whose unconfirmed batches get folded back on restart
+(`supervisor.py:2654-2668`). That is a true read signal, not a transport ack.
+
+**Five states, each with an existing owner:**
+
+| state | set when | source |
+|---|---|---|
+| `queued` | the sender's spool holds it (§4) | sender instance |
+| `sent` | the hub accepted it | hub |
+| `fetched` | the recipient instance pulled and acked it | recipient instance |
+| `delivered` | it landed in the recipient's org inbox | `post_external_mail` |
+| **`read`** | an agent's turn actually consumed it | `_confirm_delivered` |
+
+Design notes:
+
+- **Receipts ride the existing long poll** — piggyback on the next poll or ack call. No second
+  connection, no callback, nothing new to keep alive.
+- **They complete the sender's view**, which today is a quiet lie: a failed outbound send appends a
+  warning to the agent's tool result while the ledger has already logged the message as sent
+  (`api.py:2093`, `ledger.py:822`). §4's spool gives it a real status; receipts give it the far end.
+- ☞ **Surface `read` to the sending agent, because it changes behaviour.** "Delivered but unread
+  for six hours" is the signal that a peer is down or busy, and it is what stops an agent from
+  re-sending — which matters most under §9.4, where a re-send loop between two unattended orgs is
+  the expensive failure.
+- **`fetched` without `read` is the diagnostic that matters**: mail arrived, no agent has consumed
+  it. That means the recipient is frozen, out of credits, has no live top-level agent, or is in
+  `notify` mode. Worth rendering distinctly rather than collapsing into "delivered".
+- ⚠ **Receipts leak activity.** They tell a peer when your org is running and when its agents woke.
+  On the closed collaborative network this is ruled for, that is acceptable and useful — but it is
+  a real disclosure, so if the hub ever leaves that network the receipt policy needs revisiting
+  alongside §3's boundary assumption.
+- **Never let a receipt fail a send.** A receipt that cannot be delivered is dropped; correspondence
+  must not depend on the back-channel.
+
+---
+
+## 11. Further suggestions
 
 Ordered by value-per-effort.
 
@@ -608,7 +674,7 @@ Ordered by value-per-effort.
 
 ---
 
-## 11. Open questions — for the user, not for me to assume
+## 12. Open questions — for the user, not for me to assume
 
 ### ✓ Closed by user ruling, 2026-08-04
 
@@ -619,16 +685,16 @@ Ordered by value-per-effort.
 | joining | **open** — reachability is the authorization, on a closed network (§3) |
 | default accept policy | **`open`**, following from the above (§7) |
 | who builds it | **the implementer**, not this session |
-| join a hub after creation | **yes** — configurable at creation *and* later; §11 №1 is closed |
+| join a hub after creation | **yes** — configurable at creation *and* later; §12 №1 is closed |
 | scale | **10+ participants** — see the consequence below |
 | hub host | **Linux** (§8, §9.3) |
 | `net_wake` positions | **`auto` only** for v1; `notify`/`curated` are not built |
 | scope | **strictly org-to-org** — the hub does not relay `@ext:`/`@mcp:` |
 
 ⚠ **10+ participants changes two v1 calls.** At that size **threading is no longer deferrable**
-(§10 №2): a flat org inbox holding concurrent conversations with ten peers is unreadable to an
+(§11 №2): a flat org inbox holding concurrent conversations with ten peers is unreadable to an
 agent, and a `thread_id` cannot be retrofitted into stored history. The **directory blurb**
-(§10 №3) moves from nice-to-have to necessary for the same reason — nobody addresses ten orgs
+(§11 №3) moves from nice-to-have to necessary for the same reason — nobody addresses ten orgs
 correctly from slugs alone. Rate limits should be sized for ten peers × the §9.4 loop breaker, not
 for two.
 
