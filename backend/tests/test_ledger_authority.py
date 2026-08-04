@@ -1408,22 +1408,53 @@ def section_edges():
     wd.hire(USER, "p", "haiku", 1, "c2")
     check("max_children refuses the hire that would cross it", lambda: expect_error(
         lambda: wd.hire(USER, "p", "haiku", 1, "c3"), "reports (cap)"))
-    # ☞ a NEW module tier must reach an org created BEFORE it existed.
-    # Org.create COPIES TIERS/MODELS into the doc, so the constant alone does
-    # nothing for existing orgs — switch_model refused "unknown tier 'opus48'"
-    # on the user's real orgs while the constant plainly had it (2026-08-04).
-    # Every other test builds a fresh org, which is exactly why nothing caught
-    # it; this one starts from a doc that predates the tier.
+    # ☞ a table added to the module must reach an org created BEFORE it
+    # existed. Org.create COPIES tiers/models into the doc, so the constant
+    # alone does nothing for existing orgs — switch_model refused a freshly
+    # added tier on the user's real orgs while the constant plainly had it
+    # (2026-08-04). Every other test builds a fresh org, which is exactly why
+    # nothing caught it; this one starts from a doc that predates the entry.
     old = deep_org()
-    del old.d["tiers"]["opus48"], old.d["models"]["opus48"]
+    old.d["tiers"].pop("fable"); old.d["models"].pop("fable")
     old.d["tiers"]["sonnet"] = 42                     # a custom price
     reloaded = Org(json.loads(json.dumps(old.d)))     # what load_org does
-    check("a tier added to the module reaches an org that predates it",
-          lambda: eq(reloaded.d["tiers"].get("opus48"), TIERS["opus48"]))
+    check("a table entry added to the module reaches an org that predates it",
+          lambda: eq(reloaded.d["tiers"].get("fable"), TIERS["fable"]))
     check("…and its model id comes with it",
-          lambda: eq(reloaded.d["models"].get("opus48"), MODELS["opus48"]))
+          lambda: eq(reloaded.d["models"].get("fable"), MODELS["fable"]))
     check("…while a per-org custom seat price is NOT overwritten",
           lambda: eq(reloaded.d["tiers"]["sonnet"], 42))
+
+    # model VERSIONS are a subcategory of a tier, never a tier (user ruling
+    # 2026-08-04): four tiers, four chips; the version lives in the gear.
+    mv = deep_org()
+    check("the tier table is exactly the four price bands",
+          lambda: eq(sorted(mv.d["tiers"]), ["fable", "haiku", "opus", "sonnet"]))
+    check("model_for defaults to the tier's own model",
+          lambda: eq(mv.model_for("top"), MODELS["opus"]))
+    mv.set_scope(USER, "top", model_version="4.8")
+    check("a pinned version changes the --model id, not the tier",
+          lambda: (eq(mv.model_for("top"), "claude-opus-4-8"),
+                   eq(mv.node("top")["model"], "opus"))[0])
+    check("…and not the seat cost",
+          lambda: eq(mv.seat_cost("top"), TIERS["opus"]))
+    check("an unknown version is refused",
+          lambda: expect_error(lambda: mv.set_scope(USER, "top",
+                                                    model_version="9.9"),
+                               "no model version"))
+    check("a tier with no versions refuses any pin",
+          lambda: expect_error(lambda: mv.set_scope(USER, "leaf-a1",
+                                                    model_version="4.8"),
+                               "single model"))
+    mv.switch_model(USER, "top", "sonnet")
+    check("switching TIER drops a version that belonged to the old one",
+          lambda: eq(mv.model_for("top"), MODELS["sonnet"]))
+    mv.switch_model(USER, "top", "opus")
+    check("…and switching back restores it (the pin is remembered, not lost)",
+          lambda: eq(mv.model_for("top"), "claude-opus-4-8"))
+    mv.set_scope(USER, "top", model_version="")
+    check("'' clears the pin back to the tier default",
+          lambda: eq(mv.model_for("top"), MODELS["opus"]))
 
     check("lineage bearers do not count against max_children", lambda: (
         wd.compact_split("c1", "s2"),

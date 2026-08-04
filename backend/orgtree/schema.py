@@ -63,6 +63,12 @@ class NodeScope(TypedDict):
     # the node (ledger sc["effort"]; supervisor reads sc.get("effort")).
     # Absent = the CLI default ("" clears by popping the key).
     effort: NotRequired[str]
+    # which model VERSION inside the tier (ledger.MODEL_VERSIONS) — a
+    # subcategory of the tier, not a tier of its own. Absent = the tier
+    # default. Neither a permission nor a price, so it clamps against nothing,
+    # and `Org.model_for` re-validates it against the node's CURRENT tier on
+    # every read, so a switch_model can never drag a stale choice with it.
+    model_version: NotRequired[str]
 
 
 class Denial(TypedDict):

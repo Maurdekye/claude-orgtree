@@ -985,7 +985,7 @@ def _build_cmd(org: Org, nid: str) -> list[str]:
     slug = org.d["slug"]
     sid = n["session_id"]
     first = transcript_path(sid, _transcript_root(org)) is None
-    model = org.d["models"].get(n["model"], n["model"])
+    model = org.model_for(nid)   # tier default, or this node's chosen version
     sc = n["scope"]
     # kiosk sandbox (user spec): the whole turn — CLI, bash, file I/O, web —
     # runs inside the org's container; paths below become container paths and
@@ -1866,7 +1866,7 @@ def _compact_split_body(slug: str, nid: str) -> None:
         org = store.load_org(slug)
         n = org.node(nid)
         old_sid = n["session_id"]
-        model = org.d["models"].get(n["model"], n["model"])
+        model = org.model_for(nid)   # tier default, or this node's chosen version
     if sbx.is_sandboxed(org):
         # the session lives inside the org's container — fork it there too
         try:
@@ -2420,7 +2420,7 @@ def immediate_command(slug: str, nid: str, text: str) -> bool:
     org = store.load_org(slug)
     n = org.node(nid)
     sid = n["session_id"]
-    model = org.d["models"].get(n["model"], n["model"])
+    model = org.model_for(nid)   # tier default, or this node's chosen version
     tdir = _transcript_root(org)
     if not transcript_path(sid, tdir):
         return False

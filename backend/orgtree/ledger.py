@@ -35,15 +35,7 @@ from .schema import (AudienceGrant, DirGrant, MailEntry, NodeDoc,
 
 # §3.1 — derived from published API pricing (output:input is 5:1 for every model, so the
 # scale is not a judgment call). Sonnet is 3, not its introductory 2 (expires 2026-08-31).
-# `opus48` is Opus 4.8 and costs THE SAME SEAT as opus (user request
-# 2026-08-04: "the ability to swap an agent between opus 5 and opus 4.8 … not
-# restricted by anything, just freely able to do so"). Equal cost is what makes
-# it free in practice: `switch_model` moves credits only on a seat DIFFERENCE,
-# so swapping either way is a no-op for the budget, needs no headroom, and
-# cannot bubble a shortfall up the chain. It also passes any kiosk tier cap
-# that admits `opus`, since `_check_tier_ceiling` compares seat costs.
-TIERS: Final[dict[str, int]] = {"fable": 10, "opus": 5, "opus48": 5,
-                                "sonnet": 3, "haiku": 1}
+TIERS: Final[dict[str, int]] = {"fable": 10, "opus": 5, "sonnet": 3, "haiku": 1}
 
 # №34 runaway insurance, and NOTHING else (user ruling 2026-08-04): "no need to
 # have any practical limit other than to prevent infinite recursion from a bug
@@ -57,12 +49,26 @@ MAX_CHILDREN: Final = 1024
 MODELS: Final[dict[str, str]] = {
     "fable": "claude-fable-5",
     "opus": "claude-opus-5",
-    # verified against the pinned CLI 2026-08-04 with a real call:
-    # `--model claude-opus-4-8` returns is_error:false, while
-    # `claude-opus-4.8` and `opus-4-8` are both refused.
-    "opus48": "claude-opus-4-8",
     "sonnet": "claude-sonnet-5",
     "haiku": "claude-haiku-4-5",
+}
+
+# A TIER is a price band — four of them, four chips. A model VERSION is a
+# subcategory INSIDE a tier (user ruling 2026-08-04: "the 4 chips should
+# represent the 4 tiers. individual model versions are a subcategory which
+# should only be accessible within the gear menu if the user desires to change
+# it"). Choosing one never touches the seat cost, the budget, or anything the
+# kiosk ceiling inspects — it decides one thing: which `--model` id the CLI is
+# handed. A first attempt made Opus 4.8 a fifth TIER, which put a fifth chip on
+# the canvas and a fifth price band in every table; this is that, corrected.
+#
+# The KEY is what a node records and the gear shows; the VALUE is the CLI id.
+# The tier's entry in MODELS above remains the default, so a node with no
+# version recorded behaves exactly as before.
+# ⚠ ids verified against the pinned CLI with a real call (2026-08-04):
+# `claude-opus-4-8` answers; `claude-opus-4.8` and `opus-4-8` are refused.
+MODEL_VERSIONS: Final[dict[str, dict[str, str]]] = {
+    "opus": {"5": "claude-opus-5", "4.8": "claude-opus-4-8"},
 }
 
 # Actors are one of three KINDS — user, system, agent — not one string namespace.
@@ -282,10 +288,11 @@ class Org:
         # tables into the doc (`"tiers": dict(TIERS)`), so every org carries
         # its own frozen set and adding a tier to the constant does nothing for
         # any org that already exists — `switch_model` refuses with "unknown
-        # tier 'opus48'; know [fable, haiku, opus, sonnet]" while the constant
-        # plainly has it. Found live 2026-08-04, the first time a tier was
-        # added since the per-org copy was introduced; every test builds fresh
-        # orgs, so nothing caught it.
+        # tier 'X'; know [...]" while the constant plainly has it. Found live
+        # 2026-08-04, the first time a tier was added since the per-org copy
+        # was introduced; every test builds fresh orgs, so nothing caught it.
+        # (That tier became a model VERSION instead — see MODEL_VERSIONS — but
+        # the migration is the general fix and stands on its own.)
         #
         # ⚠ ADD ONLY, never overwrite. The per-org copy is what lets an org
         # price its own seats, and a plain `update` would silently reset a
@@ -2429,12 +2436,33 @@ class Org:
                or self.d.get("default_effort") or "")
         return eff if eff in self.EFFORTS else self.DEFAULT_EFFORT
 
+    def versions_for(self, tier: str) -> dict[str, str]:
+        """The model versions selectable within a tier ({} = no choice)."""
+        return dict(MODEL_VERSIONS.get(tier) or {})
+
+    def model_for(self, nid: str) -> str:
+        """The `--model` id for this node: its chosen VERSION when it recorded
+        a valid one for its CURRENT tier, else the tier default.
+
+        Derived, never stored, for the same reason `effort_for` is: the tier
+        can change under a node (switch_model), and a version recorded for the
+        old tier must not follow it there. An unknown or stale value falls back
+        silently — a bad string in a doc must never be able to stop a turn."""
+        n = self.node(nid)
+        tier = n["model"]
+        want = n["scope"].get("model_version")
+        if want:
+            got = self.versions_for(tier).get(want)
+            if got:
+                return got
+        return self.d["models"].get(tier, tier)
+
     def set_scope(self, actor: str, nid: str, add_dirs: list[Any] | None = None,
                   tools: Mapping[str, Any] | None = None,
                   org_visibility: str | None = None,
                   permission_mode: str | None = None,
                   charter: str | None = None, team_charter: str | None = None,
-                  effort: str | None = None,
+                  effort: str | None = None, model_version: str | None = None,
                   raise_ceiling: bool = False) -> dict[str, Any]:
         """Per-node configuration (the ⚙): dir grants with modes, the full tool set
         (built-ins + MCP servers), org-structure visibility. Superior-only.
@@ -2480,6 +2508,16 @@ class Org:
         if effort is not None and effort not in self.EFFORTS and effort != "":
             raise LedgerError(
                 f"effort must be one of {self.EFFORTS} (or '' to clear)")
+        # a VERSION is neither a permission nor a price, so it clamps against
+        # nothing — exactly like effort. Validated against the node's CURRENT
+        # tier so a stale choice can never be written in the first place.
+        if model_version is not None and model_version != "":
+            _ok = self.versions_for(n["model"])
+            if model_version not in _ok:
+                raise LedgerError(
+                    f"{n['model']} has no model version {model_version!r}"
+                    + (f" — know {sorted(_ok)}" if _ok
+                       else " (this tier has a single model)"))
 
         if want_dirs is not None:
             _t, kept, _v, _p, b = self._apply_ceiling(
@@ -2513,6 +2551,11 @@ class Org:
                 sc["effort"] = effort
             else:
                 sc.pop("effort", None)
+        if model_version is not None:
+            if model_version:
+                sc["model_version"] = model_version
+            else:
+                sc.pop("model_version", None)   # "" clears ⇒ the tier default
         # §15 cascade: charter = this node's role card · team_charter = standing
         # instructions binding this node's whole subtree (manager-owned)
         if charter is not None:

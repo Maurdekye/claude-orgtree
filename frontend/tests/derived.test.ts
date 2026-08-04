@@ -72,14 +72,21 @@ test('②  the conversation is fetched in exactly one place', () => {
   const hits: string[] = []
   for (const f of uiFiles) {
     for (const { n, l } of lines(f)) {
-      if (/\bgetChat\(/.test(l)) hits.push(`${f}:${n}`)
+      if (/\bgetChat\(/.test(l)) hits.push(f)
     }
   }
   // desk.tsx LineagePanel reads an ARCHIVED bearer's transcript (an immutable
   // object — §8.3 of the review says a snapshot is correct there); modals.tsx
   // reads `init` once for the model/permission header of a config panel.
-  assert.deepEqual(hits.sort(), ['canvas/desk.tsx:742', 'canvas/modals.tsx:458'],
+  //
+  // ⚠ FILES, not file:line. Pinning the line number made this guard fail on
+  // any edit ANYWHERE ABOVE the call — it fired on an unrelated change seven
+  // lines earlier (2026-08-04) reporting "a live conversation must come from
+  // convo.ts", which is not remotely what had happened. A guard that cries
+  // wolf on every refactor gets muted, and this one is worth keeping audible.
+  assert.deepEqual(hits.sort(), ['canvas/desk.tsx', 'canvas/modals.tsx'],
     'a live conversation must come from convo.ts, not a private getChat')
+  assert.equal(hits.length, 2, 'exactly two sanctioned getChat call sites')
   assert.ok(read('convo.ts').includes('getChat(slug, nid, e.s.win)'),
     'convo.ts is still the one that fetches it')
 })

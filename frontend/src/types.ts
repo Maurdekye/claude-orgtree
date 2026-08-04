@@ -45,6 +45,10 @@ export interface NodeScope {
   /** per-agent thinking effort — set/popped by ledger.py update_scope
    *  (ledger.py:2093-2096); absent = CLI default */
   effort?: string
+  /** which model VERSION inside the tier (ledger.MODEL_VERSIONS) — a
+   *  subcategory of the tier, never a tier of its own. Absent = the tier
+   *  default; the ledger re-validates it against the node's current tier. */
+  model_version?: string
 }
 
 // schema.py Denial (№7)
@@ -630,6 +634,7 @@ export interface ScopeRequest {
   charter?: string | null
   team_charter?: string | null
   effort?: string | null
+  model_version?: string | null
   raise_ceiling?: boolean
 }
 

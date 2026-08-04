@@ -1201,6 +1201,7 @@ class Scope(Body):
     charter: str | None = None              # §15: this node's role card
     team_charter: str | None = None         # §15: binds this node's whole subtree
     effort: str | None = None               # thinking effort: low|medium|high|"" clears
+    model_version: str | None = None        # a VERSION inside the tier ("" clears)
     raise_ceiling: bool = False             # the one-action bridge (spec §1)
 
 
@@ -1226,7 +1227,9 @@ def node_scope(slug: str, nid: str, body: Scope,
                                    permission_mode=body.permission_mode,
                                    charter=body.charter,
                                    team_charter=body.team_charter,
-                                   effort=body.effort, raise_ceiling=rc)
+                                   effort=body.effort,
+                                   model_version=body.model_version,
+                                   raise_ceiling=rc)
         except LedgerError as e:
             raise HTTPException(422, str(e))
         store.save_org(org)

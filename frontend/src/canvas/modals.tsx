@@ -18,7 +18,7 @@ import { pickFolder } from '../picker'
 import {
   CloseIcon, DeleteIcon, FolderIcon, LayersIcon, SettingsIcon,
 } from '../icons'
-import { TIER_LABEL, TIER_LETTER, TIER_SEAT, TIERS, USER, useEsc } from './shared'
+import { MODEL_VERSIONS, TIER_LETTER, TIER_SEAT, TIERS, USER, useEsc } from './shared'
 import type { CanvasNode, DraftScope, DraftState, OpFn, Pile } from './shared'
 
 export interface ConfirmModalProps {
@@ -447,6 +447,13 @@ export function NodeConfig({ node, map, tree, slug, op, toast, close }: NodeConf
   const setModel = set<string>('model', model)
   const effort = val('effort', scope.effort ?? '')
   const setEffort = set<string>('effort', effort)
+  // a model VERSION is a subcategory of the TIER, so it lives here in the gear
+  // and never on a chip (user ruling 2026-08-04). It resets when the tier
+  // changes: a version belongs to one tier, and the ledger re-validates it
+  // against the node's current tier on every read anyway.
+  const modelVersion = val('modelVersion', scope.model_version ?? '')
+  const setModelVersion = set<string>('modelVersion', modelVersion)
+  const versions = MODEL_VERSIONS[model] ?? []
   const [newPath, setNewPath] = useState('')
   const [servers, setServers] = useState<string[]>([])
   const [sandboxMcp, setSandboxMcp] = useState(false)
@@ -590,7 +597,7 @@ export function NodeConfig({ node, map, tree, slug, op, toast, close }: NodeConf
               || (TIER_SEAT[t] ?? 0) <= (TIER_SEAT[cap] ?? Infinity)
           }).map((t) => (
             <option key={t} value={t}>
-              {TIER_LABEL[t] ?? t} · seat {TIER_SEAT[t]}
+              {t} · seat {TIER_SEAT[t]}
             </option>
           ))}
         </select>
@@ -599,6 +606,20 @@ export function NodeConfig({ node, map, tree, slug, op, toast, close }: NodeConf
         <select value={vis} onChange={(e) => setVis(e.target.value)}>
           {VIS_OPTIONS.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
         </select>
+
+        {versions.length > 1 && (
+          <>
+            <div className="field-label">model version — {model} runs the
+              latest unless you pin one here</div>
+            <select value={versions.includes(modelVersion) ? modelVersion : ''}
+              onChange={(e) => setModelVersion(e.target.value)}>
+              <option value="">{`latest (${versions[0]})`}</option>
+              {versions.map((v) => (
+                <option key={v} value={v}>{`${model} ${v}`}</option>
+              ))}
+            </select>
+          </>
+        )}
 
         <div className="field-label">thinking effort (user-approved: a deep
           setting, never a hire-row control)</div>
@@ -638,7 +659,9 @@ export function NodeConfig({ node, map, tree, slug, op, toast, close }: NodeConf
               : Promise.resolve())
               .then(() => saveScope(slug, node.id,
                 { add_dirs: dirs, tools, org_visibility: vis,
-                  charter, team_charter: teamCharter, effort }))
+                  charter, team_charter: teamCharter, effort,
+                  model_version: versions.includes(modelVersion)
+                    ? modelVersion : '' }))
               .then((r) => {
                 if (r?.bridge?.raise_ceiling) {
                   // one-action bridge (ceiling spec §1): same save, flag set
@@ -648,6 +671,8 @@ export function NodeConfig({ node, map, tree, slug, op, toast, close }: NodeConf
                     fn: () => saveScope(slug, node.id,
                       { add_dirs: dirs, tools, org_visibility: vis,
                         charter, team_charter: teamCharter, effort,
+                        model_version: versions.includes(modelVersion)
+                          ? modelVersion : '',
                         raise_ceiling: true })
                       .then((r2) => toast(r2.warnings?.length ? r2.warnings
                         : ['ceiling raised — applied']))

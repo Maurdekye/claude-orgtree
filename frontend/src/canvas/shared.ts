@@ -13,15 +13,17 @@ import type {
   OpResult, ToolGrant, TreeNode, TreePayload,
 } from '../types'
 
-export const TIER_LETTER: Record<string, string> = { haiku: 'H', sonnet: 'S', opus: 'O', opus48: '8', fable: 'F' }
-export const TIERS = ['haiku', 'sonnet', 'opus', 'opus48', 'fable']
-/** seat cost per tier — mirrors ledger.TIERS. opus48 (Opus 4.8) deliberately
- *  costs the SAME as opus so swapping between them moves no credits. */
+export const TIER_LETTER: Record<string, string> = { haiku: 'H', sonnet: 'S', opus: 'O', fable: 'F' }
+export const TIERS = ['haiku', 'sonnet', 'opus', 'fable']
+/** seat cost per tier — mirrors ledger.TIERS. One table, four tiers; the
+ *  frontend had four copies of this before. */
 export const TIER_SEAT: Record<string, number> =
-  { haiku: 1, sonnet: 3, opus: 5, opus48: 5, fable: 10 }
-/** what the user reads; the KEY is what the wire carries. */
-export const TIER_LABEL: Record<string, string> =
-  { haiku: 'haiku', sonnet: 'sonnet', opus: 'opus 5', opus48: 'opus 4.8', fable: 'fable' }
+  { haiku: 1, sonnet: 3, opus: 5, fable: 10 }
+/** Model VERSIONS inside a tier — mirrors ledger.MODEL_VERSIONS. A version is
+ *  a subcategory of the tier (user ruling 2026-08-04): it never changes the
+ *  seat cost and never appears as a chip, only in the gear. A tier absent
+ *  here, or present with one entry, offers no choice. */
+export const MODEL_VERSIONS: Record<string, string[]> = { opus: ['5', '4.8'] }
 
 // ---------------------------------------------------------------- view types
 // The canvas overlays the payload's TreeNode with synthetic cards — the eye
@@ -87,6 +89,9 @@ export interface CanvasScope {
   permission_mode?: string
   org_visibility?: string
   effort?: string
+  /** the model VERSION pinned inside the tier — a gear-only subcategory,
+   *  never a chip (ledger.MODEL_VERSIONS). Absent = the tier's latest. */
+  model_version?: string
 }
 
 /** the app-level event feeds OrgCanvas rides (produced by App's WS handler) */

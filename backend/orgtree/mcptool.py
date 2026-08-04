@@ -96,9 +96,7 @@ TOOLS: list[dict[str, Any]] = [
             "editable later via orgtree_retool), and state exactly which "
             "folders, tools and org visibility it needs — you cannot grant "
             "anything you do not hold yourself. Seat costs: haiku 1, sonnet 3, "
-            "opus 5, opus48 5 (Opus 4.8 — the same seat as opus, so switching "
-            "between the two is free), fable 10; seat + grant must fit within "
-            "YOUR free credits. "
+            "opus 5, fable 10; seat + grant must fit within YOUR free credits. "
             "⚠ HIRING DOES NOT START ANYONE. A new hire sits IDLE until it "
             "receives its first message — the charter is who it is, not a task "
             "to begin. Follow every hire with an orgtree_message to it saying "
@@ -107,8 +105,7 @@ TOOLS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "name": {"type": "string", "description": "1-2 words, the node id"},
-                "tier": {"type": "string",
-                         "enum": ["haiku", "sonnet", "opus", "opus48", "fable"]},
+                "tier": {"type": "string", "enum": ["haiku", "sonnet", "opus", "fable"]},
                 "grant": {"type": "integer", "minimum": 0,
                           "description": "credits it may spend on ITS OWN hires"},
                 "charter": {"type": "string",
@@ -304,14 +301,12 @@ TOOLS: list[dict[str, Any]] = [
             "turn runs the new model. Cheaper tier: the seat difference becomes "
             "the agent's own free allocation. Pricier: paid from its free first, "
             "any shortfall bubbles up the chain to YOU — refused only if the "
-            "whole chain lacks it. Tiers: haiku 1 · sonnet 3 · opus 5 · "
-            "opus48 5 (Opus 4.8) · fable 10."),
+            "whole chain lacks it. Tiers: haiku 1 · sonnet 3 · opus 5 · fable 10."),
         "inputSchema": {"type": "object",
                         "properties": {"node": {"type": "string"},
                                        "tier": {"type": "string",
                                                 "enum": ["haiku", "sonnet",
-                                                         "opus", "opus48",
-                                                         "fable"]}},
+                                                         "opus", "fable"]}},
                         "required": ["node", "tier"]},
     },
     {
