@@ -395,6 +395,16 @@ def state(slug: str, nid: str) -> dict[str, Any]:
             "live": []})
 
 
+def working_count(slug: str) -> int:
+    # F-09: how many of this org's agents have a turn RUNNING right now.
+    # Reads _state directly — state() setdefault-allocates an entry per lookup,
+    # which a per-org call on the hot /api/orgs path must not do. A queued
+    # message with no running turn is not "working" (the desk's starting… line
+    # and the queue badge already cover that state).
+    with _state_lock:
+        return sum(1 for k, v in _state.items() if k[0] == slug and v.get("busy"))
+
+
 def scratch_dir(slug: str, nid: str) -> str:
     # lineage nodes ("name@gen") share their successor's scratch — they are the same
     # self at different times, and the CLAUDE.md self-notes belong to that self.

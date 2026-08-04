@@ -640,7 +640,10 @@ def orgs_list(request: Request) -> list[dict[str, Any]]:
         except LedgerError:
             out.append(o)
             continue
-        row = {**o, "cost_usd_total": org.cost_total()}
+        row = {**o, "cost_usd_total": org.cost_total(),
+               # F-09: agents with a running turn. Deliberately absent from the
+               # public/kiosk branch above — visitors don't see how busy an org is.
+               "working": supervisor.working_count(o["slug"])}
         k = org.d.get("kiosk")
         if k:
             row["kiosk_cfg"] = {

@@ -1718,6 +1718,51 @@ fixed in the pre-dormancy fix batch (`35ec4eb` + follow-ups), so the spec that r
 layout/interaction work. One open ruling rides with it: the compact-desk question sits in
 DECISIONS.md §Open and should be answered before (or as part of) the build.
 
+### F-09 · a working count in the org list
+> add a "working count" next to live / total count in org list, to show the number of active agents
+> currently working in an org at a glance. only appears if any agents are working: color-coded to
+> orange, with the little spinning working arrows next to it
+
+*(user request 2026-08-05, recorded on their instruction by 4f69f83a — research only, NOT BUILT.
+The implementer owns the build; what follows is the groundwork so it is a short job.)*
+
+**The shape.** The org list row (`App.tsx` ~:274) currently ends in one dim figure —
+`{o.live}/{o.nodes} live`. The addition sits beside it, renders only when the count is non-zero, is
+orange, and carries the spinning-arrows glyph the desk already uses for "thinking":
+`<AutorenewIcon fontSize="inherit" className="cc-spin" />` (see `Activity` in `canvas/desk.tsx`,
+and `.cc-spin` in `styles.css`). Same icon, same animation, so "working" reads identically wherever
+it appears.
+
+**Where the number has to come from — the one design question.** `busy` is NOT in the org doc. It
+lives in the supervisor's in-memory `state()` dict (`st["busy"]`, set/cleared around a turn), and
+today it reaches the UI only through the per-org tree payload (`api.py:775`, `node["busy"] =
+st["busy"]`). The org LIST is built by `store.list_orgs()` (`store.py:320`), which reads the org
+JSON files and never consults the supervisor — which is why `live`/`nodes` are doc counts and why
+`cost_usd_total` had to be attached separately in `orgs_list` (`api.py`), org by org.
+
+So the working count is attached the same way, in `orgs_list`, not in `store.list_orgs()`:
+a count over that org's node ids of `supervisor.state(slug, nid)["busy"]`. Notes for whoever
+writes it:
+
+- ⚠ **`supervisor.state()` CREATES the entry it reads** (`setdefault`), so counting naively over
+  every node of every org materialises a state dict per node per poll. Read the existing `_state`
+  map directly instead, or add a read-only helper (`supervisor.working_count(slug)`) that does not
+  allocate — the list endpoint is polled by every open tab.
+- The count must be **live-only** and should agree with what the org's own canvas shows, or the
+  figure will contradict the tree the moment the user clicks in.
+- `queued`/`waiting` is deliberately NOT the same thing as working; the request says *currently
+  working*. A node with a queued message but no running turn should not be counted (that is what
+  the desk's `starting…` and the queue badge are for).
+- Payload: one integer on the existing row (`working`), absent or `0` when nothing runs. The public
+  kiosk branch of `orgs_list` returns early with a trimmed row — decide deliberately whether a
+  visitor sees it (it leaks how busy the org is, which for a kiosk is probably fine and arguably
+  useful, but it is a decision, not a default).
+- Frontend types: `OrgListEntry` in `types.ts` gains `working?: number`.
+
+**Cadence.** The org list refreshes on its own poll; a count that updates a beat behind the canvas
+is acceptable and matches how `cost_usd_total` already behaves. Nothing here needs a websocket
+event.
+
 ## D-54 · `--expose-admin` moves from argv to an environment variable
 > Move exposed to an environment variable.
 

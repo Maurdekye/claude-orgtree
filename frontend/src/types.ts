@@ -419,6 +419,7 @@ export interface OrgListEntry {
   kiosk: boolean
   created: string | null
   cost_usd_total?: number
+  working?: number             // F-09: agents with a running turn (admin list only)
   kiosk_cfg?: KioskDashboard
 }
 

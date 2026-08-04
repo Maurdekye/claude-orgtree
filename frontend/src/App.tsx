@@ -272,6 +272,10 @@ export default function App() {
             {(o.kiosk_cfg || o.kiosk) &&
               <span className="kiosk-badge" title="kiosk org"><PublicIcon fontSize="inherit" /></span>}
             <span className="spacer" />
+            {(o.working ?? 0) > 0 &&
+              <span className="working-ct"
+                title={`${o.working} agent${o.working === 1 ? '' : 's'} currently working`}>
+                <AutorenewIcon fontSize="inherit" className="cc-spin" /> {o.working}</span>}
             <span className="dim">{o.live}/{o.nodes} live</span>
             {/* kiosk orgs delete like any other (user report 2026-07-31: the
                 old !o.kiosk gate left NO UI path at all — the server already

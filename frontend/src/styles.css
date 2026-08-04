@@ -78,6 +78,11 @@ nav { display: flex; flex-direction: column; gap: 2px; }
   background: none; color: var(--ink); cursor: pointer; font-size: 13px;
 }
 .org .spacer { flex: 1; }
+/* F-09: agents-currently-working count — only rendered when > 0 */
+.working-ct {
+  display: inline-flex; align-items: center; gap: 2px;
+  color: var(--accent); font-size: 11px; line-height: 1;
+}
 .org-del {
   background: none; border: none; padding: 0 2px; font-size: 11px;
   color: var(--dim); opacity: 0; transition: opacity .12s; line-height: 1;
