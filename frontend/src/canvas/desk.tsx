@@ -23,7 +23,7 @@ import {
 import { ago, EXTERN, md, TIER_LETTER, USER, useEsc, usePolled } from './shared'
 import {
   addPending, CHAT_WINDOW, dropPending, loadOlder as storeLoadOlder, markBusy,
-  refreshConvo, useConvo,
+  MAX_WINDOW, refreshConvo, useConvo,
 } from '../convo'
 import type {
   ActivityInfo, CanvasNode, LiveRow, MailLinkFn, OpFn,
@@ -439,11 +439,18 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
             // within a screen of the top: page in the previous window
             if (e.currentTarget.scrollTop < 240 && hasOlder) loadOlder()
           }}>
+          {/* paging is automatic (the onScroll above pages in within a screen
+              of the top) — this is a status line, not a control. It still
+              earns its place: it reserves height so the list does not jump as
+              rows prepend, and at the API's window cap it is the ONLY thing
+              that explains why scrolling up stopped producing messages. */}
           {hasOlder && (
-            <button className="loadolder" onClick={loadOlder} disabled={loadingOlder}>
-              {loadingOlder ? 'loading…'
-                : `load earlier messages (${chat?.messages[0]?.seq ?? 0} above)`}
-            </button>)}
+            <div className={'dim pad loadolder-status' + (loadingOlder ? ' on' : '')}>
+              {loadingOlder ? 'loading earlier messages…'
+                : convo.win >= MAX_WINDOW
+                  ? `${chat?.messages[0]?.seq ?? 0} earlier messages — beyond the window`
+                  : `${chat?.messages[0]?.seq ?? 0} earlier messages`}
+            </div>)}
           {!hasOlder && convo.win > CHAT_WINDOW && chat?.messages.length
             ? <div className="dim pad loadolder-end">— start of the conversation —</div> : null}
           {!chat && <div className="dim pad">loading…</div>}

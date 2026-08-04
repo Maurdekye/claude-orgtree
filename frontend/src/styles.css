@@ -463,14 +463,14 @@ main {
   gap: 7px; padding: 3px 2px;
 }
 .desk-over .msgs::-webkit-scrollbar { width: 8px; }
-/* windowed transcript: the pager that sits above the oldest loaded row */
-.loadolder {
-  align-self: center; font-size: 11px; padding: 3px 10px; margin: 2px 0 4px;
-  border-radius: 999px; background: none; color: var(--dim);
-  border: 1px solid var(--line); cursor: pointer;
+/* windowed lists page in automatically on scroll (user ruling 2026-08-04) —
+   what sits at the far edge is a STATUS line, never a control. It still
+   reserves height, so the list does not jump as rows prepend. */
+.loadolder-status {
+  align-self: center; text-align: center; font-size: 10.5px;
+  padding: 3px 10px; margin: 2px 0 4px; opacity: .65;
 }
-.loadolder:hover:not(:disabled) { color: var(--ink); border-color: var(--accent); }
-.loadolder:disabled { cursor: default; opacity: .6; }
+.loadolder-status.on { opacity: 1; }
 .loadolder-end { align-self: center; font-size: 10.5px; }
 /* "jump to bottom" — appears only once the reader has left the sticky zone.
    position:sticky keeps it on the bottom edge of the scrollport without a

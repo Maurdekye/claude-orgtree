@@ -112,7 +112,18 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
   if (!all.length) return <div className="dim pad">no mail yet</div>
   return (
     <div className="mailer">
-      <div className="mailer-list">
+      {/* paging is automatic: within a screen of the bottom, the next window
+          is already rendered (user ruling 2026-08-04 — reaching the end of a
+          list should not then ask you to press something). `vis` only ever
+          grows, so this cannot thrash; the `shown.length` guard stops it
+          climbing past the set and re-rendering on every scroll event once
+          everything is on screen. */}
+      <div className="mailer-list"
+        onScroll={(e) => {
+          const el = e.currentTarget
+          if (el.scrollHeight - el.scrollTop - el.clientHeight < 240
+            && vis < shown.length) setVis((v) => v + MAIL_WINDOW)
+        }}>
         {all.length > 4 && (
           <input className="mail-filter" placeholder="filter…" value={q}
             onChange={(e) => setQ(e.target.value)} />
@@ -151,9 +162,9 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
           </div>
         ))}
         {shown.length > vis && (
-          <button className="loadolder" onClick={() => setVis((v) => v + MAIL_WINDOW)}>
-            load earlier ({shown.length - vis} older)
-          </button>)}
+          <div className="dim pad loadolder-status">
+            {shown.length - vis} earlier
+          </div>)}
       </div>
       <div className="mailer-read">
         {cur && (

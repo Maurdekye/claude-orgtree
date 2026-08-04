@@ -27,7 +27,7 @@ import { useCallback, useSyncExternalStore } from 'react'
  *  top pages another window in. The cost that bites is DOM size — every row
  *  carries markdown and tool chips — so this is deliberately small. */
 export const CHAT_WINDOW = 120
-const MAX_WINDOW = 1000        // the API's own cap
+export const MAX_WINDOW = 1000        // the API's own cap
 const BUSY_POLL_MS = 2500      // heartbeat while the payload says busy
 const IDLE_POLL_MS = 7000      // heartbeat otherwise — slower, never off
 const NUDGE_MS = 200           // burst coalescing for the post-event refetch
