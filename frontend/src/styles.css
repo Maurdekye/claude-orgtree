@@ -701,8 +701,6 @@ main {
   flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px;
   justify-content: flex-end;
 }
-/* the bar may overrun the card top — keep the header tab clear of it */
-.askcard.credit .ask-tab { margin-left: 26px; }
 /* the canvas bar's hover tip is world-scaled and renders unreadably tiny
    here — the side column already states every number (user ruling) */
 .ask-barbox .cbar-tip { display: none; }
