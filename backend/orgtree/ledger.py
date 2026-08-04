@@ -35,7 +35,15 @@ from .schema import (AudienceGrant, DirGrant, MailEntry, NodeDoc,
 
 # §3.1 — derived from published API pricing (output:input is 5:1 for every model, so the
 # scale is not a judgment call). Sonnet is 3, not its introductory 2 (expires 2026-08-31).
-TIERS: Final[dict[str, int]] = {"fable": 10, "opus": 5, "sonnet": 3, "haiku": 1}
+# `opus48` is Opus 4.8 and costs THE SAME SEAT as opus (user request
+# 2026-08-04: "the ability to swap an agent between opus 5 and opus 4.8 … not
+# restricted by anything, just freely able to do so"). Equal cost is what makes
+# it free in practice: `switch_model` moves credits only on a seat DIFFERENCE,
+# so swapping either way is a no-op for the budget, needs no headroom, and
+# cannot bubble a shortfall up the chain. It also passes any kiosk tier cap
+# that admits `opus`, since `_check_tier_ceiling` compares seat costs.
+TIERS: Final[dict[str, int]] = {"fable": 10, "opus": 5, "opus48": 5,
+                                "sonnet": 3, "haiku": 1}
 
 # №34 runaway insurance, and NOTHING else (user ruling 2026-08-04): "no need to
 # have any practical limit other than to prevent infinite recursion from a bug
@@ -49,6 +57,10 @@ MAX_CHILDREN: Final = 1024
 MODELS: Final[dict[str, str]] = {
     "fable": "claude-fable-5",
     "opus": "claude-opus-5",
+    # verified against the pinned CLI 2026-08-04 with a real call:
+    # `--model claude-opus-4-8` returns is_error:false, while
+    # `claude-opus-4.8` and `opus-4-8` are both refused.
+    "opus48": "claude-opus-4-8",
     "sonnet": "claude-sonnet-5",
     "haiku": "claude-haiku-4-5",
 }

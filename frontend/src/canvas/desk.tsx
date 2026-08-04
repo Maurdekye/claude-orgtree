@@ -20,7 +20,7 @@ import {
   MailIcon, PlayIcon, PsychologyIcon, SettingsIcon, SparkIcon, StopIcon,
   WarnIcon,
 } from '../icons'
-import { ago, EXTERN, md, TIER_LETTER, USER, useEsc, usePolled } from './shared'
+import { ago, EXTERN, md, TIER_LETTER, TIER_SEAT, USER, useEsc, usePolled } from './shared'
 import {
   addPending, CHAT_WINDOW, dropPending, loadOlder as storeLoadOlder, markBusy,
   MAX_WINDOW, refreshConvo, useConvo,
@@ -745,7 +745,7 @@ export function LineagePanel({ node, op, slug, close }: LineagePanelProps) {
         if (readingRef.current === bid) setReadChat({ messages: [] })
       })
   }
-  const SEAT: Record<string, number> = { haiku: 1, sonnet: 3, opus: 5, fable: 10 }
+  const SEAT = TIER_SEAT      // one table (shared.ts), mirrors ledger.TIERS
   const gens = [...(node.lineage ?? [])].sort(
     (a, b) => (b.generation ?? 0) - (a.generation ?? 0))
   return (

@@ -16,7 +16,7 @@ import {
 } from './icons'
 import { DirList } from './forms'
 import { FolderPickerHost } from './picker'
-import { deskDpi, setDeskDpi, usePolled } from './canvas/shared'
+import { deskDpi, setDeskDpi, usePolled, TIERS } from './canvas/shared'
 import { addPending, dropPending, ingestPulse, ingestStream, resetConvos } from './convo'
 import type {
   AudiencesPayload, DefaultsPayload, InboxPayload, KioskSpecRequest,
@@ -327,7 +327,7 @@ export default function App() {
                     <span className="chip agents"
                       title="live agents · currently working · breakdown by model">
                       {ns.length} live{busy > 0 ? ` · ${busy} working` : ''}
-                      {['haiku', 'sonnet', 'opus', 'fable']
+                      {TIERS
                         .filter((t) => byTier[t])
                         .map((t) => <b key={t} className={'t-' + t}>{TIER_LETTER[t]}{byTier[t]}</b>)}
                     </span>

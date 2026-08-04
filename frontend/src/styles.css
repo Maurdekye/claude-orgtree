@@ -220,7 +220,7 @@ main {
 .chip.agents b { font-family: var(--mono); font-weight: 700; }
 .chip.agents b.t-haiku { color: var(--tier-haiku); }
 .chip.agents b.t-sonnet { color: var(--tier-sonnet); }
-.chip.agents b.t-opus { color: var(--tier-opus); }
+.chip.agents b.t-opus, .chip.agents b.t-opus48 { color: var(--tier-opus); }
 .chip.agents b.t-fable { color: var(--tier-fable); }
 /* credit requests (inbox panel): old → new (+Δ), reason, one-click verdict */
 .credreq {
@@ -565,7 +565,7 @@ main {
 .sq.tier-fable { border-top-color: color-mix(in srgb, var(--tier-fable) 55%, var(--line)); }
 .tier.t-haiku { color: var(--tier-haiku); border-color: color-mix(in srgb, var(--tier-haiku) 45%, var(--line)); }
 .tier.t-sonnet { color: var(--tier-sonnet); border-color: color-mix(in srgb, var(--tier-sonnet) 45%, var(--line)); }
-.tier.t-opus { color: var(--tier-opus); border-color: color-mix(in srgb, var(--tier-opus) 45%, var(--line)); }
+.tier.t-opus, .tier.t-opus48 { color: var(--tier-opus); border-color: color-mix(in srgb, var(--tier-opus) 45%, var(--line)); }
 .tier.t-fable { color: var(--tier-fable); border-color: color-mix(in srgb, var(--tier-fable) 45%, var(--line)); }
 /* lifecycle fills: archived fades (existing); knowledge bearers wash grey */
 .sq.bearer {
@@ -857,11 +857,11 @@ main {
 /* each chip wears its model's color (same idiom as the .tier badge) */
 .hsof button.t-haiku { color: var(--tier-haiku); border-color: color-mix(in srgb, var(--tier-haiku) 45%, var(--line)); }
 .hsof button.t-sonnet { color: var(--tier-sonnet); border-color: color-mix(in srgb, var(--tier-sonnet) 45%, var(--line)); }
-.hsof button.t-opus { color: var(--tier-opus); border-color: color-mix(in srgb, var(--tier-opus) 45%, var(--line)); }
+.hsof button.t-opus, .hsof button.t-opus48 { color: var(--tier-opus); border-color: color-mix(in srgb, var(--tier-opus) 45%, var(--line)); }
 .hsof button.t-fable { color: var(--tier-fable); border-color: color-mix(in srgb, var(--tier-fable) 45%, var(--line)); }
 .hsof button.t-haiku:hover:not(:disabled) { border-color: var(--tier-haiku); }
 .hsof button.t-sonnet:hover:not(:disabled) { border-color: var(--tier-sonnet); }
-.hsof button.t-opus:hover:not(:disabled) { border-color: var(--tier-opus); }
+.hsof button.t-opus:hover:not(:disabled), .hsof button.t-opus48:hover:not(:disabled) { border-color: var(--tier-opus); }
 .hsof button.t-fable:hover:not(:disabled) { border-color: var(--tier-fable); }
 /* (the desk needs no special case — the universal --invz counter-scale keeps
    the chips screen-constant below the card border at any zoom) */

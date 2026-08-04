@@ -18,7 +18,7 @@ import { pickFolder } from '../picker'
 import {
   CloseIcon, DeleteIcon, FolderIcon, LayersIcon, SettingsIcon,
 } from '../icons'
-import { TIER_LETTER, USER, useEsc } from './shared'
+import { TIER_LABEL, TIER_LETTER, TIER_SEAT, TIERS, USER, useEsc } from './shared'
 import type { CanvasNode, DraftScope, DraftState, OpFn, Pile } from './shared'
 
 export interface ConfirmModalProps {
@@ -584,13 +584,13 @@ export function NodeConfig({ node, map, tree, slug, op, toast, close }: NodeConf
         <select value={model} onChange={(e) => setModel(e.target.value)}>
           {/* kiosk tier cap: options above it vanish — but the node's OWN
               tier stays listed so a pre-cap agent still shows truthfully */}
-          {['haiku', 'sonnet', 'opus', 'fable'].filter((t) => {
-            const rank: Record<string, number> = { haiku: 1, sonnet: 3, opus: 5, fable: 10 }
+          {TIERS.filter((t) => {
             const cap = tree.kiosk?.max_tier
-            return t === node.tier || !cap || rank[t]! <= (rank[cap] ?? Infinity) // nUIA: t ∈ the literal list, all rank keys
+            return t === node.tier || !cap
+              || (TIER_SEAT[t] ?? 0) <= (TIER_SEAT[cap] ?? Infinity)
           }).map((t) => (
             <option key={t} value={t}>
-              {t} · seat {({ haiku: 1, sonnet: 3, opus: 5, fable: 10 } as Record<string, number>)[t]}
+              {TIER_LABEL[t] ?? t} · seat {TIER_SEAT[t]}
             </option>
           ))}
         </select>

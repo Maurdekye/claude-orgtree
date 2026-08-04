@@ -13,8 +13,15 @@ import type {
   OpResult, ToolGrant, TreeNode, TreePayload,
 } from '../types'
 
-export const TIER_LETTER: Record<string, string> = { haiku: 'H', sonnet: 'S', opus: 'O', fable: 'F' }
-export const TIERS = ['haiku', 'sonnet', 'opus', 'fable']
+export const TIER_LETTER: Record<string, string> = { haiku: 'H', sonnet: 'S', opus: 'O', opus48: '8', fable: 'F' }
+export const TIERS = ['haiku', 'sonnet', 'opus', 'opus48', 'fable']
+/** seat cost per tier — mirrors ledger.TIERS. opus48 (Opus 4.8) deliberately
+ *  costs the SAME as opus so swapping between them moves no credits. */
+export const TIER_SEAT: Record<string, number> =
+  { haiku: 1, sonnet: 3, opus: 5, opus48: 5, fable: 10 }
+/** what the user reads; the KEY is what the wire carries. */
+export const TIER_LABEL: Record<string, string> =
+  { haiku: 'haiku', sonnet: 'sonnet', opus: 'opus 5', opus48: 'opus 4.8', fable: 'fable' }
 
 // ---------------------------------------------------------------- view types
 // The canvas overlays the payload's TreeNode with synthetic cards — the eye
