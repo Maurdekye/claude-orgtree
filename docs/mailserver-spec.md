@@ -1,7 +1,7 @@
 <!-- ⚠ EXPLORATION ONLY — the user asked for design and documentation, NOT
      implementation ("as usual don't implement, just explore and document",
-     2026-08-04). Nothing here is built. Open questions at §12 need a user
-     ruling before anyone starts. Author: session 4f69f83a. -->
+     2026-08-04). Nothing here is built. No open questions block a build as of
+     2026-08-04; the rulings are tabled at §12. Author: session 4f69f83a. -->
 
 # orgtree mailserver — a public hub for org-to-org mail across machines
 
@@ -402,6 +402,21 @@ Docker, as asked. Precedent exists in-repo: `sandbox/Dockerfile`, and `docker_av
 Boot-start is the easy half. The hard half is that **three separate things quietly break when
 nobody is logged in and nobody is watching**, and two of them are measured on this machine below.
 
+⚠ **Terminology — the two words are about different things.** An earlier draft of this spec talked
+about "an unattended org that is not headless", which is incoherent; the correction is worth
+keeping because the distinction it was reaching for is real:
+
+- **Unattended** describes the **machine**: it autostarts, survives a reboot, and runs with nobody
+  sitting at it (§9.1-§9.3).
+- **Headless** describes the **org**: no user will *ever* answer it, so user-bound requests are
+  auto-denied (§9.6).
+
+The middle case is a machine that runs unattended while the user checks in daily — the org's
+requests are not denied, merely *slow*, and subscription auth is fine because a visiting user can
+re-login. So the axis is **how long until a human answers**, not presence: headless is that
+interval being infinite. An org is headless because it was set headless, never because its host
+happens to be unattended.
+
 ### 9.1 ⚠ Do not install it as a Windows service
 
 `~/.claude/.credentials.json` — measured on this machine, 566 bytes, mode `-rw-r--r--` — is a
@@ -762,11 +777,10 @@ sized for ten peers × the §9.4 loop breaker, not for two.
 
 ### Still open
 
-1. **Is API-key mode the default for unattended orgs that are *not* headless?** Headless now
-   **requires** one (§9.6), which settles the case that mattered. For a merely unattended org I
-   still recommend it, for the same reason. Residual curiosity only: whether the OAuth token
-   endpoint returns a fresh refresh token on every refresh (the client already stores one if it
-   does — `subproxy.py:74`).
+**Nothing blocking.** One residual curiosity, which no decision waits on: whether the OAuth token
+endpoint returns a fresh refresh token on every refresh (the client already stores one if it does —
+`subproxy.py:74`). It only affects how long a *subscription* org survives on a box nobody visits,
+and §9.6 already removes that combination for headless orgs.
 
 ### One hub for v1 — but do not design several out (user ruling, 2026-08-04)
 

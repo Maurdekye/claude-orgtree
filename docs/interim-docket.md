@@ -1601,9 +1601,19 @@ flat org inbox holding concurrent conversations with ten peers is unreadable to 
 cannot be retrofitted into stored history. The directory blurb moves from nice-to-have to necessary
 for the same reason: nobody addresses ten orgs correctly from slugs alone.
 
-One open question remains, non-blocking: whether API-key mode should also be the default for
-unattended orgs that are not headless (⑦). The suffix question was closed by ⑪, one-hub-or-several
-by ⑬.
+⚠ **Terminology correction (user, 2026-08-04):** an earlier line here asked about "unattended orgs
+that are not headless", which is incoherent — the two words describe different nouns. **Unattended**
+is the *machine* (autostarts, runs with nobody at it); **headless** is the *org* (no user will ever
+answer, so user-bound requests are auto-denied). The real axis is **how long until a human answers**,
+and headless is that interval being infinite. The middle case is a machine running unattended while
+the user checks in daily — requests are slow, not denied, and subscription auth is fine because a
+visiting user can re-login. An org is headless because it was set headless, never because its host
+happens to be unattended.
+
+**No open questions remain.** ⑦'s residual curiosity (does the OAuth endpoint return a fresh refresh
+token each time) blocks nothing — it only bounds how long a *subscription* org survives on a box
+nobody visits, and ⑬ removes that combination for headless orgs. The suffix question was closed by
+⑪, one-hub-or-several by ⑬.
 
 ## Carried, not done
 
