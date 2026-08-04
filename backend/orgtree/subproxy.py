@@ -36,10 +36,24 @@ def available() -> bool:
 
 
 def _write(doc: dict[str, Any]) -> None:
-    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(CREDS), suffix=".tmp")
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump(doc, f)
-    os.replace(tmp, CREDS)
+    """Atomic in-place replace — the host CLI and this proxy share one copy.
+    A failed write must leave neither a half-file nor a stray temp beside the
+    real credentials (the directory is the user's ~/.claude), and it must
+    surface as the RuntimeError every caller of get_access_token expects."""
+    try:
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(CREDS), suffix=".tmp")
+    except OSError as e:
+        raise RuntimeError(f"cannot write Claude credentials at {CREDS}: {e}")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(doc, f)
+        os.replace(tmp, CREDS)
+    except (OSError, TypeError, ValueError) as e:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise RuntimeError(f"cannot write Claude credentials at {CREDS}: {e}")
 
 
 def get_access_token() -> str:
@@ -70,9 +84,31 @@ def get_access_token() -> str:
                 res = json.load(r)
         except Exception as e:                       # noqa: BLE001
             raise RuntimeError(f"subscription token refresh failed: {e}")
-        o["accessToken"] = res["access_token"]
-        o["refreshToken"] = res.get("refresh_token", o["refreshToken"])
+        try:
+            access: str = res["access_token"]
+        except (KeyError, TypeError) as e:
+            raise RuntimeError(f"subscription token refresh returned no "
+                               f"access token: {e}")
+        old_refresh = o["refreshToken"]
+        o["accessToken"] = access
+        o["refreshToken"] = res.get("refresh_token", old_refresh)
         o["expiresAt"] = int((time.time() + res.get("expires_in", 3600)) * 1000)
+        # ⚠ `refreshTokenExpiresAt` is a REAL field of this file (the CLI
+        # writes it) and nothing here used to touch it. After a rotation it
+        # then described a refresh token that no longer exists, drifting
+        # further into the past with every refresh — and both the CLI and
+        # this proxy read the one shared copy. Three honest cases:
+        #   • the endpoint reports a lifetime → record it
+        #   • the refresh token ROTATED and no lifetime came back → the old
+        #     value belongs to the replaced token; drop it rather than lie
+        #     (absent = unknown, which is what it now is)
+        #   • the refresh token did NOT rotate → its expiry is still its own
+        rt_in = res.get("refresh_token_expires_in",
+                        res.get("refreshTokenExpiresIn"))
+        if isinstance(rt_in, (int, float)) and rt_in > 0:
+            o["refreshTokenExpiresAt"] = int((time.time() + rt_in) * 1000)
+        elif o["refreshToken"] != old_refresh:
+            o.pop("refreshTokenExpiresAt", None)
         doc["claudeAiOauth"] = o
         _write(doc)
         return o["accessToken"]

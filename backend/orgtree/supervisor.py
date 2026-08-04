@@ -18,6 +18,7 @@ truth for live/archived. A server restart loses in-flight turns, never ledger st
 
 from __future__ import annotations
 
+import datetime as _dtm
 import glob
 import json
 import os
@@ -27,11 +28,11 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any, cast
 
 from . import sandbox as sbx, store
-from .ledger import EXTERN, USER, Org, expand_mcp, now as now_iso
+from .ledger import EXTERN, USER, LedgerError, Org, expand_mcp, now as now_iso
 from .schema import (Denial, FrozenInfo, InflightInfo, KioskCfg, MailEntry,
                      NodeDoc, NoticeEntry)
 
@@ -231,7 +232,16 @@ def _claude_argv() -> list[str]:
         return ["cmd", "/c", CLAUDE]
     return [CLAUDE]
 TURN_TIMEOUT = int(os.environ.get("ORGTREE_TURN_TIMEOUT", "1800"))   # seconds
-MAX_CONCURRENT = int(os.environ.get("ORGTREE_MAX_TURNS", "3"))       # №34
+# №34. Raised 3 -> 16 (user ruling 2026-08-03). There is no correctness reason
+# for a low cap — the semaphore exists to bound RESOURCES, not to serialise
+# anything — so the only question is what a turn costs. Measured on the dev
+# box: a single headless CLI turn holds ~306 MB resident, so 16 concurrent is
+# roughly 5 GB of working set at full tilt. Fine on a 32 GB desktop, tight on a
+# small VM, hence the env override rather than a hardcoded number.
+#
+# ⚠ The cap is GLOBAL, not per-org: 16 is shared across every org on the
+# instance, so a busy org can starve a quiet one. Nothing enforces fairness.
+MAX_CONCURRENT = int(os.environ.get("ORGTREE_MAX_TURNS", "16"))
 
 _turn_slots = threading.Semaphore(MAX_CONCURRENT)
 # per-(slug, nid) in-memory runtime state — see state() for the key set
@@ -326,13 +336,51 @@ notify: Callable[[str, str, str], None] = \
 stream: Callable[[str, str, dict[str, Any]], None] = \
     lambda slug, node, payload: None   # noqa: E731 — live per-message feed
 
+_LIVE_KEEP = 40           # rows retained per node; the UI renders far fewer
+
+
+def live_row(slug: str, nid: str, payload: dict[str, Any]) -> None:
+    """Stream a row AND record it in the node's live tail (P2).
+
+    Everything a view needs to render an in-flight turn goes through here, so
+    the server holds the authoritative list and read_chat can retire rows the
+    transcript has caught up on. Sub-second scaffolding — token deltas, the
+    thinking clock — deliberately does NOT: it is superseded within the second
+    and would only be noise in a fetched payload."""
+    st = state(slug, nid)
+    with _state_lock:
+        rows = cast("list[dict[str, Any]]", st.setdefault("live", []))
+        # `n`: a per-node monotonic id, so the client can key a live row on
+        # WHICH ROW IT IS rather than on its index. The list both trims at the
+        # head and retires from the middle, so an index key silently renames
+        # every row below the change — remounting them and collapsing any open
+        # thought line. The durable rows solved this with `seq`; this is the
+        # same fix on the live side.
+        st["live_n"] = n = int(st.get("live_n") or 0) + 1
+        rows.append({**payload, "at": now_iso(), "n": n})
+        del rows[:-_LIVE_KEEP]
+    stream(slug, nid, payload)
+
 
 def state(slug: str, nid: str) -> dict[str, Any]:
     with _state_lock:
         return _state.setdefault((slug, nid), {
+            # ONLY what is genuinely process-bound lives here. `occupancy`,
+            # `context_window` and `last_status` used to be mirrored from the
+            # org doc as well — two homes for one fact, with nothing keeping
+            # them in step (`last_status` had already rotted to zero readers).
+            # The doc is the home; a restart no longer changes the answer.
             "busy": False, "waiting": False, "queue": [], "last_error": None,
-            "turns_run": 0, "last_status": None, "occupancy": None,
-            "context_window": None})
+            "turns_run": 0,
+            # the LIVE TAIL: rows the agent has produced this turn that the
+            # transcript may not carry yet. Server-owned (P2) — the client used
+            # to accumulate its own copy from the websocket and reconcile it
+            # against the transcript by string prefix, which is the machinery
+            # every "message flashed then vanished" bug came out of. Here the
+            # same code sees BOTH sides, so one implementation serves every
+            # view. Bounded; swept in read_chat; cleared at turn end except
+            # sticky rows (immediate command output lives in no transcript).
+            "live": []})
 
 
 def scratch_dir(slug: str, nid: str) -> str:
@@ -355,6 +403,43 @@ def transcript_path(session_id: str, root: str | None = None) -> str | None:
     return hits[0] if hits else None
 
 
+def transcript_index(root: str | None = None) -> dict[str, str]:
+    """`session_id → transcript path`, built with ONE walk of `projects/`.
+
+    ⚠ `transcript_path` is a `glob` whose WILDCARD COMPONENT is the project
+    directory, so every call re-lists `projects/` — and `reconcile` calls it
+    once per live node that has ever run. That is O(live_nodes × project_dirs)
+    at startup, on a directory whose size is the user's whole Claude Code
+    history, not this org's. Measured 2026-08-04: with 3,000 project dirs and
+    50 nodes, one `transcript_path` cost 40 ms and `reconcile` cost 2,253 ms —
+    55× a single call, i.e. the per-node scan, not a fixed cost. One walk
+    turns the same pass into O(project_dirs) with O(1) lookups.
+
+    Matches `glob`'s semantics deliberately, including skipping dot-prefixed
+    directories (`*` does not match a leading dot) — an index that disagreed
+    with the direct lookup would make `reconcile` and the turn path reach
+    different verdicts about the same session."""
+    base = root or os.path.expanduser("~/.claude")
+    proj = os.path.join(base, "projects")
+    out: dict[str, str] = {}
+    try:
+        dirs = os.listdir(proj)
+    except OSError:
+        return out
+    for d in dirs:
+        if d.startswith("."):
+            continue
+        p = os.path.join(proj, d)
+        try:
+            names = os.listdir(p)
+        except OSError:
+            continue
+        for f in names:
+            if f.endswith(".jsonl"):
+                out.setdefault(f[:-6], os.path.join(p, f))
+    return out
+
+
 def _transcript_root(org: Org) -> str | None:
     """Sandboxed kiosk orgs write transcripts inside the container's home,
     which is bind-mounted from the host sandbox dir — readable natively."""
@@ -368,6 +453,11 @@ def clean_env() -> dict[str, str]:
     for k in list(env):
         if k.startswith("CLAUDE_CODE_") or k == "CLAUDECODE":
             env.pop(k, None)
+    # ORGTREE_EXPOSE_ADMIN moved from an argv flag to an env var (user ruling
+    # 2026-08-04) so service definitions can set it. Env vars are inherited,
+    # and whether the HOST is reachable off loopback is not the agent's
+    # business — strip it here rather than let it ride into every turn.
+    env.pop("ORGTREE_EXPOSE_ADMIN", None)
     return env
 
 
@@ -605,6 +695,13 @@ def identity_prompt(org: Org, nid: str) -> str:
                                     ("edit", "file editing"), ("subagents", "subagents"))
            if not tools.get(key, True)]
     tool_line = (f"Disabled for you: {', '.join(off)}. " if off else "")
+    if tools.get("bash", True):
+        # keep in step with _build_cmd's allowlist — promising a capability the
+        # config drops is a bug class already hit once here. A Linux sandbox
+        # has Bash only, so never offer PowerShell there.
+        tool_line += ("Terminal: Bash. " if sbx.is_sandboxed(org) else
+                      "Terminal: Bash and PowerShell are both available to "
+                      "you; for a cmd command, run `cmd /c …` from either. ")
     mcp_names = tools.get("mcp") or []
     if "*" in mcp_names:      # "*" = every registered server, present and future
         mcp_names = sorted(registered_mcp_servers())
@@ -653,7 +750,10 @@ def identity_prompt(org: Org, nid: str) -> str:
         f'"orgtree" also works — the bare name alone will NOT match). '
         f"The tools: orgtree_message (reach your reports at any depth, your "
         f"superior, your peers), orgtree_hire (you must state a charter, folders, every "
-        f"tool switch and visibility — no defaults), orgtree_retire/rehire/dissolve/"
+        f"tool switch and visibility — no defaults; and HIRING DOES NOT START "
+        f"ANYONE — a new hire sits idle until you send it a message, so every "
+        f"hire is TWO calls: hire, then orgtree_message telling it what to do "
+        f"now), orgtree_retire/rehire/dissolve/"
         f"reallocate, orgtree_retool (re-scope an existing report), orgtree_chart"
         + (", orgtree_request_credits (top-level privilege: ask the user directly "
            "for a larger grant — state the new TOTAL and a reason; the user "
@@ -706,28 +806,73 @@ def _user_event(text: str) -> str:
 
 
 def _journal_drain(org: Org, nid: str, mail: list[MailEntry] | None,
-                   pending: list[NoticeEntry] | None) -> str:
+                   pending: list[NoticeEntry] | None, via: str = "steer") -> str:
     """Record a drained-but-not-yet-delivered batch in the org doc (caller
     saves). Draining REMOVES mail from the doc; until the text carrying it
     reaches the agent's process, this journal is the only copy that survives
-    a turn that fails to launch or a backend death (gap audit item 1)."""
+    a turn that fails to launch or a backend death (gap audit item 1).
+
+    `via` says how the text travels, which decides whether the UI shows it:
+      "turn"  — written to the CLI as a user event, so the TRANSCRIPT will
+                carry it and the chat renders it there
+      "steer" — injected as hook context, which the CLI never transcripts, so
+                the journal is the only thing that can show it
+    Durability is identical either way; this only governs display."""
     tok = os.urandom(8).hex()
     org.d.setdefault("delivering", {}).setdefault(nid, []).append(
         {"tok": tok, "at": now_iso(), "mail": mail or [],
-         "notices": pending or []})
+         "notices": pending or [], "via": via})
     return tok
 
 
-def delivering_mail(org: Org, nid: str) -> list[dict[str, Any]]:
-    """Mail drained for an IN-FLIGHT delivery — steered mid-task or riding a
-    turn that hasn't confirmed yet. The journal holds the only copy, and the
-    UI read it from nowhere (user bug 2026-07-31: messages sent during a
-    long bash command 'didn't appear as queued until the command finished').
-    Surfaced with delivering:True — retraction stays box-only."""
+def delivering_mail(org: Org, nid: str,
+                    shown: Callable[[Mapping[str, Any]], bool] | None = None
+                    ) -> list[dict[str, Any]]:
+    """Mail drained for an in-flight delivery, for as long as nothing else is
+    showing it. The journal holds the only copy while a batch is in flight,
+    and the UI read it from nowhere (user bug 2026-07-31: messages sent during
+    a long bash command "didn't appear as queued until the command finished").
+    Surfaced with delivering:True — retraction stays box-only.
+
+    `shown(entry)` — "is this exact mail already on screen as a transcript
+    bubble" — is what retires it, for BOTH carriers:
+
+      via="steer"  hook context the CLI does not transcript, so it normally
+                   stays until the journal is confirmed. But a steer still
+                   pending at the result boundary is folded into the queue and
+                   written as a user event, and then the transcript DOES carry
+                   it — measured 2026-08-04: 1.95–2.35 s of the message
+                   rendered TWICE, once as the pending bubble and once as the
+                   durable one, on every send to a busy agent.
+      via="turn"   written to the CLI as a user event, so the transcript WILL
+                   carry it — but not until the process has started and echoed
+                   it back. That is D-29's "starting…" phase: ~1 s warm,
+                   several seconds cold, longer still for a sandboxed org that
+                   must start a container first. Draining removed it from the
+                   mailbox at the top of the turn, so for the whole of that
+                   phase the message the user had just sent existed in NO
+                   place the desk renders from (user bug 2026-08-03: "the
+                   queued preview never shows up while the agent is
+                   starting").
+
+    ⚠ This replaces a blanket exclusion of `via="turn"`, which existed to stop
+    exactly the duplicate described above — but suppressed the row for the
+    whole window INCLUDING the part where nothing else was showing it, and
+    left the steer duplicate untouched. One test replaces both halves: the
+    transcript actually having this mail. Superseded is not replaced, and
+    replaced is not "will be replaced eventually" — evidence, both ways.
+
+    With no `shown` (a caller that cannot see the transcript) everything is
+    surfaced: showing a duplicate is the failure this system prefers over
+    hiding a message. Old entries have no `via` and default to "steer"."""
     out = []
     for b in (org.d.get("delivering") or {}).get(nid, []):
+        turn = b.get("via", "steer") == "turn"
         for m in b.get("mail") or []:
-            out.append({**m, "delivering": True})
+            if shown is not None and shown(m):
+                continue        # the transcript is showing it — hand over
+            out.append({**m, "delivering": True,
+                        **({"via": "turn"} if turn else {})})
     return out
 
 
@@ -790,11 +935,15 @@ def _fold_back_undelivered(slug: str, nid: str,
         pass
 
 
-def _envelope(slug: str, nid: str, text: str) -> tuple[str, str | None]:
+def _envelope(slug: str, nid: str, text: str,
+              via: str = "steer") -> tuple[str, str | None]:
     """Drain notices + mail atomically and prepend them (№27 envelope, §7.4).
     Safe to call repeatedly — a second call finds nothing new. Returns the
     enveloped text plus the delivery-journal token when anything was drained
-    (the caller confirms it once the text actually reaches the agent)."""
+    (the caller confirms it once the text actually reaches the agent).
+
+    `via` is passed straight to the journal — see _journal_drain. The caller
+    knows how its text travels; this function does not."""
     tok = None
     with store.DOC_LOCK:
         org = store.load_org(slug)
@@ -803,7 +952,7 @@ def _envelope(slug: str, nid: str, text: str) -> tuple[str, str | None]:
         pending = (org.d.get("notices") or {}).pop(nid, None)
         mail = org.take_mail(nid)
         if pending or mail:
-            tok = _journal_drain(org, nid, mail, pending)
+            tok = _journal_drain(org, nid, mail, pending, via)
             store.save_org(org)
     prelude = []
     if pending:
@@ -843,7 +992,7 @@ def _build_cmd(org: Org, nid: str) -> list[str]:
     slug = org.d["slug"]
     sid = n["session_id"]
     first = transcript_path(sid, _transcript_root(org)) is None
-    model = org.d["models"].get(n["model"], n["model"])
+    model = org.model_for(nid)   # tier default, or this node's chosen version
     sc = n["scope"]
     # kiosk sandbox (user spec): the whole turn — CLI, bash, file I/O, web —
     # runs inside the org's container; paths below become container paths and
@@ -925,18 +1074,20 @@ def _build_cmd(org: Org, nid: str) -> list[str]:
     # per-agent thinking effort (user-approved 2026-07-31); an UNSET node
     # inherits the org's default_effort LIVE at turn time (user ruling
     # 2026-08-01: visible inherit — a default change reaches unset nodes
-    # without a rehire); "" everywhere = CLI default, no flag. Org.EFFORTS
-    # is the ONE allowlist (review P2) — a literal copy here is how a
-    # partial edit silently un-wires a tier.
-    eff = sc.get("effort") or org.d.get("default_effort")
-    if eff and eff in Org.EFFORTS:
-        cmd += ["--effort", eff]
+    # without a rehire), and an unset ORG falls to Org.DEFAULT_EFFORT.
+    # ALWAYS passed: leaving the flag off delegated the level to an
+    # undocumented, unreported CLI default, which is why the ⚙ control could
+    # not name it (user bug 2026-08-02). Same call the UI displays, so they
+    # cannot disagree.
+    cmd += ["--effort", org.effective_effort(nid)]
     tools = sc.get("tools", {})
     # interactive-only tools cannot work in a headless turn (there is no client
     # to present them) — questions route through orgtree_message instead
     disallowed = ["AskUserQuestion", "EnterPlanMode", "ExitPlanMode"]
     if not tools.get("bash", True):
-        disallowed += ["Bash"]
+        # the terminal switch covers EVERY shell tool, not just Bash — leaving
+        # PowerShell off this list would hand a "no terminal" agent a shell
+        disallowed += ["Bash", "PowerShell"]
     if not tools.get("web", True):
         disallowed += ["WebSearch", "WebFetch"]
     if not tools.get("edit", True):
@@ -986,7 +1137,11 @@ def _build_cmd(org: Org, nid: str) -> list[str]:
     # every granted capability must be explicitly allowlisted.
     allowed = [f"mcp__{k}" for k in sorted(chosen)]
     if tools.get("bash", True):
-        allowed.append("Bash")
+        # both shells the CLI actually exposes (probed on the pinned 2.1.220:
+        # "Bash, PowerShell" — there is no separate cmd tool; cmd is reached as
+        # `cmd /c …` from either, so the terminal switch already covers it).
+        # PowerShell is inert inside a Linux sandbox, which costs nothing.
+        allowed += ["Bash", "PowerShell"]
     if tools.get("web", True):
         allowed += ["WebSearch", "WebFetch"]
     if n["parent"] is None:
@@ -1015,7 +1170,32 @@ def _build_cmd(org: Org, nid: str) -> list[str]:
 
 
 def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
+    """Run a turn, then keep running whatever the queue has, until it is empty.
+
+    ⚠ The follow-on used to be a TAIL CALL from `_run_one_turn`'s own
+    `finally`, which meant one never-unwinding stack frame per turn for as
+    long as a node stayed busy. It is reachable whenever each queued message
+    is consumed by a fresh CLI process (the in-process boundary feed does not
+    recurse), and the failure is silent and terminal: the RecursionError is
+    raised inside the `finally`, so it escapes the turn's own `except`, kills
+    the worker thread, and leaves `busy=True` with a non-empty queue — the
+    node accepts messages forever and runs nothing. Measured 2026-08-04
+    (test_turn_lifecycle "deepqueue"): a 260-deep queue against a 200-frame
+    limit died at depth 189 with 71 messages still queued; the stock limit
+    puts the cliff at ~900. Iterating costs nothing and has no cliff."""
+    nxt: str | dict[str, Any] | None = text
+    while nxt is not None:
+        nxt = _run_one_turn(slug, nid, nxt)
+
+
+def _run_one_turn(slug: str, nid: str,
+                  text: str | dict[str, Any]) -> str | dict[str, Any] | None:
+    """One turn. Returns the next queued item for the caller to run, or None
+    when the node went idle (`busy` is cleared here in that case, under the
+    same lock that a concurrent `send_message` takes — so there is no window
+    where the queue is non-empty and nobody owns it)."""
     st = state(slug, nid)
+    follow: str | dict[str, Any] | None = None
     # a dict carrier is an already-enveloped text still owing its delivery
     # journal a confirmation (a steer/boundary leftover re-queued for a turn)
     toks: list[str] = []
@@ -1047,6 +1227,18 @@ def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
                     raise RuntimeError(
                         "halted: weekly Fable usage limit exhausted — waiting for the "
                         "limit to reset or the user to intervene")
+                if org.node(nid).get("frozen"):
+                    # `send_message` refuses to drive a frozen node, but the
+                    # QUEUE is drained by the previous turn's own follow-up,
+                    # which never re-checked: a node that froze mid-queue kept
+                    # launching one doomed CLI per queued message against a
+                    # live usage limit. ▶ resume (and auto_resume) clear
+                    # `frozen` under DOC_LOCK before they start anything, so
+                    # this never blocks a legitimate resume. Nothing has been
+                    # drained yet at this point — the mail stays boxed.
+                    raise RuntimeError(
+                        "frozen by a usage limit — waiting for ▶ resume "
+                        "(or auto-resume) before running anything")
                 # NOT locked fable nodes under a fable_lock (e.g. rehired anyway) are
                 # allowed to TRY — the real limit rejects them naturally (user ruling:
                 # the gate is a suggestion, reality is the enforcement)
@@ -1062,7 +1254,7 @@ def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
                     # journal the batch: if the CLI never launches (bad
                     # binary, Docker down, timeout) the drained mail would
                     # die with the turn — the journal folds it back
-                    toks.append(_journal_drain(org, nid, mail, pending))
+                    toks.append(_journal_drain(org, nid, mail, pending, "turn"))
                     store.save_org(org)
             prelude = []
             if pending:
@@ -1112,6 +1304,19 @@ def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
             pend_toks: list[str] = []   # journal batches written, not yet consumed (C1)
             turn_occ = 0        # context size = LAST assistant call's usage (№24)
             dbuf, dlast = "", time.time()   # token-stream delta batcher (~8 Hz)
+            think_t0, think_buf = 0.0, ""   # the in-progress thought
+
+            def fold_thought() -> None:
+                """The thinking block ended because output began: bank it as a
+                live row. Server-side because the server sees both the opening
+                and what followed — the client only ever inferred it."""
+                nonlocal think_t0, think_buf
+                if not think_t0:
+                    return
+                secs = max(1, round(time.time() - think_t0))
+                text, think_t0, think_buf = think_buf, 0.0, ""
+                live_row(slug, nid, {"kind": "thought", "secs": secs,
+                                     "text": text[:6000]})
             timed_out = threading.Event()
 
             def _expire() -> None:
@@ -1155,14 +1360,49 @@ def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
                         ev = json.loads(line)
                     except json.JSONDecodeError:
                         continue
-                    if pend_toks and ev.get("type") != "system":
+                    if pend_toks and ev.get("type") != "system" \
+                            and not (ev.get("type") == "result"
+                                     and ev.get("is_error")):
+                        # ⚠ an ERROR result is not proof of consumption. C1's
+                        # rule is "the first stdout event the CLI cannot emit
+                        # without having read stdin" — but a failing turn's
+                        # result event is emitted on paths where the message
+                        # was never processed (auth failure, credit balance,
+                        # overloaded after retries), and confirming on it
+                        # DELETED the journal batch while the `finally`
+                        # fold-back then found nothing to restore. Measured
+                        # 2026-08-04 (test_turn_lifecycle "errresult"): a
+                        # turn answering with is_error and no prior stdout
+                        # event lost the user's message outright — not in the
+                        # mailbox, not journaled, not in the transcript, only
+                        # in mail_log, which is forensics and not delivery.
+                        # Leaving the batch journaled costs at most a
+                        # duplicate, which is the semantics this system
+                        # chose.
                         _confirm_delivered(slug, nid, pend_toks)
                         pend_toks = []
                     if ev.get("type") == "stream_event":
                         # partial-message deltas → the UI renders the reply
                         # growing word-by-word (user spec); batched so the WS
                         # is not flooded — ~8 Hz or 400 chars, whichever first
-                        d = (ev.get("event") or {}).get("delta") or {}
+                        sev = ev.get("event") or {}
+                        if (sev.get("type") == "content_block_start"
+                                and (sev.get("content_block") or {}).get("type")
+                                == "thinking"):
+                            think_t0 = think_t0 or time.time()
+                            # THE START of thinking, which is the only reliable
+                            # marker when the reasoning is sealed: opus/sonnet
+                            # send thinking_delta with an empty body, and on a
+                            # long think the deltas may not arrive until it is
+                            # over — so a client waiting for them would start
+                            # its clock at the end. The panel sat blank for the
+                            # whole think (user bug 2026-08-02: measured 6.4s on
+                            # HAIKU, and haiku is the tier that still streams
+                            # text — a sealed opus think shows nothing at all
+                            # until its first tool call).
+                            stream(slug, nid, {"kind": "thinking_start"})
+                            continue
+                        d = sev.get("delta") or {}
                         if d.get("type") == "text_delta" and d.get("text"):
                             dbuf += d["text"]
                             if len(dbuf) >= 400 or time.time() - dlast >= 0.12:
@@ -1172,6 +1412,8 @@ def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
                         elif d.get("type") == "thinking_delta" and d.get("thinking"):
                             # №18 (live-only, never persisted): a dimmed
                             # italic ribbon above the growing draft
+                            think_t0 = think_t0 or time.time()
+                            think_buf = (think_buf + d["thinking"])[-24000:]
                             stream(slug, nid, {"kind": "thinking",
                                                "text": d["thinking"][:400]})
                         continue
@@ -1181,8 +1423,8 @@ def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
                         # too — the history projection keeps it durable
                         body = _cmd_stdout(ev.get("content") or "")
                         if body:
-                            stream(slug, nid, {"kind": "text",
-                                               "text": body[:2000]})
+                            live_row(slug, nid, {"kind": "text",
+                                                 "text": body[:2000]})
                         continue
                     if ev.get("type") == "system" and ev.get("subtype") == "init":
                         # №14: the CLI's own resolution of what this turn can
@@ -1205,12 +1447,19 @@ def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
                             turn_occ = t
                         for b in ev.get("message", {}).get("content", []):
                             if b.get("type") == "text" and b.get("text", "").strip():
-                                stream(slug, nid, {"kind": "text",
-                                                   "text": b["text"][:2000]})
+                                fold_thought()
+                                live_row(slug, nid, {"kind": "text",
+                                                     "text": b["text"][:2000]})
                             elif b.get("type") == "tool_use":
                                 arg = _tool_arg(b.get("name", ""), b.get("input"))
-                                stream(slug, nid, {
+                                fold_thought()
+                                live_row(slug, nid, {
                                     "kind": "tool",
+                                    # the tool_use_id rides along: read_chat
+                                    # puts the SAME id on the chip, so the
+                                    # client can retire a live row by identity
+                                    # instead of comparing rendered strings
+                                    "id": b.get("id"),
                                     "text": (b.get("name", "tool")
                                              + (f" · {arg}" if arg else ""))})
                     elif ev.get("type") == "result":
@@ -1219,7 +1468,18 @@ def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
                         timer = threading.Timer(TURN_TIMEOUT, _expire)
                         timer.start()
                         # the response resolved: feed the next queued message
-                        # into the same process, or close stdin to end it
+                        # into the same process, or close stdin to end it.
+                        # ⚠ …unless the session just said it is out of quota.
+                        # The feed used to ignore `is_error` entirely, so a
+                        # CLI answering "usage limit reached" was handed the
+                        # next queued message, and the next: measured
+                        # 2026-08-04 (test_turn_lifecycle "frozenq") — three
+                        # queued messages became three real API attempts
+                        # against a live limit, and only the first turn's text
+                        # was kept for replay. Leaving them queued lets the
+                        # freeze below stop them for real.
+                        limited = bool(ev.get("is_error")) and \
+                            _looks_like_usage_limit(str(ev.get("result") or ""))
                         nxt = None
                         with _state_lock:
                             st["responding"] = False
@@ -1227,7 +1487,7 @@ def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
                             st["steer"] = []
                             if leftover:
                                 st["queue"][0:0] = leftover
-                            if st["queue"]:
+                            if st["queue"] and not limited:
                                 nxt = st["queue"].pop(0)
                                 st["responding"] = True
                         if nxt is not None:
@@ -1240,7 +1500,7 @@ def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
                                 ncmd = bool(nxt.get("cmd"))
                                 ntoks, nxt = list(nxt.get("toks") or []), nxt["text"]
                             if not ncmd:      # a slash command goes verbatim
-                                nxt, ntok = _envelope(slug, nid, nxt)
+                                nxt, ntok = _envelope(slug, nid, nxt, via="turn")
                                 if ntok:
                                     ntoks.append(ntok)
                             try:
@@ -1314,7 +1574,15 @@ def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
                     notify(slug, nid, "filter_flagged")
                     if applied == "opus":
                         with _state_lock:
-                            st["queue"].insert(0, text)   # replays as opus now
+                            # the replay carries the SAME enveloped text, so it
+                            # must carry the same journal tokens too: as a bare
+                            # string the batch is not "still riding a carrier",
+                            # the finally folds it back into the mailbox, and
+                            # the opus retry then drains it a second time on
+                            # top of the copy already inside `text`
+                            st["queue"].insert(0, {"toks": list(pend_toks),
+                                                   "text": text}
+                                               if pend_toks else text)
                         raise RuntimeError(
                             "a Fable content filter flagged the message — "
                             "converted to opus and retrying (org policy)")
@@ -1330,9 +1598,39 @@ def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
                         o2 = store.load_org(slug)
                         if nid in o2.nodes:
                             fz = _ensure_frozen(o2.node(nid))
+                            # POSITIVE kind marker — see FrozenInfo.limit. A
+                            # usage-limit freeze whose reset time is
+                            # unparseable and which kept no replay text is
+                            # shape-identical to a pre-№41 spend freeze, and
+                            # was being retagged into one that ▶ resume skips
+                            # forever. This flag is what tells them apart.
+                            fz["limit"] = True
                             fz["until"] = _parse_limit_reset(err_blob) or fz.get("until")
                             fz["until_ts"] = (_parse_limit_reset_ts(err_blob)
                                               or fz.get("until_ts"))
+                            _uts = fz.get("until_ts")
+                            if not fz.get("until") and _uts:
+                                # The CLI's usual wording carries ONLY the
+                                # epoch ("…usage limit reached|1753898400"),
+                                # which `_parse_limit_reset` cannot phrase — so
+                                # the record kept a machine time and no human
+                                # one, and the desk showed a freeze with no
+                                # reset. Worse: {error, no until, no
+                                # resume_texts, nothing True} is EXACTLY the
+                                # shape ledger's pre-№41 migration re-tags as a
+                                # kiosk SPEND freeze on the next load, after
+                                # which ▶ resume skips the node for good (it
+                                # defers to "whichever mechanism owns this
+                                # freeze", and no spend mechanism exists in a
+                                # non-kiosk org). Live-caught 2026-08-04
+                                # (test_turn_lifecycle "freeze · a limit on the
+                                # first call"). Deriving the label from the
+                                # timestamp we already parsed fixes the display
+                                # and keeps the record out of that shape.
+                                _t = _dtm.datetime.fromtimestamp(_uts)
+                                _lbl = _t.strftime("%I:%M%p").lstrip("0").lower()
+                                fz["until"] = (_lbl if _t.date() == _dtm.date.today()
+                                               else _t.strftime("%a ") + _lbl)
                             fz["error"] = err_blob[:300]
                             # replay only what the CLI actually consumed: an
                             # unconsumed batch folds back as MAIL (C1) and
@@ -1377,15 +1675,18 @@ def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
             alive = [t for x in (st["queue"] + (st.get("steer") or []))
                      if isinstance(x, dict) for t in x.get("toks") or []]
         _fold_back_undelivered(slug, nid, keep_toks=alive)
-        nxt = None
         with _state_lock:
             if st["queue"]:
-                nxt = st["queue"].pop(0)
+                follow = st["queue"].pop(0)
             else:
                 st["busy"] = False
+        with _state_lock:
+            # sticky rows (/context answers) outlive the turn — the reader
+            # asked mid-turn precisely to peek; the turn ending must not eat
+            # the answer
+            st["live"] = [r for r in (st.get("live") or []) if r.get("sticky")]
         notify(slug, nid, "turn_done")
-        if nxt is not None:
-            _run_turn(slug, nid, nxt)
+    return follow
 
 
 def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
@@ -1407,7 +1708,6 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
     if not cw:
         for mu in (res.get("modelUsage") or {}).values():
             cw = mu.get("contextWindow") or cw
-    st["occupancy"], st["context_window"] = occ or st["occupancy"], cw or st["context_window"]
     # №7: the CLI reports every headless auto-deny on the result event — the
     # machine truth about the corrections the permission settings made
     denials: list[Denial] = [
@@ -1466,20 +1766,93 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
             with store.DOC_LOCK:
                 o2 = store.load_org(slug)
                 o2.node(nid)["bearer_state"] = "preserving"
-                o2._notify([o2.node(nid)["parent"]],
+                # ⚠ The notice used to go to `parent` ALONE, and `_notify`
+                # silently drops a falsy target — so a bearer rehired into a
+                # TOP-LEVEL slot (the superior-rehired case, which keeps the
+                # old parent, i.e. None) announced its own transition to
+                # nobody at all: the agent quietly stopped retaining anything
+                # said to it and no one was told. Measured 2026-08-04
+                # (test_compaction "a TOP-LEVEL bearer's oracle transition
+                # tells nobody"). The SUCCESSOR is the right target in every
+                # case — it is the one agent whose reason to consult this
+                # bearer just changed — and `_notify` de-duplicates, so the
+                # self-rehired case (parent == successor) still sends one.
+                o2._notify([o2.node(nid)["parent"],
+                            o2.node(nid).get("successor")],
                            f'Knowledge bearer "{nid}" has exhausted its headroom and is '
                            f'now a PRESERVING ORACLE — it still answers, but exchanges '
                            f'are no longer retained by it.')
                 store.save_org(o2)
         return
     # per-org compaction threshold (user setting, 50–95%); the env default is
-    # the fallback, everything hard-capped at 95%
-    compact_at = min(0.95, float(org.d.get("compact_at") or COMPACT_AT))
+    # the fallback, everything hard-capped at 95%.
+    #
+    # ⚠ The FLOOR matters as much as the ceiling, and only the ceiling was
+    # here. `POST /settings` clamps to 50–95 (api.py:1012) but nothing else
+    # does: `defaults.json` is stored ORG-DOC-SHAPED and unvalidated
+    # (api.py:894,921) and the doc itself is hand-editable, so a
+    # zero-or-negative `compact_at` reached this line intact and made
+    # `occ / cw >= compact_at` true on EVERY turn — each one forking a
+    # compaction with a 600 s ceiling that holds a global turn slot, on a node
+    # whose context is nearly empty. Measured 2026-08-04 (test_compaction
+    # "a NEGATIVE compact_at compacts on every turn"). A NaN is the same bug
+    # spelled the other way round: every comparison is False, so compaction
+    # silently never happens and the node runs until the context wall.
+    # Anything unusable falls back to the configured default rather than
+    # guessing a number the operator did not choose.
+    compact_at = _threshold(org.d.get("compact_at"), COMPACT_AT)
     if occ and cw and occ / cw >= compact_at:
         # №28: a failing compaction used to re-fire after EVERY turn, holding
         # a turn slot for up to 10 minutes each time — cool down between tries
         if time.time() >= state(slug, nid).get("compact_retry_at", 0):
             _compact_split(slug, nid)
+
+
+def _fork_result(out: str) -> dict[str, Any]:
+    """The compaction fork's `--output-format json` answer.
+
+    ⚠ `json.loads(out)` on the WHOLE stream assumed the CLI's stdout carries
+    the result object and nothing else. It usually does — but a single
+    unrelated line (an npm/node warning, an update notice, a `--debug`
+    banner) makes the parse throw, which this function's caller treats as a
+    failed split: a 15-minute cooldown, a `last_error` on the desk, and the
+    most expensive call the system makes thrown away, for output that
+    actually contained a perfectly good session id. Scan for the last
+    parseable JSON OBJECT instead, which is what the result is, and keep the
+    whole-body parse as the fast path."""
+    body = out.strip()
+    if not body:
+        return {}
+    try:
+        whole = json.loads(body)
+        if isinstance(whole, dict):
+            return cast("dict[str, Any]", whole)
+    except json.JSONDecodeError:
+        pass
+    for line in reversed(body.splitlines()):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict) and obj.get("session_id"):
+            return cast("dict[str, Any]", obj)
+    return {}
+
+
+def _threshold(raw: Any, fallback: float) -> float:
+    """A context-occupancy fraction, clamped into a band where it can only
+    mean what it says. Unusable input (None, "", junk, NaN, <= 0, > 1) falls
+    back to `fallback`; the 0.95 ceiling is the long-standing hard cap."""
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return fallback
+    if v != v or v <= 0.0 or v > 1.0:      # NaN, non-positive, or not a fraction
+        return fallback
+    return min(0.95, v)
 
 
 def _compact_split(slug: str, nid: str) -> None:
@@ -1500,7 +1873,7 @@ def _compact_split_body(slug: str, nid: str) -> None:
         org = store.load_org(slug)
         n = org.node(nid)
         old_sid = n["session_id"]
-        model = org.d["models"].get(n["model"], n["model"])
+        model = org.model_for(nid)   # tier default, or this node's chosen version
     if sbx.is_sandboxed(org):
         # the session lives inside the org's container — fork it there too
         try:
@@ -1530,8 +1903,15 @@ def _compact_split_body(slug: str, nid: str) -> None:
             proc.kill()
             proc.communicate()
             raise RuntimeError("fork/compact timed out after 600s (child killed)")
-        res = json.loads(out) if out.strip() else {}
+        res = _fork_result(out)
         new_sid = res.get("session_id")
+        # the id has to be USABLE as `--resume <sid>`, not merely present: a
+        # non-string (or a blank/whitespace one) would be written straight
+        # onto the node and every later turn would resume a session that
+        # cannot exist, with the pre-compaction transcript already retired
+        # into a bearer. Cheaper to fail the split and keep the old session.
+        if not isinstance(new_sid, str) or not new_sid.strip():
+            new_sid = None
         if proc.returncode != 0 or not new_sid or new_sid == old_sid:
             raise RuntimeError(f"fork/compact failed (rc={proc.returncode})")
     except Exception as e:                                   # noqa: BLE001
@@ -1545,7 +1925,27 @@ def _compact_split_body(slug: str, nid: str) -> None:
     # public gateway's compact button can trigger repeatedly)
     fork_cost = float(res.get("total_cost_usd") or 0.0)
     with store.DOC_LOCK:
-        org = store.load_org(slug)
+        # ⚠ Everything above ran for up to 600 s with no lock held, and the
+        # node can be deleted — or the whole org dropped — inside that window.
+        # `org.node(nid)` then raised a LedgerError out of a DAEMON THREAD
+        # whose caller catches only RuntimeError (api.node_compact), so the
+        # thread died with a traceback and the fork's dollar cost vanished
+        # with it: a real, billed, expensive API call that nothing recorded.
+        # Bank the burn where every other removed node's burn goes and stop.
+        try:
+            org = store.load_org(slug)
+        except LedgerError:
+            print(f"[orgtree] {slug}/{nid}: compaction fork finished after the "
+                  f"org was deleted (${fork_cost:.4f} unrecorded)")
+            return
+        if nid not in org.nodes:
+            if fork_cost:
+                org.d["deleted_cost_usd"] = round(
+                    float(org.d.get("deleted_cost_usd") or 0.0) + fork_cost, 6)
+                store.save_org(org)
+            print(f"[orgtree] {slug}/{nid}: compaction split abandoned — the "
+                  f"node was removed while the fork ran")
+            return
         pred = org.compact_split(nid, new_sid)
         n = org.node(nid)
         if fork_cost:
@@ -1561,7 +1961,7 @@ def _compact_split_body(slug: str, nid: str) -> None:
             and spend_total >= float(kcfg["spend_limit"])):   # pyright: ignore[reportTypedDictNotRequiredAccess]
         hard_freeze(slug, "spend", "kiosk spend limit reached")
     st = state(slug, nid)
-    st["occupancy"] = None
+    # (the post-compact occupancy reset lives on the doc, written above)
     st.pop("compact_retry_at", None)
     notify(slug, nid, "compacted")
     notify(slug, pred, "created")
@@ -1578,14 +1978,38 @@ def manual_compact(slug: str, nid: str) -> None:
             raise RuntimeError("busy — wait for the current turn to finish")
         st["busy"] = True
     try:
-        _compact_split(slug, nid)
+        # ⚠ The fork is a full CLI child — the same ~306 MB of working set a
+        # turn costs, for up to the same 600 s — and this path did not take a
+        # turn slot. `MAX_CONCURRENT` therefore did not bound the number of
+        # concurrent CLI processes at all: N manual compactions ran ON TOP of
+        # the cap, and the compact button is on the kiosk's public surface, so
+        # a visitor with N agents could add N children to a box already at its
+        # limit. Measured 2026-08-04 (test_compaction "a compaction fork
+        # occupies a global turn slot"): with the cap at 1 and a node
+        # compacting, an unrelated org was served in 152 ms — i.e. the fork
+        # was invisible to the semaphore. The AUTOMATIC path is already inside
+        # `_run_one_turn`'s `with _turn_slots:`, which is why the acquisition
+        # belongs here and not inside `_compact_split` (that would deadlock on
+        # a non-reentrant semaphore the same thread already holds).
+        # `waiting` is the established "blocked on a slot, not running" flag
+        # (№12 — the UI draws it hollow).
+        st["waiting"] = True
+        with _turn_slots:
+            st["waiting"] = False
+            _compact_split(slug, nid)
     finally:
+        st["waiting"] = False
         nxt = None
         with _state_lock:
             if st["queue"]:
                 nxt = st["queue"].pop(0)
             else:
                 st["busy"] = False
+        with _state_lock:
+            # sticky rows (/context answers) outlive the turn — the reader
+            # asked mid-turn precisely to peek; the turn ending must not eat
+            # the answer
+            st["live"] = [r for r in (st.get("live") or []) if r.get("sticky")]
         notify(slug, nid, "turn_done")
         if nxt is not None:
             _run_turn(slug, nid, nxt)
@@ -2003,7 +2427,7 @@ def immediate_command(slug: str, nid: str, text: str) -> bool:
     org = store.load_org(slug)
     n = org.node(nid)
     sid = n["session_id"]
-    model = org.d["models"].get(n["model"], n["model"])
+    model = org.model_for(nid)   # tier default, or this node's chosen version
     tdir = _transcript_root(org)
     if not transcript_path(sid, tdir):
         return False
@@ -2061,8 +2485,8 @@ def immediate_command(slug: str, nid: str, text: str) -> bool:
             out_text = f"⚠ /{word} failed: {e}"
         # sticky: this output exists in NO transcript — the live-feed
         # reconciliation must never sweep it on a refresh or turn end
-        stream(slug, nid, {"kind": "text", "sticky": True,
-                           "text": out_text[:20000]})
+        live_row(slug, nid, {"kind": "text", "sticky": True,
+                             "text": out_text[:20000]})
         # the fork transcript is a full COPY of the session — delete it, or
         # every /context banks megabytes (kiosk storage included) for nothing
         if fork_sid and fork_sid != sid:
@@ -2158,7 +2582,14 @@ def resume_frozen(slug: str) -> list[str]:
             # leaving their record intact for whoever can actually act.
             if n["state"] != "live" or n.get("limit_locked"):
                 continue
-            if any(v is True for v in fz.values()):
+            # ⚠ `limit` is excluded: it is the kind ▶ resume ITSELF owns. The
+            # guard means "another mechanism owns this record" — adding a
+            # positive marker for the usage-limit kind (FrozenInfo.limit) put
+            # that kind's own flag in scope and made ▶ skip every
+            # limit-frozen agent, i.e. exactly the bug the marker was added to
+            # prevent, from the other end. Caught immediately by the
+            # turn-lifecycle suite's three freeze checks.
+            if any(k != "limit" and v is True for k, v in fz.items()):
                 continue
             n.pop("frozen", None)
             resumed.append((nid, fz.get("resume_texts") or []))
@@ -2450,31 +2881,53 @@ def pop_steer(slug: str, nid: str) -> list[str]:
     with _state_lock:
         msgs = st.get("steer") or []
         st["steer"] = []
-    _confirm_delivered(slug, nid, [
-        t for m in msgs if isinstance(m, dict) for t in m.get("toks") or []])
+    toks = [t for m in msgs if isinstance(m, dict) for t in m.get("toks") or []]
     out = [m["text"] if isinstance(m, dict) else m for m in msgs]
-    if out:
-        # user bug 2026-07-31 ("my prompt vanishes moments after sending"):
-        # steered mail is injected as HOOK CONTEXT, which the CLI never
-        # writes to the transcript — so once the pending row drained and the
-        # live row aged out, the message existed NOWHERE the chat could
-        # show. The steered log is its durable home; read_chat interleaves
-        # it by timestamp. Written off-thread — the steer endpoint is the
-        # per-tool-call hot path and must never wait on a doc save.
-        def record() -> None:
-            with store.DOC_LOCK:
-                try:
-                    org = store.load_org(slug)
-                except Exception:               # noqa: BLE001
-                    return
-                if nid not in org.nodes:
-                    return
+    # The steered log (user bug 2026-07-31, "my prompt vanishes moments after
+    # sending"): steered mail rides HOOK CONTEXT, which the CLI writes to the
+    # transcript as a `type:"attachment"` record — a shape read_chat cannot
+    # render (verified 2026-08-04 across 94 real transcripts: 9 injections, all
+    # of them attachments). So this log is the message's ONLY durable home once
+    # the journal batch is confirmed away, and read_chat interleaves it by
+    # timestamp.
+    #
+    # ⚠ Confirming and recording used to be two separate writes — a synchronous
+    # `_confirm_delivered` followed by a daemon thread that saved the log. That
+    # is this whole bug family's signature: the journal (the thing on screen)
+    # was retired BEFORE its replacement existed, and on Windows `save_org`
+    # retries `os.replace` for up to 2.1 s under reader contention, so the hole
+    # is not theoretical. Measured 2026-08-04: between the two writes the
+    # message was in no carrier the desk renders from.
+    #
+    # They are now ONE load-modify-save under one lock, so the pending row
+    # leaves and the steered row arrives in the same payload — the same rule
+    # `node_chat` applies to the turn carrier (D-55). It is also strictly
+    # CHEAPER than what it replaces: one doc write where there were two, which
+    # answers the "the hot path must never wait on a doc save" note that put
+    # the record off-thread in the first place.
+    if out or toks:
+        with store.DOC_LOCK:
+            try:
+                org = store.load_org(slug)
+            except Exception:                   # noqa: BLE001
+                return out
+            if nid not in org.nodes:
+                return out
+            if out:
                 log = org.d.setdefault("steered_log", {}).setdefault(nid, [])
                 for t in out:
                     log.append({"at": now_iso(), "text": str(t)[:20000]})
                 del log[:-40]
-                store.save_org(org)
-        threading.Thread(target=record, daemon=True).start()
+            drop = set(toks)
+            dlmap = org.d.get("delivering") or {}
+            dl = dlmap.get(nid)
+            if dl and drop:
+                keep = [b for b in dl if b.get("tok") not in drop]
+                if keep:
+                    dlmap[nid] = keep
+                else:
+                    dlmap.pop(nid, None)
+            store.save_org(org)
     return out
 
 
@@ -2499,14 +2952,17 @@ def reconcile(slug: str) -> list[str]:
     marked = []
     with store.DOC_LOCK:
         org = store.load_org(slug)
+        # ONE walk for the whole pass — see transcript_index. The per-node
+        # `transcript_path` this replaces re-listed the user's entire
+        # `projects/` directory for every node, once per org, at startup.
+        seen = transcript_index(_transcript_root(org))
         for nid, n in org.nodes.items():
             if (n["state"] == "live" and float(n.get("cost_usd") or 0.0) > 0
                     and not n.get("bearer_state")
                     # audit finding: the root MUST be the org's — sandboxed
                     # transcripts live under <data>/sandboxes/<slug>/home, and
                     # omitting it condemned every sandboxed node at restart
-                    and transcript_path(n["session_id"],
-                                        _transcript_root(org)) is None):
+                    and n["session_id"] not in seen):
                 org.mark_unrecoverable(nid, "transcript missing at startup (№31)")
                 marked.append(nid)
         if marked:
@@ -2515,6 +2971,7 @@ def reconcile(slug: str) -> list[str]:
         # where they left off (user ruling) — the interrupted turn text was
         # persisted at turn start
         inflight = []
+        dropped_cmd = False
         for nid, n in org.nodes.items():
             if n["state"] == "live" and nid not in marked and not n.get("frozen"):
                 inf = n.pop("inflight", None)
@@ -2523,7 +2980,16 @@ def reconcile(slug: str) -> list[str]:
                 # text) — a lost command is dropped, not degraded (review)
                 if inf and not inf.get("cmd"):
                     inflight.append((nid, inf))
-        if inflight:
+                elif inf:
+                    # ⚠ the pop above is IN MEMORY. Saving only when something
+                    # is replayable meant an org whose only in-flight turn was
+                    # a COMMAND never wrote the drop back: the marker survived
+                    # on disk, every later restart re-dropped it, and the tree
+                    # kept reporting `inflight_at` — "running for 6 days" on an
+                    # idle node. Measured 2026-08-04 (test_turn_lifecycle
+                    # "reconcile · its inflight marker is cleared").
+                    dropped_cmd = True
+        if inflight or dropped_cmd:
             store.save_org(org)
         # delivery-journal fold-back: batches drained for a turn whose
         # delivery never confirmed — the backend died in between. The mail
@@ -2660,6 +3126,89 @@ def _ts_gap_secs(a: str | None, b: str | None) -> int | None:
         return None
 
 
+def _sweep_live(slug: str, nid: str, msgs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Retire live rows the transcript has caught up on, and return the rest.
+
+    This is the whole live/durable reconciliation, in ONE place that can see
+    both sides. It used to run in the browser, once per mounted view, against
+    a payload the client had assembled itself — matching by 300-character
+    string prefix and expiring on a 5-second timer that raced the transcript
+    write. Here a tool row retires on the CLI's own tool_use_id, and nothing
+    is dropped on a clock: a row survives until its durable twin is visible.
+
+    Sticky rows (immediate /context output) are in no transcript, ever, so
+    they are never swept — only the turn's end clears them."""
+    tail = msgs[-12:]
+
+    def head_of(r: dict[str, Any]) -> str:
+        return (r.get("text") or "")[:300]
+
+    def durable_texts(head: str) -> int:
+        """How many durable assistant rows in the tail carry this text."""
+        return sum(1 for m in tail if m.get("role") == "assistant"
+                   and (m.get("text") or "").startswith(head))
+
+    def covered(r: dict[str, Any], budget: dict[str, int]) -> bool:
+        if r.get("sticky"):
+            return False
+        kind = r.get("kind")
+        if kind == "tool":
+            return any(t.get("id") and t["id"] == r.get("id")
+                       for m in tail for t in (m.get("tools") or []))
+        if kind == "text":
+            # ⚠ COUNTED, not merely matched. An agent that says the same thing
+            # twice in one turn ("done." after two edits) used to have its
+            # second live row retired by the FIRST one's durable twin — the row
+            # left the screen and came back a poll later, out of place. Same
+            # defect as the thought rule below, in the one other kind that has
+            # no id: allow one retirement per durable copy, in order.
+            head = head_of(r)
+            if head not in budget:
+                budget[head] = durable_texts(head)
+            if budget[head] <= 0:
+                return False
+            budget[head] -= 1
+            return True
+        return True
+
+    st = state(slug, nid)
+    with _state_lock:
+        rows = cast("list[dict[str, Any]]", st.get("live") or [])
+        # ⚠ A `thought` row is NOT matched against the transcript's thinking
+        # rows (user bug 2026-08-04: "thinking blocks sometimes appear late or
+        # out of order, shifting messages around"). Since the API seals the
+        # reasoning, a live thought carries no text and a durable one carries
+        # only `thinking_sealed` — so the old test ("is there ANY sealed
+        # thinking in the tail?") matched the FIRST think of the turn and
+        # retired every later one on sight, twin or no twin. Measured: think →
+        # tool A → think → tool B, polled between steps, retired thought №2
+        # while its transcript record did not yet exist; the record landed a
+        # poll later and the line reappeared ABOVE rows already on screen.
+        # That is D-50's rule broken in a new place — retired without a
+        # replacement in hand.
+        #
+        # The identity a thought lacks, its SUCCESSOR has. `fold_thought` only
+        # ever banks a thought immediately before the text/tool row that ended
+        # it, and the CLI writes its transcript in order — so a covered later
+        # row is proof the transcript is already past this thought. Nothing
+        # here compares strings or clocks; it reads the order both sides agree
+        # on.
+        budget: dict[str, int] = {}
+        # forward, so the counted text budget is spent oldest-first
+        cov = [False if r.get("kind") == "thought" else covered(r, budget)
+               for r in rows]
+        # backward, so each thought can see whether anything after it landed
+        later = False
+        for i in range(len(rows) - 1, -1, -1):
+            if rows[i].get("kind") == "thought":
+                cov[i] = later
+            elif cov[i]:
+                later = True
+        keep = [r for r, c in zip(rows, cov) if not c]
+        st["live"] = keep
+        return [dict(r) for r in keep]
+
+
 def read_chat(org: Org, nid: str, last: int | None = None) -> dict[str, Any]:
     """Parse the node's transcript into renderable messages + context occupancy.
 
@@ -2676,6 +3225,12 @@ def read_chat(org: Org, nid: str, last: int | None = None) -> dict[str, Any]:
            # a long command ran); the chat payload refreshes on every pulse
            "responding": bool(st.get("responding")),
            "last_error": st["last_error"], "occupancy": None, "messages": [],
+           # (an `effort_used` field lived here for one commit, reading the
+           # effort back out of the transcript. It is gone: the CLI stamps
+           # that field on some tiers and not others, so it answered for opus
+           # and shrugged for haiku. orgtree now PASSES --effort on every
+           # turn, so Org.effective_effort is the answer and nothing has to be
+           # observed. Derive, don't store — and better, cause.)
            "init": st.get("init")}
     tpath = transcript_path(n["session_id"], _transcript_root(org))
     if not tpath:
@@ -2766,6 +3321,7 @@ def read_chat(org: Org, nid: str, last: int | None = None) -> dict[str, Any]:
                          "ts": rec.get("timestamp")})
             continue
         texts, tools, thinks = [], [], []
+        sealed = 0        # thinking blocks that carry a signature but no text
         if isinstance(content, str):
             texts.append(content)
         else:
@@ -2776,9 +3332,21 @@ def read_chat(org: Org, nid: str, last: int | None = None) -> dict[str, Any]:
                 elif bt == "thinking":
                     # №18 evolved (user spec 2026-07-31): thinking IS in the
                     # CLI transcript — surfaced as a collapsed "thought for
-                    # Xs" line, expandable on click
+                    # Xs" line, expandable on click.
+                    # ⚠ Since 2026-08-02 the text is usually NOT there: the
+                    # block arrives as {"signature": …, "thinking": ""} and
+                    # the plaintext never leaves the API. Measured across CLI
+                    # 2.1.31 and 2.1.220, every model, every --effort tier,
+                    # and interactive sessions too — 0 blocks with text out of
+                    # 583. Dropping those silently is what made thinking
+                    # "completely hidden" (user bug): the record holds NOTHING
+                    # else, so the whole row vanished and the agent looked
+                    # like it had stopped thinking. It didn't — so the line
+                    # still renders, minus the body it was never given.
                     if block.get("thinking", "").strip():
                         thinks.append(block["thinking"])
+                    else:
+                        sealed += 1
                     continue
                 elif bt == "tool_use":
                     entry = {"name": block.get("name", "tool"),
@@ -2886,7 +3454,7 @@ def read_chat(org: Org, nid: str, last: int | None = None) -> dict[str, Any]:
                 occupancy = occ            # №24: LAST non-synthetic wins
         if t == "user" and tools and not any(texts):
             continue                        # pure tool_result plumbing — skip
-        if not texts and not tools and not thinks:
+        if not texts and not tools and not thinks and not sealed:
             continue
         mrow = {
             "role": t,
@@ -2894,8 +3462,14 @@ def read_chat(org: Org, nid: str, last: int | None = None) -> dict[str, Any]:
             "tools": [x for x in tools if x],
             "ts": rec.get("timestamp"),
         }
-        if thinks:
-            mrow["thinking"] = "\n\n".join(thinks)[:6000]
+        if thinks or sealed:
+            if thinks:
+                mrow["thinking"] = "\n\n".join(thinks)[:6000]
+            else:
+                # the thought happened and its DURATION is still true — only
+                # the body is missing, so the line says so instead of lying
+                # with an empty expander
+                mrow["thinking_sealed"] = True
             # "thought for Xs" ≈ the gap from the previous record to this
             # message — the API call's pre-output time
             secs = _ts_gap_secs(rec_prev_ts, rec.get("timestamp"))
@@ -2925,6 +3499,7 @@ def read_chat(org: Org, nid: str, last: int | None = None) -> dict[str, Any]:
         msgs = msgs[-last:]
     out["messages"] = msgs
     out["occupancy"] = occupancy
+    out["live"] = _sweep_live(org.d["slug"], nid, msgs)
     if n.get("bearer_state") == "preserving":
         for ex in n.get("oracle_exchanges", []):
             out["messages"].append({"role": "user", "text": ex["q"], "tools": [],

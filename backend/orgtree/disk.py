@@ -42,7 +42,48 @@ from typing import cast
 
 SENTINEL = ".orgtree-disk"
 IMG = "disk.img"
-MOUNT_ROOT = "/mnt/wsl/orgtree-disk"
+# ⚠ NOT a constant: Docker Desktop MOVED the shared mount, and hardcoding it
+# broke sandboxed-org creation on this machine with no orgtree change involved.
+#
+# The design wants the ONE tmpfs WSL shares across distros — containers bind
+# it, and the Windows backend reads the same bytes over \\wsl.localhost. That
+# tmpfs used to be at `/mnt/wsl` inside the docker-desktop distro. A Docker
+# Desktop update put the distro in its own mount namespace and remapped the
+# host mounts under `/mnt/host/`, so `/mnt/wsl` there became a plain directory
+# on a READ-ONLY overlay root — with the previously-created org mountpoints
+# still baked into it, which is why existing orgs kept working (`mkdir -p`
+# returns 0 on an existing dir) while every NEW slug failed on a read-only
+# filesystem. Measured 2026-08-04: docker-desktop had 0 mounts under
+# `/mnt/wsl`, Ubuntu-24.04 had 9, and `/mnt/host/wsl` in the distro listed the
+# very same contents as `/mnt/wsl` in Ubuntu.
+#
+# `wsl --shutdown` does NOT fix it (tried) — the namespace split is by design,
+# not a damaged disk. So the root is DETECTED, in the same spirit as `distro()`
+# right below, and both spellings are accepted so the same code runs on the
+# older and newer Docker Desktop layouts. Both were verified reachable from
+# Windows over \\wsl.localhost before this was written.
+_MOUNT_ROOTS = ("/mnt/host/wsl", "/mnt/wsl")
+_mount_root_cache: str | None = None
+
+
+def mount_root() -> str:
+    """The shared-tmpfs directory holding every org's mountpoint.
+
+    Fails loud, like `distro()`: an org whose disk cannot be mounted must say
+    what is missing rather than silently bind an empty workspace."""
+    global _mount_root_cache
+    if _mount_root_cache:
+        return _mount_root_cache
+    for base in _MOUNT_ROOTS:
+        # writability is the test, not existence — `/mnt/wsl` still EXISTS in
+        # the new layout, on a read-only root, which is exactly the trap.
+        if _sh(f"mkdir -p {base}/orgtree-disk").returncode == 0:
+            _mount_root_cache = f"{base}/orgtree-disk"
+            return _mount_root_cache
+    raise RuntimeError(
+        "no writable shared mount root inside the Docker Desktop distro "
+        f"(tried {', '.join(_MOUNT_ROOTS)}). Sandboxed orgs cannot be "
+        "created or started until one of these is writable.")
 # distro-side candidates for the docker daemon's data root (the volume
 # Mountpoint docker reports is the DAEMON namespace path, not the distro's)
 _DATA_ROOTS = ("/mnt/docker-desktop-disk/data/docker/volumes",
@@ -114,7 +155,7 @@ def _img_path(slug: str) -> str:
 
 
 def mount_path(slug: str) -> str:
-    return f"{MOUNT_ROOT}/{slug}"
+    return f"{mount_root()}/{slug}"
 
 
 def windows_path(slug: str) -> str:
@@ -162,8 +203,19 @@ def create(slug: str, size_mb: int) -> None:
                             + (r.stderr or r.stdout)[-300:])
         img = _img_path(slug)
         if _sh(f"test -f {img}").returncode != 0:
+            # -m 0: NO reserved-for-root blocks. ext4's 5% default reserve is
+            # for a system disk that must not wedge root; this image holds one
+            # org's data and the container's CLI runs as an unprivileged user,
+            # so the reserve is simply 5% of the cap the operator paid for
+            # that agents can never use — and it makes the ≥99% "hard full"
+            # tier unreachable: measured on a real 4096 MB org disk, the CLI's
+            # writes hit ENOSPC with `df` reading 94.4% (test_sandbox.py §9),
+            # so the alert state that tier exists to raise could not fire.
+            # Applies to NEWLY created disks; an existing one can be migrated
+            # with `tune2fs -m 0 <img>` (not done automatically — it is the
+            # operator's disk).
             mk = _sh(f"dd if=/dev/zero of={img} bs=1M count=0 seek={size_mb} "
-                     f"2>/dev/null && mkfs.ext4 -q {img}", timeout=300)
+                     f"2>/dev/null && mkfs.ext4 -q -m 0 {img}", timeout=300)
             if mk.returncode != 0:
                 _sh(f"rm -f {img}")
                 raise DiskError("org disk format failed: "
@@ -388,8 +440,18 @@ def enumerate_by_size(slug: str, limit: int = 500,
     # busybox find has no -printf; stat -c does exist. '@' as the separator
     # (paths may contain tabs in principle, never '@' at position 0 of the
     # size field). ⚠ busybox exits 0 even on flag errors — trust the parse.
+    #
+    # ⚠ Paging is `tail -n +N | head -M`, NOT `head -(offset+limit) | tail
+    # -limit`. The latter reads correctly and is wrong: `head -N` CLAMPS to
+    # the real line count once N overshoots it, and `tail -limit` then
+    # measures "the last `limit`" from the clamped list rather than from
+    # `offset`. Measured on a 12-file disk: offset=8 limit=10 returned TEN
+    # rows starting at file 3 — six of them already served on the previous
+    # page — and offset=12 (exactly past the end) returned the last five
+    # files instead of nothing. Both land precisely where a "load more"
+    # button naturally goes, at the end of a long listing.
     r = _sh(f"cd {mp} && find . -type f -exec stat -c '%s@%n' {{}} + "
-            f"| sort -rn | head -{offset + limit} | tail -{limit}",
+            f"| sort -rn | tail -n +{offset + 1} | head -{limit}",
             timeout=120)
     if r.returncode != 0:
         raise DiskError("disk enumeration failed: "
