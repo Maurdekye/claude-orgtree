@@ -33,9 +33,10 @@ import uuid
 from typing import TYPE_CHECKING, Any, cast
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from . import sandbox, store, subproxy, supervisor
 from .ledger import LedgerError, Org, USER, VIS_LEVELS, norm_dirs, norm_tools
@@ -51,6 +52,70 @@ if TYPE_CHECKING:
     from .schema import DirGrant, KioskCfg as KioskDoc, MailEntry, UserMailEntry
 
 app = FastAPI(title="orgtree", version="1.0.0")
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_error(  # type: ignore[unused-function]  # registered by the decorator
+        _request: Request, exc: RequestValidationError) -> Response:
+    """FastAPI's default 422 echoes the offending value back as `input`, RAW.
+
+    JSON may carry a lone surrogate (`"\\ud800"`), Python's decoder happily
+    produces it, and the echo then kills the UTF-8 encode of the RESPONSE —
+    turning a 422 into an uncaught UnicodeEncodeError, i.e. a 500, on every
+    body-taking endpoint at once. (Handler-authored messages are safe: they
+    interpolate with !r, which escapes it.)
+
+    Same payload shape as the default handler — only the strings are made
+    encodable, so nothing that reads a 422 today sees a difference."""
+    def fix(v: Any) -> Any:
+        if isinstance(v, str):
+            return v.encode("utf-8", "replace").decode("utf-8")
+        if isinstance(v, list):
+            return [fix(x) for x in cast("list[Any]", v)]
+        if isinstance(v, dict):
+            return {k: fix(x) for k, x in cast("dict[str, Any]", v).items()}
+        return v
+    from fastapi.encoders import jsonable_encoder
+    from fastapi.responses import JSONResponse
+    return JSONResponse(status_code=422,
+                        content={"detail": fix(jsonable_encoder(exc.errors()))})
+
+
+def _encodable(v: Any) -> Any:
+    """Replace UNPAIRED SURROGATES anywhere in a decoded request body.
+
+    ☠ This one is a persistent denial of service, not a cosmetic bug. JSON may
+    contain `"\\ud800"`; Python's decoder accepts it into a str; `json.dump`
+    writes it straight back out as an escape (ensure_ascii, so the SAVE
+    succeeds); and every response that later includes that string dies in
+    pydantic's UTF-8 serializer. One kiosk message body was enough to make
+    GET /api/orgs/<slug>, /events, /chat and /inbox answer 500 for that org
+    FOREVER — the poison is on disk and nothing removes it.
+
+    So it is scrubbed at the only door it can arrive through: the request
+    body, recursively, before validation — which covers free-form dicts
+    (`args`, `max_scope`, `tools`) as well as declared string fields."""
+    if isinstance(v, str):
+        try:
+            v.encode("utf-8")
+            return v
+        except UnicodeEncodeError:
+            return v.encode("utf-8", "replace").decode("utf-8")
+    if isinstance(v, list):
+        return [_encodable(x) for x in cast("list[Any]", v)]
+    if isinstance(v, dict):
+        return {_encodable(k): _encodable(x)
+                for k, x in cast("dict[Any, Any]", v).items()}
+    return v
+
+
+class Body(BaseModel):
+    """Base for every request-body model — see _encodable."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _scrub(cls, data: Any) -> Any:
+        return _encodable(data)
 
 
 # ---- kiosk v2 (user vision): preauthenticated public URLs. Each kiosk-enabled
@@ -82,17 +147,35 @@ def _kiosk_token_map() -> dict[str, str]:
 def _public_denied(method: str, rest: str, slug: str) -> tuple[int, str] | None:
     """The public restriction matrix, applied to the post-token path. Config
     surfaces are admin-only; all access is scoped to the token's own org."""
+    # FastAPI's own routes sit OUTSIDE /api, so the "not /api ⇒ it's the SPA"
+    # rule handed them to visitors: /k/<token>/openapi.json served the
+    # complete 51 KB schema of every frozen admin endpoint and body model,
+    # and /docs + /redoc served a working console for firing at them.
+    if rest.rstrip("/") in ("/openapi.json", "/docs", "/redoc",
+                            "/docs/oauth2-redirect"):
+        return 404, "not found"
     if not rest.startswith("/api"):
         return None                              # the SPA itself
     if rest == "/api/orgs" and method == "GET":
         return None                              # handler filters to this org
     frozen_config = (
         (method == "POST" and rest == "/api/orgs")           # create org
-        or (method == "DELETE" and rest.startswith("/api/orgs/"))  # delete org
+        # ⚠ NOT a blanket `startswith("/api/orgs/")`: that also froze
+        # DELETE …/nodes/…/mail/<id>, the mail-retraction button the visitor
+        # UI renders unconditionally (desk.tsx) — a control that could only
+        # ever 403. Freeze the org-delete route itself, which is the one this
+        # clause was ever about.
+        or (method == "DELETE"
+            and re.fullmatch(r"/api/orgs/[^/]+", rest) is not None)
         or rest.endswith("/settings")                        # org settings
         # /scope is OPEN (ceiling spec §2): visitors retool freely WITHIN the
         # kiosk permission ceiling — the ledger clamps, never a 403 here
         or rest.endswith("/kiosk")                           # kiosk caps/token/ceiling
+        # the PostToolUse steer fetch: an agent-process path, authorised by
+        # loopback or the bridge secret, never by a browser (the frontend has
+        # no call site for it). Reachable from the kiosk it POPPED the node's
+        # pending mid-task mail — reading it AND destroying the delivery.
+        or rest.endswith("/steer")
         or rest == "/api/fs"                                 # filesystem browse
         or (method == "PUT" and rest.endswith("/orgmd"))     # org.md edits
         or rest == "/api/agent"                              # node MCP gateway
@@ -157,6 +240,27 @@ class PublicGateway:
 
 def _public_slug(request: Request) -> str | None:
     return getattr(request.state, "public_slug", None)
+
+
+# A free-form `dict[str, Any]` off the wire (max_scope, tools, add_dirs) hits
+# ledger normalizers that assume the documented SHAPE — `{"tools": 5}` came
+# back out as an AttributeError, i.e. a 500 rather than a 422. Pydantic can't
+# help: the field really is Any. Catch the shape errors where the untyped dict
+# crosses into the ledger, and only there.
+_BAD_SHAPE = (TypeError, AttributeError, ValueError, KeyError, IndexError)
+
+
+def _no_nul(path: str) -> str:
+    """Refuse an embedded NUL before it reaches os.path.
+
+    Every path-taking endpoint funnels into `os.path.realpath`, and on Windows
+    that raises `ValueError: embedded null character` from inside ntpath —
+    below every `except OSError` in this file, so it surfaced as a bare 500.
+    One `?path=%00` did it on /scratch, /file, /disk/file, /disk/delete and the
+    message-attachment stager. A refusal is the contract; a 500 is not."""
+    if "\x00" in path:
+        raise HTTPException(422, "path contains a null byte")
+    return path
 
 
 # ---- the sandbox bridge: the ONE door out of a kiosk container. Serves only
@@ -445,7 +549,7 @@ def hub_changed(slug: str) -> None:
 
 
 # ---------------------------------------------------------------------- orgs
-class KioskSpec(BaseModel):
+class KioskSpec(Body):
     credits: int = 30                 # top-level holdings cap (user ruling)
     spend_limit: float = 50.0         # USD hard limit (user ruling 2026-07-31)
     storage_limit_mb: int = 4096      # sandboxed: the org DISK size (4096 MB
@@ -461,7 +565,7 @@ class KioskSpec(BaseModel):
     # subscription — the host attaches the token, the sandbox never sees it
 
 
-class OrgCreate(BaseModel):
+class OrgCreate(Body):
     name: str
     dirs: list[str] = []
     permission_mode: str = "acceptEdits"
@@ -531,6 +635,11 @@ def orgs_create(body: OrgCreate) -> dict[str, Any]:
         org = store.create_org(body.name, body.dirs, body.permission_mode)
     except LedgerError as e:
         raise HTTPException(400, str(e))
+    except OSError as e:
+        # create_org mkdirs the workspace before the ledger ever sees the
+        # name; a name the host filesystem refuses (too long, a reserved
+        # device name, an unwritable data root) surfaced as a bare 500
+        raise HTTPException(422, f"could not create the org's workspace: {e}")
     # global default org settings (user spec): every new org is born with them
     dflt = load_org_defaults()
     if dflt:
@@ -564,7 +673,7 @@ def orgs_create(body: OrgCreate) -> dict[str, Any]:
                             "add_dirs": o.default_kiosk_ceiling()["add_dirs"]}
                 o.d["kiosk"]["max_scope"] = o._norm_ceiling(
                     prov if prov is not None else o.default_kiosk_ceiling())
-            except LedgerError as e:
+            except (LedgerError, *_BAD_SHAPE) as e:
                 # unwind: without this, the org survived its own failed
                 # creation as a non-kiosk org (registered + saved above)
                 # while the 422 told the caller nothing was made
@@ -721,6 +830,20 @@ def _scrub_public(tree: dict[str, Any]) -> None:
                               for d in sc["add_dirs"]]
         if n.get("last_error"):
             n["last_error"] = _WINPATH.sub("<path>", str(n["last_error"]))
+        # the other two ENGINE-generated strings on a node. `frozen.error` is
+        # a raw CLI/limit error and `last_denials[].arg` is the argument of a
+        # headless auto-denied tool call — i.e. routinely a host file path.
+        # Both rode the tree payload unscrubbed while last_error beside them
+        # was cleaned (measured: a denial arg leaked E:\… and a freeze error
+        # leaked the operator's username).
+        fz: dict[str, Any] = n.get("frozen") or {}
+        if fz.get("error"):
+            fz["error"] = _WINPATH.sub("<path>", str(fz["error"]))
+        dens: list[Any] = n.get("last_denials") or []
+        for dn in dens:
+            if isinstance(dn, dict) and cast("dict[str, Any]", dn).get("arg"):
+                d2 = cast("dict[str, Any]", dn)
+                d2["arg"] = _WINPATH.sub("<path>", str(d2["arg"]))
         children: list[dict[str, Any]] = n.get("children") or []
         for c in children:
             walk(c)
@@ -748,7 +871,7 @@ def _scrub_events(evts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [cast("dict[str, Any]", scrub(e)) for e in evts]
 
 
-class Settings(BaseModel):
+class Settings(Body):
     org_dirs: list[Any] | None = None       # external folders [{path, mode}] (ws excluded)
     max_top_grant: int | None = None
     default_top_grant: int | None = None    # pre-filled grant for top-level hires
@@ -837,6 +960,18 @@ def _org_settings_locked(slug: str, body: Settings) -> dict[str, Any]:
     ws = org.d.get("workspace")
     warnings: list[str] = []
     if body.org_dirs is not None:
+        # `org_dirs` is typed `list[Any]` on the wire, and norm_dirs assumes
+        # every entry is a str or a {path: str} mapping — `[null]` and
+        # `[{"path": 123}]` both reached it and came back out as an
+        # AttributeError, i.e. a 500. Say what is wrong instead.
+        for d in body.org_dirs:
+            ok = isinstance(d, str) or (
+                isinstance(d, dict)
+                and isinstance(cast("dict[str, Any]", d).get("path"), str))
+            if not ok:
+                raise HTTPException(
+                    422, "org_dirs entries must be a path string or "
+                         f"{{path, mode}} — got {d!r}")
         # org folder holdings live on the eye's gear (user ruling). Removals
         # revoke everywhere; an rw→ro downgrade propagates to every node's
         # grant (upgrades don't auto-propagate — grant per node deliberately).
@@ -912,7 +1047,7 @@ def _org_settings_locked(slug: str, body: Settings) -> dict[str, Any]:
     return {"dirs": org.d["dirs"], "warnings": warnings}
 
 
-class KioskCfg(BaseModel):
+class KioskCfg(Body):
     enabled: bool | None = None
     credits: int | None = None            # top-level holdings cap (0 = uncapped)
     spend_limit: float | None = None      # USD hard limit (0 = unlimited)
@@ -976,6 +1111,8 @@ async def org_kiosk(slug: str, body: KioskCfg) -> dict[str, Any]:
                                           auto_raise=body.auto_raise)
             except LedgerError as e:
                 raise HTTPException(422, str(e))
+            except _BAD_SHAPE as e:
+                raise HTTPException(422, f"malformed max_scope: {e}")
             ceiling_warnings = r.get("warnings") or []
             k = org.d["kiosk"]  # type: ignore[typeddict-item, assignment]  # set_kiosk_ceiling keeps the key
         elif body.auto_raise is not None:
@@ -1025,7 +1162,7 @@ async def org_kiosk(slug: str, body: KioskCfg) -> dict[str, Any]:
             **({"warnings": ceiling_warnings} if ceiling_warnings else {})}
 
 
-class HireDefaults(BaseModel):
+class HireDefaults(Body):
     default_tools: dict[str, Any] | None = None  # {bash, web, edit, subagents, mcp}
     default_visibility: str | None = None   # self|team|subtree|full
     raise_ceiling: bool = False             # admin bridge (ignored for visitors)
@@ -1056,7 +1193,7 @@ async def org_hire_defaults(slug: str, body: HireDefaults,
     return result
 
 
-class Scope(BaseModel):
+class Scope(Body):
     add_dirs: list[dict[str, Any]] | None = None  # [{path, mode: rw|ro}]
     tools: dict[str, Any] | None = None     # {bash, web, edit, subagents, mcp: []}
     org_visibility: str | None = None
@@ -1191,7 +1328,7 @@ def host_info() -> dict[str, Any]:
                        "version": sys.version.split()[0]}}
 
 
-class Reorder(BaseModel):
+class Reorder(Body):
     before: str | None = None
     after: str | None = None
 
@@ -1209,7 +1346,7 @@ async def node_reorder(slug: str, nid: str, body: Reorder) -> dict[str, Any]:
     return result
 
 
-class Message(BaseModel):
+class Message(Body):
     text: str
     # relative uploads/ paths already landed via the upload endpoint — the
     # composer stages them and sends them WITH the mail (user spec 2026-07-31)
@@ -1303,9 +1440,18 @@ def node_message(slug: str, nid: str, body: Message) -> dict[str, Any]:
     # verify each really exists there (traversal-guarded) and ride metadata
     metas: list[dict[str, Any]] = []
     if body.attachments:
+        # same rule as /scratch: `nid` reaches the filesystem here (via
+        # scratch_dir's makedirs), so it must name a real node first — an
+        # unresolved `..\..\..\x` created a directory outside the data root
+        # and only THEN got its 422 from post_mail
+        try:
+            store.load_org(slug).node(nid)
+        except LedgerError as e:
+            raise HTTPException(404, str(e))
         base = os.path.realpath(supervisor.scratch_dir(slug, nid))
         for rel in body.attachments[:10]:
-            full = os.path.realpath(os.path.join(base, str(rel).lstrip("/\\")))
+            full = os.path.realpath(
+                os.path.join(base, _no_nul(str(rel)).lstrip("/\\")))
             if full.startswith(base + os.sep) and os.path.isfile(full):
                 metas.append({"name": os.path.basename(full),
                               "path": str(rel).replace("\\", "/"),
@@ -1437,7 +1583,7 @@ async def org_resume(slug: str) -> dict[str, Any]:
     return {"resumed": resumed}
 
 
-class CreditDecision(BaseModel):
+class CreditDecision(Body):
     id: str
     action: str        # approve | deny
 
@@ -1476,7 +1622,7 @@ def user_inbox(slug: str) -> dict[str, Any]:
             "sent": d.get("user_outbox", [])[-50:]}
 
 
-class InboxRead(BaseModel):
+class InboxRead(Body):
     ids: list[str]
 
 
@@ -1519,7 +1665,7 @@ async def user_inbox_read(slug: str, body: InboxRead) -> dict[str, Any]:
 _PEER_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
 
 
-class ExternSend(BaseModel):
+class ExternSend(Body):
     org: str
     body: str
     attachments: list[str] = []   # absolute local paths (extern peers are local)
@@ -1699,7 +1845,9 @@ def node_history(slug: str, nid: str, request: Request,
             items.append({"at": n["at"], "kind": "notice", "actor": "system",
                           "detail": {"text": n["text"]}})
     items.sort(key=lambda x: x["at"])
-    out = items[-last:]
+    # clamped like /chat's `last`: `?last=0` is `items[-0:]`, i.e. the WHOLE
+    # log — the one value of `last` that means "no limit"
+    out = items[-max(1, min(last, 1000)):]
     if _public_slug(request):
         out = _scrub_events(out)     # e.g. revoke_dir carries the host path
     return {"items": out}
@@ -1707,8 +1855,20 @@ def node_history(slug: str, nid: str, request: Request,
 
 @app.get("/api/orgs/{slug}/nodes/{nid}/scratch")
 def node_scratch(slug: str, nid: str, path: str = "") -> dict[str, Any]:
+    # ☠ The node MUST be resolved before `nid` reaches the filesystem. This
+    # was the only /nodes/{nid}/… endpoint that skipped it, and `nid` is
+    # joined straight into a path by supervisor.scratch_dir: `nid` =
+    # `..\..\..\..\Users` walked out of the data root, mkdir'd the target,
+    # and then anchored the containment check TO THE ESCAPED BASE — so the
+    # listing and the 60 KB file read both succeeded. Reachable through the
+    # kiosk gateway (the path is org-scoped, so the public matrix allows it),
+    # which made it an internet-facing read of the operator's filesystem.
+    try:
+        store.load_org(slug).node(nid)
+    except LedgerError as e:
+        raise HTTPException(404, str(e))
     base = os.path.realpath(supervisor.scratch_dir(slug, nid))
-    full = os.path.realpath(os.path.join(base, path.lstrip("/\\")))
+    full = os.path.realpath(os.path.join(base, _no_nul(path).lstrip("/\\")))
     # separator-anchored: a bare prefix test admits sibling dirs (<base>-x)
     if full != base and not full.startswith(base + os.sep):
         raise HTTPException(422, "path escapes the scratch space")
@@ -1741,7 +1901,7 @@ def orgmd_get(slug: str, request: Request) -> dict[str, Any]:
     return {"path": p, "content": content}
 
 
-class OrgMd(BaseModel):
+class OrgMd(Body):
     content: str
 
 
@@ -1764,7 +1924,7 @@ async def orgmd_put(slug: str, body: OrgMd) -> dict[str, Any]:
     return {"path": p, "bytes": len(body.content)}
 
 
-class AudienceAction(BaseModel):
+class AudienceAction(Body):
     action: str            # grant | deny | revoke
     node: str              # the grantee / requester
     target: str | None = None
@@ -1859,11 +2019,63 @@ async def anthropic_proxy(path: str, request: Request) -> StreamingResponse:
 
 
 # ------------------------------------------------------------- agent gateway
-class AgentCall(BaseModel):
+class AgentCall(Body):
     org: str
     node: str
     tool: str
     args: dict[str, Any] = {}
+
+
+# every `args` key the tool schema documents as text: an identifier, a tier
+# name, a body, a status. Containers were never legal in any of them.
+_ARG_STRS = ("node", "to", "from", "target", "grantee", "parent", "new_parent",
+             "name", "tier", "kind", "body", "action", "status", "summary",
+             "reason", "charter", "team_charter", "org_visibility", "effort",
+             "path")
+
+
+def _norm_args(a: dict[str, Any]) -> dict[str, Any]:
+    """Normalise the free-form `args` dict an LLM fills in.
+
+    Two 500 families came out of trusting it verbatim. A container in a text
+    argument reached `self.nodes[nid]` as an unhashable dict key (every
+    node-taking tool) and `delivered.startswith(...)` as a list (message). An
+    explicit `null` was worse than a missing key: `a.get("to", "")` returns
+    None when the key is PRESENT and null, so the "" default never applied.
+
+    So: drop nulls (restoring the defaults), coerce scalars to text, refuse
+    containers with the same 422 shape as any other bad argument."""
+    out = dict(a)
+    for k in _ARG_STRS:
+        if k not in out:
+            continue
+        v = out[k]
+        if v is None:
+            del out[k]                       # let the `.get(k, default)` win
+        elif isinstance(v, (dict, list, tuple, set)):
+            raise LedgerError(
+                f"{k} must be text, not {type(cast('object', v)).__name__}")
+        elif not isinstance(v, str):
+            out[k] = str(v)                  # a bare number reads as its text
+    return out
+
+
+def _arg_int(a: dict[str, Any], key: str, default: int) -> int:
+    """`args` is a free-form dict off the wire — an LLM fills it, so a string
+    or a float lands there routinely. A bare `int(a.get(k) or d)` turned
+    `{"delta": "x"}` and `{"last": "abc"}` into an uncaught ValueError, i.e. a
+    500 from the gateway an agent is holding a tool result open on. Coerce
+    what is coercible; refuse the rest the way every other bad argument is."""
+    v = a.get(key)
+    if v is None or v == "":
+        return default
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        try:
+            return int(float(v))
+        except (TypeError, ValueError):
+            raise LedgerError(f"{key} must be a number (got {v!r})")
 
 
 @app.post("/api/agent")
@@ -1881,7 +2093,10 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
     bridge_slug = getattr(request.state, "bridge_slug", None)
     if bridge_slug and body.org != bridge_slug:
         raise HTTPException(403, "bridge secret is scoped to its own org")
-    a = body.args
+    try:
+        a = _norm_args(body.args)
+    except LedgerError as e:
+        raise HTTPException(422, str(e))
     if body.tool in ("orgtree_read_transcript", "orgtree_read_scratch",
                      "orgtree_chart", "orgtree_send_file"):
         try:
@@ -1899,7 +2114,7 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                     raise LedgerError("read access is strictly DOWNWARD (§7.6) — you "
                                       "may read yourself and your descendants only")
                 chat = supervisor.read_chat(org, target)
-                last = max(1, min(int(a.get("last") or 30), 80))
+                last = max(1, min(_arg_int(a, "last", 30), 80))
                 msgs = chat["messages"][-last:]
                 return {"node": target, "busy": chat["busy"],
                         "occupancy": chat["occupancy"],
@@ -1910,7 +2125,7 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
             if target != body.node and not org.is_ancestor(body.node, target):
                 raise LedgerError("read access is strictly DOWNWARD (§7.6)")
             base = os.path.realpath(supervisor.scratch_dir(body.org, target))
-            rel = (a.get("path") or "").strip().lstrip("/\\")
+            rel = _no_nul(str(a.get("path") or "")).strip().lstrip("/\\")
             full = os.path.realpath(os.path.join(base, rel))
             # separator-anchored: a bare prefix test admits sibling dirs
             if full != base and not full.startswith(base + os.sep):
@@ -1960,7 +2175,7 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                 hdirs, dwarns = supervisor.sandbox_dirs_to_host(
                     org, a.get("add_dirs"))
                 result = org.hire(body.node, a.get("parent") or body.node,
-                                  a.get("tier"), int(a.get("grant") or 0),  # type: ignore[arg-type]  # ledger 422s a missing tier
+                                  a.get("tier"), _arg_int(a, "grant", 0),  # type: ignore[arg-type]  # ledger 422s a missing tier
                                   a.get("name") or "", add_dirs=hdirs,
                                   tools=a.get("tools"),
                                   org_visibility=a.get("org_visibility"),
@@ -2013,7 +2228,7 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
             elif body.tool == "orgtree_dissolve":
                 result = org.dissolve(body.node, a.get("node"))  # type: ignore[arg-type]  # node() 422s on None
             elif body.tool == "orgtree_reallocate":
-                result = org.reallocate(body.node, a.get("node"), int(a.get("delta") or 0))  # type: ignore[arg-type]  # node() 422s on None
+                result = org.reallocate(body.node, a.get("node"), _arg_int(a, "delta", 0))  # type: ignore[arg-type]  # node() 422s on None
             elif body.tool == "orgtree_switch_model":
                 result = org.switch_model(body.node, a.get("node", ""),
                                           a.get("tier", ""))
@@ -2148,11 +2363,20 @@ async def node_upload(slug: str, nid: str, request: Request,
             raise HTTPException(413, "this agent's upload space is full — ask "
                                      "it to clean up uploads/ first")
     stem, ext = os.path.splitext(safe)
+    # a filename the host refuses is an OSError from the write below, i.e. a
+    # 500: Windows caps one path COMPONENT at 255 chars, and `?name=` is
+    # attacker-supplied. Bound it here, leaving room for the `-2` de-dupe.
+    stem, ext = (stem[:120] or "upload"), ext[:20]
+    safe = stem + ext
     final, i = safe, 2
     while os.path.exists(os.path.join(updir, final)):
         final, i = f"{stem}-{i}{ext}", i + 1
-    with open(os.path.join(updir, final), "wb") as f:
-        f.write(data)
+    try:
+        with open(os.path.join(updir, final), "wb") as f:
+            f.write(data)
+    except OSError as e:
+        # ENOSPC on a full org disk, or a name the filesystem still refuses
+        raise HTTPException(422, f"could not store the upload: {e}")
     return {"path": f"uploads/{final}", "bytes": len(data)}
 
 
@@ -2168,7 +2392,7 @@ def _agent_send_file(org: Org, nid: str, a: dict[str, Any]) -> dict[str, Any]:
     or deletes the original (re-sending an updated file yields report-2.pdf —
     both chat cards stay honest). Outbox lives in scratch, so kiosk storage
     metering already counts it and org deletion sweeps it."""
-    raw = str(a.get("path") or "").strip()
+    raw = _no_nul(str(a.get("path") or "")).strip()
     if not raw:
         raise LedgerError("path is required — the file to deliver")
     slug = org.d["slug"]
@@ -2261,7 +2485,7 @@ def node_file(slug: str, nid: str, path: str = "") -> FileResponse:
     except LedgerError as e:
         raise HTTPException(404, str(e))
     base = os.path.realpath(supervisor.scratch_dir(slug, nid))
-    full = os.path.realpath(os.path.join(base, path.lstrip("/\\")))
+    full = os.path.realpath(os.path.join(base, _no_nul(path).lstrip("/\\")))
     if not full.startswith(base + os.sep):
         raise HTTPException(422, "path escapes the scratch space")
     if not os.path.isfile(full):
@@ -2279,7 +2503,14 @@ def node_file(slug: str, nid: str, path: str = "") -> FileResponse:
 
 # engine credential/state files on the disk (subscription auth copies the
 # HOST's OAuth credentials into the sandbox home) — never served to visitors
-_PUBLIC_DISK_DENY = (".credentials.json", ".claude.json")
+# ⚠ `.bridge` is not an engine file — orgtree writes it itself
+# (sandbox.py: `{home}/orgtree/.bridge` = {"url", "secret"}), and it holds the
+# org's SANDBOX BRIDGE SECRET. The bridge listener binds 0.0.0.0, so a visitor
+# who downloads this file gets: the /api/agent gateway this very matrix
+# freezes for the public (acting as ANY node of the org), the node steer
+# fetch, and the /anthropic proxy — which attaches the HOST's subscription
+# token. Verified reachable at GET …/disk/file?path=home/orgtree/.bridge.
+_PUBLIC_DISK_DENY = (".credentials.json", ".claude.json", ".bridge")
 _SID_FILE = re.compile(r"^home/\.claude/projects/[^/]+/([0-9a-f-]{36})\.jsonl$")
 
 
@@ -2299,7 +2530,7 @@ def _disk_rel(slug: str, path: str) -> tuple[str, str]:
     containment ASSERTED before any read/download/unlink. A traversal here
     would reach the host filesystem from a kiosk URL: the worst outcome
     available in this feature, so both a lexical and a realpath check."""
-    rel = posixpath.normpath((path or "").replace("\\", "/").strip("/"))
+    rel = posixpath.normpath(_no_nul(path or "").replace("\\", "/").strip("/"))
     if not rel or rel == "." or rel == ".." or rel.startswith("../") \
             or rel.startswith("/") or ":" in rel:
         raise HTTPException(422, "path escapes the org disk")
@@ -2343,8 +2574,8 @@ def _disk_classify(org: Org, rel: str, public: bool) -> tuple[str, str | None]:
         return "reclaimable", "no node owns this session"
     if rel.rsplit("/", 1)[-1] in _PUBLIC_DISK_DENY:
         if public:
-            return "blocked", "engine credential/state file"
-        return "content", "engine state file — admin-side only"
+            return "blocked", "credential/secret file"
+        return "content", "credential/secret file — admin-side only"
     return "content", None
 
 
@@ -2453,7 +2684,7 @@ def disk_file(slug: str, request: Request, path: str = "") -> FileResponse:
     return FileResponse(full, filename=os.path.basename(full))
 
 
-class DiskDelete(BaseModel):
+class DiskDelete(Body):
     paths: list[str]
 
 
@@ -2525,7 +2756,7 @@ def disk_delete(slug: str, body: DiskDelete, request: Request) -> dict[str, Any]
             "full": bool(org.d.get("storage_full"))}
 
 
-class DiskResize(BaseModel):
+class DiskResize(Body):
     size_mb: int | None = None
     cancel: bool = False       # one-click cancel of a pending shrink (ruled)
 
@@ -2913,7 +3144,7 @@ def org_events(slug: str, request: Request, since: int = 0) -> dict[str, Any]:
 
 
 # ----------------------------------------------------------------------- ops
-class Op(BaseModel):
+class Op(Body):
     op: str                       # hire|retire|rehire|dissolve|reallocate|promote|demote|revoke_dir
     actor: str = USER
     node: str | None = None       # target node (all but hire)
