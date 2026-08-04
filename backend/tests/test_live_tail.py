@@ -124,12 +124,15 @@ class World:
         with open(self.path, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(rec) + "\n")
 
-    def write_think(self, body: str = "") -> None:
+    def write_think(self, body: str = "", mid: str | None = None) -> None:
         """A sealed thinking record — `{"signature": …, "thinking": ""}`, which
         is what every tier has produced since 2026-08-02. `body` fills it in for
-        the tiers that still stream their reasoning."""
+        the tiers that still stream their reasoning. `mid` sets message.id —
+        fable writes TWO thinking blocks of ONE message as two records sharing
+        it (the double-thought bug, 2026-08-04)."""
         self._rec({"type": "assistant", "message": {
-            "role": "assistant", "model": "m", "content": [
+            "role": "assistant", "model": "m",
+            **({"id": mid} if mid else {}), "content": [
                 {"type": "thinking", "thinking": body, "signature": "sig"}]}})
 
     def write_tool(self, tid: str, name: str = "Read") -> None:
@@ -363,6 +366,58 @@ def main() -> int:
         finally:
             w.destroy()
     check("a durable row that EXTENDS the live text is its twin", _text_prefix)
+
+    def _double_think():
+        # fable returns TWO thinking blocks in one assistant message; the CLI
+        # writes each block as its own record with the same message.id. One
+        # thought must render as ONE row with the FIRST record's duration —
+        # not "thought for Xs" followed by "thought for a moment" (user bug
+        # 2026-08-04, measured: 31/38 fable messages carried two blocks).
+        w = World("dblthink")
+        try:
+            w.write_user("go")
+            w.write_think(mid="msg_1")
+            w.write_think(mid="msg_1")
+            rows = [m for m in w.poll()["messages"]
+                    if m.get("thinking") or m.get("thinking_sealed")]
+            assert len(rows) == 1, f"one message, one thought row (got {len(rows)})"
+            assert rows[0].get("thinking_sealed"), "two sealed blocks stay one sealed line"
+            assert rows[0].get("think_secs"), \
+                "the merged row keeps the FIRST record's duration"
+        finally:
+            w.destroy()
+    check("two thinking records of ONE message merge into one row", _double_think)
+
+    def _double_think_distinct():
+        # …but two thinks from DIFFERENT messages are two real thoughts
+        w = World("dblthink2")
+        try:
+            w.write_think(mid="msg_1")
+            w.write_think(mid="msg_2")
+            rows = [m for m in w.poll()["messages"]
+                    if m.get("thinking") or m.get("thinking_sealed")]
+            assert len(rows) == 2, "different message.ids never merge"
+        finally:
+            w.destroy()
+    check("thinks from different messages stay separate rows",
+          _double_think_distinct)
+
+    def _double_think_body():
+        # a bodied second block joins the row and unseals it
+        w = World("dblthink3")
+        try:
+            w.write_think(mid="msg_1")
+            w.write_think(body="the visible half", mid="msg_1")
+            rows = [m for m in w.poll()["messages"]
+                    if m.get("thinking") or m.get("thinking_sealed")]
+            assert len(rows) == 1
+            assert rows[0].get("thinking") == "the visible half"
+            assert not rows[0].get("thinking_sealed"), \
+                "a body arrived — the row must not still claim to be sealed"
+        finally:
+            w.destroy()
+    check("a bodied block merging into a sealed row unseals it",
+          _double_think_body)
 
     def _sticky():
         w = World("sticky")

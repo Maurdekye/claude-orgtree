@@ -3240,6 +3240,10 @@ def read_chat(org: Org, nid: str, last: int | None = None) -> dict[str, Any]:
     by_tool_id: dict[str, dict[str, Any]] = {}
     after_boundary = False           # the next flagged record is the summary
     prev_ts = None                   # the preceding record's timestamp
+    # (index, message.id) of the last appended thinking-only assistant row —
+    # the merge anchor for a second thinking block of the SAME message (see
+    # below). The index check invalidates it the moment any other row lands.
+    prev_think: tuple[int, str] | None = None
     for line in open(tpath, encoding="utf-8", errors="replace"):
         try:
             rec = json.loads(line)
@@ -3475,7 +3479,32 @@ def read_chat(org: Org, nid: str, last: int | None = None) -> dict[str, Any]:
             secs = _ts_gap_secs(rec_prev_ts, rec.get("timestamp"))
             if secs:
                 mrow["think_secs"] = secs
+        # ONE thought, ONE row (user bug 2026-08-04: every fable thought
+        # rendered twice — "thought for Xs" immediately followed by "thought
+        # for a moment"). Fable returns TWO thinking blocks in one assistant
+        # message, and the CLI writes every content block as its own record —
+        # two consecutive thinking records ~1 ms apart sharing message.id.
+        # Row-per-record turned that into two lines, and the second's record
+        # gap is sub-second so _ts_gap_secs returns None → the UI's "a moment"
+        # fallback. Merge a thinking-only row into the immediately preceding
+        # thinking-only row of the SAME message: the first record's think_secs
+        # (the API call's true pre-output gap) stands, a body from either
+        # block joins in, and two sealed blocks stay one sealed line.
+        think_only = t == "assistant" and (thinks or sealed) \
+            and not texts and not tools
+        mid = m.get("id")
+        if (think_only and prev_think and mid
+                and prev_think == (len(msgs) - 1, mid)):
+            hit = msgs[-1]
+            if thinks:
+                body = "\n\n".join(
+                    x for x in [hit.get("thinking"), mrow.get("thinking")] if x)
+                hit["thinking"] = body[:6000]
+                hit.pop("thinking_sealed", None)
+            continue
         msgs.append(mrow)
+        if think_only and mid:
+            prev_think = (len(msgs) - 1, mid)
     # steered deliveries (user bug 2026-07-31): mid-task mail rides hook
     # context the CLI never transcripts — without this merge the message
     # vanished from the chat forever once its live row aged out. The
