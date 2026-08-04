@@ -1376,6 +1376,64 @@ route around the limit. So the notice must state the outcome and **not** imply t
 Note these requests come from **top-level** agents (the credit is the user's own pool), so
 `max_top_grant` is the binding upper clamp.
 
+### F-06 · a public orgtree mailserver — org-to-org mail across machines
+> a pubic orgtree mailserver. a separate subproject of the repo that acts as a central
+> communication hub for multiple orgtree instances running on separate computers. you run it in a
+> central hub location, and then connect individual orgtree instances to it. they communicate with
+> it via the external mailbox, and can send and receive mails to it just the same as they would to
+> other adjacent orgs. the only difference is that the mailserver needs to be configured in the org
+> settings on creation in order for it to appear as a listed entry.
+>
+> it uses https and long polling to send and receive mails, and has its own independent ui that
+> isolates a mimic of the mail ui of individual orgs themselves. orgs register with the mailserver
+> using a slug combining the org name with the username of the logged in account on the pc they're
+> interacting from.
+>
+> this allows multiple simultaneous users of the orgtree to have their orgs all communicate with one
+> another over the air, and work autonomously as a collective unit.
+>
+> this system should use docker in order to be resilient and automatically start up on machine start.
+>
+> any further suggestions?
+>
+> one question that comes to mind its how to handle starting orgtree up when an org has pending mail.
+> do we activate the org immediately automatically? does the org wait for the user to manually
+> trigger it to check? what is the resolution here?
+
+**NOT BUILT.** Exploration and design only, per the ruling. Full spec: **`docs/mailserver-spec.md`**.
+
+Four things worth carrying at docket level:
+
+**① The orgtree side is small; the hub is the project.** Inbound already funnels through ONE
+function — `deliver_org_inbox` (`supervisor.py:2415`) serves both chatq and inter-org — and
+outbound through ONE dispatch (`api.py:1929-1948`). A hub client is structurally
+`start_chatq_bridge` (35 lines) pointed at HTTPS instead of files, plus one ledger prefix and one
+settings block.
+
+**② ⚠ The proposed slug has a collision and an authentication hole.** `<org>.<username>` relies on
+OS usernames being unique; `Administrator`, `admin`, `user`, `pi` are everywhere, and a username is
+a string the client merely asserts — as specified, anyone can register `payroll.<yourname>` and
+receive that mail. Fix in the spec §3: first-claim binds a hub-issued secret (TOFU), collisions get
+suffixed rather than merged, and an optional hub join code closes it to the open internet.
+
+**③ The pending-mail question is already answered in-tree, and the answer is "activate".**
+`reconcile()` drives any live unfrozen node with a waiting mailbox at startup
+(`supervisor.py:2671-2678`), and a backlog is cheap because `_envelope`/`take_mail` drains the
+WHOLE mailbox into one turn (`supervisor.py:861-887`) — 40 messages wake an agent once, not 40
+times. Recommendation: keep that as the default (`net_wake: auto`), add `notify` and `curated`
+positions, and hold the rule that **only driving is gated, never delivery**, with a staleness stamp
+in the envelope so an agent can tell a fortnight-old request from a fresh one.
+
+**④ The new hazard is spend, not transport.** This is the first external path where an unknown
+third party can make your machine run tools and burn credits — chatq peers are sessions on your own
+PC and `@org:` peers are your own orgs. Needs a per-org accept policy, per-peer rate limits, and an
+inbound-mail spend ceiling. The existing "untrusted outside input, never user authority" framing
+(`supervisor.py:2455-2461`) is the right injection mitigation and should be reused verbatim.
+
+Six open questions are listed at spec §10; the two that block a build are whether hub membership is
+truly creation-time-only (it would mean an existing org can never join) and whether identity is the
+secret or the slug (it decides whether an org survives a move to another PC).
+
 ## Carried, not done
 
 | item | state |
