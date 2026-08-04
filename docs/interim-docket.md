@@ -1696,6 +1696,16 @@ flag to the backend.
 a PowerShell tokenizer parse on both scripts; ledger suite **186/186**; pyright **0 errors**. The
 `sys` import in `api.py` is still used (`/api/host`), so nothing is orphaned.
 
+⚠ **Commit hygiene defect — `1debf4a` is a mixed commit.** It was staged with `git add -A` while a
+subagent was concurrently editing the tree for D-53, so it also carries that agent's in-flight work
+(`frontend/src/App.tsx`, `canvas/desk.tsx`, `types.ts`, and part of the `api.py`/`supervisor.py`
+diffs — e.g. a `m.via === 'turn'` delivering-tag change that has nothing to do with this entry).
+Nothing was lost and the working tree was untouched, but the commit's stat does not match its
+message. **Not rewritten deliberately:** splitting hunks out of files an agent is actively writing
+risks clobbering its work, which is worse than a mixed commit on a quarantined branch. Attribution
+is separated when that agent reports. ☞ Rule: **never `git add -A` while a subagent is running** —
+stage explicit paths.
+
 ## Carried, not done
 
 | item | state |
