@@ -91,6 +91,27 @@ def t(label):
     return deco
 
 
+GAPS = []
+
+
+def gap(label, why):
+    """A property that SHOULD hold and currently does not (idiom borrowed from
+    test_rename.py). The body asserts the SAFE behaviour and is expected to
+    FAIL: the suite stays green, the finding is printed every run instead of
+    rotting in a report, and the day it is fixed the check passes unexpectedly
+    and turns RED — which is the reminder to promote it to a real `t`."""
+    def deco(fn):
+        try:
+            fn()
+        except AssertionError as e:
+            GAPS.append((label, why, str(e).split("\n")[0][:300]))
+            print(f"  ⚑ GAP    {label}")
+            return fn
+        check(label + "  ← FIXED: promote out of gap()", lambda: None)
+        return fn
+    return deco
+
+
 ADMIN = api.app
 PUBLIC = api.PublicGateway(api.app)
 BRIDGE = api.BridgeGateway(api.app)
@@ -1862,6 +1883,137 @@ def _():
         f"reloads straight back into the old app ({r.headers})")
 
 
+# ----------------------------------------- §10c the working count (F-09)
+print("\n§10c the org list's working count")
+
+
+@t("working_count counts RUNNING turns, per org, and nothing else")
+def _():
+    st = supervisor.state(K, NID)
+    st2 = supervisor.state(K, NID2)
+    other = supervisor.state(K2, "someone")
+    try:
+        assert supervisor.working_count(K) == 0
+        st["busy"] = True
+        assert supervisor.working_count(K) == 1
+        st2["busy"] = True
+        assert supervisor.working_count(K) == 2
+        other["busy"] = True
+        assert supervisor.working_count(K) == 2, \
+            "another org's running turn must not be counted here"
+        assert supervisor.working_count(K2) == 1
+    finally:
+        for s in (st, st2, other):
+            s["busy"] = False
+    assert supervisor.working_count(K) == 0
+
+
+@t("a QUEUED message is not 'working' — only a running turn is")
+def _():
+    st = supervisor.state(K, NID)
+    st["queue"].append("waiting to be sent")
+    try:
+        assert supervisor.working_count(K) == 0, (
+            "a node with a queued message and no running turn is not working "
+            "(the desk's starting… line and the queue badge cover that state)")
+    finally:
+        st["queue"].clear()
+
+
+@t("the admin org list carries the count; a busy agent raises it")
+def _():
+    row = next(o for o in call(ADMIN, "GET", "/api/orgs").json if o["slug"] == K)
+    assert row.get("working") == 0, row
+    st = supervisor.state(K, NID)
+    st["busy"] = True
+    try:
+        row = next(o for o in call(ADMIN, "GET", "/api/orgs").json
+                   if o["slug"] == K)
+        assert row["working"] == 1, row
+        others = [o for o in call(ADMIN, "GET", "/api/orgs").json
+                  if o["slug"] != K]
+        assert all(o.get("working") == 0 for o in others), \
+            "the count is per-org, not global"
+    finally:
+        st["busy"] = False
+
+
+@t("☞ a kiosk VISITOR is not told how busy the org is")
+def _():
+    st = supervisor.state(K, NID)
+    st["busy"] = True
+    try:
+        rows = call(PUBLIC, "GET", f"/k/{TOKEN}/api/orgs").json
+        assert len(rows) == 1 and rows[0]["slug"] == K, rows
+        assert "working" not in rows[0], (
+            "the public branch returns a trimmed row on purpose — a visitor "
+            f"must not read the org's live load: {rows[0]}")
+    finally:
+        st["busy"] = False
+
+
+@t("the polled list endpoint ALLOCATES NO STATE (the reason for the helper)")
+def _():
+    # supervisor.state() setdefault-allocates an entry per lookup. Counting
+    # through it would mint one dict per node per poll on the hottest endpoint
+    # in the app, which is why working_count reads _state directly. This is the
+    # regression guard for that: the fix is invisible until someone "simplifies"
+    # the helper back into state().
+    before = set(supervisor._state)
+    for _i in range(3):
+        call(ADMIN, "GET", "/api/orgs")
+    assert set(supervisor._state) == before, (
+        "GET /api/orgs created supervisor state entries: "
+        f"{sorted(set(supervisor._state) - before)[:8]}")
+
+
+@t("the count agrees with the tree the user clicks into")
+def _():
+    st = supervisor.state(K, NID)
+    st["busy"] = True
+    try:
+        row = next(o for o in call(ADMIN, "GET", "/api/orgs").json
+                   if o["slug"] == K)
+        tree = call(ADMIN, "GET", f"/api/orgs/{K}").json
+
+        def busy_nodes(n):
+            return (1 if n.get("busy") else 0) + sum(busy_nodes(c)
+                                                     for c in n["children"])
+        assert row["working"] == sum(busy_nodes(r) for r in tree["roots"]), (
+            "the list figure and the org's own canvas must not disagree — "
+            "they are the same fact on two screens")
+    finally:
+        st["busy"] = False
+
+
+@gap("deleting an ORG forgets its agents' runtime state",
+     "DELETE /api/orgs/{slug} (api.py orgs_delete) never calls "
+     "supervisor.forget(), unlike the node-level delete which does "
+     "(api.py:3434). Two consequences, both measured: (a) every deleted org's "
+     "state entries — busy, queue, live rows, last_error — are held for the "
+     "life of the process; (b) delete is a REVERSIBLE rename into "
+     "<data>/deleted/ and the documented restore is to put the file back, so "
+     "a restored org comes back with a phantom busy agent that never clears "
+     "(no turn will run its finally), its old queued messages, and stale live "
+     "rows. One line: supervisor.forget(slug, list(org.nodes)) before the "
+     "rename, while the doc can still be read.")
+def _():
+    r = call(ADMIN, "POST", "/api/orgs", {"name": "Doomed Org"})
+    doomed = r.json["slug"]
+    call(ADMIN, "POST", f"/api/orgs/{doomed}/ops",
+         {"op": "hire", "tier": "haiku", "name": "worker", "grant": 1})
+    st = supervisor.state(doomed, "worker")
+    st["busy"] = True
+    st["queue"].append("queued before the delete")
+    assert supervisor.working_count(doomed) == 1, "precondition"
+    assert call(ADMIN, "DELETE", f"/api/orgs/{doomed}").status == 200
+    held = [k for k in supervisor._state if k[0] == doomed]
+    supervisor.forget(doomed, ["worker"])          # clean up after the probe
+    assert not held, (
+        f"the deleted org still holds runtime state {held} "
+        f"(working_count={supervisor.working_count(doomed)})")
+
+
 # ------------------------------------------------- §11 raw HTTP on port 7402
 print("\n§11 raw HTTP against a real uvicorn on :7402")
 
@@ -1928,4 +2080,10 @@ def _():
         th.join(timeout=20)
 
 
-print(f"\nALL {PASS} CHECKS PASS")
+if GAPS:
+    print("\nknown gaps (asserted as failing on purpose — promote when fixed):")
+    for _label, _why, _saw in GAPS:
+        print(f"  ⚑ {_label}\n      why: {_why}\n      saw: {_saw}")
+
+print(f"\nALL {PASS} CHECKS PASS"
+      + (f" · {len(GAPS)} known gaps" if GAPS else ""))
