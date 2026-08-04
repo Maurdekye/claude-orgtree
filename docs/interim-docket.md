@@ -1449,10 +1449,53 @@ PC and `@org:` peers are your own orgs. Needs a per-org accept policy, per-peer 
 inbound-mail spend ceiling. The existing "untrusted outside input, never user authority" framing
 (`supervisor.py:2455-2461`) is the right injection mitigation and should be reused verbatim.
 
-Five open questions remain at spec §10 — the two biggest were closed by the 2026-08-04 ruling. The
-one that most shapes a build is whether hub membership is truly creation-time-only; ② weakens the
-case for it, since identity is now minted at org creation independently of any hub, so an org can
-join later at no cost.
+**⑤ Joining is open — RULED (user, 2026-08-04).**
+> any new org that has access can join and is immediately listed, the join auth is just having
+> access to the server (it will be on a closed network)
+
+Reachability is the authorization; the join code from the first draft is dropped and the default
+accept policy becomes `open`. ☞ This does **not** retire ②, and the distinction is easy to collapse:
+*joining is open, addresses are owned*. Without the org secret any participant could poll another
+org's queue and read its mail — by accident as easily as by intent. The posture now rests entirely
+on the network boundary, so the hub must bind to the private interface only, and TLS still earns its
+place inside it because the org secret crosses the wire on every call.
+
+**⑥ Unattended operation — the autostart requirement, and what it exposes.** New spec §9.
+> this opens up the possibility of orgs running fully autonomously without direct oversight by a
+> user, so we need a way of ensuring orgtree starts up automatically with the pc it's on
+
+Boot-start is the easy half. Three measured findings shape the rest:
+
+- ⚠ **Do not install it as a Windows service.** `~/.claude/.credentials.json` is a plain file in
+  the **user profile** (measured on this machine, 566 bytes). A `LocalSystem` service resolves a
+  different `~`, finds no credentials, and every agent turn fails — while orgtree itself boots
+  fine and the UI serves, so the failure looks like anything but auth. Correct recipe: Task
+  Scheduler *At log on*, running as the user, auto-login, and untick the default 3-day
+  "stop the task if it runs longer than" or it dies silently on day three.
+- ⚠ **Docker Desktop forces the same conclusion.** Measured: `com.docker.service` is
+  `Stopped`/`Manual` — that is only the privileged helper; the engine lives behind the user-session
+  app. An instance hosting **sandboxed** orgs cannot run from a logged-out box at all.
+- ⚠ **Authentication expires, and that is the ceiling on "fully autonomous."** Measured from the
+  credentials file: the access token lasts ~8 h (refreshed automatically, not a concern), but
+  `refreshTokenExpiresAt` is **~15 days out**, and re-auth is interactive. Whether the CLI rolls
+  the refresh token forward was **not** verified — it is spec §11 №2 and one experiment settles it.
+  Either way the cheap fix is the same and is worth building **before** the mailserver, since it
+  applies to any unattended orgtree: read those two timestamps, and mail the user days before they
+  lapse. Finding out from a pile of failed 3am turns is the worst available outcome.
+
+☞ **The biggest unattended risk is already in this docket.** D-44 — *"subordinates keep talking in
+a loop as the coordinator goes back and forth with them"* — was fixed by a charter clause and
+noticed **because the user was watching**. Two autonomous orgs on separate machines reproduce it
+with nobody in the room and a credit meter running on both. Spec §9.4 asks for a per-peer
+exchange-depth breaker, a daily inbound-drive budget, `auto_resume` effectively mandatory, and a
+dead-man's switch. Also worth saying plainly: **a Linux box is the better host for an unattended
+instance** — one systemd user unit with `Restart=always` plus `enable-linger` covers boot *and*
+crash, against Windows' scheduler-plus-auto-login stack.
+
+Five open questions remain at spec §11 — four were closed by the 2026-08-04 rulings. The one that
+most shapes a build is whether hub membership is truly creation-time-only; ② weakens the case for
+it, since identity is now minted at org creation independently of any hub, so an org can join later
+at no cost.
 
 ## Carried, not done
 

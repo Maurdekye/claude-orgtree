@@ -158,10 +158,27 @@ cheap: always render the fingerprint suffix alongside the name in the roster, an
 receiving agent's framing at "untrusted outside party" regardless of how the sender is labelled
 (§7).
 
-**Optional hub join code retained.** One shared secret in the hub's env, checked at registration,
-stops the open internet from registering at all. It is orthogonal to org identity — that is
-"may you join this hub", not "who are you" — and for a small collective it is three lines and
-probably the only gate anyone wants.
+### Joining: no gate (user ruling, 2026-08-04)
+
+> any new org that has access can join and is immediately listed, the join auth is just having
+> access to the server (it will be on a closed network)
+
+**Ruled: reachability is the authorization.** No join code, no admission step, no operator
+approval — an org that can reach the hub registers and appears in the roster immediately. Drop the
+join-code idea from the earlier draft.
+
+☞ **This does not make §3 redundant, and the distinction is worth stating because it is easy to
+collapse.** "No join auth" governs *may you register*; the org secret governs *are you the holder
+of this address*. Without the second, any participant on the closed network could poll another
+org's queue and read its mail, or send as it — not through malice necessarily, but a
+misconfigured or copied instance would do it by accident. So: **joining is open, addresses are
+owned.** The self-issued secret stays exactly as specified.
+
+⚠ The security posture now rests entirely on the network boundary, which makes that boundary
+load-critical. Two consequences: the hub must not be reachable from outside it (bind to the private
+interface, and if a tunnel is ever added, that decision reopens this ruling), and TLS is still
+worth having inside it — not against outsiders, but because the org secret crosses the wire on
+every call and a closed network is not a private one.
 
 ---
 
@@ -285,13 +302,20 @@ can cause your instance to spend.
 
 Required, not optional:
 
-1. **A per-org accept policy** — `open` / `allowlist` / `approval-required`. `approval-required`
-   is the sane default for a hub with more than a couple of participants: an unknown peer's first
-   message lands in the *user's* inbox with accept/block, and acceptance adds them to the
-   allowlist. Note the shape already exists conceptually — audience requests work this way.
-2. **Rate limits at both ends.** Hub-side per-sender, and instance-side per-peer. An instance
-   should be able to say "at most 20 messages per peer per hour" and have the hub enforce it
-   before it ever crosses the wire.
+⚠ **Amended by the closed-network ruling (§3).** With joining open on a private network, every peer
+is a colleague rather than a stranger, so the threat model shifts from *malice* to *accident* — and
+the accidents are the expensive part, because with §9's autonomous orgs there is nobody watching
+when one happens. Items 1 and 2 below are rewritten accordingly; 3–7 stand unchanged.
+
+1. **A per-org accept policy — `open` by default now**, with `allowlist` retained as an opt-in for
+   an org that should only ever talk to two named peers. The `approval-required` position from the
+   first draft is no longer the recommended default; keep it available, since an org running
+   unattended may reasonably want first contact from a new peer to reach the user first.
+2. **Rate limits at both ends — as a runaway brake, not an anti-abuse measure.** Hub-side
+   per-sender and instance-side per-peer. The scenario to size them for is not a flood: it is two
+   autonomous orgs exchanging courtesies at machine speed (§9.4 ②). "At most 20 messages per peer
+   per hour", enforced hub-side before it crosses the wire, turns an unattended overnight loop into
+   a bounded annoyance.
 3. **An external-mail spend ceiling per org**, so that even a fully open org cannot be driven
    past a bounded daily cost by inbound mail alone.
 4. **Prompt injection is the resident hazard, and the existing mitigation is the right one.** The
@@ -345,7 +369,110 @@ Docker, as asked. Precedent exists in-repo: `sandbox/Dockerfile`, and `docker_av
 
 ---
 
-## 9. Further suggestions
+## 9. Unattended operation — orgtree must survive a reboot, and more than that
+
+> this opens up the possibility of orgs running fully autonomously without direct oversight by a
+> user, so we need a way of ensuring orgtree starts up automatically with the pc it's on
+
+Boot-start is the easy half. The hard half is that **three separate things quietly break when
+nobody is logged in and nobody is watching**, and two of them are measured on this machine below.
+
+### 9.1 ⚠ Do not install it as a Windows service
+
+`~/.claude/.credentials.json` — measured on this machine, 566 bytes, mode `-rw-r--r--` — is a
+**plain file in the user profile**. A Windows service running as `LocalSystem` (or any "run whether
+the user is logged on or not" Task Scheduler entry that does not load the profile) resolves a
+*different* `~`, finds no credentials, and every agent turn fails at the CLI. The failure is
+delayed and confusing: orgtree itself boots fine, the UI serves, the tree renders, and only the
+turns die.
+
+**The correct Windows recipe is Task Scheduler at logon, running as the user**, with the box set to
+auto-login. Specifically: trigger *At log on* (that user), action = the deploy script's launch line,
+"Run only when user is logged on", **untick "Stop the task if it runs longer than…"** (the default
+3-day limit will kill an unattended backend, silently, on day three), and set *If the task fails,
+restart every 1 minute*.
+
+☞ **Docker Desktop forces the same conclusion independently.** Measured here: `com.docker.service`
+exists but is `Stopped` / `StartType: Manual` — that service is only the privileged helper. The
+engine lives behind the Docker Desktop app, which is a **user-session application**. So an
+instance hosting *sandboxed* orgs cannot work from a logged-out box at all, service or not: it
+needs a real interactive session (auto-login, and Docker Desktop set to start on login). An
+instance with no sandboxed orgs is free of this.
+
+### 9.2 ⚠ The hard ceiling on "fully autonomous": authentication expires
+
+Measured from the same credentials file:
+
+| field | value |
+|---|---|
+| `claudeAiOauth.expiresAt` | **~8 hours** out |
+| `claudeAiOauth.refreshTokenExpiresAt` | **2026-08-19** — ~15 days from issue |
+
+The 8-hour access token is refreshed by the CLI and is not a concern while the machine is running.
+The **refresh token is the ceiling**: it has a finite life, and when it lapses, re-authentication is
+*interactive*. An unattended org therefore has a bounded autonomous lifetime measured in weeks, not
+forever — and the way it ends is silent, at whatever hour it happens, with every turn failing.
+
+⚠ What I measured is the schema and the two timestamps. Whether the CLI rolls the refresh token
+forward on each refresh — which would extend the ceiling indefinitely for a box that stays online —
+I did **not** verify, and it should be tested before anyone promises unattended operation. The
+recommendation holds either way, because it is cheap:
+
+**Watch both timestamps and alarm early.** The instance should read the credentials file, and when
+`refreshTokenExpiresAt` is inside a few days, mail the user and post a notice. Discovering an auth
+lapse from a pile of failed turns at 3am is the worst possible way to find out, and this is a file
+read and a comparison. It is also the one piece of this that is worth building *before* the
+mailserver, because it applies to any unattended orgtree.
+
+### 9.3 Boot-start is not crash-restart
+
+A boot trigger covers the reboot; it does nothing for the backend dying at 04:00. Both are needed:
+
+- **Windows:** Task Scheduler's *restart on failure* handles the crash; the *At log on* trigger
+  handles the boot.
+- **Linux:** one systemd **user** unit (`systemctl --user enable --now orgtree`, plus
+  `loginctl enable-linger <user>` so it runs without a login session) with `Restart=always` and
+  `RestartSec=10` covers both. This is markedly cleaner than the Windows path, and worth saying
+  out loud: **a Linux box is the better host for an unattended instance**, and if the mailserver
+  makes autonomous orgs a real workflow, that is where they should live.
+- **macOS:** a launchd *user agent* with `KeepAlive` — same shape as the systemd unit.
+
+⚠ Whatever launches it must not fight a manually-run instance. Both deploy scripts already have the
+stale-backend guard and a `listeners()` port check (D-42, D-47) — the autostart entry should reuse
+the same script rather than invoke Python directly, so that logic is not duplicated into a third
+place. Note also how each script detaches (`update.ps1:168` `Start-Process -WindowStyle Hidden`;
+`update.sh:265` a redirected subshell, the shape that fixed the MSYS pipe-hold) — an autostart
+wrapper that re-implements detachment will reintroduce that bug.
+
+### 9.4 What must be true of the *org*, not just the process
+
+Autostart makes the process survive. These make the org survive:
+
+1. **`auto_resume` on.** It already exists — usage-limit-frozen agents restart on their own one
+   minute after the reported reset (`supervisor.py:2527`). For an unattended org it stops being a
+   convenience and becomes close to mandatory; without it a limit at midnight parks the org until a
+   human presses ▶.
+2. ☞ **A loop breaker. This is the biggest unattended risk, and it is not hypothetical.** D-44 in
+   this very docket is *"subordinates keep talking in a loop as the coordinator goes back and forth
+   with them"* — fixed by a charter clause, and noticed because **the user was watching**. Two
+   autonomous orgs on separate machines, each politely acknowledging the other's status update,
+   reproduce that failure with nobody in the room and a credit meter running on both. Needed: a
+   per-peer exchange-depth counter that refuses to auto-drive past N consecutive round trips
+   without new content, and the coordinator charter clause extended to remote peers.
+3. **A daily inbound-drive budget per org**, so the total cost of *being mailed* is bounded even
+   when every sender is friendly. On a closed network the realistic threat is not malice but a
+   runaway loop (②) — and a cap is the same defence against both.
+4. **A dead-man's switch.** If an unattended org's spend crosses a threshold, or it has been
+   running N days without a human opening the UI, it should stop and mail the user rather than
+   continue on its own recognisance. Autonomy the user cannot audit after the fact is the thing to
+   avoid; a bounded run they can review is not.
+5. **Log rotation and disk.** An instance running for months writes transcripts and event logs
+   forever. The virtual-disk soft cap already exists for sandboxed orgs (`disk.py`); an unattended
+   *non*-sandboxed instance has no such backstop.
+
+---
+
+## 10. Further suggestions
 
 Ordered by value-per-effort.
 
@@ -376,11 +503,12 @@ Ordered by value-per-effort.
 
 ---
 
-## 10. Open questions — for the user, not for me to assume
+## 11. Open questions — for the user, not for me to assume
 
 ✓ **Closed 2026-08-04:** identity is a **self-issued secret minted at org creation**, with the
-public slug suffix derived from it (§3). ✓ **Closed 2026-08-04:** pending mail **auto-starts** the
-org (§5).
+public slug suffix derived from it (§3) · pending mail **auto-starts** the org (§5) · **joining is
+open** — reachability is the authorization, on a closed network (§3) · the default accept policy is
+therefore **`open`** (§7).
 
 1. **Is hub membership really creation-time-only?** The user's phrasing says configured "in the
    org settings on creation". There is precedent for born-with config (`kiosk` — `api.py:468`),
@@ -389,8 +517,9 @@ org (§5).
    since identity is now minted at org creation independently of any hub, so joining later costs
    nothing. Orgs created before this feature would simply mint a secret on first join. My
    recommendation: configurable at creation **and** later.
-2. **Default accept policy** — `open` or `approval-required`? I lean `approval-required` for any
-   hub with participants who do not all know each other, `open` for a two-person collective.
+2. **Does the refresh token roll forward?** (§9.2.) Untested, and it decides whether "fully
+   autonomous" means *indefinitely* or *about a fortnight at a time*. One experiment settles it,
+   and it should be run before the autonomy is relied on.
 3. **Is the display suffix pinned or re-derived on rotation?** (§3.) Recommended: pinned — it is a
    label, and re-deriving changes everyone's address book to fix one leaked secret.
 4. **One hub or several?** Multiple hub connections per instance is a modest generalization if
