@@ -220,8 +220,21 @@ Four constraints, three of which the chatq precedent already encodes:
 - **Kiosk orgs are excluded**, and a stale registration from before a seal is torn down —
   `chatq_register_org` already does exactly this (`supervisor.py:2348-2351`). Same rule, same
   reason.
-- **Per-org opt-out**, since being listed means peers can mail the org and thereby spend its
-  credits. Default on, switch present.
+- **The opt-out is a checkbox in the creation form's mailserver section** (user ruling,
+  2026-08-04), sitting with the hub-address fields: *“connect to the mailserver on this computer”*,
+  **checked by default**. Being listed means peers can mail the org and thereby spend its credits,
+  so it must be visible and refusable at the moment the org is made — not buried in settings
+  afterwards.
+  - Home: the **`advanced`** disclosure of the create form (`App.tsx:583-584`), where kiosk and
+    sandbox already live since D-40, below folder selection. The collapsed summary line
+    (`App.tsx:577`) should gain the hub state the same way it names `kiosk`/`sandboxed`.
+  - ⚠ **Do not gate the checkbox on the hub being detected.** The boot race is real (below): a hub
+    that is not up yet must still be checkable, or the setting is unavailable exactly when an
+    autostarting machine is being configured. Show detection as a *hint* beside the box —
+    “detected at `<addr>`” or “not running right now; will connect when it starts” — and let the
+    checkbox stand on its own.
+  - Remote hubs are separate address entries in the same section, typed in explicitly (a local hub
+    is the only thing that auto-connects).
 - ⚠ **Auto-connect applies to the LOCAL hub only.** A remote hub is configured explicitly. Under
   the closed-network ruling reachability is the authorization, so an instance that auto-joined
   every hub it could reach would be joining networks by accident.
@@ -799,7 +812,7 @@ Ordered by value-per-effort.
 | secret rotation | **out of v1** — simplify now, harden later (§3) |
 | headless + credentials | **API key REQUIRED** — headless without one is refused (§9.6) |
 | number of hubs | **one for v1**, several not designed out (§12) |
-| same-machine hub | **auto-connect by default**, local hub only, per-org opt-out (§3) |
+| same-machine hub | **auto-connect by default**, local hub only; opt-out is a **checkbox in the creation form's mailserver section** (§3) |
 
 ⚠ **10+ participants, with v1 deliberately kept basic.** The simplification ruling keeps threading
 and broadcasts out, so the one thing that must still happen at day one is **reserving an optional

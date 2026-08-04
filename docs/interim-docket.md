@@ -1598,6 +1598,14 @@ it, orgs register at startup (`api.py:342`) and at creation (`api.py:540`), and 
 with any stale registration torn down (`supervisor.py:2348-2351`). It works because ② already
 removed everything that would need a prompt: the org mints its own secret, and joining needs no gate.
 
+**The opt-out is a checkbox in the creation form's mailserver section** (user, 2026-08-04),
+checked by default, alongside the hub-address fields — home is the `advanced` disclosure
+(`App.tsx:583-584`) where kiosk and sandbox have lived since D-40, and the collapsed summary
+(`App.tsx:577`) should name the hub state too. ⚠ **Do not gate the checkbox on the hub being
+detected** — the boot race means a hub that is not up yet must still be checkable, or the setting is
+missing exactly when an autostarting machine is being configured. Detection is a hint beside the
+box, not a precondition.
+
 ⚠ Two constraints the chatq precedent does not cover. **Local hub only** — a remote hub is
 configured explicitly, or an instance auto-joins every network it can reach, which under the
 open-join ruling is exactly how you end up somewhere by accident. And **retry, do not probe once**:
