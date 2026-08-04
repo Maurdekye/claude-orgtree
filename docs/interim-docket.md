@@ -1856,6 +1856,139 @@ threaded through the POST** — D-51 proposed it, nobody has built it.
 back to `game-club` + `resonite`. ⚠ `frontend/dist` was rebuilt, so the served bundle now carries
 both the `convo.ts` fixes and D-56's paging changes — a page reload picks up both.
 
+## D-58 · The five-subsystem test campaign — 40 defects, six suites, 1,097 checks
+> this test suite was seemingly a great success; keep throwing more tests at it. spawn subagents to
+> design and test against the full application thoroughly as much as possible.
+
+Five agents in parallel, one subsystem each, partitioned so no two could write the same file: each
+owned **one** production file for fixes and had to *report* anything outside it. Suites below are
+all plain runnable scripts in `test_ledger.py` style (**pytest is still not installed**).
+
+| suite | checks | subsystem |
+|---|---|---|
+| `test_ledger.py` | 186 | pre-existing |
+| `test_ledger_authority.py` | 155 | authority, budgets, structure |
+| `test_turn_lifecycle.py` | 131 (120 `--quick`, 49 `--hermetic`) | the turn loop |
+| `test_api_surface.py` | 395 | every endpoint + the three gateways |
+| `test_persistence.py` | 62 | store, locking, durability |
+| `test_message_visibility.py` | 183 | D-57's suite |
+| `frontend/tests/` (`npm test`) | 51 | shared state, rendering |
+
+### ☠ Security — all reachable from the kiosk public listener
+
+1. **Arbitrary directory listing and file read on the host.** `…/nodes/{nid}/scratch` was the only
+   `/nodes/{nid}/` route that never resolved the node, so `nid` reached `scratch_dir`, which joins
+   **and mkdirs** it, and the containment check then anchored on the *escaped* base.
+   `nid = ..\..\..\..\..\..\Users` → `200` with a listing of the operator's home; any file under it
+   read back. ⚠ Exposure at the time was nil — neither live org is a kiosk — but it was live for
+   any future one.
+2. **A visitor could download the org's sandbox bridge secret.** The deny list named only
+   `.credentials.json`/`.claude.json`; `sandbox.py` writes `.bridge` onto the org disk. That secret
+   buys the `/api/agent` gateway the public matrix explicitly freezes **and** the `/anthropic`
+   proxy, which attaches the host's subscription OAuth token.
+3. **Path traversal in `org_path`** — `DELETE /api/orgs/..%5Cdefaults` returned 200 and renamed
+   `<data>/defaults.json` into the trash. Starlette's `[^/]+` converter admits a backslash on
+   Windows. Any relative `.json` reachable from `orgs/` was a moveable target.
+4. A visitor could **read-and-destroy** any node's mid-task mail queue via `steer`; the full
+   OpenAPI schema and a live Swagger console were public; `frozen.error` and `last_denials[].arg`
+   leaked host paths and the username.
+
+### ☠ Data loss and wedges
+
+5. **Mail LOST outright.** The delivery-journal confirm fired on any non-`system` stdout event —
+   including a **failing** result — so a CLI answering "API Error: 500" confirmed the journal away
+   and the fold-back found nothing. In **no carrier at all**; never reached the agent.
+6. **A ~900-turn recursion wedge.** `_run_turn` called itself from its own `finally`. The
+   `RecursionError` is raised *inside* the `finally`, escapes the turn's own `except`, kills the
+   worker thread and leaves `busy=True` with a non-empty queue — silent and terminal. Measured with
+   the limit lowered: 260 queued died at depth 189 with **69 still queued**.
+7. **A usage-limit freeze retagged as a kiosk SPEND freeze, unresumable forever.** The pre-№41
+   migration matches on shape, and a genuine limit freeze hits that shape whenever the reset time
+   is unparseable *and* no replay text was kept. ▶ resume silently did nothing.
+8. **One unpaired surrogate poisoned an org permanently** — every later read 500s, nothing removes
+   it.
+9. **Writer starvation, not a collision.** Measured **0 of 1,659** `os.replace` calls succeeding
+   under an 8-reader storm, so D-57's retry was a lottery the writer always lost. A
+   writer-preferring latch: **6 → 260 writes in 6 s**, errors 2 → 0.
+10. **`delete_org` overwrote its own backups** — delete/recreate/delete inside one second destroyed
+    the first copy, which is exactly the loss delete-as-rename was introduced to prevent.
+
+### The rest
+
+`hire` was **not atomic** in three ways — a *refused* hire moved 810 credits from the user's pool
+with no node to hold them; `dissolve` stranded a rehired bearer's subtree live under an archived
+parent; `_move` could build a **real 2-cycle** in the parent graph and produce grants of −7/−13;
+`load_org` held its file handle across the whole JSON parse; every failed save leaked its temp file
+forever; `save_org` never fsynced; five frontend state defects including **stale live scaffolding
+that retired only on a websocket event** (lose the frame ending a turn and the reply renders twice
+forever, the clock counts into later turns, an interval leaks per node).
+
+☞ **One earlier "fix" turned out to be inert.** D-57 ④ raised `COPIES_WINDOW` 20 → 200 against a
+measured 138-row burial — but `read_chat` only ever returns `CHAT_WINDOW` = **120** rows, so the
+newest-200 slice *is* the whole payload and the effective window never moved. Retirement is now
+evidence-based on the window's oldest `seq`.
+
+### Two things about method worth keeping
+
+- **`--discriminate`** (authority suite): reverts each fix one at a time in a temp copy of the
+  package and re-runs the section meant to catch it. **All 14 go RED.** That is the answer to "a
+  green suite proves nothing".
+- **An agent declined a fix I had recommended, correctly.** The turn-lifecycle agent evaluated
+  putting the transcript-evidence test inside `_fold_back_undelivered` and rejected it: the
+  fold-back is the only thing that puts a consumed-but-unanswered message back where the next
+  envelope re-presents it, so that change buys one clean render at the cost of the agent never
+  being asked again. It recommended the display layer instead. Taken — `node_chat` now applies
+  `_in_transcript` to mailbox rows too, and the check is promoted from a pinned exception.
+- ⚠ **I nearly shipped a fix that broke ▶ resume.** Adding a positive `limit` kind flag (⑦) tripped
+  `resume_frozen`'s "another kind owns this record" guard, making ▶ skip *every* limit-frozen agent
+  — the same bug from the other end. The suite's three freeze checks caught it on the next run.
+
+### User rulings, 2026-08-04
+
+> both should be restricted by max depth but at the same time it should be some ludicruously high
+> value like 1024, no need to have any practical limit other than to prevent infinite recursion from
+> a bug that spawns unlimited subagents
+
+**`move` now enforces `max_depth` AND `max_children`**, closing the D-A/D-B pins, and both defaults
+move **10/256 → 1024**. They are runaway insurance and nothing else. The depth check measures the
+**deepest leaf of the moved subtree**, not the moved node — that leaf is what actually ends up
+deepest. ⚠ Read `both` as both caps binding both operations; say so if only depth was meant.
+
+> permission mode is independent per agent because an agent's read/write/tool use access is decided
+> independently of its permission mode … so theres basically no reason to audit it whatsoever.
+
+**D-C is WON'T-FIX.** `permission_mode` stays per-agent, deliberately unclamped and unswept. The
+dirs/tools/mcp grants *are* clamped against the parent chain and the kiosk ceiling, and those bound
+what an agent can reach; `permission_mode` only decides how the CLI prompts within that boundary.
+Pinned in the authority suite as **intended behaviour**, so a future "fix" has to argue with the
+ruling rather than silently narrow it.
+
+### Left undecided (user: "leave the rest undecided")
+
+- **`/chat` is not scrubbed for public visitors** — an unsandboxed kiosk's transcript hands the
+  operator's absolute paths and username to the internet. Scrubbing means regexing the visitor's own
+  prose. Asserted as current behaviour so a change fails loudly.
+- **The bridge pins the ORG, not the NODE.** One container serves every agent and all can read the
+  shared `.bridge`, so a subordinate can address `/api/agent` as its own superior. Closing it needs
+  a per-node credential that does not exist.
+- `audience_forward` has no `_require_live` on the actor (D-D).
+- Five uncapped-growth defects in `ledger.py`, each pinned as a live reproduction in
+  `test_persistence.py`: `events`, per-node `mail`, per-node `notices`, `hire`'s O(n²) peer-notify
+  fanout, and **the org-inbox unread count collapsing to 0** once the 200-cap trims past a
+  mark-read.
+- `usePolled` keeps the previous identity's data across a deps change (folder A's listing renders
+  under path B). Marked `todo` in the frontend suite so it prints every run.
+- **A failed turn is never retried** — the mail sits in the mailbox with no driver until the next
+  message or a restart. Visible, not lost, consistent across every failure path.
+
+### Hygiene
+
+Throwaway orgs deleted and the org list verified back to `game-club` + `resonite` after every
+agent. One flaky check fixed in passing: the crash-durability orphan sweep asserted reclamation of
+strays that a SIGKILL only leaves if it lands in a microsecond window, so a clean run failed with
+nothing to reclaim — it now plants one. ⚠ `frontend/dist` was rebuilt mid-campaign, so a page
+reload picks up the frontend fixes and D-56's paging together.
+
 ## Carried, not done
 
 | item | state |
@@ -1864,7 +1997,7 @@ both the `convo.ts` fixes and D-56's paging changes — a page reload picks up b
 | D-29 ~6s blank before thinking | FIXED (derived `starting…`) |
 | D-30 shared conversation store | FIXED (`convo.ts`) |
 | `chain_notices` dead reserved key | REMOVED (D-33) |
-| `_move` inflates a top-level grant past `max_top_grant` | confirmed in the shelved ledger review, unfixed |
+| `_move` inflates a top-level grant past `max_top_grant` | FIXED (D-58) |
 | `game-master` has an empty charter although `hire` now refuses without one | predates the requirement |
 | P1–P5 of the state review | ALL IMPLEMENTED (D-32) |
 | mobile wave | spec at `docs/mobile-spec.md`, held by the user |

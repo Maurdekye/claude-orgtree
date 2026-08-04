@@ -1415,20 +1415,43 @@ def section_edges():
     # ⚑ the structural caps are enforced by hire and by NOTHING ELSE
     dp.hire(USER, None, "haiku", 50, "m0")
     dp.hire(USER, "m0", "haiku", 10, "m1")
-    defect("D-A", "move seats a subtree PAST max_depth (hire refuses, move does not)",
-           lambda: (dp.move(USER, "m0", "l2"),
-                    true(dp.depth("m1") >= dp.d["max_depth"],
-                         f"depth {dp.depth('m1')} vs cap {dp.d['max_depth']}"))[-1],
-           "`_move` never consults max_depth — a subtree dragged under a deep "
-           "node lands deeper than any hire could reach. Fix = a depth check on "
-           "the moved subtree in `_move`, IF the caps are meant to bind "
-           "reorganization as well as growth (a design ruling, not a clear bug).")
+    # PROMOTED 2026-08-04 — the design ruling D-A asked for was given: the caps
+    # bind reorganization as well as growth, and both defaults move to a
+    # deliberately unreachable 1024 so they are runaway insurance and nothing
+    # else. The check measures the DEEPEST LEAF of the moved subtree, which is
+    # what actually ends up deepest.
+    check("move refuses a subtree that would land past max_depth",
+          lambda: expect_error(lambda: dp.move(USER, "m0", "l2"), "max org depth"))
+    check("…and the tree is untouched by the refusal",
+          lambda: true(dp.depth("m1") < dp.d["max_depth"],
+                       f"depth {dp.depth('m1')} vs cap {dp.d['max_depth']}"))
     wd.hire(USER, None, "haiku", 5, "q")
-    defect("D-B", "move seats a child PAST max_children",
-           lambda: (wd.move(USER, "q", "p"),
-                    true(len(wd.org_children("p")) > wd.d["max_children"],
-                         f"{len(wd.org_children('p'))} > {wd.d['max_children']}"))[-1],
-           "same hole, same place: `_move` does not consult max_children either.")
+    check("move refuses a child that would land past max_children",
+          lambda: expect_error(lambda: wd.move(USER, "q", "p"), "reports (cap)"))
+    check("…and the parent keeps its count",
+          lambda: true(len(wd.org_children("p")) <= wd.d["max_children"],
+                       f"{len(wd.org_children('p'))} vs {wd.d['max_children']}"))
+
+    # ⚑ D-C is RULED WON'T-FIX (user, 2026-08-04): permission_mode stays
+    # independent per agent and is deliberately NOT clamped or swept —
+    # "an agent's read/write/tool use access is decided independently of its
+    # permission mode, which is basically everything permission mode already
+    # handles on its own. so there's basically no reason to audit it."
+    # The dirs/tools/mcp grants ARE clamped against the parent chain and the
+    # kiosk ceiling, and those are what bound what an agent can reach;
+    # permission_mode only decides how the CLI prompts within that boundary.
+    # Asserted as intended behaviour so a future "fix" has to argue with the
+    # ruling rather than silently narrow it.
+    pm = deep_org()
+    pm.set_scope(USER, "top", permission_mode="default")
+    pm.set_scope(USER, "mid-a", permission_mode="bypassPermissions")
+    check("permission_mode is per-agent BY RULING: no parent clamp",
+          lambda: eq(pm.node("mid-a")["scope"]["permission_mode"],
+                     "bypassPermissions"))
+    pm.set_scope(USER, "top", permission_mode="acceptEdits")
+    check("…and no subtree sweep when an ancestor lowers its own",
+          lambda: eq(pm.node("mid-a")["scope"]["permission_mode"],
+                     "bypassPermissions"))
 
     # --- unknown ids raise LedgerError, never KeyError
     u = deep_org()

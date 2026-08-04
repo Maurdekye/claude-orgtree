@@ -37,6 +37,14 @@ from .schema import (AudienceGrant, DirGrant, MailEntry, NodeDoc,
 # scale is not a judgment call). Sonnet is 3, not its introductory 2 (expires 2026-08-31).
 TIERS: Final[dict[str, int]] = {"fable": 10, "opus": 5, "sonnet": 3, "haiku": 1}
 
+# №34 runaway insurance, and NOTHING else (user ruling 2026-08-04): "no need to
+# have any practical limit other than to prevent infinite recursion from a bug
+# that spawns unlimited subagents". Both were low enough to be felt as design
+# constraints (10 and 256); at these values a human org never meets them and a
+# runaway still terminates. Both are per-org overridable.
+MAX_DEPTH: Final = 1024
+MAX_CHILDREN: Final = 1024
+
 # §5 — full model ids only; aliases drift (spike: 'sonnet' resolved to sonnet-4-5).
 MODELS: Final[dict[str, str]] = {
     "fable": "claude-fable-5",
@@ -1407,17 +1415,17 @@ class Org:
         # №34 — cheap runaway insurance
         if parent is not None:
             depth = self.depth(parent) + 1
-            if depth >= self.d.get("max_depth", 10):
-                raise LedgerError(f"max org depth {self.d.get('max_depth', 10)} reached")
+            if depth >= self.d.get("max_depth", MAX_DEPTH):
+                raise LedgerError(f"max org depth {self.d.get('max_depth', MAX_DEPTH)} reached")
             # audit finding: count ORG children only — lineage bearers share
             # the parent slot but are not reports, and counting them let
             # routine compaction silently eat the hiring cap
             # user ruling 2026-07-31: the cap is runaway INSURANCE, not a shape
             # constraint — wide flat teams are legitimate (the canvas stacks
             # leaf crowds), so the default is far above any deliberate org
-            if len(self.org_children(parent)) >= self.d.get("max_children", 256):
+            if len(self.org_children(parent)) >= self.d.get("max_children", MAX_CHILDREN):
                 raise LedgerError(
-                    f"{parent} already has {self.d.get('max_children', 256)} reports (cap)")
+                    f"{parent} already has {self.d.get('max_children', MAX_CHILDREN)} reports (cap)")
 
         # №30 — dirs default: top level gets the org's dirs; deeper gets what the
         # parent holds. Explicit grants must fit the parent's capability (path AND
@@ -2142,6 +2150,30 @@ class Org:
                 raise LedgerError("target is inside the moved subtree — cycle (§4.5)")
         if p_old is not None:
             self._require_authority(actor, p_old, allow_self=True)
+
+        # №34 runaway insurance binds REORGANIZATION too (user ruling
+        # 2026-08-04, closing the D-A/D-B pins). `hire` refused past the caps
+        # and `move` did not, so a subtree could simply be dragged past them —
+        # and since a drag is how a runaway would re-shape a tree it had
+        # already been refused permission to grow, the hole defeated the
+        # insurance rather than merely bending a rule. Measured against the
+        # WHOLE moved subtree: the deepest leaf under `nid` is what actually
+        # ends up deepest, not `nid` itself.
+        if new_parent is not None:
+            cap_d = self.d.get("max_depth", MAX_DEPTH)
+            sub = self.descendants(nid, live_only=False)
+            rel = max((self.depth(k) for k in sub), default=self.depth(nid)) \
+                - self.depth(nid)
+            if self.depth(new_parent) + 1 + rel >= cap_d:
+                raise LedgerError(
+                    f"max org depth {cap_d} reached — moving {nid} under "
+                    f"{new_parent} would seat its deepest report at "
+                    f"{self.depth(new_parent) + 1 + rel}")
+            cap_c = self.d.get("max_children", MAX_CHILDREN)
+            if new_parent != p_old \
+                    and len(self.org_children(new_parent)) >= cap_c:
+                raise LedgerError(
+                    f"{new_parent} already has {cap_c} reports (cap)")
 
         # §8.5: a bearer occupies its SUCCESSOR's slot and is not an org node of
         # its own, so it may not be re-parented on its own — doing so split the

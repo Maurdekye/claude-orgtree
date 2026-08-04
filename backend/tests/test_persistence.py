@@ -644,6 +644,17 @@ def s3_crash() -> None:
         must all be gone after one ordinary org-list call — and the live
         docs must be untouched."""
         assert res["strays"], "the kills left no orphan to reclaim‽"
+        # ⚠ A SIGKILL only leaves a stray if it lands in the window between
+        # mkstemp and os.replace, and that window is microseconds — some runs
+        # produce none at all (observed 2026-08-04: three kills, zero strays,
+        # and this check then failed with nothing to reclaim). "Nothing was
+        # orphaned" is a pass, not a failure; plant one so the sweep is still
+        # exercised on every run rather than only on the lucky ones.
+        if not res["strays"]:
+            planted = os.path.join(orgs_dir(), "planted-orphan.tmp")
+            with open(planted, "w", encoding="utf-8") as f:
+                f.write("{}")
+            res["strays"] = [os.path.basename(planted)]
         past = time.time() - store._TMP_GRACE - 60
         for f in res["strays"]:
             p = os.path.join(orgs_dir(), f)
