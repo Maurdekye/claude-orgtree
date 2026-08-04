@@ -1706,6 +1706,94 @@ risks clobbering its work, which is worse than a mixed commit on a quarantined b
 is separated when that agent reports. ☞ Rule: **never `git add -A` while a subagent is running** —
 stage explicit paths.
 
+## D-55 · ⚑ SOLVED — the vanishing message: the server hid the mail it had just drained
+> when i activate the agent with a new message, sometimes the queued preview never shows up while
+> the agent is 'starting', i only see my message once it actually goes through
+
+**The remaining cause D-53 handed off, found by a dedicated Opus subagent.** D-51 and D-52 were real
+and were not the whole bug: the last one is **server-side**, which is why five rounds of client-side
+probing could not see it.
+
+`delivering_mail` (`supervisor.py:778`) **excluded `via="turn"` journal batches** from
+`pending_mail`, on the premise that their text is written to the CLI as a user event and so is
+"already on screen as the transcript bubble". True *eventually*, not *yet*:
+
+1. `POST /message` writes the mail and saves ⇒ it is in `pending_mail`.
+2. **~60 ms** later the turn thread drains it (`_journal_drain(…, "turn")`) ⇒ out of the mailbox and
+   excluded from the journal projection.
+3. The CLI launches and echoes it into the transcript — D-29's "starting…" phase, ~1 s warm, longer
+   cold, longer still sandboxed.
+
+Between ② and ③ the message is in **no place the desk renders from**. The client ghost is the only
+cover — and it graduates the instant any fetch lands inside that ~60 ms window, because
+`serverCopies` counts `pending_mail`. ☞ **A race: lose it and the ghost survives (what every earlier
+probe measured); win it and the ghost retires against evidence that is about to vanish.**
+Intermittent by construction — the user's "sometimes". The window widens exactly when a turn cannot
+start at once: waiting on a slot, DOC_LOCK contention, a large org doc, a container start.
+
+**The same rule a FIFTH time** (D-34, D-43, D-50, D-51/52), one layer down: *retired against evidence
+that was itself about to disappear.*
+
+**Measured, unique token per run.** Server-side probe at 20 Hz replaying `convo.ts`'s own graduation
+rule:
+
+| build | run | ghost graduated | `pending_mail` | transcript | gap |
+|---|---|---|---|---|---|
+| before | 1 | t+0.014 | t+0.014 only | t+1.108 | **1.04 s** |
+| before | 2 | t+1.114 | never seen | t+1.114 | 0 |
+| before | 3 | t+0.026 | t+0.026 only | t+1.047 | **0.96 s** |
+| after | ×4 | t+0.03–0.04 | t+0.03 → 1.02–1.37 | t+1.09–1.43 | **0 in all** |
+
+2 of 3 before-runs reproduce, and run 2 is the same code not tripping the race — *that shape is the
+symptom*.
+
+**Fix.** The blanket `via` exclusion becomes one evidence test applied to **both** carriers — "is
+this exact mail already a transcript bubble" — built in `node_chat`, the one place both halves are
+in hand, so the handover lands in **one payload**: the pending bubble leaves and the durable one
+arrives together, never a frame with neither. Identity, not resemblance: the marker is
+`· {at}\n{body}[:400]` from the entry's own `at`, so no clock is compared and a body-only match
+cannot reintroduce D-52.
+
+**Two extras it caught on the way.** Applying the same test to `via="steer"` killed a **pre-existing
+1.95–2.35 s double-render** (pendrow *and* transcript) on every send to a busy agent — never
+reported, contradicting the old docstring. And D-53's lead 2 was confirmed: `MailList.onReply` never
+called `addPending`, now fixed. ⚠ No matched before-measurement exists for that path (concurrency,
+below); it is closed on code evidence plus an after-measurement, and it is almost certainly *not* the
+user's symptom — the inbox modal renders no transcript.
+
+**Gates on the combined tree:** ledger **186/186**, pyright **0 errors**, `tsc` clean.
+
+**Not done:** lead 1 (stale bundle) not investigated, no build stamp added — still worth doing.
+Lead 3 unmeasured at size, but the concrete defect behind it is now named: `serverCopies`'
+`messages.slice(-20)` baseline can become *unreachable* if copies scroll out of the window, which
+strands a ghost forever (a stuck duplicate, not a gap). Exposure is small now that graduation
+happens via `pending_mail` within ~40 ms. Flagged, not claimed.
+
+⚠ **Concurrency note.** Part of this fix (`api.py`, `App.tsx`, `types.ts`, `desk.tsx`) was already
+committed by accident in `1debf4a` — see D-54. The `supervisor.py` half lands here. The agent
+committed nothing itself and declined to write this entry to avoid conflicting on a file being
+edited concurrently; it also redeployed :7360 to measure, and cleaned up its probe orgs
+(`zz-drain-probe`, `zz-stream-probe2` deleted; list back to `game-club` + `resonite`, verified).
+
+## D-56 · Paging happens on scroll, not on a button
+> Scrolling to the bottom of the mail list to the top of a chat shouldn't show a button to load the
+> extra events or mails. It should just load automatically when you reach the scroll.
+
+Both pagers become status lines rather than controls.
+
+- **Chat** already auto-loaded on scroll (`scrollTop < 240 && hasOlder`) — the button was pure
+  redundancy. The line replacing it does something the button could not: at the API's `MAX_WINDOW`
+  cap (1000) it says *"beyond the window"*, which is the only explanation for why scrolling up stops
+  producing messages. `MAX_WINDOW` is now exported for that.
+- **Mail list** had **no scroll handler at all**, so auto-paging there is new: within a screen of the
+  bottom the next `MAIL_WINDOW` renders. `vis` only grows and is guarded against `shown.length`, so
+  it cannot thrash or re-fire once the whole set is on screen.
+- The status line keeps its height reserved, so the list does not jump as rows prepend. `.loadolder`
+  button styling replaced with `.loadolder-status`.
+
+`tsc` clean. ⚠ Not verified live: the running deployment carries the D-55 agent's rebuild, and
+re-verifying the scroll behaviour needs a fresh build — worth a look on the next deploy.
+
 ## Carried, not done
 
 | item | state |
