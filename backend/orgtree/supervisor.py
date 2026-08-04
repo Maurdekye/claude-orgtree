@@ -27,7 +27,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any, cast
 
 from . import sandbox as sbx, store
@@ -781,7 +781,7 @@ def _journal_drain(org: Org, nid: str, mail: list[MailEntry] | None,
 
 
 def delivering_mail(org: Org, nid: str,
-                    shown: Callable[[str], bool] | None = None
+                    shown: Callable[[Mapping[str, Any]], bool] | None = None
                     ) -> list[dict[str, Any]]:
     """Mail drained for an in-flight delivery, for as long as nothing else is
     showing it. The journal holds the only copy while a batch is in flight,
@@ -789,12 +789,16 @@ def delivering_mail(org: Org, nid: str,
     a long bash command "didn't appear as queued until the command finished").
     Surfaced with delivering:True — retraction stays box-only.
 
-    The two carriers differ in whether the transcript will EVER carry the
-    text, so `shown` — "is this body already in the transcript" — decides:
+    `shown(entry)` — "is this exact mail already on screen as a transcript
+    bubble" — is what retires it, for BOTH carriers:
 
-      via="steer"  hook context the CLI never transcripts ⇒ `shown` is never
-                   true and the journal remains the only thing that can show
-                   it, exactly as before.
+      via="steer"  hook context the CLI does not transcript, so it normally
+                   stays until the journal is confirmed. But a steer still
+                   pending at the result boundary is folded into the queue and
+                   written as a user event, and then the transcript DOES carry
+                   it — measured 2026-08-04: 1.95–2.35 s of the message
+                   rendered TWICE, once as the pending bubble and once as the
+                   durable one, on every send to a busy agent.
       via="turn"   written to the CLI as a user event, so the transcript WILL
                    carry it — but not until the process has started and echoed
                    it back. That is D-29's "starting…" phase: ~1 s warm,
@@ -804,25 +808,23 @@ def delivering_mail(org: Org, nid: str,
                    phase the message the user had just sent existed in NO
                    place the desk renders from (user bug 2026-08-03: "the
                    queued preview never shows up while the agent is
-                   starting"). It is surfaced until `shown` says the
-                   transcript has it.
+                   starting").
 
     ⚠ This replaces a blanket exclusion of `via="turn"`, which existed to stop
-    the message rendering TWICE — once here and once as the transcript bubble
-    — for the window between turn start and the journal's confirmation (on a
-    long think, ~10 s; found 2026-08-02). The duplicate is still prevented,
-    but by the right test: the transcript actually having it, rather than a
-    confirmation that lands well after it does. Superseded is not replaced,
-    and replaced is not "will be replaced eventually" — evidence, both ways.
+    exactly the duplicate described above — but suppressed the row for the
+    whole window INCLUDING the part where nothing else was showing it, and
+    left the steer duplicate untouched. One test replaces both halves: the
+    transcript actually having this mail. Superseded is not replaced, and
+    replaced is not "will be replaced eventually" — evidence, both ways.
 
-    With no `shown` (a caller that cannot see the transcript) a turn batch is
+    With no `shown` (a caller that cannot see the transcript) everything is
     surfaced: showing a duplicate is the failure this system prefers over
     hiding a message. Old entries have no `via` and default to "steer"."""
     out = []
     for b in (org.d.get("delivering") or {}).get(nid, []):
         turn = b.get("via", "steer") == "turn"
         for m in b.get("mail") or []:
-            if turn and shown is not None and shown(m.get("body") or ""):
+            if shown is not None and shown(m):
                 continue        # the transcript is showing it — hand over
             out.append({**m, "delivering": True,
                         **({"via": "turn"} if turn else {})})
