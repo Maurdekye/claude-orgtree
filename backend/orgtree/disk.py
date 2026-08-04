@@ -42,7 +42,48 @@ from typing import cast
 
 SENTINEL = ".orgtree-disk"
 IMG = "disk.img"
-MOUNT_ROOT = "/mnt/wsl/orgtree-disk"
+# ⚠ NOT a constant: Docker Desktop MOVED the shared mount, and hardcoding it
+# broke sandboxed-org creation on this machine with no orgtree change involved.
+#
+# The design wants the ONE tmpfs WSL shares across distros — containers bind
+# it, and the Windows backend reads the same bytes over \\wsl.localhost. That
+# tmpfs used to be at `/mnt/wsl` inside the docker-desktop distro. A Docker
+# Desktop update put the distro in its own mount namespace and remapped the
+# host mounts under `/mnt/host/`, so `/mnt/wsl` there became a plain directory
+# on a READ-ONLY overlay root — with the previously-created org mountpoints
+# still baked into it, which is why existing orgs kept working (`mkdir -p`
+# returns 0 on an existing dir) while every NEW slug failed on a read-only
+# filesystem. Measured 2026-08-04: docker-desktop had 0 mounts under
+# `/mnt/wsl`, Ubuntu-24.04 had 9, and `/mnt/host/wsl` in the distro listed the
+# very same contents as `/mnt/wsl` in Ubuntu.
+#
+# `wsl --shutdown` does NOT fix it (tried) — the namespace split is by design,
+# not a damaged disk. So the root is DETECTED, in the same spirit as `distro()`
+# right below, and both spellings are accepted so the same code runs on the
+# older and newer Docker Desktop layouts. Both were verified reachable from
+# Windows over \\wsl.localhost before this was written.
+_MOUNT_ROOTS = ("/mnt/host/wsl", "/mnt/wsl")
+_mount_root_cache: str | None = None
+
+
+def mount_root() -> str:
+    """The shared-tmpfs directory holding every org's mountpoint.
+
+    Fails loud, like `distro()`: an org whose disk cannot be mounted must say
+    what is missing rather than silently bind an empty workspace."""
+    global _mount_root_cache
+    if _mount_root_cache:
+        return _mount_root_cache
+    for base in _MOUNT_ROOTS:
+        # writability is the test, not existence — `/mnt/wsl` still EXISTS in
+        # the new layout, on a read-only root, which is exactly the trap.
+        if _sh(f"mkdir -p {base}/orgtree-disk").returncode == 0:
+            _mount_root_cache = f"{base}/orgtree-disk"
+            return _mount_root_cache
+    raise RuntimeError(
+        "no writable shared mount root inside the Docker Desktop distro "
+        f"(tried {', '.join(_MOUNT_ROOTS)}). Sandboxed orgs cannot be "
+        "created or started until one of these is writable.")
 # distro-side candidates for the docker daemon's data root (the volume
 # Mountpoint docker reports is the DAEMON namespace path, not the distro's)
 _DATA_ROOTS = ("/mnt/docker-desktop-disk/data/docker/volumes",
@@ -114,7 +155,7 @@ def _img_path(slug: str) -> str:
 
 
 def mount_path(slug: str) -> str:
-    return f"{MOUNT_ROOT}/{slug}"
+    return f"{mount_root()}/{slug}"
 
 
 def windows_path(slug: str) -> str:

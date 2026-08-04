@@ -1452,11 +1452,12 @@ elif ONLY and "§4" not in ONLY and ONLY not in "§4  disk.py against a real POS
     pass
 elif SH:
     D4 = FakeDistro(os.path.join(DATA, "distro"))
+    UNC_ROOT_BEFORE = dsk.mount_root()      # resolve BEFORE the stubs land
     UNC_BEFORE = dsk.windows_path("probe-slug")
     dsk._run = D4.run
     dsk._distro_cache = None
     dsk._dataroot_cache = None
-    dsk.MOUNT_ROOT = msys(os.path.join(D4.root, "mnt", "wsl", "orgtree-disk"))
+    dsk._mount_root_cache = msys(os.path.join(D4.root, "mnt", "wsl", "orgtree-disk"))
     dsk._DATA_ROOTS = (msys(D4.vol),)
     NATIVE_MP = lambda s: os.path.join(D4.root, "mnt", "wsl",   # noqa: E731
                                        "orgtree-disk", s)
@@ -1465,8 +1466,15 @@ elif SH:
 
     @t("windows_path is the \\\\wsl.localhost UNC view of the mount")
     def _():
-        assert UNC_BEFORE == r"\\wsl.localhost\docker-desktop" + \
-            "\\mnt\\wsl\\orgtree-disk\\probe-slug", UNC_BEFORE
+        # ⚠ derived from the RESOLVED mount root, not hardcoded. Docker Desktop
+        # moved the shared tmpfs from /mnt/wsl to /mnt/host/wsl inside the
+        # distro (2026-08-04), which is what broke sandboxed-org creation; the
+        # thing under test here is the UNC *shape* — \\wsl.localhost\<distro>
+        # plus the distro-side path with separators flipped — not which root
+        # this machine happens to resolve to.
+        assert UNC_BEFORE == (r"\\wsl.localhost\docker-desktop"
+                              + UNC_ROOT_BEFORE.replace("/", "\\")
+                              + "\\probe-slug"), UNC_BEFORE
 
     @t("distro() DETECTS docker-desktop, ignoring the -data twin and the NULs")
     def _():
@@ -2986,8 +2994,8 @@ elif DOCKER_TIER:
         # writable the feature cannot work at all — measured here rather than
         # assumed, and the section relocates so the REST of the tier still
         # runs against real ext4 and a real container.
-        _probe = dsk._sh(f"mkdir -p {dsk.MOUNT_ROOT}/probe-zzsbx && "
-                         f"rmdir {dsk.MOUNT_ROOT}/probe-zzsbx")
+        _probe = dsk._sh(f"mkdir -p {dsk.mount_root()}/probe-zzsbx && "
+                         f"rmdir {dsk.mount_root()}/probe-zzsbx")
         if _probe.returncode != 0:
             note("☠ HOST STATE: the docker-desktop distro's / is a READ-ONLY "
                  "overlay and NOTHING is mounted on /mnt/wsl (`mount | grep "
@@ -3006,8 +3014,8 @@ elif DOCKER_TIER:
                  "the daemon's own distro (e.g. /mnt/docker-desktop-disk/…), "
                  "which the daemon binds and \\\\wsl.localhost still serves. "
                  "§9 relocates MOUNT_ROOT to run the rest of the tier.")
-            dsk.MOUNT_ROOT = "/mnt/docker-desktop-disk/orgtree-zzsbx-test"
-            print(f"       … relocated MOUNT_ROOT to {dsk.MOUNT_ROOT}")
+            dsk._mount_root_cache = "/mnt/docker-desktop-disk/orgtree-zzsbx-test"
+            print(f"       … relocated MOUNT_ROOT to {dsk.mount_root()}")
         S9 = PFX + "real1"
         NAME9 = sandbox.container_name(S9)
         made = {"container": False, "disk": False}

@@ -1349,6 +1349,10 @@ def s6_disk() -> None:
     disk._sh = fake                                        # type: ignore[assignment]
     disk._distro_cache = "docker-desktop"                  # skip WSL detection
     disk._dataroot_cache = "/var/lib/docker/volumes"
+    # …and the mount root, for the same reason. It is DETECTED now (Docker
+    # Desktop moved the shared tmpfs to /mnt/host/wsl), and detection shells
+    # out — which this fake shell rightly refuses as an unexpected script.
+    disk._mount_root_cache = "/mnt/wsl/orgtree-disk"
 
     def reset(slug: str | None = None) -> None:
         if slug is None:
