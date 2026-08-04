@@ -63,6 +63,12 @@ class NodeScope(TypedDict):
     # the node (ledger sc["effort"]; supervisor reads sc.get("effort")).
     # Absent = the CLI default ("" clears by popping the key).
     effort: NotRequired[str]
+    # which model VERSION inside the tier (ledger.MODEL_VERSIONS) — a
+    # subcategory of the tier, not a tier of its own. Absent = the tier
+    # default. Neither a permission nor a price, so it clamps against nothing,
+    # and `Org.model_for` re-validates it against the node's CURRENT tier on
+    # every read, so a switch_model can never drag a stale choice with it.
+    model_version: NotRequired[str]
 
 
 class Denial(TypedDict):
@@ -88,6 +94,16 @@ class FrozenInfo(TypedDict, total=False):
     until: str | None
     until_ts: float | None
     error: str | None
+    # `limit` is the usage-limit kind flag, and it exists to be a POSITIVE
+    # marker. The pre-№41 retag in Org.__init__ matches on shape — error, no
+    # until, no resume_texts, no kind flag True — and a genuine usage-limit
+    # freeze hits that shape exactly whenever the reset time is unparseable AND
+    # no replay text was kept (a /command turn, or an unconfirmed batch). It
+    # was then rewritten as a SPEND freeze, which resume_frozen skips forever:
+    # ▶ resume silently did nothing and the agent could never be woken. Caught
+    # live 2026-08-04 by the turn-lifecycle suite. Setting this flag takes the
+    # retag's `not any(v is True …)` guard out of the picture by construction.
+    limit: bool
     spend: bool
     spend_error: str | None
     # prompts to replay when the freeze lifts (supervisor queues them)
@@ -249,7 +265,6 @@ class OrgDoc(TypedDict):
     fable_filter_policy: str
     nodes: dict[str, NodeDoc]
     audiences: list[AudienceGrant]
-    chain_notices: list[dict[str, Any]]
     audience_requests: list[dict[str, Any]]
     events: list[dict[str, Any]]
     # ---- setdefault'd / optional org state ----

@@ -317,11 +317,13 @@ def main():
         else (_ for _ in ()).throw(AssertionError))[-1])
     check("user deep reach notices the chain and grants a user audience", lambda: (
         org8.user_deep_reach("leaf", "please refocus on X"),
+        # the notice must name the AUTHORITY, not merely report that the user
+        # spoke: the recipient is told "user instructions outrank your chain"
+        # in the same breath, and the two sides must agree about that
         None if org8._has_audience("leaf", USER)
-        and any("spoke directly" in x["text"]
-                for x in org8.d["notices"].get("mgr", []))
-        and any("spoke directly" in x["text"]
-                for x in org8.d["notices"].get("vp", []))
+        and all(any("direct instruction" in x["text"] and "outranks" in x["text"]
+                    for x in org8.d["notices"].get(sup, []))
+                for sup in ("mgr", "vp"))
         else (_ for _ in ()).throw(AssertionError(org8.d.get("notices"))))[-1])
     check("take_mail drains once", lambda: (
         None if len(org8.take_mail("leaf")) == 1 and org8.take_mail("leaf") == []
