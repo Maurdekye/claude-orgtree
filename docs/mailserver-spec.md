@@ -138,12 +138,10 @@ is brute-forceable in seconds. The suffix is a label; the fingerprint is the che
   that is the property that makes it trustworthy. So the UI must show it once at creation, offer an
   export, and say plainly that losing it loses the address. A "regenerate" button that silently
   mints a new identity would be a data-loss trap; call it what it is.
-- **Rotation should be designed in now.** If a secret leaks, the naive fix changes the org's
-  identity and orphans its correspondence. One endpoint fixes it: `POST /rotate`, authenticated
-  with the current secret, replaces the stored fingerprint under the same slug. The display suffix
-  then no longer matches the new fingerprint — decide whether the suffix is pinned at first
-  registration (recommended: yes, it is a label) or re-derived. There is precedent for re-minting:
-  the kiosk token has exactly this button (`api.py:968`).
+- **Rotation is OUT of v1** (user ruling 2026-08-04: simplify now, harden later). A leaked secret
+  is handled by recreating the org. ⚠ When it is added, the trap is that the display suffix stops
+  matching the current secret — see the immutability section below. Precedent for the re-mint
+  button exists on the kiosk token (`api.py:968`).
 - **Upgrade path, if it is ever wanted:** sign each request with the secret (HMAC) instead of
   sending it. The secret then leaves the machine exactly once, at registration, and the same key
   material gives the end-to-end message signing floated in §7.
@@ -171,10 +169,11 @@ Consequences that must be built in, not assumed:
   time, then moving the org to another machine or renaming the OS account silently changes the
   address. Mint once, persist in the org doc, read it thereafter. (Locally this is already the
   shape: an org's slug is set at creation, `ledger.py:301`, and there is no rename path.)
-- ⚠ **After a rotation, `sha256(current_secret)[:6] != suffix`.** The suffix is a historical
-  artifact of the *first* secret. Verification must compare against the hub's **stored
-  fingerprint**, never re-derive the suffix — that is a natural bug to write and it would lock an
-  org out of its own address the first time it rotated.
+- **With no rotation in v1, `sha256(secret)[:6] == suffix` always holds** — one less thing to get
+  wrong, which is the point of dropping rotation. ⚠ That equality is exactly what stops holding the
+  day rotation lands: the suffix is then an artifact of the *first* secret, and verification must
+  compare the hub's **stored fingerprint** rather than re-derive the suffix, or every org is locked
+  out of its own address the first time it rotates. Do not build a check that assumes the equality.
 - **The username part may become misleading** — an org moved to a different account keeps `.bob` in
   its address. That is cosmetic; nothing authenticates on it (§3), and stability is worth more than
   accuracy here.
@@ -603,25 +602,26 @@ org mail is its only channel. An org that is both is an org that cannot communic
 > an orgs inbox should only show mail directed to it. also for this cross server boundary we
 > probably want read receipts.
 
-### 10.1 Scoping — the hub is not a shared mailbox
+### 10.1 Scoping — two different surfaces, two different answers
 
-**Every read is scoped to the authenticated org.** The org secret (§3) authenticates the poll; the
-hub returns only rows addressed to that org, and there is **no endpoint that returns another org's
-queue** — not for admins, not for the hub UI. The roster carries addresses, presence, and the
-directory blurb only; never message content or counts of who is talking to whom.
+⚠ **Corrected 2026-08-04** — an earlier draft of this section made the hub UI per-org. It is not.
 
-⚠ **This constrains the broadcast idea (§11 №1).** A group address must **fan out into per-org
-copies at the hub**, each one directed at its recipient, rather than creating a shared thread
-everyone reads. Same visible feature, and the invariant survives.
+**The hub UI is global.** It shows all traffic across every registered org, with a **filter to
+narrow to one org**. That is the operator's view of the network, and it is deliberate: on a closed
+collaborative network the person running the hub is a participant, not an adversary.
 
-⚠ **It also constrains the hub's own UI.** "A mimic of the mail UI" must be per-org and behind the
-org's secret — an operator dashboard that lists all traffic would be exactly the shared mailbox
-this rules out. The hub operator can of course read the database; that is a property of hosting it
-(§7 №7), and the answer is that the UI should not make it casual.
+**The org's own inbox is scoped** — an org sees only mail directed to it. That is what the poll
+returns, and it is a functional property before it is a security one: an instance fetches its own
+queue by its own address. No cross-org read is offered to an *instance*; the global view lives in
+the hub UI only.
 
-Note this is about the **hub**. Inside an org, inbound mail still reaches every live top-level agent
-and every org-inbox audience holder — that is the org-inbox model as specified, and it is unchanged
-(`ledger.py:969`).
+Inside an org nothing changes: inbound mail still reaches every live top-level agent and every
+org-inbox audience holder (`ledger.py:969`).
+
+☞ Consequence to keep in mind for §7 №7 — the hub UI being global means hub access is effectively
+read access to everyone's correspondence. That is fine under the closed-network ruling and is the
+cost of the operator view; it just means "who can reach the hub UI" is the same question as "who
+can read all the mail".
 
 ### 10.2 Two receipts: received (the hub has it) and read (an agent consumed it)
 
@@ -688,12 +688,15 @@ Design notes:
 
 Ordered by value-per-effort.
 
-1. **Group addresses.** `@net:` to a named list, or an all-hands broadcast. "Work as a collective
-   unit" implies announcements, and a hub-side fan-out is trivial while an agent mailing six
-   peers individually is six turns and six chances to diverge.
-2. **Threading.** Org-inbox mail is flat today. With five orgs holding several concurrent
-   conversations, agents will conflate them. A `thread_id` echoed on reply, rendered as a group
-   in the inbox, is cheap now and near-impossible to retrofit into stored history later.
+1. **Group addresses / broadcasts — RULED OUT of v1** (user, 2026-08-04): "for now we won't
+   concern ourselves with broadcasts/mailing lists. just the basic org to org chat that the
+   existing mailbox system offers." Kept here only so the idea is not rediscovered as new. A
+   hub-side fan-out remains the cheap way to do it later.
+2. **Threading — reserve the field, build the UI later.** Org-inbox mail is flat today, and with
+   ten peers holding concurrent conversations agents will conflate them. But threading is beyond
+   "the basic org to org chat the existing mailbox system offers", so v1 does not render it. ☞ Carry
+   an optional `thread_id` in the message envelope from day one anyway: it costs nothing unused and
+   cannot be retrofitted into mail already stored without it.
 3. **A directory blurb per org.** Each registered org publishes one line of "what we do" — the
    material already exists in `org.md`. Without it, an agent choosing a recipient is guessing
    from a slug.
@@ -733,13 +736,16 @@ Ordered by value-per-effort.
 | scope | **strictly org-to-org** — the hub does not relay `@ext:`/`@mcp:` |
 | slug lifetime | **immutable** — all three parts fixed at first registration (§3) |
 | receipts | **received** (hub custody / connectivity) **and read** (an agent consumed it) (§10.2) |
+| hub mail UI | **global** — all orgs' traffic, with a per-org filter (§10.1) |
+| broadcasts / mailing lists | **out of v1** — basic org-to-org chat only (§11 №1) |
+| secret rotation | **out of v1** — simplify now, harden later (§3) |
 
-⚠ **10+ participants changes two v1 calls.** At that size **threading is no longer deferrable**
-(§11 №2): a flat org inbox holding concurrent conversations with ten peers is unreadable to an
-agent, and a `thread_id` cannot be retrofitted into stored history. The **directory blurb**
-(§11 №3) moves from nice-to-have to necessary for the same reason — nobody addresses ten orgs
-correctly from slugs alone. Rate limits should be sized for ten peers × the §9.4 loop breaker, not
-for two.
+⚠ **10+ participants, with v1 deliberately kept basic.** The simplification ruling keeps threading
+and broadcasts out, so the one thing that must still happen at day one is **reserving an optional
+`thread_id` in the envelope** (§11 №2) — unused it costs nothing, and it cannot be retrofitted into
+mail already stored without it. The **directory blurb** (§11 №3) stays a suggestion but earns its
+place at ten peers: nobody addresses ten orgs correctly from slugs alone. Rate limits should be
+sized for ten peers × the §9.4 loop breaker, not for two.
 
 ### Still open
 

@@ -1560,6 +1560,23 @@ An org that is both cannot communicate at all.
   the far end. No received receipt within a threshold ⇒ mark the hub unreachable in the status pill
   rather than spooling silently.
 
+**⑫ Scope cut — keep v1 basic (user, 2026-08-04).** Three corrections:
+
+- ⚠ **The hub mail UI is GLOBAL**, showing all orgs' traffic with a per-org filter — ⑩ had it
+  per-org and was wrong. Corrected in spec §10.1. What stays scoped is the **org's own inbox**: an
+  instance polls its own queue by its own address. Consequence to keep in view — a global UI means
+  hub access *is* read access to everyone's correspondence, so "who can reach the hub UI" and "who
+  can read all the mail" are the same question.
+- **Broadcasts / mailing lists: out of v1.** Basic org-to-org chat only, as the existing mailbox
+  already offers. Kept in the spec as a later idea so it is not rediscovered as new.
+- **Secret rotation: out of v1** — simplify now, harden later. This actually *removes* the trap ⑪
+  recorded: with no rotation, `sha256(secret)[:6] == suffix` always holds. ⚠ That equality is
+  exactly what stops holding the day rotation lands, so do not build a check that assumes it.
+
+☞ **The one thing that must still happen at day one despite the cut:** carry an optional
+`thread_id` in the message envelope. Unused it costs nothing; it cannot be retrofitted into mail
+already stored without it, and at 10+ peers a flat inbox will want it.
+
 **⑨ The six build questions — ANSWERED (user, 2026-08-04).** Full table at spec §12: built by the
 **implementer**; orgs may join a hub **after creation**; **10+** participants; the hub runs on
 **Linux**; `net_wake` ships **`auto` only** (`notify`/`curated` documented but not built); and the
