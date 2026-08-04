@@ -2700,6 +2700,67 @@ class Org:
         return {"requested": new_limit, "increase": new_limit - old,
                 "status": "pending — the user will approve or deny"}
 
+    def rename(self, actor: str, nid: str, new_name: str) -> dict[str, Any]:
+        """FULL identity rename (user ruling 2026-08-05): the id itself
+        changes and the whole doc re-keys — nodes (lineage generations
+        included: `old@g` → `new@g`, they share the scratch dir), parent/
+        predecessor/successor pointers, audiences and their requests, the
+        mailbox and every per-node dict (delivering, steered_log,
+        turn_error_log, notices), open asks and credit requests. Authority =
+        the user, the superior, or any ancestor (never self). Validate-all-
+        then-mutate (§4.7). HISTORICAL records — mail bodies, sender fields
+        in archives, the event log — deliberately keep the old name; the
+        returned warning says so (user ruling: warn, don't rewrite)."""
+        self._require_authority(actor, nid)
+        n = self.node(nid)
+        new = slugify(new_name)
+        if new == nid:
+            return {"node": nid, "warnings": ["that is already its name"]}
+        stack = [nid] + [k for k in self.nodes if k.startswith(nid + "@")]
+        renamed = {k: (new + k[len(nid):]) for k in stack}
+        for tgt in renamed.values():
+            if tgt in self.nodes:
+                raise LedgerError(f"the name {tgt!r} is already taken")
+        # ---- mutate (nothing below may raise) ----
+        for old_k, new_k in renamed.items():
+            self.nodes[new_k] = self.nodes.pop(old_k)
+        for v in self.nodes.values():
+            for f in ("parent", "predecessor", "successor"):
+                if v.get(f) in renamed:
+                    v[f] = renamed[v[f]]
+        for a in self.d.get("audiences", []):
+            for f in ("grantee", "grantor"):
+                if a.get(f) in renamed:
+                    a[f] = renamed[a[f]]
+        for r in self.d.get("audience_requests", []):
+            for f in ("from", "target", "currently_at"):
+                if r.get(f) in renamed:
+                    r[f] = renamed[r[f]]
+        for key in ("mail", "delivering", "steered_log", "turn_error_log",
+                    "notices"):
+            box = self.d.get(key)
+            if isinstance(box, dict):
+                for old_k, new_k in renamed.items():
+                    if old_k in box:
+                        box[new_k] = box.pop(old_k)
+        for a in self.d.get("asks", []):
+            if a.get("node") in renamed:
+                a["node"] = renamed[a["node"]]
+        for r in self.d.get("credit_requests", []):
+            if r.get("node") in renamed:
+                r["node"] = renamed[r["node"]]
+        warnings = [f"renamed {nid} → {new}. Historical mail, archives and "
+                    f"the event log still reference {nid!r}; agents may keep "
+                    f"addressing the old name until they notice — such mail "
+                    f"will bounce with 'unknown recipient'."]
+        self._log("rename", actor, {"node": nid, "new": new}, warnings)
+        self._notify([new], f"You have been renamed: {nid} → {new} "
+                            f"(by {'the user' if actor == USER else actor}). "
+                            f"Sign and refer to yourself as {new!r} from now on.")
+        _ = n
+        return {"node": new, "was": nid, "renamed": renamed,
+                "warnings": warnings}
+
     def credit_headroom(self, nid: str) -> tuple[int | None, str]:
         """How many MORE credits this node could be granted, and which cap
         binds. None = unbounded (no cap set). Top-level: max_top_grant and the

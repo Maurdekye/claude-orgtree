@@ -381,7 +381,12 @@ export function CreditBar({ seat = 0, grant, committed, segments = [], draftMode
     const dg = (drag.y0 - e.clientY) / (pxc * zoom)
     const v = Math.round(Math.max(min, Math.min(max ?? Infinity, drag.g0 + dg)))
     if (draftMode) onDragValue?.(v)
-    else setDrag((d) => d && { ...d, val: v })
+    else {
+      setDrag((d) => d && { ...d, val: v })
+      // the ask card mirrors the offer in realtime (user report 2026-08-05);
+      // canvas bars pass no onDragValue and are untouched
+      onDragValue?.(v)
+    }
   }
   const end = () => {
     if (!drag) return
