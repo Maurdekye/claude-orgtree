@@ -1989,6 +1989,57 @@ strays that a SIGKILL only leaves if it lands in a microsecond window, so a clea
 nothing to reclaim — it now plants one. ⚠ `frontend/dist` was rebuilt mid-campaign, so a page
 reload picks up the frontend fixes and D-56's paging together.
 
+## D-59 · Thinking lines appearing late and out of order — the live tail retired a row it had no twin for
+> thinking blocks sometimes appear late or out of order, shifting messages around
+
+**Reproduced, then fixed.** `_sweep_live` is the one place that decides what leaves the screen, and
+its rule for a `thought` row was *"is there ANY sealed thinking in the last 12 durable rows?"*. Since
+2026-08-02 the API seals the reasoning, so a live thought carries no text and its durable twin
+carries only `thinking_sealed` — the test matched the FIRST think of the turn and retired every later
+one on sight, twin or no twin.
+
+Measured (`scratchpad/repro_thought.py`, now a suite check): think → tool A → think → tool B, polled
+between steps. Thought №2 was retired while its transcript record did not yet exist; the record
+landed a poll later and the line re-appeared **above** rows already on screen. That is D-50's rule —
+*superseded is not replaced* — broken in a new place.
+
+**The fix: the identity a thought lacks, its successor has.** `fold_thought` only ever banks a
+thought immediately before the text/tool row that ended it, and the CLI writes its transcript in
+order, so *a covered later row is proof the transcript is already past this thought*. No strings, no
+clocks; it reads the order both sides already agree on.
+
+Two more, found while writing the tests for it:
+
+- **`text` rows retired on a MATCH, not a COUNT.** An agent that says the same thing twice in a turn
+  ("done." after two edits) had its second live row retired by the first one's durable twin — the
+  same defect, in the other kind that has no id. Now one retirement per durable copy, spent
+  oldest-first. (This is the server-side twin of the client's `serverCopies` counting rule, D-52.)
+- **Live rows were keyed on their array index.** They retire from the *middle* of the list and trim
+  from the head, so an index key renames every row below the change: React remounts them and any
+  open thought line collapses. Rows now carry a per-node monotonic `n` — the same fix the durable
+  rows got with `seq`.
+
+**The gap that let it ship:** twelve suites, 1,870 checks, and `_sweep_live` — the function whose
+entire job is preventing this class of bug — had **zero**. New suite `backend/tests/test_live_tail.py`
+(868 checks, hermetic, 20 s) asserts the invariant over the whole rendered conversation rather than
+over one row's retirement:
+
+    rendered = durable(transcript ↑ k) ++ live survivors
+
+① no gap ② non-decreasing in step index (the reported bug) ③ no echo — checked at **every** (live
+rows emitted, transcript records written) lag for every turn shape of 2–4 steps, plus sealed and
+streamed reasoning, a 30-step turn (the 12-row match window slides), and a whole turn burst before
+the first poll. Discriminated: 18 failures against the pre-fix thought rule, 1 against the pre-fix
+text rule.
+
+**Admitted residual, asserted rather than hidden:** a thought may render twice for one poll if the
+transcript stops *exactly* on its record — its successor is what proves the transcript passed it. In
+real timing that window is the milliseconds between the CLI writing the tool record and the stream
+event that banks the thought, versus the ~1.5 s gap the old rule mishandled; and a brief double is
+the direction D-50 chooses over a gap.
+
+Fast tier 12/12, 2,738 checks, drift guards 3 held · 0 FIRED. `pyright` 0 errors, `tsc` clean.
+
 ## Carried, not done
 
 | item | state |

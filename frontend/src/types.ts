@@ -468,6 +468,8 @@ export interface LiveRowPayload {
   secs?: number
   sticky?: boolean
   at?: string
+  /** per-node monotonic row id — the render key (see LiveRow.n) */
+  n?: number
 }
 
 export interface ChatPayload {

@@ -350,7 +350,14 @@ def live_row(slug: str, nid: str, payload: dict[str, Any]) -> None:
     st = state(slug, nid)
     with _state_lock:
         rows = cast("list[dict[str, Any]]", st.setdefault("live", []))
-        rows.append({**payload, "at": now_iso()})
+        # `n`: a per-node monotonic id, so the client can key a live row on
+        # WHICH ROW IT IS rather than on its index. The list both trims at the
+        # head and retires from the middle, so an index key silently renames
+        # every row below the change — remounting them and collapsing any open
+        # thought line. The durable rows solved this with `seq`; this is the
+        # same fix on the live side.
+        st["live_n"] = n = int(st.get("live_n") or 0) + 1
+        rows.append({**payload, "at": now_iso(), "n": n})
         del rows[:-_LIVE_KEEP]
     stream(slug, nid, payload)
 
@@ -3133,7 +3140,15 @@ def _sweep_live(slug: str, nid: str, msgs: list[dict[str, Any]]) -> list[dict[st
     they are never swept — only the turn's end clears them."""
     tail = msgs[-12:]
 
-    def covered(r: dict[str, Any]) -> bool:
+    def head_of(r: dict[str, Any]) -> str:
+        return (r.get("text") or "")[:300]
+
+    def durable_texts(head: str) -> int:
+        """How many durable assistant rows in the tail carry this text."""
+        return sum(1 for m in tail if m.get("role") == "assistant"
+                   and (m.get("text") or "").startswith(head))
+
+    def covered(r: dict[str, Any], budget: dict[str, int]) -> bool:
         if r.get("sticky"):
             return False
         kind = r.get("kind")
@@ -3141,21 +3156,57 @@ def _sweep_live(slug: str, nid: str, msgs: list[dict[str, Any]]) -> list[dict[st
             return any(t.get("id") and t["id"] == r.get("id")
                        for m in tail for t in (m.get("tools") or []))
         if kind == "text":
-            head = (r.get("text") or "")[:300]
-            return any(m.get("role") == "assistant"
-                       and (m.get("text") or "").startswith(head) for m in tail)
-        if kind == "thought":
-            body = (r.get("text") or "")[:120]
-            return any((m.get("thinking") or "").startswith(body)
-                       if body else bool(m.get("thinking_sealed")) for m in tail)
+            # ⚠ COUNTED, not merely matched. An agent that says the same thing
+            # twice in one turn ("done." after two edits) used to have its
+            # second live row retired by the FIRST one's durable twin — the row
+            # left the screen and came back a poll later, out of place. Same
+            # defect as the thought rule below, in the one other kind that has
+            # no id: allow one retirement per durable copy, in order.
+            head = head_of(r)
+            if head not in budget:
+                budget[head] = durable_texts(head)
+            if budget[head] <= 0:
+                return False
+            budget[head] -= 1
+            return True
         return True
 
     st = state(slug, nid)
     with _state_lock:
-        rows = [r for r in cast("list[dict[str, Any]]", st.get("live") or [])
-                if not covered(r)]
-        st["live"] = rows
-        return [dict(r) for r in rows]
+        rows = cast("list[dict[str, Any]]", st.get("live") or [])
+        # ⚠ A `thought` row is NOT matched against the transcript's thinking
+        # rows (user bug 2026-08-04: "thinking blocks sometimes appear late or
+        # out of order, shifting messages around"). Since the API seals the
+        # reasoning, a live thought carries no text and a durable one carries
+        # only `thinking_sealed` — so the old test ("is there ANY sealed
+        # thinking in the tail?") matched the FIRST think of the turn and
+        # retired every later one on sight, twin or no twin. Measured: think →
+        # tool A → think → tool B, polled between steps, retired thought №2
+        # while its transcript record did not yet exist; the record landed a
+        # poll later and the line reappeared ABOVE rows already on screen.
+        # That is D-50's rule broken in a new place — retired without a
+        # replacement in hand.
+        #
+        # The identity a thought lacks, its SUCCESSOR has. `fold_thought` only
+        # ever banks a thought immediately before the text/tool row that ended
+        # it, and the CLI writes its transcript in order — so a covered later
+        # row is proof the transcript is already past this thought. Nothing
+        # here compares strings or clocks; it reads the order both sides agree
+        # on.
+        budget: dict[str, int] = {}
+        # forward, so the counted text budget is spent oldest-first
+        cov = [False if r.get("kind") == "thought" else covered(r, budget)
+               for r in rows]
+        # backward, so each thought can see whether anything after it landed
+        later = False
+        for i in range(len(rows) - 1, -1, -1):
+            if rows[i].get("kind") == "thought":
+                cov[i] = later
+            elif cov[i]:
+                later = True
+        keep = [r for r, c in zip(rows, cov) if not c]
+        st["live"] = keep
+        return [dict(r) for r in keep]
 
 
 def read_chat(org: Org, nid: str, last: int | None = None) -> dict[str, Any]:

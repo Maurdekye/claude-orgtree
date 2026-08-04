@@ -159,6 +159,10 @@ export interface LiveRow {
   /** the CLI's tool_use_id on a 'tool' row — identity, so reconciliation
    *  against the transcript's chip does not have to compare rendered strings */
   id?: string
+  /** the server's per-node monotonic row id — the RENDER key. An index key
+   *  renames every row below one that retires from the middle (or falls off
+   *  the head), remounting them; `n` names the row itself. */
+  n?: number
 }
 
 // the canvas exposes its inverse-zoom to CSS; React's CSSProperties has no

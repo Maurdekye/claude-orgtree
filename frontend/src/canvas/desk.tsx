@@ -474,19 +474,22 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
               </div>
             )
           })}
+          {/* keyed on the server's row id (`n`), never the index: rows retire
+              from the MIDDLE of this list as the transcript catches up, and an
+              index key would rename every row below the one that left */}
           {live_feed.map((f, i) => (
             f.kind === 'thought'
-              ? <div key={'f' + i} className="msg assistant live">
+              ? <div key={f.n ?? 'f' + i} className="msg assistant live">
                   <ThoughtLine text={f.text} secs={f.secs} /></div>
               : f.kind === 'tool'
-                ? <div key={'f' + i} className="msg live tools"><DotIcon fontSize="inherit" className="tooldot" /> {f.text}</div>
+                ? <div key={f.n ?? 'f' + i} className="msg live tools"><DotIcon fontSize="inherit" className="tooldot" /> {f.text}</div>
                 : f.kind === 'steered'
                   // notices are split off here too: the live row would
                   // otherwise flash raw [ORG NOTICES] chrome for the second
                   // before the transcript refresh renders them as a card
-                  ? <div key={'f' + i} className="msg user live md"
+                  ? <div key={f.n ?? 'f' + i} className="msg user live md"
                       dangerouslySetInnerHTML={md(stripEnvelope(splitNotices(f.text).rest))} />
-                  : <div key={'f' + i} className="msg assistant live md"
+                  : <div key={f.n ?? 'f' + i} className="msg assistant live md"
                       dangerouslySetInnerHTML={md(f.text)} />
           ))}
           {thinkSecs !== null && chat?.busy && (thinking
