@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 import {
   audienceAction, BASE, clearInbox, createOrg, deleteOrg,
   getAudiences, getDefaults, getEvents, getHost, getInbox, getOrgMd,
@@ -520,6 +521,33 @@ export default function App() {
   )
 }
 
+/** F-07 (user ruling 2026-08-04: "both, one modal"): the ONE advanced-org
+ *  modal shell. The create form's advanced disclosure and the ⚙ settings
+ *  panel both open this same surface; each pours in its own sections, and
+ *  creation-only facts (kiosk, sandbox, disk type) render as LOCKED chips
+ *  outside creation — visible, never editable, so the modal can't offer to
+ *  change what cannot change after birth. No save button of its own: the
+ *  create form submits, and the settings panel keeps its ONE bottom save
+ *  (three save surfaces was a user-reported failure once already). */
+function AdvancedOrgModal({ title, close, children }: {
+  title: string
+  close: () => void
+  children: ReactNode
+}) {
+  useEsc(close)
+  return (
+    <div className="overlay" onClick={(e) => { e.stopPropagation(); close() }}>
+      <div className="settings" onClick={(e) => e.stopPropagation()}>
+        <h3><SettingsIcon fontSize="inherit" /> {title} — advanced</h3>
+        {children}
+        <div className="row">
+          <button className="primary" type="button" onClick={close}>done</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function NewOrg({ onCreate }: {
   onCreate: (name: string, dirs: string[], kiosk: KioskSpecRequest | null,
              sandbox: boolean, diskMb: number | null) => void
@@ -582,17 +610,21 @@ function NewOrg({ onCreate }: {
     }}>
       <input autoFocus placeholder="organization name" value={name}
         onChange={(e) => setName(e.target.value)} required />
+      {/* F-07: the disclosure now OPENS the shared advanced modal instead of
+          unfolding inline — same summary line (the at-a-glance state the form
+          must not lose), one modal shape shared with the ⚙ settings panel */}
       <button type="button" className="disclosure" aria-expanded={advanced}
-        onClick={() => setAdvanced(!advanced)}>
-        {advanced ? <ExpandMoreIcon fontSize="inherit" /> : <ChevronRightIcon fontSize="inherit" />} advanced
-        {!advanced && (kiosk || sandboxed || dirs.length > 0) && (
+        onClick={() => setAdvanced(true)}>
+        <ChevronRightIcon fontSize="inherit" /> advanced…
+        {(kiosk || sandboxed || dirs.length > 0) && (
           <span className="dim adv-sum"> · {[
             kiosk ? 'kiosk' : '', sandboxed ? 'sandboxed' : '',
             dirs.length ? `${dirs.length} folder${dirs.length > 1 ? 's' : ''}` : '',
           ].filter(Boolean).join(' · ')}</span>)}
       </button>
       {advanced && (
-        <div className="advanced">
+        <AdvancedOrgModal title={name.trim() || 'new organization'}
+          close={() => setAdvanced(false)}>
           <div className="field-label">also grant existing folders</div>
           <DirList dirs={dirs} onChange={setDirs} />
           {/* kiosk and sandbox live here (user ruling 2026-08-03): both are
@@ -698,7 +730,7 @@ function NewOrg({ onCreate }: {
             a sandbox the storage limit is enforced loosely — usage is checked
             only between turns, so a single turn can overshoot it</div>
         )}
-        </div>
+        </AdvancedOrgModal>
       )}
       <div className="row">
         <button type="submit" className="primary">create</button>
@@ -1086,6 +1118,7 @@ function SettingsPanel({ tree, toast, close }: {
     (k in edit ? edit[k] as T : server)
   const clearEdits = () => setEdit({})
   const [orgMd, setOrgMd] = useState<string | null>(null)
+  const [showAdv, setShowAdv] = useState(false)   // F-07: the shared modal
 
   // kiosk permission ceiling (consensus spec): admin payload only — the
   // public tree never carries max_scope
@@ -1176,32 +1209,6 @@ function SettingsPanel({ tree, toast, close }: {
           <option value="xhigh">xhigh</option>
           <option value="max">max</option>
         </select>
-        <div className="field-label">fable weekly-limit policy</div>
-        <select value={fablePolicy} onChange={(e) => setFablePolicy(e.target.value)}>
-          <option value="halt">halt (default)</option>
-          <option value="opus">switch to opus</option>
-          <option value="dissolve">dissolve subtree</option>
-        </select>
-        <div className="field-label">fable content-filter policy (a flagged message
-          halts the turn, or converts the agent to opus and retries)</div>
-        <select value={filterPolicy} onChange={(e) => setFilterPolicy(e.target.value)}>
-          <option value="halt">halt (default)</option>
-          <option value="opus">switch to opus + retry</option>
-        </select>
-        {/* §4.6 cost-bubbling toggles (user spec, both ON by default) */}
-        <div className="field-label">credit cost bubbling</div>
-        <label className="checkline">
-          <input type="checkbox" checked={cascadeHire}
-            onChange={(e) => setCascadeHire(e.target.checked)} />
-          hires bubble their cost up the chain (off: the hiring agent's superior
-          must hold the free credits itself)
-        </label>
-        <label className="checkline">
-          <input type="checkbox" checked={cascadeAlloc}
-            onChange={(e) => setCascadeAlloc(e.target.checked)} />
-          allocations &amp; model upgrades bubble their cost up the chain (off:
-          limited to the superior's own free credits)
-        </label>
         {/* per-kiosk controls (user ruling 2026-07-31): caps, share URL and
             pause live HERE, in the org's own settings — the all-kiosks
             dashboard on the welcome panel is gone */}
@@ -1251,68 +1258,121 @@ function SettingsPanel({ tree, toast, close }: {
             </div>
           </>
         )}
-        {ms && ceil && (
-          <>
-            <div className="field-label"
-              title="visitors and agents retool freely WITHIN it (clamped, never refused); lowering it sweeps every agent's grants to fit">
-              kiosk permission ceiling — the maximum grantable to any agent</div>
-            <div className="ceil-tools">
-              {(['bash', 'web', 'edit', 'subagents'] as const).map((k) => (
-                <label key={k} className="checkline">
-                  <input type="checkbox" checked={ceil[k]}
-                    onChange={(e) => setCeil((c) => ({ ...c!, [k]: e.target.checked }))} />
-                  {k}
-                </label>
-              ))}
-            </div>
-            <div className="field-label">MCP servers ("*" = all, empty = none,
-              or a comma-separated list)</div>
-            <input value={ceilMcp} placeholder="*"
-              onChange={(e) => setCeilMcp(e.target.value)} />
-            <div className="field-label">folder bounds (grants clamp into these)</div>
-            <CeilDirs dirs={ceilDirs} onChange={setCeilDirs} />
-            {/* styled like the credits/spend/storage caps (user spec) */}
-            <div className="kiosk-caps">
-              <label>visibility ≤ <select value={ceilVis}
-                onChange={(e) => setCeilVis(e.target.value)}>
-                {['self', 'team', 'subtree', 'full'].map((v) =>
-                  <option key={v} value={v}>{v}</option>)}
-              </select></label>
-              <label>mode ≤ <select value={ceilPm}
-                onChange={(e) => setCeilPm(e.target.value)}>
-                <option value="default">default</option>
-                <option value="acceptEdits">acceptEdits</option>
-                <option value="bypassPermissions">bypassPermissions</option>
-              </select></label>
-              <label
-                title="the highest model tier this kiosk may run — spawn tokens above it disappear; hires, rehires and switches above it are refused (existing over-cap agents stay until you switch or retire them)">
-                tier ≤ <select value={ceilTier}
-                  onChange={(e) => setCeilTier(e.target.value)}>
-                  <option value="">fable</option>
-                  <option value="opus">opus</option>
-                  <option value="sonnet">sonnet</option>
-                  <option value="haiku">haiku</option>
-                </select></label>
-            </div>
-            <label className="checkline"
-              title="an over-ceiling grant made by YOU raises the ceiling to fit (logged, named) instead of clamping; visitors always clamp">
-              <input type="checkbox" checked={autoRaise}
-                onChange={(e) => setAutoRaise(e.target.checked)} />
-              auto-raise the ceiling on my own over-ceiling grants
-            </label>
-          </>
-        )}
         <div className="field-label">org.md</div>
         <textarea rows={6} value={orgMd ?? ''} disabled={orgMd == null}
           onChange={(e) => setOrgMd(e.target.value)} />
-        {tree.fable_lock && (
-          <button className="danger" onClick={() =>
-            saveSettings(tree.slug, { clear_fable_lock: true })
-              .then((r) => { toast(r.warnings); close() })
-              .catch((e: Error) => toast([`error: ${e.message}`]))}>
-            <BlockIcon fontSize="inherit" /> clear the fable weekly-limit lock (your decree)</button>
+        {/* F-07: everything below the everyday knobs lives in the shared
+            advanced modal — same shape the create form opens. The summary
+            names what is set, so nothing hides silently. */}
+        <button type="button" className="disclosure" onClick={() => setShowAdv(true)}>
+          <ChevronRightIcon fontSize="inherit" /> advanced…
+          <span className="dim adv-sum"> · {[
+            kk ? 'kiosk' : '', tree.sandboxed ? 'sandboxed' : '',
+            fablePolicy !== 'halt' ? `fable-limit:${fablePolicy}` : '',
+            filterPolicy !== 'halt' ? `fable-filter:${filterPolicy}` : '',
+            !cascadeHire || !cascadeAlloc ? 'cascade off' : '',
+          ].filter(Boolean).join(' · ') || 'policies & ceiling'}</span>
+        </button>
+        {showAdv && (
+          <AdvancedOrgModal title={tree.name} close={() => setShowAdv(false)}>
+            {/* born-with facts render LOCKED: the modal must not offer to
+                change what cannot change after creation (docket F-07 rule 1) */}
+            <div className="field-label">born-with — set at creation, immutable</div>
+            <div className="row" style={{ flexWrap: 'wrap' }}>
+              <span className="badge dim">{kk ? 'kiosk' : 'not a kiosk'}</span>
+              <span className="badge dim">{tree.sandboxed ? 'sandboxed (Docker)' : 'unsandboxed'}</span>
+              {tree.disk && <span className="badge dim">fixed disk · resize via the storage browser</span>}
+            </div>
+            <div className="field-label">fable weekly-limit policy</div>
+            <select value={fablePolicy} onChange={(e) => setFablePolicy(e.target.value)}>
+              <option value="halt">halt (default)</option>
+              <option value="opus">switch to opus</option>
+              <option value="dissolve">dissolve subtree</option>
+            </select>
+            <div className="field-label">fable content-filter policy (a flagged message
+              halts the turn, or converts the agent to opus and retries)</div>
+            <select value={filterPolicy} onChange={(e) => setFilterPolicy(e.target.value)}>
+              <option value="halt">halt (default)</option>
+              <option value="opus">switch to opus + retry</option>
+            </select>
+            {/* §4.6 cost-bubbling toggles (user spec, both ON by default) */}
+            <div className="field-label">credit cost bubbling</div>
+            <label className="checkline">
+              <input type="checkbox" checked={cascadeHire}
+                onChange={(e) => setCascadeHire(e.target.checked)} />
+              hires bubble their cost up the chain (off: the hiring agent's superior
+              must hold the free credits itself)
+            </label>
+            <label className="checkline">
+              <input type="checkbox" checked={cascadeAlloc}
+                onChange={(e) => setCascadeAlloc(e.target.checked)} />
+              allocations &amp; model upgrades bubble their cost up the chain (off:
+              limited to the superior's own free credits)
+            </label>
+            {ms && ceil && (
+              <>
+                <div className="field-label"
+                  title="visitors and agents retool freely WITHIN it (clamped, never refused); lowering it sweeps every agent's grants to fit">
+                  kiosk permission ceiling — the maximum grantable to any agent</div>
+                <div className="ceil-tools">
+                  {(['bash', 'web', 'edit', 'subagents'] as const).map((k) => (
+                    <label key={k} className="checkline">
+                      <input type="checkbox" checked={ceil[k]}
+                        onChange={(e) => setCeil((c) => ({ ...c!, [k]: e.target.checked }))} />
+                      {k}
+                    </label>
+                  ))}
+                </div>
+                <div className="field-label">MCP servers ("*" = all, empty = none,
+                  or a comma-separated list)</div>
+                <input value={ceilMcp} placeholder="*"
+                  onChange={(e) => setCeilMcp(e.target.value)} />
+                <div className="field-label">folder bounds (grants clamp into these)</div>
+                <CeilDirs dirs={ceilDirs} onChange={setCeilDirs} />
+                {/* styled like the credits/spend/storage caps (user spec) */}
+                <div className="kiosk-caps">
+                  <label>visibility ≤ <select value={ceilVis}
+                    onChange={(e) => setCeilVis(e.target.value)}>
+                    {['self', 'team', 'subtree', 'full'].map((v) =>
+                      <option key={v} value={v}>{v}</option>)}
+                  </select></label>
+                  <label>mode ≤ <select value={ceilPm}
+                    onChange={(e) => setCeilPm(e.target.value)}>
+                    <option value="default">default</option>
+                    <option value="acceptEdits">acceptEdits</option>
+                    <option value="bypassPermissions">bypassPermissions</option>
+                  </select></label>
+                  <label
+                    title="the highest model tier this kiosk may run — spawn tokens above it disappear; hires, rehires and switches above it are refused (existing over-cap agents stay until you switch or retire them)">
+                    tier ≤ <select value={ceilTier}
+                      onChange={(e) => setCeilTier(e.target.value)}>
+                      <option value="">fable</option>
+                      <option value="opus">opus</option>
+                      <option value="sonnet">sonnet</option>
+                      <option value="haiku">haiku</option>
+                    </select></label>
+                </div>
+                <label className="checkline"
+                  title="an over-ceiling grant made by YOU raises the ceiling to fit (logged, named) instead of clamping; visitors always clamp">
+                  <input type="checkbox" checked={autoRaise}
+                    onChange={(e) => setAutoRaise(e.target.checked)} />
+                  auto-raise the ceiling on my own over-ceiling grants
+                </label>
+              </>
+            )}
+            {tree.fable_lock && (
+              <button className="danger" onClick={() =>
+                saveSettings(tree.slug, { clear_fable_lock: true })
+                  .then((r) => { toast(r.warnings); close() })
+                  .catch((e: Error) => toast([`error: ${e.message}`]))}>
+                <BlockIcon fontSize="inherit" /> clear the fable weekly-limit lock (your decree)</button>
+            )}
+            {tree.disk && <SweepBlock slug={tree.slug} toast={toast} />}
+            <div className="dim" style={{ fontSize: '11.5px' }}>
+              changes here save with the panel's own save button
+            </div>
+          </AdvancedOrgModal>
         )}
-        {tree.disk && <SweepBlock slug={tree.slug} toast={toast} />}
         <div className="row">
           <button className="primary" onClick={() => {
             // the bottom save applies the WHOLE panel: the kiosk caps and
