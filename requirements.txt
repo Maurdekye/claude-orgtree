@@ -1,6 +1,43 @@
+# orgtree backend dependencies.  Install:  pip install -r requirements.txt
+#
+# Floors, not pins. This is a small app on a fast-moving stack, so exact pins
+# would age badly — and a `pip freeze` would be worse still: the usual install
+# is a system-wide Python shared with other projects, so a freeze captures every
+# unrelated package on the machine (193 of them on the dev box) and turns a
+# fresh install into a dependency-resolution fight.
+
 fastapi>=0.110
 uvicorn>=0.27
 
-# optional — only for tools/ui_probe.py (headless UI screenshots):
+# ⚠ NOT OPTIONAL, and nothing imports it — which is exactly how it went missing.
+#
+# Plain `uvicorn` ships no WebSocket implementation. Without one the server does
+# not fail loudly: it answers a WebSocket upgrade with a plain "HTTP/1.1 200 OK"
+# and the request falls through to the SPA catch-all, so the browser gets HTML
+# where it expected a protocol switch, the socket never opens, and the client
+# reconnect-loops forever. Every HTTP endpoint keeps working perfectly, so the
+# app looks fine and merely feels slow — the UI falls back to its polling
+# heartbeats and every action lags by up to one poll interval. A user hit this
+# on a second machine (2026-08-03); it was invisible from the dev box, which
+# happened to have `websockets` installed for unrelated reasons.
+#
+# Measured in a clean venv: with the old manifest, upgrade -> 200 OK; with this
+# line, upgrade -> 101 Switching Protocols.
+#
+# (`uvicorn[standard]` would also pull this in, along with httptools, watchfiles
+# and friends. This is the one piece actually needed, so it is named directly.)
+websockets>=12
+
+# Imported DIRECTLY by the backend, not merely inherited from fastapi. They do
+# arrive as fastapi's own dependencies today, but a direct import deserves a
+# direct declaration — otherwise a future fastapi that drops or renames one
+# breaks us with no clue why.
+pydantic>=2.6           # api.py — request/response models
+starlette>=0.36         # api.py — ASGI types, Request, responses
+typing_extensions>=4.8  # schema.py — TypedDict/NotRequired on Python 3.10
+
+httpx>=0.27             # api.py — outbound calls (bridge, cloud, chatq)
+
+# optional — only for tools/ui_probe.py and tools/social_preview.py
+# (headless UI screenshots; not needed to run orgtree):
 # playwright>=1.40
-httpx>=0.27

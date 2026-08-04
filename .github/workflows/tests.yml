@@ -1,0 +1,93 @@
+# The fast tier, on every push and PR.
+#
+# WINDOWS IS THE AUTHORITATIVE JOB. orgtree is developed, deployed and lived-in
+# on Windows (README: "Developed and battle-tested on Windows"), and one suite —
+# test_persistence.py — is *about* Windows filesystem semantics: that os.replace
+# over an open destination raises WinError 5, that a FILE_SHARE_DELETE handle
+# does not rescue it, and that the writer-preferring latch built on top of those
+# facts holds under a reader storm. On Linux os.replace over an open file simply
+# succeeds, so those checks are not "failing" there, they are meaningless there.
+# `tools/run_tests.py` detects that suite by its own assertions (WinError /
+# MoveFileEx / FILE_SHARE_DELETE) and prints it as SKIP with the reason. Nothing
+# is papered over: the Linux job's summary says out loud what it did not run.
+#
+# The Linux job is kept anyway, because everything else in the tree is portable
+# and a POSIX regression should surface here rather than on the first person who
+# tries to run orgtree on a server. It is ADVISORY (continue-on-error) for one
+# honest reason: no suite in this repo has ever been observed running on Linux —
+# they were written, and every number in them measured, on Windows. Flip it to
+# blocking the first time it comes back green, and not before; an advisory job
+# nobody reads is still better than a blocking job everyone disables.
+#
+# Only the FAST tier runs in CI. The full tier includes live rigs that spawn a
+# real uvicorn, a fake Claude CLI and real elapsed time. Measured on the dev
+# box: turn-lifecycle 7.4 min, message-visibility-live 3.6 min (1.8 at
+# --quick), ~13 min end to end. Run it before a release, on a real machine:
+#     python tools/run_tests.py --full
+
+name: tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fast:
+    name: fast tier · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    continue-on-error: ${{ matrix.advisory }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest     # authoritative — this is where orgtree runs
+            advisory: false
+          - os: ubuntu-latest      # advisory until one green run exists
+            advisory: true
+    env:
+      PYTHONUTF8: '1'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # 3.11 is the floor the README declares. ⚠ Worth knowing: the dev box
+      # actually runs 3.10.11 and the whole fast tier passes there, so the
+      # declared floor and the measured floor disagree by one minor version.
+      # CI tests the declared contract; if you ever rely on a 3.11-only
+      # feature, CI will be happy and the dev box will not.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --upgrade pip
+      - run: pip install -r requirements.txt
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+        working-directory: frontend
+
+      # the repo's own declared typecheck script — cheap, and `tsc` clean was
+      # one of the two gates that existed before this workflow
+      - run: npm run typecheck
+        working-directory: frontend
+
+      - name: run_tests.py (fast tier)
+        run: python tools/run_tests.py --logdir testlogs
+
+      - name: suite logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: testlogs-${{ matrix.os }}
+          path: testlogs/
+          if-no-files-found: ignore
+          retention-days: 14
