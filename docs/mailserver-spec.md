@@ -518,6 +518,58 @@ unverified: whether the token endpoint actually returns a new refresh token each
 real defect found in passing — `subproxy` never updates `refreshTokenExpiresAt` when it writes a new
 refresh token, so that field goes stale, and the §9.2 watcher must not trust it without a fix.
 
+### 9.6 `headless` — an org that knows nobody is watching
+
+> we should also have a setting that runs an org in "headless" mode: orgs are made aware that the
+> user is not present, all user-bound queries (such as increased credit requests) are instantly
+> denied, and all communication is expected to arrive via org mail.
+
+Three parts, in the order they matter.
+
+**① Tell the agents.** A line in the system framing — *no user is present; nothing you send to the
+user will be read; every request to the user is auto-denied; your only correspondents are your own
+chain and the org inbox.* Without this an agent asks, gets refused, and retries, which is the
+expensive failure. `orgtree_status(blocked, …)` should be explicitly named as the right move for
+"I cannot proceed", since a human will read it later even if none reads it now.
+
+**② Auto-deny the user-bound verbs.** Deny at the ledger, not in the UI, so it is uniform across
+the MCP tools and the API. The full set of user-bound paths — every place the ledger currently
+escalates to a human — is seven:
+
+| path | headless behaviour |
+|---|---|
+| `request_credits` (`ledger.py:2353`) | **deny immediately**, with the reason in the result so the agent adapts rather than retries |
+| `request_audience` → user (`ledger.py:1046`) | **deny immediately** |
+| `post_mail` to `USER` (`ledger.py:827-841`) | ⚠ see below — deny is the wrong answer |
+| unrouteable inbound mail rescue (`ledger.py:939`) | keep: it is a record, not a question |
+| permission-ceiling notice (`ledger.py:240`) | keep |
+| audience-granted notice (`ledger.py:1122`) | keep |
+| Fable filter / weekly-limit decisions (`ledger.py:2461,2530`) | keep — and see ④ |
+
+☞ **Do not silently deny mail to the user.** The user inbox is also the audit trail of an
+unattended run, and it is where §9.4's dead-man's switch reports. Correct behaviour: accept the
+write, tell the sender *"stored; no user is present and no reply is coming"*. Denying it destroys
+the only record of what an unsupervised org thought was worth escalating.
+
+**③ Make it observable.** The org shows a headless badge, and turning it off should surface
+everything that accumulated while nobody was there — denied requests included, since a pile of
+them is the signal that the org's grant is set wrong.
+
+**④ Decide what happens on a hard stop.** Two existing policies escalate to the user and then
+*wait*: `fable_limit_policy` and `fable_filter_policy`, both defaulting to `halt` (`api.py:772`).
+A halted headless org is a dead org nobody will notice. Either force `auto_resume` on in headless
+mode (it already exists, `supervisor.py:2527`) or require a non-`halt` policy, and say which at the
+setting.
+
+**Composition:** headless is orthogonal to *sandboxed* and to *kiosk*, but it pairs with §9.5 —
+an org that cannot ask for more credit needs a grant sized for the whole unattended run up front,
+and API-key mode is what makes overrunning it a bounded cost rather than a surprise on the user's
+subscription.
+
+⚠ **Do not conflate headless with kiosk.** A kiosk is sealed from the outside world
+(`ledger.py:809-811,913`); headless is the opposite — it *depends* on the outside world, because
+org mail is its only channel. An org that is both is an org that cannot communicate at all.
+
 ---
 
 ## 10. Further suggestions

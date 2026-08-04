@@ -1510,6 +1510,21 @@ box, not a ceiling. ⚠ Real defect found in passing: `subproxy` never updates
 `refreshTokenExpiresAt` when it writes a new refresh token, so that field goes stale — the proposed
 expiry watcher must not trust it as-is.
 
+**⑧ `headless` mode** (user, 2026-08-04). Spec §9.6. An org told no user is present, with
+user-bound requests auto-denied and org mail as its only channel. Two findings:
+
+- ☞ **Mail to the user must NOT be denied**, unlike `request_credits` and `request_audience`. The
+  user inbox is the audit trail of an unattended run and where the dead-man's switch reports —
+  accept the write, tell the sender no reply is coming. There are seven user-bound paths in the
+  ledger (`ledger.py:240,939,1046,1122,2461,2530` plus `post_mail`→USER at 827); only two are
+  questions, the rest are records and must survive.
+- ⚠ **`fable_limit_policy` and `fable_filter_policy` default to `halt`** (`api.py:772`), which
+  escalates to the user and waits — a halted headless org is a dead org nobody notices. Headless
+  must force `auto_resume` on or refuse a `halt` policy.
+
+⚠ Headless is **not** kiosk: a kiosk is sealed from the outside world, headless *depends* on it.
+An org that is both cannot communicate at all.
+
 Five open questions remain at spec §11 — four were closed by the 2026-08-04 rulings. The one that
 most shapes a build is whether hub membership is truly creation-time-only; ② weakens the case for
 it, since identity is now minted at org creation independently of any hub, so an org can join later
