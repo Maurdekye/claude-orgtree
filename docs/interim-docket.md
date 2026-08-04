@@ -1723,8 +1723,10 @@ DECISIONS.md §Open and should be answered before (or as part of) the build.
 > currently working in an org at a glance. only appears if any agents are working: color-coded to
 > orange, with the little spinning working arrows next to it
 
-*(user request 2026-08-05, recorded on their instruction by 4f69f83a — research only, NOT BUILT.
-The implementer owns the build; what follows is the groundwork so it is a short job.)*
+*(user request 2026-08-05, recorded on their instruction by 4f69f83a. **BUILT + DEPLOYED same day
+(`8312093`)** — `supervisor.working_count(slug)` non-allocating `_state` read, attached per-row in
+`orgs_list`, absent from the public branch; orange `.working-ct` + `cc-spin` beside the live count.
+The groundwork below was followed as written.)*
 
 **The shape.** The org list row (`App.tsx` ~:274) currently ends in one dim figure —
 `{o.live}/{o.nodes} live`. The addition sits beside it, renders only when the count is non-zero, is
