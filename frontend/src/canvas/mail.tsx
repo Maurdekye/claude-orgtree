@@ -83,6 +83,15 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
   // rest page in. ⚠ the filter runs over the WHOLE set before the window, so
   // hunting an old message never depends on how far you have paged.
   const [vis, setVis] = useState(MAIL_WINDOW)
+  // ONE page per commit. A flick emits a burst of scroll events and React
+  // batches them, so every event in the burst reads the same `vis` and every
+  // one of them adds a window: measured at eight events rendering a whole
+  // 200-row folder in a single gesture, which is exactly the windowing this
+  // exists to provide, gone. `vis` growing monotonically stops it oscillating
+  // — it never stopped it over-shooting. The latch clears on the commit that
+  // renders the page, so a gesture that keeps going keeps paging.
+  const paging = useRef(false)
+  useEffect(() => { paging.current = false }, [vis])
   const S: (id: string, m: MailRow) => ReactNode =
     sender ?? ((id) => <span>{id === USER ? '@user' : id}</span>)
   const partyOf = (m: MailRow) => (outgoing ? m.to : m.from)
@@ -115,14 +124,17 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
       {/* paging is automatic: within a screen of the bottom, the next window
           is already rendered (user ruling 2026-08-04 — reaching the end of a
           list should not then ask you to press something). `vis` only ever
-          grows, so this cannot thrash; the `shown.length` guard stops it
-          climbing past the set and re-rendering on every scroll event once
-          everything is on screen. */}
+          grows and is guarded against `shown.length`, so it cannot thrash and
+          stops once everything is on screen; the `paging` latch keeps ONE
+          gesture to ONE window (see above). */}
       <div className="mailer-list"
         onScroll={(e) => {
           const el = e.currentTarget
           if (el.scrollHeight - el.scrollTop - el.clientHeight < 240
-            && vis < shown.length) setVis((v) => v + MAIL_WINDOW)
+            && vis < shown.length && !paging.current) {
+            paging.current = true
+            setVis((v) => v + MAIL_WINDOW)
+          }
         }}>
         {all.length > 4 && (
           <input className="mail-filter" placeholder="filter…" value={q}

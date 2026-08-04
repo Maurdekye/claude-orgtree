@@ -87,15 +87,30 @@ class Desk:
 
     # --- convo.ts addPending
     def send(self, text: str) -> None:
-        self.pending.append({"text": text, "seen": server_copies(self.chat, text)})
+        # + the ghosts already standing in for this same text: two sends of
+        # "continue" before a refresh both used to carry seen:0, so ONE server
+        # copy retired BOTH and the second went off screen (frontend suite
+        # §3.2 — D-52's same-instant twin).
+        self.pending.append({
+            "text": text,
+            "seen": server_copies(self.chat, text)
+                    + sum(1 for g in self.pending if g["text"] == text)})
 
     # --- convo.ts dropPending (commands + failed sends only)
     def drop(self, text: str) -> None:
-        self.pending = [g for g in self.pending if g["text"] != text]
+        # ONE call retires ONE ghost. Filtering every match meant a failed
+        # second "yes" took the first send's preview down with it (§3.3).
+        for i, g in enumerate(self.pending):
+            if g["text"] == text:
+                del self.pending[i]
+                break
 
     # --- convo.ts ingestStream, kind === 'steered'
     def steered_event(self, text: str) -> None:
-        self.pending = [g for g in self.pending if g["text"] not in text]
+        for i, g in enumerate(self.pending):        # first match only (§3.4)
+            if g["text"] in text:
+                del self.pending[i]
+                break
 
     # --- convo.ts refreshConvo
     def fetch(self, payload: dict[str, Any]) -> None:
@@ -316,8 +331,10 @@ _SOURCE_CONTRACTS = [
      "the pending-body cap must stay above the client's needle"),
     ("backend/orgtree/api.py", r"for m in pending\]",
      "pending_mail must not be row-capped — a queued message may not fall off"),
-    ("frontend/src/convo.ts", r"\{ text, seen: serverCopies\(e\.s\.chat, text\) \}",
-     "the ghost baseline is taken at addPending; ported in Desk.send"),
+    ("frontend/src/convo.ts",
+     r"serverCopies\(e\.s\.chat, text\)\s*\+\s*e\.s\.pending\.filter",
+     "the ghost baseline is server copies PLUS standing ghosts of the same "
+     "text; ported in Desk.send"),
     ("frontend/src/canvas/desk.tsx", r"chat\?\.pending_mail \?\? \[\]\)\.filter\(\(m\) => m\.from === USER\)",
      "the pendrow render filter is ported in Desk.renders"),
     ("frontend/src/canvas/desk.tsx", r"addPending\(slug, node\.id, t\)",

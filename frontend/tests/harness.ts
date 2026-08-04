@@ -1,0 +1,322 @@
+// frontend/tests/harness.ts — the rig every suite in this folder mounts on.
+//
+// ⚠ IMPORT ORDER IS LOAD-BEARING. Every test file must import this module
+// FIRST, before any `../src/*`. `api.ts` reads `location.pathname` at module
+// scope and `desk.tsx` reads `localStorage` during render, so the DOM has to
+// exist before their module bodies run. esbuild emits module bodies in import
+// order, so "first import wins" is enough — but only if it really is first.
+//
+// What it provides:
+//   • a jsdom window/document/localStorage installed on globalThis
+//   • FakeServer — one node's conversation as the SERVER sees it, with the
+//     drain/echo handover the real one performs, and a `getChat` projection
+//   • a fetch stub routed at the real `api.ts` URLs, with programmable latency,
+//     out-of-order delivery and failure injection
+//   • deterministic time (node:test's mock timers) plus `flush`/`advance`
+//   • mountConvoView() — a real React subscriber, i.e. the actual code path a
+//     desk uses, so subscription-gated liveness is exercised rather than faked
+
+import { JSDOM } from 'jsdom'
+import { mock } from 'node:test'
+import type { ChatMessage, ChatPayload, LiveRowPayload, PendingMail } from '../src/types'
+
+// --------------------------------------------------------------------- DOM
+// ⚠ pretendToBeVisual stays OFF: it starts jsdom's own 60 Hz rAF loop on the
+// REAL clock, which holds the node event loop open forever — a suite that
+// passes and then hangs for its whole timeout. rAF is supplied below instead.
+const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
+  url: 'http://localhost/',
+})
+const g = globalThis as unknown as Record<string, unknown>
+const put = (name: string, value: unknown) => {
+  // node 24 defines `navigator`/`location` as accessor properties on the
+  // global object, so a plain assignment throws — redefine instead
+  Object.defineProperty(g, name, { value, configurable: true, writable: true })
+}
+put('window', dom.window)
+put('document', dom.window.document)
+put('navigator', dom.window.navigator)
+put('location', dom.window.location)
+g.localStorage = dom.window.localStorage
+g.HTMLElement = dom.window.HTMLElement
+g.Node = dom.window.Node
+g.Event = dom.window.Event
+g.UIEvent = dom.window.UIEvent
+g.MouseEvent = dom.window.MouseEvent
+g.KeyboardEvent = dom.window.KeyboardEvent
+g.getComputedStyle = dom.window.getComputedStyle.bind(dom.window)
+g.requestAnimationFrame = (cb: (t: number) => void) => setTimeout(() => cb(Date.now()), 16)
+g.cancelAnimationFrame = (id: number) => clearTimeout(id)
+g.IS_REACT_ACT_ENVIRONMENT = true
+
+process.on('beforeExit', () => { try { dom.window.close() } catch { /* already gone */ } })
+
+export const REPS = Number(process.env.ORGTREE_TEST_REPS || '1') || 1
+
+// -------------------------------------------------------------- the server
+/** One node's conversation as the server holds it. Deliberately models the
+ *  three carriers a message passes through, in order — the client ghost is not
+ *  the server's business, but `pending_mail` → transcript IS, and the handover
+ *  between them is where D-51/D-52/D-55 all lived. */
+export class FakeServer {
+  busy = false
+  responding = false
+  queued = 0
+  last_error: string | null = null
+  occupancy: number | null = 1000
+  messages: ChatMessage[] = []
+  live: LiveRowPayload[] = []
+  pending_mail: PendingMail[] = []
+  /** every chat request the client has made, newest last */
+  requests: { last: number | null; at: number }[] = []
+  /** truncation tier the real `node_chat` applies to a pending body */
+  bodyCap = 2000
+  /** next response fails with this status until cleared */
+  fail: number | null = null
+  /** ms of latency for the NEXT response only (null = use `latency`) */
+  onceLatency: number | null = null
+  latency = 0
+  private seq = 0
+
+  // -- world steps ---------------------------------------------------------
+  /** the user posts mail: it lands in the mailbox, undelivered */
+  postMail(body: string, id = `m${this.pending_mail.length + 1}`): PendingMail {
+    const m: PendingMail = { id, from: '@user', body, at: new Date(Date.now()).toISOString() }
+    this.pending_mail.push(m)
+    return m
+  }
+
+  /** the turn drains the mailbox and the CLI echoes it into the transcript.
+   *  `gap` splits the two halves so a test can sit inside the D-55 window. */
+  drain(): PendingMail[] {
+    const taken = this.pending_mail.splice(0)
+    taken.forEach((m) => { m.delivering = true; m.via = 'turn' })
+    this._drained = taken
+    this.busy = true
+    return taken
+  }
+
+  private _drained: PendingMail[] = []
+
+  /** the transcript catches up with whatever `drain` took */
+  echo(): void {
+    this._drained.forEach((m) => this.userMsg(m.body))
+    this._drained = []
+  }
+
+  /** while the turn is starting, the drained mail is projected back into
+   *  `pending_mail` — the real `delivering_mail` + `node_chat` evidence test */
+  private projectedPending(): PendingMail[] {
+    return [...this._drained.map((m) => ({ ...m, delivering: true })), ...this.pending_mail]
+  }
+
+  userMsg(text: string): ChatMessage {
+    const m: ChatMessage = { role: 'user', text, seq: this.seq++, ts: new Date(Date.now()).toISOString() }
+    this.messages.push(m)
+    return m
+  }
+
+  assistantMsg(text: string, extra: Partial<ChatMessage> = {}): ChatMessage {
+    const m: ChatMessage = {
+      role: 'assistant', text, seq: this.seq++,
+      ts: new Date(Date.now()).toISOString(), ...extra,
+    }
+    this.messages.push(m)
+    return m
+  }
+
+  liveRow(kind: string, text: string, id?: string): LiveRowPayload {
+    const r: LiveRowPayload = { kind, text, ...(id ? { id } : {}) }
+    this.live.push(r)
+    return r
+  }
+
+  /** the server's own sweep: a live row retires when the transcript carries it */
+  sweepLive(): void {
+    this.live = this.live.filter((r) => !this.messages.some((m) =>
+      m.role === 'assistant' && (m.text || '') === (r.text || '')))
+  }
+
+  endTurn(): void {
+    this.busy = false
+    this.responding = false
+    this.live = []
+    this._drained = []
+  }
+
+  // -- the projection the client actually sees ------------------------------
+  chat(last: number | null): ChatPayload {
+    const n = last ?? 120
+    const cap = this.bodyCap
+    return {
+      busy: this.busy,
+      queued: this.queued,
+      responding: this.responding,
+      last_error: this.last_error,
+      occupancy: this.occupancy,
+      messages: this.messages.slice(-n).map((m) => ({ ...m })),
+      live: this.live.map((r) => ({ ...r })),
+      mail_pending: this.pending_mail.length,
+      pending_mail: this.projectedPending().map((m) => ({ ...m, body: (m.body || '').slice(0, cap) })),
+    }
+  }
+}
+
+// ---------------------------------------------------------------- transport
+export interface Transport {
+  server: FakeServer
+  /** responses currently held back, oldest first */
+  held: (() => void)[]
+  /** hold every response until `release()` is called */
+  holdAll: boolean
+  release(n?: number): void
+  releaseLast(): void
+  requests: number
+}
+
+export function installFetch(server: FakeServer): Transport {
+  const t: Transport = {
+    server,
+    held: [],
+    holdAll: false,
+    requests: 0,
+    release(n = Infinity) {
+      const take = t.held.splice(0, n === Infinity ? t.held.length : n)
+      take.forEach((f) => f())
+    },
+    releaseLast() {
+      const f = t.held.pop()
+      if (f) f()
+    },
+  }
+  g.fetch = (url: string, _init?: unknown): Promise<unknown> => {
+    const u = new URL(String(url), 'http://localhost')
+    t.requests++
+    const last = u.searchParams.get('last')
+    if (/\/chat$/.test(u.pathname)) {
+      server.requests.push({ last: last ? Number(last) : null, at: Date.now() })
+    }
+    const status = server.fail
+    const lat = server.onceLatency ?? server.latency
+    server.onceLatency = null
+    // a two-folder scratch tree, so a panel whose identity changes has
+    // something to change TO (see render §6.10 — a vacuous pass there would
+    // hide exactly the defect it is looking for)
+    const sub = u.searchParams.get('path')
+    const body = /\/chat$/.test(u.pathname)
+      ? server.chat(last ? Number(last) : null)
+      : /\/scratch$/.test(u.pathname)
+        ? {
+          path: sub ?? '',
+          entries: sub
+            ? [{ name: 'inner.txt', dir: false, size: 7 }]
+            : [{ name: 'sub', dir: true, size: 0 },
+              { name: 'notes.txt', dir: false, size: 12 }],
+        }
+        : /\/history$/.test(u.pathname) ? { items: [] }
+          : { ok: true }
+    return new Promise((resolve, reject) => {
+      const deliver = () => {
+        if (status != null) {
+          resolve({
+            ok: false, status, statusText: `HTTP ${status}`,
+            json: () => Promise.resolve({ detail: `boom ${status}` }),
+          })
+          return
+        }
+        resolve({ ok: true, status: 200, json: () => Promise.resolve(body) })
+      }
+      const go = () => { if (lat > 0) setTimeout(deliver, lat); else deliver() }
+      if (t.holdAll) t.held.push(go)
+      else go()
+      void reject
+    })
+  }
+  return t
+}
+
+// -------------------------------------------------------------------- time
+export function useFakeClock(): void {
+  // reset first: a test that fails before its own `realClock()` would
+  // otherwise poison every test after it with "MockTimers is already enabled"
+  mock.timers.reset()
+  mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'], now: 1_700_000_000_000 })
+}
+
+export function realClock(): void {
+  mock.timers.reset()
+}
+
+/** drain the microtask + macrotask queues so pending `.then`s settle. The
+ *  timers are mocked; `setImmediate` deliberately is not, which is what makes
+ *  this possible at all. */
+export async function flush(rounds = 6): Promise<void> {
+  for (let i = 0; i < rounds; i++) {
+    await new Promise((r) => setImmediate(r))
+  }
+}
+
+/** Move the fake clock and let everything it triggered settle.
+ *
+ *  Wrapped in `act` because the things a tick sets off — a heartbeat fetch
+ *  landing, the thinking clock — patch the store from outside React's own
+ *  event handling. Without it React warns on every one and, worse, the render
+ *  a test then asserts on may not have happened yet. */
+export async function advance(ms: number, step = 250): Promise<void> {
+  const { act } = await import('react')
+  let left = ms
+  while (left > 0) {
+    const d = Math.min(step, left)
+    // eslint-disable-next-line no-await-in-loop
+    await act(async () => {
+      mock.timers.tick(d)
+      await flush(3)
+    })
+    left -= d
+  }
+  await act(async () => { await flush(3) })
+}
+
+/** run store mutations (ingest*, addPending, …) where React can see them */
+export async function inAct(fn: () => void | Promise<void>): Promise<void> {
+  const { act } = await import('react')
+  await act(async () => { await fn() })
+}
+
+// ------------------------------------------------------------- React views
+import { createElement, StrictMode } from 'react'
+import type { ReactNode } from 'react'
+
+export interface MountedView<T> {
+  /** every snapshot this view has rendered, oldest first */
+  frames: T[]
+  last(): T
+  unmount(): Promise<void>
+  el: HTMLElement
+}
+
+/** Mount a component in a fresh container and record what it renders.
+ *  `select` turns each render into the value the test compares. */
+export async function mountView<T>(
+  node: ReactNode, select: (el: HTMLElement) => T,
+): Promise<MountedView<T>> {
+  const { createRoot } = await import('react-dom/client')
+  const { act } = await import('react')
+  const host = dom.window.document.createElement('div')
+  dom.window.document.body.appendChild(host)
+  const root = createRoot(host)
+  const frames: T[] = []
+  await act(async () => { root.render(node) })
+  frames.push(select(host))
+  return {
+    frames,
+    el: host,
+    last: () => select(host),
+    unmount: async () => {
+      await act(async () => { root.unmount() })
+      host.remove()
+    },
+  }
+}
+
+export { createElement, StrictMode }

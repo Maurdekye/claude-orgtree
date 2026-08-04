@@ -1,0 +1,191 @@
+// derived.test.ts — the state-deduplication programme, kept honest.
+//
+// `docs/state-architecture-review.md` deleted a long list of second copies of
+// server-owned state and replaced them with derivations. Nothing in a running
+// app notices when one creeps back: the copy is right for a while, and the bug
+// it causes surfaces weeks later as "the panel is stale again". So this suite
+// reads the sources and asserts the shapes that were removed are still absent,
+// with an ALLOWLIST that has to name a reason for every survivor.
+//
+// It also carries a drift guard, in the spirit of `backend/tests/msgvis.py`:
+// the numbers the behavioural suites assume are re-read here, so changing one
+// fails loudly instead of quietly making a test meaningless.
+//
+// Run:  cd frontend && node tests/run.mjs derived
+
+import './harness'
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { readFileSync, readdirSync } from 'node:fs'
+import path from 'node:path'
+
+/** injected by tests/run.mjs — the bundle does not sit next to the sources */
+declare const __SRC_DIR__: string
+const SRC = __SRC_DIR__
+const read = (p: string) => readFileSync(path.join(SRC, p), 'utf8')
+const uiFiles = ['App.tsx', 'DiskBrowser.tsx', 'picker.tsx', 'forms.tsx',
+  ...readdirSync(path.join(SRC, 'canvas')).filter((f) => f.endsWith('.tsx'))
+    .map((f) => `canvas/${f}`)]
+
+const lines = (p: string) => read(p).split('\n').map((l, i) => ({ n: i + 1, l }))
+/** the file with comment lines removed — this suite asserts on what the code
+ *  DOES, and every deleted mechanism here is named in a comment explaining why
+ *  it was deleted (`beat()`'s docstring cites `pollWhileBusy` by name) */
+const code = (p: string) => read(p).split('\n')
+  .filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n')
+
+// --------------------------------------------------------------------- ①
+test('①  no useState is seeded from server data, except where documented',
+  () => {
+    // P3 collapsed 25 of these into three edit buffers. The shape to catch is
+    // `useState(<something read from a prop>)`: it snapshots once at mount and
+    // never re-syncs, which is the mechanism behind "the charter looks empty".
+    const SERVERISH = /useState(?:<[^>]*>)?\(\s*(?!\)|\[\]|''|""|`|0[,)]|1[,)]|false|true|null|undefined|\{\s*\}|\(\)\s*=>)/
+    const PROPISH = /\b(tree|node|chat|box|inbox|scope|base|draft|data|org|m|b|it)\??\./
+    const hits: string[] = []
+    for (const f of uiFiles) {
+      for (const { n, l } of lines(f)) {
+        if (SERVERISH.test(l) && PROPISH.test(l)) hits.push(`${f}:${n} ${l.trim()}`)
+      }
+    }
+    // Every entry must be an UNCOMMITTED OPERATION or a one-time proposal —
+    // never a mirror of a value the server owns and keeps changing.
+    const allow = [
+      // DraftScopeModal stages permissions for an agent that does not exist
+      // yet: `base` is a proposal, not a live server value (D-32 records the
+      // deliberate exception, and re-deriving would overwrite staged edits)
+      /canvas\/modals\.tsx:\d+ const \[dirs, setDirs\]/,
+      /canvas\/modals\.tsx:\d+ const \[tools, setTools\]/,
+      /canvas\/modals\.tsx:\d+ const \[vis, setVis\] = useState\(base\.org_visibility\)/,
+      /canvas\/modals\.tsx:\d+ const \[effort, setEffort\] = useState\(base\.effort/,
+      // the hire draft's credit slider — same thing, for a node not yet hired
+      /canvas\/cards\.tsx:\d+ const \[grant, setGrant\] = useState\(\(\) => \{/,
+    ]
+    const unexplained = hits.filter((h) => !allow.some((a) => a.test(h)))
+    assert.deepEqual(unexplained, [],
+      'a new useState-from-a-prop appeared; make it derived, or add it to the '
+      + 'allowlist WITH the reason it is an uncommitted edit and not a mirror')
+  })
+
+// --------------------------------------------------------------------- ②
+test('②  the conversation is fetched in exactly one place', () => {
+  const hits: string[] = []
+  for (const f of uiFiles) {
+    for (const { n, l } of lines(f)) {
+      if (/\bgetChat\(/.test(l)) hits.push(`${f}:${n}`)
+    }
+  }
+  // desk.tsx LineagePanel reads an ARCHIVED bearer's transcript (an immutable
+  // object — §8.3 of the review says a snapshot is correct there); modals.tsx
+  // reads `init` once for the model/permission header of a config panel.
+  assert.deepEqual(hits.sort(), ['canvas/desk.tsx:742', 'canvas/modals.tsx:458'],
+    'a live conversation must come from convo.ts, not a private getChat')
+  assert.ok(read('convo.ts').includes('getChat(slug, nid, e.s.win)'),
+    'convo.ts is still the one that fetches it')
+})
+
+// --------------------------------------------------------------------- ③
+test('③  liveness is never gated on the data it repairs (D-34)', () => {
+  // the bootstrap trap: `poll only while the payload says busy`, where busy
+  // arrives in the payload the poll fetches. The gate must be something known
+  // locally — a mounted view, an open panel.
+  const src = read('convo.ts')
+  assert.ok(!/pollWhileBusy/.test(code('convo.ts')),
+    'the busy-gated poller stays deleted')
+  assert.ok(/if \(e\.poll \|\| !e\.subs\.size\) return/.test(src),
+    'the heartbeat is gated on SUBSCRIPTION')
+  assert.ok(/cur\.s\.chat\?\.busy \? BUSY_POLL_MS : IDLE_POLL_MS/.test(src),
+    'busy still decides the CADENCE — only how often, never whether')
+  const shared = read('canvas/shared.ts')
+  assert.ok(/export function usePolled/.test(shared),
+    'the panel heartbeat (G5) still exists')
+  assert.ok(/const t = setInterval\(tick, ms\)/.test(shared),
+    'and it is unconditional while mounted')
+})
+
+// --------------------------------------------------------------------- ④
+test('④  the mutable read panels all poll (G5)', () => {
+  // getInbox / getNodeInbox / getEvents / getAudiences / getHistory /
+  // getScratch display data that changes while the panel is open.
+  const polled = ['getInbox', 'getNodeInbox', 'getEvents', 'getAudiences',
+    'getHistory', 'getScratch']
+  const bad: string[] = []
+  for (const f of uiFiles) {
+    const text = read(f)
+    for (const fn of polled) {
+      const re = new RegExp(`^.*\\b${fn}\\(`, 'gm')
+      for (const m of text.match(re) ?? []) {
+        if (!/usePolled|folder ===/.test(m)) bad.push(`${f}: ${m.trim()}`)
+      }
+    }
+  }
+  assert.deepEqual(bad, [], 'a mutable panel went back to fetching once')
+})
+
+// --------------------------------------------------------------------- ⑤
+test('⑤  the client-side event accumulations stay deleted (G4)', () => {
+  const gone = ['setActivity', 'setPulses', 'setStreams', 'streamEvt']
+  const hits: string[] = []
+  for (const f of [...uiFiles, 'convo.ts', 'canvas/shared.ts']) {
+    for (const { n, l } of lines(f)) {
+      for (const g of gone) if (l.includes(g)) hits.push(`${f}:${n} ${g}`)
+    }
+  }
+  assert.deepEqual(hits, [],
+    'activity/pulses are derived from the tree payload and the server live tail')
+  // and the live tail is the SERVER's, mirrored — never accumulated here
+  const src = read('convo.ts')
+  assert.ok(/live: \(c\.live \?\? \[\]\) as LiveRow\[\]/.test(src),
+    'convo.live is a mirror of chat.live, not a local accumulation')
+  assert.ok(!/live: \[\.\.\.e\.s\.live/.test(src), 'nothing appends to it locally')
+})
+
+// --------------------------------------------------------------------- ⑥
+test('⑥  a wide table still scrolls inside its own message (D-14)', () => {
+  const css = readFileSync(path.join(SRC, 'styles.css'), 'utf8')
+  const rule = /\.md table \{[^}]*\}/.exec(css)?.[0] ?? ''
+  assert.ok(rule, '.md table rule is gone')
+  for (const decl of ['display: block', 'max-width: 100%', 'overflow-x: auto']) {
+    assert.ok(rule.includes(decl), `.md table lost \`${decl}\``)
+  }
+})
+
+// --------------------------------------------------------------------- ⑦
+test('⑦  drift guard: the constants the behavioural suites assume', () => {
+  const src = read('convo.ts')
+  const want: [RegExp, string][] = [
+    [/export const CHAT_WINDOW = (\d+)/, '120'],
+    [/export const MAX_WINDOW = (\d+)/, '1000'],
+    [/const BUSY_POLL_MS = (\d+)/, '2500'],
+    [/const IDLE_POLL_MS = (\d+)/, '7000'],
+    [/const NUDGE_MS = (\d+)/, '200'],
+    [/const COPIES_WINDOW = (\d+)/, '200'],
+    [/const COPIES_NEEDLE = (\d+)/, '200'],
+  ]
+  for (const [re, v] of want) {
+    const m = re.exec(src)
+    assert.ok(m, `${re} no longer matches convo.ts`)
+    assert.equal(m![1], v,
+      `${re} changed — re-read frontend/tests/convo.test.tsx before trusting it`)
+  }
+  assert.equal(/const MAIL_WINDOW = (\d+)/.exec(read('canvas/mail.tsx'))?.[1], '40')
+  assert.ok(/scrollTop < 240 && hasOlder/.test(read('canvas/desk.tsx')),
+    'the chat still pages on scroll (D-56)')
+  assert.ok(/scrollHeight - el\.scrollTop - el\.clientHeight < 240/.test(read('canvas/mail.tsx')),
+    'the mail list still pages on scroll (D-56)')
+})
+
+// --------------------------------------------------------------------- ⑧
+test('⑧  nothing on screen is retired on a clock', () => {
+  // D-50's rule: superseded is not replaced. The 5-second expiry and the
+  // 300-character prefix match that used to drop live rows are gone, and the
+  // scaffolding now retires only in the patch that installs its replacement.
+  const src = code('convo.ts')
+  assert.ok(!/_at < 5000|Date\.now\(\) - r\._at/.test(src), 'no live-row expiry timer')
+  assert.ok(!/startsWith\(r\.text\.slice/.test(src), 'no prefix matching')
+  assert.ok(/const retire: Partial<Convo> = \{\}/.test(src),
+    'retirement still happens in one atomic patch with the payload')
+  const desk = code('canvas/desk.tsx')
+  assert.ok(!/setInterval/.test(desk),
+    'the desk owns no timer of its own — the store does')
+})

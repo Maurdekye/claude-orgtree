@@ -47,7 +47,41 @@ const NUDGE_MS = 200           // burst coalescing for the post-event refetch
  *  A stale baseline can only over-count what was already there, which keeps a
  *  ghost a moment longer — erring toward showing the message, which is the
  *  direction this whole class of bug wants. */
-export interface PendingGhost { text: string; seen: number }
+export interface PendingGhost {
+  text: string
+  seen: number
+  /** the newest transcript `seq` the payload showed when this ghost was made.
+   *  It is what makes the ghost's retirement REACHABLE: see `scrolledPast`. */
+  seq0: number
+}
+
+/** Has the fetched window moved entirely PAST where this ghost's message would
+ *  sit?
+ *
+ *  The count baseline can otherwise become unreachable, which is the fourth
+ *  costume of this bug (D-53 lead 3 → D-55 flagged it → D-57 ④ raised
+ *  COPIES_WINDOW to 200 against a measured maximum burial of 138 rows). The
+ *  raise did nothing, because `read_chat` only ever returns CHAT_WINDOW = 120
+ *  rows: the newest-200 slice IS the whole payload, so the effective window
+ *  stayed at 120 — under the measured maximum. Bury the message deeper than
+ *  that and the server can never show a copy again; the ghost sits at the
+ *  bottom of the desk for the rest of the session, presenting a message that
+ *  was answered ten minutes ago as though it were still queued.
+ *
+ *  The test is evidence, not a guess: if the OLDEST row now in the window is
+ *  newer than the NEWEST row that existed when the message was sent, the
+ *  message cannot be in the window — it is behind it. The only other place it
+ *  could be is the mailbox, and `serverCopies` counts that, so a message still
+ *  waiting is still covered. (It also cannot fire early: the window has to
+ *  turn over completely — 120 rows — and the CLI's echo of the message is the
+ *  FIRST of those rows, so the transcript has long since taken over.) */
+function scrolledPast(c: ChatPayload, g: PendingGhost): boolean {
+  const oldest = c.messages[0]?.seq
+  // `seq0 + 1` is the earliest row the message could occupy, so this is the
+  // strict form: the window must start after the message's own place, not
+  // merely after the last row that preceded it.
+  return oldest != null && oldest > g.seq0 + 1
+}
 
 export interface Convo {
   chat: ChatPayload | null
@@ -88,6 +122,10 @@ interface Entry {
    *  fired returns a payload from before the durable row existed, and honouring
    *  it would reopen the very gap this closes. */
   staleAt: number
+  /** when a delta/thinking last extended the scaffolding. A payload may only
+   *  declare that scaffolding stale if the request went out AFTER it — one
+   *  already in flight describes a world from before the stream started. */
+  streamAt: number
   /** debounce for the post-event refetch */
   nudge: ReturnType<typeof setTimeout> | null
   poll: ReturnType<typeof setTimeout> | null
@@ -105,7 +143,7 @@ function entry(k: string): Entry {
   let e = M.get(k)
   if (!e) {
     e = { s: BLANK, subs: new Set(), thinkT0: 0, clock: null, nudge: null,
-          staleDraft: false, staleThink: false, staleAt: 0,
+          staleDraft: false, staleThink: false, staleAt: 0, streamAt: 0,
           poll: null, inflight: false, fetchedAt: 0 }
     M.set(k, e)
   }
@@ -203,17 +241,39 @@ export function refreshConvo(slug: string, nid: string,
     // a ghost graduates when the server shows MORE copies of its text than it
     // did when the ghost was made — never merely "a copy exists", which an
     // earlier identical message already satisfies
-    const pending = e.s.pending.filter((g) => serverCopies(c, g.text) <= g.seen)
+    const pending = e.s.pending.filter((g) =>
+      serverCopies(c, g.text) <= g.seen && !scrolledPast(c, g))
     // superseded scaffolding retires HERE, with its replacement in hand — one
     // atomic patch, so the draft never blinks out ahead of the durable row
     const retire: Partial<Convo> = {}
     const fresh = startedAt >= e.staleAt      // this fetch can SEE the new row
-    if (fresh && e.staleDraft) { retire.draft = ''; e.staleDraft = false }
-    if (fresh && e.staleThink) {
+    // THE PAYLOAD IS EVIDENCE TOO. Until now the scaffolding retired only on a
+    // websocket event, so losing the one frame that ends a turn left the grey
+    // streamed text and the thinking clock on screen FOREVER — beside the
+    // durable row that replaced them (the reply rendered twice) and across
+    // every later turn (`thinking… for 3100s`). That is a violation of the one
+    // rule this app is built on: nothing on screen may depend on having caught
+    // an event. `busy:false` is the server saying no turn is running, so
+    // nothing can be streaming, and the payload carrying that statement also
+    // carries the durable rows — the same atomic handover D-50 requires.
+    //
+    // ⚠ Only if this request went out AFTER the newest token, though. One
+    // issued before the stream began describes a world in which nothing was
+    // being typed, and honouring it would blank a draft that is still growing
+    // — the same mistake this rule exists to fix, in a new place.
+    //
+    // Residual, stated rather than hidden: a `text` frame lost MID-turn still
+    // leaves that draft up until the turn ends, because no server fact
+    // distinguishes "this draft was superseded" from "this draft is still
+    // being typed" without going back to the string matching P2 deleted.
+    const idle = !c.busy && startedAt >= e.streamAt
+    if ((fresh && e.staleDraft) || idle) { retire.draft = ''; e.staleDraft = false }
+    if ((fresh && e.staleThink) || idle) {
       retire.thinking = ''
       retire.thinkSecs = null
       e.staleThink = false
     }
+    if (idle && e.thinkT0) { e.thinkT0 = 0; stopClock(e) }
     patch(k, { chat: c, loaded: true, loadingOlder: false, pending,
                live: (c.live ?? []) as LiveRow[], ...retire })
   }).catch(() => {
@@ -239,14 +299,40 @@ export function loadOlder(slug: string, nid: string): boolean {
 export function addPending(slug: string, nid: string, text: string): void {
   const k = key(slug, nid)
   const e = entry(k)
-  // baseline from the newest payload we hold: whatever is already on screen is
-  // NOT this send
-  patch(k, { pending: [...e.s.pending, { text, seen: serverCopies(e.s.chat, text) }] })
+  // Baseline: everything already ACCOUNTED FOR is not this send. That is the
+  // payload's copies PLUS the ghosts already standing in for earlier sends of
+  // the same text — send "continue" twice before a refresh lands and both
+  // ghosts used to carry `seen: 0`, so the server showing ONE copy retired
+  // BOTH and the second message went off screen. (D-52 fixed the same-text
+  // case across turns; this is the same-instant case its baseline missed.)
+  const msgs = e.s.chat?.messages ?? []
+  patch(k, {
+    pending: [...e.s.pending, {
+      text,
+      seen: serverCopies(e.s.chat, text)
+        + e.s.pending.filter((g) => g.text === text).length,
+      // −1 on an empty transcript: the message will be row 0, so the window
+      // has moved past it once row 0 is no longer in it
+      seq0: msgs.length ? (msgs[msgs.length - 1]?.seq ?? -1) : -1,
+    }],
+  })
 }
 
+/** Retire ONE ghost — the oldest with this text.
+ *
+ *  It used to filter by text, which retires every send of the same words: a
+ *  failed second "yes" took the first one's preview down with it. One call,
+ *  one send, one ghost. */
 export function dropPending(slug: string, nid: string, text: string): void {
   const k = key(slug, nid)
-  patch(k, { pending: entry(k).s.pending.filter((g) => g.text !== text) })
+  patch(k, { pending: dropOne(entry(k).s.pending, (g) => g.text === text) })
+}
+
+/** the same list minus the first match — or the same array if nothing matched,
+ *  so `patch` can tell that nothing changed */
+function dropOne(list: PendingGhost[], hit: (g: PendingGhost) => boolean): PendingGhost[] {
+  const i = list.findIndex(hit)
+  return i < 0 ? list : [...list.slice(0, i), ...list.slice(i + 1)]
 }
 
 /** the composer's optimistic "it is working now", corrected by the next fetch */
@@ -272,12 +358,14 @@ export function ingestStream(slug: string, ev: StreamEvent): void {
     // one that is early (a sealed think's deltas can all arrive at the end,
     // which would start the clock as it stops)
     e.thinkT0 = Date.now()
+    e.streamAt = e.thinkT0
     startClock(k, e)
     e.staleThink = false
     patch(k, { thinking: '', thinkSecs: 0 })
     return
   }
   if (ev.kind === 'thinking') {
+    e.streamAt = Date.now()
     if (!e.thinkT0) { e.thinkT0 = Date.now(); startClock(k, e); patch(k, { thinkSecs: 0 }) }
     // a fresh thought must not continue a superseded one
     const base = e.staleThink ? '' : e.s.thinking
@@ -286,6 +374,7 @@ export function ingestStream(slug: string, ev: StreamEvent): void {
     return
   }
   if (ev.kind === 'delta') {
+    e.streamAt = Date.now()
     const base = e.staleDraft ? '' : entry(k).s.draft
     e.staleDraft = false
     patch(k, { draft: (base + ev.text).slice(-12000) })
@@ -311,7 +400,8 @@ export function ingestStream(slug: string, ev: StreamEvent): void {
   e.staleAt = Date.now()
   if (ev.kind === 'text') e.staleDraft = true
   if (ev.kind === 'steered') {
-    patch(k, { pending: e.s.pending.filter((g) => !ev.text.includes(g.text)) })
+    // one steered delivery retires one ghost — see dropPending
+    patch(k, { pending: dropOne(e.s.pending, (g) => ev.text.includes(g.text)) })
   }
   nudge(slug, ev.node)
 }
@@ -402,6 +492,7 @@ export function resetConvos(): void {
     e.staleDraft = false
     e.staleThink = false
     e.staleAt = 0
+    e.streamAt = 0
     e.inflight = false
     e.fetchedAt = 0
     e.s = BLANK
