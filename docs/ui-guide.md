@@ -36,7 +36,11 @@ snowflake, lock, layers, fullscreen, hearing.
 
 - Hover any live card (or the eye) and click one of the round **H S O F**
   chips (tinted in their model's color): haiku · sonnet · opus · fable, seat
-  costs 1 · 3 · 5 · 10. Chips are NEVER disabled by the node's own free
+  costs 1 · 3 · 5 · 10. The BOTTOM chips hire a subordinate; the LEFT and
+  RIGHT edge chips hire a **coworker** — same superior, landing on that side
+  of the card (the draft previews the spot, and the ordering is pinned at
+  birth). Side chips don't appear on pile/crowd stacks, where the card's
+  edges belong to the stack's layers. Chips are NEVER disabled by the node's own free
   credits: a user hire cascades (§4.6), automatically granting every node up
   the chain whatever it lacks (each inflation is reported as a warning and a
   notice — reclaim with reallocate when done). The draft's grant slider has
@@ -280,6 +284,12 @@ reading order (row by row, left to right).
 
 ## The top bar
 
+The **second ✉ icon** (right side, beside settings) is the ask bell: it
+glows and pulses — the only header element that ever does — while an ask
+(question or credit request) is waiting on your answer, with a count badge;
+clicking it opens your inbox where the cards are. When nothing is asked it
+is a plain quiet inbox shortcut.
+
 The agents chip summarizes the org at a glance: total live agents, how many
 are working right now, and a per-model breakdown (H/S/O/F counts in their
 tier colors). Beside it: cumulative cost, the ledger self-audit (only speaks
@@ -332,8 +342,10 @@ shape rule; wide flat teams are legitimate.
 ## The five visual channels on a card
 
 hue = tier (top edge + letter chip) · fill = lifecycle (archived fades,
-bearers wash grey) · dashed border = the agent cannot edit files · glow =
-holds an audience (bright terracotta = holds YOUR ear) · left bar = credits.
+bearers wash grey) · dashed border = the agent cannot edit files · soft steel
+glow = holds an audience (any audience — yours included) · **bright pulsing
+terracotta glow = this agent has an open ask and needs YOUR answer** (the
+only attention glow anywhere, 2026-08-04) · left bar = credits.
 Also: red border = unrecoverable session, 🔒 = frozen by the fable weekly
 limit, red dot = last turn errored, orange pulse = working, mini-zoom status
 dot: green done / red blocked / orange working. The top bar stays quiet: the
@@ -341,6 +353,13 @@ ledger self-audit chip appears ONLY if the credit invariants are ever violated
 (a bug or a hand-edited org doc — every live node's free must be ≥ 0).
 
 ## The desk (zoomed-in chat)
+
+Navigation chips: a small **↑ superior** chip sits at the top of the desk
+(for a top-level agent it reads "switchboard" and jumps to the eye), and one
+**↓ chip per direct report** sits above the composer. Each carries the
+agent's tier letter, a busy spinner and an unread-mail count, and clicking
+one glides the camera there — the same move as clicking its card. Dimmed
+chips are non-live reports.
 
 - Header (ONE row): tier, name (hover for its purpose), context wheel
   (red ≥ 80% — compaction approaches; **in the zoomed view the wheel is a
@@ -413,15 +432,35 @@ the now-immediate stop. Enter still queues a message meanwhile. The button
 renders only while an interrupt can actually land, so pressing it never
 errors.
 
-## Credit requests (top-level agents asking you)
+## Asks (agents asking YOU — questions and credit requests)
 
-A top-level agent can ask YOU directly for a larger grant via
-orgtree_request_credits — not mail, a structured request framed
-**old → new (+increase)** with the agent's reason below and one-click
-**approve / deny** buttons, shown at the top of your ✉ inbox (it counts
-toward the eye's badge). Approve reallocates immediately and notifies the
-agent; deny notifies it to work within its grant. One pending request per
-agent. Deeper agents can't do this — they ask their superior to reallocate.
+An **ask** is an interactive card that appears in TWO places at once: pinned
+above the composer on the asking agent's desk, and in your ✉ inbox. Answer
+from whichever you reach first — the answer is sent to the agent as ordinary
+mail (which wakes it), and the card nulls in both places. If any OTHER mail
+wakes the agent before you answer, the ask is voided everywhere and the
+agent must re-ask. A nulled card stays visible wearing its reason: grey
+**answered**/**denied**, orange **interrupted**. While an ask is open, the
+agent's card wears the bright pulsing aura and the header's second ✉ icon
+glows.
+
+**Questions** (orgtree_ask) mirror Claude Code's own ask shape: 2–4 option
+buttons (sometimes multi-select) plus a free-text box that always works —
+pick options, type, or both, then **answer**.
+
+**Credit requests** (orgtree_request_credits, top-level agents only) embed
+their own draggable credit bar, pre-loaded at the requested amount. Drag it
+anywhere legal: below the ask, above it, or below the agent's current grant
+down to its committed floor (clawing back unused credits). A **+x/−x** tip
+and an I-bar bracket the difference against the current grant; releasing
+the drag surfaces any stranding warnings BEFORE you commit. The button
+names what it will do — grant as asked, counter-offer, decline the
+increase, or reduce — and the agent is told honestly which one happened
+(it may re-ask or route around your answer). If the org genuinely has zero
+grantable headroom, the agent's request is refused outright and no card is
+made. Deeper agents can't do this — they ask their superior to reallocate
+(and their orgtree_ask questions route to their superior unless they hold
+your audience).
 
 ## chatq policy
 
@@ -503,6 +542,14 @@ it appears on hover, next to ⚙). The desk's inbox tab is the same view inline.
   on disk). Agents can at most retire.
 
 ## Org settings (⚙ in the top bar)
+
+The panel keeps the everyday knobs inline; **advanced…** opens the shared
+advanced modal (the same shape the create form's "advanced…" opens), holding
+the fable limit/filter policies, the cost-bubbling toggles, the kiosk
+permission ceiling, the fable-lock decree and the legacy sweep. Facts fixed
+at creation — kiosk, sandboxed, fixed-disk — show there as locked
+"born-with" chips: visible, never editable. Nothing in the modal saves
+itself; the panel's single **save** commits everything.
 
 - Folder access is NOT here — it lives on the eye's ⚙ gear panel (user
   ruling), alongside the agent-hire defaults.

@@ -1228,6 +1228,29 @@ would mean for an agent inside a sandbox container. orgtree already has a verbat
 path (`send_message(command=True)`) that delivers a `/…` as its own user event, so the delivery
 mechanism exists if the command itself turns out to be viable.
 
+**INVESTIGATED (implementer, 2026-08-04, against the pinned CLI 2.1.220 — `claude remote-control
+--help` + binary strings; no live probe, since starting the server ENROLLS THE DEVICE on the
+user's claude.ai account, an account-state change that is the user's to make).** Findings:
+
+- It is not a per-session slash command but a **standalone subcommand**: `claude remote-control`
+  runs a *persistent server* in a working directory; you connect from claude.ai/code or the Claude
+  mobile app and it spawns/controls sessions there (`--spawn same-dir|worktree|session`, capacity
+  32). Requires a logged-in subscription and a one-time workspace-trust acceptance in that dir.
+- ☞ **The orgtree-shaped hook exists: `--session-id <id>` resumes a SPECIFIC session.** So "take
+  over an agent from my phone" is plausibly: orgtree launches
+  `claude remote-control --session-id <agent session_id>` in that agent's scratch dir, the user
+  drives the agent's real session from claude.ai, orgtree kills the server on release.
+- Constraints found: ① the supervisor must NOT run turns on a remote-controlled session (two
+  writers, one session id) — needs a `remote-controlled` node state that parks mail until release;
+  ② sandboxed agents are out of scope at first — their session files live in the container and
+  the container deliberately never holds the subscription token; ③ unknown whether the server
+  runs without a TTY (it reads keys — "press 'w'"), which decides whether orgtree can spawn it
+  headless; ④ workspace trust may not have been recorded by `-p` runs.
+- Next step if pursued: ONE live experiment (user present, their account): start
+  `claude remote-control --session-id …` against a probe org's agent, confirm it appears on
+  claude.ai/code, confirm TTY-less spawn works, then scope the UX (a desk button + the parked
+  node state).
+
 ---
 
 ### F-03 · side hire buttons — hire a COWORKER, not a report

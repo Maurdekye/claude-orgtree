@@ -291,6 +291,70 @@ machines"); the user reversed the mechanism one day later for the
 unattended-host case, and the inheritance objection is handled by the strip
 rather than dismissed.
 
+### D-090 · asks always park; answered anywhere, nulled everywhere
+Ruling (user, 2026-08-04, the F-04/F-05 redesign): an agent's question to
+the user NEVER blocks a turn slot — orgtree_ask parks it and the agent
+ends its turn. The ask renders as ONE interactive card in TWO places (the
+agent's desk, the user's inbox); answering either sends the answer as
+ordinary user mail (the mail drives the turn) and nulls the card in both.
+Any OTHER mail waking the agent first voids the ask everywhere; the agent
+is told in that turn and must re-ask. Nulled cards stay visible wearing
+their reason — grey answered/denied, orange interrupted. Gate = the
+user-mail gate; an agent without it has the question ROUTED to its
+superior as mail, never refused (the motto). Kiosk visitors are always
+askable. Answer shape mirrors AskUserQuestion (2-4 options, multi, free
+text). Re-asking amends the open ask (the ratified idempotent pattern);
+answering marks BEFORE the mail posts, under the doc lock, so the
+answer's own turn can never void its question.
+
+### D-091 · credit asks: full-range counter-offers, zero headroom refuses outright
+Ruling (user, 2026-08-04): the user answers a credit request by setting
+ANY legal amount — below the ask, above it, or below the current grant
+down to the committed floor (reallocate's own invariant; a clawback of
+unused credits). Outcome wording is honest: a partial grant is a
+COUNTER-OFFER, not an "APPROVED", and always says the agent may re-ask
+or route around it (the matter stays the agent's to continue). Stranding
+warnings surface via a dry-run BEFORE the commit. If there is genuinely
+ZERO headroom (max_top_grant reached, or the kiosk pool fully held) the
+request is refused OUTRIGHT at ask time with no card — a card the user
+could only refuse would be a lie. Credit asks void on wake exactly like
+questions (one system, D-090).
+
+### D-092 · attention glow means exactly one thing
+Ruling (user, 2026-08-04): the bright terracotta aura is REPURPOSED —
+it marks an agent with an un-nulled ask, and nothing else glows. The
+user-audience aura is diminished to the same soft steel as any audience;
+the eye's unread-mail glow is removed (the count badge stays); a second
+inbox icon in the page header glows — alone in the chrome — iff an ask
+is open, and opens the inbox.
+Was. bright terracotta = "holds the user's ear"; the eye pulsed on any
+unread mail — attention markers that fired on capabilities and routine
+mail, so the one that mattered had no channel left.
+
+### D-093 · the turn bound is an idle watchdog; failures are durable
+Ruling (user, 2026-08-04): ORGTREE_TURN_IDLE (600 s, zero CLI events)
+is what kills a turn — "wedged", not "long-running"; the wall-clock
+ORGTREE_TURN_TIMEOUT rises to 14400 s and is a per-message backstop. A
+killed turn records {killed, toks} in the turn ring with a cost estimated
+from the node's own $/output-token history (self-calibrating — no pricing
+table to rot; honest zero without history). Turn failures append to a
+durable per-node ring (turn_error_log) that read_chat interleaves as a ⚠
+system row in chronological place; the in-memory banner then clears at
+the NEXT turn's start (D-50 one level up: the durable row is the
+replacement in hand).
+Was. one 1800 s wall clock killed a productive 40-tool-call turn exactly
+like a hung one, the spend of a killed turn was never charged, and the
+failure banner lived only in memory — forever on an agent never messaged
+again.
+
+### D-094 · one advanced modal, two doors; born-with facts lock
+Ruling (user, 2026-08-04, F-07): the create form's advanced disclosure
+and the ⚙ settings panel open the SAME modal. Creation-only facts
+(kiosk, sandbox, disk type) render as locked chips outside creation —
+visible, never editable. The create form keeps its collapsed summary
+line; the settings panel keeps its ONE bottom save (the modal saves
+nothing itself — three save surfaces already failed once, 2026-08-01).
+
 ### D-089 · a failed read must never arm a destructive write
 Ruling (review, 2026-08-04, from the org.md near-wipe): SettingsPanel's
 catch turned a failed GET of org.md into an EMPTY EDITABLE buffer, so a
