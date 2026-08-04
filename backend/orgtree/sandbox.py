@@ -372,8 +372,11 @@ def chown_agent(org: Org, nid: str, *rel: str) -> None:
     slug = org.d["slug"]
     target = "/".join((cpath_scratch(slug, nid), *rel))
     try:
-        _docker("exec", container_name(slug), "chown", "-R", "agent:agent",
-                target, timeout=30)
+        # ⚠ -u root: exec inherits the image's USER agent, and an unprivileged
+        # chown fails "Operation not permitted" — silently, given the swallow
+        # below (caught live 2026-08-05 healing vnuser by hand)
+        _docker("exec", "-u", "root", container_name(slug),
+                "chown", "-R", "agent:agent", target, timeout=30)
     except Exception:                                        # noqa: BLE001
         pass
 
@@ -384,8 +387,8 @@ def _heal_ownership(name: str) -> None:
     at container start. Also fixes Docker's own root-owned mount scaffolding
     (/home/agent/orgtree, …/scratch, …/workspaces), which the agent sees when
     it looks one level above its own folder."""
-    _docker("exec", name, "chown", "-R", "agent:agent", cpath_data(),
-            timeout=120)
+    _docker("exec", "-u", "root", name, "chown", "-R", "agent:agent",
+            cpath_data(), timeout=120)
 
 
 def _docker(*args: str, timeout: int = 120) -> subprocess.CompletedProcess[str]:
