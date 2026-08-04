@@ -291,6 +291,19 @@ machines"); the user reversed the mechanism one day later for the
 unattended-host case, and the inheritance objection is handled by the strip
 rather than dismissed.
 
+### D-089 · a failed read must never arm a destructive write
+Ruling (review, 2026-08-04, from the org.md near-wipe): SettingsPanel's
+catch turned a failed GET of org.md into an EMPTY EDITABLE buffer, so a
+network blip plus one ordinary save wiped the charter with put('').
+The rule generalizes: optimistic/editable state seeded from a fetch keeps
+its "not loaded" sentinel (null → disabled control → save skips the field)
+on ANY failure path, and resets to the sentinel on identity change (org
+switch), so stale content can't be written under a new key. Sibling rules
+from the same review pass: an optimistic control must also hear a
+same-value answer (EffortButton's bounded settle — a 200 that changes
+nothing never fires an on-change effect), and an optimistic hide must roll
+back when its write rejects (InboxView retract).
+
 ### D-088 · one backend per data root, enforced by an OS lock
 Ruling (measured, 2026-08-04): two backends on one ORGTREE_DATA silently
 lose 32–74% of completed writes (zero errors — every writer is told it

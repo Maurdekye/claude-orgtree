@@ -16,6 +16,18 @@ me, not reported. Entries marked ⚠ are corrections of my own errors.
 `main` was force-reset to `fb427e9` on 2026-08-02 at the user's instruction; everything below lives
 only on this branch and awaits the implementer's review.
 
+> **Review status (implementer, 2026-08-04):** reviewed in full — every hunk of the
+> fb427e9→8964a0f diff accounted for, re-adopted onto `rebuild` in unit commits with green gates
+> between each, and merged to `main`. The backend production diff was adopted unchanged (three of
+> its fixes correct the implementer's own pre-dormancy bugs). The frontend was adopted with a fix
+> pass from an adversarial re-review: an org.md-wiping failed-read path in SettingsPanel, a
+> heartbeat kill in `resetConvos` on org switch, an out-of-order payload race and unmount-gated
+> event fetches in `convo.ts`, a mismatched-props localStorage sweep in OrgCanvas, an effort
+> control that couldn't hear a same-value answer, a retract with no rollback, and smaller edges
+> (ghost/live render keys, a `LiveRow` cast, the >2000-char steered needle, API `no-store`).
+> Entries below describe the branch as the secondary left it; where the rebuild differs, the code
+> and DECISIONS.md are the truth.
+
 ---
 
 ## D-01 · Mail archive ordered by click, not by send time
@@ -1669,6 +1681,17 @@ Three things the design should preserve, all of which the current form gets righ
    `sandboxed`, and the folder count without expanding. Whatever replaces the disclosure needs an
    equivalent, or the create form loses its at-a-glance state.
 
+### F-08 · the mobile wave
+> *(added at the review, 2026-08-04, on the user's instruction: the wave joins the prospective
+> features here rather than staying a standing hold in memory)*
+
+**NOT BUILT — held by the user** ("hold off implementing until i give the go ahead",
+2026-08-01, re-affirmed after an earlier release). The full spec lives at `docs/mobile-spec.md`
+(carrying its own HOLD banner); three live bugs its audit surfaced were split out and already
+fixed in the pre-dormancy fix batch (`35ec4eb` + follow-ups), so the spec that remains is purely
+layout/interaction work. One open ruling rides with it: the compact-desk question sits in
+DECISIONS.md §Open and should be answered before (or as part of) the build.
+
 ## D-54 · `--expose-admin` moves from argv to an environment variable
 > Move exposed to an environment variable.
 
@@ -2093,4 +2116,4 @@ Fast tier 12/12 · 2,745 checks · guards 3 held · 0 FIRED · pyright 0 · tsc 
 | `_move` inflates a top-level grant past `max_top_grant` | FIXED (D-58) |
 | `game-master` has an empty charter although `hire` now refuses without one | predates the requirement |
 | P1–P5 of the state review | ALL IMPLEMENTED (D-32) |
-| mobile wave | spec at `docs/mobile-spec.md`, held by the user |
+| mobile wave | now F-08 above — spec at `docs/mobile-spec.md`, held by the user |
