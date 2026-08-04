@@ -46,7 +46,9 @@ Set before the backend starts. Not visible in the UI, not per-org. A change requ
 | variable | default | what it does |
 |---|---|---|
 | `ORGTREE_MAX_TURNS` | `16` | concurrent turn slots, **global not per-org**; ~306 MB per turn (`supervisor.py:243`, D-49) |
-| `ORGTREE_TURN_TIMEOUT` | `1800` s | per-turn wall clock (`supervisor.py:233`) |
+| `ORGTREE_TURN_TIMEOUT` | `14400` s | absolute per-message ceiling, re-based at each result event — a backstop, not the bound that normally fires (`supervisor.py`, reshaped 2026-08-04) |
+| `ORGTREE_TURN_IDLE` | `600` s | the idle watchdog: kill only after this long with ZERO CLI stdout events — distinguishes "wedged" from "working" (`supervisor.py`) |
+| `ORGTREE_COMPACT_TIMEOUT` | `600` s | the compaction fork's own bound (`supervisor.py`) — a big context can legitimately need longer |
 | `ORGTREE_COMPACT_AT` | `0.80` | context fraction that triggers compaction (`supervisor.py:144`) |
 | `ORGTREE_ORACLE_AT` | `0.92` | context fraction for the §8.3 state 2→3 transition (`supervisor.py:145`) |
 | `ORGTREE_CONTEXT_WINDOWS` | `{}` | JSON override of per-model context sizes (`supervisor.py:153`) |

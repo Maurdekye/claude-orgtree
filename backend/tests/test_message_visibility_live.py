@@ -150,6 +150,7 @@ def start_backend(max_turns: int = 16, steer_hook: str = "0",
         "ORGTREE_MAX_TURNS": str(max_turns),
         "ORGTREE_STEER_HOOK": steer_hook,
         "ORGTREE_TURN_TIMEOUT": "60",
+        "ORGTREE_TURN_IDLE": "60",   # the reshaped bound that actually fires
         "PYTHONPATH": os.path.join(_REPO, "backend"),
         "PYTHONIOENCODING": "utf-8",
         # ⚠ the throwaway backend must claim NOTHING the user's real one holds.

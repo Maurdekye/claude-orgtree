@@ -63,6 +63,11 @@ export interface TurnStat {
   cost: number
   ms?: number | null
   denials: number
+  /** killed-turn accounting (2026-08-04): output tokens, the kill marker,
+   *  and whether the cost is derived rather than API-reported */
+  toks?: number
+  killed?: boolean
+  estimated?: boolean
 }
 
 // schema.py AudienceGrant (§7.3)

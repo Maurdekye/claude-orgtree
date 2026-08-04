@@ -1374,7 +1374,11 @@ def start_backend(max_turns: int = 16, turn_timeout: int = 60,
         "ORGTREE_CLAUDE_CLI": WRAP,
         "ORGTREE_MAX_TURNS": str(max_turns),
         "ORGTREE_STEER_HOOK": "0",
+        # both bounds ride the same knob: a hung fake CLI emits nothing, so
+        # since the 2026-08-04 reshape the IDLE watchdog is what fires; the
+        # ceiling stays set so the total budget is bounded too
         "ORGTREE_TURN_TIMEOUT": str(turn_timeout),
+        "ORGTREE_TURN_IDLE": str(turn_timeout),
         "ORGTREE_COMPACT_AT": compact_at,
         "ORGTREE_ORACLE_AT": oracle_at,
         "PYTHONPATH": os.path.join(_REPO, "backend"),

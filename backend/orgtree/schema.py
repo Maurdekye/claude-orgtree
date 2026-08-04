@@ -83,6 +83,13 @@ class TurnStat(TypedDict):
     cost: float
     ms: NotRequired[int | None]
     denials: int
+    # killed-turn accounting (2026-08-04): output tokens ride every entry so a
+    # later killed turn can estimate its unreported spend from the node's own
+    # $/token history; `killed` marks the kill, `estimated` marks a derived
+    # (not API-reported) cost
+    toks: NotRequired[int]
+    killed: NotRequired[bool]
+    estimated: NotRequired[bool]
 
 
 class FrozenInfo(TypedDict, total=False):
@@ -281,6 +288,7 @@ class OrgDoc(TypedDict):
     notice_log: NotRequired[list[NoticeLogEntry]]
     delivering: NotRequired[dict[str, list[dict[str, Any]]]]  # supervisor in-flight mail batches
     steered_log: NotRequired[dict[str, list[dict[str, Any]]]]  # per-NODE steer history, org-keyed
+    turn_error_log: NotRequired[dict[str, list[dict[str, Any]]]]  # per-NODE turn failures {at, text} — the durable half of last_error
     org_inbox: NotRequired[list[OrgInboxEntry]]
     org_inbox_read: NotRequired[int]
     kiosk: NotRequired[KioskCfg | None]

@@ -592,7 +592,10 @@ def start_backend(max_turns: int = 16, steer_hook: str = "0",
         "ORGTREE_CLAUDE_CLI": WRAP,
         "ORGTREE_MAX_TURNS": str(max_turns),
         "ORGTREE_STEER_HOOK": steer_hook,
+        # a hung fake CLI is IDLE — since the 2026-08-04 reshape the idle
+        # watchdog is the bound that fires; the ceiling rides along
         "ORGTREE_TURN_TIMEOUT": str(turn_timeout),
+        "ORGTREE_TURN_IDLE": str(turn_timeout),
         "PYTHONPATH": os.path.join(_REPO, "backend"),
         "PYTHONIOENCODING": "utf-8",
         # ⚠ never claim anything the user's real backend holds: the sandbox

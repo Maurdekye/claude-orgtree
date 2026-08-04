@@ -406,8 +406,10 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
           <span className="badge dim"
             title={(node.turns ?? []).slice(-5).reverse().map((t) =>
               `${t.at?.slice(5, 16).replace('T', ' ')} · $${(t.cost ?? 0).toFixed(2)}`
+              + (t.estimated ? ' est.' : '')
               + (t.ms ? ` · ${Math.round(t.ms / 1000)}s` : '')
-              + (t.denials ? ` · ${t.denials} denied` : '')).join('\n')
+              + (t.denials ? ` · ${t.denials} denied` : '')
+              + (t.killed ? ' · killed' : '')).join('\n')
               || 'per-turn detail appears after the next turn'}>
             ${node.cost_usd!.toFixed(2)}</span>)}
         {(chat?.queued ?? 0) > 0 && <span className="badge">{chat!.queued} queued</span>}

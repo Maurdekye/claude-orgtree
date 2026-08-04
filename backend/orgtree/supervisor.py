@@ -34,7 +34,7 @@ from typing import Any, cast
 from . import sandbox as sbx, store
 from .ledger import EXTERN, USER, LedgerError, Org, expand_mcp, now as now_iso
 from .schema import (Denial, FrozenInfo, InflightInfo, KioskCfg, MailEntry,
-                     NodeDoc, NoticeEntry)
+                     NodeDoc, NoticeEntry, TurnStat)
 
 # ---- kiosk v2 (user vision): per-org public exposure behind a secret-URL
 # token. Caps (credits, spend, workspace storage) live ON THE ORG DOC —
@@ -231,7 +231,19 @@ def _claude_argv() -> list[str]:
     if os.name == "nt" and CLAUDE.lower().endswith((".cmd", ".bat")):
         return ["cmd", "/c", CLAUDE]
     return [CLAUDE]
-TURN_TIMEOUT = int(os.environ.get("ORGTREE_TURN_TIMEOUT", "1800"))   # seconds
+# Two-part turn bound (user ruling 2026-08-04, reshaped from a single 1800 s
+# wall clock — which killed a productive 40-tool-call turn exactly like a
+# wedged one):
+# · TURN_IDLE — the watchdog: kill only after this long with ZERO CLI stdout
+#   events. A hung CLI emits nothing; a productive one emits constantly, so
+#   this distinguishes "wedged" from "working", which a wall-clock cannot.
+# · TURN_TIMEOUT — the absolute ceiling per message (re-based at each result
+#   event, "fresh budget per message"). A backstop, not the thing that fires.
+TURN_TIMEOUT = int(os.environ.get("ORGTREE_TURN_TIMEOUT", "14400"))  # seconds
+TURN_IDLE = int(os.environ.get("ORGTREE_TURN_IDLE", "600"))          # seconds
+# the compaction fork's own bound — it had a hard 600 with no way to tune it,
+# and a big context can legitimately need longer
+COMPACT_TIMEOUT = int(os.environ.get("ORGTREE_COMPACT_TIMEOUT", "600"))
 # №34. Raised 3 -> 16 (user ruling 2026-08-03). There is no correctness reason
 # for a low cap — the semaphore exists to bound RESOURCES, not to serialise
 # anything — so the only question is what a turn costs. Measured on the dev
@@ -1284,6 +1296,13 @@ def _run_one_turn(slug: str, nid: str,
                     if ls:
                         o2.node(nid)["prev_status"] = ls
                     store.save_org(o2)
+            # a new turn supersedes the previous failure: the durable system
+            # row (_log_turn_error) already holds the history, so the banner
+            # clears NOW instead of surviving until a later success — it used
+            # to describe the past through the whole of the next turn, and
+            # forever on an agent never messaged again (user bug 2026-08-04:
+            # "the timeout banner does not go away on its own")
+            st["last_error"] = None
             notify(slug, nid, "turn_started")
             sandbox_name = None
             if sbx.is_sandboxed(org):
@@ -1303,6 +1322,7 @@ def _run_one_turn(slug: str, nid: str,
             res = {}
             pend_toks: list[str] = []   # journal batches written, not yet consumed (C1)
             turn_occ = 0        # context size = LAST assistant call's usage (№24)
+            turn_out = 0        # cumulative output tokens (killed-turn accounting)
             dbuf, dlast = "", time.time()   # token-stream delta batcher (~8 Hz)
             think_t0, think_buf = 0.0, ""   # the in-progress thought
 
@@ -1318,6 +1338,7 @@ def _run_one_turn(slug: str, nid: str,
                 live_row(slug, nid, {"kind": "thought", "secs": secs,
                                      "text": text[:6000]})
             timed_out = threading.Event()
+            timeout_why = [""]
 
             def _expire() -> None:
                 timed_out.set()
@@ -1328,8 +1349,32 @@ def _run_one_turn(slug: str, nid: str,
                     # shared by every agent in the org, and a blanket
                     # `pkill -f claude` SIGKILLed unrelated turns (№40)
                     sbx.kill_claude(sandbox_name, sid)
-            timer = threading.Timer(TURN_TIMEOUT, _expire)
-            timer.start()
+            # ONE polling thread, not a Timer cancelled per event — deltas
+            # arrive at ~8 Hz and a Timer per event is a thread per event.
+            # `last_ev` is stamped by every parsed stdout line; `budget_t0`
+            # re-bases at each result (fresh ceiling per message). Monotonic,
+            # so a wall-clock jump can neither spare nor kill a turn.
+            dog_stop = threading.Event()
+            last_ev = [time.monotonic()]
+            budget_t0 = [time.monotonic()]
+
+            def _dog() -> None:
+                while not dog_stop.wait(5.0):
+                    now = time.monotonic()
+                    if now - last_ev[0] > TURN_IDLE:
+                        timeout_why[0] = (
+                            f"turn killed: no CLI output for {TURN_IDLE}s "
+                            "(idle watchdog — the process was wedged)")
+                        _expire()
+                        return
+                    if now - budget_t0[0] > TURN_TIMEOUT:
+                        timeout_why[0] = (
+                            f"turn killed: exceeded the {TURN_TIMEOUT}s "
+                            "per-message ceiling")
+                        _expire()
+                        return
+            threading.Thread(target=_dog, daemon=True,
+                             name=f"turndog-{slug}-{nid}").start()
             with _state_lock:
                 st["proc"] = proc         # for the user-interrupt escape hatch
                 st["responding"] = True
@@ -1360,6 +1405,7 @@ def _run_one_turn(slug: str, nid: str,
                         ev = json.loads(line)
                     except json.JSONDecodeError:
                         continue
+                    last_ev[0] = time.monotonic()      # the CLI is alive
                     if pend_toks and ev.get("type") != "system" \
                             and not (ev.get("type") == "result"
                                      and ev.get("is_error")):
@@ -1445,6 +1491,9 @@ def _run_one_turn(slug: str, nid: str,
                              + u.get("cache_creation_input_tokens", 0))
                         if t:                     # zero-usage synthetics don't count
                             turn_occ = t
+                        # killed-turn accounting: the result event never comes,
+                        # so the stream's per-message usage is the only record
+                        turn_out += u.get("output_tokens", 0) or 0
                         for b in ev.get("message", {}).get("content", []):
                             if b.get("type") == "text" and b.get("text", "").strip():
                                 fold_thought()
@@ -1464,9 +1513,7 @@ def _run_one_turn(slug: str, nid: str,
                                              + (f" · {arg}" if arg else ""))})
                     elif ev.get("type") == "result":
                         res = ev
-                        timer.cancel()                    # fresh budget per message
-                        timer = threading.Timer(TURN_TIMEOUT, _expire)
-                        timer.start()
+                        budget_t0[0] = time.monotonic()   # fresh ceiling per message
                         # the response resolved: feed the next queued message
                         # into the same process, or close stdin to end it.
                         # ⚠ …unless the session just said it is out of quota.
@@ -1538,7 +1585,7 @@ def _run_one_turn(slug: str, nid: str,
                 err = proc.stderr.read()   # pyright: ignore[reportOptionalMemberAccess]
                 proc.wait()
             finally:
-                timer.cancel()
+                dog_stop.set()
                 with _state_lock:
                     st["proc"] = None
                     st["responding"] = False
@@ -1547,7 +1594,9 @@ def _run_one_turn(slug: str, nid: str,
                     if leftover:
                         st["queue"][0:0] = leftover
             if timed_out.is_set():
-                raise RuntimeError(f"turn timed out after {TURN_TIMEOUT}s and was killed")
+                _charge_killed_turn(slug, nid, turn_out)
+                raise RuntimeError(timeout_why[0]
+                                   or "turn timed out and was killed")
             err_blob = " / ".join((err or "").strip().splitlines()[-3:]) \
                 if proc.returncode != 0 else (
                     str(res.get("result", "")) if res.get("is_error") else "")
@@ -1659,6 +1708,10 @@ def _run_one_turn(slug: str, nid: str,
             _after_turn(slug, nid, org, res, st, turn_occ)
     except Exception as e:                                  # noqa: BLE001
         st["last_error"] = str(e)
+        # the durable half — the banner above is in-memory and now clears at
+        # the next turn's START (see turn_started below); this row is what
+        # keeps the failure in the conversation, in chronological place
+        _log_turn_error(slug, nid, str(e))
     finally:
         # the turn is over one way or another — it is no longer in-flight
         try:
@@ -1687,6 +1740,65 @@ def _run_one_turn(slug: str, nid: str,
             st["live"] = [r for r in (st.get("live") or []) if r.get("sticky")]
         notify(slug, nid, "turn_done")
     return follow
+
+
+def _charge_killed_turn(slug: str, nid: str, out_toks: int) -> None:
+    """A killed turn has no result event, so its spend was never reported —
+    the API billed it anyway, and the expensive case (a long opus turn) is
+    exactly the one that went unaccounted. Best-effort accounting (user ruling
+    2026-08-04): estimate from this node's own recent $/output-token ratio —
+    self-calibrating, no pricing table to rot — and record the turn as killed
+    with its token count. A node with no priced history records the tokens
+    and an honest zero rather than an invented price."""
+    try:
+        with store.DOC_LOCK:
+            o2 = store.load_org(slug)
+            if nid not in o2.nodes:
+                return
+            n = o2.node(nid)
+            ring = n.setdefault("turns", [])
+            pairs = [(t.get("cost") or 0.0, t.get("toks") or 0)
+                     for t in ring
+                     if t.get("cost") and t.get("toks") and not t.get("killed")]
+            den = sum(tk for _, tk in pairs)
+            est = round(out_toks * sum(c for c, _ in pairs) / den, 6) \
+                if (out_toks and den) else 0.0
+            if est:
+                n["cost_usd"] = round(float(n.get("cost_usd") or 0.0) + est, 6)
+            entry: TurnStat = {"at": now_iso(), "cost": est, "ms": None,
+                               "denials": 0, "killed": True, "toks": out_toks}
+            if est:
+                entry["estimated"] = True
+            ring.append(entry)
+            del ring[:-20]
+            store.save_org(o2)
+    except Exception:                                            # noqa: BLE001
+        pass          # accounting must never turn a killed turn into a crash
+
+
+def _log_turn_error(slug: str, nid: str, text: str) -> None:
+    """The durable half of a turn failure. `last_error` is an in-memory flag —
+    it vanished on restart and, worse, was the ONLY trace a failure left (a
+    killed CLI writes nothing to its transcript, notify() is a pure websocket
+    pulse). The org doc keeps a small per-node ring that read_chat interleaves
+    into the conversation as a system row at the moment it happened — the same
+    mechanism as steered_log. With the durable row in hand, the banner may
+    clear at the NEXT turn's start instead of surviving until a later success
+    (D-50's rule one level up: superseded is not replaced until the
+    replacement exists)."""
+    try:
+        with store.DOC_LOCK:
+            o2 = store.load_org(slug)
+            if nid not in o2.nodes:
+                return
+            log = cast("dict[str, list[dict[str, Any]]]",
+                       o2.d.setdefault("turn_error_log", {}))
+            rows = log.setdefault(nid, [])
+            rows.append({"at": now_iso(), "text": text[:400]})
+            del rows[:-30]
+            store.save_org(o2)
+    except Exception:                                            # noqa: BLE001
+        pass
 
 
 def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
@@ -1732,9 +1844,15 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
             # №15: a small per-turn ring — cost + duration + denial count —
             # surfaced as a tooltip on the $ badge, never a new chip
             ring = n.setdefault("turns", [])
-            ring.append({"at": now_iso(), "cost": round(cost, 6),
-                         "ms": res.get("duration_ms"),
-                         "denials": len(denials)})
+            # output tokens ride along so a later killed turn can estimate its
+            # unreported spend from this node's own $/token history
+            out_toks = int((res.get("usage") or {}).get("output_tokens") or 0)
+            entry: TurnStat = {"at": now_iso(), "cost": round(cost, 6),
+                               "ms": res.get("duration_ms"),
+                               "denials": len(denials)}
+            if out_toks:
+                entry["toks"] = out_toks
+            ring.append(entry)
             del ring[:-20]
             store.save_org(o2)
             spend_total = o2.cost_total()   # incl. deleted agents' burn
@@ -1896,7 +2014,7 @@ def _compact_split_body(slug: str, nid: str) -> None:
                                 errors="replace")
         _leash(proc)
         try:
-            out, _err = proc.communicate(input="/compact", timeout=600)
+            out, _err = proc.communicate(input="/compact", timeout=COMPACT_TIMEOUT)
         except subprocess.TimeoutExpired:
             # №28: never leave the child running — it held one of the 3 turn
             # slots invisible and burned real cost on every retry
@@ -3512,6 +3630,20 @@ def read_chat(org: Org, nid: str, last: int | None = None) -> dict[str, Any]:
     for e in (org.d.get("steered_log") or {}).get(nid, []):
         row = {"role": "user", "text": e.get("text") or "", "tools": [],
                "ts": e.get("at"), "steered": True}
+        at = e.get("at") or ""
+        pos = len(msgs)
+        for j, m in enumerate(msgs):
+            if (m.get("ts") or "") > at:
+                pos = j
+                break
+        msgs.insert(pos, row)
+    # turn failures, the durable copy (_log_turn_error): a killed CLI writes
+    # nothing to its own transcript, so without this row the failure exists
+    # only as the transient banner — interleaved by timestamp, same mechanism
+    # as the steered rows above
+    for e in (org.d.get("turn_error_log") or {}).get(nid, []):
+        row = {"role": "system", "text": "⚠ " + (e.get("text") or ""),
+               "tools": [], "ts": e.get("at"), "turn_error": True}
         at = e.get("at") or ""
         pos = len(msgs)
         for j, m in enumerate(msgs):
