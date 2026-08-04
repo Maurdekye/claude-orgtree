@@ -1637,6 +1637,38 @@ token each time) blocks nothing — it only bounds how long a *subscription* org
 nobody visits, and ⑬ removes that combination for headless orgs. The suffix question was closed by
 ⑪, one-hub-or-several by ⑬.
 
+### F-07 · advanced settings move into their own modal
+> at this point org configuration is getting complex, advanced settings should probably be moved to
+> its own separate model
+>
+> but don't make that implementation now, leave it as a future feature
+
+**NOT BUILT.** Recorded on the user's instruction.
+
+The pressure is real and measurable. The `advanced` disclosure inside the create form
+(`App.tsx:583-584`) started as two switches — kiosk and sandbox, moved there in D-40 — and the
+mailserver wave (F-06) adds hub addresses plus the auto-connect checkbox, headless plus its
+API-key precondition, and a credential-mode selector. That is a modal's worth of decisions living
+inside a disclosure inside another modal.
+
+☞ **The supporting evidence is `docs/configuration.md`** (written 2026-08-04), a full sweep of every
+knob at every level: **six levels** — process env/flags, global defaults, org settings, kiosk/sandbox
+ceilings, agent defaults, per-agent scope — and F-06 would add a seventh. Anyone designing this
+modal should start from that document rather than from the current form, because the form is a
+partial view of the model.
+
+Three things the design should preserve, all of which the current form gets right by accident:
+
+1. **Creation-time vs any-time is a real distinction**, not a layout accident. Kiosk is born-with
+   (`api.py:468`); everything in `Settings` (`api.py:751`) is editable later. A single modal that
+   flattens the two will offer to change things that cannot be changed after creation.
+2. **The clamping hierarchy should be visible.** A kiosk ceiling narrows a request silently rather
+   than refusing it, and a child's scope is clamped against its parent chain. A settings surface
+   that shows a value the ledger will quietly reduce is lying to the user.
+3. **The collapsed summary line** (`App.tsx:577`) is the part that works — it names `kiosk`,
+   `sandboxed`, and the folder count without expanding. Whatever replaces the disclosure needs an
+   equivalent, or the create form loses its at-a-glance state.
+
 ## Carried, not done
 
 | item | state |
