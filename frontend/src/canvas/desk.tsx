@@ -95,7 +95,7 @@ export function Activity({ act, dotOnly }: { act?: ActivityInfo; dotOnly?: boole
 export const DeskChat = memo(DeskChatInner, (p, n) =>
   p.node === n.node && p.map === n.map && p.slug === n.slug
   && p.pub === n.pub && p.bare === n.bare && p.compact === n.compact
-  && p.compactAt === n.compactAt && p.maxTop === n.maxTop)
+  && p.compactAt === n.compactAt && p.maxTop === n.maxTop && p.pxc === n.pxc)
 
 interface DeskChatProps {
   node: CanvasNode
@@ -111,6 +111,8 @@ interface DeskChatProps {
   onJump?: (id: string) => void
   /** F-05: the org's top-level grant cap — the ask card's bar ceiling */
   maxTop?: number
+  /** the org's px-per-credit (orgPxc) — the ask bar's scale */
+  pxc?: number
   pub: boolean
   bare?: boolean
   compact?: boolean
@@ -147,8 +149,8 @@ function NavChip({ n, dir, onJump }:
 const SENDMODE_MS = 6000
 
 function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
-  onRecenter, onJump, maxTop, pub, bare = false, compact = false, compactAt,
-  onMailLink }: DeskChatProps) {
+  onRecenter, onJump, maxTop, pxc, pub, bare = false, compact = false,
+  compactAt, onMailLink }: DeskChatProps) {
   // THE CONVERSATION IS NOT THIS COMPONENT'S. It lives in one per-node store
   // (convo.ts) that every view of this node subscribes to, because a node can
   // be on screen twice — its card and its switchboard panel — and two private
@@ -625,6 +627,9 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
         <AskCard ask={node.ask} slug={slug} toast={toast}
           seat={node.seat ?? 0}
           committed={(node.grant ?? 0) - (node.free ?? 0)}
+          segments={node.children.filter((c) => c.state === 'live' && !c.isBearerOf)
+            .map((c) => ({ seat: c.seat ?? 0, grant: c.grant ?? 0 }))}
+          pxc={pxc}
           maxTop={maxTop} />
       )}
       {/* F-01: subordinate chips at the BOTTOM — one per direct report. Drafts

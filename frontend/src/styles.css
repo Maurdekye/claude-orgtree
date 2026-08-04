@@ -691,8 +691,10 @@ main {
 }
 .ask-submit:not(:disabled) { color: var(--ink-strong); border-color: var(--accent); }
 .ask-credit-row { display: flex; gap: 16px; align-items: stretch; }
-.ask-barbox { position: relative; width: 52px; flex: none; display: flex; align-items: flex-end; }
-.ask-barbox .cbar { position: relative; width: 24px; margin-left: 10px; }
+/* the bar hugs the card's left margin and keeps the REAL card bar's width,
+   radius and rung background (base .cbar) — only its positioning is local */
+.ask-barbox { position: relative; width: 18px; flex: none; display: flex; align-items: flex-end; }
+.ask-barbox .cbar { position: relative; left: 0; }
 .ask-credit-side {
   flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px;
 }

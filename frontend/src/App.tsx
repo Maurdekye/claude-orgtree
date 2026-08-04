@@ -17,7 +17,7 @@ import {
 } from './icons'
 import { DirList } from './forms'
 import { FolderPickerHost } from './picker'
-import { deskDpi, setDeskDpi, usePolled, TIERS } from './canvas/shared'
+import { deskDpi, orgPxc, setDeskDpi, usePolled, TIERS } from './canvas/shared'
 import { AskCard } from './canvas/asks'
 import { addPending, dropPending, ingestPulse, ingestStream, resetConvos } from './convo'
 import type {
@@ -819,13 +819,19 @@ function InboxPanel({ slug, tree, toast, refresh, close, jumpTo }: {
   const asks = tree.asks ?? []
   const askPending = asks.filter(askOpen).map(askRow)
   const askDone = asks.filter((a) => !askOpen(a)).slice(-8).map(askRow)
-  const renderAskBody = (m: MailRow) => m._ask ? (
-    <AskCard ask={m._ask} slug={slug} toast={toast}
-      seat={nodes.get(m._ask.node)?.seat ?? 0}
-      committed={(nodes.get(m._ask.node)?.grant ?? 0)
-        - (nodes.get(m._ask.node)?.free ?? 0)}
-      maxTop={tree.max_top_grant ?? 1000} />
-  ) : null
+  const renderAskBody = (m: MailRow) => {
+    if (!m._ask) return null
+    const n = nodes.get(m._ask.node)
+    return (
+      <AskCard ask={m._ask} slug={slug} toast={toast}
+        seat={n?.seat ?? 0}
+        committed={(n?.grant ?? 0) - (n?.free ?? 0)}
+        segments={(n?.children ?? []).filter((c) => c.state === 'live')
+          .map((c) => ({ seat: c.seat, grant: c.grant }))}
+        pxc={orgPxc(tree)}
+        maxTop={tree.max_top_grant ?? 1000} />
+    )
+  }
   return (
     <div className="overlay" onClick={close}>
       <div className="settings wide" onClick={(e) => e.stopPropagation()}>

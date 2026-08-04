@@ -257,6 +257,22 @@ export function withDraftTree(tree: TreePayload, draft: DraftState | null): Canv
   }
 }
 
+/** the org's px-per-credit scale — ONE formula for the canvas bars and the
+ *  credit-ask card (user ruling 2026-08-05: the ask bar must look identical
+ *  to the agent's existing bar, same scale included) */
+export function orgPxc(tree: TreePayload): number {
+  // kiosk: the cap is the scale — the overseer bar is a fixed size (user spec)
+  if (tree.kiosk?.credits) return (NODE_H * 1.6) / tree.kiosk.credits
+  const holds = tree.roots
+    .filter((n) => n.state === 'live')
+    .map((n) => n.seat + n.grant)
+  if (!holds.length) return NODE_H / 10
+  if (holds.length === 1) return NODE_H / holds[0]!
+  const avg = holds.reduce((a, b) => a + b, 0) / holds.length
+  const max = Math.max(...holds)
+  return Math.min((NODE_H * 1.25) / avg, (NODE_H * 1.6) / max)
+}
+
 export function flatten(root: CanvasNode, seats: Record<string, number>): Map<string, CanvasNode> {
   const map = new Map<string, CanvasNode>()
   const walk = (n: CanvasNode, parent: string | null) => {

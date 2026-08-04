@@ -141,7 +141,8 @@ export function UserNode({ pos, isDrop, stats, inboxCount, seats,
         <EyeDesk map={map} op={op} slug={slug} toast={toast}
           inboxCount={inboxCount} onInbox={onInbox}
           onGear={onGear} pub={pub} eyeW={eyeW} posX={posX} onJump={onJump}
-          compactAt={compactAt} maxTop={maxTop} onMailLink={onMailLink} />
+          compactAt={compactAt} maxTop={maxTop} pxc={pxc}
+          onMailLink={onMailLink} />
       )}
     </div>
   )
@@ -167,11 +168,12 @@ interface EyeDeskProps {
   onJump?: (id: string) => void
   compactAt?: number
   maxTop?: number
+  pxc?: number
   onMailLink: MailLinkFn
 }
 
 function EyeDesk({ map, op, slug, toast, inboxCount,
-  onInbox, onGear, pub, eyeW, posX, onJump, compactAt, maxTop,
+  onInbox, onGear, pub, eyeW, posX, onJump, compactAt, maxTop, pxc,
   onMailLink }: EyeDeskProps) {
   const agents = [...map.values()].filter((n) =>
     n.id !== USER && n.id !== DRAFT && n.state === 'live' && !n.isBearerOf
@@ -282,7 +284,7 @@ function EyeDesk({ map, op, slug, toast, inboxCount,
             <div className="eye-panel" key={a.id}>
               <DeskChat node={a} map={map} op={op} slug={slug}
                 toast={toast} pub={pub} bare compact compactAt={compactAt}
-                onJump={onJump} maxTop={maxTop} onMailLink={onMailLink} />
+                onJump={onJump} maxTop={maxTop} pxc={pxc} onMailLink={onMailLink} />
             </div>
           ))}
           {!open.length && agents.length > 0 &&
@@ -814,7 +816,7 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, m
         <DeskChat node={node} map={map} op={op} slug={slug}
           toast={toast}
           onLineage={onLineage} onConfig={onConfig} compactAt={compactAt}
-          onRecenter={onRecenter} onJump={onJump} maxTop={maxTop}
+          onRecenter={onRecenter} onJump={onJump} maxTop={maxTop} pxc={pxc}
           pub={pub} onMailLink={onMailLink} />
       )}
       {/* user ruling: chips are NEVER disabled by the node's own free credits —

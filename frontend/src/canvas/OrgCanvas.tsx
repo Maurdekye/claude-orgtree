@@ -12,7 +12,7 @@ import {
   AddIcon, FrozenIcon, FullscreenIcon, PublicIcon, RemoveIcon, ViewListIcon,
 } from '../icons'
 import {
-  ago, DRAFT, ease, flatten, INBOX, INBOX_H, layout, NODE_H, NODE_W, segD,
+  ago, DRAFT, ease, flatten, INBOX, INBOX_H, layout, NODE_H, NODE_W, orgPxc, segD,
   segPoint, sizeOf, smooth, SPRING_C, SPRING_K, TIER_LETTER, USER, USER_H,
   USER_W, withDraftTree, Z_DESK, Z_MAX, Z_MINI,
 } from './shared'
@@ -368,18 +368,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
   // seat block at the foot).
   // ⚠ Derived from TOP-LEVEL holdings ONLY (user ruling): sub-reallocations
   // re-partition circulation and must never move any other bar.
-  const pxPerCredit = useMemo(() => {
-    // kiosk: the cap is the scale — the overseer bar is a fixed size (user spec)
-    if (tree.kiosk?.credits) return (NODE_H * 1.6) / tree.kiosk.credits
-    const holds = tree.roots
-      .filter((n) => n.state === 'live')
-      .map((n) => n.seat + n.grant)
-    if (!holds.length) return NODE_H / 10
-    if (holds.length === 1) return NODE_H / holds[0]!
-    const avg = holds.reduce((a, b) => a + b, 0) / holds.length
-    const max = Math.max(...holds)
-    return Math.min((NODE_H * 1.25) / avg, (NODE_H * 1.6) / max)
-  }, [tree])
+  const pxPerCredit = useMemo(() => orgPxc(tree), [tree])
 
   // composer drafts are keyed per node id and freed slugs are re-minted by
   // later hires (review): sweep drafts whose node no longer exists at all,
