@@ -27,7 +27,7 @@ import math
 import re
 import uuid
 from collections.abc import Iterable, Mapping
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Final, Literal, cast
 
 from .schema import (AudienceGrant, DirGrant, MailEntry, NodeDoc,
@@ -2665,6 +2665,18 @@ class Org:
             return {"status": f"your grant is already {old} — nothing to request"}
         if not (reason and str(reason).strip()):
             raise LedgerError("a reason is required")
+        # ZERO headroom → refused OUTRIGHT, no ask made (user ruling
+        # 2026-08-04): when there are genuinely no credits available to grant,
+        # a pending card would be a lie — the user could only refuse it.
+        room, why = self.credit_headroom(nid)
+        if room is not None and room <= 0:
+            self._log("credit_refused", nid, {"asked": new_limit}, [])
+            return {"refused": True,
+                    "status": f"refused outright — there are ZERO credits "
+                              f"available to grant ({why}). No request was "
+                              f"made. Free credits (retire a sibling, hand "
+                              f"back unused grant) or ask the user to raise "
+                              f"the cap."}
         if pending is not None:
             # amend in place: the card the user eventually clicks always
             # shows the CURRENT figure, never a stale one
@@ -2683,7 +2695,36 @@ class Org:
         return {"requested": new_limit, "increase": new_limit - old,
                 "status": "pending — the user will approve or deny"}
 
-    def credit_request_action(self, rid: str, action: str) -> dict[str, Any]:
+    def credit_headroom(self, nid: str) -> tuple[int | None, str]:
+        """How many MORE credits a top-level node could be granted, and which
+        cap binds. None = unbounded (no cap set). Two independent ceilings:
+        max_top_grant (per-node) and the kiosk credit pool (org-wide)."""
+        n = self.node(nid)
+        rooms: list[tuple[int, str]] = []
+        cap = int(self.d.get("max_top_grant") or 0)
+        if cap:
+            rooms.append((cap - int(n["grant"]),
+                          f"your grant {n['grant']:g} is at the org's "
+                          f"top-level cap of {cap}"))
+        kc = (self.d.get("kiosk") or {}).get("credits")
+        if kc is not None:
+            holds = sum(self.seat_cost(k) + self.nodes[k]["grant"]
+                        for k in self.children(None))
+            rooms.append((int(kc) - int(holds),
+                          f"the kiosk credit pool ({kc:g}) is fully held"))
+        if not rooms:
+            return None, ""
+        room, why = min(rooms, key=lambda r: r[0])
+        return room, why
+
+    def credit_request_action(self, rid: str, action: str,
+                              granted: int | None = None) -> dict[str, Any]:
+        """Approve, counter-offer, or deny. `granted` (F-05, user-ruled): the
+        user may set ANY legal amount — below the ask, above it, or below the
+        node's current grant down to its committed floor (a clawback of unused
+        credits; reallocate's own invariant is the floor). The outcome notice
+        states what was asked, what was given, and that the agent may come
+        back — the matter is the agent's to continue, not closed (ruling ③)."""
         req = next((r for r in self.d.get("credit_requests", [])
                     if r["id"] == rid), None)
         if req is None or req["status"] != "pending":
@@ -2691,6 +2732,7 @@ class Org:
         if action not in ("approve", "deny"):
             raise LedgerError("action must be approve|deny")
         nid = req["node"]
+        old = req["old"]
         if action == "approve":
             if nid not in self.nodes or self.node(nid)["state"] != "live":
                 # the card clears rather than raising: an approval that can't
@@ -2700,20 +2742,216 @@ class Org:
                 req["note"] = f"{nid} is no longer live — dropped as moot"
                 self._log("credit_moot", USER, {"node": nid}, [])
                 return req
-            delta = req["new"] - self.node(nid)["grant"]
-            if delta > 0:
-                self.reallocate(USER, nid, delta)
-            req["status"] = "approved"
-            self._notify([nid], f"The user APPROVED your credit request — your "
-                                f"grant is now {self.node(nid)['grant']:g}.")
-        else:
-            req["status"] = "denied"
-            if nid in self.nodes:
-                self._notify([nid], f"The user DENIED your credit request "
-                                    f"({req['old']} → {req['new']}). Work within "
-                                    f"your current grant or escalate differently.")
-        self._log("credit_" + action, USER, {"node": nid, "new": req["new"]}, [])
+            give = int(granted if granted is not None else req["new"])
+            delta = give - self.node(nid)["grant"]
+            warnings: list[str] = []
+            if delta != 0:
+                # reallocate enforces both ends: +Δ checks max_top_grant,
+                # −Δ refuses past free (the committed floor) and names what
+                # a reduction strands
+                warnings = self.reallocate(USER, nid, delta).get("warnings", [])
+            req["status"] = "answered"
+            req["granted"] = give
+            now_g = self.node(nid)["grant"]
+            asked = f"you asked {old:g} → {req['new']:g}"
+            if give == req["new"]:
+                notice = (f"The user APPROVED your credit request — your "
+                          f"grant is now {now_g:g}.")
+            elif give > old:
+                notice = (f"The user COUNTER-OFFERED: {asked}; granted "
+                          f"{old:g} → {give:g} ({give - old:+g}). You may take "
+                          f"this as-is, request more later, or find another "
+                          f"way within it.")
+            elif give == old:
+                notice = (f"The user DECLINED the increase — {asked}; your "
+                          f"grant stays {now_g:g}. You may re-ask with a "
+                          f"stronger case, or work within it.")
+            else:
+                notice = (f"The user REDUCED your grant: {asked}; your grant "
+                          f"is now {give:g} ({give - old:+g} — unused credits "
+                          f"reclaimed). You may re-ask, or work within it.")
+            req["notice"] = notice
+            self._log("credit_answer", USER,
+                      {"node": nid, "asked": req["new"], "granted": give},
+                      warnings)
+            return {**req, "warnings": warnings}
+        req["status"] = "denied"
+        if nid in self.nodes:
+            req["notice"] = (f"The user DENIED your credit request "
+                            f"({old:g} → {req['new']:g}). Your grant stays "
+                            f"{old:g} — work within it, re-ask with a stronger "
+                            f"case, or escalate differently.")
+        self._log("credit_deny", USER, {"node": nid, "new": req["new"]}, [])
         return req
+
+    def credit_preview(self, rid: str, granted: int) -> dict[str, Any]:
+        """F-05 dry run: the warnings a `granted` amount WOULD raise, before
+        the user commits — a reduction's stranding list is exactly what
+        someone dragging the bar downward needs to see first."""
+        req = next((r for r in self.d.get("credit_requests", [])
+                    if r["id"] == rid), None)
+        if req is None or req["status"] != "pending":
+            raise LedgerError(f"no pending credit request {rid!r}")
+        nid = req["node"]
+        if nid not in self.nodes or self.node(nid)["state"] != "live":
+            return {"ok": False, "warnings": [f"{nid} is no longer live"]}
+        n = self.node(nid)
+        give = int(granted)
+        delta = give - n["grant"]
+        warnings: list[str] = []
+        if delta > 0 and n["parent"] is None:
+            cap = int(self.d.get("max_top_grant") or 0)
+            if cap and give > cap:
+                return {"ok": False,
+                        "warnings": [f"{give:g} is past the top-level grant "
+                                     f"cap of {cap}"]}
+        if delta < 0:
+            if self.free(nid) < -delta:
+                return {"ok": False,
+                        "warnings": [f"{nid} has only {self.free(nid):g} "
+                                     f"unused; the rest is committed"]}
+            warnings = self._stranding_warnings(
+                nid, self.free(nid), self.free(nid) + delta)
+        return {"ok": True, "warnings": warnings}
+
+    # ---------------------------------------------------- F-04: asking the user
+    def ask_user(self, nid: str, question: str, options: list[Any] | None = None,
+                 multi: bool = False) -> dict[str, Any]:
+        """A structured question to the user (F-04, user-ruled 2026-08-04):
+        ALWAYS parks — no blocking wait. The question becomes an interactive
+        card on the agent's desk AND in the user's inbox; the answer arrives
+        as ordinary user mail. Gate = the user-mail gate (top-level or a held
+        user audience); anyone else has the question ROUTED to their superior
+        as mail instead of refused (the auto-bridge motto). One open question
+        per node — re-asking amends it (the ratified idempotent-ask pattern)."""
+        self._require_live(nid)
+        q = str(question or "").strip()
+        if not q:
+            raise LedgerError("a question is required")
+        opts = [str(o).strip() for o in (options or []) if str(o).strip()][:4]
+        n = self.node(nid)
+        if n["parent"] is not None and not self._has_audience(nid, USER):
+            sup = n["parent"]
+            body = "[QUESTION — needs an answer]\n" + q
+            if opts:
+                body += "\nOptions: " + " · ".join(opts) \
+                        + (" (several may apply)" if multi else "")
+            r = self.post_mail(nid, sup, body, kind="question")
+            return {"routed": sup, "deferred": bool(r.get("deferred")),
+                    "status": f"you hold no user audience — the question was "
+                              f"mailed to your superior \"{sup}\"; their "
+                              f"answer arrives as mail"}
+        asks = self.d.setdefault("asks", [])
+        entry = next((a for a in asks
+                      if a["node"] == nid and a["status"] == "open"), None)
+        if entry is not None:
+            entry.update({"question": q, "at": now(),
+                          **({"options": opts} if opts else {}),
+                          **({"multi": True} if multi else {})})
+            if not opts:
+                entry.pop("options", None)
+            if not multi:
+                entry.pop("multi", None)
+            self._log("ask", nid, {"id": entry["id"], "amended": True}, [])
+            return {"asked": entry["id"],
+                    "status": "parked (amended your earlier question) — the "
+                              "answer will arrive as mail; do NOT wait for it "
+                              "in this turn"}
+        aid = "q" + uuid.uuid4().hex[:8]
+        asks.append({"id": aid, "node": nid, "kind": "question", "question": q,
+                     **({"options": opts} if opts else {}),
+                     **({"multi": True} if multi else {}),
+                     "at": now(), "status": "open"})
+        self._prune_asks()
+        self._log("ask", nid, {"id": aid}, [])
+        return {"asked": aid,
+                "status": "parked — the question is on the user's screen; the "
+                          "answer will arrive as mail. Do NOT wait for it in "
+                          "this turn: wrap up and end the turn. ⚠ If any other "
+                          "mail wakes you first, the question is VOIDED and "
+                          "must be re-asked."}
+
+    def ask_answer(self, aid: str, selected: list[Any] | None = None,
+                   text: str | None = None) -> dict[str, Any]:
+        """Mark a question answered and return the composed answer body — the
+        caller delivers it as ordinary user mail (which is what drives the
+        turn). Marking happens FIRST, under the same doc lock, so the turn the
+        answer starts can never void its own question."""
+        a = next((x for x in self.d.get("asks", []) if x["id"] == aid), None)
+        if a is None:
+            raise LedgerError(f"no ask {aid!r}")
+        if a["status"] != "open":
+            raise LedgerError(
+                f"ask {aid} is already {a['status']}"
+                + (f" ({a.get('reason')})" if a.get("reason") else ""))
+        sel = [str(s).strip() for s in (selected or []) if str(s).strip()]
+        txt = str(text or "").strip()
+        if not sel and not txt:
+            raise LedgerError("an answer needs selected options or text")
+        a["status"] = "answered"
+        a["reason"] = "answered"
+        a["answer"] = {**({"selected": sel} if sel else {}),
+                       **({"text": txt} if txt else {})}
+        a["resolved_at"] = now()
+        body = "[ANSWER to your question]\nQ: " + a["question"]
+        if sel:
+            body += "\nSelected: " + " · ".join(sel)
+        if txt:
+            body += ("\nAnswer: " if not sel else "\nAlso: ") + txt
+        self._log("ask_answered", USER, {"id": aid, "node": a["node"]}, [])
+        return {"node": a["node"], "body": body}
+
+    def void_open_asks(self, nid: str) -> list[str]:
+        """Wake-voids (user ruling 2026-08-04): a turn that starts while an
+        ask is open means the agent's context moved on before the answer —
+        the ask is nulled EVERYWHERE and the agent is told to re-ask. Applies
+        to questions and pending credit requests alike."""
+        gone: list[str] = []
+        for a in self.d.get("asks", []):
+            if a["node"] == nid and a["status"] == "open":
+                a["status"] = "interrupted"
+                a["reason"] = "the agent was woken by other input before an answer arrived"
+                a["resolved_at"] = now()
+                gone.append(f"your question ({a['question'][:100]!r}) was "
+                            f"VOIDED — re-ask it if still needed")
+        for r in self.d.get("credit_requests", []):
+            if r["node"] == nid and r["status"] == "pending":
+                r["status"] = "interrupted"
+                r["reason"] = "the agent was woken by other input before an answer arrived"
+                r["resolved_at"] = now()
+                gone.append(f"your credit request ({r['old']:g} → {r['new']:g}) "
+                            f"was VOIDED — re-ask it if still needed")
+        if gone:
+            self._log("asks_voided", nid, {"n": len(gone)}, [])
+        return gone
+
+    def _prune_asks(self) -> None:
+        """Open asks are never pruned; resolved ones keep a short history."""
+        asks = self.d.get("asks", [])
+        resolved = [a for a in asks if a["status"] != "open"]
+        for a in resolved[:-30]:
+            asks.remove(a)
+
+    def node_ask(self, nid: str) -> dict[str, Any] | None:
+        """The ask the UI should show on this node's desk: the open one, or
+        the most recently resolved one within its linger window (the nulled
+        card carries WHY it nulled — grey answered / orange interrupted)."""
+        pool = ([a for a in self.d.get("asks", []) if a["node"] == nid]
+                + [{**r, "kind": "credit"} for r in self.d.get("credit_requests", [])
+                   if r["node"] == nid and r["status"] not in ("withdrawn", "moot")])
+        if not pool:
+            return None
+
+        def stamp(a: dict[str, Any]) -> str:
+            return str(a.get("resolved_at") or a["at"])
+        opens = [a for a in pool if a.get("status") in ("open", "pending")]
+        best = max(opens, key=stamp) if opens else max(pool, key=stamp)
+        if best.get("status") not in ("open", "pending"):
+            cutoff = (datetime.now(timezone.utc)
+                      - timedelta(minutes=15)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            if (best.get("resolved_at") or best["at"]) < cutoff:
+                return None
+        return best
 
     def fable_filter_hit(self, nid: str, detail: str) -> str:
         """A Fable content filter flagged this node's message mid-turn (user
@@ -3020,6 +3258,9 @@ class Org:
                            if n.get("frozen") else None),
                 "audiences_held": [a["grantor"] for a in self.d["audiences"]
                                    if a["grantee"] == nid],
+                # F-04/F-05: the ask card this node's desk shows — open, or
+                # freshly nulled (the nulled card carries its reason)
+                "ask": self.node_ask(nid),
                 "bearer_state": n["bearer_state"],
                 "generation": n["generation"],
                 "children": [build(c) for c in self.org_children(nid)],
@@ -3048,6 +3289,17 @@ class Org:
             "effort_default": self.DEFAULT_EFFORT,
             "credit_requests": [r for r in self.d.get("credit_requests", [])
                                 if r["status"] == "pending"],
+            # F-04: everything the user's inbox interleaves as ask cards —
+            # open first-class, resolved for the nulled history; the header
+            # ask-icon glows iff asks_open > 0
+            "asks": (self.d.get("asks", [])
+                     + [{**r, "kind": "credit"}
+                        for r in self.d.get("credit_requests", [])
+                        if r["status"] not in ("withdrawn", "moot")])[-60:],
+            "asks_open": sum(1 for a in self.d.get("asks", [])
+                             if a["status"] == "open")
+                         + sum(1 for r in self.d.get("credit_requests", [])
+                               if r["status"] == "pending"),
             "tiers": self.d["tiers"],
             "audiences": self.d["audiences"],
             "roots": [build(c) for c in self.org_children(None)],

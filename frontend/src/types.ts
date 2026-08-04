@@ -181,6 +181,9 @@ export interface TreeNode {
   /** G4: what the agent is doing this instant, derived server-side from the
    *  live tail. The client used to build this itself from websocket events. */
   activity: ActivityInfo
+  /** F-04/F-05: the ask card this node's desk shows — open, or freshly
+   *  nulled (ledger.node_ask; null once the linger window passes) */
+  ask?: AskInfo | null
 }
 
 /** 'thinking' | 'writing' | 'tool' — a string rather than a union for the same
@@ -193,6 +196,30 @@ export interface CreditRequest {
   status?: string
   node?: string
   id?: string
+  [k: string]: unknown
+}
+
+/** ledger.node_ask / tree.asks — one ask card (F-04 question or F-05 credit
+ *  request), open or nulled. `status`: open|pending = live; answered/denied =
+ *  grey null; interrupted = orange null (`reason` says why). */
+export interface AskInfo {
+  id: string
+  node: string
+  kind?: string              // "question" | "credit" (credit rows may omit it in credit_requests)
+  status: string
+  at: string
+  resolved_at?: string
+  reason?: string
+  // question kind
+  question?: string
+  options?: string[]
+  multi?: boolean
+  answer?: { selected?: string[]; text?: string }
+  // credit kind (ledger credit_requests shape)
+  old?: number
+  new?: number
+  granted?: number
+  notice?: string
   [k: string]: unknown
 }
 
@@ -335,6 +362,10 @@ export interface TreePayload {
   roots: TreeNode[]
   audit: AuditReport
   cost_usd_total: number
+  /** F-04: every ask card the inbox interleaves (open + recent resolved);
+   *  the header ask-icon glows iff asks_open > 0 */
+  asks?: AskInfo[]
+  asks_open?: number
   user_inbox_count: number
   user_inbox_newest: string | null
   fable_lock: Record<string, unknown> | null

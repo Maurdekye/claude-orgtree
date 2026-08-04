@@ -596,10 +596,26 @@ main {
 /* permission border: dashed = cannot edit files (read-only agent); the tier
    edge stays solid — dashing it too read as noise, not as a channel */
 .sq.ro-agent { border-style: dashed; border-top-style: solid; }
-/* audience glow: soft steel = holds an agent audience · bright terracotta =
-   holds the USER's ear (steel, not sonnet blue — see .edge.aud-line) */
+/* audience glow: soft steel = holds an audience (the USER's included — the
+   bright terracotta it used to wear is REPURPOSED, user ruling 2026-08-04:
+   only an agent that needs the user's attention glows — see .sq.asking) */
 .sq.aud { --aud-glow: 0 0 10px rgba(190, 210, 230, .3); box-shadow: var(--aud-glow); }
-.sq.aud-user { --aud-glow: 0 0 14px rgba(217, 119, 87, .5), 0 0 30px rgba(217, 119, 87, .18); box-shadow: var(--aud-glow); }
+/* the attention aura: an un-nulled ask (question / credit request) is waiting
+   on the user. Bright, pulsing, and the ONLY thing in the chrome that does. */
+.sq.asking {
+  border-color: color-mix(in srgb, var(--accent) 80%, var(--line));
+  animation: askglow 2s ease-in-out infinite;
+}
+@keyframes askglow {
+  0%, 100% {
+    box-shadow: var(--aud-glow, 0 0 0 0 transparent),
+      0 0 12px rgba(217, 119, 87, .55), 0 0 0 0 rgba(217, 119, 87, .35);
+  }
+  50% {
+    box-shadow: var(--aud-glow, 0 0 0 0 transparent),
+      0 0 26px rgba(217, 119, 87, .8), 0 0 0 8px rgba(217, 119, 87, .14);
+  }
+}
 /* status chips */
 .statuschip { font-size: 9px; padding: 0 6px; border-radius: 8px; font-family: var(--mono); }
 .statuschip.done { color: var(--ok); border: 1px solid rgba(111, 211, 119, .4); }
@@ -621,25 +637,68 @@ main {
   font-size: 13px; color: var(--dim); line-height: 1;
 }
 .eye-gear:hover { color: var(--accent); background: none; }
-/* unread mail: the whole eye glows and pulses until the mailbox is opened */
-.sq.user.mail-glow {
-  border-color: color-mix(in srgb, var(--accent) 75%, var(--line));
-  animation: mailglow 2.4s ease-in-out infinite;
-}
-.sq.user.mail-glow .eye-inbox { color: var(--accent); opacity: 1; }
-@keyframes mailglow {
-  0%, 100% {
-    box-shadow: 0 0 8px rgba(217, 119, 87, .3),
-      0 0 0 0 rgba(217, 119, 87, .3);
-  }
-  50% {
-    box-shadow: 0 0 22px rgba(217, 119, 87, .6),
-      0 0 0 7px rgba(217, 119, 87, .12);
-  }
-}
+/* (the eye's unread-mail glow is gone — user ruling 2026-08-04: attention
+   glow means "an agent needs your answer", nothing else; unread mail keeps
+   its count badge and the header ask icon carries the pulse) */
 .eye-inbox .count {
   position: absolute; top: -5px; right: -7px; background: var(--accent);
   color: #fff; border-radius: 8px; font-size: 9.5px; padding: 0 4px; font-weight: 700;
+}
+
+/* ------------------------------------ the ask system (F-04 + F-05 cards) */
+.askcard {
+  margin: 6px 0; padding: 8px 10px; border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--line));
+  background: color-mix(in srgb, var(--accent) 6%, var(--panel));
+  display: flex; flex-direction: column; gap: 6px; font-size: 12.5px;
+}
+.ask-head { display: flex; align-items: center; gap: 6px; color: var(--ink-strong); }
+.ask-q { white-space: pre-wrap; }
+.ask-opts { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.ask-opt {
+  border: 1px solid var(--line); border-radius: 5px; background: var(--input);
+  padding: 3px 10px; font-size: 12px; color: var(--ink);
+}
+.ask-opt.on {
+  border-color: var(--accent); background: var(--accent-soft);
+  color: var(--ink-strong);
+}
+.ask-answer-row { display: flex; gap: 6px; }
+.ask-answer-row input { flex: 1; min-width: 0; }
+.ask-credit-row { display: flex; gap: 14px; align-items: flex-end; }
+.ask-barbox { position: relative; width: 46px; flex: none; display: flex; align-items: flex-end; }
+.ask-barbox .cbar { position: relative; width: 22px; margin-left: 8px; }
+.ask-credit-side { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.ask-warn { color: var(--warn, #e5c07b); font-size: 11.5px; }
+/* nulled: the card STAYS, wearing why — grey answered/denied, orange interrupted */
+.askcard.nulled { opacity: .75; border-color: var(--line); background: var(--panel); }
+.askcard.nulled.grey { color: var(--dim); }
+.askcard.nulled.orange { border-color: rgba(229, 140, 60, .6); }
+.ask-null-tag {
+  margin-left: auto; font-size: 10px; padding: 0 6px; border-radius: 8px;
+  border: 1px solid var(--line); color: var(--dim); font-family: var(--mono);
+}
+.ask-null-tag.warn { color: #e58c3c; border-color: rgba(229, 140, 60, .6); }
+.ask-null-why { color: #e58c3c; font-size: 11.5px; }
+/* the F-05 I-bar: brackets current grant → offered grant on the bar's flank */
+.cbar-ibar {
+  position: absolute; right: -7px; width: 5px;
+  border: 1px solid var(--accent); border-left: none;
+  pointer-events: none;
+}
+.cbar-ibar.down { border-color: #e58c3c; }
+.n-down { color: #e58c3c; }
+/* the header ask icon: the ONE bell — glows only while an ask is un-nulled */
+.ask-bell { position: relative; }
+.ask-bell .eye-count { position: absolute; top: -4px; right: -6px; }
+.ask-bell.glow {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 70%, var(--line));
+  animation: askbell 2s ease-in-out infinite;
+}
+@keyframes askbell {
+  0%, 100% { box-shadow: 0 0 6px rgba(217, 119, 87, .4); }
+  50% { box-shadow: 0 0 16px rgba(217, 119, 87, .8); }
 }
 /* ------------------------------- the mail interface (webmail two-pane layout):
    list on the left (sender · time · truncated brief), reading pane on the

@@ -1282,6 +1282,15 @@ def _run_one_turn(slug: str, nid: str,
             with store.DOC_LOCK:
                 o2 = store.load_org(slug)
                 if nid in o2.nodes:
+                    # F-04 wake-void (user ruling): a turn starting while this
+                    # node has an open ask means its context moves on before
+                    # the answer — null the ask everywhere and TELL the agent
+                    # in this very turn. The answer-carrying turn never trips
+                    # this: answering marks the ask first, under this lock.
+                    voided = o2.void_open_asks(nid)
+                    if voided:
+                        text = ("[PENDING ASK VOIDED] " + " · ".join(voided)
+                                + "\n\n") + text
                     # the cmd marker makes the flag durable: both replayers
                     # (reconcile, ▶ resume) rebuild plain text as prose, which
                     # would bury the "/" mid-string — a command that can't

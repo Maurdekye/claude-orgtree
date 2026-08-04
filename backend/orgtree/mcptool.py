@@ -69,13 +69,46 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "orgtree_ask",
+        "description": (
+            "Ask the USER a structured question. It ALWAYS parks: an "
+            "interactive card appears on your desk and in the user's inbox, "
+            "and the answer arrives later as ordinary mail — so ask, then "
+            "WRAP UP AND END YOUR TURN; never wait or poll. Optionally give "
+            "2-4 options (the user can always answer free-text instead). "
+            "⚠ If any OTHER mail wakes you before the user answers, the "
+            "question is VOIDED everywhere and you must re-ask. Re-asking "
+            "while one is open amends it. If you hold no user audience and "
+            "are not top-level, the question is routed to your superior as "
+            "mail instead."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "question": {"type": "string",
+                             "description": "the complete question"},
+                "options": {"type": "array", "items": {"type": "string"},
+                            "maxItems": 4,
+                            "description": "2-4 concise answer options (optional)"},
+                "multi": {"type": "boolean",
+                          "description": "several options may be selected"},
+            },
+            "required": ["question"],
+        },
+    },
+    {
         "name": "orgtree_request_credits",
         "description": (
             "TOP-LEVEL AGENTS ONLY: ask the user directly for a larger credit "
-            "grant. Not mail — a structured request the user approves or denies "
-            "with one click. State the requested NEW TOTAL grant (not the "
-            "increase) and a concrete reason. One pending request at a time; "
-            "the verdict arrives as a notice in a future turn."),
+            "grant. Not mail — a structured request card on your desk and in "
+            "the user's inbox. State the requested NEW TOTAL grant (not the "
+            "increase) and a concrete reason. The user may grant the asked "
+            "amount, MORE, LESS, or even reduce your grant — their decision "
+            "arrives as mail, and you may take it as-is, re-ask, or route "
+            "around it. If there are genuinely ZERO credits available to "
+            "grant, the request is refused outright with no card. ⚠ Like a "
+            "question, the pending request is VOIDED if other mail wakes you "
+            "first — re-ask then. One pending request at a time; asking "
+            "again amends it."),
         "inputSchema": {
             "type": "object",
             "properties": {

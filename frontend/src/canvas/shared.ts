@@ -9,8 +9,8 @@ import { marked } from 'marked'
 import { useEffect, useRef, useState } from 'react'
 import type { DependencyList } from 'react'
 import type {
-  ActivityInfo, DirGrant, MailEntry, NodeState, NodeStatus, OpRequest,
-  OpResult, ToolGrant, TreeNode, TreePayload,
+  ActivityInfo, AskInfo, DirGrant, MailEntry, NodeState, NodeStatus,
+  OpRequest, OpResult, ToolGrant, TreeNode, TreePayload,
 } from '../types'
 
 export const TIER_LETTER: Record<string, string> = { haiku: 'H', sonnet: 'S', opus: 'O', fable: 'F' }
@@ -73,6 +73,8 @@ export interface CanvasNode {
   /** G4: server-derived, from the supervisor's live tail (absent on the
    *  synthetic cards — eye root, draft, bearers — which never run turns) */
   activity?: ActivityInfo
+  /** F-04/F-05: the ask card this node shows (ledger.node_ask) */
+  ask?: AskInfo | null
   waiting?: boolean
   responding?: boolean
   phase?: string | null

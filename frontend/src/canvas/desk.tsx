@@ -30,6 +30,7 @@ import type {
 } from './shared'
 import { ConfirmModal } from './modals'
 import { InboxView } from './mail'
+import { AskCard } from './asks'
 
 interface ContextWheelProps {
   occ?: number | null
@@ -94,7 +95,7 @@ export function Activity({ act, dotOnly }: { act?: ActivityInfo; dotOnly?: boole
 export const DeskChat = memo(DeskChatInner, (p, n) =>
   p.node === n.node && p.map === n.map && p.slug === n.slug
   && p.pub === n.pub && p.bare === n.bare && p.compact === n.compact
-  && p.compactAt === n.compactAt)
+  && p.compactAt === n.compactAt && p.maxTop === n.maxTop)
 
 interface DeskChatProps {
   node: CanvasNode
@@ -108,6 +109,8 @@ interface DeskChatProps {
   /** camera move to a related agent (F-01 nav chips) — the same glide as
    *  clicking its card. USER as the id targets the eye/switchboard. */
   onJump?: (id: string) => void
+  /** F-05: the org's top-level grant cap — the ask card's bar ceiling */
+  maxTop?: number
   pub: boolean
   bare?: boolean
   compact?: boolean
@@ -144,7 +147,7 @@ function NavChip({ n, dir, onJump }:
 const SENDMODE_MS = 6000
 
 function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
-  onRecenter, onJump, pub, bare = false, compact = false, compactAt,
+  onRecenter, onJump, maxTop, pub, bare = false, compact = false, compactAt,
   onMailLink }: DeskChatProps) {
   // THE CONVERSATION IS NOT THIS COMPONENT'S. It lives in one per-node store
   // (convo.ts) that every view of this node subscribes to, because a node can
@@ -607,6 +610,16 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
           .then(() => refresh(true))
           // rethrow: InboxView's optimistic hide rolls back on rejection
           .catch((e: Error) => { toast([`error: ${e.message}`]); throw e })} />}
+      {/* F-04/F-05: the ask card — pinned above the composer so it is visible
+          whatever the scroll position ("a question answering ui should appear
+          on the agent"). Open = interactive; nulled = grey/orange with its
+          reason, until the linger window drops it from the payload. */}
+      {node.ask && (
+        <AskCard ask={node.ask} slug={slug} toast={toast}
+          seat={node.seat ?? 0}
+          committed={(node.grant ?? 0) - (node.free ?? 0)}
+          maxTop={maxTop} />
+      )}
       {/* F-01: subordinate chips at the BOTTOM — one per direct report. Drafts
           are not agents yet; bearer pseudo-cards are consultable stack layers,
           not reports. */}

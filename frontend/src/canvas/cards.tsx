@@ -30,7 +30,6 @@ interface UserNodeProps {
   stats: { circ: number; seats: number; free: number }
   inboxCount: number
   seats: Record<string, number>
-  mailGlow: boolean
   kiosk: TreePayload['kiosk']
   pub: boolean
   kioskRemaining: number | null
@@ -51,20 +50,24 @@ interface UserNodeProps {
   slug: string
   toast: ToastFn
   compactAt?: number
+  maxTop?: number
 }
 
-export function UserNode({ pos, isDrop, stats, inboxCount, seats, mailGlow,
+export function UserNode({ pos, isDrop, stats, inboxCount, seats,
   kiosk, pub, kioskRemaining, kioskSegs, pxc, zoom, onInbox, onGear, onSpawn,
   onMailLink,
   focused, eyeW, onFocus, posX, onJump, map, op, slug, toast,
-  compactAt }: UserNodeProps) {
+  compactAt, maxTop }: UserNodeProps) {
   const downRef = useRef<Pt | null>(null)
   // const extraction: the kiosk-credits narrowing must survive the commit
   // closure below (a property check alone would not)
   const kioskCredits = kiosk?.credits
   return (
+    // the mail glow is GONE (user ruling 2026-08-04): unread mail keeps its
+    // count badge; the only thing that glows anywhere is an agent that needs
+    // the user's answer (see .asking), echoed by the header ask icon
     <div className={'sq user' + (focused ? ' desk eyeboard' : '')
-      + (isDrop ? ' drop' : '') + (mailGlow && !focused ? ' mail-glow' : '')}
+      + (isDrop ? ' drop' : '')}
       style={{
         transform: `translate(${pos.x}px, ${pos.y}px)`,
         width: focused ? eyeW : USER_W, height: USER_H,
@@ -136,7 +139,7 @@ export function UserNode({ pos, isDrop, stats, inboxCount, seats, mailGlow,
         <EyeDesk map={map} op={op} slug={slug} toast={toast}
           inboxCount={inboxCount} onInbox={onInbox}
           onGear={onGear} pub={pub} eyeW={eyeW} posX={posX} onJump={onJump}
-          compactAt={compactAt} onMailLink={onMailLink} />
+          compactAt={compactAt} maxTop={maxTop} onMailLink={onMailLink} />
       )}
     </div>
   )
@@ -161,11 +164,13 @@ interface EyeDeskProps {
   posX: (id: string) => number
   onJump?: (id: string) => void
   compactAt?: number
+  maxTop?: number
   onMailLink: MailLinkFn
 }
 
 function EyeDesk({ map, op, slug, toast, inboxCount,
-  onInbox, onGear, pub, eyeW, posX, onJump, compactAt, onMailLink }: EyeDeskProps) {
+  onInbox, onGear, pub, eyeW, posX, onJump, compactAt, maxTop,
+  onMailLink }: EyeDeskProps) {
   const agents = [...map.values()].filter((n) =>
     n.id !== USER && n.id !== DRAFT && n.state === 'live' && !n.isBearerOf
     && (n.parent === USER || n.audiences_held?.includes(USER)))
@@ -275,7 +280,7 @@ function EyeDesk({ map, op, slug, toast, inboxCount,
             <div className="eye-panel" key={a.id}>
               <DeskChat node={a} map={map} op={op} slug={slug}
                 toast={toast} pub={pub} bare compact compactAt={compactAt}
-                onJump={onJump} onMailLink={onMailLink} />
+                onJump={onJump} maxTop={maxTop} onMailLink={onMailLink} />
             </div>
           ))}
           {!open.length && agents.length > 0 &&
@@ -346,10 +351,17 @@ interface CreditBarProps {
   zoom: number
   pxc: number
   capMode?: boolean
+  /** F-05 counter-offer: the agent's CURRENT grant. The tip shows the offer's
+   *  ±delta against it and an I-bar brackets the difference, so the size of
+   *  the concession is visible rather than arithmetic. */
+  baseline?: number
+  /** draftMode drag released — the ask card runs its dry-run preview here */
+  onRelease?: () => void
 }
 
-function CreditBar({ seat = 0, grant, committed, segments = [], draftMode,
-  min = 0, max, maxGhost, onDragValue, onCommit, zoom, pxc, capMode }: CreditBarProps) {
+export function CreditBar({ seat = 0, grant, committed, segments = [], draftMode,
+  min = 0, max, maxGhost, onDragValue, onCommit, zoom, pxc, capMode,
+  baseline, onRelease }: CreditBarProps) {
   const [drag, setDrag] = useState<{ y0: number; g0: number; val: number } | null>(null)          // {y0, g0, val}
   const cur = drag && !draftMode ? drag.val : grant
   const seatLen = seat * pxc
@@ -372,6 +384,7 @@ function CreditBar({ seat = 0, grant, committed, segments = [], draftMode,
     const v = drag.val
     setDrag(null)
     if (!draftMode && v !== grant) onCommit?.(v - grant)
+    if (draftMode) onRelease?.()
   }
   // ruler rungs mark REAL quantities: every 5 credits, or every 25 when the
   // scale is too fine for 5s to resolve (user ruling — never equal-spaced fluff)
@@ -424,8 +437,23 @@ function CreditBar({ seat = 0, grant, committed, segments = [], draftMode,
             style={{ height: seatLen }} />}
         {seat > 0 && cur > 0 && <div className="cbar-div" style={{ bottom: seatLen }} />}
       </div>
+      {/* F-05: the I-bar spanning current grant → offered grant */}
+      {baseline != null && cur !== baseline && (
+        <div className={'cbar-ibar' + (cur < baseline ? ' down' : '')}
+          style={{ bottom: seatLen + Math.min(baseline, cur) * pxc,
+                   height: Math.max(2, Math.abs(cur - baseline) * pxc) }} />
+      )}
       <div className="cbar-tip">
-        {draftMode ? (
+        {draftMode && baseline != null ? (
+          /* the counter-offer tip: what is offered, vs what the agent holds */
+          <>
+            <div>offer <b className="n-fill">{grant}</b>
+              {grant !== baseline && <span className={grant < baseline ? 'n-down' : 'dim'}>
+                {' '}({grant > baseline ? '+' : ''}{grant - baseline})</span>}
+            </div>
+            <div className="dim">now <b>{baseline}</b></div>
+          </>
+        ) : draftMode ? (
           <>
             <div>grant <b className="n-fill">{grant}</b></div>
             <div className="dim">seat <b className="n-seat">{seat}</b></div>
@@ -653,8 +681,14 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, m
   if (node.limit_locked) cls.push('locked')
   if (node.frozen) cls.push('frozen')
   if (node.scope?.tools?.edit === false) cls.push('ro-agent')
-  if (node.audiences_held?.includes(USER)) cls.push('aud-user')
-  else if (node.audiences_held?.length) cls.push('aud')
+  // aura semantics reworked (user ruling 2026-08-04): the bright terracotta
+  // glow now means ONE thing — this agent needs the user's attention (an open
+  // ask). Holding a user audience is a capability, not an emergency: it wears
+  // the same soft steel as any other audience.
+  if (node.ask && (node.ask.status === 'open' || node.ask.status === 'pending')) {
+    cls.push('asking')
+  }
+  if (node.audiences_held?.length) cls.push('aud')
   const stackN = (node.lineage ?? []).length
   if (!focused && stackN) cls.push('stack' + Math.min(stackN, 3))
   const live = node.state === 'live'
@@ -763,7 +797,8 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, m
         <DeskChat node={node} map={map} op={op} slug={slug}
           toast={toast}
           onLineage={onLineage} onConfig={onConfig} compactAt={compactAt}
-          onRecenter={onRecenter} onJump={onJump} pub={pub} onMailLink={onMailLink} />
+          onRecenter={onRecenter} onJump={onJump} maxTop={maxTop}
+          pub={pub} onMailLink={onMailLink} />
       )}
       {/* user ruling: chips are NEVER disabled by the node's own free credits —
           a user hire §4.6-cascades, granting the chain whatever it lacks.

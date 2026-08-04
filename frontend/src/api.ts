@@ -111,11 +111,25 @@ export const interruptNode = (
   req(`/api/orgs/${slug}/nodes/${nid}/interrupt`, { method: 'POST' })
 export const compactNode = (slug: string, nid: string): Promise<{ started: boolean }> =>
   req(`/api/orgs/${slug}/nodes/${nid}/compact`, { method: 'POST' })
-export const creditDecide = (slug: string, id: string, action: string): Promise<OpResult> =>
+export const creditDecide = (
+  slug: string, id: string, action: string,
+  // F-05: `granted` = the counter-offer amount; `dry` = validate + stranding
+  // warnings only, mutating nothing (shown BEFORE the user commits)
+  granted?: number, dry?: boolean,
+): Promise<OpResult & { ok?: boolean; warnings?: string[] }> =>
   req(`/api/orgs/${slug}/credit-requests`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id, action }),
+    body: JSON.stringify({ id, action,
+      ...(granted != null ? { granted } : {}), ...(dry ? { dry: true } : {}) }),
+  })
+export const answerAsk = (
+  slug: string, aid: string, body: { selected?: string[]; text?: string },
+): Promise<{ answered: string; node: string }> =>
+  req(`/api/orgs/${slug}/asks/${aid}/answer`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
   })
 export const clearInbox = (slug: string): Promise<{ ok: boolean }> =>
   req(`/api/orgs/${slug}/inbox/clear`, { method: 'POST' })

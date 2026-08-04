@@ -1637,27 +1637,83 @@ async def org_resume(slug: str) -> dict[str, Any]:
 
 class CreditDecision(Body):
     id: str
-    action: str        # approve | deny
+    action: str = "approve"    # approve | deny
+    # F-05 counter-offer: the amount the user actually grants — any legal
+    # value (below the ask, above it, or a clawback down to the committed
+    # floor). Absent = the asked amount, the old one-click approve.
+    granted: int | None = None
+    # dry run: validate + return the stranding warnings for `granted`,
+    # mutating nothing — the card shows them BEFORE the user commits
+    dry: bool = False
 
 
 @app.post("/api/orgs/{slug}/credit-requests")
 async def credit_request_decide(slug: str, body: CreditDecision) -> dict[str, Any]:
-    """One-click approve/deny of a top-level agent's credit request."""
+    """Decide a top-level agent's credit request: approve as asked, counter-
+    offer any legal amount (F-05), or deny. The outcome reaches the agent as
+    ordinary user MAIL (the unified ask system: the answer is a mail that
+    drives a turn), wearing honest wording — a partial grant is not an
+    approval, and the matter stays the agent's to continue."""
+    if body.dry:
+        if body.granted is None:
+            raise HTTPException(422, "dry run needs `granted`")
+        with store.DOC_LOCK:
+            try:
+                return store.load_org(slug).credit_preview(body.id, body.granted)
+            except LedgerError as e:
+                raise HTTPException(422, str(e))
     with store.DOC_LOCK:
         try:
             org = store.load_org(slug)
-            req = org.credit_request_action(body.id, body.action)
+            req = org.credit_request_action(body.id, body.action,
+                                            granted=body.granted)
             _kiosk_cap_check(org)
+            notice = req.get("notice")
+            drive = False
+            if notice and req["node"] in org.nodes:
+                drive = not org.post_mail(
+                    USER, req["node"], notice).get("deferred")
         except LedgerError as e:
             raise HTTPException(422, str(e))
         store.save_org(org)
-    # drive the agent so it learns the verdict promptly (rides the notice)
-    supervisor.send_message(
-        slug, req["node"],
-        "(orgtree) The user has decided on your credit request — see the "
-        "notice above and proceed accordingly.")
+    if drive:
+        mail_notify(slug, USER, req["node"])
+        supervisor.send_message(
+            slug, req["node"],
+            "(orgtree) The mail above contains the user's decision on your "
+            "credit request — proceed accordingly.")
     await hub.changed(slug)
     return req
+
+
+class AskAnswer(Body):
+    selected: list[str] | None = None
+    text: str | None = None
+
+
+@app.post("/api/orgs/{slug}/asks/{aid}/answer")
+async def ask_answer(slug: str, aid: str, body: AskAnswer) -> dict[str, Any]:
+    """Answer an agent's question (F-04) — from the desk card or the inbox
+    card, whichever the user reached first. Marking happens before the mail
+    is posted, under one doc lock, so the turn the answer starts can never
+    void its own question; every other rendering of the card nulls to grey
+    "answered" on the next payload."""
+    with store.DOC_LOCK:
+        try:
+            org = store.load_org(slug)
+            r = org.ask_answer(aid, selected=body.selected, text=body.text)
+            drive = not org.post_mail(USER, r["node"], r["body"]).get("deferred")
+        except LedgerError as e:
+            raise HTTPException(422, str(e))
+        store.save_org(org)
+    if drive:
+        mail_notify(slug, USER, r["node"])
+        supervisor.send_message(
+            slug, r["node"],
+            "(orgtree) The mail above answers the question you asked the "
+            "user — act on it now.")
+    await hub.changed(slug)
+    return {"answered": aid, "node": r["node"]}
 
 
 @app.get("/api/orgs/{slug}/inbox")
@@ -2229,6 +2285,15 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
             elif body.tool == "orgtree_request_credits":
                 result = org.request_credits(body.node, a.get("new_limit"),
                                              a.get("reason"))
+            elif body.tool == "orgtree_ask":
+                result = org.ask_user(body.node, a.get("question") or "",
+                                      options=a.get("options"),
+                                      multi=bool(a.get("multi")))
+                # no user audience → the question rode to the superior as
+                # mail; drive them like any other delivery
+                routed = result.get("routed")
+                if routed and not result.get("deferred"):
+                    drive.append(routed)
             elif body.tool == "orgtree_hire":
                 hdirs, dwarns = supervisor.sandbox_dirs_to_host(
                     org, a.get("add_dirs"))

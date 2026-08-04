@@ -289,6 +289,7 @@ class OrgDoc(TypedDict):
     delivering: NotRequired[dict[str, list[dict[str, Any]]]]  # supervisor in-flight mail batches
     steered_log: NotRequired[dict[str, list[dict[str, Any]]]]  # per-NODE steer history, org-keyed
     turn_error_log: NotRequired[dict[str, list[dict[str, Any]]]]  # per-NODE turn failures {at, text} — the durable half of last_error
+    asks: NotRequired[list[dict[str, Any]]]  # F-04 questions-to-the-user {id, node, kind, question, options?, multi?, at, status, reason?, answer?, resolved_at?}
     org_inbox: NotRequired[list[OrgInboxEntry]]
     org_inbox_read: NotRequired[int]
     kiosk: NotRequired[KioskCfg | None]

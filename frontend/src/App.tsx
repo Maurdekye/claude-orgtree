@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  audienceAction, BASE, clearInbox, createOrg, creditDecide, deleteOrg,
+  audienceAction, BASE, clearInbox, createOrg, deleteOrg,
   getAudiences, getDefaults, getEvents, getHost, getInbox, getOrgMd,
   getSweepPreview, getTree, killAll, listOrgs, markRead, openWs, putOrgMd,
   resumeFrozen, runOp, saveDefaults, saveKiosk, saveSettings, sendMessage,
@@ -17,6 +17,7 @@ import {
 import { DirList } from './forms'
 import { FolderPickerHost } from './picker'
 import { deskDpi, setDeskDpi, usePolled, TIERS } from './canvas/shared'
+import { AskCard } from './canvas/asks'
 import { addPending, dropPending, ingestPulse, ingestStream, resetConvos } from './convo'
 import type {
   AudiencesPayload, DefaultsPayload, InboxPayload, KioskSpecRequest,
@@ -423,6 +424,18 @@ export default function App() {
                         .catch((e: Error) => toast([`error: ${e.message}`]))
                     }}><StopIcon fontSize="inherit" /> STOP ALL</button>
                 </span>
+                {/* the SECOND inbox icon (user ruling 2026-08-04): it glows —
+                    alone in the whole chrome — iff an un-nulled ask (question
+                    or credit request) is waiting on the user; click opens the
+                    inbox where the cards are answerable */}
+                <button className={'iconbtn ask-bell' + ((tree.asks_open ?? 0) > 0 ? ' glow' : '')}
+                  title={(tree.asks_open ?? 0) > 0
+                    ? `${tree.asks_open} ask${(tree.asks_open ?? 0) > 1 ? 's' : ''} waiting on your answer`
+                    : 'your inbox'}
+                  onClick={() => { setInboxJump(null); setShowInbox(true) }}>
+                  <MailIcon fontSize="inherit" />
+                  {(tree.asks_open ?? 0) > 0 && <b className="eye-count">{tree.asks_open}</b>}
+                </button>
                 {!tree.public &&
                   <button onClick={() => setShowSettings(true)}><SettingsIcon fontSize="inherit" /> settings</button>}
                 <a className="gh-link" href="https://github.com/Maurdekye/claude-orgtree"
@@ -715,17 +728,6 @@ function SenderChip({ id, nodes }: { id: string; nodes: Map<string, TreeNode> })
   )
 }
 
-// the credit-request fields the inbox renders — CreditRequest is an open
-// ledger dict in types.ts; this states the shape at the same wire boundary
-interface CreditReqView {
-  id: string
-  node: string
-  old: number
-  new: number
-  at?: string
-  reason?: string
-  [k: string]: unknown
-}
 
 // audience requests parked at the user (fields the inbox reads) —
 // AudienceRequest is an open dict in types.ts
@@ -764,32 +766,27 @@ function InboxPanel({ slug, tree, toast, refresh, close, jumpTo }: {
     <div className="overlay" onClick={close}>
       <div className="settings wide" onClick={(e) => e.stopPropagation()}>
         <h3><MailIcon fontSize="inherit" /> your inbox</h3>
-        {(tree.credit_requests ?? []).length > 0 && (
-          <>
-            <div className="field-label">credit requests</div>
-            {(tree.credit_requests as CreditReqView[]).map((r) => (
-              <div className="credreq" key={r.id}>
-                <div className="cr-head">
-                  <SenderChip id={r.node} nodes={nodes} />
-                  <b>{r.old} → {r.new}</b>
-                  <span className="dim">(+{r.new - r.old})</span>
-                  <span className="dim">{r.at}</span>
-                </div>
-                <div className="cr-reason">{r.reason}</div>
-                <div className="row">
-                  <button className="primary" onClick={() =>
-                    creditDecide(slug, r.id, 'approve')
-                      .then(() => { toast([`approved — ${r.node}'s grant is now ${r.new}`]); refresh?.() })
-                      .catch((e: Error) => toast([`error: ${e.message}`]))}>approve</button>
-                  <button onClick={() =>
-                    creditDecide(slug, r.id, 'deny')
-                      .then(() => { toast([`denied ${r.node}'s request`]); refresh?.() })
-                      .catch((e: Error) => toast([`error: ${e.message}`]))}>deny</button>
-                </div>
-              </div>
-            ))}
-          </>
-        )}
+        {/* F-04/F-05: the same ask cards the agents' desks show — answerable
+            from EITHER place; answering (or an interrupt) nulls both. Open
+            cards first, then a short nulled history wearing its reasons. */}
+        {(() => {
+          const all = tree.asks ?? []
+          const live = all.filter((a) => a.status === 'open' || a.status === 'pending')
+          const done = all.filter((a) => !(a.status === 'open' || a.status === 'pending')).slice(-5)
+          if (!live.length && !done.length) return null
+          const nodeOf = (id: string) => nodes.get(id)
+          return (
+            <>
+              <div className="field-label">asks — questions & credit requests</div>
+              {[...live, ...done].map((a) => (
+                <AskCard key={a.id} ask={a} slug={slug} toast={toast}
+                  seat={nodeOf(a.node)?.seat ?? 0}
+                  committed={(nodeOf(a.node)?.grant ?? 0) - (nodeOf(a.node)?.free ?? 0)}
+                  maxTop={tree.max_top_grant ?? 1000} />
+              ))}
+            </>
+          )
+        })()}
         {userReqs.length > 0 && (
           <>
             <div className="field-label">audience requests</div>

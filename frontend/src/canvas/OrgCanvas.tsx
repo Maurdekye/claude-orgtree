@@ -51,12 +51,11 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
   // the org inbox for outbound. Jump ids clear when the modal closes.
   const [nodeInboxJump, setNodeInboxJump] = useState<string | null>(null)
   const [oiJump, setOiJump] = useState<string | null>(null)
-  // unread-mail attention: the eye glows until the mailbox is OPENED (merely
-  // opening acknowledges the glow; the count badge stays until mails are READ)
-  const [inboxSeen, setInboxSeen] = useState(
+  // the eye's unread-mail GLOW is gone (user ruling 2026-08-04: only agents
+  // that need the user's answer glow; the header ask icon carries the rest).
+  // The seen-stamp bookkeeping stays: the inbox count badge still uses it.
+  const [, setInboxSeen] = useState(
     () => localStorage.getItem('orgtree-inbox-seen-' + slug) ?? '')
-  const mailGlow = (tree.user_inbox_count ?? 0) > 0
-    && (tree.user_inbox_newest ?? '') > inboxSeen
   const seats = tree.tiers ?? { haiku: 1, sonnet: 3, opus: 5, fable: 10 }
   const vroot = useMemo(() => withDraftTree(tree, draft), [tree, draft])
   const map = useMemo(() => flatten(vroot, seats), [vroot])   // eslint-disable-line
@@ -1045,7 +1044,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
               ? Math.round(USER_H * (vp.width - 48) / (vp.height - 48))
               : Math.round(USER_H * 16 / 9)
             return <UserNode key={USER} pos={p} isDrop={dropId === USER} seats={seats}
-              stats={orgStats} mailGlow={mailGlow}
+              stats={orgStats}
               kiosk={tree.kiosk} pub={!!tree.public} kioskRemaining={kioskRemaining}
               kioskSegs={tree.roots.filter((n) => n.state === 'live')
                 .map((n) => ({ seat: n.seat, grant: n.grant }))}
@@ -1055,7 +1054,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
               posX={(id) => posOf(id)?.x ?? 0}
               onJump={(id) => centerOn(id)}
               map={map} op={op} slug={slug} toast={toast}
-              compactAt={tree.compact_at}
+              compactAt={tree.compact_at} maxTop={tree.max_top_grant ?? 1000}
               inboxCount={(tree.user_inbox_count ?? 0) + (tree.credit_requests?.length ?? 0)}
               onInbox={() => {
                 const nw = tree.user_inbox_newest ?? new Date().toISOString()
