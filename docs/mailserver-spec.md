@@ -200,6 +200,38 @@ interface, and if a tunnel is ever added, that decision reopens this ruling), an
 worth having inside it — not against outsiders, but because the org secret crosses the wire on
 every call and a closed network is not a private one.
 
+### Same-machine auto-connect (user question, 2026-08-04)
+
+> if an org is running adjacent to a mailserver on the same computer, can it auto-connect to it by
+> default?
+
+**Yes, and the repo already has this exact pattern — copy it rather than invent one.** chatq
+registration is automatic and unconfigured: `chatq_available()` checks whether chatq is present
+(`supervisor.py:2336`), and if it is, every org registers at **startup** (`api.py:342`) and at
+**creation** (`api.py:540`). The hub client should behave identically against a hub on the default
+local address.
+
+It works because §3 already removed everything that would need a prompt: the org mints its own
+secret at creation, and joining needs no gate. There is nothing to ask the user, so asking would be
+ceremony.
+
+Four constraints, three of which the chatq precedent already encodes:
+
+- **Kiosk orgs are excluded**, and a stale registration from before a seal is torn down —
+  `chatq_register_org` already does exactly this (`supervisor.py:2348-2351`). Same rule, same
+  reason.
+- **Per-org opt-out**, since being listed means peers can mail the org and thereby spend its
+  credits. Default on, switch present.
+- ⚠ **Auto-connect applies to the LOCAL hub only.** A remote hub is configured explicitly. Under
+  the closed-network ruling reachability is the authorization, so an instance that auto-joined
+  every hub it could reach would be joining networks by accident.
+- ⚠ **Retry; do not probe once.** With §9's autostart, the hub container and orgtree race at boot,
+  and the hub will frequently lose. A single startup probe would leave the instance
+  permanently unregistered until someone restarted it — treat "no hub yet" as an ordinary state of
+  the poll loop, not an error, and keep retrying. This is the one place the chatq precedent does
+  not help: chatq is a file on disk that is either there or not, whereas a container takes time to
+  come up.
+
 ---
 
 ## 4. Transport — long poll, with a spool the current code does not have
@@ -767,6 +799,7 @@ Ordered by value-per-effort.
 | secret rotation | **out of v1** — simplify now, harden later (§3) |
 | headless + credentials | **API key REQUIRED** — headless without one is refused (§9.6) |
 | number of hubs | **one for v1**, several not designed out (§12) |
+| same-machine hub | **auto-connect by default**, local hub only, per-org opt-out (§3) |
 
 ⚠ **10+ participants, with v1 deliberately kept basic.** The simplification ruling keeps threading
 and broadcasts out, so the one thing that must still happen at day one is **reserving an optional

@@ -1591,6 +1591,20 @@ already stored without it, and at 10+ peers a flat inbox will want it.
   reaches a peer is a lookup, not something parsed out of the address. UI and settings can stay
   singular.
 
+**⑭ Same-machine auto-connect — YES (user question, 2026-08-04).** Spec §3. An org on the same
+computer as the hub registers automatically, no configuration. The repo already has the pattern:
+chatq registration is unconfigured and automatic — `chatq_available()` (`supervisor.py:2336`) gates
+it, orgs register at startup (`api.py:342`) and at creation (`api.py:540`), and kiosks are excluded
+with any stale registration torn down (`supervisor.py:2348-2351`). It works because ② already
+removed everything that would need a prompt: the org mints its own secret, and joining needs no gate.
+
+⚠ Two constraints the chatq precedent does not cover. **Local hub only** — a remote hub is
+configured explicitly, or an instance auto-joins every network it can reach, which under the
+open-join ruling is exactly how you end up somewhere by accident. And **retry, do not probe once**:
+with ⑥'s autostart the hub container and orgtree race at boot and the hub usually loses, so a single
+startup probe leaves the instance unregistered until someone restarts it. chatq is a file that is
+either there or not; a container takes time to come up.
+
 **⑨ The six build questions — ANSWERED (user, 2026-08-04).** Full table at spec §12: built by the
 **implementer**; orgs may join a hub **after creation**; **10+** participants; the hub runs on
 **Linux**; `net_wake` ships **`auto` only** (`notify`/`curated` documented but not built); and the
