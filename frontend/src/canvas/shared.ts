@@ -6,14 +6,24 @@
 
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
-import { useEffect } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import type { DependencyList } from 'react'
 import type {
-  DirGrant, MailEntry, NodeState, NodeStatus, OpRequest, OpResult, ToolGrant,
-  TreeNode, TreePayload,
+  ActivityInfo, DirGrant, MailEntry, NodeState, NodeStatus, OpRequest,
+  OpResult, ToolGrant, TreeNode, TreePayload,
 } from '../types'
 
 export const TIER_LETTER: Record<string, string> = { haiku: 'H', sonnet: 'S', opus: 'O', fable: 'F' }
 export const TIERS = ['haiku', 'sonnet', 'opus', 'fable']
+/** seat cost per tier — mirrors ledger.TIERS. One table, four tiers; the
+ *  frontend had four copies of this before. */
+export const TIER_SEAT: Record<string, number> =
+  { haiku: 1, sonnet: 3, opus: 5, fable: 10 }
+/** Model VERSIONS inside a tier — mirrors ledger.MODEL_VERSIONS. A version is
+ *  a subcategory of the tier (user ruling 2026-08-04): it never changes the
+ *  seat cost and never appears as a chip, only in the gear. A tier absent
+ *  here, or present with one entry, offers no choice. */
+export const MODEL_VERSIONS: Record<string, string[]> = { opus: ['5', '4.8'] }
 
 // ---------------------------------------------------------------- view types
 // The canvas overlays the payload's TreeNode with synthetic cards — the eye
@@ -38,6 +48,10 @@ export interface CanvasNode {
   free?: number | null
   model_id?: string
   scope?: CanvasScope
+  /** what a turn would ACTUALLY launch with: scope.effort, else the org
+   *  default, else "" (no --effort flag). Derived server-side so the control
+   *  cannot disagree with the runtime — ledger.Org.effective_effort */
+  effort_effective?: string
   cost_usd?: number
   occupancy?: number | null
   context_window?: number | null
@@ -56,6 +70,9 @@ export interface CanvasNode {
   generation?: number
   lineage?: TreeNode['lineage']
   busy?: boolean
+  /** G4: server-derived, from the supervisor's live tail (absent on the
+   *  synthetic cards — eye root, draft, bearers — which never run turns) */
+  activity?: ActivityInfo
   waiting?: boolean
   responding?: boolean
   phase?: string | null
@@ -72,22 +89,31 @@ export interface CanvasScope {
   permission_mode?: string
   org_visibility?: string
   effort?: string
+  /** the model VERSION pinned inside the tier — a gear-only subcategory,
+   *  never a chip (ledger.MODEL_VERSIONS). Absent = the tier's latest. */
+  model_version?: string
 }
 
 /** the app-level event feeds OrgCanvas rides (produced by App's WS handler) */
 export interface PulseEvent { node: string; event: string; t: number }
 export interface StreamEvent {
   node: string
-  /** 'delta' | 'thinking' | 'text' | 'tool' (supervisor.py stream(),
-   *  №1167-1211) + 'steered' (api.py:1193) — open: built from untyped WS JSON */
+  /** 'delta' | 'thinking' | 'thinking_start' | 'text' | 'tool' (supervisor.py
+   *  stream()) + 'steered' (api.py) — open: built from untyped WS JSON.
+   *  'thinking_start' carries no text: it marks the block opening, which is
+   *  the only signal that survives when the reasoning is sealed. */
   kind: string
   text: string
   sticky?: boolean
   t: number
+  /** tool_use_id on a 'tool' event — see LiveRow.id */
+  id?: string
 }
 export interface MailEvent { from: string; to: string; t: number }
-/** 'thinking' | 'writing' | 'tool' — open for the same WS-JSON reason */
-export interface ActivityInfo { phase: string; tool?: string }
+// ActivityInfo moved to types.ts with G4 — it is a TREE PAYLOAD field now, not
+// a client-side accumulation, and types.ts may not import from here (this file
+// imports from it). Re-exported so existing importers are untouched.
+export type { ActivityInfo } from '../types'
 export type OpFn = (body: OpRequest) => Promise<OpResult>
 /** a chat chip's mail pointer — routed to whichever box holds the mail */
 export type MailLinkFn = (
@@ -130,6 +156,13 @@ export interface LiveRow {
   _at?: number
   node?: string
   t?: number
+  /** the CLI's tool_use_id on a 'tool' row — identity, so reconciliation
+   *  against the transcript's chip does not have to compare rendered strings */
+  id?: string
+  /** the server's per-node monotonic row id — the RENDER key. An index key
+   *  renames every row below one that retires from the middle (or falls off
+   *  the head), remounting them; `n` names the row itself. */
+  n?: number
 }
 
 // the canvas exposes its inverse-zoom to CSS; React's CSSProperties has no
@@ -164,6 +197,24 @@ export const INBOX_H = 64
 // the eye's fixed world x (see layout()): generous enough that even a very
 // wide left subtree (~32 leaf columns) never crosses into negative space
 export const EYE_ANCHOR_X = 6000
+
+// The desk's counter-scale, and the reader's text-size dial over it. Keep this
+// the ONE definition: the factor used to live both here-ish (cards.tsx) and in
+// .desk-inner's transform, which is one equation with no slack —
+// 900 × 0.13333 = 120 = NODE_H − 2×inset.
+export const DESK_SCALE = 0.13333
+export const DESK_DPI_KEY = 'orgtree-desk-dpi'
+// device preference (screen-dependent), so localStorage — never the org doc
+export const deskDpi = (): number => {
+  try {
+    const v = parseFloat(localStorage.getItem(DESK_DPI_KEY) || '1')
+    return Number.isFinite(v) && v >= 0.5 && v <= 3 ? v : 1
+  } catch { return 1 }
+}
+export const setDeskDpi = (v: number) => {
+  try { localStorage.setItem(DESK_DPI_KEY, String(v)) } catch { /* private mode */ }
+  document.documentElement.style.setProperty('--desk-dpi', String(v))
+}
 
 export function withDraftTree(tree: TreePayload, draft: DraftState | null): CanvasNode {
   const draftNode = (): CanvasNode => ({
@@ -345,4 +396,40 @@ export function useEsc(close: () => void) {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [close])
+}
+
+/** G5 — the panel heartbeat.
+ *
+ *  An audit of the read endpoints found 18 of 19 call sites fetching ONCE on
+ *  mount: open a panel, and whatever it showed at that instant is what it
+ *  shows until you close it. Some of those panels display data that changes
+ *  while you are looking at it — mail arriving, an agent writing files, disk
+ *  filling — and the node inbox had a workaround for exactly this, refetching
+ *  when a `pulse` prop changed, which covered turn events and nothing else
+ *  (a mail delivery is not a pulse).
+ *
+ *  Same rule as the tree and the chat: liveness is gated on "this panel is
+ *  mounted", which is known locally and cannot be stale — never on a piece of
+ *  the data being refreshed. The fetcher is held in a ref so an inline arrow
+ *  does not restart the timer on every render; `deps` decides identity.
+ */
+export function usePolled<T>(
+  fetcher: () => Promise<T>, deps: DependencyList, ms = 5000,
+): T | null {
+  const [v, setV] = useState<T | null>(null)
+  const ref = useRef(fetcher)
+  ref.current = fetcher
+  useEffect(() => {
+    let dead = false
+    const tick = () => {
+      void ref.current().then((r) => { if (!dead) setV(r) }).catch(() => {})
+    }
+    tick()
+    const t = setInterval(tick, ms)
+    return () => { dead = true; clearInterval(t) }
+    // the fetcher rides a ref on purpose; `deps` is the identity of the thing
+    // being fetched (slug, node, folder), which is what should restart it
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [...deps, ms])
+  return v
 }

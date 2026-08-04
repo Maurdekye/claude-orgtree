@@ -4,7 +4,7 @@
 // checklist, and the retired/crowd pile picker. Extracted verbatim from
 // Canvas.tsx in the phase-3 split.
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import type {
@@ -18,7 +18,7 @@ import { pickFolder } from '../picker'
 import {
   CloseIcon, DeleteIcon, FolderIcon, LayersIcon, SettingsIcon,
 } from '../icons'
-import { TIER_LETTER, USER, useEsc } from './shared'
+import { MODEL_VERSIONS, TIER_LETTER, TIER_SEAT, TIERS, USER, useEsc } from './shared'
 import type { CanvasNode, DraftScope, DraftState, OpFn, Pile } from './shared'
 
 export interface ConfirmModalProps {
@@ -65,18 +65,32 @@ export function UserConfig({ tree, slug, toast, close }: UserConfigProps) {
   // (host paths — the public payload only carries basenames anyway)
   const pub = !!tree.public
   const [asking, setAsking] = useState(false)   // dissolve-all confirmation
-  const [defTools, setDefTools] = useState<ToolGrant>({
+  const [servers, setServers] = useState<string[]>([])
+  const [sandboxMcp, setSandboxMcp] = useState(false)
+  // P3: derived from `tree`, with a buffer holding only what has been edited
+  // — see NodeConfig for the reasoning. These are org DEFAULTS the server
+  // owns, so a snapshot at mount could show yesterday's answer.
+  const [edit, setEdit] = useState<Record<string, unknown>>({})
+  const val = <T,>(k: string, server: T): T => (k in edit ? edit[k] as T : server)
+  const set = <T,>(k: string, cur: T) => (v: T | ((prev: T) => T)) =>
+    setEdit((e) => ({ ...e,
+      [k]: typeof v === 'function' ? (v as (p: T) => T)(cur) : v }))
+  const srvTools = useMemo<ToolGrant>(() => ({
     bash: true, web: true, edit: true, subagents: true,
     ...(tree.default_tools ?? {}),
     mcp: [...(tree.default_tools?.mcp ?? ['*'])],
-  })
-  const [servers, setServers] = useState<string[]>([])
-  const [sandboxMcp, setSandboxMcp] = useState(false)
-  const [vis, setVis] = useState(tree.default_visibility ?? 'full')
+  }), [tree.default_tools])
+  const defTools = val<ToolGrant>('defTools', srvTools)
+  const setDefTools = set<ToolGrant>('defTools', defTools)
+  const vis = val('vis', tree.default_visibility ?? 'full')
+  const setVis = set<string>('vis', vis)
   // the org's folder holdings (workspace excluded — it is permanent RW).
   // These double as the folder defaults for every hire.
-  const [orgDirs, setOrgDirs] = useState<DirGrant[]>(
-    (tree.dirs ?? []).filter((d) => d.path !== tree.workspace).map((d) => ({ ...d })))
+  const srvDirs = useMemo<DirGrant[]>(
+    () => (tree.dirs ?? []).filter((d) => d.path !== tree.workspace)
+      .map((d) => ({ ...d })), [tree.dirs, tree.workspace])
+  const orgDirs = val<DirGrant[]>('orgDirs', srvDirs)
+  const setOrgDirs = set<DirGrant[]>('orgDirs', orgDirs)
   const [newPath, setNewPath] = useState('')
   useEffect(() => {
     getMcpServers().then((r) => {
@@ -225,6 +239,12 @@ export function DraftScopeModal({ draft, map, tree, scope, onSave, close }: Draf
       ?? tree.default_visibility ?? 'full',
   })
   const base = scope ?? inherited()
+  // ⚠ These four ARE useState-from-a-prop and are deliberately left that way.
+  // This modal stages permissions for an agent that DOES NOT EXIST YET: `base`
+  // is a one-time proposal (what the hire would inherit), not a live server
+  // value with an authoritative copy elsewhere. Re-deriving it mid-edit would
+  // overwrite the user's staged choices from a default they were changing.
+  // A snapshot is the correct shape here; the P3 sweep skipped it on purpose.
   const [dirs, setDirs] = useState<DirGrant[]>(base.add_dirs.map((d) => ({ ...d })))
   const [tools, setTools] = useState<Partial<ToolGrant> & { mcp: string[] }>(
     { ...base.tools, mcp: [...(base.tools.mcp ?? [])] })
@@ -306,7 +326,7 @@ export function DraftScopeModal({ draft, map, tree, scope, onSave, close }: Draf
         </select>
         <div className="field-label">thinking effort</div>
         <select value={effort} onChange={(e) => setEffort(e.target.value)}>
-          <option value="">{`inherit — org default (${tree.default_effort || 'CLI default'})`}</option>
+          <option value="">{`inherit — org default (${tree.default_effort || tree.effort_default || 'high'})`}</option>
           <option value="low">low</option>
           <option value="medium">medium</option>
           <option value="high">high</option>
@@ -394,17 +414,46 @@ export function NodeConfig({ node, map, tree, slug, op, toast, close }: NodeConf
   // every card that opens a config panel carries a scope (real nodes and
   // bearer stubs both) — only the eye root and drafts lack one
   const scope = node.scope!
-  const [dirs, setDirs] = useState<DirGrant[]>(scope.add_dirs.map((d) => ({ ...d })))
-  const [tools, setTools] = useState<ToolGrant>({
+  // P3 — these seven were each a useState SEEDED FROM `node`/`scope`, i.e. a
+  // snapshot taken once at mount that never looked at the prop again. That is
+  // what produced a config panel showing an empty charter: the panel had
+  // captured the node before it carried one. One buffer of ACTUAL EDITS now;
+  // everything else derives from the prop each render, so the panel cannot
+  // drift from the agent it is configuring. The shadowing pairs below keep
+  // every use site below unchanged.
+  const [edit, setEdit] = useState<Record<string, unknown>>({})
+  const val = <T,>(k: string, server: T): T => (k in edit ? edit[k] as T : server)
+  const set = <T,>(k: string, cur: T) => (v: T | ((prev: T) => T)) =>
+    setEdit((e) => ({ ...e,
+      [k]: typeof v === 'function' ? (v as (p: T) => T)(cur) : v }))
+  const srvDirs = useMemo(
+    () => scope.add_dirs.map((d) => ({ ...d })), [scope.add_dirs])
+  const srvTools = useMemo<ToolGrant>(() => ({
     bash: true, web: true, edit: true, subagents: true,
     ...(scope.tools ?? {}),
     mcp: [...(scope.tools?.mcp ?? [])],
-  })
-  const [vis, setVis] = useState(scope.org_visibility ?? 'full')
-  const [charter, setCharter] = useState(node.charter ?? '')
-  const [teamCharter, setTeamCharter] = useState(node.team_charter ?? '')
-  const [model, setModel] = useState(node.tier!)
-  const [effort, setEffort] = useState(scope.effort ?? '')
+  }), [scope.tools])
+  const dirs = val<DirGrant[]>('dirs', srvDirs)
+  const setDirs = set<DirGrant[]>('dirs', dirs)
+  const tools = val<ToolGrant>('tools', srvTools)
+  const setTools = set<ToolGrant>('tools', tools)
+  const vis = val('vis', scope.org_visibility ?? 'full')
+  const setVis = set<string>('vis', vis)
+  const charter = val('charter', node.charter ?? '')
+  const setCharter = set<string>('charter', charter)
+  const teamCharter = val('teamCharter', node.team_charter ?? '')
+  const setTeamCharter = set<string>('teamCharter', teamCharter)
+  const model = val('model', node.tier!)
+  const setModel = set<string>('model', model)
+  const effort = val('effort', scope.effort ?? '')
+  const setEffort = set<string>('effort', effort)
+  // a model VERSION is a subcategory of the TIER, so it lives here in the gear
+  // and never on a chip (user ruling 2026-08-04). It resets when the tier
+  // changes: a version belongs to one tier, and the ledger re-validates it
+  // against the node's current tier on every read anyway.
+  const modelVersion = val('modelVersion', scope.model_version ?? '')
+  const setModelVersion = set<string>('modelVersion', modelVersion)
+  const versions = MODEL_VERSIONS[model] ?? []
   const [newPath, setNewPath] = useState('')
   const [servers, setServers] = useState<string[]>([])
   const [sandboxMcp, setSandboxMcp] = useState(false)
@@ -542,13 +591,13 @@ export function NodeConfig({ node, map, tree, slug, op, toast, close }: NodeConf
         <select value={model} onChange={(e) => setModel(e.target.value)}>
           {/* kiosk tier cap: options above it vanish — but the node's OWN
               tier stays listed so a pre-cap agent still shows truthfully */}
-          {['haiku', 'sonnet', 'opus', 'fable'].filter((t) => {
-            const rank: Record<string, number> = { haiku: 1, sonnet: 3, opus: 5, fable: 10 }
+          {TIERS.filter((t) => {
             const cap = tree.kiosk?.max_tier
-            return t === node.tier || !cap || rank[t]! <= (rank[cap] ?? Infinity) // nUIA: t ∈ the literal list, all rank keys
+            return t === node.tier || !cap
+              || (TIER_SEAT[t] ?? 0) <= (TIER_SEAT[cap] ?? Infinity)
           }).map((t) => (
             <option key={t} value={t}>
-              {t} · seat {({ haiku: 1, sonnet: 3, opus: 5, fable: 10 } as Record<string, number>)[t]}
+              {t} · seat {TIER_SEAT[t]}
             </option>
           ))}
         </select>
@@ -558,10 +607,24 @@ export function NodeConfig({ node, map, tree, slug, op, toast, close }: NodeConf
           {VIS_OPTIONS.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
         </select>
 
+        {versions.length > 1 && (
+          <>
+            <div className="field-label">model version — {model} runs the
+              latest unless you pin one here</div>
+            <select value={versions.includes(modelVersion) ? modelVersion : ''}
+              onChange={(e) => setModelVersion(e.target.value)}>
+              <option value="">{`latest (${versions[0]})`}</option>
+              {versions.map((v) => (
+                <option key={v} value={v}>{`${model} ${v}`}</option>
+              ))}
+            </select>
+          </>
+        )}
+
         <div className="field-label">thinking effort (user-approved: a deep
           setting, never a hire-row control)</div>
         <select value={effort} onChange={(e) => setEffort(e.target.value)}>
-          <option value="">{`inherit — org default (${tree.default_effort || 'CLI default'})`}</option>
+          <option value="">{`inherit — org default (${tree.default_effort || tree.effort_default || 'high'})`}</option>
           <option value="low">low</option>
           <option value="medium">medium</option>
           <option value="high">high</option>
@@ -596,7 +659,9 @@ export function NodeConfig({ node, map, tree, slug, op, toast, close }: NodeConf
               : Promise.resolve())
               .then(() => saveScope(slug, node.id,
                 { add_dirs: dirs, tools, org_visibility: vis,
-                  charter, team_charter: teamCharter, effort }))
+                  charter, team_charter: teamCharter, effort,
+                  model_version: versions.includes(modelVersion)
+                    ? modelVersion : '' }))
               .then((r) => {
                 if (r?.bridge?.raise_ceiling) {
                   // one-action bridge (ceiling spec §1): same save, flag set
@@ -606,6 +671,8 @@ export function NodeConfig({ node, map, tree, slug, op, toast, close }: NodeConf
                     fn: () => saveScope(slug, node.id,
                       { add_dirs: dirs, tools, org_visibility: vis,
                         charter, team_charter: teamCharter, effort,
+                        model_version: versions.includes(modelVersion)
+                          ? modelVersion : '',
                         raise_ceiling: true })
                       .then((r2) => toast(r2.warnings?.length ? r2.warnings
                         : ['ceiling raised — applied']))

@@ -15,11 +15,43 @@ import type {
 export const BASE = (location.pathname.match(/^\/k\/[A-Za-z0-9_-]+/) || [''])[0]
 const u = (p: string) => BASE + p
 
+/** THE RESTART DETECTOR.
+ *
+ *  A redeploy restarts the server and leaves every open tab running the bundle
+ *  it loaded — an old client against a new API, which looks fine and is subtly
+ *  wrong until someone thinks to press refresh. The backend stamps every
+ *  response with the id of the process that answered it (`api.INSTANCE`, fresh
+ *  per start), so the first one we see is the server we were built against and
+ *  any different one means it was replaced. Reload, whole page.
+ *
+ *  It costs no request and no poller: the heartbeats this app already runs
+ *  (the tree, the conversation, every open panel) all pass through `req`, so
+ *  detection is within one poll of the restart.
+ *
+ *  ⚠ Deliberately unconditional — the user asked for a forced refresh. An
+ *  unsent composer draft is lost, which is the same thing pressing F5 does.
+ *  `reloading` only stops several in-flight responses from each calling
+ *  `location.reload()` while the first one is already tearing the page down. */
+let instance = ''
+let reloading = false
+function noteInstance(r: Response): void {
+  const id = r.headers.get('X-Orgtree-Instance')
+  if (!id || reloading) return
+  if (!instance) { instance = id; return }
+  if (id === instance) return
+  reloading = true
+  console.info(`orgtree restarted (${instance} → ${id}) — reloading`)
+  location.reload()
+}
+
 // the one wire-boundary cast in the app: runtime JSON is untyped, and each
 // endpoint's declared Promise<T> return type is the contract that types it.
 // T infers from that declared return at every call site - no `any` escapes.
 const req = <T,>(path: string, init?: RequestInit): Promise<T> =>
   fetch(u(path), init).then((r) => {
+    // before the ok/not-ok split: a restart is worth noticing even when the
+    // call it rode in on failed
+    noteInstance(r)
     if (!r.ok) {
       return r.json().then((b: { detail?: string }) => {
         throw new Error(b.detail || r.statusText)

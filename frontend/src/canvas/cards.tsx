@@ -13,11 +13,12 @@ import {
   LockIcon, MailIcon, SettingsIcon,
 } from '../icons'
 import {
-  DRAFT, NODE_H, NODE_W, TIER_LETTER, TIERS, USER, USER_H, USER_W,
+  DESK_SCALE, deskDpi, DRAFT, NODE_H, NODE_W, TIER_LETTER, TIERS, USER,
+  USER_H, USER_W,
 } from './shared'
 import type {
-  ActivityInfo, CanvasNode, DraftScope, DraftState, MailLinkFn, OpFn, Pile,
-  Pt, PulseEvent, StreamEvent,
+  CanvasNode, DraftScope, DraftState, MailLinkFn, OpFn, Pile,
+  Pt,
 } from './shared'
 import { Activity, ContextWheel, DeskChat } from './desk'
 import { DraftScopeModal } from './modals'
@@ -48,17 +49,15 @@ interface UserNodeProps {
   map: Map<string, CanvasNode>
   op: OpFn
   slug: string
-  pulse: PulseEvent | null
   toast: ToastFn
-  streamEvt: StreamEvent | null
   compactAt?: number
 }
 
 export function UserNode({ pos, isDrop, stats, inboxCount, seats, mailGlow,
   kiosk, pub, kioskRemaining, kioskSegs, pxc, zoom, onInbox, onGear, onSpawn,
   onMailLink,
-  focused, eyeW, onFocus, posX, onJump, map, op, slug, pulse, toast,
-  streamEvt, compactAt }: UserNodeProps) {
+  focused, eyeW, onFocus, posX, onJump, map, op, slug, toast,
+  compactAt }: UserNodeProps) {
   const downRef = useRef<Pt | null>(null)
   // const extraction: the kiosk-credits narrowing must survive the commit
   // closure below (a property check alone would not)
@@ -134,8 +133,8 @@ export function UserNode({ pos, isDrop, stats, inboxCount, seats, mailGlow,
       <SpawnChips onSpawn={onSpawn} free={kioskRemaining ?? Infinity} seats={seats}
         maxTier={kiosk?.max_tier} />
       {focused && (
-        <EyeDesk map={map} op={op} slug={slug} pulse={pulse} toast={toast}
-          streamEvt={streamEvt} inboxCount={inboxCount} onInbox={onInbox}
+        <EyeDesk map={map} op={op} slug={slug} toast={toast}
+          inboxCount={inboxCount} onInbox={onInbox}
           onGear={onGear} pub={pub} eyeW={eyeW} posX={posX} onJump={onJump}
           compactAt={compactAt} onMailLink={onMailLink} />
       )}
@@ -153,9 +152,7 @@ interface EyeDeskProps {
   map: Map<string, CanvasNode>
   op: OpFn
   slug: string
-  pulse: PulseEvent | null
   toast: ToastFn
-  streamEvt: StreamEvent | null
   inboxCount: number
   onInbox?: () => void
   onGear?: () => void
@@ -167,7 +164,7 @@ interface EyeDeskProps {
   onMailLink: MailLinkFn
 }
 
-function EyeDesk({ map, op, slug, pulse, toast, streamEvt, inboxCount,
+function EyeDesk({ map, op, slug, toast, inboxCount,
   onInbox, onGear, pub, eyeW, posX, onJump, compactAt, onMailLink }: EyeDeskProps) {
   const agents = [...map.values()].filter((n) =>
     n.id !== USER && n.id !== DRAFT && n.state === 'live' && !n.isBearerOf
@@ -219,8 +216,10 @@ function EyeDesk({ map, op, slug, pulse, toast, streamEvt, inboxCount,
     } catch { /* private mode */ }
   }, [idsKey, slug])
   const open = agents.filter((a) => !minned.has(a.id))
-  // the inner virtual panel matches the card interior through the desk scale
-  const innerW = Math.round((eyeW - 4) / 0.13333)
+  // the inner virtual panel matches the card interior through the desk scale.
+  // DESK_SCALE/deskDpi are shared so this stays in step with .desk-inner's
+  // transform — the same equation used to be written out here AND in the CSS
+  const innerW = Math.round((eyeW - 4) / (DESK_SCALE * deskDpi()))
   return (
     <div className="desk-over eye-desk" onWheel={(e) => e.stopPropagation()}
       onPointerDown={(e) => e.stopPropagation()}>
@@ -274,10 +273,9 @@ function EyeDesk({ map, op, slug, pulse, toast, streamEvt, inboxCount,
         <div className="eye-panels">
           {open.map((a) => (
             <div className="eye-panel" key={a.id}>
-              <DeskChat node={a} map={map} op={op} slug={slug} pulse={pulse}
+              <DeskChat node={a} map={map} op={op} slug={slug}
                 toast={toast} pub={pub} bare compact compactAt={compactAt}
-                onMailLink={onMailLink}
-                streamEvt={streamEvt?.node === a.id ? streamEvt : null} />
+                onMailLink={onMailLink} />
             </div>
           ))}
           {!open.length && agents.length > 0 &&
@@ -607,12 +605,9 @@ interface NodeSquareProps {
   map: Map<string, CanvasNode>
   op: OpFn
   slug: string
-  pulse: PulseEvent | null
   toast: ToastFn
-  streamEvt: StreamEvent | null
   pxc: number
   zoom: number
-  act?: ActivityInfo
   onSpawn: (tier: string) => void
   onConfig: () => void
   onInbox: () => void
@@ -634,7 +629,7 @@ interface NodeSquareProps {
 }
 
 export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, map, op, slug,
-  pulse, toast, streamEvt, pxc, zoom, act, onSpawn, onConfig, onInbox, onLineage,
+  toast, pxc, zoom, onSpawn, onConfig, onInbox, onLineage,
   onRecenter, pub, kioskRemaining, cascadeAlloc, maxTop, pile, compactAt, maxTier,
   onMailLink, onDragStart, onDragMove, onDragEnd, onDragCancel }: NodeSquareProps) {
   // pile fronts zoom on a plain CENTER click (user spec) — track the
@@ -728,11 +723,11 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, m
         {lod === 'mini' && node.last_status &&
           <span className={'statusdot ' + node.last_status.status}
             title={`${node.last_status.status} — ${node.last_status.summary ?? ''}`} />}
-        {node.busy && <Activity act={act} dotOnly />}
+        {node.busy && <Activity act={node.activity} dotOnly />}
         {node.last_error && <span className="errdot" title={node.last_error ?? undefined} />}
       </div>}
       {!focused && lod === 'mini' && <div className="mini-name">{node.id}</div>}
-      {node.busy && !focused && lod !== 'mini' && <Activity act={act} />}
+      {node.busy && !focused && lod !== 'mini' && <Activity act={node.activity} />}
       {!focused && lod !== 'mini' && (
         <div className="sq-badges">
           {/* no seat/free badges — the credit bar carries all of that */}
@@ -755,8 +750,8 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, m
         </div>
       )}
       {focused && (
-        <DeskChat node={node} map={map} op={op} slug={slug} pulse={pulse} toast={toast}
-          streamEvt={streamEvt?.node === node.id ? streamEvt : null}
+        <DeskChat node={node} map={map} op={op} slug={slug}
+          toast={toast}
           onLineage={onLineage} onConfig={onConfig} compactAt={compactAt}
           onRecenter={onRecenter} pub={pub} onMailLink={onMailLink} />
       )}

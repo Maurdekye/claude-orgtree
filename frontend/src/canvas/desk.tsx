@@ -5,7 +5,7 @@
 // ContextWheel/Activity indicators shared with the cards. Extracted verbatim
 // from Canvas.tsx in the phase-3 split.
 
-import { memo, useCallback, useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type {
   ChatMessage, ChatPayload, HistoryItem, ScratchPayload,
   ToolChip as ToolChipData, ToastFn,
@@ -20,10 +20,13 @@ import {
   MailIcon, PlayIcon, PsychologyIcon, SettingsIcon, SparkIcon, StopIcon,
   WarnIcon,
 } from '../icons'
-import { ago, EXTERN, md, TIER_LETTER, USER, useEsc } from './shared'
+import { ago, EXTERN, md, TIER_LETTER, TIER_SEAT, USER, useEsc, usePolled } from './shared'
+import {
+  addPending, CHAT_WINDOW, dropPending, loadOlder as storeLoadOlder, markBusy,
+  MAX_WINDOW, refreshConvo, useConvo,
+} from '../convo'
 import type {
-  ActivityInfo, CanvasNode, LiveRow, MailLinkFn, OpFn, PulseEvent,
-  StreamEvent,
+  ActivityInfo, CanvasNode, LiveRow, MailLinkFn, OpFn,
 } from './shared'
 import { ConfirmModal } from './modals'
 import { InboxView } from './mail'
@@ -90,7 +93,6 @@ export function Activity({ act, dotOnly }: { act?: ActivityInfo; dotOnly?: boole
 // over stable setters, so their per-render identities are ignorable.
 export const DeskChat = memo(DeskChatInner, (p, n) =>
   p.node === n.node && p.map === n.map && p.slug === n.slug
-  && p.pulse === n.pulse && p.streamEvt === n.streamEvt
   && p.pub === n.pub && p.bare === n.bare && p.compact === n.compact
   && p.compactAt === n.compactAt)
 
@@ -99,9 +101,7 @@ interface DeskChatProps {
   map: Map<string, CanvasNode>
   op: OpFn
   slug: string
-  pulse: PulseEvent | null
   toast: ToastFn
-  streamEvt: StreamEvent | null
   onLineage?: () => void
   onConfig?: () => void
   onRecenter?: () => void
@@ -112,9 +112,24 @@ interface DeskChatProps {
   onMailLink?: MailLinkFn
 }
 
-function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage, onConfig,
+// how long the send receipt (§№11) stays up — long enough to read a routing
+// word you were not expecting, short enough that it never describes a message
+// that has already been answered
+const SENDMODE_MS = 6000
+
+function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
   onRecenter, pub, bare = false, compact = false, compactAt, onMailLink }: DeskChatProps) {
-  const [chat, setChat] = useState<ChatPayload | null>(null)
+  // THE CONVERSATION IS NOT THIS COMPONENT'S. It lives in one per-node store
+  // (convo.ts) that every view of this node subscribes to, because a node can
+  // be on screen twice — its card and its switchboard panel — and two private
+  // copies of one conversation diverge by construction (user bug 2026-08-02:
+  // "the switchboard desk going out of sync with the individual agent desks").
+  // What stays local below is only what is genuinely per-VIEW: this desk's
+  // scroll position, its open tab, its composer draft.
+  const convo = useConvo(slug, node.id)
+  const { chat, live_feed, draft, thinking, thinkSecs, pending } = {
+    chat: convo.chat, live_feed: convo.live, draft: convo.draft,
+    thinking: convo.thinking, thinkSecs: convo.thinkSecs, pending: convo.pending }
   // №2: the draft survives the camera — persisted per node on every keystroke
   // (clicking a sibling card unmounts this whole component)
   const draftKey = `orgtree-draft-${slug}-${node.id}`
@@ -129,141 +144,106 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
     } catch { /* private mode */ }
     return next
   }), [draftKey])
-  const [pending, setPending] = useState<string[]>([])   // optimistic, until the server copy lands
-  const [sendMode, setSendMode] = useState('') // №11: which door the send went through
+  // №11: which door the last send went through. It is a RECEIPT, not a state —
+  // it answers "where did that message just go", and that answer goes stale the
+  // moment the queue drains. It had no clear at all (user bug 2026-08-02: the
+  // "delivering" line sat under the composer forever), so it expires. Anything
+  // durable has its own surface: the per-message "delivering mid-task…" tag,
+  // the frozen badge, the mail count.
+  const [sendMode, setSendMode] = useState('')
+  const modeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const flashMode = useCallback((m: string) => {
+    setSendMode(m)
+    if (modeTimer.current) clearTimeout(modeTimer.current)
+    modeTimer.current = m ? setTimeout(() => setSendMode(''), SENDMODE_MS) : null
+  }, [])
+  useEffect(() => () => { if (modeTimer.current) clearTimeout(modeTimer.current) }, [])
   const [asking, setAsking] = useState(false)
   const [askCompact, setAskCompact] = useState(false)
   const [view, setView] = useState<'chat' | 'history' | 'files' | 'inbox'>('chat')     // chat | history | files | inbox
-  // №7 denials are per-turn server state — only the NEXT turn clears them, so
-  // the panel needs its own × (user report 2026-07-31). Dismissal is keyed to
-  // the turn that produced the batch (a fresh batch always shows) and rides
-  // localStorage like the draft, since clicking a sibling unmounts this.
-  const lastTurn = (node.turns ?? [])[(node.turns?.length ?? 0) - 1]
-  const denialsKey = `${lastTurn?.at ?? ''}·${node.last_denials?.length ?? 0}`
-  const denialsLsKey = `orgtree-denials-${slug}-${node.id}`
-  const [denialsHidden, setDenialsHidden] = useState<string | null>(() => {
-    try { return localStorage.getItem(denialsLsKey) } catch { return null }
-  })
-  const hideDenials = () => {
-    setDenialsHidden(denialsKey)
-    try { localStorage.setItem(denialsLsKey, denialsKey) } catch { /* private mode */ }
-  }
-  const [live_feed, setLiveFeed] = useState<LiveRow[]>([])
-  const [draft, setDraft] = useState('')       // the token-streamed growing reply
-  const [thinking, setThinking] = useState('') // №18: the live ribbon (tail)
-  // full thought accumulation + start time: when the reply begins, the ribbon
-  // folds into a clickable "thought for Xs" line (user spec 2026-07-31)
-  const thinkBuf = useRef('')
-  const thinkT0 = useRef(0)
+  // №7's denials banner and its dismissal state are gone (user bug
+  // 2026-08-02): a denial already renders inline as an errored ToolChip where
+  // it happened, so the banner was a duplicate that also sorted a past event
+  // below undelivered mail. Nothing needs dismissing that lives in sequence.
+  // (live_feed / draft / thinking / thinkSecs / pending all come from the
+  // store above — they were seven local cells and a pair of refs here, which
+  // is exactly how two views of one node ended up with two different answers.)
   const scroller = useRef<HTMLDivElement | null>(null)
   const loadedRef = useRef(false)     // first load always lands at the bottom
   const live = node.state === 'live'
+  // sticky-bottom, in one place. `stuck` is maintained by the SCROLL EVENT
+  // rather than recomputed at each update: growing content does not move
+  // scrollTop, so a reader sitting at the bottom stays "stuck" and a reader who
+  // scrolled up stays free until they come back down. 40px of slack keeps it
+  // from unsticking on a stray pixel.
+  const stickRef = useRef(true)
+  const [showJump, setShowJump] = useState(false)
   const nearBottom = () => {
     const el = scroller.current
     return !el || el.scrollHeight - el.scrollTop - el.clientHeight < 40
   }
-  const toBottom = () => requestAnimationFrame(() => {
-    if (scroller.current) scroller.current.scrollTop = scroller.current.scrollHeight
+  const setStuck = (v: boolean) => {
+    stickRef.current = v
+    setShowJump((s) => (s === !v ? s : !v))   // only re-render on a real flip
+  }
+  const pin = () => {
+    const el = scroller.current
+    if (el) el.scrollTop = el.scrollHeight
+  }
+  // AFTER the DOM commit, before paint: a bare requestAnimationFrame scheduled
+  // during an event handler can fire BEFORE React commits the new rows, so it
+  // read the OLD scrollHeight and landed short — that was the "gets left
+  // behind" bug. A layout effect measures post-commit, so it cannot miss.
+  // Windowed transcript: only the newest CHAT_WINDOW rows are fetched and
+  // rendered; scrolling to the top loads another page. A long-lived agent's
+  // transcript is unbounded, and the cost that actually bites is DOM size —
+  // every row carries markdown and tool chips. The server stamps `seq` as the
+  // PRE-slice ordinal, so messages[0].seq > 0 means older rows exist.
+  const loadingOlder = convo.loadingOlder
+  // distance-from-bottom is invariant when older rows are PREPENDED, so it is
+  // the anchor that keeps the reader's place instead of jumping them down
+  const growAnchor = useRef<number | null>(null)
+  useLayoutEffect(() => {
+    const el = scroller.current
+    if (stickRef.current) { pin(); return }
+    if (el && growAnchor.current != null) {
+      el.scrollTop = el.scrollHeight - growAnchor.current
+      growAnchor.current = null
+    }
   })
+  // seq is the PRE-slice ordinal, so a non-zero first seq means older rows exist
+  const hasOlder = (chat?.messages[0]?.seq ?? 0) > 0
+  const toBottom = () => { setStuck(true); pin() }
+  const loadOlder = () => {
+    const el = scroller.current
+    if (!el) return
+    growAnchor.current = el.scrollHeight - el.scrollTop
+    if (!storeLoadOlder(slug, node.id)) growAnchor.current = null
+  }
 
-  const refresh = useCallback((force = false) =>
-    getChat(slug, node.id).then((c) => {
-      // sticky-bottom: follow new content only if the reader is already at
-      // (or near) the bottom — never yank them out of scrollback
-      const stick = force || !loadedRef.current || nearBottom()
-      loadedRef.current = true
-      setChat(c)
-      // a pending message graduates once the transcript contains it — by
-      // containment, not equality: the turn text is a mail envelope now
-      setPending((p) => p.filter((x) =>
-        !c.messages.slice(-20).some((m) => m.role === 'user' && m.text.includes(x))))
-      // the fetched transcript supersedes what it COVERS — never blindly:
-      // the CLI's file append can lag its own stream event, and a refresh
-      // landing in that gap ate the message (user bug 2026-07-31: replies
-      // flashed, vanished, then reappeared with the next tool use). A live
-      // row survives while it is young or not yet visible in the fetched
-      // tail; covered/old rows drop (keeping everything doubled the whole
-      // in-flight turn). Sticky rows (immediate /context output — in no
-      // transcript, ever) always stay.
-      const now = Date.now()
-      const tail = c.messages.slice(-12)
-      const covered = (r: LiveRow) => {
-        if (r.kind === 'text')
-          return tail.some((m) => m.role === 'assistant'
-            && (m.text || '').startsWith((r.text || '').slice(0, 300)))
-        if (r.kind === 'tool')
-          return tail.some((m) => (m.tools ?? []).some((t) =>
-            r.text === t.name || r.text === `${t.name} · ${t.arg}`))
-        if (r.kind === 'steered')
-          return tail.some((m) => m.role === 'user'
-            && (m.text || '').includes((r.text || '').slice(0, 200)))
-        if (r.kind === 'thought')
-          return tail.some((m) => (m.thinking || '')
-            .includes((r.text || '').slice(0, 120)))
-        return true
-      }
-      setLiveFeed((f) => f.filter((r) => r.sticky
-        || (now - (r._at ?? 0) < 5000 && !covered(r))))
-      if (stick) toBottom()
-    }).catch(() => {}), [slug, node.id])
-
-  useEffect(() => { refresh() }, [refresh])
+  // Ingestion of stream/pulse events, the transcript fetch, the live/durable
+  // reconciliation and the busy poller ALL moved into convo.ts. They used to
+  // live here, which meant every mounted view ran its own copy of each — the
+  // divergence the store exists to make impossible. What is left is this
+  // view's business: ask for a first load, and re-stick the scroll when the
+  // store hands back a payload this view has not seen yet.
+  const refresh = useCallback((force = false) => {
+    if (force) setStuck(true)
+    return refreshConvo(slug, node.id, { force })
+  }, [slug, node.id])
   useEffect(() => {
-    if (pulse && pulse.node === node.id) {
-      if (pulse.event === 'turn_done') {
-        // sticky rows (/context answers) outlive the turn — the user asked
-        // mid-turn precisely to peek; the turn ending must not eat the answer
-        setLiveFeed((f) => f.filter((r) => r.sticky))
-        setDraft(''); setThinking('')
-        thinkBuf.current = ''
-      }
-      refresh()
-    }
-  }, [pulse, node.id, refresh])
-  useEffect(() => {                       // live per-message feed while working
-    if (streamEvt && streamEvt.node === node.id) {
-      const stick = nearBottom()
-      // the reply (or a tool call) started: the live ribbon folds into a
-      // clickable "thought for Xs" line that stays in the flow (user spec)
-      const foldThought = () => {
-        if (!thinkBuf.current) return
-        const secs = Math.max(1, Math.round((Date.now() - thinkT0.current) / 1000))
-        const entry: LiveRow = { kind: 'thought', text: thinkBuf.current, secs,
-                        _at: Date.now() }
-        thinkBuf.current = ''
-        setThinking('')
-        setLiveFeed((f) => [...f.slice(-24), entry])
-      }
-      if (streamEvt.kind === 'delta') {
-        // token streaming (user spec): the reply grows word-by-word; the
-        // complete message event replaces it when the block finishes
-        foldThought()
-        setDraft((d) => (d + streamEvt.text).slice(-12000))
-        if (stick) toBottom()
-        return
-      }
-      if (streamEvt.kind === 'thinking') {
-        if (!thinkBuf.current) thinkT0.current = Date.now()
-        thinkBuf.current = (thinkBuf.current + streamEvt.text).slice(-24000)
-        setThinking((t) => (t + streamEvt.text).slice(-2000))
-        if (stick) toBottom()
-        return
-      }
-      if (streamEvt.kind === 'steered') {
-        // a pending user message just got DELIVERED mid-task
-        setPending((p) => p.filter((x) => !streamEvt.text.includes(x)))
-      }
-      foldThought()
-      if (streamEvt.kind === 'text') setDraft('')
-      setLiveFeed((f) => [...f.slice(-24), { ...streamEvt, _at: Date.now() }])
-      if (stick) toBottom()
-    }
-  }, [streamEvt, node.id])   // eslint-disable-line react-hooks/exhaustive-deps
+    if (!convo.loaded) void refreshConvo(slug, node.id)
+  }, [slug, node.id, convo.loaded])
   useEffect(() => {
-    if (!chat?.busy) return
-    const t = setInterval(refresh, 5000)
-    return () => clearInterval(t)
-  }, [chat?.busy, refresh])
+    // the FIRST payload this view sees lands it at the bottom, whether the
+    // store fetched it for us or another view had already loaded it
+    if (convo.loaded && !loadedRef.current) { loadedRef.current = true; setStuck(true) }
+  }, [convo.loaded])   // eslint-disable-line react-hooks/exhaustive-deps
+  // (the busy-gated poller that lived here is gone. Liveness is now driven by
+  // SUBSCRIPTION inside convo.ts: if a view is watching a node, that node is
+  // polled. Gating it on chat.busy meant the refresh loop depended on a field
+  // that arrives in the payload the loop fetches — so a view that started out
+  // believing "not busy" could never learn otherwise. See convo.beat().)
 
   // an archived agent still RECEIVES mail (user ruling) — it queues in its
   // inbox and gets acted on at rehire; only unrecoverable nodes refuse
@@ -278,25 +258,31 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
     // optimistic ghost only until the server confirms — the durable copy
     // then renders from chat.pending_mail (№11); a failed send clears the
     // ghost instead of leaving a dimmed bubble forever
-    setPending((p) => [...p, t])
-    if (live) setChat((c) => c && ({ ...c, busy: true }))
+    addPending(slug, node.id, t)
+    if (live) markBusy(slug, node.id)
+    flashMode('')   // the previous send's receipt must not outlive this one
     toBottom()
     sendMessage(slug, node.id, t, paths)
       .then((r) => {
         // review C3: name every real outcome — "delivering" as the fallback
         // lied for frozen nodes (mail waits durably; nothing delivers now)
-        setSendMode(r.compacting ? 'compacting — the org way (§8)'
+        flashMode(r.compacting ? 'compacting — the org way (§8)'
           : r.command ? 'command sent'
             : r.steering ? 'steering in mid-task'
               : r.frozen ? 'frozen — mail waits for ▶ resume'
                 : r.deferred ? 'deferred — delivers at rehire'
                   : (r.queued ?? 0) > 0 ? `queued (${r.queued} ahead)` : 'delivering')
         if (r.warnings?.length) toast(r.warnings)
+        // A COMMAND is not correspondence: it never enters pending_mail, and an
+        // IMMEDIATE command may never reach this node's transcript either (it
+        // runs in a throwaway fork and its output rides the live feed), so its
+        // ghost has no evidence to graduate against and would sit there
+        // forever. Retire it here — the "command sent" receipt is the feedback.
+        if (r.command) dropPending(slug, node.id, t)
         return refresh(true)
       })
-      .then(() => setPending((p) => p.filter((x) => x !== t)))
       .catch((e: Error) => {
-        setPending((p) => p.filter((x) => x !== t))
+        dropPending(slug, node.id, t)
         toast([`error: ${e.message}`])
       })
   }
@@ -317,12 +303,21 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
   // №13: the composer grows with the draft (2 → ~8 rows); the desk interior
   // is a fixed 900px virtual panel, so .msgs absorbs the difference
   const taRef = useRef<HTMLTextAreaElement | null>(null)
-  const grow = () => {
+  const grow = useCallback(() => {
     const el = taRef.current
     if (!el) return
     el.style.height = 'auto'
     el.style.height = Math.min(el.scrollHeight, 160) + 'px'
-  }
+  }, [])
+  // the height follows the TEXT, not the keystroke. onChange was the only
+  // caller, so every other way the value changes left the inline height
+  // stale: SENDING cleared the draft and the box stayed tall until the desk
+  // remounted (user bug 2026-08-02), a draft restored from localStorage
+  // opened at two rows however long it was, and picking a slash hint did not
+  // resize either. A layout effect measures POST-COMMIT, so the new value is
+  // already in the DOM when this reads scrollHeight — reading it inside the
+  // handler would measure the outgoing text.
+  useLayoutEffect(grow, [text, grow])
   // №6: dropping a file anywhere on the desk uploads it (and prevents the
   // browser's default navigate-away, which would also eat the draft)
   const dropProps = {
@@ -431,9 +426,33 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
             .catch((e: Error) => toast([`error: ${e.message}`]))}
           close={() => setAskCompact(false)} />
       )}
-      {chat?.last_error && <div className="desk-error"><WarnIcon fontSize="inherit" /> {chat.last_error}</div>}
+      {/* last_error moved INTO the chat stream (it renders at the end, where
+          it actually occurred). On the non-chat tabs it would otherwise be the
+          only surface showing a failed turn, so it still renders here for
+          those — never on the chat tab, which owns it chronologically. */}
+      {chat?.last_error && view !== 'chat' && (
+        <div className="desk-error"><WarnIcon fontSize="inherit" /> {chat.last_error}</div>)}
       {view === 'chat' && (
-        <div className="msgs" ref={scroller}>
+        <div className="msgs" ref={scroller}
+          onScroll={(e) => {
+            setStuck(nearBottom())
+            // within a screen of the top: page in the previous window
+            if (e.currentTarget.scrollTop < 240 && hasOlder) loadOlder()
+          }}>
+          {/* paging is automatic (the onScroll above pages in within a screen
+              of the top) — this is a status line, not a control. It still
+              earns its place: it reserves height so the list does not jump as
+              rows prepend, and at the API's window cap it is the ONLY thing
+              that explains why scrolling up stopped producing messages. */}
+          {hasOlder && (
+            <div className={'dim pad loadolder-status' + (loadingOlder ? ' on' : '')}>
+              {loadingOlder ? 'loading earlier messages…'
+                : convo.win >= MAX_WINDOW
+                  ? `${chat?.messages[0]?.seq ?? 0} earlier messages — beyond the window`
+                  : `${chat?.messages[0]?.seq ?? 0} earlier messages`}
+            </div>)}
+          {!hasOlder && convo.win > CHAT_WINDOW && chat?.messages.length
+            ? <div className="dim pad loadolder-end">— start of the conversation —</div> : null}
           {!chat && <div className="dim pad">loading…</div>}
           {chat && !chat.messages.length && !live_feed.length &&
             <div className="dim pad">no conversation yet</div>}
@@ -444,7 +463,7 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
               ? Date.parse(m.ts) - Date.parse(prev.ts) : 0
             return (
               // seq = the server's pre-slice ordinal: index keys over the
-              // sliding 300-row window remounted every row (and collapsed
+              // sliding CHAT_WINDOW-row window remounted every row (and collapsed
               // every open ToolChip) each time one message scrolled off
               <div key={m.seq ?? i}>
                 {gapMs > 5 * 60e3 && (
@@ -455,22 +474,45 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
               </div>
             )
           })}
+          {/* keyed on the server's row id (`n`), never the index: rows retire
+              from the MIDDLE of this list as the transcript catches up, and an
+              index key would rename every row below the one that left */}
           {live_feed.map((f, i) => (
             f.kind === 'thought'
-              ? <div key={'f' + i} className="msg assistant live">
+              ? <div key={f.n ?? 'f' + i} className="msg assistant live">
                   <ThoughtLine text={f.text} secs={f.secs} /></div>
               : f.kind === 'tool'
-                ? <div key={'f' + i} className="msg live tools"><DotIcon fontSize="inherit" className="tooldot" /> {f.text}</div>
+                ? <div key={f.n ?? 'f' + i} className="msg live tools"><DotIcon fontSize="inherit" className="tooldot" /> {f.text}</div>
                 : f.kind === 'steered'
-                  ? <div key={'f' + i} className="msg user live md"
-                      dangerouslySetInnerHTML={md(stripEnvelope(f.text))} />
-                  : <div key={'f' + i} className="msg assistant live md"
+                  // notices are split off here too: the live row would
+                  // otherwise flash raw [ORG NOTICES] chrome for the second
+                  // before the transcript refresh renders them as a card
+                  ? <div key={f.n ?? 'f' + i} className="msg user live md"
+                      dangerouslySetInnerHTML={md(stripEnvelope(splitNotices(f.text).rest))} />
+                  : <div key={f.n ?? 'f' + i} className="msg assistant live md"
                       dangerouslySetInnerHTML={md(f.text)} />
           ))}
-          {thinking && chat?.busy && (
-            <div className="msg live thinking">{thinking}</div>)}
+          {thinkSecs !== null && chat?.busy && (thinking
+            // haiku streams its reasoning: the text IS the indicator
+            ? <div className="msg live thinking">{thinking}</div>
+            // opus/sonnet seal it: nothing to show but the fact and the clock,
+            // which beats the blank panel this replaces
+            : <div className="msg live thinking sealed">
+                <PsychologyIcon fontSize="inherit" />{' '}thinking…
+                {thinkSecs > 0 ? ` for ${thinkSecs}s` : ''}
+              </div>)}
           {draft && <div className="msg assistant live md draft"
             dangerouslySetInnerHTML={md(draft)} />}
+          {/* D-29: the turn has begun but the CLI has not produced anything
+              yet — process launch, hooks, `init`, roughly six seconds during
+              which the panel showed nothing but a spinner in the chrome. This
+              is DERIVED, not a new event or a new state cell: busy, with
+              nothing live, nothing thinking and nothing drafted, IS starting. */}
+          {chat?.busy && !live_feed.length && thinkSecs === null && !draft
+            && !pending.length && (
+            <div className="msg live thinking sealed">
+              <AutorenewIcon fontSize="inherit" className="cc-spin" /> starting…
+            </div>)}
           {/* №11: pending bubbles render from the DURABLE server copy, each
               retractable until delivery (№17) */}
           {(chat?.pending_mail ?? []).filter((m) => m.from === USER).map((m) => (
@@ -482,7 +524,8 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
               {/* journal-riding mail (drained for a mid-task delivery) shows
                   as queued but is past the point of retraction */}
               {m.delivering
-                ? <span className="dim pend-tag">delivering mid-task…</span>
+                ? <span className="dim pend-tag">{m.via === 'turn'
+                  ? 'delivering…' : 'delivering mid-task…'}</span>
                 : m.id && (
                   <button className="chip-x" title="retract (undelivered)"
                     onClick={() => retractMail(slug, node.id, m.id!)
@@ -491,28 +534,41 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
                     <CloseIcon fontSize="inherit" /></button>)}
             </div>
           ))}
-          {pending.map((p, i) => (
-            <div key={'q' + i} className="msg user pending md"
-              dangerouslySetInnerHTML={md(p)} />
+          {pending.map((p) => (
+            <div key={'q' + p.id} className="msg user pending md"
+              dangerouslySetInnerHTML={md(p.text)} />
           ))}
-          {/* №7: the machine truth about headless auto-denies — the agent
-              was corrected and nothing showed it */}
-          {(node.last_denials?.length ?? 0) > 0 && denialsHidden !== denialsKey && (
-            <div className="denials">
-              <button className="chip-x denials-x" title="dismiss"
-                onClick={hideDenials}><CloseIcon fontSize="inherit" /></button>
-              {node.last_denials!.map((d, i) => (
-                <div key={i}>⊘ denied · {d.tool}{d.arg ? `(${d.arg})` : ''}</div>))}
-              <span className="dim">last turn — the ⚙ folder grants decide this</span>
-            </div>)}
+          {/* the turn's own failure is the LAST thing that happened, so it
+              reads at the end of the stream. It used to render above the whole
+              transcript, which put the newest event first (user bug
+              2026-08-02: events must appear in the order they occurred). */}
+          {chat?.last_error && (
+            <div className="desk-error"><WarnIcon fontSize="inherit" /> {chat.last_error}</div>)}
+          {/* №7's denials banner is GONE (user bug 2026-08-02). A headless
+              auto-deny already writes a tool_result with is_error, so the
+              denial renders inline as an errored ToolChip at the point it
+              happened — verified in a live transcript ("Claude requested
+              permissions to write to …, but you haven't granted it yet").
+              The banner restated that, pinned below even undelivered pending
+              mail, so a past event sorted under a future one. */}
+          {/* sticky INSIDE the scroller (not a wrapper): the desk's flex chain
+              is documented as fragile, and sticky needs no new layout box. It
+              is the last child, so it rides the bottom edge of the scrollport
+              while the reader is up in the scrollback. */}
+          {showJump && (
+            <button className="jumpbottom" onClick={toBottom}
+              title="jump to the newest message">
+              ↓ jump to bottom
+            </button>)}
         </div>
       )}
       {view === 'history' && <HistoryView slug={slug} nid={node.id} />}
       {view === 'files' && <FilesView slug={slug} nid={node.id} />}
-      {view === 'inbox' && <InboxView slug={slug} nid={node.id} pulse={pulse}
+      {view === 'inbox' && <InboxView slug={slug} nid={node.id}
         onRetract={(m) => retractMail(slug, node.id, m.id)
           .then(() => refresh(true))
-          .catch((e: Error) => toast([`error: ${e.message}`]))} />}
+          // rethrow: InboxView's optimistic hide rolls back on rejection
+          .catch((e: Error) => { toast([`error: ${e.message}`]); throw e })} />}
       {/* №13: the composer is present under EVERY tab — finding a wrong number
           on the files tab shouldn't cost your place to say so */}
       {sendMode && <div className="sendmode dim">{sendMode}</div>}
@@ -555,7 +611,7 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
           placeholder={live ? `message ${node.id}…`
             : node.state === 'archived'
               ? `message ${node.id} — queued until rehire…` : node.state}
-          onChange={(e) => { setSendMode(''); setText(e.target.value); grow() }}
+          onChange={(e) => { flashMode(''); setText(e.target.value); grow() }}
           onPaste={(e) => {
             // №6: Ctrl+V of an image/file auto-bridges to a real upload
             if (e.clipboardData?.files?.length) {
@@ -568,10 +624,11 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
           }} />
         {!pub && (
           <EffortButton value={node.scope?.effort ?? ''}
+            effective={node.effort_effective ?? ''}
             onSet={(lvl) => saveScope(slug, node.id, { effort: lvl })
               .then(() => toast([lvl
                 ? `${node.id} thinking effort: ${lvl}`
-                : `${node.id} thinking effort: CLI default`]))
+                : `${node.id} thinking effort: back to the org default`]))
               .catch((e: Error) => toast([`error: ${e.message}`]))} />
         )}
         {/* №3: STOP renders only when an interrupt can actually land —
@@ -609,8 +666,9 @@ function DeskChatInner({ node, map, op, slug, pulse, toast, streamEvt, onLineage
   )
 }
 function HistoryView({ slug, nid }: { slug: string; nid: string }) {
-  const [items, setItems] = useState<HistoryItem[] | null>(null)
-  useEffect(() => { getHistory(slug, nid).then((r) => setItems(r.items)).catch(() => setItems([])) }, [slug, nid])
+  // G5: the agent keeps acting while this tab is open — a fetch-once list is
+  // a photograph of the moment the tab was clicked
+  const items = usePolled(() => getHistory(slug, nid).then((r) => r.items), [slug, nid])
   return (
     <div className="msgs">
       {items == null && <div className="dim pad">loading…</div>}
@@ -630,8 +688,8 @@ function HistoryView({ slug, nid }: { slug: string; nid: string }) {
 
 function FilesView({ slug, nid }: { slug: string; nid: string }) {
   const [path, setPath] = useState('')
-  const [data, setData] = useState<ScratchPayload | null>(null)
-  useEffect(() => { getScratch(slug, nid, path).then(setData).catch(() => setData(null)) }, [slug, nid, path])
+  // G5: same — the agent writes into this very directory while you browse it
+  const data = usePolled(() => getScratch(slug, nid, path), [slug, nid, path])
   const up = () => setPath(path.split('/').slice(0, -1).join('/'))
   // union split (type-only narrowing): a scratch payload is a dir listing OR
   // a file body — the two reads below each see only their variant
@@ -644,7 +702,8 @@ function FilesView({ slug, nid }: { slug: string; nid: string }) {
         {path && <button onClick={up}><ArrowUpIcon fontSize="inherit" /> up</button>}
         <span className="dim mono">/{path}</span>
       </div>
-      {!data && <div className="dim pad">empty or unreadable</div>}
+      {!data && <div className="dim pad">loading…</div>}
+      {entries && !entries.length && <div className="dim pad">empty</div>}
       {entries?.map((e) => (
         <div key={e.name} className="hist-row">
           {e.dir
@@ -691,7 +750,7 @@ export function LineagePanel({ node, op, slug, close }: LineagePanelProps) {
         if (readingRef.current === bid) setReadChat({ messages: [] })
       })
   }
-  const SEAT: Record<string, number> = { haiku: 1, sonnet: 3, opus: 5, fable: 10 }
+  const SEAT = TIER_SEAT      // one table (shared.ts), mirrors ledger.TIERS
   const gens = [...(node.lineage ?? [])].sort(
     (a, b) => (b.generation ?? 0) - (a.generation ?? 0))
   return (
@@ -767,6 +826,31 @@ export function LineagePanel({ node, op, slug, close }: LineagePanelProps) {
   )
 }
 // Incoming turns are mail envelopes (messages ARE mail); for the chat view,
+// The envelope also prepends an [ORG NOTICES — n change(s)…] block to the next
+// turn's message (supervisor._envelope). That is machine chrome about the ORG,
+// not part of what the sender wrote, so it is pulled out here and rendered as
+// its own collapsed card rather than sitting inside the bubble (user bug
+// 2026-08-02). Anchored at the start because _envelope builds the prelude
+// notices-first; the trailing \n* eats the blank line before the mail block.
+const NOTICE_RE = /^\s*\[ORG NOTICES[^\]\n]*\]\n([\s\S]*?)\n\[END NOTICES\]\n*/
+const splitNotices = (t: string | null | undefined) => {
+  const s = t ?? ''
+  const m = NOTICE_RE.exec(s)
+  if (!m) return { notices: [] as string[], rest: s }
+  const notices = (m[1] ?? '').split('\n')
+    .map((l) => l.replace(/^\s*-\s*/, '').trim()).filter(Boolean)
+  return { notices, rest: s.slice(m[0].length) }
+}
+
+// The restart replay (supervisor.reconcile) re-sends the message that drove an
+// interrupted turn, prefixed with this marker. Re-delivery is deliberate and
+// load-bearing — D-045's "worst case a duplicate, never a loss" — but the
+// reader already knows what they typed, so it folds into a one-line marker
+// instead of replaying their own prompt back at them (user, 2026-08-02).
+const RESTART_MARK = '[ORGTREE RESTART]'
+const isRestart = (t: string | null | undefined) =>
+  (t ?? '').trimStart().startsWith(RESTART_MARK)
+
 // hide the machine chrome — [MAIL]/[END MAIL] markers, drive nudges — and
 // render the FROM attribution as a small header instead of body text.
 const stripEnvelope = (t: string | null | undefined) => (t ?? '')
@@ -859,10 +943,26 @@ const Msg = memo(function Msg({ m, slug, nid, onMailLink }: {
   m: ChatMessage; slug: string; nid: string; onMailLink?: MailLinkFn
 }) {
   if (m.role === 'system') return <SysLine m={m} />
-  const text = m.role === 'user' ? stripEnvelope(m.text) : m.text
+  // notices come out BEFORE the envelope strip — they are their own card
+  const { notices, rest } = m.role === 'user'
+    ? splitNotices(m.text) : { notices: [] as string[], rest: m.text }
+  // a restart replay is machinery, not something the reader said: one line,
+  // with the repeated prompt behind a click for anyone who wants to confirm it
+  if (m.role === 'user' && isRestart(rest)) {
+    return (
+      <div className="msg user restartmsg">
+        {notices.length > 0 && <NoticeLine notices={notices} />}
+        <RestartLine text={stripEnvelope(rest)} />
+      </div>
+    )
+  }
+  const text = m.role === 'user' ? stripEnvelope(rest) : m.text
   return (
     <div className={'msg ' + m.role + (m.oracle ? ' oracle' : '')}>
-      {m.thinking && <ThoughtLine text={m.thinking} secs={m.think_secs} />}
+      {notices.length > 0 && <NoticeLine notices={notices} />}
+      {(m.thinking || m.thinking_sealed) &&
+        <ThoughtLine text={m.thinking} secs={m.think_secs}
+          sealed={m.thinking_sealed} />}
       {/* (the string branch guards legacy live rows; the payload's tools
           rows are null-swept server-side, so no null case exists) */}
       {(m.tools ?? []).map((t, i) => (typeof t === 'string'
@@ -875,18 +975,73 @@ const Msg = memo(function Msg({ m, slug, nid, onMailLink }: {
   )
 })
 
+// "resumed after a restart" — the replayed prompt is hidden by default because
+// the reader typed it and can see it upstream; one click proves what the agent
+// was actually re-sent, which matters when diagnosing a duplicated turn.
+function RestartLine({ text }: { text: string }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="thoughtwrap">
+      <button className="thoughtline noticeline" onClick={() => setOpen((o) => !o)}
+        title={open ? 'collapse' : 'show what was re-sent to the agent'}>
+        <AutorenewIcon fontSize="inherit" />
+        {' '}resumed after an orgtree restart {open ? '▾' : '▸'}
+      </button>
+      {open && <div className="thoughtbody noticebody">{text}</div>}
+    </div>
+  )
+}
+
+// Org-change notices (hire/retire/reallocate/move/scope) ride in on the next
+// turn's message. They are about the ORG, not the conversation, so they fold
+// into their own collapsed card — same shape as the thought line, deliberately
+// (one collapse vocabulary in the transcript, not two).
+function NoticeLine({ notices }: { notices: string[] }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="thoughtwrap">
+      <button className="thoughtline noticeline" onClick={() => setOpen((o) => !o)}
+        title={open ? 'collapse' : 'read the org changes delivered with this message'}>
+        <AutorenewIcon fontSize="inherit" />
+        {' '}{notices.length} notice{notices.length === 1 ? '' : 's'} {open ? '▾' : '▸'}
+      </button>
+      {open && (
+        <div className="thoughtbody noticebody">
+          {notices.map((n, i) => <div key={i}>{n}</div>)}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // №18 evolved (user spec 2026-07-31): after thinking wraps up it folds into a
 // small clickable "thought for Xs" line; the click expands the thought
 // process. Fed live (measured) while the turn runs, and from the transcript's
 // thinking blocks (gap-derived seconds) ever after.
-function ThoughtLine({ text, secs }: { text: string; secs?: number }) {
+// `sealed` = the block arrived signature-only, its plaintext withheld by the
+// API (the normal case since 2026-08-02). The thought and its duration are
+// still real, so the line stays — as a plain marker with no expander, because
+// an expander that opens on nothing is worse than no expander.
+function ThoughtLine({ text, secs, sealed }:
+{ text?: string; secs?: number; sealed?: boolean }) {
   const [open, setOpen] = useState(false)
+  const dur = secs ? `${secs}s` : 'a moment'
+  if (sealed || !text) {
+    return (
+      <div className="thoughtwrap">
+        <span className="thoughtline sealed"
+          title="the model's reasoning was not included in the response — only its duration is known">
+          <PsychologyIcon fontSize="inherit" />{' '}thought for {dur}
+        </span>
+      </div>
+    )
+  }
   return (
     <div className="thoughtwrap">
       <button className="thoughtline" onClick={() => setOpen((o) => !o)}
         title={open ? 'collapse' : 'read the thought process'}>
         <PsychologyIcon fontSize="inherit" />
-        {' '}thought for {secs ? `${secs}s` : 'a moment'} {open ? '▾' : '▸'}
+        {' '}thought for {dur} {open ? '▾' : '▸'}
       </button>
       {open && <div className="thoughtbody">{text}</div>}
     </div>
@@ -924,8 +1079,48 @@ function SysLine({ m }: { m: ChatMessage }) {
 // agents can do.
 const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max']
 
-function EffortButton({ value, onSet }: { value: string; onSet: (lvl: string) => void }) {
+// `effective` is what the next turn WILL run at, resolved server-side by
+// Org.effective_effort — the same call that builds the --effort flag, so the
+// control and the runtime cannot disagree. It is never empty: orgtree passes
+// the flag on every turn precisely so that this can always name a level.
+// (Reported three times before it was right. Attempt 1 read only
+// node.scope.effort, so an unconfigured agent showed nothing. Attempt 2 fell
+// back to an effort field in the transcript, which the CLI writes for opus and
+// not for haiku — so it worked on the agent I happened to test and nowhere
+// else. The lesson is in §7 of docs/state-architecture-review.md: read the
+// value that CAUSES the behaviour, not one that correlates with it.)
+function EffortButton({ value, effective, onSet }:
+{ value: string; effective?: string
+  onSet: (lvl: string) => Promise<unknown> | void }) {
   const [open, setOpen] = useState(false)
+  // OPTIMISTIC (user report 2026-08-03: "a lag of around 3-5 seconds when i
+  // change the effort level before it updates visually"). The control used to
+  // render purely from the tree payload, so the click showed nothing until a
+  // refetch landed — which is fast when a broadcast arrives and up to a full
+  // heartbeat when one does not. The click already KNOWS the new level, so
+  // stop making the user wait for the server to say it back.
+  //
+  // `null` = nothing pending, `''` = a pending CLEAR (distinct from null, which
+  // is why this is not just a string). It is uncommitted-operation state, not a
+  // mirror of server data — the same exception the retract path takes — and it
+  // is dropped the moment the payload speaks, whatever the payload says, so a
+  // rejected or clamped write corrects itself rather than sticking.
+  //
+  // ⚠ "the payload speaks" is an EFFECT ON CHANGE — a 200 that changes nothing
+  // (the write clamped or ignored, props come back identical) never fires it,
+  // and the phantom level would stick with its .saving dim forever. So a
+  // resolved write also arms a bounded settle: if the payload has not spoken
+  // within a broadcast round-trip, drop the phantom and show the truth.
+  const [pending, setPending] = useState<string | null>(null)
+  const settle = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => { setPending(null) }, [value, effective])
+  useEffect(() => () => { if (settle.current) clearTimeout(settle.current) }, [])
+  // a pending CLEAR falls back to `effective`, which is still the old level for
+  // one refresh — the org default is not known here. Transient and honest: it
+  // is what the control showed before this change anyway.
+  const shown = (pending || value || effective || '')
+  const why = value ? 'set on this agent'
+    : 'inherited — change it on this agent, or org-wide in ⚙ settings'
   const wrapRef = useRef<HTMLSpanElement | null>(null)
   useEffect(() => {
     if (!open) return
@@ -938,35 +1133,57 @@ function EffortButton({ value, onSet }: { value: string; onSet: (lvl: string) =>
   }, [open])
   return (
     <span className="eff-wrap" ref={wrapRef}>
-      <button type="button" className={'cc-eff' + (value ? ' set' : '')}
-        title={`thinking effort — ${value || 'inherit (org default)'}`}
+      <button type="button"
+        className={'cc-eff' + ((pending ?? value) ? ' set' : shown ? ' inherited' : '')
+          + (pending !== null ? ' saving' : '')}
+        title={`thinking effort — ${shown || 'unset'} (${why})`}
         onClick={() => setOpen((o) => !o)}>
-        {value || 'effort'}
+        {shown || 'effort'}
       </button>
       {open && (
         <span className="eff-pop">
-          <EffortSwitch value={value}
-            onSet={(lvl) => { onSet(lvl); setOpen(false) }} />
+          <EffortSwitch value={pending ?? value} level={shown}
+            why={(pending ?? value) ? 'set here' : 'inherited'}
+            onSet={(lvl) => {
+              setPending(lvl)
+              setOpen(false)
+              if (settle.current) clearTimeout(settle.current)
+              // the payload normally lands first and clears this; the settle
+              // covers a 200 that changed nothing, the catch a write that
+              // never landed at all
+              Promise.resolve(onSet(lvl))
+                .then(() => { settle.current = setTimeout(() => setPending(null), 2500) })
+                .catch(() => setPending(null))
+            }} />
         </span>
       )}
     </span>
   )
 }
 
-function EffortSwitch({ value, onSet }: { value: string; onSet: (lvl: string) => void }) {
-  const idx = EFFORT_LEVELS.indexOf(value)
+function EffortSwitch({ value, level, why, onSet }:
+{ value: string; level: string; why: string; onSet: (lvl: string) => void }) {
+  // the track lights at the level that will actually be USED so it always says
+  // what will happen; `pinned` is what a click can clear, which is only the
+  // node's own setting — clicking an unpinned dot pins it rather than clearing
+  // nothing. `why` is the caller's one description of where the level came
+  // from, so the button and the popover can never word it differently.
+  const pinned = EFFORT_LEVELS.indexOf(value)
+  const idx = pinned >= 0 ? pinned : EFFORT_LEVELS.indexOf(level)
   return (
     <span className="effort-switch"
-      title={`thinking effort — ${value || 'inherit (org default)'}; click a`
-        + ' dot to set, click the active dot to clear back to inherit'}>
-      <span className="eff-label">Effort{value ? ` (${value})` : ''}</span>
+      title={`thinking effort — ${level || 'unset'} (${why})`
+        + '; click a dot to set, click the active dot to clear back to inherit'}>
+      <span className="eff-label">Effort{level
+        ? ` (${level}${value ? '' : ` — ${why}`})` : ''}</span>
       <span className="eff-track">
         {EFFORT_LEVELS.map((l, i) => (
           <button key={l} type="button"
             className={'eff-dot' + (i === idx ? ' on' : '')
-              + (idx >= 0 && i < idx ? ' below' : '')}
+              + (idx >= 0 && i < idx ? ' below' : '')
+              + (pinned < 0 ? ' faint' : '')}
             title={l}
-            onClick={() => onSet(i === idx ? '' : l)} />
+            onClick={() => onSet(i === pinned ? '' : l)} />
         ))}
       </span>
     </span>

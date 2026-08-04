@@ -17,8 +17,8 @@ import {
   USER_W, withDraftTree, Z_DESK, Z_MAX, Z_MINI,
 } from './shared'
 import type {
-  ActivityInfo, CanvasNode, DraftScope, DraftState, MailEvent, MailLinkFn,
-  OpFn, Pile, Pt, PulseEvent, Seg, Spring, StreamEvent, View,
+  CanvasNode, DraftScope, DraftState, MailEvent, MailLinkFn,
+  OpFn, Pile, Pt, Seg, Spring, StreamEvent, View,
 } from './shared'
 import { Activity, ContextWheel, LineagePanel } from './desk'
 import { NodeInboxModal, OrgInboxModal } from './mail'
@@ -29,16 +29,13 @@ export interface OrgCanvasProps {
   tree: TreePayload
   op: OpFn
   slug: string
-  pulse: PulseEvent | null
   toast: ToastFn
-  streamEvt: StreamEvent | null
-  activity?: Record<string, ActivityInfo | undefined>
   mailEvt: MailEvent | null
   /** open the user's inbox, optionally jumped to a specific mail id */
   onInbox?: (jump?: string) => void
 }
 
-export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, mailEvt, onInbox }: OrgCanvasProps) {
+export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvasProps) {
   const [draft, setDraft] = useState<DraftState | null>(null)
   const [configId, setConfigId] = useState<string | null>(null)
   const [lineageId, setLineageId] = useState<string | null>(null)
@@ -390,6 +387,12 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
   // so a namesake never inherits a dead agent's unsent instruction.
   // Archived nodes stay in `map` — their queued-until-rehire drafts survive.
   useEffect(() => {
+    // ⚠ props can be mismatched for a commit: on an org switch `slug` is the
+    // new org while `tree` is still the old payload (App swaps the tree only
+    // when its fetch resolves, and this component is not keyed by slug). A
+    // sweep in that window prunes the NEW org's storage against the OLD org's
+    // node set — nearly everything. Only sweep when the two agree.
+    if (tree.slug !== slug) return
     try {
       const pre = `orgtree-draft-${slug}-`
       for (let i = localStorage.length - 1; i >= 0; i--) {
@@ -399,7 +402,39 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
         }
       }
     } catch { /* private mode */ }
-  }, [map, slug])
+  }, [map, slug, tree.slug])
+
+  // G6: the SAME sweep for every other id-keyed client store. `orgtree-eyemin-`
+  // (which direct lines are collapsed), `-eyeseen-` (which ones have been seen,
+  // so a new one arrives minimized) and `-pile-` (which retiree fronts its
+  // stack) all key on node ids and none of them was ever pruned. They grew
+  // across the org's entire hire/fire history, and a pile front could name a
+  // node that no longer exists. Client-owned state is legitimate — client-owned
+  // state that outlives what it refers to is just a slower kind of stale.
+  useEffect(() => {
+    if (!map.size) return              // never prune against a not-yet-loaded tree
+    if (tree.slug !== slug) return     // mismatched-props window — see the draft sweep
+    try {
+      for (const suffix of ['eyemin', 'eyeseen']) {
+        const k = `orgtree-${suffix}-${slug}`
+        const raw = localStorage.getItem(k)
+        if (!raw) continue
+        const ids = JSON.parse(raw) as string[]
+        const keep = ids.filter((id) => map.has(id))
+        if (keep.length !== ids.length) localStorage.setItem(k, JSON.stringify(keep))
+      }
+      const pk = `orgtree-pile-${slug}`
+      const rawP = localStorage.getItem(pk)
+      if (rawP) {
+        const pf = JSON.parse(rawP) as Record<string, string>
+        const keep = Object.fromEntries(Object.entries(pf)
+          .filter(([parent, front]) => map.has(parent) && map.has(front)))
+        if (Object.keys(keep).length !== Object.keys(pf).length) {
+          localStorage.setItem(pk, JSON.stringify(keep))
+        }
+      }
+    } catch { /* private mode, or a hand-edited value — never fatal */ }
+  }, [map, slug, tree.slug])
 
   // ------------------------------------------------------- the spring engine
   useEffect(() => {
@@ -1002,8 +1037,8 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
               onFocus={() => centerOn(USER)}
               posX={(id) => posOf(id)?.x ?? 0}
               onJump={(id) => centerOn(id)}
-              map={map} op={op} slug={slug} pulse={pulse} toast={toast}
-              streamEvt={streamEvt} compactAt={tree.compact_at}
+              map={map} op={op} slug={slug} toast={toast}
+              compactAt={tree.compact_at}
               inboxCount={(tree.user_inbox_count ?? 0) + (tree.credit_requests?.length ?? 0)}
               onInbox={() => {
                 const nw = tree.user_inbox_newest ?? new Date().toISOString()
@@ -1028,8 +1063,8 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
             <NodeSquare key={n.id} node={n} pos={p} lod={lod} focused={n.id === focusId}
               dragging={nodeDrag.current?.id === n.id && nodeDrag.current!.moved}
               isDrop={dropId === n.id}
-              seats={seats} map={map} op={op} slug={slug} pulse={pulse} toast={toast}
-              streamEvt={streamEvt} pxc={pxPerCredit} zoom={view.z} act={activity?.[n.id]}
+              seats={seats} map={map} op={op} slug={slug} toast={toast}
+              pxc={pxPerCredit} zoom={view.z}
               onSpawn={(t) => spawn(n.id, t)} onConfig={() => setConfigId(n.id)}
               onInbox={() => setInboxId(n.id)} onLineage={() => setLineageId(n.id)}
               onMailLink={openMail}
@@ -1176,7 +1211,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
                           title="queued — waiting for a free turn slot (№12)" />
                       : <span title={n.inflight_at
                           ? `running for ${ago(n.inflight_at)}` : 'working'}>
-                          <Activity act={activity?.[n.id]} dotOnly />
+                          <Activity act={n.activity} dotOnly />
                         </span>)
                       : n.frozen
                         ? <FrozenIcon fontSize="inherit" className="tray-frozen" />
@@ -1216,7 +1251,7 @@ export function OrgCanvas({ tree, op, slug, pulse, toast, streamEvt, activity, m
           close={() => setUserCfg(false)} />
       )}
       {inboxId && map.get(inboxId) && (
-        <NodeInboxModal node={map.get(inboxId)!} slug={slug} pulse={pulse}
+        <NodeInboxModal node={map.get(inboxId)!} slug={slug}
           jumpTo={nodeInboxJump}
           close={() => { setInboxId(null); setNodeInboxJump(null) }} />
       )}

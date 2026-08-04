@@ -12,14 +12,14 @@ import { audienceAction, fileUrl, getNodeInbox, orgInboxRead } from '../api'
 import {
   CloseIcon, DownloadIcon, FileIcon, HearingIcon, MailIcon, PublicIcon,
 } from '../icons'
-import { DRAFT, EXTERN, md, USER, useEsc } from './shared'
-import type { CanvasNode, MailRow, PulseEvent } from './shared'
+import { DRAFT, EXTERN, md, USER, useEsc, usePolled } from './shared'
+import type { CanvasNode, MailRow } from './shared'
 
 // One mail interface, everywhere (user ruling: the user's and the agents'
 // inboxes function identically), laid out like a webmail client: the list on
 // the left (sender · time · truncated brief — mails have no subjects), the
-// selected message opened in the reading pane on the right. Waiting/unread
-// mail sorts on top and is highlighted until read/delivered.
+// selected message opened in the reading pane on the right. Unread mail is
+// HIGHLIGHTED but never moved.
 export interface MailListProps {
   pending?: MailRow[]
   delivered?: MailRow[]
@@ -34,15 +34,38 @@ export interface MailListProps {
   fileHref?: (path: string) => string
 }
 
+const MAIL_WINDOW = 40
+
 export function MailList({ pending = [], delivered = [], waitLabel, sender, outgoing,
   onRead, onReply, onRetract, jumpTo, fileHref }: MailListProps) {
-  // newest first throughout (user ruling) — waiting/unread stays grouped on top
+  // ONE order, by send time, always — never grouped, never re-grouped.
+  //
+  // Unread used to sort as its own block on top, which meant the list
+  // reordered itself AS YOU READ IT: every mail you opened jumped out of the
+  // top group and down into the body, moving everything around it (user bug
+  // 2026-08-03: "that keeps reordering them as i read them which is
+  // confusing"). Reading is now a purely visual change — the row highlights
+  // and stays exactly where it was.
+  //
+  // Sorting by SEND time rather than trusting list position stays, and matters
+  // independently: the user-mail archive was appended in READ order, so
+  // position was click order, not chronology (user bug 2026-08-02). Sorting
+  // here also repairs archives already written out of order, which a
+  // server-side fix alone cannot. `at` is ISO-8601 Z, so a plain string
+  // compare IS a time compare.
+  //
+  // `pending` and `delivered` still arrive as separate lists because they are
+  // different server-side facts (undelivered vs delivered); `_wait` carries
+  // that distinction into the row's styling, which is now all it drives.
+  const newestFirst = (a: MailRow, b: MailRow) =>
+    (a.at ?? '') < (b.at ?? '') ? 1 : (a.at ?? '') > (b.at ?? '') ? -1 : 0
   const all = [
-    ...[...pending].reverse().map((m) => ({ ...m, _wait: true })),
-    ...[...delivered].reverse(),
-  ]
-  // selection is BY IDENTITY, not index — marking a mail read reshuffles the
-  // list, and an index would silently land on a different mail
+    ...pending.map((m) => ({ ...m, _wait: true })),
+    ...delivered,
+  ].sort(newestFirst)
+  // selection is BY IDENTITY, not index. The list no longer reshuffles on
+  // read, but identity is still the right key: the window pages, the filter
+  // narrows, and new mail arrives — an index would silently land elsewhere
   const keyOf = (m: MailRow | undefined) =>
     m?.id ?? `${m?.at}|${m?.from}|${(m?.body ?? '').slice(0, 24)}`
   // jumpTo (user spec 2026-07-31): a chat's inline mail link opens the box
@@ -55,6 +78,20 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
   // a plain client-side filter over sender+body, no index, no server
   const [q, setQ] = useState('')
   const [draft, setDraft] = useState('')
+  // windowed like the transcript: a long-lived org's folders grow without
+  // bound and every row is a live DOM node. Newest MAIL_WINDOW render, the
+  // rest page in. ⚠ the filter runs over the WHOLE set before the window, so
+  // hunting an old message never depends on how far you have paged.
+  const [vis, setVis] = useState(MAIL_WINDOW)
+  // ONE page per commit. A flick emits a burst of scroll events and React
+  // batches them, so every event in the burst reads the same `vis` and every
+  // one of them adds a window: measured at eight events rendering a whole
+  // 200-row folder in a single gesture, which is exactly the windowing this
+  // exists to provide, gone. `vis` growing monotonically stops it oscillating
+  // — it never stopped it over-shooting. The latch clears on the commit that
+  // renders the page, so a gesture that keeps going keeps paging.
+  const paging = useRef(false)
+  useEffect(() => { paging.current = false }, [vis])
   const S: (id: string, m: MailRow) => ReactNode =
     sender ?? ((id) => <span>{id === USER ? '@user' : id}</span>)
   const partyOf = (m: MailRow) => (outgoing ? m.to : m.from)
@@ -84,13 +121,32 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
   if (!all.length) return <div className="dim pad">no mail yet</div>
   return (
     <div className="mailer">
-      <div className="mailer-list">
+      {/* paging is automatic: within a screen of the bottom, the next window
+          is already rendered (user ruling 2026-08-04 — reaching the end of a
+          list should not then ask you to press something). `vis` only ever
+          grows and is guarded against `shown.length`, so it cannot thrash and
+          stops once everything is on screen; the `paging` latch keeps ONE
+          gesture to ONE window (see above). */}
+      <div className="mailer-list"
+        onScroll={(e) => {
+          const el = e.currentTarget
+          if (el.scrollHeight - el.scrollTop - el.clientHeight < 240
+            && vis < shown.length && !paging.current) {
+            paging.current = true
+            setVis((v) => v + MAIL_WINDOW)
+          }
+        }}>
         {all.length > 4 && (
           <input className="mail-filter" placeholder="filter…" value={q}
             onChange={(e) => setQ(e.target.value)} />
         )}
         {shown.length === 0 && <div className="dim pad">no matches</div>}
-        {shown.map((m, i) => (
+        {/* windowed like the transcript: a long-lived org's folders grow
+            without bound and every row is a live DOM node. Newest MAIL_WINDOW
+            render; the rest page in on demand. The filter searches the WHOLE
+            set (`shown`), not just the window — hunting an old message must
+            not depend on how far you have paged. */}
+        {shown.slice(0, vis).map((m, i) => (
           <div key={keyOf(m)}
             ref={(el) => {
               if (el && jumpTo && keyOf(m) === jumpTo && !jumpedRef.current) {
@@ -117,6 +173,10 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
             <div className="l2">{brief(m.body)}</div>
           </div>
         ))}
+        {shown.length > vis && (
+          <div className="dim pad loadolder-status">
+            {shown.length - vis} earlier
+          </div>)}
       </div>
       <div className="mailer-read">
         {cur && (
@@ -172,32 +232,50 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
 interface InboxViewProps {
   slug: string
   nid: string
-  pulse: PulseEvent | null
-  onRetract?: (m: MailRow) => void
+  /** must RETURN the retract promise (and rethrow on failure) — the optimistic
+   *  hide below rolls back on rejection, and a swallowed error would leave the
+   *  mail on the server but invisible here until remount */
+  onRetract?: (m: MailRow) => Promise<unknown> | void
   jumpTo?: string | null
 }
 
-export function InboxView({ slug, nid, pulse, onRetract, jumpTo }: InboxViewProps) {
-  const [box, setBox] = useState<InboxPayload | null>(null)
+export function InboxView({ slug, nid, onRetract, jumpTo }: InboxViewProps) {
   const [folder, setFolder] = useState('inbox')
-  useEffect(() => {
-    getNodeInbox(slug, nid).then(setBox)
-      .catch(() => setBox({ pending: [], delivered: [], sent: [] }))
-  }, [slug, nid, pulse])
+  // G5: was a fetch keyed on the `pulse` prop, which meant it refreshed on turn
+  // events and on nothing else — and a mail DELIVERY is not a turn event, so
+  // the one panel whose whole job is showing mail was the one that did not
+  // learn when mail arrived. Polled while mounted instead.
+  const box = usePolled(() => getNodeInbox(slug, nid), [slug, nid])
+  // the ONE piece of local state left here: mails this user just retracted,
+  // held only until the server's copy agrees. That is an uncommitted operation,
+  // not a mirror of server data — the distinction the whole refactor turns on.
+  const [dropped, setDropped] = useState<string[]>([])
+  const pending = (box?.pending ?? []).filter((m) => !dropped.includes(m.id ?? ''))
+  useEffect(() => {         // let go as soon as the server has caught up
+    if (!box) return
+    setDropped((d) => d.filter((id) => box.pending.some((m) => m.id === id)))
+  }, [box])
   return (
     <div className="mailwrap">
       <MailFolders folder={folder} setFolder={setFolder}
-        unread={box?.pending.length ?? 0} />
+        unread={pending.length} />
       <div className="mailpane">
         {box == null
           ? <div className="dim pad">loading…</div>
           : folder === 'inbox'
-            ? <MailList pending={box.pending} delivered={box.delivered}
+            ? <MailList pending={pending} delivered={box.delivered}
                 waitLabel="awaiting next turn" jumpTo={jumpTo}
                 fileHref={(p) => fileUrl(slug, nid, p)}
                 onRetract={onRetract
-                  ? (m) => { onRetract(m); setBox((b) => b && ({
-                      ...b, pending: b.pending.filter((x) => x.id !== m.id) })) }
+                  ? (m) => {
+                      const id = m.id ?? ''
+                      setDropped((d) => [...d, id])
+                      // rollback on failure: the sweep above only RELEASES ids
+                      // the server no longer lists, so without this a failed
+                      // retract hid the mail here while it stayed on the server
+                      Promise.resolve(onRetract(m))
+                        .catch(() => setDropped((d) => d.filter((x) => x !== id)))
+                    }
                   : undefined} />
             : <MailList delivered={box.sent ?? []} outgoing />}
       </div>
@@ -267,18 +345,17 @@ export function OrgRecord({ events }: OrgRecordProps) {
 interface NodeInboxModalProps {
   node: CanvasNode
   slug: string
-  pulse: PulseEvent | null
   close: () => void
   jumpTo?: string | null
 }
 
-export function NodeInboxModal({ node, slug, pulse, close, jumpTo }: NodeInboxModalProps) {
+export function NodeInboxModal({ node, slug, close, jumpTo }: NodeInboxModalProps) {
   useEsc(close)
   return (
     <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
       <div className="settings wide" onClick={(e) => e.stopPropagation()}>
         <h3><MailIcon fontSize="inherit" /> {node.id} <span className="dim">· inbox</span></h3>
-        <InboxView slug={slug} nid={node.id} pulse={pulse} jumpTo={jumpTo} />
+        <InboxView slug={slug} nid={node.id} jumpTo={jumpTo} />
         <div className="row">
           <button className="primary" onClick={close}>close</button>
         </div>

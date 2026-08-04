@@ -82,11 +82,18 @@ class InstanceStamp:
         if scope["type"] != "http":
             return await self.inner(scope, receive, send)
 
+        # /api/ responses also get no-store: the restart detector compares the
+        # instance stamp per response, and a heuristically-cached GET replaying
+        # an OLD instance id after a reload would re-trigger the reload — a
+        # loop. One header closes it; static assets keep their own caching.
+        api = scope.get("path", "").startswith("/api/")
+
         async def _send(msg: Any) -> None:
             if msg["type"] == "http.response.start":
                 msg = dict(msg)
                 msg["headers"] = [*(msg.get("headers") or []),
-                                  (b"x-orgtree-instance", INSTANCE.encode())]
+                                  (b"x-orgtree-instance", INSTANCE.encode()),
+                                  *([(b"cache-control", b"no-store")] if api else [])]
             await send(msg)
         await self.inner(scope, receive, _send)
 

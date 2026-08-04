@@ -367,9 +367,19 @@ main {
    at desk-fill zoom (z ≈ 7.5) authored px ≈ screen px (0.1333 × 7.5 ≈ 1.0).
    Zooming out only scales DOWN, so the browser's ≥10px minimum-font clamp
    never forces text larger than authored. */
+/* The desk is authored at 900px and counter-scaled into the 124px card, so
+   on-screen text = authored × 0.13333 × cameraZoom — which is why it turns
+   unreadable on a smaller screen (the camera cannot zoom as far).
+   --desk-dpi is the reader's own text-size dial: it SHRINKS the authored
+   coordinate space and scales up by the same factor, so the panel still lands
+   on exactly 120px of card (900/d × 0.13333d ≡ 120) while every authored px
+   buys more screen. Bigger text, proportionally less of it visible — which is
+   what a font-size control is. Device preference, so it lives in localStorage,
+   never in the org doc. */
 .desk-inner {
-  width: 900px; height: 900px;
-  transform: scale(0.13333); transform-origin: 0 0;
+  width: calc(900px / var(--desk-dpi, 1));
+  height: calc(900px / var(--desk-dpi, 1));
+  transform: scale(calc(0.13333 * var(--desk-dpi, 1))); transform-origin: 0 0;
   padding: 12px 18px 22px 14px;
 }
 .desk-body {
@@ -453,10 +463,33 @@ main {
   gap: 7px; padding: 3px 2px;
 }
 .desk-over .msgs::-webkit-scrollbar { width: 8px; }
+/* windowed lists page in automatically on scroll (user ruling 2026-08-04) —
+   what sits at the far edge is a STATUS line, never a control. It still
+   reserves height, so the list does not jump as rows prepend. */
+.loadolder-status {
+  align-self: center; text-align: center; font-size: 10.5px;
+  padding: 3px 10px; margin: 2px 0 4px; opacity: .65;
+}
+.loadolder-status.on { opacity: 1; }
+.loadolder-end { align-self: center; font-size: 10.5px; }
+/* "jump to bottom" — appears only once the reader has left the sticky zone.
+   position:sticky keeps it on the bottom edge of the scrollport without a
+   wrapper element (the desk's flex chain is fragile by documented history);
+   align-self keeps it from stretching to the column's full width. */
+.jumpbottom {
+  position: sticky; bottom: 4px; align-self: center; z-index: 3;
+  font-size: 11px; padding: 3px 10px; border-radius: 999px;
+  background: var(--panel); color: var(--ink);
+  border: 1px solid var(--line); box-shadow: var(--shadow); cursor: pointer;
+  opacity: .92;
+}
+.jumpbottom:hover { opacity: 1; border-color: var(--accent); }
 .msg {
-  max-width: 100%; font-size: 14px;
+  max-width: 100%; min-width: 0; font-size: 14px;
   line-height: 1.45; white-space: pre-wrap; overflow-wrap: break-word;
 }
+/* the same containment for the mail reading pane, which shares .md */
+.mailer-body { min-width: 0; max-width: 100%; }
 .msg.assistant { align-self: stretch; background: none; border: none; padding: 1px 2px; }
 .msg.user {
   align-self: stretch; background: var(--input);
@@ -488,7 +521,17 @@ main {
   margin: 4px 0; padding: 2px 0 2px 9px; border-left: 2px solid var(--line);
   color: var(--dim);
 }
-.md table { border-collapse: collapse; margin: 4px 0; font-size: 13px; }
+/* A wide table scrolls INSIDE its own message — it must never stretch the
+   column and put a horizontal scrollbar on the whole chat (user bug
+   2026-08-02). display:block makes the table its own scroll container;
+   width:max-content keeps the columns at their natural width inside it.
+   min-width:0 on the flex children is the half that actually lets a message
+   shrink below its content's intrinsic width — without it the flex column
+   refuses to shrink and the overflow escapes upward. */
+.md table {
+  border-collapse: collapse; margin: 4px 0; font-size: 13px;
+  display: block; width: max-content; max-width: 100%; overflow-x: auto;
+}
 .md th, .md td { border: 1px solid var(--line-soft); padding: 2px 7px; }
 .md hr { border: none; border-top: 1px solid var(--line-soft); margin: 8px 0; }
 .md strong { color: var(--ink-strong); }
@@ -1143,6 +1186,10 @@ button:disabled { opacity: .45; cursor: default; }
 }
 .disclosure:hover { background: none; color: var(--ink); }
 
+/* the effort chip while its write is in flight: the new level is already
+   shown (optimistic), this only says it is not acknowledged yet */
+.cc-eff.saving { opacity: 0.72; }
+
 input, select, textarea {
   font: inherit; font-size: 12.5px; padding: 5px 9px; border-radius: 4px;
   border: 1px solid var(--line); background: var(--input); color: var(--ink-strong);
@@ -1172,6 +1219,14 @@ input:focus, select:focus, textarea:focus, button:focus-visible {
   display: flex; flex-direction: column; gap: 6px; padding: 10px;
   background: var(--bg); border: 1px solid var(--line-soft); border-radius: 4px;
 }
+/* kiosk/sandbox moved in under the folder grants — a rule keeps the two
+   halves of the panel from reading as one list */
+.advanced .adv-sep {
+  margin-top: 4px; padding-top: 8px; border-top: 1px solid var(--line-soft);
+}
+/* the collapsed disclosure still names what is switched on inside it: a kiosk
+   must never be created with the evidence folded away */
+.adv-sum { font-size: 11.5px; }
 
 .dirlist { display: flex; flex-direction: column; gap: 6px; }
 .dirrow { display: flex; gap: 6px; }
@@ -1606,12 +1661,20 @@ svg.MuiSvgIcon-root {
   color: var(--dim); font-style: italic; font-size: 11.5px; cursor: pointer;
 }
 .thoughtline:hover { color: var(--ink); }
+/* signature-only thinking: nothing to open, so nothing invites a click */
+.thoughtline.sealed { cursor: default; opacity: 0.75; }
+.thoughtline.sealed:hover { color: var(--dim); }
 .thoughtbody {
   color: var(--dim); font-style: italic; font-size: 12px; line-height: 1.45;
   border-left: 2px solid var(--line); padding: 4px 10px; margin: 4px 0 6px;
   white-space: pre-wrap; overflow-wrap: anywhere;
   max-height: 320px; overflow-y: auto;
 }
+/* org-change notices reuse the collapse shape but are FACTS, not musings —
+   upright rather than italic so they never read as the agent thinking */
+.noticeline, .noticebody { font-style: normal; }
+.noticebody { white-space: normal; }
+.noticebody > div + div { margin-top: 3px; }
 .toolimg {
   display: block; max-width: 90%; max-height: 260px; margin: 4px 0 4px 18px;
   border: 1px solid var(--line); border-radius: 4px;
@@ -1630,6 +1693,17 @@ svg.MuiSvgIcon-root {
 .msg.thinking {
   font-style: italic; color: var(--dim); font-size: 11.5px;
   white-space: pre-wrap; opacity: .75;
+}
+/* sealed reasoning: the clock is the whole message, so it gets the breathing
+   pulse the streaming ribbon does not need — motion is what says "still alive"
+   when the text can never arrive */
+.msg.thinking.sealed {
+  display: inline-flex; align-items: center; gap: 4px;
+  animation: think-breathe 1.8s ease-in-out infinite;
+}
+@keyframes think-breathe { 0%, 100% { opacity: .45 } 50% { opacity: .85 } }
+@media (prefers-reduced-motion: reduce) {
+  .msg.thinking.sealed { animation: none; opacity: .75 }
 }
 /* №11/№17: durable pending bubble + retract ✕ */
 .pendrow { display: flex; align-items: flex-start; gap: 6px; }
@@ -1676,6 +1750,10 @@ svg.MuiSvgIcon-root {
 }
 .cc-eff:hover { border-color: var(--accent); color: var(--ink); }
 .cc-eff.set { color: var(--accent); border-color: var(--accent); }
+/* inherited from the org default: the level is REAL, so it is shown — but it
+   is not this agent's own setting, so it does not claim the accent */
+.cc-eff.inherited { color: var(--dim); border-style: dashed; }
+.cc-eff.inherited:hover { color: var(--ink); }
 .eff-pop {
   position: absolute; bottom: calc(100% + 8px); right: 0; z-index: 30;
   background: var(--panel-2); border: 1px solid var(--line);
@@ -1698,6 +1776,10 @@ svg.MuiSvgIcon-root {
   width: 13px; height: 13px; background: #d9d9e8;
   box-shadow: 0 0 0 1px var(--line);
 }
+/* the track is lit by INHERITANCE, not by a choice made here — same position,
+   quieter fill, so "this is where you sit" and "you chose this" stay distinct */
+.eff-dot.faint { opacity: 0.55; }
+.eff-dot.faint:hover { opacity: 1; }
 
 /* №12: read-only bearer transcript inside the lineage panel */
 .lin-read {

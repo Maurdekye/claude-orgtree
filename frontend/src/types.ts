@@ -45,6 +45,10 @@ export interface NodeScope {
   /** per-agent thinking effort — set/popped by ledger.py update_scope
    *  (ledger.py:2093-2096); absent = CLI default */
   effort?: string
+  /** which model VERSION inside the tier (ledger.MODEL_VERSIONS) — a
+   *  subcategory of the tier, never a tier of its own. Absent = the tier
+   *  default; the ledger re-validates it against the node's current tier. */
+  model_version?: string
 }
 
 // schema.py Denial (№7)
@@ -169,9 +173,16 @@ export interface TreeNode {
   phase: string | null
   queued: number
   last_error: string | null
+  /** G4: what the agent is doing this instant, derived server-side from the
+   *  live tail. The client used to build this itself from websocket events. */
+  activity: ActivityInfo
 }
 
-// ledger.py credit_requests / audience_requests / chain_notices are
+/** 'thinking' | 'writing' | 'tool' — a string rather than a union for the same
+ *  reason every other wire enum here is: it arrives as JSON. */
+export interface ActivityInfo { phase: string; tool?: string }
+
+// ledger.py credit_requests / audience_requests are
 // dict[str, Any] in schema.py — only `status` is provably read on requests
 export interface CreditRequest {
   status?: string
@@ -308,8 +319,11 @@ export interface TreePayload {
   compact_at: number
   default_tools: ToolGrant | null
   default_visibility: string
-  /** org-wide effort fallback ("" = CLI default) — live inherit for unset nodes */
+  /** org-wide effort fallback ("" = fall through to effort_default) — live
+   *  inherit for unset nodes */
   default_effort: string
+  /** what "" resolves to, so no UI string hardcodes it (ledger DEFAULT_EFFORT) */
+  effort_default?: string
   credit_requests: CreditRequest[]
   tiers: Record<string, number>
   audiences: AudienceGrant[]
@@ -409,6 +423,8 @@ export interface ChatMessage {
   thinking?: string
   /** "thought for Xs" — gap-derived seconds (supervisor.py:2941-2943) */
   think_secs?: number
+  /** the block came signature-only: it thought, the plaintext was withheld */
+  thinking_sealed?: boolean
   /** preserving-oracle exchange rows (supervisor.py:2969-2973) */
   oracle?: boolean
   /** interleaved from the durable steered log (supervisor.py:2951) */
@@ -436,10 +452,26 @@ export interface PendingMail {
   body: string
   at: string
   delivering?: boolean
+  /** which carrier is in flight: "turn" = drained into the turn's own text,
+   *  so the transcript will take over as soon as the CLI echoes it (D-54).
+   *  Absent = steered mid-task, which the transcript never carries. */
+  via?: 'turn'
   attachments?: MailAttachment[]
 }
 
 // GET /api/orgs/{slug}/nodes/{nid}/chat — read_chat + node_chat additions
+/** one row of ChatPayload.live — the shape supervisor.live_row records */
+export interface LiveRowPayload {
+  kind: string
+  text?: string
+  id?: string
+  secs?: number
+  sticky?: boolean
+  at?: string
+  /** per-node monotonic row id — the render key (see LiveRow.n) */
+  n?: number
+}
+
 export interface ChatPayload {
   busy: boolean
   queued: number
@@ -447,6 +479,11 @@ export interface ChatPayload {
   last_error: string | null
   occupancy: number | null
   messages: ChatMessage[]
+  /** the server-owned live tail: rows this turn produced that the transcript
+   *  has not caught up on yet, already swept against it server-side
+   *  (supervisor._sweep_live). The client renders these; it does not build
+   *  or retire them. */
+  live?: LiveRowPayload[]
   init?: ChatInit | null
   mail_pending: number
   pending_mail: PendingMail[]
@@ -599,6 +636,7 @@ export interface ScopeRequest {
   charter?: string | null
   team_charter?: string | null
   effort?: string | null
+  model_version?: string | null
   raise_ceiling?: boolean
 }
 

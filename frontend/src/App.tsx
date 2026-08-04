@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   audienceAction, BASE, clearInbox, createOrg, creditDecide, deleteOrg,
   getAudiences, getDefaults, getEvents, getHost, getInbox, getOrgMd,
@@ -16,6 +16,8 @@ import {
 } from './icons'
 import { DirList } from './forms'
 import { FolderPickerHost } from './picker'
+import { deskDpi, setDeskDpi, usePolled, TIERS } from './canvas/shared'
+import { addPending, dropPending, ingestPulse, ingestStream, resetConvos } from './convo'
 import type {
   AudiencesPayload, DefaultsPayload, InboxPayload, KioskSpecRequest,
   MailEntry, OpRequest, OrgEvent, OrgListEntry, SweepPreview, ToastFn,
@@ -30,19 +32,21 @@ const SYSTEM = '@system'
 // only triggers the tree refetch) — cast once at the JSON.parse boundary
 type WsEvent =
   | { type: 'mail'; from: string; to: string }
-  | { type: 'node_stream'; node: string; kind: string; text?: string; sticky?: boolean }
+  | { type: 'node_stream'; node: string; kind: string; text?: string; sticky?: boolean; id?: string }
   | { type: 'node_event'; node: string; event: string }
 
 // live-feed state threaded into OrgCanvas (boundary shapes — Canvas declares
 // its own; reconcile if they drift)
-interface PulseEvt { node: string; event: string; t: number }
 // text is required on the OUT side: the backend sends it on every stream()
 // emit (supervisor stream plumbing) — the `?? ''` at the construction site
 // is the wire-boundary guard, not a real case
-interface StreamEvt { node: string; kind: string; text: string; sticky?: boolean; t: number }
 interface MailEvt { from: string; to: string; t: number }
-interface NodeActivity { phase: string; tool?: string }
 interface Toast { id: number; lines: string[]; undo: ToastUndo | null }
+
+/** G1: the tree is pulled on a timer as well as pushed. Slow enough to be
+ *  invisible in cost (a ~4 KB payload every 6 s), fast enough that a missed
+ *  push is a blink rather than a wedge. */
+const TREE_POLL_MS = 6000
 
 const slugFromPath = () => {
   // BASE is the /k/<token> prefix when served from a public kiosk URL
@@ -51,15 +55,27 @@ const slugFromPath = () => {
 }
 
 export default function App() {
+  // apply the stored desk text size before anything renders a desk
+  useEffect(() => { setDeskDpi(deskDpi()) }, [])
   const [orgs, setOrgs] = useState<OrgListEntry[]>([])
   const [slug, setSlug] = useState<string | null>(slugFromPath)   // /o/<slug> survives refresh
   const [tree, setTree] = useState<TreePayload | null>(null)
   const [toasts, setToasts] = useState<Toast[]>([])
   const [error, setError] = useState<string | null>(null)
-  const [pulse, setPulse] = useState<PulseEvt | null>(null)
-  const [streamEvt, setStreamEvt] = useState<StreamEvt | null>(null)
+  // G4: `pulses` used to live here — a per-node record of the last turn event,
+  // threaded App → OrgCanvas → EyeDesk/NodeSquare → DeskChat. Every consumer
+  // of it is gone: the conversation refetches through convo.ts, and the node
+  // inbox (its last real reader) polls itself now. DeskChat still destructured
+  // it and its memo still compared it, but nothing read it — the same dead
+  // prop chain `streams` was, and dead update paths are what make staleness
+  // hard to see. ingestPulse still runs below; only the mirror is gone.
   const [mailEvt, setMailEvt] = useState<MailEvt | null>(null)
-  const [activity, setActivity] = useState<Record<string, NodeActivity>>({})   // node → {phase, tool}
+  // G4: `activity` used to live here — a Record<node, {phase,tool}> accumulated
+  // from websocket frames and cleared on turn_done, i.e. a client-side copy of
+  // something the supervisor already knows. A missed turn_done stranded an
+  // indicator until the socket reconnected. It is a tree-payload field now
+  // (api.py annotate(), derived from the live tail), so it self-heals on the
+  // same heartbeat as everything else and no event can be missed.
   const [showSettings, setShowSettings] = useState(false)
   // the recovery browser: 'largest' = forced triage mode (the alert's path);
   // 'last' = whatever mode was used last (the header chip's path)
@@ -98,6 +114,25 @@ export default function App() {
   }, [])
 
   useEffect(() => { refreshOrgs() }, [refreshOrgs])
+  // G1 — THE TREE HEARTBEAT. Everything on screen that is not the conversation
+  // — every card, credit meter, occupancy bar, roster row, resume timer and
+  // inbox badge — is rendered from this one payload, and until now it was
+  // PUSH-ONLY: refetched on a websocket frame or in the acting client's own
+  // callback, never on a timer. So any fact that reached the ledger without a
+  // frame reaching THIS browser stayed invisible indefinitely — another tab's
+  // edit, an endpoint that saved without broadcasting, a dropped frame, mail
+  // (whose frame is animation-only and deliberately refetches nothing).
+  //
+  // This is the same lesson as the chat heartbeat (convo.beat, D-34) applied to
+  // the other half of the app: the gate is "an org view is mounted", which is
+  // known LOCALLY and cannot be stale. The payload is ~4 KB and the endpoint
+  // answers in 2-12 ms, so the pull costs nothing worth counting; pushes stay
+  // and simply make it feel instant instead of being the only way to learn.
+  useEffect(() => {
+    if (!slug) return
+    const t = setInterval(() => refreshTree(slug), TREE_POLL_MS)
+    return () => clearInterval(t)
+  }, [slug, refreshTree])
   useEffect(() => {          // the org list/dashboard is LIVE while visible —
     // kiosk spend/storage/caps move under it (agent turns, admin edits)
     if (slug && !drawer) return
@@ -131,6 +166,9 @@ export default function App() {
       + (tree?.name ? `${tree.name} — orgtree` : 'orgtree')
   }, [tree])
 
+  // a conversation belongs to ONE org — dropping the store on an org switch
+  // keeps a stale chat from ever being shown under a different tree
+  useEffect(() => { resetConvos() }, [slug])
   useEffect(() => {
     if (!slug) return
     // the WS must SURVIVE backend restarts (updates, redeploys): without
@@ -141,7 +179,6 @@ export default function App() {
     const connect = () => {
       if (dead) return
       refreshTree(slug)
-      setActivity({})                  // drop indicators from before the gap
       wsRef.current = openWs(slug, handleWs,
         () => { if (!dead) timer = setTimeout(connect, 1500) })
     }
@@ -153,38 +190,34 @@ export default function App() {
         return
       }
       if (data?.type === 'node_stream') {
-        setStreamEvt({ node: data.node, kind: data.kind, text: data.text ?? '',
+        // the conversation model is fed ONCE here, not once per mounted view:
+        // a node can be on screen twice (its card and its switchboard panel)
+        // and two private copies of one conversation diverge by construction
+        // (user bug 2026-08-02). See convo.ts.
+        ingestStream(slug, {
+          node: data.node, kind: data.kind, text: data.text ?? '',
           // sticky rides through: immediate-command output lives in NO
           // transcript, so the live-feed reconciliation must never sweep it
-          ...(data.sticky ? { sticky: true } : {}), t: Date.now() })
-        setActivity((a) => ({ ...a, [data.node]:
-          data.kind === 'tool' ? { phase: 'tool', tool: data.text }
-            : { phase: 'writing' } }))
+          ...(data.sticky ? { sticky: true } : {}),
+          ...(data.id ? { id: data.id as string } : {}), t: Date.now() })
         return   // live feed only — no tree refetch per message
       }
       if (data?.type === 'node_event') {
-        setPulse({ node: data.node, event: data.event, t: Date.now() })
+        ingestPulse(slug, { node: data.node, event: data.event, t: Date.now() })
+        // toasts only here — the tree refetch is the shared one below (each
+        // branch used to call refreshTree and then fall through to it again,
+        // two fetches per event)
         if (data.event === 'frozen') {   // usage-limit popup (user ruling)
           toast([`${data.node} hit a usage limit and is FROZEN — use the resume button in the top bar when the limit resets`])
-          refreshTree(slug)
         }
-        if (data.event === 'resumed') refreshTree(slug)
         if (data.event === 'spend_frozen') {
           toast(['SPEND LIMIT REACHED — every agent is frozen; raise the limit in the org’s settings (⚙) to resume'])
-          refreshTree(slug)
         }
         if (data.event === 'storage_blocked') {
           toast(['WORKSPACE STORAGE LIMIT reached — file writes are blocked until enough files are deleted (agents keep running)'])
-          refreshTree(slug)
         }
         if (data.event === 'storage_cleared') {
           toast(['workspace back under its storage limit — writes unblocked'])
-          refreshTree(slug)
-        }
-        if (data.event === 'turn_started') {
-          setActivity((a) => ({ ...a, [data.node]: { phase: 'thinking' } }))
-        } else if (data.event === 'turn_done') {
-          setActivity((a) => { const n = { ...a }; delete n[data.node]; return n })
         }
       }
       refreshTree(slug)
@@ -292,7 +325,7 @@ export default function App() {
                     <span className="chip agents"
                       title="live agents · currently working · breakdown by model">
                       {ns.length} live{busy > 0 ? ` · ${busy} working` : ''}
-                      {['haiku', 'sonnet', 'opus', 'fable']
+                      {TIERS
                         .filter((t) => byTier[t])
                         .map((t) => <b key={t} className={'t-' + t}>{TIER_LETTER[t]}{byTier[t]}</b>)}
                     </span>
@@ -396,8 +429,8 @@ export default function App() {
                   target="_blank" rel="noreferrer" title="orgtree on GitHub">
                   <GitHubIcon fontSize="inherit" /></a>
               </header>
-              <OrgCanvas tree={tree} op={op} slug={slug} pulse={pulse} toast={toast}
-                streamEvt={streamEvt} activity={activity} mailEvt={mailEvt}
+              <OrgCanvas tree={tree} op={op} slug={slug} toast={toast}
+                mailEvt={mailEvt}
                 onInbox={(jump: unknown) => {
                   setInboxJump(typeof jump === 'string' ? jump : null)
                   setShowInbox(true)
@@ -508,7 +541,8 @@ function NewOrg({ onCreate }: {
     getHost().then((h) => setDocker(!!h.docker)).catch(() => {})
   }, [])
   const reset = () => {
-    setOpen(false); setAdvanced(false); setName(''); setDirs([]); setKiosk(false)
+    setOpen(false); setAdvanced(false); setName(''); setDirs([])
+    setKiosk(false); setSandboxed(false)
   }
   if (!open) return <button className="primary" onClick={() => setOpen(true)}>+ new organization</button>
   return (
@@ -535,111 +569,122 @@ function NewOrg({ onCreate }: {
     }}>
       <input autoFocus placeholder="organization name" value={name}
         onChange={(e) => setName(e.target.value)} required />
-      <label className="row kiosk-sbx">
-        <input type="checkbox" checked={kiosk}
-          onChange={(e) => {
-            setKiosk(e.target.checked)
-            // kiosks default the sandbox ON — but only where Docker exists
-            if (e.target.checked && docker) {
-              setSandboxed(true)
-              setStorage((s) => Math.max(4096, +s || 0))
-            }
-          }} />
-        kiosk — publicly shareable via a secret URL, with hard limits
-      </label>
-      {kiosk && (
-        <div className="kiosk-caps">
-          <label>credits <input type="number" min="0" value={credits}
-            onChange={(e) => setCredits(e.target.value)} /></label>
-          <label>spend $ <input type="number" min="0" step="0.5" value={spend}
-            onChange={(e) => setSpend(e.target.value)} /></label>
-          <label title={sandboxed
-            ? 'the org’s fixed-size virtual disk — system dirs and transcripts count inside it; 4096 MB minimum'
-            : 'loose workspace+scratch cap (checked between turns)'}>
-            {sandboxed ? 'disk MB' : 'storage MB'}
-            <input type="number" min={sandboxed ? 4096 : 0} value={storage}
-            onChange={(e) => setStorage(e.target.value)} /></label>
-        </div>
-      )}
-      {kiosk && (
-        <div className="kiosk-ceil">
-          <div className="field-label"
-            title="the MAXIMUM grantable to any agent in this kiosk — visitors retool freely within it; folders bound to the org's own">
-            permission ceiling</div>
-          <div className="ceil-tools">
-            {(['bash', 'web', 'edit', 'subagents', 'mcp'] as const).map((k) => (
-              <label key={k} className="row">
-                <input type="checkbox" checked={ceil[k]}
-                  onChange={(e) => setCeil((c) => ({ ...c, [k]: e.target.checked }))} />
-                {k === 'mcp' ? 'MCP servers' : k}
-              </label>
-            ))}
-          </div>
-          {/* the rank ceilings — styled like the credits/spend/storage caps
-              (user spec 2026-07-31): stacked label, three columns */}
-          <div className="kiosk-caps">
-            <label>visibility ≤ <select value={ceilVis}
-              onChange={(e) => setCeilVis(e.target.value)}>
-              {['self', 'team', 'subtree', 'full'].map((v) =>
-                <option key={v} value={v}>{v}</option>)}
-            </select></label>
-            <label>mode ≤ <select value={ceilPm}
-              onChange={(e) => setCeilPm(e.target.value)}>
-              <option value="default">default (asks)</option>
-              <option value="acceptEdits">acceptEdits</option>
-              <option value="bypassPermissions">bypassPermissions</option>
-            </select></label>
-            <label
-              title="the highest model tier this kiosk may run — spawn tokens above it disappear and agents cannot hire, rehire or switch above it">
-              tier ≤ <select value={ceilTier}
-                onChange={(e) => setCeilTier(e.target.value)}>
-                <option value="">fable</option>
-                <option value="opus">opus</option>
-                <option value="sonnet">sonnet</option>
-                <option value="haiku">haiku</option>
-              </select></label>
-          </div>
-          <label className="row" title="an over-ceiling grant made by YOU (admin) raises the ceiling to fit instead of clamping — off so nothing lifts it without meaning to; visitors always clamp">
-            <input type="checkbox" checked={autoRaise}
-              onChange={(e) => setAutoRaise(e.target.checked)} />
-            auto-raise on my own over-ceiling grants
-          </label>
-        </div>
-      )}
-      {/* any org may sandbox (user ruling) — OFF by default; the checkbox is
-          disabled entirely when Docker isn't installed */}
-      <label className={'row kiosk-sbx' + (docker ? '' : ' dim')}
-        title={docker ? undefined : 'Docker is not installed — sandboxing unavailable'}>
-        <input type="checkbox" checked={sandboxed && docker} disabled={!docker}
-          onChange={(e) => {
-            setSandboxed(e.target.checked)
-            // the sandbox rides a fixed-size disk — bump the storage field
-            // to its 4096 MB minimum (user ruling 2026-08-01)
-            if (e.target.checked) setStorage((s) => Math.max(4096, +s || 0))
-          }} />
-        sandboxed — agents run in a Docker container, isolated from this PC
-        {!docker && <span className="dim"> (requires Docker)</span>}
-      </label>
-      {sandboxed && !kiosk && (
-        <div className="kiosk-caps">
-          <label title="the org&rsquo;s fixed-size virtual disk — system dirs and transcripts count inside it; 4096 MB minimum">
-            disk MB <input type="number" min="4096" value={storage}
-              onChange={(e) => setStorage(e.target.value)} /></label>
-        </div>
-      )}
-      {kiosk && !sandboxed && (
-        <div className="dim kiosk-warn"><WarnIcon fontSize="inherit" /> without
-          a sandbox the storage limit is enforced loosely — usage is checked
-          only between turns, so a single turn can overshoot it</div>
-      )}
       <button type="button" className="disclosure" aria-expanded={advanced}
         onClick={() => setAdvanced(!advanced)}>
         {advanced ? <ExpandMoreIcon fontSize="inherit" /> : <ChevronRightIcon fontSize="inherit" />} advanced
+        {!advanced && (kiosk || sandboxed || dirs.length > 0) && (
+          <span className="dim adv-sum"> · {[
+            kiosk ? 'kiosk' : '', sandboxed ? 'sandboxed' : '',
+            dirs.length ? `${dirs.length} folder${dirs.length > 1 ? 's' : ''}` : '',
+          ].filter(Boolean).join(' · ')}</span>)}
       </button>
       {advanced && (
         <div className="advanced">
           <div className="field-label">also grant existing folders</div>
           <DirList dirs={dirs} onChange={setDirs} />
+          {/* kiosk and sandbox live here (user ruling 2026-08-03): both are
+              advanced choices — one publishes the org, the other changes where
+              every turn executes — and neither belongs in the two-field path
+              most new orgs take. Below the folder grants, deliberately: the
+              sandbox decides whether those folders are reachable at all. */}
+          <div className="field-label adv-sep">org type</div>
+        <label className="row kiosk-sbx">
+          <input type="checkbox" checked={kiosk}
+            onChange={(e) => {
+              setKiosk(e.target.checked)
+              // kiosks default the sandbox ON — but only where Docker exists
+              if (e.target.checked && docker) {
+                setSandboxed(true)
+                setStorage((s) => Math.max(4096, +s || 0))
+              }
+            }} />
+          kiosk — publicly shareable via a secret URL, with hard limits
+        </label>
+        {kiosk && (
+          <div className="kiosk-caps">
+            <label>credits <input type="number" min="0" value={credits}
+              onChange={(e) => setCredits(e.target.value)} /></label>
+            <label>spend $ <input type="number" min="0" step="0.5" value={spend}
+              onChange={(e) => setSpend(e.target.value)} /></label>
+            <label title={sandboxed
+              ? 'the org’s fixed-size virtual disk — system dirs and transcripts count inside it; 4096 MB minimum'
+              : 'loose workspace+scratch cap (checked between turns)'}>
+              {sandboxed ? 'disk MB' : 'storage MB'}
+              <input type="number" min={sandboxed ? 4096 : 0} value={storage}
+              onChange={(e) => setStorage(e.target.value)} /></label>
+          </div>
+        )}
+        {kiosk && (
+          <div className="kiosk-ceil">
+            <div className="field-label"
+              title="the MAXIMUM grantable to any agent in this kiosk — visitors retool freely within it; folders bound to the org's own">
+              permission ceiling</div>
+            <div className="ceil-tools">
+              {(['bash', 'web', 'edit', 'subagents', 'mcp'] as const).map((k) => (
+                <label key={k} className="row">
+                  <input type="checkbox" checked={ceil[k]}
+                    onChange={(e) => setCeil((c) => ({ ...c, [k]: e.target.checked }))} />
+                  {k === 'mcp' ? 'MCP servers' : k}
+                </label>
+              ))}
+            </div>
+            {/* the rank ceilings — styled like the credits/spend/storage caps
+                (user spec 2026-07-31): stacked label, three columns */}
+            <div className="kiosk-caps">
+              <label>visibility ≤ <select value={ceilVis}
+                onChange={(e) => setCeilVis(e.target.value)}>
+                {['self', 'team', 'subtree', 'full'].map((v) =>
+                  <option key={v} value={v}>{v}</option>)}
+              </select></label>
+              <label>mode ≤ <select value={ceilPm}
+                onChange={(e) => setCeilPm(e.target.value)}>
+                <option value="default">default (asks)</option>
+                <option value="acceptEdits">acceptEdits</option>
+                <option value="bypassPermissions">bypassPermissions</option>
+              </select></label>
+              <label
+                title="the highest model tier this kiosk may run — spawn tokens above it disappear and agents cannot hire, rehire or switch above it">
+                tier ≤ <select value={ceilTier}
+                  onChange={(e) => setCeilTier(e.target.value)}>
+                  <option value="">fable</option>
+                  <option value="opus">opus</option>
+                  <option value="sonnet">sonnet</option>
+                  <option value="haiku">haiku</option>
+                </select></label>
+            </div>
+            <label className="row" title="an over-ceiling grant made by YOU (admin) raises the ceiling to fit instead of clamping — off so nothing lifts it without meaning to; visitors always clamp">
+              <input type="checkbox" checked={autoRaise}
+                onChange={(e) => setAutoRaise(e.target.checked)} />
+              auto-raise on my own over-ceiling grants
+            </label>
+          </div>
+        )}
+        {/* any org may sandbox (user ruling) — OFF by default; the checkbox is
+            disabled entirely when Docker isn't installed */}
+        <label className={'row kiosk-sbx' + (docker ? '' : ' dim')}
+          title={docker ? undefined : 'Docker is not installed — sandboxing unavailable'}>
+          <input type="checkbox" checked={sandboxed && docker} disabled={!docker}
+            onChange={(e) => {
+              setSandboxed(e.target.checked)
+              // the sandbox rides a fixed-size disk — bump the storage field
+              // to its 4096 MB minimum (user ruling 2026-08-01)
+              if (e.target.checked) setStorage((s) => Math.max(4096, +s || 0))
+            }} />
+          sandboxed — agents run in a Docker container, isolated from this PC
+          {!docker && <span className="dim"> (requires Docker)</span>}
+        </label>
+        {sandboxed && !kiosk && (
+          <div className="kiosk-caps">
+            <label title="the org&rsquo;s fixed-size virtual disk — system dirs and transcripts count inside it; 4096 MB minimum">
+              disk MB <input type="number" min="4096" value={storage}
+                onChange={(e) => setStorage(e.target.value)} /></label>
+          </div>
+        )}
+        {kiosk && !sandboxed && (
+          <div className="dim kiosk-warn"><WarnIcon fontSize="inherit" /> without
+            a sandbox the storage limit is enforced loosely — usage is checked
+            only between turns, so a single turn can overshoot it</div>
+        )}
         </div>
       )}
       <div className="row">
@@ -699,25 +744,22 @@ function InboxPanel({ slug, tree, toast, refresh, close, jumpTo }: {
   jumpTo: string | null
 }) {
   useEsc(close)
-  const [box, setBox] = useState<InboxPayload | null>(null)
-  const [aud, setAud] = useState<AudiencesPayload | null>(null)
   const [folder, setFolder] = useState('inbox')
-  const [events, setEvents] = useState<OrgEvent[] | null>(null)
   const nodes = flatNodes(tree)
-  const reload = useCallback(() => {
-    getInbox(slug).then(setBox).catch((e: Error) => toast([`error: ${e.message}`]))
-    getAudiences(slug).then(setAud).catch(() => {})
-  }, [slug, toast])
-  useEffect(() => { reload() }, [reload])
-  useEffect(() => {          // №10: the record loads on demand
-    if (folder === 'record') {
-      getEvents(slug).then((r) => setEvents(r.events)).catch(() => setEvents([]))
-    }
-  }, [folder, slug])
+  // G5: mail arrives, and audience requests are raised by agents, while this
+  // panel sits open. Polled while mounted rather than fetched once — the same
+  // gate as everywhere else: "is anyone looking at this".
+  const box = usePolled(() => getInbox(slug), [slug])
+  const aud = usePolled(() => getAudiences(slug), [slug])
+  // №10: the record loads on demand — and keeps loading while that tab is up
+  const events = usePolled(
+    () => (folder === 'record' ? getEvents(slug).then((r) => r.events)
+      : Promise.resolve(null)), [folder, slug])
   const userAud = aud?.audiences.filter((a) => a.grantor === USER) ?? []
   const userReqs = (aud?.requests.filter((r) => r.target === USER && r.currently_at === USER) ?? []) as UserAudReq[]
   const act = (action: string, node: string, target?: string | null) =>
-    audienceAction(slug, action, node, target).then(reload).catch((e: Error) => toast([`error: ${e.message}`]))
+    audienceAction(slug, action, node, target)
+      .catch((e: Error) => toast([`error: ${e.message}`]))
   return (
     <div className="overlay" onClick={close}>
       <div className="settings wide" onClick={(e) => e.stopPropagation()}>
@@ -787,17 +829,29 @@ function InboxPanel({ slug, tree, toast, refresh, close, jumpTo }: {
               ? <MailList pending={box.pending} delivered={box.delivered}
                   waitLabel="unread" jumpTo={jumpTo}
                   onRead={(m: MailEntry) => markRead(slug, [m.id])
-                    .then(() => { reload(); refresh?.() }).catch(() => {})}
-                  onReply={(m: MailEntry, text: string) => sendMessage(slug, m.from, text)
-                    .then(() => toast([`sent to ${m.from}`]))
-                    .catch((e: Error) => toast([`error: ${e.message}`]))}
+                    .then(() => { refresh?.() }).catch(() => {})}
+                  onReply={(m: MailEntry, text: string) => {
+                    // the desk composer's optimistic ghost, which this
+                    // composer never had (D-54): a reply sent from the inbox
+                    // is an ordinary message to that node, and its desk —
+                    // open behind this modal, or opened a second later —
+                    // showed nothing at all until the server copy landed.
+                    // Same store, same graduation-on-evidence rule.
+                    addPending(slug, m.from, text)
+                    return sendMessage(slug, m.from, text)
+                      .then(() => toast([`sent to ${m.from}`]))
+                      .catch((e: Error) => {
+                        dropPending(slug, m.from, text)
+                        toast([`error: ${e.message}`])
+                      })
+                  }}
                   sender={(id: string) => <SenderChip id={id} nodes={nodes} />} />
               : <MailList delivered={box.sent ?? []} outgoing
                   sender={(id: string) => <SenderChip id={id} nodes={nodes} />} />}
         </div>
         <div className="row">
           {folder === 'inbox' && (box?.pending.length ?? 0) > 0 && <button onClick={() =>
-            clearInbox(slug).then(reload).catch((e: Error) => toast([`error: ${e.message}`]))}>mark all read</button>}
+            clearInbox(slug).catch((e: Error) => toast([`error: ${e.message}`]))}>mark all read</button>}
           <button className="primary" onClick={close}>close</button>
         </div>
       </div>
@@ -990,46 +1044,116 @@ function SweepBlock({ slug, toast }: { slug: string; toast: ToastFn }) {
   )
 }
 
+// Desk text size — a DEVICE preference, never org state: the same org read on a
+// laptop and a 4K monitor wants different values. Applied immediately to the
+// --desk-dpi custom property, so it is not part of the settings save.
+function DeskTextSize() {
+  const [dpi, setDpi] = useState(deskDpi)
+  const apply = (v: number) => {
+    const c = Math.min(2.5, Math.max(0.75, Math.round(v * 100) / 100))
+    setDpi(c); setDeskDpi(c)
+  }
+  return (
+    <>
+      <div className="field-label">desk text size — this browser only (the desk
+        is counter-scaled into the card, so it reads smaller on smaller screens)</div>
+      <div className="row">
+        <button onClick={() => apply(dpi - 0.25)} disabled={dpi <= 0.75}>−</button>
+        <span style={{ minWidth: '4.5em', textAlign: 'center' }}>{Math.round(dpi * 100)}%</span>
+        <button onClick={() => apply(dpi + 0.25)} disabled={dpi >= 2.5}>+</button>
+        <button onClick={() => apply(1)} disabled={dpi === 1}>reset</button>
+      </div>
+    </>
+  )
+}
+
 function SettingsPanel({ tree, toast, close }: {
   tree: TreePayload
   toast: ToastFn
   close: () => void
 }) {
   useEsc(close)
-  const [maxTop, setMaxTop] = useState<number | string>(tree.max_top_grant ?? 1000)
-  const [defTop, setDefTop] = useState<number | string>(tree.default_top_grant ?? 50)
-  const [compactAt, setCompactAt] = useState<number | string>(Math.round((tree.compact_at ?? 0.8) * 100))
+  // P3 — every field below used to be its own useState SEEDED FROM `tree`.
+  // useState(x) snapshots x once at mount and never looks again, so this panel
+  // held seventeen private copies of server values that could each go stale
+  // silently (the mechanism behind the user's "the charter looks empty"). Now
+  // there is ONE cell: the edits you have actually made. Everything else is
+  // derived from the prop on every render, so a value that changes anywhere
+  // else shows up here, and saving clears the buffer back to server truth.
+  const [edit, setEdit] = useState<Record<string, unknown>>({})
+  // takes the value THIS render derived, so an updater form still works
+  const set = <T,>(k: string, cur: T) => (v: T | ((prev: T) => T)) =>
+    setEdit((e) => ({ ...e,
+      [k]: typeof v === 'function' ? (v as (p: T) => T)(cur) : v }))
+  const val = <T,>(k: string, server: T): T =>
+    (k in edit ? edit[k] as T : server)
+  const clearEdits = () => setEdit({})
   const [orgMd, setOrgMd] = useState<string | null>(null)
-  const [fablePolicy, setFablePolicy] = useState(tree.fable_limit_policy ?? 'halt')
-  const [filterPolicy, setFilterPolicy] = useState(tree.fable_filter_policy ?? 'halt')
-  const [defEffort, setDefEffort] = useState(tree.default_effort ?? '')
-  const [cascadeHire, setCascadeHire] = useState(tree.cascade_hire !== false)
-  const [cascadeAlloc, setCascadeAlloc] = useState(tree.cascade_alloc !== false)
+
   // kiosk permission ceiling (consensus spec): admin payload only — the
   // public tree never carries max_scope
   const ms = tree.kiosk?.max_scope as MaxScope | null | undefined
   // const extraction so the kiosk narrowing survives the click closures
   const kk = tree.kiosk
-  const [ceil, setCeil] = useState(() => (ms ? {
+  // the shadowing pair below keeps every USE SITE unchanged: same name, same
+  // setter signature — only where the value comes from has changed
+  const maxTop = val<number | string>('maxTop', tree.max_top_grant ?? 1000)
+  const setMaxTop = set('maxTop', maxTop)
+  const defTop = val<number | string>('defTop', tree.default_top_grant ?? 50)
+  const setDefTop = set('defTop', defTop)
+  const compactAt = val<number | string>('compactAt',
+    Math.round((tree.compact_at ?? 0.8) * 100))
+  const setCompactAt = set('compactAt', compactAt)
+  const fablePolicy = val('fablePolicy', tree.fable_limit_policy ?? 'halt')
+  const setFablePolicy = set('fablePolicy', fablePolicy)
+  const filterPolicy = val('filterPolicy', tree.fable_filter_policy ?? 'halt')
+  const setFilterPolicy = set('filterPolicy', filterPolicy)
+  const defEffort = val('defEffort', tree.default_effort ?? '')
+  const setDefEffort = set('defEffort', defEffort)
+  const cascadeHire = val('cascadeHire', tree.cascade_hire !== false)
+  const setCascadeHire = set('cascadeHire', cascadeHire)
+  const cascadeAlloc = val('cascadeAlloc', tree.cascade_alloc !== false)
+  const setCascadeAlloc = set('cascadeAlloc', cascadeAlloc)
+  const srvCeil = useMemo(() => (ms ? {
     bash: !!ms.tools?.bash, web: !!ms.tools?.web, edit: !!ms.tools?.edit,
-    subagents: !!ms.tools?.subagents } : null))
-  const [ceilMcp, setCeilMcp] = useState(() => (ms?.tools?.mcp ?? []).join(', '))
-  const [ceilDirs, setCeilDirs] = useState<CeilDir[]>(() => ms?.add_dirs ?? [])
-  const [ceilVis, setCeilVis] = useState(ms?.org_visibility ?? 'full')
-  const [ceilPm, setCeilPm] = useState(ms?.permission_mode ?? 'acceptEdits')
-  const [ceilTier, setCeilTier] = useState(ms?.max_tier ?? '')
-  const [autoRaise, setAutoRaise] = useState(!!tree.kiosk?.auto_raise)
+    subagents: !!ms.tools?.subagents } : null), [ms])
+  const ceil = val('ceil', srvCeil)
+  const setCeil = set('ceil', ceil)
+  const ceilMcp = val('ceilMcp', (ms?.tools?.mcp ?? []).join(', '))
+  const setCeilMcp = set('ceilMcp', ceilMcp)
+  const srvDirs = useMemo(() => ms?.add_dirs ?? [], [ms])
+  const ceilDirs = val<CeilDir[]>('ceilDirs', srvDirs)
+  const setCeilDirs = set('ceilDirs', ceilDirs)
+  const ceilVis = val('ceilVis', ms?.org_visibility ?? 'full')
+  const setCeilVis = set('ceilVis', ceilVis)
+  const ceilPm = val('ceilPm', ms?.permission_mode ?? 'acceptEdits')
+  const setCeilPm = set('ceilPm', ceilPm)
+  const ceilTier = val('ceilTier', ms?.max_tier ?? '')
+  const setCeilTier = set('ceilTier', ceilTier)
+  const autoRaise = val('autoRaise', !!tree.kiosk?.auto_raise)
+  const setAutoRaise = set('autoRaise', autoRaise)
   // per-kiosk caps (moved here from the retired all-kiosks dashboard)
-  const [kkCredits, setKkCredits] = useState<number | string>(tree.kiosk?.credits ?? 0)
-  const [kkSpend, setKkSpend] = useState<number | string>(tree.kiosk?.spend_limit ?? 0)
-  const [kkStorage, setKkStorage] = useState<number | string>(tree.kiosk?.storage_limit_mb ?? 0)
+  const kkCredits = val<number | string>('kkCredits', tree.kiosk?.credits ?? 0)
+  const setKkCredits = set('kkCredits', kkCredits)
+  const kkSpend = val<number | string>('kkSpend', tree.kiosk?.spend_limit ?? 0)
+  const setKkSpend = set('kkSpend', kkSpend)
+  const kkStorage = val<number | string>('kkStorage', tree.kiosk?.storage_limit_mb ?? 0)
+  const setKkStorage = set('kkStorage', kkStorage)
   useEffect(() => {
-    getOrgMd(tree.slug).then((r) => setOrgMd(r.content)).catch(() => setOrgMd(''))
+    // null = not loaded: the textarea is disabled and save skips the write.
+    // ☠ The catch used to set '' — an empty EDITABLE buffer — so a transient
+    // fetch failure plus one ordinary save wiped the org's charter with
+    // putOrgMd(slug, ''). A failed READ must never arm a destructive write;
+    // null also resets on org switch so the previous org's text cannot be
+    // saved into the new one during the load window.
+    setOrgMd(null)
+    getOrgMd(tree.slug).then((r) => setOrgMd(r.content)).catch(() => setOrgMd(null))
   }, [tree.slug])
   return (
     <div className="overlay" onClick={close}>
       <div className="settings" onClick={(e) => e.stopPropagation()}>
         <h3><SettingsIcon fontSize="inherit" /> {tree.name} — settings</h3>
+        <DeskTextSize />
         {/* folder access lives on the eye's ⚙ gear panel (user ruling) */}
         <div className="field-label">top-level grant cap</div>
         <input type="number" min="1" step="1" value={maxTop} style={{ width: '8em' }}
@@ -1252,6 +1376,9 @@ function SettingsPanel({ tree, toast, close }: {
                 ...rs.flatMap((r) => r.warnings ?? []),
               ]
               toast(lines.length ? lines : ['settings saved'])
+              // the edits are the server's now — drop the buffer so the panel
+              // reads from the tree again rather than from what was typed
+              clearEdits()
               close()
             }).catch((e: Error) => toast([`error: ${e.message}`]))
           }}>save</button>
