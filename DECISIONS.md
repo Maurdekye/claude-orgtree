@@ -120,16 +120,30 @@ ceiling and the UI must not pretend otherwise.
 Was. PLAN's precondition `free(actor) ≥ seat_cost + grant`, credits
 cascading *down* from the actor.
 
-### D-010 · moves are budget-neutral and acyclic
-Ruling (user, PLAN §4.5 corrected 2026-07-29): promote/demote/move release
-credits up to the LCA and acquire back down, hop by hop, so EVERY node's
-free is unchanged — a move can never fail for credits and CANNOT strand (the
-earlier "moves strand" plan text is a corrected erratum). The only
-move-specific warning is for moving an ARCHIVED node, whose rehire cost
-changes payer. Guard: `new_parent` is never the node or anything in its
-subtree, and the root cannot move.
+### D-010 · moves are budget-neutral and cannot strand — but they CAN refuse
+Ruling (user, PLAN §4.5 corrected 2026-07-29; bounds sharpened 2026-08-04):
+promote/demote/move release credits up to the LCA and acquire back down, hop
+by hop, so EVERY node's free is unchanged — a move never strands and never
+needs credits of its own. The only move-specific warning is for moving an
+ARCHIVED node, whose rehire cost changes payer. Guards: `new_parent` is
+never inside the moved subtree NOR its lineage stacks (a bearer with
+children of its own could host a real 2-cycle otherwise); a lineage bearer
+is never moved alone (the stack shares its successor's slot); the root
+cannot move.
 Why: without neutrality a fully-occupied tree would be frozen in shape —
 promotion impossible exactly when most needed.
+Bounds: "cannot fail on credits" is not "cannot fail". A move refuses when
+it would push a TOP-LEVEL grant past `max_top_grant` on the acquire leg
+(D-014 is categorical — the cap binds every route to the same end state),
+when the moved subtree's deepest leaf would cross `max_depth` or the target
+would cross `max_children` (runaway insurance binds reorganization too —
+user ruling 2026-08-04), and when the release leg would drive a grant
+negative (a corrupted chain is refused, never subtracted into).
+Was. until 2026-08-04 none of those bounds existed: a canvas drag across
+roots inflated a top-level grant past the cap unchecked (the one confirmed
+finding of the shelved ledger review), a drag could out-run the depth and
+children caps that hire enforced, and one reseed shape produced grants of
+−7/−13.
 
 ### D-011 · stranding warns, never blocks
 Ruling (user, PLAN §4.4, 2026-07-28): reclaiming credits may leave a manager
@@ -141,6 +155,17 @@ reduction crosses an archived dependent's rehire cost; every free-reducing
 op passes through `_stranding_warnings`.
 Why: blocking would let a long-archived agent veto present work; silence is
 worse — the failure surfaces later as an unexplained "cannot afford".
+
+### D-083 · structural caps are runaway insurance at 1024, and bind moves too
+Ruling (user, 2026-08-04): `max_depth` and `max_children` exist ONLY to stop
+infinite recursion from a bug that spawns unlimited subagents — "no need to
+have any practical limit" beyond that. Both default to 1024 (per-org
+overridable), and both bind REORGANIZATION as well as hire: a move measures
+the moved subtree's deepest leaf, since that is what actually ends up
+deepest.
+Was. 10 and 256 — low enough to be felt as design constraints, and enforced
+on hire only, so a drag could re-shape a tree past the limit a hire had
+already been refused.
 
 ### D-012 · model-switch economics
 Ruling (№16): a node's model can swap mid-life and the SESSION SURVIVES
@@ -163,6 +188,21 @@ Why: halting keeps the model choice with the humans/superiors who made it;
 the soft gate follows the motto (tell the truth, don't refuse).
 Was. a fourth policy `retire` was considered and DROPPED as too destructive;
 old docs carrying it migrate to `halt` on load.
+
+### D-084 · a model version is a subcategory of the tier, never a fifth tier
+Ruling (user, 2026-08-04): the four chips are the four TIERS — price bands.
+Individual model versions (Opus 5 vs Opus 4.8) are a subcategory selectable
+only in the node gear, and choosing one touches nothing the budget or the
+kiosk ceiling inspects: it decides which `--model` id the CLI is handed, and
+nothing else. The choice is stored in the node scope and re-validated
+against the CURRENT tier on every read, so a tier switch can never drag a
+stale version with it; an unknown value falls back to the tier default
+silently (a bad string in a doc must never stop a turn).
+Was. the first build made Opus 4.8 a fifth TIER — a fifth chip on the canvas
+and a fifth price band in every table; corrected the same day. Also: new
+tiers/versions now REACH EXISTING ORGS (the per-org tier table is migrated
+add-only at load; Org.create's frozen copy used to strand old orgs on the
+shipped set forever).
 
 ### D-014 · hire chips cascade; which credit ceilings actually bind
 Ruling (user, §4.6 cascade + drag order 54e5e19): the H/S/O/F hire chips are
@@ -236,6 +276,28 @@ multi-machine clause still holds (all nodes run on one desktop), and §11.3's
 what died is the single-user premise, the day kiosk mode admitted outside
 visitors (2026-07-30). Per D-005, PLAN is not amended; this register carries
 the supersession.
+
+### D-087 · off-loopback admin is an env-var wall, never a setting
+Ruling (user, 2026-08-03 argv-only; superseded 2026-08-04 to the env var):
+`ORGTREE_EXPOSE_ADMIN` binds the admin listener to 0.0.0.0, printed as a
+74-column warning wall at startup. It is an environment variable because
+service definitions (Task Scheduler, systemd) set environment naturally —
+and it is stripped from every agent's env (clean_env), because whether the
+host is exposed is not an agent's business. It is deliberately NOT an org
+setting: anything that can write the doc — including an agent — could flip
+a setting. No auth was added by ruling; the user accepted the risk.
+Was. D-39 ruled it argv-only ("env vars get inherited and copied between
+machines"); the user reversed the mechanism one day later for the
+unattended-host case, and the inheritance objection is handled by the strip
+rather than dismissed.
+
+### D-088 · one backend per data root, enforced by an OS lock
+Ruling (measured, 2026-08-04): two backends on one ORGTREE_DATA silently
+lose 32–74% of completed writes (zero errors — every writer is told it
+succeeded). The rule the architecture stated is now enforced at startup by
+a kernel file lock (`store.claim_data_root`): no PID file, no staleness
+heuristic (a mtime-based steal was reproduced overlapping critical sections
+against a merely-slow holder), released by the OS however the process dies.
 
 ### D-015 · authority is downward, transitive, unconditional
 Ruling (user, PLAN §7.1, 2026-07-28): an agent holds full authority over its
@@ -609,11 +671,34 @@ permission ceiling entirely (resolve, no clamp); agents may set it on their
 REPORTS via `orgtree_retool`, never on themselves; the org-level
 `default_effort` resolves LIVE at turn time — clearing a node's effort means
 inherit, and a default change reaches every unset agent's next turn with no
-rehire. All five CLI levels are exposed; `''` means CLI default and passes
-no flag.
+rehire. All five CLI levels are exposed.
+Sharpened (user bug reported three times, resolved 2026-08-04): orgtree
+passes `--effort` on EVERY turn — an unconfigured node resolves node scope →
+org default → `Org.DEFAULT_EFFORT` ("high", pinned to what opus resolved to
+unaided across 54 measured records). Delegating the level to the CLI's
+undocumented, unreported default meant the ⚙ control could not truthfully
+name it; now the displayed value and the launched flag come from the same
+function and cannot disagree.
+Was. `''` meant "CLI default, no flag" — a level orgtree could not observe
+and therefore could not display.
 Why: copying the default at hire time would freeze it and reintroduce the
 invisible drift the setting exists to remove; a cost dial under a permission
 ceiling conflates spending with authority.
+
+### D-085 · done collapses into idle; a hire is born idle
+Ruling (user, 2026-08-02): `done` and `idle` are not functionally distinct —
+an agent that finished IS idle. A DONE report still reaches the superior;
+the node then rests at idle carrying the summary. `blocked` is deliberately
+NOT collapsed: it means "stuck, needs a superior or a human", which idle
+does not. And a fresh hire is born `idle` ("hired — awaiting work"), never
+stateless — a blank chip read as "unknown" rather than "ready".
+
+### D-086 · a hire does not start anyone — a hire is TWO calls
+Ruling (user report 2026-08-02, encoded 2026-08-03): neither hire path
+drives the new node. The charter is identity; mail is what runs a turn.
+Stated where it is read: the hire RESULT (`next_step`), the tool
+description, the identity prompt, and the coordinator charter ("A hire is
+TWO calls, never one").
 
 ---
 

@@ -48,9 +48,10 @@ ledger, supervisor, the gateways, or the canvas.
   `_resolve_recipient`). `audiences_held` mixes sentinels with node ids —
   map sentinels before iterating as node ids. And remember `actor_kind()`
   classifies org ROLE, not authentication (DECISIONS D-001).
-- **Structural caps exist only in code**: `max_depth` 10, `max_children` 256
-  (bearers excluded). Overridable only by editing the org doc; no UI or doc
-  predicts the refusal.
+- **Structural caps**: `max_depth`/`max_children` 1024 (user-ruled runaway
+  insurance, D-083; bearers excluded), binding hire AND move (a move
+  measures the moved subtree's deepest leaf). Per-org overridable in the
+  doc only.
 
 ## Mail & delivery
 
@@ -125,6 +126,23 @@ ledger, supervisor, the gateways, or the canvas.
   write" semantics** — the real rule lives at the call sites: turn path
   confirms on the first non-`system` stdout event; steer path confirms at
   the hook's fetch (a ratified trade — D-045 Bounds).
+- **Readers and `os.replace` must not overlap on Windows** — the `_IOLatch`
+  in store.py is writer-preferring for a measured reason (8 looping readers
+  starved the replace 1,659/1,659). Nothing that can re-enter load/save may
+  run under it; the held regions are one `read()` and one `os.replace()`.
+- **One backend per data root is an OS-level lock now** (D-088,
+  `claim_data_root` at api.main) — anything that spawns its own backend
+  (tests, drills, probes) must use an isolated `ORGTREE_DATA` or it will be
+  refused at startup.
+- **Several suites carry DRIFT GUARDS** that mirror production expressions
+  (msgvis.py greps the four source files for the nine expressions it
+  replays; the runner fails LOUDLY with a ⚑ wall). A guard firing does not
+  mean runtime breakage — it means fix the mirror or revert the source, and
+  until then that suite's checks are fiction.
+- **`ORGTREE_CLAUDE_CLI` is the test seam**: `backend/tests/fakecli.js` is a
+  programmable Claude Code stand-in (timing dials) that turns delivery races
+  into reproducible tests. The live tiers of the suites use it; only
+  explicitly-marked runs touch a real CLI (haiku only, by user ruling).
 - **`DOC_LOCK` is a single-process `threading.RLock`.** File writes are
   atomic (tmp + `os.replace`), which makes a concurrent SECOND backend look
   like it works while silently discarding interleaved load-modify-save
