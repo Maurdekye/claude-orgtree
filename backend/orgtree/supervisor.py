@@ -405,7 +405,16 @@ def scratch_dir(slug: str, nid: str) -> str:
     else:
         base = store.scratch_root(slug)
     p = os.path.join(base, nid.split("@")[0])
-    os.makedirs(p, exist_ok=True)
+    if not os.path.isdir(p):
+        os.makedirs(p, exist_ok=True)
+        # backend-minted = root-owned inside a sandbox (UNC writes arrive as
+        # root; the CLI runs as agent) — hand a NEW node dir over immediately,
+        # or its first turn cannot write its own cwd (live bug 2026-08-04)
+        try:
+            org = store.load_org(slug)
+            sbx.chown_agent(org, nid)
+        except Exception:                                    # noqa: BLE001
+            pass          # container down → ensure_container's heal covers it
     return p
 
 
@@ -2864,10 +2873,14 @@ def deliver_org_inbox(slug: str, peer: str, body: str,
             tops = org.extern_recipients()
         for nid in tops:
             updir = os.path.join(scratch_dir(slug, nid), "uploads")
+            new_updir = not os.path.isdir(updir)
             metas = []
             for src in attachments:
                 try:
                     os.makedirs(updir, exist_ok=True)
+                    if new_updir:      # root-owned when backend-minted (sandbox)
+                        new_updir = False
+                        sbx.chown_agent(org, nid, "uploads")
                     safe = re.sub(r"[^\w .()+\-]", "_",
                                   os.path.basename(src)).strip(" .") or "file.bin"
                     stem, ext = os.path.splitext(safe)

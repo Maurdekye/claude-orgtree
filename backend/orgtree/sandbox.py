@@ -358,6 +358,36 @@ def bridge_url() -> str:
     return f"http://host.docker.internal:{BRIDGE_PORT}"
 
 
+def chown_agent(org: Org, nid: str, *rel: str) -> None:
+    """Hand a backend-minted path inside a sandboxed org to the agent.
+
+    The backend writes through the \\\\wsl.localhost UNC view, and everything
+    it creates lands root-owned inside the container — while the CLI runs as
+    `agent` (uid 1001). A root-owned `outbox/` or `uploads/` reads to the
+    agent as "my scratch is broken" (live bug 2026-08-04, kiosk `vnuser`).
+    Best-effort by design: with the container down the exec fails silently,
+    and the start-time heal in ensure_container covers it instead."""
+    if not is_sandboxed(org):
+        return
+    slug = org.d["slug"]
+    target = "/".join((cpath_scratch(slug, nid), *rel))
+    try:
+        _docker("exec", container_name(slug), "chown", "-R", "agent:agent",
+                target, timeout=30)
+    except Exception:                                        # noqa: BLE001
+        pass
+
+
+def _heal_ownership(name: str) -> None:
+    """Every path the backend minted while the container was DOWN is
+    root-owned (see chown_agent) — hand the whole data tree back to the agent
+    at container start. Also fixes Docker's own root-owned mount scaffolding
+    (/home/agent/orgtree, …/scratch, …/workspaces), which the agent sees when
+    it looks one level above its own folder."""
+    _docker("exec", name, "chown", "-R", "agent:agent", cpath_data(),
+            timeout=120)
+
+
 def _docker(*args: str, timeout: int = 120) -> subprocess.CompletedProcess[str]:
     return subprocess.run(["docker", *args], capture_output=True, text=True,
                           timeout=timeout)
@@ -444,6 +474,7 @@ def ensure_container(org: Org) -> str:
         else:
             if running != "true":
                 _docker("start", name)
+                _heal_ownership(name)
             return name
     # auth (user ruling): PROXIED SUBSCRIPTION is the default for every kiosk
     # — the container's CLI talks to the bridge's /anthropic passthrough and
@@ -509,6 +540,7 @@ def ensure_container(org: Org) -> str:
     if r.returncode != 0:
         raise RuntimeError("sandbox container failed to start: "
                            + (r.stderr or r.stdout)[-500:])
+    _heal_ownership(name)
     return name
 
 

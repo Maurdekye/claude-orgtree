@@ -2585,8 +2585,14 @@ def _agent_send_file(org: Org, nid: str, a: dict[str, Any]) -> dict[str, Any]:
                           "copy is paused; delete files to lift the block, "
                           "then re-send")
     outdir = os.path.join(scratch, "outbox")
+    new_outdir = not os.path.isdir(outdir)
     try:
         os.makedirs(outdir, exist_ok=True)
+        if new_outdir:
+            # backend-minted = root-owned inside a sandbox — the agent is then
+            # TOLD its file is in outbox/ and finds a dir it cannot write
+            # (live bug 2026-08-04, kiosk `vnuser`)
+            sandbox.chown_agent(org, nid)
         if src.startswith(os.path.realpath(outdir) + os.sep):
             final = os.path.relpath(src, outdir).replace("\\", "/")
         else:

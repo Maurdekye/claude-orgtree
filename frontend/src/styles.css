@@ -690,10 +690,13 @@ main {
   padding: 5px 10px;
 }
 .ask-submit:not(:disabled) { color: var(--ink-strong); border-color: var(--accent); }
-.ask-credit-row { display: flex; gap: 14px; align-items: flex-end; }
-.ask-barbox { position: relative; width: 46px; flex: none; display: flex; align-items: flex-end; }
-.ask-barbox .cbar { position: relative; width: 22px; margin-left: 8px; }
-.ask-credit-side { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.ask-credit-row { display: flex; gap: 16px; align-items: stretch; }
+.ask-barbox { position: relative; width: 52px; flex: none; display: flex; align-items: flex-end; }
+.ask-barbox .cbar { position: relative; width: 24px; margin-left: 10px; }
+.ask-credit-side {
+  flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px;
+}
+.ask-credit-side .spacer { flex: 1; }
 .ask-warn { color: var(--warn, #e5c07b); font-size: 11.5px; }
 /* nulled: the card STAYS, wearing why — grey answered/denied, orange interrupted */
 .askcard.nulled { opacity: .75; border-color: var(--line); background: var(--panel); }
