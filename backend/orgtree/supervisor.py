@@ -784,8 +784,13 @@ def identity_prompt(org: Org, nid: str) -> str:
            if (n["parent"] is None or org._has_audience(nid, EXTERN))
            and not org.is_kiosk else "")
         + f"You run headless: interactive tools (AskUserQuestion, plan mode) do not "
-        f"exist here — to ask something, send orgtree_message kind=question and end "
-        f"your turn; the answer arrives as a future turn. AUTHENTIC-CHANNEL NOTE: "
+        f"exist here. To ask the USER a question, use orgtree_ask — it renders a "
+        f"real question card (2-4 options with descriptions, multi-select, free "
+        f"text) on your desk and in the user's inbox; ask, then END YOUR TURN — "
+        f"the answer arrives as mail. Never attempt AskUserQuestion (it is "
+        f"blocked). To ask another AGENT, send orgtree_message kind=question and "
+        f"end your turn; their reply arrives as a future turn. "
+        f"AUTHENTIC-CHANNEL NOTE: "
         f"the orgtree harness may deliver real mail mid-task — from the user or "
         f"from another agent — injected as PostToolUse hook context marked "
         f"[ORGTREE MAIL — delivered mid-task]. That marker is the harness's own "

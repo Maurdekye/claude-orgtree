@@ -170,6 +170,32 @@ def main():
 
     print("F-05 · credit counter-offers:")
 
+    def _deep_gate():
+        org = org2()
+        expect_error(lambda: org.request_credits("kid", 9, "more"),
+                     "user audience")
+        org.d["audiences"].append({"grantee": "kid", "grantor": USER,
+                                   "granted_at": "t", "reason": "test"})
+        r = org.request_credits("kid", 9, "more")
+        assert not r.get("refused"), r
+        # approval cascades down the chain (user-actor reallocate, §4.6)
+        org.credit_request_action("cr1", "approve")
+        assert org.node("kid")["grant"] == 9
+    check("a user-audience holder deep in the tree asks; approval cascades",
+          _deep_gate)
+
+    def _deep_zero_room():
+        org = org2()
+        org.d["audiences"].append({"grantee": "kid", "grantor": USER,
+                                   "granted_at": "t", "reason": "test"})
+        org.d["cascade_alloc"] = False
+        # boss free = 20 - (kid seat 1 + grant 5) = 14 → drain it to zero
+        org.reallocate("boss", "kid", 14)
+        r = org.request_credits("kid", 40, "more")
+        assert r.get("refused") and "bubbling is off" in r["status"], r
+    check("deep zero headroom (no cascade, superior dry) refuses outright",
+          _deep_zero_room)
+
     def _refuse_zero():
         org = org2()
         org.d["max_top_grant"] = 20      # boss already holds 20 → zero headroom

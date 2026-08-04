@@ -428,16 +428,25 @@ export default function App() {
                 </span>
                 {/* the SECOND inbox icon (user ruling 2026-08-04): it glows —
                     alone in the whole chrome — iff an un-nulled ask (question
-                    or credit request) is waiting on the user; click opens the
-                    inbox where the cards are answerable */}
-                <button className={'iconbtn ask-bell' + ((tree.asks_open ?? 0) > 0 ? ' glow' : '')}
-                  title={(tree.asks_open ?? 0) > 0
-                    ? `${tree.asks_open} ask${(tree.asks_open ?? 0) > 1 ? 's' : ''} waiting on your answer`
-                    : 'your inbox'}
-                  onClick={() => { setInboxJump(null); setShowInbox(true) }}>
-                  <MailIcon fontSize="inherit" />
-                  {(tree.asks_open ?? 0) > 0 && <b className="eye-count">{tree.asks_open}</b>}
-                </button>
+                    or credit request) is waiting on the user; the count badge
+                    is the FULL unread total (mail + asks), same as the
+                    switchboard's ✉ (user ruling 2026-08-05); click opens the
+                    inbox */}
+                {(() => {
+                  const asks = tree.asks_open ?? 0
+                  const unread = (tree.user_inbox_count ?? 0) + asks
+                  return (
+                    <button className={'iconbtn ask-bell' + (asks > 0 ? ' glow' : '')}
+                      title={asks > 0
+                        ? `${asks} ask${asks > 1 ? 's' : ''} waiting on your answer`
+                          + (unread > asks ? ` · ${unread - asks} unread mail` : '')
+                        : unread > 0 ? `${unread} unread` : 'your inbox'}
+                      onClick={() => { setInboxJump(null); setShowInbox(true) }}>
+                      <MailIcon fontSize="inherit" />
+                      {unread > 0 && <b className="eye-count">{unread}</b>}
+                    </button>
+                  )
+                })()}
                 {!tree.public &&
                   <button onClick={() => setShowSettings(true)}><SettingsIcon fontSize="inherit" /> settings</button>}
                 <a className="gh-link" href="https://github.com/Maurdekye/claude-orgtree"

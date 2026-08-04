@@ -2642,9 +2642,14 @@ class Org:
         hard-errored on an idempotent ask, against the ratified pattern."""
         self._require_live(nid)
         n = self.node(nid)
-        if n["parent"] is not None:
-            raise LedgerError("only top-level agents may ask the user for credits "
-                              "directly — ask your superior to reallocate instead")
+        # the user-mail gate, same as questions (user ruling 2026-08-04):
+        # top-level OR a held user audience may ask the user directly. Approval
+        # for a deep node is an ordinary user-actor reallocate, which §4.6-
+        # cascades the shortfall down the chain — no new mechanics.
+        if n["parent"] is not None and not self._has_audience(nid, USER):
+            raise LedgerError("only top-level agents (or holders of a user "
+                              "audience) may ask the user for credits directly "
+                              "— ask your superior to reallocate instead")
         try:
             new_limit = int(new_limit)
         except (TypeError, ValueError):
@@ -2696,26 +2701,51 @@ class Org:
                 "status": "pending — the user will approve or deny"}
 
     def credit_headroom(self, nid: str) -> tuple[int | None, str]:
-        """How many MORE credits a top-level node could be granted, and which
-        cap binds. None = unbounded (no cap set). Two independent ceilings:
-        max_top_grant (per-node) and the kiosk credit pool (org-wide)."""
+        """How many MORE credits this node could be granted, and which cap
+        binds. None = unbounded (no cap set). Top-level: max_top_grant and the
+        kiosk pool. Deep node (a user-audience holder, ruling 2026-08-04):
+        credits arrive by user-actor cascade, so headroom = what is FREE along
+        its superior chain, plus how far the top-level ancestor could still
+        grow (cap slack, bounded by the kiosk pool) — or just the parent's own
+        free when allocation bubbling is off. Conservative on purpose: the
+        outright refusal fires only on provably-zero; approve validates for
+        real."""
         n = self.node(nid)
-        rooms: list[tuple[int, str]] = []
         cap = int(self.d.get("max_top_grant") or 0)
-        if cap:
-            rooms.append((cap - int(n["grant"]),
-                          f"your grant {n['grant']:g} is at the org's "
-                          f"top-level cap of {cap}"))
         kc = (self.d.get("kiosk") or {}).get("credits")
+        pool: int | None = None
         if kc is not None:
             holds = sum(self.seat_cost(k) + self.nodes[k]["grant"]
                         for k in self.children(None))
-            rooms.append((int(kc) - int(holds),
-                          f"the kiosk credit pool ({kc:g}) is fully held"))
-        if not rooms:
+            pool = int(kc) - int(holds)
+        if n["parent"] is None:
+            rooms: list[tuple[int, str]] = []
+            if cap:
+                rooms.append((cap - int(n["grant"]),
+                              f"your grant {n['grant']:g} is at the org's "
+                              f"top-level cap of {cap}"))
+            if pool is not None:
+                rooms.append((pool, f"the kiosk credit pool ({kc:g}) is fully held"))
+            if not rooms:
+                return None, ""
+            return min(rooms, key=lambda r: r[0])
+        if not bool(self.d.get("cascade_alloc", True)):
+            room = int(self.free(n["parent"]))
+            return room, (f'your superior "{n["parent"]}" has no free credits '
+                          f"(allocation bubbling is off)")
+        chain: list[str] = []
+        cur: str | None = n["parent"]
+        while cur is not None:
+            chain.append(cur)
+            cur = self.node(cur)["parent"]
+        free_sum = sum(int(self.free(a) or 0) for a in chain)
+        slack = [s for s in ((cap - int(self.node(chain[-1])["grant"])) if cap else None,
+                             pool) if s is not None]
+        if not slack:
             return None, ""
-        room, why = min(rooms, key=lambda r: r[0])
-        return room, why
+        return free_sum + max(0, min(slack)), (
+            "nothing is free along your superior chain and the org has no "
+            "growth headroom (top-level cap / kiosk pool exhausted)")
 
     def credit_request_action(self, rid: str, action: str,
                               granted: int | None = None) -> dict[str, Any]:

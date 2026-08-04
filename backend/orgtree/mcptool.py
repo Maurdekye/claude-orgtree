@@ -109,10 +109,12 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "orgtree_request_credits",
         "description": (
-            "TOP-LEVEL AGENTS ONLY: ask the user directly for a larger credit "
-            "grant. Not mail — a structured request card on your desk and in "
-            "the user's inbox. State the requested NEW TOTAL grant (not the "
-            "increase) and a concrete reason. The user may grant the asked "
+            "Ask the user directly for a larger credit grant — allowed for "
+            "TOP-LEVEL agents and holders of a USER AUDIENCE (a deep grant "
+            "cascades down your superior chain). Not mail — a structured "
+            "request card on your desk and in the user's inbox. State the "
+            "requested NEW TOTAL grant (not the increase) and a concrete "
+            "reason. The user may grant the asked "
             "amount, MORE, LESS, or even reduce your grant — their decision "
             "arrives as mail, and you may take it as-is, re-ask, or route "
             "around it. If there are genuinely ZERO credits available to "
