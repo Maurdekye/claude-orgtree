@@ -1689,6 +1689,8 @@ async def credit_request_decide(slug: str, body: CreditDecision) -> dict[str, An
 class AskAnswer(Body):
     selected: list[str] | None = None
     text: str | None = None
+    # the card's ✕ — close without answering (mirrors AskUserQuestion's Esc)
+    dismiss: bool = False
 
 
 @app.post("/api/orgs/{slug}/asks/{aid}/answer")
@@ -1701,7 +1703,8 @@ async def ask_answer(slug: str, aid: str, body: AskAnswer) -> dict[str, Any]:
     with store.DOC_LOCK:
         try:
             org = store.load_org(slug)
-            r = org.ask_answer(aid, selected=body.selected, text=body.text)
+            r = (org.ask_dismiss(aid) if body.dismiss
+                 else org.ask_answer(aid, selected=body.selected, text=body.text))
             drive = not org.post_mail(USER, r["node"], r["body"]).get("deferred")
         except LedgerError as e:
             raise HTTPException(422, str(e))
@@ -1711,7 +1714,9 @@ async def ask_answer(slug: str, aid: str, body: AskAnswer) -> dict[str, Any]:
         supervisor.send_message(
             slug, r["node"],
             "(orgtree) The mail above answers the question you asked the "
-            "user — act on it now.")
+            "user — act on it now." if not body.dismiss else
+            "(orgtree) The mail above reports that the user dismissed your "
+            "question — proceed accordingly.")
     await hub.changed(slug)
     return {"answered": aid, "node": r["node"]}
 
@@ -2288,7 +2293,8 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
             elif body.tool == "orgtree_ask":
                 result = org.ask_user(body.node, a.get("question") or "",
                                       options=a.get("options"),
-                                      multi=bool(a.get("multi")))
+                                      multi=bool(a.get("multi")),
+                                      header=a.get("header"))
                 # no user audience → the question rode to the superior as
                 # mail; drive them like any other delivery
                 routed = result.get("routed")

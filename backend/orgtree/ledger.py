@@ -2815,8 +2815,28 @@ class Org:
         return {"ok": True, "warnings": warnings}
 
     # ---------------------------------------------------- F-04: asking the user
+    @staticmethod
+    def _norm_options(options: list[Any] | None) -> list[dict[str, str]]:
+        """Options mirror AskUserQuestion's shape (user ruling 2026-08-04):
+        {label, description?}. Plain strings are accepted and become bare
+        labels, so older callers keep working."""
+        out: list[dict[str, str]] = []
+        for o in (options or [])[:4]:
+            if isinstance(o, dict):
+                od = cast("dict[str, Any]", o)
+                lab = str(od.get("label") or "").strip()
+                if not lab:
+                    continue
+                d = str(od.get("description") or "").strip()
+                out.append({"label": lab[:60], **({"description": d[:300]} if d else {})})
+            else:
+                s = str(o).strip()
+                if s:
+                    out.append({"label": s[:60]})
+        return out
+
     def ask_user(self, nid: str, question: str, options: list[Any] | None = None,
-                 multi: bool = False) -> dict[str, Any]:
+                 multi: bool = False, header: str | None = None) -> dict[str, Any]:
         """A structured question to the user (F-04, user-ruled 2026-08-04):
         ALWAYS parks — no blocking wait. The question becomes an interactive
         card on the agent's desk AND in the user's inbox; the answer arrives
@@ -2828,13 +2848,14 @@ class Org:
         q = str(question or "").strip()
         if not q:
             raise LedgerError("a question is required")
-        opts = [str(o).strip() for o in (options or []) if str(o).strip()][:4]
+        opts = self._norm_options(options)
+        hdr = str(header or "").strip()[:24]
         n = self.node(nid)
         if n["parent"] is not None and not self._has_audience(nid, USER):
             sup = n["parent"]
             body = "[QUESTION — needs an answer]\n" + q
             if opts:
-                body += "\nOptions: " + " · ".join(opts) \
+                body += "\nOptions: " + " · ".join(o["label"] for o in opts) \
                         + (" (several may apply)" if multi else "")
             r = self.post_mail(nid, sup, body, kind="question")
             return {"routed": sup, "deferred": bool(r.get("deferred")),
@@ -2847,11 +2868,14 @@ class Org:
         if entry is not None:
             entry.update({"question": q, "at": now(),
                           **({"options": opts} if opts else {}),
-                          **({"multi": True} if multi else {})})
+                          **({"multi": True} if multi else {}),
+                          **({"header": hdr} if hdr else {})})
             if not opts:
                 entry.pop("options", None)
             if not multi:
                 entry.pop("multi", None)
+            if not hdr:
+                entry.pop("header", None)
             self._log("ask", nid, {"id": entry["id"], "amended": True}, [])
             return {"asked": entry["id"],
                     "status": "parked (amended your earlier question) — the "
@@ -2861,6 +2885,7 @@ class Org:
         asks.append({"id": aid, "node": nid, "kind": "question", "question": q,
                      **({"options": opts} if opts else {}),
                      **({"multi": True} if multi else {}),
+                     **({"header": hdr} if hdr else {}),
                      "at": now(), "status": "open"})
         self._prune_asks()
         self._log("ask", nid, {"id": aid}, [])
@@ -2870,6 +2895,25 @@ class Org:
                           "this turn: wrap up and end the turn. ⚠ If any other "
                           "mail wakes you first, the question is VOIDED and "
                           "must be re-asked."}
+
+    def ask_dismiss(self, aid: str) -> dict[str, Any]:
+        """The card's ✕ (mirrors AskUserQuestion's Esc/close): the user closes
+        the question WITHOUT answering. Nulled grey as 'dismissed'; the agent
+        is told and proceeds on its own judgment."""
+        a = next((x for x in self.d.get("asks", []) if x["id"] == aid), None)
+        if a is None:
+            raise LedgerError(f"no ask {aid!r}")
+        if a["status"] != "open":
+            raise LedgerError(f"ask {aid} is already {a['status']}")
+        a["status"] = "dismissed"
+        a["reason"] = "dismissed by the user without an answer"
+        a["resolved_at"] = now()
+        self._log("ask_dismissed", USER, {"id": aid, "node": a["node"]}, [])
+        return {"node": a["node"],
+                "body": "[QUESTION DISMISSED] The user closed your question "
+                        "without answering:\nQ: " + a["question"]
+                        + "\nProceed on your best judgment, or re-ask later "
+                          "with a sharper framing."}
 
     def ask_answer(self, aid: str, selected: list[Any] | None = None,
                    text: str | None = None) -> dict[str, Any]:

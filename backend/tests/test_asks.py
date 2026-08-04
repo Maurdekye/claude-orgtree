@@ -62,12 +62,28 @@ def main():
     def _park():
         org = org2()
         r = org.ask_user("boss", "ship now or wait?",
-                         options=["ship", "wait"], multi=False)
+                         options=["ship", {"label": "wait",
+                                           "description": "until CI is green"}],
+                         multi=False, header="Ship gate")
         assert r.get("asked"), r
         assert "parked" in r["status"] and "do not wait" in r["status"].lower()
         a = open_asks(org)[0]
-        assert a["node"] == "boss" and a["options"] == ["ship", "wait"]
+        assert a["node"] == "boss" and a["header"] == "Ship gate"
+        # options normalize to AskUserQuestion's {label, description?} shape,
+        # plain strings included (user ruling 2026-08-04)
+        assert a["options"] == [{"label": "ship"},
+                                {"label": "wait", "description": "until CI is green"}]
     check("a top-level ask parks as an open card and says so", _park)
+
+    def _dismiss():
+        org = org2()
+        aid = org.ask_user("boss", "may I?")["asked"]
+        r = org.ask_dismiss(aid)
+        assert r["node"] == "boss" and "DISMISSED" in r["body"]
+        a = org.d["asks"][0]
+        assert a["status"] == "dismissed" and "without an answer" in a["reason"]
+        expect_error(lambda: org.ask_answer(aid, text="late"), "already dismissed")
+    check("the card's ✕ dismisses: nulled grey, agent told, final", _dismiss)
 
     def _amend():
         org = org2()
@@ -100,7 +116,7 @@ def main():
     def _answer():
         org = org2()
         aid = org.ask_user("boss", "ship now or wait?",
-                           options=["ship", "wait"])["asked"]
+                           options=["ship", "wait"])["asked"]  # labels normalize
         r = org.ask_answer(aid, selected=["wait"], text="until CI is green")
         assert r["node"] == "boss"
         assert "Q: ship now or wait?" in r["body"]

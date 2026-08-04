@@ -124,7 +124,8 @@ export const creditDecide = (
       ...(granted != null ? { granted } : {}), ...(dry ? { dry: true } : {}) }),
   })
 export const answerAsk = (
-  slug: string, aid: string, body: { selected?: string[]; text?: string },
+  slug: string, aid: string,
+  body: { selected?: string[]; text?: string; dismiss?: boolean },
 ): Promise<{ answered: string; node: string }> =>
   req(`/api/orgs/${slug}/asks/${aid}/answer`, {
     method: 'POST',

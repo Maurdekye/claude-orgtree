@@ -86,9 +86,20 @@ TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "question": {"type": "string",
                              "description": "the complete question"},
-                "options": {"type": "array", "items": {"type": "string"},
-                            "maxItems": 4,
-                            "description": "2-4 concise answer options (optional)"},
+                "header": {"type": "string",
+                           "description": "very short label chip (max ~12 "
+                                          "chars), e.g. 'Approach'"},
+                "options": {
+                    "type": "array", "maxItems": 4,
+                    "description": "2-4 answer options; the user can always "
+                                   "answer free-text instead",
+                    "items": {"type": "object", "properties": {
+                        "label": {"type": "string",
+                                  "description": "concise choice (1-5 words)"},
+                        "description": {"type": "string",
+                                        "description": "what picking it means"},
+                    }, "required": ["label"]},
+                },
                 "multi": {"type": "boolean",
                           "description": "several options may be selected"},
             },

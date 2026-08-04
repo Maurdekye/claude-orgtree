@@ -210,9 +210,11 @@ export interface AskInfo {
   at: string
   resolved_at?: string
   reason?: string
-  // question kind
+  // question kind — options mirror AskUserQuestion ({label, description?});
+  // header is the short chip label (ledger normalizes plain strings away)
   question?: string
-  options?: string[]
+  header?: string
+  options?: { label: string; description?: string }[]
   multi?: boolean
   answer?: { selected?: string[]; text?: string }
   // credit kind (ledger credit_requests shape)

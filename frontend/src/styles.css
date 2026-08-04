@@ -654,17 +654,42 @@ main {
 }
 .ask-head { display: flex; align-items: center; gap: 6px; color: var(--ink-strong); }
 .ask-q { white-space: pre-wrap; }
-.ask-opts { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-.ask-opt {
-  border: 1px solid var(--line); border-radius: 5px; background: var(--input);
-  padding: 3px 10px; font-size: 12px; color: var(--ink);
+/* the AskUserQuestion-shaped form (user ruling 2026-08-04, from a
+   side-by-side with Claude Code proper): a header TAB with a ✕, option ROWS
+   with a radio/checkbox dot + bold label + dim description, an Other row
+   that opens free text, and a submit bar. */
+.ask-tab {
+  display: flex; align-items: center; gap: 6px;
+  border-bottom: 1px solid var(--line-soft); padding-bottom: 5px;
 }
-.ask-opt.on {
-  border-color: var(--accent); background: var(--accent-soft);
-  color: var(--ink-strong);
+.ask-tab-label {
+  font-weight: 600; color: var(--ink-strong);
+  border-bottom: 2px solid var(--accent); padding-bottom: 3px; margin-bottom: -6px;
 }
-.ask-answer-row { display: flex; gap: 6px; }
-.ask-answer-row input { flex: 1; min-width: 0; }
+.ask-rows { display: flex; flex-direction: column; gap: 2px; }
+.ask-row {
+  display: flex; align-items: flex-start; gap: 9px; text-align: left;
+  background: none; border: none; border-radius: 5px; padding: 5px 7px;
+  color: var(--ink); font-size: 12.5px; cursor: pointer;
+}
+.ask-row:hover:not(:disabled) { background: var(--panel-2); }
+.ask-row.on { background: var(--accent-soft); }
+.ask-dot {
+  flex: none; width: 13px; height: 13px; margin-top: 2px;
+  border: 1.5px solid var(--dim); border-radius: 50%;
+}
+.ask-dot.sqr { border-radius: 3px; }   /* multi-select wears checkboxes */
+.ask-dot.on { border-color: var(--accent); box-shadow: inset 0 0 0 3px var(--accent); }
+.ask-dot.sqr.on { box-shadow: inset 0 0 0 6px var(--accent); }
+.ask-row-body { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.ask-row-body .dim { font-size: 11.5px; line-height: 1.35; }
+.ask-other { margin: 2px 7px 2px 29px; }
+.ask-submit {
+  align-self: stretch; text-align: left; color: var(--dim);
+  background: var(--input); border: 1px solid var(--line); border-radius: 5px;
+  padding: 5px 10px;
+}
+.ask-submit:not(:disabled) { color: var(--ink-strong); border-color: var(--accent); }
 .ask-credit-row { display: flex; gap: 14px; align-items: flex-end; }
 .ask-barbox { position: relative; width: 46px; flex: none; display: flex; align-items: flex-end; }
 .ask-barbox .cbar { position: relative; width: 22px; margin-left: 8px; }
