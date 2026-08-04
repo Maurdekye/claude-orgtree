@@ -263,8 +263,13 @@ class Org:
         # instead of leaving a stale-reason freeze the API reports as cleared
         for n in self.nodes.values():
             fz = n.get("frozen")
+            # ⚠ `until_ts` is checked as well as `until`: the CLI's usual
+            # wording carries only an epoch, so a genuine usage-limit freeze
+            # routinely has a machine time and no human one. Together with the
+            # `limit` kind flag (FrozenInfo) this stops the retag eating a real
+            # usage-limit freeze and making it permanently unresumable.
             if (isinstance(fz, dict) and fz.get("error") and not fz.get("until")
-                    and not fz.get("resume_texts")
+                    and not fz.get("until_ts") and not fz.get("resume_texts")
                     and not any(v is True for v in fz.values())):
                 fz["spend"] = True
                 fz["spend_error"] = fz.pop("error")

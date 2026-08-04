@@ -18,6 +18,7 @@ truth for live/archived. A server restart loses in-flight turns, never ledger st
 
 from __future__ import annotations
 
+import datetime as _dtm
 import glob
 import json
 import os
@@ -1125,7 +1126,32 @@ def _build_cmd(org: Org, nid: str) -> list[str]:
 
 
 def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
+    """Run a turn, then keep running whatever the queue has, until it is empty.
+
+    ⚠ The follow-on used to be a TAIL CALL from `_run_one_turn`'s own
+    `finally`, which meant one never-unwinding stack frame per turn for as
+    long as a node stayed busy. It is reachable whenever each queued message
+    is consumed by a fresh CLI process (the in-process boundary feed does not
+    recurse), and the failure is silent and terminal: the RecursionError is
+    raised inside the `finally`, so it escapes the turn's own `except`, kills
+    the worker thread, and leaves `busy=True` with a non-empty queue — the
+    node accepts messages forever and runs nothing. Measured 2026-08-04
+    (test_turn_lifecycle "deepqueue"): a 260-deep queue against a 200-frame
+    limit died at depth 189 with 71 messages still queued; the stock limit
+    puts the cliff at ~900. Iterating costs nothing and has no cliff."""
+    nxt: str | dict[str, Any] | None = text
+    while nxt is not None:
+        nxt = _run_one_turn(slug, nid, nxt)
+
+
+def _run_one_turn(slug: str, nid: str,
+                  text: str | dict[str, Any]) -> str | dict[str, Any] | None:
+    """One turn. Returns the next queued item for the caller to run, or None
+    when the node went idle (`busy` is cleared here in that case, under the
+    same lock that a concurrent `send_message` takes — so there is no window
+    where the queue is non-empty and nobody owns it)."""
     st = state(slug, nid)
+    follow: str | dict[str, Any] | None = None
     # a dict carrier is an already-enveloped text still owing its delivery
     # journal a confirmation (a steer/boundary leftover re-queued for a turn)
     toks: list[str] = []
@@ -1157,6 +1183,18 @@ def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
                     raise RuntimeError(
                         "halted: weekly Fable usage limit exhausted — waiting for the "
                         "limit to reset or the user to intervene")
+                if org.node(nid).get("frozen"):
+                    # `send_message` refuses to drive a frozen node, but the
+                    # QUEUE is drained by the previous turn's own follow-up,
+                    # which never re-checked: a node that froze mid-queue kept
+                    # launching one doomed CLI per queued message against a
+                    # live usage limit. ▶ resume (and auto_resume) clear
+                    # `frozen` under DOC_LOCK before they start anything, so
+                    # this never blocks a legitimate resume. Nothing has been
+                    # drained yet at this point — the mail stays boxed.
+                    raise RuntimeError(
+                        "frozen by a usage limit — waiting for ▶ resume "
+                        "(or auto-resume) before running anything")
                 # NOT locked fable nodes under a fable_lock (e.g. rehired anyway) are
                 # allowed to TRY — the real limit rejects them naturally (user ruling:
                 # the gate is a suggestion, reality is the enforcement)
@@ -1278,7 +1316,25 @@ def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
                         ev = json.loads(line)
                     except json.JSONDecodeError:
                         continue
-                    if pend_toks and ev.get("type") != "system":
+                    if pend_toks and ev.get("type") != "system" \
+                            and not (ev.get("type") == "result"
+                                     and ev.get("is_error")):
+                        # ⚠ an ERROR result is not proof of consumption. C1's
+                        # rule is "the first stdout event the CLI cannot emit
+                        # without having read stdin" — but a failing turn's
+                        # result event is emitted on paths where the message
+                        # was never processed (auth failure, credit balance,
+                        # overloaded after retries), and confirming on it
+                        # DELETED the journal batch while the `finally`
+                        # fold-back then found nothing to restore. Measured
+                        # 2026-08-04 (test_turn_lifecycle "errresult"): a
+                        # turn answering with is_error and no prior stdout
+                        # event lost the user's message outright — not in the
+                        # mailbox, not journaled, not in the transcript, only
+                        # in mail_log, which is forensics and not delivery.
+                        # Leaving the batch journaled costs at most a
+                        # duplicate, which is the semantics this system
+                        # chose.
                         _confirm_delivered(slug, nid, pend_toks)
                         pend_toks = []
                     if ev.get("type") == "stream_event":
@@ -1368,7 +1424,18 @@ def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
                         timer = threading.Timer(TURN_TIMEOUT, _expire)
                         timer.start()
                         # the response resolved: feed the next queued message
-                        # into the same process, or close stdin to end it
+                        # into the same process, or close stdin to end it.
+                        # ⚠ …unless the session just said it is out of quota.
+                        # The feed used to ignore `is_error` entirely, so a
+                        # CLI answering "usage limit reached" was handed the
+                        # next queued message, and the next: measured
+                        # 2026-08-04 (test_turn_lifecycle "frozenq") — three
+                        # queued messages became three real API attempts
+                        # against a live limit, and only the first turn's text
+                        # was kept for replay. Leaving them queued lets the
+                        # freeze below stop them for real.
+                        limited = bool(ev.get("is_error")) and \
+                            _looks_like_usage_limit(str(ev.get("result") or ""))
                         nxt = None
                         with _state_lock:
                             st["responding"] = False
@@ -1376,7 +1443,7 @@ def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
                             st["steer"] = []
                             if leftover:
                                 st["queue"][0:0] = leftover
-                            if st["queue"]:
+                            if st["queue"] and not limited:
                                 nxt = st["queue"].pop(0)
                                 st["responding"] = True
                         if nxt is not None:
@@ -1463,7 +1530,15 @@ def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
                     notify(slug, nid, "filter_flagged")
                     if applied == "opus":
                         with _state_lock:
-                            st["queue"].insert(0, text)   # replays as opus now
+                            # the replay carries the SAME enveloped text, so it
+                            # must carry the same journal tokens too: as a bare
+                            # string the batch is not "still riding a carrier",
+                            # the finally folds it back into the mailbox, and
+                            # the opus retry then drains it a second time on
+                            # top of the copy already inside `text`
+                            st["queue"].insert(0, {"toks": list(pend_toks),
+                                                   "text": text}
+                                               if pend_toks else text)
                         raise RuntimeError(
                             "a Fable content filter flagged the message — "
                             "converted to opus and retrying (org policy)")
@@ -1479,9 +1554,39 @@ def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
                         o2 = store.load_org(slug)
                         if nid in o2.nodes:
                             fz = _ensure_frozen(o2.node(nid))
+                            # POSITIVE kind marker — see FrozenInfo.limit. A
+                            # usage-limit freeze whose reset time is
+                            # unparseable and which kept no replay text is
+                            # shape-identical to a pre-№41 spend freeze, and
+                            # was being retagged into one that ▶ resume skips
+                            # forever. This flag is what tells them apart.
+                            fz["limit"] = True
                             fz["until"] = _parse_limit_reset(err_blob) or fz.get("until")
                             fz["until_ts"] = (_parse_limit_reset_ts(err_blob)
                                               or fz.get("until_ts"))
+                            _uts = fz.get("until_ts")
+                            if not fz.get("until") and _uts:
+                                # The CLI's usual wording carries ONLY the
+                                # epoch ("…usage limit reached|1753898400"),
+                                # which `_parse_limit_reset` cannot phrase — so
+                                # the record kept a machine time and no human
+                                # one, and the desk showed a freeze with no
+                                # reset. Worse: {error, no until, no
+                                # resume_texts, nothing True} is EXACTLY the
+                                # shape ledger's pre-№41 migration re-tags as a
+                                # kiosk SPEND freeze on the next load, after
+                                # which ▶ resume skips the node for good (it
+                                # defers to "whichever mechanism owns this
+                                # freeze", and no spend mechanism exists in a
+                                # non-kiosk org). Live-caught 2026-08-04
+                                # (test_turn_lifecycle "freeze · a limit on the
+                                # first call"). Deriving the label from the
+                                # timestamp we already parsed fixes the display
+                                # and keeps the record out of that shape.
+                                _t = _dtm.datetime.fromtimestamp(_uts)
+                                _lbl = _t.strftime("%I:%M%p").lstrip("0").lower()
+                                fz["until"] = (_lbl if _t.date() == _dtm.date.today()
+                                               else _t.strftime("%a ") + _lbl)
                             fz["error"] = err_blob[:300]
                             # replay only what the CLI actually consumed: an
                             # unconsumed batch folds back as MAIL (C1) and
@@ -1526,10 +1631,9 @@ def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
             alive = [t for x in (st["queue"] + (st.get("steer") or []))
                      if isinstance(x, dict) for t in x.get("toks") or []]
         _fold_back_undelivered(slug, nid, keep_toks=alive)
-        nxt = None
         with _state_lock:
             if st["queue"]:
-                nxt = st["queue"].pop(0)
+                follow = st["queue"].pop(0)
             else:
                 st["busy"] = False
         with _state_lock:
@@ -1538,8 +1642,7 @@ def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
             # the answer
             st["live"] = [r for r in (st.get("live") or []) if r.get("sticky")]
         notify(slug, nid, "turn_done")
-        if nxt is not None:
-            _run_turn(slug, nid, nxt)
+    return follow
 
 
 def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
@@ -2316,7 +2419,14 @@ def resume_frozen(slug: str) -> list[str]:
             # leaving their record intact for whoever can actually act.
             if n["state"] != "live" or n.get("limit_locked"):
                 continue
-            if any(v is True for v in fz.values()):
+            # ⚠ `limit` is excluded: it is the kind ▶ resume ITSELF owns. The
+            # guard means "another mechanism owns this record" — adding a
+            # positive marker for the usage-limit kind (FrozenInfo.limit) put
+            # that kind's own flag in scope and made ▶ skip every
+            # limit-frozen agent, i.e. exactly the bug the marker was added to
+            # prevent, from the other end. Caught immediately by the
+            # turn-lifecycle suite's three freeze checks.
+            if any(k != "limit" and v is True for k, v in fz.items()):
                 continue
             n.pop("frozen", None)
             resumed.append((nid, fz.get("resume_texts") or []))
@@ -2695,6 +2805,7 @@ def reconcile(slug: str) -> list[str]:
         # where they left off (user ruling) — the interrupted turn text was
         # persisted at turn start
         inflight = []
+        dropped_cmd = False
         for nid, n in org.nodes.items():
             if n["state"] == "live" and nid not in marked and not n.get("frozen"):
                 inf = n.pop("inflight", None)
@@ -2703,7 +2814,16 @@ def reconcile(slug: str) -> list[str]:
                 # text) — a lost command is dropped, not degraded (review)
                 if inf and not inf.get("cmd"):
                     inflight.append((nid, inf))
-        if inflight:
+                elif inf:
+                    # ⚠ the pop above is IN MEMORY. Saving only when something
+                    # is replayable meant an org whose only in-flight turn was
+                    # a COMMAND never wrote the drop back: the marker survived
+                    # on disk, every later restart re-dropped it, and the tree
+                    # kept reporting `inflight_at` — "running for 6 days" on an
+                    # idle node. Measured 2026-08-04 (test_turn_lifecycle
+                    # "reconcile · its inflight marker is cleared").
+                    dropped_cmd = True
+        if inflight or dropped_cmd:
             store.save_org(org)
         # delivery-journal fold-back: batches drained for a turn whose
         # delivery never confirmed — the backend died in between. The mail

@@ -2992,8 +2992,21 @@ def node_chat(slug: str, nid: str, last: int = 300) -> dict[str, Any]:
         mark = (f"· {at}\n{body}" if at else body)[:400]
         return any(mark in t for t in _seen_user)
 
+    # ⚠ The same evidence test applies to the MAILBOX rows, not only the
+    # journal's. `_fold_back_undelivered` re-queues a batch whose delivery was
+    # never confirmed — correctly: it is the only thing that puts a
+    # consumed-but-unanswered message back where the next envelope re-presents
+    # it, so weakening the fold-back itself would buy one clean render at the
+    # cost of the agent never being asked again. But when the CLI died AFTER
+    # echoing the message into its transcript and BEFORE its first stdout
+    # event, the returned row is one the transcript already shows, and the desk
+    # rendered both — measured 2026-08-04, 22 of 32 samples, indefinitely.
+    # Hiding it HERE removes the duplicate at the display layer and leaves
+    # delivery untouched: the marker names one specific entry, so only a row
+    # the transcript genuinely carries is dropped from the payload.
     pending = sorted(supervisor.delivering_mail(org, nid, _in_transcript)
-                     + list((org.d.get("mail") or {}).get(nid, [])),
+                     + [m for m in (org.d.get("mail") or {}).get(nid, [])
+                        if not _in_transcript(m)],
                      key=lambda m: m.get("at") or "")
     out["mail_pending"] = len(pending)
     # ⚠ NOT `pending[-20:]`. A fixed row cap on a list that only GROWS while

@@ -88,6 +88,16 @@ class FrozenInfo(TypedDict, total=False):
     until: str | None
     until_ts: float | None
     error: str | None
+    # `limit` is the usage-limit kind flag, and it exists to be a POSITIVE
+    # marker. The pre-№41 retag in Org.__init__ matches on shape — error, no
+    # until, no resume_texts, no kind flag True — and a genuine usage-limit
+    # freeze hits that shape exactly whenever the reset time is unparseable AND
+    # no replay text was kept (a /command turn, or an unconfirmed batch). It
+    # was then rewritten as a SPEND freeze, which resume_frozen skips forever:
+    # ▶ resume silently did nothing and the agent could never be woken. Caught
+    # live 2026-08-04 by the turn-lifecycle suite. Setting this flag takes the
+    # retag's `not any(v is True …)` guard out of the picture by construction.
+    limit: bool
     spend: bool
     spend_error: str | None
     # prompts to replay when the freeze lifts (supervisor queues them)
