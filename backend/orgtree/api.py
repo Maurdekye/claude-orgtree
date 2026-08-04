@@ -53,6 +53,48 @@ if TYPE_CHECKING:
 
 app = FastAPI(title="orgtree", version="1.0.0")
 
+#: THIS PROCESS's identity — a fresh value on every start.
+#:
+#: A redeploy replaces both halves of the app, but only the server half
+#: restarts: every browser already open keeps running the bundle it loaded,
+#: against a backend that may have changed its payloads underneath it. The
+#: symptom is a UI that looks fine and is subtly wrong, and the fix has always
+#: been "tell the user to hit refresh". Stamping every response with this lets
+#: the client notice the change itself (see `noteInstance` in api.ts) — no new
+#: endpoint, no extra request, and no poller: the heartbeats that already run
+#: carry it.
+INSTANCE = secrets.token_hex(8)
+
+
+class InstanceStamp:
+    """Adds `X-Orgtree-Instance` to every HTTP response.
+
+    Pure ASGI rather than `@app.middleware("http")`: Starlette's
+    BaseHTTPMiddleware re-wraps the response body in its own StreamingResponse,
+    and this sits in front of multi-GB virtual-disk downloads. Rewriting one
+    header on the `http.response.start` message touches nothing else."""
+
+    def __init__(self, inner: ASGIApp) -> None:
+        self.inner = inner
+
+    async def __call__(self, scope: ASGIScope, receive: Receive,
+                       send: Send) -> None:
+        if scope["type"] != "http":
+            return await self.inner(scope, receive, send)
+
+        async def _send(msg: Any) -> None:
+            if msg["type"] == "http.response.start":
+                msg = dict(msg)
+                msg["headers"] = [*(msg.get("headers") or []),
+                                  (b"x-orgtree-instance", INSTANCE.encode())]
+            await send(msg)
+        await self.inner(scope, receive, _send)
+
+
+# on the APP, so all three listeners (admin, kiosk, bridge) inherit it — they
+# are gateways wrapped around this same object
+app.add_middleware(InstanceStamp)
+
 
 @app.exception_handler(RequestValidationError)
 async def _validation_error(  # type: ignore[unused-function]  # registered by the decorator
@@ -3337,7 +3379,13 @@ if os.path.isdir(FRONTEND_DIST):
         if path and full.startswith(FRONTEND_DIST + os.sep) \
                 and os.path.isfile(full):
             return FileResponse(full)
-        return FileResponse(os.path.join(FRONTEND_DIST, "index.html"))
+        # ⚠ never cached. Asset filenames are content-hashed, so /assets/* may
+        # be held forever — but index.html is the file that NAMES them, and a
+        # browser that reuses a stale copy pulls the previous bundle straight
+        # back after the reload the instance change just triggered. That would
+        # make the refresh look like it did nothing.
+        return FileResponse(os.path.join(FRONTEND_DIST, "index.html"),
+                            headers={"Cache-Control": "no-store"})
 
 
 EXPOSE_ENV = "ORGTREE_EXPOSE_ADMIN"

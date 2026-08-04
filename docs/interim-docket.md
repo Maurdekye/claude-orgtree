@@ -2040,6 +2040,48 @@ the direction D-50 chooses over a gap.
 
 Fast tier 12/12, 2,738 checks, drift guards 3 held · 0 FIRED. `pyright` 0 errors, `tsc` clean.
 
+## D-60 · The page refreshes itself when orgtree restarts
+> add a feature that forcibly refreshes the frontend when orgtree is restarted
+
+A redeploy replaces both halves of the app and restarts only the server one: every tab already open
+keeps running the bundle it loaded, against an API that may have changed underneath it. The failure
+mode is a UI that looks fine and is quietly wrong, and the fix has always been "tell them to press
+refresh".
+
+**Mechanism — one header, no new endpoint, no new poller.** `api.INSTANCE` is a
+`secrets.token_hex(8)` generated at import, so it is a fresh value per process. `InstanceStamp`, a
+pure-ASGI middleware on the app, adds `X-Orgtree-Instance` to every HTTP response; the client's
+`req()` keeps the first id it sees and calls `location.reload()` when a different one arrives.
+Detection costs nothing: the heartbeats this app already runs (tree, conversation, every open panel)
+all pass through `req`, so a restart is noticed within one poll.
+
+Details that matter:
+
+- **Pure ASGI, not `@app.middleware("http")`.** Starlette's BaseHTTPMiddleware re-wraps the response
+  body in its own StreamingResponse, and this sits in front of multi-GB virtual-disk downloads.
+  Rewriting one header on `http.response.start` touches nothing else.
+- **On the app, not per listener** — admin, kiosk and bridge are gateways wrapped around the same
+  object, so all three inherit it. Gateway-level rejections (a bad `/k/<token>`, a bridge call with
+  no secret) are answered *above* the app and are therefore unstamped: asserted as a stated property,
+  since a browser only ever talks to the admin app or a valid kiosk path.
+- **The header is read before the ok/not-ok split** — a restart during an outage is exactly when one
+  happens, and only reading it on success would miss it.
+- **`index.html` is now served `Cache-Control: no-store`.** Asset filenames are content-hashed and may
+  be cached forever, but index.html is the file that *names* them; a cached copy would reload straight
+  back into the old bundle and make the refresh look like it did nothing.
+- **Latched.** Several responses can be in flight when the id changes; without the latch each one
+  calls `reload()` on a page already tearing down.
+- Deliberately unconditional, as asked — an unsent composer draft is lost, exactly as pressing F5
+  loses it.
+
+Tests: `test_api_surface.py` §10b (5 checks — the stamp on all three listeners, on error responses,
+the gateway exception, the id's shape and that it encodes nothing, and the no-store on index.html;
+`call()` now captures response headers) and `frontend/tests/restart.test.ts` (2 — the full lifecycle
+in one ordered test, since the baseline and the latch are page-scoped module state, plus a two-sided
+drift guard on the header name). The harness fetch stub now carries headers, as the real one does.
+
+Fast tier 12/12 · 2,745 checks · guards 3 held · 0 FIRED · pyright 0 · tsc clean.
+
 ## Carried, not done
 
 | item | state |

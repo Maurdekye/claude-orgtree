@@ -75,6 +75,10 @@ export class FakeServer {
   fail: number | null = null
   /** ms of latency for the NEXT response only (null = use `latency`) */
   onceLatency: number | null = null
+  /** the backend process answering — every real response carries it as
+   *  `X-Orgtree-Instance`, and a CHANGE means orgtree was restarted under
+   *  this page (see `noteInstance` in api.ts). Change it to model a redeploy. */
+  instance = 'inst-0'
   latency = 0
   private seq = 0
 
@@ -216,15 +220,19 @@ export function installFetch(server: FakeServer): Transport {
         : /\/history$/.test(u.pathname) ? { items: [] }
           : { ok: true }
     return new Promise((resolve, reject) => {
+      // every real response carries the answering process's id; the stub does
+      // too, or the restart detector in `req` would be exercised by nothing
+      const headers = new Headers({ 'X-Orgtree-Instance': server.instance })
       const deliver = () => {
         if (status != null) {
           resolve({
-            ok: false, status, statusText: `HTTP ${status}`,
+            ok: false, status, statusText: `HTTP ${status}`, headers,
             json: () => Promise.resolve({ detail: `boom ${status}` }),
           })
           return
         }
-        resolve({ ok: true, status: 200, json: () => Promise.resolve(body) })
+        resolve({ ok: true, status: 200, headers,
+                  json: () => Promise.resolve(body) })
       }
       const go = () => { if (lat > 0) setTimeout(deliver, lat); else deliver() }
       if (t.holdAll) t.held.push(go)

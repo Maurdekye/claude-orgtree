@@ -45,6 +45,7 @@ says in its body what should happen the day the gap is closed.
 import asyncio
 import json
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -99,8 +100,11 @@ class R:
     """One response: status, raw body, parsed json, and the exception that
     ESCAPED — which is what uvicorn turns into a bare 500."""
 
-    def __init__(self, status, body, exc=None):
+    def __init__(self, status, body, exc=None, headers=None):
         self.status, self.body, self.exc = status, body, exc
+        #: lower-cased name → value, as they went on the wire
+        self.headers = {k.decode().lower(): v.decode("utf-8", "replace")
+                        for k, v in (headers or [])}
         try:
             self.json = json.loads(body)
         except Exception:                                      # noqa: BLE001
@@ -125,7 +129,7 @@ def call(app, method, path, body=None, headers=None, query=b"", raw=None):
                  (b"content-length", str(len(payload)).encode())]
     for k, v in (headers or []):
         hdrs.append((k.lower().encode(), v.encode()))
-    st, chunks, exc = [0], [], [None]
+    st, chunks, exc, rhdrs = [0], [], [None], [[]]
 
     async def receive():
         return {"type": "http.request", "body": payload, "more_body": False}
@@ -133,6 +137,7 @@ def call(app, method, path, body=None, headers=None, query=b"", raw=None):
     async def send(msg):
         if msg["type"] == "http.response.start":
             st[0] = msg["status"]
+            rhdrs[0] = list(msg.get("headers") or [])
         elif msg["type"] == "http.response.body":
             chunks.append(msg.get("body", b""))
 
@@ -146,7 +151,7 @@ def call(app, method, path, body=None, headers=None, query=b"", raw=None):
     except Exception as e:                                     # noqa: BLE001
         st[0] = st[0] or 500
         exc[0] = f"{type(e).__name__}: {e}"
-    return R(st[0], b"".join(chunks), exc[0])
+    return R(st[0], b"".join(chunks), exc[0], rhdrs[0])
 
 
 def ws_call(app, path):
@@ -1786,6 +1791,75 @@ def _():
     if r.status != 200:
         assert {o["slug"] for o in store.list_orgs()} == before, \
             "a half-created org survived its own failure"
+
+
+# ------------------------------------------- §10b the restart stamp (D-60)
+print("\n§10b X-Orgtree-Instance — the browser's restart detector")
+
+
+@t("every response carries the instance stamp, on all three listeners")
+def _():
+    seen = set()
+    for label, r in (
+            ("admin", call(ADMIN, "GET", "/api/orgs")),
+            ("admin tree", call(ADMIN, "GET", f"/api/orgs/{K}")),
+            ("kiosk", call(PUBLIC, "GET", f"/k/{TOKEN}/api/orgs/{K}")),
+            ("bridge", br("POST", "/api/agent",
+                          {"org": SBX, "node": SNID, "tool": "orgtree_chart"}))):
+        got = r.headers.get("x-orgtree-instance")
+        assert got, f"{label} carried no stamp ({r.status})"
+        seen.add(got)
+    assert seen == {api.INSTANCE}, \
+        f"the stamp must be THIS process's id, one value: {seen}"
+
+
+@t("the stamp rides error responses too — a restart is worth noticing then")
+def _():
+    for app_, path, want in ((ADMIN, "/api/orgs/zznope", 404),
+                             (ADMIN, f"/api/orgs/{K}/nodes/zznope/chat", 404),
+                             (PUBLIC, f"/k/{TOKEN}/api/orgs/{K}/nodes/zz/chat",
+                              404)):
+        r = call(app_, "GET", path)
+        assert r.status == want, (path, r.status)
+        assert r.headers.get("x-orgtree-instance") == api.INSTANCE, \
+            f"{path} ({r.status}) lost the stamp"
+
+
+@t("a GATEWAY rejection is pre-app and unstamped — stated, not assumed")
+def _():
+    # The middleware is on the app; the two gateways answer some requests
+    # themselves, before it. That is fine for the feature — a browser only ever
+    # talks to the admin app or a valid /k/<token>, and both pass through — but
+    # it should be a recorded property rather than a surprise to the next
+    # person who greps for the header and finds a response without it.
+    for label, r in (("bad token", call(PUBLIC, "GET", "/k/badtoken/api/orgs")),
+                     ("frozen config surface",
+                      call(PUBLIC, "GET", f"/k/{TOKEN}/api/fs")),
+                     ("bridge, no secret",
+                      br("POST", "/api/agent", {}, secret=None))):
+        assert r.status in (403, 404), (label, r.status)
+        assert "x-orgtree-instance" not in r.headers, \
+            f"{label} is answered by the gateway, above the app"
+
+
+@t("the stamp is a fresh value per process, and leaks nothing")
+def _():
+    assert re.fullmatch(r"[0-9a-f]{16}", api.INSTANCE), api.INSTANCE
+    # it must not be derived from anything an outsider should not have: no
+    # path, no port, no secret, no pid
+    for bad in (str(os.getpid()), os.environ["ORGTREE_DATA"], SECRET, TOKEN):
+        assert bad not in api.INSTANCE and api.INSTANCE not in bad
+
+
+@t("index.html is never cached — the reload must not fetch the old bundle")
+def _():
+    if not os.path.isdir(api.FRONTEND_DIST):
+        return                       # nothing built in this checkout
+    r = call(ADMIN, "GET", "/")
+    assert r.status == 200, r.status
+    assert "no-store" in r.headers.get("cache-control", ""), (
+        "index.html NAMES the content-hashed bundle files; a cached copy "
+        f"reloads straight back into the old app ({r.headers})")
 
 
 # ------------------------------------------------- §11 raw HTTP on port 7402
