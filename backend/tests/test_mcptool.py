@@ -362,7 +362,7 @@ def _():
 @t("tools/list returns the catalogue and every card is well-formed")
 def _():
     tools = BOSS.rpc("tools/list")["result"]["tools"]
-    assert len(tools) == 18, [x["name"] for x in tools]   # +orgtree_ask (F-04)
+    assert len(tools) == 19, [x["name"] for x in tools]   # +orgtree_ask (F-04)
     for c in tools:
         assert c["name"].startswith("orgtree_"), c
         assert len(c["description"]) > 20, c
@@ -509,12 +509,12 @@ _AGENT_CALL = API_SRC[API_SRC.index('@app.post("/api/agent")'):
 _DISPATCH = sorted(set(__import__("re").findall(r'"(orgtree_\w+)"', _AGENT_CALL)))
 
 
-@t("the catalogue and the /api/agent dispatch name exactly the same 18 verbs")
+@t("the catalogue and the /api/agent dispatch name exactly the same 19 verbs")
 def _():
     assert sorted(CARDS) == _DISPATCH, \
         f"drift: cards {sorted(set(CARDS) - set(_DISPATCH))}, " \
         f"dispatch-only {sorted(set(_DISPATCH) - set(CARDS))}"
-    assert len(CARDS) == 18, len(CARDS)   # +orgtree_ask (F-04)
+    assert len(CARDS) == 19, len(CARDS)   # +orgtree_ask, +orgtree_rename
 
 
 @t("no tool name is duplicated and every card carries an inputSchema")
@@ -606,7 +606,8 @@ def _():
                     if n not in recital and n.split("orgtree_")[1] not in recital)
     assert absent == ["orgtree_list_orgs", "orgtree_move",
                       "orgtree_read_scratch", "orgtree_read_transcript",
-                      "orgtree_send_file", "orgtree_switch_model"], \
+                      "orgtree_rename", "orgtree_send_file",
+                      "orgtree_switch_model"], \
         f"the recital gap changed — update or retire this pin: {absent}"
     # orgtree_audience escapes the list only because "audience" appears as a
     # NOUN ("org-inbox audience holders") — the tool itself is never named

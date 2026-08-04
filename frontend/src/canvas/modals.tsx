@@ -484,6 +484,28 @@ export function NodeConfig({ node, map, tree, slug, op, toast, close }: NodeConf
     <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
       <div className="settings cfg" onClick={(e) => e.stopPropagation()}>
         <h3><SettingsIcon fontSize="inherit" /> {node.id} <span className="dim">· {node.tier} · configuration</span></h3>
+        {/* FULL identity rename (user ruling 2026-08-05): id, mailbox,
+            working folder and session all move; history keeps the old name
+            (the warning rides the toast). Refused while mid-turn. */}
+        {!node.isBearerOf && (
+          <div className="row">
+            <input style={{ width: '14em' }} placeholder="rename…"
+              value={val('rename', node.id)}
+              onChange={(e) => set('rename', node.id)(e.target.value)} />
+            {val('rename', node.id) !== node.id && (
+              <button onClick={() =>
+                op({ op: 'rename', node: node.id,
+                     name: String(val('rename', node.id)) })
+                  .then((r) => {
+                    toast([`renamed ${node.id} → ${String(r?.node ?? '')}`,
+                           ...((r?.warnings as string[] | undefined) ?? [])])
+                    close()
+                  })
+                  .catch((e: Error) => toast([`error: ${e.message}`]))}>
+                rename</button>
+            )}
+          </div>
+        )}
 
         <div className="row">
           {node.state === 'live' && !node.children.some((c) => c.state !== 'archived') &&

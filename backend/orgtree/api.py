@@ -2259,6 +2259,15 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
         except LedgerError as e:
             raise HTTPException(422, str(e))
     result: dict[str, Any]
+    # rename orchestrates its own DOC_LOCK + filesystem moves — it must run
+    # OUTSIDE the block below (the lock is not reentrant)
+    if body.tool == "orgtree_rename":
+        try:
+            return supervisor.rename_node(
+                body.org, a.get("node") or "", a.get("name") or "",
+                actor=body.node)
+        except LedgerError as e:
+            raise HTTPException(422, str(e))
     drive: list[str] = []      # nodes whose turn should run after we release the lock
     ext_send: tuple[str, str] | None = None   # (chat-id, body) outbound riding the chatq bridge
     org_send: tuple[str, str] | None = None   # (dst-slug, body) outbound to another org's inbox
@@ -3358,6 +3367,16 @@ def org_op(slug: str, body: Op, request: Request) -> dict[str, Any]:
     # kiosk org is disposable by design. See DECISIONS.md D-001 (incl. why
     # the cost-is-history tombstone makes this budget-safe). An interim 403
     # lived here for ~25 min while the ruling was pending (2c5af3e).
+    if body.op == "rename":
+        if not body.node or not body.name:
+            raise HTTPException(422, "rename needs node and name")
+        try:
+            result = supervisor.rename_node(slug, body.node, body.name,
+                                            actor=body.actor)
+        except LedgerError as e:
+            raise HTTPException(422, str(e))
+        hub_changed(slug)
+        return result
     with store.DOC_LOCK:
         result = _org_op_locked(slug, body, allow_raise=not pub)
     if pub and isinstance(result, dict):

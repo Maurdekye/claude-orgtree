@@ -461,6 +461,78 @@ def transcript_index(root: str | None = None) -> dict[str, str]:
     return out
 
 
+def _cli_project_dir(cwd: str) -> str:
+    """Claude Code names a session's project directory by its cwd with every
+    non-alphanumeric replaced by '-'. Renames must follow it (below)."""
+    return re.sub(r"[^A-Za-z0-9]", "-", cwd)
+
+
+def rename_node(slug: str, nid: str, new_name: str,
+                actor: str = "@user") -> dict[str, Any]:
+    """FULL identity rename, orchestrated (user ruling 2026-08-05): refuse
+    while any generation is mid-turn, move the shared scratch dir and the
+    CLI's project dir (resume is project-scoped: without the move the agent
+    answers 'No conversation found' and loses its memory), then re-key the
+    org doc (ledger.rename) and the in-memory turn state. Filesystem moves
+    happen FIRST and roll back if the doc mutation refuses."""
+    from .ledger import LedgerError
+    with store.DOC_LOCK:
+        org = store.load_org(slug)
+        n = org.node(nid)                      # 422s unknown nodes
+        stack = [nid] + [k for k in org.nodes if k.startswith(nid + "@")]
+        for k in stack:
+            st = state(slug, k)
+            if st["busy"] or st["queue"]:
+                raise LedgerError(f"{k} is mid-turn — wait for it to finish, "
+                                  f"then rename")
+        new_slug_probe = org.rename(actor, nid, new_name)  # validates; mutates
+        new = str(new_slug_probe["node"])
+        # ---- filesystem, before save: scratch dir + CLI project dir ----
+        moved: list[tuple[str, str]] = []
+        try:
+            if sbx.on_disk(slug):
+                from . import disk as dsk
+                base = dsk.windows_sub(slug, "scratch")
+            else:
+                base = store.scratch_root(slug)
+            old_dir, new_dir = (os.path.join(base, nid),
+                                os.path.join(base, new))
+            if os.path.isdir(old_dir) and not os.path.exists(new_dir):
+                os.rename(old_dir, new_dir)
+                moved.append((old_dir, new_dir))
+            # the CLI project dir rides the CWD — container path for sandboxed
+            # orgs, host path natively. One directory holds every generation's
+            # sessions (they share the scratch cwd).
+            troot = _transcript_root(org) or os.path.expanduser("~/.claude")
+            if sbx.is_sandboxed(org):
+                old_cwd = sbx.cpath_scratch(slug, nid)
+                new_cwd = sbx.cpath_scratch(slug, new)
+            else:
+                old_cwd, new_cwd = old_dir, new_dir
+            oldp = os.path.join(troot, "projects", _cli_project_dir(old_cwd))
+            newp = os.path.join(troot, "projects", _cli_project_dir(new_cwd))
+            if os.path.isdir(oldp) and not os.path.exists(newp):
+                os.rename(oldp, newp)
+                moved.append((oldp, newp))
+            store.save_org(org)
+        except Exception:
+            for a, b in reversed(moved):
+                try:
+                    os.rename(b, a)
+                except OSError:
+                    pass
+            raise
+        # ---- in-memory turn state re-keys with the identity ----
+        with _state_lock:
+            for k in stack:
+                nk = new + k[len(nid):]
+                if (slug, k) in _state:
+                    _state[(slug, nk)] = _state.pop((slug, k))
+        _ = n
+    notify(slug, new, "renamed")
+    return new_slug_probe
+
+
 def _transcript_root(org: Org) -> str | None:
     """Sandboxed kiosk orgs write transcripts inside the container's home,
     which is bind-mounted from the host sandbox dir — readable natively."""

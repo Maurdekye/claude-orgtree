@@ -69,6 +69,23 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "orgtree_rename",
+        "description": (
+            "Rename an agent BELOW you (full identity: its id, mailbox, "
+            "working folder and session move with it). Allowed on any "
+            "descendant; never on yourself or a peer. ⚠ Historical mail and "
+            "logs keep the old name, and anyone addressing the old name "
+            "bounces until they notice — tell your team."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "node": {"type": "string", "description": "the agent to rename"},
+                "name": {"type": "string", "description": "the new name"},
+            },
+            "required": ["node", "name"],
+        },
+    },
+    {
         "name": "orgtree_ask",
         "description": (
             "Ask the USER a structured question. It ALWAYS parks: an "

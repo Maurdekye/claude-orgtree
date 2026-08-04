@@ -2726,8 +2726,9 @@ class Org:
             self.nodes[new_k] = self.nodes.pop(old_k)
         for v in self.nodes.values():
             for f in ("parent", "predecessor", "successor"):
-                if v.get(f) in renamed:
-                    v[f] = renamed[v[f]]
+                cur = v.get(f)
+                if isinstance(cur, str) and cur in renamed:
+                    v[f] = renamed[cur]
         for a in self.d.get("audiences", []):
             for f in ("grantee", "grantor"):
                 if a.get(f) in renamed:
@@ -2738,7 +2739,7 @@ class Org:
                     r[f] = renamed[r[f]]
         for key in ("mail", "delivering", "steered_log", "turn_error_log",
                     "notices"):
-            box = self.d.get(key)
+            box = cast("dict[str, Any] | None", self.d.get(key))
             if isinstance(box, dict):
                 for old_k, new_k in renamed.items():
                     if old_k in box:
