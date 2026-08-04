@@ -2738,11 +2738,25 @@ def node_chat(slug: str, nid: str, last: int = 300) -> dict[str, Any]:
         the body alone would repeat D-52's mistake one layer down: re-send
         "continue" and the new entry would match the OLD bubble and be hidden
         while still in flight. No clock is compared, only a string this
-        process itself wrote."""
-        body = (m.get("body") or "").strip()
-        if not body:
-            return False
+        process itself wrote.
+
+        ⚠ The body is used RAW. `_mail_block` writes `f"…· {at}\\n{m['body']}"`
+        with no normalisation, so a stripped copy of a body that begins with
+        whitespace does not occur in the transcript at all — the test then said
+        "not on screen" forever and the pending bubble stayed up ALONGSIDE the
+        durable one for the whole of the turn's first response (measured
+        2026-08-04 on a real transcript sample: median 2.4 s, max 137 s). The
+        composer trims, but nothing else does: the API takes `body.text` as
+        sent, and agent mail routinely opens with a newline. Only the emptiness
+        guard strips — and only where it must. With an `at` the marker is
+        unique whatever the body is, so a whitespace-only message (nothing
+        forbids one; only the composer trims) is identified like any other. It
+        is only the legacy `at`-less entry that falls back to a bare body, and
+        THAT needle must not be empty or it would match every bubble."""
+        body = m.get("body") or ""
         at = m.get("at")
+        if not at and not body.strip():
+            return False
         # the head is enough to identify it and survives truncation either side
         mark = (f"· {at}\n{body}" if at else body)[:400]
         return any(mark in t for t in _seen_user)
@@ -2751,10 +2765,31 @@ def node_chat(slug: str, nid: str, last: int = 300) -> dict[str, Any]:
                      + list((org.d.get("mail") or {}).get(nid, [])),
                      key=lambda m: m.get("at") or "")
     out["mail_pending"] = len(pending)
-    # parity №11: the pending bubble renders from the DURABLE server copy —
-    # orgtree's queue is better than Claude Code's and presented as flimsier
+    # ⚠ NOT `pending[-20:]`. A fixed row cap on a list that only GROWS while
+    # the agent cannot run is the same bug as everything else in this family:
+    # the 21st queued message pushed the 1st off the payload, its ghost had
+    # long since graduated against the very row that just vanished, and the
+    # message was on screen nowhere (measured 2026-08-04: message #0 gone at
+    # send #21, and it never comes back until a turn drains it). Every queued
+    # message keeps a row; the payload is bounded by SHRINKING BODIES instead,
+    # which costs a truncated preview rather than a missing message.
+    #
+    # Bodies shrink in tiers as the queue grows, so the payload stays bounded
+    # (worst case ~200 KB at the 800-row backstop) without any message losing
+    # its row. The floor must stay well above the client's graduation needle
+    # (`serverCopies` compares the first 200 characters) or a shrunk body would
+    # stop matching its own ghost and strand it — a duplicate.
+    #
+    # ⚠ Residual: past 800 undelivered mails the oldest do fall off. The live
+    # mailbox is uncapped (`ledger.post_mail` caps `mail_log`, not `mail`), so
+    # SOME backstop has to exist; 800 is far outside anything a user can type
+    # and the tier floor keeps the payload survivable if an agent ever spams a
+    # frozen node.
+    n_pending = len(pending)
+    body_cap = 2000 if n_pending <= 20 else 800 if n_pending <= 100 else 250
+    pending = pending[-800:]
     out["pending_mail"] = [{"id": m.get("id"), "from": m["from"],
-                            "body": m["body"][:2000], "at": m["at"],
+                            "body": m["body"][:body_cap], "at": m["at"],
                             **({"delivering": True} if m.get("delivering")
                                else {}),
                             # the two in-flight carriers read differently to a
@@ -2763,7 +2798,7 @@ def node_chat(slug: str, nid: str, last: int = 300) -> dict[str, Any]:
                                else {}),
                             **({"attachments": m["attachments"]}  # type: ignore[typeddict-item]  # guard proves the key
                                if m.get("attachments") else {})}
-                           for m in pending[-20:]]
+                           for m in pending]
     return out
 
 

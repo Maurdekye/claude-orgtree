@@ -2608,31 +2608,53 @@ def pop_steer(slug: str, nid: str) -> list[str]:
     with _state_lock:
         msgs = st.get("steer") or []
         st["steer"] = []
-    _confirm_delivered(slug, nid, [
-        t for m in msgs if isinstance(m, dict) for t in m.get("toks") or []])
+    toks = [t for m in msgs if isinstance(m, dict) for t in m.get("toks") or []]
     out = [m["text"] if isinstance(m, dict) else m for m in msgs]
-    if out:
-        # user bug 2026-07-31 ("my prompt vanishes moments after sending"):
-        # steered mail is injected as HOOK CONTEXT, which the CLI never
-        # writes to the transcript — so once the pending row drained and the
-        # live row aged out, the message existed NOWHERE the chat could
-        # show. The steered log is its durable home; read_chat interleaves
-        # it by timestamp. Written off-thread — the steer endpoint is the
-        # per-tool-call hot path and must never wait on a doc save.
-        def record() -> None:
-            with store.DOC_LOCK:
-                try:
-                    org = store.load_org(slug)
-                except Exception:               # noqa: BLE001
-                    return
-                if nid not in org.nodes:
-                    return
+    # The steered log (user bug 2026-07-31, "my prompt vanishes moments after
+    # sending"): steered mail rides HOOK CONTEXT, which the CLI writes to the
+    # transcript as a `type:"attachment"` record — a shape read_chat cannot
+    # render (verified 2026-08-04 across 94 real transcripts: 9 injections, all
+    # of them attachments). So this log is the message's ONLY durable home once
+    # the journal batch is confirmed away, and read_chat interleaves it by
+    # timestamp.
+    #
+    # ⚠ Confirming and recording used to be two separate writes — a synchronous
+    # `_confirm_delivered` followed by a daemon thread that saved the log. That
+    # is this whole bug family's signature: the journal (the thing on screen)
+    # was retired BEFORE its replacement existed, and on Windows `save_org`
+    # retries `os.replace` for up to 2.1 s under reader contention, so the hole
+    # is not theoretical. Measured 2026-08-04: between the two writes the
+    # message was in no carrier the desk renders from.
+    #
+    # They are now ONE load-modify-save under one lock, so the pending row
+    # leaves and the steered row arrives in the same payload — the same rule
+    # `node_chat` applies to the turn carrier (D-55). It is also strictly
+    # CHEAPER than what it replaces: one doc write where there were two, which
+    # answers the "the hot path must never wait on a doc save" note that put
+    # the record off-thread in the first place.
+    if out or toks:
+        with store.DOC_LOCK:
+            try:
+                org = store.load_org(slug)
+            except Exception:                   # noqa: BLE001
+                return out
+            if nid not in org.nodes:
+                return out
+            if out:
                 log = org.d.setdefault("steered_log", {}).setdefault(nid, [])
                 for t in out:
                     log.append({"at": now_iso(), "text": str(t)[:20000]})
                 del log[:-40]
-                store.save_org(org)
-        threading.Thread(target=record, daemon=True).start()
+            drop = set(toks)
+            dlmap = org.d.get("delivering") or {}
+            dl = dlmap.get(nid)
+            if dl and drop:
+                keep = [b for b in dl if b.get("tok") not in drop]
+                if keep:
+                    dlmap[nid] = keep
+                else:
+                    dlmap.pop(nid, None)
+            store.save_org(org)
     return out
 
 

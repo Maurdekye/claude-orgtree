@@ -895,8 +895,14 @@ class Org:
             out = self.d.setdefault("user_outbox", [])
             out.append({**entry, "to": to})
             del out[:-100]
-        self._log("mail", sender, {"to": to, "kind": kind,
-                                   "gist": body.strip().splitlines()[0][:80]}, warnings)
+        # ⚠ `or [""]`: a body that is entirely whitespace strips to "" and
+        # `"".splitlines()` is the EMPTY LIST, so this line raised IndexError
+        # and the whole send 500ed. The composer trims and refuses empty, but
+        # nothing else does — the API takes `body.text` as sent, and agent mail
+        # comes from a model. Found 2026-08-04 by the message-visibility suite.
+        gist = (body.strip().splitlines() or [""])[0][:80]
+        self._log("mail", sender, {"to": to, "kind": kind, "gist": gist},
+                  warnings)
         return {"delivered": to, "id": entry["id"], "deferred": deferred,
                 "warnings": warnings}
 

@@ -141,13 +141,40 @@ export function useConvo(slug: string, nid: string): Convo {
   return useSyncExternalStore(sub, snap, snap)
 }
 
+/** The newest N transcript rows `serverCopies` counts within.
+ *
+ *  It is a NEWEST-n slice rather than the whole payload on purpose: paging
+ *  older messages in (`loadOlder`) prepends rows, and a window measured from
+ *  the end is immune to that, while counting the whole payload would let an
+ *  ancient identical message drift into view and graduate a live ghost early —
+ *  a GAP, the failure direction this system refuses.
+ *
+ *  ⚠ It was 20, which is smaller than a real turn. Measured over 94 real
+ *  transcripts (2026-08-04): consecutive user messages are typically 5
+ *  rendered rows apart, but the p90 is 14 and the maximum 138 — a tool-heavy
+ *  turn buries the user's own message deeper than 20 rows in one go. Once the
+ *  copy is out of the window the count can never rise again, so the ghost is
+ *  stranded FOREVER and the message renders twice for the rest of the session.
+ *  200 covers the measured maximum with room to spare. */
+const COPIES_WINDOW = 200
+/** How much of a ghost's text has to be found. Bounded because the server
+ *  TRUNCATES pending bodies (`node_chat` shrinks them in tiers as the queue
+ *  grows: 2000 / 800 / 250 chars) — a full-length needle can never occur in a
+ *  truncated haystack, so
+ *  a long message's ghost never graduated against `pending_mail` and sat on
+ *  screen beside its own pending bubble until the transcript caught up, or for
+ *  ever if the agent was frozen/archived/queued (measured 2026-08-04 on a
+ *  ~10 kB message). Must stay well under the server's smallest body cap. */
+const COPIES_NEEDLE = 200
+
 /** how many copies of `text` the server is currently showing — the mailbox and
  *  the transcript both count, since a message passes through them in order */
 function serverCopies(c: ChatPayload | null, text: string): number {
   if (!c) return 0
-  return c.messages.slice(-20)
-    .filter((m) => m.role === 'user' && (m.text || '').includes(text)).length
-    + (c.pending_mail ?? []).filter((m) => (m.body || '').includes(text)).length
+  const needle = text.slice(0, COPIES_NEEDLE)
+  return c.messages.slice(-COPIES_WINDOW)
+    .filter((m) => m.role === 'user' && (m.text || '').includes(needle)).length
+    + (c.pending_mail ?? []).filter((m) => (m.body || '').includes(needle)).length
 }
 
 // -------------------------------------------------------------------- fetch

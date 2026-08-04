@@ -66,10 +66,28 @@ def load_org(slug: str) -> Org:
     p = org_path(slug)
     if not os.path.exists(p):
         raise LedgerError(f"no such org: {slug!r}")
-    # deterministic close: a lingering read handle is what makes a concurrent
-    # save's os.replace throw WinError 5 (see save_org)
-    with open(p, encoding="utf-8") as f:
-        return Org(json.load(f))
+    # ⚠ The retry is the MIRROR IMAGE of save_org's, and it is not optional.
+    # save_org retries `os.replace` because a reader may have the file open;
+    # the collision is symmetric, and the reader loses it just as often — on
+    # Windows, opening the destination while a replace is in flight raises
+    # PermissionError [Errno 13]. Read-only endpoints deliberately read
+    # OUTSIDE DOC_LOCK (№22), so this is the normal case under agent load, and
+    # only one side was defended. Measured 2026-08-04 on the message-visibility
+    # rig: 3 of 123 live turns (~2.4%) had a `GET …/chat` poll come back as
+    # HTTP 500 — the desk's own refresh, failing at random while an agent
+    # worked. Same bounded backoff, same reasoning: handles close in
+    # microseconds, so waiting is right and failing is not.
+    for i in range(20):
+        try:
+            # deterministic close: a lingering read handle is what makes a
+            # concurrent save's os.replace throw WinError 5 (see save_org)
+            with open(p, encoding="utf-8") as f:
+                return Org(json.load(f))
+        except PermissionError:
+            if i == 19:
+                raise
+            time.sleep(0.01 * (i + 1))
+    raise LedgerError(f"could not read org {slug!r}")   # unreachable
 
 
 REVISION: int = 0   # bumped on every save — cheap change detection for pollers
