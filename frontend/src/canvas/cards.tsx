@@ -291,15 +291,19 @@ interface SpawnChipsProps {
   free: number
   seats: Record<string, number>
   maxTier?: string | null
+  /** F-03: render as a vertical column on this edge — the chips hire a
+   *  COWORKER (same superior, placed to that side), not a report */
+  side?: 'left' | 'right'
 }
 
-function SpawnChips({ onSpawn, free, seats, maxTier }: SpawnChipsProps) {
+function SpawnChips({ onSpawn, free, seats, maxTier, side }: SpawnChipsProps) {
   // kiosk tier cap (user spec): tokens above the cap DISAPPEAR entirely —
   // seat cost doubles as the tier rank, so the cap is a simple cost compare
   const shown = TIERS.filter((t) =>
     !maxTier || (seats[t] ?? 0) <= (seats[maxTier] ?? Infinity))
   return (
-    <div className="hsof" onPointerDown={(e) => e.stopPropagation()}>
+    <div className={'hsof' + (side ? ` side side-${side[0]}` : '')}
+      onPointerDown={(e) => e.stopPropagation()}>
       {shown.map((t) => {
         const seat = seats[t] ?? 0
         const cant = Number.isFinite(free) && free < seat
@@ -311,7 +315,10 @@ function SpawnChips({ onSpawn, free, seats, maxTier }: SpawnChipsProps) {
               ? `${t}: needs ${seat} free (has ${free}) — the kiosk credit `
                 + 'cap is fully held; drag an agent’s credit bar down '
                 + 'or retire one to free credits'
-              : `hire ${/^[aeiou]/.test(t) ? 'an' : 'a'} ${t} (seat ${seat})`}
+              : side
+                ? `hire ${/^[aeiou]/.test(t) ? 'an' : 'a'} ${t} COWORKER — same `
+                  + `superior, to the ${side} (seat ${seat})`
+                : `hire ${/^[aeiou]/.test(t) ? 'an' : 'a'} ${t} (seat ${seat})`}
             onClick={(e) => { e.stopPropagation(); onSpawn(t) }}>
             {TIER_LETTER[t]}
           </button>
@@ -609,6 +616,8 @@ interface NodeSquareProps {
   pxc: number
   zoom: number
   onSpawn: (tier: string) => void
+  /** F-03: hire a sibling to this side (absent on piles/crowds — see render) */
+  onSpawnSide?: (tier: string, side: 'left' | 'right') => void
   onConfig: () => void
   onInbox: () => void
   onLineage: () => void
@@ -630,7 +639,7 @@ interface NodeSquareProps {
 }
 
 export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, map, op, slug,
-  toast, pxc, zoom, onSpawn, onConfig, onInbox, onLineage,
+  toast, pxc, zoom, onSpawn, onSpawnSide, onConfig, onInbox, onLineage,
   onRecenter, onJump, pub, kioskRemaining, cascadeAlloc, maxTop, pile, compactAt, maxTier,
   onMailLink, onDragStart, onDragMove, onDragEnd, onDragCancel }: NodeSquareProps) {
   // pile fronts zoom on a plain CENTER click (user spec) — track the
@@ -762,6 +771,17 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, m
       {live && !node.isBearerOf && !node.bearer_state &&
         <SpawnChips onSpawn={onSpawn} free={kioskRemaining ?? Infinity} seats={seats}
           maxTier={maxTier} />}
+      {/* F-03: side chips hire a COWORKER — same superior, landing on that
+          side. Not on pile/crowd fronts: the card's edges there are the
+          stack's layers, and "the side of the agent" is not a free position. */}
+      {live && !node.isBearerOf && !node.bearer_state && !pile && onSpawnSide && (
+        <>
+          <SpawnChips side="left" onSpawn={(t) => onSpawnSide(t, 'left')}
+            free={kioskRemaining ?? Infinity} seats={seats} maxTier={maxTier} />
+          <SpawnChips side="right" onSpawn={(t) => onSpawnSide(t, 'right')}
+            free={kioskRemaining ?? Infinity} seats={seats} maxTier={maxTier} />
+        </>
+      )}
     </div>
   )
 }

@@ -863,6 +863,14 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
     setTimeout(() => centerOn(
       DRAFT, Math.min(2.05, Math.max(1.7, viewRef.current.z))), 60)
   }
+  // F-03: hire a COWORKER — same superior, placed to the chosen side of the
+  // anchor. Top-level agents side-hire more top-levels (parent is the user).
+  const spawnBeside = (n: CanvasNode, tier: string, side: 'left' | 'right') => {
+    setDraft({ parent: !n.parent || n.parent === USER ? null : n.parent, tier,
+               beside: { anchor: n.id, side } })
+    setTimeout(() => centerOn(
+      DRAFT, Math.min(2.05, Math.max(1.7, viewRef.current.z))), 60)
+  }
   const confirmDraft = (name: string, grant: number, charter: string,
     scope: DraftScope | null) => {
     op({ op: 'hire', parent: draft!.parent, tier: draft!.tier, grant, name,
@@ -885,6 +893,15 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
         const born = r?.node
         if (typeof born === 'string' && born && ds) {
           seedRef.current.set(born, { x: ds.x, y: ds.y, at: performance.now() })
+        }
+        // F-03: pin the ordering the side chip promised. Best-effort — the
+        // hire itself already succeeded, and reorder is cosmetic (its own
+        // ruling); a failure leaves the hire appended at the end.
+        const beside = draft?.beside
+        if (typeof born === 'string' && born && beside) {
+          void reorderNode(slug, born, beside.side === 'left'
+            ? { before: beside.anchor } : { after: beside.anchor })
+            .catch(() => {})   // the broadcast refetch shows the final order
         }
         setDraft(null)
       }).catch((e: Error) => toast([`hire failed: ${e.message}`]))
@@ -1065,7 +1082,9 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
               isDrop={dropId === n.id}
               seats={seats} map={map} op={op} slug={slug} toast={toast}
               pxc={pxPerCredit} zoom={view.z}
-              onSpawn={(t) => spawn(n.id, t)} onConfig={() => setConfigId(n.id)}
+              onSpawn={(t) => spawn(n.id, t)}
+              onSpawnSide={(t, side) => spawnBeside(n, t, side)}
+              onConfig={() => setConfigId(n.id)}
               onInbox={() => setInboxId(n.id)} onLineage={() => setLineageId(n.id)}
               onMailLink={openMail}
               onRecenter={() => centerOn(n.id)}   /* recenter AND re-zoom to fill */

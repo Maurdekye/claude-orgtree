@@ -131,7 +131,14 @@ export type MailRow = MailEntry & {
 export interface Pt { x: number; y: number }
 export interface Spring extends Pt { vx: number; vy: number }
 export interface View { x: number; y: number; z: number }
-export interface DraftState { parent: string | null; tier: string }
+export interface DraftState {
+  parent: string | null
+  tier: string
+  /** F-03 side hire: the draft is a SIBLING placed to `side` of `anchor` —
+   *  the hire lands under the same superior, and after birth a reorder pins
+   *  the chosen ordering (left = before, right = after). */
+  beside?: { anchor: string; side: 'left' | 'right' }
+}
 /** the staged pre-hire permissions (DraftScopeModal → confirmDraft); also
  *  the shape of the would-inherit prefill, whose tools may lack mcp */
 export interface DraftScope {
@@ -221,15 +228,24 @@ export function withDraftTree(tree: TreePayload, draft: DraftState | null): Canv
     id: DRAFT, title: '', tier: draft!.tier, state: 'draft', children: [],
     seat: 0, grant: 0, free: 0,
   })
+  // a side-hire draft (F-03) sits ADJACENT to its anchor sibling, so the form
+  // previews the ordering the hire will pin; a plain draft appends at the end
+  const place = (kids: CanvasNode[]): CanvasNode[] => {
+    const b = draft!.beside
+    const i = b ? kids.findIndex((k) => k.id === b.anchor) : -1
+    if (!b || i < 0) return [...kids, draftNode()]
+    const at = b.side === 'left' ? i : i + 1
+    return [...kids.slice(0, at), draftNode(), ...kids.slice(at)]
+  }
   const mk = (n: TreeNode): CanvasNode => ({
     ...n,
-    children: [...n.children.map(mk),
-      ...(draft && draft.parent === n.id ? [draftNode()] : [])],
+    children: draft && draft.parent === n.id
+      ? place(n.children.map(mk)) : n.children.map(mk),
   })
   return {
     id: USER, title: 'you', tier: null, state: 'user',
-    children: [...tree.roots.map(mk),
-      ...(draft && draft.parent === null ? [draftNode()] : [])],
+    children: draft && draft.parent === null
+      ? place(tree.roots.map(mk)) : tree.roots.map(mk),
   }
 }
 

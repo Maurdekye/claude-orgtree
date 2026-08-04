@@ -859,6 +859,18 @@ main {
   transition: opacity .15s; z-index: 3;
 }
 .sq:hover > .hsof { opacity: 1; pointer-events: auto; }
+/* F-03 coworker chips: vertical columns riding the card's edges — same hover
+   gate and counter-scaling as the bottom row, anchored 1px inside the border
+   for the same contiguous-hover reason */
+.hsof.side {
+  left: auto; right: auto; bottom: auto; top: 50%;
+  flex-direction: column;
+}
+.hsof.side-l { left: -21px; transform: translateY(-50%) scale(var(--invz, 1)); transform-origin: center right; }
+.hsof.side-r { right: -21px; transform: translateY(-50%) scale(var(--invz, 1)); transform-origin: center left; }
+/* at desk fill the panel is opaque — push the columns fully outside */
+.sq.desk > .hsof.side-l { left: -24px; }
+.sq.desk > .hsof.side-r { right: -24px; }
 /* the desk and the switchboard KEEP their hire chips (user spec): always
    visible — no hover gate — and pushed fully below the border. They were
    anchored 1px inside the card (right for the hover-region rule at overview
