@@ -1669,6 +1669,33 @@ Three things the design should preserve, all of which the current form gets righ
    `sandboxed`, and the folder count without expanding. Whatever replaces the disclosure needs an
    equivalent, or the create form loses its at-a-glance state.
 
+## D-54 · `--expose-admin` moves from argv to an environment variable
+> Move exposed to an environment variable.
+
+**Supersedes D-39's argv-only ruling** (2026-08-03), which is quoted in full in that entry: *"the
+override is COMMAND-LINE ONLY, on purpose … deliberately not an env var and not a setting: env vars
+get inherited by child processes and copied between machines."* The user reversed it, and the
+reversal has a clear motive — F-06 §9 puts orgtree under Task Scheduler and systemd, and a service
+definition sets **environment** naturally while threading an argv flag through a deploy script to a
+detached process is the awkward path. The mechanism should suit the case that needs it.
+
+`ORGTREE_EXPOSE_ADMIN`, truthy on `1` / `true` / `yes` / `on`. `sys.argv` is gone from `_admin_host`;
+the loud startup wall is unchanged apart from naming the variable.
+
+☞ **The old ruling's first objection was real, so it is now handled rather than dismissed.** Env vars
+are inherited, and `clean_env()` (`supervisor.py:406`) hands every agent CLI the whole host
+environment minus `CLAUDE_CODE_*` — so the variable would have ridden into every turn. It is
+stripped there: whether the host is reachable off loopback is not an agent's business. The second
+objection ("copied between machines") stands and is accepted, not solved.
+
+Both deploy scripts keep `-ExposeAdmin` / `--expose-admin` as a convenience that sets the variable
+for that launch, so nothing that worked yesterday stops working; the scripts no longer pass an argv
+flag to the backend.
+
+**Verified:** truthiness table across `'' 1 true YES 0 no` → correct host each time; `bash -n` and
+a PowerShell tokenizer parse on both scripts; ledger suite **186/186**; pyright **0 errors**. The
+`sys` import in `api.py` is still used (`/api/host`), so nothing is orphaned.
+
 ## Carried, not done
 
 | item | state |

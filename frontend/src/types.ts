@@ -448,6 +448,10 @@ export interface PendingMail {
   body: string
   at: string
   delivering?: boolean
+  /** which carrier is in flight: "turn" = drained into the turn's own text,
+   *  so the transcript will take over as soon as the CLI echoes it (D-54).
+   *  Absent = steered mid-task, which the transcript never carries. */
+  via?: 'turn'
   attachments?: MailAttachment[]
 }
 

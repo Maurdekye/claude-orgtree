@@ -514,7 +514,8 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
               {/* journal-riding mail (drained for a mid-task delivery) shows
                   as queued but is past the point of retraction */}
               {m.delivering
-                ? <span className="dim pend-tag">delivering mid-task…</span>
+                ? <span className="dim pend-tag">{m.via === 'turn'
+                  ? 'delivering…' : 'delivering mid-task…'}</span>
                 : m.id && (
                   <button className="chip-x" title="retract (undelivered)"
                     onClick={() => retractMail(slug, node.id, m.id!)

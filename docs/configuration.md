@@ -9,7 +9,7 @@ different time, by a different person, and — the part that actually matters �
 clamped by** the levels around it:
 
 ```
-① process     env vars + CLI flags        set by whoever launches the backend
+① process     environment variables       set by whoever launches the backend
 ② global      defaults.json               set once from the root page, applies to FUTURE orgs
 ③ org         org doc settings            per organization, editable any time
 ④ ceiling     kiosk / sandbox             clamps everything below it, admin-only
@@ -27,7 +27,7 @@ clamped by** the levels around it:
 
 ---
 
-## ① Process level — environment variables and CLI flags
+## ① Process level — environment variables
 
 Set before the backend starts. Not visible in the UI, not per-org. A change requires a restart.
 
@@ -36,7 +36,7 @@ Set before the backend starts. Not visible in the UI, not per-org. A change requ
 | variable | default | what it does |
 |---|---|---|
 | `ORGTREE_DATA` | `~/orgtree` | the data root: org docs, workspaces, scratch, sandboxes (`store.py:26`) |
-| `ORGTREE_PORT` | `7360` | admin API + UI, bound to loopback unless the flag below (`api.py:368`) |
+| `ORGTREE_PORT` | `7360` | admin API + UI, bound to loopback unless exposed below (`api.py:368`) |
 | `ORGTREE_PUBLIC_PORT` | `0` (off) | the PublicGateway listener for kiosk `/k/<token>` URLs (`api.py:369`) |
 | `ORGTREE_PUBLIC_ORIGIN` | — | external origin advertised in kiosk links (`api.py:370`) |
 | `ORGTREE_CLAUDE` / `ORGTREE_CLAUDE_CLI` | auto-detected | path to the Claude Code CLI (`supervisor.py:167,174`) |
@@ -71,11 +71,23 @@ Set before the backend starts. Not visible in the UI, not per-org. A change requ
 `ORGTREE_KIOSK`, `ORGTREE_KIOSK_CREDITS`, `ORGTREE_KIOSK_SPEND_LIMIT` (`api.py:345-354`) — retired
 in favour of per-org kiosk config; a legacy value is migrated once at startup and then ignored.
 
-### CLI flags
+### Exposing the admin port
 
-| flag | effect |
-|---|---|
-| `--expose-admin` | binds the admin port to `0.0.0.0` instead of loopback (`api.py:3001`). ☠ Command-line only **by design** (D-39) — it exposes an unauthenticated admin surface. |
+| variable | default | what it does |
+|---|---|---|
+| `ORGTREE_EXPOSE_ADMIN` | unset (loopback) | ☠ binds the admin API to `0.0.0.0` (`api.py:3004`). Truthy values: `1`, `true`, `yes`, `on`. |
+
+☠ **The admin API has no password, no token and no login** — "you can reach 127.0.0.1" has always
+been the whole credential. Anyone who reaches an exposed port controls every org and can make agents
+run commands on the machine. VPN or SSH tunnel only; for public access use a kiosk instead.
+
+Both deploy scripts keep a convenience switch (`-ExposeAdmin` / `--expose-admin`) that sets the
+variable for that launch. A service definition sets the variable directly and needs no switch —
+which is why it moved here from argv (user ruling 2026-08-04, superseding D-39).
+
+⚠ It is **stripped from every agent's environment** by `clean_env()` (`supervisor.py:406`): env vars
+are inherited by child processes, and whether the host is reachable off loopback is not an agent's
+business.
 
 ### Set by orgtree, not by you
 

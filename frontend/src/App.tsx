@@ -17,7 +17,7 @@ import {
 import { DirList } from './forms'
 import { FolderPickerHost } from './picker'
 import { deskDpi, setDeskDpi, usePolled } from './canvas/shared'
-import { ingestPulse, ingestStream, resetConvos } from './convo'
+import { addPending, dropPending, ingestPulse, ingestStream, resetConvos } from './convo'
 import type {
   AudiencesPayload, DefaultsPayload, InboxPayload, KioskSpecRequest,
   MailEntry, OpRequest, OrgEvent, OrgListEntry, SweepPreview, ToastFn,
@@ -832,9 +832,21 @@ function InboxPanel({ slug, tree, toast, refresh, close, jumpTo }: {
                   waitLabel="unread" jumpTo={jumpTo}
                   onRead={(m: MailEntry) => markRead(slug, [m.id])
                     .then(() => { refresh?.() }).catch(() => {})}
-                  onReply={(m: MailEntry, text: string) => sendMessage(slug, m.from, text)
-                    .then(() => toast([`sent to ${m.from}`]))
-                    .catch((e: Error) => toast([`error: ${e.message}`]))}
+                  onReply={(m: MailEntry, text: string) => {
+                    // the desk composer's optimistic ghost, which this
+                    // composer never had (D-54): a reply sent from the inbox
+                    // is an ordinary message to that node, and its desk —
+                    // open behind this modal, or opened a second later —
+                    // showed nothing at all until the server copy landed.
+                    // Same store, same graduation-on-evidence rule.
+                    addPending(slug, m.from, text)
+                    return sendMessage(slug, m.from, text)
+                      .then(() => toast([`sent to ${m.from}`]))
+                      .catch((e: Error) => {
+                        dropPending(slug, m.from, text)
+                        toast([`error: ${e.message}`])
+                      })
+                  }}
                   sender={(id: string) => <SenderChip id={id} nodes={nodes} />} />
               : <MailList delivered={box.sent ?? []} outgoing
                   sender={(id: string) => <SenderChip id={id} nodes={nodes} />} />}

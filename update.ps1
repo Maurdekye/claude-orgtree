@@ -1,12 +1,14 @@
 # orgtree update script -- pull the latest changes and redeploy.
 #   powershell -ExecutionPolicy Bypass -File update.ps1
 #   powershell -ExecutionPolicy Bypass -File update.ps1 -ExposeAdmin   # DANGEROUS
+#   $env:ORGTREE_EXPOSE_ADMIN='1'                                    # same, for services
 # (or run update.cmd). Works in Windows PowerShell 5.1.
 #
 # Steps: git pull -> npm install + build the UI -> pip install -> restart the
 # backend (which serves the built UI) -> health-check.
 #
-# -ExposeAdmin binds the ADMIN api to 0.0.0.0 instead of loopback. The admin
+# ORGTREE_EXPOSE_ADMIN=1 binds the ADMIN api to 0.0.0.0 instead of loopback
+# (-ExposeAdmin is a convenience switch that sets it). The admin
 # api has no password, no token and no login -- reaching the port IS the
 # credential -- so this hands anyone who finds it full control of every org and
 # of any folder an agent has been granted. It is a switch you type, never a
@@ -155,15 +157,19 @@ $errLog = Join-Path $logDir 'backend.err.log'
 # run expose.ps1 to open one); set ORGTREE_PUBLIC_PORT yourself to override
 if (-not $env:ORGTREE_PUBLIC_PORT) { $env:ORGTREE_PUBLIC_PORT = '7361' }
 $apiArgs = @('-m', 'orgtree.api')
-if ($ExposeAdmin) {
+# ORGTREE_EXPOSE_ADMIN is what the backend reads (user ruling 2026-08-04, was
+# an argv flag). -ExposeAdmin is kept as a convenience that sets it for this
+# launch; a service definition sets the variable directly and needs no switch.
+if ($ExposeAdmin) { $env:ORGTREE_EXPOSE_ADMIN = '1' }
+if ($env:ORGTREE_EXPOSE_ADMIN -and
+    $env:ORGTREE_EXPOSE_ADMIN.Trim().ToLower() -in @('1', 'true', 'yes', 'on')) {
     Write-Host ''
     Write-Host ('!' * 74) -ForegroundColor Red
-    Write-Host '  -ExposeAdmin: the ADMIN api will listen on 0.0.0.0 with NO auth.' -ForegroundColor Red
+    Write-Host '  ORGTREE_EXPOSE_ADMIN: the ADMIN api will listen on 0.0.0.0 with NO auth.' -ForegroundColor Red
     Write-Host '  Anyone who can reach this port controls every org and can make' -ForegroundColor Red
     Write-Host '  agents run commands on this machine. VPN/SSH tunnel only.' -ForegroundColor Red
     Write-Host ('!' * 74) -ForegroundColor Red
     Write-Host ''
-    $apiArgs += '--expose-admin'
 }
 Start-Process -FilePath $py -ArgumentList $apiArgs `
     -WorkingDirectory (Join-Path $root 'backend') -WindowStyle Hidden `

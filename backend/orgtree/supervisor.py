@@ -408,6 +408,11 @@ def clean_env() -> dict[str, str]:
     for k in list(env):
         if k.startswith("CLAUDE_CODE_") or k == "CLAUDECODE":
             env.pop(k, None)
+    # ORGTREE_EXPOSE_ADMIN moved from an argv flag to an env var (user ruling
+    # 2026-08-04) so service definitions can set it. Env vars are inherited,
+    # and whether the HOST is reachable off loopback is not the agent's
+    # business — strip it here rather than let it ride into every turn.
+    env.pop("ORGTREE_EXPOSE_ADMIN", None)
     return env
 
 
@@ -775,27 +780,52 @@ def _journal_drain(org: Org, nid: str, mail: list[MailEntry] | None,
     return tok
 
 
-def delivering_mail(org: Org, nid: str) -> list[dict[str, Any]]:
-    """Mail drained for an in-flight delivery that the transcript will NOT
-    show — i.e. steered mid-task. The journal holds the only copy, and the UI
-    read it from nowhere (user bug 2026-07-31: messages sent during a long
-    bash command "didn't appear as queued until the command finished").
+def delivering_mail(org: Org, nid: str,
+                    shown: Callable[[str], bool] | None = None
+                    ) -> list[dict[str, Any]]:
+    """Mail drained for an in-flight delivery, for as long as nothing else is
+    showing it. The journal holds the only copy while a batch is in flight,
+    and the UI read it from nowhere (user bug 2026-07-31: messages sent during
+    a long bash command "didn't appear as queued until the command finished").
     Surfaced with delivering:True — retraction stays box-only.
 
-    ⚠ `via="turn"` batches are deliberately EXCLUDED. Their text is written to
-    the CLI as a user event, so it is already on screen as the transcript's
-    @user bubble — surfacing them too rendered the user's message TWICE for
-    the whole window between turn start and the journal's confirmation, which
-    on a long think is ~10s (found while verifying the thinking clock,
-    2026-08-02; the user reported it independently the same day). Old entries
-    have no `via` and default to "steer": showing a duplicate is the failure
-    this system already prefers over hiding a message."""
+    The two carriers differ in whether the transcript will EVER carry the
+    text, so `shown` — "is this body already in the transcript" — decides:
+
+      via="steer"  hook context the CLI never transcripts ⇒ `shown` is never
+                   true and the journal remains the only thing that can show
+                   it, exactly as before.
+      via="turn"   written to the CLI as a user event, so the transcript WILL
+                   carry it — but not until the process has started and echoed
+                   it back. That is D-29's "starting…" phase: ~1 s warm,
+                   several seconds cold, longer still for a sandboxed org that
+                   must start a container first. Draining removed it from the
+                   mailbox at the top of the turn, so for the whole of that
+                   phase the message the user had just sent existed in NO
+                   place the desk renders from (user bug 2026-08-03: "the
+                   queued preview never shows up while the agent is
+                   starting"). It is surfaced until `shown` says the
+                   transcript has it.
+
+    ⚠ This replaces a blanket exclusion of `via="turn"`, which existed to stop
+    the message rendering TWICE — once here and once as the transcript bubble
+    — for the window between turn start and the journal's confirmation (on a
+    long think, ~10 s; found 2026-08-02). The duplicate is still prevented,
+    but by the right test: the transcript actually having it, rather than a
+    confirmation that lands well after it does. Superseded is not replaced,
+    and replaced is not "will be replaced eventually" — evidence, both ways.
+
+    With no `shown` (a caller that cannot see the transcript) a turn batch is
+    surfaced: showing a duplicate is the failure this system prefers over
+    hiding a message. Old entries have no `via` and default to "steer"."""
     out = []
     for b in (org.d.get("delivering") or {}).get(nid, []):
-        if b.get("via", "steer") != "steer":
-            continue
+        turn = b.get("via", "steer") == "turn"
         for m in b.get("mail") or []:
-            out.append({**m, "delivering": True})
+            if turn and shown is not None and shown(m.get("body") or ""):
+                continue        # the transcript is showing it — hand over
+            out.append({**m, "delivering": True,
+                        **({"via": "turn"} if turn else {})})
     return out
 
 

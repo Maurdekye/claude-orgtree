@@ -41,7 +41,7 @@ from . import sandbox, store, subproxy, supervisor
 from .ledger import LedgerError, Org, USER, VIS_LEVELS, norm_dirs, norm_tools
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
 
     import httpx
     # aliased: `Scope` is taken by the pydantic body model of the same name
@@ -2714,7 +2714,40 @@ def node_chat(slug: str, nid: str, last: int = 300) -> dict[str, Any]:
     # queued = the mail box PLUS the delivery journal's in-flight batches —
     # a message steered mid-task drains the box instantly, and during a long
     # tool call it showed NOWHERE (user bug 2026-07-31)
-    pending = sorted(supervisor.delivering_mail(org, nid)
+    #
+    # A batch drained INTO a turn is the same story one step later: the
+    # mailbox no longer has it and the CLI has not echoed it into the
+    # transcript yet, so it is surfaced until the transcript does. This is the
+    # one place both halves are in hand, so the handover is decided here and
+    # lands in ONE payload — the pending bubble goes and the durable @user
+    # bubble arrives together, never a frame with neither (D-54).
+    _seen_user = [(m.get("text") or "") for m in out["messages"]
+                  if m.get("role") == "user"]
+
+    def _in_transcript(m: Mapping[str, Any]) -> bool:
+        """Is THIS mail entry already on screen as a transcript bubble?
+
+        Identity, not resemblance. The transcript text is the `_mail_block`
+        envelope wrapped around the body, and that envelope carries the
+        entry's own `at` immediately before it —
+
+            FROM @user (…) · message · 2026-08-04T04:27:08.545Z
+            <body>
+
+        — so the timestamp+body junction names one specific mail. Matching on
+        the body alone would repeat D-52's mistake one layer down: re-send
+        "continue" and the new entry would match the OLD bubble and be hidden
+        while still in flight. No clock is compared, only a string this
+        process itself wrote."""
+        body = (m.get("body") or "").strip()
+        if not body:
+            return False
+        at = m.get("at")
+        # the head is enough to identify it and survives truncation either side
+        mark = (f"· {at}\n{body}" if at else body)[:400]
+        return any(mark in t for t in _seen_user)
+
+    pending = sorted(supervisor.delivering_mail(org, nid, _in_transcript)
                      + list((org.d.get("mail") or {}).get(nid, [])),
                      key=lambda m: m.get("at") or "")
     out["mail_pending"] = len(pending)
@@ -2723,6 +2756,10 @@ def node_chat(slug: str, nid: str, last: int = 300) -> dict[str, Any]:
     out["pending_mail"] = [{"id": m.get("id"), "from": m["from"],
                             "body": m["body"][:2000], "at": m["at"],
                             **({"delivering": True} if m.get("delivering")
+                               else {}),
+                            # the two in-flight carriers read differently to a
+                            # human: "mid-task" is only true of a steer
+                            **({"via": "turn"} if m.get("via") == "turn"
                                else {}),
                             **({"attachments": m["attachments"]}  # type: ignore[typeddict-item]  # guard proves the key
                                if m.get("attachments") else {})}
@@ -2980,7 +3017,8 @@ if os.path.isdir(FRONTEND_DIST):
         return FileResponse(os.path.join(FRONTEND_DIST, "index.html"))
 
 
-EXPOSE_FLAG = "--expose-admin"
+EXPOSE_ENV = "ORGTREE_EXPOSE_ADMIN"
+_TRUTHY = {"1", "true", "yes", "on"}
 
 
 def _admin_host() -> str:
@@ -2992,13 +3030,24 @@ def _admin_host() -> str:
     read and write every org, grant any folder on this machine to an agent,
     and run turns that execute commands on it.
 
-    So the override is COMMAND-LINE ONLY, on purpose (user ruling 2026-08-03).
-    It is deliberately not an env var and not a setting: env vars get inherited
-    by child processes and copied between machines, and a setting can be
-    flipped by anything that can write the doc — including an agent. An argv
-    flag has to be typed by whoever starts the process, every time.
+    The override is an ENV VAR (user ruling 2026-08-04, superseding the
+    argv-only ruling of 2026-08-03 recorded in D-39). The reason it moved: a
+    service definition — Task Scheduler, a systemd unit — sets environment
+    naturally and threading an argv flag through the deploy scripts to a
+    detached process is the awkward path. Unattended hosts are the case that
+    needs this, so the mechanism should suit them.
+
+    ⚠ What the old ruling was protecting against is still true and is now
+    handled elsewhere: env vars are INHERITED by child processes, so every
+    agent CLI would see this one through `supervisor.clean_env()`. It is
+    stripped there (it is not the agent's business whether the host is
+    exposed) — see that function.
+
+    Still deliberately NOT a setting in the org doc: a setting can be flipped
+    by anything that can write the doc, including an agent.
     """
-    return "0.0.0.0" if EXPOSE_FLAG in sys.argv else "127.0.0.1"
+    return ("0.0.0.0" if os.environ.get(EXPOSE_ENV, "").strip().lower() in _TRUTHY
+            else "127.0.0.1")
 
 
 def _ws_impl() -> str | None:
@@ -3041,7 +3090,7 @@ def main() -> None:
         # able to tell at a glance that this process is wide open.
         bar = "!" * 74
         print(f"\n{bar}\n"
-              f"  {EXPOSE_FLAG}: THE ADMIN API IS BOUND TO {host}:{PORT}\n"
+              f"  {EXPOSE_ENV}=1: THE ADMIN API IS BOUND TO {host}:{PORT}\n"
               f"\n"
               f"  It has NO password, NO token and NO login. Anyone who can\n"
               f"  reach this port has full control of every org and can make\n"

@@ -3,6 +3,7 @@
 #
 #   ./update.sh
 #   ./update.sh --expose-admin      # DANGEROUS, see below
+#   ORGTREE_EXPOSE_ADMIN=1 ./update.sh   # same, for services
 #
 # The bash counterpart of update.ps1, step for step. Written for Linux and
 # macOS; it also runs under Git Bash / MSYS on Windows, where the two things
@@ -16,7 +17,8 @@
 # installed dependency set is exactly what requirements.txt says rather than
 # whatever a shared system Python happens to hold.
 #
-# --expose-admin binds the ADMIN api to 0.0.0.0 instead of loopback. The admin
+# ORGTREE_EXPOSE_ADMIN=1 binds the ADMIN api to 0.0.0.0 instead of loopback
+# (--expose-admin is a convenience switch that sets it). The admin
 # api has no password, no token and no login -- reaching the port IS the
 # credential -- so this hands anyone who finds it full control of every org and
 # of any folder an agent has been granted. It is a switch you type, never a
@@ -245,14 +247,20 @@ ERRLOG="$DATA_ROOT/backend.err.log"
 export ORGTREE_PUBLIC_PORT=${ORGTREE_PUBLIC_PORT:-7361}
 
 API_ARGS=(-m orgtree.api)
+# ORGTREE_EXPOSE_ADMIN is what the backend reads (user ruling 2026-08-04, was
+# an argv flag). --expose-admin is kept as a convenience that sets it for this
+# launch; a service definition exports the variable and needs no switch.
+[ "$EXPOSE" = 1 ] && export ORGTREE_EXPOSE_ADMIN=1
+case "$(printf '%s' "${ORGTREE_EXPOSE_ADMIN:-}" | tr 'A-Z' 'a-z')" in
+  1|true|yes|on) EXPOSE=1 ;;
+esac
 if [ "$EXPOSE" = 1 ]; then
   bar=$(printf '!%.0s' $(seq 74))
   printf '\n%s%s\n' "$RED" "$bar"
-  echo '  --expose-admin: the ADMIN api will listen on 0.0.0.0 with NO auth.'
+  echo '  ORGTREE_EXPOSE_ADMIN: the ADMIN api will listen on 0.0.0.0 with NO auth.'
   echo '  Anyone who can reach this port controls every org and can make'
   echo '  agents run commands on this machine. VPN/SSH tunnel only.'
   printf '%s%s\n\n' "$bar" "$OFF"
-  API_ARGS+=(--expose-admin)
 fi
 
 # Detach properly. The child's own stdout/stderr go to the log files, but the
