@@ -158,6 +158,27 @@ cheap: always render the fingerprint suffix alongside the name in the roster, an
 receiving agent's framing at "untrusted outside party" regardless of how the sender is labelled
 (§7).
 
+### The slug is immutable for the org's lifetime (user ruling, 2026-08-04)
+
+> the full slug should remain identical for the lifetime of the org it represents.
+
+All three parts — org name, username, fingerprint suffix — are fixed at first registration and never
+change. This closes the rotation question: **the suffix is pinned, not re-derived.**
+
+Consequences that must be built in, not assumed:
+
+- ☞ **Store the network slug; never recompute it.** If it is derived from name + username at call
+  time, then moving the org to another machine or renaming the OS account silently changes the
+  address. Mint once, persist in the org doc, read it thereafter. (Locally this is already the
+  shape: an org's slug is set at creation, `ledger.py:301`, and there is no rename path.)
+- ⚠ **After a rotation, `sha256(current_secret)[:6] != suffix`.** The suffix is a historical
+  artifact of the *first* secret. Verification must compare against the hub's **stored
+  fingerprint**, never re-derive the suffix — that is a natural bug to write and it would lock an
+  org out of its own address the first time it rotated.
+- **The username part may become misleading** — an org moved to a different account keeps `.bob` in
+  its address. That is cosmetic; nothing authenticates on it (§3), and stability is worth more than
+  accuracy here.
+
 ### Joining: no gate (user ruling, 2026-08-04)
 
 > any new org that has access can join and is immediately listed, the join auth is just having
@@ -602,7 +623,26 @@ Note this is about the **hub**. Inside an org, inbound mail still reaches every 
 and every org-inbox audience holder — that is the org-inbox model as specified, and it is unchanged
 (`ledger.py:969`).
 
-### 10.2 Read receipts — orgtree can report something better than "delivered"
+### 10.2 Two receipts: received (the hub has it) and read (an agent consumed it)
+
+> read receipts and received receipts (for server connectivity confirmation)
+
+They answer different questions and fail independently, so they are separate signals, not two
+points on one bar:
+
+- **Received** — the hub acknowledged custody. Answers *is my connection to the server working*.
+  Its absence means the network or the hub, never the peer.
+- **Read** — an agent's turn actually consumed the message. Answers *did anyone act on this*. Its
+  absence with a received receipt present means the peer is down, frozen, or idle.
+
+⚠ **A missing received receipt does not mean the message was not delivered.** A send that times out
+may already have been accepted. The retry must therefore be **idempotent on the message id** —
+otherwise every flaky connection produces duplicate mail at the far end, which under §9.4 is a
+re-send loop with no human to notice it. The id already has to exist for the ack cursor; reuse it.
+
+**No received receipt within a threshold ⇒ the instance marks the hub unreachable** and says so in
+the status pill (§6), rather than silently spooling forever. The poll connection doubles as the
+liveness beacon, so this is one signal serving both directions.
 
 Most systems can only say a message was fetched. Here the delivery journal already knows when an
 agent **actually received** it: `_journal_drain` writes a token when mail is drained into a turn
@@ -610,12 +650,13 @@ envelope, and `_confirm_delivered` (`supervisor.py:1250`) fires only once the CL
 afterwards — the same machinery whose unconfirmed batches get folded back on restart
 (`supervisor.py:2654-2668`). That is a true read signal, not a transport ack.
 
-**Five states, each with an existing owner:**
+**Five states, each with an existing owner** — `received` and `read` are the two the user named;
+the rest are the intermediate positions they bracket:
 
 | state | set when | source |
 |---|---|---|
 | `queued` | the sender's spool holds it (§4) | sender instance |
-| `sent` | the hub accepted it | hub |
+| **`received`** | the hub acknowledged custody — the connectivity signal | hub |
 | `fetched` | the recipient instance pulled and acked it | recipient instance |
 | `delivered` | it landed in the recipient's org inbox | `post_external_mail` |
 | **`read`** | an agent's turn actually consumed it | `_confirm_delivered` |
@@ -632,8 +673,8 @@ Design notes:
   re-sending — which matters most under §9.4, where a re-send loop between two unattended orgs is
   the expensive failure.
 - **`fetched` without `read` is the diagnostic that matters**: mail arrived, no agent has consumed
-  it. That means the recipient is frozen, out of credits, has no live top-level agent, or is in
-  `notify` mode. Worth rendering distinctly rather than collapsing into "delivered".
+  it. That means the recipient is frozen, out of credits, or has no live top-level agent. Worth
+  rendering distinctly rather than collapsing into "delivered".
 - ⚠ **Receipts leak activity.** They tell a peer when your org is running and when its agents woke.
   On the closed collaborative network this is ruled for, that is acceptable and useful — but it is
   a real disclosure, so if the hub ever leaves that network the receipt policy needs revisiting
@@ -690,6 +731,8 @@ Ordered by value-per-effort.
 | hub host | **Linux** (§8, §9.3) |
 | `net_wake` positions | **`auto` only** for v1; `notify`/`curated` are not built |
 | scope | **strictly org-to-org** — the hub does not relay `@ext:`/`@mcp:` |
+| slug lifetime | **immutable** — all three parts fixed at first registration (§3) |
+| receipts | **received** (hub custody / connectivity) **and read** (an agent consumed it) (§10.2) |
 
 ⚠ **10+ participants changes two v1 calls.** At that size **threading is no longer deferrable**
 (§11 №2): a flat org inbox holding concurrent conversations with ten peers is unreadable to an
@@ -704,8 +747,6 @@ for two.
    the re-auth ceiling and isolates spend. Mostly moot if so, but still open: whether the OAuth
    token endpoint returns a fresh refresh token on every refresh (the client already stores one if
    it does — `subproxy.py:74`).
-2. **Is the display suffix pinned or re-derived on rotation?** (§3.) Recommended: pinned — it is a
-   label, and re-deriving changes everyone's address book to fix one leaked secret.
-3. **One hub or several?** Multiple hub connections per instance is a modest generalization if
+2. **One hub or several?** Multiple hub connections per instance is a modest generalization if
    designed in now and awkward later — and §3's self-issued identity makes it natural, since one
    secret already works everywhere.

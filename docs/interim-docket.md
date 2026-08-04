@@ -1544,6 +1544,22 @@ An org that is both cannot communicate at all.
   between two unattended orgs. ⚠ Receipts leak when an org is running; acceptable on the closed
   network ruled for, revisit if that boundary ever changes.
 
+**⑪ Slug immutability + two receipts** (user, 2026-08-04). Spec §3, §10.2.
+
+- **The full slug is fixed for the org's lifetime** — org name, username, and fingerprint suffix
+  alike. Closes the rotation question: the suffix is pinned. ☞ **Store the network slug, never
+  recompute it** from name + username, or moving the org or renaming the OS account silently
+  changes its address. ⚠ After a rotation `sha256(secret)[:6] != suffix` — verification must
+  compare the hub's stored fingerprint, never re-derive the suffix, or an org is locked out of its
+  own address the first time it rotates.
+- **Received and read are separate signals**, not two points on one bar: *received* = the hub
+  acknowledged custody (answers "is my link to the server working" — its absence implicates the
+  network, never the peer); *read* = an agent's turn consumed it. ⚠ A missing received receipt does
+  **not** mean the message was not delivered — a timed-out send may already have been accepted, so
+  the retry must be **idempotent on the message id** or every flaky connection duplicates mail at
+  the far end. No received receipt within a threshold ⇒ mark the hub unreachable in the status pill
+  rather than spooling silently.
+
 **⑨ The six build questions — ANSWERED (user, 2026-08-04).** Full table at spec §12: built by the
 **implementer**; orgs may join a hub **after creation**; **10+** participants; the hub runs on
 **Linux**; `net_wake` ships **`auto` only** (`notify`/`curated` documented but not built); and the
@@ -1554,8 +1570,8 @@ flat org inbox holding concurrent conversations with ten peers is unreadable to 
 cannot be retrofitted into stored history. The directory blurb moves from nice-to-have to necessary
 for the same reason: nobody addresses ten orgs correctly from slugs alone.
 
-Three open questions remain, none blocking: API-key default (⑦), whether the display suffix is
-pinned across a rotation, and one hub or several.
+Two open questions remain, none blocking: API-key default (⑦) and one hub or several. The suffix
+question was closed by ⑪.
 
 ## Carried, not done
 
