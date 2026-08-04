@@ -372,9 +372,16 @@ class Org:
         if nid == USER:
             return []
         out: list[str] = []
+        seen = {nid}
         cur = self.node(nid)["parent"]
-        while cur is not None:
+        # the `seen` guard is pure defense: every op that can re-parent already
+        # refuses a cycle, so on well-formed data this is identical. On a
+        # corrupted doc it is the difference between a wedged process and a
+        # short list — `while cur is not None` never terminates on a loop, and
+        # ancestors() is under depth()/is_ancestor()/tree(), i.e. everything.
+        while cur is not None and cur not in seen:
             out.append(cur)
+            seen.add(cur)
             cur = self.nodes[cur]["parent"]
         out.append(USER)
         return out
@@ -396,8 +403,16 @@ class Org:
         """Predecessor chain of nid, newest first."""
         out: list[str]
         out, cur = [], self.node(nid).get("predecessor")
-        while cur and cur in self.nodes:
+        # same guard as ancestors(), and here it was measured: a `predecessor`
+        # loop made this spin FOREVER (no RecursionError, no return), wedging
+        # tree(), dissolve(), delete() and _move()'s bearer check with it.
+        # Unreachable from the API (compact_split/reseed always mint a fresh
+        # `<nid>@<gen>` with a rising generation) — reachable from a corrupted
+        # or hand-edited doc, which is exactly when you want a process back.
+        seen = {nid}
+        while cur and cur in self.nodes and cur not in seen:
             out.append(cur)
+            seen.add(cur)
             cur = self.nodes[cur].get("predecessor")
         return out
 
@@ -690,6 +705,20 @@ class Org:
                     f"remain ({', '.join(over)}) — the cap blocks new hires, "
                     f"rehires and switches; switch or retire them as you "
                     f"see fit")
+            # …and the ARCHIVED ones, which used to be reported nowhere. They
+            # are the worse case: rehire hard-refuses on the cap and
+            # switch_model needs a live node, so an archived over-cap agent is
+            # STRANDED — recoverable only by raising the cap again — and the
+            # admin was told nothing at all.
+            stuck = sorted(i for i, n in self.nodes.items()
+                           if n["state"] == "archived"
+                           and TIERS.get(n["model"], 0) > TIERS[mt])
+            if stuck:
+                warnings.append(
+                    f"{len(stuck)} ARCHIVED agent(s) above the {mt} tier cap "
+                    f"({', '.join(stuck)}) can no longer be rehired at their "
+                    f"own tier — rehire them with a cheaper tier= override, or "
+                    f"raise the cap")
         return {"max_scope": ms, "swept": swept, "warnings": warnings}
 
     def set_hire_defaults(self, default_tools: Mapping[str, Any] | None = None,
@@ -1044,7 +1073,15 @@ class Org:
         req = self._find_request(frm, target)
         if actor != req["currently_at"] and actor != USER:
             raise LedgerError(f"the request currently awaits {req['currently_at']}")
-        nxt = USER if actor == USER else self.parent(actor)
+        # The user is the TOP of every chain, so there is no "one hop up" from
+        # there: a user forward hands the request straight to its target. It
+        # used to set `nxt = USER` unconditionally, which for any target other
+        # than the user fell through to `post_mail(USER, USER, …)` —
+        # "the user cannot mail the user" — AFTER `currently_at` had already
+        # been written, so the request was left stuck at @user and the real
+        # holder could never forward or deny it again. Dormant (no route calls
+        # forward as the user today) but a live landmine for the next caller.
+        nxt = target if actor == USER else self.parent(actor)
         req["currently_at"] = nxt
         drive: list[str] = []
         if nxt == target:
@@ -1080,7 +1117,13 @@ class Org:
         direct line to the user. The ear's owner may rescind at will, and the
         grant survives re-parenting only while the delegator still commands
         the grantee. Also resolves any open request frm → target."""
-        if target in ("extern", "inbox", EXTERN):
+        # names win over the bare-string aliases, the same rule
+        # `_resolve_recipient` applies to "user": an agent whose slug really is
+        # "extern" or "inbox" was permanently unreachable through this API,
+        # every grant aimed at it being silently redirected to the org-inbox
+        # sentinel. The @-sentinel itself is unambiguous and always wins.
+        if target == EXTERN or (target in ("extern", "inbox")
+                                and target not in self.nodes):
             return self._grant_extern(actor, frm)
         target = self._resolve_recipient(target) if target else actor
         if frm == target:
@@ -1315,6 +1358,12 @@ class Org:
         self._check_tier_ceiling(tier)
         if grant < 0 or grant != int(grant):
             raise LedgerError("grant must be a non-negative integer (№7)")
+        # ATOMICITY (§4.7 moved up, 2026-08-04): the name was validated only
+        # inside `_new_node`, at the very END — after `_chain_acquire` had
+        # already inflated grants down the chain. A hire refused for an
+        # unsluggable name therefore left the credits behind: measured
+        # top_level_holds 105 → 915 on a user-pool cascade, with no node.
+        slugify(name)
         need = self.d["tiers"][tier] + int(grant)
 
         if parent is None:
@@ -1393,15 +1442,13 @@ class Org:
             # the seat cannot actually run until the limit resets or the user decrees
             warnings.append("the weekly Fable usage limit is exhausted — this agent "
                             "will not be able to run yet; hiring it now is futile")
-        # §4.6 generalized (user ruling): the parent pays; any shortfall
-        # bubbles up the chain to the actor (the user's pool is infinite) —
-        # refused only when the WHOLE chain lacks it
-        if parent is not None:
-            self._chain_acquire(actor, parent, need, warnings,
-                                cascade=bool(self.d.get("cascade_hire", True)))
-
-        if tlost:
-            warnings.append(f"tool grants clamped to the parent's own: {tlost}")
+        # ATOMICITY: every remaining check that can REFUSE runs BEFORE
+        # `_chain_acquire`, which is the first thing in this method to mutate
+        # state. The strict visibility clamp used to run after it, so an agent
+        # hire asking for more visibility than its parent holds was refused
+        # with 35 credits already moved from the actor to the payer and no node
+        # created. Nothing below `_chain_acquire` may raise.
+        #
         # D-021: visibility clamps like tools — strict for agent-explicit
         # grants, lenient (warned) for user hires and defaults
         if parent is not None:
@@ -1413,6 +1460,15 @@ class Org:
         # D-014: the top-level grant cap binds at the source
         if parent is None:
             self._check_top_grant(int(grant), "this hire")
+        # §4.6 generalized (user ruling): the parent pays; any shortfall
+        # bubbles up the chain to the actor (the user's pool is infinite) —
+        # refused only when the WHOLE chain lacks it
+        if parent is not None:
+            self._chain_acquire(actor, parent, need, warnings,
+                                cascade=bool(self.d.get("cascade_hire", True)))
+
+        if tlost:
+            warnings.append(f"tool grants clamped to the parent's own: {tlost}")
         # ceiling spec §2/§4: the ceiling clamp runs AFTER defaults resolve and
         # after the parent clamp (parent ∩ ceiling at depth) — org defaults may
         # exceed the ceiling and must lose on every bare chip-click hire
@@ -1653,6 +1709,13 @@ class Org:
             # design motto: asking for what's already true is a no-op, not an error
             return {"cost": 0, "drive": [],
                     "warnings": [f"{nid} is already live — nothing to do"]}
+        # ATOMICITY: the tier NAME was validated far below, after the
+        # archived-superior chain had already been rehired — so
+        # `rehire(nid, tier="gpt-9")` woke every archived ancestor (spending
+        # their parents' credits and sending notices) and only then refused.
+        # Input validation belongs before the first mutation.
+        if tier is not None and tier not in self.d["tiers"]:
+            raise LedgerError(f"unknown tier {tier!r}")
         # kiosk tier cap: an archived over-cap agent re-entering service is
         # "using" that tier — blocked like a fresh hire (reseed too). The
         # EFFECTIVE tier is tested: a rehire that downgrades below the cap
@@ -1786,17 +1849,39 @@ class Org:
             res["bridge"] = {"raise_ceiling": True}
         return res
 
+    def _taken_with(self, nid: str) -> set[str]:
+        """Every node that goes when `nid` goes: org descendants AND lineage
+        stacks, to a FIXPOINT.
+
+        The fixpoint is the part that was missing. A lineage bearer can acquire
+        org children of its own — rehire a bearer (a superior-rehired one keeps
+        the OLD parent slot, so it is a sibling of its successor, not a
+        descendant) and hire under it. Adding each node's stack without
+        re-descending into it then left those children behind, two ways:
+        `dissolve` archived the bearer and stranded its subtree LIVE under an
+        archived parent (the "invalid tree state" rehire refuses to create, and
+        the stranded seats were then committed by nobody — the parent's free
+        jumped by their holding); `delete` removed the bearer outright and left
+        a DANGLING parent id, so `ancestors()` raised KeyError instead of a
+        LedgerError. Found 2026-08-04 by the authority suite's property test."""
+        out: set[str] = set()
+        frontier = [nid]
+        while frontier:
+            k = frontier.pop()
+            if k in out or k not in self.nodes:
+                continue
+            out.add(k)
+            frontier.extend(self.children(k, live_only=False))
+            frontier.extend(self.lineage_stack(k))
+        return out
+
     # --------------------------------------------------------------- dissolve
     def dissolve(self, actor: str, nid: str) -> dict[str, Any]:
         """Recursive retire, deepest first (§4.2). Takes the whole lineage stack (§8.5)."""
         self._require_authority(actor, nid)
         parent = self.node(nid)["parent"]
         # §8.5: dissolve takes each node's ENTIRE lineage stack with it
-        core = self.descendants(nid) + [nid]
-        with_lineage = list(core)
-        for k in core:
-            with_lineage.extend(self.lineage_stack(k))
-        order = sorted(set(with_lineage), key=self.depth, reverse=True)
+        order = sorted(self._taken_with(nid), key=self.depth, reverse=True)
         freed = 0
         for k in order:
             n = self.nodes[k]
@@ -1839,11 +1924,7 @@ class Org:
         n = self.node(nid)
         parent = n["parent"]
         peers = self._peers_of(parent, nid)
-        doomed = [nid] + self.descendants(nid, live_only=False)
-        with_lineage = list(doomed)
-        for k in doomed:
-            with_lineage.extend(self.lineage_stack(k))
-        doomed_set = set(with_lineage)
+        doomed_set = self._taken_with(nid)
         # bank the burn BEFORE the nodes go — cost is history (see cost_total)
         lost = round(sum(float((self.nodes.get(k) or {}).get("cost_usd") or 0.0)
                          for k in doomed_set), 6)
@@ -1870,7 +1951,7 @@ class Org:
         self.d["credit_requests"] = [
             r for r in self.d.get("credit_requests", [])
             if r.get("node") not in doomed_set]
-        extra = len(doomed) - 1
+        extra = len(doomed_set) - 1
         self._notify([parent],
                      f'The user permanently DELETED your report "{nid}"'
                      + (f" and its suborganization ({extra} more node(s))" if extra else "")
@@ -1891,7 +1972,6 @@ class Org:
         SUBTREE, but never their own (user spec); the user switches anyone."""
         if tier not in self.d["tiers"]:
             raise LedgerError(f"unknown tier {tier!r}; know {sorted(self.d['tiers'])}")
-        self._check_tier_ceiling(tier)
         self._require_live(nid)
         n = self.node(nid)
         if actor != USER:
@@ -1905,6 +1985,13 @@ class Org:
             # design motto: asking for what's already true is a no-op, not an error
             return {"model": tier, "seat": self.d["tiers"][tier], "freed": 0,
                     "warnings": [f"{nid} already runs {tier} — nothing to do"]}
+        # the kiosk tier cap is checked HERE, after the no-op return and after
+        # the authority checks. It used to run first, so switching a
+        # grandfathered over-cap agent to the tier it ALREADY runs was refused
+        # ("opus agents cannot be switched to") — a hard error for a request
+        # that would change nothing, against the ratified idempotent-no-op rule.
+        # It also leaked the cap to actors with no authority over the node.
+        self._check_tier_ceiling(tier)
         if tier == "fable" and self.d.get("fable_lock") and actor == USER:
             self.clear_fable_lock()      # a user fable-switch is the decree
         delta = self.d["tiers"][tier] - self.d["tiers"][old]
@@ -2035,6 +2122,16 @@ class Org:
         if p_old is not None:
             self._require_authority(actor, p_old, allow_self=True)
 
+        # §8.5: a bearer occupies its SUCCESSOR's slot and is not an org node of
+        # its own, so it may not be re-parented on its own — doing so split the
+        # stack from the live agent that owns it and left the bearer showing up
+        # in `descendants()` of a branch it never belonged to.
+        succ = n.get("successor")
+        if succ and succ in self.nodes:
+            raise LedgerError(
+                f'{nid} is a lineage bearer of "{succ}" — the stack shares its '
+                f'successor\'s slot (§8.5). Move "{succ}" and the stack '
+                f'follows it.')
         live_bearers = [k for k in self.lineage_stack(nid)
                         if self.nodes[k]["state"] != "archived"]
         if live_bearers:
@@ -2049,11 +2146,26 @@ class Org:
                 f"({self.seat_cost(nid) + n['grant']}) now falls on {new_parent or USER} (§4.5)")
 
         lca = self._lca(p_old, new_parent)
+        down = (self._path_down(lca if lca is not None else USER, new_parent)
+                if new_parent is not None else [])
         if c:
+            # D-014, the hole the docket carried: the ACQUIRE leg inflates every
+            # grant on the way down to the new parent, and when the move crosses
+            # the root boundary (lca == USER) the first of those is a TOP-LEVEL
+            # grant. Nothing checked it, so a drag across roots reached a number
+            # `reallocate` refuses to type — the cap was enforced on one route to
+            # the same end state and not the other. Pre-check BEFORE any
+            # mutation, exactly as `_chain_acquire` does, so a refusal leaves the
+            # tree untouched. (Release only ever shrinks; a grant on that leg is
+            # >= c by the free>=0 invariant, so it cannot go negative.)
+            for hop in down:
+                if self.nodes[hop]["parent"] is None:
+                    self._check_top_grant(
+                        self.nodes[hop]["grant"] + c,
+                        f"moving {nid} under {new_parent}")
             for hop in self._chain_up(p_old, lca):     # release: grants shrink
                 self.nodes[hop]["grant"] -= c
-            for hop in self._path_down(lca if lca is not None else USER, new_parent) \
-                    if new_parent is not None else []:  # acquire: grants swell
+            for hop in down:                           # acquire: grants swell
                 self.nodes[hop]["grant"] += c
 
         prior_peers = self._peers_of(p_old, nid)
@@ -2159,9 +2271,16 @@ class Org:
             kept, lost = self._clamp_dirs(sc["add_dirs"], allowed, strict=False)
             sc["add_dirs"] = kept
             dropped.extend(lost)
+            had_star = "*" in (sc.get("tools", {}).get("mcp") or [])
             tkept, tlost = self._clamp_tools(sc["tools"], ptools, strict=False)
             sc["tools"] = tkept
             dropped.extend(tlost)
+            if had_star and "*" not in tkept["mcp"]:
+                # the same semantic change `_apply_ceiling` names: "*" meant
+                # "every server, present AND future" and is now a fixed list,
+                # so registry additions will no longer reach this node. The
+                # sweep collapsed it in silence until 2026-08-04.
+                dropped.append(f"mcp:* ({k} materialized to the parent's list)")
             v = sc.get("org_visibility", "full")
             if (pvis in VIS_LEVELS and v in VIS_LEVELS
                     and VIS_LEVELS.index(v) > VIS_LEVELS.index(pvis)):
@@ -2226,31 +2345,55 @@ class Org:
         warnings: list[str] = []
         changed_caps = False
         bridged = False
+        # ATOMICITY (2026-08-04): every refusal happens in THIS block, before a
+        # single field is written. The three capability fields used to be
+        # validated-and-applied one at a time, so a call carrying a legal
+        # `add_dirs` and an illegal `tools` grant wrote the dirs, refused, and
+        # never ran the subtree sweep — half a retool, reported as a failure.
+        # `_apply_ceiling(raise_ceiling=True)` also grows the ceiling itself, so
+        # every strict parent clamp has to pass before ANY of it runs.
+        want_dirs: list[DirGrant] | None = None
+        want_tools: ToolGrant | None = None
+        want_vis: str | None = None
         if add_dirs is not None:
-            req = norm_dirs(add_dirs)
-            kept, _ = self._clamp_dirs(req, self.effective_dirs(n["parent"]), strict=True)
-            _t, kept, _v, _p, b = self._apply_ceiling(
-                dirs=kept, raise_ceiling=raise_ceiling, warnings=warnings)
-            bridged = bridged or b
-            sc["add_dirs"] = cast("list[DirGrant]", kept)  # dirs in ⇒ dirs out
-            changed_caps = True
+            want_dirs, _ = self._clamp_dirs(
+                norm_dirs(add_dirs), self.effective_dirs(n["parent"]), strict=True)
         if tools is not None:
             ptools = (None if n["parent"] is None
                       else self.node(n["parent"])["scope"]["tools"])
-            tset, _ = self._clamp_tools(tools, ptools, strict=True)
-            tset, _d, _v, _p, b = self._apply_ceiling(
-                tools=tset, raise_ceiling=raise_ceiling, warnings=warnings)
-            bridged = bridged or b
-            sc["tools"] = cast(ToolGrant, tset)  # tools in ⇒ tools out
-            changed_caps = True
+            want_tools, _ = self._clamp_tools(tools, ptools, strict=True)
         if org_visibility is not None:
             if org_visibility not in VIS_LEVELS:
                 raise LedgerError(f"org_visibility must be one of {VIS_LEVELS}")
             # D-021: parent clamp first (strict, like dirs/tools here), then
             # the kiosk ceiling
-            vis1, _ = self._clamp_vis(org_visibility, n["parent"], strict=True)
+            want_vis, _ = self._clamp_vis(org_visibility, n["parent"], strict=True)
+        if permission_mode is not None and permission_mode not in PM_LEVELS:
+            raise LedgerError(                     # D-030 hardening
+                f"permission_mode must be one of {PM_LEVELS}")
+        # user-approved (2026-07-31): thinking effort as a per-agent setting,
+        # adjusted from the gear — never a hire-row control. "" clears back to
+        # the CLI default. (No ultracode tier: orgtree replaces subagent
+        # semantics with real hires.)
+        if effort is not None and effort not in self.EFFORTS and effort != "":
+            raise LedgerError(
+                f"effort must be one of {self.EFFORTS} (or '' to clear)")
+
+        if want_dirs is not None:
+            _t, kept, _v, _p, b = self._apply_ceiling(
+                dirs=want_dirs, raise_ceiling=raise_ceiling, warnings=warnings)
+            bridged = bridged or b
+            sc["add_dirs"] = cast("list[DirGrant]", kept)  # dirs in ⇒ dirs out
+            changed_caps = True
+        if want_tools is not None:
+            tset, _d, _v, _p, b = self._apply_ceiling(
+                tools=want_tools, raise_ceiling=raise_ceiling, warnings=warnings)
+            bridged = bridged or b
+            sc["tools"] = cast(ToolGrant, tset)  # tools in ⇒ tools out
+            changed_caps = True
+        if want_vis is not None:
             _t, _d, vis2, _p, b = self._apply_ceiling(
-                vis=vis1, raise_ceiling=raise_ceiling, warnings=warnings)
+                vis=want_vis, raise_ceiling=raise_ceiling, warnings=warnings)
             bridged = bridged or b
             sc["org_visibility"] = cast(str, vis2)  # vis in ⇒ vis out
             changed_caps = True   # lowering sweeps the subtree like the others
@@ -2259,21 +2402,11 @@ class Org:
             if swept:
                 warnings.append(f"subtree grants clamped to the new set (№30): {swept}")
         if permission_mode is not None:
-            if permission_mode not in PM_LEVELS:   # D-030 hardening
-                raise LedgerError(
-                    f"permission_mode must be one of {PM_LEVELS}")
             _t, _d, _v, pm2, b = self._apply_ceiling(
                 pm=permission_mode, raise_ceiling=raise_ceiling, warnings=warnings)
             bridged = bridged or b
             sc["permission_mode"] = cast(str, pm2)  # pm in ⇒ pm out
         if effort is not None:
-            # user-approved (2026-07-31): thinking effort as a per-agent
-            # setting, adjusted from the gear — never a hire-row control.
-            # "" clears back to the CLI default. (No ultracode tier: orgtree
-            # replaces subagent semantics with real hires.)
-            if effort not in self.EFFORTS and effort != "":
-                raise LedgerError(
-                    f"effort must be one of {self.EFFORTS} (or '' to clear)")
             if effort:
                 sc["effort"] = effort
             else:
