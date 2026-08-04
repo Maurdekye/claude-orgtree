@@ -470,6 +470,54 @@ Autostart makes the process survive. These make the org survive:
    forever. The virtual-disk soft cap already exists for sandboxed orgs (`disk.py`); an unattended
    *non*-sandboxed instance has no such backstop.
 
+### 9.5 Credential mode — an API key instead of the user's subscription
+
+> we may need an alternative mode of operation for autonomous orgtree instances to allow them to
+> use an API key instead of taking the user's subscription credentials.
+
+**Three credential modes already exist — but only for sandboxed orgs.** `sandbox.py:451-455,499-503`
+selects between them per org:
+
+| mode | how | source |
+|---|---|---|
+| `proxied` *(default)* | container gets `ANTHROPIC_BASE_URL` → the bridge; the **host** attaches the OAuth token (`subproxy.py`), so the sandbox never holds a credential | host `~/.claude/.credentials.json` |
+| subscription | the credentials file is **copied into** the container home (`sandbox.py:472`) | same |
+| **API key** | `-e ANTHROPIC_API_KEY=<key>` straight into the container | `kiosk.api_key` (creation form / dashboard) **or** `ORGTREE_SANDBOX_API_KEY` |
+
+So the mechanism, the settings field, and the escape-hatch env var are all present. What is missing
+is the case autonomy actually needs:
+
+1. **Unsandboxed orgs have no per-org credential at all.** `clean_env()` (`supervisor.py:406`)
+   hands the CLI the whole host environment minus `CLAUDE_CODE_*`, so a host-level
+   `ANTHROPIC_API_KEY` would reach *every* org or none — untested, and not per-org. The fix is
+   small and the seam already exists: the per-node env is built three lines above the spawn
+   (`supervisor.py:1178-1181`), which is where an org's key belongs.
+2. **The selector is keyed off `kiosk.api_key`** — an org must be a kiosk to have a key. Autonomy
+   wants it on the ordinary org settings block (`api.py:751`), promoted out of the kiosk spec.
+3. ⚠ **The bridge proxy would override a key if a sandboxed org ever used both.** `anthropic_proxy`
+   strips `x-api-key` and force-sets `Authorization: Bearer <subscription token>`
+   (`api.py:1835-1841`). Correct today, since proxy mode and key mode are mutually exclusive — but
+   the exclusivity is implicit in `use_proxy` and should be made explicit before anyone adds a
+   third caller.
+
+**Why this matters for autonomy specifically, beyond preference:** an API key removes §9.2's
+ceiling entirely. No 15-day refresh window, no interactive re-auth, no shared credential file that
+a headless box must keep alive. It also isolates blast radius — an unattended org burning its own
+key does not consume the user's subscription rate limits, and the key can be revoked without
+touching the user's login. ☞ **For a genuinely unattended instance, API-key mode should be the
+default, not the alternative.**
+
+The trade to state plainly: an API key is metered spend against the org's own budget, so the
+ledger's credit accounting becomes the *only* brake — which raises the priority of §9.4's daily
+inbound-drive budget and dead-man's switch from prudent to necessary.
+
+**Correction to §9.2 from reading `subproxy.py`:** the refresh token **does** roll forward — the
+client stores `res.get("refresh_token", <old>)` on every refresh (`subproxy.py:74`). So a box that
+stays online plausibly renews indefinitely and the 15-day figure is a floor, not a ceiling. Still
+unverified: whether the token endpoint actually returns a new refresh token each time. ⚠ Separate
+real defect found in passing — `subproxy` never updates `refreshTokenExpiresAt` when it writes a new
+refresh token, so that field goes stale, and the §9.2 watcher must not trust it without a fix.
+
 ---
 
 ## 10. Further suggestions
@@ -517,9 +565,10 @@ therefore **`open`** (§7).
    since identity is now minted at org creation independently of any hub, so joining later costs
    nothing. Orgs created before this feature would simply mint a secret on first join. My
    recommendation: configurable at creation **and** later.
-2. **Does the refresh token roll forward?** (§9.2.) Untested, and it decides whether "fully
-   autonomous" means *indefinitely* or *about a fortnight at a time*. One experiment settles it,
-   and it should be run before the autonomy is relied on.
+2. **Is API-key mode the default for unattended instances?** (§9.5.) I recommend yes — it removes
+   the re-auth ceiling and isolates spend. Mostly moot if so, but still open: whether the OAuth
+   token endpoint returns a fresh refresh token on every refresh (the client already stores one if
+   it does — `subproxy.py:74`).
 3. **Is the display suffix pinned or re-derived on rotation?** (§3.) Recommended: pinned — it is a
    label, and re-deriving changes everyone's address book to fix one leaked secret.
 4. **One hub or several?** Multiple hub connections per instance is a modest generalization if

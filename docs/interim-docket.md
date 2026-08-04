@@ -1492,6 +1492,24 @@ dead-man's switch. Also worth saying plainly: **a Linux box is the better host f
 instance** — one systemd user unit with `Restart=always` plus `enable-linger` covers boot *and*
 crash, against Windows' scheduler-plus-auto-login stack.
 
+**⑦ API-key credential mode for autonomous instances** (user, 2026-08-04). Spec §9.5. Already
+half-built: `sandbox.py:451-455,499-503` selects between `proxied` / subscription / **API key**
+today, sourced from `kiosk.api_key` or `ORGTREE_SANDBOX_API_KEY`. Two gaps — it is **sandbox-only**
+(unsandboxed orgs get the whole host env via `clean_env()`, so a key would be global or absent, not
+per-org), and it is **kiosk-only** (the field lives in the kiosk spec, not org settings). The
+per-node env is built at `supervisor.py:1178-1181`, which is where a per-org key belongs.
+
+☞ For an unattended instance this should be the **default, not the alternative**: it removes ⑥'s
+re-auth ceiling entirely and stops an autonomous org consuming the user's subscription limits.
+Trade: metered spend against the org's own budget makes §9.4's daily drive cap and dead-man's switch
+necessary rather than prudent.
+
+**Correction to ⑥ from reading `subproxy.py`:** the refresh token **does** roll forward
+(`subproxy.py:74` stores `res.get("refresh_token", <old>)`), so 15 days is a floor for an online
+box, not a ceiling. ⚠ Real defect found in passing: `subproxy` never updates
+`refreshTokenExpiresAt` when it writes a new refresh token, so that field goes stale — the proposed
+expiry watcher must not trust it as-is.
+
 Five open questions remain at spec §11 — four were closed by the 2026-08-04 rulings. The one that
 most shapes a build is whether hub membership is truly creation-time-only; ② weakens the case for
 it, since identity is now minted at org creation independently of any hub, so an org can join later
