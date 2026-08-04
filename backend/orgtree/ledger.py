@@ -2117,7 +2117,23 @@ class Org:
         if new_parent is not None:
             self._require_live(new_parent)
             self._require_authority(actor, new_parent, allow_self=True)
-            if new_parent == nid or new_parent in self.descendants(nid, live_only=False):
+            # ⚠ The guard must cover EVERY node this move reparents, and that is
+            # not just `nid`'s subtree: the loop near the end of this method
+            # reparents the whole LINEAGE STACK to `new_parent` too (§8.5, the
+            # stack shares the successor's slot). A bearer that was stranded
+            # with org children of its own — `reseed`'s own-successor branch
+            # leaves exactly that — could therefore host `new_parent` below it
+            # while not being below `nid`, and the old check waved it through.
+            # Result: a REAL 2-cycle in the parent graph (`a@0.parent == "b"`
+            # and `b.parent == "a@0"`), reproduced 2026-08-04 by the credit
+            # conservation fuzzer. The cycle guards on ancestors()/
+            # lineage_stack() stop it hanging; they do not stop it existing,
+            # and a cyclic org is corrupt whether or not the walk terminates.
+            moved = {nid, *self.lineage_stack(nid)}
+            forbidden = set(moved)
+            for m in moved:
+                forbidden |= set(self.descendants(m, live_only=False))
+            if new_parent in forbidden:
                 raise LedgerError("target is inside the moved subtree — cycle (§4.5)")
         if p_old is not None:
             self._require_authority(actor, p_old, allow_self=True)
@@ -2163,6 +2179,24 @@ class Org:
                     self._check_top_grant(
                         self.nodes[hop]["grant"] + c,
                         f"moving {nid} under {new_parent}")
+            # ⚠ The docstring above claims the release leg "cannot fail on
+            # credits" because a grant on it is >= c by the free>=0 invariant.
+            # That holds only while the invariant does. `reseed`'s own-successor
+            # branch can zero a stranded bearer's grant while its children still
+            # hang off it, and then this subtraction ran unconditionally and
+            # produced a NEGATIVE grant — measured -7 and -13 by the credit
+            # conservation fuzzer 2026-08-04, on moves that raised nothing and
+            # left an ancestor's free() lower than it started (so not
+            # budget-neutral either, against this method's own contract).
+            # Refuse rather than corrupt: a negative grant is not a state any
+            # later operation is written to survive.
+            for hop in self._chain_up(p_old, lca):
+                if self.nodes[hop]["grant"] < c:
+                    raise LedgerError(
+                        f"cannot move {nid}: {hop} holds a grant of "
+                        f"{self.nodes[hop]['grant']}, less than the {c} this "
+                        f"move must release through it — the chain's accounting "
+                        f"is inconsistent (§4.5)")
             for hop in self._chain_up(p_old, lca):     # release: grants shrink
                 self.nodes[hop]["grant"] -= c
             for hop in down:                           # acquire: grants swell
