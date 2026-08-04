@@ -388,8 +388,18 @@ def enumerate_by_size(slug: str, limit: int = 500,
     # busybox find has no -printf; stat -c does exist. '@' as the separator
     # (paths may contain tabs in principle, never '@' at position 0 of the
     # size field). ⚠ busybox exits 0 even on flag errors — trust the parse.
+    #
+    # ⚠ Paging is `tail -n +N | head -M`, NOT `head -(offset+limit) | tail
+    # -limit`. The latter reads correctly and is wrong: `head -N` CLAMPS to
+    # the real line count once N overshoots it, and `tail -limit` then
+    # measures "the last `limit`" from the clamped list rather than from
+    # `offset`. Measured on a 12-file disk: offset=8 limit=10 returned TEN
+    # rows starting at file 3 — six of them already served on the previous
+    # page — and offset=12 (exactly past the end) returned the last five
+    # files instead of nothing. Both land precisely where a "load more"
+    # button naturally goes, at the end of a long listing.
     r = _sh(f"cd {mp} && find . -type f -exec stat -c '%s@%n' {{}} + "
-            f"| sort -rn | head -{offset + limit} | tail -{limit}",
+            f"| sort -rn | tail -n +{offset + 1} | head -{limit}",
             timeout=120)
     if r.returncode != 0:
         raise DiskError("disk enumeration failed: "
