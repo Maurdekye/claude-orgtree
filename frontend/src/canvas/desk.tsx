@@ -15,10 +15,10 @@ import {
   getScratch, interruptNode, retractMail, saveScope, sendMessage, uploadFile,
 } from '../api'
 import {
-  ArrowUpIcon, AutorenewIcon, CloseIcon, DotIcon, DownloadIcon, EditIcon,
-  FileIcon, FolderIcon, FrozenIcon, HearingIcon, LayersIcon, LockIcon,
-  MailIcon, PlayIcon, PsychologyIcon, SettingsIcon, SparkIcon, StopIcon,
-  WarnIcon,
+  ArrowDownIcon, ArrowUpIcon, AutorenewIcon, CloseIcon, DotIcon, DownloadIcon,
+  EditIcon, EyeIcon, FileIcon, FolderIcon, FrozenIcon, HearingIcon, LayersIcon,
+  LockIcon, MailIcon, PlayIcon, PsychologyIcon, SettingsIcon, SparkIcon,
+  StopIcon, WarnIcon,
 } from '../icons'
 import { ago, EXTERN, md, TIER_LETTER, TIER_SEAT, USER, useEsc, usePolled } from './shared'
 import {
@@ -105,11 +105,37 @@ interface DeskChatProps {
   onLineage?: () => void
   onConfig?: () => void
   onRecenter?: () => void
+  /** camera move to a related agent (F-01 nav chips) — the same glide as
+   *  clicking its card. USER as the id targets the eye/switchboard. */
+  onJump?: (id: string) => void
   pub: boolean
   bare?: boolean
   compact?: boolean
   compactAt?: number
   onMailLink?: MailLinkFn
+}
+
+/** F-01: one small clickable card pointing at a related agent — superior at
+ *  the top of the desk, one per direct report at the bottom. Carries live
+ *  state (busy spinner, unread mail count) because the data is already in
+ *  `map`; an inert chip would be a lie of omission next to a busy agent. */
+function NavChip({ n, dir, onJump }:
+{ n: CanvasNode; dir: 'up' | 'down'; onJump: (id: string) => void }) {
+  const eye = n.id === USER
+  return (
+    <button className={'desk-nav-chip' + (!eye && n.state !== 'live' ? ' dim' : '')}
+      title={eye ? 'jump to the switchboard'
+        : `jump to ${n.id}${n.state !== 'live' ? ` (${n.state})` : ''}`}
+      onClick={() => onJump(n.id)}>
+      {dir === 'up' ? <ArrowUpIcon fontSize="inherit" /> : <ArrowDownIcon fontSize="inherit" />}
+      {eye
+        ? <><EyeIcon fontSize="inherit" /> switchboard</>
+        : <><span className={'tier t-' + n.tier}>{TIER_LETTER[n.tier!] ?? '?'}</span>
+            {n.id}</>}
+      {n.busy && <AutorenewIcon fontSize="inherit" className="cc-spin" />}
+      {(n.mail_pending ?? 0) > 0 && <b className="eye-count">{n.mail_pending}</b>}
+    </button>
+  )
 }
 
 // how long the send receipt (§№11) stays up — long enough to read a routing
@@ -118,7 +144,8 @@ interface DeskChatProps {
 const SENDMODE_MS = 6000
 
 function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
-  onRecenter, pub, bare = false, compact = false, compactAt, onMailLink }: DeskChatProps) {
+  onRecenter, onJump, pub, bare = false, compact = false, compactAt,
+  onMailLink }: DeskChatProps) {
   // THE CONVERSATION IS NOT THIS COMPONENT'S. It lives in one per-node store
   // (convo.ts) that every view of this node subscribes to, because a node can
   // be on screen twice — its card and its switchboard panel — and two private
@@ -410,6 +437,15 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
         </span>}
         {!compact && <button className="cc-icon" onClick={onConfig}><SettingsIcon fontSize="inherit" /></button>}
       </div>
+      {/* F-01: superior chip at the TOP. For a top-level agent the superior is
+          the user, so the chip targets the switchboard (map carries the eye
+          root under USER). Bearer pseudo-cards float beside a successor and
+          have no meaningful parent chip. */}
+      {onJump && !node.isBearerOf && node.parent && map.has(node.parent) && (
+        <div className="desk-nav">
+          <NavChip n={map.get(node.parent)!} dir="up" onJump={onJump} />
+        </div>
+      )}
       {asking && (
         <ConfirmModal title={`dissolve ${node.id}?`}
           body="Its entire suborganization is retired with it. Context is kept; rehire brings nodes back."
@@ -569,6 +605,15 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
           .then(() => refresh(true))
           // rethrow: InboxView's optimistic hide rolls back on rejection
           .catch((e: Error) => { toast([`error: ${e.message}`]); throw e })} />}
+      {/* F-01: subordinate chips at the BOTTOM — one per direct report. Drafts
+          are not agents yet; bearer pseudo-cards are consultable stack layers,
+          not reports. */}
+      {onJump && node.children.some((c) => c.state !== 'draft' && !c.isBearerOf) && (
+        <div className="desk-nav">
+          {node.children.filter((c) => c.state !== 'draft' && !c.isBearerOf)
+            .map((c) => <NavChip key={c.id} n={c} dir="down" onJump={onJump} />)}
+        </div>
+      )}
       {/* №13: the composer is present under EVERY tab — finding a wrong number
           on the files tab shouldn't cost your place to say so */}
       {sendMode && <div className="sendmode dim">{sendMode}</div>}

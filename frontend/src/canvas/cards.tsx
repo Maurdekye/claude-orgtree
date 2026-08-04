@@ -275,7 +275,7 @@ function EyeDesk({ map, op, slug, toast, inboxCount,
             <div className="eye-panel" key={a.id}>
               <DeskChat node={a} map={map} op={op} slug={slug}
                 toast={toast} pub={pub} bare compact compactAt={compactAt}
-                onMailLink={onMailLink} />
+                onJump={onJump} onMailLink={onMailLink} />
             </div>
           ))}
           {!open.length && agents.length > 0 &&
@@ -613,6 +613,7 @@ interface NodeSquareProps {
   onInbox: () => void
   onLineage: () => void
   onRecenter?: () => void
+  onJump?: (id: string) => void
   pub: boolean
   kioskRemaining: number | null
   cascadeAlloc: boolean
@@ -630,7 +631,7 @@ interface NodeSquareProps {
 
 export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, map, op, slug,
   toast, pxc, zoom, onSpawn, onConfig, onInbox, onLineage,
-  onRecenter, pub, kioskRemaining, cascadeAlloc, maxTop, pile, compactAt, maxTier,
+  onRecenter, onJump, pub, kioskRemaining, cascadeAlloc, maxTop, pile, compactAt, maxTier,
   onMailLink, onDragStart, onDragMove, onDragEnd, onDragCancel }: NodeSquareProps) {
   // pile fronts zoom on a plain CENTER click (user spec) — track the
   // pointer-down point so a drag's trailing click doesn't re-zoom
@@ -753,7 +754,7 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, m
         <DeskChat node={node} map={map} op={op} slug={slug}
           toast={toast}
           onLineage={onLineage} onConfig={onConfig} compactAt={compactAt}
-          onRecenter={onRecenter} pub={pub} onMailLink={onMailLink} />
+          onRecenter={onRecenter} onJump={onJump} pub={pub} onMailLink={onMailLink} />
       )}
       {/* user ruling: chips are NEVER disabled by the node's own free credits —
           a user hire §4.6-cascades, granting the chain whatever it lacks.

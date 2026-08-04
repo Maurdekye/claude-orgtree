@@ -1069,6 +1069,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
               onInbox={() => setInboxId(n.id)} onLineage={() => setLineageId(n.id)}
               onMailLink={openMail}
               onRecenter={() => centerOn(n.id)}   /* recenter AND re-zoom to fill */
+              onJump={centerOn}                   /* F-01 nav chips */
               pub={!!tree.public} kioskRemaining={kioskRemaining}
               cascadeAlloc={tree.cascade_alloc !== false}
               maxTop={tree.max_top_grant ?? 1000} maxTier={tree.kiosk?.max_tier}

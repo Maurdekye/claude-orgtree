@@ -1,6 +1,7 @@
 // One import surface for every icon in the app (user ruling: MUI icons, no
 // emojis). All render at the local font size and inherit currentColor.
 export { default as AddIcon } from '@mui/icons-material/Add'
+export { default as ArrowDownIcon } from '@mui/icons-material/ArrowDownward'
 export { default as ArrowUpIcon } from '@mui/icons-material/ArrowUpward'
 export { default as AutorenewIcon } from '@mui/icons-material/Autorenew'
 export { default as BlockIcon } from '@mui/icons-material/Block'
@@ -18,6 +19,7 @@ export { default as ExpandMoreIcon } from '@mui/icons-material/ExpandMore'
 export { default as FileIcon } from '@mui/icons-material/InsertDriveFileOutlined'
 export { default as FolderIcon } from '@mui/icons-material/FolderOpen'
 export { default as FrozenIcon } from '@mui/icons-material/AcUnit'
+export { default as EyeIcon } from '@mui/icons-material/VisibilityOutlined'
 export { default as FullscreenIcon } from '@mui/icons-material/Fullscreen'
 export { default as GitHubIcon } from '@mui/icons-material/GitHub'
 export { default as HearingIcon } from '@mui/icons-material/Hearing'
