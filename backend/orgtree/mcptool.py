@@ -382,20 +382,38 @@ def main() -> None:
             msg = json.loads(line)
         except json.JSONDecodeError:
             continue
+        # ⚠ a line may parse as ANY json value — 5, "x", null, or a JSON-RPC 2.0
+        # BATCH (a list), which is legal on the wire. `msg.get(...)` on those
+        # raised AttributeError out of the loop and the process EXITED: an
+        # agent whose MCP server dies mid-turn loses its only way to act, with
+        # no error it can see. Same for a `params` that is not an object.
+        if not isinstance(msg, dict):
+            continue
+        msg = cast("dict[str, Any]", msg)
         method = msg.get("method", "")
         id_ = msg.get("id")
+        raw_params = msg.get("params")
+        params: dict[str, Any] = (cast("dict[str, Any]", raw_params)
+                                  if isinstance(raw_params, dict) else {})
+        if id_ is None:
+            # a notification draws NO response (JSON-RPC 2.0 / MCP): the
+            # unsolicited `"id": null` this used to emit for an id-less
+            # tools/call is a frame no client can match to a request
+            continue
         if method == "initialize":
             reply(id_, {
-                "protocolVersion": msg.get("params", {}).get("protocolVersion",
-                                                             "2024-11-05"),
+                "protocolVersion": params.get("protocolVersion",
+                                              "2024-11-05"),
                 "capabilities": {"tools": {}},
                 "serverInfo": {"name": "orgtree", "version": "1.0.0"},
             })
         elif method == "tools/list":
             reply(id_, {"tools": TOOLS})
         elif method == "tools/call":
-            params = msg.get("params", {})
-            out = call_api(params.get("name", ""), params.get("arguments", {}) or {})
+            raw_args = params.get("arguments")
+            out = call_api(str(params.get("name", "")),
+                           cast("dict[str, Any]", raw_args)
+                           if isinstance(raw_args, dict) else {})
             try:
                 parsed = json.loads(out)
                 is_err = isinstance(parsed, dict) and ("error" in parsed or "detail" in parsed)
@@ -406,9 +424,8 @@ def main() -> None:
                 is_err, text = False, out
             reply(id_, {"content": [{"type": "text", "text": str(text)}],
                         "isError": bool(is_err)})
-        elif id_ is not None:      # unknown request — answer, don't wedge the client
+        else:                      # unknown request — answer, don't wedge the client
             reply(id_, {})
-        # notifications (no id) are ignored
 
 
 if __name__ == "__main__":

@@ -641,18 +641,19 @@ def main() -> None:
             p = _crash(True)
             tm = p.timings()
             assert tm["gap_s"] == 0, f"a GAP, not the expected duplicate: {tm}"
+            # PROMOTED 2026-08-04, on its own instruction ("if the fold-back
+            # learned to consult the transcript, delete this exception and
+            # assert the invariant"). It did not learn — weakening the
+            # fold-back would cost the agent ever being re-asked — but
+            # `node_chat` now applies its `_in_transcript` evidence test to the
+            # MAILBOX rows as well as the journal's, so the duplicate is gone
+            # at the display layer with delivery untouched. The turn-lifecycle
+            # suite's twin of this check was promoted at the same time.
             dups = [t for t, r, _ in p.samples if r["total"] > 1]
-            assert dups, ("the transcript+mailbox double-render did NOT happen — "
-                          "if the fold-back learned to consult the transcript, "
-                          "delete this exception and assert the invariant")
-            EXCEPTIONS.append((
-                "crash after the transcript echo, before the first stdout event",
-                f"{len(dups)} of {len(p.samples)} samples showed the message "
-                f"TWICE (transcript + re-queued mailbox row), from t+{dups[0]:.2f}s "
-                f"to the end of the run — at-least-once redelivery, by design: "
-                f"`_fold_back_undelivered` re-queues an unconfirmed batch "
-                f"without asking whether the transcript already carries it"))
-        check("crash · after the echo: the at-least-once duplicate, measured",
+            assert not dups, (
+                f"the transcript+mailbox double-render is BACK: {len(dups)} of "
+                f"{len(p.samples)} samples showed it twice, from t+{dups[0]:.2f}s")
+        check("crash · after the echo: exactly one copy on screen",
               _crash_after_echo)
 
         def _usage_limit():

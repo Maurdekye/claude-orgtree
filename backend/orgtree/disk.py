@@ -162,8 +162,19 @@ def create(slug: str, size_mb: int) -> None:
                             + (r.stderr or r.stdout)[-300:])
         img = _img_path(slug)
         if _sh(f"test -f {img}").returncode != 0:
+            # -m 0: NO reserved-for-root blocks. ext4's 5% default reserve is
+            # for a system disk that must not wedge root; this image holds one
+            # org's data and the container's CLI runs as an unprivileged user,
+            # so the reserve is simply 5% of the cap the operator paid for
+            # that agents can never use — and it makes the ≥99% "hard full"
+            # tier unreachable: measured on a real 4096 MB org disk, the CLI's
+            # writes hit ENOSPC with `df` reading 94.4% (test_sandbox.py §9),
+            # so the alert state that tier exists to raise could not fire.
+            # Applies to NEWLY created disks; an existing one can be migrated
+            # with `tune2fs -m 0 <img>` (not done automatically — it is the
+            # operator's disk).
             mk = _sh(f"dd if=/dev/zero of={img} bs=1M count=0 seek={size_mb} "
-                     f"2>/dev/null && mkfs.ext4 -q {img}", timeout=300)
+                     f"2>/dev/null && mkfs.ext4 -q -m 0 {img}", timeout=300)
             if mk.returncode != 0:
                 _sh(f"rm -f {img}")
                 raise DiskError("org disk format failed: "

@@ -32,7 +32,7 @@ from collections.abc import Callable, Iterable, Mapping
 from typing import Any, cast
 
 from . import sandbox as sbx, store
-from .ledger import EXTERN, USER, Org, expand_mcp, now as now_iso
+from .ledger import EXTERN, USER, LedgerError, Org, expand_mcp, now as now_iso
 from .schema import (Denial, FrozenInfo, InflightInfo, KioskCfg, MailEntry,
                      NodeDoc, NoticeEntry)
 
@@ -394,6 +394,43 @@ def transcript_path(session_id: str, root: str | None = None) -> str | None:
     base = root or os.path.expanduser("~/.claude")
     hits = glob.glob(os.path.join(base, "projects", "*", session_id + ".jsonl"))
     return hits[0] if hits else None
+
+
+def transcript_index(root: str | None = None) -> dict[str, str]:
+    """`session_id → transcript path`, built with ONE walk of `projects/`.
+
+    ⚠ `transcript_path` is a `glob` whose WILDCARD COMPONENT is the project
+    directory, so every call re-lists `projects/` — and `reconcile` calls it
+    once per live node that has ever run. That is O(live_nodes × project_dirs)
+    at startup, on a directory whose size is the user's whole Claude Code
+    history, not this org's. Measured 2026-08-04: with 3,000 project dirs and
+    50 nodes, one `transcript_path` cost 40 ms and `reconcile` cost 2,253 ms —
+    55× a single call, i.e. the per-node scan, not a fixed cost. One walk
+    turns the same pass into O(project_dirs) with O(1) lookups.
+
+    Matches `glob`'s semantics deliberately, including skipping dot-prefixed
+    directories (`*` does not match a leading dot) — an index that disagreed
+    with the direct lookup would make `reconcile` and the turn path reach
+    different verdicts about the same session."""
+    base = root or os.path.expanduser("~/.claude")
+    proj = os.path.join(base, "projects")
+    out: dict[str, str] = {}
+    try:
+        dirs = os.listdir(proj)
+    except OSError:
+        return out
+    for d in dirs:
+        if d.startswith("."):
+            continue
+        p = os.path.join(proj, d)
+        try:
+            names = os.listdir(p)
+        except OSError:
+            continue
+        for f in names:
+            if f.endswith(".jsonl"):
+                out.setdefault(f[:-6], os.path.join(p, f))
+    return out
 
 
 def _transcript_root(org: Org) -> str | None:
@@ -1722,20 +1759,93 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
             with store.DOC_LOCK:
                 o2 = store.load_org(slug)
                 o2.node(nid)["bearer_state"] = "preserving"
-                o2._notify([o2.node(nid)["parent"]],
+                # ⚠ The notice used to go to `parent` ALONE, and `_notify`
+                # silently drops a falsy target — so a bearer rehired into a
+                # TOP-LEVEL slot (the superior-rehired case, which keeps the
+                # old parent, i.e. None) announced its own transition to
+                # nobody at all: the agent quietly stopped retaining anything
+                # said to it and no one was told. Measured 2026-08-04
+                # (test_compaction "a TOP-LEVEL bearer's oracle transition
+                # tells nobody"). The SUCCESSOR is the right target in every
+                # case — it is the one agent whose reason to consult this
+                # bearer just changed — and `_notify` de-duplicates, so the
+                # self-rehired case (parent == successor) still sends one.
+                o2._notify([o2.node(nid)["parent"],
+                            o2.node(nid).get("successor")],
                            f'Knowledge bearer "{nid}" has exhausted its headroom and is '
                            f'now a PRESERVING ORACLE — it still answers, but exchanges '
                            f'are no longer retained by it.')
                 store.save_org(o2)
         return
     # per-org compaction threshold (user setting, 50–95%); the env default is
-    # the fallback, everything hard-capped at 95%
-    compact_at = min(0.95, float(org.d.get("compact_at") or COMPACT_AT))
+    # the fallback, everything hard-capped at 95%.
+    #
+    # ⚠ The FLOOR matters as much as the ceiling, and only the ceiling was
+    # here. `POST /settings` clamps to 50–95 (api.py:1012) but nothing else
+    # does: `defaults.json` is stored ORG-DOC-SHAPED and unvalidated
+    # (api.py:894,921) and the doc itself is hand-editable, so a
+    # zero-or-negative `compact_at` reached this line intact and made
+    # `occ / cw >= compact_at` true on EVERY turn — each one forking a
+    # compaction with a 600 s ceiling that holds a global turn slot, on a node
+    # whose context is nearly empty. Measured 2026-08-04 (test_compaction
+    # "a NEGATIVE compact_at compacts on every turn"). A NaN is the same bug
+    # spelled the other way round: every comparison is False, so compaction
+    # silently never happens and the node runs until the context wall.
+    # Anything unusable falls back to the configured default rather than
+    # guessing a number the operator did not choose.
+    compact_at = _threshold(org.d.get("compact_at"), COMPACT_AT)
     if occ and cw and occ / cw >= compact_at:
         # №28: a failing compaction used to re-fire after EVERY turn, holding
         # a turn slot for up to 10 minutes each time — cool down between tries
         if time.time() >= state(slug, nid).get("compact_retry_at", 0):
             _compact_split(slug, nid)
+
+
+def _fork_result(out: str) -> dict[str, Any]:
+    """The compaction fork's `--output-format json` answer.
+
+    ⚠ `json.loads(out)` on the WHOLE stream assumed the CLI's stdout carries
+    the result object and nothing else. It usually does — but a single
+    unrelated line (an npm/node warning, an update notice, a `--debug`
+    banner) makes the parse throw, which this function's caller treats as a
+    failed split: a 15-minute cooldown, a `last_error` on the desk, and the
+    most expensive call the system makes thrown away, for output that
+    actually contained a perfectly good session id. Scan for the last
+    parseable JSON OBJECT instead, which is what the result is, and keep the
+    whole-body parse as the fast path."""
+    body = out.strip()
+    if not body:
+        return {}
+    try:
+        whole = json.loads(body)
+        if isinstance(whole, dict):
+            return cast("dict[str, Any]", whole)
+    except json.JSONDecodeError:
+        pass
+    for line in reversed(body.splitlines()):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict) and obj.get("session_id"):
+            return cast("dict[str, Any]", obj)
+    return {}
+
+
+def _threshold(raw: Any, fallback: float) -> float:
+    """A context-occupancy fraction, clamped into a band where it can only
+    mean what it says. Unusable input (None, "", junk, NaN, <= 0, > 1) falls
+    back to `fallback`; the 0.95 ceiling is the long-standing hard cap."""
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return fallback
+    if v != v or v <= 0.0 or v > 1.0:      # NaN, non-positive, or not a fraction
+        return fallback
+    return min(0.95, v)
 
 
 def _compact_split(slug: str, nid: str) -> None:
@@ -1786,8 +1896,15 @@ def _compact_split_body(slug: str, nid: str) -> None:
             proc.kill()
             proc.communicate()
             raise RuntimeError("fork/compact timed out after 600s (child killed)")
-        res = json.loads(out) if out.strip() else {}
+        res = _fork_result(out)
         new_sid = res.get("session_id")
+        # the id has to be USABLE as `--resume <sid>`, not merely present: a
+        # non-string (or a blank/whitespace one) would be written straight
+        # onto the node and every later turn would resume a session that
+        # cannot exist, with the pre-compaction transcript already retired
+        # into a bearer. Cheaper to fail the split and keep the old session.
+        if not isinstance(new_sid, str) or not new_sid.strip():
+            new_sid = None
         if proc.returncode != 0 or not new_sid or new_sid == old_sid:
             raise RuntimeError(f"fork/compact failed (rc={proc.returncode})")
     except Exception as e:                                   # noqa: BLE001
@@ -1801,7 +1918,27 @@ def _compact_split_body(slug: str, nid: str) -> None:
     # public gateway's compact button can trigger repeatedly)
     fork_cost = float(res.get("total_cost_usd") or 0.0)
     with store.DOC_LOCK:
-        org = store.load_org(slug)
+        # ⚠ Everything above ran for up to 600 s with no lock held, and the
+        # node can be deleted — or the whole org dropped — inside that window.
+        # `org.node(nid)` then raised a LedgerError out of a DAEMON THREAD
+        # whose caller catches only RuntimeError (api.node_compact), so the
+        # thread died with a traceback and the fork's dollar cost vanished
+        # with it: a real, billed, expensive API call that nothing recorded.
+        # Bank the burn where every other removed node's burn goes and stop.
+        try:
+            org = store.load_org(slug)
+        except LedgerError:
+            print(f"[orgtree] {slug}/{nid}: compaction fork finished after the "
+                  f"org was deleted (${fork_cost:.4f} unrecorded)")
+            return
+        if nid not in org.nodes:
+            if fork_cost:
+                org.d["deleted_cost_usd"] = round(
+                    float(org.d.get("deleted_cost_usd") or 0.0) + fork_cost, 6)
+                store.save_org(org)
+            print(f"[orgtree] {slug}/{nid}: compaction split abandoned — the "
+                  f"node was removed while the fork ran")
+            return
         pred = org.compact_split(nid, new_sid)
         n = org.node(nid)
         if fork_cost:
@@ -1834,8 +1971,27 @@ def manual_compact(slug: str, nid: str) -> None:
             raise RuntimeError("busy — wait for the current turn to finish")
         st["busy"] = True
     try:
-        _compact_split(slug, nid)
+        # ⚠ The fork is a full CLI child — the same ~306 MB of working set a
+        # turn costs, for up to the same 600 s — and this path did not take a
+        # turn slot. `MAX_CONCURRENT` therefore did not bound the number of
+        # concurrent CLI processes at all: N manual compactions ran ON TOP of
+        # the cap, and the compact button is on the kiosk's public surface, so
+        # a visitor with N agents could add N children to a box already at its
+        # limit. Measured 2026-08-04 (test_compaction "a compaction fork
+        # occupies a global turn slot"): with the cap at 1 and a node
+        # compacting, an unrelated org was served in 152 ms — i.e. the fork
+        # was invisible to the semaphore. The AUTOMATIC path is already inside
+        # `_run_one_turn`'s `with _turn_slots:`, which is why the acquisition
+        # belongs here and not inside `_compact_split` (that would deadlock on
+        # a non-reentrant semaphore the same thread already holds).
+        # `waiting` is the established "blocked on a slot, not running" flag
+        # (№12 — the UI draws it hollow).
+        st["waiting"] = True
+        with _turn_slots:
+            st["waiting"] = False
+            _compact_split(slug, nid)
     finally:
+        st["waiting"] = False
         nxt = None
         with _state_lock:
             if st["queue"]:
@@ -2789,14 +2945,17 @@ def reconcile(slug: str) -> list[str]:
     marked = []
     with store.DOC_LOCK:
         org = store.load_org(slug)
+        # ONE walk for the whole pass — see transcript_index. The per-node
+        # `transcript_path` this replaces re-listed the user's entire
+        # `projects/` directory for every node, once per org, at startup.
+        seen = transcript_index(_transcript_root(org))
         for nid, n in org.nodes.items():
             if (n["state"] == "live" and float(n.get("cost_usd") or 0.0) > 0
                     and not n.get("bearer_state")
                     # audit finding: the root MUST be the org's — sandboxed
                     # transcripts live under <data>/sandboxes/<slug>/home, and
                     # omitting it condemned every sandboxed node at restart
-                    and transcript_path(n["session_id"],
-                                        _transcript_root(org)) is None):
+                    and n["session_id"] not in seen):
                 org.mark_unrecoverable(nid, "transcript missing at startup (№31)")
                 marked.append(nid)
         if marked:

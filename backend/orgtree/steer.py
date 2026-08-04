@@ -19,6 +19,7 @@ import json
 import os
 import sys
 import urllib.request
+from typing import cast
 
 
 def identity() -> tuple[str | None, str | None, str | None, str | None]:
@@ -48,9 +49,21 @@ def identity() -> tuple[str | None, str | None, str | None, str | None]:
             return None, None, None, None
         org, node = parts[0], parts[1]
     try:
-        b = json.load(open(os.path.join(data_root, ".bridge"), encoding="utf-8"))
-        return org, node, b["url"].rstrip("/"), b.get("secret", "")
-    except (OSError, ValueError, KeyError):
+        # ⚠ the file is written by ANOTHER process (sandbox.py, into a mounted
+        # sandbox home) and can be truncated mid-write, a list, or carry a null
+        # url. This runs after EVERY tool call, so anything that escapes here
+        # is a traceback on every single one — hence a shape check rather than
+        # a wider `except`: `[]` raised TypeError and `{"url": null}`
+        # AttributeError, neither of which the old clause caught.
+        with open(os.path.join(data_root, ".bridge"), encoding="utf-8") as f:
+            raw: object = json.load(f)
+        if isinstance(raw, dict):
+            b = cast("dict[str, object]", raw)
+            url, secret = b.get("url"), b.get("secret", "")
+            if isinstance(url, str) and url.strip():
+                return (org, node, url.strip().rstrip("/"),
+                        secret if isinstance(secret, str) else "")
+    except (OSError, ValueError):
         pass
     port = os.environ.get("ORGTREE_PORT")
     if not port:
@@ -75,7 +88,14 @@ def main() -> None:
             f"{base}/api/orgs/{org}/nodes/{node}/steer", method="POST")
         if secret:
             req.add_header("X-Orgtree-Bridge", secret)
-        with urllib.request.urlopen(req, timeout=5) as r:
+        # ⚠ 2 s, not 5. This runs inside a PostToolUse hook with an 8 s budget,
+        # on EVERY tool call of EVERY agent. A refused connection returns
+        # instantly, but a black-holed backend — a paused container, a DROP
+        # rule — burns the whole timeout on every single call, measured at
+        # 5.09 s against TEST-NET-1 and completely invisible: it just makes
+        # every turn slower. The backend is on loopback or the local bridge; if
+        # it has not answered in 2 s it is not going to.
+        with urllib.request.urlopen(req, timeout=2) as r:
             data = json.load(r)
     except Exception:             # noqa: BLE001 — backend down = nothing to say
         return

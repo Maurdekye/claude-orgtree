@@ -410,10 +410,68 @@ capacity*, not dollars.
 ## Development
 
 ```bash
-cd backend && python tests/test_ledger.py   # ledger invariants (all checks must pass)
+python tools/run_tests.py                   # every suite, fast tier (~2 min)
 cd frontend && npm run dev                  # vite dev server w/ API proxy
 python tools/ui_probe.py sweep <org> out/   # headless UI screenshot sweep
 ```
+
+### Running the tests
+
+There is no pytest. Every backend suite is a plain script that prints `ok N`
+lines and ends in `ALL N CHECKS PASS`, and the frontend suite is node's own
+test runner behind an esbuild step — so each one can still be run directly
+(`python backend/tests/test_ledger.py`, `npm test` in `frontend/`). One command
+runs all of them and prints a single summary:
+
+```bash
+python tools/run_tests.py            # fast tier — hermetic only, ~2 min
+python tools/run_tests.py --full     # everything, live rigs included, ~13 min
+python tools/run_tests.py --list     # what would run, and how, without running it
+```
+
+Useful flags: `--only <substring>` · `--serial` · `--jobs N` · `--no-frontend`
+· `--logdir DIR` (per-suite logs; otherwise a temp directory, path printed).
+Exit status is non-zero if any suite fails.
+
+**The two tiers.** The fast tier runs every suite in the cheapest mode that
+suite advertises — `--hermetic` if it has one, else `--quick`, else plain — and
+touches no real listener that matters. It is what CI runs. The full tier runs
+everything at full depth, including the live rigs that spawn a real uvicorn, a
+real turn loop and a fake Claude CLI, and sweep timing configurations in real
+elapsed time. Those are minutes each, so they are a pre-release gate rather
+than a per-change one.
+
+**How suites are found.** By glob — `backend/tests/test_*.py` plus
+`frontend/tests/run.mjs`. Adding a suite requires no edit to the runner: its
+flags, whether it starts a real listener (those run one at a time, after the
+parallel pool drains, so nothing races them), whether it asserts Windows-only
+filesystem behaviour, and whether it carries a drift guard are all read out of
+the suite's own source. The one table of literals in `run_tests.py` is `SLOW`,
+which records *measured* wall times that keep a suite out of the fast tier.
+
+**Drift guards.** Several suites mirror expressions that live in production
+files and check that the original still says what the mirror assumes:
+`backend/tests/msgvis.py` re-implements the client's ghost-graduation rule and
+greps four sources for the nine expressions it ports, `derived.test.ts` pins
+seven `convo.ts` constants, and the authority suite audits every
+grant-mutating site in `ledger.py`. If one of those fires, the runner says so
+under its own banner and separately from the pass/fail count,
+because a drift failure does not mean the app is broken — it means a guarded
+expression moved and the test's model of it did not, so every check downstream
+of that model has quietly become fiction until the mirror is updated. The
+summary also reports guards that ran and *held*, and flags a guard that
+printed no verdict at all.
+
+**CI** (`.github/workflows/tests.yml`) runs the fast tier on every push, on
+`windows-latest` **and** `ubuntu-latest`. Windows is the authoritative job:
+orgtree runs on Windows, and `test_persistence.py` asserts Windows filesystem
+semantics directly (`os.replace` over an open destination raises WinError 5;
+`FILE_SHARE_DELETE` does not rescue it) — the writer-preferring latch exists
+*because* of them. On Linux those calls simply succeed, so the runner skips
+that suite there and prints the reason in the summary rather than pretending
+it passed. The Linux job is advisory until it has come back green once —
+nothing in this tree has ever been observed running on Linux, and a blocking
+job that has never passed is a job people turn off.
 
 The ledger (`backend/orgtree/ledger.py`) is the single source of truth for
 credits, authority, addressing, and capability subsets; the supervisor

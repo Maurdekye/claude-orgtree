@@ -2069,12 +2069,18 @@ def _arg_int(a: dict[str, Any], key: str, default: int) -> int:
     v = a.get(key)
     if v is None or v == "":
         return default
+    # ⚠ OverflowError as well as TypeError/ValueError: `int(float("Infinity"))`
+    # and `float("1e400")` raise it, not ValueError, so "Infinity", "-Infinity"
+    # and "1e400" walked past the guard and 500ed the gateway an agent is
+    # holding a tool result open on. Found 2026-08-04 by the mcptool suite,
+    # which builds these args itself — and an LLM writes "Infinity" far more
+    # readily than a human does.
     try:
         return int(v)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         try:
             return int(float(v))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             raise LedgerError(f"{key} must be a number (got {v!r})")
 
 
@@ -2213,7 +2219,14 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
             elif body.tool == "orgtree_retire":
                 result = org.retire(body.node, a.get("node"))  # type: ignore[arg-type]  # node() 422s on None
             elif body.tool == "orgtree_rehire":
-                result = org.rehire(body.node, a.get("node"), a.get("grant"))  # type: ignore[arg-type]  # node() 422s on None
+                # `grant` now goes through _arg_int like every other int
+                # argument. It was the ONE that did not, so {"grant": "abc"}
+                # reached `int(grant)` in the ledger and 500ed (mcptool suite,
+                # 2026-08-04). None/"" stays None — rehire's "no explicit grant".
+                _g = a.get("grant")
+                result = org.rehire(body.node, a.get("node"),  # type: ignore[arg-type]  # node() 422s on None
+                                    None if _g is None or _g == ""
+                                    else _arg_int(a, "grant", 0))
                 drive.extend(result.pop("drive", []))
             elif body.tool == "orgtree_move":
                 result = org.move(body.node, a.get("node", ""),
@@ -2511,6 +2524,10 @@ def node_file(slug: str, nid: str, path: str = "") -> FileResponse:
 # fetch, and the /anthropic proxy — which attaches the HOST's subscription
 # token. Verified reachable at GET …/disk/file?path=home/orgtree/.bridge.
 _PUBLIC_DISK_DENY = (".credentials.json", ".claude.json", ".bridge")
+#: how much of a file a visitor download scans for this org's bridge secret.
+#: 256 KiB covers any plausible copy of a credential file while costing one
+#: read; see disk_file for why the name check alone is not a boundary.
+_SECRET_SCAN_BYTES = 262144
 _SID_FILE = re.compile(r"^home/\.claude/projects/[^/]+/([0-9a-f-]{36})\.jsonl$")
 
 
@@ -2676,11 +2693,35 @@ def disk_file(slug: str, request: Request, path: str = "") -> FileResponse:
     buffered). Visitors get everything except the engine credential files."""
     org = _disk_org(slug)
     rel, full = _disk_rel(slug, path)
-    cls, why = _disk_classify(org, rel, bool(_public_slug(request)))
+    public = bool(_public_slug(request))
+    cls, why = _disk_classify(org, rel, public)
     if cls == "blocked" and rel.rsplit("/", 1)[-1] in _PUBLIC_DISK_DENY:
         raise HTTPException(403, why or "not served publicly")
     if not os.path.isfile(full):
         raise HTTPException(404, f"no such file: {rel!r}")
+    # ☠ A FILENAME denylist is not a boundary here, and the sandbox suite
+    # proved it end to end: every sandboxed agent has passwordless root on the
+    # org disk, so `cp ~/orgtree/.bridge workspace/notes.txt` renames the
+    # secret out of the deny tuple and a kiosk visitor downloads it with a 200.
+    # That secret opens /api/agent as ANY node of the org and the /anthropic
+    # proxy, which attaches the HOST's subscription OAuth token — so this is
+    # the whole sandbox boundary, defeated by a copy.
+    #
+    # Content is therefore checked as well as name, for visitors only: any file
+    # carrying this org's bridge secret is refused whatever it is called. The
+    # scan is bounded and cheap (the secret is 32 hex chars; a copy of a small
+    # JSON file is what this defends against, and a multi-GB file streaming to
+    # a visitor is not a credential-shaped object).
+    if public:
+        secret = sandbox.sandbox_secret(org)
+        if secret:
+            try:
+                with open(full, "rb") as f:
+                    head = f.read(_SECRET_SCAN_BYTES)
+                if secret.encode() in head:
+                    raise HTTPException(403, "credential/secret file")
+            except OSError:
+                pass          # unreadable: the FileResponse below reports it
     return FileResponse(full, filename=os.path.basename(full))
 
 
@@ -3349,6 +3390,34 @@ def _ws_impl() -> str | None:
 
 def main() -> None:
     import uvicorn
+
+    # ⚠ ONE BACKEND PER DATA ROOT — enforced here because this is the only
+    # moment it is cheap and safe. MEASURED (test_compaction.py "xproc"): two
+    # processes running the canonical load → mutate → save cycle against one
+    # org doc lose 44–50 % of their COMPLETED writes, four processes 62–82 %,
+    # with zero exceptions, zero torn reads and zero orphaned temp files. Both
+    # existing guards are per-process and `os.replace` is atomic, which is
+    # exactly why the loss is silent: every writer is told it succeeded.
+    #
+    # A lock around save_org would not help — the race is the read-modify-write
+    # CYCLE, so a correct lock would have to span load → save, i.e. regions
+    # that spawn CLI children and stay held for a 600 s compaction fork. That
+    # is a deadlock surface. Claiming the root at startup is the whole fix.
+    try:
+        store.claim_data_root()
+    except store.DataRootBusy as e:
+        bar = "!" * 74
+        print(f"\n{bar}\n"
+              f"  ANOTHER ORGTREE BACKEND ALREADY OWNS THIS DATA ROOT\n"
+              f"\n"
+              f"  {e}\n"
+              f"\n"
+              f"  Two backends on one data root silently DISCARD each other's\n"
+              f"  writes — measured at 44-82% of completed saves lost, with no\n"
+              f"  error on either side. Stop the other one, or point this one\n"
+              f"  at a different ORGTREE_DATA.\n"
+              f"{bar}\n", flush=True)
+        raise SystemExit(1)
 
     if _ws_impl() is None:
         bar = "!" * 74

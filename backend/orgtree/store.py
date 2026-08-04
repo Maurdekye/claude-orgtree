@@ -100,6 +100,133 @@ class _IOLatch:
 _IO = _IOLatch()
 
 
+# ------------------------------------------------- one backend per data root
+# MEASURED, 2026-08-04 (test_compaction.py "xproc"): two OS processes running
+# the canonical `with DOC_LOCK: load_org → mutate → save_org` cycle against one
+# org doc lose **32–74 % of their completed writes**, with **zero exceptions,
+# zero torn reads and zero orphaned temp files**. Both guards above are
+# per-process: `DOC_LOCK` is a `threading.RLock` and `_IOLatch` a `Condition`,
+# and `os.replace` is atomic — which is exactly why the failure is invisible.
+# Every writer is told it succeeded; the loser's changes are simply not there.
+#
+# Note what this does NOT justify: a cross-process lock around `save_org`
+# alone would not help at all. The race is the read-modify-write CYCLE, so a
+# correct lock would have to span `load_org … save_org`, i.e. replace
+# `DOC_LOCK` in every caller — regions that spawn CLI children and can be held
+# for the length of a 600 s compaction fork. That is a deadlock surface, not a
+# fix.
+#
+# So the rule the architecture already states — ONE BACKEND PER DATA ROOT — is
+# enforced at the one moment it is cheap and safe to enforce: process start.
+# The claim is an OS-level file lock, not a PID file with a staleness
+# heuristic. That distinction is load-bearing: a stale-lock STEAL based on
+# mtime is independently broken against a merely-slow (not dead) holder —
+# reproduced 2026-08-04, four processes' critical sections overlapping by up
+# to 2.0 s because `release()` deleted whatever file was at the path. A kernel
+# lock has no stale state at all: when the holder dies, however it dies, the
+# handle closes and the lock is gone.
+#
+# ⚠ INERT UNTIL WIRED. Nothing calls this yet — the one-line call belongs at
+# the top of `api.main()`, which is outside this wave's file split. Arming it
+# is `store.claim_data_root()` there; the mechanism below is tested end to end
+# in real subprocesses by `test_compaction.py` (section "xproc · the owner
+# claim").
+_owner_fd: int | None = None
+
+
+class DataRootBusy(RuntimeError):
+    """Another live process already owns this ORGTREE_DATA."""
+
+
+def owner_file(root: str | None = None) -> str:
+    return os.path.join(root or DATA_ROOT, ".owner")
+
+
+def _try_lock(fd: int) -> bool:
+    """Exclusive, non-blocking, on BYTE 0. False = someone else holds it.
+
+    ⚠ `msvcrt.locking` locks a range starting at the file's CURRENT position,
+    so the seek is part of the contract, not tidiness: locking at EOF would
+    give two processes two different byte ranges and mutual exclusion would
+    silently not hold. Hence a raw fd (position 0 after `os.open`) rather than
+    a text handle opened `"a+"` (position EOF)."""
+    try:
+        os.lseek(fd, 0, os.SEEK_SET)
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except OSError:
+        return False
+
+
+def claim_data_root(root: str | None = None) -> None:
+    """Claim exclusive ownership of the data root for THIS process.
+
+    Raises `DataRootBusy` if a live process already holds it. Idempotent
+    within a process. Released by the OS when the process exits, however it
+    exits — there is no cleanup to forget and no stale file to reason about.
+    """
+    global _owner_fd
+    if _owner_fd is not None:
+        return
+    base = root or DATA_ROOT
+    os.makedirs(base, exist_ok=True)
+    fd = os.open(owner_file(base), os.O_RDWR | os.O_CREAT, 0o644)
+    if not _try_lock(fd):
+        held = ""
+        try:
+            os.lseek(fd, 1, os.SEEK_SET)
+            held = os.read(fd, 200).decode("utf-8", "replace").strip()
+        except OSError:
+            pass
+        os.close(fd)
+        raise DataRootBusy(
+            f"{base!r} is already in use by another orgtree process"
+            + (f" ({held})" if held else "")
+            + " — one backend per data root. Concurrent writers silently lose "
+              "32-74% of their completed writes (measured; see the comment "
+              "above this in store.py). Stop the other process, or point "
+              "ORGTREE_DATA somewhere else.")
+    # byte 0 is the lock byte and stays a filler; the identity lives after it
+    # so a process that LOST the race can still read who holds the root
+    try:
+        os.lseek(fd, 0, os.SEEK_SET)
+        os.write(fd, (f"-pid={os.getpid()} "
+                      f"since={time.strftime('%Y-%m-%dT%H:%M:%S')}\n")
+                 .encode("utf-8"))
+        os.ftruncate(fd, 64)
+    except OSError:
+        pass
+    _owner_fd = fd              # held for the process lifetime, deliberately
+
+
+def release_data_root() -> None:
+    """Drop the claim early (tests, a graceful shutdown). Normally unnecessary
+    — process exit does it."""
+    global _owner_fd
+    fd, _owner_fd = _owner_fd, None
+    if fd is None:
+        return
+    try:
+        os.lseek(fd, 0, os.SEEK_SET)
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    except OSError:
+        pass
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+
+
 def _orgs_dir() -> str:
     d = os.path.join(DATA_ROOT, "orgs")
     os.makedirs(d, exist_ok=True)
