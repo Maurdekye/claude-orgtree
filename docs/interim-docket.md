@@ -1410,19 +1410,38 @@ outbound through ONE dispatch (`api.py:1929-1948`). A hub client is structurally
 `start_chatq_bridge` (35 lines) pointed at HTTPS instead of files, plus one ledger prefix and one
 settings block.
 
-**② ⚠ The proposed slug has a collision and an authentication hole.** `<org>.<username>` relies on
-OS usernames being unique; `Administrator`, `admin`, `user`, `pi` are everywhere, and a username is
-a string the client merely asserts — as specified, anyone can register `payroll.<yourname>` and
-receive that mail. Fix in the spec §3: first-claim binds a hub-issued secret (TOFU), collisions get
-suffixed rather than merged, and an optional hub join code closes it to the open internet.
+**② Identity — RULED (user, 2026-08-04): a self-issued secret minted at org creation.**
+> instead of orgs receiving a secret on join, they just generate their own secret on creation and
+> supply that as their registration info. still include the username and org name in the slug, but
+> also part of the secret for uniqueness, and the rest can be used for authentication like a
+> password kind of.
+>
+> and i agree with the auto start as well, i was also leaning in that direction
 
-**③ The pending-mail question is already answered in-tree, and the answer is "activate".**
+This supersedes the first draft's hub-issued TOFU scheme and is better than it: the identity exists
+before any hub, survives a move to another PC (the draft's stated weakness), and makes a land grab
+impossible rather than merely refused. ⚠ The draft's underlying finding stands — `<org>.<username>`
+alone is neither unique (`Administrator`, `admin`, `user`, `pi` recur everywhere) nor authenticated
+(a username is a string the client asserts) — and the ruling closes it by drawing the uniqueness
+from the secret.
+
+☞ **One amendment carried into spec §3: derive the public suffix as `sha256(secret)[:6]` rather
+than slicing the secret.** Identical from the outside, but the public part then discloses nothing
+about the private part, the hub stores a fingerprint instead of a credential (a hub DB leak exposes
+nothing), and there is no split to get wrong. Compare against the FULL fingerprint, never the
+6-char display suffix — 24 bits is brute-forceable. Mint with `secrets.token_hex(16)`, the repo's
+existing credential pattern (`api.py:352,549,554,587`); `uuid4` is for ids, not credentials. And
+the secret must never enter an agent's context — an org that reads untrusted remote mail must not
+carry its own mail identity in the prompt.
+
+**③ The pending-mail question — RULED (user, 2026-08-04): auto-start.** It was already answered
+in-tree, and the answer agrees:
 `reconcile()` drives any live unfrozen node with a waiting mailbox at startup
 (`supervisor.py:2671-2678`), and a backlog is cheap because `_envelope`/`take_mail` drains the
 WHOLE mailbox into one turn (`supervisor.py:861-887`) — 40 messages wake an agent once, not 40
-times. Recommendation: keep that as the default (`net_wake: auto`), add `notify` and `curated`
-positions, and hold the rule that **only driving is gated, never delivery**, with a staleness stamp
-in the envelope so an agent can tell a fortnight-old request from a fresh one.
+times. So `net_wake: auto` is the default, with `notify` and `curated` positions available, and the
+rule holds that **only driving is gated, never delivery** — plus a staleness stamp in the envelope
+so an agent can tell a fortnight-old request from a fresh one.
 
 **④ The new hazard is spend, not transport.** This is the first external path where an unknown
 third party can make your machine run tools and burn credits — chatq peers are sessions on your own
@@ -1430,9 +1449,10 @@ PC and `@org:` peers are your own orgs. Needs a per-org accept policy, per-peer 
 inbound-mail spend ceiling. The existing "untrusted outside input, never user authority" framing
 (`supervisor.py:2455-2461`) is the right injection mitigation and should be reused verbatim.
 
-Six open questions are listed at spec §10; the two that block a build are whether hub membership is
-truly creation-time-only (it would mean an existing org can never join) and whether identity is the
-secret or the slug (it decides whether an org survives a move to another PC).
+Five open questions remain at spec §10 — the two biggest were closed by the 2026-08-04 ruling. The
+one that most shapes a build is whether hub membership is truly creation-time-only; ② weakens the
+case for it, since identity is now minted at org creation independently of any hub, so an org can
+join later at no cost.
 
 ## Carried, not done
 

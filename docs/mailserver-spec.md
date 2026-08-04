@@ -75,39 +75,93 @@ one settings block, one status pill.** The hub is the actual project.
 
 ---
 
-## 3. Identity — and a defect in the proposed slug
+## 3. Identity — self-issued secret at org creation (user ruling, 2026-08-04)
 
-> orgs register with the mailserver using a slug combining the org name with the username of the
-> logged in account on the pc they're interacting from
+> instead of orgs receiving a secret on join, they just generate their own secret on creation and
+> supply that as their registration info. still include the username and org name in the slug, but
+> also part of the secret for uniqueness, and the rest can be used for authentication like a
+> password kind of.
 
-⚠ **OS usernames are not globally unique, and the collisions are concentrated exactly where you
-don't want them.** `Administrator`, `admin`, `user`, `pi`, `ubuntu`, and every corporate
-`firstname.lastname` scheme recur across machines. On this machine the username happens to be
-distinctive (`ncola_k8bx`) — that is luck, not a property of the scheme. Two people who both run
-an org called `research` from an account called `admin` produce the identical address
-`research.admin`, and the second one to register either steals the first one's mail or is
-locked out.
+**Ruled: the secret is minted by the org at creation, not issued by the hub.** This is better than
+the hub-issued TOFU scheme it replaces, for three reasons worth writing down:
 
-It is also **unauthenticated by construction**: an OS username is a string the client asserts. As
-specified, I can register `payroll.yourname` and receive your mail.
+- **The identity exists before any hub does**, so the same org can join several hubs under one
+  address, and an org that never joins one still has an identity waiting.
+- **It survives a move.** The earlier draft warned that baking the OS username into the address
+  meant an org relocated to another PC lost its identity and its correspondence history. With a
+  self-issued secret it does not: copy the org, keep the address.
+- **No land grab is possible**, which removes the TOFU mechanism entirely rather than securing it.
 
-**Recommended fix, keeping the user's scheme as the visible default:**
+### The one change I would make: derive the public part, don't slice it
 
-1. `<org-slug>.<username>` remains the **proposed** address, both parts normalized through the
-   existing `slugify` (`store.py:130`).
-2. **First claim binds it (TOFU).** The hub mints a secret on first registration and stores it
-   in the org doc; every later call must present it. A second claimant is refused and offered
-   `research.admin-2` — never silently merged.
-3. **Optional hub join code.** One shared secret in the hub's env stops the open internet from
-   registering at all. For a small trusted collective this is probably the only auth anyone
-   wants, and it is three lines.
-4. The address is **display-stable but not trusted for authority** — the receiving agent is told
-   the origin is untrusted regardless (§7).
+The proposal splits one generated secret into a public piece (in the slug) and a private piece
+(the password). That works, but it makes the security depend on a split being done correctly
+forever — and it publishes a substring of the credential in every roster listing, log line, and
+agent prompt. Hash instead:
 
-⚠ Consequence worth flagging: the address bakes in the OS username, so *the same org moved to a
-different PC or account changes identity*, and its correspondence history does not follow. If
-that matters, identity should be the registration secret with the slug as a label. My
-recommendation is the secret-is-identity model with the slug as a renameable display name.
+```
+secret        = secrets.token_hex(16)            # 128 bits — the repo's existing credential
+                                                 # pattern (api.py:352,549,554,587)
+fingerprint   = sha256(secret).hexdigest()       # stored by the hub
+slug          = f"{org}.{username}.{fingerprint[:6]}"
+```
+
+Identical to the user's scheme from the outside — `research.ncola_k8bx.a3f9c1` — and the visible
+suffix still comes *from* the secret, so it still supplies the uniqueness. What changes:
+
+1. **The public part discloses nothing about the private part**, even in principle, so there is no
+   split to get wrong and no "how many characters is safe to show" question to answer.
+2. **The hub stores no secrets at all — only the fingerprint.** Registration presents the secret;
+   the hub hashes it and compares. A hub database leak therefore exposes no credential, which for
+   a service the user is being asked to run on a public box is a meaningful difference.
+3. **Impersonation is impossible rather than merely refused.** Claiming someone's address requires
+   producing a secret that hashes to their fingerprint. There is nothing to race and nothing for
+   the hub to arbitrate.
+
+⚠ Compare against the **full** stored fingerprint, never the 6-character display suffix — 24 bits
+is brute-forceable in seconds. The suffix is a label; the fingerprint is the check. Use
+`hmac.compare_digest`.
+
+### The details that follow from it
+
+- **Generate with `secrets`, never `uuid4` or `random`.** The repo already draws this distinction
+  in practice: `uuid.uuid4().hex[:8]` for entity ids, `secrets.token_hex(16)` for credentials
+  (kiosk token, sandbox secret). This is a credential.
+- ☞ **The secret must never enter an agent's context.** An org's mail identity in the prompt of an
+  agent that reads untrusted remote mail is an exfiltration path straight to impersonation. It
+  belongs beside the kiosk token — in the org doc, returned only over the loopback admin listener
+  (`api.py:481-483` already documents exactly this care for the kiosk token), and excluded from
+  every agent-facing payload.
+- **Send it in a header over TLS, never in a URL** (URLs land in access logs and in the browser
+  history of anyone opening the hub UI), and never log it.
+- **Backup is now the user's problem, and that is the trade.** Nobody can restore a lost secret —
+  that is the property that makes it trustworthy. So the UI must show it once at creation, offer an
+  export, and say plainly that losing it loses the address. A "regenerate" button that silently
+  mints a new identity would be a data-loss trap; call it what it is.
+- **Rotation should be designed in now.** If a secret leaks, the naive fix changes the org's
+  identity and orphans its correspondence. One endpoint fixes it: `POST /rotate`, authenticated
+  with the current secret, replaces the stored fingerprint under the same slug. The display suffix
+  then no longer matches the new fingerprint — decide whether the suffix is pinned at first
+  registration (recommended: yes, it is a label) or re-derived. There is precedent for re-minting:
+  the kiosk token has exactly this button (`api.py:968`).
+- **Upgrade path, if it is ever wanted:** sign each request with the secret (HMAC) instead of
+  sending it. The secret then leaves the machine exactly once, at registration, and the same key
+  material gives the end-to-end message signing floated in §7.
+
+### What the username is now for
+
+With uniqueness coming from the fingerprint, the username no longer carries any load — it is
+human-readable decoration, which is the right job for it. One residual point: it is still
+**asserted, not verified**, so a peer may register `payroll.ceo.a3f9c1` and look official. Since
+nothing authenticates on it, this is a social-engineering surface only, and the mitigations are
+cheap: always render the fingerprint suffix alongside the name in the roster, and keep the
+receiving agent's framing at "untrusted outside party" regardless of how the sender is labelled
+(§7).
+
+**Optional hub join code retained.** One shared secret in the hub's env, checked at registration,
+stops the open internet from registering at all. It is orthogonal to org identity — that is
+"may you join this hub", not "who are you" — and for a small collective it is three lines and
+probably the only gate anyone wants.
 
 ---
 
@@ -177,7 +231,10 @@ But three things genuinely differ from the crash-window case, and they justify a
 3. **Every wake spends real money**, and the user may not be at the machine when the instance
    boots.
 
-### Recommendation — three positions, defaulting to today's behaviour
+### Ruled: auto-start (user, 2026-08-04) — three positions, defaulting to today's behaviour
+
+> and i agree with the auto start as well, i was also leaning in that direction
+
 
 A per-org setting, `net_wake`:
 
@@ -321,19 +378,24 @@ Ordered by value-per-effort.
 
 ## 10. Open questions — for the user, not for me to assume
 
+✓ **Closed 2026-08-04:** identity is a **self-issued secret minted at org creation**, with the
+public slug suffix derived from it (§3). ✓ **Closed 2026-08-04:** pending mail **auto-starts** the
+org (§5).
+
 1. **Is hub membership really creation-time-only?** The user's phrasing says configured "in the
    org settings on creation". There is precedent for born-with config (`kiosk` — `api.py:468`),
-   but everything in `Settings` (`api.py:751`) is editable later. Creation-only means *an
-   existing org can never join a hub*, which is a real cost. My recommendation: configurable at
-   creation **and** later, with the caveat that the address is minted on first registration.
-2. **Identity: secret-as-identity or slug-as-identity?** (§3.) It decides whether an org survives
-   a move to another PC or account.
-3. **Default accept policy** — `open` or `approval-required`? I lean `approval-required` for any
+   but everything in `Settings` (`api.py:751`) is editable later. Creation-only means *an existing
+   org can never join a hub*, which is a real cost — and §3's ruling weakens the argument for it,
+   since identity is now minted at org creation independently of any hub, so joining later costs
+   nothing. Orgs created before this feature would simply mint a secret on first join. My
+   recommendation: configurable at creation **and** later.
+2. **Default accept policy** — `open` or `approval-required`? I lean `approval-required` for any
    hub with participants who do not all know each other, `open` for a two-person collective.
-4. **`net_wake` default** — I recommend `auto` for consistency with `reconcile`, but `notify` is
-   defensible if the user expects to be away while orgs boot.
-5. **One hub or several?** Multiple hub connections per instance is a modest generalization if
-   designed in now and awkward later.
-6. **Does the hub relay `@ext:`/`@mcp:` traffic too**, or strictly org-to-org? Strictly
+3. **Is the display suffix pinned or re-derived on rotation?** (§3.) Recommended: pinned — it is a
+   label, and re-deriving changes everyone's address book to fix one leaked secret.
+4. **One hub or several?** Multiple hub connections per instance is a modest generalization if
+   designed in now and awkward later — and §3's self-issued identity makes it natural, since one
+   secret already works everywhere.
+5. **Does the hub relay `@ext:`/`@mcp:` traffic too**, or strictly org-to-org? Strictly
    org-to-org is the smaller and safer answer, and matches "just the same as they would to other
    adjacent orgs".
