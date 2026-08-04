@@ -278,6 +278,25 @@ class Org:
                         # cast: isinstance narrows Any to dict[Unknown, Unknown]
                         cast("dict[str, Any]", m).setdefault(
                             "id", uuid.uuid4().hex[:12])
+        # ☞ NEW TIERS REACH EXISTING ORGS. `Org.create` COPIES the module
+        # tables into the doc (`"tiers": dict(TIERS)`), so every org carries
+        # its own frozen set and adding a tier to the constant does nothing for
+        # any org that already exists — `switch_model` refuses with "unknown
+        # tier 'opus48'; know [fable, haiku, opus, sonnet]" while the constant
+        # plainly has it. Found live 2026-08-04, the first time a tier was
+        # added since the per-org copy was introduced; every test builds fresh
+        # orgs, so nothing caught it.
+        #
+        # ⚠ ADD ONLY, never overwrite. The per-org copy is what lets an org
+        # price its own seats, and a plain `update` would silently reset a
+        # customised table to the shipped defaults on the next load.
+        # cast first: OrgDoc is a TypedDict, so a DYNAMIC key is not
+        # expressible against it (`setdefault` wants a literal).
+        _doc = cast("dict[str, Any]", self.d)
+        for key, table in (("tiers", TIERS), ("models", MODELS)):
+            cur = cast("dict[str, Any]", _doc.setdefault(key, {}))
+            for k, v in table.items():
+                cur.setdefault(k, v)
         # pre-№41 spend freezes wrote the usage-limit keys (error, until=None);
         # re-tag them so clear_hard_freeze("spend") actually clears them
         # instead of leaving a stale-reason freeze the API reports as cleared

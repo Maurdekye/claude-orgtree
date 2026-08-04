@@ -29,6 +29,7 @@ someone fixes it without updating the ledger of known defects. Each one names
 what the right behaviour would be.
 """
 
+import json
 import os
 import random
 import re
@@ -40,9 +41,9 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 os.environ["ORGTREE_DATA"] = tempfile.mkdtemp(prefix="orgtree-authority-")
 
-from orgtree.ledger import (EXTERN, PM_LEVELS, SYSTEM, TIERS,   # noqa: E402
-                            TOOL_KEYS, USER, VIS_LEVELS, LedgerError, Org,
-                            slugify)
+from orgtree.ledger import (EXTERN, MODELS, PM_LEVELS, SYSTEM,  # noqa: E402
+                            TIERS, TOOL_KEYS, USER, VIS_LEVELS, LedgerError,
+                            Org, slugify)
 
 PASS = 0
 DEFECTS = []          # (id, one-line description) — printed in the tail
@@ -1407,6 +1408,23 @@ def section_edges():
     wd.hire(USER, "p", "haiku", 1, "c2")
     check("max_children refuses the hire that would cross it", lambda: expect_error(
         lambda: wd.hire(USER, "p", "haiku", 1, "c3"), "reports (cap)"))
+    # ☞ a NEW module tier must reach an org created BEFORE it existed.
+    # Org.create COPIES TIERS/MODELS into the doc, so the constant alone does
+    # nothing for existing orgs — switch_model refused "unknown tier 'opus48'"
+    # on the user's real orgs while the constant plainly had it (2026-08-04).
+    # Every other test builds a fresh org, which is exactly why nothing caught
+    # it; this one starts from a doc that predates the tier.
+    old = deep_org()
+    del old.d["tiers"]["opus48"], old.d["models"]["opus48"]
+    old.d["tiers"]["sonnet"] = 42                     # a custom price
+    reloaded = Org(json.loads(json.dumps(old.d)))     # what load_org does
+    check("a tier added to the module reaches an org that predates it",
+          lambda: eq(reloaded.d["tiers"].get("opus48"), TIERS["opus48"]))
+    check("…and its model id comes with it",
+          lambda: eq(reloaded.d["models"].get("opus48"), MODELS["opus48"]))
+    check("…while a per-org custom seat price is NOT overwritten",
+          lambda: eq(reloaded.d["tiers"]["sonnet"], 42))
+
     check("lineage bearers do not count against max_children", lambda: (
         wd.compact_split("c1", "s2"),
         eq(len(wd.children("p", live_only=False)), 3),

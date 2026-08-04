@@ -643,7 +643,12 @@ def s3_crash() -> None:
         the orphans the kills above really left, aged past the grace window,
         must all be gone after one ordinary org-list call — and the live
         docs must be untouched."""
-        assert res["strays"], "the kills left no orphan to reclaim‽"
+        # ⚠ NOT `assert res["strays"]`. A SIGKILL only orphans a temp file if
+        # it lands between mkstemp and os.replace — a window of microseconds —
+        # so a perfectly healthy run can leave none, and asserting otherwise
+        # made this check fail at random (~1 run in 4). "Nothing was orphaned"
+        # is a pass; the sweep is still exercised on every run because the
+        # block below plants one when the kills happen not to.
         # ⚠ A SIGKILL only leaves a stray if it lands in the window between
         # mkstemp and os.replace, and that window is microseconds — some runs
         # produce none at all (observed 2026-08-04: three kills, zero strays,
