@@ -248,7 +248,12 @@ But three things genuinely differ from the crash-window case, and they justify a
 3. **Every wake spends real money**, and the user may not be at the machine when the instance
    boots.
 
-### Ruled: auto-start (user, 2026-08-04) — three positions, defaulting to today's behaviour
+### Ruled: auto-start (user, 2026-08-04) — v1 ships `auto` ONLY
+
+The three positions below are the design space; the user ruled **`auto` only for v1**. `notify` and
+`curated` stay documented because they are the natural knobs if auto-start ever proves too eager,
+but nothing else in the spec depends on them existing.
+
 
 > and i agree with the auto start as well, i was also leaning in that direction
 
@@ -605,27 +610,36 @@ Ordered by value-per-effort.
 
 ## 11. Open questions — for the user, not for me to assume
 
-✓ **Closed 2026-08-04:** identity is a **self-issued secret minted at org creation**, with the
-public slug suffix derived from it (§3) · pending mail **auto-starts** the org (§5) · **joining is
-open** — reachability is the authorization, on a closed network (§3) · the default accept policy is
-therefore **`open`** (§7).
+### ✓ Closed by user ruling, 2026-08-04
 
-1. **Is hub membership really creation-time-only?** The user's phrasing says configured "in the
-   org settings on creation". There is precedent for born-with config (`kiosk` — `api.py:468`),
-   but everything in `Settings` (`api.py:751`) is editable later. Creation-only means *an existing
-   org can never join a hub*, which is a real cost — and §3's ruling weakens the argument for it,
-   since identity is now minted at org creation independently of any hub, so joining later costs
-   nothing. Orgs created before this feature would simply mint a secret on first join. My
-   recommendation: configurable at creation **and** later.
-2. **Is API-key mode the default for unattended instances?** (§9.5.) I recommend yes — it removes
+| decision | ruling |
+|---|---|
+| identity | **self-issued secret** minted at org creation; public slug suffix derived from it (§3) |
+| pending mail on start | **auto** (§5) |
+| joining | **open** — reachability is the authorization, on a closed network (§3) |
+| default accept policy | **`open`**, following from the above (§7) |
+| who builds it | **the implementer**, not this session |
+| join a hub after creation | **yes** — configurable at creation *and* later; §11 №1 is closed |
+| scale | **10+ participants** — see the consequence below |
+| hub host | **Linux** (§8, §9.3) |
+| `net_wake` positions | **`auto` only** for v1; `notify`/`curated` are not built |
+| scope | **strictly org-to-org** — the hub does not relay `@ext:`/`@mcp:` |
+
+⚠ **10+ participants changes two v1 calls.** At that size **threading is no longer deferrable**
+(§10 №2): a flat org inbox holding concurrent conversations with ten peers is unreadable to an
+agent, and a `thread_id` cannot be retrofitted into stored history. The **directory blurb**
+(§10 №3) moves from nice-to-have to necessary for the same reason — nobody addresses ten orgs
+correctly from slugs alone. Rate limits should be sized for ten peers × the §9.4 loop breaker, not
+for two.
+
+### Still open
+
+1. **Is API-key mode the default for unattended instances?** (§9.5.) I recommend yes — it removes
    the re-auth ceiling and isolates spend. Mostly moot if so, but still open: whether the OAuth
    token endpoint returns a fresh refresh token on every refresh (the client already stores one if
    it does — `subproxy.py:74`).
-3. **Is the display suffix pinned or re-derived on rotation?** (§3.) Recommended: pinned — it is a
+2. **Is the display suffix pinned or re-derived on rotation?** (§3.) Recommended: pinned — it is a
    label, and re-deriving changes everyone's address book to fix one leaked secret.
-4. **One hub or several?** Multiple hub connections per instance is a modest generalization if
+3. **One hub or several?** Multiple hub connections per instance is a modest generalization if
    designed in now and awkward later — and §3's self-issued identity makes it natural, since one
    secret already works everywhere.
-5. **Does the hub relay `@ext:`/`@mcp:` traffic too**, or strictly org-to-org? Strictly
-   org-to-org is the smaller and safer answer, and matches "just the same as they would to other
-   adjacent orgs".

@@ -1525,10 +1525,18 @@ user-bound requests auto-denied and org mail as its only channel. Two findings:
 ⚠ Headless is **not** kiosk: a kiosk is sealed from the outside world, headless *depends* on it.
 An org that is both cannot communicate at all.
 
-Five open questions remain at spec §11 — four were closed by the 2026-08-04 rulings. The one that
-most shapes a build is whether hub membership is truly creation-time-only; ② weakens the case for
-it, since identity is now minted at org creation independently of any hub, so an org can join later
-at no cost.
+**⑨ The six build questions — ANSWERED (user, 2026-08-04).** Full table at spec §11: built by the
+**implementer**; orgs may join a hub **after creation**; **10+** participants; the hub runs on
+**Linux**; `net_wake` ships **`auto` only** (`notify`/`curated` documented but not built); and the
+hub carries **strictly org-to-org** mail.
+
+⚠ **10+ participants changes two v1 calls.** Threading (`thread_id`) is no longer deferrable — a
+flat org inbox holding concurrent conversations with ten peers is unreadable to an agent, and it
+cannot be retrofitted into stored history. The directory blurb moves from nice-to-have to necessary
+for the same reason: nobody addresses ten orgs correctly from slugs alone.
+
+Three open questions remain, none blocking: API-key default (⑦), whether the display suffix is
+pinned across a rotation, and one hub or several.
 
 ## Carried, not done
 
