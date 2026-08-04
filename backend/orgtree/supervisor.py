@@ -497,6 +497,10 @@ def rename_node(slug: str, nid: str, new_name: str,
                                   f"then rename")
         new_slug_probe = org.rename(actor, nid, new_name)  # validates; mutates
         new = str(new_slug_probe["node"])
+        if new == nid:
+            # no-op — the ledger changed nothing; leave the filesystem alone
+            _ = n
+            return new_slug_probe
         # ---- filesystem, before save: scratch dir + CLI project dir ----
         moved: list[tuple[str, str]] = []
         try:
@@ -507,9 +511,6 @@ def rename_node(slug: str, nid: str, new_name: str,
                 base = store.scratch_root(slug)
             old_dir, new_dir = (os.path.join(base, nid),
                                 os.path.join(base, new))
-            if os.path.isdir(old_dir) and not os.path.exists(new_dir):
-                os.rename(old_dir, new_dir)
-                moved.append((old_dir, new_dir))
             # the CLI project dir rides the CWD — container path for sandboxed
             # orgs, host path natively. One directory holds every generation's
             # sessions (they share the scratch cwd).
@@ -521,7 +522,20 @@ def rename_node(slug: str, nid: str, new_name: str,
                 old_cwd, new_cwd = old_dir, new_dir
             oldp = os.path.join(troot, "projects", _cli_project_dir(old_cwd))
             newp = os.path.join(troot, "projects", _cli_project_dir(new_cwd))
-            if os.path.isdir(oldp) and not os.path.exists(newp):
+            # a taken DIRECTORY is refused like a taken name (test_rename §5):
+            # skipping the move while the doc re-keys would hand the agent a
+            # stranger's leftover files — and, for the project dir, someone
+            # else's resumable conversations. Check BOTH before moving either.
+            for tgt in (new_dir, newp):
+                if os.path.exists(tgt):
+                    raise LedgerError(
+                        f"cannot rename {nid!r} → {new!r}: {tgt} already "
+                        f"exists (leftover from a deleted or previously "
+                        f"renamed agent). Remove or move it aside, then retry.")
+            if os.path.isdir(old_dir):
+                os.rename(old_dir, new_dir)
+                moved.append((old_dir, new_dir))
+            if os.path.isdir(oldp):
                 os.rename(oldp, newp)
                 moved.append((oldp, newp))
             store.save_org(org)

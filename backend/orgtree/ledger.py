@@ -2713,6 +2713,13 @@ class Org:
         returned warning says so (user ruling: warn, don't rewrite)."""
         self._require_authority(actor, nid)
         n = self.node(nid)
+        if "@" in nid:
+            # a generation carries `base@gen` — renaming one directly would
+            # detach the bearer from its lineage naming while the pointers
+            # still tie it to the family (test_rename §5)
+            raise LedgerError(
+                f"{nid!r} is a lineage generation — rename the base id "
+                f"{nid.split('@', 1)[0]!r} and its generations follow")
         new = slugify(new_name)
         if new == nid:
             return {"node": nid, "warnings": ["that is already its name"]}
@@ -2750,6 +2757,12 @@ class Org:
         for r in self.d.get("credit_requests", []):
             if r.get("node") in renamed:
                 r["node"] = renamed[r["node"]]
+        # the display title (set at hire from the raw name) follows the
+        # identity — tree() ships it beside the id, so a stale title would
+        # show exactly the name the rename was meant to replace
+        title = new_name.strip() or new
+        for new_k in renamed.values():
+            self.nodes[new_k]["title"] = title
         warnings = [f"renamed {nid} → {new}. Historical mail, archives and "
                     f"the event log still reference {nid!r}; agents may keep "
                     f"addressing the old name until they notice — such mail "
