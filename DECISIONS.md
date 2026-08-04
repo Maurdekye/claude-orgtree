@@ -291,6 +291,18 @@ machines"); the user reversed the mechanism one day later for the
 unattended-host case, and the inheritance objection is handled by the strip
 rather than dismissed.
 
+### D-095 · moves never touch a user audience — promotion leaves it dormant
+Ruling (user, 2026-08-05): an agent holding a user audience KEEPS it when
+dragged to top level, and keeps it back down. An audience is an explicit,
+durable channel grant (no expiry, D-'no audience expiry'), removed only by
+deliberate revocation; moves shrink parent-bounded capabilities (dirs,
+tools, visibility — the ⊆ invariant), and a user audience is not
+parent-bounded — the grantor is the user, not the chain. While the agent
+is top-level the grant is dormant (top-level user access is intrinsic)
+and has no visible handle (the switchboard tab shows no ✕ on intrinsic
+lines); it resurfaces with its direct line if the agent is ever demoted.
+That resurfacing is deliberate, not a bug — do not "fix" it.
+
 ### D-090 · asks always park; answered anywhere, nulled everywhere
 Ruling (user, 2026-08-04, the F-04/F-05 redesign): an agent's question to
 the user NEVER blocks a turn slot — orgtree_ask parks it and the agent
