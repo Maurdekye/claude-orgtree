@@ -190,6 +190,8 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
   useEffect(() => () => { if (modeTimer.current) clearTimeout(modeTimer.current) }, [])
   const [asking, setAsking] = useState(false)
   const [askCompact, setAskCompact] = useState(false)
+  // F-01 footer: retired reports collapsed behind one chip (user ruling)
+  const [showRetired, setShowRetired] = useState(false)
   const [view, setView] = useState<'chat' | 'history' | 'files' | 'inbox'>('chat')     // chat | history | files | inbox
   // №7's denials banner and its dismissal state are gone (user bug
   // 2026-08-02): a denial already renders inline as an errored ToolChip where
@@ -444,9 +446,12 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
       </div>
       {/* F-01: superior chip at the TOP. For a top-level agent the superior is
           the user, so the chip targets the switchboard (map carries the eye
-          root under USER). Bearer pseudo-cards float beside a successor and
-          have no meaningful parent chip. */}
-      {onJump && !node.isBearerOf && node.parent && map.has(node.parent) && (
+          root under USER) — unless this desk IS a switchboard panel (bare),
+          where a jump-to-switchboard chip points at where you already are
+          (user report 2026-08-04). Bearer pseudo-cards float beside a
+          successor and have no meaningful parent chip. */}
+      {onJump && !node.isBearerOf && node.parent && map.has(node.parent)
+        && !(bare && node.parent === USER) && (
         <div className="desk-nav">
           <NavChip n={map.get(node.parent)!} dir="up" onJump={onJump} />
         </div>
@@ -624,13 +629,32 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
       )}
       {/* F-01: subordinate chips at the BOTTOM — one per direct report. Drafts
           are not agents yet; bearer pseudo-cards are consultable stack layers,
-          not reports. */}
-      {onJump && node.children.some((c) => c.state !== 'draft' && !c.isBearerOf) && (
-        <div className="desk-nav">
-          {node.children.filter((c) => c.state !== 'draft' && !c.isBearerOf)
-            .map((c) => <NavChip key={c.id} n={c} dir="down" onJump={onJump} />)}
-        </div>
-      )}
+          not reports. Retired reports collapse behind one expandable chip
+          (user ruling 2026-08-04) — a long-lived team's footer is otherwise
+          mostly graves. */}
+      {(() => {
+        if (!onJump) return null
+        const reports = node.children.filter((c) => c.state !== 'draft' && !c.isBearerOf)
+        const alive = reports.filter((c) => c.state === 'live')
+        const retired = reports.filter((c) => c.state !== 'live')
+        if (!reports.length) return null
+        return (
+          <div className="desk-nav">
+            {alive.map((c) => <NavChip key={c.id} n={c} dir="down" onJump={onJump} />)}
+            {retired.length > 0 && (
+              <button className="desk-nav-chip dim"
+                title={showRetired ? 'collapse the retired reports'
+                  : retired.map((c) => c.id).join(', ')}
+                onClick={() => setShowRetired((v) => !v)}>
+                {showRetired ? 'hide retired'
+                  : `show ${retired.length} retired`}
+              </button>
+            )}
+            {showRetired && retired.map((c) =>
+              <NavChip key={c.id} n={c} dir="down" onJump={onJump} />)}
+          </div>
+        )
+      })()}
       {/* №13: the composer is present under EVERY tab — finding a wrong number
           on the files tab shouldn't cost your place to say so */}
       {sendMode && <div className="sendmode dim">{sendMode}</div>}
