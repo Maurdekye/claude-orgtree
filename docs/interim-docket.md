@@ -1577,6 +1577,20 @@ An org that is both cannot communicate at all.
 `thread_id` in the message envelope. Unused it costs nothing; it cannot be retrofitted into mail
 already stored without it, and at 10+ peers a flat inbox will want it.
 
+**⑬ Headless requires an API key · one hub for v1 (user, 2026-08-04).**
+
+- **Headless without an API key is refused**, at creation and in settings, and the key cannot be
+  cleared while headless is on. Not a recommendation — the derivation is ⑥: subscription auth ends
+  in an **interactive** re-login, and headless is defined as having nobody to perform it. That
+  combination has exactly one possible ending, silent death at an unpredictable hour. Spend
+  isolation and revocability are real but secondary.
+- **One hub for v1, several not designed out.** Three schema decisions taken now cost nothing in a
+  single-hub build and are painful later: store hub config as a **list of one**, key per-hub state
+  (registration, last-seen, spool, receipts) **by hub id** rather than globally, and keep
+  `@net:<slug>` **hub-agnostic** — one self-issued secret already works everywhere, so which hub
+  reaches a peer is a lookup, not something parsed out of the address. UI and settings can stay
+  singular.
+
 **⑨ The six build questions — ANSWERED (user, 2026-08-04).** Full table at spec §12: built by the
 **implementer**; orgs may join a hub **after creation**; **10+** participants; the hub runs on
 **Linux**; `net_wake` ships **`auto` only** (`notify`/`curated` documented but not built); and the
@@ -1587,8 +1601,9 @@ flat org inbox holding concurrent conversations with ten peers is unreadable to 
 cannot be retrofitted into stored history. The directory blurb moves from nice-to-have to necessary
 for the same reason: nobody addresses ten orgs correctly from slugs alone.
 
-Two open questions remain, none blocking: API-key default (⑦) and one hub or several. The suffix
-question was closed by ⑪.
+One open question remains, non-blocking: whether API-key mode should also be the default for
+unattended orgs that are not headless (⑦). The suffix question was closed by ⑪, one-hub-or-several
+by ⑬.
 
 ## Carried, not done
 

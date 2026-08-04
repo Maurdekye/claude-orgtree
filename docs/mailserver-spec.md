@@ -586,10 +586,21 @@ A halted headless org is a dead org nobody will notice. Either force `auto_resum
 mode (it already exists, `supervisor.py:2527`) or require a non-`halt` policy, and say which at the
 setting.
 
-**Composition:** headless is orthogonal to *sandboxed* and to *kiosk*, but it pairs with §9.5 —
-an org that cannot ask for more credit needs a grant sized for the whole unattended run up front,
-and API-key mode is what makes overrunning it a bounded cost rather than a surprise on the user's
-subscription.
+**⑤ Headless REQUIRES an API key (user ruling, 2026-08-04).** Not a recommendation — a hard
+constraint, enforced at org creation and in settings: turning headless on without a key is refused,
+and clearing the key while headless is on is refused. The derivation is §9.2: subscription auth
+ends in an **interactive** re-login, and a headless org is defined as one with nobody to perform
+it. Subscription + headless is therefore a configuration whose only possible ending is silent
+death at an unpredictable hour. An API key has no such ceiling.
+
+Two supporting reasons, both real but secondary to that one: the org's spend stops competing with
+the user's own subscription limits, and a key can be revoked without touching the user's login.
+
+**Composition:** headless is orthogonal to *sandboxed*, incompatible with *kiosk* (below), and
+now **coupled to §9.5**. Note the second-order effect: an org that cannot ask for more credit needs
+a grant sized for the whole unattended run up front, and metered API spend makes overrunning it a
+bounded cost rather than a surprise — which is why §9.4's daily cap and dead-man's switch are
+listed as necessary rather than prudent.
 
 ⚠ **Do not conflate headless with kiosk.** A kiosk is sealed from the outside world
 (`ledger.py:809-811,913`); headless is the opposite — it *depends* on the outside world, because
@@ -739,6 +750,8 @@ Ordered by value-per-effort.
 | hub mail UI | **global** — all orgs' traffic, with a per-org filter (§10.1) |
 | broadcasts / mailing lists | **out of v1** — basic org-to-org chat only (§11 №1) |
 | secret rotation | **out of v1** — simplify now, harden later (§3) |
+| headless + credentials | **API key REQUIRED** — headless without one is refused (§9.6) |
+| number of hubs | **one for v1**, several not designed out (§12) |
 
 ⚠ **10+ participants, with v1 deliberately kept basic.** The simplification ruling keeps threading
 and broadcasts out, so the one thing that must still happen at day one is **reserving an optional
@@ -749,10 +762,28 @@ sized for ten peers × the §9.4 loop breaker, not for two.
 
 ### Still open
 
-1. **Is API-key mode the default for unattended instances?** (§9.5.) I recommend yes — it removes
-   the re-auth ceiling and isolates spend. Mostly moot if so, but still open: whether the OAuth
-   token endpoint returns a fresh refresh token on every refresh (the client already stores one if
-   it does — `subproxy.py:74`).
-2. **One hub or several?** Multiple hub connections per instance is a modest generalization if
-   designed in now and awkward later — and §3's self-issued identity makes it natural, since one
-   secret already works everywhere.
+1. **Is API-key mode the default for unattended orgs that are *not* headless?** Headless now
+   **requires** one (§9.6), which settles the case that mattered. For a merely unattended org I
+   still recommend it, for the same reason. Residual curiosity only: whether the OAuth token
+   endpoint returns a fresh refresh token on every refresh (the client already stores one if it
+   does — `subproxy.py:74`).
+
+### One hub for v1 — but do not design several out (user ruling, 2026-08-04)
+
+> for now we will expect to use just one hub, but that doesn't mean several might not be possible
+> in the future
+
+v1 connects to exactly one. The cost of keeping the door open is three schema decisions taken now,
+none of which add work to a single-hub build:
+
+- **Store hub config as a list of one**, not a scalar. Retrofitting a scalar into a list means
+  migrating every org doc that has one.
+- **Key per-hub state by hub id** — registration status, last-seen, spool entries, and receipts all
+  belong to *a* hub, not to *the* hub. This is the one that is genuinely painful later, because it
+  is a shape change in stored data rather than a config change.
+- **Do not make the remote address imply a hub.** `@net:<slug>` is deliberately hub-agnostic:
+  §3's self-issued identity means one secret already works everywhere, so an org's address is the
+  same on every hub it joins. Resolution (which hub reaches this peer) is a lookup, not a parse.
+
+Everything else — the UI, the settings block, the status pill — can stay singular until there is a
+second hub to show.
