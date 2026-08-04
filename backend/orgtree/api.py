@@ -14,6 +14,7 @@ pings "changed" after every successful op so the UI refreshes. Session spawning 
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import json
 import os
 import posixpath
@@ -21,6 +22,7 @@ import re
 import secrets
 import shutil
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -31,15 +33,16 @@ import uuid
 from typing import TYPE_CHECKING, Any, cast
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from . import sandbox, store, subproxy, supervisor
 from .ledger import LedgerError, Org, USER, VIS_LEVELS, norm_dirs, norm_tools
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
 
     import httpx
     # aliased: `Scope` is taken by the pydantic body model of the same name
@@ -49,6 +52,112 @@ if TYPE_CHECKING:
     from .schema import DirGrant, KioskCfg as KioskDoc, MailEntry, UserMailEntry
 
 app = FastAPI(title="orgtree", version="1.0.0")
+
+#: THIS PROCESS's identity — a fresh value on every start.
+#:
+#: A redeploy replaces both halves of the app, but only the server half
+#: restarts: every browser already open keeps running the bundle it loaded,
+#: against a backend that may have changed its payloads underneath it. The
+#: symptom is a UI that looks fine and is subtly wrong, and the fix has always
+#: been "tell the user to hit refresh". Stamping every response with this lets
+#: the client notice the change itself (see `noteInstance` in api.ts) — no new
+#: endpoint, no extra request, and no poller: the heartbeats that already run
+#: carry it.
+INSTANCE = secrets.token_hex(8)
+
+
+class InstanceStamp:
+    """Adds `X-Orgtree-Instance` to every HTTP response.
+
+    Pure ASGI rather than `@app.middleware("http")`: Starlette's
+    BaseHTTPMiddleware re-wraps the response body in its own StreamingResponse,
+    and this sits in front of multi-GB virtual-disk downloads. Rewriting one
+    header on the `http.response.start` message touches nothing else."""
+
+    def __init__(self, inner: ASGIApp) -> None:
+        self.inner = inner
+
+    async def __call__(self, scope: ASGIScope, receive: Receive,
+                       send: Send) -> None:
+        if scope["type"] != "http":
+            return await self.inner(scope, receive, send)
+
+        async def _send(msg: Any) -> None:
+            if msg["type"] == "http.response.start":
+                msg = dict(msg)
+                msg["headers"] = [*(msg.get("headers") or []),
+                                  (b"x-orgtree-instance", INSTANCE.encode())]
+            await send(msg)
+        await self.inner(scope, receive, _send)
+
+
+# on the APP, so all three listeners (admin, kiosk, bridge) inherit it — they
+# are gateways wrapped around this same object
+app.add_middleware(InstanceStamp)
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_error(  # type: ignore[unused-function]  # registered by the decorator
+        _request: Request, exc: RequestValidationError) -> Response:
+    """FastAPI's default 422 echoes the offending value back as `input`, RAW.
+
+    JSON may carry a lone surrogate (`"\\ud800"`), Python's decoder happily
+    produces it, and the echo then kills the UTF-8 encode of the RESPONSE —
+    turning a 422 into an uncaught UnicodeEncodeError, i.e. a 500, on every
+    body-taking endpoint at once. (Handler-authored messages are safe: they
+    interpolate with !r, which escapes it.)
+
+    Same payload shape as the default handler — only the strings are made
+    encodable, so nothing that reads a 422 today sees a difference."""
+    def fix(v: Any) -> Any:
+        if isinstance(v, str):
+            return v.encode("utf-8", "replace").decode("utf-8")
+        if isinstance(v, list):
+            return [fix(x) for x in cast("list[Any]", v)]
+        if isinstance(v, dict):
+            return {k: fix(x) for k, x in cast("dict[str, Any]", v).items()}
+        return v
+    from fastapi.encoders import jsonable_encoder
+    from fastapi.responses import JSONResponse
+    return JSONResponse(status_code=422,
+                        content={"detail": fix(jsonable_encoder(exc.errors()))})
+
+
+def _encodable(v: Any) -> Any:
+    """Replace UNPAIRED SURROGATES anywhere in a decoded request body.
+
+    ☠ This one is a persistent denial of service, not a cosmetic bug. JSON may
+    contain `"\\ud800"`; Python's decoder accepts it into a str; `json.dump`
+    writes it straight back out as an escape (ensure_ascii, so the SAVE
+    succeeds); and every response that later includes that string dies in
+    pydantic's UTF-8 serializer. One kiosk message body was enough to make
+    GET /api/orgs/<slug>, /events, /chat and /inbox answer 500 for that org
+    FOREVER — the poison is on disk and nothing removes it.
+
+    So it is scrubbed at the only door it can arrive through: the request
+    body, recursively, before validation — which covers free-form dicts
+    (`args`, `max_scope`, `tools`) as well as declared string fields."""
+    if isinstance(v, str):
+        try:
+            v.encode("utf-8")
+            return v
+        except UnicodeEncodeError:
+            return v.encode("utf-8", "replace").decode("utf-8")
+    if isinstance(v, list):
+        return [_encodable(x) for x in cast("list[Any]", v)]
+    if isinstance(v, dict):
+        return {_encodable(k): _encodable(x)
+                for k, x in cast("dict[Any, Any]", v).items()}
+    return v
+
+
+class Body(BaseModel):
+    """Base for every request-body model — see _encodable."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _scrub(cls, data: Any) -> Any:
+        return _encodable(data)
 
 
 # ---- kiosk v2 (user vision): preauthenticated public URLs. Each kiosk-enabled
@@ -80,17 +189,35 @@ def _kiosk_token_map() -> dict[str, str]:
 def _public_denied(method: str, rest: str, slug: str) -> tuple[int, str] | None:
     """The public restriction matrix, applied to the post-token path. Config
     surfaces are admin-only; all access is scoped to the token's own org."""
+    # FastAPI's own routes sit OUTSIDE /api, so the "not /api ⇒ it's the SPA"
+    # rule handed them to visitors: /k/<token>/openapi.json served the
+    # complete 51 KB schema of every frozen admin endpoint and body model,
+    # and /docs + /redoc served a working console for firing at them.
+    if rest.rstrip("/") in ("/openapi.json", "/docs", "/redoc",
+                            "/docs/oauth2-redirect"):
+        return 404, "not found"
     if not rest.startswith("/api"):
         return None                              # the SPA itself
     if rest == "/api/orgs" and method == "GET":
         return None                              # handler filters to this org
     frozen_config = (
         (method == "POST" and rest == "/api/orgs")           # create org
-        or (method == "DELETE" and rest.startswith("/api/orgs/"))  # delete org
+        # ⚠ NOT a blanket `startswith("/api/orgs/")`: that also froze
+        # DELETE …/nodes/…/mail/<id>, the mail-retraction button the visitor
+        # UI renders unconditionally (desk.tsx) — a control that could only
+        # ever 403. Freeze the org-delete route itself, which is the one this
+        # clause was ever about.
+        or (method == "DELETE"
+            and re.fullmatch(r"/api/orgs/[^/]+", rest) is not None)
         or rest.endswith("/settings")                        # org settings
         # /scope is OPEN (ceiling spec §2): visitors retool freely WITHIN the
         # kiosk permission ceiling — the ledger clamps, never a 403 here
         or rest.endswith("/kiosk")                           # kiosk caps/token/ceiling
+        # the PostToolUse steer fetch: an agent-process path, authorised by
+        # loopback or the bridge secret, never by a browser (the frontend has
+        # no call site for it). Reachable from the kiosk it POPPED the node's
+        # pending mid-task mail — reading it AND destroying the delivery.
+        or rest.endswith("/steer")
         or rest == "/api/fs"                                 # filesystem browse
         or (method == "PUT" and rest.endswith("/orgmd"))     # org.md edits
         or rest == "/api/agent"                              # node MCP gateway
@@ -155,6 +282,27 @@ class PublicGateway:
 
 def _public_slug(request: Request) -> str | None:
     return getattr(request.state, "public_slug", None)
+
+
+# A free-form `dict[str, Any]` off the wire (max_scope, tools, add_dirs) hits
+# ledger normalizers that assume the documented SHAPE — `{"tools": 5}` came
+# back out as an AttributeError, i.e. a 500 rather than a 422. Pydantic can't
+# help: the field really is Any. Catch the shape errors where the untyped dict
+# crosses into the ledger, and only there.
+_BAD_SHAPE = (TypeError, AttributeError, ValueError, KeyError, IndexError)
+
+
+def _no_nul(path: str) -> str:
+    """Refuse an embedded NUL before it reaches os.path.
+
+    Every path-taking endpoint funnels into `os.path.realpath`, and on Windows
+    that raises `ValueError: embedded null character` from inside ntpath —
+    below every `except OSError` in this file, so it surfaced as a bare 500.
+    One `?path=%00` did it on /scratch, /file, /disk/file, /disk/delete and the
+    message-attachment stager. A refusal is the contract; a 500 is not."""
+    if "\x00" in path:
+        raise HTTPException(422, "path contains a null byte")
+    return path
 
 
 # ---- the sandbox bridge: the ONE door out of a kiosk container. Serves only
@@ -325,6 +473,11 @@ async def _wire_notify() -> None:  # type: ignore[unused-function]  # registered
 
     supervisor.notify = notify
     supervisor.stream = stream
+    # G2: every persisted change announces itself, from wherever it was made —
+    # an endpoint, an agent's MCP call, the supervisor's own turn bookkeeping.
+    # The explicit hub_changed() calls left at a few endpoints are now
+    # redundant but harmless (they coalesce into the same window).
+    store.on_save = hub_changed
     supervisor.start_auto_resume_loop()
     # storage watchdog (user spec): catches single long tool calls —
     # clones/builds/downloads — that balloon past the limit MID-CALL
@@ -403,16 +556,42 @@ hub = Hub()
 _LOOP: asyncio.AbstractEventLoop | None = None
 
 
+_BCAST_COALESCE = 0.4      # seconds; see hub_changed
+_bcast_pending: set[str] = set()
+_bcast_lock = threading.Lock()
+
+
 def hub_changed(slug: str) -> None:
     """Schedule a 'changed' broadcast from any thread (№22: the heavyweight
     endpoints are plain `def` now — they run in the threadpool and can't
-    await)."""
-    if _LOOP is not None:
-        asyncio.run_coroutine_threadsafe(hub.changed(slug), _LOOP)
+    await).
+
+    G2: this is now driven by `store.save_org` itself rather than by ~30
+    endpoints remembering to call it, which means it fires far more often —
+    a single turn writes the doc many times (mail drain, budget, status,
+    journal). So it COALESCES: the first save opens a 0.4 s window and every
+    save inside that window rides the same broadcast. The clients refetch a
+    ~4 KB tree, so the worst case is ~2.5 refetches/second/org under sustained
+    writes, and the common case is one broadcast per burst.
+    """
+    if _LOOP is None:
+        return
+    with _bcast_lock:
+        if slug in _bcast_pending:
+            return                      # a broadcast is already coming
+        _bcast_pending.add(slug)
+
+    async def _fire() -> None:
+        await asyncio.sleep(_BCAST_COALESCE)
+        with _bcast_lock:
+            _bcast_pending.discard(slug)
+        await hub.changed(slug)
+
+    asyncio.run_coroutine_threadsafe(_fire(), _LOOP)
 
 
 # ---------------------------------------------------------------------- orgs
-class KioskSpec(BaseModel):
+class KioskSpec(Body):
     credits: int = 30                 # top-level holdings cap (user ruling)
     spend_limit: float = 50.0         # USD hard limit (user ruling 2026-07-31)
     storage_limit_mb: int = 4096      # sandboxed: the org DISK size (4096 MB
@@ -428,7 +607,7 @@ class KioskSpec(BaseModel):
     # subscription — the host attaches the token, the sandbox never sees it
 
 
-class OrgCreate(BaseModel):
+class OrgCreate(Body):
     name: str
     dirs: list[str] = []
     permission_mode: str = "acceptEdits"
@@ -498,6 +677,11 @@ def orgs_create(body: OrgCreate) -> dict[str, Any]:
         org = store.create_org(body.name, body.dirs, body.permission_mode)
     except LedgerError as e:
         raise HTTPException(400, str(e))
+    except OSError as e:
+        # create_org mkdirs the workspace before the ledger ever sees the
+        # name; a name the host filesystem refuses (too long, a reserved
+        # device name, an unwritable data root) surfaced as a bare 500
+        raise HTTPException(422, f"could not create the org's workspace: {e}")
     # global default org settings (user spec): every new org is born with them
     dflt = load_org_defaults()
     if dflt:
@@ -531,7 +715,7 @@ def orgs_create(body: OrgCreate) -> dict[str, Any]:
                             "add_dirs": o.default_kiosk_ceiling()["add_dirs"]}
                 o.d["kiosk"]["max_scope"] = o._norm_ceiling(
                     prov if prov is not None else o.default_kiosk_ceiling())
-            except LedgerError as e:
+            except (LedgerError, *_BAD_SHAPE) as e:
                 # unwind: without this, the org survived its own failed
                 # creation as a non-kiosk org (registered + saved above)
                 # while the 422 told the caller nothing was made
@@ -589,10 +773,24 @@ def org_tree(slug: str, request: Request) -> dict[str, Any]:
         node["phase"] = st.get("phase")     # e.g. "compacting" (№3)
         node["queued"] = len(st["queue"])
         node["last_error"] = st["last_error"]
-        if st.get("occupancy"):       # runtime is fresher than the persisted copy
-            node["occupancy"] = st["occupancy"]
-        if st.get("context_window"):
-            node["context_window"] = st["context_window"]
+        # G4: what the agent is doing RIGHT NOW, derived from the live tail the
+        # supervisor already keeps. The client used to accumulate this itself
+        # from the websocket (`activity`, keyed by node, cleared on turn_done),
+        # which meant a missed `turn_done` stranded an indicator until the
+        # socket reconnected — a second copy of a fact the server already had.
+        # Derived here per request, stored nowhere: the newest row wins, and
+        # `busy` (above) is what decides whether it renders at all.
+        live = cast("list[dict[str, Any]]", st.get("live") or [])
+        last = live[-1] if live else {}
+        kind = last.get("kind")
+        node["activity"] = (
+            {"phase": "tool", "tool": last.get("text")} if kind == "tool"
+            else {"phase": "writing"} if kind == "text"
+            else {"phase": "thinking"})
+        # (occupancy / context_window were re-read from the supervisor's
+        # in-memory copy here, on the belief that it was fresher. It was not:
+        # _after_turn wrote both in the same block, so the mirror could only
+        # ever agree or be stale. The doc projection is the answer.)
         for c in node["children"]:
             annotate(c)
 
@@ -674,6 +872,20 @@ def _scrub_public(tree: dict[str, Any]) -> None:
                               for d in sc["add_dirs"]]
         if n.get("last_error"):
             n["last_error"] = _WINPATH.sub("<path>", str(n["last_error"]))
+        # the other two ENGINE-generated strings on a node. `frozen.error` is
+        # a raw CLI/limit error and `last_denials[].arg` is the argument of a
+        # headless auto-denied tool call — i.e. routinely a host file path.
+        # Both rode the tree payload unscrubbed while last_error beside them
+        # was cleaned (measured: a denial arg leaked E:\… and a freeze error
+        # leaked the operator's username).
+        fz: dict[str, Any] = n.get("frozen") or {}
+        if fz.get("error"):
+            fz["error"] = _WINPATH.sub("<path>", str(fz["error"]))
+        dens: list[Any] = n.get("last_denials") or []
+        for dn in dens:
+            if isinstance(dn, dict) and cast("dict[str, Any]", dn).get("arg"):
+                d2 = cast("dict[str, Any]", dn)
+                d2["arg"] = _WINPATH.sub("<path>", str(d2["arg"]))
         children: list[dict[str, Any]] = n.get("children") or []
         for c in children:
             walk(c)
@@ -701,7 +913,7 @@ def _scrub_events(evts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [cast("dict[str, Any]", scrub(e)) for e in evts]
 
 
-class Settings(BaseModel):
+class Settings(Body):
     org_dirs: list[Any] | None = None       # external folders [{path, mode}] (ws excluded)
     max_top_grant: int | None = None
     default_top_grant: int | None = None    # pre-filled grant for top-level hires
@@ -790,6 +1002,18 @@ def _org_settings_locked(slug: str, body: Settings) -> dict[str, Any]:
     ws = org.d.get("workspace")
     warnings: list[str] = []
     if body.org_dirs is not None:
+        # `org_dirs` is typed `list[Any]` on the wire, and norm_dirs assumes
+        # every entry is a str or a {path: str} mapping — `[null]` and
+        # `[{"path": 123}]` both reached it and came back out as an
+        # AttributeError, i.e. a 500. Say what is wrong instead.
+        for d in body.org_dirs:
+            ok = isinstance(d, str) or (
+                isinstance(d, dict)
+                and isinstance(cast("dict[str, Any]", d).get("path"), str))
+            if not ok:
+                raise HTTPException(
+                    422, "org_dirs entries must be a path string or "
+                         f"{{path, mode}} — got {d!r}")
         # org folder holdings live on the eye's gear (user ruling). Removals
         # revoke everywhere; an rw→ro downgrade propagates to every node's
         # grant (upgrades don't auto-propagate — grant per node deliberately).
@@ -865,7 +1089,7 @@ def _org_settings_locked(slug: str, body: Settings) -> dict[str, Any]:
     return {"dirs": org.d["dirs"], "warnings": warnings}
 
 
-class KioskCfg(BaseModel):
+class KioskCfg(Body):
     enabled: bool | None = None
     credits: int | None = None            # top-level holdings cap (0 = uncapped)
     spend_limit: float | None = None      # USD hard limit (0 = unlimited)
@@ -929,6 +1153,8 @@ async def org_kiosk(slug: str, body: KioskCfg) -> dict[str, Any]:
                                           auto_raise=body.auto_raise)
             except LedgerError as e:
                 raise HTTPException(422, str(e))
+            except _BAD_SHAPE as e:
+                raise HTTPException(422, f"malformed max_scope: {e}")
             ceiling_warnings = r.get("warnings") or []
             k = org.d["kiosk"]  # type: ignore[typeddict-item, assignment]  # set_kiosk_ceiling keeps the key
         elif body.auto_raise is not None:
@@ -978,7 +1204,7 @@ async def org_kiosk(slug: str, body: KioskCfg) -> dict[str, Any]:
             **({"warnings": ceiling_warnings} if ceiling_warnings else {})}
 
 
-class HireDefaults(BaseModel):
+class HireDefaults(Body):
     default_tools: dict[str, Any] | None = None  # {bash, web, edit, subagents, mcp}
     default_visibility: str | None = None   # self|team|subtree|full
     raise_ceiling: bool = False             # admin bridge (ignored for visitors)
@@ -1009,7 +1235,7 @@ async def org_hire_defaults(slug: str, body: HireDefaults,
     return result
 
 
-class Scope(BaseModel):
+class Scope(Body):
     add_dirs: list[dict[str, Any]] | None = None  # [{path, mode: rw|ro}]
     tools: dict[str, Any] | None = None     # {bash, web, edit, subagents, mcp: []}
     org_visibility: str | None = None
@@ -1017,12 +1243,21 @@ class Scope(BaseModel):
     charter: str | None = None              # §15: this node's role card
     team_charter: str | None = None         # §15: binds this node's whole subtree
     effort: str | None = None               # thinking effort: low|medium|high|"" clears
+    model_version: str | None = None        # a VERSION inside the tier ("" clears)
     raise_ceiling: bool = False             # the one-action bridge (spec §1)
 
 
 @app.post("/api/orgs/{slug}/nodes/{nid}/scope")
-async def node_scope(slug: str, nid: str, body: Scope,
-                     request: Request) -> dict[str, Any]:
+# plain `def`, not `async` (No.22): the body does load_org + save_org under a
+# THREADING lock, and an `async def` runs that ON THE EVENT LOOP -- so while it
+# waits for the lock or the disk, every other request and every websocket frame
+# waits with it. As a sync def FastAPI runs it in the threadpool and only this
+# request pays. Measured 3-22 ms either way, so this is NOT the cause of the
+# reported effort lag; it is a hazard that sat on the path and cost nothing to
+# remove. 15 other async routes still do doc IO on the loop -- listed in the
+# docket, deliberately not swept here.
+def node_scope(slug: str, nid: str, body: Scope,
+               request: Request) -> dict[str, Any]:
     pub = bool(_public_slug(request))
     with store.DOC_LOCK:
         try:
@@ -1034,13 +1269,16 @@ async def node_scope(slug: str, nid: str, body: Scope,
                                    permission_mode=body.permission_mode,
                                    charter=body.charter,
                                    team_charter=body.team_charter,
-                                   effort=body.effort, raise_ceiling=rc)
+                                   effort=body.effort,
+                                   model_version=body.model_version,
+                                   raise_ceiling=rc)
         except LedgerError as e:
             raise HTTPException(422, str(e))
         store.save_org(org)
     if pub and isinstance(result, dict):
         result.pop("bridge", None)
-    await hub.changed(slug)
+    # (the explicit broadcast is gone: store.save_org announces every write
+    # now -- G2 -- so this was a second, uncoalesced copy of one signal)
     return result
 
 
@@ -1117,10 +1355,25 @@ def host_info() -> dict[str, Any]:
     checkbox is disabled at org creation)."""
     return {"docker": sandbox.docker_available(),
             "sandbox_mcp": supervisor.sandbox_mcp_enabled(),
-            "cli_version": supervisor.cli_version()}
+            "cli_version": supervisor.cli_version(),
+            # None = uvicorn has no WebSocket implementation, so pushed updates
+            # never reach the browser and the UI is running on its polling
+            # heartbeats alone. Reported here so the deployment can SAY it
+            # rather than just feeling slow (see _ws_impl).
+            "websockets": _ws_impl(),
+            # which interpreter is serving. `venv` false means the deps live in
+            # a system-wide Python shared with every other project, which is
+            # how the missing-websockets bug stayed invisible for so long
+            # (D-46). Reported so the answer needs no process forensics: on
+            # Windows a venv-launched process reports the BASE exe in the task
+            # list, so "which python is this" is genuinely hard to see from
+            # outside.
+            "python": {"prefix": sys.prefix,
+                       "venv": sys.prefix != sys.base_prefix,
+                       "version": sys.version.split()[0]}}
 
 
-class Reorder(BaseModel):
+class Reorder(Body):
     before: str | None = None
     after: str | None = None
 
@@ -1138,7 +1391,7 @@ async def node_reorder(slug: str, nid: str, body: Reorder) -> dict[str, Any]:
     return result
 
 
-class Message(BaseModel):
+class Message(Body):
     text: str
     # relative uploads/ paths already landed via the upload endpoint — the
     # composer stages them and sends them WITH the mail (user spec 2026-07-31)
@@ -1160,8 +1413,11 @@ def node_message(slug: str, nid: str, body: Message) -> dict[str, Any]:
     # "/" at position 0 (the envelope would prepend [MAIL …] otherwise).
     # Command-SHAPED only (review C3b): "/compact", "/context foo" — a first
     # token with internal slashes ("/e/Libraries/report.md — pick this up")
-    # is correspondence and keeps full mail semantics (durability, Sent,
-    # chain notices, the user-audience grant).
+    # is correspondence and keeps full MAIL semantics (durability, a Sent copy,
+    # delivery at rehire). What a command DOES share with a message, since
+    # 2026-08-03, is the two consequences of direct user contact: the superior
+    # chain is notified and the node gains a user audience. Those are about who
+    # the user reached, not about whether a copy was filed.
     if stripped.startswith("/") \
             and re.fullmatch(r"/[A-Za-z?][\w-]*", stripped.split()[0]):
         with store.DOC_LOCK:
@@ -1185,6 +1441,16 @@ def node_message(slug: str, nid: str, body: Message) -> dict[str, Any]:
                 raise HTTPException(
                     409, "frozen (usage limit) — a session command would be "
                          "dropped, not queued; ▶ resume the org first")
+            # A command is direct user contact, so it carries the same two
+            # consequences a message does: the superior chain is told, and the
+            # node gains a user audience (user report 2026-08-03 — running a
+            # command did neither, so the user could `/compact` an agent deep
+            # in a tree and nobody above it would ever know). Done HERE, after
+            # the validity checks and before any of the three command paths
+            # below, so all of them get it from one place — the branch has
+            # several returns and per-return calls would rot apart.
+            org.user_deep_reach(nid, stripped[:160], kind="command")
+            store.save_org(org)
         if stripped.split()[0] == "/compact":
             # review C4: one word, one meaning. The hinted /compact used to
             # compact the CLI session IN PLACE — same desk, same word as the
@@ -1219,9 +1485,18 @@ def node_message(slug: str, nid: str, body: Message) -> dict[str, Any]:
     # verify each really exists there (traversal-guarded) and ride metadata
     metas: list[dict[str, Any]] = []
     if body.attachments:
+        # same rule as /scratch: `nid` reaches the filesystem here (via
+        # scratch_dir's makedirs), so it must name a real node first — an
+        # unresolved `..\..\..\x` created a directory outside the data root
+        # and only THEN got its 422 from post_mail
+        try:
+            store.load_org(slug).node(nid)
+        except LedgerError as e:
+            raise HTTPException(404, str(e))
         base = os.path.realpath(supervisor.scratch_dir(slug, nid))
         for rel in body.attachments[:10]:
-            full = os.path.realpath(os.path.join(base, str(rel).lstrip("/\\")))
+            full = os.path.realpath(
+                os.path.join(base, _no_nul(str(rel)).lstrip("/\\")))
             if full.startswith(base + os.sep) and os.path.isfile(full):
                 metas.append({"name": os.path.basename(full),
                               "path": str(rel).replace("\\", "/"),
@@ -1230,7 +1505,9 @@ def node_message(slug: str, nid: str, body: Message) -> dict[str, Any]:
         try:
             org = store.load_org(slug)
             r = org.post_mail(USER, nid, body.text, attachments=metas or None)
-            org.user_deep_reach(nid, body.text.strip().splitlines()[0][:80])
+            # 80 chars truncated most instructions mid-clause; the notice is a
+            # gist, but it has to survive being read on its own
+            org.user_deep_reach(nid, body.text.strip().splitlines()[0][:160])
             store.save_org(org)
         except LedgerError as e:
             raise HTTPException(422, str(e))
@@ -1351,7 +1628,7 @@ async def org_resume(slug: str) -> dict[str, Any]:
     return {"resumed": resumed}
 
 
-class CreditDecision(BaseModel):
+class CreditDecision(Body):
     id: str
     action: str        # approve | deny
 
@@ -1390,7 +1667,7 @@ def user_inbox(slug: str) -> dict[str, Any]:
             "sent": d.get("user_outbox", [])[-50:]}
 
 
-class InboxRead(BaseModel):
+class InboxRead(Body):
     ids: list[str]
 
 
@@ -1412,6 +1689,12 @@ async def user_inbox_read(slug: str, body: InboxRead) -> dict[str, Any]:
             org.d["user_inbox"] = keep
             log = org.d.setdefault("user_mail_log", [])
             log.extend(read)
+            # the archive is CHRONOLOGICAL, never read-order. extend() appends
+            # in whatever order the user happened to CLICK, and the reader
+            # renders by list position — so without this sort a mail read
+            # second outranks one sent later (user bug 2026-08-02). `at` is
+            # ISO-8601 Z, so a string sort is a time sort.
+            log.sort(key=lambda m: m.get("at") or "")
             del log[:-100]
             store.save_org(org)
     await hub.changed(slug)
@@ -1427,7 +1710,7 @@ async def user_inbox_read(slug: str, body: InboxRead) -> dict[str, Any]:
 _PEER_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
 
 
-class ExternSend(BaseModel):
+class ExternSend(Body):
     org: str
     body: str
     attachments: list[str] = []   # absolute local paths (extern peers are local)
@@ -1607,7 +1890,9 @@ def node_history(slug: str, nid: str, request: Request,
             items.append({"at": n["at"], "kind": "notice", "actor": "system",
                           "detail": {"text": n["text"]}})
     items.sort(key=lambda x: x["at"])
-    out = items[-last:]
+    # clamped like /chat's `last`: `?last=0` is `items[-0:]`, i.e. the WHOLE
+    # log — the one value of `last` that means "no limit"
+    out = items[-max(1, min(last, 1000)):]
     if _public_slug(request):
         out = _scrub_events(out)     # e.g. revoke_dir carries the host path
     return {"items": out}
@@ -1615,8 +1900,20 @@ def node_history(slug: str, nid: str, request: Request,
 
 @app.get("/api/orgs/{slug}/nodes/{nid}/scratch")
 def node_scratch(slug: str, nid: str, path: str = "") -> dict[str, Any]:
+    # ☠ The node MUST be resolved before `nid` reaches the filesystem. This
+    # was the only /nodes/{nid}/… endpoint that skipped it, and `nid` is
+    # joined straight into a path by supervisor.scratch_dir: `nid` =
+    # `..\..\..\..\Users` walked out of the data root, mkdir'd the target,
+    # and then anchored the containment check TO THE ESCAPED BASE — so the
+    # listing and the 60 KB file read both succeeded. Reachable through the
+    # kiosk gateway (the path is org-scoped, so the public matrix allows it),
+    # which made it an internet-facing read of the operator's filesystem.
+    try:
+        store.load_org(slug).node(nid)
+    except LedgerError as e:
+        raise HTTPException(404, str(e))
     base = os.path.realpath(supervisor.scratch_dir(slug, nid))
-    full = os.path.realpath(os.path.join(base, path.lstrip("/\\")))
+    full = os.path.realpath(os.path.join(base, _no_nul(path).lstrip("/\\")))
     # separator-anchored: a bare prefix test admits sibling dirs (<base>-x)
     if full != base and not full.startswith(base + os.sep):
         raise HTTPException(422, "path escapes the scratch space")
@@ -1649,7 +1946,7 @@ def orgmd_get(slug: str, request: Request) -> dict[str, Any]:
     return {"path": p, "content": content}
 
 
-class OrgMd(BaseModel):
+class OrgMd(Body):
     content: str
 
 
@@ -1672,7 +1969,7 @@ async def orgmd_put(slug: str, body: OrgMd) -> dict[str, Any]:
     return {"path": p, "bytes": len(body.content)}
 
 
-class AudienceAction(BaseModel):
+class AudienceAction(Body):
     action: str            # grant | deny | revoke
     node: str              # the grantee / requester
     target: str | None = None
@@ -1767,11 +2064,69 @@ async def anthropic_proxy(path: str, request: Request) -> StreamingResponse:
 
 
 # ------------------------------------------------------------- agent gateway
-class AgentCall(BaseModel):
+class AgentCall(Body):
     org: str
     node: str
     tool: str
     args: dict[str, Any] = {}
+
+
+# every `args` key the tool schema documents as text: an identifier, a tier
+# name, a body, a status. Containers were never legal in any of them.
+_ARG_STRS = ("node", "to", "from", "target", "grantee", "parent", "new_parent",
+             "name", "tier", "kind", "body", "action", "status", "summary",
+             "reason", "charter", "team_charter", "org_visibility", "effort",
+             "path")
+
+
+def _norm_args(a: dict[str, Any]) -> dict[str, Any]:
+    """Normalise the free-form `args` dict an LLM fills in.
+
+    Two 500 families came out of trusting it verbatim. A container in a text
+    argument reached `self.nodes[nid]` as an unhashable dict key (every
+    node-taking tool) and `delivered.startswith(...)` as a list (message). An
+    explicit `null` was worse than a missing key: `a.get("to", "")` returns
+    None when the key is PRESENT and null, so the "" default never applied.
+
+    So: drop nulls (restoring the defaults), coerce scalars to text, refuse
+    containers with the same 422 shape as any other bad argument."""
+    out = dict(a)
+    for k in _ARG_STRS:
+        if k not in out:
+            continue
+        v = out[k]
+        if v is None:
+            del out[k]                       # let the `.get(k, default)` win
+        elif isinstance(v, (dict, list, tuple, set)):
+            raise LedgerError(
+                f"{k} must be text, not {type(cast('object', v)).__name__}")
+        elif not isinstance(v, str):
+            out[k] = str(v)                  # a bare number reads as its text
+    return out
+
+
+def _arg_int(a: dict[str, Any], key: str, default: int) -> int:
+    """`args` is a free-form dict off the wire — an LLM fills it, so a string
+    or a float lands there routinely. A bare `int(a.get(k) or d)` turned
+    `{"delta": "x"}` and `{"last": "abc"}` into an uncaught ValueError, i.e. a
+    500 from the gateway an agent is holding a tool result open on. Coerce
+    what is coercible; refuse the rest the way every other bad argument is."""
+    v = a.get(key)
+    if v is None or v == "":
+        return default
+    # ⚠ OverflowError as well as TypeError/ValueError: `int(float("Infinity"))`
+    # and `float("1e400")` raise it, not ValueError, so "Infinity", "-Infinity"
+    # and "1e400" walked past the guard and 500ed the gateway an agent is
+    # holding a tool result open on. Found 2026-08-04 by the mcptool suite,
+    # which builds these args itself — and an LLM writes "Infinity" far more
+    # readily than a human does.
+    try:
+        return int(v)
+    except (TypeError, ValueError, OverflowError):
+        try:
+            return int(float(v))
+        except (TypeError, ValueError, OverflowError):
+            raise LedgerError(f"{key} must be a number (got {v!r})")
 
 
 @app.post("/api/agent")
@@ -1789,7 +2144,10 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
     bridge_slug = getattr(request.state, "bridge_slug", None)
     if bridge_slug and body.org != bridge_slug:
         raise HTTPException(403, "bridge secret is scoped to its own org")
-    a = body.args
+    try:
+        a = _norm_args(body.args)
+    except LedgerError as e:
+        raise HTTPException(422, str(e))
     if body.tool in ("orgtree_read_transcript", "orgtree_read_scratch",
                      "orgtree_chart", "orgtree_send_file"):
         try:
@@ -1807,7 +2165,7 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                     raise LedgerError("read access is strictly DOWNWARD (§7.6) — you "
                                       "may read yourself and your descendants only")
                 chat = supervisor.read_chat(org, target)
-                last = max(1, min(int(a.get("last") or 30), 80))
+                last = max(1, min(_arg_int(a, "last", 30), 80))
                 msgs = chat["messages"][-last:]
                 return {"node": target, "busy": chat["busy"],
                         "occupancy": chat["occupancy"],
@@ -1818,7 +2176,7 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
             if target != body.node and not org.is_ancestor(body.node, target):
                 raise LedgerError("read access is strictly DOWNWARD (§7.6)")
             base = os.path.realpath(supervisor.scratch_dir(body.org, target))
-            rel = (a.get("path") or "").strip().lstrip("/\\")
+            rel = _no_nul(str(a.get("path") or "")).strip().lstrip("/\\")
             full = os.path.realpath(os.path.join(base, rel))
             # separator-anchored: a bare prefix test admits sibling dirs
             if full != base and not full.startswith(base + os.sep):
@@ -1868,13 +2226,25 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                 hdirs, dwarns = supervisor.sandbox_dirs_to_host(
                     org, a.get("add_dirs"))
                 result = org.hire(body.node, a.get("parent") or body.node,
-                                  a.get("tier"), int(a.get("grant") or 0),  # type: ignore[arg-type]  # ledger 422s a missing tier
+                                  a.get("tier"), _arg_int(a, "grant", 0),  # type: ignore[arg-type]  # ledger 422s a missing tier
                                   a.get("name") or "", add_dirs=hdirs,
                                   tools=a.get("tools"),
                                   org_visibility=a.get("org_visibility"),
                                   charter=a.get("charter"))
                 if dwarns:
                     result.setdefault("warnings", []).extend(dwarns)
+                # observed on another install (user report 2026-08-02): an
+                # agent hires, writes a thorough charter, and considers the
+                # delegation DONE — the hire then sits idle forever, because
+                # nothing in the tree self-starts. The charter is identity;
+                # mail is what runs a turn. Said in the RESULT because that is
+                # what the hiring agent reads next, not the tool description
+                # it read once.
+                if result.get("node"):
+                    result["next_step"] = (
+                        f'"{result["node"]}" is hired and IDLE. Hiring does not '
+                        f'start it — send it an orgtree_message now saying what '
+                        f'to do, or it will never run.')
             elif body.tool == "orgtree_retool":
                 # effort joins retool (ceiling spec §6): a cost dial, so a
                 # superior may set it on REPORTS — never on itself (set_scope's
@@ -1894,7 +2264,14 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
             elif body.tool == "orgtree_retire":
                 result = org.retire(body.node, a.get("node"))  # type: ignore[arg-type]  # node() 422s on None
             elif body.tool == "orgtree_rehire":
-                result = org.rehire(body.node, a.get("node"), a.get("grant"))  # type: ignore[arg-type]  # node() 422s on None
+                # `grant` now goes through _arg_int like every other int
+                # argument. It was the ONE that did not, so {"grant": "abc"}
+                # reached `int(grant)` in the ledger and 500ed (mcptool suite,
+                # 2026-08-04). None/"" stays None — rehire's "no explicit grant".
+                _g = a.get("grant")
+                result = org.rehire(body.node, a.get("node"),  # type: ignore[arg-type]  # node() 422s on None
+                                    None if _g is None or _g == ""
+                                    else _arg_int(a, "grant", 0))
                 drive.extend(result.pop("drive", []))
             elif body.tool == "orgtree_move":
                 result = org.move(body.node, a.get("node", ""),
@@ -1909,7 +2286,7 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
             elif body.tool == "orgtree_dissolve":
                 result = org.dissolve(body.node, a.get("node"))  # type: ignore[arg-type]  # node() 422s on None
             elif body.tool == "orgtree_reallocate":
-                result = org.reallocate(body.node, a.get("node"), int(a.get("delta") or 0))  # type: ignore[arg-type]  # node() 422s on None
+                result = org.reallocate(body.node, a.get("node"), _arg_int(a, "delta", 0))  # type: ignore[arg-type]  # node() 422s on None
             elif body.tool == "orgtree_switch_model":
                 result = org.switch_model(body.node, a.get("node", ""),
                                           a.get("tier", ""))
@@ -1919,8 +2296,15 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                 # persisted on the node (survives restarts); a new turn moves
                 # it to prev_status, so a stale "done" never shows over live
                 # work but the history is not erased (gap audit №13)
+                # user ruling 2026-08-02: `done` and `idle` are not functionally
+                # distinct — an agent that finished IS idle. The DONE report
+                # still goes to the superior below; the node then simply sits
+                # idle, carrying the summary so the chip still says what it did.
+                # `blocked` is NOT collapsed: it means "stuck, needs a human or
+                # a superior", which idle does not.
+                stored = "idle" if status == "done" else status
                 org.node(body.node)["last_status"] = {
-                    "status": status, "summary": summary,
+                    "status": stored, "summary": summary,
                     "at": supervisor.now_iso()}
                 result = {"recorded": status}
                 if status in ("done", "blocked"):
@@ -2037,11 +2421,20 @@ async def node_upload(slug: str, nid: str, request: Request,
             raise HTTPException(413, "this agent's upload space is full — ask "
                                      "it to clean up uploads/ first")
     stem, ext = os.path.splitext(safe)
+    # a filename the host refuses is an OSError from the write below, i.e. a
+    # 500: Windows caps one path COMPONENT at 255 chars, and `?name=` is
+    # attacker-supplied. Bound it here, leaving room for the `-2` de-dupe.
+    stem, ext = (stem[:120] or "upload"), ext[:20]
+    safe = stem + ext
     final, i = safe, 2
     while os.path.exists(os.path.join(updir, final)):
         final, i = f"{stem}-{i}{ext}", i + 1
-    with open(os.path.join(updir, final), "wb") as f:
-        f.write(data)
+    try:
+        with open(os.path.join(updir, final), "wb") as f:
+            f.write(data)
+    except OSError as e:
+        # ENOSPC on a full org disk, or a name the filesystem still refuses
+        raise HTTPException(422, f"could not store the upload: {e}")
     return {"path": f"uploads/{final}", "bytes": len(data)}
 
 
@@ -2057,7 +2450,7 @@ def _agent_send_file(org: Org, nid: str, a: dict[str, Any]) -> dict[str, Any]:
     or deletes the original (re-sending an updated file yields report-2.pdf —
     both chat cards stay honest). Outbox lives in scratch, so kiosk storage
     metering already counts it and org deletion sweeps it."""
-    raw = str(a.get("path") or "").strip()
+    raw = _no_nul(str(a.get("path") or "")).strip()
     if not raw:
         raise LedgerError("path is required — the file to deliver")
     slug = org.d["slug"]
@@ -2150,7 +2543,7 @@ def node_file(slug: str, nid: str, path: str = "") -> FileResponse:
     except LedgerError as e:
         raise HTTPException(404, str(e))
     base = os.path.realpath(supervisor.scratch_dir(slug, nid))
-    full = os.path.realpath(os.path.join(base, path.lstrip("/\\")))
+    full = os.path.realpath(os.path.join(base, _no_nul(path).lstrip("/\\")))
     if not full.startswith(base + os.sep):
         raise HTTPException(422, "path escapes the scratch space")
     if not os.path.isfile(full):
@@ -2168,7 +2561,18 @@ def node_file(slug: str, nid: str, path: str = "") -> FileResponse:
 
 # engine credential/state files on the disk (subscription auth copies the
 # HOST's OAuth credentials into the sandbox home) — never served to visitors
-_PUBLIC_DISK_DENY = (".credentials.json", ".claude.json")
+# ⚠ `.bridge` is not an engine file — orgtree writes it itself
+# (sandbox.py: `{home}/orgtree/.bridge` = {"url", "secret"}), and it holds the
+# org's SANDBOX BRIDGE SECRET. The bridge listener binds 0.0.0.0, so a visitor
+# who downloads this file gets: the /api/agent gateway this very matrix
+# freezes for the public (acting as ANY node of the org), the node steer
+# fetch, and the /anthropic proxy — which attaches the HOST's subscription
+# token. Verified reachable at GET …/disk/file?path=home/orgtree/.bridge.
+_PUBLIC_DISK_DENY = (".credentials.json", ".claude.json", ".bridge")
+#: how much of a file a visitor download scans for this org's bridge secret.
+#: 256 KiB covers any plausible copy of a credential file while costing one
+#: read; see disk_file for why the name check alone is not a boundary.
+_SECRET_SCAN_BYTES = 262144
 _SID_FILE = re.compile(r"^home/\.claude/projects/[^/]+/([0-9a-f-]{36})\.jsonl$")
 
 
@@ -2188,7 +2592,7 @@ def _disk_rel(slug: str, path: str) -> tuple[str, str]:
     containment ASSERTED before any read/download/unlink. A traversal here
     would reach the host filesystem from a kiosk URL: the worst outcome
     available in this feature, so both a lexical and a realpath check."""
-    rel = posixpath.normpath((path or "").replace("\\", "/").strip("/"))
+    rel = posixpath.normpath(_no_nul(path or "").replace("\\", "/").strip("/"))
     if not rel or rel == "." or rel == ".." or rel.startswith("../") \
             or rel.startswith("/") or ":" in rel:
         raise HTTPException(422, "path escapes the org disk")
@@ -2232,8 +2636,8 @@ def _disk_classify(org: Org, rel: str, public: bool) -> tuple[str, str | None]:
         return "reclaimable", "no node owns this session"
     if rel.rsplit("/", 1)[-1] in _PUBLIC_DISK_DENY:
         if public:
-            return "blocked", "engine credential/state file"
-        return "content", "engine state file — admin-side only"
+            return "blocked", "credential/secret file"
+        return "content", "credential/secret file — admin-side only"
     return "content", None
 
 
@@ -2334,15 +2738,39 @@ def disk_file(slug: str, request: Request, path: str = "") -> FileResponse:
     buffered). Visitors get everything except the engine credential files."""
     org = _disk_org(slug)
     rel, full = _disk_rel(slug, path)
-    cls, why = _disk_classify(org, rel, bool(_public_slug(request)))
+    public = bool(_public_slug(request))
+    cls, why = _disk_classify(org, rel, public)
     if cls == "blocked" and rel.rsplit("/", 1)[-1] in _PUBLIC_DISK_DENY:
         raise HTTPException(403, why or "not served publicly")
     if not os.path.isfile(full):
         raise HTTPException(404, f"no such file: {rel!r}")
+    # ☠ A FILENAME denylist is not a boundary here, and the sandbox suite
+    # proved it end to end: every sandboxed agent has passwordless root on the
+    # org disk, so `cp ~/orgtree/.bridge workspace/notes.txt` renames the
+    # secret out of the deny tuple and a kiosk visitor downloads it with a 200.
+    # That secret opens /api/agent as ANY node of the org and the /anthropic
+    # proxy, which attaches the HOST's subscription OAuth token — so this is
+    # the whole sandbox boundary, defeated by a copy.
+    #
+    # Content is therefore checked as well as name, for visitors only: any file
+    # carrying this org's bridge secret is refused whatever it is called. The
+    # scan is bounded and cheap (the secret is 32 hex chars; a copy of a small
+    # JSON file is what this defends against, and a multi-GB file streaming to
+    # a visitor is not a credential-shaped object).
+    if public:
+        secret = sandbox.sandbox_secret(org)
+        if secret:
+            try:
+                with open(full, "rb") as f:
+                    head = f.read(_SECRET_SCAN_BYTES)
+                if secret.encode() in head:
+                    raise HTTPException(403, "credential/secret file")
+            except OSError:
+                pass          # unreadable: the FileResponse below reports it
     return FileResponse(full, filename=os.path.basename(full))
 
 
-class DiskDelete(BaseModel):
+class DiskDelete(Body):
     paths: list[str]
 
 
@@ -2414,7 +2842,7 @@ def disk_delete(slug: str, body: DiskDelete, request: Request) -> dict[str, Any]
             "full": bool(org.d.get("storage_full"))}
 
 
-class DiskResize(BaseModel):
+class DiskResize(Body):
     size_mb: int | None = None
     cancel: bool = False       # one-click cancel of a pending shrink (ruled)
 
@@ -2603,19 +3031,104 @@ def node_chat(slug: str, nid: str, last: int = 300) -> dict[str, Any]:
     # queued = the mail box PLUS the delivery journal's in-flight batches —
     # a message steered mid-task drains the box instantly, and during a long
     # tool call it showed NOWHERE (user bug 2026-07-31)
-    pending = sorted(supervisor.delivering_mail(org, nid)
-                     + list((org.d.get("mail") or {}).get(nid, [])),
+    #
+    # A batch drained INTO a turn is the same story one step later: the
+    # mailbox no longer has it and the CLI has not echoed it into the
+    # transcript yet, so it is surfaced until the transcript does. This is the
+    # one place both halves are in hand, so the handover is decided here and
+    # lands in ONE payload — the pending bubble goes and the durable @user
+    # bubble arrives together, never a frame with neither (D-54).
+    _seen_user = [(m.get("text") or "") for m in out["messages"]
+                  if m.get("role") == "user"]
+
+    def _in_transcript(m: Mapping[str, Any]) -> bool:
+        """Is THIS mail entry already on screen as a transcript bubble?
+
+        Identity, not resemblance. The transcript text is the `_mail_block`
+        envelope wrapped around the body, and that envelope carries the
+        entry's own `at` immediately before it —
+
+            FROM @user (…) · message · 2026-08-04T04:27:08.545Z
+            <body>
+
+        — so the timestamp+body junction names one specific mail. Matching on
+        the body alone would repeat D-52's mistake one layer down: re-send
+        "continue" and the new entry would match the OLD bubble and be hidden
+        while still in flight. No clock is compared, only a string this
+        process itself wrote.
+
+        ⚠ The body is used RAW. `_mail_block` writes `f"…· {at}\\n{m['body']}"`
+        with no normalisation, so a stripped copy of a body that begins with
+        whitespace does not occur in the transcript at all — the test then said
+        "not on screen" forever and the pending bubble stayed up ALONGSIDE the
+        durable one for the whole of the turn's first response (measured
+        2026-08-04 on a real transcript sample: median 2.4 s, max 137 s). The
+        composer trims, but nothing else does: the API takes `body.text` as
+        sent, and agent mail routinely opens with a newline. Only the emptiness
+        guard strips — and only where it must. With an `at` the marker is
+        unique whatever the body is, so a whitespace-only message (nothing
+        forbids one; only the composer trims) is identified like any other. It
+        is only the legacy `at`-less entry that falls back to a bare body, and
+        THAT needle must not be empty or it would match every bubble."""
+        body = m.get("body") or ""
+        at = m.get("at")
+        if not at and not body.strip():
+            return False
+        # the head is enough to identify it and survives truncation either side
+        mark = (f"· {at}\n{body}" if at else body)[:400]
+        return any(mark in t for t in _seen_user)
+
+    # ⚠ The same evidence test applies to the MAILBOX rows, not only the
+    # journal's. `_fold_back_undelivered` re-queues a batch whose delivery was
+    # never confirmed — correctly: it is the only thing that puts a
+    # consumed-but-unanswered message back where the next envelope re-presents
+    # it, so weakening the fold-back itself would buy one clean render at the
+    # cost of the agent never being asked again. But when the CLI died AFTER
+    # echoing the message into its transcript and BEFORE its first stdout
+    # event, the returned row is one the transcript already shows, and the desk
+    # rendered both — measured 2026-08-04, 22 of 32 samples, indefinitely.
+    # Hiding it HERE removes the duplicate at the display layer and leaves
+    # delivery untouched: the marker names one specific entry, so only a row
+    # the transcript genuinely carries is dropped from the payload.
+    pending = sorted(supervisor.delivering_mail(org, nid, _in_transcript)
+                     + [m for m in (org.d.get("mail") or {}).get(nid, [])
+                        if not _in_transcript(m)],
                      key=lambda m: m.get("at") or "")
     out["mail_pending"] = len(pending)
-    # parity №11: the pending bubble renders from the DURABLE server copy —
-    # orgtree's queue is better than Claude Code's and presented as flimsier
+    # ⚠ NOT `pending[-20:]`. A fixed row cap on a list that only GROWS while
+    # the agent cannot run is the same bug as everything else in this family:
+    # the 21st queued message pushed the 1st off the payload, its ghost had
+    # long since graduated against the very row that just vanished, and the
+    # message was on screen nowhere (measured 2026-08-04: message #0 gone at
+    # send #21, and it never comes back until a turn drains it). Every queued
+    # message keeps a row; the payload is bounded by SHRINKING BODIES instead,
+    # which costs a truncated preview rather than a missing message.
+    #
+    # Bodies shrink in tiers as the queue grows, so the payload stays bounded
+    # (worst case ~200 KB at the 800-row backstop) without any message losing
+    # its row. The floor must stay well above the client's graduation needle
+    # (`serverCopies` compares the first 200 characters) or a shrunk body would
+    # stop matching its own ghost and strand it — a duplicate.
+    #
+    # ⚠ Residual: past 800 undelivered mails the oldest do fall off. The live
+    # mailbox is uncapped (`ledger.post_mail` caps `mail_log`, not `mail`), so
+    # SOME backstop has to exist; 800 is far outside anything a user can type
+    # and the tier floor keeps the payload survivable if an agent ever spams a
+    # frozen node.
+    n_pending = len(pending)
+    body_cap = 2000 if n_pending <= 20 else 800 if n_pending <= 100 else 250
+    pending = pending[-800:]
     out["pending_mail"] = [{"id": m.get("id"), "from": m["from"],
-                            "body": m["body"][:2000], "at": m["at"],
+                            "body": m["body"][:body_cap], "at": m["at"],
                             **({"delivering": True} if m.get("delivering")
+                               else {}),
+                            # the two in-flight carriers read differently to a
+                            # human: "mid-task" is only true of a steer
+                            **({"via": "turn"} if m.get("via") == "turn"
                                else {}),
                             **({"attachments": m["attachments"]}  # type: ignore[typeddict-item]  # guard proves the key
                                if m.get("attachments") else {})}
-                           for m in pending[-20:]]
+                           for m in pending]
     return out
 
 
@@ -2730,7 +3243,7 @@ def org_events(slug: str, request: Request, since: int = 0) -> dict[str, Any]:
 
 
 # ----------------------------------------------------------------------- ops
-class Op(BaseModel):
+class Op(Body):
     op: str                       # hire|retire|rehire|dissolve|reallocate|promote|demote|revoke_dir
     actor: str = USER
     node: str | None = None       # target node (all but hire)
@@ -2866,17 +3379,133 @@ if os.path.isdir(FRONTEND_DIST):
         if path and full.startswith(FRONTEND_DIST + os.sep) \
                 and os.path.isfile(full):
             return FileResponse(full)
-        return FileResponse(os.path.join(FRONTEND_DIST, "index.html"))
+        # ⚠ never cached. Asset filenames are content-hashed, so /assets/* may
+        # be held forever — but index.html is the file that NAMES them, and a
+        # browser that reuses a stale copy pulls the previous bundle straight
+        # back after the reload the instance change just triggered. That would
+        # make the refresh look like it did nothing.
+        return FileResponse(os.path.join(FRONTEND_DIST, "index.html"),
+                            headers={"Cache-Control": "no-store"})
+
+
+EXPOSE_ENV = "ORGTREE_EXPOSE_ADMIN"
+_TRUTHY = {"1", "true", "yes", "on"}
+
+
+def _admin_host() -> str:
+    """Where the ADMIN listener binds.
+
+    Loopback by design — the admin app has no authentication of any kind,
+    because "you can reach 127.0.0.1" has always been the whole credential.
+    Exposing it hands anyone who finds the port the same powers the owner has:
+    read and write every org, grant any folder on this machine to an agent,
+    and run turns that execute commands on it.
+
+    The override is an ENV VAR (user ruling 2026-08-04, superseding the
+    argv-only ruling of 2026-08-03 recorded in D-39). The reason it moved: a
+    service definition — Task Scheduler, a systemd unit — sets environment
+    naturally and threading an argv flag through the deploy scripts to a
+    detached process is the awkward path. Unattended hosts are the case that
+    needs this, so the mechanism should suit them.
+
+    ⚠ What the old ruling was protecting against is still true and is now
+    handled elsewhere: env vars are INHERITED by child processes, so every
+    agent CLI would see this one through `supervisor.clean_env()`. It is
+    stripped there (it is not the agent's business whether the host is
+    exposed) — see that function.
+
+    Still deliberately NOT a setting in the org doc: a setting can be flipped
+    by anything that can write the doc, including an agent.
+    """
+    return ("0.0.0.0" if os.environ.get(EXPOSE_ENV, "").strip().lower() in _TRUTHY
+            else "127.0.0.1")
+
+
+def _ws_impl() -> str | None:
+    """Which WebSocket implementation uvicorn will find, if any.
+
+    Plain `uvicorn` has none, and the resulting failure is SILENT: an upgrade
+    request falls through to the SPA catch-all and answers 200 OK with HTML, so
+    the browser's socket simply never opens and reconnect-loops forever. Every
+    HTTP route keeps working, the UI falls back to its polling heartbeats, and
+    the only symptom is that everything feels slightly slow — which is exactly
+    how a user lost time to it on a second machine (2026-08-03). A dependency
+    nothing imports, whose absence produces no error, has to be checked for
+    explicitly or it is undiscoverable.
+    """
+    for mod in ("websockets", "wsproto"):
+        if importlib.util.find_spec(mod) is not None:
+            return mod
+    return None
 
 
 def main() -> None:
     import uvicorn
 
-    # three listeners, three trust levels: the admin app stays LOOPBACK-ONLY
-    # (user vision: root access never reaches the wider web); the public
-    # listener serves nothing but preauthenticated /k/<token> URLs; the
-    # bridge listener serves nothing but secret-gated sandbox traffic
-    servers = [uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=PORT))]
+    # ⚠ ONE BACKEND PER DATA ROOT — enforced here because this is the only
+    # moment it is cheap and safe. MEASURED (test_compaction.py "xproc"): two
+    # processes running the canonical load → mutate → save cycle against one
+    # org doc lose 44–50 % of their COMPLETED writes, four processes 62–82 %,
+    # with zero exceptions, zero torn reads and zero orphaned temp files. Both
+    # existing guards are per-process and `os.replace` is atomic, which is
+    # exactly why the loss is silent: every writer is told it succeeded.
+    #
+    # A lock around save_org would not help — the race is the read-modify-write
+    # CYCLE, so a correct lock would have to span load → save, i.e. regions
+    # that spawn CLI children and stay held for a 600 s compaction fork. That
+    # is a deadlock surface. Claiming the root at startup is the whole fix.
+    try:
+        store.claim_data_root()
+    except store.DataRootBusy as e:
+        bar = "!" * 74
+        print(f"\n{bar}\n"
+              f"  ANOTHER ORGTREE BACKEND ALREADY OWNS THIS DATA ROOT\n"
+              f"\n"
+              f"  {e}\n"
+              f"\n"
+              f"  Two backends on one data root silently DISCARD each other's\n"
+              f"  writes — measured at 44-82% of completed saves lost, with no\n"
+              f"  error on either side. Stop the other one, or point this one\n"
+              f"  at a different ORGTREE_DATA.\n"
+              f"{bar}\n", flush=True)
+        raise SystemExit(1)
+
+    if _ws_impl() is None:
+        bar = "!" * 74
+        print(f"\n{bar}\n"
+              "  NO WEBSOCKET LIBRARY — the live UI will be DEGRADED, not broken.\n"
+              "\n"
+              "  uvicorn has no WebSocket implementation installed, so pushed\n"
+              "  updates cannot reach the browser. Everything still works; it\n"
+              "  falls back to polling, so every action lags by up to one poll.\n"
+              "\n"
+              "  Fix:  pip install -r requirements.txt      (or: pip install websockets)\n"
+              f"{bar}\n", flush=True)
+
+    host = _admin_host()
+    if host != "127.0.0.1":
+        # not a log line — a wall. Whoever typed the flag should see exactly
+        # what they turned off, and anyone reading the console later should be
+        # able to tell at a glance that this process is wide open.
+        bar = "!" * 74
+        print(f"\n{bar}\n"
+              f"  {EXPOSE_ENV}=1: THE ADMIN API IS BOUND TO {host}:{PORT}\n"
+              f"\n"
+              f"  It has NO password, NO token and NO login. Anyone who can\n"
+              f"  reach this port has full control of every org and can make\n"
+              f"  agents run commands on this machine.\n"
+              f"\n"
+              f"  Only do this behind a VPN, an SSH tunnel or an authenticating\n"
+              f"  reverse proxy. To share an org with someone instead, make it\n"
+              f"  a kiosk: that serves one org over a secret URL with limits.\n"
+              f"{bar}\n", flush=True)
+
+    # three listeners, three trust levels: the admin app is LOOPBACK-ONLY
+    # unless the operator typed the flag above (user vision: root access never
+    # reaches the wider web); the public listener serves nothing but
+    # preauthenticated /k/<token> URLs; the bridge listener serves nothing but
+    # secret-gated sandbox traffic
+    servers = [uvicorn.Server(uvicorn.Config(app, host=host, port=PORT))]
     if PUBLIC_PORT:
         servers.append(uvicorn.Server(uvicorn.Config(
             PublicGateway(app), host="0.0.0.0", port=PUBLIC_PORT)))
@@ -2884,7 +3513,7 @@ def main() -> None:
         servers.append(uvicorn.Server(uvicorn.Config(
             BridgeGateway(app), host="0.0.0.0", port=sandbox.BRIDGE_PORT)))
     if len(servers) == 1:
-        uvicorn.run(app, host="127.0.0.1", port=PORT)
+        uvicorn.run(app, host=host, port=PORT)
         return
 
     async def serve_all() -> None:
