@@ -19,6 +19,7 @@
   --accent-soft: rgba(217, 119, 87, .16);
   --accent-hover: #e08a6d;
   --accent-ink: #fff;
+  --sandbox: #7ea8cc;       /* sandboxed-org canvas border (light steel blue) */
   --kiosk: #4ba3c7;         /* "exposed to the public" teal */
   --kiosk-soft: rgba(75, 163, 199, .09);
   --kiosk-hover: rgba(75, 163, 199, .16);
@@ -116,6 +117,8 @@ main {
   background: var(--bg); cursor: grab; touch-action: none;
 }
 .viewport:active { cursor: grabbing; }
+/* sandboxed orgs: the office border wears a light blue instead of the grey */
+.viewport.sandboxed { border-color: var(--sandbox); }
 .space {
   position: absolute; transform-origin: 0 0;
   background-image: radial-gradient(circle, #2a2a2a 1px, transparent 1px);

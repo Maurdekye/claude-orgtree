@@ -917,7 +917,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
   }, [tree])
 
   return (
-    <div className="viewport" ref={viewportRef}
+    <div className={'viewport' + (tree.sandboxed ? ' sandboxed' : '')} ref={viewportRef}
       onPointerDown={onPointerDown} onPointerMove={onPointerMove}
       onPointerUp={onPointerUp} onPointerCancel={onPointerUp}
       onScroll={(e) => {
