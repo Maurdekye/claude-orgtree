@@ -53,13 +53,22 @@ def peer_id() -> str:
     pid = os.environ.get("ORGTREE_EXTERN_ID", "").strip()
     if pid:
         return pid                     # verbatim, by contract — validated below
+    return f"{_peer_base()}.{uuid.uuid4().hex[:6]}"
+
+
+def _peer_base() -> str:
+    """The machine-stable half of the identity (~/.orgtree/extern-id). The
+    FR-08 listener listens AS this bare base: it is the one address that
+    outlives any process, so an org can wake this machine unprompted — while
+    per-session send ids (`base.suffix`) stay distinct, so a listener never
+    steals a session's own wait replies (№5 stands)."""
     path = os.path.join(os.path.expanduser("~"), ".orgtree", "extern-id")
     base = ""
     try:
         base = open(path, encoding="utf-8").read().strip().lstrip("\ufeff")
     except OSError:
         pass
-    # 57 = 64 minus the ".<6 hex>" suffix this function appends
+    # 57 = 64 minus the ".<6 hex>" suffix peer_id appends
     if not base or len(base) > 57 or not PEER_RE.fullmatch(base):
         base = uuid.uuid4().hex[:12]
         try:
@@ -68,7 +77,7 @@ def peer_id() -> str:
                 f.write(base)
         except OSError:
             pass
-    return f"{base}.{uuid.uuid4().hex[:6]}"
+    return base
 
 
 PEER: str = peer_id()
@@ -242,6 +251,62 @@ def run_tool(name: str, args: dict[str, Any]) -> tuple[str, bool]:
         return f"orgtree unreachable at {BASE}: {e}", True
 
 
+def _fmt(m: dict[str, Any]) -> str:
+    return (f"[orgtree mail from @org:{m.get('org')} at {m.get('at')}] "
+            + str(m.get("body") or "").replace("\n", "\n  "))
+
+
+def listen(org: str | None = None) -> None:
+    """FR-08: the Monitor-armable standing listener — the same throughline as
+    chatq's listen.sh and hubtool's `listen` mode: one fmt line per received
+    message, flush=True, retry-forever. Loops the wait endpoint DIRECTLY
+    (bypassing the MCP tool wrapper and its 300 s ceiling); the server-side
+    `cursor` is the dedupe, so no local seen-ring is needed. Identity: the
+    machine-stable BASE id (or ORGTREE_EXTERN_ID verbatim) — the one address
+    that outlives any process, so an org can wake this machine unprompted at
+    `@mcp:<base>`; per-session send ids keep their `.suffix` and a listener
+    never steals a session's own wait replies. Unlike hubtool there is no
+    name-choice step to gate on, so there is deliberately no upfront refusal.
+
+        python -m orgtree.externtool listen [org]
+    """
+    peer = os.environ.get("ORGTREE_EXTERN_ID", "").strip() or _peer_base()
+    if not PEER_RE.fullmatch(peer):
+        print(f"ORGTREE_EXTERN_ID={peer!r} is not a usable peer id — 1-64 "
+              f"chars of [A-Za-z0-9._-]", flush=True)
+        return
+    peer_q = urllib.parse.quote(peer, safe="")
+    q0 = {"org": org} if org else {}
+    print(f"listening as @mcp:{peer}"
+          + (f" (org {org})" if org else "") + " …", flush=True)
+    # seed the cursor at NOW (via the newest already-delivered message, or
+    # the clock — same machine as the server, so the compare is safe). An
+    # explicit `after` floor matters doubly here: the wait path's fresh_only
+    # fallback (№5) requires the peer to have SENT something first, and a
+    # pure listener may never send — without a floor it would starve forever.
+    cursor = ""
+    try:
+        cursor = str(http("GET", f"/api/extern/{peer_q}/messages?"
+                          + urllib.parse.urlencode(q0)).get("cursor") or "")
+    except Exception:                                            # noqa: BLE001
+        pass
+    if not cursor:
+        import datetime
+        cursor = datetime.datetime.now(datetime.timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%S.000Z")
+    while True:
+        try:
+            q = {**q0, **({"after": cursor} if cursor else {}), "timeout": 25}
+            out = http("GET", f"/api/extern/{peer_q}/wait?"
+                       + urllib.parse.urlencode(q), timeout=40)
+            msgs: list[dict[str, Any]] = list(out.get("messages") or [])
+            for m in msgs:
+                print(_fmt(m), flush=True)
+            cursor = str(out.get("cursor") or cursor)
+        except Exception:                                        # noqa: BLE001
+            time.sleep(5.0)
+
+
 def reply(id_: int | str | None, result: Any = None) -> None:
     sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": id_, "result": result}) + "\n")
     sys.stdout.flush()
@@ -280,4 +345,9 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) > 1 and sys.argv[1] == "listen":       # FR-08
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")   # type: ignore[attr-defined]  # same hasattr-guarded runtime call as main()
+        listen(sys.argv[2] if len(sys.argv) > 2 else None)
+    else:
+        main()
