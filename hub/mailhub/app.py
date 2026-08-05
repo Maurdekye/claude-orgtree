@@ -505,7 +505,8 @@ async def ui_data() -> dict[str, Any]:
 
 
 @app.get("/ui/messages")
-async def ui_messages(org: str = "", limit: int = 100) -> dict[str, Any]:
+async def ui_messages(org: str = "", client: str = "",
+                      limit: int = 100) -> dict[str, Any]:
     con = db.connect()
     try:
         limit = min(max(int(limit), 1), 500)
@@ -514,6 +515,20 @@ async def ui_messages(org: str = "", limit: int = 100) -> dict[str, Any]:
                 "SELECT * FROM messages WHERE from_slug=? OR to_slug=? "
                 "ORDER BY received_at DESC, rowid DESC LIMIT ?",
                 (org, org, limit)).fetchall()
+        elif client:
+            # group filter (user spec 2026-08-05): all mail touching any
+            # slug of one CLIENT — the username segment every org/chat
+            # registered from one machine profile shares. Matched on the
+            # exact segment in Python, not a LIKE (a name could contain
+            # the client string).
+            def _of(slug: str) -> str:
+                parts = str(slug).split(".")
+                return parts[1] if len(parts) > 2 else ""
+            rows = [m for m in con.execute(
+                        "SELECT * FROM messages ORDER BY received_at DESC, "
+                        "rowid DESC").fetchall()
+                    if client in (_of(m["from_slug"]), _of(m["to_slug"]))
+                    ][:limit]
         else:
             rows = con.execute(
                 "SELECT * FROM messages ORDER BY received_at DESC, rowid DESC "

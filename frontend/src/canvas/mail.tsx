@@ -78,8 +78,11 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
     m?.id ?? `${m?.at}|${m?.from}|${(m?.body ?? '').slice(0, 24)}`
   // jumpTo (user spec 2026-07-31): a chat's inline mail link opens the box
   // SELECTED on that mail — identity selection means the reading pane shows
-  // it; the scroll + flash happen on the row ref below. A retracted or
-  // expired id falls back to the newest mail, never an error.
+  // it; the scroll + flash happen on the row ref below. Without a jump the
+  // box opens with NOTHING selected (user spec 2026-08-05 — the reading
+  // pane invites a click instead of auto-opening the newest), and clicking
+  // the selected row deselects it again; either way off a viewed unread
+  // mail marks it read.
   const [selId, setSelId] = useState<string | null>(jumpTo ?? null)
   const jumpedRef = useRef(false)
   // №26: hunting an hour-old message decayed your unread set click by click —
@@ -108,7 +111,8 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
     ? all.filter((m) => String(partyOf(m) ?? '').toLowerCase().includes(qn)
       || String(m.body ?? '').toLowerCase().includes(qn))
     : all
-  const cur = shown.find((m) => keyOf(m) === selId) ?? shown[0]
+  const cur = selId == null ? undefined
+    : shown.find((m) => keyOf(m) === selId)
   // per-mail read (user ruling): a VIEWED unread mail is marked read the
   // moment you click OFF it — select another mail, or leave the list
   const curRef = useRef<MailRow | undefined>(undefined); curRef.current = cur
@@ -169,8 +173,14 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
             className={'mailrow' + (m === cur ? ' on' : '') + (m._wait ? ' unread' : '')
               + (jumpTo && keyOf(m) === jumpTo ? ' jflash' : '')}
             onClick={() => {
-              if (keyOf(m) !== keyOf(cur)) leave(cur)
-              setSelId(keyOf(m))
+              if (cur && keyOf(m) === keyOf(cur)) {
+                // toggling the selected row off — reading it counts as read
+                leave(cur)
+                setSelId(null)
+              } else {
+                leave(cur)
+                setSelId(keyOf(m))
+              }
             }}>
             <div className="l1">
               <span className="mfrom">
@@ -236,6 +246,11 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
               </div>
             )}
           </>
+        )}
+        {!cur && (
+          <div className="dim pad mailer-none">
+            {shown.length ? 'select a mail to read it' : ''}
+          </div>
         )}
       </div>
     </div>
@@ -518,7 +533,10 @@ function ComposeModal({ slug, net, entries, toast, close }: {
   toast: ToastFn
   close: () => void
 }) {
-  const [to, setTo] = useState('')          // the picked chip's address
+  // multiple recipients (user spec 2026-08-05): chips TOGGLE into a set and
+  // the mail goes to every selected address — one send per recipient, the
+  // failures reported per-address
+  const [sel, setSel] = useState<string[]>([])
   const [other, setOther] = useState(false) // the free-entry "other" chip
   // FR-07: a free-typed address — offline addressing must never be gated on
   // a live roster; @net:<slug> needs only the slug string, and the spool
@@ -528,41 +546,74 @@ function ComposeModal({ slug, net, entries, toast, close }: {
   const [staged, setStaged] = useState<{ id: string; name: string }[]>([])
   const [busy, setBusy] = useState(false)
   const fileRef = useRef<HTMLInputElement | null>(null)
-  const opts = (() => {
+  // recipients grouped by ORIGIN (user spec 2026-08-05, FR-11 parity): hub
+  // peers under their slug's username segment — the same "domain (account)"
+  // headers the mailservers tab and the hub's own web UI use — and the
+  // log-only correspondents under their transport's namespace
+  const groups = (() => {
     const seen = new Set<string>()
-    const out: { addr: string; name: string; kind: string
-      online?: boolean }[] = []
+    const gs = new Map<string, { addr: string; name: string; kind: string
+      online?: boolean }[]>()
+    const put = (g: string, o: { addr: string; name: string; kind: string
+      online?: boolean }) => {
+      if (seen.has(o.addr)) return
+      seen.add(o.addr)
+      gs.set(g, [...(gs.get(g) ?? []), o])
+    }
     for (const h of net?.hubs ?? []) {
       if (h.hidden) continue
       for (const r of h.roster) {
-        const addr = `@net:${r.slug}`
-        if (!seen.has(addr)) {
-          seen.add(addr)
-          out.push({ addr, name: r.org_name || r.slug.split('.')[0]!,
+        put(r.slug.split('.')[1] ?? h.name ?? '?',
+          { addr: `@net:${r.slug}`, name: r.org_name || r.slug.split('.')[0]!,
             kind: r.kind === 'chat' ? 'chat' : 'org', online: !!r.online })
-        }
       }
     }
     for (const e of entries) {
-      if (!seen.has(e.peer) && e.peer.startsWith('@')) {
-        seen.add(e.peer)
-        out.push({ addr: e.peer, name: e.peer.replace(/^@\w+:/, ''),
-          kind: e.peer.slice(1, e.peer.indexOf(':')) })
-      }
+      if (!e.peer.startsWith('@')) continue
+      const ns = e.peer.slice(1, e.peer.indexOf(':'))
+      const g = e.peer.startsWith('@net:')
+        ? e.peer.slice(5).split('.')[1] ?? '?'
+        : ns === 'org' ? 'this instance'
+          : ns === 'ext' ? 'local sessions' : `${ns} peers`
+      put(g, { addr: e.peer, name: e.peer.replace(/^@\w+:/, ''), kind: ns })
     }
-    return out
+    return [...gs.entries()].sort(([a], [b]) => (a < b ? -1 : 1))
   })()
-  const dest = other ? freeTo.trim() : to
-  const attachable = dest.startsWith('@net:') || dest.startsWith('@org:')
+  const toggle = (addr: string) => setSel((s) =>
+    s.includes(addr) ? s.filter((a) => a !== addr) : [...s, addr])
+  const dests = [
+    ...sel,
+    ...(other && freeTo.trim() ? [freeTo.trim()] : []),
+  ].filter((d, i, a) => a.indexOf(d) === i)
+  const attachable = dests.length > 0
+    && dests.every((d) => d.startsWith('@net:') || d.startsWith('@org:'))
   const send = () => {
-    if (!dest || !text.trim() || busy) return
+    if (!dests.length || !text.trim() || busy) return
     setBusy(true)
-    orgInboxSend(slug, dest, text, staged.map((s) => s.id))
-      .then((r) => {
-        toast(r.warnings.length ? r.warnings : ['sent — as the org, by you'])
-        close()
+    Promise.all(dests.map((d) =>
+      orgInboxSend(slug, d, text, staged.map((s) => s.id))
+        .then((r) => ({ d, error: null as string | null, warnings: r.warnings }))
+        .catch((e: Error) => ({ d, error: e.message, warnings: [] as string[] }))))
+      .then((rs) => {
+        const fails = rs.filter((r) => r.error != null)
+        const warns = rs.flatMap((r) => r.warnings)
+        if (!fails.length) {
+          toast(warns.length ? warns
+            : [dests.length > 1
+                ? `sent to ${dests.length} recipients — as the org, by you`
+                : 'sent — as the org, by you'])
+          close()
+        } else {
+          // partial failure: stay open so the text is not lost; the sent
+          // ones are already out, the failed addresses are named
+          toast([
+            ...fails.map((f) => `→ ${f.d} failed: ${f.error}`),
+            ...(rs.length > fails.length
+              ? [`${rs.length - fails.length} of ${rs.length} sent`] : []),
+          ])
+          setBusy(false)
+        }
       })
-      .catch((e: Error) => { toast([`error: ${e.message}`]); setBusy(false) })
   }
   return (
     <div className="overlay" onClick={close}
@@ -570,21 +621,30 @@ function ComposeModal({ slug, net, entries, toast, close }: {
       <div className="settings cmp-modal" onClick={(e) => e.stopPropagation()}>
         <h3><EditIcon fontSize="inherit" /> Compose mail
           <span className="dim"> — goes out as the org, sent by you</span></h3>
-        <div className="field-label">to</div>
+        <div className="field-label">to
+          <span className="dim"> — click to add, click again to remove; the
+            mail goes to every selected recipient</span></div>
+        {groups.map(([g, os]) => (
+          <div key={g}>
+            <div className="oi-origin">{g} · {os.length}</div>
+            <div className="cmp-chips">
+              {os.map((o) => (
+                <button key={o.addr} type="button" disabled={busy}
+                  className={'cmp-chip' + (sel.includes(o.addr) ? ' on' : '')}
+                  title={o.addr}
+                  onClick={() => toggle(o.addr)}>
+                  <span className={'oi-dot' + (o.online ? ' ok' : '')} />
+                  {o.name}
+                  <span className="dim">{o.kind}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        ))}
         <div className="cmp-chips">
-          {opts.map((o) => (
-            <button key={o.addr} type="button" disabled={busy}
-              className={'cmp-chip' + (!other && to === o.addr ? ' on' : '')}
-              title={o.addr}
-              onClick={() => { setTo(o.addr); setOther(false) }}>
-              <span className={'oi-dot' + (o.online ? ' ok' : '')} />
-              {o.name}
-              <span className="dim">{o.kind}</span>
-            </button>
-          ))}
           <button type="button" disabled={busy}
             className={'cmp-chip' + (other ? ' on' : '')}
-            onClick={() => setOther(true)}>other address…</button>
+            onClick={() => setOther((v) => !v)}>other address…</button>
         </div>
         {other && (
           <input autoFocus placeholder="@net:slug / @org:slug / @ext:id"
@@ -615,8 +675,11 @@ function ComposeModal({ slug, net, entries, toast, close }: {
             <AttachIcon fontSize="inherit" /></button>
           <span className="spacer" />
           <button onClick={close} disabled={busy}>cancel</button>
-          <button className="primary" disabled={busy || !dest || !text.trim()}
-            onClick={send}>{busy ? 'sending…' : 'send'}</button>
+          <button className="primary"
+            disabled={busy || !dests.length || !text.trim()}
+            onClick={send}>
+            {busy ? 'sending…'
+              : dests.length > 1 ? `send to ${dests.length}` : 'send'}</button>
         </div>
       </div>
     </div>

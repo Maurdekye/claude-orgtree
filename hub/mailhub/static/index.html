@@ -28,7 +28,6 @@
          height: calc(100vh - 45px); }
   aside { border-right: 1px solid var(--line-soft); background: var(--side);
           overflow-y: auto; padding: 8px; }
-  section { overflow-y: auto; padding: 10px 14px; }
   .org { display: flex; align-items: center; gap: 8px; padding: 6px 8px;
          border-radius: 5px; cursor: pointer;
          border-left: 3px solid transparent; }
@@ -43,10 +42,16 @@
              border-radius: 8px; padding: 0 5px; color: var(--sky);
              flex: none; }
   /* FR-11: one header per CLIENT (the slug's username part) — grouping is
-     spatial, color is spent on org-vs-chat */
+     spatial, color is spent on org-vs-chat. The header is also a FILTER
+     (user spec 2026-08-05): clicking it shows every mail touching any of
+     that client's slugs. */
   .client { color: var(--dim); font-size: 10.5px; text-transform: uppercase;
             letter-spacing: 0.06em; padding: 10px 8px 3px;
-            border-bottom: 1px solid var(--line-soft); margin-bottom: 3px; }
+            border-bottom: 1px solid var(--line-soft); margin-bottom: 3px;
+            cursor: pointer; border-radius: 5px 5px 0 0; }
+  .client:hover { background: var(--panel-2); color: var(--ink); }
+  .client.current { background: var(--panel-2); color: var(--ink-strong);
+                    outline: 1px solid var(--line); }
   .dot { width: 8px; height: 8px; border-radius: 50%; flex: none;
          background: var(--line); }
   .dot.on { background: var(--ok); }
@@ -54,18 +59,40 @@
   .org .fp { color: var(--dim); font-family: var(--mono); font-size: 11px; }
   .org .q { margin-left: auto; color: var(--sky); font-size: 11px; }
   .org .last { color: var(--dim); font-size: 10.5px; }
-  .msg { border: 1px solid var(--line-soft); border-radius: 6px;
-         padding: 8px 10px; margin-bottom: 8px; background: var(--panel); }
-  .msg .head { display: flex; gap: 8px; align-items: baseline;
-               font-size: 11.5px; color: var(--dim); flex-wrap: wrap; }
-  .msg .head b { color: var(--ink-strong); font-weight: 600; }
-  .msg .head .arrow { color: var(--accent); }
-  .msg .state { margin-left: auto; font-size: 10.5px; }
-  .msg .state.queued { color: var(--sky); }
-  .msg .state.read { color: var(--ok); }
-  .msg .body { margin-top: 5px; white-space: pre-wrap; word-break: break-word;
-               font-size: 12.5px; max-height: 220px; overflow-y: auto; }
-  .msg .att { margin-top: 4px; font-size: 11px; color: var(--dim); }
+  /* the mail area (user spec 2026-08-05): the orgtree inbox shape — a list
+     pane of every mail (who → whom, when, state, snippet) and a reading
+     pane that opens the clicked one. Nothing is selected by default;
+     clicking the selected row deselects it. */
+  section { display: grid; grid-template-columns: minmax(300px, 38%) 1fr;
+            gap: 0; overflow: hidden; }
+  #mlist { overflow-y: auto; border-right: 1px solid var(--line-soft);
+           padding: 8px; }
+  #mread { overflow-y: auto; padding: 12px 16px; }
+  .mrow { border: 1px solid var(--line-soft); border-radius: 6px;
+          padding: 6px 9px; margin-bottom: 6px; background: var(--panel);
+          cursor: pointer; }
+  .mrow:hover { background: var(--panel-2); }
+  .mrow.on { background: var(--panel-2); outline: 1px solid var(--accent); }
+  .mrow .l1 { display: flex; gap: 6px; align-items: baseline;
+              font-size: 11.5px; color: var(--dim); flex-wrap: wrap; }
+  .mrow .l1 b { color: var(--ink-strong); font-weight: 600;
+                overflow: hidden; text-overflow: ellipsis;
+                white-space: nowrap; max-width: 38%; }
+  .mrow .arrow { color: var(--accent); }
+  .mrow .when { margin-left: auto; flex: none; }
+  .mrow .snip { color: var(--dim); font-size: 12px; white-space: nowrap;
+                overflow: hidden; text-overflow: ellipsis; }
+  .state { font-size: 10.5px; flex: none; }
+  .state.queued { color: var(--sky); }
+  .state.read { color: var(--ok); }
+  .mhead { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap;
+           font-size: 12px; color: var(--dim);
+           border-bottom: 1px solid var(--line-soft); padding-bottom: 8px;
+           margin-bottom: 8px; }
+  .mhead b { color: var(--ink-strong); }
+  .mhead .arrow { color: var(--accent); }
+  .mbody { white-space: pre-wrap; word-break: break-word; font-size: 13px; }
+  .att { margin-top: 10px; font-size: 11.5px; color: var(--dim); }
   .empty { color: var(--dim); text-align: center; padding: 40px 0; }
   .allbtn { width: 100%; text-align: left; background: none; color: var(--ink);
             border: none; padding: 6px 8px; border-radius: 5px; cursor: pointer;
@@ -82,11 +109,17 @@
 </header>
 <main>
   <aside id="orgs"></aside>
-  <section id="msgs"></section>
+  <section>
+    <div id="mlist"></div>
+    <div id="mread"></div>
+  </section>
 </main>
 <script>
 'use strict'
-let filter = ''            // '' = global view (ruled: operator sees all)
+let filter = ''       // '' = global · '<slug>' = one client row ·
+                      // 'client:<username>' = a whole client group
+let sel = ''          // selected message id — '' = nothing (the default)
+let MSGS = []         // the last-fetched window, the reader renders from it
 const el = (id) => document.getElementById(id)
 
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g,
@@ -100,6 +133,43 @@ function ago (iso) {
   if (s < 5400) return Math.round(s / 60) + ' min ago'
   if (s < 129600) return Math.round(s / 3600) + ' h ago'
   return Math.round(s / 86400) + ' d ago'
+}
+
+const stateOf = (x) => x.read_at ? 'read' : x.delivered_at ? 'delivered'
+  : x.state === 'fetched' ? 'fetched' : 'queued'
+
+function renderMail () {
+  if (!MSGS.length) {
+    el('mlist').innerHTML = '<div class="empty">no mail yet</div>'
+    el('mread').innerHTML = ''
+    return
+  }
+  el('mlist').innerHTML = MSGS.map((x) => {
+    const st = stateOf(x)
+    const snip = String(x.body ?? '').replace(/\s+/g, ' ').slice(0, 110)
+    return '<div class="mrow' + (sel === x.id ? ' on' : '')
+      + '" onclick="selmsg(\'' + esc(x.id) + '\')">'
+      + '<div class="l1"><b>' + esc(x.from) + '</b>'
+      + '<span class="arrow">→</span><b>' + esc(x.to) + '</b>'
+      + '<span class="state ' + st + '">' + st + '</span>'
+      + '<span class="when">' + ago(x.received_at) + '</span></div>'
+      + '<div class="snip">' + esc(snip) + '</div>'
+      + '</div>'
+  }).join('')
+  const cur = MSGS.find((x) => x.id === sel)
+  el('mread').innerHTML = cur
+    ? '<div class="mhead"><b>' + esc(cur.from) + '</b>'
+      + '<span class="arrow">→</span><b>' + esc(cur.to) + '</b>'
+      + '<span>' + esc((cur.received_at ?? '').slice(0, 16).replace('T', ' '))
+      + '</span>'
+      + '<span class="state ' + stateOf(cur) + '">' + stateOf(cur) + '</span>'
+      + '</div>'
+      + '<div class="mbody">' + esc(cur.body) + '</div>'
+      + (cur.attachments && cur.attachments.length
+        ? '<div class="att">📎 ' + cur.attachments.map(
+            (a) => esc(a.name) + ' (' + Math.round(a.bytes / 1024) + ' KB)')
+            .join(' · ') + '</div>' : '')
+    : '<div class="empty">select a mail to read it</div>'
 }
 
 async function refresh () {
@@ -125,8 +195,10 @@ async function refresh () {
     for (const client of [...groups.keys()].sort()) {
       const rows = groups.get(client).sort(
         (a, b) => a.slug < b.slug ? -1 : 1)
-      side.push('<div class="client">' + esc(client) + ' · '
-        + rows.length + '</div>')
+      side.push('<div class="client' + (filter === 'client:' + client
+        ? ' current' : '') + '" title="all mail touching this client"'
+        + ' onclick="pick(\'client:' + esc(client) + '\')">' + esc(client)
+        + ' · ' + rows.length + '</div>')
       for (const o of rows) {
         const parts = o.slug.split('.')
         const fp = parts.length > 2 ? parts.pop() : ''
@@ -146,33 +218,22 @@ async function refresh () {
       }
     }
     el('orgs').innerHTML = side.join('')
-    const m = await (await fetch('/ui/messages?limit=200'
-      + (filter ? '&org=' + encodeURIComponent(filter) : ''))).json()
-    if (!m.messages.length) {
-      el('msgs').innerHTML = '<div class="empty">no mail yet</div>'
-      return
-    }
-    el('msgs').innerHTML = m.messages.map((x) => {
-      const st = x.read_at ? 'read' : x.delivered_at ? 'delivered'
-        : x.state === 'fetched' ? 'fetched' : 'queued'
-      return '<div class="msg"><div class="head"><b>' + esc(x.from)
-        + '</b><span class="arrow">→</span><b>' + esc(x.to) + '</b>'
-        + '<span>' + ago(x.received_at) + '</span>'
-        + '<span class="state ' + st + '">' + st + '</span></div>'
-        + '<div class="body">' + esc(x.body) + '</div>'
-        + (x.attachments && x.attachments.length
-          ? '<div class="att">📎 ' + x.attachments.map(
-              (a) => esc(a.name) + ' (' + Math.round(a.bytes / 1024) + ' KB)')
-              .join(' · ') + '</div>' : '')
-        + '</div>'
-    }).join('')
+    const arg = !filter ? ''
+      : filter.startsWith('client:')
+        ? '&client=' + encodeURIComponent(filter.slice(7))
+        : '&org=' + encodeURIComponent(filter)
+    const m = await (await fetch('/ui/messages?limit=200' + arg)).json()
+    MSGS = m.messages
+    renderMail()
   } catch (e) {
     el('stats').textContent = 'hub unreachable'
   }
 }
 
 function pick (slug) { filter = slug; refresh() }
+function selmsg (id) { sel = (sel === id ? '' : id); renderMail() }
 window.pick = pick
+window.selmsg = selmsg
 refresh()
 setInterval(refresh, 5000)
 </script>
