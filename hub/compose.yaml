@@ -1,0 +1,25 @@
+services:
+  mailhub:
+    build: .
+    container_name: orgtree-mailhub
+    restart: unless-stopped          # start-on-boot rides the Docker daemon's
+                                     # own autostart (Docker Desktop default;
+                                     # `systemctl enable docker` on Linux)
+    ports:
+      - "7370:7370"
+    environment:
+      # the hub's NAME — discovered by clients on connect, shown in their UI
+      # and the hub's own header. Defaults to the container hostname if unset.
+      HUB_NAME: ${HUB_NAME:-}
+      HUB_RETENTION_DAYS: ${HUB_RETENTION_DAYS:-30}
+    volumes:
+      - orgtree-hub-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7370/healthz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  orgtree-hub-data:
