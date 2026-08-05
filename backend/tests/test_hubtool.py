@@ -326,6 +326,110 @@ def sec_race() -> None:
           "only", _legacy_single_identity_is_adopted)
 
 
+# ══════════════════════════════════════════════════════════ §2b (redteam)
+def sec_names() -> None:
+    """The per-session ruling moved the identity key from THE PROFILE to THE
+    NAME. That kills the old race — but only for sessions whose names differ,
+    and nothing anywhere makes them differ. This section is about what the new
+    key costs: what happens when two sessions pick the same name, and what
+    happens when one session picks the wrong one."""
+    print("\n§2b  per-session names — the new key, and what it gives up")
+
+    def _taken_name_is_visibly_resumed():
+        # was a finding: two sessions choosing the same words silently
+        # merged into one mailbox. Same-name adoption stays BY DESIGN (it is
+        # both the O_EXCL race fix and the ruling's resume-by-name), so the
+        # fix is the cheap honest one the finding named: hub_register's
+        # result now carries `resumed` whenever the name pre-existed, so a
+        # session expecting a FRESH identity sees the collision and can
+        # choose another name. (The listener half gets a hard lock — below.)
+        fresh_ident()
+        first = hubtool.register("orgtree-redteam")
+        assert "resumed" not in first, (
+            f"a brand-new name reported as resumed: {first}")
+        hubtool._CUR.clear()                  # a DIFFERENT session, same idea
+        second = hubtool.register("orgtree-redteam")
+        assert second.get("resumed"), (
+            "a second session registering an EXISTING name got no signal — "
+            "the two silently share one mailbox and split each other's mail")
+    check("names · registering a name that already exists says so "
+          "(`resumed`) instead of silently merging",
+          _taken_name_is_visibly_resumed)
+
+    def _second_live_listener_is_refused():
+        # was a finding (its strongest half): a second session on the same
+        # name CONSUMED the first's mail. The standing-listener path — the
+        # one that runs unattended for a whole session — now takes a
+        # LIVE-HOLDER lock beside the identity file: a second `listen` on
+        # the same name is refused while the first's pid is alive. (The
+        # interactive hub_read path stays shared by design for the resume
+        # case; `resumed` above is its visibility.)
+        fresh_ident()
+        become("locked-name")
+        lock = hubtool._id_path("locked-name") + ".listening"
+        # the live holder must be a FOREIGN pid: listen treats its own pid
+        # as a stale self-lock and takes it over (correct — a crashed
+        # listener must not brick its name)
+        import subprocess
+        sleeper = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60)"])
+        with open(lock, "w", encoding="utf-8") as f:
+            f.write(str(sleeper.pid))
+        buf = io.StringIO()
+        import contextlib
+        try:
+            with contextlib.redirect_stdout(buf):
+                hubtool.listen("locked-name")   # must refuse, not loop
+        finally:
+            sleeper.kill()
+            try:
+                os.remove(lock)
+            except OSError:
+                pass
+        out = buf.getvalue()
+        assert "already listens" in out, (
+            f"a second listener on a locked name was not refused: {out!r}")
+    check("names · a second live listener on the same name is refused, not "
+          "silently split", _second_live_listener_is_refused)
+
+    def _typo_listener_refuses_and_names_the_known():
+        # was a finding: listen minted on a miss, so `listen nebula-buidler`
+        # produced a confident listener on a brand-new empty address while
+        # the real mail sat at nebula-builder — and silence is
+        # indistinguishable from 'no mail yet'. Fixed 2026-08-05: every verb
+        # except register resolves EXISTING identities only (mint=False);
+        # a listener miss refuses and prints the known names.
+        fresh_ident()
+        real = become("nebula-builder")
+        become("outsider")
+        hubtool.dispatch("hub_send", {"to": real, "body": "the real mail"})
+        hubtool._CUR.clear()
+        buf = io.StringIO()
+        import contextlib
+        with contextlib.redirect_stdout(buf):
+            hubtool.listen("nebula-buidler")          # one transposition
+        out = buf.getvalue()
+        assert "no identity named" in out and "nebula-builder" in out, (
+            f"a typo'd listen neither refused nor named the known "
+            f"identities: {out!r}")
+        assert not os.path.exists(
+            hubtool._id_path("nebula-buidler")), (
+            "the typo'd listen MINTED an identity file anyway")
+    check("names · a typo'd listener refuses and prints the known names, "
+          "minting nothing", _typo_listener_refuses_and_names_the_known)
+
+    def _name_cannot_escape_the_identity_dir():
+        for hostile in ("../../evil", "..\\..\\evil", "/etc/passwd",
+                        "C:/Windows/win.ini", "a/../../b"):
+            nm = hubtool._norm_name(hostile)
+            assert "/" not in nm and "\\" not in nm and ".." not in nm, nm
+            p = os.path.abspath(hubtool._id_path(nm))
+            assert p.startswith(os.path.abspath(hubtool._ID_DIR) + os.sep), p
+    check("names · a hostile name cannot escape hub-clients/ (the name is a "
+          "FILENAME now, which it was not before the ruling)",
+          _name_cannot_escape_the_identity_dir)
+
+
 # ══════════════════════════════════════════════════════════════════════ §3
 def sec_secret() -> None:
     print("\n§3  the uid is the secret — header only")
@@ -536,6 +640,7 @@ def main() -> int:
     print("orgtree · FR-06 hub chat clients (hub/hubtool.py)")
     sec_identity()
     sec_race()
+    sec_names()
     sec_secret()
     sec_listen()
     sec_kind()

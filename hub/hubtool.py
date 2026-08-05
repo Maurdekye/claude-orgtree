@@ -138,18 +138,33 @@ def _mint_uid(name: str) -> dict[str, Any]:
         return _load_ident(name)      # the other starter won — adopt theirs
 
 
-def _ident(name: str | None = None) -> dict[str, Any]:
+def _known_names() -> list[str]:
+    try:
+        return sorted(f[:-5] for f in os.listdir(_ID_DIR)
+                      if f.endswith(".json"))
+    except OSError:
+        return []
+
+
+def _ident(name: str | None = None, mint: bool = True) -> dict[str, Any]:
     """The persistent PER-SESSION identity (user ruling 2026-08-05): keyed
     by the session's self-chosen name — ~/.orgtree/hub-clients/<name>.json.
     Registering with a remembered name resumes the same uid and therefore
     the same address; the name is immutable per identity (the fingerprint
     suffix rides the address, so a rename would change it — same rule as
-    orgs). No name resolved → empty dict; hub_register must supply one."""
+    orgs). No name resolved → empty dict; hub_register must supply one.
+
+    `mint=False` resolves an EXISTING identity only (redteam finding ③:
+    every verb except register used to mint on miss, so a typo'd listen
+    invented a fresh address and heard nothing forever while the session's
+    real mail piled up elsewhere — register is the one deliberate minter)."""
     nm = _active_name(name)
     if not nm:
         return {}
     d = _load_ident(nm)
     if not d.get("uid"):
+        if not mint:
+            return {}
         d = _mint_uid(nm)
         if not d.get("uid"):          # corrupt file lost the race — rare
             d = {"uid": uuid.uuid4().hex + uuid.uuid4().hex}
@@ -179,16 +194,30 @@ def _call(path: str, payload: dict[str, Any] | None = None,
 
 
 def register(name: str | None = None) -> dict[str, Any]:
-    d = _ident(name)
-    if not d.get("slug"):
+    nm = _active_name(name)
+    if not nm:
         return {"error": "no name chosen yet — call hub_register with a "
                          "name (it becomes part of your permanent address)"}
+    # redteam ①/②: the name is self-chosen prose and adoption-by-name is by
+    # design, so a COLLISION (two sessions choosing the same words) silently
+    # merges two mailboxes — make the resumption VISIBLE so a session that
+    # expected a fresh identity sees it and can pick another name
+    resumed = bool(_load_ident(nm).get("uid"))
+    d = _ident(nm)
     out = _call("/api/register", {
         "slug": d["slug"], "org_name": d["name"],
         "username": getpass.getuser(), "kind": "chat",
         "blurb": "independent Claude Code chat"})
-    return {"slug": d["slug"], "hub": out.get("name"),
-            "roster": out.get("roster")}
+    res: dict[str, Any] = {"slug": d["slug"], "hub": out.get("name"),
+                           "roster": out.get("roster")}
+    if resumed:
+        res["resumed"] = (
+            f"the name {d['name']!r} already existed on this machine — the "
+            f"SAME identity and address were resumed. If YOU registered it "
+            f"in an earlier session, this is correct; if you did not, "
+            f"another live session owns this mailbox and you two would "
+            f"split each other's mail — choose a different name")
+    return res
 
 
 def poll(wait: float) -> dict[str, Any]:
@@ -231,28 +260,81 @@ def fmt(m: dict[str, Any]) -> str:
 
 # ─────────────────────────────────────────────── the Monitor-armable listener
 
+def _pid_alive(pid: int) -> bool:
+    if os.name == "nt":
+        try:
+            import subprocess
+            r = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                               capture_output=True, text=True, timeout=15)
+            return str(pid) in (r.stdout or "")
+        except Exception:                                        # noqa: BLE001
+            return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
 def listen(name: str | None = None) -> None:
     """python hub/hubtool.py listen <name>   (or MAILHUB_NAME) — the name
     selects WHICH session identity listens; per-session identities are the
     whole point (user ruling 2026-08-05), so an unnamed listener would be
-    ambiguous and is refused."""
-    d = _ident(name)
+    ambiguous and is refused. Resolves EXISTING identities only (redteam ③:
+    minting on a typo'd name produced a confident listener that hears
+    nothing forever — register is where names are chosen deliberately), and
+    takes a LIVE-HOLDER lock (redteam ②): a second listener on the same
+    name would silently split the mailbox, so it is refused while the first
+    is running."""
+    d = _ident(name, mint=False)
     if not d.get("slug"):
-        print("no identity name — pass one (python hubtool.py listen "
-              "<name>) or set MAILHUB_NAME; use the name this session "
-              "registered with", flush=True)
+        nm = _active_name(name)
+        known = _known_names()
+        print((f"no identity named {nm!r} on this machine"
+               if nm else "no identity name given")
+              + (f" — known names: {', '.join(known)}" if known
+                 else " — none registered yet")
+              + ". Register first (hub_register / hubtool.py register "
+              "<name>), then listen with that exact name.", flush=True)
         return
+    lock = _id_path(str(d["name"])) + ".listening"
+    try:
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(str(os.getpid()))
+    except FileExistsError:
+        try:
+            holder = int(open(lock, encoding="utf-8").read().strip() or 0)
+        except (OSError, ValueError):
+            holder = 0
+        if holder and _pid_alive(holder) and holder != os.getpid():
+            print(f"another live listener (pid {holder}) already listens as "
+                  f"{d['slug']} — two listeners on one name split the "
+                  f"mailbox at random. If that session is yours and dead, "
+                  f"delete {lock}", flush=True)
+            return
+        try:                            # stale lock — take it over
+            with open(lock, "w", encoding="utf-8") as f:
+                f.write(str(os.getpid()))
+        except OSError:
+            pass
     print(f"listening as {d['slug']} …", flush=True)
     try:
         register()
     except Exception:                                            # noqa: BLE001
         pass                       # hub down: the loop below keeps retrying
-    while True:
+    try:
+        while True:
+            try:
+                for m in take_fresh(poll(25.0)):
+                    print(fmt(m), flush=True)
+            except Exception:                                    # noqa: BLE001
+                time.sleep(5.0)
+    finally:
         try:
-            for m in take_fresh(poll(25.0)):
-                print(fmt(m), flush=True)
-        except Exception:                                        # noqa: BLE001
-            time.sleep(5.0)
+            os.remove(lock)
+        except OSError:
+            pass
 
 
 # ──────────────────────────────────────────────────────────── the MCP server
@@ -267,7 +349,9 @@ TOOLS: list[dict[str, Any]] = [
          "REMEMBER the name you chose: registering with it again later "
          "resumes the SAME address (<name>.<user>.<fingerprint>); a "
          "different name is a different identity. Immutable once minted. "
-         "Returns your address and the roster."),
+         "Returns your address and the roster — ⚠ if the result carries "
+         "`resumed` and YOU did not register this name earlier, another "
+         "session owns it: pick a different name."),
      "inputSchema": {"type": "object", "properties": {
          "name": {"type": "string",
                   "description": "this session's self-chosen identity name "
@@ -298,7 +382,7 @@ TOOLS: list[dict[str, Any]] = [
 def dispatch(tool: str, args: dict[str, Any]) -> str:
     if tool == "hub_register":
         return json.dumps(register(str(args.get("name") or "") or None))
-    d = _ident()
+    d = _ident(mint=False)          # only hub_register mints (redteam ③)
     if not d.get("slug"):
         return json.dumps({"error": "not registered — call hub_register "
                                     "with this session's self-chosen name "
@@ -361,8 +445,70 @@ def serve() -> None:
             reply(id_, {})
 
 
+# ─────────────────────────────── chatq-parity CLI verbs (the FR-09 cutover)
+# chatq's shell surface was send.sh/list.sh/listen.sh; sessions migrating to
+# the hub need the same verbs without an MCP registration step:
+#     python hubtool.py register <name>
+#     python hubtool.py send <name> <to-slug> <message…>
+#     python hubtool.py list <name>
+#     python hubtool.py listen <name>
+
+def cli(argv: list[str]) -> int:
+    verb = argv[0] if argv else ""
+    if verb == "listen":
+        listen(argv[1] if len(argv) > 1 else None)
+        return 0
+    if verb == "register":
+        if len(argv) < 2:
+            print("usage: hubtool.py register <name>", flush=True)
+            return 2
+        out = register(argv[1])
+        print(json.dumps(out), flush=True)
+        return 1 if out.get("error") else 0
+    if verb == "send":
+        if len(argv) < 4:
+            print("usage: hubtool.py send <name> <to-slug> <message…>",
+                  flush=True)
+            return 2
+        d = _ident(argv[1], mint=False)      # a typo must not mint (redteam ③)
+        if not d.get("slug"):
+            print(json.dumps({"error": f"no identity named {argv[1]!r} — "
+                              f"known: {', '.join(_known_names()) or 'none'}"
+                              f"; register first"}), flush=True)
+            return 1
+        try:
+            register()               # idempotent; also refreshes presence
+        except Exception:                                        # noqa: BLE001
+            pass
+        out = _call("/api/send", {"id": uuid.uuid4().hex,
+                                  "to": argv[2],
+                                  "body": " ".join(argv[3:]),
+                                  "sent_at": time.strftime(
+                                      "%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
+        print(json.dumps(out), flush=True)
+        return 0
+    if verb == "list":
+        if len(argv) < 2:
+            print("usage: hubtool.py list <name>", flush=True)
+            return 2
+        d = _ident(argv[1], mint=False)      # a typo must not mint (redteam ③)
+        if not d.get("slug"):
+            print(json.dumps({"error": f"no identity named {argv[1]!r} — "
+                              f"known: {', '.join(_known_names()) or 'none'}"
+                              f"; register first"}), flush=True)
+            return 1
+        out = _call("/api/roster", None, method="GET")
+        for r in cast("list[dict[str, Any]]", out.get("roster") or []):
+            print(f"{r.get('slug')}  [{r.get('kind') or 'org'}]"
+                  + ("  online" if r.get("online") else
+                     f"  last seen {r.get('last_seen')}"), flush=True)
+        return 0
+    print("usage: hubtool.py [listen|register|send|list] …  "
+          "(no verb = MCP server on stdio)", flush=True)
+    return 2
+
+
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "listen":
-        listen(sys.argv[2] if len(sys.argv) > 2 else None)
-    else:
-        serve()
+    if len(sys.argv) > 1:
+        sys.exit(cli(sys.argv[1:]))
+    serve()
