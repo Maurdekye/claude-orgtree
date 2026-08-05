@@ -384,6 +384,11 @@ REVISION: int = 0   # bumped on every save — cheap change detection for poller
 # about: N writers each responsible for remembering the same side effect. A
 # save IS the change, so the save announces it and a new endpoint cannot forget.
 on_save: Callable[[str], None] = lambda slug: None   # no-op until wired
+# additional per-save listeners a MODULE registers at import time (on_save is
+# a single slot the API claims at startup; these compose instead of racing
+# for it). First user: the supervisor's FR-01 remote-control reaper — any doc
+# mutation that removes a controlled seat must take its server with it.
+save_hooks: list[Callable[[str], None]] = []
 
 
 def save_org(org: Org) -> None:
@@ -429,6 +434,11 @@ def save_org(org: Org) -> None:
         on_save(org.d["slug"])
     except Exception:
         pass
+    for h in list(save_hooks):
+        try:
+            h(org.d["slug"])
+        except Exception:
+            pass
 
 
 def workspace_dir(slug: str) -> str:

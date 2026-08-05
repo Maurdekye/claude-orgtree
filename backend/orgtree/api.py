@@ -793,6 +793,7 @@ def orgs_delete(slug: str) -> dict[str, Any]:
     # (a restore brings the files back) but runtime state must die with the
     # org or a restore resurrects phantom busy/queued agents
     supervisor.forget_state(slug)
+    supervisor.remote_reap(slug)     # FR-01: no server outlives its org
     sandbox.remove(slug)            # container down; files stay (like scratch)
     supervisor.chatq_deregister_org(slug)
     return {"ok": True}
@@ -1685,6 +1686,12 @@ def node_message(slug: str, nid: str, body: Message) -> dict[str, Any]:
                 raise HTTPException(
                     409, "frozen (usage limit) — a session command would be "
                          "dropped, not queued; ▶ resume the org first")
+            if n.get("remote_controlled"):
+                # FR-01 (redteam): the remote park queues MAIL, but a command
+                # has no mailbox behind it — success here would be a lie
+                raise HTTPException(
+                    409, "under remote control — a session command would be "
+                         "dropped, not queued; release remote control first")
             # A command is direct user contact, so it carries the same two
             # consequences a message does: the superior chain is told, and the
             # node gains a user audience (user report 2026-08-03 — running a
@@ -1702,6 +1709,13 @@ def node_message(slug: str, nid: str, body: Message) -> dict[str, Any]:
             # It now routes to the same org split the button runs.
             if n.get("bearer_state"):
                 raise HTTPException(422, "a knowledge bearer never re-compacts (§8.3)")
+            if n.get("remote_controlled"):
+                # FR-01: unreachable today (the endpoint's own remote gate
+                # refuses first), kept HERE like busy/bearer so the branch
+                # stays safe if it ever moves — the fork rebinds the session
+                # id out from under the phone
+                raise HTTPException(409, "under remote control — release it "
+                                         "before compacting")
             if not n.get("occupancy"):
                 raise HTTPException(422, "no conversation yet — nothing to compact")
             if supervisor.state(slug, nid)["busy"]:
@@ -1809,6 +1823,12 @@ def node_compact(slug: str, nid: str) -> dict[str, Any]:
         raise HTTPException(422, f"{nid} is {n['state']} — rehire it first")
     if n.get("bearer_state"):
         raise HTTPException(422, "a knowledge bearer never re-compacts (§8.3)")
+    if n.get("remote_controlled"):
+        # FR-01 (redteam): compaction forks this session id and rebinds the
+        # node to a new one — the phone would keep driving an orphaned id
+        raise HTTPException(409, "under remote control — release it before "
+                                 "compacting (the fork would strand the "
+                                 "controlled session)")
     if not n.get("occupancy"):
         raise HTTPException(422, "no conversation yet — nothing to compact")
     if n.get("frozen"):
@@ -2938,6 +2958,10 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
         except LedgerError as e:
             raise HTTPException(422, str(e))
         store.save_org(org)
+    if body.tool in ("orgtree_retire", "orgtree_dissolve", "orgtree_rename"):
+        # FR-01 (redteam): agents removing/re-keying seats must not orphan a
+        # running remote-control server either
+        supervisor.remote_reap(body.org)
     for target in drive:
         supervisor.send_message(
             body.org, target,
@@ -3882,10 +3906,15 @@ def org_op(slug: str, body: Op, request: Request) -> dict[str, Any]:
                                             actor=body.actor)
         except LedgerError as e:
             raise HTTPException(422, str(e))
+        supervisor.remote_reap(slug)     # FR-01: a rename re-keys the seat
         hub_changed(slug)
         return result
     with store.DOC_LOCK:
         result = _org_op_locked(slug, body, allow_raise=not pub)
+    # FR-01 (redteam): retire/dissolve/delete must not orphan a running
+    # remote-control server — reap any whose seat is gone or no longer live
+    if body.op in ("retire", "dissolve", "delete"):
+        supervisor.remote_reap(slug)
     if pub and isinstance(result, dict):
         # the bridge is the ADMIN affordance — a visitor has no legal path to
         # raise the ceiling, so the offer must not dangle

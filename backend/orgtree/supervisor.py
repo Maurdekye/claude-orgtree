@@ -2347,6 +2347,16 @@ def manual_compact(slug: str, nid: str) -> None:
     arriving during the up-to-10-minute split QUEUES instead of running a turn
     against the OLD session id — that work would have been archived into the
     bearer and the successor would not remember it."""
+    # FR-01 (redteam): compaction forks the SAME session id and rebinds the
+    # node to a new one — started under remote control, the user would keep
+    # driving an id the org no longer uses, their work landing in an
+    # orphaned session
+    with store.DOC_LOCK:
+        _o = store.load_org(slug)
+        if nid in _o.nodes and _o.node(nid).get("remote_controlled"):
+            raise RuntimeError(
+                "under remote control — release it before compacting (the "
+                "fork would strand the controlled session)")
     st = state(slug, nid)
     with _state_lock:
         if st["busy"]:
@@ -2404,7 +2414,23 @@ def manual_compact(slug: str, nid: str) -> None:
 _remote_procs: dict[tuple[str, str], subprocess.Popen[str]] = {}
 
 
+def _remote_unpark(slug: str, nid: str) -> None:
+    """Roll the park back (failed probe / busy race / refused start)."""
+    with store.DOC_LOCK:
+        o = store.load_org(slug)
+        if nid in o.nodes and o.node(nid).pop("remote_controlled", None):
+            store.save_org(o)
+
+
 def remote_control_start(slug: str, nid: str) -> dict[str, Any]:
+    # PARK FIRST, PROVE SECOND (redteam race 2026-08-05): the flag goes into
+    # the doc BEFORE anything is spawned, so from this point every turn
+    # launch path refuses. Only then is `busy` re-checked: a turn that set
+    # busy before our check is caught here (roll back and refuse); one that
+    # sets it after will hit the turn gate, which now sees the flag. Both
+    # writes serialize on DOC_LOCK, so there is no window in which the node
+    # looks idle and unflagged while the server is (about to be) driving
+    # the same session id.
     with store.DOC_LOCK:
         org = store.load_org(slug)
         if nid not in org.nodes:
@@ -2421,11 +2447,15 @@ def remote_control_start(slug: str, nid: str) -> dict[str, Any]:
         if n.get("remote_controlled"):
             return {"ok": True, "already": True}
         sid = n["session_id"]
+        n["remote_controlled"] = {"at": now_iso()}
+        store.save_org(org)
     st = state(slug, nid)
     with _state_lock:
-        if st["busy"]:
-            return {"error": f"{nid} is mid-turn — wait for the turn to "
-                             f"finish, then start remote control"}
+        busy = st["busy"]
+    if busy:
+        _remote_unpark(slug, nid)
+        return {"error": f"{nid} is mid-turn — wait for the turn to "
+                         f"finish, then start remote control"}
     cwd = scratch_dir(slug, nid)
     log_path = os.path.join(cwd, "remote-control.log")
     try:
@@ -2435,10 +2465,12 @@ def remote_control_start(slug: str, nid: str) -> dict[str, Any]:
             cwd=cwd, stdin=subprocess.DEVNULL, stdout=logf, stderr=logf,
             text=True, encoding="utf-8", errors="replace")
     except OSError as e:
+        _remote_unpark(slug, nid)
         return {"error": f"could not start the remote-control server: {e}"}
     _leash(proc)
     time.sleep(2.5)                 # the cheap TTY-less sanity probe
     if proc.poll() is not None:
+        _remote_unpark(slug, nid)
         tail = ""
         try:
             tail = open(log_path, encoding="utf-8",
@@ -2449,15 +2481,62 @@ def remote_control_start(slug: str, nid: str) -> dict[str, Any]:
                          f"(code {proc.returncode}) — log tail: {tail}"}
     with store.DOC_LOCK:
         o2 = store.load_org(slug)
-        if nid in o2.nodes:
+        if nid in o2.nodes and o2.node(nid).get("remote_controlled"):
             o2.node(nid)["remote_controlled"] = {"at": now_iso(),
                                                  "pid": proc.pid}
             store.save_org(o2)
+        else:
+            # the node vanished (or was force-released) mid-probe — the
+            # server must not outlive its seat
+            try:
+                proc.terminate()
+            except OSError:
+                pass
+            return {"error": f"{nid} disappeared while the server started"}
     _remote_procs[(slug, nid)] = proc
     notify(slug, nid, "remote_control")
     return {"ok": True, "log": log_path,
             "note": "connect from claude.ai/code or the Claude mobile app; "
                     "mail queues until release"}
+
+
+store.save_hooks.append(
+    lambda slug: _remote_save_hook(slug))
+
+
+def _remote_save_hook(slug: str) -> None:
+    """Registered on store.save_hooks at import: EVERY doc save re-checks
+    that running servers still have a live, flagged seat — so a ledger-level
+    delete/retire/rename with a plain save (no API involved) still takes the
+    server with it. One falsy dict check when nothing is running."""
+    if _remote_procs:
+        remote_reap(slug)
+
+
+def remote_reap(slug: str) -> None:
+    """Kill remote-control servers whose seat no longer exists (redteam
+    2026-08-05: delete/archive/rename removed the node but `_remote_procs`
+    kept the handle under a key nobody looks up — the phone stayed attached
+    to a session whose agent was gone). Called after any op that can remove
+    or re-key nodes; cheap when nothing is running."""
+    keys = [k for k in _remote_procs if k[0] == slug]
+    if not keys:
+        return
+    try:
+        with store.DOC_LOCK:
+            org = store.load_org(slug)
+            alive = {nid for nid, n in org.nodes.items()
+                     if n["state"] == "live" and n.get("remote_controlled")}
+    except Exception:                                            # noqa: BLE001
+        alive = set()                          # org gone: reap everything
+    for k in keys:
+        if k[1] not in alive:
+            proc = _remote_procs.pop(k, None)
+            if proc is not None:
+                try:
+                    proc.terminate()
+                except OSError:
+                    pass
 
 
 def remote_control_stop(slug: str, nid: str) -> dict[str, Any]:
@@ -2505,7 +2584,14 @@ def send_message(slug: str, nid: str, text: str,
             return {"accepted": True, "queued": 0, "frozen": True}
         if nid in _o.nodes and _o.node(nid).get("remote_controlled"):
             # FR-01: the user is driving this session directly — two writers
-            # on one session id corrupt it, so mail waits for release
+            # on one session id corrupt it, so mail waits for release. A
+            # COMMAND has no mailbox behind it (redteam): "accepted" would
+            # mean silently dropped, so refuse it honestly instead
+            if command:
+                return {"accepted": False, "remote": True,
+                        "error": "under remote control — a session command "
+                                 "would be dropped, not queued; release "
+                                 "remote control first"}
             return {"accepted": True, "queued": 0, "remote": True}
         if nid in _o.nodes and _o.node(nid)["state"] != "live":
             # an archived node receives mail but cannot act (user ruling) —
@@ -3581,11 +3667,26 @@ def reconcile(slug: str) -> list[str]:
             store.save_org(org)
         # FR-01: a remote-control server is leashed to the backend, so after
         # a restart none can be running — a surviving flag is stale and
-        # would park the node forever
+        # would park the node forever. Belt-and-braces (redteam note): if
+        # the leash silently failed, the recorded pid may still be alive
+        # with a phone attached to a session orgtree is about to treat as
+        # free — kill it by pid before clearing.
         rc_cleared = False
         for n in org.nodes.values():
-            if n.pop("remote_controlled", None) is not None:
+            rc = n.pop("remote_controlled", None)
+            if rc is not None:
                 rc_cleared = True
+                pid = rc.get("pid") if isinstance(rc, dict) else None
+                if pid:
+                    try:
+                        if os.name == "nt":
+                            subprocess.run(
+                                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                                capture_output=True, timeout=15)
+                        else:
+                            os.kill(int(pid), 15)
+                    except (OSError, subprocess.TimeoutExpired, ValueError):
+                        pass
         if rc_cleared:
             store.save_org(org)
         # agents that were MID-TURN when orgtree went down auto-resume from
