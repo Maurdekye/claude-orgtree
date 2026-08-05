@@ -480,6 +480,7 @@ async def _wire_notify() -> None:  # type: ignore[unused-function]  # registered
 
     supervisor.notify = notify
     supervisor.stream = stream
+    supervisor.mail_spark = _mail
     # G2: every persisted change announces itself, from wherever it was made —
     # an endpoint, an agent's MCP call, the supervisor's own turn bookkeeping.
     # The explicit hub_changed() calls left at a few endpoints are now
@@ -1279,7 +1280,9 @@ def _org_settings_locked(slug: str, body: Settings) -> dict[str, Any]:
                 raise HTTPException(422, "net_hubs entries must be "
                                          "{id?, address, enabled?}")
             hd = cast("dict[str, Any]", h)
-            addr = str(hd.get("address") or "").strip()
+            # bare host / host:port entries are valid (user spec 2026-08-05):
+            # no scheme assumes http, no port assumes the hub default 7370
+            addr = net.normalize_hub_address(str(hd.get("address") or ""))
             if not addr:
                 continue
             kept = old_by_id.get(str(hd.get("id") or "")) \
@@ -2332,6 +2335,9 @@ def org_inbox_send(slug: str, body: OrgInboxSend,
             net.spool_append(org, to[5:], body.body, oid=oid,
                              attachments=paths)
         store.save_org(org)
+    # spark on the wire (user spec 2026-08-05): a user compose leaves the
+    # eye for the mailbox like an agent's outbound leaves its node
+    mail_notify(slug, USER, "org_inbox")
     if to.startswith("@net:"):
         net.kick()
     elif to.startswith("@org:"):
@@ -2785,6 +2791,11 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                 result = org.post_mail(body.node, a.get("to", ""), a.get("body", ""),
                                        a.get("kind", "message"))
                 delivered = result.get("delivered")
+                if delivered and delivered.startswith("@"):
+                    # spark on the wire (user spec 2026-08-05): outbound
+                    # org mail rides the sender→mailbox line, whatever the
+                    # transport branch below does with it
+                    mail_notify(body.org, body.node, "org_inbox")
                 if delivered and delivered.startswith("@ext:"):
                     # outbound to an external session — rides the chatq bridge
                     ext_send = (delivered[5:], a.get("body", ""))

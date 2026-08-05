@@ -324,6 +324,30 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
   const launchSpark = useCallback((from: string, to: string) => {
     const m = mapRef.current
     const norm = (x: string) => (!x || x === 'user' || x === 'user_inbox' || x === USER) ? USER : x
+    // org-inbox mail (user spec 2026-08-05): a spark rides the mailbox↔node
+    // curve — the same facing-sides geometry the audience lines to holders
+    // draw — in whichever direction the mail travels
+    const isBox = (x: string) => x === 'org_inbox' || x === INBOX
+    if (isBox(from) !== isBox(to)) {
+      const other = norm(isBox(from) ? to : from)
+      const at = posOf(INBOX), bt = posOf(other)
+      if (!at || !bt || (other !== USER && !m.has(other))) return
+      const ga = sizeOf(INBOX), gb = sizeOf(other)
+      const left = (bt.x + gb.w / 2) < (at.x + ga.w / 2)
+      const x1 = left ? at.x : at.x + ga.w
+      const x2 = left ? bt.x + gb.w : bt.x
+      const y1 = at.y + ga.h / 2, y2 = bt.y + gb.h / 2
+      const bulge = 64 + Math.abs(y2 - y1) * 0.12
+      sparksRef.current.push({
+        id: ++sparkId.current,
+        segs: [{ kind: 'c', pts: [
+          { x: x1, y: y1 }, { x: x1 + (left ? -bulge : bulge), y: y1 },
+          { x: x2 + (left ? bulge : -bulge), y: y2 }, { x: x2, y: y2 }],
+          rev: !isBox(from) }],
+        start: performance.now(), segDur: 420 })
+      setFrame((f) => f + 1)
+      return
+    }
     const a = norm(from), b = norm(to)
     if (a === b || !m.has(a) || !m.has(b)) return
     const segs: (Seg & { rev: boolean })[] = []

@@ -347,6 +347,9 @@ notify: Callable[[str, str, str], None] = \
     lambda slug, node, event: None   # noqa: E731
 stream: Callable[[str, str, dict[str, Any]], None] = \
     lambda slug, node, payload: None   # noqa: E731 — live per-message feed
+mail_spark: Callable[[str, str, str], None] = \
+    lambda slug, frm, to: None   # noqa: E731 — spark-on-the-wire animation;
+                                 # 'org_inbox' = the mailbox panel endpoint
 
 _LIVE_KEEP = 40           # rows retained per node; the UI renders far fewer
 
@@ -3326,6 +3329,9 @@ def deliver_org_inbox(slug: str, peer: str, body: str,
                                            net_id=net_id)
         store.save_org(org)
     for t in delivered:
+        # spark on the wire (user spec 2026-08-05): inbound org mail rides
+        # the mailbox→holder line like every other message rides its wire
+        mail_spark(slug, "org_inbox", t)
         send_message(
             slug, t,
             "(orgtree) The ORG INBOX received outside mail (above) — it is "

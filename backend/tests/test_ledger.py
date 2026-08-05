@@ -649,8 +649,12 @@ def main():
                    else (_ for _ in ()).throw(AssertionError(before)))(
                        len([a for a in orgE.d["audiences"]
                             if a["grantor"] == EXTERN and a["grantee"] == "b"])))
-    check("inbox audience grant makes deep2 a recipient + responder", lambda: (
-        lambda r: None if r["drive"] == ["deep2"]
+    # user ruling 2026-08-05: the grant itself wakes nobody when the grantee
+    # has no mail waiting (delivery is at arrival, never retroactive) — the
+    # next inbound mail is what drives, proven two lines down
+    check("inbox audience grant makes deep2 a recipient + responder (the "
+          "grant alone drives no turn)", lambda: (
+        lambda r: None if r["drive"] == []
         and set(orgE.extern_holders()) == {"a", "b", "deep2"}
         # HOLDERS ONLY — every holder gets the copy, and nobody else does
         and set(orgE.post_external_mail("@ext:abc123", "second ping"))

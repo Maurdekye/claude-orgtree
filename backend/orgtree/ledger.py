@@ -1392,7 +1392,15 @@ class Org:
                      f"Replies speak for the org as a whole — coordinate with "
                      f"the other recipients before answering.")
         self._log("audience_grant", actor, {"grantee": frm, "grantor": EXTERN}, [])
-        return {"drive": [frm], "warnings": []}
+        # user ruling 2026-08-05: the grant alone wakes nobody. A new holder
+        # receives only FUTURE inbound mail (delivery happens at arrival,
+        # never retroactively), so with an empty box the driven turn would
+        # exist only to read the notice above — drive only when mail is
+        # already waiting for the grantee; otherwise the notice rides their
+        # next natural turn. (The bootstrap path is untouched: there the
+        # arriving mail itself drives.)
+        pending = bool((self.d.get("mail") or {}).get(frm))
+        return {"drive": [frm] if pending else [], "warnings": []}
 
     def audience_deny(self, actor: str, frm: str, target: str) -> dict[str, Any]:
         req = self._find_request(frm, target)
