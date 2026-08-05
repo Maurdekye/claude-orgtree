@@ -3172,16 +3172,29 @@ def pop_steer(slug: str, nid: str) -> list[str]:
     return out
 
 
-def forget(slug: str, nids: Iterable[str]) -> None:
-    """After a user delete: drop runtime state and remove org-owned scratch dirs.
-    Lineage ids share their base's scratch, so only base ids delete directories;
-    session transcripts under ~/.claude are deliberately left alone."""
-    import shutil
-    nids = set(nids)
+def forget_state(slug: str, nids: Iterable[str] | None = None) -> None:
+    """Drop runtime state ONLY — the files-preserving half of forget().
+    With nids=None, every node of the org. Used by the ORG delete, which is a
+    REVERSIBLE rename into <data>/deleted/ ("putting the file back IS the
+    restore"): the scratch dirs must survive so a restore brings the agents'
+    files back, but the in-memory state must die with the org or a restored
+    org resurrects a phantom busy agent whose turn ended long ago, stale
+    queued messages, and stale live rows (test_api_surface §10c)."""
+    keep = None if nids is None else set(nids)
     with _state_lock:
         for k in list(_state):
-            if k[0] == slug and k[1] in nids:
+            if k[0] == slug and (keep is None or k[1] in keep):
                 _state.pop(k, None)
+
+
+def forget(slug: str, nids: Iterable[str]) -> None:
+    """After a user delete of NODES: drop runtime state and remove org-owned
+    scratch dirs. Lineage ids share their base's scratch, so only base ids
+    delete directories; session transcripts under ~/.claude are deliberately
+    left alone."""
+    import shutil
+    nids = set(nids)
+    forget_state(slug, nids)
     for nid in {n for n in nids if "@" not in n}:
         shutil.rmtree(os.path.join(store.scratch_root(slug), nid), ignore_errors=True)
 

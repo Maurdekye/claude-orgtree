@@ -760,6 +760,10 @@ def orgs_delete(slug: str) -> dict[str, Any]:
         store.delete_org(slug)
     except LedgerError as e:
         raise HTTPException(404, str(e))
+    # state-only purge: delete is a reversible rename, so scratch dirs stay
+    # (a restore brings the files back) but runtime state must die with the
+    # org or a restore resurrects phantom busy/queued agents
+    supervisor.forget_state(slug)
     sandbox.remove(slug)            # container down; files stay (like scratch)
     supervisor.chatq_deregister_org(slug)
     return {"ok": True}

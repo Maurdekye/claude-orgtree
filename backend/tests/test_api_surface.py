@@ -1986,32 +1986,30 @@ def _():
         st["busy"] = False
 
 
-@gap("deleting an ORG forgets its agents' runtime state",
-     "DELETE /api/orgs/{slug} (api.py orgs_delete) never calls "
-     "supervisor.forget(), unlike the node-level delete which does "
-     "(api.py:3434). Two consequences, both measured: (a) every deleted org's "
-     "state entries — busy, queue, live rows, last_error — are held for the "
-     "life of the process; (b) delete is a REVERSIBLE rename into "
-     "<data>/deleted/ and the documented restore is to put the file back, so "
-     "a restored org comes back with a phantom busy agent that never clears "
-     "(no turn will run its finally), its old queued messages, and stale live "
-     "rows. One line: supervisor.forget(slug, list(org.nodes)) before the "
-     "rename, while the doc can still be read.")
+@t("deleting an ORG forgets runtime state; scratch survives for the restore")
 def _():
+    # promoted from gap() 2026-08-05: orgs_delete now calls forget_state() —
+    # the state-only split of forget(). Both halves pinned: the runtime state
+    # dies with the org (no phantom busy agent on restore), and the scratch
+    # dirs SURVIVE, because delete is a reversible rename and putting the file
+    # back is documented as the restore — the agents' files must come back too.
     r = call(ADMIN, "POST", "/api/orgs", {"name": "Doomed Org"})
     doomed = r.json["slug"]
     call(ADMIN, "POST", f"/api/orgs/{doomed}/ops",
          {"op": "hire", "tier": "haiku", "name": "worker", "grant": 1})
+    scratch = supervisor.scratch_dir(doomed, "worker")     # creates it
     st = supervisor.state(doomed, "worker")
     st["busy"] = True
     st["queue"].append("queued before the delete")
     assert supervisor.working_count(doomed) == 1, "precondition"
     assert call(ADMIN, "DELETE", f"/api/orgs/{doomed}").status == 200
     held = [k for k in supervisor._state if k[0] == doomed]
-    supervisor.forget(doomed, ["worker"])          # clean up after the probe
     assert not held, (
         f"the deleted org still holds runtime state {held} "
         f"(working_count={supervisor.working_count(doomed)})")
+    assert os.path.isdir(scratch), (
+        "the scratch dir must SURVIVE an org delete — the delete is a "
+        "reversible rename, and the restore must bring the files back")
 
 
 # ------------------------------------------------- §11 raw HTTP on port 7402
