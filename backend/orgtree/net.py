@@ -595,6 +595,23 @@ def _drain_spools(parts: dict[str, dict[str, Any]]) -> None:
                 continue
             addr = str(h["address"])
             if time.monotonic() < _backoff.get(addr, 0.0):
+                # THE SILENT-FAILURE AMPLIFIER (remote-side finding
+                # 2026-08-05): register runs before drain on the same loop
+                # and re-arms this same per-address backoff, so an
+                # enabled-but-down hub starves the drain indefinitely —
+                # tries never moved, last_err was never written, and the
+                # entries most certain to be stuck were exactly the ones
+                # that looked pristine. Nothing is attempted here, so
+                # `tries` stays honest — but the SKIP now stamps its
+                # reason, so the ⚠ glyph and the stuck counts fire for
+                # never-visited entries too. (The backoff stays SHARED by
+                # design: splitting it would spend real connect timeouts
+                # probing a dead hub every pass; visibility was the only
+                # missing piece.)
+                with _status_lock:
+                    why = str((_status.get((slug, hid)) or {}).get("error")
+                              or "connection failing; retrying")
+                _stamp_skip(slug, hid, f"hub unreachable — {why}")
                 continue
             # snapshot the entries OUTSIDE the lock hold during HTTP
             with store.DOC_LOCK:
@@ -716,6 +733,28 @@ def _spool_done(slug: str, hub_id: str, entry_id: str) -> None:
                 os.remove(p)
             except OSError:
                 pass
+
+
+def _stamp_skip(slug: str, hub_id: str, err: str) -> None:
+    """The drain did NOT attempt these entries — record why anyway, on the
+    spool entries AND their org-inbox out rows, so a hub the backoff never
+    lets the drain visit still shows its stuck mail (`tries` is untouched:
+    no attempt happened). Writes only when the reason CHANGED — the steady
+    state costs one save total, not one per pass."""
+    from . import store
+    err = err[:200]
+    with store.DOC_LOCK:
+        org = store.load_org(slug)
+        entries = (org.d.get("net_spool") or {}).get(hub_id, [])
+        if not entries or all(e.get("last_err") == err for e in entries):
+            return
+        for e in entries:
+            e["last_err"] = err
+        ids = {str(e.get("id")) for e in entries}
+        for row in cast("list[dict[str, Any]]", org.d.get("org_inbox") or []):
+            if row.get("net_id") in ids and row.get("last_err") != err:
+                row["last_err"] = err
+        store.save_org(org)
 
 
 def _bump_try(slug: str, hub_id: str, entry_id: str, err: str) -> None:
