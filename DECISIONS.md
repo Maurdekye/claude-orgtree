@@ -291,6 +291,51 @@ machines"); the user reversed the mechanism one day later for the
 unattended-host case, and the inheritance objection is handled by the strip
 rather than dismissed.
 
+### D-098 · extern mail is audience-gated: holders only, bootstrap, auto-bridge
+Ruling (user, 2026-08-05, F-06 phase C0 — ALL outside namespaces
+@ext:/@org:/@mcp:/@net:): inbound extern mail wakes ORG-INBOX AUDIENCE
+HOLDERS only, never the whole top row, and every holder is driven (holding
+the audience means you handle inbound). Zero holders + a live top-level ⇒
+the bootstrap auto-grants the LEFTMOST live top-level (canvas order),
+notifies it, and delivers in the same call; the re-trigger is implicit
+when the last holder goes. Zero live top-levels ⇒ the user-inbox rescue,
+unchanged. Outbound is holder-only with the cross-gaps auto-bridge: a
+top-level non-holder's send self-grants and SUCCEEDS with a warning; a
+deep non-holder is refused with both remedies named. Grants: a top-level
+grants itself or its subtree directly; revoke = subtree for top-levels,
+self-revoke for any holder, the user anywhere. UI: drag an agent onto the
+mailbox node to grant; holders list + revoke in the mailbox modal; the
+USER composes extern mail from that modal (bypasses the gate — they
+outrank it — grants nothing; attachments refused for the text-only
+@ext:/@mcp: transports). Kiosks stay sealed; incidental fix: the sealed-
+kiosk attachment-copy leak closed because kiosks cannot hold the audience.
+
+### D-097 · the F-06 mailserver wave: rulings beyond the spec
+The spec's ruling table (docs/mailserver-spec.md §12) is normative for the
+hub design — identity self-issued (sha256 fingerprint slug, immutable),
+joining open on a closed network, one multiplexed long poll, at-least-once
++ acks, received_at as ordering authority, received+read receipts, global
+hub UI, no broadcasts/rotation, auto-connect LOCAL only. Session rulings
+on top (user, 2026-08-05): scope = EVERYTHING AT ONCE incl. §9 autonomy;
+attachments FULL in v1 (25 MB/10-file, hub blobs, agent sends @net:-only);
+hub UI = full read-only mail view; runaway GUARDS = NONE for now (no rate
+limits/wake caps/loop breaker/allowlist — seams only); hubs have a NAME
+the client DISCOVERS on connect (only the address is typed); mailserver
+connection is a third visibility trigger for the mailbox node — but a
+NEVER-ANSWERED implicit local hub shows NO ui at all (hidden until
+registered_at exists; the daemon keeps dialling quietly, backed off;
+explicit typed remotes always render, offline included); headless REQUIRES
+an API key both directions, forces auto_resume, refuses halt policies, and
+draws every eye GREY and EMPTY (outline, no iris/pupil); clean_env STRIPS
+a host-level ANTHROPIC_API_KEY/AUTH_TOKEN (billing is the per-org
+selector's decision, never an inherited env var); a rename destination
+directory occupied by a DELETED agent's leftovers moves aside as
+.orphan-<ts> and the rename proceeds (an occupant is an orphan by
+construction — the taken-name check ran first). Accepted design note: the
+seen-ring's far edge is a bounded redelivery window (at-least-once + a
+500-id ring; the alternative is a per-hub high-water mark) — kept as the
+one open finding in test_net_transport.py.
+
 ### D-096 · rename is full identity, and the old name BOUNCES
 Ruling (user, 2026-08-05): the user, the superior, or any ancestor —
 never the agent itself — may rename an agent. Rename is FULL identity:

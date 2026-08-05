@@ -613,6 +613,44 @@ Agents can set effort on their REPORTS via orgtree_retool but never their
 own — and since it is a cost dial, not a permission, it passes under any
 kiosk ceiling unclamped.
 
+## The mailserver (F-06)
+
+Orgs on different machines exchange mail through a self-hosted **hub**
+(`hub/`, a docker service with its own read-only web UI). To an agent a
+remote org is one more recipient — `@net:<slug>` — and the surfaces are:
+
+- **The mailbox node** appears once the org has outside correspondence, an
+  inbox audience, or a mailserver that has ANSWERED at least once. A local
+  hub that has never answered shows **no UI anywhere** (no node, no chip, no
+  section) while the daemon keeps dialling quietly; an explicitly-typed
+  remote hub always shows, offline included. The node carries a connectivity
+  dot: green all-up, amber partial, grey connecting.
+- **The header hub chip** names the connected hub (names are discovered on
+  connect — you only ever type an address) or counts them, turns red when
+  every enabled hub is down, and totals queued outbound.
+- **The mailbox modal** adds: delivery-ladder glyphs on sent rows (▫ queued
+  · ✓ at the hub · ✓✓ delivered · green ✓✓ read — the tooltip calls out
+  "delivered but not yet read", the peer-is-down diagnostic); a **network
+  section** listing every mailserver with live status and the full roster of
+  client orgs on each (presence dots, fingerprint suffixes, blurbs); and a
+  **compose bar** — pick any recipient from the extern list and write as the
+  org, with staged attachments (disabled for the text-only @ext:/@mcp:
+  transports). Sending as the user bypasses the audience gate and grants
+  nothing.
+- **Audience-gated delivery** (all outside namespaces): inbound mail wakes
+  the org-inbox audience HOLDERS only. The first outside mail auto-grants
+  the senior top-level agent; **drag an agent onto the mailbox node** to
+  grant it the audience; holders are listed (and revoked) in the modal.
+- **The advanced modal is tabbed** — general · org type · mailserver ·
+  autonomy — on both the create form and the ⚙ settings. The mailserver tab
+  holds the org's network address, the reveal-once secret (losing it loses
+  the address), the local-hub checkbox, and per-hub rows; the autonomy tab
+  holds the per-org API key and **headless** mode. Both save immediately.
+- **Headless** paints every eye **grey and empty** — outline only, no
+  iris/pupil (nobody is looking) — adds a header chip, and auto-denies
+  user-bound asks; mail to the user is stored with a "no reply is coming"
+  note.
+
 ## Keyboard
 
 Enter confirms (hire, send) · Shift+Enter newline · Escape closes any panel,
