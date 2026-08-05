@@ -502,9 +502,12 @@ export function OrgInboxModal({ inbox, net, map, slug, toast, close, jumpTo }: O
 
 // ---- F-06: the user composes extern mail straight from the mailbox ----
 // recipients come from "the extern list": hub roster peers (@net:) plus every
-// past correspondent in the log, deduped. The user bypasses the audience gate
+// past correspondent in the log, deduped — plus a free-typed address (FR-07:
+// addressing must never require a live roster; the spool holds @net: mail
+// until the hub is reachable). The user bypasses the audience gate
 // (they outrank it); attachments stage first and are refused for the
 // text-only transports (@ext:/@mcp:) by the server with a clear message.
+const OTHER_ADDR = ' other'      // sentinel — no address can collide
 function ComposeBar({ slug, net, entries, toast }: {
   slug: string
   net?: TreePayload['net']
@@ -512,6 +515,10 @@ function ComposeBar({ slug, net, entries, toast }: {
   toast: ToastFn
 }) {
   const [to, setTo] = useState('')
+  // FR-07: a free-typed address — offline addressing must never be gated on
+  // a live roster; @net:<slug> needs only the slug string, and the spool
+  // holds the mail until the hub is back
+  const [freeTo, setFreeTo] = useState('')
   const [text, setText] = useState('')
   const [staged, setStaged] = useState<{ id: string; name: string }[]>([])
   const [busy, setBusy] = useState(false)
@@ -540,11 +547,12 @@ function ComposeBar({ slug, net, entries, toast }: {
     }
     return out
   })()
-  const attachable = to.startsWith('@net:') || to.startsWith('@org:')
+  const dest = to === OTHER_ADDR ? freeTo.trim() : to
+  const attachable = dest.startsWith('@net:') || dest.startsWith('@org:')
   const send = () => {
-    if (!to || !text.trim()) return
+    if (!dest || !text.trim()) return
     setBusy(true)
-    orgInboxSend(slug, to, text, staged.map((s) => s.id))
+    orgInboxSend(slug, dest, text, staged.map((s) => s.id))
       .then((r) => {
         toast(r.warnings.length ? r.warnings : ['sent — as the org, by you'])
         setText(''); setStaged([])
@@ -557,7 +565,12 @@ function ComposeBar({ slug, net, entries, toast }: {
       <select value={to} onChange={(e) => setTo(e.target.value)}>
         <option value="">write to…</option>
         {opts.map((o) => <option key={o.addr} value={o.addr}>{o.label}</option>)}
+        <option value={OTHER_ADDR}>other address…</option>
       </select>
+      {to === OTHER_ADDR && (
+        <input style={{ width: 200 }} placeholder="@net:slug / @org:slug / @ext:id"
+          value={freeTo} onChange={(e) => setFreeTo(e.target.value)} />
+      )}
       <input style={{ flex: 1, minWidth: 160 }} placeholder="message — goes out as the org, sent by you"
         value={text} onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } }} />
@@ -581,7 +594,7 @@ function ComposeBar({ slug, net, entries, toast }: {
         disabled={!attachable}
         onClick={() => fileRef.current?.click()}>
         <AttachIcon fontSize="inherit" /></button>
-      <button className="primary" disabled={busy || !to || !text.trim()}
+      <button className="primary" disabled={busy || !dest || !text.trim()}
         onClick={send}>send</button>
     </div>
   )
