@@ -425,6 +425,32 @@ def sec_names() -> None:
             assert "/" not in nm and "\\" not in nm and ".." not in nm, nm
             p = os.path.abspath(hubtool._id_path(nm))
             assert p.startswith(os.path.abspath(hubtool._ID_DIR) + os.sep), p
+    def _split_is_disclosed_not_prevented():
+        """What the three fixes did and did NOT do. The listener lock stops a
+        second LISTENER; `resumed` DISCLOSES a name that already exists. The
+        underlying property is unchanged and by design: one name is one
+        identity, so two MCP clients on that name still share one
+        deliver-once mailbox. Pinned so nobody later reads the fixes as
+        prevention."""
+        fresh_ident()
+        me = become("shared-desk")
+        become("shared-desk-sender")
+        hubtool.dispatch("hub_send", {"to": me, "body": "for whoever asks first"})
+        hubtool._CUR.clear()
+        become("shared-desk")                  # a second session, same name
+        out = json.loads(hubtool.dispatch("hub_read", {}))
+        assert [m["body"] for m in out["messages"]] == ["for whoever asks first"], (
+            "the residual changed shape — re-read the disclosure story")
+        # and the disclosure is what the second session gets instead
+        again = json.loads(hubtool.dispatch("hub_register", {"name": "shared-desk"}))
+        assert again.get("resumed"), (
+            "no `resumed` notice on a name that already existed — the "
+            "disclosure that replaced prevention is missing")
+    check("names · characterised: the mailbox split is DISCLOSED (`resumed`) "
+          "and listener-locked, not prevented — two MCP clients on one name "
+          "still share one deliver-once mailbox, by design",
+          _split_is_disclosed_not_prevented)
+
     check("names · a hostile name cannot escape hub-clients/ (the name is a "
           "FILENAME now, which it was not before the ruling)",
           _name_cannot_escape_the_identity_dir)
