@@ -3093,17 +3093,18 @@ class Org:
         1-entry batch; the batch form validates every entry (each needs its
         own question text; options/multi are per question, not per card)."""
         if questions is not None:
-            if not isinstance(questions, list) or not questions:
+            if not isinstance(questions, list) or not questions:   # pyright: ignore[reportUnnecessaryIsInstance]  # arrives as Any off the wire
                 raise LedgerError("questions must be a non-empty list of "
                                   "question objects (1–4)")
             if len(questions) > 4:
                 raise LedgerError("a batch carries at most 4 questions — "
                                   "split the rest into a follow-up ask")
             batch: list[dict[str, Any]] = []
-            for i, qd in enumerate(questions):
-                if not isinstance(qd, dict):
+            for i, qd_any in enumerate(questions):
+                if not isinstance(qd_any, dict):
                     raise LedgerError(f"questions[{i}] must be an object with "
                                       f"question text")
+                qd = cast("dict[str, Any]", qd_any)
                 qt = str(qd.get("question") or "").strip()
                 if not qt:
                     raise LedgerError(f"questions[{i}] needs question text")
@@ -3162,7 +3163,7 @@ class Org:
         n = self.node(nid)
         if n["parent"] is not None and not self._has_audience(nid, USER):
             sup = n["parent"]
-            parts = []
+            parts: list[str] = []
             for qd in batch:
                 p = str(qd.get("question"))
                 if qd.get("header"):
@@ -3211,6 +3212,66 @@ class Org:
                           "this turn: wrap up and end the turn. ⚠ If any other "
                           "mail wakes you first, the question is VOIDED and "
                           "must be re-asked."}
+
+    DOC_BODY_MAX = 65536          # FR-03: a plan, not a data dump
+
+    def present_document(self, nid: str, title: str, body: str,
+                         replaces: str | None = None) -> dict[str, Any]:
+        """FR-03 (user request 2026-08-05): present a DOCUMENT to the user —
+        a reading surface, not a download. A small card pops out beside the
+        agent's node; clicking it opens the markdown in-page. Non-blocking
+        (the present parks like an ask but nothing voids it — a document is
+        a standing artifact, not a pending question). `replaces` updates an
+        earlier presentation in place instead of stacking a second card."""
+        self._require_live(nid)
+        t = str(title or "").strip()[:120]
+        b = str(body or "")
+        if not t:
+            raise LedgerError("a title is required")
+        if not b.strip():
+            raise LedgerError("the document body is empty")
+        if len(b) > self.DOC_BODY_MAX:
+            raise LedgerError(
+                f"the document is {len(b)} bytes — over the 64 KB reading "
+                f"cap. Trim it, split it into parts, or hand the full file "
+                f"over with orgtree_send_file instead")
+        docs = self.d.setdefault("documents", [])
+        if replaces:
+            old = next((x for x in docs
+                        if x["id"] == replaces and x["node"] == nid), None)
+            if old is not None:
+                old.update({"title": t, "body": b, "at": now()})
+                self._log("present", nid, {"id": replaces, "replaced": True},
+                          [])
+                return {"presented": replaces,
+                        "status": "updated in place — the card and any open "
+                                  "reader now show this revision"}
+            # a dangling replaces falls through to a fresh card rather than
+            # erroring: the user may have dismissed the original meanwhile
+        did = "d" + uuid.uuid4().hex[:8]
+        docs.append({"id": did, "node": nid, "title": t, "body": b,
+                     "at": now()})
+        mine = [x for x in docs if x["node"] == nid]
+        for x in mine[:-10]:                  # newest 10 per node…
+            docs.remove(x)
+        del docs[:-100]                       # …100 org-wide
+        self._log("present", nid, {"id": did, "title": t[:60]}, [])
+        return {"presented": did,
+                "status": "the document is on the user's screen as a card "
+                          "beside your desk — non-blocking, keep working. "
+                          "Present again with replaces set to this id to "
+                          "update it in place."}
+
+    def dismiss_document(self, did: str) -> dict[str, Any]:
+        """The card's ✕ — the user removes a presented document."""
+        docs = self.d.get("documents", [])
+        doc = next((x for x in docs if x["id"] == did), None)
+        if doc is None:
+            raise LedgerError(f"no document {did!r}")
+        docs.remove(doc)
+        self._log("present_dismissed", USER,
+                  {"id": did, "node": doc["node"]}, [])
+        return {"node": doc["node"], "title": doc["title"]}
 
     def ask_dismiss(self, aid: str) -> dict[str, Any]:
         """The card's ✕ (mirrors AskUserQuestion's Esc/close): the user closes
@@ -3661,6 +3722,13 @@ class Org:
                 # F-04/F-05: the ask card this node's desk shows — open, or
                 # freshly nulled (the nulled card carries its reason)
                 "ask": self.node_ask(nid),
+                # FR-03: presented documents — METADATA only (the reader
+                # fetches the body on open; bodies are up to 64 KB and would
+                # bloat every tree payload)
+                "documents": [{"id": x["id"], "title": x["title"],
+                               "at": x["at"]}
+                              for x in self.d.get("documents", [])
+                              if x["node"] == nid] or None,
                 "bearer_state": n["bearer_state"],
                 "generation": n["generation"],
                 "children": [build(c) for c in self.org_children(nid)],

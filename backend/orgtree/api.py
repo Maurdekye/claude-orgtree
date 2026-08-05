@@ -1924,6 +1924,35 @@ async def credit_request_decide(slug: str, body: CreditDecision) -> dict[str, An
     return req
 
 
+@app.get("/api/orgs/{slug}/documents/{did}")
+def document_get(slug: str, did: str) -> dict[str, Any]:
+    """FR-03: the reader fetches the BODY on open (the tree payload carries
+    metadata only). Kiosk visitors are the user of their org — readable."""
+    try:
+        org = store.load_org(slug)
+    except LedgerError as e:
+        raise HTTPException(404, str(e))
+    doc = next((x for x in org.d.get("documents", []) if x["id"] == did), None)
+    if doc is None:
+        raise HTTPException(404, f"no document {did!r}")
+    return {"id": doc["id"], "node": doc["node"], "title": doc["title"],
+            "body": doc["body"], "at": doc["at"]}
+
+
+@app.delete("/api/orgs/{slug}/documents/{did}")
+async def document_dismiss(slug: str, did: str) -> dict[str, Any]:
+    """FR-03: the card's ✕ — remove a presented document."""
+    with store.DOC_LOCK:
+        try:
+            org = store.load_org(slug)
+            r = org.dismiss_document(did)
+        except LedgerError as e:
+            raise HTTPException(404, str(e))
+        store.save_org(org)
+    await hub.changed(slug)
+    return {"ok": True, "node": r["node"]}
+
+
 class AskAnswer(Body):
     # single card: the picked labels. FR-04 batch card: ONE item per tab,
     # positionally — a string, or a list for a multi tab's picks
@@ -2739,6 +2768,12 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                                       multi=bool(a.get("multi")),
                                       header=a.get("header"),
                                       questions=a.get("questions"))
+            elif body.tool == "orgtree_present":
+                # FR-03: a reading card beside the node — non-blocking
+                result = org.present_document(body.node,
+                                              a.get("title") or "",
+                                              a.get("body") or "",
+                                              a.get("replaces"))
                 # no user audience → the question rode to the superior as
                 # mail; drive them like any other delivery
                 routed = result.get("routed")

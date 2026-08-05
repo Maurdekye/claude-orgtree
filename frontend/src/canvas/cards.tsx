@@ -21,6 +21,7 @@ import type {
   Pt,
 } from './shared'
 import { Activity, ContextWheel, DeskChat } from './desk'
+import { DocChips } from './docs'
 import { DraftScopeModal } from './modals'
 
 // ------------------------------------------------------------- the overseer
@@ -660,6 +661,8 @@ interface NodeSquareProps {
   onConfig: () => void
   onInbox: () => void
   onLineage: () => void
+  /** FR-03: open a presented document in the in-page reader */
+  onOpenDoc?: (id: string) => void
   onRecenter?: () => void
   onJump?: (id: string) => void
   pub: boolean
@@ -678,7 +681,7 @@ interface NodeSquareProps {
 }
 
 export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, map, op, slug,
-  toast, pxc, zoom, onSpawn, onSpawnSide, onConfig, onInbox, onLineage,
+  toast, pxc, zoom, onSpawn, onSpawnSide, onConfig, onInbox, onLineage, onOpenDoc,
   onRecenter, onJump, pub, kioskRemaining, cascadeAlloc, maxTop, pile, compactAt, maxTier,
   onMailLink, onDragStart, onDragMove, onDragEnd, onDragCancel }: NodeSquareProps) {
   // pile fronts zoom on a plain CENTER click (user spec) — track the
@@ -832,6 +835,12 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, m
       {live && !node.isBearerOf && !node.bearer_state &&
         <SpawnChips onSpawn={onSpawn} free={kioskRemaining ?? Infinity} seats={seats}
           maxTier={maxTier} />}
+      {/* FR-03: presented documents pop out the card's side as small chips —
+          click opens the in-page reader. Not at desk zoom (world-scaled
+          chips blow up) and not on pile fronts (the side is the stack). */}
+      {!focused && !pile && (node.documents?.length ?? 0) > 0 && onOpenDoc && (
+        <DocChips docs={node.documents!} onOpen={onOpenDoc} />
+      )}
       {/* F-03: side chips hire a COWORKER — same superior, landing on that
           side. Not on pile/crowd fronts: the card's edges there are the
           stack's layers, and "the side of the agent" is not a free position. */}

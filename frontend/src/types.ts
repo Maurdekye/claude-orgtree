@@ -219,6 +219,8 @@ export interface TreeNode {
   /** F-04/F-05: the ask card this node's desk shows — open, or freshly
    *  nulled (ledger.node_ask; null once the linger window passes) */
   ask?: AskInfo | null
+  /** FR-03: presented documents (metadata; body via getDocument) */
+  documents?: { id: string; title: string; at: string }[] | null
 }
 
 /** 'thinking' | 'writing' | 'tool' — a string rather than a union for the same

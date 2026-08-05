@@ -75,6 +75,9 @@ export interface CanvasNode {
   activity?: ActivityInfo
   /** F-04/F-05: the ask card this node shows (ledger.node_ask) */
   ask?: AskInfo | null
+  /** FR-03: presented documents — metadata only; the reader fetches the
+   *  body on open */
+  documents?: { id: string; title: string; at: string }[] | null
   waiting?: boolean
   responding?: boolean
   phase?: string | null

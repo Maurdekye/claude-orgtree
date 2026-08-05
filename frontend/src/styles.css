@@ -707,6 +707,36 @@ main {
   font-weight: 600; color: var(--ink-strong);
   border-bottom: 2px solid var(--accent); padding-bottom: 3px; margin-bottom: -6px;
 }
+/* FR-03: presented documents — little cards popping out the node's side;
+   click opens the in-page reader. */
+.doc-chips {
+  position: absolute; left: calc(100% + 4px); top: 26px;
+  display: flex; flex-direction: column; gap: 3px; z-index: 2;
+  max-width: 150px;
+}
+.doc-chip {
+  display: flex; align-items: center; gap: 5px;
+  background: var(--panel); border: 1px solid var(--line);
+  border-left: 3px solid var(--accent); border-radius: 0 6px 6px 0;
+  color: var(--ink); font-size: 10.5px; padding: 3px 7px 3px 5px;
+  cursor: pointer; text-align: left; max-width: 100%;
+}
+.doc-chip:hover { border-color: var(--accent); color: var(--ink-strong); }
+.doc-chip-title {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.doc-reader { width: min(760px, 92vw); max-height: 86vh; display: flex;
+  flex-direction: column; }
+.doc-reader-head {
+  display: flex; align-items: center; gap: 7px;
+  border-bottom: 1px solid var(--line-soft); padding-bottom: 6px;
+}
+.doc-reader-head > button.dim {
+  background: none; border: 1px solid var(--line); border-radius: 5px;
+  padding: 2px 8px; cursor: pointer;
+}
+.doc-reader-body { overflow-y: auto; padding-top: 8px; min-height: 0; }
+
 /* FR-04: the batch's tab strip — the Claude Code batch-AskUserQuestion
    shape: short headers as tabs, active underlined, answered tabs wear a
    check so the user can see what's left before the single submit. */

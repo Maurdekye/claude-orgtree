@@ -158,6 +158,33 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "orgtree_present",
+        "description": (
+            "Present a DOCUMENT to the user for in-page reading — a plan, a "
+            "proposal, a report. A small card appears beside your node; "
+            "clicking it opens the markdown in a reader. This is a READING "
+            "surface, not a download (use orgtree_send_file for files). "
+            "Non-blocking: nothing voids it and no reply is implied — keep "
+            "working. Body is markdown, ≤64 KB. Present again with "
+            "`replaces` set to the returned id to update the same card in "
+            "place instead of stacking a second one (newest 10 per agent "
+            "are kept)."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string",
+                          "description": "short document title (the card "
+                                         "label)"},
+                "body": {"type": "string",
+                         "description": "the document, as markdown (≤64 KB)"},
+                "replaces": {"type": "string",
+                             "description": "id of an earlier presentation "
+                                            "to update in place"},
+            },
+            "required": ["title", "body"],
+        },
+    },
+    {
         "name": "orgtree_request_credits",
         "description": (
             "Ask the user directly for a larger credit grant — allowed for "

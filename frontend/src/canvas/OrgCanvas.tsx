@@ -21,6 +21,7 @@ import type {
   OpFn, Pile, Pt, Seg, Spring, StreamEvent, View,
 } from './shared'
 import { Activity, ContextWheel, LineagePanel } from './desk'
+import { DocReader } from './docs'
 import { NodeInboxModal, OrgInboxModal } from './mail'
 import { NodeConfig, PilePicker, UserConfig } from './modals'
 import { DraftNode, NodeSquare, UserNode } from './cards'
@@ -39,6 +40,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
   const [draft, setDraft] = useState<DraftState | null>(null)
   const [configId, setConfigId] = useState<string | null>(null)
   const [lineageId, setLineageId] = useState<string | null>(null)
+  const [docView, setDocView] = useState<string | null>(null)   // FR-03 reader
   const [userCfg, setUserCfg] = useState(false)
   const [trayOpen, setTrayOpen] = useState(false)   // the flat agent tray
   const [trayQ, setTrayQ] = useState('')            // №26: tray name filter
@@ -1125,6 +1127,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
               onSpawnSide={(t, side) => spawnBeside(n, t, side)}
               onConfig={() => setConfigId(n.id)}
               onInbox={() => setInboxId(n.id)} onLineage={() => setLineageId(n.id)}
+              onOpenDoc={setDocView}
               onMailLink={openMail}
               onRecenter={() => centerOn(n.id)}   /* recenter AND re-zoom to fill */
               onJump={centerOn}                   /* F-01 nav chips */
@@ -1315,6 +1318,10 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
       {lineageId && map.get(lineageId) && (
         <LineagePanel node={map.get(lineageId)!} op={op} slug={slug}
           close={() => setLineageId(null)} />
+      )}
+      {docView && (
+        <DocReader slug={slug} docId={docView} toast={toast}
+          close={() => setDocView(null)} />
       )}
       {userCfg && (
         <UserConfig tree={tree} slug={slug} toast={toast}
