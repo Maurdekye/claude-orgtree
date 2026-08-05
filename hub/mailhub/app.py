@@ -528,14 +528,23 @@ async def ui_messages(org: str = "", client: str = "",
             def _of(slug: str) -> str:
                 parts = str(slug).split(".")
                 return parts[1] if len(parts) > 2 else ""
-            like = f"%.{client}.%"
+            # escape LIKE metacharacters (redteam §11b): an unescaped '%'
+            # made the prefilter match everything while the exact check
+            # matched nothing, so the loop paged the whole table — the
+            # unbounded walk §11 removed, back on a query parameter. And
+            # real usernames contain '_' (a single-char wildcard), so this
+            # is live-query correctness, not hygiene.
+            lit = (client.replace("\\", "\\\\")
+                         .replace("%", "\\%").replace("_", "\\_"))
+            like = f"%.{lit}.%"
             hits: list[Any] = []
             off = 0
             batch = max(limit, 100)
             while len(hits) < limit:
                 page = con.execute(
                     "SELECT * FROM messages "
-                    "WHERE from_slug LIKE ? OR to_slug LIKE ? "
+                    "WHERE from_slug LIKE ? ESCAPE '\\' "
+                    "OR to_slug LIKE ? ESCAPE '\\' "
                     "ORDER BY received_at DESC, rowid DESC LIMIT ? OFFSET ?",
                     (like, like, batch, off)).fetchall()
                 if not page:

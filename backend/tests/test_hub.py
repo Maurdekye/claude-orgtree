@@ -1016,6 +1016,89 @@ def sec_client_filter() -> None:
           "neighbours", _the_narrowing_read_is_bounded)
 
 
+# ==================================================================== §11b
+def sec_client_filter_paging() -> None:
+    """The §11 fix pages a parameterised LIKE prefilter. Two questions follow
+    any prefilter: does it still find everything it should (paging must not
+    stop early), and can the caller make the prefilter useless again."""
+    print("\n§11b  the paged prefilter — completeness and the wildcard")
+
+    def _pages_past_a_full_page_of_misses():
+        """The under-delivery shape: the matches are OLDER than a whole page
+        of other clients' traffic, so a single LIMIT would return nothing."""
+        target = f"grp{secrets.token_hex(2)}"
+        me = (f"old.{target}.aaaaaa", secrets.token_hex(16))
+        req("POST", "/api/register", auth=pair(*me),
+            json_body={"slug": me[0], "org_name": "Old", "username": target})
+        sender = new_org()
+        for i in range(3):
+            send(sender, me[0], f"early {i}")           # the oldest traffic
+        for i in range(150):                            # a page-plus of noise
+            a, b = new_org(), new_org()
+            send(a, b[0], f"noise {i}")
+        j = req("GET", "/ui/messages",
+                params={"client": target, "limit": 3}).json()
+        bodies = [m["body"] for m in j["messages"]]
+        assert len(bodies) == 3, (
+            f"the filter returned {len(bodies)} of 3 existing matches — "
+            "paging stopped before reaching them")
+        assert set(bodies) == {"early 0", "early 1", "early 2"}, bodies
+    check("paging · matches buried behind a full page of other clients' mail "
+          "are still delivered (no under-delivery)", _pages_past_a_full_page_of_misses)
+
+    def _newest_first_across_pages():
+        target = f"ord{secrets.token_hex(2)}"
+        me = (f"o.{target}.bbbbbb", secrets.token_hex(16))
+        req("POST", "/api/register", auth=pair(*me),
+            json_body={"slug": me[0], "org_name": "Ord", "username": target})
+        sender = new_org()
+        for i in range(5):
+            send(sender, me[0], f"m{i}")
+        j = req("GET", "/ui/messages",
+                params={"client": target, "limit": 3}).json()
+        assert [m["body"] for m in j["messages"]] == ["m4", "m3", "m2"], j
+    check("paging · the newest-first order survives the paging", _newest_first_across_pages)
+
+    def _wildcard_name_cannot_force_a_full_walk():
+        """A LIKE metacharacter in the name makes the prefilter match
+        everything while the exact Python check matches nothing — so the loop
+        pages the entire table looking for rows that cannot exist."""
+        rows_before = len(rows("SELECT id FROM messages"))
+        assert rows_before > 150, rows_before      # the fixtures above
+        seen: list[int] = []
+        real = db.connect
+
+        class Recording:
+            def __init__(self, con): self._c = con
+
+            def execute(self, sql, args=()):
+                cur = self._c.execute(sql, args)
+                if "LIKE" in str(sql).upper():
+                    seen.append(1)
+                return cur
+
+            def __getattr__(self, n):
+                return getattr(self._c, n)
+
+        db.connect = lambda: Recording(real())          # type: ignore[assignment]
+        try:
+            r = req("GET", "/ui/messages", params={"client": "%", "limit": 5})
+        finally:
+            db.connect = real                           # type: ignore[assignment]
+        assert r.status_code == 200 and r.json()["messages"] == []
+        assert len(seen) <= 1, (
+            f"a client name of '%' made the prefilter match everything and "
+            f"the loop paged the whole table ({len(seen)} pages) to return "
+            f"nothing — the unbounded walk is back, on a query parameter")
+    # promoted from gap() 2026-08-05, fixed same day: %, _ and the escape
+    # character are escaped and the clause carries ESCAPE '\' — a wildcard
+    # name now prefilter-matches nothing (one page, empty result), and
+    # underscore usernames stop over-matching in production
+    check("wildcard · a LIKE metacharacter in the client name cannot "
+          "re-create the unbounded walk",
+          _wildcard_name_cannot_force_a_full_walk)
+
+
 def main() -> int:
     print("orgtree · the mail hub (F-06 Phase B)")
     sec_register()
@@ -1029,6 +1112,7 @@ def main() -> int:
     sec_ui()
     sec_public_face()
     sec_client_filter()
+    sec_client_filter_paging()
 
     print()
     if GAPS:
