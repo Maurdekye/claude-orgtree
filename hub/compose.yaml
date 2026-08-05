@@ -7,11 +7,17 @@ services:
                                      # `systemctl enable docker` on Linux)
     ports:
       - "7370:7370"
+      # FR-10: the PUBLIC listener (API-only — no UI, no /). Inert unless
+      # HUB_PUBLIC is set; tunnel THIS host port, never 7370 (the full port
+      # serves the unauthenticated all-mail UI).
+      - "${HUB_PUBLIC_HOST_PORT:-7378}:7371"
     environment:
       # the hub's NAME — discovered by clients on connect, shown in their UI
       # and the hub's own header. Defaults to the container hostname if unset.
       HUB_NAME: ${HUB_NAME:-}
       HUB_RETENTION_DAYS: ${HUB_RETENTION_DAYS:-30}
+      # set to 1 to serve the API-only public listener on 7371 (FR-10)
+      HUB_PUBLIC: ${HUB_PUBLIC:-}
     volumes:
       - orgtree-hub-data:/data
     healthcheck:
