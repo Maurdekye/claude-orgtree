@@ -122,7 +122,10 @@ Groundwork:
 > replies inline in the mailbox should be attributed to the mail they're replying to, so the agent
 > knows the context
 
-*(user request 2026-08-05, recorded by the explorer. NOT BUILT.)*
+*(user request 2026-08-05, recorded by the explorer. **SHIPPED (`5e2319b`, deployed)** — replies
+carry a sanitized snapshot `{id, from, at, gist(200)}`, rendered as an "IN REPLY TO" line in the
+recipient's recital, wired through the user-facing reply flow. This resolves the open question
+below in favor of the inline-quote option, not the bare-id option.)*
 
 **Confirmed gap, not just a hunch — traced the actual reply path.** A reply typed in the mail
 reading pane reaches the agent completely unlinked from what it replied to:
@@ -164,9 +167,12 @@ a lookup onto every agent for something the UI already has on screen.
 *(user request 2026-08-05, recorded by the explorer. Explicitly framed by the user as an addition
 to F-06 — the mailserver wave the implementer has in flight right now, not a standalone feature.
 Flagged directly to the implementer over chatq the same day, given the timing below.
-**PICKED UP + SHIPPED same day (`a4d9b83`)** — normative record is `DECISIONS.md` **D-099**, an
-explicit user reversal of the §12 ruling exactly as flagged below; identity ended up being a new
-per-user-profile UID rather than piggybacking on an org's, and the dial-out security model (§1,
+**PICKED UP + SHIPPED same day, then HARDENED (`a4d9b83` + `693f38e`)** — the second commit adds
+`O_EXCL`-safe identity minting, a name-length budget, seen-ring dedupe, and `0600` permissions on
+the client identity file, plus a committed redteam suite. Normative record is `DECISIONS.md`
+**D-099**, an explicit user reversal of the §12 ruling exactly as flagged below; identity ended up
+being a new per-user-profile UID rather than piggybacking on an org's, and the dial-out security
+model (§1,
 also flagged below) held: "the chat polls the hub, nothing reaches in." Not restated here — see
 D-099 for the normative ruling.)*
 
@@ -243,3 +249,128 @@ historical record of who it has corresponded with — so the natural answer is "
 just don't gate the recipient picker on a live hub call" — but that is an implementation detail
 worth stating rather than assuming, since it is exactly the kind of gate that gets added by
 accident (e.g., an autocomplete that only populates from a live `orgtree_list_orgs` response).
+
+---
+
+### FR-08 · align every external mail interface on send + Monitor-armable listen, like chatq
+> log the intent to align all external mail interfaces along the same throughline: send + monitor
+> that yields a wake on every received mail, same as chatq, for connections to specific orgs or to
+> mailservers
+
+*(user request 2026-08-05, recorded by the curator. Direct follow-on from a question about whether
+`externtool.py` already had this — traced the code and confirmed it doesn't.)*
+
+**The asymmetry, precisely.** Three "send mail from outside a Claude Code session" interfaces exist
+today; only two of the three match the throughline:
+
+| interface | reaches | send | monitor / listen |
+|---|---|---|---|
+| chatq | another chat on this machine | `send.sh` | `listen.sh`, Monitor-armable — the reference model |
+| `hub/hubtool.py` | the mailserver hub (any org or chat on it) | `hub_send` (MCP tool) | **`python hub/hubtool.py listen`** — standalone CLI mode, Monitor-armable |
+| `backend/orgtree/externtool.py` | one specific local org | `orgtree_send` (MCP tool) | **none.** Only `orgtree_wait`, an MCP tool with a 300s ceiling, callable solely from inside an agent's own turn — not a standing listener |
+
+**Groundwork — this looks buildable, not just wished-for.** `hubtool.py`'s `listen()`
+(`hub/hubtool.py:195-210`) is a ~15-line reference: register once, then loop `poll(25.0)` →
+`take_fresh()` (dedupe against a persisted seen-id ring in the identity file) → print one `fmt()`
+line per fresh message, `flush=True` → on any exception, sleep 5s and retry. Entry point is a plain
+`sys.argv[1] == "listen"` branch (`hubtool.py:312-315`) alongside the existing MCP-server `serve()`.
+
+`externtool.py` already has everything this needs *except* the standalone entry point:
+- Its `orgtree_wait` tool (`externtool.py:227-237`) already long-polls in bounded slices against
+  `/api/extern/{peer}/wait` — the exact primitive `hubtool.py`'s `poll()` plays.
+- Its wait/read responses already carry a `cursor` for exactly-once delivery (see the tool
+  descriptions at `externtool.py:116-153`) — meaning externtool.py may not even need `hubtool.py`'s
+  seen-id ring; the dedup problem looks already solved at the API level, just never exposed as a
+  standing loop.
+- What's missing is purely the standalone mode: `main()` (`externtool.py:250-283`) only implements
+  the MCP stdio loop, with no `sys.argv` handling at all.
+
+So the shape of the fix: add a `listen()` that loops the existing wait call directly (bypassing the
+MCP tool-call wrapper), formats one line per message, and add the same `sys.argv[1] == "listen"`
+branch `hubtool.py` uses. One asymmetry worth a ruling, not a silent assumption: `hubtool.py`'s
+listen refuses to start with "no identity yet — run hub_register with a name first"; externtool's
+identity is auto-generated at import (`peer_id()`, `externtool.py:40-71`), so an externtool
+`listen` mode has no equivalent upfront gate to replicate — probably correct, since there's no
+name-choice step to wait for, but worth stating rather than silently diverging.
+
+**Scope, per the user's own framing:** "for connections to specific orgs or to mailservers" is
+`externtool.py` (org) and `hubtool.py` (mailserver, already aligned) specifically — not
+`@org:`/`@ext:` (agent-to-agent, and chatq itself, already the reference model rather than a gap)
+and not `mcptool.py` (orgtree's *internal* per-agent server, not an outside-facing interface at
+all).
+
+---
+
+### FR-09 · long-term intent: fully replace chatq with orgtree's mailserver system
+> record the intent to eventually fully replace chatq with orgtree's mailserver system
+
+*(user-stated intent, 2026-08-05, recorded by the curator. Not a build spec — a stated direction to
+keep on record, not something to scope or start on its own say-so.)*
+
+**Already on the record once, less definitely.** `DECISIONS.md` **D-099** named this in passing
+when ruling FR-06: the `hubtool.py` client uses "the chatq delivery shape over the hub, which is
+what makes this a candidate END-TO-END CHATQ REPLACEMENT (user's framing; migration is its own
+future decision)." Today's message is the same intent stated plainly on its own, rather than left
+sitting inside a different entry's parenthetical where it's easy to miss.
+
+**What would actually have to be true first, going by what's built vs. not today:**
+- **FR-08** (immediately above) closes the capability gap this depends on — a `listen` mode for
+  direct org connections (`externtool.py`), matching what `hubtool.py` already has for the hub.
+  Without it, "replace chatq" would leave direct-to-org connections with a *worse* interface than
+  chatq gives them today, which is a regression dressed as a migration.
+- chatq's own SessionStart-hook auto-registration (`~/.claude/chatq/bin/session-start.sh` on this
+  machine — a real, working example, not a proposal) has no orgtree equivalent yet. Suggested as a
+  documented pattern in `docs/setup-guide.md` §1/§3 alongside this entry; a full replacement needs
+  it to be as close to zero-configuration as chatq already is, not a manual step users skip.
+- chatq is cross-session on **one machine**, no server process required. The mailserver is a
+  **separate Docker service** someone has to run and explicitly trust (`hub/README.md`'s trust-model
+  section — the hub sees every message in plaintext). "Replace" could mean the hub becomes a
+  near-invisible local default, or it could mean the two systems keep coexisting for the pure local
+  case and only the cross-machine/external case actually migrates. Those are different-sized
+  commitments and worth deciding as its own question when this is actually scoped.
+
+Not scoping a build here. This entry exists so the *direction* FR-08 and the hook-pattern
+suggestion both serve doesn't get lost — the two are steps toward this, not this itself.
+
+**Sharpened same day, in the user's own words:** *"eventually we will simply uninstall chatq
+entirely."* Not a hedge — stated as the literal endpoint, not just a capability migration. Doesn't
+change the three prerequisites above, but it does settle one of the open questions in the third
+bullet: "uninstall entirely" reads as the mailserver becoming a full replacement rather than the
+two systems permanently coexisting for the local-only case.
+
+---
+
+### FR-10 · expose the mailserver hub publicly through the same cloudflared tunnel as kiosks
+> new feature, allow mailservers to be exposed publicly through the same cloudflared reverse proxy
+> system
+
+*(user request 2026-08-05, recorded by the curator. Related to FR-09's replace-chatq direction —
+a publicly-reachable hub is a precondition for orgtree mail working the way chatq works today,
+where reachability has never required a private network.)*
+
+**Mechanically close, but not a safe drop-in — one real security wrinkle.** `expose.ps1`
+(documented in `docs/setup-guide.md` §2) downloads `cloudflared` once and runs `cloudflared tunnel
+--url http://localhost:<port>`, capturing the resulting `*.trycloudflare.com` URL. Pointing that
+same mechanism at the hub's port (`7370`) instead of the kiosk public port (`7361`) would work
+mechanically — but the two ports serve very different things behind them:
+
+- The kiosk public listener (`PublicGateway`, `api.py:241-244`) resolves **only**
+  `/k/<token>` and 404s everything else — no org list, no discovery, safe by construction to tunnel
+  raw.
+- The hub's port `7370` serves the **whole hub**, including `/` — per `hub/README.md`'s own trust
+  model: *"The web UI at `/` is read-only and unauthenticated: it shows all traffic across every
+  org... Hub access IS read access to everyone's correspondence... do not expose the hub outside
+  the network you trust."* A blind tunnel of `7370` makes that unauthenticated, all-orgs mail log
+  reachable by anyone who finds the tunnel URL — a materially bigger exposure than a kiosk's
+  scoped, token-gated link.
+
+**The actual design question, not a reason to say no:** does "expose the hub publicly" mean
+accepting the UI exposure as the tradeoff (a genuinely public, open collaborative hub — maybe fine,
+maybe even the point, for some deployments), or does it mean the hub needs its own
+`PublicGateway`-equivalent — a route split that tunnels `/api/*` (already per-org-secret-gated) for
+remote registration and mail exchange while keeping `/` off the public listener? The two are
+different amounts of work: the first is close to "just run `expose.ps1` against port 7370"; the
+second needs a real change in `hub/`'s own server, mirroring the split orgtree's own admin app
+already makes between its loopback-only admin surface and the public kiosk gateway.
+
+Not decided here — flagging the wrinkle is the point, not picking a side.
