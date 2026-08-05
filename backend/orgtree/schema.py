@@ -220,6 +220,10 @@ MailEntry = TypedDict("MailEntry", {
     "retracted": NotRequired[bool],   # api node_mail_retract tombstones in place
     "net_id": NotRequired[str],       # F-06: hub message id — _confirm_delivered
                                       # turns it into a READ receipt
+    "reply_to": NotRequired[dict[str, Any]],  # FR-05: SNAPSHOT of the mail
+                                      # this replies to ({id, from, at, gist}
+                                      # captured at send — quoted by
+                                      # _mail_block; no lookup needed)
 })
 
 

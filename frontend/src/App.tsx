@@ -1133,7 +1133,14 @@ function InboxPanel({ slug, tree, toast, refresh, close, jumpTo }: {
                     // showed nothing at all until the server copy landed.
                     // Same store, same graduation-on-evidence rule.
                     addPending(slug, m.from, text)
-                    return sendMessage(slug, m.from, text)
+                    // FR-05: the reply is attributed to the mail it answers —
+                    // the agent's [MAIL] block quotes the snapshot, so a
+                    // two-word reply is unambiguous
+                    return sendMessage(slug, m.from, text, undefined, {
+                      id: m.id, from: m.from, at: m.at,
+                      gist: (m.body ?? '').trim().replace(/\s+/g, ' ')
+                        .slice(0, 200),
+                    })
                       .then(() => toast([`sent to ${m.from}`]))
                       .catch((e: Error) => {
                         dropPending(slug, m.from, text)

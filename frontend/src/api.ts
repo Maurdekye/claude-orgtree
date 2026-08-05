@@ -234,12 +234,15 @@ export const fileUrl = (slug: string, nid: string, path: string): string =>
   u(`/api/orgs/${slug}/nodes/${nid}/file?path=${encodeURIComponent(path)}`)
 export const sendMessage = (
   slug: string, nid: string, text: string, attachments?: string[],
+  replyTo?: { id?: string; from: string; at?: string; gist: string },
 ): Promise<SendMessageResult> =>
   req(`/api/orgs/${slug}/nodes/${nid}/message`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text,
-      ...(attachments?.length ? { attachments } : {}) }),
+      ...(attachments?.length ? { attachments } : {}),
+      // FR-05: an inline mailbox reply carries a snapshot of what it answers
+      ...(replyTo ? { reply_to: replyTo } : {}) }),
   })
 export const saveSettings = (slug: string, opts: SettingsRequest = {}): Promise<SettingsResult> =>
   req(`/api/orgs/${slug}/settings`, {

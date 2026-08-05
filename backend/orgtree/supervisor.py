@@ -1139,8 +1139,16 @@ def _mail_block(mail: list[MailEntry]) -> str:
         tag = " ⚠ THE USER — user instructions outrank your chain" \
             if m["from"] == USER else ""
         b = (f"FROM {m['from']} ({m.get('relationship', 'agent')}"
-             f"{tag}) · {m.get('kind', 'message')} · {m['at']}\n"
-             f"{m['body']}")
+             f"{tag}) · {m.get('kind', 'message')} · {m['at']}")
+        rt = m.get("reply_to")
+        if rt:
+            # FR-05: an inline mailbox reply carries a SNAPSHOT of what it
+            # answers (id/from/at/gist, captured at send — no lookup, no
+            # dependence on the original still existing), quoted here so a
+            # two-word reply like "do it" is unambiguous to the agent
+            b += (f"\n↩ IN REPLY TO your message of {rt.get('at')}: "
+                  f"“{rt.get('gist')}”")
+        b += f"\n{m['body']}"
         for a in m.get("attachments") or []:
             # the file already sits in the recipient's uploads/ (its cwd)
             nb = int(a.get("bytes") or 0)

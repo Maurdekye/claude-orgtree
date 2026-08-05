@@ -1637,6 +1637,9 @@ class Message(Body):
     # relative uploads/ paths already landed via the upload endpoint — the
     # composer stages them and sends them WITH the mail (user spec 2026-07-31)
     attachments: list[str] = []
+    # FR-05: when this is an inline mailbox REPLY, a snapshot of the mail it
+    # answers ({id, from, at, gist}) — quoted in the agent's [MAIL] block
+    reply_to: dict[str, Any] | None = None
 
 
 @app.post("/api/orgs/{slug}/nodes/{nid}/message")
@@ -1745,7 +1748,8 @@ def node_message(slug: str, nid: str, body: Message) -> dict[str, Any]:
     with store.DOC_LOCK:
         try:
             org = store.load_org(slug)
-            r = org.post_mail(USER, nid, body.text, attachments=metas or None)
+            r = org.post_mail(USER, nid, body.text, attachments=metas or None,
+                              reply_to=body.reply_to)
             # 80 chars truncated most instructions mid-clause; the notice is a
             # gist, but it has to survive being read on its own
             org.user_deep_reach(nid, body.text.strip().splitlines()[0][:160])

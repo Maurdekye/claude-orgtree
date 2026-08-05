@@ -115,3 +115,131 @@ Groundwork:
   non-skipped tab has a selection or free text.
 
 → moved from `docs/interim-docket.md` F-11, 2026-08-05, by the explorer on the user's instruction.
+
+---
+
+### FR-05 · attribute inline mailbox replies to the mail they're replying to
+> replies inline in the mailbox should be attributed to the mail they're replying to, so the agent
+> knows the context
+
+*(user request 2026-08-05, recorded by the explorer. NOT BUILT.)*
+
+**Confirmed gap, not just a hunch — traced the actual reply path.** A reply typed in the mail
+reading pane reaches the agent completely unlinked from what it replied to:
+- Frontend: `MailList.onReply(m, text)` (`frontend/src/canvas/mail.tsx:35`) receives the full mail
+  `m` being replied to, but its wiring in `App.tsx:1128-1140` keeps only `m.from` and drops the
+  rest — the reply goes out as `sendMessage(slug, m.from, text)`, indistinguishable from a fresh
+  compose to that agent.
+- Backend: `Org.post_mail(sender, to, body, kind, attachments)` (`backend/orgtree/ledger.py:870`)
+  has no reply-linkage parameter, and `MailEntry` (`backend/orgtree/schema.py:211`) has no
+  `reply_to`/`in_reply_to` field — its keys are `id, from, kind, body, at, relationship,
+  attachments, delivering, retracted, net_id`; nothing points at another mail.
+- What the agent actually reads: `_mail_block()` (`backend/orgtree/supervisor.py:1133` — "the one
+  [MAIL] formatter", used by both the turn-envelope and turn-start paths) renders each mail as
+  `FROM {sender} ({relationship}) · {kind} · {at}\n{body}`. No back-reference at all — an agent
+  reading a two-word reply like "do it" has no way to know which of its own prior sends that
+  answers.
+
+**Adjacent, already-flagged concern worth reading together.** The F-06 mailserver spec
+(`docs/mailserver-spec.md`) already calls for an optional `thread_id` on the *external* hub message
+envelope and says plainly: "unused it costs nothing; it cannot be retrofitted into mail already
+stored without it." That was scoped to org-to-org mail over the hub; this request is the same shape
+of gap one level in, for mail between an agent and whoever it talks to locally (the user, a
+superior, a subordinate, a sibling). Worth deciding once whether a single `reply_to`/`thread_id`
+field on `MailEntry` should serve both, rather than solving the same problem twice under two names.
+
+**Open question for whoever builds it (not decided here):** does attribution mean a bare
+`reply_to: <mail id>` that `_mail_block` resolves and quotes back inline for the agent, or does the
+id just ride along for the agent to look up itself if it needs to? The former costs more at render
+time and needs the original mail to still be reachable (retracted/expired mail?); the latter pushes
+a lookup onto every agent for something the UI already has on screen.
+
+---
+
+### FR-06 · mailserver addition — independent chats reach the hub directly via mcp/chatq
+> mailserver addition: independent chats should be able to send and receive mail directly from it
+> via mcp / chatq, same as they can send / receive directly to and from an org via the same
+> channels
+
+*(user request 2026-08-05, recorded by the explorer. Explicitly framed by the user as an addition
+to F-06 — the mailserver wave the implementer has in flight right now, not a standalone feature.
+Flagged directly to the implementer over chatq the same day, given the timing below.
+**PICKED UP + SHIPPED same day (`a4d9b83`)** — normative record is `DECISIONS.md` **D-099**, an
+explicit user reversal of the §12 ruling exactly as flagged below; identity ended up being a new
+per-user-profile UID rather than piggybacking on an org's, and the dial-out security model (§1,
+also flagged below) held: "the chat polls the hub, nothing reaches in." Not restated here — see
+D-099 for the normative ruling.)*
+
+⚠ **This reopens a ruling closed the day before.** `docs/mailserver-spec.md` §12 lists, as CLOSED
+2026-08-04: *"scope | **strictly org-to-org** — the hub does not relay `@ext:`/`@mcp:`."* Today's
+request asks for exactly that relay. Not raised as an objection — rulings get revised — but
+whoever picks this up should treat it as an explicit reversal, not a blank slate: phases A
+(hub identity, `90b5fa9`) and B (hub, `b584577`) are already built against the narrower scope, and
+C0/C are uncommitted in the implementer's working tree as of this entry.
+
+**What "same channels" means today** (`docs/mailserver-spec.md` §2's namespace table):
+
+| namespace | who | transport today |
+|---|---|---|
+| `@ext:<chat>` | a Claude Code session on this machine | chatq files, 3s poll |
+| `@org:<slug>` | another org in this instance | direct call |
+| `@mcp:<peer>` | an outside session polling us | the peer pulls (`externtool.py`) |
+| `@net:<slug>` | an org on another machine | the hub (F-06, in flight) |
+
+`@ext:`/`@mcp:` today reach a **specific local org on this one instance** — the bridge is
+instance-local (`deliver_org_inbox`, `supervisor.py:2415`). This request is a **fifth**
+reachability shape: an independent chat or MCP peer talking to **the hub itself**, presumably to
+reach any org registered on it, not only orgs on the requester's own instance.
+
+**The concrete gap: the hub's identity model is org-shaped, not chat-shaped.** §3's self-issued
+secret (`secret → sha256 fingerprint → org.username.fingerprint[:6]` slug) is minted **at org
+creation** — there is no equivalent identity for a bare chatq chat or an `@mcp:` peer that isn't
+itself part of an org. Whoever builds this needs either a new hub-level identity for non-org
+clients, or a design where the independent chat authenticates *as*, or *through*, an org it can
+already reach locally.
+
+**Also worth reconciling explicitly against §1's stated security model:** *"resist any later
+feature that needs the hub to reach into an instance... the direction of the connection is the
+security model."* The existing bridges are pull-based — an instance polls chatq, or lets a peer
+poll it. Whether "independent chats reach the hub directly" preserves that shape (the chat/peer
+polls the hub) or requires the hub to push somewhere is the detail that decides whether this fits
+the existing model or cuts against it.
+
+---
+
+### FR-07 · outbound mail to the mailserver survives a disconnect and sends on reconnect
+> additional feature: if a mailserver was previously registered, but is currently disconnected,
+> then mails may still be sent to its historical remembered list of recipients: as soon as the
+> reconnection occurs, and the recipients are available, immediately send the mail.
+
+*(user request 2026-08-05, recorded by the explorer. Another F-06/mailserver addition — unlike
+FR-06, this one does not reopen anything closed; see below.)*
+
+**Good news: this is almost exactly what's already speced, end to end.** Cross-referencing rather
+than treating it as new design — `docs/mailserver-spec.md` already plans the full chain being
+asked for:
+- **§4, outbound spool.** *"Outbound needs a local spool, which today's code has no equivalent
+  of."* A send to `@net:` writes to a local spool instantly (never blocks on the network); a
+  background sender drains it with backoff once the hub is reachable again, and the org inbox's
+  outbound entry gets a real `queued → sent → delivered` state instead of today's unconditional
+  "out".
+- **The hub's own per-org queue** (§2: *"the hub holds a queue per registered org"*). The sender's
+  spool only needs the HUB reachable to hand off (state → `sent`); the hub then holds the message
+  for the recipient regardless of whether that recipient happens to be online at that exact moment.
+- **§5, auto-drive on the recipient's reconnect.** Mirrors this from the other side —
+  `reconcile()`'s drain-on-start pass delivers and drives on the recipient's own next connect,
+  ruled `auto` for v1. This is the "as soon as … recipients are available, immediately send" half,
+  already the default behavior.
+
+Sender-reconnect (§4) + the hub's queue (§2) + recipient-reconnect auto-drive (§5) already compose
+into exactly the behavior asked for. Nothing here should need building twice.
+
+**The one piece that may genuinely be missing: offline ADDRESSING, not offline sending.** The
+spec's roster/presence machinery (§6 — `orgtree_list_orgs` extended with `online`/`last_seen`)
+reads as a **live hub query**. Worth confirming explicitly that composing a NEW message to a
+previously-known `@net:` peer does not require a live roster fetch to succeed while disconnected.
+`@net:<slug>` addressing itself needs only the slug string, and the org's own mail log already IS a
+historical record of who it has corresponded with — so the natural answer is "no new cache needed,
+just don't gate the recipient picker on a live hub call" — but that is an implementation detail
+worth stating rather than assuming, since it is exactly the kind of gate that gets added by
+accident (e.g., an autocomplete that only populates from a live `orgtree_list_orgs` response).

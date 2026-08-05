@@ -868,7 +868,8 @@ class Org:
         return to
 
     def post_mail(self, sender: str, to: str, body: str, kind: str = "message",
-                  attachments: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+                  attachments: list[dict[str, Any]] | None = None,
+                  reply_to: dict[str, Any] | None = None) -> dict[str, Any]:
         """Agent-to-agent (or agent-to-user) mail under the §7.2 addressing rules:
         downward any depth (deep reach implicitly grants the recipient an audience),
         one hop up, siblings, held audiences. Everything else is refused with the
@@ -999,6 +1000,16 @@ class Org:
             # bytes already landed in its uploads/); the envelope announces
             # each one at delivery
             entry["attachments"] = list(attachments)[:10]
+        if reply_to and reply_to.get("gist"):
+            # FR-05: a sanitized SNAPSHOT of the mail being replied to —
+            # captured at send so the quote never depends on the original
+            # still existing (retraction, archive caps)
+            entry["reply_to"] = {
+                "id": str(reply_to.get("id") or "")[:16],
+                "from": str(reply_to.get("from") or "")[:64],
+                "at": str(reply_to.get("at") or "")[:32],
+                "gist": str(reply_to.get("gist") or "")[:200],
+            }
         box.setdefault(to, []).append(entry)
         # full-body archive for the node's inbox view (the event log keeps only
         # a gist) — capped per node
