@@ -1257,40 +1257,39 @@ def sec_hub_choice() -> None:
             f"this message will be offered to a hub that has never heard of "
             f"it (422, retried forever) while the hub that CAN deliver it is "
             f"never asked")
-    gap("hub-choice · an outbound message is staged for a hub that can "
-        "actually reach the recipient",
-        "`spool_append` does `hub_id = str(hubs[0][\"id\"])` — first enabled "
-        "entry, always, regardless of the recipient. `hub_entries()` puts the "
-        "org's OWN local hub first, so on any instance that also talks to a "
-        "remote hub, every outbound @net: message is offered to the local hub "
-        "and to nothing else. It answers 422 'no org registered as …' (the "
-        "peer is on the other hub), which by ruling retries forever. The "
-        "sender sees 'queued for the mail hub'; the hub that could have "
-        "delivered it is never contacted — measured live: the remote org "
-        "polls us continuously and has issued zero /api/send. Inbound is "
-        "already multi-hub (`_poll_pass` iterates every enabled entry); this "
-        "is the outbound half of the same idea. Fix: choose the hub whose "
-        "cached roster holds the recipient (`net._rosters`, already kept per "
-        "address); when several do, prefer the local one (fewest hops, the "
-        "same rule as the transport ruling); when NONE does, either stage "
-        "per-hub and let the first acceptance win, or refuse at the door "
-        "naming the hubs searched — what must not happen is silently "
-        "choosing by list position.",
-        _staged_for_the_hub_that_can_reach_it)
+    # promoted from gap() 2026-08-05, fixed the same day (6f547ae) after the
+    # remote org's own agent reached the same root cause independently:
+    # spool_append now picks the hub whose roster holds the target, then a
+    # currently connected one, and only then list order.
+    check("hub-choice · an outbound message is staged for a hub that can "
+          "actually reach the recipient", _staged_for_the_hub_that_can_reach_it)
 
-    def _inbound_is_already_multi_hub():
-        """ANTI-VACUITY / the asymmetry, stated: polling visits EVERY enabled
-        hub, which is why the same org receives fine while it cannot send."""
+    def _both_directions_resolve_rather_than_position():
+        """The asymmetry that caused the live failure, pinned in its FIXED
+        shape. The previous guard here asserted the DEFECT (`hubs[0]` present
+        in spool_append) and kept passing after the fix — a check that still
+        passes while telling the wrong story is worse than no check, so it is
+        re-pointed at the ordering that now has to hold."""
         src = open(os.path.join(_REPO, "backend", "orgtree", "net.py"),
                    encoding="utf-8").read()
         i = src.index("def _poll_pass")
-        seg = src[i:i + 1200]
-        assert "for addr, members in groups.items()" in seg, seg[:200]
+        assert "for addr, members in groups.items()" in src[i:i + 1200], (
+            "inbound stopped iterating every enabled hub")
         j = src.index("def spool_append")
-        assert 'hubs[0]' in src[j:j + 1800], "the outbound choice moved — re-read §11"
-    check("hub-choice · inbound polls EVERY enabled hub while outbound picks "
-          "one by position — the asymmetry that makes 'receives fine, never "
-          "sends' possible", _inbound_is_already_multi_hub)
+        seg = src[j:j + 2600]
+        assert "_rosters" in seg, (
+            "spool_append no longer consults the rosters — the destination is "
+            "being chosen without asking who can deliver")
+        # comments in that function DISCUSS the old hubs[0] behaviour, so
+        # compare CODE only — the first draft of this guard tripped on the
+        # commit's own explanatory comment
+        code = "\n".join(ln for ln in seg.splitlines()
+                         if not ln.lstrip().startswith("#"))
+        assert "hubs[0]" not in code[:code.index("_rosters")], (
+            "a positional pick happens BEFORE the roster is consulted")
+    check("hub-choice · inbound polls every enabled hub and outbound resolves "
+          "by who can deliver (rosters consulted before any positional "
+          "fallback)", _both_directions_resolve_rather_than_position)
 
 
 def main() -> int:
