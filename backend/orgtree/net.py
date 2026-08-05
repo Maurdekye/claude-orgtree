@@ -273,6 +273,7 @@ def remote_peers() -> list[dict[str, Any]]:
             out.append({"slug": f"@net:{s}", "name": r.get("org_name") or s,
                         "online": bool(r.get("online")),
                         "last_seen": r.get("last_seen"),
+                        "kind": r.get("kind") or "org",   # FR-06: org | chat
                         "blurb": r.get("blurb") or ""})
     return out
 

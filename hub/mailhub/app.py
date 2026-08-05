@@ -127,11 +127,12 @@ def _auth(request: Request, con: Any) -> list[str]:
 
 def _roster(con: Any) -> list[dict[str, Any]]:
     rows = con.execute(
-        "SELECT slug, org_name, username, blurb, last_seen FROM orgs "
+        "SELECT slug, org_name, username, blurb, last_seen, kind FROM orgs "
         "ORDER BY slug").fetchall()
     return [{"slug": r["slug"], "org_name": r["org_name"],
              "username": r["username"], "blurb": r["blurb"],
-             "online": _online(r["slug"]), "last_seen": r["last_seen"]}
+             "online": _online(r["slug"]), "last_seen": r["last_seen"],
+             "kind": r["kind"] or "org"}
             for r in rows]
 
 
@@ -175,12 +176,14 @@ async def register(request: Request) -> dict[str, Any]:
         if row is None:
             # first write wins the slug — colliding requires producing a
             # secret that hashes to the holder's fingerprint
+            kind = "chat" if str(body.get("kind") or "") == "chat" else "org"
             con.execute(
                 "INSERT INTO orgs (slug, fingerprint, org_name, username, "
-                "blurb, registered_at, last_seen) VALUES (?,?,?,?,?,?,?)",
+                "blurb, registered_at, last_seen, kind) "
+                "VALUES (?,?,?,?,?,?,?,?)",
                 (slug, fp, str(body.get("org_name") or ""),
                  str(body.get("username") or ""),
-                 str(body.get("blurb") or ""), _now_iso(), _now_iso()))
+                 str(body.get("blurb") or ""), _now_iso(), _now_iso(), kind))
         elif not hmac.compare_digest(str(row["fingerprint"]), fp):
             raise HTTPException(403, "slug is owned by another identity")
         else:

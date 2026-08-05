@@ -291,6 +291,25 @@ machines"); the user reversed the mechanism one day later for the
 unattended-host case, and the inheritance objection is handled by the strip
 rather than dismissed.
 
+### D-099 · independent chats are first-class hub clients (FR-06)
+Ruling (user, 2026-08-05 — an explicit REVERSAL of the spec §12 line
+"strictly org-to-org; the hub does not relay @ext:/@mcp:"): any Claude
+Code chat may join the mail hub directly, correspond with orgs AND other
+chats symmetrically, and appear on the roster tagged `kind: chat`.
+Identity (user's scheme): the client's UID — minted once per user profile
+(~/.orgtree/hub-client.json) — is the secret (hub stores sha256(uid));
+on FIRST registration the chat must CHOOSE a NAME, persisted and
+immutable thereafter (the fingerprint suffix rides the address, same
+immutability rule as orgs): `<name>.<username>.<fp[:6]>`. The client is
+`hub/hubtool.py` — a stdlib MCP server (`claude mcp add mailhub -- python
+hub/hubtool.py`: hub_register/list/send/read/wait) plus a Monitor-armable
+`listen` mode emitting one line per inbound mail — the chatq delivery
+shape over the hub, which is what makes this a candidate END-TO-END CHATQ
+REPLACEMENT (user's framing; migration is its own future decision). The
+dial-out security model holds: the chat polls the hub, nothing reaches
+in. Orgs address a chat as @net:<slug> like any peer; rosters and the
+compose list label chats.
+
 ### D-098 · extern mail is audience-gated: holders only, bootstrap, auto-bridge
 Ruling (user, 2026-08-05, F-06 phase C0 — ALL outside namespaces
 @ext:/@org:/@mcp:/@net:): inbound extern mail wakes ORG-INBOX AUDIENCE

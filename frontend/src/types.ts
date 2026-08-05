@@ -124,6 +124,7 @@ export interface NetPeer {
   blurb?: string | null
   online: boolean
   last_seen?: string | null
+  kind?: 'org' | 'chat'        // FR-06: independent chats are clients too
 }
 export interface NetHub {
   id: string

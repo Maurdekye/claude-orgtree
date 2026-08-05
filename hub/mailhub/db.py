@@ -35,7 +35,9 @@ CREATE TABLE IF NOT EXISTS orgs (
   username      TEXT,
   blurb         TEXT,
   registered_at TEXT NOT NULL,
-  last_seen     TEXT
+  last_seen     TEXT,
+  kind          TEXT NOT NULL DEFAULT 'org'   -- org | chat (FR-06: independent
+                                              -- Claude Code chats are clients)
 );
 CREATE TABLE IF NOT EXISTS messages (
   id              TEXT PRIMARY KEY,          -- client-minted: idempotent send
@@ -75,6 +77,13 @@ def connect() -> sqlite3.Connection:
     con.execute("PRAGMA busy_timeout=5000")
     con.execute("PRAGMA synchronous=NORMAL")
     con.executescript(_SCHEMA)
+    # FR-06 migration: hubs created before the client-kind column
+    try:
+        con.execute("ALTER TABLE orgs ADD COLUMN kind TEXT NOT NULL "
+                    "DEFAULT 'org'")
+        con.commit()
+    except sqlite3.OperationalError:
+        pass                                    # column already exists
     return con
 
 

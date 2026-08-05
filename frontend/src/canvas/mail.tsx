@@ -526,7 +526,8 @@ function ComposeBar({ slug, net, entries, toast }: {
         if (!seen.has(addr)) {
           seen.add(addr)
           out.push({ addr,
-            label: `${r.org_name || r.slug} (${addr})`
+            label: `${r.org_name || r.slug}`
+              + (r.kind === 'chat' ? ' (chat)' : '') + ` (${addr})`
               + (r.online ? ' · online' : '') })
         }
       }
@@ -614,6 +615,8 @@ function NetSection({ net }: { net?: TreePayload['net'] }) {
                     ? ` · last seen ${r.last_seen.slice(5, 16).replace('T', ' ')}` : '')}>
                   <span className={'oi-dot' + (r.online ? ' ok' : '')} />
                   {r.org_name || r.slug.split('.')[0]}
+                  {r.kind === 'chat' &&
+                    <span className="dim"> (chat)</span>}
                   <span className="dim mono-sm">·{r.slug.split('.').pop()}</span>
                 </span>
               ))}
