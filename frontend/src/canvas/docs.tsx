@@ -13,7 +13,10 @@ import { CloseIcon, DocIcon } from '../icons'
 
 export interface DocMeta { id: string; title: string; at: string }
 
-/** the outboard chips on the node square — one per presented document */
+/** the outboard chips on the node square — one per presented document.
+ *  Square ICONS only (user report 2026-08-05: the titled chips were wide
+ *  enough to overlap the adjacent card) — the title lives in the tooltip;
+ *  the desk header carries the readable titled badges. */
 export function DocChips({ docs, onOpen }: {
   docs: DocMeta[]
   onOpen: (id: string) => void
@@ -25,7 +28,6 @@ export function DocChips({ docs, onOpen }: {
           onPointerDown={(e) => e.stopPropagation()}
           onClick={(e) => { e.stopPropagation(); onOpen(d.id) }}>
           <DocIcon fontSize="inherit" />
-          <span className="doc-chip-title">{d.title}</span>
         </button>
       ))}
     </div>

@@ -1129,7 +1129,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
                 onInbox?.()
               }}
               onGear={() => setUserCfg(true)}
-              onMailLink={openMail}
+              onMailLink={openMail} onOpenDoc={setDocView}
               onSpawn={(t) => spawn(USER, t)} />
           }
           if (n.id === DRAFT) {

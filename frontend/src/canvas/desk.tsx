@@ -15,10 +15,10 @@ import {
   getScratch, interruptNode, retractMail, saveScope, sendMessage, uploadFile,
 } from '../api'
 import {
-  ArrowDownIcon, ArrowUpIcon, AutorenewIcon, CloseIcon, DotIcon, DownloadIcon,
-  EditIcon, EyeIcon, FileIcon, FolderIcon, FrozenIcon, HearingIcon, LayersIcon,
-  LockIcon, MailIcon, PlayIcon, PsychologyIcon, SettingsIcon, SparkIcon,
-  StopIcon, WarnIcon,
+  ArrowDownIcon, ArrowUpIcon, AutorenewIcon, CloseIcon, DocIcon, DotIcon,
+  DownloadIcon, EditIcon, EyeIcon, FileIcon, FolderIcon, FrozenIcon,
+  HearingIcon, LayersIcon, LockIcon, MailIcon, PlayIcon, PsychologyIcon,
+  SettingsIcon, SparkIcon, StopIcon, WarnIcon,
 } from '../icons'
 import { ago, EXTERN, md, TIER_LETTER, TIER_SEAT, USER, useEsc, usePolled } from './shared'
 import {
@@ -118,6 +118,8 @@ interface DeskChatProps {
   compact?: boolean
   compactAt?: number
   onMailLink?: MailLinkFn
+  /** FR-03: open a presented document in the in-page reader */
+  onOpenDoc?: (id: string) => void
 }
 
 /** F-01: one small clickable card pointing at a related agent — superior at
@@ -150,7 +152,7 @@ const SENDMODE_MS = 6000
 
 function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
   onRecenter, onJump, maxTop, pxc, pub, bare = false, compact = false,
-  compactAt, onMailLink }: DeskChatProps) {
+  compactAt, onMailLink, onOpenDoc }: DeskChatProps) {
   // THE CONVERSATION IS NOT THIS COMPONENT'S. It lives in one per-node store
   // (convo.ts) that every view of this node subscribes to, because a node can
   // be on screen twice — its card and its switchboard panel — and two private
@@ -408,6 +410,17 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
                 .then(() => toast([`audience ${node.id}→${g} rescinded`]))
                 .catch((e: Error) => toast([`error: ${e.message}`]))}><CloseIcon fontSize="inherit" /></button>
           </span>
+        ))}
+        {/* FR-03: presented documents ride the desk header too (user report
+            2026-08-05 — they only lived on the unfocused card, so zooming in
+            HID them). Shown in compact/switchboard panels as well: D-100
+            restricts presenting to direct-user-audience agents, which is
+            exactly who the switchboard shows. */}
+        {onOpenDoc && node.documents?.slice(-4).map((d) => (
+          <button key={d.id} className="doc-badge" title={`read “${d.title}”`}
+            onClick={() => onOpenDoc(d.id)}>
+            <DocIcon fontSize="inherit" /><span>{d.title}</span>
+          </button>
         ))}
         {!compact && (node.cost_usd ?? 0) > 0 && (
           <span className="badge dim"

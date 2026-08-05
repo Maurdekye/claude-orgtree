@@ -722,23 +722,33 @@ main {
   font-weight: 600; color: var(--ink-strong);
   border-bottom: 2px solid var(--accent); padding-bottom: 3px; margin-bottom: -6px;
 }
-/* FR-03: presented documents — little cards popping out the node's side;
-   click opens the in-page reader. */
+/* FR-03: presented documents — square icon tabs popping out the node's
+   side (title = tooltip; the wide titled chips overlapped the neighbor
+   card — user report 2026-08-05); click opens the in-page reader. */
 .doc-chips {
-  position: absolute; left: calc(100% + 4px); top: 26px;
+  position: absolute; left: calc(100% + 3px); top: 26px;
   display: flex; flex-direction: column; gap: 3px; z-index: 2;
-  max-width: 150px;
 }
 .doc-chip {
-  display: flex; align-items: center; gap: 5px;
+  display: flex; align-items: center; justify-content: center;
+  width: 21px; height: 21px; padding: 0;
   background: var(--panel); border: 1px solid var(--line);
   border-left: 3px solid var(--accent); border-radius: 0 6px 6px 0;
-  color: var(--ink); font-size: 10.5px; padding: 3px 7px 3px 5px;
-  cursor: pointer; text-align: left; max-width: 100%;
+  color: var(--ink); font-size: 12px; cursor: pointer;
 }
 .doc-chip:hover { border-color: var(--accent); color: var(--ink-strong); }
-.doc-chip-title {
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+/* the desk header's titled document badge (the canvas chip's readable twin) */
+.doc-badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: var(--input); border: 1px solid var(--line);
+  border-left: 3px solid var(--accent); border-radius: 0 9px 9px 0;
+  color: var(--ink); font-size: 10.5px; font-family: var(--mono);
+  padding: 1px 7px 1px 5px; cursor: pointer;
+}
+.doc-badge:hover { border-color: var(--accent); color: var(--ink-strong); }
+.doc-badge span {
+  max-width: 130px; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .doc-reader { width: min(760px, 92vw); max-height: 86vh; display: flex;
   flex-direction: column; }

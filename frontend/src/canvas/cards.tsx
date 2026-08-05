@@ -52,13 +52,15 @@ interface UserNodeProps {
   toast: ToastFn
   compactAt?: number
   maxTop?: number
+  /** FR-03: open a presented document in the in-page reader */
+  onOpenDoc?: (id: string) => void
 }
 
 export function UserNode({ pos, isDrop, stats, inboxCount, seats,
   kiosk, pub, kioskRemaining, kioskSegs, pxc, zoom, onInbox, onGear, onSpawn,
   onMailLink,
   focused, eyeW, onFocus, posX, onJump, map, op, slug, toast,
-  compactAt, maxTop }: UserNodeProps) {
+  compactAt, maxTop, onOpenDoc }: UserNodeProps) {
   const downRef = useRef<Pt | null>(null)
   // const extraction: the kiosk-credits narrowing must survive the commit
   // closure below (a property check alone would not)
@@ -143,7 +145,7 @@ export function UserNode({ pos, isDrop, stats, inboxCount, seats,
           inboxCount={inboxCount} onInbox={onInbox}
           onGear={onGear} pub={pub} eyeW={eyeW} posX={posX} onJump={onJump}
           compactAt={compactAt} maxTop={maxTop} pxc={pxc}
-          onMailLink={onMailLink} />
+          onMailLink={onMailLink} onOpenDoc={onOpenDoc} />
       )}
     </div>
   )
@@ -171,11 +173,13 @@ interface EyeDeskProps {
   maxTop?: number
   pxc?: number
   onMailLink: MailLinkFn
+  /** FR-03: open a presented document in the in-page reader */
+  onOpenDoc?: (id: string) => void
 }
 
 function EyeDesk({ map, op, slug, toast, inboxCount,
   onInbox, onGear, pub, eyeW, posX, onJump, compactAt, maxTop, pxc,
-  onMailLink }: EyeDeskProps) {
+  onMailLink, onOpenDoc }: EyeDeskProps) {
   const agents = [...map.values()].filter((n) =>
     n.id !== USER && n.id !== DRAFT && n.state === 'live' && !n.isBearerOf
     && (n.parent === USER || n.audiences_held?.includes(USER)))
@@ -287,7 +291,8 @@ function EyeDesk({ map, op, slug, toast, inboxCount,
             <div className="eye-panel" key={a.id}>
               <DeskChat node={a} map={map} op={op} slug={slug}
                 toast={toast} pub={pub} bare compact compactAt={compactAt}
-                onJump={onJump} maxTop={maxTop} pxc={pxc} onMailLink={onMailLink} />
+                onJump={onJump} maxTop={maxTop} pxc={pxc} onMailLink={onMailLink}
+                onOpenDoc={onOpenDoc} />
             </div>
           ))}
           {!open.length && agents.length > 0 &&
@@ -831,7 +836,7 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, m
           toast={toast}
           onLineage={onLineage} onConfig={onConfig} compactAt={compactAt}
           onRecenter={onRecenter} onJump={onJump} maxTop={maxTop} pxc={pxc}
-          pub={pub} onMailLink={onMailLink} />
+          pub={pub} onMailLink={onMailLink} onOpenDoc={onOpenDoc} />
       )}
       {/* user ruling: chips are NEVER disabled by the node's own free credits —
           a user hire §4.6-cascades, granting the chain whatever it lacks.
@@ -839,9 +844,10 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, m
       {live && !node.isBearerOf && !node.bearer_state &&
         <SpawnChips onSpawn={onSpawn} free={kioskRemaining ?? Infinity} seats={seats}
           maxTier={maxTier} />}
-      {/* FR-03: presented documents pop out the card's side as small chips —
-          click opens the in-page reader. Not at desk zoom (world-scaled
-          chips blow up) and not on pile fronts (the side is the stack). */}
+      {/* FR-03: presented documents pop out the card's side as square icon
+          chips — click opens the in-page reader. Not at desk zoom (the desk
+          HEADER carries titled doc badges instead — world-scaled side chips
+          blow up) and not on pile fronts (the side is the stack). */}
       {!focused && !pile && (node.documents?.length ?? 0) > 0 && onOpenDoc && (
         <DocChips docs={node.documents!} onOpen={onOpenDoc} />
       )}
