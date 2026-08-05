@@ -39,14 +39,25 @@ $logon = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 $every5 = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
     -RepetitionInterval (New-TimeSpan -Minutes 5) `
     -RepetitionDuration (New-TimeSpan -Days 3650)
-$deploy = New-ScheduledTaskAction -Execute $ps `
-    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$updater`""
-$ensure = New-ScheduledTaskAction -Execute $ps `
-    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$updater`" -EnsureUp"
+# WINDOWLESS launch (user directive 2026-08-05, relayed: the 5-min watchdog
+# painted a visible conhost on the interactive desktop for ~5 s every firing,
+# all evening). Two layers, both needed: `conhost --headless` hosts the
+# action on a windowless pseudoconsole (a bare <Hidden> only shortens the
+# window to a flash), and -Hidden below keeps Task Scheduler itself from
+# painting one.
+# ⚠ The principal STAYS InteractiveToken. Switching to S4U looks like the
+# tidier fix and silently lands the relaunched backend -- with its docker
+# and Claude-CLI children -- in session 0, off the user's desktop and away
+# from the profile whose ~/.claude credentials every turn needs.
+$conhost = Join-Path $env:SystemRoot 'System32\conhost.exe'
+$deploy = New-ScheduledTaskAction -Execute $conhost `
+    -Argument "--headless $ps -NoProfile -ExecutionPolicy Bypass -File `"$updater`""
+$ensure = New-ScheduledTaskAction -Execute $conhost `
+    -Argument "--headless $ps -NoProfile -ExecutionPolicy Bypass -File `"$updater`" -EnsureUp"
 # ExecutionTimeLimit 0 = the 3-day stop limit is OFF (an unattended backend
 # would otherwise be killed silently on day three)
 $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) `
-    -MultipleInstances IgnoreNew -StartWhenAvailable
+    -MultipleInstances IgnoreNew -StartWhenAvailable -Hidden
 $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive
 
 # one task, two actions is wrong (actions run IN SEQUENCE) -- register two
