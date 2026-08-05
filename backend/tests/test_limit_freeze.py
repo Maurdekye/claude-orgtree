@@ -47,6 +47,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import traceback
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -180,12 +181,26 @@ function serve(text) {
           usage: { input_tokens: 0 }, total_cost_usd: 0 })
     return
   }
+  if (cfg.mode === 'benign-synthetic') {
+    // the OTHER synthetic record the CLI writes constantly — same two flags,
+    // nothing to do with a limit. Must not fail the turn.
+    const msg = { role: 'assistant', model: '<synthetic>',
+                  content: 'No response requested.', usage: {} }
+    say({ type: 'assistant', message: msg, isApiErrorMessage: false })
+    record({ type: 'assistant', message: msg })
+    say({ type: 'result', subtype: 'success', is_error: false, result: '',
+          usage: {}, total_cost_usd: 0 })
+    return
+  }
+  // plain: the agent's own answer, and the result event that carries it —
+  // in stream-json the result's `result` IS the assistant's final text
+  const reply = cfg.replyText || 'ack.'
   const msg = { role: 'assistant', model: 'fake',
-                content: [{ type: 'text', text: 'ack.' }],
+                content: [{ type: 'text', text: reply }],
                 usage: { input_tokens: 1000 } }
   say({ type: 'assistant', message: msg })
   record({ type: 'assistant', message: msg })
-  say({ type: 'result', subtype: 'success', is_error: false, result: 'ok',
+  say({ type: 'result', subtype: 'success', is_error: false, result: reply,
         usage: { input_tokens: 1000 }, total_cost_usd: 0.0001 })
 }
 
@@ -213,11 +228,12 @@ with open(_CLI, "w", encoding="utf-8") as _f:
     _f.write(SYNTH_JS)
 
 
-def set_mode(mode: str, echo_result: bool = False, limit_text: str = REAL) -> None:
+def set_mode(mode: str, echo_result: bool = False, limit_text: str = REAL,
+             reply: str = "ack.") -> None:
     """Reprogram the stand-in for the next launch (it re-reads on every run)."""
     with open(_CFG, "w", encoding="utf-8") as f:
         json.dump({"mode": mode, "limitText": limit_text,
-                   "echoResult": echo_result}, f)
+                   "echoResult": echo_result, "replyText": reply}, f)
     open(_COUNT, "w", encoding="utf-8").close()
 
 
@@ -448,6 +464,112 @@ def sec_reader() -> None:
           _card_and_state_agree)
 
 
+# ══════════════════════════════════════════════════════════════════════════ §4
+#
+# The fix (9b79281) widened what can freeze an agent, and a freeze is a HARD
+# STOP: the node runs nothing until a human presses ▶. So the second question
+# is the one a widened detector always owes — what ELSE now freezes — plus the
+# one nobody asked when there was no button: does ▶ actually work on this kind?
+
+def sec_attack_the_fix() -> None:
+    print("\n§4  the fix, attacked — false positives and the way out")
+
+    # ── a benign synthetic record must not fail the turn ────────────────────
+    slug_b, nid_b = probe_org()
+
+    def _benign_synthetic():
+        set_mode("benign-synthetic")
+        run_turn(slug_b, nid_b)
+        n = node(slug_b, nid_b)
+        assert not n.get("frozen"), f"froze on a non-limit synthetic: {n['frozen']}"
+        rows = (store.load_org(slug_b).d.get("turn_error_log") or {}).get(nid_b) or []
+        assert not rows, f"booked a turn failure for a benign synthetic: {rows}"
+    check("false-positive · '<synthetic> · No response requested.' (the CLI "
+          "writes it constantly) neither freezes nor fails the turn — the "
+          "capture is gated on the predicate, not on the flags",
+          _benign_synthetic)
+
+    # ── the agent's OWN short answer, riding the result event ───────────────
+    # In stream-json the result event's `result` IS the assistant's final text.
+    # The <200-char fallback therefore reads every short answer an agent gives.
+    slug_a, nid_a = probe_org()
+
+    def _own_answer_about_limits():
+        set_mode("plain", reply="Done — raised the rate limit to 100/min; "
+                                "it resets nightly.")
+        run_turn(slug_a, nid_a)
+        n = node(slug_a, nid_a)
+        assert not n.get("frozen"), (
+            "an agent's own 57-character answer froze it: the result-text "
+            "fallback cannot tell the CLI's limit card from a short reply that "
+            f"happens to say 'limit' and 'resets' — {n['frozen']}")
+    # was a gap: the <200-char bound alone let an agent's own 57-char answer
+    # freeze it (and _parse_limit_reset scraped "nightly" out of the prose as
+    # the reset time). Fixed 2026-08-05: the flagless result-text fallback
+    # now ALSO requires `_parse_limit_reset_ts` to return a real timestamp —
+    # the machine marker the CLI's card always carries and prose never does.
+    check("false-positive · a short answer that merely MENTIONS a limit does "
+          "not freeze its author", _own_answer_about_limits)
+
+    # ── a transient per-minute 429, if the CLI ever surfaces one ────────────
+    slug_r, nid_r = probe_org()
+    RATE = ("API Error: 429 rate_limit_error — Number of request tokens has "
+            "exceeded your per-minute rate limit")
+
+    def _rate_limit_shape():
+        set_mode("synthetic", limit_text=RATE)
+        run_turn(slug_r, nid_r)
+        fz = node(slug_r, nid_r).get("frozen")
+        if not fz:
+            return                       # not detected at all — nothing to say
+        assert fz.get("until_ts") or fz.get("until"), (
+            "a per-minute rate limit freezes the node with NO reset time, so "
+            "auto_resume has nothing to schedule on and the node waits for a "
+            f"human — {fz}")
+    # was a gap: a rate-limit-class text (no reset marker) froze with
+    # until=None/until_ts=None — nothing but a human ▶ could clear it. Fixed
+    # 2026-08-05: a reset-less LIMIT freeze is stamped with a ~5-minute probe
+    # time at freeze time ("unknown — probing again in ~5 min"), so
+    # auto_resume schedules it through its normal path; a failed probe
+    # re-freezes, worst case one try per ~5 min. (Belt-and-braces: the
+    # auto_resume loop also retries pre-existing reset-less limit records.)
+    check("rate-limit · a freeze with no parseable reset time is not a dead "
+          "end", _rate_limit_shape)
+
+    # ── the way out: ▶ resume on a freeze of the NEW kind ───────────────────
+    slug_x, nid_x = probe_org()
+
+    def _resume_works():
+        set_mode("synthetic")
+        run_turn(slug_x, nid_x, "the message that was interrupted")
+        fz = node(slug_x, nid_x).get("frozen")
+        assert fz, "precondition: the synthetic shape must freeze"
+        assert fz.get("limit") is True, f"not tagged as a usage limit: {fz}"
+        texts = fz.get("resume_texts") or []
+        assert any("the message that was interrupted" in t for t in texts), (
+            f"the interrupted message was not kept for replay: {texts}")
+        set_mode("plain")               # the limit has 'reset'
+        resumed = supervisor.resume_frozen(slug_x)
+        assert resumed == [nid_x], f"▶ resume did not pick up the node: {resumed}"
+        assert not node(slug_x, nid_x).get("frozen"), "still frozen after ▶"
+    check("resume · ▶ clears a synthetic-shape freeze and replays the message "
+          "the limit ate (the freeze kind is tagged limit:true, so resume_frozen "
+          "owns it rather than deferring to a mechanism that does not exist)",
+          _resume_works)
+
+    def _replayed_for_real():
+        # ▶ hands the replay to a worker thread (supervisor.py:2951), so the
+        # measurement has to wait for the turn, not for the call
+        for _ in range(150):
+            if any("the message that was interrupted" in t for t in served()):
+                return
+            time.sleep(0.1)
+        raise AssertionError(
+            f"▶ resumed the node but the message never reached the CLI within "
+            f"15 s: {served()}")
+    check("resume · and the replay actually reaches the CLI", _replayed_for_real)
+
+
 def _flat(tree: dict) -> list[dict]:
     out: list[dict] = []
 
@@ -470,6 +592,7 @@ def main() -> None:
     else:
         sec_shapes()
         sec_reader()
+        sec_attack_the_fix()
 
     print(f"\n{'═' * 70}\n{PASS} checks passed, {len(FAIL)} failed, "
           f"{len(GAPS)} gaps")

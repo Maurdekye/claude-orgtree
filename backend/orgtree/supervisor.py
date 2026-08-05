@@ -1731,14 +1731,20 @@ def _run_one_turn(slug: str, nid: str,
                         else:
                             # the synthetic-record limit (captured above) — and,
                             # as independent hardening, a limit named in a
-                            # "clean" result. The predicate is broad, so the
-                            # result-text fallback only fires on SHORT
-                            # standalone texts (the CLI's limit card is one
-                            # line); a long genuine answer that merely
-                            # discusses limits must not freeze its author
+                            # "clean" result. In stream-json a clean result's
+                            # `result` IS the agent's own final text, so this
+                            # fallback must not freeze an agent for a sentence:
+                            # it requires BOTH a short standalone text AND a
+                            # machine-parseable reset marker (|epoch / clock
+                            # time / "try again in N"), which the CLI's card
+                            # always carries and prose like "it resets
+                            # nightly" never does (redteam measured a genuine
+                            # 57-char answer freezing its author without this)
                             limited = bool(synth_limit_txt) or (
                                 len(_res_txt.strip()) < 200
-                                and _looks_like_usage_limit(_res_txt))
+                                and _looks_like_usage_limit(_res_txt)
+                                and _parse_limit_reset_ts(_res_txt)
+                                is not None)
                             if limited and not synth_limit_txt:
                                 synth_limit_txt = _res_txt.strip()[:400]
                         nxt = None
@@ -1901,6 +1907,17 @@ def _run_one_turn(slug: str, nid: str,
                                 _lbl = _t.strftime("%I:%M%p").lstrip("0").lower()
                                 fz["until"] = (_lbl if _t.date() == _dtm.date.today()
                                                else _t.strftime("%a ") + _lbl)
+                            if not fz.get("until_ts"):
+                                # no reset marker at all (rate-limit-class
+                                # text): a transient limit must not need a
+                                # human, so schedule a short probe instead of
+                                # leaving auto_resume nothing to act on
+                                # (redteam gap 2026-08-05). A failed probe
+                                # re-freezes, so the worst case is one try
+                                # per ~5 minutes, honestly labeled.
+                                fz["until_ts"] = time.time() + 300
+                                fz["until"] = ("unknown — probing again "
+                                               "in ~5 min")
                             fz["error"] = err_blob[:300]
                             # replay only what the CLI actually consumed: an
                             # unconsumed batch folds back as MAIL (C1) and
@@ -3183,9 +3200,12 @@ _auto_resume_started = False
 def start_auto_resume_loop() -> None:
     """Background timer for the inline org toggle (user spec): when
     `auto_resume` is on, usage-limit-frozen agents restart on their own ONE
-    MINUTE after the latest reported reset time. Freezes with no parseable
-    reset time stay manual; a failed attempt (limit still live) re-freezes
-    with a fresh time and is retried no sooner than 5 minutes later."""
+    MINUTE after the latest reported reset time. A LIMIT freeze with no
+    parseable reset time (a rate-limit-style text — the class the synthetic
+    detector admits) is retried on the 5-minute floor instead of waiting for
+    a human forever (redteam gap 2026-08-05): a failed attempt re-freezes,
+    so the worst case is one probe per 5 minutes, not a dead node. Non-limit
+    freezes without a time stay manual — their own mechanism owns them."""
     global _auto_resume_started
     if _auto_resume_started:
         return
@@ -3204,11 +3224,24 @@ def start_auto_resume_loop() -> None:
                         tss = [fz.get("until_ts")
                                for n in org.nodes.values()
                                if n["state"] == "live" and (fz := n.get("frozen"))]
+                        timeless_limit = any(
+                            fz.get("limit") and not fz.get("until_ts")
+                            for n in org.nodes.values()
+                            if n["state"] == "live" and (fz := n.get("frozen")))
                         last = float(org.d.get("auto_resume_last") or 0)
                     known = [t for t in tss if t]
-                    if not tss or not known:
+                    if not tss:
                         continue
-                    if time.time() < max(known) + 60 or time.time() - last < 300:
+                    if known:
+                        if time.time() < max(known) + 60 \
+                                or time.time() - last < 300:
+                            continue
+                    elif timeless_limit:
+                        # reset-less LIMIT freeze: probe on the 5-minute
+                        # floor rather than never
+                        if time.time() - last < 300:
+                            continue
+                    else:
                         continue
                     with store.DOC_LOCK:
                         org = store.load_org(slug)
