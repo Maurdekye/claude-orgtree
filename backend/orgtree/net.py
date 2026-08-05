@@ -215,7 +215,32 @@ def spool_append(org: "Org", peer: str, body: str, oid: str,
         raise LedgerError(
             "no mailserver is configured — enable a hub in the org's "
             "settings (mailserver tab) before addressing @net: mail")
-    hub_id = str(hubs[0]["id"])
+    # ⚠ WHICH hub the entry files under decides whether it can EVER leave
+    # (remote-side investigation 2026-08-05: `hubs[0]` filed everything
+    # under a dead implicit local entry while the reachable hub sat second
+    # in the list — four messages "queued" forever with the recipient
+    # online). Pick like the transport ruling picks: the hub whose roster
+    # HOLDS the target wins; failing that, a hub that is currently
+    # connected; only then list order. Never refuse on a cold roster —
+    # offline addressing must not require a live hub (FR-07), the spool
+    # holds until one is back.
+    hub_id = None
+    for h in hubs:
+        with _status_lock:
+            roster = _rosters.get(str(h.get("address") or "")) or []
+        if any(str(r.get("slug")) == peer for r in roster):
+            hub_id = str(h["id"])
+            break
+    if hub_id is None:
+        oslug = str(org.d.get("slug") or "")
+        for h in hubs:
+            with _status_lock:
+                st = _status.get((oslug, str(h.get("id")))) or {}
+            if st.get("connected"):
+                hub_id = str(h["id"])
+                break
+    if hub_id is None:
+        hub_id = str(hubs[0]["id"])
     entry: dict[str, Any] = {"id": uuid.uuid4().hex, "to": peer, "body": body,
                              "kind": kind, "at": now(), "oid": oid, "tries": 0}
     metas: list[dict[str, Any]] = []
