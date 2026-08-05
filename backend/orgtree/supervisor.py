@@ -1141,13 +1141,22 @@ def _mail_block(mail: list[MailEntry]) -> str:
         b = (f"FROM {m['from']} ({m.get('relationship', 'agent')}"
              f"{tag}) · {m.get('kind', 'message')} · {m['at']}")
         rt = m.get("reply_to")
-        if rt:
+        if rt and str(rt.get("gist") or "").strip():
             # FR-05: an inline mailbox reply carries a SNAPSHOT of what it
             # answers (id/from/at/gist, captured at send — no lookup, no
             # dependence on the original still existing), quoted here so a
-            # two-word reply like "do it" is unambiguous to the agent
-            b += (f"\n↩ IN REPLY TO your message of {rt.get('at')}: "
-                  f"“{rt.get('gist')}”")
+            # two-word reply like "do it" is unambiguous to the agent.
+            # `from` is present ONLY when the quoted author is not the
+            # recipient (post_mail drops the self-consistent case) — recite
+            # the name then, never "your message", or a forged snapshot
+            # reads a third party's words back in the recipient's voice.
+            # No timestamp → drop the clause (": " after a bare "of" was
+            # the redteam's dangling-colon catch).
+            _who = str(rt.get("from") or "").strip()
+            _owner = f"{_who}'s message" if _who else "your message"
+            _at = str(rt.get("at") or "").strip()
+            b += (f"\n↩ IN REPLY TO {_owner}"
+                  f"{f' of {_at}' if _at else ''}: “{rt.get('gist')}”")
         b += f"\n{m['body']}"
         for a in m.get("attachments") or []:
             # the file already sits in the recipient's uploads/ (its cwd)

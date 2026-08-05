@@ -1000,16 +1000,29 @@ class Org:
             # bytes already landed in its uploads/); the envelope announces
             # each one at delivery
             entry["attachments"] = list(attachments)[:10]
-        if reply_to and reply_to.get("gist"):
+        rt_gist = " ".join(str((reply_to or {}).get("gist") or "").split())
+        if reply_to and rt_gist:
             # FR-05: a sanitized SNAPSHOT of the mail being replied to —
             # captured at send so the quote never depends on the original
-            # still existing (retraction, archive caps)
+            # still existing (retraction, archive caps). Redteam round
+            # 2026-08-05: whitespace collapses server-side (a newline in the
+            # gist could fabricate a fake FROM header line inside the [MAIL]
+            # block), blank-only gists are ignored, and a trim past the cap
+            # is MARKED with an ellipsis inside the 200 budget — a silently
+            # truncated quote framed as verbatim can change what the reader
+            # does. `from` is kept only when it names someone OTHER than the
+            # recipient: the recital says "your message" for the normal
+            # self-consistent snapshot, and naming a third-party author
+            # beats reading their words back in the recipient's own voice.
             entry["reply_to"] = {
                 "id": str(reply_to.get("id") or "")[:16],
-                "from": str(reply_to.get("from") or "")[:64],
                 "at": str(reply_to.get("at") or "")[:32],
-                "gist": str(reply_to.get("gist") or "")[:200],
+                "gist": (rt_gist if len(rt_gist) <= 200
+                         else rt_gist[:199] + "…"),
             }
+            rt_from = " ".join(str(reply_to.get("from") or "").split())[:64]
+            if rt_from and rt_from != to:
+                entry["reply_to"]["from"] = rt_from
         box.setdefault(to, []).append(entry)
         # full-body archive for the node's inbox view (the event log keeps only
         # a gist) — capped per node
