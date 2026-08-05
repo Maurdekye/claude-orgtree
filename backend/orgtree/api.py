@@ -802,14 +802,23 @@ def org_net(slug: str, request: Request) -> dict[str, Any]:
         raise HTTPException(404, str(e))
     if org.d.get("kiosk"):
         return {"identity": None, "hubs": [], "autoconnect": False}
-    ident = org.d.get("net_identity")
-    if not ident:
-        # existing orgs backfill lazily — first reveal mints (idempotent)
+    if not org.d.get("net_identity") or "net_hubs" not in org.d:
+        # existing (pre-F-06) orgs backfill lazily on first reveal — the FULL
+        # default config, not just the identity: identity without a hub list
+        # is an org that silently never joins while the panel says autoconnect
+        # is on (researcher finding 2026-08-05). Mirrors the chatq precedent
+        # (existing orgs register automatically; opt-out lives in settings).
         with store.DOC_LOCK:
-            o = store.load_org(slug)
-            ident = net.mint_identity(o)
-            store.save_org(o)
-    return {"identity": ident,
+            org = store.load_org(slug)
+            net.mint_identity(org)
+            if "net_hubs" not in org.d:
+                addr = str(load_org_defaults().get("net_hub_address") or "") \
+                    or net.DEFAULT_HUB_ADDRESS
+                org.d.setdefault("net_autoconnect", True)
+                org.d["net_hubs"] = net.hub_entries(
+                    bool(org.d.get("net_autoconnect", True)), [], addr)
+            store.save_org(org)
+    return {"identity": org.d.get("net_identity"),
             "hubs": org.d.get("net_hubs") or [],
             "autoconnect": bool(org.d.get("net_autoconnect", True))}
 
