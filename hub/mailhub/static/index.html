@@ -119,7 +119,16 @@
 let filter = ''       // '' = global · '<slug>' = one client row ·
                       // 'client:<username>' = a whole client group
 let sel = ''          // selected message id — '' = nothing (the default)
-let MSGS = []         // the last-fetched window, the reader renders from it
+let MSGS = []         // accumulated newest-first (top window + paged-in tail)
+// lazy loading (user spec 2026-08-05, the orgtree inbox shape): render a
+// WINDOW of rows and page in near the bottom — first from what is already
+// fetched, then by cursor-fetching older mail from the hub. One page per
+// gesture; `vis`/`atEnd` reset when the filter changes.
+const WINDOW = 40
+const TOP = 100       // the poll's head fetch — state refresh for these rows
+let vis = WINDOW      // rows rendered
+let atEnd = false     // an older-page fetch came back empty — start reached
+let loadingOlder = false
 const el = (id) => document.getElementById(id)
 
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g,
@@ -144,7 +153,17 @@ function renderMail () {
     el('mread').innerHTML = ''
     return
   }
-  el('mlist').innerHTML = MSGS.map((x) => {
+  // the tail status line mirrors the orgtree inbox: it reserves height so
+  // the list does not jump as rows append, and at the start it is the only
+  // thing explaining why scrolling stopped producing mail
+  const tail = loadingOlder
+    ? '<div class="empty">loading earlier mail…</div>'
+    : atEnd && vis >= MSGS.length
+      ? '<div class="empty">— start of retained mail —</div>'
+      : MSGS.length > vis
+        ? '<div class="empty">' + (MSGS.length - vis) + ' earlier</div>'
+        : ''
+  el('mlist').innerHTML = MSGS.slice(0, vis).map((x) => {
     const st = stateOf(x)
     const snip = String(x.body ?? '').replace(/\s+/g, ' ').slice(0, 110)
     return '<div class="mrow' + (sel === x.id ? ' on' : '')
@@ -155,7 +174,7 @@ function renderMail () {
       + '<span class="when">' + ago(x.received_at) + '</span></div>'
       + '<div class="snip">' + esc(snip) + '</div>'
       + '</div>'
-  }).join('')
+  }).join('') + tail
   const cur = MSGS.find((x) => x.id === sel)
   el('mread').innerHTML = cur
     ? '<div class="mhead"><b>' + esc(cur.from) + '</b>'
@@ -223,22 +242,60 @@ async function refresh () {
       }
     }
     el('orgs').innerHTML = side.join('')
-    const arg = !filter ? ''
-      : filter.startsWith('client:')
-        ? '&client=' + encodeURIComponent(filter.slice(7))
-        : '&org=' + encodeURIComponent(filter)
-    const m = await (await fetch('/ui/messages?limit=200' + arg)).json()
-    MSGS = m.messages
+    const m = await (await fetch('/ui/messages?limit=' + TOP
+      + filterArg())).json()
+    // merge: the fresh head (state changes live there) + the already
+    // paged-in older tail. Anything the head re-covers takes the head's
+    // copy; rows a deep scroll accumulated stay put.
+    const top = m.messages
+    const seen = new Set(top.map((x) => x.id))
+    MSGS = top.concat(MSGS.filter((x) => !seen.has(x.id)
+      && (!top.length || x.received_at <= top[top.length - 1].received_at)))
     renderMail()
   } catch (e) {
     el('stats').textContent = 'hub unreachable'
   }
 }
 
-function pick (slug) { filter = slug; refresh() }
+function filterArg () {
+  return !filter ? ''
+    : filter.startsWith('client:')
+      ? '&client=' + encodeURIComponent(filter.slice(7))
+      : '&org=' + encodeURIComponent(filter)
+}
+
+// page in near the bottom — from memory first, then the cursor fetch
+async function more () {
+  if (vis < MSGS.length) { vis += WINDOW; renderMail(); return }
+  if (atEnd || loadingOlder || !MSGS.length) return
+  loadingOlder = true
+  renderMail()
+  try {
+    const last = MSGS[MSGS.length - 1]
+    const m = await (await fetch('/ui/messages?limit=' + TOP + filterArg()
+      + '&before_at=' + encodeURIComponent(last.received_at)
+      + '&before_n=' + (last.n ?? 0))).json()
+    const seen = new Set(MSGS.map((x) => x.id))
+    const older = m.messages.filter((x) => !seen.has(x.id))
+    if (!older.length) atEnd = true
+    MSGS = MSGS.concat(older)
+    vis += WINDOW
+  } catch (e) { /* transient — the next gesture retries */
+  } finally { loadingOlder = false; renderMail() }
+}
+
+function pick (slug) {
+  filter = slug
+  MSGS = []; vis = WINDOW; atEnd = false   // a new filter = a new folder
+  refresh()
+}
 function selmsg (id) { sel = (sel === id ? '' : id); renderMail() }
 window.pick = pick
 window.selmsg = selmsg
+el('mlist').addEventListener('scroll', () => {
+  const l = el('mlist')
+  if (l.scrollHeight - l.scrollTop - l.clientHeight < 240) more()
+})
 refresh()
 setInterval(refresh, 5000)
 </script>

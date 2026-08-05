@@ -1002,7 +1002,11 @@ def sec_client_filter() -> None:
         finally:
             db.connect = real                           # type: ignore[assignment]
         assert r.status_code == 200 and len(r.json()["messages"]) == 5
-        selects = [x for x in stmts if x.upper().startswith("SELECT * FROM MESSAGES")]
+        # matcher loosened 2026-08-05 (implementer, lazy-loading wave): the
+        # projection grew `rowid AS n` for the keyset cursor — the pin is
+        # about WHICH table is read bounded, not the column list
+        selects = [x for x in stmts if x.upper().startswith("SELECT")
+                   and "FROM MESSAGES" in x.upper()]
         assert selects, stmts
         assert all("LIMIT" in x.upper() for x in selects), (
             "the client filter runs an unbounded SELECT and slices in "

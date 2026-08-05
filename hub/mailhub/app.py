@@ -505,16 +505,30 @@ async def ui_data() -> dict[str, Any]:
 
 
 @app.get("/ui/messages")
-async def ui_messages(org: str = "", client: str = "",
-                      limit: int = 100) -> dict[str, Any]:
+async def ui_messages(org: str = "", client: str = "", limit: int = 100,
+                      before_at: str = "", before_n: int = 0) -> dict[str, Any]:
     con = db.connect()
     try:
         limit = min(max(int(limit), 1), 500)
+        # lazy loading (user spec 2026-08-05, mirroring the orgtree inbox):
+        # (before_at, before_n) is a keyset cursor — strictly older rows in
+        # the SAME (received_at, rowid) order the page sorts by, so paging
+        # stays stable while new mail keeps arriving (an OFFSET would skip
+        # or duplicate rows whenever the head moved). `n` rides each row out
+        # for the client to hand back.
+        cur_sql = ""
+        cur_args: tuple[Any, ...] = ()
+        if before_at:
+            cur_sql = ("AND (received_at < ? OR "
+                       "(received_at = ? AND rowid < ?)) ")
+            cur_args = (before_at, before_at, int(before_n))
         if org:
             rows = con.execute(
-                "SELECT * FROM messages WHERE from_slug=? OR to_slug=? "
+                "SELECT *, rowid AS n FROM messages "
+                "WHERE (from_slug=? OR to_slug=?) "
+                f"{cur_sql}"
                 "ORDER BY received_at DESC, rowid DESC LIMIT ?",
-                (org, org, limit)).fetchall()
+                (org, org, *cur_args, limit)).fetchall()
         elif client:
             # group filter (user spec 2026-08-05): all mail touching any
             # slug of one CLIENT. §11c (redteam, user-reported "only orgs
@@ -540,22 +554,26 @@ async def ui_messages(org: str = "", client: str = "",
             if slugs:
                 ph = ",".join("?" * len(slugs))
                 rows = con.execute(
-                    f"SELECT * FROM messages WHERE from_slug IN ({ph}) "
-                    f"OR to_slug IN ({ph}) "
+                    f"SELECT *, rowid AS n FROM messages "
+                    f"WHERE (from_slug IN ({ph}) OR to_slug IN ({ph})) "
+                    f"{cur_sql}"
                     f"ORDER BY received_at DESC, rowid DESC LIMIT ?",
-                    (*slugs, *slugs, limit)).fetchall()
+                    (*slugs, *slugs, *cur_args, limit)).fetchall()
             else:
                 rows = []
         else:
             rows = con.execute(
-                "SELECT * FROM messages ORDER BY received_at DESC, rowid DESC "
-                "LIMIT ?", (limit,)).fetchall()
+                "SELECT *, rowid AS n FROM messages "
+                f"WHERE 1=1 {cur_sql}"
+                "ORDER BY received_at DESC, rowid DESC "
+                "LIMIT ?", (*cur_args, limit)).fetchall()
         out: list[dict[str, Any]] = []
         for m in rows:
             e = db.row_to_envelope(m)
             e["state"] = m["state"]
             e["delivered_at"] = m["delivered_at"]
             e["read_at"] = m["read_at"]
+            e["n"] = m["n"]
             out.append(e)
         return {"messages": out}
     finally:
