@@ -1477,13 +1477,19 @@ def sec_hub_pick_heal() -> None:
           "(bounded at 4 moves)", _ping_pong_is_bounded)
 
     def _a_refiled_row_stops_showing_the_refuted_hubs_error():
-        """The residual seam. `_refile_known_elsewhere` pops the SPOOL entry's
-        `last_err` but not the org-inbox ROW's, and the row is what the sender
-        reads (§10). The sequence that reaches it: hub A refuses, no other
-        roster knows the peer yet, so `_bump_try` stamps the row; later a
-        roster warms and the entry is re-filed correctly. Measured here rather
-        than assumed, because "the row says a message is failing when it is
-        not" is the exact shape this whole thread has been about."""
+        """A re-file clears the failure note on BOTH carriers — the spool entry
+        and the org-inbox row — because the row is the one the sender reads
+        (§10). The sequence that reaches it: hub A refuses, no other roster
+        knows the peer yet, so `_bump_try` stamps the row; later a roster warms
+        and the entry is re-filed correctly. Was the residual gap on 761c63f
+        (the entry was cleared, the row was not); measured rather than assumed,
+        because "the row says a message is failing when it is not" is the exact
+        shape this whole thread has been about.
+
+        ⚠ The e2e check below does NOT cover this: there the heal short-circuits
+        before `_bump_try`, so the row never carries a note at all. Only the
+        refuse-THEN-warm order reaches the seam — which is why this check
+        stamps the row by hand instead of driving it through the ladder."""
         _fresh_rosters()
         a, ids, addrs = two_hub_org()
         mid, hid = file_to(a, "wanted.other.abcdef")
