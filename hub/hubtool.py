@@ -31,7 +31,20 @@ its own address and its own deliver-once mailbox, no racing). Orgs address a
 chat as @net:<slug>; the dial-out direction is preserved (the chat polls the
 hub; nothing ever reaches in).
 
-Env: MAILHUB_URL (default http://127.0.0.1:7370) · MAILHUB_NAME (pre-seeds /
+Multi-hub (user spec 2026-08-05): one identity may live on SEVERAL hubs at
+once. The identity file carries the list (`hubs: [address, …]` — never an
+env var: the env is per-process, the point is one session on many hubs), and
+the address is the SAME everywhere because the fingerprint derives from the
+uid, not from any hub. register joins every listed hub; listen polls them
+all concurrently (one merged stream, each line tagged `via <hub>` when more
+than one is listed, seen-ring PER HUB — ids are only unique within a hub);
+send resolves the hub by roster (several hold the target → the local one
+wins, fewest hops; none → refuse naming the hubs searched). Manage the list:
+    python hub/hubtool.py addhub <name> <address>
+    python hub/hubtool.py drophub <name> <address>
+
+Env: MAILHUB_URL (the BOOTSTRAP hub, default http://127.0.0.1:7370 — used
+until the identity carries its own list) · MAILHUB_NAME (pre-seeds /
 selects the name; the listener requires one).
 """
 
@@ -43,14 +56,67 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
 import uuid
 from typing import Any, cast
 
+# ☞ THE MISSED-MAIL BUG (diagnosed live 2026-08-05, user: "pervasive and
+# resilient to repair"): on Windows a PIPED stdout defaults to cp1252 with
+# STRICT errors, so a mail body carrying any non-cp1252 char (⚠ ✓ → ⚑ …)
+# made the listener's print() RAISE — after take_fresh had already acked
+# the message and marked it seen. The catch-all swallowed the error and
+# slept: the mail was consumed and never shown, unrecoverably. UTF-8 with
+# errors=replace makes print infallible (and un-mangles the � mojibake the
+# cp1252 bytes caused downstream).
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]  # TextIO stub lacks reconfigure; runtime TextIOWrapper has it (hasattr-guarded, the externtool.py pattern)
+
 HUB = os.environ.get("MAILHUB_URL", "http://127.0.0.1:7370").rstrip("/")
 _ID_DIR = os.path.expanduser("~/.orgtree/hub-clients")
+_RING_LOCK = threading.Lock()    # the listener's threads share the id file
+
+
+def _norm_hub(addr: str) -> str:
+    """Bare host / host:port accepted (the org client's rule, user spec
+    2026-08-05): no scheme assumes http, no port assumes 7370; https left
+    alone (a tunneled hub listens on 443)."""
+    a = str(addr or "").strip().rstrip("/")
+    if not a:
+        return ""
+    if "://" not in a:
+        a = "http://" + a
+    try:
+        from urllib.parse import urlsplit
+        u = urlsplit(a)
+        if u.scheme == "http" and u.hostname and u.port is None:
+            a = f"http://{u.netloc}:7370" + (u.path or "")
+    except ValueError:
+        pass
+    return a
+
+
+def _hubs(d: dict[str, Any]) -> list[str]:
+    """The identity's hub list — the file is the source of truth (never an
+    env var: the env is per-process, the point is one session on several
+    hubs). An identity from before the multi-hub wave carries no list and
+    resolves to the bootstrap hub. Entries are stored ALREADY normalized
+    (addhub applies _norm_hub); stored values and the env bootstrap pass
+    through untouched — rewriting an explicit URL would change where an
+    operator pointed us."""
+    hs = [str(h).rstrip("/") for h in cast("list[Any]", d.get("hubs") or [])]
+    hs = [h for h in hs if h]
+    return hs or [HUB]
+
+
+def _local_first(hubs: list[str]) -> list[str]:
+    """Fewest hops first: loopback hubs sort ahead of remote ones, list
+    order preserved within each class."""
+    def is_local(h: str) -> bool:
+        return "127.0.0.1" in h or "localhost" in h
+    return sorted(hubs, key=lambda h: (not is_local(h),))
 _LEGACY_ID = os.path.expanduser("~/.orgtree/hub-client.json")
 _NAME_RE = re.compile(r"[^a-z0-9-]+")
 _CUR: list[str] = []            # this process's active identity NAME
@@ -199,18 +265,27 @@ def _ident(name: str | None = None, mint: bool = True) -> dict[str, Any]:
             d = {"uid": uuid.uuid4().hex + uuid.uuid4().hex}
             _save_ident(nm, d)
     fp = hashlib.sha256(str(d["uid"]).encode()).hexdigest()
-    d["name"] = nm
-    d["slug"] = f"{nm}.{_user()}.{fp[:6]}"
-    _save_ident(nm, d)
+    slug = f"{nm}.{_user()}.{fp[:6]}"
+    if d.get("name") != nm or d.get("slug") != slug:
+        # save only when something changed: steady-state _ident() must be
+        # READ-ONLY — an unconditional save here raced the listener
+        # threads' per-hub ring writes (load → concurrent ring save →
+        # stale overwrite)
+        d["name"] = nm
+        d["slug"] = slug
+        with _RING_LOCK:
+            _save_ident(nm, d)
     _CUR[:] = [nm]
     return d
 
 
 def _call(path: str, payload: dict[str, Any] | None = None,
-          method: str = "POST", timeout: float = 30.0) -> dict[str, Any]:
+          method: str = "POST", timeout: float = 30.0,
+          hub: str | None = None) -> dict[str, Any]:
     d = _ident()
+    base = hub.rstrip("/") if hub else _hubs(d)[0]
     req = urllib.request.Request(
-        HUB + path,
+        base + path,
         data=json.dumps(payload).encode() if payload is not None else None,
         method=method,
         headers={"Content-Type": "application/json",
@@ -244,12 +319,31 @@ def register(name: str | None = None) -> dict[str, Any]:
         except OSError:
             pass
     d = _ident(nm)
-    out = _call("/api/register", {
-        "slug": d["slug"], "org_name": d["name"],
-        "username": getpass.getuser(), "kind": "chat",
-        "blurb": "independent Claude Code chat"})
-    res: dict[str, Any] = {"slug": d["slug"], "hub": out.get("name"),
-                           "roster": out.get("roster")}
+    # multi-hub (user spec 2026-08-05): register on EVERY listed hub — the
+    # address is identical on all of them (the fingerprint derives from the
+    # uid, not the hub). Per-hub failures are reported, not fatal: one dark
+    # hub must not block the others.
+    payload = {"slug": d["slug"], "org_name": d["name"],
+               "username": getpass.getuser(), "kind": "chat",
+               "blurb": "independent Claude Code chat"}
+    hubs = _hubs(d)
+    per_hub: dict[str, Any] = {}
+    first_out: dict[str, Any] = {}
+    for h in hubs:
+        try:
+            out = _call("/api/register", dict(payload), hub=h)
+            per_hub[h] = {"hub": out.get("name")}
+            if not first_out:
+                first_out = out
+        except Exception as e:                                   # noqa: BLE001
+            per_hub[h] = {"error": str(e)[:200]}
+    res: dict[str, Any] = {"slug": d["slug"],
+                           "hub": first_out.get("name"),
+                           "hubs": per_hub,
+                           "roster": first_out.get("roster")}
+    if all("error" in v for v in per_hub.values()):
+        res["error"] = "no hub reachable — identity minted locally; the " \
+                       "listener will register when one comes back"
     if corrupt:
         res["reminted"] = (
             f"⚠ the identity file for {nm!r} existed but was CORRUPT (torn "
@@ -267,41 +361,61 @@ def register(name: str | None = None) -> dict[str, Any]:
     return res
 
 
-def poll(wait: float) -> dict[str, Any]:
-    return _call(f"/api/poll?wait={wait}", {}, timeout=wait + 10.0)
+def poll(wait: float, hub: str | None = None) -> dict[str, Any]:
+    return _call(f"/api/poll?wait={wait}", {}, timeout=wait + 10.0, hub=hub)
 
 
-def ack(ids: list[str]) -> None:
+def ack(ids: list[str], hub: str | None = None) -> None:
     if ids:
-        _call("/api/ack", {"ids": ids})
+        _call("/api/ack", {"ids": ids}, hub=hub)
 
 
-def take_fresh(out: dict[str, Any]) -> list[dict[str, Any]]:
+def take_fresh(out: dict[str, Any],
+               hub: str | None = None) -> list[dict[str, Any]]:
     """Surface each hub message ONCE (redteam ③): the hub is at-least-once,
     so during an ACK OUTAGE the same message redelivers on every poll — not
     a crash-window duplicate but a repeat per pass. A small persisted ring
     in the identity file (the org client's pattern) collapses repeats; the
-    ack is still attempted for EVERY delivered id, seen or not."""
+    ack is still attempted for EVERY delivered id, seen or not.
+
+    Multi-hub: the ring is PER HUB (`seen` keyed by address — ids are only
+    unique within one hub, and one hub's ring must never suppress another's
+    mail), and the ack goes back to the hub the batch came from. The
+    identity file is shared by the listener's threads — _RING_LOCK
+    serializes the read-modify-write."""
     msgs = cast("list[dict[str, Any]]", out.get("messages") or [])
     if not msgs:
         return []
     nm = _active_name()
-    d = _load_ident(nm)
-    ring = [str(x) for x in cast("list[Any]", d.get("seen_ids") or [])]
-    fresh = [m for m in msgs if str(m.get("id")) not in ring]
-    if fresh:
-        ring.extend(str(m.get("id")) for m in fresh)
-        d["seen_ids"] = ring[-200:]
-        _save_ident(nm, d)
+    with _RING_LOCK:
+        d = _load_ident(nm)
+        key = hub.rstrip("/") if hub else _hubs(d)[0]
+        rings = cast("dict[str, Any]", d.get("seen") or {})
+        if not rings and d.get("seen_ids"):
+            # pre-multi-hub identities carried ONE flat ring — it belonged
+            # to the bootstrap hub, so it migrates under that key
+            rings = {_hubs(d)[0]: d.get("seen_ids")}
+        ring = [str(x) for x in cast("list[Any]", rings.get(key) or [])]
+        fresh = [m for m in msgs if str(m.get("id")) not in ring]
+        if fresh:
+            ring.extend(str(m.get("id")) for m in fresh)
+            rings[key] = ring[-200:]
+            d["seen"] = rings
+            d.pop("seen_ids", None)
+            _save_ident(nm, d)
     try:
-        ack([str(m["id"]) for m in msgs])
+        ack([str(m["id"]) for m in msgs], hub=key)
     except Exception:                                            # noqa: BLE001
         pass          # unacked → redelivered → the ring collapses the repeat
     return fresh
 
 
-def fmt(m: dict[str, Any]) -> str:
-    return (f"[hub mail from {m.get('from')} at {m.get('received_at')}] "
+def fmt(m: dict[str, Any], hub: str | None = None) -> str:
+    # the merged multi-hub stream tags each line's SOURCE — the reader is
+    # otherwise left guessing where to reply
+    via = f" via {hub}" if hub else ""
+    return (f"[hub mail from {m.get('from')} at {m.get('received_at')}"
+            f"{via}] "
             + str(m.get("body") or "").replace("\n", "\n  "))
 
 
@@ -365,23 +479,166 @@ def listen(name: str | None = None) -> None:
                 f.write(str(os.getpid()))
         except OSError:
             pass
-    print(f"listening as {d['slug']} …", flush=True)
+    hubs0 = _hubs(d)
+    print(f"listening as {d['slug']} on "
+          + (", ".join(hubs0) if len(hubs0) > 1 else hubs0[0]) + " …",
+          flush=True)
     try:
-        register()
+        register()                 # all hubs; per-hub failures are non-fatal
     except Exception:                                            # noqa: BLE001
-        pass                       # hub down: the loop below keeps retrying
+        pass                       # hub down: the loops below keep retrying
+    # multi-hub (user spec 2026-08-05): ONE process, one thread per hub,
+    # merged onto stdout. The hub list is re-read every cycle, so addhub /
+    # drophub take effect without re-arming: a dropped hub's thread retires
+    # at its next wakeup, the others' cursors are untouched.
+    import threading
+    stop = threading.Event()
+    threads: dict[str, threading.Thread] = {}
+
+    def pump(h: str) -> None:
+        registered = False
+        while not stop.is_set() and h in _hubs(_load_ident(str(d["name"]))):
+            try:
+                if not registered:
+                    _call("/api/register", {
+                        "slug": d["slug"], "org_name": d["name"],
+                        "username": getpass.getuser(), "kind": "chat",
+                        "blurb": "independent Claude Code chat"}, hub=h)
+                    registered = True
+                many = len(_hubs(_load_ident(str(d["name"])))) > 1
+                for m in take_fresh(poll(25.0, hub=h), hub=h):
+                    # the message is ALREADY acked + ring-marked: from here
+                    # the print must be infallible, or the mail is consumed
+                    # unseen (the 2026-08-05 missed-mail bug) — reconfigure
+                    # above makes that so; the fallback is the belt
+                    line = fmt(m, hub=h if many else None)
+                    try:
+                        print(line, flush=True)
+                    except Exception:                            # noqa: BLE001
+                        print(line.encode("ascii", "replace")
+                              .decode("ascii"), flush=True)
+            except Exception:                                    # noqa: BLE001
+                registered = False   # re-register on reconnect
+                stop.wait(5.0)
+
     try:
         while True:
-            try:
-                for m in take_fresh(poll(25.0)):
-                    print(fmt(m), flush=True)
-            except Exception:                                    # noqa: BLE001
-                time.sleep(5.0)
+            live = _hubs(_load_ident(str(d["name"])))
+            for h in live:
+                t = threads.get(h)
+                if t is None or not t.is_alive():
+                    threads[h] = threading.Thread(
+                        target=pump, args=(h,), daemon=True)
+                    threads[h].start()
+            time.sleep(5.0)
     finally:
+        stop.set()
         try:
             os.remove(lock)
         except OSError:
             pass
+
+
+def _resolve_send_hub(d: dict[str, Any],
+                      to: str) -> tuple[str | None, list[str]]:
+    """Which hub reaches `to` (user spec 2026-08-05): the same shape as the
+    transport ruling — whichever hub's roster holds the target; several →
+    the LOCAL one wins (fewest hops); none → refuse, and the caller names
+    the hubs searched rather than failing into one of them. A single-hub
+    identity skips the roster gate (the hub itself refuses an unknown
+    recipient, and a transient roster failure must not block mail)."""
+    hubs = _hubs(d)
+    if len(hubs) == 1:
+        return hubs[0], hubs
+    searched: list[str] = []
+    for h in _local_first(hubs):
+        searched.append(h)
+        try:
+            out = _call("/api/roster", None, method="GET", hub=h)
+            if any(str(r.get("slug")) == to for r in
+                   cast("list[dict[str, Any]]", out.get("roster") or [])):
+                return h, searched
+        except Exception:                                        # noqa: BLE001
+            continue
+    return None, searched
+
+
+def _send(d: dict[str, Any], to: str, body: str) -> dict[str, Any]:
+    hub, searched = _resolve_send_hub(d, to)
+    if hub is None:
+        return {"error": f"no hub on this identity's list knows {to!r} — "
+                         f"searched: {', '.join(searched)}. Check hub_list "
+                         f"for the right slug, or addhub the hub it lives on"}
+    out = _call("/api/send", {"id": uuid.uuid4().hex, "to": to,
+                              "body": body,
+                              "sent_at": time.strftime(
+                                  "%Y-%m-%dT%H:%M:%SZ", time.gmtime())},
+                hub=hub)
+    if len(_hubs(d)) > 1:
+        out["via"] = hub
+    return out
+
+
+def _merged_roster(d: dict[str, Any]) -> list[dict[str, Any]]:
+    """All hubs' rosters, one row per slug, tagged with every hub that
+    holds it (the same identity registered on N hubs is ONE recipient)."""
+    rows: dict[str, dict[str, Any]] = {}
+    many = len(_hubs(d)) > 1
+    for h in _hubs(d):
+        try:
+            out = _call("/api/roster", None, method="GET", hub=h)
+        except Exception:                                        # noqa: BLE001
+            continue
+        for r in cast("list[dict[str, Any]]", out.get("roster") or []):
+            s = str(r.get("slug"))
+            row = rows.setdefault(s, dict(r))
+            if many:
+                hs = cast("list[str]", row.setdefault("hubs", []))
+                if h not in hs:
+                    hs.append(h)
+                if r.get("online"):
+                    row["online"] = True
+    return list(rows.values())
+
+
+def _hubs_edit(name: str, add: str = "",
+               remove: str = "") -> dict[str, Any]:
+    """addhub / drophub — the identity file carries the list. Adding also
+    registers there right away (per-hub failure reported, not fatal);
+    dropping stops its polling at the listener's next cycle without
+    touching any other hub's ring."""
+    d = _ident(name, mint=False)
+    if not d.get("uid"):
+        return {"error": f"no identity named {name!r} — register first"}
+    hubs = _hubs(d)
+    res: dict[str, Any] = {}
+    if add:
+        a = _norm_hub(add)
+        if a and a not in hubs:
+            hubs.append(a)
+            try:
+                _call("/api/register", {
+                    "slug": d["slug"], "org_name": d["name"],
+                    "username": getpass.getuser(), "kind": "chat",
+                    "blurb": "independent Claude Code chat"}, hub=a)
+                res["registered"] = a
+            except Exception as e:                               # noqa: BLE001
+                res["warning"] = (f"{a} added but unreachable ({e}) — the "
+                                  f"listener registers there when it is up")
+    if remove:
+        r = _norm_hub(remove)
+        if r in hubs and len(hubs) > 1:
+            hubs.remove(r)
+            res["dropped"] = r
+        elif r in hubs:
+            return {"error": "that is the identity's only hub — add "
+                             "another before dropping this one"}
+        else:
+            return {"error": f"{r} is not on the list"}
+    d["hubs"] = hubs
+    _save_ident(str(d["name"]), d)
+    res["hubs"] = hubs
+    return res
 
 
 # ──────────────────────────────────────────────────────────── the MCP server
@@ -406,23 +663,43 @@ TOOLS: list[dict[str, Any]] = [
                                  "every later register"},
      }}},
     {"name": "hub_list",
-     "description": "Everyone on the hub — orgs and chats — with kind, "
-                    "presence and last_seen.",
+     "description": "Everyone on your hubs — orgs and chats — with kind, "
+                    "presence and last_seen. On a multi-hub identity the "
+                    "rosters are MERGED, one row per slug, each row's "
+                    "`hubs` naming where it lives.",
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": "hub_send",
      "description": "Send mail to any hub client (org or chat) by its slug "
-                    "from hub_list.",
+                    "from hub_list. On a multi-hub identity the hub is "
+                    "resolved by roster (several hold the target → the "
+                    "local one wins; none → refused naming the hubs "
+                    "searched — never guessed).",
      "inputSchema": {"type": "object", "properties": {
          "to": {"type": "string"}, "body": {"type": "string"}},
          "required": ["to", "body"]}},
     {"name": "hub_read",
-     "description": "Fetch (and consume) any mail waiting for you right now.",
+     "description": "Fetch (and consume) any mail waiting for you right now "
+                    "— across ALL your hubs; each message carries `hub` so "
+                    "you know where to reply (acks go back to the hub each "
+                    "message came from automatically).",
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": "hub_wait",
      "description": "Wait up to `timeout` seconds (max 55) for new mail — "
-                    "long-polls the hub; empty result on timeout.",
+                    "polls every hub on your list (the window is split "
+                    "across them); each message carries `hub`; empty "
+                    "result on timeout.",
      "inputSchema": {"type": "object", "properties": {
          "timeout": {"type": "number"}}}},
+    {"name": "hub_hubs",
+     "description": "This identity's mailserver list. No args = show it. "
+                    "`add` joins another hub (registers there immediately; "
+                    "same address everywhere — the fingerprint derives "
+                    "from your uid, not the hub). `remove` drops one (its "
+                    "polling stops; the others' cursors are untouched). "
+                    "Addresses accept bare host / host:port (http + :7370 "
+                    "assumed).",
+     "inputSchema": {"type": "object", "properties": {
+         "add": {"type": "string"}, "remove": {"type": "string"}}}},
 ]
 
 
@@ -436,22 +713,34 @@ def dispatch(tool: str, args: dict[str, Any]) -> str:
                                     "first (pick one from your purpose; "
                                     "reuse it every session)"})
     if tool == "hub_list":
-        out = _call("/api/roster", None, method="GET")
-        return json.dumps(out.get("roster") or [])
+        return json.dumps(_merged_roster(d))
     if tool == "hub_send":
-        out = _call("/api/send", {"id": uuid.uuid4().hex,
-                                  "to": str(args.get("to") or ""),
-                                  "body": str(args.get("body") or ""),
-                                  "sent_at": time.strftime(
-                                      "%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
-        return json.dumps(out)
+        return json.dumps(_send(d, str(args.get("to") or ""),
+                                str(args.get("body") or "")))
+    if tool == "hub_hubs":
+        add, rem = str(args.get("add") or ""), str(args.get("remove") or "")
+        if not add and not rem:
+            return json.dumps({"hubs": _hubs(d)})
+        return json.dumps(_hubs_edit(str(d["name"]), add=add, remove=rem))
     if tool in ("hub_read", "hub_wait"):
         wait = min(max(float(args.get("timeout") or 0), 0.0), 55.0) \
             if tool == "hub_wait" else 0.0
-        msgs = take_fresh(poll(wait))
-        return json.dumps({"messages": [
-            {"from": m.get("from"), "body": m.get("body"),
-             "received_at": m.get("received_at")} for m in msgs]})
+        hubs = _hubs(d)
+        per = max(1.0, wait / len(hubs)) if wait else 0.0
+        many = len(hubs) > 1
+        rows: list[dict[str, Any]] = []
+        for h in hubs:
+            try:
+                for m in take_fresh(poll(per, hub=h), hub=h):
+                    rows.append({"from": m.get("from"),
+                                 "body": m.get("body"),
+                                 "received_at": m.get("received_at"),
+                                 **({"hub": h} if many else {})})
+            except Exception:                                    # noqa: BLE001
+                continue          # one dark hub must not block the others
+            if wait and rows:
+                break             # mail in hand — stop burning the window
+        return json.dumps({"messages": rows})
     return json.dumps({"error": f"unknown tool {tool!r}"})
 
 
@@ -537,13 +826,9 @@ def cli(argv: list[str]) -> int:
             register()               # idempotent; also refreshes presence
         except Exception:                                        # noqa: BLE001
             pass
-        out = _call("/api/send", {"id": uuid.uuid4().hex,
-                                  "to": argv[2],
-                                  "body": " ".join(argv[3:]),
-                                  "sent_at": time.strftime(
-                                      "%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
+        out = _send(d, argv[2], " ".join(argv[3:]))
         print(json.dumps(out), flush=True)
-        return 0
+        return 1 if out.get("error") else 0
     if verb == "list":
         if len(argv) < 2:
             print("usage: hubtool.py list <name>", flush=True)
@@ -554,14 +839,31 @@ def cli(argv: list[str]) -> int:
                               f"known: {', '.join(_known_names()) or 'none'}"
                               f"; register first"}), flush=True)
             return 1
-        out = _call("/api/roster", None, method="GET")
-        for r in cast("list[dict[str, Any]]", out.get("roster") or []):
+        for r in _merged_roster(d):
             print(f"{r.get('slug')}  [{r.get('kind') or 'org'}]"
                   + ("  online" if r.get("online") else
-                     f"  last seen {r.get('last_seen')}"), flush=True)
+                     f"  last seen {r.get('last_seen')}")
+                  + (f"  on {', '.join(cast('list[str]', r['hubs']))}"
+                     if r.get("hubs") else ""), flush=True)
         return 0
-    print("usage: hubtool.py [listen|register|send|list] …  "
-          "(no verb = MCP server on stdio)", flush=True)
+    if verb in ("addhub", "drophub"):
+        if len(argv) < 3:
+            print(f"usage: hubtool.py {verb} <name> <address>", flush=True)
+            return 2
+        out = _hubs_edit(_norm_name(argv[1]),
+                         add=argv[2] if verb == "addhub" else "",
+                         remove=argv[2] if verb == "drophub" else "")
+        print(json.dumps(out), flush=True)
+        return 1 if out.get("error") else 0
+    if verb == "hubs":
+        d = _ident(argv[1] if len(argv) > 1 else None, mint=False)
+        if not d.get("uid"):
+            print(json.dumps({"error": "no such identity"}), flush=True)
+            return 1
+        print(json.dumps({"hubs": _hubs(d)}), flush=True)
+        return 0
+    print("usage: hubtool.py [listen|register|send|list|hubs|addhub|drophub]"
+          " …  (no verb = MCP server on stdio)", flush=True)
     return 2
 
 
