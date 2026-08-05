@@ -6,3 +6,6 @@ node_modules/
 dist/
 .venv/
 shots*/
+
+# machine-local hub config (compose reads it automatically)
+hub/.env
