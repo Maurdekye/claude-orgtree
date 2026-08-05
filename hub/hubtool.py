@@ -83,10 +83,26 @@ def _active_name(explicit: str | None = None) -> str:
 
 def _load_ident(name: str) -> dict[str, Any]:
     try:
-        d = json.load(open(_id_path(name), encoding="utf-8"))
+        # with-block, deliberately: on a parse error the open handle would
+        # otherwise live on inside the exception's traceback, and Windows
+        # then refuses the quarantine rename below (PermissionError)
+        with open(_id_path(name), encoding="utf-8") as f:
+            d = json.load(f)
         if isinstance(d, dict) and cast("dict[str, Any]", d).get("uid"):
             return cast("dict[str, Any]", d)
-    except (OSError, ValueError):
+    except ValueError:
+        # the file EXISTS but does not parse — a torn write (the 2026-08-05
+        # power cut left one full of zeros). The uid is unrecoverable, so a
+        # re-mint is the only way forward — but it must be LOUD, not silent:
+        # quarantine the wreck and let register() report the address change
+        # (silent churn strands the old address with nobody told).
+        try:
+            os.replace(_id_path(name),
+                       _id_path(name) + f".corrupt-{int(time.time())}")
+        except OSError:
+            pass
+        return {"_corrupt": True}
+    except OSError:
         pass
     # one-time adoption of the pre-ruling single-profile identity: if the
     # legacy file carries THIS name, its uid moves here so the already-
@@ -106,12 +122,22 @@ def _load_ident(name: str) -> dict[str, Any]:
 
 
 def _save_ident(name: str, d: dict[str, Any]) -> None:
+    """Durable write: tmp + fsync + atomic replace. A plain open/write here
+    cost a real identity on 2026-08-05 — a power cut left the file full of
+    zeros (NTFS makes the rename durable before the data), and the uid IS
+    the only copy of the secret: a torn identity file is a PERMANENTLY
+    stranded address on the first-write-wins hub."""
     os.makedirs(_ID_DIR, exist_ok=True)
-    with open(_id_path(name), "w", encoding="utf-8") as f:
+    path = _id_path(name)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(d, f, indent=1)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
     try:
         # the uid IS the credential (redteam ④): owner-only on POSIX
-        os.chmod(_id_path(name), 0o600)
+        os.chmod(path, 0o600)
     except OSError:
         pass
 
@@ -202,7 +228,18 @@ def register(name: str | None = None) -> dict[str, Any]:
     # design, so a COLLISION (two sessions choosing the same words) silently
     # merges two mailboxes — make the resumption VISIBLE so a session that
     # expected a fresh identity sees it and can pick another name
-    resumed = bool(_load_ident(nm).get("uid"))
+    pre = _load_ident(nm)
+    resumed = bool(pre.get("uid"))
+    corrupt = bool(pre.get("_corrupt"))
+    if not resumed and not corrupt:
+        # a read-only verb may have already quarantined the wreck — the
+        # .corrupt-* sibling is the durable breadcrumb, so the remint is
+        # still LOUD even when register isn't the first to touch the damage
+        try:
+            corrupt = any(f.startswith(f"{nm}.json.corrupt-")
+                          for f in os.listdir(_ID_DIR))
+        except OSError:
+            pass
     d = _ident(nm)
     out = _call("/api/register", {
         "slug": d["slug"], "org_name": d["name"],
@@ -210,6 +247,13 @@ def register(name: str | None = None) -> dict[str, Any]:
         "blurb": "independent Claude Code chat"})
     res: dict[str, Any] = {"slug": d["slug"], "hub": out.get("name"),
                            "roster": out.get("roster")}
+    if corrupt:
+        res["reminted"] = (
+            f"⚠ the identity file for {nm!r} existed but was CORRUPT (torn "
+            f"write — quarantined beside it) — its secret is unrecoverable, "
+            f"so this is a NEW address with a new fingerprint. Your old "
+            f"address is a dead letterbox: tell your correspondents the new "
+            f"one, and ask the hub operator to remove the old registration")
     if resumed:
         res["resumed"] = (
             f"the name {d['name']!r} already existed on this machine — the "

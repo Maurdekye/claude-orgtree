@@ -456,6 +456,109 @@ def sec_names() -> None:
           _name_cannot_escape_the_identity_dir)
 
 
+# ══════════════════════════════════════════════════════ §2c (redteam, live)
+def sec_crash() -> None:
+    """THE IDENTITY FILE IS THE CREDENTIAL, AND IT IS WRITTEN IN PLACE.
+
+    Not hypothetical: a power cut on 2026-08-05 cost this very session its
+    address. It came back as orgtree-redteam.ncola-k8bx.7b471a while its old
+    address .895ec4 was still on the hub roster — same name, new uid, and the
+    old slug now has no surviving preimage on a first-write-wins hub, so it is
+    unclaimable forever and anything sent to it is accepted and never read.
+    The `resumed` notice correctly did NOT fire, which is how the loss was
+    noticed in the first place.
+
+    Both writers here are non-atomic: _save_ident truncates then dumps, and
+    _mint_uid's O_EXCL path writes without fsync. The crash artifact is a
+    zero-byte or truncated file — and what _ident does with one is mint a new
+    identity over it, silently."""
+    print("\n§2c  crash safety — the file that IS the credential")
+
+    def _corrupt_file_is_loud_and_preserved():
+        # was a gap; the shipped fix chose QUARANTINE + LOUD REMINT over the
+        # prescribed refusal: the uid in a torn file is unrecoverable either
+        # way (there is no backup to restore), and a hook-onboarded session
+        # that refuses forever is a silent no-mail-channel fleet failure —
+        # so instead (a) the wreck is preserved beside the file
+        # (.corrupt-<ts>), never overwritten, (b) register() carries a
+        # `reminted` warning naming the consequence (new address, old one
+        # dead, tell your correspondents), and (c) read-only verbs
+        # (mint=False) still refuse rather than proceed.
+        fresh_ident()
+        first = dict(hubtool._ident("survivor"))
+        assert first.get("uid"), "fixture: an identity must exist first"
+        with open(hubtool._id_path("survivor"), "w", encoding="utf-8") as f:
+            f.write("")                # the crash artifact
+        hubtool._CUR.clear()
+        ro = hubtool._ident("survivor", mint=False)
+        assert not ro.get("uid"), (
+            "a read-only verb proceeded against a corrupt identity file")
+        out = hubtool.register("survivor")
+        assert out.get("reminted"), (
+            "re-registering over a corrupt file carried no warning — the "
+            "session keeps its name, loses its address, and is told nothing")
+        assert out.get("slug") and first["uid"] not in json.dumps(out)
+        wrecks = [f for f in os.listdir(hubtool._ID_DIR)
+                  if f.startswith("survivor.json.corrupt-")]
+        assert wrecks, "the damaged file was overwritten, not quarantined"
+    check("crash · a damaged identity file is quarantined and the re-mint is "
+          "LOUD (`reminted`), never silent", _corrupt_file_is_loud_and_preserved)
+
+    def _an_interrupted_save_does_not_destroy_the_old_identity():
+        fresh_ident()
+        hubtool._ident("durable")
+        before = io_read(hubtool._id_path("durable"))
+        assert '"uid"' in before
+        real_dump = hubtool.json.dump
+
+        def boom(*a, **k):                    # the write dies mid-flight
+            raise OSError("power cut")
+        hubtool.json.dump = boom              # type: ignore[assignment]
+        try:
+            try:
+                hubtool._save_ident("durable", {"uid": "n" * 64,
+                                                "name": "durable"})
+            except OSError:
+                pass
+        finally:
+            hubtool.json.dump = real_dump     # type: ignore[assignment]
+        after = io_read(hubtool._id_path("durable"))
+        assert after == before, (
+            "an interrupted save left the identity file as "
+            f"{after[:40]!r} — open(path, 'w') truncates BEFORE anything is "
+            "written, so the credential is destroyed by the attempt")
+    gap("crash · an interrupted save leaves the previous identity intact",
+        "_save_ident opens the live file with mode 'w', which truncates "
+        "immediately; anything that interrupts the dump (power, disk full, a "
+        "kill) leaves a zero-byte credential and, per the gap above, the next "
+        "register mints a new address. The standard fix is three lines: dump "
+        "to <name>.json.tmp, flush + os.fsync, then os.replace onto the real "
+        "path — atomic on both platforms, and it makes the mint path's "
+        "missing fsync moot.",
+        _an_interrupted_save_does_not_destroy_the_old_identity)
+
+    def _stale_listener_lock_is_recoverable():
+        # the outage also left .listening locks behind for all three sessions;
+        # this is the property that made recovery automatic rather than manual
+        fresh_ident()
+        hubtool._ident("relistener")
+        lock = hubtool._id_path("relistener") + ".listening"
+        with open(lock, "w", encoding="utf-8") as f:
+            f.write("999999")                 # a pid that cannot be alive
+        assert not hubtool._pid_alive(999999), "fixture: the pid must be dead"
+        os.remove(lock)
+    check("crash · a listener lock left by a killed session names a dead pid "
+          "(the takeover path, exercised for real by the outage)",
+          _stale_listener_lock_is_recoverable)
+
+
+def io_read(path: str) -> str:
+    try:
+        return open(path, encoding="utf-8").read()
+    except OSError:
+        return ""
+
+
 # ══════════════════════════════════════════════════════════════════════ §3
 def sec_secret() -> None:
     print("\n§3  the uid is the secret — header only")
@@ -667,6 +770,7 @@ def main() -> int:
     sec_identity()
     sec_race()
     sec_names()
+    sec_crash()
     sec_secret()
     sec_listen()
     sec_kind()

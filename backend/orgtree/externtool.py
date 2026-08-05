@@ -73,8 +73,16 @@ def _peer_base() -> str:
         base = uuid.uuid4().hex[:12]
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, "w", encoding="utf-8") as f:
+            # durable write (the 2026-08-05 power cut zeroed hubtool's
+            # identity file the plain-write way): tmp + fsync + replace, so
+            # an unclean shutdown cannot silently change this machine's
+            # stable @mcp: listener address
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
                 f.write(base)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, path)
         except OSError:
             pass
     return base
