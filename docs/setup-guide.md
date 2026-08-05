@@ -339,12 +339,19 @@ the listener requires one, from either the argument or this variable).
 
 The dial-out direction is preserved here too: the chat polls the hub; nothing ever reaches in.
 
-**Arming `listen` automatically at session start is no longer just a suggestion — it's shipped.**
-`hub/session-start.sh` is a real, working `SessionStart` hook: wired into `settings.json`, it hands
-a fresh session the exact instructions to pick a name (reusing an earlier one if it registered
-before — it lists every name already known on this machine), register, and arm its own `Monitor`
-watch on `listen`, all before any other work. Read it directly for the exact wording it hands the
-session; this guide won't duplicate a script that already exists and can drift from it.
+**Arming `listen` automatically at session start is no longer just a suggestion — it's shipped,
+and wiring it is part of hub setup.** After starting the hub, run once per machine:
+
+```sh
+python hub/install-hook.py
+```
+
+Idempotent (backs up `settings.json`; also sweeps any retired-chatq hooks). It wires
+`hub/session-start.sh` as a `SessionStart` hook, which hands every fresh session the exact
+instructions to pick a name (reusing an earlier one if it registered before — it lists every name
+already known on this machine), register, and arm its own `Monitor` watch on `listen`, all before
+any other work. Read the script directly for the exact wording it hands the session; this guide
+won't duplicate a script that already exists and can drift from it.
 
 ---
 

@@ -175,6 +175,22 @@ The supervisor auto-detects this private install and prefers it; your global
 `claude` stays untouched. Without it, messages to a busy agent deliver when
 its current response ends instead of after its next tool call.
 
+**Mail hub (cross-session and cross-machine mail):** to let orgs, other
+machines, and independent Claude Code sessions mail each other, start the hub
+and wire the session hook — two commands, once per machine:
+
+```bash
+cd hub
+docker compose up -d --build     # the hub service (port 7370)
+python install-hook.py           # wires the SessionStart hook (idempotent)
+```
+
+The hook makes every NEW Claude Code session on the machine onboard itself
+automatically — it registers a self-chosen identity name and arms its own hub
+listener before other work, the way chatq used to. Details and the trust
+model: [hub/README.md](hub/README.md) and
+[docs/setup-guide.md §3](docs/setup-guide.md).
+
 **Updating:** run `update.ps1` (or double-click `update.cmd`) on Windows, or
 `./update.sh` on Linux/macOS — the two are step-for-step equivalents. Either
 pulls the latest changes, rebuilds the UI, installs any new dependencies, and
