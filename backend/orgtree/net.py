@@ -791,6 +791,16 @@ def _refile_known_elsewhere(slug: str, hub_id: str, entry_id: str,
         e["refiled"] = int(e.get("refiled") or 0) + 1
         e.pop("last_err", None)
         spool.setdefault(target, []).append(e)
+        # the org-inbox row too (redteam residual gap on 761c63f): an earlier
+        # refusal may have _bump_try-stamped it, and a stale "no org
+        # registered" ⚠ on a now-correctly-routed message reads as still
+        # failing until the next delivery would have popped it
+        for row in reversed(cast("list[dict[str, Any]]",
+                                 org.d.get("org_inbox") or [])):
+            if row.get("net_id") == entry_id:
+                row.pop("last_err", None)
+                row.pop("tries", None)
+                break
         store.save_org(org)
     return target
 

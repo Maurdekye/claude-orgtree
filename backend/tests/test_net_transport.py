@@ -1292,6 +1292,289 @@ def sec_hub_choice() -> None:
           "fallback)", _both_directions_resolve_rather_than_position)
 
 
+# ═════════════════════════════════════════════════════════════════════ §12
+def sec_hub_pick_heal() -> None:
+    """761c63f — the two halves of the hub pick, after the cross-org find.
+
+    §11 fixed "which hub does an entry file under" at APPEND time. This is the
+    follow-up: `connected` turned out to be weak evidence (a hub can be
+    connected with a roster that has never synced), and — because a 422
+    unknown-recipient retries the same hub forever by ruling — a single bad
+    guess was permanent. So the pick got a second gate, and the drain got a
+    heal that treats the append-time choice as REFUTABLE.
+
+    The invariant that must survive both: a message is never moved because a
+    hub does not know the peer (absence proves nothing — FR-07 says an address
+    may be given before the recipient exists). It moves only when some other
+    hub POSITIVELY names them."""
+    print("\n§12  the cold-roster gate and the 422 re-file heal")
+
+    def _fresh_rosters():
+        """`_rosters` is a module global keyed by ADDRESS, and HUB_A/HUB_B are
+        fixed — so a roster another check stubbed outlives it. Every check
+        below states the roster world it wants rather than inheriting one."""
+        with net._status_lock:
+            net._rosters.clear()
+            for k in [k for k in net._status if k[1]]:
+                net._status.pop(k, None)
+
+    def two_hub_org():
+        a = mkorg(hubs=(HUB_A, HUB_B))
+        with store.DOC_LOCK:
+            org = store.load_org(a)
+            for h in org.d["net_hubs"]:
+                h["enabled"] = True
+            store.save_org(org)
+        addrs = [str(h["address"]) for h in store.load_org(a).d["net_hubs"]]
+        return a, hub_ids(a), addrs
+
+    def connect(slug, hid, on=True):
+        with net._status_lock:
+            net._status[(slug, hid)] = {"connected": on}
+
+    def file_to(slug, peer):
+        with store.DOC_LOCK:
+            org = store.load_org(slug)
+            org.post_mail("ceo", f"@net:{peer}", "which hub gets this")
+            mid = net.spool_append(org, peer, "which hub gets this",
+                                   oid=org.d["org_inbox"][-1]["id"])
+            store.save_org(org)
+        spool = store.load_org(slug).d.get("net_spool") or {}
+        where = [k for k, v in spool.items() if any(e["id"] == mid for e in v)]
+        return mid, (where[0] if where else None)
+
+    # ---- the append-time gate ------------------------------------------
+    def _cold_connected_loses_to_warm_connected():
+        _fresh_rosters()
+        a, ids, addrs = two_hub_org()
+        connect(a, ids[0]); connect(a, ids[1])
+        with net._status_lock:
+            net._rosters[addrs[0]] = []                      # never synced
+            net._rosters[addrs[1]] = [{"slug": "someone.else.111111"}]
+        _mid, hid = file_to(a, "stranger.other.abcdef")
+        assert hid == ids[1], (
+            f"filed onto {hid} — the FIRST hub is connected but its roster "
+            f"has never synced, so 'connected' picked a hub that may know "
+            f"nobody at all while a hub with a live roster sat second")
+    check("hub-pick · a connected hub whose roster never synced loses to a "
+          "connected hub with a live roster (the cross-org misroute)",
+          _cold_connected_loses_to_warm_connected)
+
+    def _all_cold_still_files_somewhere():
+        """FR-07, restated at the new gate: a cold world must never refuse or
+        stall — the spool exists precisely to hold mail until a hub is back."""
+        _fresh_rosters()
+        a, ids, _addrs = two_hub_org()
+        connect(a, ids[0]); connect(a, ids[1])
+        _mid, hid = file_to(a, "stranger.other.abcdef")
+        assert hid == ids[0], (
+            f"filed onto {hid}: with every roster cold the gate must fall "
+            f"through to any connected hub in list order, not refuse")
+    check("hub-pick · when EVERY roster is cold the gate falls through "
+          "instead of refusing (FR-07 offline addressing)",
+          _all_cold_still_files_somewhere)
+
+    def _positive_knowledge_still_outranks_everything():
+        """ANTI-VACUITY for the two above: tier 1 is unchanged, so a hub that
+        actually holds the peer wins even when a warm, connected hub with a
+        full roster sits ahead of it in the list."""
+        _fresh_rosters()
+        a, ids, addrs = two_hub_org()
+        connect(a, ids[0]); connect(a, ids[1])
+        with net._status_lock:
+            net._rosters[addrs[0]] = [{"slug": "a-crowd.other.222222"},
+                                      {"slug": "another.other.333333"}]
+            net._rosters[addrs[1]] = [{"slug": "wanted.other.abcdef"}]
+        _mid, hid = file_to(a, "wanted.other.abcdef")
+        assert hid == ids[1], (
+            f"filed onto {hid} — the roster that NAMES the recipient must "
+            f"beat a merely-populated one, or §11 regressed")
+    check("hub-pick · a roster that names the recipient still outranks a "
+          "merely-warm one (tier 1 over tier 2)",
+          _positive_knowledge_still_outranks_everything)
+
+    def _nothing_connected_files_by_list_order():
+        _fresh_rosters()
+        a, ids, _addrs = two_hub_org()
+        _mid, hid = file_to(a, "stranger.other.abcdef")
+        assert hid == ids[0], f"filed onto {hid} with no hub connected"
+    check("hub-pick · with nothing connected at all the entry still files "
+          "(tier 3, list order — unchanged)",
+          _nothing_connected_files_by_list_order)
+
+    # ---- the 422 heal ---------------------------------------------------
+    def _absence_never_moves_mail():
+        """The invariant the heal must not break. A hub refusing a recipient
+        is not evidence the recipient is elsewhere — hub-agnostic addresses
+        are ruled, and a peer may register tomorrow."""
+        _fresh_rosters()
+        a, ids, addrs = two_hub_org()
+        mid, hid = file_to(a, "not-yet-born.other.abcdef")
+        with net._status_lock:
+            net._rosters[addrs[0]] = [{"slug": "somebody.else.111111"}]
+            net._rosters[addrs[1]] = [{"slug": "another.else.222222"}]
+        hubs = [dict(h) for h in store.load_org(a).d["net_hubs"]]
+        moved = net._refile_known_elsewhere(a, hid, mid,
+                                            "not-yet-born.other.abcdef", hubs)
+        assert moved is None, f"moved to {moved} on nobody's positive evidence"
+        spool = store.load_org(a).d.get("net_spool") or {}
+        assert [k for k, v in spool.items() if v] == [hid], (
+            "the entry left its hub although no roster names the recipient")
+    check("422-heal · an entry moves on POSITIVE evidence only — a peer no "
+          "roster knows stays put and keeps retrying (FR-07)",
+          _absence_never_moves_mail)
+
+    def _refile_preserves_the_entry_identity():
+        """The id is the hub's idempotency key AND the org-inbox row's
+        `net_id`. A refile that re-minted either would leave the row unable
+        to ever advance its state — "queued" forever on a message that was
+        in fact delivered, which is this whole thread's failure shape."""
+        _fresh_rosters()
+        a, ids, addrs = two_hub_org()
+        mid, hid = file_to(a, "wanted.other.abcdef")
+        other = ids[1] if hid == ids[0] else ids[0]
+        other_addr = addrs[1] if hid == ids[0] else addrs[0]
+        with net._status_lock:
+            net._rosters[other_addr] = [{"slug": "wanted.other.abcdef"}]
+        row = [r for r in store.load_org(a).d["org_inbox"]
+               if r.get("dir") == "out"][-1]
+        hubs = [dict(h) for h in store.load_org(a).d["net_hubs"]]
+        moved = net._refile_known_elsewhere(a, hid, mid,
+                                            "wanted.other.abcdef", hubs)
+        assert moved == other, f"refiled to {moved}, expected {other}"
+        spool = store.load_org(a).d.get("net_spool") or {}
+        assert not spool.get(hid), "the entry is still on the refuting hub too"
+        e = next(x for x in spool[other] if x["id"] == mid)
+        assert e["oid"] == row["id"] and str(row.get("net_id")) == mid, (
+            "the refile broke the entry↔row link — the org-inbox row can no "
+            "longer be stamped when this message lands")
+        assert int(e.get("refiled") or 0) == 1, e
+    check("422-heal · a refile preserves the entry id and its org-inbox link "
+          "(the idempotency key and `net_id` both survive)",
+          _refile_preserves_the_entry_identity)
+
+    def _ping_pong_is_bounded():
+        """Two hubs with mutually stale rosters each claim the peer. Without
+        a bound the entry would shuttle forever, invisible and undelivered."""
+        _fresh_rosters()
+        a, ids, addrs = two_hub_org()
+        mid, hid = file_to(a, "claimed.other.abcdef")
+        with net._status_lock:
+            net._rosters[addrs[0]] = [{"slug": "claimed.other.abcdef"}]
+            net._rosters[addrs[1]] = [{"slug": "claimed.other.abcdef"}]
+        hubs = [dict(h) for h in store.load_org(a).d["net_hubs"]]
+        seen, at = [], hid
+        for _ in range(8):
+            nxt = net._refile_known_elsewhere(a, at, mid,
+                                              "claimed.other.abcdef", hubs)
+            if nxt is None:
+                break
+            seen.append(nxt)
+            at = nxt
+        assert len(seen) <= 4, f"shuttled {len(seen)} times: {seen}"
+        assert seen, "a mutually-claimed peer never moved at all"
+    check("422-heal · mutually stale rosters cannot shuttle an entry forever "
+          "(bounded at 4 moves)", _ping_pong_is_bounded)
+
+    def _a_refiled_row_stops_showing_the_refuted_hubs_error():
+        """The residual seam. `_refile_known_elsewhere` pops the SPOOL entry's
+        `last_err` but not the org-inbox ROW's, and the row is what the sender
+        reads (§10). The sequence that reaches it: hub A refuses, no other
+        roster knows the peer yet, so `_bump_try` stamps the row; later a
+        roster warms and the entry is re-filed correctly. Measured here rather
+        than assumed, because "the row says a message is failing when it is
+        not" is the exact shape this whole thread has been about."""
+        _fresh_rosters()
+        a, ids, addrs = two_hub_org()
+        mid, hid = file_to(a, "wanted.other.abcdef")
+        # phase 1: refused, nobody else knows them → the row is stamped
+        net._bump_try(a, hid, mid, "no org registered as wanted.other.abcdef")
+        row = [r for r in store.load_org(a).d["org_inbox"]
+               if r.get("net_id") == mid][0]
+        assert row.get("last_err"), "the fixture did not stamp the row"
+        # phase 2: the other hub's roster warms and names them
+        other = ids[1] if hid == ids[0] else ids[0]
+        with net._status_lock:
+            net._rosters[addrs[1] if hid == ids[0] else addrs[0]] = [
+                {"slug": "wanted.other.abcdef"}]
+        hubs = [dict(h) for h in store.load_org(a).d["net_hubs"]]
+        assert net._refile_known_elsewhere(a, hid, mid,
+                                           "wanted.other.abcdef", hubs) == other
+        row = [r for r in store.load_org(a).d["org_inbox"]
+               if r.get("net_id") == mid][0]
+        assert not row.get("last_err"), (
+            f"the row still reads {row.get('last_err')!r} after the entry was "
+            f"re-filed onto a hub that DOES know the recipient — the sender "
+            f"sees ⚠ 'delivery failing' on a message that is now correctly "
+            f"routed and about to be delivered")
+    # promoted from gap() 2026-08-05, fixed the same day: the re-file now
+    # clears the org-inbox row beside the spool entry. Deviation from the
+    # finding's suggestion, deliberate: `tries` is popped TOO, for symmetry
+    # with `_stamp_row` — the frontend never renders a row's tries without
+    # its error note, and a later real failure on the new hub re-copies the
+    # honest cumulative count from the entry anyway (`_bump_try`).
+    check("422-heal · a re-filed entry's row stops showing the refuted hub's "
+          "error", _a_refiled_row_stops_showing_the_refuted_hubs_error)
+
+    # ---- end to end, on the real two-hub fleet --------------------------
+    def _a_misfiled_message_heals_and_lands():
+        """The whole point, measured on real hubs: the sender talks to both,
+        the recipient exists on hub B only, and the entry is staged while
+        every roster is still cold — exactly the cross-org report. Hub A
+        answers 422; the entry must end up delivered rather than retrying A
+        for the rest of the process's life."""
+        _fresh_rosters()
+        a = mkorg(hubs=(HUB_A, HUB_B))
+        with store.DOC_LOCK:
+            org = store.load_org(a)
+            for h in org.d["net_hubs"]:
+                h["enabled"] = True
+            store.save_org(org)
+        b = mkorg(hubs=(HUB_B,))
+        bslug = net_slug(b)
+        mid, _r = send_net(a, "ceo", bslug, "healed across hubs")
+        staged = [k for k, v in spool_of(a).items() if any(e["id"] == mid for e in v)]
+        assert staged and staged[0] == hub_ids(a)[0], (
+            f"the fixture must stage onto hub A to test the heal, got {staged}")
+        ladder(a, b, passes=3)
+        assert not spool_of(a), f"still spooled after three passes: {spool_of(a)}"
+        got = [r["body"] for r in inbox_rows(b, "in")]
+        assert "healed across hubs" in got, (
+            f"the message never reached the recipient: {got}")
+        row = [r for r in store.load_org(a).d["org_inbox"]
+               if r.get("net_id") == mid][0]
+        assert row.get("state") in ("sent", "delivered", "read"), row
+        assert "last_err" not in row, (
+            f"the row still carries the refuted hub's failure note: {row}")
+    check("422-heal · end to end on two real hubs: a message staged onto the "
+          "wrong hub re-files itself and is delivered, and its row stops "
+          "showing the refuted hub's error",
+          _a_misfiled_message_heals_and_lands)
+
+    def _heal_runs_before_the_failure_is_recorded():
+        """Drift guard, code only (the §11 lesson: a guard that reads comments
+        tells the wrong story). Order matters — if `_bump_try` ran first, a
+        guess that was merely refuted would be stamped onto the sender's row
+        as a delivery failure before the heal had a chance to fix it."""
+        src = open(os.path.join(_REPO, "backend", "orgtree", "net.py"),
+                   encoding="utf-8").read()
+        i = src.index("elif r.status_code == 422:")
+        seg = "\n".join(ln for ln in src[i:i + 1400].splitlines()
+                        if not ln.lstrip().startswith("#"))
+        assert "_refile_known_elsewhere" in seg, "the 422 heal is gone"
+        assert seg.index("_refile_known_elsewhere") < seg.index("_bump_try"), (
+            "the failure is recorded before the heal is tried")
+        heal = src[src.index("def _refile_known_elsewhere"):]
+        heal = "\n".join(ln for ln in heal[:1600].splitlines()
+                         if not ln.lstrip().startswith("#"))
+        assert "_rosters" in heal and "refiled" in heal, (
+            "the heal no longer requires positive roster evidence, or lost "
+            "its move bound — re-read §12 before trusting these checks")
+    check("422-heal · the heal is consulted BEFORE the failure is stamped, "
+          "and still needs positive roster evidence plus a move bound",
+          _heal_runs_before_the_failure_is_recorded)
+
+
 def main() -> int:
     print("orgtree · @net Phase C — the transport, attacked")
     sec_ladder()
@@ -1305,6 +1588,7 @@ def main() -> int:
     sec_connect_latency()
     sec_failed_send_visibility()
     sec_hub_choice()
+    sec_hub_pick_heal()
 
     print()
     if GAPS:
