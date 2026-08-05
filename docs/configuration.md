@@ -167,7 +167,7 @@ dashboard. This is the only level that clamps rather than configures.
 ⚠ Auth is **not** configurable for a kiosk (user ruling): every sandbox uses the proxied
 subscription — the host attaches the token and the container never sees a credential.
 
-⚠ A kiosk org is **sealed from the outside world** in both directions — no chatq, no inter-org mail,
+⚠ A kiosk org is **sealed from the outside world** in both directions — no hub mail, no inter-org mail,
 not listed to outsiders (`ledger.py:809-811,913`, `supervisor.py:2473`). The refusal is deliberately
 indistinguishable from "no such org" so the kiosk roster cannot be enumerated.
 

@@ -101,6 +101,13 @@ Groundwork (researcher, 2026-08-05):
 
 → moved from `docs/interim-docket.md` F-10, 2026-08-05, by the curator on the user's instruction.
 
+**Closing note, same day (`ff33072`, shipped+deployed):** `DECISIONS.md` **D-100** ruled
+`orgtree_present`'s audience down to a **direct user audience only** — refused otherwise, a
+deliberate asymmetry with `orgtree_ask`'s broader routing (present is for showing the user
+something, not for a chain of intermediaries to relay). Same commit added a headless-org refusal
+for `present` (consistent with headless's existing user-bound-request auto-denials elsewhere) and
+made evictions visible. Was left open at ship time; now closed.
+
 ---
 
 ### FR-04 · batched asks — multiple questions in one card
@@ -324,6 +331,23 @@ all).
 *(user-stated intent, 2026-08-05, recorded by the curator. Not a build spec — a stated direction to
 keep on record, not something to scope or start on its own say-so.)*
 
+**DONE 2026-08-05 — the cutover happened the same day.** Every session and org runs on the hub;
+chatq is archived at `~/.claude/chatq.retired-20260805` and its SessionStart hook is replaced by
+`hub/install-hook.py`. Two follow-on **user rulings** the same afternoon, after a live failure in
+which an org kept replying over the dead bridge (its own view showed the mail sent; the hub's
+request log showed it never attempted a send):
+
+1. **Drop `@ext:` entirely** — not merely unused: a prefix that still parses, still writes an
+   outbound row and can no longer deliver is worse than no prefix at all.
+2. **Resolve the transport automatically**, preferring fewer hops — and since `@org:` and `@mcp:`
+   are mutually exclusive for any one recipient, that is two graphs rather than one chain:
+   `@org: > @net:` and `@mcp: > @net:`. A bare name is enough; the explicit prefixes survive only
+   as optional disambiguators.
+
+*(Implementation with the implementer; documentation swept of chatq the same day by the redteam
+at the user's direction. Docket entries and `DECISIONS.md` keep their original wording — they
+record what was asked and when, and rewriting them would falsify the record.)*
+
 **Already on the record once, less definitely.** `DECISIONS.md` **D-099** named this in passing
 when ruling FR-06: the `hubtool.py` client uses "the chatq delivery shape over the hub, which is
 what makes this a candidate END-TO-END CHATQ REPLACEMENT (user's framing; migration is its own
@@ -396,6 +420,19 @@ moved to `~/.claude/chatq.retired-20260805`, its `SessionStart` hook replaced by
 is reached for the cross-session-coordination use case; the deeper code-level removal (the `@ext:`
 bridge inside orgtree itself, footprint traced below) is unaffected and remains its own future
 work, not implied by this cutover.
+
+**The deeper removal landed too, same day (`e860798`, deployed) — this entry's full scope is now
+CLOSED, not just the cross-session half.** The `@ext:` bridge code traced below — `chatq_available`/
+`chatq_register_org`/`chatq_deregister_org`/`chatq_send`/`start_chatq_bridge` in `supervisor.py`,
+the org-lifecycle hooks and `ext_send` dispatch in `api.py`, the `ledger.py` authorization
+recognition — is **deleted**, not merely dormant. New `@ext:` sends now refuse loudly, naming the
+hub route instead; historical `@ext:` rows in old records stay readable. A bare (unprefixed) outside
+name now auto-resolves its transport (`{@org XOR @mcp} > @net`, ambiguity refuses rather than
+guessing, internal names always win, explicit prefixes still work as an override) — a usability
+layer this entry never asked for but that falls naturally out of there being one fewer namespace to
+disambiguate against. "Chatq and orgtree will be entirely independent tools... no integration with
+one another" (the user's own framing) is now true on **both** sides of that sentence: chatq itself
+retired, and orgtree's code no longer references it at all.
 
 ⚠ **Retirement gotcha, worth keeping on record:** stopping this session's chatq listener via
 `TaskStop` killed the wrapper process but left a `listen.sh` child holding the chatq directory open,
@@ -524,6 +561,13 @@ already makes between its loopback-only admin surface and the public kiosk gatew
 
 Not decided here — flagging the wrinkle is the point, not picking a side.
 
+**Post-ship gap found and closed, same day (`ff33072`):** redteam (4f69f83a) found a real hole in
+the shipped route split — noted here as "PublicHub scope pin" per the implementer's report, not
+independently traced by this seat. Fixed same commit as FR-03's D-100 closing note above. Worth
+remembering: "shipped" in this docket means shipped-as-of-that-report, not audited-and-clean —
+redteam passes on already-shipped work are exactly how gaps like this get caught, and this entry is
+proof the process works, not evidence the original ship was sloppy.
+
 ---
 
 ### FR-11 · hub UI: group orgs by client, color-code apart from independent chats
@@ -571,6 +615,11 @@ and color should be spent entirely on the org-vs-chat distinction? The request n
 separate signals, not one — but stacking two color dimensions (per-client hue *and* per-kind marker)
 on a small sidebar row risks the "generic dashboard with too many simultaneous colors" trap. Left
 for whoever builds it.
+
+**Extended same day (`1b89349`), beyond this entry's original scope:** the hub's own web UI grew
+list+reading panes with clickable client-group filters — the grouping this entry shipped became an
+interactive filter, not just a visual grouping. Organic follow-on, not a separate user request; not
+giving it its own FR number since it's the same feature deepening rather than a new one.
 
 ---
 

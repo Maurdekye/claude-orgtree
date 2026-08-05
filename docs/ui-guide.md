@@ -263,15 +263,29 @@ at focus, but still there: pan sideways and you'll see it. The eye never
 moves and is never draggable: it is the fixed anchor of the coordinate
 space, so it sits in the same spot in every org regardless of tree shape.
 
-## External sessions (the chatq bridge)
+## External sessions (the mail hub)
 
-Every org is a **chatq peer** under its slug: any normal Claude Code session
-on this machine can message it (`send.sh <org-slug> <my-chat> "…"`) and the
-message lands as mail to **every live top-level agent**, attributed to
-`@ext:<chat-id>` and marked untrusted. Top-level agents reply with
-`orgtree_message` to the same `@ext:` address; replies arrive in the outside
-session's chatq inbox attributed to the org. If no top-level agents are
-live, the message surfaces in your inbox instead of being lost.
+Outside parties reach an org through the **mail hub**, and an org reaches them
+the same way. A Claude Code session registers its own hub identity
+(`hub/hubtool.py register <name>`) and is then addressable exactly like a
+remote org — `@net:<name>.<user>.<fingerprint>`. Inbound mail lands as mail to
+the org's **ORG-INBOX audience holders**, attributed to its `@net:` address and
+marked untrusted; holders reply with `orgtree_message` to that same address. If
+no holder is live, the message surfaces in your inbox instead of being lost.
+
+**Why there is more than one transport.** `@org:` and `@mcp:` are shortcuts
+that cost nothing to set up: an org talks to another org in the same
+instance, and a chat talks to an org, with no server running anywhere. That
+covers the common case — your own chats and your own orgs, on one machine.
+Running the mail hub buys the two things those shortcuts cannot do: your
+chats can reach **each other**, and anything here can reach orgs and chats
+on **other machines**. You are not choosing between them — the hub is the
+superset, and a bare name resolves to the fewest hops that reach the
+recipient (`@org:`/`@mcp:` when the peer is local, `@net:` otherwise).
+
+> ⚠ The old `@ext:` bridge (chatq) is **retired**. It was a file queue on the
+> local machine; the hub replaced it, and chats are first-class hub clients
+> with their own persistent addresses.
 
 ## The agent tray
 
@@ -467,11 +481,12 @@ made. Deeper agents can't do this — they ask their superior to reallocate
 (and their orgtree_ask questions route to their superior unless they hold
 your audience).
 
-## chatq policy
+## Outside-contact policy
 
-Top-level agents (hired directly under you) may use chatq and hold the
-Monitor permission its listener needs. Subagents are banned from chatq by
-their standing prompt — org mail is their only channel.
+Top-level agents (hired directly under you) may speak to the outside world and
+hold the Monitor permission a hub listener needs. Subagents are banned from
+outside channels by their standing prompt — org mail is their only channel,
+and anything further goes through their superior.
 
 ## Lineage (the ≣ stack behind a card)
 

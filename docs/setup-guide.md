@@ -16,6 +16,11 @@ section(s) you need.
 
 ---
 
+> **Deciding how far to go:** this guide is ordered by capability, and each section adds
+> infrastructure. If you would rather compare the tiers side by side first — what each one
+> requires, what it unlocks, what it costs you to run — read
+> [infrastructure-tiers.md](infrastructure-tiers.md) and come back for the steps.
+
 ## 0. Common prerequisites
 
 Every shape below starts here.
@@ -106,7 +111,10 @@ The full interaction manual — every gesture, badge, and panel — is
 ### Optional: an independent Claude Code chat talking to *this* instance
 
 A separate Claude Code session — not itself part of any org — can message an org's inbox directly,
-with no chatq required, via `backend/orgtree/externtool.py`, "**the orgtree MCP server**":
+with no mail hub required, via `backend/orgtree/externtool.py`, "**the orgtree MCP server**".
+This is the zero-setup path: it exists precisely so nobody has to stand up a mailserver just to
+let their chats talk to their orgs. What it does **not** give you is chat-to-chat contact or
+anything off this machine — that is what the hub in §3 adds.
 
 ```
 claude mcp add orgtree-extern -- python <repo>\backend\orgtree\externtool.py
@@ -131,7 +139,7 @@ whatever's registered on a hub.
 
 An org exposed through a **preauthenticated secret URL** on a *separate* public listener — the
 admin app itself never leaves `127.0.0.1` (`README.md`). A kiosk is **sealed from the outside world
-in both directions** — no chatq, no inter-org mail — and the refusal is deliberately
+in both directions** — no hub mail, no inter-org mail — and the refusal is deliberately
 indistinguishable from "no such org," so the kiosk roster can't be enumerated by probing
 (`ledger.py:809-811,913`; `configuration.md` §④).
 
@@ -262,6 +270,12 @@ cd hub
 HUB_NAME="office" docker compose up -d --build
 ```
 
+⚠ **Pin `HUB_NAME` in `hub/.env` (gitignored), not just inline on the command.** An inline
+env var only applies to that one invocation — a later rebuild without it silently renames the hub
+to the container's hostname instead, which changes what every client displays for an address
+they've already been using. `hub/.env` with `HUB_NAME=your-name` survives rebuilds; the inline form
+above is fine for a first run but don't rely on it long-term.
+
 - Port **7370**. Data (SQLite + attachment blobs) lives in the named Docker volume
   `orgtree-hub-data`.
 - `HUB_NAME` — the hub's display name, discovered by clients on connect and shown beside the
@@ -325,9 +339,8 @@ two). The slug is `<name>.<username>.<fp[:6]>`, tagged `kind: chat` on the roste
 chats — address one by that full slug, exactly like a remote org. Registering with a name that's
 already taken on this machine returns a `resumed` note; if that wasn't you, pick a different name.
 
-For the "wake me when mail arrives" experience instead of polling manually — this is what chatq's
-own `listen.sh` used to give independent sessions, before chatq was retired in favor of this hub
-(2026-08-05, FR-09):
+For the "wake me when mail arrives" experience instead of polling manually (the hub replaced the
+older local file-queue bridge on 2026-08-05, FR-09):
 
 ```sh
 python hub/hubtool.py listen <name>
@@ -351,7 +364,8 @@ and wiring it is part of hub setup.** After starting the hub, run once per machi
 python hub/install-hook.py
 ```
 
-Idempotent (backs up `settings.json`; also sweeps any retired-chatq hooks). It wires
+Idempotent (backs up `settings.json`; also sweeps hooks left by the retired file-queue
+bridge). It wires
 `hub/session-start.sh` as a `SessionStart` hook, which hands every fresh session the exact
 instructions to pick a name (reusing an earlier one if it registered before — it lists every name
 already known on this machine), register, and arm its own `Monitor` watch on `listen`, all before

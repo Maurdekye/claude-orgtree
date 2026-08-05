@@ -5,6 +5,8 @@
 
 # orgtree mailserver — a public hub for org-to-org mail across machines
 
+> ⚠︎ **Historical design record (F-06).** The local file-queue bridge it compares against was RETIRED on 2026-08-05: `@ext:` is gone and independent chats are first-class hub clients with their own `@net:` addresses. The reasoning below is kept as written — read the precedent paragraphs as history, not as instructions.
+
 Author: session 4f69f83a · 2026-08-04 · drafted from a source audit of the existing
 external-mail path. Every line citation below was read, not recalled.
 
@@ -51,7 +53,7 @@ fourth, and almost nothing else.
 
 | namespace | who | transport today |
 |---|---|---|
-| `@ext:<chat>` | a Claude Code session on this machine | chatq files, 3 s poll (`supervisor.py:2486`) |
+| ~~`@ext:<chat>`~~ | a Claude Code session on this machine | **RETIRED 2026-08-05** (was a local file queue) — sessions are hub clients now, addressed `@net:` |
 | `@org:<slug>` | another org **in this instance** | direct call (`supervisor.py:2465`) |
 | `@mcp:<peer>` | an outside session polling us | the peer pulls (`externtool.py`) |
 | **`@net:<slug>`** | **an org on another machine** | **the hub — new** |

@@ -9,6 +9,7 @@ hire top-level agents, they hire their own reports, and the whole org runs on
 your existing Claude Code installation and subscription.
 
 Design document: [PLAN.md](PLAN.md) · UI manual: [docs/ui-guide.md](docs/ui-guide.md)
+· How much infrastructure to run, and what each tier buys: [docs/infrastructure-tiers.md](docs/infrastructure-tiers.md)
 
 **Design motto:** one thing, done very very well. orgtree is a simple idea —
 a persistent, visual organization of Claude agents — refined meticulously and
@@ -187,7 +188,7 @@ python install-hook.py           # wires the SessionStart hook (idempotent)
 
 The hook makes every NEW Claude Code session on the machine onboard itself
 automatically — it registers a self-chosen identity name and arms its own hub
-listener before other work, the way chatq used to. Details and the trust
+listener before other work. Details and the trust
 model: [hub/README.md](hub/README.md) and
 [docs/setup-guide.md §3](docs/setup-guide.md).
 
@@ -285,14 +286,13 @@ identity). Four tools:
 | `orgtree_wait` | **block** until an org replies (long-poll) — the answer half of a Q&A loop |
 
 `send` + `wait` gives a full question-and-answer back-and-forth with an org,
-fully independent of chatq or the mail hub. Reaching an external chat
-*unprompted* — an **org** starting the conversation, not the chat — needs one
-of those two instead: chatq (a separate, optional cross-session message
-queue, if installed; orgs register there under their **org slug**, never an
-opaque id) or the mail hub's `@net:` addressing, which reaches a chat
-registered with `hub/hubtool.py` exactly the way it reaches a remote org (see
-[`docs/setup-guide.md`](docs/setup-guide.md) §3). Orgs can also message
-**each other** directly (`@org:<slug>`), with none of the three involved.
+needing no mail hub at all — the polling session reads the org's inbox
+directly. Reaching an external chat *unprompted* — an **org** starting the
+conversation, not the chat — goes through the mail hub's `@net:` addressing,
+which reaches a chat registered with `hub/hubtool.py` exactly the way it
+reaches a remote org (see [`docs/setup-guide.md`](docs/setup-guide.md) §3).
+Orgs can also message **each other** directly (`@org:<slug>`), with no hub
+involved.
 
 Pair it with the **business** charter preset (`docs/charters/business.md`) to
 run an org as an open shop that accepts and performs all outside work

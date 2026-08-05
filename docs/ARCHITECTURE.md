@@ -79,8 +79,9 @@ ledger, supervisor, the gateways, or the canvas.
   so mail queued while archived is finally acted on. A new caller that
   ignores the key leaves agents holding unread mail forever, with no error.
 - **Names predating the org inbox**: `post_external_mail` /
-  `_deliver_ext` handle *all* outside peers (`@ext:` chatq, `@org:`
-  inter-org, `@mcp:` extern-MCP), not just chatq; `tops` inside means
+  `_deliver_ext` handle *all* outside peers (`@org:` inter-org, `@mcp:`
+  extern-MCP, `@net:` hub — and historically `@ext:`, the local file-queue
+  bridge retired 2026-08-05); `tops` inside means
   top-levels **plus** extern-audience holders. Same residue class: `attach`
   is now an overloaded word — ledger `attach` code is mail
   *file-attachments*; the org attach/release feature is retired. Bundle any
@@ -110,7 +111,7 @@ ledger, supervisor, the gateways, or the canvas.
   hook fired inside an agent — live-tested). ⚠ A hook event name the
   defensive list misses still inherits; when the CLI grows an event, extend
   the list in `_steer_settings`. Second safety net someone could delete
-  without knowing it holds anything up: the chatq hooks carry
+  without knowing it holds anything up: the bridge hooks carry
   `ORGTREE_NODE` env/cwd guards — that mitigation is why the historical leak
   never caused visible chaos.
 - **`clean_env()` strips `CLAUDE_CODE_*` / `CLAUDECODE` for a reason**: the
@@ -221,7 +222,10 @@ ledger, supervisor, the gateways, or the canvas.
   family: `max_top_grant` has grown into the global drag ceiling for every
   credit bar whenever the cascade toggles are on.
 - **`chatq_register_org` is not a pure register** — it self-checks kiosk
-  status and *deregisters* sealed orgs.
+  status and *deregisters* sealed orgs. ⚠︎ The bridge it registers with is
+  RETIRED (2026-08-05, user ruling: drop `@ext:` entirely); the function and
+  its callers are pending removal, so treat this entry as a note about code
+  on its way out, not a pattern to copy.
 - **Known matrix/scrub drift (fixes pending):** `GET …/events` and
   `GET …/orgmd` are visitor-reachable and can leak host paths/usernames the
   scrub exists to hide (`…/history` passes `revoke_dir` path strings);
