@@ -343,6 +343,9 @@ class OrgDoc(TypedDict):
     headless: NotRequired[bool]             # §9.6: no user present; user-bound
                                             # asks auto-deny (requires api_key)
     api_key: NotRequired[str]               # §9.5: per-org ANTHROPIC_API_KEY
+    cred_warned_at: NotRequired[str]        # §9.2 watcher: last credential-
+                                            # expiry warning (≤1/day survives
+                                            # restarts — redteam finding)
     deleted_cost_usd: NotRequired[float]    # tombstone burn accumulator (cost_total)
     _actors_typed: NotRequired[bool]        # one-shot @-sentinel migration marker
     # ---- legacy keys old docs may still carry (popped/rewritten on load) ----

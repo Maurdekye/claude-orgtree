@@ -3247,7 +3247,6 @@ def start_cred_watcher() -> None:
     if _cred_watch_started:
         return
     _cred_watch_started = True
-    warned: dict[str, float] = {}       # slug → monotonic last-warn
 
     def run() -> None:
         while True:
@@ -3268,14 +3267,29 @@ def start_cred_watcher() -> None:
                             slug = str(o["slug"])
                             if o.get("kiosk"):
                                 continue
-                            if time.monotonic() - warned.get(slug, -1e9) \
-                                    < 86400.0:
-                                continue
                             try:
                                 with store.DOC_LOCK:
                                     org = store.load_org(slug)
                                     if org.d.get("api_key"):
                                         continue     # no ceiling on a key
+                                    # ≤1/day PERSISTED on the doc (redteam:
+                                    # a closure clock made it one-per-
+                                    # RESTART on exactly the host that
+                                    # restarts on a schedule)
+                                    last = str(org.d.get("cred_warned_at")
+                                               or "")
+                                    if last:
+                                        try:
+                                            lt = _dtm.datetime.fromisoformat(
+                                                last.replace("Z", "+00:00"))
+                                            age = (_dtm.datetime.now(
+                                                _dtm.timezone.utc)
+                                                - lt).total_seconds()
+                                            if age < 86400.0:
+                                                continue
+                                        except ValueError:
+                                            pass
+                                    org.d["cred_warned_at"] = now_iso()
                                     org.d.setdefault("user_inbox", []).append({
                                         "id": uuid_hex8(), "from": "@system",
                                         "kind": "notice", "at": now_iso(),
@@ -3291,7 +3305,6 @@ def start_cred_watcher() -> None:
                                             "an API key (settings → "
                                             "autonomy).")})
                                     store.save_org(org)
-                                warned[slug] = time.monotonic()
                             except Exception:                    # noqa: BLE001
                                 pass
             except Exception:                                    # noqa: BLE001
