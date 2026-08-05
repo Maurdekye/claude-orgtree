@@ -109,6 +109,36 @@ export interface OrgInboxEntry {
   body: string
   at: string
   by?: string
+  // F-06: @net: outbound delivery ladder (net.py _stamp_row, monotonic)
+  state?: 'queued' | 'sent' | 'delivered' | 'read'
+  state_at?: string
+  net_id?: string
+  attachments?: { name: string; bytes: number }[]
+}
+
+// F-06: net.py status_block — hub config + live connectivity (never secrets)
+export interface NetPeer {
+  slug: string
+  org_name?: string | null
+  username?: string | null
+  blurb?: string | null
+  online: boolean
+  last_seen?: string | null
+}
+export interface NetHub {
+  id: string
+  address: string
+  enabled: boolean
+  name?: string | null         // discovered on connect, never typed
+  connected: boolean
+  last_ok?: string | null
+  error?: string | null
+  queued: number
+  roster: NetPeer[]
+}
+export interface NetBlock {
+  slug: string | null          // this org's network address
+  hubs: NetHub[]
 }
 
 // ledger.py tree(): last_status/prev_status are dict[str, Any] | None in
@@ -391,6 +421,8 @@ export interface TreePayload {
   }
   kiosk?: TreeKiosk            // only when the org is a kiosk
   public?: boolean             // only through the public gateway
+  net?: NetBlock | null        // F-06 (null for kiosks; absent for visitors)
+  headless?: boolean           // §9.6
 }
 
 // ----------------------------------------------------------------- org list
@@ -694,6 +726,20 @@ export interface SettingsRequest {
   auto_resume?: boolean | null
   cascade_hire?: boolean | null
   cascade_alloc?: boolean | null
+  // F-06
+  net_hub_address?: string | null      // global defaults only
+  net_autoconnect?: boolean | null     // per-org: keep/join the local hub
+  net_hubs?: { id?: string; address: string; enabled?: boolean }[] | null
+}
+
+// F-06: GET /api/orgs/{slug}/net — loopback-admin reveal (the ONE place the
+// secret is returned)
+export interface OrgNetReveal {
+  identity: { secret: string; fingerprint: string; slug: string;
+              minted_at: string } | null
+  hubs: { id: string; address: string; enabled: boolean;
+          name?: string | null }[]
+  autoconnect: boolean
 }
 
 // api.py HireDefaults (POST /api/orgs/{slug}/defaults)

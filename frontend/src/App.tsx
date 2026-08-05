@@ -10,7 +10,7 @@ import {
 import { ConfirmModal, MailFolders, MailList, OrgCanvas, OrgRecord, useEsc } from './Canvas'
 import { DiskBrowser, DiskFullAlert } from './DiskBrowser'
 import {
-  AutorenewIcon, BlockIcon, CheckIcon, ChevronRightIcon, CloseIcon, CopyIcon,
+  AutorenewIcon, BlockIcon, CheckIcon, ChevronRightIcon, CloseIcon, CopyIcon, LanIcon,
   DeleteIcon, ExpandMoreIcon, GitHubIcon, HearingIcon, HomeIcon, LockIcon,
   LockOpenIcon, MailIcon, MenuIcon, PlayIcon, PublicIcon, SettingsIcon,
   SparkIcon, StopIcon, StorageIcon, WarnIcon,
@@ -378,6 +378,24 @@ export default function App() {
                         <StorageIcon fontSize="inherit" /> {tree.kiosk.storage_mb ?? 0} / {tree.kiosk.storage_limit_mb} MB
                       </span>
                 )}
+                {(() => {   // F-06: hub connectivity chip (enabled hubs only)
+                  const hubs = (tree.net?.hubs ?? []).filter((h) => h.enabled)
+                  if (!hubs.length) return null
+                  const up = hubs.filter((h) => h.connected).length
+                  const queued = hubs.reduce((a, h) => a + h.queued, 0)
+                  const label = hubs.length === 1
+                    ? (hubs[0]?.name || 'hub') : `${up}/${hubs.length} hubs`
+                  return (
+                    <span className={'chip' + (up === 0 ? ' bad' : '')}
+                      title={hubs.map((h) =>
+                        `${h.name || h.address}: ${h.connected ? 'connected'
+                          : h.error || 'connecting…'}`).join(' · ')}>
+                      <LanIcon fontSize="inherit" /> {label}
+                      {up === 0 ? ': offline' : ''}
+                      {queued > 0 ? ` · ${queued} queued` : ''}
+                    </span>
+                  )
+                })()}
                 {(() => {   // usage-limit freeze: ▶ restarts every frozen agent
                   if (tree.spend_frozen) return null
                   const frozen = [...flatNodes(tree).values()]

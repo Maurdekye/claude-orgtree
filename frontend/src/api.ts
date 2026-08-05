@@ -7,7 +7,7 @@ import type {
   HireDefaultsRequest, HistoryPayload, HostPayload,
   InboxPayload, KioskCfgRequest, KioskSaveResult, KioskSpecRequest,
   McpServersPayload, OpRequest, OpResult, OrgListEntry, OrgMdPayload,
-  ReorderRequest, ScopeRequest, ScratchPayload, SendMessageResult,
+  OrgNetReveal, ReorderRequest, ScopeRequest, ScratchPayload, SendMessageResult,
   SettingsRequest, SettingsResult, SweepPreview, SweepResult, TreePayload,
   UploadResult,
 } from './types'
@@ -175,6 +175,25 @@ export const saveDefaults = (body: SettingsRequest): Promise<DefaultsPayload> =>
   })
 export const orgInboxRead = (slug: string): Promise<{ ok: boolean }> =>
   req(`/api/orgs/${slug}/org_inbox/read`, { method: 'POST' })
+// F-06: the user composes extern mail from the mailbox UI (admin only)
+export const orgInboxSend = (
+  slug: string, to: string, body: string, attachments: string[] = [],
+): Promise<{ id: string; warnings: string[] }> =>
+  req(`/api/orgs/${slug}/org_inbox/send`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ to, body, attachments }),
+  })
+export const orgInboxUpload = (
+  slug: string, file: File,
+): Promise<{ id: string; name: string; bytes: number }> =>
+  req(`/api/orgs/${slug}/org_inbox/upload?name=${encodeURIComponent(file.name)}`, {
+    method: 'POST', body: file,
+  })
+// F-06: the network-identity reveal — loopback admin only; the ONE call that
+// returns the org secret (the settings panel's reveal/export)
+export const getOrgNet = (slug: string): Promise<OrgNetReveal> =>
+  req(`/api/orgs/${slug}/net`)
 export const saveScope = (slug: string, nid: string, scope: ScopeRequest): Promise<OpResult> =>
   req(`/api/orgs/${slug}/nodes/${nid}/scope`, {
     method: 'POST',

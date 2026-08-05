@@ -1156,6 +1156,16 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
             onClick={() => setOiOpen(true)}>
             <div className="oi-head">
               <PublicIcon fontSize="inherit" /> org inbox
+              {(() => {   // F-06: hub connectivity at a glance on the mailbox
+                const hubs = (tree.net?.hubs ?? []).filter((h) => h.enabled)
+                if (!hubs.length) return null
+                const up = hubs.filter((h) => h.connected).length
+                const cls = up === hubs.length ? ' ok' : up > 0 ? ' mix' : ''
+                return <span className={'oi-dot' + cls}
+                  title={hubs.map((h) => `${h.name || h.address}: `
+                    + (h.connected ? 'connected' : h.error || 'connecting…'))
+                    .join(' · ')} />
+              })()}
               {tree.org_inbox.unread > 0 &&
                 <b className="count">{tree.org_inbox.unread}</b>}
             </div>
@@ -1299,7 +1309,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
           close={() => setPileOpen(null)} />
       )}
       {oiOpen && (
-        <OrgInboxModal inbox={tree.org_inbox} map={map} slug={slug} toast={toast}
+        <OrgInboxModal inbox={tree.org_inbox} net={tree.net} map={map} slug={slug} toast={toast}
           jumpTo={oiJump}
           close={() => {
             setOiOpen(false); setOiJump(null)

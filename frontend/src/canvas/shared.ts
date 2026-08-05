@@ -131,6 +131,9 @@ export type MailRow = MailEntry & {
    *  the reading pane renders the response UI as the body instead of the
    *  reply UI. Never sent to markRead — it is not a real mail id. */
   _ask?: AskInfo
+  /** F-06: @net: outbound delivery state (org-inbox out rows) */
+  _state?: 'queued' | 'sent' | 'delivered' | 'read'
+  _state_at?: string
 }
 
 // world-space geometry primitives
