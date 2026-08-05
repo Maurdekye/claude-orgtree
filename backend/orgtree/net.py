@@ -271,13 +271,22 @@ def status_block(org_d: dict[str, Any]) -> dict[str, Any] | None:
         seen = connected or bool(
             cell.get("registered_at")
             and cell.get("address") == str(h.get("address")))
+        # §10: per-message failures, summarized where the mailserver tab
+        # reads — "N stuck, last error: …" instead of a bare queue count
+        entries = spool.get(hid) or []
+        stuck = [e for e in entries if e.get("last_err")]
+        newest = max(stuck, key=lambda e: int(e.get("tries") or 0),
+                     default=None)
         hubs_out.append({
             "id": hid, "address": h.get("address"),
             "enabled": bool(h.get("enabled")), "name": name,
             "connected": connected,
             "hidden": hid == LOCAL_HUB_ID and not seen,
             "last_ok": st.get("last_ok"), "error": st.get("error"),
-            "queued": len(spool.get(hid) or []),
+            "queued": len(entries),
+            **({"stuck": len(stuck),
+                "stuck_err": str(newest.get("last_err"))[:200]}
+               if newest else {}),
             "roster": [r for r in roster
                        if r.get("slug") != ident.get("slug")],
         })
@@ -692,6 +701,18 @@ def _bump_try(slug: str, hub_id: str, entry_id: str, err: str) -> None:
             if e.get("id") == entry_id:
                 e["tries"] = int(e.get("tries") or 0) + 1
                 e["last_err"] = err[:200]
+                # redteam §10 (user-reported "shows sent, hub never saw
+                # it"): the failure used to live ONLY here, a structure no
+                # payload exposes — copy it onto the org-inbox out row the
+                # sender actually reads. A later success clears it
+                # (_stamp_row advances the state; the stale reason is
+                # removed on the next delivery receipt path via _ship).
+                for row in reversed(cast("list[dict[str, Any]]",
+                                         org.d.get("org_inbox") or [])):
+                    if row.get("net_id") == entry_id:
+                        row["tries"] = e["tries"]
+                        row["last_err"] = e["last_err"]
+                        break
                 store.save_org(org)
                 return
 
@@ -707,6 +728,10 @@ def _stamp_row(org_d: Any, net_id: str, state: str) -> bool:
             if cur in order and order.index(state) > order.index(cur):
                 row["state"] = state
                 row["state_at"] = now()
+                # a delivery that finally lands retires the failure note
+                # (§10): the row must not read "sent · last error …"
+                row.pop("last_err", None)
+                row.pop("tries", None)
                 return True
             return False
     return False

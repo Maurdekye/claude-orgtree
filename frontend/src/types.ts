@@ -113,6 +113,10 @@ export interface OrgInboxEntry {
   state?: 'queued' | 'sent' | 'delivered' | 'read'
   state_at?: string
   net_id?: string
+  // §10: per-message delivery failure, copied off the spool entry when a
+  // wire try fails (cleared when a later try lands)
+  tries?: number
+  last_err?: string
   attachments?: { name: string; bytes: number }[]
 }
 
@@ -139,6 +143,10 @@ export interface NetHub {
   last_ok?: string | null
   error?: string | null
   queued: number
+  // §10: how many queued entries have a recorded wire failure, + the
+  // newest reason — "N stuck, last error: …" on the mailservers tab
+  stuck?: number
+  stuck_err?: string
   roster: NetPeer[]
 }
 export interface NetBlock {

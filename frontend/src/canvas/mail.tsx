@@ -425,7 +425,7 @@ export function OrgInboxModal({ inbox, net, map, slug, toast, close, jumpTo }: O
   const rows: MailRow[] = entries.map((e, i) => ({
     id: e.id, at: e.at, body: e.body, from: e.peer, to: e.peer, _by: e.by,
     kind: e.dir === 'in' ? 'message' : 'reply', _wait0: i >= readFrom,
-    _state: e.state, _state_at: e.state_at,
+    _state: e.state, _state_at: e.state_at, _tries: e.tries, _err: e.last_err,
     attachments: e.attachments?.map((a) => ({ ...a, path: a.name })),
     relationship: e.dir === 'in'
       ? 'outside party — addressed to the whole org' : undefined,
@@ -438,6 +438,14 @@ export function OrgInboxModal({ inbox, net, map, slug, toast, close, jumpTo }: O
   // diagnostic that matters (peer down/busy) — the tooltip says it plainly.
   const glyph = (m: MailRow) => {
     if (!m._state) return null
+    // §10: a queued row whose wire tries keep failing says so — the ⚠ and
+    // its reason were previously trapped in net_spool where nothing reads
+    if (m._state === 'queued' && m._err) {
+      return <span className="net-state stuck"
+        title={`delivery failing (${m._tries ?? '?'} tries) — ${m._err}. `
+          + 'Retries continue; a stale address fails forever — check the '
+          + 'recipient on the mailservers tab'}> ⚠</span>
+    }
     const g = m._state === 'queued' ? '▫'
       : m._state === 'sent' ? '✓' : '✓✓'
     const tip = m._state === 'queued' ? 'queued — not yet at the hub'
@@ -704,6 +712,11 @@ function NetSection({ net }: { net?: TreePayload['net'] }) {
                 : 'disabled'}
               {h.queued > 0 ? ` · ${h.queued} queued outbound` : ''}
             </span>
+            {(h.stuck ?? 0) > 0 && (
+              <span className="oi-stuck" title={h.stuck_err}>
+                ⚠ {h.stuck} failing — {h.stuck_err}
+              </span>
+            )}
           </div>
           {h.roster.length > 0 && (() => {
             // FR-11 parity in-app: group by ORIGIN — the slug's username

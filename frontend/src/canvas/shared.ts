@@ -139,6 +139,9 @@ export type MailRow = MailEntry & {
   /** F-06: @net: outbound delivery state (org-inbox out rows) */
   _state?: 'queued' | 'sent' | 'delivered' | 'read'
   _state_at?: string
+  /** §10: wire-failure note copied off the spool entry (queued rows only) */
+  _tries?: number
+  _err?: string
 }
 
 // world-space geometry primitives

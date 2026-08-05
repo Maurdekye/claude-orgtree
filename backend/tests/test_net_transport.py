@@ -34,6 +34,7 @@ import asyncio
 import io
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -1046,6 +1047,168 @@ def sec_second_wave() -> None:
           _identity_does_not_follow_the_org_name)
 
 
+# ══════════════════════════════════════════════════════════════════════ §9
+def sec_connect_latency() -> None:
+    """USER REPORT 2026-08-05: "when connecting to a remote mailserver, the
+    other connected clients don't immediately show up — it takes about 20-30
+    seconds."
+
+    The roster the UI draws comes from ONE place: `_rosters[addr]`, written
+    only from the `/api/poll` response. That call is a LONG POLL (25 s in
+    production), so on a freshly added hub the panel stays empty until the
+    first poll returns — which is the reported delay, to the second. The
+    register response that already ran seconds earlier carries the very same
+    roster and throws it away."""
+    print("\n§9  connect latency — why a new hub shows no clients for ~25 s")
+
+    def _register_response_carries_the_roster():
+        """The data is IN HAND at registration — measured off the wire, so the
+        'one line' fix below is a fact, not a hope."""
+        neighbour = mkorg()
+        net._register_pending(parts_for(neighbour))
+        me = mkorg()
+        p = parts_for(me)[me]
+        with net._client() as c:
+            r = c.post(f"{HUB_A}/api/register",
+                       json={"slug": p["net_slug"], "org_name": p["name"],
+                             "username": "tester"},
+                       headers=net._auth_header([(p["net_slug"], p["secret"])]))
+        assert r.status_code == 200, r.text
+        roster = r.json().get("roster") or []
+        assert any(x["slug"] == net_slug(neighbour) for x in roster), roster
+    check("connect · /api/register's own response already lists every client "
+          "on the hub", _register_response_carries_the_roster)
+
+    def _roster_visible_right_after_registration():
+        neighbour = mkorg()
+        net._register_pending(parts_for(neighbour))
+        net._poll_pass(parts_for(neighbour))       # the neighbour is settled
+        me = mkorg()
+        with net._status_lock:
+            net._rosters.pop(HUB_A, None)          # a FRESH connection
+        net._register_pending(parts_for(me))       # …and nothing else
+        with net._status_lock:
+            seen = list(net._rosters.get(HUB_A) or [])
+        assert seen, (
+            "after registering, the org knows of NO other client on the hub "
+            "— the panel stays empty until the first long poll returns, which "
+            "is the 20-30 s the user measured")
+    # promoted from gap() 2026-08-05, fixed same day (0ef9bc0): the register
+    # response's roster is adopted into _rosters immediately — the panel no
+    # longer waits out the first 25 s poll window
+    check("connect · a freshly connected hub shows its other clients "
+          "immediately, without waiting for the first long poll",
+          _roster_visible_right_after_registration)
+
+    def _poll_does_populate_it():
+        """ANTI-VACUITY: the same assertion PASSES once a poll has run, so the
+        gap above is about WHEN the roster arrives, not whether it ever does."""
+        neighbour = mkorg()
+        net._register_pending(parts_for(neighbour))
+        me = mkorg()
+        with net._status_lock:
+            net._rosters.pop(HUB_A, None)
+        ladder(me, neighbour)
+        with net._status_lock:
+            seen = [x["slug"] for x in (net._rosters.get(HUB_A) or [])]
+        assert net_slug(neighbour) in seen, seen
+    check("connect · the roster DOES arrive on the first completed poll (so "
+          "the gap above is about latency, not absence)", _poll_does_populate_it)
+
+    def _the_wait_is_the_number_the_user_felt():
+        src = open(os.path.join(_REPO, "backend", "orgtree", "net.py"),
+                   encoding="utf-8").read()
+        m = re.search(r"POLL_WAIT_S\s*=\s*([0-9.]+)", src)
+        assert m, "POLL_WAIT_S is gone — re-derive the connect latency"
+        assert 20.0 <= float(m.group(1)) <= 30.0, (
+            f"POLL_WAIT_S is now {m.group(1)}; the user's measured 20-30 s "
+            f"delay was this constant, so a change here changes the symptom")
+    check("connect · the long-poll window is 20-30 s in production — the "
+          "delay the user measured IS this constant",
+          _the_wait_is_the_number_the_user_felt)
+
+
+# ═════════════════════════════════════════════════════════════════════ §10
+def sec_failed_send_visibility() -> None:
+    """USER-DIRECTED REPORT (via the curator, 2026-08-05): an org's own extern
+    view "shows a response was sent back", while the hub's message log — read
+    directly — never received it.
+
+    That pair is not a contradiction: the org-inbox OUT row is written at
+    compose time and stamped `queued`; the wire attempt happens later on the
+    sender loop, and when it fails the reason is recorded on the SPOOL entry
+    (`tries` / `last_err`) — a structure no payload exposes. So a message that
+    can never be delivered looks, from the org's side, exactly like one that
+    was."""
+    print("\n§10  a send that never lands — what the org's own side shows")
+
+    def _successful_send_advances_the_row():
+        """ANTI-VACUITY: the state machine DOES work, so the gap below is
+        about failure reporting, not about states never moving."""
+        a, b = mkorg(), mkorg()
+        ladder(a, b)
+        mid, _ = send_net(a, "ceo", net_slug(b), "this one lands")
+        ladder(a, b)
+        row = next(r for r in inbox_rows(a, "out") if r.get("net_id") == mid)
+        assert row.get("state") in ("sent", "delivered", "read"), row
+    check("visibility · a delivered message advances its out row past queued",
+          _successful_send_advances_the_row)
+
+    def _failed_send_is_visible_where_the_user_looks():
+        a = mkorg()
+        ladder(a)
+        # a recipient that is not registered on this hub — the shape a stale
+        # address produces (the hub answers 422 and the entry retries forever)
+        mid, _ = send_net(a, "ceo", "ghost.nobody.abcdef", "into the void")
+        for _ in range(3):
+            ladder(a)
+        d = store.load_org(a).d
+        entry = next(e for v in (d.get("net_spool") or {}).values()
+                     for e in v if e["id"] == mid)
+        assert entry.get("tries", 0) >= 1 and entry.get("last_err"), (
+            "fixture: the send must have failed on the wire")
+        row = next(r for r in inbox_rows(a, "out") if r.get("net_id") == mid)
+        block = net.status_block(d) or {}
+        surfaced = (row.get("state") not in (None, "queued")
+                    or row.get("error") or row.get("last_err")
+                    or any(h.get("error") for h in (block.get("hubs") or [])))
+        assert surfaced, (
+            f"the message has failed {entry['tries']}x with "
+            f"{entry['last_err']!r} and the org's own view still shows only "
+            f"state={row.get('state')!r}: the failure exists ONLY inside "
+            f"net_spool, which no payload exposes")
+    # promoted from gap() 2026-08-05, fixed same day: BOTH suggested fixes
+    # shipped — _bump_try copies last_err+tries onto the org-inbox out row
+    # (the ⚠ glyph and its tooltip read them), and status_block carries a
+    # per-hub stuck count + newest reason for the mailservers tab
+    check("visibility · a send that keeps failing says so where the sender "
+          "can see it", _failed_send_is_visible_where_the_user_looks)
+
+    def _failure_fields_ride_the_row_and_clear_on_success():
+        """The fixed shape, both directions: a failing row carries the reason;
+        a row that finally lands sheds it (nobody should read
+        'sent · last error …')."""
+        a = mkorg()
+        ladder(a)
+        mid, _ = send_net(a, "ceo", "ghost2.nobody.abcdef", "also lost")
+        ladder(a)
+        row = next(r for r in inbox_rows(a, "out") if r.get("net_id") == mid)
+        assert row.get("last_err") and int(row.get("tries") or 0) >= 1, row
+        assert row.get("state") == "queued", row
+        # …and a delivery that lands retires the note (_stamp_row pops it)
+        b = mkorg()
+        ladder(a, b)
+        mid2, _ = send_net(a, "ceo", net_slug(b), "this one lands")
+        ladder(a, b)
+        row2 = next(r for r in inbox_rows(a, "out")
+                    if r.get("net_id") == mid2)
+        assert row2.get("state") in ("sent", "delivered", "read"), row2
+        assert "last_err" not in row2 and "tries" not in row2, row2
+    check("visibility · the failure note rides the out row while it fails "
+          "and clears when a delivery lands",
+          _failure_fields_ride_the_row_and_clear_on_success)
+
+
 def main() -> int:
     print("orgtree · @net Phase C — the transport, attacked")
     sec_ladder()
@@ -1056,6 +1219,8 @@ def main() -> int:
     sec_secret()
     sec_compose()
     sec_second_wave()
+    sec_connect_latency()
+    sec_failed_send_visibility()
 
     print()
     if GAPS:
