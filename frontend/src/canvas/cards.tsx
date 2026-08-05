@@ -272,7 +272,9 @@ function EyeDesk({ map, op, slug, toast, inboxCount,
           {!agents.length &&
             <span className="dim">no direct lines yet — top-level hires and user-audience holders appear here</span>}
           </div>
-          <span className="spacer" />
+          {/* no spacer here (user bug 2026-08-05): .eye-tabs already has
+              flex:1, and a second flex:1 sibling split the header 50/50 so
+              the tab strip wrapped at half width */}
           <button className="cc-icon" title="your inbox" onClick={() => onInbox?.()}>
             <MailIcon fontSize="inherit" />{inboxCount > 0 && <b className="eye-count">{inboxCount}</b>}
           </button>

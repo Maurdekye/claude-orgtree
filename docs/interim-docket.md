@@ -1765,6 +1765,29 @@ writes it:
 is acceptable and matches how `cost_usd_total` already behaves. Nothing here needs a websocket
 event.
 
+### F-10 · present a document to the user (in-page review card)
+> need the ability for the agent to present documents to the user. this is different than giving a
+> download link: this should be used for presenting plans and other things to them. when doing so, a
+> little card should pop out the side of the agent, which when clicked, opens the document up for
+> visual review in-page.
+
+*(user request 2026-08-05, relayed via 4f69f83a's session; groundwork theirs. NOT BUILT — queued
+behind the F-06 wave.)*
+
+⚠ Not `orgtree_send_file` — that is a DOWNLOAD card (outbox/ + `/file`). This is a READING
+surface: a plan reviewed in-page without leaving the canvas.
+
+Groundwork (researcher, 2026-08-05):
+- Rendering: the desk already has the markdown renderer (`md()` in `canvas/desk.tsx`) and `.md`
+  styling with the D-14 table containment — the reader is mostly plumbing.
+- "Pops out the side of the agent" = a card anchored to the NODE on the canvas (the credit ask
+  bar's outboard-anchored shape), not a chat-stream row.
+- Storage: durable + re-openable ⇒ a per-node `documents` list on the org doc (the `asks` /
+  `credit_requests` pattern) — the card derives from the doc and survives reload. The chat stream
+  windows at 120 rows and is the wrong home.
+- Agent tool: `orgtree_present {title, body (markdown), replaces?}` mirroring `orgtree_ask`'s
+  shape — parked, never blocking.
+
 ## D-54 · `--expose-admin` moves from argv to an environment variable
 > Move exposed to an environment variable.
 
