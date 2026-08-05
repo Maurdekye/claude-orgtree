@@ -282,6 +282,11 @@ HUB_NAME="office" docker compose up -d --build
 *once Docker itself starts with the machine* — Docker Desktop's default on Windows, or
 `systemctl enable docker` on Linux.
 
+**Also run once per machine, right after this:** `python install-hook.py` (from inside `hub/`) —
+wires every future Claude Code session on this machine to onboard itself onto the hub
+automatically. See "Connecting an independent Claude Code chat to it" below for exactly what it
+does; the two commands together are the complete once-per-machine setup.
+
 ### Connecting an org to it
 
 Org creation (or later, from settings) → the `advanced` disclosure's **Mailserver** tab — checked
