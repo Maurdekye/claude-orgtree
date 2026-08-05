@@ -561,9 +561,9 @@ function ComposeModal({ slug, net, entries, toast, close }: {
   const groups = (() => {
     const seen = new Set<string>()
     const gs = new Map<string, { addr: string; name: string; kind: string
-      online?: boolean }[]>()
+      online?: boolean; via?: string[] }[]>()
     const put = (g: string, o: { addr: string; name: string; kind: string
-      online?: boolean }) => {
+      online?: boolean; via?: string[] }) => {
       if (seen.has(o.addr)) return
       seen.add(o.addr)
       gs.set(g, [...(gs.get(g) ?? []), o])
@@ -573,7 +573,8 @@ function ComposeModal({ slug, net, entries, toast, close }: {
       for (const r of h.roster) {
         put(r.slug.split('.')[1] ?? h.name ?? '?',
           { addr: `@net:${r.slug}`, name: r.org_name || r.slug.split('.')[0]!,
-            kind: r.kind === 'chat' ? 'chat' : 'org', online: !!r.online })
+            kind: r.kind === 'chat' ? 'chat' : 'org', online: !!r.online,
+            via: r.transports ?? ['net'] })
       }
     }
     for (const e of entries) {
@@ -585,7 +586,8 @@ function ComposeModal({ slug, net, entries, toast, close }: {
       const g = e.peer.startsWith('@net:')
         ? e.peer.slice(5).split('.')[1] ?? '?'
         : ns === 'org' ? 'this instance' : `${ns} peers`
-      put(g, { addr: e.peer, name: e.peer.replace(/^@\w+:/, ''), kind: ns })
+      put(g, { addr: e.peer, name: e.peer.replace(/^@\w+:/, ''), kind: ns,
+        via: [ns] })
     }
     return [...gs.entries()].sort(([a], [b]) => (a < b ? -1 : 1))
   })()
@@ -641,11 +643,13 @@ function ComposeModal({ slug, net, entries, toast, close }: {
               {os.map((o) => (
                 <button key={o.addr} type="button" disabled={busy}
                   className={'cmp-chip' + (sel.includes(o.addr) ? ' on' : '')}
-                  title={o.addr}
+                  title={o.addr + ' — reachable via: '
+                    + (o.via ?? [o.kind]).join(', ')}
                   onClick={() => toggle(o.addr)}>
                   <span className={'oi-dot' + (o.online ? ' ok' : '')} />
                   {o.name}
-                  <span className="dim">{o.kind}</span>
+                  {o.kind === 'chat' && <span className="dim">chat</span>}
+                  <span className="dim">{(o.via ?? [o.kind]).join('·')}</span>
                 </button>
               ))}
             </div>
@@ -737,12 +741,15 @@ function NetSection({ net }: { net?: TreePayload['net'] }) {
                   {rs.map((r) => (
                     <span key={r.slug} className="oi-peer"
                       title={(r.blurb || '') + (r.last_seen
-                        ? ` · last seen ${r.last_seen.slice(5, 16).replace('T', ' ')}` : '')}>
+                        ? ` · last seen ${r.last_seen.slice(5, 16).replace('T', ' ')}` : '')
+                        + ' · reachable via: '
+                        + (r.transports ?? ['net']).join(', ')}>
                       <span className={'oi-dot' + (r.online ? ' ok' : '')} />
                       {r.org_name || r.slug.split('.')[0]}
                       {r.kind === 'chat' &&
                         <span className="dim"> (chat)</span>}
                       <span className="dim mono-sm">·{r.slug.split('.').pop()}</span>
+                      <span className="dim"> {(r.transports ?? ['net']).join('·')}</span>
                     </span>
                   ))}
                 </div>

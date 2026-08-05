@@ -336,6 +336,10 @@ def list_orgs() -> list[dict[str, Any]]:
         out.append({"slug": doc.get("slug", f[:-5]), "name": doc.get("name", f[:-5]),
                     "nodes": len(doc.get("nodes", {})), "live": live,
                     "kiosk": doc.get("kiosk") is not None,
+                    # the PUBLIC half of the org's hub identity (never the
+                    # secret) — lets listings mark a local org as also
+                    # hub-reachable (transport sets, user spec 2026-08-05)
+                    "net_slug": (doc.get("net_identity") or {}).get("slug"),
                     "created": doc.get("created")})
     return out
 

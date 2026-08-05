@@ -328,10 +328,13 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "orgtree_list_orgs",
         "description": (
-            "List the OTHER orgtree organizations on this backend — the "
-            "reachable @org:<slug> peers for inter-org mail (top-level agents "
-            "and org-inbox audience holders may write to them via "
-            "orgtree_message). Sealed kiosk orgs are not listed."),
+            "List the reachable outside recipients: the OTHER orgs on this "
+            "backend (@org:<slug>) and every hub peer (@net:<slug>, orgs and "
+            "independent chats, with online/last_seen). Each entry carries "
+            "`transports` — which address forms resolve it (a local org "
+            "that is also hub-registered reads ['org','net']; prefer fewer "
+            "hops, or send the bare name and let transport resolve). Sealed "
+            "kiosk orgs are not listed."),
         "inputSchema": {"type": "object", "properties": {}},
     },
     {

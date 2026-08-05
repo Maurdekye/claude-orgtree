@@ -964,6 +964,18 @@ def org_tree(slug: str, request: Request) -> dict[str, Any]:
     # F-06: hub config + live connectivity for the status surfaces — never
     # the secret (status_block guarantees it); None for kiosks
     tree["net"] = net.status_block(cast("dict[str, Any]", org.d))
+    if tree["net"]:
+        # transport sets (user spec 2026-08-05): every roster peer names
+        # which transports resolve it — a hub peer that is ALSO a local org
+        # on this instance reads {org, net}; everyone else {net}. Derived
+        # from the same data the bare-name resolver consults.
+        local_net = {str(o.get("net_slug")) for o in store.list_orgs()
+                     if o.get("net_slug") and not o.get("kiosk")}
+        for h in tree["net"].get("hubs") or []:
+            for r in h.get("roster") or []:
+                r["transports"] = (["org", "net"]
+                                   if str(r.get("slug")) in local_net
+                                   else ["net"])
     tree["headless"] = bool(org.d.get("headless"))
     # WHETHER a key is set, never the key (settings needs the fact)
     tree["api_key_set"] = bool(org.d.get("api_key"))
@@ -2921,11 +2933,25 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                 # F-06 (§6 presence): remote peers from the hub roster ride
                 # the same listing, addressed @net:<slug>, with online /
                 # last_seen so an agent can route around a dark peer.
+                # Transport sets (user spec 2026-08-05): every entry names
+                # WHICH transports resolve it, derived from the same data
+                # the bare-name resolver consults — the list and the send
+                # agree by construction.
+                locs = [o for o in store.list_orgs() if not o.get("kiosk")]
+                local_net = {str(o.get("net_slug")): o["slug"]
+                             for o in locs if o.get("net_slug")}
+                peers = net.remote_peers()
+                roster = {str(p.get("slug") or "")[5:] for p in peers}
+                for p in peers:
+                    s = str(p.get("slug") or "")[5:]
+                    p["transports"] = (["org", "net"] if s in local_net
+                                       else ["net"])
                 result = {"orgs": [
                     {"slug": o["slug"], "name": o.get("name", o["slug"]),
-                     "you": o["slug"] == body.org}
-                    for o in store.list_orgs() if not o.get("kiosk")]
-                    + net.remote_peers()}
+                     "you": o["slug"] == body.org,
+                     "transports": ["org"] + (
+                         ["net"] if o.get("net_slug") in roster else [])}
+                    for o in locs] + peers}
             elif body.tool == "orgtree_dissolve":
                 result = org.dissolve(body.node, a.get("node"))  # type: ignore[arg-type]  # node() 422s on None
             elif body.tool == "orgtree_reallocate":

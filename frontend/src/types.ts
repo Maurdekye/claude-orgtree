@@ -129,6 +129,9 @@ export interface NetPeer {
   online: boolean
   last_seen?: string | null
   kind?: 'org' | 'chat'        // FR-06: independent chats are clients too
+  /** user spec 2026-08-05: which transports resolve this recipient —
+   *  derived server-side from the same data the bare-name resolver uses */
+  transports?: string[]
 }
 export interface NetHub {
   id: string
