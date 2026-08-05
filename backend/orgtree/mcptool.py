@@ -104,16 +104,20 @@ TOOLS: list[dict[str, Any]] = [
             "and the answer arrives later as ordinary mail — so ask, then "
             "WRAP UP AND END YOUR TURN; never wait or poll. Optionally give "
             "2-4 options (the user can always answer free-text instead). "
+            "Several related questions go in ONE card: pass `questions` "
+            "(1-4 entries, each with its own options/multi/header) and the "
+            "user answers every tab before one combined answer mail arrives. "
             "⚠ If any OTHER mail wakes you before the user answers, the "
             "question is VOIDED everywhere and you must re-ask. Re-asking "
-            "while one is open amends it. If you hold no user audience and "
-            "are not top-level, the question is routed to your superior as "
-            "mail instead."),
+            "while one is open amends (replaces) it. If you hold no user "
+            "audience and are not top-level, the question is routed to your "
+            "superior as mail instead."),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "question": {"type": "string",
-                             "description": "the complete question"},
+                             "description": "the complete question (single "
+                                            "form; or use `questions`)"},
                 "header": {"type": "string",
                            "description": "very short label chip (max ~12 "
                                           "chars), e.g. 'Approach'"},
@@ -130,8 +134,27 @@ TOOLS: list[dict[str, Any]] = [
                 },
                 "multi": {"type": "boolean",
                           "description": "several options may be selected"},
+                "questions": {
+                    "type": "array", "minItems": 1, "maxItems": 4,
+                    "description": "batch form — 1-4 questions asked as ONE "
+                                   "card with tabs; every tab is answered "
+                                   "before the single combined answer "
+                                   "arrives. Overrides the single-form "
+                                   "fields",
+                    "items": {"type": "object", "properties": {
+                        "question": {"type": "string"},
+                        "header": {"type": "string",
+                                   "description": "short tab label"},
+                        "options": {"type": "array", "maxItems": 4,
+                                    "items": {"type": "object", "properties": {
+                                        "label": {"type": "string"},
+                                        "description": {"type": "string"},
+                                    }, "required": ["label"]}},
+                        "multi": {"type": "boolean"},
+                    }, "required": ["question"]},
+                },
             },
-            "required": ["question"],
+            "required": [],
         },
     },
     {

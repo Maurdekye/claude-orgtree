@@ -3084,15 +3084,67 @@ class Org:
                     out.append({"label": s[:60]})
         return out
 
-    def ask_user(self, nid: str, question: str, options: list[Any] | None = None,
-                 multi: bool = False, header: str | None = None) -> dict[str, Any]:
+    def _norm_question_batch(self, question: str, options: list[Any] | None,
+                             multi: bool, header: str | None,
+                             questions: list[Any] | None
+                             ) -> list[dict[str, Any]]:
+        """FR-04: both ask forms normalize to ONE batch shape — a list of 1–4
+        `{question, options?, multi?, header?}` entries. The single form is a
+        1-entry batch; the batch form validates every entry (each needs its
+        own question text; options/multi are per question, not per card)."""
+        if questions is not None:
+            if not isinstance(questions, list) or not questions:
+                raise LedgerError("questions must be a non-empty list of "
+                                  "question objects (1–4)")
+            if len(questions) > 4:
+                raise LedgerError("a batch carries at most 4 questions — "
+                                  "split the rest into a follow-up ask")
+            batch: list[dict[str, Any]] = []
+            for i, qd in enumerate(questions):
+                if not isinstance(qd, dict):
+                    raise LedgerError(f"questions[{i}] must be an object with "
+                                      f"question text")
+                qt = str(qd.get("question") or "").strip()
+                if not qt:
+                    raise LedgerError(f"questions[{i}] needs question text")
+                e: dict[str, Any] = {"question": qt}
+                o = self._norm_options(cast("list[Any] | None",
+                                            qd.get("options")))
+                if o:
+                    e["options"] = o
+                if qd.get("multi"):
+                    e["multi"] = True
+                h = str(qd.get("header") or "").strip()[:24]
+                if h:
+                    e["header"] = h
+                batch.append(e)
+            return batch
+        q = str(question or "").strip()
+        if not q:
+            raise LedgerError("a question is required")
+        opts = self._norm_options(options)
+        hdr = str(header or "").strip()[:24]
+        return [{"question": q,
+                 **({"options": opts} if opts else {}),
+                 **({"multi": True} if multi else {}),
+                 **({"header": hdr} if hdr else {})}]
+
+    def ask_user(self, nid: str, question: str = "",
+                 options: list[Any] | None = None,
+                 multi: bool = False, header: str | None = None,
+                 questions: list[Any] | None = None) -> dict[str, Any]:
         """A structured question to the user (F-04, user-ruled 2026-08-04):
         ALWAYS parks — no blocking wait. The question becomes an interactive
         card on the agent's desk AND in the user's inbox; the answer arrives
         as ordinary user mail. Gate = the user-mail gate (top-level or a held
         user audience); anyone else has the question ROUTED to their superior
         as mail instead of refused (the auto-bridge motto). One open question
-        per node — re-asking amends it (the ratified idempotent-ask pattern)."""
+        per node — re-asking amends it (the ratified idempotent-ask pattern).
+
+        FR-04 (2026-08-05): `questions` batches 1–4 questions into ONE card
+        (a tab strip in the UI). A batch is a single ask entry — one open ask
+        per node still holds, a wake voids the WHOLE card, an amend replaces
+        the whole batch, and every tab's answer travels in one user mail."""
         self._require_live(nid)
         if self.d.get("headless"):
             # §9.6 ②: never park a card nobody will answer
@@ -3102,18 +3154,28 @@ class Org:
                 "charter, ask a peer/superior with orgtree_message "
                 "kind=question, or record the blocker with "
                 "orgtree_status(blocked, …)")
-        q = str(question or "").strip()
-        if not q:
-            raise LedgerError("a question is required")
-        opts = self._norm_options(options)
-        hdr = str(header or "").strip()[:24]
+        batch = self._norm_question_batch(question, options, multi, header,
+                                          questions)
+        # the entry mirrors batch[0] at top level (the single-question shape
+        # every existing surface reads) AND carries the full batch
+        first = batch[0]
         n = self.node(nid)
         if n["parent"] is not None and not self._has_audience(nid, USER):
             sup = n["parent"]
-            body = "[QUESTION — needs an answer]\n" + q
-            if opts:
-                body += "\nOptions: " + " · ".join(o["label"] for o in opts) \
-                        + (" (several may apply)" if multi else "")
+            parts = []
+            for qd in batch:
+                p = str(qd.get("question"))
+                if qd.get("header"):
+                    p = f"[{qd['header']}] {p}"
+                o = cast("list[dict[str, Any]]", qd.get("options") or [])
+                if o:
+                    p += "\nOptions: " + " · ".join(x["label"] for x in o) \
+                        + (" (several may apply)" if qd.get("multi") else "")
+                parts.append(p)
+            body = ("[QUESTION — needs an answer]\n"
+                    if len(batch) == 1 else
+                    f"[QUESTIONS — {len(batch)} need answers]\n") \
+                + "\n\n".join(parts)
             r = self.post_mail(nid, sup, body, kind="question")
             return {"routed": sup, "deferred": bool(r.get("deferred")),
                     "status": f"you hold no user audience — the question was "
@@ -3122,28 +3184,25 @@ class Org:
         asks = self.d.setdefault("asks", [])
         entry = next((a for a in asks
                       if a["node"] == nid and a["status"] == "open"), None)
+        mirror: dict[str, Any] = {
+            "question": first["question"], "questions": batch, "at": now(),
+            **({"options": first["options"]} if first.get("options") else {}),
+            **({"multi": True} if first.get("multi") else {}),
+            **({"header": first["header"]} if first.get("header") else {})}
         if entry is not None:
-            entry.update({"question": q, "at": now(),
-                          **({"options": opts} if opts else {}),
-                          **({"multi": True} if multi else {}),
-                          **({"header": hdr} if hdr else {})})
-            if not opts:
-                entry.pop("options", None)
-            if not multi:
-                entry.pop("multi", None)
-            if not hdr:
-                entry.pop("header", None)
+            entry.update(mirror)
+            # an amend REPLACES the batch — stale mirror keys must not linger
+            for k in ("options", "multi", "header"):
+                if k not in mirror:
+                    entry.pop(k, None)
             self._log("ask", nid, {"id": entry["id"], "amended": True}, [])
             return {"asked": entry["id"],
                     "status": "parked (amended your earlier question) — the "
                               "answer will arrive as mail; do NOT wait for it "
                               "in this turn"}
         aid = "q" + uuid.uuid4().hex[:8]
-        asks.append({"id": aid, "node": nid, "kind": "question", "question": q,
-                     **({"options": opts} if opts else {}),
-                     **({"multi": True} if multi else {}),
-                     **({"header": hdr} if hdr else {}),
-                     "at": now(), "status": "open"})
+        asks.append({"id": aid, "node": nid, "kind": "question", **mirror,
+                     "status": "open"})
         self._prune_asks()
         self._log("ask", nid, {"id": aid}, [])
         return {"asked": aid,
@@ -3185,14 +3244,54 @@ class Org:
             raise LedgerError(
                 f"ask {aid} is already {a['status']}"
                 + (f" ({a.get('reason')})" if a.get("reason") else ""))
-        sel = [str(s).strip() for s in (selected or []) if str(s).strip()]
         txt = str(text or "").strip()
+        qs = cast("list[dict[str, Any]]", a.get("questions") or [])
+        if len(qs) > 1:
+            # FR-04 batch: `selected` carries ONE item per tab, positionally —
+            # a string (the picked option or free text) or a list (a multi
+            # tab's picks). The UI disables submit until every tab is
+            # answered; this is the SERVER enforcement of the same rule, or a
+            # batch answer arrives with holes and the agent cannot tell which
+            # tab was skipped.
+            per_tab: list[Any] = list(selected or [])
+            norm: list[str | list[str]] = []
+            for item in per_tab[:len(qs)]:
+                if isinstance(item, list):
+                    norm.append([str(x).strip()
+                                 for x in cast("list[Any]", item)
+                                 if str(x).strip()])
+                else:
+                    norm.append(str(item or "").strip())
+            if len(norm) != len(qs) or any(not v for v in norm):
+                raise LedgerError(
+                    f"every tab needs an answer — this card has {len(qs)} "
+                    f"questions and the answer covered "
+                    f"{sum(1 for v in norm if v)}")
+            a["status"] = "answered"
+            a["reason"] = "answered"
+            flat = [x for v in norm
+                    for x in (v if isinstance(v, list) else [v])]
+            a["answer"] = {"selected": flat, **({"text": txt} if txt else {})}
+            lines = ["[ANSWER to your questions]"]
+            for i, (qd, v) in enumerate(zip(qs, norm)):
+                qd["answer"] = v
+                label = qd.get("header") or f"Q{i + 1}"
+                ans = " · ".join(v) if isinstance(v, list) else v
+                lines.append(f"{label} — {qd['question']}\n→ {ans}")
+            if txt:
+                lines.append("Also: " + txt)
+            a["resolved_at"] = now()
+            self._log("ask_answered", USER, {"id": aid, "node": a["node"]}, [])
+            return {"node": a["node"], "body": "\n".join(lines)}
+        sel = [str(s).strip() for s in (selected or []) if str(s).strip()]
         if not sel and not txt:
             raise LedgerError("an answer needs selected options or text")
         a["status"] = "answered"
         a["reason"] = "answered"
         a["answer"] = {**({"selected": sel} if sel else {}),
                        **({"text": txt} if txt else {})}
+        if qs:
+            qs[0]["answer"] = sel if len(sel) > 1 else (sel[0] if sel else txt)
         a["resolved_at"] = now()
         body = "[ANSWER to your question]\nQ: " + a["question"]
         if sel:

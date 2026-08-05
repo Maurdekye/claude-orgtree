@@ -252,12 +252,25 @@ export interface AskInfo {
   options?: { label: string; description?: string }[]
   multi?: boolean
   answer?: { selected?: string[]; text?: string }
+  /** FR-04: the batch — 1-4 tabs; both ask forms normalize to this. The
+   *  top-level question/options/header mirror tab 0 for older surfaces. */
+  questions?: AskQuestion[]
   // credit kind (ledger credit_requests shape)
   old?: number
   new?: number
   granted?: number
   notice?: string
   [k: string]: unknown
+}
+
+/** FR-04: one tab of a batched ask (ledger `_norm_question_batch`) */
+export interface AskQuestion {
+  question: string
+  header?: string
+  options?: { label: string; description?: string }[]
+  multi?: boolean
+  /** set once answered — the tab's answer (list for a multi tab) */
+  answer?: string | string[]
 }
 
 export type AudienceRequest = Record<string, unknown>

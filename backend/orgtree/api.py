@@ -1925,7 +1925,9 @@ async def credit_request_decide(slug: str, body: CreditDecision) -> dict[str, An
 
 
 class AskAnswer(Body):
-    selected: list[str] | None = None
+    # single card: the picked labels. FR-04 batch card: ONE item per tab,
+    # positionally — a string, or a list for a multi tab's picks
+    selected: list[str | list[str]] | None = None
     text: str | None = None
     # the card's ✕ — close without answering (mirrors AskUserQuestion's Esc)
     dismiss: bool = False
@@ -2735,7 +2737,8 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                 result = org.ask_user(body.node, a.get("question") or "",
                                       options=a.get("options"),
                                       multi=bool(a.get("multi")),
-                                      header=a.get("header"))
+                                      header=a.get("header"),
+                                      questions=a.get("questions"))
                 # no user audience → the question rode to the superior as
                 # mail; drive them like any other delivery
                 routed = result.get("routed")

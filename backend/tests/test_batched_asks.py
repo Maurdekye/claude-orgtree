@@ -248,10 +248,17 @@ def main() -> int:
     contract("re-asking replaces the entire batch", _amend_replaces_the_whole_batch)
 
     def _void_is_all_or_nothing():
+        # NB (build 2026-08-05): the void fires at WAKE time — the turn-start
+        # `void_open_asks` call (supervisor.py:1461) — not at post time. That
+        # is deliberate: mail queued behind a busy node leaves the card
+        # answerable until the turn actually starts, and an answer landing in
+        # that window still validly reaches the same turn. So this check
+        # exercises the void hook itself, which is what every wake path runs.
         org = org2()
         org.ask_user("boss", questions=QS)
         aid = open_asks(org)[0]["id"]
-        org.post_mail(USER, "boss", "something else entirely")   # wakes it
+        org.post_mail(USER, "boss", "something else entirely")
+        org.void_open_asks("boss")                    # = the wake's turn start
         left = [a for a in org.d["asks"] if a["id"] == aid][0]
         assert left["status"] != "open", "the batch survived a wake"
         assert not any(q.get("answer") for q in left.get("questions", [])), (

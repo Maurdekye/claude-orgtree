@@ -129,7 +129,9 @@ export const creditDecide = (
   })
 export const answerAsk = (
   slug: string, aid: string,
-  body: { selected?: string[]; text?: string; dismiss?: boolean },
+  // FR-04 batch cards: `selected` is one item per tab, positionally —
+  // a string, or a list for a multi tab's picks
+  body: { selected?: (string | string[])[]; text?: string; dismiss?: boolean },
 ): Promise<{ answered: string; node: string }> =>
   req(`/api/orgs/${slug}/asks/${aid}/answer`, {
     method: 'POST',
