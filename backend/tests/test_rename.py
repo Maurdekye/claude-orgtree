@@ -665,40 +665,52 @@ def sec_supervisor() -> None:
     check("renaming to the same slug does nothing, safely", _same_name_noop)
 
     def _occupied_scratch():
-        # promoted from gap() 2026-08-05: a leftover directory with the
-        # target's name — from a deleted agent, or a rename back and forth —
-        # now REFUSES the rename (a taken directory, like a taken name),
-        # leaving doc and disk untouched
+        # RE-promoted 2026-08-05 (second contract change, user bug): an
+        # occupied destination is an ORPHAN BY CONSTRUCTION — the ledger's
+        # taken-name check has already passed, so no existing node owns the
+        # name. The rename now MOVES THE SQUATTER ASIDE (*.orphan-<ts>),
+        # proceeds, and says so in the warnings; the squatter's files
+        # survive inside the moved-aside dir, never adopted by the agent.
         org, slug, d, p = setup()
         squat = scratch_of(slug, "sprocket")
         os.makedirs(squat, exist_ok=True)
         with open(os.path.join(squat, "stranger.txt"), "w", encoding="utf-8") as fh:
             fh.write("someone else's files")
-        expect_error(lambda: supervisor.rename_node(slug, "kid", "sprocket"),
-                     "already exists")
-        assert "kid" in store.load_org(slug).nodes, \
-            "the refusal must leave the doc un-re-keyed"
-        assert os.path.isfile(os.path.join(d, "notes.md")), \
-            "…and the agent's own scratch in place"
-        assert open(os.path.join(squat, "stranger.txt"),
-                    encoding="utf-8").read() == "someone else's files", \
-            "…and the stranger's files untouched"
-    check("a rename onto an existing directory is refused, changing nothing",
+        r = supervisor.rename_node(slug, "kid", "sprocket")
+        assert any("moved aside" in w for w in r.get("warnings", [])), r
+        assert "sprocket" in store.load_org(slug).nodes
+        nd = scratch_of(slug, "sprocket")
+        assert open(os.path.join(nd, "notes.md"), encoding="utf-8").read() \
+            == "agent memory", "the agent's OWN files landed at the new name"
+        assert not os.path.exists(os.path.join(nd, "stranger.txt")), \
+            "the squatter's files must NOT be adopted"
+        aside = [x for x in os.listdir(os.path.dirname(nd))
+                 if x.startswith("sprocket.orphan-")]
+        assert aside, "the squatter dir was moved aside, not deleted"
+        assert open(os.path.join(os.path.dirname(nd), aside[0],
+                                 "stranger.txt"), encoding="utf-8").read() \
+            == "someone else's files", "…with its contents intact"
+    check("an occupied destination is moved aside and the rename proceeds",
           _occupied_scratch)
 
     def _occupied_project():
-        # same refusal for the CLI project dir alone — the worse case, since
-        # adopting it means resuming someone else's conversations
+        # same for the CLI project dir alone — the agent must not resume a
+        # dead stranger's conversations, so the orphan moves aside and a
+        # FRESH project dir takes the name
         org, slug, d, p = setup()
         squat = project_of(scratch_of(slug, "sprocket"))
         os.makedirs(squat, exist_ok=True)
-        expect_error(lambda: supervisor.rename_node(slug, "kid", "sprocket"),
-                     "already exists")
-        assert os.path.isdir(d) and not os.path.exists(
-            scratch_of(slug, "sprocket")), \
-            "the scratch move must not have happened either (checked BEFORE moving)"
-        assert "kid" in store.load_org(slug).nodes
-    check("an occupied CLI project dir refuses the rename too",
+        with open(os.path.join(squat, "ghost.jsonl"), "w", encoding="utf-8") as fh:
+            fh.write("{}\n")
+        r = supervisor.rename_node(slug, "sprocket" if False else "kid",
+                                   "sprocket")
+        assert any("moved aside" in w for w in r.get("warnings", [])), r
+        np = project_of(scratch_of(slug, "sprocket"))
+        assert os.path.isfile(os.path.join(np, "sess.jsonl")), \
+            "the agent's own sessions moved in"
+        assert not os.path.exists(os.path.join(np, "ghost.jsonl")), \
+            "the dead stranger's sessions must not be resumable at this name"
+    check("an occupied CLI project dir is moved aside too",
           _occupied_project)
 
     def _generation_direct():
@@ -713,6 +725,79 @@ def sec_supervisor() -> None:
             "the refusal must leave the family intact"
     check("a lineage generation cannot be renamed out of its family",
           _generation_direct)
+
+
+    def _reclaim_a_deleted_name():
+        # USER BUG 2026-08-05: "deleting an agent and then attempting to
+        # rename another to reclaim the name does not work, im still told that
+        # the name exists". Reproduced end to end through the REAL delete path.
+        org, slug, d, p = setup()
+        org2 = store.load_org(slug)
+        org2.hire(USER, None, "opus", 10, "spare")
+        store.save_org(org2)
+        gone = supervisor.scratch_dir(slug, "kid")      # kid has lived
+        proj = project_of(gone)
+        os.makedirs(proj, exist_ok=True)
+        o = store.load_org(slug)
+        res = o.delete(USER, "kid")
+        store.save_org(o)
+        supervisor.forget(slug, res.get("deleted") or ["kid"])   # what api.py calls
+        assert "kid" not in store.load_org(slug).nodes, "precondition: deleted"
+        assert not os.path.exists(gone), "forget() removed the scratch dir"
+        try:
+            supervisor.rename_node(slug, "spare", "kid")
+        except LedgerError as e:
+            # the refusal IS the finding — restate it as the failed property
+            raise AssertionError(
+                f"the name could not be reclaimed after the agent was "
+                f"deleted: {e}. The CLI project dir {proj} survives the "
+                f"delete on purpose (forget's docstring: transcripts are "
+                f"deliberately left alone), and rename_node refuses any "
+                f"occupied destination directory") from None
+        assert "kid" in store.load_org(slug).nodes
+    # promoted from gap() 2026-08-05: the occupied-destination handling is now
+    # move-aside (orphan by construction — the taken-name check ran first),
+    # so the user's delete-then-reclaim flow works and the delete's preserved
+    # transcripts survive under the .orphan name
+    check("a deleted agent's name can be reclaimed by renaming another",
+          _reclaim_a_deleted_name)
+
+    def _forget_misses_an_on_disk_scratch():
+        # found while reproducing the above: forget() resolves the scratch
+        # root WITHOUT the on-disk branch that scratch_dir() has
+        org, slug, d, p = setup()
+        from orgtree import disk as dsk, sandbox as sbx
+        o = store.load_org(slug)
+        o.d["disk"] = {"size_mb": 4096, "migrated_at": "2026-01-01"}
+        store.save_org(o)
+        real_sub, real_flag = dsk.windows_sub, dict(sbx._disk_flag)
+        root = os.path.join(_TMP, "diskview")
+        dsk.windows_sub = lambda slug_, sub: os.path.join(root, slug_, sub)
+        sbx._disk_flag.clear()
+        try:
+            live = supervisor.scratch_dir(slug, "kid")
+            with open(os.path.join(live, "work.txt"), "w", encoding="utf-8") as fh:
+                fh.write("the agent's files")
+            o = store.load_org(slug)
+            res = o.delete(USER, "kid")
+            store.save_org(o)
+            supervisor.forget(slug, res.get("deleted") or ["kid"])
+            assert not os.path.isdir(live), (
+                f"a disk-migrated org's scratch dir survived the delete: "
+                f"{live} still holds {os.listdir(live)}. forget() removes "
+                f"store.scratch_root(slug)/<nid>, but scratch_dir() puts a "
+                f"disk-migrated org's scratch on the DISK — so the rmtree "
+                f"targets a path that does not exist and ignore_errors=True "
+                f"hides the miss")
+        finally:
+            dsk.windows_sub = real_sub
+            sbx._disk_flag.clear()
+            sbx._disk_flag.update(real_flag)
+    # promoted from gap() 2026-08-05: forget() now branches on the
+    # disk-migrated case exactly like scratch_dir() — the rmtree aims at the
+    # org disk's scratch, not a phantom under store.scratch_root
+    check("deleting a node removes its scratch dir on a DISK-MIGRATED org too",
+          _forget_misses_an_on_disk_scratch)
 
 
 def main() -> int:

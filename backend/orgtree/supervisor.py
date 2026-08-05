@@ -522,16 +522,29 @@ def rename_node(slug: str, nid: str, new_name: str,
                 old_cwd, new_cwd = old_dir, new_dir
             oldp = os.path.join(troot, "projects", _cli_project_dir(old_cwd))
             newp = os.path.join(troot, "projects", _cli_project_dir(new_cwd))
-            # a taken DIRECTORY is refused like a taken name (test_rename §5):
-            # skipping the move while the doc re-keys would hand the agent a
-            # stranger's leftover files — and, for the project dir, someone
-            # else's resumable conversations. Check BOTH before moving either.
+            # an occupied DESTINATION is an ORPHAN by construction (redteam +
+            # user report 2026-08-05): the ledger's taken-name check has
+            # already passed, so no existing node — live, archived, or
+            # lineage — is named `new`; any directory sitting there belongs
+            # to a DELETED or previously-renamed agent. The old refusal
+            # blocked exactly the ordinary reclaim (delete alpha → rename
+            # beta to alpha) with a ~/.claude path the user cannot reasonably
+            # act on. Move it aside instead — the stranger-inheritance hazard
+            # the refusal closed cannot occur, and the delete's deliberately
+            # preserved transcripts survive under the .orphan name.
+            aside_notes: list[str] = []
             for tgt in (new_dir, newp):
                 if os.path.exists(tgt):
-                    raise LedgerError(
-                        f"cannot rename {nid!r} → {new!r}: {tgt} already "
-                        f"exists (leftover from a deleted or previously "
-                        f"renamed agent). Remove or move it aside, then retry.")
+                    aside = f"{tgt}.orphan-{int(time.time())}"
+                    i = 2
+                    while os.path.exists(aside):
+                        aside = f"{tgt}.orphan-{int(time.time())}-{i}"
+                        i += 1
+                    os.rename(tgt, aside)
+                    moved.append((tgt, aside))    # rollback restores it
+                    aside_notes.append(
+                        f"a leftover folder from a deleted agent was moved "
+                        f"aside as {os.path.basename(aside)}")
             if os.path.isdir(old_dir):
                 os.rename(old_dir, new_dir)
                 moved.append((old_dir, new_dir))
@@ -539,6 +552,8 @@ def rename_node(slug: str, nid: str, new_name: str,
                 os.rename(oldp, newp)
                 moved.append((oldp, newp))
             store.save_org(org)
+            if aside_notes:
+                new_slug_probe.setdefault("warnings", []).extend(aside_notes)
         except Exception:
             for a, b in reversed(moved):
                 try:
@@ -3211,12 +3226,23 @@ def forget(slug: str, nids: Iterable[str]) -> None:
     """After a user delete of NODES: drop runtime state and remove org-owned
     scratch dirs. Lineage ids share their base's scratch, so only base ids
     delete directories; session transcripts under ~/.claude are deliberately
-    left alone."""
+    left alone.
+
+    ⚠ The scratch base must branch on the DISK-MIGRATED case exactly like
+    scratch_dir() does (redteam 2026-08-05): rmtree aimed at
+    store.scratch_root for a disk-migrated org deleted a path that never
+    existed — ignore_errors swallowed the miss and the agent's working
+    folder stayed on the org disk forever, counted against its quota."""
     import shutil
     nids = set(nids)
     forget_state(slug, nids)
+    if sbx.on_disk(slug):
+        from . import disk as dsk
+        base = dsk.windows_sub(slug, "scratch")
+    else:
+        base = store.scratch_root(slug)
     for nid in {n for n in nids if "@" not in n}:
-        shutil.rmtree(os.path.join(store.scratch_root(slug), nid), ignore_errors=True)
+        shutil.rmtree(os.path.join(base, nid), ignore_errors=True)
 
 
 def reconcile(slug: str) -> list[str]:

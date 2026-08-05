@@ -3,7 +3,8 @@ import type { ReactNode } from 'react'
 import {
   audienceAction, BASE, clearInbox, createOrg, deleteOrg,
   getAudiences, getDefaults, getEvents, getHost, getInbox, getOrgMd,
-  getSweepPreview, getTree, killAll, listOrgs, markRead, openWs, putOrgMd,
+  getOrgNet, getSweepPreview, getTree, killAll, listOrgs, markRead, openWs,
+  probeHub, putOrgMd,
   resumeFrozen, runOp, saveDefaults, saveKiosk, saveSettings, sendMessage,
   sweepLegacy,
 } from './api'
@@ -561,17 +562,30 @@ export default function App() {
  *  change what cannot change after birth. No save button of its own: the
  *  create form submits, and the settings panel keeps its ONE bottom save
  *  (three save surfaces was a user-reported failure once already). */
-function AdvancedOrgModal({ title, close, children }: {
+function AdvancedOrgModal({ title, close, children, tabs }: {
   title: string
   close: () => void
-  children: ReactNode
+  children?: ReactNode
+  /** tabbed form (user amendment 2026-08-05): categories as a tab strip —
+   *  presentation only; both callers keep their own save flow */
+  tabs?: { label: string; content: ReactNode }[]
 }) {
   useEsc(close)
+  const [tab, setTab] = useState(0)
   return (
     <div className="overlay" onClick={(e) => { e.stopPropagation(); close() }}>
       <div className="settings" onClick={(e) => e.stopPropagation()}>
         <h3><SettingsIcon fontSize="inherit" /> {title} — advanced</h3>
-        {children}
+        {tabs && (
+          <div className="adv-tabs">
+            {tabs.map((t, i) => (
+              <button key={t.label} type="button"
+                className={'adv-tab' + (i === tab ? ' on' : '')}
+                onClick={() => setTab(i)}>{t.label}</button>
+            ))}
+          </div>
+        )}
+        {tabs ? tabs[Math.min(tab, tabs.length - 1)]?.content : children}
         <div className="row">
           <button className="primary" type="button" onClick={close}>done</button>
         </div>
@@ -582,7 +596,8 @@ function AdvancedOrgModal({ title, close, children }: {
 
 function NewOrg({ onCreate }: {
   onCreate: (name: string, dirs: string[], kiosk: KioskSpecRequest | null,
-             sandbox: boolean, diskMb: number | null) => void
+             sandbox: boolean, diskMb: number | null,
+             netAuto: boolean, netHubs: string[]) => void
 }) {
   const [open, setOpen] = useState(false)
   const [advanced, setAdvanced] = useState(false)
@@ -610,12 +625,22 @@ function NewOrg({ onCreate }: {
   // sandbox is OFF by default (user ruling) — and impossible without Docker
   const [sandboxed, setSandboxed] = useState(false)
   const [docker, setDocker] = useState(false)
+  // F-06: local-hub auto-connect defaults ON (ruled); detection is a HINT
+  // beside the box, never a gate — a hub that is down still gets configured
+  const [netAuto, setNetAuto] = useState(true)
+  const [netHubs, setNetHubs] = useState<string[]>([])
+  const [hubSeen, setHubSeen] = useState<{ ok: boolean; name?: string | null } | null>(null)
   useEffect(() => {
     getHost().then((h) => setDocker(!!h.docker)).catch(() => {})
   }, [])
+  useEffect(() => {
+    if (advanced && hubSeen == null) {
+      probeHub().then(setHubSeen).catch(() => setHubSeen({ ok: false }))
+    }
+  }, [advanced, hubSeen])
   const reset = () => {
     setOpen(false); setAdvanced(false); setName(''); setDirs([])
-    setKiosk(false); setSandboxed(false)
+    setKiosk(false); setSandboxed(false); setNetAuto(true); setNetHubs([])
   }
   if (!open) return <button className="primary" onClick={() => setOpen(true)}>+ new organization</button>
   return (
@@ -637,7 +662,8 @@ function NewOrg({ onCreate }: {
           },
         } : null,
         sandboxed,
-        sandboxed && !kiosk ? Math.max(4096, +storage || 4096) : null)
+        sandboxed && !kiosk ? Math.max(4096, +storage || 4096) : null,
+        netAuto, netHubs.map((s) => s.trim()).filter(Boolean))
       reset()
     }}>
       <input autoFocus placeholder="organization name" value={name}
@@ -648,23 +674,81 @@ function NewOrg({ onCreate }: {
       <button type="button" className="disclosure" aria-expanded={advanced}
         onClick={() => setAdvanced(true)}>
         <ChevronRightIcon fontSize="inherit" /> advanced…
-        {(kiosk || sandboxed || dirs.length > 0) && (
+        {(kiosk || sandboxed || dirs.length > 0 || netAuto || netHubs.length > 0) && (
           <span className="dim adv-sum"> · {[
             kiosk ? 'kiosk' : '', sandboxed ? 'sandboxed' : '',
             dirs.length ? `${dirs.length} folder${dirs.length > 1 ? 's' : ''}` : '',
+            netAuto || netHubs.length ? 'hub' : '',
           ].filter(Boolean).join(' · ')}</span>)}
       </button>
       {advanced && (
         <AdvancedOrgModal title={name.trim() || 'new organization'}
-          close={() => setAdvanced(false)}>
-          <div className="field-label">also grant existing folders</div>
-          <DirList dirs={dirs} onChange={setDirs} />
-          {/* kiosk and sandbox live here (user ruling 2026-08-03): both are
-              advanced choices — one publishes the org, the other changes where
-              every turn executes — and neither belongs in the two-field path
-              most new orgs take. Below the folder grants, deliberately: the
-              sandbox decides whether those folders are reachable at all. */}
-          <div className="field-label adv-sep">org type</div>
+          close={() => setAdvanced(false)}
+          tabs={[
+            { label: 'general', content: (
+              <>
+                <div className="field-label">also grant existing folders</div>
+                <DirList dirs={dirs} onChange={setDirs} />
+              </>
+            ) },
+            { label: 'org type', content: (
+              <OrgTypeTab />
+            ) },
+            { label: 'mailserver', content: (
+              <>
+                <label className="row kiosk-sbx"
+                  title="being listed means peers can mail this org (and thereby spend its credits) — refusable here, at creation">
+                  <input type="checkbox" checked={netAuto && !kiosk}
+                    disabled={kiosk}
+                    onChange={(e) => setNetAuto(e.target.checked)} />
+                  connect to the mailserver on this computer
+                  {kiosk && <span className="dim"> (kiosks are sealed — no mail identity)</span>}
+                </label>
+                {!kiosk && <div className="dim hub-hint">
+                  {hubSeen == null ? 'checking for a local hub…'
+                    : hubSeen.ok
+                      ? `detected: ${hubSeen.name || 'unnamed hub'}`
+                      : 'not running right now — the org will connect when it starts'}
+                </div>}
+                {!kiosk && (
+                  <>
+                    <div className="field-label adv-sep">remote mailservers</div>
+                    {netHubs.map((h, i) => (
+                      <div className="row" key={i}>
+                        <input style={{ flex: 1 }} placeholder="http://host:7370"
+                          value={h} onChange={(e) => setNetHubs(
+                            (l) => l.map((x, j) => (j === i ? e.target.value : x)))} />
+                        <button type="button" onClick={() => setNetHubs(
+                          (l) => l.filter((_, j) => j !== i))}>
+                          <CloseIcon fontSize="inherit" /></button>
+                      </div>
+                    ))}
+                    <button type="button" onClick={() => setNetHubs((l) => [...l, ''])}>
+                      + add a remote mailserver address</button>
+                    <div className="dim hub-hint">names are discovered on
+                      connect — only the address is typed</div>
+                  </>
+                )}
+              </>
+            ) },
+          ]} />
+      )}
+      <div className="row">
+        <button type="submit" className="primary">create</button>
+        <button type="button" onClick={reset}>cancel</button>
+      </div>
+    </form>
+  )
+
+  // the org-type tab body — extracted so the tab array above stays readable;
+  // closes over the form state (kiosk/sandbox/caps/ceiling)
+  function OrgTypeTab() {
+    return (
+      <>
+        {/* kiosk and sandbox live here (user ruling 2026-08-03): both are
+            advanced choices — one publishes the org, the other changes where
+            every turn executes — and neither belongs in the two-field path
+            most new orgs take. */}
         <label className="row kiosk-sbx">
           <input type="checkbox" checked={kiosk}
             onChange={(e) => {
@@ -762,13 +846,96 @@ function NewOrg({ onCreate }: {
             a sandbox the storage limit is enforced loosely — usage is checked
             only between turns, so a single turn can overshoot it</div>
         )}
-        </AdvancedOrgModal>
-      )}
-      <div className="row">
-        <button type="submit" className="primary">create</button>
-        <button type="button" onClick={reset}>cancel</button>
+      </>
+    )
+  }
+}
+
+/** F-06: the settings modal's mailserver tab. Deliberately saves IMMEDIATELY
+ *  (the auto-resume header-toggle precedent) — hub membership is operational
+ *  state, not a form draft; the footer says so. */
+function NetTab({ tree, toast }: { tree: TreePayload; toast: ToastFn }) {
+  const hubs = tree.net?.hubs ?? []
+  const [reveal, setReveal] = useState<string | null>(null)
+  const [adding, setAdding] = useState('')
+  const apply = (next: { id?: string; address: string; enabled?: boolean }[],
+                 note: string) =>
+    saveSettings(tree.slug, { net_hubs: next })
+      .then((r) => toast(r.warnings?.length ? r.warnings : [note]))
+      .catch((e: Error) => toast([`error: ${e.message}`]))
+  return (
+    <>
+      <div className="field-label">this org's network address</div>
+      <div className="row" style={{ alignItems: 'center', flexWrap: 'wrap' }}>
+        <span className="badge dim mono-sm">{tree.net?.slug ?? '—'}</span>
+        {reveal == null
+          ? <button onClick={() => getOrgNet(tree.slug)
+              .then((r) => setReveal(r.identity?.secret ?? '(none)'))
+              .catch((e: Error) => toast([`error: ${e.message}`]))}>
+              reveal secret…</button>
+          : <>
+              <span className="badge dim mono-sm">{reveal}</span>
+              <button onClick={() => { navigator.clipboard?.writeText(reveal)
+                .catch(() => {}); toast(['secret copied']) }}>
+                <CopyIcon fontSize="inherit" /></button>
+            </>}
       </div>
-    </form>
+      <div className="dim hub-hint">the secret IS the address's ownership —
+        losing it loses the address; nobody can restore it. It never reaches
+        an agent.</div>
+      <label className="checkline"
+        title="being listed means peers can mail this org (and thereby spend its credits)">
+        <input type="checkbox"
+          checked={hubs.some((h) => h.id === 'local')}
+          onChange={(e) => saveSettings(tree.slug,
+            { net_autoconnect: e.target.checked })
+            .then((r) => toast(r.warnings?.length ? r.warnings
+              : [e.target.checked ? 'local hub joined' : 'local hub left']))
+            .catch((err: Error) => toast([`error: ${err.message}`]))} />
+        connect to the mailserver on this computer
+      </label>
+      <div className="field-label">mailservers</div>
+      {hubs.map((h) => (
+        <div className="row" key={h.id} style={{ alignItems: 'center' }}>
+          <span className={'oi-dot' + (h.connected ? ' ok' : '')} />
+          <b>{h.name || (h.id === 'local' ? 'local hub' : 'unnamed')}</b>
+          <span className="dim mono-sm" style={{ flex: 1 }}>{h.address}</span>
+          <span className="dim" style={{ fontSize: '11px' }}>
+            {h.connected ? 'connected'
+              : h.enabled ? (h.error ? `retrying — ${h.error}` : 'connecting…')
+                : 'disabled'}
+            {h.queued > 0 ? ` · ${h.queued} queued` : ''}
+          </span>
+          <label className="checkline" style={{ margin: 0 }}>
+            <input type="checkbox" checked={h.enabled}
+              onChange={(e) => apply(hubs.map((x) => ({ id: x.id,
+                address: x.address, enabled: x.id === h.id
+                  ? e.target.checked : x.enabled })),
+                e.target.checked ? `${h.name || h.address} enabled`
+                  : `${h.name || h.address} disabled`)} />
+            on
+          </label>
+          <button title="remove this mailserver"
+            onClick={() => apply(hubs.filter((x) => x.id !== h.id)
+              .map((x) => ({ id: x.id, address: x.address,
+                             enabled: x.enabled })),
+              `${h.name || h.address} removed`)}>
+            <CloseIcon fontSize="inherit" /></button>
+        </div>
+      ))}
+      <div className="row">
+        <input style={{ flex: 1 }} placeholder="http://host:7370 — add a remote mailserver"
+          value={adding} onChange={(e) => setAdding(e.target.value)} />
+        <button disabled={!adding.trim()}
+          onClick={() => { apply([...hubs.map((x) => ({ id: x.id,
+            address: x.address, enabled: x.enabled })),
+            { address: adding.trim(), enabled: true }], 'mailserver added')
+            setAdding('') }}>add</button>
+      </div>
+      <div className="dim" style={{ fontSize: '11.5px' }}>
+        mailserver changes apply immediately (names are discovered on connect)
+      </div>
+    </>
   )
 }
 
@@ -1315,15 +1482,9 @@ function SettingsPanel({ tree, toast, close }: {
           ].filter(Boolean).join(' · ') || 'policies & ceiling'}</span>
         </button>
         {showAdv && (
-          <AdvancedOrgModal title={tree.name} close={() => setShowAdv(false)}>
-            {/* born-with facts render LOCKED: the modal must not offer to
-                change what cannot change after creation (docket F-07 rule 1) */}
-            <div className="field-label">born-with — set at creation, immutable</div>
-            <div className="row" style={{ flexWrap: 'wrap' }}>
-              <span className="badge dim">{kk ? 'kiosk' : 'not a kiosk'}</span>
-              <span className="badge dim">{tree.sandboxed ? 'sandboxed (Docker)' : 'unsandboxed'}</span>
-              {tree.disk && <span className="badge dim">fixed disk · resize via the storage browser</span>}
-            </div>
+          <AdvancedOrgModal title={tree.name} close={() => setShowAdv(false)}
+            tabs={[
+              { label: 'general', content: (<>
             <div className="field-label">fable weekly-limit policy</div>
             <select value={fablePolicy} onChange={(e) => setFablePolicy(e.target.value)}>
               <option value="halt">halt (default)</option>
@@ -1350,6 +1511,19 @@ function SettingsPanel({ tree, toast, close }: {
               allocations &amp; model upgrades bubble their cost up the chain (off:
               limited to the superior's own free credits)
             </label>
+            <div className="dim" style={{ fontSize: '11.5px' }}>
+              changes here save with the panel's own save button
+            </div>
+              </>) },
+              { label: 'org type', content: (<>
+            {/* born-with facts render LOCKED: the modal must not offer to
+                change what cannot change after creation (docket F-07 rule 1) */}
+            <div className="field-label">born-with — set at creation, immutable</div>
+            <div className="row" style={{ flexWrap: 'wrap' }}>
+              <span className="badge dim">{kk ? 'kiosk' : 'not a kiosk'}</span>
+              <span className="badge dim">{tree.sandboxed ? 'sandboxed (Docker)' : 'unsandboxed'}</span>
+              {tree.disk && <span className="badge dim">fixed disk · resize via the storage browser</span>}
+            </div>
             {ms && ceil && (
               <>
                 <div className="field-label"
@@ -1412,7 +1586,11 @@ function SettingsPanel({ tree, toast, close }: {
             <div className="dim" style={{ fontSize: '11.5px' }}>
               changes here save with the panel's own save button
             </div>
-          </AdvancedOrgModal>
+              </>) },
+              ...(tree.net != null
+                ? [{ label: 'mailserver',
+                     content: <NetTab tree={tree} toast={toast} /> }] : []),
+            ]} />
         )}
         <div className="row">
           <button className="primary" onClick={() => {

@@ -792,6 +792,25 @@ def orgs_delete(slug: str) -> dict[str, Any]:
     return {"ok": True}
 
 
+@app.get("/api/net/probe")
+def net_probe(request: Request, address: str = "") -> dict[str, Any]:
+    """F-06: is a hub reachable at this address RIGHT NOW? A creation-form
+    HINT only — the auto-connect checkbox never gates on it (a hub that is
+    down at config time still gets configured; the daemon retries forever)."""
+    if _public_slug(request):
+        raise HTTPException(404, "not found")
+    addr = address.strip() or net.DEFAULT_HUB_ADDRESS
+    try:
+        import httpx
+        r = httpx.get(f"{addr}/healthz", timeout=2.0)
+        if r.status_code == 200:
+            d = cast("dict[str, Any]", r.json())
+            return {"ok": True, "name": d.get("name")}
+    except Exception:                                            # noqa: BLE001
+        pass
+    return {"ok": False}
+
+
 @app.get("/api/orgs/{slug}/net")
 def org_net(slug: str, request: Request) -> dict[str, Any]:
     """F-06: the org's network identity — the ONE place the secret is
@@ -1191,12 +1210,16 @@ def _org_settings_locked(slug: str, body: Settings) -> dict[str, Any]:
                             "auto-connects")
         org.d["net_hubs"] = hubs
     if body.net_hubs is not None and org.d.get("kiosk") is None:
-        # authoritative replacement of the hub LIST; per-hub ids (and the
-        # names discovered on connect) survive for entries the client kept
-        old_by_id = {str(h.get("id")): h
-                     for h in (org.d.get("net_hubs") or [])}
+        # authoritative replacement of the hub LIST. Ids (and discovered
+        # names) survive by id OR BY ADDRESS (redteam ②: minting a fresh id
+        # for an identical address orphaned every spooled entry — net_spool
+        # keys on the hub id); entries under truly-removed hubs re-key to the
+        # first enabled hub (addresses are hub-agnostic, ruled)
+        old_hubs = list(org.d.get("net_hubs") or [])
+        old_by_id = {str(h.get("id")): h for h in old_hubs}
+        old_by_addr = {str(h.get("address")): h for h in old_hubs}
         new_hubs: list[dict[str, Any]] = []
-        for h in cast("list[Any]", body.net_hubs):
+        for h in body.net_hubs:
             if not isinstance(h, dict):
                 raise HTTPException(422, "net_hubs entries must be "
                                          "{id?, address, enabled?}")
@@ -1204,8 +1227,10 @@ def _org_settings_locked(slug: str, body: Settings) -> dict[str, Any]:
             addr = str(hd.get("address") or "").strip()
             if not addr:
                 continue
-            hid = str(hd.get("id") or "") or uuid.uuid4().hex[:8]
-            kept = old_by_id.get(hid) or {}
+            kept = old_by_id.get(str(hd.get("id") or "")) \
+                or old_by_addr.get(addr) or {}
+            hid = str(hd.get("id") or "") or str(kept.get("id") or "") \
+                or uuid.uuid4().hex[:8]
             new_hubs.append({"id": hid, "address": addr,
                              "enabled": bool(hd.get("enabled", True)),
                              **({"name": kept["name"]}
@@ -1213,6 +1238,21 @@ def _org_settings_locked(slug: str, body: Settings) -> dict[str, Any]:
         org.d["net_hubs"] = new_hubs
         org.d["net_autoconnect"] = any(
             h["id"] == net.LOCAL_HUB_ID for h in new_hubs)
+        # re-key orphaned spool entries so nothing queued becomes invisible
+        spool: dict[str, list[Any]] = org.d.get("net_spool") or {}
+        live_ids = {h["id"] for h in new_hubs}
+        target = next((str(h["id"]) for h in new_hubs if h["enabled"]), None)
+        for gone in [k for k in list(spool) if k not in live_ids]:
+            entries: list[Any] = spool.pop(gone) or []
+            if entries and target:
+                spool.setdefault(target, []).extend(entries)
+                warnings.append(f"{len(entries)} queued message(s) moved to "
+                                f"the remaining mailserver")
+            elif entries:
+                spool[gone] = entries    # keep; ① blocks new ones doorside
+                warnings.append(f"{len(entries)} queued message(s) have no "
+                                f"mailserver to leave through — enable one")
+        org.d["net_spool"] = spool
     store.save_org(org)
     hub_changed(slug)
     net.kick()
@@ -2075,13 +2115,13 @@ def org_inbox_send(slug: str, body: OrgInboxSend,
     if not to.startswith(("@ext:", "@org:", "@mcp:", "@net:")):
         raise HTTPException(422, "recipient must be an outside address "
                                  "(@ext:/@org:/@mcp:/@net:)")
-    paths = []
+    paths: list[str] = []
     for sid in body.attachments[:10]:
-        p = _COMPOSE_STAGE.get(sid)
-        if not p or not os.path.isfile(p):
+        sp = _COMPOSE_STAGE.get(sid)
+        if not sp or not os.path.isfile(sp):
             raise HTTPException(422, f"staged attachment {sid!r} not found — "
                                      f"re-upload and retry")
-        paths.append(p)
+        paths.append(sp)
     if paths and to.startswith(("@ext:", "@mcp:")):
         # ruled 2026-08-05: those transports are text-only
         raise HTTPException(422, "attachments ride @net: and @org: mail "
@@ -2097,6 +2137,10 @@ def org_inbox_send(slug: str, body: OrgInboxSend,
         if to.startswith("@net:") and to[5:] == (
                 (org.d.get("net_identity") or {}).get("slug")):
             raise HTTPException(422, "that address is this organization")
+        if to.startswith("@net:") and not any(
+                h.get("enabled") for h in org.d.get("net_hubs") or []):
+            raise HTTPException(422, "no mailserver is configured — enable a "
+                                     "hub in settings → mailserver first")
         oid = org._org_inbox_log("out", to, body.body, by="user")
         if to.startswith("@net:"):
             net.spool_append(org, to[5:], body.body, oid=oid,
@@ -2513,6 +2557,15 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                 # (ruled; @ext:/@mcp: are text-only transports, @org: local
                 # mail has its own path). Validated BEFORE post_mail so a
                 # refused send records nothing.
+                if str(a.get("to", "")).startswith("@net:") \
+                        and not any(h.get("enabled")
+                                    for h in org.d.get("net_hubs") or []):
+                    # redteam ①: refuse at the door — the old fallback spooled
+                    # under an id no drain visits ("queued" forever)
+                    raise LedgerError(
+                        "no mailserver is configured for this org — ask the "
+                        "user to enable a hub (settings → mailserver) before "
+                        "addressing @net: mail")
                 net_atts: list[str] = []
                 raw_atts = [str(x) for x in
                             cast("list[Any]", a.get("attachments") or [])]

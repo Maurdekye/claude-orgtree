@@ -65,6 +65,7 @@ export const createOrg = (
   name: string, dirs: string[],
   kiosk: KioskSpecRequest | null = null, sandbox = false,
   diskMb: number | null = null,
+  netAutoconnect = true, netHubs: string[] = [],
 ): Promise<{ slug: string }> =>
   req('/api/orgs', {
     method: 'POST',
@@ -72,6 +73,9 @@ export const createOrg = (
     body: JSON.stringify({
       name, dirs, ...(kiosk ? { kiosk } : {}),
       ...(sandbox && !kiosk ? { sandbox: true } : {}),
+      // F-06: mailserver — local-hub opt-out + typed remote addresses
+      ...(netAutoconnect ? {} : { net_autoconnect: false }),
+      ...(netHubs.length ? { net_hubs: netHubs } : {}),
       // sandboxed non-kiosk orgs: virtual-disk size (4096 MB minimum)
       ...(sandbox && !kiosk && diskMb != null ? { disk_mb: diskMb } : {}),
     }),
@@ -194,6 +198,12 @@ export const orgInboxUpload = (
 // returns the org secret (the settings panel's reveal/export)
 export const getOrgNet = (slug: string): Promise<OrgNetReveal> =>
   req(`/api/orgs/${slug}/net`)
+// F-06: is a hub reachable at this address right now? (a HINT — the
+// checkbox never gates on it; a hub that is down still gets configured)
+export const probeHub = (
+  address = '',
+): Promise<{ ok: boolean; name?: string | null }> =>
+  req(`/api/net/probe${address ? `?address=${encodeURIComponent(address)}` : ''}`)
 export const saveScope = (slug: string, nid: string, scope: ScopeRequest): Promise<OpResult> =>
   req(`/api/orgs/${slug}/nodes/${nid}/scope`, {
     method: 'POST',

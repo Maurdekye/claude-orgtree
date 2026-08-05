@@ -108,6 +108,15 @@ nav { display: flex; flex-direction: column; gap: 2px; }
   font-size: 11.5px; }
 .mono-sm { font-family: var(--mono); font-size: 10.5px; }
 .pad-s { padding: 4px 0 0 15px; font-size: 11.5px; }
+/* F-06/F-07: the advanced modal's category tabs (user amendment 2026-08-05) */
+.adv-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line-soft);
+  margin-bottom: 10px; }
+.adv-tab { background: none; border: none; border-bottom: 2px solid transparent;
+  color: var(--dim); padding: 4px 10px; font: inherit; font-size: 12.5px;
+  cursor: pointer; border-radius: 0; }
+.adv-tab:hover { color: var(--ink); background: var(--panel-2); }
+.adv-tab.on { color: var(--ink-strong); border-bottom-color: var(--accent); }
+.hub-hint { font-size: 11.5px; margin: 2px 0 6px 22px; }
 .org-del {
   background: none; border: none; padding: 0 2px; font-size: 11px;
   color: var(--dim); opacity: 0; transition: opacity .12s; line-height: 1;

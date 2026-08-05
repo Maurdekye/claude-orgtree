@@ -139,6 +139,14 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
     for (const p of piles.values()) out.set(p.front, p)
     return out
   }, [piles])
+  // member id → its pile, for focus-brings-to-front (ref: centerOn is a
+  // stable callback and must read the CURRENT piles mid-gesture)
+  const pileOfRef = useRef(new Map<string, Pile>())
+  useEffect(() => {
+    const out = new Map<string, Pile>()
+    for (const p of piles.values()) for (const m of p.list) out.set(m, p)
+    pileOfRef.current = out
+  }, [piles])
   const hidden = useMemo(() => {         // piled-away id → its pile's front id
     const out = new Map<string, string>()
     const bury = (n: CanvasNode, front: string) => {
@@ -535,6 +543,16 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
   }, [animateTo])
 
   const centerOn = useCallback((id: string, z: number | null = null) => {
+    // focusing a BURIED pile member brings it to the front first (user spec
+    // 2026-08-05), then finishes the glide once the re-layout gives it a
+    // position (two frames: state commit, then layout)
+    const pile = pileOfRef.current.get(id)
+    if (pile && pile.front !== id) {
+      setFront(pile.key, id)
+      requestAnimationFrame(() => requestAnimationFrame(() =>
+        centerRef.current?.(id, z)))
+      return
+    }
     const p = targetRef.current.get(id)
     const vp = viewportRef.current?.getBoundingClientRect()
     if (!p || !vp) return
@@ -554,7 +572,9 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
       y: vp.height / 2 - (p.y + NODE_H / 2) * zz,
       z: zz,
     })
-  }, [animateTo])
+  }, [animateTo, setFront])
+  const centerRef = useRef<typeof centerOn | null>(null)
+  centerRef.current = centerOn
 
   // a REAL fit: whole org inside the actual viewport
   const fitAll = useCallback((animate = true, ms = 320) => {

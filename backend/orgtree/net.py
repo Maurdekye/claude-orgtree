@@ -133,9 +133,27 @@ _hub_names: dict[str, str] = {}
 # self-heals to "delivered", which is honest
 _read_q: list[tuple[str, str]] = []      # (org_slug, net_id)
 _read_q_lock = threading.Lock()
-# delivered receipts queued at delivery time (we know the hub they came from)
+# delivered receipts queued at delivery time (we know the hub they came from).
+# ⚠ its OWN lock (redteam ⑤): the poller appends while the sender snapshots,
+# and an unlocked snapshot dropped receipts — a lost DELIVERED does not
+# self-heal (the row sits at 'sent' until a read happens to follow)
 _dlv_q: list[tuple[str, str, str]] = []  # (org_slug, hub_id, net_id)
+_dlv_q_lock = threading.Lock()
 _backoff: dict[str, float] = {}          # hub address → monotonic not-before
+_backoff_n: dict[str, int] = {}          # consecutive failures PER ADDRESS
+                                         # (redteam ③: len(_backoff) counted
+                                         # addresses, not attempts — flat 2 s)
+
+
+def _fail(addr: str) -> None:
+    n = _backoff_n.get(addr, 0) + 1
+    _backoff_n[addr] = n
+    _backoff[addr] = time.monotonic() + min(BACKOFF_MAX_S, 2.0 ** n)
+
+
+def _ok(addr: str) -> None:
+    _backoff_n.pop(addr, None)
+    _backoff.pop(addr, None)
 
 
 def kick() -> None:
@@ -159,9 +177,20 @@ def spool_append(org: "Org", peer: str, body: str, oid: str,
     """Stage an outbound @net: message. PURE doc mutation on the caller's
     already-loaded org — it rides the caller's save (api.py agent dispatch),
     so the org-inbox row and the spool entry land atomically. Returns the hub
-    message id (the idempotency key)."""
+    message id (the idempotency key).
+
+    ⚠ Raises when NO hub is enabled (redteam ①): the old LOCAL_HUB_ID
+    fallback filed the entry under an id the org may not have, where no
+    drain ever visits — a message that says "queued" and never leaves.
+    Callers refuse at the door instead."""
+    peer = peer.removeprefix("@net:")    # tolerate the prefixed form (redteam)
     hubs = [h for h in (org.d.get("net_hubs") or []) if h.get("enabled")]
-    hub_id = str(hubs[0]["id"]) if hubs else LOCAL_HUB_ID
+    if not hubs:
+        from .ledger import LedgerError
+        raise LedgerError(
+            "no mailserver is configured — enable a hub in the org's "
+            "settings (mailserver tab) before addressing @net: mail")
+    hub_id = str(hubs[0]["id"])
     entry: dict[str, Any] = {"id": uuid.uuid4().hex, "to": peer, "body": body,
                              "kind": kind, "at": now(), "oid": oid, "tries": 0}
     metas: list[dict[str, Any]] = []
@@ -288,6 +317,27 @@ def _participants() -> dict[str, dict[str, Any]]:
                 if h.get("enabled") and h.get("address")]
         if not ident.get("secret"):
             continue
+        # SELF-HEAL orphaned spool keys (redteam ②): anything queued under a
+        # hub id the org no longer has re-keys to the first enabled hub —
+        # covers direct doc edits, not just the settings path (addresses are
+        # hub-agnostic, ruled, so any hub may carry the entry)
+        spool = cast("dict[str, list[Any]]", org.d.get("net_spool") or {})
+        hub_id_set = {str(h["id"]) for h in hubs}
+        orphans = [k for k in spool if k not in hub_id_set and spool.get(k)]
+        if orphans and hubs:
+            try:
+                with store.DOC_LOCK:
+                    org = store.load_org(slug)
+                    sp = cast("dict[str, list[Any]]",
+                              org.d.setdefault("net_spool", {}))
+                    tgt = str(hubs[0]["id"])
+                    for k in [x for x in list(sp) if x not in hub_id_set]:
+                        moved: list[Any] = sp.pop(k) or []
+                        if moved:
+                            sp.setdefault(tgt, []).extend(moved)
+                    store.save_org(org)
+            except Exception:                                    # noqa: BLE001
+                pass
         net_state = cast("dict[str, dict[str, Any]]",
                          org.d.get("net_state") or {})
         spool = cast("dict[str, list[Any]]", org.d.get("net_spool") or {})
@@ -336,19 +386,24 @@ def _auth_header(pairs: list[tuple[str, str]]) -> dict[str, str]:
 
 def _record_hub_name(addr: str, name: Any, parts: dict[str, dict[str, Any]],
                      hub_ids: dict[str, str]) -> None:
-    """Persist a discovered hub name onto every org's matching hub entry
-    (once — names are display data, refreshed when they change)."""
+    """Persist a discovered hub name onto EVERY org's matching hub entry.
+    ⚠ The skip must be PER ORG (redteam ④): an address-level early-return
+    meant only the first caller's doc learned the name — the UI looked right
+    off the in-memory cache while every other doc stayed nameless, and the
+    doc is what survives a restart. The parts snapshot carries each org's
+    current entry, so the check is cheap (no doc load on the skip path)."""
     from . import store
     if not name or not isinstance(name, str):
         return
     with _status_lock:
-        known = _hub_names.get(addr)
         _hub_names[addr] = name
-    if known == name:
-        return
     for slug in parts:
         hid = hub_ids.get(slug)
         if not hid:
+            continue
+        mine = next((h for h in parts[slug]["hubs"]
+                     if str(h.get("id")) == hid), None)
+        if mine is not None and mine.get("name") == name:
             continue
         try:
             with store.DOC_LOCK:
@@ -358,6 +413,8 @@ def _record_hub_name(addr: str, name: Any, parts: dict[str, dict[str, Any]],
                         h["name"] = name
                         store.save_org(org)
                         break
+            if mine is not None:
+                mine["name"] = name      # keep the snapshot honest this pass
         except Exception:                                        # noqa: BLE001
             pass
 
@@ -405,9 +462,9 @@ def _register_pending(parts: dict[str, dict[str, Any]]) -> None:
                     st.setdefault(hid, {})["registered_at"] = now()
                     store.save_org(org)
                 _set_status(slug, hid, True)
+                _ok(addr)
             except Exception as e:                               # noqa: BLE001
-                _backoff[addr] = time.monotonic() + min(
-                    BACKOFF_MAX_S, 2.0 * (1 + len(_backoff)))
+                _fail(addr)
                 _set_status(slug, hid, False, type(e).__name__)
 
 
@@ -436,7 +493,7 @@ def _drain_spools(parts: dict[str, dict[str, Any]]) -> None:
                 try:
                     att_ids = _ship_attachments(slug, hid, addr, p, e)
                 except Exception as ex:                          # noqa: BLE001
-                    _backoff[addr] = time.monotonic() + BACKOFF_MAX_S / 2
+                    _fail(addr)
                     _set_status(slug, hid, False, type(ex).__name__)
                     _bump_try(slug, hid, str(e["id"]), type(ex).__name__)
                     break
@@ -452,13 +509,14 @@ def _drain_spools(parts: dict[str, dict[str, Any]]) -> None:
                                    headers=_auth_header(
                                        [(p["net_slug"], p["secret"])]))
                 except Exception as ex:                          # noqa: BLE001
-                    _backoff[addr] = time.monotonic() + BACKOFF_MAX_S / 2
+                    _fail(addr)
                     _set_status(slug, hid, False, type(ex).__name__)
                     _bump_try(slug, hid, str(e["id"]), type(ex).__name__)
                     break
                 if r.status_code == 200:
                     _spool_done(slug, hid, str(e["id"]))
                     _set_status(slug, hid, True)
+                    _ok(addr)
                 elif r.status_code == 422:
                     # unknown recipient: keep retrying forever (the peer may
                     # register later — hub-agnostic addresses, ruled), but
@@ -651,9 +709,26 @@ def _deliver_inbound(slug: str, hub_id: str, msgs: list[dict[str, Any]],
                     ring.append(mid)
                     del ring[:-SEEN_RING]
                 store.save_org(org)
-            _dlv_q.append((slug, hub_id, mid))
+            with _dlv_q_lock:             # redteam ⑤: the sender snapshots
+                _dlv_q.append((slug, hub_id, mid))
         ack.append(mid)
     return ack
+
+
+def _read_hub_of(slug: str, mid: str) -> str | None:
+    """Which hub delivered this inbound id? The persisted seen-ring answers —
+    redteam ⑥: fanning a read receipt to EVERY hub stamps `read` on any hub
+    where an id collides (adversarial-only with uuid ids, but the precise
+    route costs nothing). None = evicted from the ring; fall back to fan-out."""
+    from . import store
+    try:
+        org = store.load_org(slug)
+        for hid, st in (org.d.get("net_state") or {}).items():
+            if mid in (st.get("seen_ids") or []):
+                return str(hid)
+    except Exception:                                            # noqa: BLE001
+        pass
+    return None
 
 
 def _flush_receipts(parts: dict[str, dict[str, Any]]) -> None:
@@ -662,18 +737,24 @@ def _flush_receipts(parts: dict[str, dict[str, Any]]) -> None:
     with _read_q_lock:
         reads = list(_read_q)
         _read_q.clear()
-    dlv = list(_dlv_q)
-    _dlv_q.clear()
+    with _dlv_q_lock:
+        dlv = list(_dlv_q)
+        _dlv_q.clear()
     by_dest: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for slug, hid, mid in dlv:
         by_dest.setdefault((slug, hid), []).append(
             {"id": mid, "state": "delivered", "at": now()})
     for slug, mid in reads:
-        # read receipts route to every enabled hub of the org — the one that
-        # owns the id records it (v1 has one hub; harmless otherwise)
-        for h in (parts.get(slug) or {}).get("hubs", []):
-            by_dest.setdefault((slug, str(h["id"])), []).append(
-                {"id": mid, "state": "read", "at": now()})
+        # route the read to the hub that DELIVERED the id (seen-ring lookup).
+        # An id in NO ring (ring-evicted, or never inbound here) is DROPPED,
+        # not fanned out — redteam ⑥ constructed a same-id message on a second
+        # hub that a fan-out stamps `read` although nobody read it. Receipts
+        # are best-effort by spec; the far end honestly keeps `delivered`.
+        owner = _read_hub_of(slug, mid)
+        if owner is None:
+            continue
+        by_dest.setdefault((slug, owner), []).append(
+            {"id": mid, "state": "read", "at": now()})
     for (slug, hid), recs in by_dest.items():
         p = parts.get(slug)
         if not p:
@@ -692,8 +773,9 @@ def _flush_receipts(parts: dict[str, dict[str, Any]]) -> None:
             with _read_q_lock:
                 _read_q.extend((slug, str(r["id"])) for r in recs
                                if r["state"] == "read")
-            _dlv_q.extend((slug, hid, str(r["id"])) for r in recs
-                          if r["state"] == "delivered")
+            with _dlv_q_lock:
+                _dlv_q.extend((slug, hid, str(r["id"])) for r in recs
+                              if r["state"] == "delivered")
 
 
 def _sender_loop() -> None:
@@ -757,15 +839,16 @@ def _poll_pass(parts: dict[str, dict[str, Any]]) -> bool:
                            params={"wait": POLL_WAIT_S},
                            headers=_auth_header(pairs))
         except Exception as e:                                   # noqa: BLE001
-            _backoff[addr] = time.monotonic() + 5.0
+            _fail(addr)
             for s, hid in members.items():
                 _set_status(s, hid, False, type(e).__name__)
             continue
         if r.status_code != 200:
-            _backoff[addr] = time.monotonic() + 5.0
+            _fail(addr)
             for s, hid in members.items():
                 _set_status(s, hid, False, f"HTTP {r.status_code}")
             continue
+        _ok(addr)
         data = cast("dict[str, Any]", r.json())
         _record_hub_name(addr, data.get("name"), parts, dict(members))
         with _status_lock:
