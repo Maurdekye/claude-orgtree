@@ -221,6 +221,8 @@ export interface TreeNode {
   ask?: AskInfo | null
   /** FR-03: presented documents (metadata; body via getDocument) */
   documents?: { id: string; title: string; at: string }[] | null
+  /** FR-01: parked while the user drives this session from another device */
+  remote_controlled?: { at?: string } | null
 }
 
 /** 'thinking' | 'writing' | 'tool' — a string rather than a union for the same

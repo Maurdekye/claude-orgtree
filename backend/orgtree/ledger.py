@@ -3722,6 +3722,8 @@ class Org:
                 # F-04/F-05: the ask card this node's desk shows — open, or
                 # freshly nulled (the nulled card carries its reason)
                 "ask": self.node_ask(nid),
+                # FR-01: parked under user remote control (supervisor sets it)
+                "remote_controlled": n.get("remote_controlled") or None,
                 # FR-03: presented documents — METADATA only (the reader
                 # fetches the body on open; bodies are up to 64 KB and would
                 # bloat every tree payload)

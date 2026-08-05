@@ -78,6 +78,8 @@ export interface CanvasNode {
   /** FR-03: presented documents — metadata only; the reader fetches the
    *  body on open */
   documents?: { id: string; title: string; at: string }[] | null
+  /** FR-01: parked while the user drives this session from another device */
+  remote_controlled?: { at?: string } | null
   waiting?: boolean
   responding?: boolean
   phase?: string | null

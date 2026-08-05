@@ -138,6 +138,15 @@ export const answerAsk = (
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
+// FR-01: hand an agent's session to claude.ai / the mobile app (and back)
+export const remoteControl = (slug: string, nid: string,
+  action: 'start' | 'stop'):
+  Promise<{ ok?: boolean; note?: string }> =>
+  req(`/api/orgs/${slug}/nodes/${nid}/remote-control`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action }),
+  })
 // FR-03: presented documents — the reader fetches the body on open
 export const getDocument = (slug: string, did: string):
   Promise<{ id: string; node: string; title: string; body: string; at: string }> =>

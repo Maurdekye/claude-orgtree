@@ -1425,6 +1425,13 @@ def _run_one_turn(slug: str, nid: str,
                     raise RuntimeError(
                         "frozen by a usage limit — waiting for ▶ resume "
                         "(or auto-resume) before running anything")
+                if org.node(nid).get("remote_controlled"):
+                    # FR-01: same double-gate as frozen — the queue drains
+                    # through the previous turn's follow-up too
+                    raise RuntimeError(
+                        "under remote control (the user is driving this "
+                        "session from another device) — mail waits until "
+                        "release")
                 # NOT locked fable nodes under a fable_lock (e.g. rehired anyway) are
                 # allowed to TRY — the real limit rejects them naturally (user ruling:
                 # the gate is a suggestion, reality is the enforcement)
@@ -2383,6 +2390,98 @@ def manual_compact(slug: str, nid: str) -> None:
             _run_turn(slug, nid, nxt)
 
 
+# ------------------------------------------------------------------ FR-01
+# Remote control: `claude remote-control --session-id <sid>` hands the
+# user's claude.ai / mobile app the agent's REAL session. Two writers on one
+# session id is the hazard, so while the server runs the node is PARKED:
+# send_message queues mail without driving, and the turn gate refuses to
+# launch. Strictly user-triggered (starting the server ENROLLS this device
+# on the user's account — never automatic), unsandboxed agents only (a
+# container's session files never hold the subscription token). The spawned
+# server is leashed to the backend, and reconcile() clears stale flags on
+# startup — so a backend restart always ends remote control cleanly.
+
+_remote_procs: dict[tuple[str, str], subprocess.Popen[str]] = {}
+
+
+def remote_control_start(slug: str, nid: str) -> dict[str, Any]:
+    with store.DOC_LOCK:
+        org = store.load_org(slug)
+        if nid not in org.nodes:
+            return {"error": f"no agent {nid!r}"}
+        n = org.node(nid)
+        if n["state"] != "live":
+            return {"error": f"{nid} is {n['state']} — only a live agent "
+                             f"can be remote-controlled"}
+        if sbx.is_sandboxed(org):
+            return {"error": "sandboxed agents are out of scope: their "
+                             "session files live inside the container, "
+                             "which deliberately never holds the "
+                             "subscription token"}
+        if n.get("remote_controlled"):
+            return {"ok": True, "already": True}
+        sid = n["session_id"]
+    st = state(slug, nid)
+    with _state_lock:
+        if st["busy"]:
+            return {"error": f"{nid} is mid-turn — wait for the turn to "
+                             f"finish, then start remote control"}
+    cwd = scratch_dir(slug, nid)
+    log_path = os.path.join(cwd, "remote-control.log")
+    try:
+        logf = open(log_path, "a", encoding="utf-8")
+        proc = subprocess.Popen(
+            _claude_argv() + ["remote-control", "--session-id", sid],
+            cwd=cwd, stdin=subprocess.DEVNULL, stdout=logf, stderr=logf,
+            text=True, encoding="utf-8", errors="replace")
+    except OSError as e:
+        return {"error": f"could not start the remote-control server: {e}"}
+    _leash(proc)
+    time.sleep(2.5)                 # the cheap TTY-less sanity probe
+    if proc.poll() is not None:
+        tail = ""
+        try:
+            tail = open(log_path, encoding="utf-8",
+                        errors="replace").read()[-400:]
+        except OSError:
+            pass
+        return {"error": "the remote-control server exited immediately "
+                         f"(code {proc.returncode}) — log tail: {tail}"}
+    with store.DOC_LOCK:
+        o2 = store.load_org(slug)
+        if nid in o2.nodes:
+            o2.node(nid)["remote_controlled"] = {"at": now_iso(),
+                                                 "pid": proc.pid}
+            store.save_org(o2)
+    _remote_procs[(slug, nid)] = proc
+    notify(slug, nid, "remote_control")
+    return {"ok": True, "log": log_path,
+            "note": "connect from claude.ai/code or the Claude mobile app; "
+                    "mail queues until release"}
+
+
+def remote_control_stop(slug: str, nid: str) -> dict[str, Any]:
+    proc = _remote_procs.pop((slug, nid), None)
+    if proc is not None:
+        try:
+            proc.terminate()
+        except OSError:
+            pass
+    had_mail = False
+    with store.DOC_LOCK:
+        org = store.load_org(slug)
+        if nid in org.nodes and org.node(nid).pop("remote_controlled", None):
+            had_mail = bool((org.d.get("mail") or {}).get(nid))
+            store.save_org(org)
+    notify(slug, nid, "remote_control")
+    if had_mail:
+        send_message(slug, nid,
+                     "(orgtree) Remote control released — mail queued while "
+                     "the user drove your session directly is above; catch "
+                     "up and continue.")
+    return {"ok": True}
+
+
 def send_message(slug: str, nid: str, text: str,
                  command: bool = False) -> dict[str, Any]:
     """Drive a node with a nudge; returns immediately. EVERY substantive message
@@ -2404,6 +2503,10 @@ def send_message(slug: str, nid: str, text: str,
         _o = store.load_org(slug)
         if nid in _o.nodes and _o.node(nid).get("frozen"):
             return {"accepted": True, "queued": 0, "frozen": True}
+        if nid in _o.nodes and _o.node(nid).get("remote_controlled"):
+            # FR-01: the user is driving this session directly — two writers
+            # on one session id corrupt it, so mail waits for release
+            return {"accepted": True, "queued": 0, "remote": True}
         if nid in _o.nodes and _o.node(nid)["state"] != "live":
             # an archived node receives mail but cannot act (user ruling) —
             # the mailbox holds it; rehire drives it
@@ -3475,6 +3578,15 @@ def reconcile(slug: str) -> list[str]:
                 org.mark_unrecoverable(nid, "transcript missing at startup (№31)")
                 marked.append(nid)
         if marked:
+            store.save_org(org)
+        # FR-01: a remote-control server is leashed to the backend, so after
+        # a restart none can be running — a surviving flag is stale and
+        # would park the node forever
+        rc_cleared = False
+        for n in org.nodes.values():
+            if n.pop("remote_controlled", None) is not None:
+                rc_cleared = True
+        if rc_cleared:
             store.save_org(org)
         # agents that were MID-TURN when orgtree went down auto-resume from
         # where they left off (user ruling) — the interrupted turn text was

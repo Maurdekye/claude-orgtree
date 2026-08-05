@@ -11,8 +11,8 @@ import type {
   ChatInit, DirGrant, ToastFn, ToolGrant, TreePayload,
 } from '../types'
 import {
-  dissolveAll, getChat, getMcpServers, saveHireDefaults, saveScope,
-  saveSettings,
+  dissolveAll, getChat, getMcpServers, remoteControl, saveHireDefaults,
+  saveScope, saveSettings,
 } from '../api'
 import { pickFolder } from '../picker'
 import {
@@ -523,6 +523,34 @@ export function NodeConfig({ node, map, tree, slug, op, toast, close }: NodeConf
           <button className="danger delete"
             onClick={() => setAsking('delete')}><DeleteIcon fontSize="inherit" /> delete permanently</button>
         </div>
+
+        {/* FR-01: hand this agent's REAL session to claude.ai / the mobile
+            app. Parked while controlled (mail queues); release resumes.
+            Loopback-only server-side; hidden from kiosk visitors. */}
+        {node.state === 'live' && !tree.public && !node.isBearerOf && (
+          <div className="row" style={{ alignItems: 'center' }}>
+            {node.remote_controlled ? (
+              <>
+                <span className="dim">under remote control — mail queues
+                  until release</span>
+                <button className="primary" onClick={() =>
+                  remoteControl(slug, node.id, 'stop')
+                    .then(() => toast([`${node.id} released`]))
+                    .catch((e: Error) => toast([`error: ${e.message}`]))}>
+                  release</button>
+              </>
+            ) : (
+              <button title={'starts `claude remote-control` on this '
+                + "agent's session — connect from claude.ai/code or the "
+                + 'Claude mobile app; the agent is parked until release'}
+                onClick={() =>
+                  remoteControl(slug, node.id, 'start')
+                    .then((r) => toast([r.note ?? 'remote control started']))
+                    .catch((e: Error) => toast([`error: ${e.message}`]))}>
+                remote control (claude.ai / mobile)</button>
+            )}
+          </div>
+        )}
 
         <div className="field-label">folder access</div>
         <div className="dirlist">

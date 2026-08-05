@@ -165,6 +165,7 @@ class NodeDoc(TypedDict):
     last_denials: NotRequired[list[Denial]]
     turns: NotRequired[list[TurnStat]]
     frozen: NotRequired[FrozenInfo | None]
+    remote_controlled: NotRequired[dict[str, Any] | None]  # FR-01 {at, pid} — the node is parked while the user drives its session directly
     limit_locked: NotRequired[bool]
     oracle_exchanges: NotRequired[list[OracleExchange]]
 

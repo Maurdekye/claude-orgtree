@@ -1924,6 +1924,31 @@ async def credit_request_decide(slug: str, body: CreditDecision) -> dict[str, An
     return req
 
 
+class RemoteControl(Body):
+    action: str                       # "start" | "stop"
+
+
+@app.post("/api/orgs/{slug}/nodes/{nid}/remote-control")
+def remote_control(slug: str, nid: str, body: RemoteControl,
+                   request: Request) -> dict[str, Any]:
+    """FR-01: hand the agent's real session to the user's claude.ai / mobile
+    app (`claude remote-control --session-id`). Strictly user-triggered —
+    starting the server enrolls THIS device on the user's account — and
+    loopback-only (never the kiosk gateway)."""
+    if _public_slug(request):
+        raise HTTPException(404, "not found")
+    if body.action == "start":
+        r = supervisor.remote_control_start(slug, nid)
+    elif body.action == "stop":
+        r = supervisor.remote_control_stop(slug, nid)
+    else:
+        raise HTTPException(422, "action must be start or stop")
+    if r.get("error"):
+        raise HTTPException(422, str(r["error"]))
+    hub_changed(slug)
+    return r
+
+
 @app.get("/api/orgs/{slug}/documents/{did}")
 def document_get(slug: str, did: str) -> dict[str, Any]:
     """FR-03: the reader fetches the BODY on open (the tree payload carries
