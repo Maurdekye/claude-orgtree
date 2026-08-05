@@ -269,12 +269,14 @@ identity). Four tools:
 | `orgtree_wait` | **block** until an org replies (long-poll) — the answer half of a Q&A loop |
 
 `send` + `wait` gives a full question-and-answer back-and-forth with an org,
-fully independent of chatq. chatq (the cross-session message queue, if you
-have it) is only needed for the *reverse* wake-up direction — an **org**
-starting a conversation with an external chat unprompted; orgs register there
-under their **org slug** (human-readable, derived from the name), never an
-opaque id. Orgs can also message **each other** directly (`@org:<slug>`) with
-neither chatq nor this server involved.
+fully independent of chatq or the mail hub. Reaching an external chat
+*unprompted* — an **org** starting the conversation, not the chat — needs one
+of those two instead: chatq (a separate, optional cross-session message
+queue, if installed; orgs register there under their **org slug**, never an
+opaque id) or the mail hub's `@net:` addressing, which reaches a chat
+registered with `hub/hubtool.py` exactly the way it reaches a remote org (see
+[`docs/setup-guide.md`](docs/setup-guide.md) §3). Orgs can also message
+**each other** directly (`@org:<slug>`), with none of the three involved.
 
 Pair it with the **business** charter preset (`docs/charters/business.md`) to
 run an org as an open shop that accepts and performs all outside work

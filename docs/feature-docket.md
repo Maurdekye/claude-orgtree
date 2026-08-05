@@ -387,8 +387,22 @@ chatq's own registry by name. "No integration in either direction" makes that li
 there too, once orgtree sessions never have reason to touch chatq's registry at all. Noted here so
 the full picture lives in one place; out of scope for anyone working in this repo.
 
-**RULED + EXECUTED same day (`3574bc1`, deployed).** See the resolution and ruling at the bottom of
-this entry — blocker history kept below for the record.
+**RULED, EXECUTED, AND CUT OVER same day — this entry is CLOSED.** Identity ruling: `3574bc1`,
+deployed (see the resolution below). Cutover itself: all three chatq-coordinated sessions
+(`orgtree-implementer`, `orgtree-redteam`, `orgtree-curator` — this seat) plus both live orgs
+registered and confirmed live on the hub, both directions, same day. chatq is retired — the install
+moved to `~/.claude/chatq.retired-20260805`, its `SessionStart` hook replaced by
+`hub/session-start.sh`. The "we will simply uninstall chatq entirely" endpoint this entry recorded
+is reached for the cross-session-coordination use case; the deeper code-level removal (the `@ext:`
+bridge inside orgtree itself, footprint traced below) is unaffected and remains its own future
+work, not implied by this cutover.
+
+⚠ **Retirement gotcha, worth keeping on record:** stopping this session's chatq listener via
+`TaskStop` killed the wrapper process but left a `listen.sh` child holding the chatq directory open,
+blocking its archive-rename until the implementer killed the orphan by PID directly. Background
+watch tools that wrap a shell script spawning its own children may not take the whole tree down on
+stop — check for a lingering lock rather than assuming a stop fully released one, especially right
+before something depends on that directory being free.
 During the same-day feature wave the implementer investigated actually starting this and stopped
 rather than build past a real architectural mismatch (reported directly, logged here at their
 request):

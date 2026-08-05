@@ -94,10 +94,11 @@ real host access, same as plain Claude Code would), not headless (you're the one
 connected to any mailserver (§3) unless you opt in. Every section below is something you turn on;
 none of it is on by default.
 
-**Note on the SessionStart-hook suggestion in §3:** the same "arm a listener automatically at
-session start, like chatq" pattern applies to `externtool.py` (below) too, once it has a `listen`
-mode — tracked as `feature-docket.md` FR-08, not built as of this writing. Today only `hubtool.py`
-has one; see §3 for the working example.
+**Note on the SessionStart-hook pattern in §3:** `externtool.py` (below) has had a `listen` mode
+since FR-08 shipped (`feature-docket.md`), the same shape as `hubtool.py`'s — but unlike the hub,
+it has no `SessionStart` hook of its own yet arming it automatically. `hub/session-start.sh` (§3)
+is the current, real example of the pattern; nothing analogous exists for a plain local-org
+connection today.
 
 The full interaction manual — every gesture, badge, and panel — is
 [`docs/ui-guide.md`](ui-guide.md).
@@ -297,46 +298,53 @@ loopback-only `GET /api/orgs/{slug}/net`.
 ### Connecting an independent Claude Code chat to it
 
 `hub/hubtool.py` — "**the mailserver hub MCP server**" — lets a plain Claude Code session (not part
-of any org) become a first-class hub client, symmetric to how an org connects:
+of any org) become a first-class hub client, symmetric to how an org connects. As an MCP tool
+(added once per session, or via the `SessionStart` hook below):
 
 ```
 claude mcp add mailhub -- python hub/hubtool.py
 ```
 
-Tools: `hub_register` (first call chooses a display **name**, persisted forever after — later calls
-are idempotent), `hub_list` (roster with kind + presence), `hub_send`, `hub_read`, `hub_wait`
-(bounded long-poll). Identity is a per-**user-profile** UID, minted once at
-`~/.orgtree/hub-client.json` (0600 permissions, `O_EXCL`-minted) and reused across every chat on
-that machine — the UID itself *is* the secret; the hub stores only `sha256(uid)`. The resulting
-slug is `<name>.<username>.<fp[:6]>`, tagged `kind: chat` on the roster; orgs address a chat as
-`@net:<that slug>`, exactly like a remote org.
+Tools: `hub_register` (chooses this session's identity name), `hub_list` (roster with kind +
+presence), `hub_send`, `hub_read`, `hub_wait` (bounded long-poll). The same four verbs are also a
+plain CLI, useful for scripts or a `SessionStart` hook that runs before any MCP tool is available:
+`python hub/hubtool.py {register|send|list|listen} <name> …`.
 
-For the chatq-shaped "wake me when mail arrives" experience instead of polling manually:
+⚠ **Identity is per-SESSION, not per machine profile** (ruled 2026-08-05, closing FR-09's
+concurrency blocker — see `feature-docket.md`). Each session **chooses its own unique,
+semantically-appropriate name** describing its own purpose (`orgtree-redteam`, `terrain-pipeline`,
+…) and reuses that name on later runs to resume the same address; a different name is a different
+identity. Identities live one-per-file at `~/.orgtree/hub-clients/<name>.json` (`0600`,
+`O_EXCL`-minted — two processes racing to mint the same name both end up with one shared uid, not
+two). The slug is `<name>.<username>.<fp[:6]>`, tagged `kind: chat` on the roster; orgs — and other
+chats — address one by that full slug, exactly like a remote org. Registering with a name that's
+already taken on this machine returns a `resumed` note; if that wasn't you, pick a different name.
+
+For the "wake me when mail arrives" experience instead of polling manually — this is what chatq's
+own `listen.sh` used to give independent sessions, before chatq was retired in favor of this hub
+(2026-08-05, FR-09):
 
 ```sh
-python hub/hubtool.py listen
+python hub/hubtool.py listen <name>
 ```
 
-Emits one line per inbound mail (arms cleanly with the `Monitor` tool) — the same delivery shape
-chatq uses today, which is why the user's own framing for this is a candidate **end-to-end chatq
-replacement** (migration itself is a separate, later decision — recorded as its own intent in
-[`feature-docket.md`](feature-docket.md) FR-09).
+The name selects **which** session identity listens (per-session identities are the whole point, so
+an unnamed listener is refused); emits one line per inbound mail, arms cleanly with the `Monitor`
+tool. A second `listen` on the same name while the first is still running is also refused — two
+listeners on one identity would silently split the mailbox at random, per the same at-least-once /
+custody-transfer mechanics as the hub's other delivery paths.
 
-Env: `MAILHUB_URL` (default `http://127.0.0.1:7370`), `MAILHUB_NAME` (pre-seeds the name choice —
-useful for scripted setups).
+Env: `MAILHUB_URL` (default `http://127.0.0.1:7370`), `MAILHUB_NAME` (pre-seeds/selects the name —
+the listener requires one, from either the argument or this variable).
 
 The dial-out direction is preserved here too: the chat polls the hub; nothing ever reaches in.
 
-**Suggested: arm `listen` automatically at session start**, the same way chatq arms its own inbox
-listener with no manual step. chatq does this with a `SessionStart` hook — a script wired into
-`settings.json` that runs when a session opens and returns `additionalContext` telling the *new*
-session to arm a Monitor watch on its own listener. A real, working copy of that exact pattern
-already exists on this machine at `~/.claude/chatq/bin/session-start.sh` (+ `register.sh`, which
-emits the actual instruction text) — read it directly rather than take this guide's word for the
-shape. The orgtree equivalent: a `SessionStart` hook whose `additionalContext` tells the session to
-arm `python hub/hubtool.py listen` via the `Monitor` tool. This guide doesn't ship that script —
-exact hook wiring follows Claude Code's own hooks schema, which changes independently of orgtree —
-but the chatq example is a complete, working reference for the pattern.
+**Arming `listen` automatically at session start is no longer just a suggestion — it's shipped.**
+`hub/session-start.sh` is a real, working `SessionStart` hook: wired into `settings.json`, it hands
+a fresh session the exact instructions to pick a name (reusing an earlier one if it registered
+before — it lists every name already known on this machine), register, and arm its own `Monitor`
+watch on `listen`, all before any other work. Read it directly for the exact wording it hands the
+session; this guide won't duplicate a script that already exists and can drift from it.
 
 ---
 
