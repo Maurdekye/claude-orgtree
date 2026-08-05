@@ -462,7 +462,17 @@ def cli(argv: list[str]) -> int:
         if len(argv) < 2:
             print("usage: hubtool.py register <name>", flush=True)
             return 2
-        out = register(argv[1])
+        try:
+            out = register(argv[1])
+        except Exception as e:                                   # noqa: BLE001
+            # hub down is NOT a failed onboarding: the identity was minted
+            # locally, and the listener self-registers on every reconnect —
+            # arm it anyway and the session comes online with the hub
+            d = _ident(argv[1])
+            out = {"slug": d.get("slug"),
+                   "warning": f"hub unreachable ({e}) — identity minted "
+                              f"locally; arm the listener anyway, it will "
+                              f"register automatically when the hub is back"}
         print(json.dumps(out), flush=True)
         return 1 if out.get("error") else 0
     if verb == "send":
