@@ -1149,10 +1149,10 @@ def section_addressing():
     # outside-world addressing
     o6 = deep_org()
     check("only a top-level agent (or an org-inbox holder) speaks outward",
-          lambda: expect_error(lambda: o6.post_mail("mid-a", "@ext:abc", "hi"),
+          lambda: expect_error(lambda: o6.post_mail("mid-a", "@mcp:abc", "hi"),
                                "top-level"))
     check("a top-level agent may", lambda: eq(
-        o6.post_mail("top", "@ext:abc", "hi")["delivered"], "@ext:abc"))
+        o6.post_mail("top", "@mcp:abc", "hi")["delivered"], "@mcp:abc"))
     check("an org-inbox audience holder may too", lambda: (
         o6.audience_grant("top", "mid-a", "extern"),
         eq(o6.post_mail("mid-a", "@org:elsewhere", "hi")["delivered"],
@@ -1161,12 +1161,12 @@ def section_addressing():
         lambda: o6.post_mail("top", f"@org:{o6.d['slug']}", "hi"),
         "this organization itself"))
     check("the USER cannot be an outbound sender (only agents speak outward)",
-          lambda: expect_error(lambda: o6.post_mail(USER, "@ext:abc", "hi"),
+          lambda: expect_error(lambda: o6.post_mail(USER, "@mcp:abc", "hi"),
                                "only agents"))
     ko = kiosk_org()
     ko.hire(USER, None, "haiku", 5, "sealed")
     check("a sealed kiosk has no contact with the outside world",
-          lambda: expect_error(lambda: ko.post_mail("sealed", "@ext:abc", "hi"),
+          lambda: expect_error(lambda: ko.post_mail("sealed", "@mcp:abc", "hi"),
                                "sealed kiosk"))
     check("…and inbound to a kiosk is dropped, not delivered",
           lambda: eq(ko.post_external_mail("@ext:abc", "hello"), []))
@@ -1347,7 +1347,7 @@ def section_edges():
     check("a node named 'extern' does not become the ORG INBOX sentinel",
           lambda: (on2.hire(USER, "extern", "haiku", 1, "sub"),
                    true(not on2._has_audience("sub", EXTERN)),
-                   expect_error(lambda: on2.post_mail("sub", "@ext:x", "hi"),
+                   expect_error(lambda: on2.post_mail("sub", "@mcp:x", "hi"),
                                 "top-level"))[-1])
 
     # --- names

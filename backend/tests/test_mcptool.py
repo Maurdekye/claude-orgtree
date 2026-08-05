@@ -907,11 +907,11 @@ def _():
     no500(txt, "unknown recipient")
 
 
-@t("orgtree_message: outside mail (@ext:/@org:) is a top-level privilege")
+@t("orgtree_message: outside mail (@org:/@mcp:) is a top-level privilege")
 def _():
     txt = WORKER.refuse("orgtree_message", {"to": "@org:" + B, "body": "hi"})
     assert "TOP-LEVEL" in txt or "top-level" in txt, txt
-    txt = WORKER.refuse("orgtree_message", {"to": "@ext:some-chat", "body": "hi"})
+    txt = WORKER.refuse("orgtree_message", {"to": "@mcp:some-chat", "body": "hi"})
     assert "TOP-LEVEL" in txt or "top-level" in txt, txt
 
 

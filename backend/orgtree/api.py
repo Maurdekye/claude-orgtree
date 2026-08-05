@@ -38,6 +38,7 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, model_validator
 
+from . import ledger as ledger_mod
 from . import net, sandbox, store, subproxy, supervisor
 from .ledger import LedgerError, Org, USER, VIS_LEVELS, norm_dirs, norm_tools
 
@@ -450,6 +451,36 @@ mail_notify: Callable[[str, str, str], None] = \
     lambda slug, frm, to: None   # wired at startup (thread-safe fanout)
 
 
+def _external_candidates(name: str) -> dict[str, list[str]]:
+    """Bare-name transport resolution (user ruling 2026-08-05, relayed via
+    the redteam): the outside knowledge the hermetic ledger cannot hold.
+    `org` = local orgs whose slug matches exactly (sealed kiosks answer like
+    nonexistent orgs, same as interorg_send); `net` = hub peers whose full
+    slug OR leading name segment matches. The @mcp: tier lives in the org's
+    own correspondence log, resolved ledger-side."""
+    out: dict[str, list[str]] = {"org": [], "net": []}
+    try:
+        for o in store.list_orgs():
+            if o.get("slug") == name:
+                try:
+                    if store.load_org(name).d.get("kiosk") is not None:
+                        continue
+                except LedgerError:
+                    continue
+                out["org"].append(name)
+    except OSError:
+        pass
+    for p in net.remote_peers():
+        s = str(p.get("slug") or "")
+        s = s[5:] if s.startswith("@net:") else s
+        if s == name or s.split(".")[0] == name:
+            out["net"].append(s)
+    return out
+
+
+ledger_mod.external_candidates = _external_candidates
+
+
 @app.on_event("startup")  # type: ignore[deprecated]  # migrating to lifespan is a runtime change (D-079: inert wave)
 async def _wire_notify() -> None:  # type: ignore[unused-function]  # registered by the decorator
     global mail_notify, _LOOP
@@ -490,11 +521,8 @@ async def _wire_notify() -> None:  # type: ignore[unused-function]  # registered
     # storage watchdog (user spec): catches single long tool calls —
     # clones/builds/downloads — that balloon past the limit MID-CALL
     supervisor.start_storage_watchdog()
-    # chatq external bridge (user vision): every org is an addressable chatq
-    # peer — external Claude Code sessions message it like any other chat
-    for o in store.list_orgs():
-        supervisor.chatq_register_org(o["slug"])
-    supervisor.start_chatq_bridge()
+    # (the chatq external bridge that used to register every org here is
+    # GONE — user ruling 2026-08-05: @ext: retired, chats ride the hub)
     # F-06: the mail-hub client — connectivity TRANSITIONS broadcast an org
     # `changed` so the UI's status dots are realtime without polling
     net.notify_changed = hub_changed
@@ -717,7 +745,6 @@ def orgs_create(body: OrgCreate) -> dict[str, Any]:
         with store.DOC_LOCK:
             org.d.update(dflt)  # type: ignore[arg-type]  # defaults.json holds org-doc-shaped keys
             store.save_org(org)
-    supervisor.chatq_register_org(org.d["slug"])
     if body.kiosk is not None:
         # kiosk orgs are a DISTINCT TYPE, born as kiosks with their limits
         # defined at creation (user ruling) — never converted from a normal
@@ -796,7 +823,6 @@ def orgs_delete(slug: str) -> dict[str, Any]:
     supervisor.forget_state(slug)
     supervisor.remote_reap(slug)     # FR-01: no server outlives its org
     sandbox.remove(slug)            # container down; files stay (like scratch)
-    supervisor.chatq_deregister_org(slug)
     return {"ok": True}
 
 
@@ -2301,9 +2327,13 @@ def org_inbox_send(slug: str, body: OrgInboxSend,
     if _public_slug(request):
         raise HTTPException(404, "not found")
     to = body.to.strip()
-    if not to.startswith(("@ext:", "@org:", "@mcp:", "@net:")):
+    if to.startswith("@ext:"):
+        # user ruling 2026-08-05: @ext: retired with chatq — refuse loudly
+        raise HTTPException(422, "the @ext: address form is retired — reach "
+                                 "chats through the mail hub (@net:<slug>)")
+    if not to.startswith(("@org:", "@mcp:", "@net:")):
         raise HTTPException(422, "recipient must be an outside address "
-                                 "(@ext:/@org:/@mcp:/@net:)")
+                                 "(@org:/@mcp:/@net:)")
     paths: list[str] = []
     for sid in body.attachments[:10]:
         staged = _COMPOSE_STAGE.get(sid)
@@ -2311,10 +2341,10 @@ def org_inbox_send(slug: str, body: OrgInboxSend,
             raise HTTPException(422, f"staged attachment {sid!r} not found — "
                                      f"re-upload and retry")
         paths.append(staged[1])
-    if paths and to.startswith(("@ext:", "@mcp:")):
-        # ruled 2026-08-05: those transports are text-only
+    if paths and to.startswith("@mcp:"):
+        # ruled 2026-08-05: that transport is text-only
         raise HTTPException(422, "attachments ride @net: and @org: mail "
-                                 "only — @ext:/@mcp: are text-only transports")
+                                 "only — @mcp: is a text-only transport")
     warnings: list[str] = []
     with store.DOC_LOCK:
         try:
@@ -2359,14 +2389,6 @@ def org_inbox_send(slug: str, body: OrgInboxSend,
                 os.remove(p)
             except OSError:
                 pass
-    elif to.startswith("@ext:"):
-        ok = supervisor.chatq_send(
-            slug, to[5:],
-            f"[message from orgtree org '{slug}' (sent by its user)]\n"
-            + body.body)
-        if not ok:
-            warnings.append(f"chatq delivery to {to[5:]} failed — is the "
-                            f"target chat still registered?")
     # @mcp: — the org-inbox entry IS the delivery; the peer polls
     hub_changed(slug)
     return {"id": oid, "warnings": warnings}
@@ -2737,7 +2759,6 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
         except LedgerError as e:
             raise HTTPException(422, str(e))
     drive: list[str] = []      # nodes whose turn should run after we release the lock
-    ext_send: tuple[str, str] | None = None   # (chat-id, body) outbound riding the chatq bridge
     org_send: tuple[str, str] | None = None   # (dst-slug, body) outbound to another org's inbox
     net_send = False                          # @net: — staged to the spool; kick after the lock
     with store.DOC_LOCK:
@@ -2746,7 +2767,7 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
             org.node(body.node)
             if body.tool == "orgtree_message":
                 # F-06 D: outbound attachments — @net: recipients only in v1
-                # (ruled; @ext:/@mcp: are text-only transports, @org: local
+                # (ruled; @mcp: is a text-only transport, @org: local
                 # mail has its own path). Validated BEFORE post_mail so a
                 # refused send records nothing.
                 if str(a.get("to", "")).startswith("@net:") \
@@ -2796,11 +2817,8 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                     # org mail rides the sender→mailbox line, whatever the
                     # transport branch below does with it
                     mail_notify(body.org, body.node, "org_inbox")
-                if delivered and delivered.startswith("@ext:"):
-                    # outbound to an external session — rides the chatq bridge
-                    ext_send = (delivered[5:], a.get("body", ""))
-                elif delivered and delivered.startswith("@org:"):
-                    # outbound to ANOTHER ORG's inbox — direct, no chatq needed
+                if delivered and delivered.startswith("@org:"):
+                    # outbound to ANOTHER ORG's inbox — direct
                     org_send = (delivered[5:], a.get("body", ""))
                 elif delivered and delivered.startswith("@mcp:"):
                     # a polling external chat: the org-inbox entry IS the
@@ -2986,16 +3004,6 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
             body.org, target,
             "(orgtree) You have new mail above — handle it as appropriate, and use "
             "orgtree_status when your own task state changes.")
-    if ext_send is not None:
-        # org-voice (user spec): the message goes out under the ORG's name,
-        # never the individual agent's
-        ok = supervisor.chatq_send(
-            body.org, ext_send[0],
-            f"[message from orgtree org '{body.org}']\n" + ext_send[1])
-        if not ok:
-            result.setdefault("warnings", []).append(
-                f"chatq delivery to {ext_send[0]} failed — is the target "
-                f"chat still registered?")
     if org_send is not None:
         err = supervisor.interorg_send(body.org, org_send[0], org_send[1])
         if err:

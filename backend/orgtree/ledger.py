@@ -26,7 +26,7 @@ from __future__ import annotations
 import math
 import re
 import uuid
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime, timedelta, timezone
 from typing import Any, Final, Literal, cast
 
@@ -87,6 +87,14 @@ def actor_kind(actor: str) -> str:
     if actor == SYSTEM:
         return "system"
     return "agent"
+
+
+# set by the API layer (the ledger stays hermetic — tests never need a
+# backend): bare-name transport resolution's OUTSIDE knowledge. Returns
+# {"org": [local org slugs matching name], "net": [hub slugs matching name]};
+# the @mcp: tier resolves from the org's own correspondence log instead.
+external_candidates: Callable[[str], dict[str, list[str]]] = \
+    lambda name: {}   # noqa: E731
 
 VIS_LEVELS: Final = ("self", "team", "subtree", "full")   # org-structure knowledge tiers
 TOOL_KEYS: Final = ("bash", "web", "edit", "subagents")   # the built-in tool switches
@@ -860,11 +868,41 @@ class Org:
             return "a superior above your chain"
         return "an agent"
 
-    def _resolve_recipient(self, to: str) -> str:
+    def _resolve_recipient(self, to: str, outward: bool = False) -> str:
         """Agent-facing convenience: 'user' addresses the user UNLESS an agent is
-        literally named user (names win — the @-sentinel stays unambiguous)."""
+        literally named user (names win — the @-sentinel stays unambiguous).
+
+        `outward` (post_mail only — user ruling 2026-08-05, relayed): a bare
+        name that is NO node here auto-resolves to the fewest-hop outside
+        transport. @org: (a local org) and @mcp: (a polling external chat)
+        are MUTUALLY EXCLUSIVE tiers and either outranks the hub; only when
+        neither matches does the name go out as @net:. Ambiguity — two
+        candidates anywhere short of the hub tier, or two hub clients —
+        REFUSES and names the candidates; it never guesses. Explicit
+        prefixes keep working as disambiguators. Internal names always win:
+        an agent addressing a colleague is never hijacked by an org that
+        happens to share the name."""
         if to == "user" and "user" not in self.nodes:
             return USER
+        if (outward and to and not to.startswith("@")
+                and to != USER and to not in self.nodes):
+            cand = external_candidates(to)
+            near = [f"@org:{s}" for s in cand.get("org") or []]
+            near += sorted({
+                e["peer"] for e in self.d.get("org_inbox") or []
+                if str(e.get("peer", "")).startswith("@mcp:")
+                and e["peer"][5:] == to})
+            hub = [f"@net:{s}" for s in cand.get("net") or []]
+            if len(near) == 1:
+                return near[0]
+            pool = near or hub
+            if len(pool) == 1:
+                return pool[0]
+            if len(pool) > 1:
+                raise LedgerError(
+                    f"'{to}' is ambiguous — it could be any of: "
+                    + ", ".join(pool)
+                    + ". Address the full form to pick one.")
         return to
 
     def post_mail(self, sender: str, to: str, body: str, kind: str = "message",
@@ -874,12 +912,23 @@ class Org:
         downward any depth (deep reach implicitly grants the recipient an audience),
         one hop up, siblings, held audiences. Everything else is refused with the
         proper route named."""
-        to = self._resolve_recipient(to)
+        to = self._resolve_recipient(to, outward=True)
         if actor_kind(sender) == "agent":
             self.node(sender)
         warnings: list[str] = []
-        if to.startswith(("@ext:", "@org:", "@mcp:", "@net:")):
-            # outbound to the OUTSIDE WORLD — a chatq session (@ext:), another
+        if to.startswith("@ext:"):
+            # user ruling 2026-08-05 (relayed): @ext: is RETIRED with chatq.
+            # The prefix used to parse and then silently black-hole (the
+            # bridge is archived) — the worst state; refuse loudly instead.
+            # Historical @ext: rows stay readable; only NEW sends refuse.
+            raise LedgerError(
+                "the @ext: address form is retired (the chatq bridge is "
+                "gone). Reach independent chats and other machines through "
+                "the mail hub: @net:<slug> (orgtree_list_orgs shows hub "
+                "peers) — or just the bare name; transport resolves "
+                "automatically")
+        if to.startswith(("@org:", "@mcp:", "@net:")):
+            # outbound to the OUTSIDE WORLD — another
             # org's inbox (@org:), a polling external chat on the extern MCP
             # server (@mcp: — no push transport; the peer reads the org inbox),
             # or an org on another machine via the mail hub (@net: — spooled
@@ -1061,7 +1110,7 @@ class Org:
                            attachments_by_node: Mapping[str, list[dict[str, Any]]]
                            | None = None,
                            net_id: str | None = None) -> list[str]:
-        """Inbound from OUTSIDE the org — a chatq session (@ext:<id>) or another
+        """Inbound from OUTSIDE the org — an external chat or another
         org (@org:<slug>). Org-inbox model (user spec): the message is addressed
         to the ORGANIZATION, not to any agent. It lands in the org-wide inbox;
         every live top-level agent AND every org-inbox audience holder receives
@@ -1388,7 +1437,7 @@ class Org:
                      f"{who} granted you audience with the ORG INBOX: you now "
                      f"receive outside messages addressed to this organization "
                      f"(chatq sessions, other orgs) and may reply for it with "
-                     f"orgtree_message to the sender's @ext:/@org: address. "
+                     f"orgtree_message to the sender's @org:/@mcp:/@net: address. "
                      f"Replies speak for the org as a whole — coordinate with "
                      f"the other recipients before answering.")
         self._log("audience_grant", actor, {"grantee": frm, "grantor": EXTERN}, [])

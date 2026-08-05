@@ -577,12 +577,14 @@ function ComposeModal({ slug, net, entries, toast, close }: {
       }
     }
     for (const e of entries) {
-      if (!e.peer.startsWith('@')) continue
+      // @ext: correspondents are HISTORY only — the bridge is retired
+      // (user ruling 2026-08-05); their rows stay readable but they are
+      // not addressable, so no chip
+      if (!e.peer.startsWith('@') || e.peer.startsWith('@ext:')) continue
       const ns = e.peer.slice(1, e.peer.indexOf(':'))
       const g = e.peer.startsWith('@net:')
         ? e.peer.slice(5).split('.')[1] ?? '?'
-        : ns === 'org' ? 'this instance'
-          : ns === 'ext' ? 'local sessions' : `${ns} peers`
+        : ns === 'org' ? 'this instance' : `${ns} peers`
       put(g, { addr: e.peer, name: e.peer.replace(/^@\w+:/, ''), kind: ns })
     }
     return [...gs.entries()].sort(([a], [b]) => (a < b ? -1 : 1))
@@ -655,7 +657,7 @@ function ComposeModal({ slug, net, entries, toast, close }: {
             onClick={() => setOther((v) => !v)}>other address…</button>
         </div>
         {other && (
-          <input autoFocus placeholder="@net:slug / @org:slug / @ext:id"
+          <input autoFocus placeholder="@net:slug / @org:slug / @mcp:id"
             value={freeTo} onChange={(e) => setFreeTo(e.target.value)} />
         )}
         <textarea rows={5} placeholder="the message…" value={text}

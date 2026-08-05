@@ -584,11 +584,11 @@ def main():
           else (_ for _ in ()).throw(AssertionError(orgE.extern_holders())))
     check("inbound extern mail bootstraps ONE holder, not a fan-out", lambda: (
         lambda tops: None if tops == ["a"]                     # leftmost live
-        and orgE.d["mail"]["a"][0]["from"] == "@ext:abc123"
+        and orgE.d["mail"]["a"][0]["from"] == "@mcp:abc123"
         and "b" not in orgE.d.get("mail", {})                  # NOT a fan-out
         and "deep2" not in orgE.d.get("mail", {})
         else (_ for _ in ()).throw(AssertionError(tops))
-    )(orgE.post_external_mail("@ext:abc123", "ping from outside")))
+    )(orgE.post_external_mail("@mcp:abc123", "ping from outside")))
     check("the bootstrap grant is recorded as such (@system, bootstrap)",
           lambda: None if [e for e in orgE.d["events"]
                            if e["op"] == "audience_grant"
@@ -610,23 +610,23 @@ def main():
                    and "b" not in orgE.d.get("mail", {})
                    else (_ for _ in ()).throw(AssertionError(
                        (tops, orgE.d["audiences"]))))(
-                           orgE.post_external_mail("@ext:abc123", "again")))
+                           orgE.post_external_mail("@mcp:abc123", "again")))
     # (two inbounds by now — the bootstrap one and the reuse one above; the
     # org inbox logs EVERY inbound regardless of who it was delivered to)
     check("inbound lands in the ORG INBOX (dir=in, peer kept)", lambda: (
         lambda log: None if len(log) == 2
-        and all(e["dir"] == "in" and e["peer"] == "@ext:abc123" for e in log)
+        and all(e["dir"] == "in" and e["peer"] == "@mcp:abc123" for e in log)
         else (_ for _ in ()).throw(AssertionError(log))
     )(orgE.d["org_inbox"]))
     check("top-level may reply to @ext (logged as outbound)", lambda: (
-        lambda r: None if r["delivered"] == "@ext:abc123"
+        lambda r: None if r["delivered"] == "@mcp:abc123"
         and orgE.d["org_inbox"][-1]["dir"] == "out"
         and orgE.d["org_inbox"][-1]["by"] == "a"
         else (_ for _ in ()).throw(AssertionError(r))
-    )(orgE.post_mail("a", "@ext:abc123", "pong")))
+    )(orgE.post_mail("a", "@mcp:abc123", "pong")))
     check("a DEEP non-holder may not reply to @ext, and is told the remedy",
           lambda: expect_error(
-              lambda: orgE.post_mail("deep2", "@ext:abc123", "sneaky"),
+              lambda: orgE.post_mail("deep2", "@mcp:abc123", "sneaky"),
               "audience"))
 
     print("org inbox (user spec: the org converses as ONE entity):")
@@ -634,15 +634,15 @@ def main():
     # grants it the audience and lets the send through in the same call. `b`
     # has held nothing so far (the bootstrap picked `a`).
     check("a TOP-LEVEL non-holder self-grants on its first outbound", lambda: (
-        lambda r: None if r["delivered"] == "@ext:abc123"
+        lambda r: None if r["delivered"] == "@mcp:abc123"
         and "b" in orgE.extern_holders()
         and any("auto-granted" in w or "you now hold" in w.lower()
                 for w in r["warnings"])
         else (_ for _ in ()).throw(AssertionError(r))
-    )(orgE.post_mail("b", "@ext:abc123", "speaking for the org")))
+    )(orgE.post_mail("b", "@mcp:abc123", "speaking for the org")))
     check("…and that auto-grant is idempotent (no second audience row)",
           lambda: (lambda before: None
-                   if (orgE.post_mail("b", "@ext:abc123", "again"),
+                   if (orgE.post_mail("b", "@mcp:abc123", "again"),
                        len([a for a in orgE.d["audiences"]
                             if a["grantor"] == EXTERN
                             and a["grantee"] == "b"]))[-1] == before
@@ -657,11 +657,11 @@ def main():
         lambda r: None if r["drive"] == []
         and set(orgE.extern_holders()) == {"a", "b", "deep2"}
         # HOLDERS ONLY — every holder gets the copy, and nobody else does
-        and set(orgE.post_external_mail("@ext:abc123", "second ping"))
+        and set(orgE.post_external_mail("@mcp:abc123", "second ping"))
         == {"a", "b", "deep2"}
-        and orgE.post_mail("deep2", "@ext:abc123",
+        and orgE.post_mail("deep2", "@mcp:abc123",
                            "org reply from the client contact")["delivered"]
-        == "@ext:abc123"
+        == "@mcp:abc123"
         else (_ for _ in ()).throw(AssertionError(r))
     )(orgE.audience_grant("a", "deep2", "extern")))
     check("inter-org outbound authorized + logged; self-address refused", lambda: (
@@ -700,7 +700,7 @@ def main():
     orgK.d["kiosk"] = {"enabled": True, "token": "t", "credits": 10}
     orgK.hire(USER, None, "haiku", 0, "clerk")
     check("kiosk orgs are sealed: no outbound, inbound dropped", lambda: (
-        expect_error(lambda: orgK.post_mail("clerk", "@ext:abc123", "hi"), "kiosk"),
+        expect_error(lambda: orgK.post_mail("clerk", "@mcp:abc123", "hi"), "kiosk"),
         expect_error(lambda: orgK.post_mail("clerk", "@org:external", "hi"), "kiosk"),
         None if orgK.post_external_mail("@org:external", "knock knock") == []
         and not orgK.d.get("org_inbox")

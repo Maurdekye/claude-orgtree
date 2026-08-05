@@ -774,13 +774,13 @@ def sec_compose() -> None:
     def _text_only_transports_refuse_attachments():
         a = mkorg()
         _c, j = upload(a)
-        for to in ("@ext:someone", "@mcp:peer"):
+        for to in ("@mcp:peer",):        # @ext: retired 2026-08-05
             code, r = api_call(api.app, "POST",
                                f"/api/orgs/{a}/org_inbox/send",
                                {"to": to, "body": "x",
                                 "attachments": [j["id"]]})
             assert code == 422 and "text-only" in json.dumps(r), (to, code, r)
-    check("@ext: and @mcp: refuse attachments (ruled text-only)",
+    check("@mcp: refuses attachments (ruled text-only; @ext: retired)",
           _text_only_transports_refuse_attachments)
 
     def _restart_fails_safe():
@@ -829,7 +829,9 @@ def sec_compose() -> None:
         store.save_org(org)
         code, r = api_call(api.app, "POST",
                            f"/api/orgs/{org.d['slug']}/org_inbox/send",
-                           {"to": "@ext:someone", "body": "x"})
+                           {"to": "@mcp:someone", "body": "x"})
+        # the SEAL must be the reason — not a retired address form, which
+        # would make this pass for the wrong reason
         assert code == 422 and "sealed kiosk" in json.dumps(r), (code, r)
     check("a sealed kiosk cannot compose outward either", _kiosk_is_sealed)
 
@@ -865,7 +867,7 @@ def sec_compose() -> None:
         for path in (f"/k/{tok}/api/orgs/{k}/org_inbox/send",
                      f"/k/{tok}/api/orgs/{k}/org_inbox/upload"):
             code, _r = api_call(pub, "POST", path,
-                                {"to": "@ext:x", "body": "y"})
+                                {"to": "@mcp:x", "body": "y"})
             assert code == 404, (path, code)
     check("☞ a kiosk visitor reaches neither compose endpoint",
           _public_gateway_cannot_compose)
