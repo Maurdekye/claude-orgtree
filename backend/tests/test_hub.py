@@ -949,6 +949,73 @@ def sec_public_face() -> None:
           _non_http_scopes_are_rejected)
 
 
+# ==================================================================== §11
+def sec_client_filter() -> None:
+    """The 2026-08-05 UI wave added /ui/messages?client=<username> — the group
+    header on the operator's list pane. Both of its neighbours bound the read
+    in SQL; this one does not, and it is the one whose job is NARROWING."""
+    print("\n§11  the client group filter (UI wave 2026-08-05)")
+
+    def _filters_by_client_segment():
+        me, sender = new_org(), new_org()
+        send(sender, me[0], "for the tester group")
+        j = req("GET", "/ui/messages", params={"client": "tester"}).json()
+        assert any(m["body"] == "for the tester group" for m in j["messages"])
+        none = req("GET", "/ui/messages", params={"client": "nobody"}).json()
+        assert none["messages"] == [], none
+    check("client · the group filter matches the username segment and "
+          "excludes everything else", _filters_by_client_segment)
+
+    def _substring_does_not_match():
+        # the docstring's own promise: an exact segment match, not a LIKE
+        j = req("GET", "/ui/messages", params={"client": "test"}).json()
+        assert j["messages"] == [], (
+            "a partial username matched — the filter is a substring after "
+            "all, so one client's group header can show another's mail")
+    check("client · a partial username matches nothing (exact segment, not a "
+          "LIKE)", _substring_does_not_match)
+
+    def _the_narrowing_read_is_bounded():
+        """MEASURED, not read: wrap the connection the endpoint gets and keep
+        every statement it runs, then check the one that serves the client
+        filter carries a LIMIT."""
+        for i in range(30):
+            me, sender = new_org(), new_org()
+            send(sender, me[0], f"bulk {i}")
+        stmts: list[str] = []
+        real = db.connect
+
+        class Recording:
+            def __init__(self, con): self._c = con
+
+            def execute(self, sql, args=()):
+                stmts.append(" ".join(str(sql).split()))
+                return self._c.execute(sql, args)
+
+            def __getattr__(self, n):
+                return getattr(self._c, n)
+
+        db.connect = lambda: Recording(real())          # type: ignore[assignment]
+        try:
+            r = req("GET", "/ui/messages",
+                    params={"client": "tester", "limit": 5})
+        finally:
+            db.connect = real                           # type: ignore[assignment]
+        assert r.status_code == 200 and len(r.json()["messages"]) == 5
+        selects = [x for x in stmts if x.upper().startswith("SELECT * FROM MESSAGES")]
+        assert selects, stmts
+        assert all("LIMIT" in x.upper() for x in selects), (
+            "the client filter runs an unbounded SELECT and slices in "
+            f"Python: {selects[-1]!r}")
+    # promoted from gap() 2026-08-05, fixed same day: the client branch now
+    # pages a parameterised LIKE prefilter (LIMIT ? OFFSET ?) and keeps the
+    # exact segment match in Python — both suggested shapes at once, so the
+    # read is bounded AND a name containing the client string still cannot
+    # leak into another group's header
+    check("client · the group filter bounds its read in SQL like its two "
+          "neighbours", _the_narrowing_read_is_bounded)
+
+
 def main() -> int:
     print("orgtree · the mail hub (F-06 Phase B)")
     sec_register()
@@ -961,6 +1028,7 @@ def main() -> int:
     sec_retention()
     sec_ui()
     sec_public_face()
+    sec_client_filter()
 
     print()
     if GAPS:

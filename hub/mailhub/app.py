@@ -518,17 +518,33 @@ async def ui_messages(org: str = "", client: str = "",
         elif client:
             # group filter (user spec 2026-08-05): all mail touching any
             # slug of one CLIENT — the username segment every org/chat
-            # registered from one machine profile shares. Matched on the
-            # exact segment in Python, not a LIKE (a name could contain
-            # the client string).
+            # registered from one machine profile shares. The decisive
+            # match is the exact segment in Python, not a LIKE (a name
+            # could contain the client string) — but the READ is bounded
+            # in SQL like the two neighbouring branches (redteam §11): a
+            # parameterised LIKE prefilter pages the cursor until `limit`
+            # rows pass the exact check, instead of materialising every
+            # retained message to narrow to a handful.
             def _of(slug: str) -> str:
                 parts = str(slug).split(".")
                 return parts[1] if len(parts) > 2 else ""
-            rows = [m for m in con.execute(
-                        "SELECT * FROM messages ORDER BY received_at DESC, "
-                        "rowid DESC").fetchall()
-                    if client in (_of(m["from_slug"]), _of(m["to_slug"]))
-                    ][:limit]
+            like = f"%.{client}.%"
+            hits: list[Any] = []
+            off = 0
+            batch = max(limit, 100)
+            while len(hits) < limit:
+                page = con.execute(
+                    "SELECT * FROM messages "
+                    "WHERE from_slug LIKE ? OR to_slug LIKE ? "
+                    "ORDER BY received_at DESC, rowid DESC LIMIT ? OFFSET ?",
+                    (like, like, batch, off)).fetchall()
+                if not page:
+                    break
+                off += len(page)
+                hits.extend(m for m in page
+                            if client in (_of(m["from_slug"]),
+                                          _of(m["to_slug"])))
+            rows = hits[:limit]
         else:
             rows = con.execute(
                 "SELECT * FROM messages ORDER BY received_at DESC, rowid DESC "
