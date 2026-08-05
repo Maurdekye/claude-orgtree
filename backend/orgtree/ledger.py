@@ -3609,13 +3609,15 @@ class Org:
                     # F-06 (user rulings 2026-08-05): joining a mail hub
                     # surfaces the mailbox — but the IMPLICIT local entry
                     # only counts once the hub has actually answered
-                    # (registered_at); a hub that was never there must show
-                    # NO ui at all. Explicit typed remotes count as-is.
+                    # (registered_at, FOR THIS ADDRESS — a re-added or
+                    # re-pointed entry starts hidden again); a hub that was
+                    # never there must show NO ui at all. Explicit typed
+                    # remotes count as-is.
                     or any(h.get("enabled") and (
                         h.get("id") != "local"
-                        or ((self.d.get("net_state") or {})
-                            .get(str(h.get("id")), {})
-                            .get("registered_at")))
+                        or ((st := (self.d.get("net_state") or {})
+                             .get(str(h.get("id")), {})).get("registered_at")
+                            and st.get("address") == h.get("address")))
                         for h in self.d.get("net_hubs") or [])),
             },
         }

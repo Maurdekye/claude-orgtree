@@ -239,9 +239,13 @@ def status_block(org_d: dict[str, Any]) -> dict[str, Any] | None:
         # the hub has actually answered once (registered_at is the durable
         # signal; the daemon keeps dialling quietly, backed off). An EXPLICIT
         # typed remote is always shown, offline included — the user asserted
-        # it exists, so silence would be the wrong answer.
+        # it exists, so silence would be the wrong answer. The registration
+        # counts only for the address it was earned against (second wave):
+        # a re-added/re-pointed entry starts hidden again.
+        cell = net_state.get(hid) or {}
         seen = connected or bool(
-            (net_state.get(hid) or {}).get("registered_at"))
+            cell.get("registered_at")
+            and cell.get("address") == str(h.get("address")))
         hubs_out.append({
             "id": hid, "address": h.get("address"),
             "enabled": bool(h.get("enabled")), "name": name,
@@ -328,6 +332,34 @@ def _participants() -> dict[str, dict[str, Any]]:
                 if h.get("enabled") and h.get("address")]
         if not ident.get("secret"):
             continue
+        # RECONCILE per-hub state with the hub list (redteam second wave —
+        # "per-hub state outlives the hub it describes"): a net_state cell
+        # whose id has NO current entry (removed local) is dropped, and one
+        # whose stored address differs from the entry's CURRENT address is
+        # dropped too — otherwise a re-added local hub inherits an old
+        # registration (shows visible before it ever answered) and, worse,
+        # a re-pointed address inherits the previous machine's dedupe ring,
+        # silently swallowing a re-homed peer's re-sent ids. Dropping a ring
+        # risks a bounded duplicate, never a loss (the ratified trade). Cells
+        # written before this change carry no address and reset once.
+        state_now = cast("dict[str, dict[str, Any]]",
+                         org.d.get("net_state") or {})
+        cur_addr = {str(h["id"]): str(h["address"]) for h in hubs}
+        # ANY mismatch resets — including cells with no stored address (a
+        # legacy or hand-planted ring must not survive an address edit; a
+        # one-time reset costs at most a bounded duplicate)
+        stale = [k for k, v in state_now.items()
+                 if k not in cur_addr or v.get("address") != cur_addr[k]]
+        if stale:
+            try:
+                with store.DOC_LOCK:
+                    org = store.load_org(slug)
+                    st2 = org.d.setdefault("net_state", {})
+                    for k in stale:
+                        st2.pop(k, None)
+                    store.save_org(org)
+            except Exception:                                    # noqa: BLE001
+                pass
         # SELF-HEAL orphaned spool keys (redteam ②): anything queued under a
         # hub id the org no longer has re-keys to the first enabled hub —
         # covers direct doc edits, not just the settings path (addresses are
@@ -470,7 +502,12 @@ def _register_pending(parts: dict[str, dict[str, Any]]) -> None:
                 with store.DOC_LOCK:
                     org = store.load_org(slug)
                     st = org.d.setdefault("net_state", {})
-                    st.setdefault(hid, {})["registered_at"] = now()
+                    cell = st.setdefault(hid, {})
+                    cell["registered_at"] = now()
+                    # the state is a fact about THIS address (redteam second
+                    # wave): a re-pointed or re-added entry must not inherit
+                    # another machine's registration or dedupe ring
+                    cell["address"] = addr
                     store.save_org(org)
                 _set_status(slug, hid, True)
                 _ok(addr)
@@ -727,8 +764,12 @@ def _deliver_inbound(slug: str, hub_id: str, msgs: list[dict[str, Any]],
                 shutil.rmtree(tmp_dir, ignore_errors=True)
             with store.DOC_LOCK:
                 org = store.load_org(slug)
-                ring = (org.d.setdefault("net_state", {})
-                        .setdefault(hub_id, {}).setdefault("seen_ids", []))
+                cell = (org.d.setdefault("net_state", {})
+                        .setdefault(hub_id, {}))
+                if addr:
+                    # the ring is a fact about THIS address (second wave)
+                    cell.setdefault("address", addr)
+                ring = cell.setdefault("seen_ids", [])
                 if mid not in ring:
                     ring.append(mid)
                     del ring[:-SEEN_RING]

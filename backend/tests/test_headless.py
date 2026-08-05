@@ -593,7 +593,11 @@ def sec_hidden_hub() -> None:
         o.d["net_autoconnect"] = True
         o.d["net_hubs"] = net.hub_entries(True, [])
         net.mint_identity(o)
-        o.d["net_state"] = {net.LOCAL_HUB_ID: {"registered_at": "2026-01-01"}}
+        # the registration records the ADDRESS it was earned against (second-
+        # wave contract): a cell without a matching address counts as unseen
+        o.d["net_state"] = {net.LOCAL_HUB_ID: {
+            "registered_at": "2026-01-01",
+            "address": str(o.d["net_hubs"][0]["address"])}}
         store.save_org(o)
         block = net.status_block(store.load_org(org.d["slug"]).d)
         local = [h for h in block["hubs"] if h["id"] == net.LOCAL_HUB_ID][0]

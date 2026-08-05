@@ -20,6 +20,7 @@ nobody will ever pick up?
     §5  failure handling — backoff, retries, and what a dead hub costs
     §6  the secret — headers only, never a URL, never a payload, never a log
     §7  the user's own compose surface — staging, refusals, and leftovers
+    §8  the second wave — A/B/C re-attacked with D+E+F underneath them
 
 Hermetic: two in-process hubs on throwaway data dirs, no socket, no thread
 (the daemons are never started — every pass is driven by hand).
@@ -36,6 +37,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import traceback
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -882,6 +884,173 @@ def sec_compose() -> None:
     check("an oversize compose upload is refused", _oversize_refused)
 
 
+# ══════════════════════════════════════════════════════════════════════ §8
+def sec_second_wave() -> None:
+    """A/B/C re-attacked against HEAD, now that D, E and F have moved under
+    them. The theme is STATE THAT OUTLIVES ITS SUBJECT: per-hub state keys on
+    a hub id, the local hub's id is the CONSTANT 'local', and nothing clears
+    that state when the entry is removed or re-pointed."""
+    print("\n§8  the second wave — state that outlives its hub")
+    net._backoff.clear()
+
+    def settings(slug, **body):
+        return api_call(api.app, "POST", f"/api/orgs/{slug}/settings", body)
+
+    def local_hub_org():
+        a = mkorg(hubs=(), autoconnect=True)     # implicit local entry only
+        return a
+
+    def _never_registered_is_invisible_everywhere():
+        a = local_hub_org()
+        d = store.load_org(a).d
+        blk = net.status_block(d)
+        local = [h for h in blk["hubs"] if h["id"] == net.LOCAL_HUB_ID][0]
+        assert local["hidden"] is True, local
+        # …and the org-inbox panel stays hidden too: the mailbox is one of the
+        # surfaces the user named, and it has its own trigger in ledger.tree()
+        org = store.load_org(a)
+        org.d["audiences"] = [x for x in org.d["audiences"]
+                              if x.get("grantor") != "@extern"]
+        store.save_org(org)
+        assert store.load_org(a).tree()["org_inbox"]["visible"] is False, (
+            "the org-inbox panel is showing for a hub that has never answered")
+    check("a never-registered local hub is invisible on BOTH surfaces",
+          _never_registered_is_invisible_everywhere)
+
+    def _registered_then_removed_then_readded():
+        a = local_hub_org()
+        with store.DOC_LOCK:
+            o = store.load_org(a)
+            o.d["net_state"] = {net.LOCAL_HUB_ID: {
+                "registered_at": "2026-01-01T00:00:00Z"}}
+            store.save_org(o)
+        assert settings(a, net_autoconnect=False)[0] == 200
+        assert store.load_org(a).d["net_hubs"] == [], "the entry was removed"
+        assert settings(a, net_autoconnect=True)[0] == 200
+        blk = net.status_block(store.load_org(a).d)
+        local = [h for h in blk["hubs"] if h["id"] == net.LOCAL_HUB_ID][0]
+        assert local["hidden"] is True, (
+            "a local hub REMOVED and re-added is shown immediately as though "
+            "it had answered: net_state['local'].registered_at survives the "
+            "removal, and the re-added entry reuses the constant id, so the "
+            "'has it ever answered' test reads a fact about a DIFFERENT "
+            "configuration")
+    # promoted from gap() 2026-08-05: per-hub state now carries the ADDRESS
+    # it was earned against — the settings write and the daemon both drop
+    # cells for removed ids / changed addresses, and the hidden test compares
+    # the address, so a re-added local entry starts hidden until it answers
+    check("re-adding the local hub starts it hidden again",
+          _registered_then_removed_then_readded)
+
+    def _address_change_carries_the_dedupe_ring():
+        # THE SHARP ONE: per-hub state is keyed by hub id, and the local hub's
+        # id is a constant — so re-pointing it at a DIFFERENT MACHINE inherits
+        # the previous hub's seen-ring.
+        a = local_hub_org()
+        with store.DOC_LOCK:
+            o = store.load_org(a)
+            o.d["net_state"] = {net.LOCAL_HUB_ID: {
+                "registered_at": "2026-01-01T00:00:00Z",
+                "seen_ids": ["id-delivered-by-the-OLD-hub"]}}
+            store.save_org(o)
+        code, _j = settings(a, net_hubs=[{"id": net.LOCAL_HUB_ID,
+                                          "address": "http://other-box:7370",
+                                          "enabled": True}])
+        assert code == 200, code
+        st = (store.load_org(a).d.get("net_state") or {}).get(
+            net.LOCAL_HUB_ID, {})
+        assert "id-delivered-by-the-OLD-hub" not in (st.get("seen_ids") or []), (
+            "the dedupe ring followed the hub id to a DIFFERENT ADDRESS: a "
+            "message the old hub already delivered will be silently dropped "
+            "as a duplicate when the new hub delivers it. Sender-side spool "
+            "entries keep their id across a hub change, so this is reachable "
+            "whenever a peer re-homes and retries")
+    # promoted from gap() 2026-08-05: the state cell records the address it
+    # was earned against; the settings write (and the daemon, for direct doc
+    # edits) DROPS the cell on any address mismatch — dedupe ring included,
+    # since a ring carried to a different machine silently swallowed a
+    # re-homed peer's re-sent ids (dropping risks a bounded duplicate, never
+    # a loss). Address-less legacy cells reset once, by design.
+    check("per-hub state does not follow the hub id to a new address",
+          _address_change_carries_the_dedupe_ring)
+
+    def _hub_swap_mid_drain_neither_loses_nor_doubles():
+        # the daemon snapshots participants, then the user replaces the hub
+        # list underneath it. At-least-once must still hold: the hub collapses
+        # the retry on the entry id, and the spool must end up empty.
+        a, b = mkorg(), mkorg()
+        ladder(a, b)                       # both registered
+        send_net(a, "ceo", net_slug(b), "mid-flight")
+        stale = parts_for(a, b)            # the daemon's snapshot, taken EARLY
+        code, _j = settings(a, net_hubs=[{"address": HUB_A, "enabled": True}])
+        assert code == 200, code
+        net._drain_spools(stale)           # drains under the OLD key
+        net._drain_spools(parts_for(a, b))  # …and again under the new one
+        net._poll_pass(parts_for(a, b))
+        assert not spool_of(a), f"the entry was stranded: {spool_of(a)}"
+        bodies = [r["body"] for r in inbox_rows(b, "in")]
+        assert bodies.count("mid-flight") == 1, (
+            f"a hub-list edit during a drain delivered it {bodies.count('mid-flight')} "
+            f"times — the hub's idempotent send is what must collapse it")
+    check("a hub-list edit mid-drain neither strands nor doubles a message",
+          _hub_swap_mid_drain_neither_loses_nor_doubles)
+
+    def _prune_vs_a_slow_compose():
+        # a staged file older than the age-out is pruned even while a compose
+        # still references it — the send must then FAIL SAFE, not send an
+        # empty attachment
+        a, b = mkorg(), mkorg()
+        code, j = api_call(api.app, "POST",
+                           f"/api/orgs/{a}/org_inbox/upload",
+                           content=b"slow compose", params=b"name=slow.txt")
+        assert code == 200, (code, j)
+        path = api._COMPOSE_STAGE[j["id"]][1] \
+            if isinstance(api._COMPOSE_STAGE[j["id"]], tuple) \
+            else api._COMPOSE_STAGE[j["id"]]
+        old = time.time() - 86400 * 2
+        os.utime(path, (old, old))                 # staged two days ago
+        api._prune_stage()                         # what the next upload runs
+        assert not os.path.exists(path), "the age-out did not fire"
+        code, r = api_call(api.app, "POST", f"/api/orgs/{a}/org_inbox/send",
+                           {"to": f"@net:{net_slug(b)}", "body": "with a file",
+                            "attachments": [j["id"]]})
+        assert code == 422 and "re-upload" in json.dumps(r), (code, r)
+        assert not spool_of(a), "the refused send still spooled"
+    check("an aged-out staged file makes the send fail safe, not send blind",
+          _prune_vs_a_slow_compose)
+
+    def _identity_survives_a_delete_and_restore():
+        a = mkorg()
+        ident = dict(store.load_org(a).d["net_identity"])
+        store.delete_org(a)
+        trash = os.path.join(store.DATA_ROOT, "deleted")
+        f = [x for x in os.listdir(trash) if a in x][0]
+        shutil.move(os.path.join(trash, f),
+                    os.path.join(store.DATA_ROOT, "orgs", a + ".json"))
+        back = store.load_org(a).d["net_identity"]
+        assert back == ident, (
+            "a deleted-then-restored org came back with a different network "
+            "identity — every peer that knows its address would be writing to "
+            "a slug that no longer authenticates")
+        assert back["secret"] == ident["secret"], "the secret must survive too"
+    check("delete + restore keeps the org's network identity intact",
+          _identity_survives_a_delete_and_restore)
+
+    def _identity_does_not_follow_the_org_name():
+        # already pinned in §1 against the doc; here through the REAL surface
+        # an operator touches — the settings write — since that is the path
+        # that would re-derive it if anyone ever added a rename
+        a = mkorg()
+        ident = dict(store.load_org(a).d["net_identity"])
+        code, _j = settings(a, default_top_grant=7)
+        assert code == 200, code
+        assert store.load_org(a).d["net_identity"] == ident, \
+            "a settings write disturbed the network identity"
+        assert net._participants().get(a, {}).get("net_slug") == ident["slug"]
+    check("a settings write never re-derives the network identity",
+          _identity_does_not_follow_the_org_name)
+
+
 def main() -> int:
     print("orgtree · @net Phase C — the transport, attacked")
     sec_ladder()
@@ -891,6 +1060,7 @@ def main() -> int:
     sec_failure()
     sec_secret()
     sec_compose()
+    sec_second_wave()
 
     print()
     if GAPS:

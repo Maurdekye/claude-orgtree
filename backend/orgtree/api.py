@@ -1307,6 +1307,23 @@ def _org_settings_locked(slug: str, body: Settings) -> dict[str, Any]:
                 warnings.append(f"{len(entries)} queued message(s) have no "
                                 f"mailserver to leave through — enable one")
         org.d["net_spool"] = spool
+    if (body.net_hubs is not None or body.net_autoconnect is not None) \
+            and org.d.get("kiosk") is None:
+        # per-hub STATE dies with the configuration it described (redteam
+        # second wave): a removed id keeps no registration (a re-added local
+        # entry must start hidden until it answers again), and a changed
+        # ADDRESS keeps no dedupe ring (a ring carried to a different machine
+        # silently swallows a re-homed peer's re-sent ids — dropping it risks
+        # a bounded duplicate, never a loss). The net daemon reconciles the
+        # same way for direct doc edits.
+        cells = cast("dict[str, dict[str, Any]]",
+                     org.d.get("net_state") or {})
+        addr_now = {str(h.get("id")): str(h.get("address"))
+                    for h in org.d.get("net_hubs") or []}
+        for k in list(cells):
+            if k not in addr_now \
+                    or (cells.get(k) or {}).get("address") != addr_now[k]:
+                cells.pop(k, None)
     store.save_org(org)
     hub_changed(slug)
     net.kick()
