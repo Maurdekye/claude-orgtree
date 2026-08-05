@@ -259,6 +259,10 @@ export interface AskInfo {
   /** FR-04: the batch — 1-4 tabs; both ask forms normalize to this. The
    *  top-level question/options/header mirror tab 0 for older surfaces. */
   questions?: AskQuestion[]
+  /** card revision — bumped on every amend; the answer echoes it (CAS: a
+   *  stale submission is refused instead of attaching positionally to
+   *  questions the user never saw) */
+  rev?: number
   // credit kind (ledger credit_requests shape)
   old?: number
   new?: number

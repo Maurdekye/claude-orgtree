@@ -3196,6 +3196,11 @@ class Org:
             for k in ("options", "multi", "header"):
                 if k not in mirror:
                     entry.pop(k, None)
+            # redteam (2026-08-05): answers are POSITIONAL, so an answer
+            # composed against the card as it rendered BEFORE this amend
+            # must not silently attach to the replaced questions — the rev
+            # is the compare-and-swap stamp ask_answer requires
+            entry["rev"] = int(entry.get("rev") or 1) + 1
             self._log("ask", nid, {"id": entry["id"], "amended": True}, [])
             return {"asked": entry["id"],
                     "status": "parked (amended your earlier question) — the "
@@ -3203,7 +3208,7 @@ class Org:
                               "in this turn"}
         aid = "q" + uuid.uuid4().hex[:8]
         asks.append({"id": aid, "node": nid, "kind": "question", **mirror,
-                     "status": "open"})
+                     "rev": 1, "status": "open"})
         self._prune_asks()
         self._log("ask", nid, {"id": aid}, [])
         return {"asked": aid,
@@ -3293,11 +3298,18 @@ class Org:
                           "with a sharper framing."}
 
     def ask_answer(self, aid: str, selected: list[Any] | None = None,
-                   text: str | None = None) -> dict[str, Any]:
+                   text: str | None = None,
+                   rev: int | None = None) -> dict[str, Any]:
         """Mark a question answered and return the composed answer body — the
         caller delivers it as ordinary user mail (which is what drives the
         turn). Marking happens FIRST, under the same doc lock, so the turn the
-        answer starts can never void its own question."""
+        answer starts can never void its own question.
+
+        `rev` is the compare-and-swap stamp (redteam 2026-08-05): answers are
+        POSITIONAL, so an answer composed against the card as it rendered
+        must not silently attach to questions an amend replaced meanwhile.
+        The UI echoes the card's rev; a mismatch — or an unstamped answer to
+        a card that HAS been amended — is refused so the caller re-reads."""
         a = next((x for x in self.d.get("asks", []) if x["id"] == aid), None)
         if a is None:
             raise LedgerError(f"no ask {aid!r}")
@@ -3305,6 +3317,16 @@ class Org:
             raise LedgerError(
                 f"ask {aid} is already {a['status']}"
                 + (f" ({a.get('reason')})" if a.get("reason") else ""))
+        cur = int(a.get("rev") or 1)
+        if rev is not None and int(rev) != cur:
+            raise LedgerError(
+                f"the card changed after it rendered (answer against "
+                f"revision {rev}, card at {cur}) — re-read the question and "
+                f"answer what it shows now")
+        if rev is None and cur > 1:
+            raise LedgerError(
+                "this card was AMENDED after it first rendered — re-read it "
+                "and answer what it shows now")
         txt = str(text or "").strip()
         qs = cast("list[dict[str, Any]]", a.get("questions") or [])
         if len(qs) > 1:
@@ -3315,6 +3337,13 @@ class Org:
             # batch answer arrives with holes and the agent cannot tell which
             # tab was skipped.
             per_tab: list[Any] = list(selected or [])
+            if len(per_tab) > len(qs):
+                # more answers than tabs was silently truncated (redteam) —
+                # the mismatch in the other direction already errors, and a
+                # caller that miscounted must hear about it either way
+                raise LedgerError(
+                    f"the answer carried {len(per_tab)} items for a "
+                    f"{len(qs)}-question card — exactly one per tab")
             norm: list[str | list[str]] = []
             for item in per_tab[:len(qs)]:
                 if isinstance(item, list):
@@ -3373,8 +3402,16 @@ class Org:
                 a["status"] = "interrupted"
                 a["reason"] = "the agent was woken by other input before an answer arrived"
                 a["resolved_at"] = now()
-                gone.append(f"your question ({a['question'][:100]!r}) was "
-                            f"VOIDED — re-ask it if still needed")
+                nq = len(a.get("questions") or [])
+                # redteam: a voided BATCH must say the whole card died, or
+                # the agent's natural repair — re-ask the one question the
+                # notice named — silently drops the rest
+                label = (f"your {nq}-question card "
+                         f"(first: {a['question'][:60]!r})" if nq > 1
+                         else f"your question ({a['question'][:100]!r})")
+                gone.append(f"{label} was VOIDED — re-ask "
+                            + ("all of it that still matters" if nq > 1
+                               else "it if still needed"))
         for r in self.d.get("credit_requests", []):
             if r["node"] == nid and r["status"] == "pending":
                 r["status"] = "interrupted"

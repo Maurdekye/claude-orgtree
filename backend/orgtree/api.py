@@ -2003,6 +2003,10 @@ class AskAnswer(Body):
     # positionally — a string, or a list for a multi tab's picks
     selected: list[str | list[str]] | None = None
     text: str | None = None
+    # the card revision the answer was composed against (redteam CAS —
+    # answers are positional, so an amend mid-render must refuse the stale
+    # submission rather than attach it to questions the user never saw)
+    rev: int | None = None
     # the card's ✕ — close without answering (mirrors AskUserQuestion's Esc)
     dismiss: bool = False
 
@@ -2018,7 +2022,8 @@ async def ask_answer(slug: str, aid: str, body: AskAnswer) -> dict[str, Any]:
         try:
             org = store.load_org(slug)
             r = (org.ask_dismiss(aid) if body.dismiss
-                 else org.ask_answer(aid, selected=body.selected, text=body.text))
+                 else org.ask_answer(aid, selected=body.selected,
+                                     text=body.text, rev=body.rev))
             drive = not org.post_mail(USER, r["node"], r["body"]).get("deferred")
         except LedgerError as e:
             raise HTTPException(422, str(e))

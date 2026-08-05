@@ -101,6 +101,28 @@ def contract(label, fn) -> None:
     check(label, fn)
 
 
+GAPS: list[tuple[str, str, str]] = []
+
+
+def gap(label, why, fn) -> None:
+    """SHOULD hold, currently does not — inverted so the suite stays green and
+    turns RED the day it is fixed. (The gate above predates the build; these
+    are findings against the shipped code.)"""
+    global PASS
+    try:
+        fn()
+    except AssertionError as e:
+        GAPS.append((label, why, str(e).split("\n")[0][:300]))
+        print(f"  ⚑ GAP    {label}")
+        return
+    except Exception:                                            # noqa: BLE001
+        FAIL.append((label + " (gap check errored)", traceback.format_exc()))
+        print(f"  FAIL     {label} — the gap check itself broke")
+        return
+    PASS += 1
+    print(f"  ok {PASS:3d}  {label}  ← FIXED: promote this out of gap()")
+
+
 def spec(**over):
     s = dict(add_dirs=[], tools=dict(ALL_TOOLS), org_visibility="team",
              charter="batched-ask test hire")
@@ -130,6 +152,121 @@ QS = [
      "options": [{"label": "flag"}, {"label": "straight to main"}]},
     {"question": "who reviews it?", "header": "Review"},
 ]
+
+
+
+# ═══════════════════════════════════════════════════ the built feature, attacked
+def sec_attack() -> None:
+    """The gate above asked whether the batch behaves like ONE ask. This asks
+    what the shipped implementation does with input it did not expect — the
+    positional answer array is the whole coupling between a card the user sees
+    and questions the server holds, and nothing ties the two together."""
+    print("\n§attack  the shipped batch — positional answers and amends")
+
+    def _amend_then_stale_answer_is_refused():
+        # was a gap: an amend kept the id and replaced `questions` in place
+        # while the answer stayed positional, so a same-length amend between
+        # render and submit silently attributed every answer to a question
+        # the user never saw. Fixed 2026-08-05 with the prescribed CAS: the
+        # entry carries `rev` (bumped on amend), the card echoes it, and
+        # ask_answer refuses a mismatched — or, on an amended card, a
+        # missing — stamp so the UI re-renders instead of lying.
+        org = org2()
+        org.ask_user("boss", questions=QS)                 # 3 tabs, rev 1
+        a0 = open_asks(org)[0]
+        aid, rev0 = a0["id"], a0.get("rev")
+        assert rev0 == 1, a0
+        org.ask_user("boss", questions=[
+            {"question": "deploy tonight?", "header": "Deploy"},
+            {"question": "notify the on-call?", "header": "Oncall"},
+            {"question": "roll back at what error rate?", "header": "Budget"}])
+        assert open_asks(org)[0]["id"] == aid, "fixture: the amend re-used the id"
+        assert open_asks(org)[0]["rev"] == 2, "the amend must bump rev"
+        for stale in ({"rev": rev0}, {}):     # echoed-stale AND unstamped
+            try:
+                org.ask_answer(aid, selected=["sqlite", "flag", "alice"],
+                               **stale)
+                raise AssertionError(
+                    f"a stale submission ({stale or 'no stamp'}) was "
+                    f"accepted against the amended card")
+            except LedgerError as e:
+                assert "re-read" in str(e), e
+        # the honest path still works: answer against the CURRENT rev
+        r = org.ask_answer(aid, selected=["yes", "yes", "5%"], rev=2)
+        assert "deploy tonight?" in r["body"], r["body"]
+    check("amend · a stale answer is refused (rev CAS); the current card "
+          "still answers", _amend_then_stale_answer_is_refused)
+
+    def _void_notice_names_the_whole_card():
+        org = org2()
+        org.ask_user("boss", questions=QS)
+        gone = org.void_open_asks("boss")
+        assert gone, "fixture: something must have been voided"
+        msg = gone[0]
+        assert ("3" in msg or "questions" in msg.lower()), (
+            "the void notice names only the first question of a 3-question "
+            f"card: {msg!r} — the agent cannot tell the other two died too")
+    # was a gap: the notice named only tab 1's question, so the agent's
+    # natural repair (re-ask that one) dropped the rest. Fixed 2026-08-05:
+    # a multi-question card's notice carries the question count.
+    check("void · voiding a batch tells the agent the WHOLE card died",
+          _void_notice_names_the_whole_card)
+
+    def _extra_answers_are_not_silently_dropped():
+        org = org2()
+        org.ask_user("boss", questions=QS[:2])
+        aid = open_asks(org)[0]["id"]
+        try:
+            org.ask_answer(aid, selected=["a", "b", "c", "d"])
+        except LedgerError:
+            return                                   # refused — the safe shape
+        raise AssertionError(
+            "four answers were accepted for a two-tab card; the extras were "
+            "truncated by selected[:len(qs)] with no complaint")
+    # was a gap: `per_tab[:len(qs)]` dropped the tail silently while the
+    # other direction errored. Fixed 2026-08-05: over-length refuses too.
+    check("answer · more answers than tabs is refused rather than truncated",
+          _extra_answers_are_not_silently_dropped)
+
+    def _wire_type_still_refuses_a_bare_string():
+        """CLEAN, and pinned so it stays that way. list(selected) over a bare
+        string would split it into CHARACTERS — 'yes' answering a 3-tab card
+        as y/e/s, accepted and completely wrong. The only thing standing
+        between the ledger and that is the endpoint's pydantic type."""
+        from orgtree import api
+        ann = api.AskAnswer.model_fields["selected"].annotation
+        assert "list" in str(ann), ann
+        assert "str]" in str(ann).replace(" ", ""), ann
+    check("wire · DRIFT GUARD: /asks/{id}/answer types `selected` as a LIST "
+          "(a bare string would be split into per-tab characters by "
+          "list(selected) and accepted)", _wire_type_still_refuses_a_bare_string)
+
+    def _multi_tab_keeps_its_shape():
+        org = org2()
+        org.ask_user("boss", questions=[
+            {"question": "which tiers?", "multi": True,
+             "options": ["haiku", "opus"]},
+            {"question": "when?"}])
+        aid = open_asks(org)[0]["id"]
+        r = org.ask_answer(aid, selected=[["haiku", "opus"], "tonight"])
+        qs = next(a for a in org.d["asks"] if a["id"] == aid)["questions"]
+        assert qs[0]["answer"] == ["haiku", "opus"], qs[0]
+        assert qs[1]["answer"] == "tonight", qs[1]
+        assert "haiku · opus" in r["body"], r["body"]
+    check("answer · a multi tab keeps its list and a single tab its string, "
+          "per question, in the durable record and the mail", _multi_tab_keeps_its_shape)
+
+    def _flattened_selection_is_characterised():
+        org = org2()
+        org.ask_user("boss", questions=[{"question": "a?"}, {"question": "b?"}])
+        aid = open_asks(org)[0]["id"]
+        org.ask_answer(aid, selected=["same", "same"])
+        a = next(x for x in org.d["asks"] if x["id"] == aid)
+        assert a["answer"]["selected"] == ["same", "same"], a["answer"]
+    check("answer · characterised: the entry's top-level `selected` is a FLAT "
+          "list across tabs (per-tab attribution lives on questions[i].answer "
+          "— any future reader of the flat list must know that)",
+          _flattened_selection_is_characterised)
 
 
 def main() -> int:
@@ -344,6 +481,9 @@ def main() -> int:
     contract("the tree payload counts one card and carries its questions",
              _tree_payload_counts_the_card_once)
 
+
+    sec_attack()
+
     print()
     if FAIL:
         for label, tb in FAIL:
@@ -351,6 +491,10 @@ def main() -> int:
         print(f"batched-asks: {PASS} passed · {len(FAIL)} FAILED"
               + (f" · {len(PENDING)} pending" if PENDING else ""))
         return 1
+    if GAPS:
+        print("\n⚑ GAPS — measured against the SHIPPED batch:")
+        for label, why, detail in GAPS:
+            print(f"\n  ⚑ {label}\n    measured: {detail}\n    {why}")
     if PENDING:
         print(f"⧗ {len(PENDING)} checks PENDING — FR-04 is not built yet. They "
               f"run automatically once orgtree_ask takes `questions` and "
