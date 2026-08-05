@@ -232,12 +232,22 @@ def spool_append(org: "Org", peer: str, body: str, oid: str,
             hub_id = str(h["id"])
             break
     if hub_id is None:
+        # tier 2 (cross-org find 2026-08-05, via neoja): "connected" alone is
+        # weak evidence — a hub can be connected with a roster that has never
+        # synced (fresh registration, container restart), and picking it over
+        # a hub that actually knows the peer is a silent misroute in list
+        # order. Prefer a connected hub whose roster HAS content; fall back
+        # to any connected hub only when every roster is cold.
         oslug = str(org.d.get("slug") or "")
-        for h in hubs:
-            with _status_lock:
-                st = _status.get((oslug, str(h.get("id")))) or {}
-            if st.get("connected"):
-                hub_id = str(h["id"])
+        for need_roster in (True, False):
+            for h in hubs:
+                with _status_lock:
+                    st = _status.get((oslug, str(h.get("id")))) or {}
+                    roster = _rosters.get(str(h.get("address") or "")) or []
+                if st.get("connected") and (roster or not need_roster):
+                    hub_id = str(h["id"])
+                    break
+            if hub_id is not None:
                 break
     if hub_id is None:
         hub_id = str(hubs[0]["id"])
@@ -651,9 +661,19 @@ def _drain_spools(parts: dict[str, dict[str, Any]]) -> None:
                     _set_status(slug, hid, True)
                     _ok(addr)
                 elif r.status_code == 422:
-                    # unknown recipient: keep retrying forever (the peer may
-                    # register later — hub-agnostic addresses, ruled), but
-                    # surface the reason
+                    # unknown recipient: the append-time hub pick is a
+                    # one-shot guess, so a refuted guess is re-checked here —
+                    # if another enabled hub's roster POSITIVELY holds the
+                    # peer, the entry re-files there instead of retrying the
+                    # refuting hub forever (cross-org find 2026-08-05: a
+                    # cold-roster tier-2 pick was a sticky misroute).
+                    if _refile_known_elsewhere(slug, hid, str(e["id"]),
+                                               str(e["to"]), p["hubs"]):
+                        _ok(addr)      # the hub answered; only the guess was wrong
+                        continue
+                    # no evidence elsewhere: keep retrying forever (the peer
+                    # may register later — hub-agnostic addresses, ruled),
+                    # but surface the reason
                     _bump_try(slug, hid, str(e["id"]),
                               str(r.json().get("detail", "unknown recipient"))
                               if r.headers.get("content-type", "")
@@ -733,6 +753,46 @@ def _spool_done(slug: str, hub_id: str, entry_id: str) -> None:
                 os.remove(p)
             except OSError:
                 pass
+
+
+def _refile_known_elsewhere(slug: str, hub_id: str, entry_id: str,
+                            peer: str,
+                            hubs: list[dict[str, Any]]) -> str | None:
+    """The 422-heal (cross-org find 2026-08-05, via neoja): an entry filed
+    onto a hub that answers "no org registered" would retry THERE forever,
+    even after another enabled hub's roster warms up and names the peer.
+    Moves on POSITIVE evidence only — another hub's cached roster holds the
+    slug; mere absence proves nothing (the peer may register later). A
+    ping-pong between two hubs with mutually stale rosters is bounded by
+    `refiled` (rosters refresh every poll, so a stale claim dies within a
+    cycle anyway). Returns the new hub id, or None to fall through to the
+    normal retry-and-surface path."""
+    target: str | None = None
+    for h in hubs:
+        if str(h["id"]) == hub_id:
+            continue
+        with _status_lock:
+            roster = _rosters.get(str(h.get("address") or "")) or []
+        if any(str(r.get("slug")) == peer for r in roster):
+            target = str(h["id"])
+            break
+    if target is None:
+        return None
+    from . import store
+    with store.DOC_LOCK:
+        org = store.load_org(slug)
+        spool = cast("dict[str, list[dict[str, Any]]]",
+                     org.d.setdefault("net_spool", {}))
+        lst = spool.get(hub_id) or []
+        e = next((x for x in lst if x.get("id") == entry_id), None)
+        if e is None or int(e.get("refiled") or 0) >= 4:
+            return None
+        spool[hub_id] = [x for x in lst if x.get("id") != entry_id]
+        e["refiled"] = int(e.get("refiled") or 0) + 1
+        e.pop("last_err", None)
+        spool.setdefault(target, []).append(e)
+        store.save_org(org)
+    return target
 
 
 def _stamp_skip(slug: str, hub_id: str, err: str) -> None:
