@@ -38,7 +38,7 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, model_validator
 
-from . import sandbox, store, subproxy, supervisor
+from . import net, sandbox, store, subproxy, supervisor
 from .ledger import LedgerError, Org, USER, VIS_LEVELS, norm_dirs, norm_tools
 
 if TYPE_CHECKING:
@@ -622,6 +622,10 @@ class OrgCreate(Body):
     sandbox: bool = False             # normal orgs may sandbox too (user ruling)
     disk_mb: int | None = None        # sandboxed non-kiosk orgs: virtual-disk
                                       # size (≥4096; None = DISK_MB fallback)
+    net_autoconnect: bool = True      # F-06: join the LOCAL mail hub (creation
+                                      # checkbox; not gated on hub detection)
+    net_hubs: list[str] = []          # F-06: remote hub addresses, typed
+                                      # explicitly (names discovered on connect)
 
 
 @app.get("/api/orgs")
@@ -692,8 +696,12 @@ def orgs_create(body: OrgCreate) -> dict[str, Any]:
         # name; a name the host filesystem refuses (too long, a reserved
         # device name, an unwritable data root) surfaced as a bare 500
         raise HTTPException(422, f"could not create the org's workspace: {e}")
-    # global default org settings (user spec): every new org is born with them
+    # global default org settings (user spec): every new org is born with them.
+    # net_hub_address is CONFIG for the local hub entry, not an org-doc key —
+    # popped here and translated below, never written raw into the doc.
     dflt = load_org_defaults()
+    local_hub_addr = str(dflt.pop("net_hub_address", "") or "") \
+        or net.DEFAULT_HUB_ADDRESS
     if dflt:
         with store.DOC_LOCK:
             org.d.update(dflt)  # type: ignore[arg-type]  # defaults.json holds org-doc-shaped keys
@@ -751,6 +759,17 @@ def orgs_create(body: OrgCreate) -> dict[str, Any]:
             store.save_org(o)
             sandbox.warm(o)
         _bridge_cache["at"] = 0.0
+    if body.kiosk is None:
+        # F-06: non-kiosk orgs mint their permanent network identity at birth
+        # (kiosks are sealed and mint none). The hub list starts with the
+        # local entry (unless opted out) plus any typed remote addresses.
+        with store.DOC_LOCK:
+            o = store.load_org(org.d["slug"])
+            net.mint_identity(o)
+            o.d["net_autoconnect"] = bool(body.net_autoconnect)
+            o.d["net_hubs"] = net.hub_entries(
+                body.net_autoconnect, body.net_hubs, local_hub_addr)
+            store.save_org(o)
     return {"slug": org.d["slug"]}
 
 
@@ -767,6 +786,32 @@ def orgs_delete(slug: str) -> dict[str, Any]:
     sandbox.remove(slug)            # container down; files stay (like scratch)
     supervisor.chatq_deregister_org(slug)
     return {"ok": True}
+
+
+@app.get("/api/orgs/{slug}/net")
+def org_net(slug: str, request: Request) -> dict[str, Any]:
+    """F-06: the org's network identity — the ONE place the secret is
+    returned (loopback admin listener only, like the kiosk token). The
+    settings panel's reveal/export reads this; the public gateway never
+    reaches it. Kiosks have no identity by design."""
+    if _public_slug(request):
+        raise HTTPException(404, "not found")
+    try:
+        org = store.load_org(slug)
+    except LedgerError as e:
+        raise HTTPException(404, str(e))
+    if org.d.get("kiosk"):
+        return {"identity": None, "hubs": [], "autoconnect": False}
+    ident = org.d.get("net_identity")
+    if not ident:
+        # existing orgs backfill lazily — first reveal mints (idempotent)
+        with store.DOC_LOCK:
+            o = store.load_org(slug)
+            ident = net.mint_identity(o)
+            store.save_org(o)
+    return {"identity": ident,
+            "hubs": org.d.get("net_hubs") or [],
+            "autoconnect": bool(org.d.get("net_autoconnect", True))}
 
 
 @app.get("/api/orgs/{slug}")
@@ -941,6 +986,8 @@ class Settings(Body):
     auto_resume: bool | None = None         # restart limit-frozen agents at reset+1min
     cascade_hire: bool | None = None        # hires bubble costs up the chain (§4.6)
     cascade_alloc: bool | None = None       # allocations/upgrades bubble costs up
+    net_hub_address: str | None = None      # F-06 (global defaults only): the
+                                            # local hub's address for NEW orgs
 
 
 # ------------------------------------------- global default org settings
@@ -950,6 +997,9 @@ _DEFAULTS_BASE = {
     "max_top_grant": 1000, "default_top_grant": 50, "compact_at": 0.80,
     "fable_limit_policy": "halt", "fable_filter_policy": "halt",
     "cascade_hire": True, "cascade_alloc": True, "auto_resume": False,
+    # F-06: NOT an org-doc key — popped + translated into the "local" hub
+    # entry at creation (orgs_create), shown on the root defaults page
+    "net_hub_address": net.DEFAULT_HUB_ADDRESS,
 }
 
 
@@ -993,6 +1043,9 @@ def defaults_set(body: Settings) -> dict[str, Any]:
         d["cascade_hire"] = bool(body.cascade_hire)
     if body.cascade_alloc is not None:
         d["cascade_alloc"] = bool(body.cascade_alloc)
+    if body.net_hub_address is not None:
+        d["net_hub_address"] = body.net_hub_address.strip() \
+            or net.DEFAULT_HUB_ADDRESS
     with open(os.path.join(store.DATA_ROOT, "defaults.json"), "w",
               encoding="utf-8") as f:
         json.dump(d, f, indent=1)

@@ -313,6 +313,21 @@ class OrgDoc(TypedDict):
     storage_warned: NotRequired[bool]
     auto_resume: NotRequired[bool]
     auto_resume_last: NotRequired[float]
+    # ---- @net: mail-hub client (F-06) — net.py owns these ----
+    net_identity: NotRequired[dict[str, Any]]   # {secret, fingerprint, slug,
+                                                # minted_at} — the SECRET lives
+                                                # here and ONLY here; never in
+                                                # tree payloads or agent context
+    net_hubs: NotRequired[list[dict[str, Any]]]  # [{id, address, enabled,
+                                                 #   name?}] — name discovered
+                                                 # on connect, never typed
+    net_autoconnect: NotRequired[bool]      # default True: local hub auto-joins
+    net_state: NotRequired[dict[str, Any]]  # per HUB ID: {registered_at,
+                                            #   last_ok, seen_ids ring}
+    net_spool: NotRequired[dict[str, Any]]  # per HUB ID: [SpoolEntry] outbound
+    headless: NotRequired[bool]             # §9.6: no user present; user-bound
+                                            # asks auto-deny (requires api_key)
+    api_key: NotRequired[str]               # §9.5: per-org ANTHROPIC_API_KEY
     deleted_cost_usd: NotRequired[float]    # tombstone burn accumulator (cost_total)
     _actors_typed: NotRequired[bool]        # one-shot @-sentinel migration marker
     # ---- legacy keys old docs may still carry (popped/rewritten on load) ----
