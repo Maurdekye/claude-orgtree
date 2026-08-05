@@ -484,7 +484,11 @@ def ensure_container(org: Org) -> str:
     # the HOST attaches the OAuth token; no credential ever enters the
     # sandbox. ORGTREE_SANDBOX_API_KEY remains a hidden escape hatch (a real
     # API key, or 'subscription' to copy the host credentials in).
-    key = (k.get("api_key") or os.environ.get("ORGTREE_SANDBOX_API_KEY")
+    # §9.5: the ORG-LEVEL key (settings, any org — promoted out of the kiosk
+    # spec) outranks the kiosk field; proxy mode and key mode stay mutually
+    # exclusive — a set key wins and the bridge proxy is not used.
+    key = (str(org.d.get("api_key") or "")
+           or k.get("api_key") or os.environ.get("ORGTREE_SANDBOX_API_KEY")
            or "proxied").strip()
     use_proxy = "prox" in key.lower()
     use_sub = key.lower() == "subscription"

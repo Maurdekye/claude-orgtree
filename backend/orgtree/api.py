@@ -498,6 +498,12 @@ async def _wire_notify() -> None:  # type: ignore[unused-function]  # registered
     # `changed` so the UI's status dots are realtime without polling
     net.notify_changed = hub_changed
     net.start_net_client()
+    # compose-stage sweep: in-memory ids died with the last process, so every
+    # file already in <data>/net_stage is unreachable — remove them all
+    _prune_stage(max_age_s=0.0)
+    # §9.2: warn EARLY when the subscription's refresh token nears expiry —
+    # an unattended box discovers an auth lapse as a pile of failed turns
+    supervisor.start_cred_watcher()
     # one-time migration of the retired v1 env-var kiosk mode into the org doc
     legacy = os.environ.get("ORGTREE_KIOSK")
     if legacy:
@@ -931,6 +937,8 @@ def org_tree(slug: str, request: Request) -> dict[str, Any]:
     # the secret (status_block guarantees it); None for kiosks
     tree["net"] = net.status_block(cast("dict[str, Any]", org.d))
     tree["headless"] = bool(org.d.get("headless"))
+    # WHETHER a key is set, never the key (settings needs the fact)
+    tree["api_key_set"] = bool(org.d.get("api_key"))
     if _public_slug(request):
         # tells the UI to lock itself down; the SERVER gate is the enforcement
         tree["public"] = True
@@ -1031,6 +1039,10 @@ class Settings(Body):
                                             # local hub entry
     net_hubs: list[Any] | None = None       # F-06 (per-org): authoritative hub
                                             # list [{id?, address, enabled?}]
+    headless: bool | None = None            # §9.6: no user present; requires
+                                            # an api_key (both directions)
+    api_key: str | None = None              # §9.5: per-org ANTHROPIC_API_KEY
+    clear_api_key: bool = False             # refused while headless is on
 
 
 # ------------------------------------------- global default org settings
@@ -1194,6 +1206,48 @@ def _org_settings_locked(slug: str, body: Settings) -> dict[str, Any]:
         org.d["cascade_hire"] = bool(body.cascade_hire)
     if body.cascade_alloc is not None:
         org.d["cascade_alloc"] = bool(body.cascade_alloc)
+    # ---- §9.5/§9.6: per-org API key + headless (couplings are HARD rules) --
+    if body.api_key is not None and body.api_key.strip():
+        org.d["api_key"] = body.api_key.strip()
+        warnings.append("API key set — this org's turns now bill the key, "
+                        "not the subscription")
+    if body.clear_api_key:
+        if org.d.get("headless"):
+            raise HTTPException(
+                422, "this org runs headless, which REQUIRES an API key "
+                     "(subscription auth ends in an interactive re-login "
+                     "nobody is present to perform) — turn headless off "
+                     "first")
+        org.d.pop("api_key", None)
+        warnings.append("API key cleared — turns use the subscription again")
+    if body.headless is not None:
+        if body.headless and not org.d.get("headless"):
+            if org.d.get("kiosk") is not None:
+                raise HTTPException(422, "a kiosk cannot run headless — it "
+                                         "is sealed from the org mail that "
+                                         "headless depends on")
+            if not org.d.get("api_key"):
+                raise HTTPException(
+                    422, "headless REQUIRES an API key (set it in the same "
+                         "panel): subscription auth ends in an interactive "
+                         "re-login that a headless org, by definition, has "
+                         "nobody to perform")
+            halted = [k for k in ("fable_limit_policy", "fable_filter_policy")
+                      if org.d.get(k, "halt") == "halt"]
+            if halted:
+                raise HTTPException(
+                    422, f"headless refuses while {' and '.join(halted)} "
+                         f"is 'halt' — a halted headless org is a dead org "
+                         f"nobody will notice; switch the policy first")
+            org.d["headless"] = True
+            if not org.d.get("auto_resume"):
+                org.d["auto_resume"] = True
+                warnings.append("auto-resume forced ON — a limit freeze must "
+                                "not park an org nobody will un-park")
+        elif not body.headless and org.d.get("headless"):
+            org.d["headless"] = False
+            warnings.append("headless off — review the user inbox for what "
+                            "accumulated while nobody was watching")
     # ---- F-06: mail-hub config (non-kiosk orgs only; kiosks are sealed) ----
     if body.net_autoconnect is not None and org.d.get("kiosk") is None:
         org.d["net_autoconnect"] = bool(body.net_autoconnect)
@@ -2075,9 +2129,28 @@ async def org_inbox_read(slug: str) -> dict[str, Any]:
 # ---- F-06 E: the user composes extern mail from the mailbox UI ----
 # The user bypasses the audience gate (they outrank it) and this grants
 # nobody anything. Attachments stage first (browser body upload, same caps),
-# then ride the same transport as agent sends.
-_COMPOSE_STAGE: dict[str, str] = {}          # stage-id → abs path
+# then ride the same transport as agent sends. Stage hygiene (redteam):
+# per-ORG ids, startup sweep (in-memory ids die with the process, so files
+# on disk at boot are unreachable), and a 24 h age-out for abandoned drafts;
+# successfully drained files are deleted by net._spool_done.
+_COMPOSE_STAGE: dict[str, tuple[str, str]] = {}   # stage-id → (slug, path)
 _COMPOSE_DIR = "net_stage"
+
+
+def _prune_stage(max_age_s: float = 86400.0) -> None:
+    stage = os.path.join(store.DATA_ROOT, _COMPOSE_DIR)
+    try:
+        cutoff = time.time() - max_age_s
+        for f in os.listdir(stage):
+            p = os.path.join(stage, f)
+            try:
+                if os.path.getmtime(p) < cutoff:
+                    os.remove(p)
+                    _COMPOSE_STAGE.pop(f.split("-", 1)[0], None)
+            except OSError:
+                pass
+    except OSError:
+        pass
 
 
 class OrgInboxSend(Body):
@@ -2091,9 +2164,17 @@ async def org_inbox_upload(slug: str, request: Request,
                            name: str = "file") -> dict[str, Any]:
     if _public_slug(request):
         raise HTTPException(404, "not found")
+    # refuse oversize BEFORE buffering when the client says how big it is
+    try:
+        clen = int(request.headers.get("content-length") or 0)
+    except ValueError:
+        clen = 0
+    if clen > _NET_ATT_MAX:
+        raise HTTPException(413, "attachment exceeds 25 MB")
     data = await request.body()
     if len(data) > _NET_ATT_MAX:
         raise HTTPException(413, "attachment exceeds 25 MB")
+    _prune_stage()
     stage = os.path.join(store.DATA_ROOT, _COMPOSE_DIR)
     os.makedirs(stage, exist_ok=True)
     sid = uuid.uuid4().hex
@@ -2102,7 +2183,7 @@ async def org_inbox_upload(slug: str, request: Request,
     path = os.path.join(stage, f"{sid}-{safe}")
     with open(path, "wb") as f:
         f.write(data)
-    _COMPOSE_STAGE[sid] = path
+    _COMPOSE_STAGE[sid] = (slug, path)
     return {"id": sid, "name": safe, "bytes": len(data)}
 
 
@@ -2117,11 +2198,11 @@ def org_inbox_send(slug: str, body: OrgInboxSend,
                                  "(@ext:/@org:/@mcp:/@net:)")
     paths: list[str] = []
     for sid in body.attachments[:10]:
-        sp = _COMPOSE_STAGE.get(sid)
-        if not sp or not os.path.isfile(sp):
+        staged = _COMPOSE_STAGE.get(sid)
+        if not staged or staged[0] != slug or not os.path.isfile(staged[1]):
             raise HTTPException(422, f"staged attachment {sid!r} not found — "
                                      f"re-upload and retry")
-        paths.append(sp)
+        paths.append(staged[1])
     if paths and to.startswith(("@ext:", "@mcp:")):
         # ruled 2026-08-05: those transports are text-only
         raise HTTPException(422, "attachments ride @net: and @org: mail "

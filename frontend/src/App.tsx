@@ -11,7 +11,7 @@ import {
 import { ConfirmModal, MailFolders, MailList, OrgCanvas, OrgRecord, useEsc } from './Canvas'
 import { DiskBrowser, DiskFullAlert } from './DiskBrowser'
 import {
-  AutorenewIcon, BlockIcon, CheckIcon, ChevronRightIcon, CloseIcon, CopyIcon, LanIcon,
+  AutorenewIcon, BlockIcon, CheckIcon, ChevronRightIcon, CloseIcon, CopyIcon, EyeIcon, LanIcon,
   DeleteIcon, ExpandMoreIcon, GitHubIcon, HearingIcon, HomeIcon, LockIcon,
   LockOpenIcon, MailIcon, MenuIcon, PlayIcon, PublicIcon, SettingsIcon,
   SparkIcon, StopIcon, StorageIcon, WarnIcon,
@@ -379,8 +379,17 @@ export default function App() {
                         <StorageIcon fontSize="inherit" /> {tree.kiosk.storage_mb ?? 0} / {tree.kiosk.storage_limit_mb} MB
                       </span>
                 )}
-                {(() => {   // F-06: hub connectivity chip (enabled hubs only)
-                  const hubs = (tree.net?.hubs ?? []).filter((h) => h.enabled)
+                {tree.headless && (
+                  <span className="chip"
+                    title="headless: no user is present — user-bound requests auto-deny; the eye renders grey and empty">
+                    <EyeIcon fontSize="inherit" /> headless
+                  </span>
+                )}
+                {(() => {   // F-06: hub connectivity chip (enabled, NON-hidden
+                  // hubs — a local hub that never answered shows no UI at all,
+                  // user ruling 2026-08-05)
+                  const hubs = (tree.net?.hubs ?? [])
+                    .filter((h) => h.enabled && !h.hidden)
                   if (!hubs.length) return null
                   const up = hubs.filter((h) => h.connected).length
                   const queued = hubs.reduce((a, h) => a + h.queued, 0)
@@ -934,6 +943,55 @@ function NetTab({ tree, toast }: { tree: TreePayload; toast: ToastFn }) {
       </div>
       <div className="dim" style={{ fontSize: '11.5px' }}>
         mailserver changes apply immediately (names are discovered on connect)
+      </div>
+    </>
+  )
+}
+
+/** §9.5/§9.6: per-org API key + headless mode. Saves IMMEDIATELY (the
+ *  couplings are server-enforced 422s — instant feedback beats a buffered
+ *  save that fails later). */
+function AutonomyTab({ tree, toast }: { tree: TreePayload; toast: ToastFn }) {
+  const [key, setKey] = useState('')
+  const save = (opts: Parameters<typeof saveSettings>[1], note: string) =>
+    saveSettings(tree.slug, opts)
+      .then((r) => toast(r.warnings?.length ? r.warnings : [note]))
+      .catch((e: Error) => toast([`error: ${e.message}`]))
+  return (
+    <>
+      <div className="field-label">API key (§9.5 — the org's own metered
+        billing)</div>
+      <div className="row">
+        {tree.api_key_set
+          ? <>
+              <span className="badge free">key set — turns bill the key</span>
+              <button onClick={() => save({ clear_api_key: true },
+                'API key cleared')}>clear</button>
+            </>
+          : <>
+              <input style={{ flex: 1 }} type="password"
+                placeholder="sk-ant-… (stored server-side, never shown again)"
+                value={key} onChange={(e) => setKey(e.target.value)} />
+              <button disabled={!key.trim()}
+                onClick={() => { save({ api_key: key.trim() }, 'API key set')
+                  setKey('') }}>set</button>
+            </>}
+      </div>
+      <div className="dim hub-hint">an API key removes the subscription's
+        refresh-token ceiling — required for headless, useful for any
+        unattended org; it never reaches an agent's context</div>
+      <label className="checkline"
+        title="no user is present: questions, credit requests and user audiences auto-deny; mail to you is stored with a no-reply note; requires an API key and non-halt fable policies">
+        <input type="checkbox" checked={!!tree.headless}
+          onChange={(e) => save({ headless: e.target.checked },
+            e.target.checked ? 'headless ON — nobody is watching now'
+              : 'headless off')} />
+        headless — this org runs with no user present
+      </label>
+      {tree.headless && <div className="dim hub-hint">the overseer renders
+        grey with an empty eye while headless is on</div>}
+      <div className="dim" style={{ fontSize: '11.5px' }}>
+        autonomy changes apply immediately
       </div>
     </>
   )
@@ -1590,6 +1648,10 @@ function SettingsPanel({ tree, toast, close }: {
               ...(tree.net != null
                 ? [{ label: 'mailserver',
                      content: <NetTab tree={tree} toast={toast} /> }] : []),
+              ...(!kk
+                ? [{ label: 'autonomy',
+                     content: <AutonomyTab tree={tree} toast={toast} /> }]
+                : []),
             ]} />
         )}
         <div className="row">

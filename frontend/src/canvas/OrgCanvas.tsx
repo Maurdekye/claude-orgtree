@@ -958,7 +958,8 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
   }, [tree])
 
   return (
-    <div className={'viewport' + (tree.sandboxed ? ' sandboxed' : '')} ref={viewportRef}
+    <div className={'viewport' + (tree.sandboxed ? ' sandboxed' : '')
+      + (tree.headless ? ' headless' : '')} ref={viewportRef}
       onPointerDown={onPointerDown} onPointerMove={onPointerMove}
       onPointerUp={onPointerUp} onPointerCancel={onPointerUp}
       onScroll={(e) => {
@@ -1177,7 +1178,8 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
             <div className="oi-head">
               <PublicIcon fontSize="inherit" /> org inbox
               {(() => {   // F-06: hub connectivity at a glance on the mailbox
-                const hubs = (tree.net?.hubs ?? []).filter((h) => h.enabled)
+                const hubs = (tree.net?.hubs ?? [])
+                  .filter((h) => h.enabled && !h.hidden)
                 if (!hubs.length) return null
                 const up = hubs.filter((h) => h.connected).length
                 const cls = up === hubs.length ? ' ok' : up > 0 ? ' mix' : ''

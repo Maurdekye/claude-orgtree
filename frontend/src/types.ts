@@ -131,6 +131,10 @@ export interface NetHub {
   enabled: boolean
   name?: string | null         // discovered on connect, never typed
   connected: boolean
+  /** the implicit local entry before the hub has EVER answered — passive
+   *  surfaces (chip, dot, network section, compose roster) render nothing;
+   *  the settings tab still shows it (it is config) */
+  hidden?: boolean
   last_ok?: string | null
   error?: string | null
   queued: number
@@ -423,6 +427,7 @@ export interface TreePayload {
   public?: boolean             // only through the public gateway
   net?: NetBlock | null        // F-06 (null for kiosks; absent for visitors)
   headless?: boolean           // §9.6
+  api_key_set?: boolean        // §9.5: whether, never the key itself
 }
 
 // ----------------------------------------------------------------- org list
@@ -730,6 +735,9 @@ export interface SettingsRequest {
   net_hub_address?: string | null      // global defaults only
   net_autoconnect?: boolean | null     // per-org: keep/join the local hub
   net_hubs?: { id?: string; address: string; enabled?: boolean }[] | null
+  headless?: boolean | null            // §9.6 (server enforces the couplings)
+  api_key?: string | null              // §9.5 (write-only)
+  clear_api_key?: boolean
 }
 
 // F-06: GET /api/orgs/{slug}/net — loopback-admin reveal (the ONE place the

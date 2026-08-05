@@ -16,14 +16,33 @@
 # which means no agent can either. To share ONE org with someone, make it a
 # kiosk instead (secret URL, hard limits) and run expose.ps1.
 param(
-    [switch]$ExposeAdmin
+    [switch]$ExposeAdmin,
+    # -EnsureUp (F-06 autostart, user-ruled): the crash-restart half. The
+    # at-logon full deploy detaches and exits, so Task Scheduler's own
+    # restart-on-failure never sees the backend die -- a 5-minute repeating
+    # trigger runs THIS mode instead: listener alive -> silent no-op; dead ->
+    # relaunch only (no pull, no build, no pip). install-autostart.ps1
+    # registers both triggers.
+    [switch]$EnsureUp
 )
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $root
 
+if ($EnsureUp) {
+    $dr = $env:ORGTREE_DATA
+    if (-not $dr) { $dr = Join-Path $env:USERPROFILE 'orgtree' }
+    $pt = '7360'
+    $pf = Join-Path $dr '.port'
+    if (Test-Path $pf) { $pt = (Get-Content $pf -Raw).Trim() }
+    $alive = Get-NetTCPConnection -LocalPort ([int]$pt) -State Listen -ErrorAction SilentlyContinue
+    if ($alive) { exit 0 }          # up -- the ensure is a no-op
+    Write-Host "== orgtree ensure-up: backend is DOWN, relaunching =="
+}
+
 $before = (git rev-parse --short HEAD).Trim()
+if (-not $EnsureUp) {
 Write-Host "== orgtree update (currently $before) =="
 
 # -- 1 - pull ---------------------------------------------------------------
@@ -32,12 +51,15 @@ if ($LASTEXITCODE -ne 0) {
     Write-Host "git pull failed -- resolve manually (local changes?)" -ForegroundColor Red
     exit 1
 }
+}
 $after = (git rev-parse --short HEAD).Trim()
+if (-not $EnsureUp) {
 if ($after -eq $before) {
     Write-Host "already up to date ($after) -- redeploying anyway"
 } else {
     Write-Host "updated $before -> $after"
     git --no-pager log --oneline "$before..$after"
+}
 }
 
 # -- 1b - the interpreter ---------------------------------------------------
@@ -78,7 +100,8 @@ $pyKind = if ($py -eq $venvPy) { ' [.venv]' } else { ' [system -- deps shared wi
 $pyVer = (& $py -c "import sys; print(sys.version.split()[0])")
 Write-Host "python: $py ($pyVer)$pyKind"
 
-# -- 2 - frontend -----------------------------------------------------------
+# -- 2 - frontend (skipped under -EnsureUp: relaunch what is built) ---------
+if (-not $EnsureUp) {
 Write-Host "`n== building the UI =="
 Set-Location (Join-Path $root 'frontend')
 npm install --no-audit --no-fund
@@ -128,6 +151,7 @@ try {
     $cliVer = (& claude --version 2>$null | Select-Object -First 1)
     if ($cliVer) { Write-Host "Claude CLI: $cliVer (sandbox images rebuild automatically when this changes)" }
 } catch {}
+}   # end -not $EnsureUp (sections 2-3b)
 
 # -- 4 - restart the backend ------------------------------------------------
 $dataRoot = $env:ORGTREE_DATA

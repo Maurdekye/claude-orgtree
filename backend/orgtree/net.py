@@ -226,16 +226,27 @@ def status_block(org_d: dict[str, Any]) -> dict[str, Any] | None:
     hubs_out: list[dict[str, Any]] = []
     slug = str(org_d.get("slug") or "")
     spool = cast("dict[str, list[Any]]", org_d.get("net_spool") or {})
+    net_state = cast("dict[str, dict[str, Any]]",
+                     org_d.get("net_state") or {})
     for h in cast("list[dict[str, Any]]", org_d.get("net_hubs") or []):
         hid = str(h.get("id"))
         with _status_lock:
             st = dict(_status.get((slug, hid)) or {})
             roster = list(_rosters.get(str(h.get("address") or "")) or [])
             name = h.get("name") or _hub_names.get(str(h.get("address") or ""))
+        connected = bool(st.get("connected"))
+        # user ruling 2026-08-05: the IMPLICIT local entry is INVISIBLE until
+        # the hub has actually answered once (registered_at is the durable
+        # signal; the daemon keeps dialling quietly, backed off). An EXPLICIT
+        # typed remote is always shown, offline included — the user asserted
+        # it exists, so silence would be the wrong answer.
+        seen = connected or bool(
+            (net_state.get(hid) or {}).get("registered_at"))
         hubs_out.append({
             "id": hid, "address": h.get("address"),
             "enabled": bool(h.get("enabled")), "name": name,
-            "connected": bool(st.get("connected")),
+            "connected": connected,
+            "hidden": hid == LOCAL_HUB_ID and not seen,
             "last_ok": st.get("last_ok"), "error": st.get("error"),
             "queued": len(spool.get(hid) or []),
             "roster": [r for r in roster
@@ -578,15 +589,28 @@ def _ship_attachments(slug: str, hub_id: str, addr: str,
 
 def _spool_done(slug: str, hub_id: str, entry_id: str) -> None:
     """Hub custody confirmed — remove the spool entry, advance the org-inbox
-    row to `sent` (the 200 IS the 'received' receipt)."""
+    row to `sent` (the 200 IS the 'received' receipt), and delete any
+    compose-STAGED files the entry carried (redteam: nothing ever swept the
+    stage; the hub holds its own copy now). Agent-scratch attachments are
+    the agent's own files and stay."""
     from . import store
+    removed: dict[str, Any] | None = None
     with store.DOC_LOCK:
         org = store.load_org(slug)
         spool = org.d.setdefault("net_spool", {})
+        removed = next((e for e in spool.get(hub_id, [])
+                        if e.get("id") == entry_id), None)
         spool[hub_id] = [e for e in spool.get(hub_id, [])
                          if e.get("id") != entry_id]
         _stamp_row(org.d, entry_id, "sent")
         store.save_org(org)
+    for pth in cast("list[Any]", (removed or {}).get("attachments") or []):
+        p = str(pth)
+        if os.path.basename(os.path.dirname(p)) == "net_stage":
+            try:
+                os.remove(p)
+            except OSError:
+                pass
 
 
 def _bump_try(slug: str, hub_id: str, entry_id: str, err: str) -> None:

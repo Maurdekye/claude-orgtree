@@ -969,6 +969,21 @@ main {
 .eye path { fill: none; stroke: var(--accent); stroke-width: 2; }
 .eye .iris { fill: rgba(217, 119, 87, .18); stroke: var(--accent); stroke-width: 1.6; }
 .eye .pupil { fill: var(--accent); }
+/* §9.6 headless (user amendments 2026-08-05): every eye rendering goes GREY
+   and EMPTY — outline only, no iris/pupil (nobody is looking). One class on
+   the viewport root; every current and future eye inside inherits both. */
+.viewport.headless .eye path,
+.viewport.headless .eye-mini path,
+.viewport.headless .zoomhud .hud-eye path { stroke: var(--dim); }
+.viewport.headless .eye .iris, .viewport.headless .eye .pupil,
+.viewport.headless .eye-mini .iris, .viewport.headless .eye-mini .pupil,
+.viewport.headless .zoomhud .hud-eye .iris,
+.viewport.headless .zoomhud .hud-eye .pupil { display: none; }
+.viewport.headless .sq.user {
+  border-color: var(--line);
+  background: radial-gradient(ellipse at 50% 30%,
+    rgba(157, 157, 157, .08), var(--panel) 70%);
+}
 .user-label {
   /* out of the flow: the eye stays dead-centre; the label fades in beneath
      it on hover without shifting anything */

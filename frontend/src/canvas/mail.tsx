@@ -492,7 +492,7 @@ export function OrgInboxModal({ inbox, net, map, slug, toast, close, jumpTo }: O
           </div>
         </div>
         <ComposeBar slug={slug} net={net} entries={entries} toast={toast} />
-        {(net?.hubs?.length ?? 0) > 0 && <NetSection net={net} />}
+        {(net?.hubs ?? []).some((h) => !h.hidden) && <NetSection net={net} />}
         <div className="row"><span className="spacer" />
           <button onClick={close}>close</button></div>
       </div>
@@ -520,6 +520,7 @@ function ComposeBar({ slug, net, entries, toast }: {
     const seen = new Set<string>()
     const out: { addr: string; label: string }[] = []
     for (const h of net?.hubs ?? []) {
+      if (h.hidden) continue
       for (const r of h.roster) {
         const addr = `@net:${r.slug}`
         if (!seen.has(addr)) {
@@ -592,7 +593,7 @@ function NetSection({ net }: { net?: TreePayload['net'] }) {
       <div className="field-label">mailservers
         {net?.slug && <span className="dim"> · this org is <b>{net.slug}</b></span>}
       </div>
-      {(net?.hubs ?? []).map((h) => (
+      {(net?.hubs ?? []).filter((h) => !h.hidden).map((h) => (
         <div key={h.id} className="oi-hub">
           <div className="oi-hub-head">
             <span className={'oi-dot' + (h.connected ? ' ok' : '')} />

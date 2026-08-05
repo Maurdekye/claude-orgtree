@@ -734,7 +734,8 @@ def sec_compose() -> None:
         code, j = upload(a)
         assert code == 200 and j["bytes"] == 6, (code, j)
         assert j["name"] == "plan.md", j
-        path = api._COMPOSE_STAGE[j["id"]]
+        owner, path = api._COMPOSE_STAGE[j["id"]]   # per-ORG tuples (2026-08-05)
+        assert owner == a, "the stage records which org staged the file"
         assert os.path.isfile(path) and open(path, "rb").read() == b"a plan"
         assert os.path.dirname(path) == stage_dir(), path
     check("an upload stages a real file under <data>/net_stage",
@@ -743,7 +744,7 @@ def sec_compose() -> None:
     def _name_is_sanitised():
         a = mkorg()
         _c, j = upload(a, name="../../etc/passwd")
-        path = api._COMPOSE_STAGE[j["id"]]
+        path = api._COMPOSE_STAGE[j["id"]][1]
         assert os.path.dirname(path) == stage_dir(), path
         assert ".." not in os.path.basename(path), path
     check("a hostile filename cannot escape the stage directory",
@@ -760,7 +761,7 @@ def sec_compose() -> None:
         row = inbox_rows(a, "out")[-1]
         assert row["by"] == "user" and row["state"] == "queued", row
         entry = list(spool_of(a).values())[0][0]
-        assert entry["attachments"] == [api._COMPOSE_STAGE[j["id"]]], entry
+        assert entry["attachments"] == [api._COMPOSE_STAGE[j["id"]][1]], entry
         ladder(a, b, passes=2)
         got = inbox_rows(b, "in")[-1]
         assert got["body"] == "from the user", got

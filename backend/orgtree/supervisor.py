@@ -590,6 +590,14 @@ def clean_env() -> dict[str, str]:
     # and whether the HOST is reachable off loopback is not the agent's
     # business — strip it here rather than let it ride into every turn.
     env.pop("ORGTREE_EXPOSE_ADMIN", None)
+    # §9.5 (redteam finding 2026-08-05, measured): a HOST-level Anthropic key
+    # silently switched EVERY keyless org — kiosks included — off the
+    # subscription and onto the key, with api_key_set reading false the whole
+    # time. Billing must be the per-org selector's decision, never an
+    # inherited env var: strip the family here; the spawn seam re-injects the
+    # org's OWN key only.
+    env.pop("ANTHROPIC_API_KEY", None)
+    env.pop("ANTHROPIC_AUTH_TOKEN", None)
     return env
 
 
@@ -906,6 +914,15 @@ def identity_prompt(org: Org, nid: str) -> str:
            "your own with action=revoke. "
            if (n["parent"] is None or org._has_audience(nid, EXTERN))
            and not org.is_kiosk else "")
+        + ("⚠ THIS ORGANIZATION RUNS HEADLESS: no user is present and none "
+           "will return. Nothing you send to the user will be read, and every "
+           "request to the user — questions (orgtree_ask), credit requests, "
+           "user audiences — is AUTO-DENIED; do not retry them. Decide "
+           "autonomously within your charter; your only correspondents are "
+           "your own chain and the org inbox. When you cannot proceed, record "
+           "it with orgtree_status(blocked, …) — a human reads statuses "
+           "later, even if none reads them now. "
+           if org.d.get("headless") else "")
         + f"You run headless: interactive tools (AskUserQuestion, plan mode) do not "
         f"exist here. To ask the USER a question, use orgtree_ask — it renders a "
         f"real question card (2-4 options with descriptions, multi-select, free "
@@ -1459,6 +1476,12 @@ def _run_one_turn(slug: str, nid: str,
             env["ORGTREE_ORG"], env["ORGTREE_NODE"] = slug, nid
             env["ORGTREE_PORT"] = os.environ.get("ORGTREE_PORT", "7360")
             env["PYTHONPATH"] = BACKEND_DIR + os.pathsep + env.get("PYTHONPATH", "")
+            # §9.5: a per-org API key reaches exactly THIS org's turns (the
+            # unsandboxed seam — sandboxed orgs get theirs via the container
+            # env in sandbox.py). Metered spend against the org's own key: no
+            # refresh-token ceiling, no competition with the user's plan.
+            if org.d.get("api_key") and not sbx.is_sandboxed(org):
+                env["ANTHROPIC_API_KEY"] = str(org.d.get("api_key") or "")
             proc = subprocess.Popen(
                 _build_cmd(org, nid), cwd=scratch_dir(slug, nid), env=env,
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -3205,6 +3228,82 @@ def pop_steer(slug: str, nid: str) -> list[str]:
                     dlmap.pop(nid, None)
             store.save_org(org)
     return out
+
+
+_cred_watch_started = False
+
+
+def start_cred_watcher() -> None:
+    """§9.2: the refresh token is the hard ceiling on unattended subscription
+    auth — when it lapses, re-auth is INTERACTIVE, and an unattended box
+    finds out as a pile of failed turns at 3am. Watch the credentials file
+    and alarm EARLY (user mail to every non-kiosk org, ≤1/org/day).
+
+    An ABSENT `refreshTokenExpiresAt` is UNKNOWN, not expired — subproxy
+    legitimately drops the field when a rotated refresh token arrives without
+    a reported lifetime (design-pass verification 2026-08-05); never alarm
+    on it. Orgs running on their own API key have no ceiling at all."""
+    global _cred_watch_started
+    if _cred_watch_started:
+        return
+    _cred_watch_started = True
+    warned: dict[str, float] = {}       # slug → monotonic last-warn
+
+    def run() -> None:
+        while True:
+            try:
+                p = os.path.expanduser("~/.claude/.credentials.json")
+                exp = None
+                try:
+                    d = json.load(open(p, encoding="utf-8"))
+                    exp = ((d or {}).get("claudeAiOauth") or {}) \
+                        .get("refreshTokenExpiresAt")
+                except (OSError, ValueError):
+                    pass
+                if isinstance(exp, (int, float)) and exp > 0:
+                    ms = float(exp)
+                    left_days = (ms / 1000.0 - time.time()) / 86400.0
+                    if left_days < 3.0:
+                        for o in store.list_orgs():
+                            slug = str(o["slug"])
+                            if o.get("kiosk"):
+                                continue
+                            if time.monotonic() - warned.get(slug, -1e9) \
+                                    < 86400.0:
+                                continue
+                            try:
+                                with store.DOC_LOCK:
+                                    org = store.load_org(slug)
+                                    if org.d.get("api_key"):
+                                        continue     # no ceiling on a key
+                                    org.d.setdefault("user_inbox", []).append({
+                                        "id": uuid_hex8(), "from": "@system",
+                                        "kind": "notice", "at": now_iso(),
+                                        "body": (
+                                            "⚠ The Claude subscription's "
+                                            "refresh token expires in "
+                                            f"~{max(0.0, left_days):.1f} "
+                                            "days. When it lapses, re-login "
+                                            "is INTERACTIVE and every turn "
+                                            "fails until someone signs in — "
+                                            "open Claude Code on this "
+                                            "machine soon, or give the org "
+                                            "an API key (settings → "
+                                            "autonomy).")})
+                                    store.save_org(org)
+                                warned[slug] = time.monotonic()
+                            except Exception:                    # noqa: BLE001
+                                pass
+            except Exception:                                    # noqa: BLE001
+                pass
+            time.sleep(6 * 3600)
+
+    threading.Thread(target=run, daemon=True, name="cred-watch").start()
+
+
+def uuid_hex8() -> str:
+    import uuid as _uuid
+    return _uuid.uuid4().hex[:8]
 
 
 def forget_state(slug: str, nids: Iterable[str] | None = None) -> None:

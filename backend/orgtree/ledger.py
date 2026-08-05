@@ -942,6 +942,14 @@ class Org:
             ue: UserMailEntry = {"id": uuid.uuid4().hex[:8], "from": sender,
                                  "kind": kind, "body": body, "at": now()}
             self.d.setdefault("user_inbox", []).append(ue)
+            if self.d.get("headless"):
+                # §9.6 ☞: NEVER deny mail to the user — the inbox is the audit
+                # trail of an unattended run. Accept, and tell the sender the
+                # truth so it does not wait on a reply.
+                warnings.append(
+                    "stored — but this org runs HEADLESS: no user is present "
+                    "and no reply is coming. Treat this as a record, not a "
+                    "question.")
             self._log("mail", sender, {"to": USER, "kind": kind}, [])
             # the id rides the result → the sender's chat renders an inline
             # "open in mailbox" link on the send (user spec 2026-07-31)
@@ -1156,6 +1164,12 @@ class Org:
         at a time. Grants flow down fast; requests climb slowly — by design."""
         self.node(actor)
         target = self._resolve_recipient(target)
+        if target == USER and self.d.get("headless"):
+            # §9.6 ②: a user audience in a headless org is an ear nobody wears
+            raise LedgerError(
+                "this org runs HEADLESS: no user is present and user-audience "
+                "requests are auto-denied — coordinate through your chain and "
+                "the org inbox instead")
         if target != USER and not self.is_ancestor(target, actor):
             raise LedgerError("audience requests climb your own chain — the target "
                               "must be one of your superiors (or 'user')")
@@ -2740,6 +2754,14 @@ class Org:
         hard-errored on an idempotent ask, against the ratified pattern."""
         self._require_live(nid)
         n = self.node(nid)
+        if self.d.get("headless"):
+            # §9.6 ②: nobody will ever answer — deny with the reason in the
+            # result so the agent adapts instead of retrying
+            raise LedgerError(
+                "this org runs HEADLESS: no user is present and credit "
+                "requests are auto-denied. Work within the grant you hold, "
+                "or record the blocker with orgtree_status(blocked, …) — a "
+                "human reads statuses later")
         # the user-mail gate, same as questions (user ruling 2026-08-04):
         # top-level OR a held user audience may ask the user directly. Approval
         # for a deep node is an ordinary user-actor reallocate, which §4.6-
@@ -3048,6 +3070,14 @@ class Org:
         as mail instead of refused (the auto-bridge motto). One open question
         per node — re-asking amends it (the ratified idempotent-ask pattern)."""
         self._require_live(nid)
+        if self.d.get("headless"):
+            # §9.6 ②: never park a card nobody will answer
+            raise LedgerError(
+                "this org runs HEADLESS: no user is present and questions to "
+                "the user are auto-denied. Decide autonomously within your "
+                "charter, ask a peer/superior with orgtree_message "
+                "kind=question, or record the blocker with "
+                "orgtree_status(blocked, …)")
         q = str(question or "").strip()
         if not q:
             raise LedgerError("a question is required")
@@ -3576,9 +3606,16 @@ class Org:
                     self.d.get("org_inbox")
                     or any(a["grantor"] == EXTERN
                            for a in self.d["audiences"])
-                    # F-06 (user ruling 2026-08-05): joining a mail hub
-                    # surfaces the mailbox before any mail exists
-                    or any(h.get("enabled")
-                           for h in self.d.get("net_hubs") or [])),
+                    # F-06 (user rulings 2026-08-05): joining a mail hub
+                    # surfaces the mailbox — but the IMPLICIT local entry
+                    # only counts once the hub has actually answered
+                    # (registered_at); a hub that was never there must show
+                    # NO ui at all. Explicit typed remotes count as-is.
+                    or any(h.get("enabled") and (
+                        h.get("id") != "local"
+                        or ((self.d.get("net_state") or {})
+                            .get(str(h.get("id")), {})
+                            .get("registered_at")))
+                        for h in self.d.get("net_hubs") or [])),
             },
         }
