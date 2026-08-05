@@ -517,43 +517,35 @@ async def ui_messages(org: str = "", client: str = "",
                 (org, org, limit)).fetchall()
         elif client:
             # group filter (user spec 2026-08-05): all mail touching any
-            # slug of one CLIENT — the username segment every org/chat
-            # registered from one machine profile shares. The decisive
-            # match is the exact segment in Python, not a LIKE (a name
-            # could contain the client string) — but the READ is bounded
-            # in SQL like the two neighbouring branches (redteam §11): a
-            # parameterised LIKE prefilter pages the cursor until `limit`
-            # rows pass the exact check, instead of materialising every
-            # retained message to narrow to a handful.
-            def _of(slug: str) -> str:
+            # slug of one CLIENT. §11c (redteam, user-reported "only orgs
+            # show up"): the UI groups by the REGISTERED username while the
+            # slug's middle segment is the SANITIZED one — identical for
+            # orgs, diverging for chats (raw ncola_k8bx vs slug ncola-k8bx).
+            # Never rewrite either (the slug IS the address; rewriting
+            # strands first-write-wins registrations) — fold case and _/-
+            # on BOTH keys, resolve the client to its slugs via the orgs
+            # table, and bound the message read with IN + LIMIT (§11/§11b:
+            # bounded, and no LIKE means no metacharacter surface at all).
+            def _fold(s: Any) -> str:
+                return str(s or "").lower().replace("_", "-")
+
+            def _seg(slug: Any) -> str:
                 parts = str(slug).split(".")
                 return parts[1] if len(parts) > 2 else ""
-            # escape LIKE metacharacters (redteam §11b): an unescaped '%'
-            # made the prefilter match everything while the exact check
-            # matched nothing, so the loop paged the whole table — the
-            # unbounded walk §11 removed, back on a query parameter. And
-            # real usernames contain '_' (a single-char wildcard), so this
-            # is live-query correctness, not hygiene.
-            lit = (client.replace("\\", "\\\\")
-                         .replace("%", "\\%").replace("_", "\\_"))
-            like = f"%.{lit}.%"
-            hits: list[Any] = []
-            off = 0
-            batch = max(limit, 100)
-            while len(hits) < limit:
-                page = con.execute(
-                    "SELECT * FROM messages "
-                    "WHERE from_slug LIKE ? ESCAPE '\\' "
-                    "OR to_slug LIKE ? ESCAPE '\\' "
-                    "ORDER BY received_at DESC, rowid DESC LIMIT ? OFFSET ?",
-                    (like, like, batch, off)).fetchall()
-                if not page:
-                    break
-                off += len(page)
-                hits.extend(m for m in page
-                            if client in (_of(m["from_slug"]),
-                                          _of(m["to_slug"])))
-            rows = hits[:limit]
+            want = _fold(client)
+            slugs = [r["slug"] for r in con.execute(
+                         "SELECT slug, username FROM orgs").fetchall()
+                     if want and (_fold(r["username"]) == want
+                                  or _fold(_seg(r["slug"])) == want)]
+            if slugs:
+                ph = ",".join("?" * len(slugs))
+                rows = con.execute(
+                    f"SELECT * FROM messages WHERE from_slug IN ({ph}) "
+                    f"OR to_slug IN ({ph}) "
+                    f"ORDER BY received_at DESC, rowid DESC LIMIT ?",
+                    (*slugs, *slugs, limit)).fetchall()
+            else:
+                rows = []
         else:
             rows = con.execute(
                 "SELECT * FROM messages ORDER BY received_at DESC, rowid DESC "

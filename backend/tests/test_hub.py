@@ -1099,6 +1099,77 @@ def sec_client_filter_paging() -> None:
           _wildcard_name_cannot_force_a_full_walk)
 
 
+# ==================================================================== §11c
+def sec_group_key() -> None:
+    """USER REPORT 2026-08-05: "highlighting a group in the mailserver UI does
+    NOT show messages sent between independent chats part of that group: only
+    orgs."
+
+    Two different keys are in play and they diverge for exactly one client
+    type. The UI groups by the registered `username` FIELD (index.html:
+    `o.username || o.slug.split('.')[1]`), while /ui/messages?client= matches
+    the SLUG's username SEGMENT. For orgs the two are the same string —
+    net.py registers username=_sanitize_user(user) and builds the slug from
+    that same value. For chats they are NOT: hubtool registers
+    username=getpass.getuser() (raw, `ncola_k8bx`) while its slug segment is
+    _user(), which folds every non-[a-z0-9-] character to a hyphen
+    (`ncola-k8bx`). So the header carries the underscore form, the filter
+    demands the hyphen form, and chat-to-chat traffic falls through the
+    gap."""
+    print("\n\u00a711c  the group header's key vs the filter's key (user report)")
+
+    def _chat_shaped(name: str, user_raw: str, user_slug: str):
+        """Register the way hubtool does: slug segment sanitized, username
+        field raw."""
+        slug = f"{name}.{user_slug}.{secrets.token_hex(3)}"
+        secret = secrets.token_hex(16)
+        r = req("POST", "/api/register", auth=pair(slug, secret),
+                json_body={"slug": slug, "org_name": name,
+                           "username": user_raw, "kind": "chat"})
+        assert r.status_code == 200, r.text
+        return slug, secret
+
+    def _the_two_keys_agree_for_chats():
+        a = _chat_shaped("alpha-chat", "grp_one", "grp-one")
+        b = _chat_shaped("beta-chat", "grp_one", "grp-one")
+        send(a, b[0], "chat to chat, same client")
+        # what the UI's header would send: the username FIELD it grouped by
+        j = req("GET", "/ui/messages", params={"client": "grp_one"}).json()
+        bodies = [m["body"] for m in j["messages"]]
+        assert "chat to chat, same client" in bodies, (
+            "the group header's own key returns nothing for chat traffic — "
+            "the filter matches the slug SEGMENT (grp-one) while the header "
+            "carries the registered username (grp_one)")
+    # promoted from gap() 2026-08-05, fixed same day: the filter resolves
+    # the client through the orgs table with a fold on case and _/- over
+    # BOTH the stored username and the slug segment (neither sanitizer
+    # touched — the slug stays the address), reads messages by slug
+    # IN (…) with a LIMIT, and index.html applies the identical fold to
+    # its grouping key so the two halves cannot drift apart again
+    check("group · the key the UI groups by is the key the filter "
+          "accepts", _the_two_keys_agree_for_chats)
+
+    def _the_traffic_is_there_under_the_other_key():
+        """ANTI-VACUITY: the same message IS returned when the filter is given
+        the slug segment, so the gap above is a key mismatch, not missing
+        data."""
+        j = req("GET", "/ui/messages", params={"client": "grp-one"}).json()
+        assert any(m["body"] == "chat to chat, same client"
+                   for m in j["messages"]), j
+    check("group \u00b7 the chat traffic IS retrievable under the slug-segment "
+          "key (so the report is a mismatch, not a loss)",
+          _the_traffic_is_there_under_the_other_key)
+
+    def _orgs_are_unaffected():
+        me, sender = new_org(), new_org()          # both username == segment
+        send(sender, me[0], "org to org")
+        j = req("GET", "/ui/messages", params={"client": "tester"}).json()
+        assert any(m["body"] == "org to org" for m in j["messages"]), j
+    check("group \u00b7 org-to-org traffic answers to the same key either way "
+          "(which is why the bug looks like 'only orgs show up')",
+          _orgs_are_unaffected)
+
+
 def main() -> int:
     print("orgtree · the mail hub (F-06 Phase B)")
     sec_register()
@@ -1113,6 +1184,7 @@ def main() -> int:
     sec_public_face()
     sec_client_filter()
     sec_client_filter_paging()
+    sec_group_key()
 
     print()
     if GAPS:

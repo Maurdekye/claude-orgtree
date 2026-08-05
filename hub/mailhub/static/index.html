@@ -186,9 +186,14 @@ async function refresh () {
     // machine profile shares it), then render each group under a header.
     // Color codes KIND (org vs independently connected chat), not client:
     // grouping is the spatial signal, color is the categorical one.
+    // §11c: the grouping key is FOLDED (lowercase, _ → -) so a chat's raw
+    // username (ncola_k8bx) and an org's sanitized slug segment
+    // (ncola-k8bx) land in ONE group — the same fold the server applies
+    // to ?client=, so the header filter always matches its own group
+    const fold = (s) => String(s || '').toLowerCase().replace(/_/g, '-')
     const groups = new Map()
     for (const o of d.orgs) {
-      const client = o.username || o.slug.split('.')[1] || '?'
+      const client = fold(o.username || o.slug.split('.')[1] || '?')
       if (!groups.has(client)) groups.set(client, [])
       groups.get(client).push(o)
     }

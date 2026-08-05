@@ -45,6 +45,7 @@ from typing import TYPE_CHECKING, Any, Callable, cast
 
 import re
 import secrets
+from urllib.parse import urlsplit
 
 from .ledger import now
 
@@ -55,8 +56,32 @@ if TYPE_CHECKING:
 # ("net_hub_address" — translated into the "local" hub entry at org creation,
 # never written raw into an org doc)
 DEFAULT_HUB_ADDRESS = "http://127.0.0.1:7370"
+DEFAULT_HUB_PORT = 7370
 LOCAL_HUB_ID = "local"    # the implicit same-machine hub; per-hub state keys
                           # on this id, so its ADDRESS may be edited freely
+
+
+def normalize_hub_address(addr: str) -> str:
+    """A bare host is a valid hub address (user spec 2026-08-05): no scheme
+    assumes http, no port assumes the hub default (7370). https entries with
+    no port are left alone — a tunneled hub (trycloudflare) listens on 443
+    and appending 7370 would break it. Invalid input is returned as typed —
+    the connect loop's status line is where 'unreachable' belongs, not a 422
+    at the settings form."""
+    a = str(addr or "").strip().rstrip("/")
+    if not a:
+        return ""
+    if "://" not in a:
+        a = "http://" + a
+    try:
+        u = urlsplit(a)
+        if u.scheme == "http" and u.hostname and u.port is None:
+            a = f"http://{u.netloc}:{DEFAULT_HUB_PORT}"
+            if u.path:
+                a += u.path
+    except ValueError:
+        pass                       # e.g. a malformed port — keep as typed
+    return a
 
 
 def _sanitize_user(user: str) -> str:
@@ -500,6 +525,14 @@ def _register_pending(parts: dict[str, dict[str, Any]]) -> None:
                 data = r.json()
                 _record_hub_name(addr, data.get("name"), {slug: p},
                                  {slug: hid})
+                # the register response already carries the full roster —
+                # adopt it NOW (redteam §9, user-reported 20–30 s panel
+                # lag): the only other writer is the poll pass, which on an
+                # idle hub blocks its whole 25 s wait window first
+                with _status_lock:
+                    _rosters[addr] = list(
+                        cast("list[dict[str, Any]]",
+                             data.get("roster") or []))
                 with store.DOC_LOCK:
                     org = store.load_org(slug)
                     st = org.d.setdefault("net_state", {})
