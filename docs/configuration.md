@@ -224,21 +224,24 @@ bookkeeping the supervisor writes; nothing reads them as settings.
 
 ---
 
-## ⑦ Mailserver — PROPOSED, NOT BUILT
+## ⑦ Mailserver — BUILT (F-06 wave, 2026-08-05)
 
-Full design at `docs/mailserver-spec.md`; listed here so the configuration picture is complete. None
-of it exists yet.
+Design record: `docs/mailserver-spec.md` (§12 rulings) + DECISIONS.md D-097/D-098/D-099.
 
-| level | setting | ruling |
+| level | setting | reality |
 |---|---|---|
-| org (creation) | mailserver addresses | remote hubs typed in explicitly |
-| org (creation) | **connect to the local mailserver** | a checkbox, **checked by default**, in the `advanced` disclosure beside the address fields |
-| org | identity secret | self-issued at org creation, `secrets.token_hex(16)`; never enters an agent's context |
-| org | network slug | `<org>.<username>.<sha256(secret)[:6]}`, **immutable for the org's lifetime** |
-| org | `net_wake` | `auto` only in v1 — pending mail drives the org at startup |
-| org | accept policy | `open` by default (closed network) |
-| org | `headless` | ⚠ **requires an API key**; user-bound requests auto-denied |
-| hub | one hub in v1 | but stored as a list and keyed by hub id so several stay possible |
+| global default | `net_hub_address` (`defaults.json`) | default `http://127.0.0.1:7370`; translated at org creation into the `"local"` hub entry |
+| org (creation) | **connect to the mailserver on this computer** | checkbox in the tabbed advanced modal → Mailserver tab, checked by default, not gated on detection (a probe endpoint hints) |
+| org | `net_hubs` | list of `{id, address, enabled, name?}` — `name` is **discovered on connect, never typed**; hub ids are client-minted (`"local"` / `uuid4[:8]`); per-hub runtime state is **stamped with the address it was earned against** and dies when the id is removed or the address changes |
+| org | identity secret | minted at creation (`secrets.token_hex(16)`), persisted in `net_identity`, never recomputed; **kiosks mint no identity at all**. Never in payloads/logs/prompts — the ONE reveal is loopback-only `GET /api/orgs/{slug}/net` |
+| org | network slug | `<org>.<username>.<sha256(secret)[:6]>`, immutable for the org's lifetime |
+| org | `net_autoconnect` | default true |
+| org | `net_wake` | `auto` only — inbound hub mail drives extern-audience holders |
+| org | `headless` | requires an API key **both directions** (headless-without-key and clear-key-while-headless → 422); forces `auto_resume`; refused while a fable policy is `halt`; refused on kiosks. User-bound requests auto-denied with adaptive reasons; `post_mail`→user accepted with a "no reply is coming" note |
+| org | `api_key` | org-level; sandbox precedence org > kiosk > env > proxied; unsandboxed orgs get it as a per-node env seam. `clean_env` strips the HOST's `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` — keyless orgs bill the subscription |
+| hub | `HUB_NAME` env (compose) | the hub's operator-set name (default hostname), returned on register/poll and shown beside the address everywhere |
+| hub | retention / caps | 30-day sweep · attachments ≤ 25 MB / 10 per message · auth `X-Org-Auth: <slug>:<secret>` pairs, full-fingerprint compare |
+| chat clients | `~/.orgtree/hub-client.json` | `hub/hubtool.py` per-profile identity: 256-bit uid IS the secret (0600, O_EXCL-minted), name chosen once at first register, slug `<name>.<user>.<fp[:6]>`, `kind: chat` |
 
 ---
 

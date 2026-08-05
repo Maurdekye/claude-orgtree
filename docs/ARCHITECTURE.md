@@ -85,6 +85,19 @@ ledger, supervisor, the gateways, or the canvas.
   is now an overloaded word — ledger `attach` code is mail
   *file-attachments*; the org attach/release feature is retired. Bundle any
   rename with the next wave touching those files.
+- **Net state must die with the configuration it described.** Per-hub
+  runtime state (`net_state`: registration, seen-ring, backoff; `net_spool`)
+  is keyed by client-minted hub id, but an id is reusable and an address is
+  editable — so **every cell that was earned against a hub records the
+  ADDRESS it was earned against**, and both the settings write (api.py
+  `net_hubs` replacement) and the daemon's `_participants` reconcile drop
+  cells whose stamped address no longer matches. A new `net_state`/ring
+  writer that forgets to stamp the address resurrects the original defect:
+  a re-keyed or re-addressed hub inherits a stranger's registration and
+  seen-ring, and inbound mail is silently deduped against messages from a
+  different hub. Same discipline in reverse: `status_block`'s hidden/visible
+  split for the implicit local hub compares the stamped address, not mere
+  presence of a state cell.
 
 ## Supervisor & turns
 
