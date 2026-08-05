@@ -813,18 +813,13 @@ def sec_compose() -> None:
             f"{sorted(after - before)}. Nothing ever removes anything from "
             f"{stage_dir()} — every compose upload leaks up to 25 MB, "
             f"permanently")
-    gap("the compose stage does not accumulate files forever",
-        "api._COMPOSE_DIR (<data>/net_stage) is written by /org_inbox/upload "
-        "and never cleaned: not after a successful send (the hub has its own "
-        "copy by then), not after a refused one (the @ext:-with-attachment "
-        "refusal happens AFTER staging), and not at startup — where the "
-        "in-memory _COMPOSE_STAGE map is empty, so every file already there is "
-        "unreferenced AND unreachable. 25 MB per file, no cap on the "
-        "directory, inside the data root the disk watchdog measures. Cheapest "
-        "fix: sweep the directory at startup (those ids are dead anyway), "
-        "delete a staged file once its spool entry drains, and age out the "
-        "composed-then-abandoned ones.",
-        _stage_is_swept)
+    # PROMOTED from gap() 2026-08-05: the stage is now swept at startup (the
+    # in-memory ids die with the process, so everything there is unreachable),
+    # aged out at each upload, and deleted per file once its spool entry
+    # reaches hub custody. Agent-scratch attachments are deliberately left
+    # alone — only files under net_stage are the transport's to remove.
+    check("the compose stage does not accumulate files forever",
+          _stage_is_swept)
 
     def _kiosk_is_sealed():
         _n[0] += 1

@@ -62,6 +62,32 @@ def _save_ident(d: dict[str, Any]) -> None:
     os.makedirs(os.path.dirname(_ID_PATH), exist_ok=True)
     with open(_ID_PATH, "w", encoding="utf-8") as f:
         json.dump(d, f, indent=1)
+    try:
+        # the uid IS the credential (redteam ④): owner-only on POSIX
+        os.chmod(_ID_PATH, 0o600)
+    except OSError:
+        pass
+
+
+def _mint_uid() -> dict[str, Any]:
+    """Mint the shared per-profile uid ATOMICALLY (redteam ①): two chats
+    starting together must end up with ONE uid — the losing writer of an
+    unlocked read-modify-write registered an address whose secret died at
+    its restart, stranding the slug on the first-write-wins hub forever.
+    O_EXCL means exactly one minter wins; everyone else adopts the file."""
+    os.makedirs(os.path.dirname(_ID_PATH), exist_ok=True)
+    fresh = {"uid": uuid.uuid4().hex + uuid.uuid4().hex}     # 256-bit uid
+    try:
+        fd = os.open(_ID_PATH, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(fresh, f, indent=1)
+        try:
+            os.chmod(_ID_PATH, 0o600)
+        except OSError:
+            pass
+        return fresh
+    except FileExistsError:
+        return _load_ident()          # the other starter won — adopt theirs
 
 
 def _ident(name: str | None = None) -> dict[str, Any]:
@@ -71,18 +97,30 @@ def _ident(name: str | None = None) -> dict[str, Any]:
     rename would change the address — same immutability rule as orgs)."""
     d = _load_ident()
     if not d.get("uid"):
-        d["uid"] = uuid.uuid4().hex + uuid.uuid4().hex   # 256-bit uid
+        d = _mint_uid()
+        if not d.get("uid"):          # corrupt file lost the race — rare
+            d = {"uid": uuid.uuid4().hex + uuid.uuid4().hex}
+            _save_ident(d)
+    fp = hashlib.sha256(str(d["uid"]).encode()).hexdigest()
+    user = _NAME_RE.sub("-", getpass.getuser().lower()).strip("-") or "user"
     if not d.get("name"):
         pick = (name or os.environ.get("MAILHUB_NAME") or "").strip().lower()
         pick = _NAME_RE.sub("-", pick).strip("-")
+        # the hub's slug cap is 128 (redteam ②): an over-long IMMUTABLE name
+        # bricked the client — every register 422'd and no rename exists.
+        # username + fingerprint are fixed width, so the budget is exact.
+        budget = 128 - len(user) - 6 - 2
+        pick = pick[:max(1, budget)].strip("-")
         if not pick:
             return d          # unnamed — hub_register must supply a name
         d["name"] = pick
-    fp = hashlib.sha256(str(d["uid"]).encode()).hexdigest()
-    user = _NAME_RE.sub("-", getpass.getuser().lower()).strip("-") or "user"
+        _save_ident(d)
+        # read BACK (redteam ①): a concurrent chooser may have won the name
+        # write — adopt whatever the file holds so both agree with the disk
+        d = _load_ident()
     if d.get("name"):
         d["slug"] = f"{d['name']}.{user}.{fp[:6]}"
-    _save_ident(d)
+        _save_ident(d)
     return d
 
 
@@ -124,6 +162,29 @@ def ack(ids: list[str]) -> None:
         _call("/api/ack", {"ids": ids})
 
 
+def take_fresh(out: dict[str, Any]) -> list[dict[str, Any]]:
+    """Surface each hub message ONCE (redteam ③): the hub is at-least-once,
+    so during an ACK OUTAGE the same message redelivers on every poll — not
+    a crash-window duplicate but a repeat per pass. A small persisted ring
+    in the identity file (the org client's pattern) collapses repeats; the
+    ack is still attempted for EVERY delivered id, seen or not."""
+    msgs = cast("list[dict[str, Any]]", out.get("messages") or [])
+    if not msgs:
+        return []
+    d = _load_ident()
+    ring = [str(x) for x in cast("list[Any]", d.get("seen_ids") or [])]
+    fresh = [m for m in msgs if str(m.get("id")) not in ring]
+    if fresh:
+        ring.extend(str(m.get("id")) for m in fresh)
+        d["seen_ids"] = ring[-200:]
+        _save_ident(d)
+    try:
+        ack([str(m["id"]) for m in msgs])
+    except Exception:                                            # noqa: BLE001
+        pass          # unacked → redelivered → the ring collapses the repeat
+    return fresh
+
+
 def fmt(m: dict[str, Any]) -> str:
     return (f"[hub mail from {m.get('from')} at {m.get('received_at')}] "
             + str(m.get("body") or "").replace("\n", "\n  "))
@@ -143,11 +204,8 @@ def listen() -> None:
         pass                       # hub down: the loop below keeps retrying
     while True:
         try:
-            out = poll(25.0)
-            msgs = cast("list[dict[str, Any]]", out.get("messages") or [])
-            for m in msgs:
+            for m in take_fresh(poll(25.0)):
                 print(fmt(m), flush=True)
-            ack([str(m["id"]) for m in msgs])
         except Exception:                                        # noqa: BLE001
             time.sleep(5.0)
 
@@ -206,9 +264,7 @@ def dispatch(tool: str, args: dict[str, Any]) -> str:
     if tool in ("hub_read", "hub_wait"):
         wait = min(max(float(args.get("timeout") or 0), 0.0), 55.0) \
             if tool == "hub_wait" else 0.0
-        out = poll(wait)
-        msgs = cast("list[dict[str, Any]]", out.get("messages") or [])
-        ack([str(m["id"]) for m in msgs])
+        msgs = take_fresh(poll(wait))
         return json.dumps({"messages": [
             {"from": m.get("from"), "body": m.get("body"),
              "received_at": m.get("received_at")} for m in msgs]})
