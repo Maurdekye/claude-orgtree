@@ -609,9 +609,11 @@ def _():
                       "orgtree_rename", "orgtree_send_file",
                       "orgtree_switch_model"], \
         f"the recital gap changed — update or retire this pin: {absent}"
-    # orgtree_audience escapes the list only because "audience" appears as a
-    # NOUN ("org-inbox audience holders") — the tool itself is never named
-    assert "orgtree_audience" not in recital, "audience is now named — good"
+    # C0 (2026-08-05): the org-inbox paragraph now names the TOOL itself —
+    # "orgtree_audience action=grant target=extern" — for top-level agents
+    # and holders (the recital under test is a top-level's)
+    assert "orgtree_audience" in recital, \
+        "the C0 recital no longer names orgtree_audience for top-levels"
     assert all(n not in recital and n.split("orgtree_")[1] in recital
                for n in contracted), \
         "the retire/rehire/dissolve/reallocate contraction changed"

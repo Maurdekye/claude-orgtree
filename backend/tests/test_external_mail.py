@@ -329,10 +329,25 @@ def s1_fixtures():
         assert supervisor.CHATQ_ROOT == CHATQ and ".claude" not in CHATQ
         assert supervisor.chatq_available(), "else §4/§6 pass vacuously"
 
-    @t("an org with two live top-levels has both as extern recipients")
+    @t("a fresh org has NO extern recipients — holders only (C0)")
     def _():
+        # C0 (user rulings 2026-08-05): inbound extern mail reaches ORG-INBOX
+        # audience holders, never every top-level agent. A brand-new org holds
+        # nothing, so the recipient list is empty until the first contact
+        # bootstraps a holder (or the user grants one).
         o = mkorg("acme", ("ceo", "cfo"))
-        assert o.extern_recipients() == ["ceo", "cfo"], o.extern_recipients()
+        assert o.extern_recipients() == [], o.extern_recipients()
+        assert o.extern_holders() == [], o.extern_holders()
+
+    @t("first contact bootstraps the LEFTMOST live top-level, and only it")
+    def _():
+        o = load("acme")
+        got = o.post_external_mail("@ext:first", "knock knock")
+        assert got == ["ceo"], got
+        assert o.extern_holders() == ["ceo"], o.extern_holders()
+        assert "cfo" not in o.d.get("mail", {}), \
+            "the second top-level received a copy — that is the retired fan-out"
+        store.save_org(o)
 
     @t("the funnel is one function: deliver_org_inbox handles all three prefixes")
     def _():
@@ -354,7 +369,23 @@ def s1_fixtures():
 def s2_funnel():
     print("\n§2 the inbound funnel — deliver_org_inbox end to end")
     mkorg("funnel", ("ceo", "cfo"))
+    # C0 (2026-08-05): recipients are ORG-INBOX AUDIENCE HOLDERS, so the
+    # two-recipient fan-out this section measures has to be SET UP rather than
+    # assumed from top-level standing. Both hold it here on purpose: everything
+    # below — per-copy ids, per-recipient mail_log, one drive each, the
+    # comma-joined event — is about delivery to SEVERAL recipients, which is
+    # still a real case, just no longer the default one.
+    _f = load("funnel")
+    for _who in ("ceo", "cfo"):
+        _f.audience_grant(USER, _who, "extern")
+    store.save_org(_f)
     reset_spies()
+
+    @t("the fixture's two recipients are HOLDERS, not merely top-level")
+    def _():
+        o = load("funnel")
+        assert sorted(o.extern_holders()) == ["ceo", "cfo"], o.extern_holders()
+        assert o.extern_recipients() == o.extern_holders()
 
     @t("deliver_org_inbox returns the recipient list")
     def _():
@@ -514,41 +545,78 @@ def s2_funnel():
 
 # ============================================================================ §3
 def s3_orginbox_model():
-    print("\n§3 the org-inbox model — fan-out, the recipient set, the rescue")
+    print("\n§3 the org-inbox model — holders, the bootstrap, the rescue")
 
-    @t("fan-out reaches EVERY live top-level, not just the first")
+    # C0 (user rulings 2026-08-05) RETIRED THE FAN-OUT TO TOP-LEVELS.
+    # Recipients are ORG-INBOX AUDIENCE HOLDERS, at any depth; top-level
+    # standing by itself delivers nothing. What survives is that delivery is
+    # still one-to-MANY across holders, and every filter (state, grantor,
+    # dangling rows) still applies — so those properties are re-expressed here
+    # against holders rather than deleted.
+
+    @t("delivery reaches EVERY holder, not just the first")
     def _():
         o = mkorg("fan", ("a", "b", "c", "d"))
+        for who in ("a", "b", "c", "d"):
+            o.audience_grant(USER, who, "extern")
         assert o.post_external_mail("@mcp:p", "x") == ["a", "b", "c", "d"]
 
-    @t("a deep org-inbox audience holder is a recipient too")
+    @t("a live top-level that holds NOTHING receives nothing")
+    def _():
+        o = mkorg("nonholder", ("a", "b"))
+        o.audience_grant(USER, "a", "extern")
+        assert o.post_external_mail("@mcp:p", "x") == ["a"]
+        assert "b" not in o.d.get("mail", {}), (
+            "a non-holder top-level received org mail — the retired fan-out")
+
+    @t("a deep org-inbox audience holder is a recipient")
     def _():
         o = mkorg("holder", ("ceo",))
         o.hire("ceo", "ceo", "haiku", 5, "mid", **spec())
         o.hire("mid", "mid", "haiku", 0, "deep", **spec())
         o.d["audiences"].append({"grantee": "deep", "grantor": EXTERN,
                                  "granted_at": "x", "reason": "r"})
-        assert o.extern_recipients() == ["ceo", "deep"]
+        assert o.extern_recipients() == ["deep"], (
+            "depth is irrelevant to the org inbox — holding it is what counts")
 
-    @t("holders are appended AFTER top-levels (fan-out order is stable)")
+    @t("recipients follow the AUDIENCE list order, deep or not")
     def _():
         o = mkorg("order2", ("t1", "t2"))
         o.hire("t1", "t1", "haiku", 0, "h", **spec())
-        o.d["audiences"].append({"grantee": "h", "grantor": EXTERN,
-                                 "granted_at": "x", "reason": "r"})
-        assert o.extern_recipients() == ["t1", "t2", "h"]
+        for who in ("h", "t2", "t1"):
+            o.d["audiences"].append({"grantee": who, "grantor": EXTERN,
+                                     "granted_at": "x", "reason": "r"})
+        assert o.extern_recipients() == ["h", "t2", "t1"]
 
-    @t("a top-level that ALSO holds the audience appears exactly once")
+    @t("a duplicate audience ROW would deliver twice — the guards' whole job")
     def _():
+        # extern_holders() reads the audience rows, so a duplicate row is a
+        # duplicate recipient. Every grant path guards against that
+        # (audience_grant is idempotent; both C0 auto-grants check
+        # _has_audience first), and this pins the invariant those guards exist
+        # to protect, by hand-writing the row they prevent.
         o = mkorg("dedup", ("ceo",))
-        o.d["audiences"].append({"grantee": "ceo", "grantor": EXTERN,
-                                 "granted_at": "x", "reason": "r"})
-        assert o.extern_recipients() == ["ceo"]
+        for _ in range(2):
+            o.d["audiences"].append({"grantee": "ceo", "grantor": EXTERN,
+                                     "granted_at": "x", "reason": "r"})
+        assert o.extern_recipients() == ["ceo", "ceo"]
+        o.post_external_mail("@mcp:p", "x")
+        assert len(o.d["mail"]["ceo"]) == 2
+
+    @t("audience_grant twice is idempotent — no second row, no double delivery")
+    def _():
+        o = mkorg("dedup2", ("ceo",))
+        o.audience_grant(USER, "ceo", "extern")
+        o.audience_grant(USER, "ceo", "extern")
+        assert o.extern_recipients() == ["ceo"], o.extern_recipients()
+        o.post_external_mail("@mcp:p", "x")
+        assert len(o.d["mail"]["ceo"]) == 1
 
     @t("an audience from anyone OTHER than @extern is not an org-inbox audience")
     def _():
         o = mkorg("wrongaud", ("ceo",))
         o.hire("ceo", "ceo", "haiku", 0, "mid", **spec())
+        o.audience_grant(USER, "ceo", "extern")
         o.d["audiences"].append({"grantee": "mid", "grantor": USER,
                                  "granted_at": "x", "reason": "r"})
         assert o.extern_recipients() == ["ceo"]
@@ -556,35 +624,42 @@ def s3_orginbox_model():
     @t("a dangling audience (grantee no longer a node) is skipped, not a KeyError")
     def _():
         o = mkorg("dangle", ("ceo",))
+        o.audience_grant(USER, "ceo", "extern")
         o.d["audiences"].append({"grantee": "ghost", "grantor": EXTERN,
                                  "granted_at": "x", "reason": "r"})
         assert o.extern_recipients() == ["ceo"]
 
-    @t("an ARCHIVED top-level is not a recipient")
+    @t("an ARCHIVED holder is not a recipient")
     def _():
         o = mkorg("arch", ("ceo", "cfo"))
+        for who in ("ceo", "cfo"):
+            o.audience_grant(USER, who, "extern")
         o.retire(USER, "cfo")
         assert o.extern_recipients() == ["ceo"]
 
-    @t("an UNRECOVERABLE top-level is not a recipient (live-for-budget ≠ live-for-delivery)")
+    @t("an UNRECOVERABLE holder is not a recipient (live-for-budget ≠ live-for-delivery)")
     def _():
         o = mkorg("unrec", ("ceo", "cfo"))
+        for who in ("ceo", "cfo"):
+            o.audience_grant(USER, who, "extern")
         o.nodes["cfo"]["state"] = "unrecoverable"
         assert "cfo" in o.children(None), "still holds its seat"
         assert o.extern_recipients() == ["ceo"]
 
-    @t("an UNRECOVERABLE audience holder is not a recipient either")
+    @t("an UNRECOVERABLE deep holder is skipped like any other dead node")
     def _():
         o = mkorg("unrec2", ("ceo",))
         o.hire("ceo", "ceo", "haiku", 0, "h", **spec())
+        o.audience_grant(USER, "ceo", "extern")
         o.d["audiences"].append({"grantee": "h", "grantor": EXTERN,
                                  "granted_at": "x", "reason": "r"})
         o.nodes["h"]["state"] = "unrecoverable"
         assert o.extern_recipients() == ["ceo"]
 
-    @t("a FROZEN node is still a recipient — mail waits in its mailbox")
+    @t("a FROZEN holder is still a recipient — mail waits in its mailbox")
     def _():
         o = mkorg("frozen", ("ceo",))
+        o.audience_grant(USER, "ceo", "extern")
         o.nodes["ceo"]["frozen"] = {"kind": "limit", "error": "x"}
         assert o.extern_recipients() == ["ceo"]
         o.post_external_mail("@mcp:p", "held")
@@ -622,12 +697,14 @@ def s3_orginbox_model():
         assert len(o.d.get("user_inbox", [])) == 1
         assert not o.d.get("mail", {}).get("ceo"), "must not queue into a dead node"
 
-    @t("the rescue does NOT fire when at least one recipient exists")
+    @t("the rescue does NOT fire when a live top-level can be bootstrapped")
     def _():
         o = mkorg("norescue", ("ceo", "cfo"))
         o.retire(USER, "cfo")
-        o.post_external_mail("@mcp:p", "x")
-        assert not o.d.get("user_inbox")
+        assert o.extern_holders() == [], "precondition: nobody holds it yet"
+        assert o.post_external_mail("@mcp:p", "x") == ["ceo"]
+        assert not o.d.get("user_inbox"), (
+            "the bootstrap must run BEFORE the user-inbox rescue")
 
     @t("the rescue path still logs the inbound entry and the event")
     def _():
@@ -658,9 +735,11 @@ def s3_orginbox_model():
         assert o.post_external_mail("@mcp:p", "x") == []
         assert len(o.d["user_inbox"]) == 1
 
-    @t("fan-out is per-message: two messages give every recipient two copies")
+    @t("delivery is per-message: two messages give every holder two copies")
     def _():
         o = mkorg("twice", ("a", "b"))
+        for who in ("a", "b"):
+            o.audience_grant(USER, who, "extern")
         o.post_external_mail("@mcp:p", "one")
         o.post_external_mail("@mcp:p", "two")
         assert [len(o.d["mail"][n]) for n in ("a", "b")] == [2, 2]
@@ -705,7 +784,16 @@ def s4_kiosk():
 
     @t("kiosk: a live top-level exists — the seal is the reason, not an empty roster")
     def _():
-        assert load("sealed").extern_recipients() == ["top"]
+        # C0: top-level standing alone no longer makes a recipient, so the
+        # premise is now stated as "a live top-level EXISTS, so the C0
+        # bootstrap had someone to pick" — and the mail still went nowhere.
+        # The audience cannot even be granted here, which is the seal itself.
+        o = load("sealed")
+        assert o.nodes["top"]["state"] == "live"
+        assert [c for c in o.children(None)] == ["top"]
+        expect_error(lambda: o.audience_grant(USER, "top", "extern"),
+                     "sealed kiosk")
+        assert o.extern_recipients() == [] and o.extern_holders() == []
 
     # ---- point 2: the ledger, outbound
     @t("kiosk: an agent may not address @ext:")
@@ -1042,6 +1130,12 @@ def s6_chatq():
     with open(sendsh, "w", encoding="utf-8") as f:
         f.write("#!/bin/sh\nexit 0\n")
     mkorg("chat", ("ceo", "cfo"))
+    # C0: recipients are HOLDERS, and this section measures the chatq funnel
+    # reaching BOTH of them — so both hold the org-inbox audience explicitly.
+    _c = load("chat")
+    for _who in ("ceo", "cfo"):
+        _c.audience_grant(USER, _who, "extern")
+    store.save_org(_c)
     reset_spies()
 
     @t("chatq_available is driven by bin/send.sh existing")
@@ -1298,6 +1392,12 @@ def _drain_once(slug):
 def s7_attachments():
     print("\n§7 attachments")
     mkorg("att", ("ceo", "cfo"))
+    # C0: both hold the org-inbox audience, so this section keeps measuring
+    # per-recipient attachment copies across SEVERAL recipients
+    _a = load("att")
+    for _who in ("ceo", "cfo"):
+        _a.audience_grant(USER, _who, "extern")
+    store.save_org(_a)
     reset_spies()
     root = mktemp("extmail-src-")
 
@@ -1341,7 +1441,10 @@ def s7_attachments():
     @t("collision suffixes are PER NODE — the metadata differs per recipient")
     def _():
         o = mkorg("percol", ("n1", "n2"))
-        # n1 already holds the name; n2 does not
+        for who in ("n1", "n2"):            # C0: recipients are holders
+            o.audience_grant(USER, who, "extern")
+        store.save_org(o)
+        # n1 already holds the FILE name; n2 does not
         u1 = os.path.join(supervisor.scratch_dir("percol", "n1"), "uploads")
         os.makedirs(u1, exist_ok=True)
         open(os.path.join(u1, "spec.md"), "w").write("pre-existing")
@@ -1511,26 +1614,25 @@ def s7_attachments():
              {"org": "att", "body": "x", "attachments": ["Z:/nope.txt"]})
         assert len(mailbox("att", "ceo")) == n
 
-    @t("⚑ attachments land in a SEALED KIOSK's uploads/ although nothing is delivered")
+    @t("✓ nothing lands in a SEALED KIOSK's uploads/ (the ⚑ closed by C0)")
     def _():
-        # OPEN FINDING (supervisor.py — not this suite's to fix). The funnel
-        # copies files BEFORE post_external_mail applies the seal, so a caller
-        # that reaches deliver_org_inbox with attachments writes into a sealed
-        # org's agent workspaces. Unreachable today only because extern_send
-        # 404s a kiosk first — and the mailserver spec's @net: branch is
-        # exactly a new caller of this funnel. The fix is a kiosk check at the
-        # top of deliver_org_inbox; when it lands, this check flips to
-        # `uploads(...) == []`.
+        # THIS WAS AN OPEN FINDING and C0 closed it, incidentally rather than
+        # deliberately — worth knowing, because an incidental fix is one
+        # refactor away from returning. The funnel copies a file once PER
+        # RECIPIENT; recipients used to be "every live top-level", which a
+        # sealed kiosk still had, and are now org-inbox audience HOLDERS,
+        # which a kiosk cannot have at all (audience_grant refuses outright).
+        # So the copy loop has nothing to iterate. Delivery was always sealed;
+        # what leaked was the file write that happened ahead of the seal.
         mkorg("kioskatt", ("top",), kiosk=True)
         p = tmpfile("leak.txt", "x", root)
         d = supervisor.deliver_org_inbox("kioskatt", "@mcp:z", "x", attachments=[p])
         assert d == [], "the seal must still stop delivery"
-        assert uploads("kioskatt", "top") == ["leak.txt"], \
-            "current behaviour: the file lands anyway"
-        note("§7 ⚑ deliver_org_inbox copies attachments into a SEALED KIOSK's "
-             "uploads/ before post_external_mail applies the seal (supervisor.py "
-             "~2560). No delivery happens, but files land in agent workspaces of "
-             "an org that is supposed to have no contact with the outside world.")
+        assert uploads("kioskatt", "top") == [], (
+            "a file landed in a sealed kiosk's agent workspace — the C0 "
+            "holder rule is what prevents this today; if the recipient list "
+            "ever stops being the loop bound, deliver_org_inbox needs its own "
+            "kiosk check at the top (supervisor.py ~2560)")
 
     @t("no attachments argument at all leaves uploads/ untouched")
     def _():
@@ -1543,6 +1645,12 @@ def s7_attachments():
 def s8_extern_http():
     print("\n§8 the extern HTTP surface — send / messages / wait, and the cursor")
     mkorg("ext", ("ceo", "cfo"))
+    # C0: both hold the org-inbox audience, so §8 keeps measuring the HTTP
+    # surface against a two-recipient org
+    _e = load("ext")
+    for _who in ("ceo", "cfo"):
+        _e.audience_grant(USER, _who, "extern")
+    store.save_org(_e)
     reset_spies()
 
     @t("POST send: 200 with the recipient list")
@@ -2388,13 +2496,18 @@ def s10_authorization():
         finally:
             supervisor.interorg_send = _real_interorg_send
             supervisor.chatq_send = _real_chatq_send
-        assert st == 422 and "TOP-LEVEL" in j["detail"], (st, j)
+        # C0: the refusal is now about HOLDING the org-inbox audience, not
+        # about depth — a deep non-holder is refused, a deep HOLDER is not
+        assert st == 422 and "audience holders" in j["detail"], (st, j)
         assert INTERORG == [] and CHATQ_SENT == []
 
-    @t("the refusal names the escalation route, not a workaround")
+    @t("the refusal names BOTH remedies, not a workaround")
     def _():
         _, j = agent("orgtree_message", "deep", {"to": "@ext:c", "body": "x"})
-        assert "escalate to your superior" in j["detail"]
+        assert "escalate the message to your superior" in j["detail"]
+        assert "action=grant" in j["detail"], (
+            "C0: the deep agent must be told it can be GRANTED the audience, "
+            "which is the route that did not exist under the old rule")
 
     @t("a refused outbound leaves NO org-inbox entry (nothing pretends to have gone)")
     def _():
@@ -2424,7 +2537,9 @@ def s10_authorization():
                                   "granted_at": "x", "reason": "user audience"})
         store.save_org(oo)
         st, j = agent("orgtree_message", "deep", {"to": "@org:nbr", "body": "x"})
-        assert st == 422 and "TOP-LEVEL" in j["detail"]
+        # C0: the refusal names the ORG-INBOX audience, not depth — a USER
+        # audience is a different grant and confers nothing here
+        assert st == 422 and "audience holders" in j["detail"], (st, j)
 
     @t("the USER cannot speak to an outside party through the node-message route")
     def _():

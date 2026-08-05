@@ -494,6 +494,10 @@ async def _wire_notify() -> None:  # type: ignore[unused-function]  # registered
     for o in store.list_orgs():
         supervisor.chatq_register_org(o["slug"])
     supervisor.start_chatq_bridge()
+    # F-06: the mail-hub client — connectivity TRANSITIONS broadcast an org
+    # `changed` so the UI's status dots are realtime without polling
+    net.notify_changed = hub_changed
+    net.start_net_client()
     # one-time migration of the retired v1 env-var kiosk mode into the org doc
     legacy = os.environ.get("ORGTREE_KIOSK")
     if legacy:
@@ -904,6 +908,10 @@ def org_tree(slug: str, request: Request) -> dict[str, Any]:
             # the yellow divergence (pending shrink): requested vs actual
             "pending_mb": (org.d.get("disk") or {}).get("pending_size_mb"),
         }
+    # F-06: hub config + live connectivity for the status surfaces — never
+    # the secret (status_block guarantees it); None for kiosks
+    tree["net"] = net.status_block(cast("dict[str, Any]", org.d))
+    tree["headless"] = bool(org.d.get("headless"))
     if _public_slug(request):
         # tells the UI to lock itself down; the SERVER gate is the enforcement
         tree["public"] = True
@@ -921,6 +929,9 @@ def _scrub_public(tree: dict[str, Any]) -> None:
     they interact with the org, not the operator's filesystem."""
     def base(p: Any) -> str:
         return os.path.basename(str(p).rstrip("/\\")) or "folder"
+    # F-06: hub addresses + rosters are the operator's network topology —
+    # visitors get none of it (kiosks carry no identity anyway, belt+braces)
+    tree.pop("net", None)
     if tree.get("workspace"):
         tree["workspace"] = base(tree["workspace"])
     dirs: list[dict[str, Any]] = tree.get("dirs") or []
@@ -997,6 +1008,10 @@ class Settings(Body):
     cascade_alloc: bool | None = None       # allocations/upgrades bubble costs up
     net_hub_address: str | None = None      # F-06 (global defaults only): the
                                             # local hub's address for NEW orgs
+    net_autoconnect: bool | None = None     # F-06 (per-org): keep/join the
+                                            # local hub entry
+    net_hubs: list[Any] | None = None       # F-06 (per-org): authoritative hub
+                                            # list [{id?, address, enabled?}]
 
 
 # ------------------------------------------- global default org settings
@@ -1160,8 +1175,47 @@ def _org_settings_locked(slug: str, body: Settings) -> dict[str, Any]:
         org.d["cascade_hire"] = bool(body.cascade_hire)
     if body.cascade_alloc is not None:
         org.d["cascade_alloc"] = bool(body.cascade_alloc)
+    # ---- F-06: mail-hub config (non-kiosk orgs only; kiosks are sealed) ----
+    if body.net_autoconnect is not None and org.d.get("kiosk") is None:
+        org.d["net_autoconnect"] = bool(body.net_autoconnect)
+        hubs = list(org.d.get("net_hubs") or [])
+        has_local = any(h.get("id") == net.LOCAL_HUB_ID for h in hubs)
+        if body.net_autoconnect and not has_local:
+            addr = str(load_org_defaults().get("net_hub_address") or "") \
+                or net.DEFAULT_HUB_ADDRESS
+            hubs.insert(0, {"id": net.LOCAL_HUB_ID, "address": addr,
+                            "enabled": True})
+        elif not body.net_autoconnect:
+            hubs = [h for h in hubs if h.get("id") != net.LOCAL_HUB_ID]
+            warnings.append("local hub entry removed — the org no longer "
+                            "auto-connects")
+        org.d["net_hubs"] = hubs
+    if body.net_hubs is not None and org.d.get("kiosk") is None:
+        # authoritative replacement of the hub LIST; per-hub ids (and the
+        # names discovered on connect) survive for entries the client kept
+        old_by_id = {str(h.get("id")): h
+                     for h in (org.d.get("net_hubs") or [])}
+        new_hubs: list[dict[str, Any]] = []
+        for h in cast("list[Any]", body.net_hubs):
+            if not isinstance(h, dict):
+                raise HTTPException(422, "net_hubs entries must be "
+                                         "{id?, address, enabled?}")
+            hd = cast("dict[str, Any]", h)
+            addr = str(hd.get("address") or "").strip()
+            if not addr:
+                continue
+            hid = str(hd.get("id") or "") or uuid.uuid4().hex[:8]
+            kept = old_by_id.get(hid) or {}
+            new_hubs.append({"id": hid, "address": addr,
+                             "enabled": bool(hd.get("enabled", True)),
+                             **({"name": kept["name"]}
+                                if kept.get("name") else {})})
+        org.d["net_hubs"] = new_hubs
+        org.d["net_autoconnect"] = any(
+            h["id"] == net.LOCAL_HUB_ID for h in new_hubs)
     store.save_org(org)
     hub_changed(slug)
+    net.kick()
     return {"dirs": org.d["dirs"], "warnings": warnings}
 
 
@@ -1978,6 +2032,110 @@ async def org_inbox_read(slug: str) -> dict[str, Any]:
     return {"ok": True}
 
 
+# ---- F-06 E: the user composes extern mail from the mailbox UI ----
+# The user bypasses the audience gate (they outrank it) and this grants
+# nobody anything. Attachments stage first (browser body upload, same caps),
+# then ride the same transport as agent sends.
+_COMPOSE_STAGE: dict[str, str] = {}          # stage-id → abs path
+_COMPOSE_DIR = "net_stage"
+
+
+class OrgInboxSend(Body):
+    to: str                                  # @ext:/@org:/@mcp:/@net: address
+    body: str
+    attachments: list[str] = []              # stage ids from /org_inbox/upload
+
+
+@app.post("/api/orgs/{slug}/org_inbox/upload")
+async def org_inbox_upload(slug: str, request: Request,
+                           name: str = "file") -> dict[str, Any]:
+    if _public_slug(request):
+        raise HTTPException(404, "not found")
+    data = await request.body()
+    if len(data) > _NET_ATT_MAX:
+        raise HTTPException(413, "attachment exceeds 25 MB")
+    stage = os.path.join(store.DATA_ROOT, _COMPOSE_DIR)
+    os.makedirs(stage, exist_ok=True)
+    sid = uuid.uuid4().hex
+    safe = re.sub(r"[^\w .()+\-]", "_",
+                  os.path.basename(name)).strip(" .")[:120] or "file.bin"
+    path = os.path.join(stage, f"{sid}-{safe}")
+    with open(path, "wb") as f:
+        f.write(data)
+    _COMPOSE_STAGE[sid] = path
+    return {"id": sid, "name": safe, "bytes": len(data)}
+
+
+@app.post("/api/orgs/{slug}/org_inbox/send")
+def org_inbox_send(slug: str, body: OrgInboxSend,
+                   request: Request) -> dict[str, Any]:
+    if _public_slug(request):
+        raise HTTPException(404, "not found")
+    to = body.to.strip()
+    if not to.startswith(("@ext:", "@org:", "@mcp:", "@net:")):
+        raise HTTPException(422, "recipient must be an outside address "
+                                 "(@ext:/@org:/@mcp:/@net:)")
+    paths = []
+    for sid in body.attachments[:10]:
+        p = _COMPOSE_STAGE.get(sid)
+        if not p or not os.path.isfile(p):
+            raise HTTPException(422, f"staged attachment {sid!r} not found — "
+                                     f"re-upload and retry")
+        paths.append(p)
+    if paths and to.startswith(("@ext:", "@mcp:")):
+        # ruled 2026-08-05: those transports are text-only
+        raise HTTPException(422, "attachments ride @net: and @org: mail "
+                                 "only — @ext:/@mcp: are text-only transports")
+    warnings: list[str] = []
+    with store.DOC_LOCK:
+        try:
+            org = store.load_org(slug)
+        except LedgerError as e:
+            raise HTTPException(404, str(e))
+        if org.d.get("kiosk") is not None:
+            raise HTTPException(422, "a sealed kiosk org has no outside face")
+        if to.startswith("@net:") and to[5:] == (
+                (org.d.get("net_identity") or {}).get("slug")):
+            raise HTTPException(422, "that address is this organization")
+        oid = org._org_inbox_log("out", to, body.body, by="user")
+        if to.startswith("@net:"):
+            net.spool_append(org, to[5:], body.body, oid=oid,
+                             attachments=paths)
+        store.save_org(org)
+    if to.startswith("@net:"):
+        net.kick()
+    elif to.startswith("@org:"):
+        dst = to[5:]
+        try:
+            dst_org = store.load_org(dst)
+            sealed = dst_org.d.get("kiosk") is not None
+        except LedgerError:
+            sealed = True
+        if sealed:
+            # same anti-enumeration answer as interorg_send
+            warnings.append(f"not delivered: no organization named {dst!r} "
+                            f"is reachable")
+        else:
+            supervisor.deliver_org_inbox(dst, f"@org:{slug}", body.body,
+                                         attachments=paths or None)
+        for p in paths:
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+    elif to.startswith("@ext:"):
+        ok = supervisor.chatq_send(
+            slug, to[5:],
+            f"[message from orgtree org '{slug}' (sent by its user)]\n"
+            + body.body)
+        if not ok:
+            warnings.append(f"chatq delivery to {to[5:]} failed — is the "
+                            f"target chat still registered?")
+    # @mcp: — the org-inbox entry IS the delivery; the peer polls
+    hub_changed(slug)
+    return {"id": oid, "warnings": warnings}
+
+
 @app.post("/api/orgs/{slug}/inbox/clear")
 async def user_inbox_clear(slug: str) -> dict[str, Any]:
     """Mark-all-read: archives into the read log (mirror of a node's mail_log)
@@ -2266,6 +2424,11 @@ def _arg_int(a: dict[str, Any], key: str, default: int) -> int:
             raise LedgerError(f"{key} must be a number (got {v!r})")
 
 
+# the @net: attachment cap — same value as the user-upload per-file cap
+# (deliberately its own name; see the anchor note at the use site)
+_NET_ATT_MAX = 25 * 1048576
+
+
 @app.post("/api/agent")
 def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
     """Backend for the orgtree MCP server every node loads. The calling NODE is the
@@ -2340,11 +2503,46 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
     drive: list[str] = []      # nodes whose turn should run after we release the lock
     ext_send: tuple[str, str] | None = None   # (chat-id, body) outbound riding the chatq bridge
     org_send: tuple[str, str] | None = None   # (dst-slug, body) outbound to another org's inbox
+    net_send = False                          # @net: — staged to the spool; kick after the lock
     with store.DOC_LOCK:
         try:
             org = store.load_org(body.org)
             org.node(body.node)
             if body.tool == "orgtree_message":
+                # F-06 D: outbound attachments — @net: recipients only in v1
+                # (ruled; @ext:/@mcp: are text-only transports, @org: local
+                # mail has its own path). Validated BEFORE post_mail so a
+                # refused send records nothing.
+                net_atts: list[str] = []
+                raw_atts = [str(x) for x in
+                            cast("list[Any]", a.get("attachments") or [])]
+                if raw_atts:
+                    if not str(a.get("to", "")).startswith("@net:"):
+                        raise LedgerError(
+                            "attachments ride @net: mail only (v1) — for "
+                            "local recipients use orgtree_send_file or paths")
+                    if len(raw_atts) > 10:
+                        raise LedgerError("at most 10 attachments")
+                    ab = os.path.realpath(
+                        supervisor.scratch_dir(body.org, body.node))
+                    for rel in raw_atts:
+                        rel = _no_nul(rel).strip().lstrip("/\\")
+                        full = os.path.realpath(os.path.join(ab, rel))
+                        # separator-anchored containment (send_file pattern)
+                        if full != ab and not full.startswith(ab + os.sep):
+                            raise LedgerError(f"attachment escapes your "
+                                              f"scratch space: {rel}")
+                        if not os.path.isfile(full):
+                            raise LedgerError(f"attachment not found: {rel}")
+                        # cap under its own name: the user-upload cap's
+                        # identifier is test_mcptool's source-slice END
+                        # ANCHOR for the dispatch-verb extraction — writing
+                        # that token here (even in a comment) truncates the
+                        # slice and the drift guard fires
+                        if os.path.getsize(full) > _NET_ATT_MAX:
+                            raise LedgerError(
+                                f"attachment over 25 MB: {rel}")
+                        net_atts.append(full)
                 result = org.post_mail(body.node, a.get("to", ""), a.get("body", ""),
                                        a.get("kind", "message"))
                 delivered = result.get("delivered")
@@ -2358,6 +2556,16 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                     # a polling external chat: the org-inbox entry IS the
                     # delivery — the peer reads it via the extern MCP server
                     pass
+                elif delivered and delivered.startswith("@net:"):
+                    # F-06: stage the spool entry on the SAME loaded org — it
+                    # rides this block's save, so the org-inbox row and the
+                    # spool entry land atomically (no crash window). The
+                    # daemon ships it; the agent's call returns instantly.
+                    net.spool_append(org, delivered[5:], a.get("body", ""),
+                                     oid=str(result.get("id") or ""),
+                                     kind=a.get("kind", "message"),
+                                     attachments=net_atts)
+                    net_send = True
                 elif delivered is not None:
                     mail_notify(body.org, body.node,
                                 USER if delivered == "user_inbox" else delivered)
@@ -2434,11 +2642,15 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                                   a.get("new_parent") or None)
             elif body.tool == "orgtree_list_orgs":
                 # №43 (user-approved): the @org: channel was advertised but
-                # undiscoverable from inside — agents had no org listing
+                # undiscoverable from inside — agents had no org listing.
+                # F-06 (§6 presence): remote peers from the hub roster ride
+                # the same listing, addressed @net:<slug>, with online /
+                # last_seen so an agent can route around a dark peer.
                 result = {"orgs": [
                     {"slug": o["slug"], "name": o.get("name", o["slug"]),
                      "you": o["slug"] == body.org}
-                    for o in store.list_orgs() if not o.get("kiosk")]}
+                    for o in store.list_orgs() if not o.get("kiosk")]
+                    + net.remote_peers()}
             elif body.tool == "orgtree_dissolve":
                 result = org.dissolve(body.node, a.get("node"))  # type: ignore[arg-type]  # node() 422s on None
             elif body.tool == "orgtree_reallocate":
@@ -2527,6 +2739,14 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
         err = supervisor.interorg_send(body.org, org_send[0], org_send[1])
         if err:
             result.setdefault("warnings", []).append(f"not delivered: {err}")
+    if net_send:
+        # F-06: the spool entry is persisted — wake the sender daemon; the
+        # agent's result already reflects "queued", never a network wait
+        net.kick()
+        if isinstance(result, dict):
+            result.setdefault("warnings", []).append(
+                "queued for the mail hub — delivery states (sent/delivered/"
+                "read) appear on the org inbox entry")
     if isinstance(result, dict):
         # the bridge is an ADMIN affordance (ceiling spec §1) — an agent has
         # no path to raise the ceiling, so the offer never reaches one

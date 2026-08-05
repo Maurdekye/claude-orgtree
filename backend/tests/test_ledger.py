@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 # at import time, and the journal/freeze sections below save real org docs
 os.environ["ORGTREE_DATA"] = tempfile.mkdtemp(prefix="orgtree-test-")
 
-from orgtree.ledger import LedgerError, Org, USER   # noqa: E402
+from orgtree.ledger import EXTERN, LedgerError, Org, SYSTEM, USER  # noqa: E402
 
 PASS = 0
 
@@ -575,15 +575,47 @@ def main():
     orgE.hire(USER, None, "haiku", 0, "a")
     orgE.hire(USER, None, "haiku", 0, "b")
     orgE.hire(USER, "a", "haiku", 0, "deep2")
-    check("external mail fans to ALL top-level agents", lambda: (
-        lambda tops: None if set(tops) == {"a", "b"}
+    # C0 (user rulings 2026-08-05): inbound extern mail reaches ORG-INBOX
+    # AUDIENCE HOLDERS ONLY — never every top-level agent, which is what this
+    # check asserted until the ruling. With no holder yet, the bootstrap
+    # auto-grants the LEFTMOST live top-level and delivers in the same call.
+    check("nobody holds the org-inbox audience before the first contact",
+          lambda: None if orgE.extern_holders() == []
+          else (_ for _ in ()).throw(AssertionError(orgE.extern_holders())))
+    check("inbound extern mail bootstraps ONE holder, not a fan-out", lambda: (
+        lambda tops: None if tops == ["a"]                     # leftmost live
         and orgE.d["mail"]["a"][0]["from"] == "@ext:abc123"
+        and "b" not in orgE.d.get("mail", {})                  # NOT a fan-out
         and "deep2" not in orgE.d.get("mail", {})
         else (_ for _ in ()).throw(AssertionError(tops))
     )(orgE.post_external_mail("@ext:abc123", "ping from outside")))
+    check("the bootstrap grant is recorded as such (@system, bootstrap)",
+          lambda: None if [e for e in orgE.d["events"]
+                           if e["op"] == "audience_grant"
+                           and e["detail"].get("bootstrap")
+                           and e["detail"]["grantee"] == "a"
+                           and e["actor"] == SYSTEM]
+          else (_ for _ in ()).throw(AssertionError(
+              [e for e in orgE.d["events"] if e["op"] == "audience_grant"])))
+    check("the auto-granted holder is TOLD, not silently enrolled",
+          lambda: None if any("audience" in n["text"].lower()
+                              for n in (orgE.d.get("notices") or {}).get("a", []))
+          else (_ for _ in ()).throw(AssertionError(
+              (orgE.d.get("notices") or {}).get("a"))))
+    check("a second inbound reuses the holder — no second grant, no fan-out",
+          lambda: (lambda tops: None
+                   if tops == ["a"]
+                   and len([a for a in orgE.d["audiences"]
+                            if a["grantor"] == EXTERN]) == 1
+                   and "b" not in orgE.d.get("mail", {})
+                   else (_ for _ in ()).throw(AssertionError(
+                       (tops, orgE.d["audiences"]))))(
+                           orgE.post_external_mail("@ext:abc123", "again")))
+    # (two inbounds by now — the bootstrap one and the reuse one above; the
+    # org inbox logs EVERY inbound regardless of who it was delivered to)
     check("inbound lands in the ORG INBOX (dir=in, peer kept)", lambda: (
-        lambda log: None if len(log) == 1 and log[0]["dir"] == "in"
-        and log[0]["peer"] == "@ext:abc123"
+        lambda log: None if len(log) == 2
+        and all(e["dir"] == "in" and e["peer"] == "@ext:abc123" for e in log)
         else (_ for _ in ()).throw(AssertionError(log))
     )(orgE.d["org_inbox"]))
     check("top-level may reply to @ext (logged as outbound)", lambda: (
@@ -592,13 +624,35 @@ def main():
         and orgE.d["org_inbox"][-1]["by"] == "a"
         else (_ for _ in ()).throw(AssertionError(r))
     )(orgE.post_mail("a", "@ext:abc123", "pong")))
-    check("deep agents may NOT reply to @ext", lambda: expect_error(
-        lambda: orgE.post_mail("deep2", "@ext:abc123", "sneaky"), "TOP-LEVEL"))
+    check("a DEEP non-holder may not reply to @ext, and is told the remedy",
+          lambda: expect_error(
+              lambda: orgE.post_mail("deep2", "@ext:abc123", "sneaky"),
+              "audience"))
 
     print("org inbox (user spec: the org converses as ONE entity):")
+    # C0: a TOP-LEVEL non-holder is not refused — the cross-gaps auto-bridge
+    # grants it the audience and lets the send through in the same call. `b`
+    # has held nothing so far (the bootstrap picked `a`).
+    check("a TOP-LEVEL non-holder self-grants on its first outbound", lambda: (
+        lambda r: None if r["delivered"] == "@ext:abc123"
+        and "b" in orgE.extern_holders()
+        and any("auto-granted" in w or "you now hold" in w.lower()
+                for w in r["warnings"])
+        else (_ for _ in ()).throw(AssertionError(r))
+    )(orgE.post_mail("b", "@ext:abc123", "speaking for the org")))
+    check("…and that auto-grant is idempotent (no second audience row)",
+          lambda: (lambda before: None
+                   if (orgE.post_mail("b", "@ext:abc123", "again"),
+                       len([a for a in orgE.d["audiences"]
+                            if a["grantor"] == EXTERN
+                            and a["grantee"] == "b"]))[-1] == before
+                   else (_ for _ in ()).throw(AssertionError(before)))(
+                       len([a for a in orgE.d["audiences"]
+                            if a["grantor"] == EXTERN and a["grantee"] == "b"])))
     check("inbox audience grant makes deep2 a recipient + responder", lambda: (
         lambda r: None if r["drive"] == ["deep2"]
-        and orgE.extern_holders() == ["deep2"]
+        and set(orgE.extern_holders()) == {"a", "b", "deep2"}
+        # HOLDERS ONLY — every holder gets the copy, and nobody else does
         and set(orgE.post_external_mail("@ext:abc123", "second ping"))
         == {"a", "b", "deep2"}
         and orgE.post_mail("deep2", "@ext:abc123",
@@ -619,13 +673,20 @@ def main():
         and orgE.d["org_inbox"][-1]["dir"] == "out"
         else (_ for _ in ()).throw(AssertionError(r))
     )(orgE.post_mail("a", "@mcp:visitor", "answer for the org")))
-    check("top-level extern grant is a no-op with a pointer", lambda: (
-        lambda r: None if "already speaks" in r["warnings"][0]
-        else (_ for _ in ()).throw(AssertionError(r))
-    )(orgE.audience_grant(USER, "b", "extern")))
+    # C0 (6): a top-level grantee is no longer a no-op — under holder-only,
+    # top-level standing confers nothing by itself, so the grant is real. `b`
+    # already auto-granted itself above, so this is the idempotent path.
+    check("granting extern to a top-level agent is a real, idempotent grant",
+          lambda: (lambda r: None
+                   if "b" in orgE.extern_holders()
+                   and len([a for a in orgE.d["audiences"]
+                            if a["grantor"] == EXTERN and a["grantee"] == "b"]) == 1
+                   else (_ for _ in ()).throw(AssertionError(
+                       (r, orgE.d["audiences"]))))(
+                           orgE.audience_grant(USER, "b", "extern")))
     check("tree exposes the inbox (visible, holders, unread)", lambda: (
         lambda t: None if t["org_inbox"]["visible"]
-        and t["org_inbox"]["holders"] == ["deep2"]
+        and set(t["org_inbox"]["holders"]) == {"a", "b", "deep2"}
         and t["org_inbox"]["unread"] == len(orgE.d["org_inbox"])
         and (orgE.org_inbox_mark_read(),
              orgE.tree()["org_inbox"]["unread"])[-1] == 0

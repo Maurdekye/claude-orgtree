@@ -394,9 +394,11 @@ export function OrgInboxModal({ inbox, map, slug, toast, close, jumpTo }: OrgInb
     jumpTo && (inbox?.entries ?? []).some((e) => e.id === jumpTo
       && e.dir === 'out') ? 'sent' : 'inbox')
   const holders = inbox?.holders ?? []
+  // C0: top-level agents need the audience too (delivery is holder-only), so
+  // they are grantable candidates like everyone else
   const candidates = [...map.values()].filter((n) =>
     n.id !== USER && n.id !== DRAFT && n.state === 'live' && !n.isBearerOf
-    && n.parent !== USER && !holders.includes(n.id))
+    && !holders.includes(n.id))
   const entries = inbox?.entries ?? []
   // the org inbox tracks read state as ONE high-water mark over the log — the
   // tail beyond it renders as unread; any read action clears the whole mark
@@ -415,14 +417,17 @@ export function OrgInboxModal({ inbox, map, slug, toast, close, jumpTo }: OrgInb
       <div className="settings wide" onClick={(e) => e.stopPropagation()}>
         <h3><PublicIcon fontSize="inherit" /> The org inbox</h3>
         <div className="hint">
-          Outside parties — external Claude Code sessions (chatq) and other
-          organizations — see this org as a single recipient. Their mail lands
-          here; every top-level agent (and every audience holder below) gets a
-          copy, coordinates internally, and one of them replies for the org.
+          Outside parties — external Claude Code sessions (chatq), other
+          organizations, and remote orgs via the mail hub — see this org as a
+          single recipient. Their mail lands here and wakes the <b>audience
+          holders</b> (only): they coordinate internally and one replies for
+          the org. The first outside mail auto-grants the senior top-level
+          agent; drag an agent onto the mailbox to grant it the audience.
         </div>
         <div className="row" style={{ alignItems: 'center', flexWrap: 'wrap' }}>
           <span className="field-label">audience holders:</span>
-          {holders.length === 0 && <span className="dim">none — top-level agents only</span>}
+          {holders.length === 0 && <span className="dim">none — the first
+            outside mail auto-grants the senior top-level agent</span>}
           {holders.map((h) => (
             <span key={h} className="badge free"><HearingIcon fontSize="inherit" />{h}
               <button className="chip-x" title="revoke this inbox audience"

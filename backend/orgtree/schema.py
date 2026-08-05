@@ -218,6 +218,8 @@ MailEntry = TypedDict("MailEntry", {
     "attachments": NotRequired[list[dict[str, Any]]],
     "delivering": NotRequired[bool],
     "retracted": NotRequired[bool],   # api node_mail_retract tombstones in place
+    "net_id": NotRequired[str],       # F-06: hub message id — _confirm_delivered
+                                      # turns it into a READ receipt
 })
 
 
@@ -230,6 +232,14 @@ class OrgInboxEntry(TypedDict):
     body: str
     at: str
     by: NotRequired[str]     # internal attribution — outbound speaks as the org
+    # ---- F-06 @net: delivery states (outbound rows only) ----
+    state: NotRequired[str]         # queued → sent (hub custody = "received")
+                                    # → delivered (peer org inbox) → read
+                                    # (a peer agent's turn consumed it)
+    state_at: NotRequired[str]
+    net_id: NotRequired[str]        # hub message id — the state-update lookup
+                                    # key (tolerant of 200-cap-trimmed rows)
+    attachments: NotRequired[list[dict[str, Any]]]   # [{name, bytes}] display
 
 
 class KioskCfg(TypedDict, total=False):
@@ -325,6 +335,11 @@ class OrgDoc(TypedDict):
     net_state: NotRequired[dict[str, Any]]  # per HUB ID: {registered_at,
                                             #   last_ok, seen_ids ring}
     net_spool: NotRequired[dict[str, Any]]  # per HUB ID: [SpoolEntry] outbound
+                                            # SpoolEntry = {id (32-hex hub msg
+                                            # id, idempotency key), to (bare
+                                            # net slug), body, kind, at, oid
+                                            # (org_inbox row id), tries,
+                                            # last_err?, attachments: [abs]}
     headless: NotRequired[bool]             # §9.6: no user present; user-bound
                                             # asks auto-deny (requires api_key)
     api_key: NotRequired[str]               # §9.5: per-org ANTHROPIC_API_KEY

@@ -7,12 +7,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { NodeStatus, ToastFn, TreeNode, TreePayload } from '../types'
-import { orgInboxRead, reorderNode } from '../api'
+import { audienceAction, orgInboxRead, reorderNode } from '../api'
 import {
   AddIcon, FrozenIcon, FullscreenIcon, PublicIcon, RemoveIcon, ViewListIcon,
 } from '../icons'
 import {
-  ago, DRAFT, ease, flatten, INBOX, INBOX_H, layout, NODE_H, NODE_W, orgPxc, segD,
+  ago, DRAFT, ease, EXTERN, flatten, INBOX, INBOX_H, layout, NODE_H, NODE_W, orgPxc, segD,
   segPoint, sizeOf, smooth, SPRING_C, SPRING_K, TIER_LETTER, USER, USER_H,
   USER_W, withDraftTree, Z_DESK, Z_MAX, Z_MINI,
 } from './shared'
@@ -665,6 +665,18 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
 
   const dropTargetAt = (world: Pt, dragId: string): string | null => {
     const banned = descendantsOf(dragId); banned.add(dragId); banned.add(DRAFT)
+    // C0: the org-inbox panel is a drop target too — dropping an agent on it
+    // GRANTS the org-inbox audience (reorder-style interaction, user ruling).
+    // posOf(INBOX) exists only while the panel is laid out (= visible), which
+    // keeps this check ref-safe inside a drag.
+    {
+      const p = posOf(INBOX)
+      if (p) {
+        const { w, h } = sizeOf(INBOX)
+        if (world.x >= p.x && world.x <= p.x + w
+          && world.y >= p.y && world.y <= p.y + h) return INBOX
+      }
+    }
     for (const [id] of targetRef.current) {
       if (banned.has(id)) continue
       const n = mapRef.current.get(id)
@@ -757,6 +769,15 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
     while (cur != null) { ancestors.push(cur); cur = mapRef.current.get(cur)?.parent }
 
     const finish = () => setFrame((f) => f + 1)   // springs glide back/onward
+    if (drop === INBOX) {
+      // dropping on the mailbox grants the org-inbox audience, never reparents
+      audienceAction(slug, 'grant', id, 'extern')
+        .then(() => toast([`${id} now reads and answers the org inbox`],
+          () => audienceAction(slug, 'revoke', id, EXTERN).catch(() => {})))
+        .catch((err: Error) => toast([`error: ${err.message}`]))
+        .finally(finish)
+      return
+    }
     if (drop && drop !== parent) {
       const body = drop === USER
         ? { op: 'promote', node: id, new_parent: null }
@@ -1125,7 +1146,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
           )
         })}
         {tree.org_inbox?.visible && posOf(INBOX) && (
-          <div className="sq orginbox"
+          <div className={'sq orginbox' + (dropId === INBOX ? ' drop' : '')}
             style={{
               transform: `translate(${posOf(INBOX)!.x}px, ${posOf(INBOX)!.y}px)`,
               width: USER_W, height: INBOX_H,

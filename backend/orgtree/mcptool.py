@@ -49,13 +49,16 @@ TOOLS: list[dict[str, Any]] = [
             "descendant (any depth — messaging a non-child descendant grants it an "
             "audience to reply), your direct superior, your peers, any superior you "
             "hold an audience with, 'user' (top-level agents only), or an OUTSIDE "
-            "party — '@ext:<chat-id>' (an external Claude Code session) or "
-            "'@org:<slug>' (another organization's shared inbox). Outside mail is "
-            "sent by top-level agents or org-inbox audience holders, goes out AS "
-            "THE ORG (not under your name), and should be a single coordinated "
-            "reply. The recipient is driven on delivery; replies arrive in your "
-            "own future turns. An ARCHIVED recipient still receives: the mail "
-            "waits in its inbox and is acted on when rehired."),
+            "party — '@ext:<chat-id>' (an external Claude Code session), "
+            "'@org:<slug>' (another organization's shared inbox) or "
+            "'@net:<slug>' (an org on another machine, via the mail hub). "
+            "Outside mail is sent by ORG-INBOX AUDIENCE HOLDERS (a top-level "
+            "agent sending without the audience is auto-granted it by the "
+            "send), goes out AS THE ORG (not under your name), and should be "
+            "a single coordinated reply. The recipient is driven on delivery; "
+            "replies arrive in your own future turns. An ARCHIVED recipient "
+            "still receives: the mail waits in its inbox and is acted on when "
+            "rehired."),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -64,6 +67,14 @@ TOOLS: list[dict[str, Any]] = [
                 "kind": {"type": "string", "enum": ["message", "question", "request",
                                                     "decision", "status"],
                          "description": "what kind of message this is"},
+                "attachments": {
+                    "type": "array", "maxItems": 10,
+                    "items": {"type": "string"},
+                    "description": "files to send WITH the mail — paths "
+                                   "relative to your working folder, ≤25 MB "
+                                   "each. '@net:' recipients only (v1); they "
+                                   "land in the receiving agents' uploads/",
+                },
             },
             "required": ["to", "body"],
         },
@@ -383,10 +394,14 @@ TOOLS: list[dict[str, Any]] = [
             "by default, or DELEGATED to anyone in your own reach via target=: a "
             "live peer, or your direct superior ('user' if you are top-level, which "
             "hands the descendant a direct line to the user's inbox), or "
-            "target='extern' — audience with the ORG INBOX, so the descendant "
-            "receives outside mail addressed to the org (@ext:/@org:) and may "
-            "reply for it (the 'client contact' pattern; top-level grantors only). "
-            "action=revoke: rescind an audience you granted (grantee=)."),
+            "target='extern' — audience with the ORG INBOX: outside mail "
+            "addressed to the org (@ext:/@org:/@mcp:/@net:) reaches HOLDERS "
+            "ONLY, so grant it to whoever should read and answer for the org "
+            "(from= yourself included, if you are top-level — the 'client "
+            "contact' pattern). action=revoke: rescind an audience you "
+            "granted (grantee=); an org-inbox holder may revoke ITSELF, and "
+            "a top-level agent may revoke any org-inbox grant in its own "
+            "subtree."),
         "inputSchema": {
             "type": "object",
             "properties": {

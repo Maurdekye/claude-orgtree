@@ -506,24 +506,39 @@ def bearer_rules() -> None:
                         json.dumps((org9.d.get("notices") or {}).get(m))))
 
     print("\nexternal mail and bearers:")
+    # C0 (user rulings 2026-08-05): recipients are ORG-INBOX AUDIENCE HOLDERS,
+    # so the question a compaction raises is no longer "is the successor still
+    # top-level" but "does the AUDIENCE follow the live successor, or does it
+    # stay with the archived bearer". If it stayed with the bearer, inbound
+    # org mail would bypass the live agent entirely — measured below, and it
+    # does NOT: audience rows key on the grantee ID, and compact_split gives
+    # the NEW id to the bearer while the successor keeps the original one.
     org10, (n10,) = horg(grant=20)
+    org10.audience_grant(USER, n10, "extern")
+    check("extern · the holder is a recipient before any compaction",
+          lambda: _eq(org10.extern_recipients(), [n10]))
     p10 = org10.compact_split(n10, "s10")
     check("extern · an archived bearer is not an external recipient",
           lambda: _true(p10 not in org10.extern_recipients()))
-    check("extern · the live successor is",
-          lambda: _true(n10 in org10.extern_recipients()))
+    check("extern · the audience follows the LIVE successor, not the bearer",
+          lambda: _eq(org10.extern_recipients(), [n10]))
+    check("extern · …and inbound org mail reaches it, not the bearer",
+          lambda: _eq(org10.post_external_mail("@mcp:probe", "after a compact"),
+                      [n10]))
+    check("extern · the bearer got no copy",
+          lambda: _true(not (org10.d.get("mail") or {}).get(p10)))
     org10.rehire(USER, p10, grant=0)
     rec = org10.extern_recipients()
     if p10 in rec:
         exception(
             "extern · a REHIRED top-level knowledge bearer receives org mail",
-            f"extern_recipients() = {rec}: it filters on children(None) + live, "
-            "not on the org axis, so a bearer rehired into the old top-level slot "
-            "is asked to answer FOR THE ORG from a pre-compaction context. "
-            "org_children(None) excludes it; extern_recipients does not. "
-            "Reported, not fixed — ledger.py is another agent's file.")
+            f"extern_recipients() = {rec}: a rehired bearer would be asked to "
+            "answer FOR THE ORG from a pre-compaction context. Under C0 this "
+            "can only happen if the bearer HOLDS the org-inbox audience, so "
+            "the old children(None) reasoning no longer applies — re-diagnose "
+            "before fixing. Reported, not fixed — ledger.py is not mine.")
     else:
-        check("extern · a rehired bearer is excluded from org mail",
+        check("extern · a rehired bearer holds no audience, so it stays excluded",
               lambda: _true(p10 not in rec))
 
 
