@@ -40,12 +40,15 @@ export interface MailListProps {
    *  the reply UI (asks: the response form IS the body, user ruling
    *  2026-08-04). Null falls through to the normal rendering. */
   renderBody?: (m: MailRow) => ReactNode | null
+  /** per-ROW status mark (redteam §9.2: the delivery glyph lived only in the
+   *  reading pane, so finding the one wedged send meant opening every mail) */
+  rowMark?: (m: MailRow) => ReactNode
 }
 
 const MAIL_WINDOW = 40
 
 export function MailList({ pending = [], delivered = [], waitLabel, sender, outgoing,
-  onRead, onReply, onRetract, jumpTo, fileHref, renderBody }: MailListProps) {
+  onRead, onReply, onRetract, jumpTo, fileHref, renderBody, rowMark }: MailListProps) {
   // ONE order, by send time, always — never grouped, never re-grouped.
   //
   // Unread used to sort as its own block on top, which meant the list
@@ -186,6 +189,7 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
               <span className="mfrom">
                 {outgoing ? '→ ' : ''}{party(m) === USER ? '@user' : party(m)}
               </span>
+              {rowMark?.(m)}
               <span className="mtime">{when(m.at)}</span>
               {m._wait && m.id && onRetract && (
                 <button className="chip-x" title="retract (undelivered)"
@@ -497,6 +501,7 @@ export function OrgInboxModal({ inbox, net, map, slug, toast, close, jumpTo }: O
                     delivered={inn.filter((r) => !r._wait0)}
                     waitLabel="unread" onRead={markRead} jumpTo={jumpTo} />
                 : <MailList delivered={out} outgoing jumpTo={jumpTo}
+                    rowMark={glyph}
                     sender={(id, m) => (
                       /* outbound attribution (user spec): @agent as @org → @recipient */
                       <span><b>{m?._by ? `@${m._by}` : '@?'}</b>
