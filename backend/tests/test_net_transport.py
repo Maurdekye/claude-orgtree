@@ -1211,6 +1211,88 @@ def sec_failed_send_visibility() -> None:
           _failure_fields_ride_the_row_and_clear_on_success)
 
 
+# ═════════════════════════════════════════════════════════════════════ §11
+def sec_hub_choice() -> None:
+    """USER REPORT 2026-08-05 (the third attempt at the same send): an org on
+    another machine composes to a `@net:` peer, is told "queued for the mail
+    hub — …", and the hub it is queued for never receives it. Measured from
+    the hub side: that org POLLS us continuously and has called /api/send
+    exactly zero times.
+
+    `spool_append` picks the destination hub as `hubs[0]` — the first ENABLED
+    entry in the org's list, which is the org's own local hub by construction
+    (`hub_entries` puts it first). Inbound listens on every hub; outbound only
+    ever talks to one. So a recipient that lives on the SECOND hub is
+    unreachable, and the failure is invisible until you read the spool."""
+    print("\n§11  which hub an outbound message is staged for")
+
+    def _two_hub_org(peer_on_second: str):
+        a = mkorg(hubs=(HUB_A, HUB_B))
+        with store.DOC_LOCK:
+            org = store.load_org(a)
+            for h in org.d["net_hubs"]:
+                h["enabled"] = True
+            store.save_org(org)
+        ids = hub_ids(a)
+        addrs = [str(h["address"]) for h in store.load_org(a).d["net_hubs"]]
+        # only the SECOND hub's roster knows the recipient
+        with net._status_lock:
+            net._rosters[addrs[0]] = []
+            net._rosters[addrs[1]] = [{"slug": peer_on_second, "online": True}]
+        return a, ids, addrs
+
+    def _staged_for_the_hub_that_can_reach_it():
+        peer = "faraway.other-machine.abcdef"
+        a, ids, _addrs = _two_hub_org(peer)
+        with store.DOC_LOCK:
+            org = store.load_org(a)
+            org.post_mail("ceo", f"@net:{peer}", "can you hear me")
+            mid = net.spool_append(org, peer, "can you hear me",
+                                   oid=org.d["org_inbox"][-1]["id"])
+            store.save_org(org)
+        spool = store.load_org(a).d.get("net_spool") or {}
+        where = [k for k, v in spool.items() if any(e["id"] == mid for e in v)]
+        assert where == [ids[1]], (
+            f"staged for hub {where} — the recipient is only on {ids[1]}, so "
+            f"this message will be offered to a hub that has never heard of "
+            f"it (422, retried forever) while the hub that CAN deliver it is "
+            f"never asked")
+    gap("hub-choice · an outbound message is staged for a hub that can "
+        "actually reach the recipient",
+        "`spool_append` does `hub_id = str(hubs[0][\"id\"])` — first enabled "
+        "entry, always, regardless of the recipient. `hub_entries()` puts the "
+        "org's OWN local hub first, so on any instance that also talks to a "
+        "remote hub, every outbound @net: message is offered to the local hub "
+        "and to nothing else. It answers 422 'no org registered as …' (the "
+        "peer is on the other hub), which by ruling retries forever. The "
+        "sender sees 'queued for the mail hub'; the hub that could have "
+        "delivered it is never contacted — measured live: the remote org "
+        "polls us continuously and has issued zero /api/send. Inbound is "
+        "already multi-hub (`_poll_pass` iterates every enabled entry); this "
+        "is the outbound half of the same idea. Fix: choose the hub whose "
+        "cached roster holds the recipient (`net._rosters`, already kept per "
+        "address); when several do, prefer the local one (fewest hops, the "
+        "same rule as the transport ruling); when NONE does, either stage "
+        "per-hub and let the first acceptance win, or refuse at the door "
+        "naming the hubs searched — what must not happen is silently "
+        "choosing by list position.",
+        _staged_for_the_hub_that_can_reach_it)
+
+    def _inbound_is_already_multi_hub():
+        """ANTI-VACUITY / the asymmetry, stated: polling visits EVERY enabled
+        hub, which is why the same org receives fine while it cannot send."""
+        src = open(os.path.join(_REPO, "backend", "orgtree", "net.py"),
+                   encoding="utf-8").read()
+        i = src.index("def _poll_pass")
+        seg = src[i:i + 1200]
+        assert "for addr, members in groups.items()" in seg, seg[:200]
+        j = src.index("def spool_append")
+        assert 'hubs[0]' in src[j:j + 1800], "the outbound choice moved — re-read §11"
+    check("hub-choice · inbound polls EVERY enabled hub while outbound picks "
+          "one by position — the asymmetry that makes 'receives fine, never "
+          "sends' possible", _inbound_is_already_multi_hub)
+
+
 def main() -> int:
     print("orgtree · @net Phase C — the transport, attacked")
     sec_ladder()
@@ -1223,6 +1305,7 @@ def main() -> int:
     sec_second_wave()
     sec_connect_latency()
     sec_failed_send_visibility()
+    sec_hub_choice()
 
     print()
     if GAPS:

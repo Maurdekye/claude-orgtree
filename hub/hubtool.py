@@ -370,39 +370,81 @@ def ack(ids: list[str], hub: str | None = None) -> None:
         _call("/api/ack", {"ids": ids}, hub=hub)
 
 
-def take_fresh(out: dict[str, Any],
-               hub: str | None = None) -> list[dict[str, Any]]:
-    """Surface each hub message ONCE (redteam ③): the hub is at-least-once,
-    so during an ACK OUTAGE the same message redelivers on every poll — not
-    a crash-window duplicate but a repeat per pass. A small persisted ring
-    in the identity file (the org client's pattern) collapses repeats; the
-    ack is still attempted for EVERY delivered id, seen or not.
+def _ring_key(d: dict[str, Any], hub: str | None) -> str:
+    return hub.rstrip("/") if hub else _hubs(d)[0]
 
-    Multi-hub: the ring is PER HUB (`seen` keyed by address — ids are only
-    unique within one hub, and one hub's ring must never suppress another's
-    mail), and the ack goes back to the hub the batch came from. The
-    identity file is shared by the listener's threads — _RING_LOCK
-    serializes the read-modify-write."""
+
+def _rings_of(d: dict[str, Any]) -> dict[str, Any]:
+    rings = cast("dict[str, Any]", d.get("seen") or {})
+    if not rings and d.get("seen_ids"):
+        # pre-multi-hub identities carried ONE flat ring — it belonged
+        # to the bootstrap hub, so it migrates under that key
+        rings = {_hubs(d)[0]: d.get("seen_ids")}
+    return rings
+
+
+def peek_fresh(out: dict[str, Any],
+               hub: str | None = None) -> list[dict[str, Any]]:
+    """READ-ONLY dedupe: which of this batch has not been seen before.
+    Nothing is marked and nothing is acked — the caller surfaces the
+    messages FIRST and only then commits with mark_seen + ack (redteam
+    structural note on the 2026-08-05 missed-mail bug: ring-and-ack before
+    the surface means any surface failure loses mail; this split closes
+    the CLASS, not just the print instance)."""
     msgs = cast("list[dict[str, Any]]", out.get("messages") or [])
     if not msgs:
         return []
     nm = _active_name()
     with _RING_LOCK:
         d = _load_ident(nm)
-        key = hub.rstrip("/") if hub else _hubs(d)[0]
-        rings = cast("dict[str, Any]", d.get("seen") or {})
-        if not rings and d.get("seen_ids"):
-            # pre-multi-hub identities carried ONE flat ring — it belonged
-            # to the bootstrap hub, so it migrates under that key
-            rings = {_hubs(d)[0]: d.get("seen_ids")}
+        ring = [str(x) for x in cast(
+            "list[Any]", _rings_of(d).get(_ring_key(d, hub)) or [])]
+    return [m for m in msgs if str(m.get("id")) not in ring]
+
+
+def mark_seen(msgs: list[dict[str, Any]],
+              hub: str | None = None) -> None:
+    """Persist the ring — PER HUB (`seen` keyed by address: ids are only
+    unique within one hub, and one hub's ring must never suppress
+    another's mail). The identity file is shared by the listener's
+    threads — _RING_LOCK serializes the read-modify-write."""
+    if not msgs:
+        return
+    nm = _active_name()
+    with _RING_LOCK:
+        d = _load_ident(nm)
+        key = _ring_key(d, hub)
+        rings = _rings_of(d)
         ring = [str(x) for x in cast("list[Any]", rings.get(key) or [])]
-        fresh = [m for m in msgs if str(m.get("id")) not in ring]
-        if fresh:
-            ring.extend(str(m.get("id")) for m in fresh)
+        new = [str(m.get("id")) for m in msgs
+               if str(m.get("id")) not in ring]
+        if new:
+            ring.extend(new)
             rings[key] = ring[-200:]
             d["seen"] = rings
             d.pop("seen_ids", None)
             _save_ident(nm, d)
+
+
+def take_fresh(out: dict[str, Any],
+               hub: str | None = None) -> list[dict[str, Any]]:
+    """Surface each hub message ONCE (redteam ③): the hub is at-least-once,
+    so during an ACK OUTAGE the same message redelivers on every poll — not
+    a crash-window duplicate but a repeat per pass. The persisted per-hub
+    ring collapses repeats; the ack is still attempted for EVERY delivered
+    id, seen or not, and goes back to the hub the batch came from.
+
+    ⚠ This composition commits BEFORE the caller surfaces — safe only
+    where the return itself is the surface and nothing can fail in
+    between (hub_read / hub_wait building a JSON result). The listener
+    uses the split primitives instead: peek_fresh → print → mark_seen →
+    ack."""
+    msgs = cast("list[dict[str, Any]]", out.get("messages") or [])
+    if not msgs:
+        return []
+    fresh = peek_fresh(out, hub=hub)
+    mark_seen(fresh, hub=hub)
+    key = _ring_key(_load_ident(_active_name()), hub)
     try:
         ack([str(m["id"]) for m in msgs], hub=key)
     except Exception:                                            # noqa: BLE001
@@ -506,17 +548,28 @@ def listen(name: str | None = None) -> None:
                         "blurb": "independent Claude Code chat"}, hub=h)
                     registered = True
                 many = len(_hubs(_load_ident(str(d["name"])))) > 1
-                for m in take_fresh(poll(25.0, hub=h), hub=h):
-                    # the message is ALREADY acked + ring-marked: from here
-                    # the print must be infallible, or the mail is consumed
-                    # unseen (the 2026-08-05 missed-mail bug) — reconfigure
-                    # above makes that so; the fallback is the belt
+                # SURFACE FIRST, COMMIT AFTER (the 2026-08-05 missed-mail
+                # class fix): nothing is ring-marked or acked until the
+                # line is on stdout. A surface failure now leaves the
+                # message unacked → the hub redelivers → retried, instead
+                # of consumed-unseen. The infallible print is still the
+                # belt; this ordering is the braces.
+                out = poll(25.0, hub=h)
+                fresh = peek_fresh(out, hub=h)
+                for m in fresh:
                     line = fmt(m, hub=h if many else None)
                     try:
                         print(line, flush=True)
                     except Exception:                            # noqa: BLE001
                         print(line.encode("ascii", "replace")
                               .decode("ascii"), flush=True)
+                mark_seen(fresh, hub=h)
+                all_ids = [str(m["id"]) for m in cast(
+                    "list[dict[str, Any]]", out.get("messages") or [])]
+                try:
+                    ack(all_ids, hub=h)
+                except Exception:                                # noqa: BLE001
+                    pass   # unacked → redelivered → the ring collapses it
             except Exception:                                    # noqa: BLE001
                 registered = False   # re-register on reconnect
                 stop.wait(5.0)

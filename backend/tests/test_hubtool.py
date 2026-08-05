@@ -728,6 +728,94 @@ def sec_listen() -> None:
           _failed_ack_redelivers_with_no_dedupe)
 
 
+# ══════════════════════════════════════════════════════ §4b (redteam, live)
+def sec_second_consumer() -> None:
+    """LIVE REPORT 2026-08-05 (curator): a message shows `fetched` in the hub's
+    own log — so something polled and received it — yet the armed listener
+    never printed it. Their hypothesis was a seen-ring clobber from concurrent
+    short-lived CLI processes rewriting the identity JSON.
+
+    Two mechanisms could produce that, and they have OPPOSITE signatures:
+      • a stale ring written over a newer one re-admits ids → REPEATS;
+      • a second consumer on the same identity takes the message off the hub
+        → SILENCE for whoever polls next.
+    Only the second can hide a message, and the hub's `fetched` state says a
+    consumer existed. This section measures both so the diagnosis is evidence
+    rather than the more alarming-sounding story."""
+    print("\n§4b  a second consumer on one identity (the silent-drop report)")
+
+    def _stale_ring_causes_repeats_not_silence():
+        me = become("ring-victim")
+        become("ring-sender")
+        hubtool.dispatch("hub_send", {"to": me, "body": "the only copy"})
+        become("ring-victim")
+        nm = hubtool._active_name()
+        before = hubtool._load_ident(nm)          # a short-lived process's view
+        out = json.loads(hubtool.dispatch("hub_read", {}))
+        assert [m["body"] for m in out["messages"]] == ["the only copy"], out
+        # …that process now writes ITS stale copy back, losing the ring entry
+        hubtool._save_ident(nm, before)
+        again = json.loads(hubtool.dispatch("hub_read", {}))
+        # the hub already acked it, so nothing redelivers — but had it not,
+        # the collapsed ring would have surfaced it AGAIN, never hidden it
+        assert again["messages"] == [], again
+        ring = (hubtool._load_ident(nm).get("seen") or {})
+        assert not any("the only copy" in str(v) for v in ring.values())
+    check("second-consumer · a stale identity write LOSES ring entries, whose "
+          "worst case is a repeat — it can never hide a message (so the "
+          "clobber hypothesis does not explain a silent drop)",
+          _stale_ring_causes_repeats_not_silence)
+
+    def _a_second_reader_takes_it_off_the_hub():
+        me = become("two-mouths")
+        become("two-mouths-sender")
+        hubtool.dispatch("hub_send", {"to": me, "body": "for the listener"})
+        become("two-mouths")
+        # ANY other call on this identity that polls is a consumer: hub_read
+        # (the MCP tool) is the one a session makes without thinking of it as
+        # "reading mail" — it polls, rings, and ACKS.
+        stolen = json.loads(hubtool.dispatch("hub_read", {}))
+        assert [m["body"] for m in stolen["messages"]] == ["for the listener"]
+        # what the listener's own next pass would see
+        left = hubtool.take_fresh(hubtool.poll(0.0))
+        assert left, (
+            "the message was consumed by another call on the SAME identity "
+            "and acked; the listener's next poll returns nothing, and the "
+            "hub's log shows state=fetched — which is exactly the reported "
+            "symptom")
+    gap("second-consumer · a listener's mail cannot be consumed out from "
+        "under it by another call on the same identity",
+        "The mailbox is per IDENTITY and delivery is once, so every verb that "
+        "polls — hub_read and hub_wait, not just `listen` — is a consumer. A "
+        "session with the hubtool MCP server registered AND a listener armed "
+        "has two mouths on one mailbox: whichever polls first takes the "
+        "message, acks it, and the other never sees it. The listener LOCK "
+        "(.listening) stops a second LISTENER; nothing stops a second READER. "
+        "This is the same deliver-once property already characterised for two "
+        "sessions sharing a name (§2b), reached from inside ONE session. "
+        "Options: have the listener hold the read lock for hub_read too (an "
+        "armed listener makes hub_read a no-op that points at the listener's "
+        "output), or give the MCP read tool its own cursor rather than the "
+        "consuming poll, so the listener stays the single consumer.",
+        _a_second_reader_takes_it_off_the_hub)
+
+    def _the_listener_lock_does_not_cover_readers():
+        """Characterisation, so the boundary of the existing protection is
+        explicit: the lock is about LISTENERS, and hub_read never looks at it."""
+        become("lock-scope")
+        lock = hubtool._id_path("lock-scope") + ".listening"
+        with open(lock, "w", encoding="utf-8") as f:
+            f.write(str(os.getpid()))          # a live listener, by pid
+        try:
+            out = json.loads(hubtool.dispatch("hub_read", {}))
+            assert "messages" in out, out      # served, lock or no lock
+        finally:
+            os.remove(lock)
+    check("second-consumer · characterised: hub_read serves normally while a "
+          "listener lock is held — the lock guards the listener seat, not the "
+          "mailbox", _the_listener_lock_does_not_cover_readers)
+
+
 # ══════════════════════════════════════════════════════════════════════ §5
 def sec_kind() -> None:
     print("\n§5  kind — who claims it, and can it be flipped")
@@ -835,6 +923,7 @@ def main() -> int:
     sec_mint_durability()
     sec_secret()
     sec_listen()
+    sec_second_consumer()
     sec_kind()
     sec_migration()
 
