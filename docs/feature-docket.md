@@ -1,8 +1,9 @@
 # Feature docket
 
-Feature requests the user brings directly to the explorer (chat `93f4cfdd`), logged here as
-reported for the implementer to triage. This is an inbox, not an authority: the explorer does not
-implement, prioritize, or close anything here — only records it.
+Feature requests the user brings directly to the curator (chat `93f4cfdd` — titled "explorer" in
+earlier entries below; same chat, renamed 2026-08-05 when documentation management was added to the
+role), logged here as reported for the implementer to triage. This is an inbox, not an authority:
+the curator does not implement, prioritize, or close anything here — only records it.
 
 Distinct from [`interim-docket.md`](interim-docket.md) (bug fixes/reports kept on the
 interim-authority branch) and `DECISIONS.md` (the implementer's decision register, which is where a
@@ -15,6 +16,14 @@ numbering, so the two are never confused.
 
 ### FR-01 · `/remote-control`, if feasible
 > potentially enabling /remote-control? if its feasible
+
+*(**SHIPPED-AS-SCAFFOLDING** (`b71a16d`), part of the 2026-08-05 feature wave — user go-ahead for
+all unimplemented FRs except mobile. Gear-panel start/release runs `claude remote-control
+--session-id` on the agent's own session; the node PARKS while controlled (`send_message` queues,
+the turn gate refuses), the server is leashed to the backend process, and stale control flags clear
+at `reconcile()`. Sandboxed agents are refused outright. ☞ The FIRST live start doubles as the
+user-present enrollment experiment the groundwork below called for — by construction, not as a
+separate step.)*
 
 Feasibility unknown — **investigate before scoping**. Open questions: what the slash command
 actually does in the pinned CLI; whether it works at all in a headless `-p` session (orgtree already
@@ -46,7 +55,7 @@ user's claude.ai account, an account-state change that is the user's to make).**
   claude.ai/code, confirm TTY-less spawn works, then scope the UX (a desk button + the parked
   node state).
 
-→ moved from `docs/interim-docket.md` F-02, 2026-08-05, by the explorer on the user's instruction.
+→ moved from `docs/interim-docket.md` F-02, 2026-08-05, by the curator on the user's instruction.
 
 ---
 
@@ -61,7 +70,7 @@ fixed in the pre-dormancy fix batch (`35ec4eb` + follow-ups), so the spec that r
 layout/interaction work. One open ruling rides with it: the compact-desk question sits in
 DECISIONS.md §Open and should be answered before (or as part of) the build.
 
-→ moved from `docs/interim-docket.md` F-08, 2026-08-05, by the explorer on the user's instruction.
+→ moved from `docs/interim-docket.md` F-08, 2026-08-05, by the curator on the user's instruction.
 
 ---
 
@@ -71,8 +80,10 @@ DECISIONS.md §Open and should be answered before (or as part of) the build.
 > little card should pop out the side of the agent, which when clicked, opens the document up for
 > visual review in-page.
 
-*(user request 2026-08-05, relayed via 4f69f83a's session; groundwork theirs. NOT BUILT — queued
-behind the F-06 wave.)*
+*(user request 2026-08-05, relayed via 4f69f83a's session; groundwork theirs. **SHIPPED (`6e230c7`)**
+— part of the 2026-08-05 feature wave. `orgtree_present` shipped as the 20th agent verb, exactly the
+shape proposed below: side-card chips + an in-page markdown reader, 64KB cap, replaces-in-place,
+newest 10 kept per node.)*
 
 ⚠ Not `orgtree_send_file` — that is a DOWNLOAD card (outbox/ + `/file`). This is a READING
 surface: a plan reviewed in-page without leaving the canvas.
@@ -88,7 +99,7 @@ Groundwork (researcher, 2026-08-05):
 - Agent tool: `orgtree_present {title, body (markdown), replaces?}` mirroring `orgtree_ask`'s
   shape — parked, never blocking.
 
-→ moved from `docs/interim-docket.md` F-10, 2026-08-05, by the explorer on the user's instruction.
+→ moved from `docs/interim-docket.md` F-10, 2026-08-05, by the curator on the user's instruction.
 
 ---
 
@@ -97,7 +108,9 @@ Groundwork (researcher, 2026-08-05):
 > looks in claude code's ui.
 
 *(user request 2026-08-05, with reference screenshots of Claude Code's AskUserQuestion batch
-form. NOT BUILT — queued behind the F-06 wave.)*
+form. **SHIPPED (`6ca9a5b`)** — part of the 2026-08-05 feature wave, acceptance gate self-armed at
+15/15. One contract note from the build: the whole-card void fires at WAKE (turn start), not at
+post time — a deliberate choice, reasoning left inline at the check site.)*
 
 The reference (from the screenshots): ONE card holding several questions as a **tab strip**
 across the top (short headers as tab labels, e.g. `Kind · Area · Images · Handoff`), the active
@@ -114,7 +127,7 @@ Groundwork:
   already there for the single header — it becomes the strip); submit disabled until every
   non-skipped tab has a selection or free text.
 
-→ moved from `docs/interim-docket.md` F-11, 2026-08-05, by the explorer on the user's instruction.
+→ moved from `docs/interim-docket.md` F-11, 2026-08-05, by the curator on the user's instruction.
 
 ---
 
@@ -122,7 +135,7 @@ Groundwork:
 > replies inline in the mailbox should be attributed to the mail they're replying to, so the agent
 > knows the context
 
-*(user request 2026-08-05, recorded by the explorer. **SHIPPED (`5e2319b`, deployed)** — replies
+*(user request 2026-08-05, recorded by the curator. **SHIPPED (`5e2319b`, deployed)** — replies
 carry a sanitized snapshot `{id, from, at, gist(200)}`, rendered as an "IN REPLY TO" line in the
 recipient's recital, wired through the user-facing reply flow. This resolves the open question
 below in favor of the inline-quote option, not the bare-id option.)*
@@ -164,7 +177,7 @@ a lookup onto every agent for something the UI already has on screen.
 > via mcp / chatq, same as they can send / receive directly to and from an org via the same
 > channels
 
-*(user request 2026-08-05, recorded by the explorer. Explicitly framed by the user as an addition
+*(user request 2026-08-05, recorded by the curator. Explicitly framed by the user as an addition
 to F-06 — the mailserver wave the implementer has in flight right now, not a standalone feature.
 Flagged directly to the implementer over chatq the same day, given the timing below.
 **PICKED UP + SHIPPED same day, then HARDENED (`a4d9b83` + `693f38e`)** — the second commit adds
@@ -218,8 +231,10 @@ the existing model or cuts against it.
 > then mails may still be sent to its historical remembered list of recipients: as soon as the
 > reconnection occurs, and the recipients are available, immediately send the mail.
 
-*(user request 2026-08-05, recorded by the explorer. Another F-06/mailserver addition — unlike
-FR-06, this one does not reopen anything closed; see below.)*
+*(user request 2026-08-05, recorded by the curator. Another F-06/mailserver addition — unlike
+FR-06, this one does not reopen anything closed; see below. **CLOSED (`4a3e1e8`)**, part of the
+2026-08-05 feature wave — confirmed mostly-already-built as analyzed below; the one real gap this
+entry named, compose having no free-typed `@net:` address, was the actual fix.)*
 
 **Good news: this is almost exactly what's already speced, end to end.** Cross-referencing rather
 than treating it as new design — `docs/mailserver-spec.md` already plans the full chain being
@@ -258,7 +273,9 @@ accident (e.g., an autocomplete that only populates from a live `orgtree_list_or
 > mailservers
 
 *(user request 2026-08-05, recorded by the curator. Direct follow-on from a question about whether
-`externtool.py` already had this — traced the code and confirmed it doesn't.)*
+`externtool.py` already had this — traced the code and confirmed it doesn't. **SHIPPED (`72c34dd`)**,
+part of the 2026-08-05 feature wave — an externtool `listen` mode built on the machine-stable BASE
+id (not the per-process suffix; a standing listener isn't one session), live-verified round trip.)*
 
 **The asymmetry, precisely.** Three "send mail from outside a Claude Code session" interfaces exist
 today; only two of the three match the throughline:
@@ -338,6 +355,98 @@ change the three prerequisites above, but it does settle one of the open questio
 bullet: "uninstall entirely" reads as the mailserver becoming a full replacement rather than the
 two systems permanently coexisting for the local-only case.
 
+**Sharpened again, same day — the endpoint is INDEPENDENCE, not just migration:** *"after
+superceeding chatq, we will completely strip all chatq integration entirely from the orgtree
+system. chatq and orgtree will be entirely independent tools, and will not scope any integration
+with one another."* More specific than "uninstall chatq": it says what happens to **orgtree's own
+code** afterward, and it's bidirectional — not "orgtree stops needing chatq" but "neither tool
+references the other at all."
+
+**The actual removal footprint, traced rather than assumed — this is a real refactor, not a config
+flip.** Chatq integration is not a small edge case; it's woven into org lifecycle and the
+addressing model across three files:
+- `backend/orgtree/supervisor.py:2986-3188` — the whole `@ext:` bridge: `chatq_available`,
+  `chatq_register_org`/`chatq_deregister_org`, `chatq_send`, `start_chatq_bridge` (the poll loop
+  that watches every org's chatq inbox file directly).
+- `backend/orgtree/api.py` — org lifecycle hooks call the bridge functions directly at creation
+  (`:719`), deletion (`:797`), and startup (`:495-496`, registering every existing org's chatq
+  inbox on boot); the outbound dispatch path threads an `ext_send` tuple through `agent_call`
+  (`:2681,2736,2924`) as one of exactly two outbound shapes alongside `org_send`.
+- `backend/orgtree/ledger.py` — `@ext:` is baked into the outside-party authorization model
+  (`:80,882,1064,1124,1390`) as a recognized outside-namespace prefix, not a bolt-on.
+
+⚠ **One nuance worth keeping precise.** Orgtree agents don't call chatq directly today —
+`supervisor.py:880` tells every agent flatly that "chatq... is OFF-LIMITS to you." The integration
+is backend-to-backend (an org's inbox bridges to a chatq mailbox under its slug); removing it
+touches org-lifecycle and dispatch code, not any agent-facing tool surface.
+
+**Chatq's own side carries the mirror image, for completeness — not this repo's to touch.**
+`~/.claude/chatq/bin/session-start.sh` (a different project entirely) already has an orgtree-aware
+carve-out: `[ -n "${ORGTREE_NODE:-}" ] && exit 0` — orgtree agent sessions are excluded from
+chatq's own registry by name. "No integration in either direction" makes that line dead code over
+there too, once orgtree sessions never have reason to touch chatq's registry at all. Noted here so
+the full picture lives in one place; out of scope for anyone working in this repo.
+
+**BLOCKER FOUND, 2026-08-05 — NOT EXECUTED; candidate resolution proposed same day, see below.**
+During the same-day feature wave the implementer investigated actually starting this and stopped
+rather than build past a real architectural mismatch (reported directly, logged here at their
+request):
+
+> hubtool identity is per-machine-PROFILE (`~/.orgtree/hub-client.json`) while chatq identity is
+> per-SESSION — N concurrent sessions arming `hubtool listen` would share one address and RACE for
+> each other's mail (hub acks deliver-once). Full replacement needs per-session hub identities,
+> which collides with the ruled one-time-name-choice UX.
+
+Consistent with what this docket independently verified of the identity model (§3, D-099): one uid
+per profile, "reused across every chat on that machine," precisely because the address is meant to
+be stable and permanent. That design is exactly what breaks the moment more than one chat on the
+same machine wants to listen concurrently — which is this repo's own live situation right now
+(three chatq-coordinated sessions, all on one machine). Custody transfer is per-message-id
+(`/api/ack`), not per-connection, so whichever of N identical listeners happens to poll a given
+message first consumes it; the others silently never see that one. Chatq itself has no such
+ceiling — a per-session identity was exactly the fix its own №5 ruling made (`externtool.py:41-45`,
+cited in `setup-guide.md`), for the identical reason.
+
+**The actual tension, for whoever rules on it:** a stable, permanent, chosen-once address is the
+whole point of the current UX (§3's "chosen once, immutable thereafter") — and is also what a
+human addressing a chat from across the hub wants. Per-session identities would fix the
+concurrency race but mean either re-choosing a name every session (defeats the point) or some
+notion of "one address, many session-scoped sub-identities" that doesn't exist in the model today.
+Not something to assume an answer to here.
+
+**Proposed resolution, same day:** *"perhaps individual external sessions can be grouped by machine
+profile, same as how orgs are."*
+
+**Checked against the actual data model — this maps cleanly, and the missing half already has a
+working precedent elsewhere in this repo.**
+
+1. **Orgs already run exactly this "shared display grouping, separate real identity" split.**
+   Multiple orgs from one instance share `username` (the grouping/display key FR-11 renders) but
+   each mints its OWN secret/fingerprint at creation (`net_identity`, `mailserver-spec.md` §3) — a
+   shared `username` groups them for a human reading the roster; it never merges their mailboxes.
+2. **A stable name plus a per-session distinguishing suffix is already a working pattern —
+   `externtool.py`'s own identity, not hubtool's.** `peer_id()` (`externtool.py:40-71`) is exactly
+   this shape: a machine-stable BASE, chosen/persisted once, plus a fresh per-process SUFFIX
+   (`f"{base}.{uuid.uuid4().hex[:6]}"`) — every concurrent session gets its own id while the base
+   stays recognizable. FR-08's `listen` mode deliberately used the BASE *alone*, reasoning that a
+   standing listener isn't one session — the session-scoped half of the same pattern was already
+   sitting right there, just never applied to `hubtool.py`.
+
+**What this would concretely change in `hubtool.py`:** instead of minting ONE uid at
+`~/.orgtree/hub-client.json` and reusing it forever for every session, mint a per-session secret at
+connect time; keep the CHOSEN NAME and `username` stable across sessions (this is what preserves
+"choose the name once"); let the fingerprint suffix differ per session. Slug shape is unchanged
+(`<name>.<username>.<fp[:6]>`) — `slug` is already the table's primary key (`db.py:32`), so several
+rows sharing a `<name>.<username>` prefix with different `fp` suffixes need no schema change, just
+a new row per session instead of one upsert-forever row.
+
+**One question this surfaces, worth confirming rather than assuming:** with per-session slugs,
+does addressing "Alice's chat" mean picking one SPECIFIC live session's full slug — the org
+precedent, where nobody addresses "any of Alice's orgs," they pick one — or does the hub need a
+"reach the whole family, fan out to whichever session is live" concept that doesn't exist for orgs
+either? The org precedent suggests the former is the consistent default, but it's worth someone
+stating explicitly rather than letting it fall out by accident.
+
 ---
 
 ### FR-10 · expose the mailserver hub publicly through the same cloudflared tunnel as kiosks
@@ -346,7 +455,11 @@ two systems permanently coexisting for the local-only case.
 
 *(user request 2026-08-05, recorded by the curator. Related to FR-09's replace-chatq direction —
 a publicly-reachable hub is a precondition for orgtree mail working the way chatq works today,
-where reachability has never required a private network.)*
+where reachability has never required a private network. **SHIPPED (`f8ed17d`)**, part of the
+2026-08-05 feature wave — resolved via the route-split option this entry raised, not the blind-tunnel
+one: `HUB_PUBLIC=1` serves a separate API-only listener on host port `7378`; `expose-hub.ps1` tunnels
+*that* and explicitly refuses to tunnel `7370`. Verified live: `/` and `/ui/*` 404 on the public
+port.)*
 
 **Mechanically close, but not a safe drop-in — one real security wrinkle.** `expose.ps1`
 (documented in `docs/setup-guide.md` §2) downloads `cloudflared` once and runs `cloudflared tunnel
@@ -381,7 +494,8 @@ Not decided here — flagging the wrinkle is the point, not picking a side.
 > group orgs in the mailserver ui by client, and color-code them differently to independently
 > connected clients so they appear visually distinct
 
-*(user request 2026-08-05, recorded by the curator.)*
+*(user request 2026-08-05, recorded by the curator. **SHIPPED (`aef6171`)**, part of the 2026-08-05
+feature wave — grouped by client, chats color-coded apart from orgs, live-verified on nova-desk.)*
 
 **Good news: this is a pure frontend change — the backend already sends everything it needs.**
 Traced the whole path, `hub/mailhub/`:
@@ -432,7 +546,14 @@ for whoever builds it.
 
 *(user request 2026-08-05, recorded by the curator — **build explicitly routed to the implementer,
 not this role.** Relayed directly over chatq rather than left for someone to notice in the docket,
-given the explicit routing instruction.)*
+given the explicit routing instruction. **SHIPPED same day (`873aa53`)** — `docs/charters/
+implementer.md`, `redteam.md`, `curator.md`, all following the `coordinator.md`/`business.md`
+convention (explanatory header, `---`, second-person numbered charter), live in the hire form via
+`/api/charters`, verified. `redteam.md` built from 4f69f83a's own practice description, not from
+this docket's secondhand guess. `curator.md` built from how this seat has actually run — worth a
+self-note: it names the exact patterns this docket has been trying to hold to (source-sweep with
+citations, dedupe-before-filing, flag-don't-rewrite on owned docs, pre-ship risk flags in the
+FR-06/FR-10 shape) as the formal charter now, not just this session's habit.)*
 
 **What a charter preset mechanically is**, for whoever picks this up: a file in `docs/charters/*.md`
 is a selectable role card offered at hire time (`configuration.md` §③, `api.py:1141`). Two exist
