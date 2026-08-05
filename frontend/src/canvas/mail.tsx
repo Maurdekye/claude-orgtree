@@ -13,10 +13,10 @@ import {
   orgInboxUpload,
 } from '../api'
 import {
-  AttachIcon, CloseIcon, DownloadIcon, FileIcon, HearingIcon, MailIcon,
-  PublicIcon,
+  AttachIcon, CloseIcon, DownloadIcon, EditIcon, FileIcon, HearingIcon,
+  MailIcon, PublicIcon,
 } from '../icons'
-import { DRAFT, EXTERN, md, USER, useEsc, usePolled } from './shared'
+import { EXTERN, md, USER, useEsc, usePolled } from './shared'
 import type { CanvasNode, MailRow } from './shared'
 
 // One mail interface, everywhere (user ruling: the user's and the agents'
@@ -393,18 +393,17 @@ interface OrgInboxModalProps {
 
 export function OrgInboxModal({ inbox, net, map, slug, toast, close, jumpTo }: OrgInboxModalProps) {
   useEsc(close)
-  const [grantee, setGrantee] = useState('')
+  // reworked (user spec 2026-08-05): no blurb, mailservers on their own TAB,
+  // compose in its own modal, holders as bare chips with a drag-to-grant tip
+  const [tab, setTab] = useState<'mail' | 'servers'>('mail')
+  const [composing, setComposing] = useState(false)
   // a jump to an OUTBOUND mail (an agent's @ext:/@org: send) opens on sent
   const [folder, setFolder] = useState(() =>
     jumpTo && (inbox?.entries ?? []).some((e) => e.id === jumpTo
       && e.dir === 'out') ? 'sent' : 'inbox')
   const holders = inbox?.holders ?? []
-  // C0: top-level agents need the audience too (delivery is holder-only), so
-  // they are grantable candidates like everyone else
-  const candidates = [...map.values()].filter((n) =>
-    n.id !== USER && n.id !== DRAFT && n.state === 'live' && !n.isBearerOf
-    && !holders.includes(n.id))
   const entries = inbox?.entries ?? []
+  const hubsVisible = (net?.hubs ?? []).some((h) => !h.hidden)
   // the org inbox tracks read state as ONE high-water mark over the log — the
   // tail beyond it renders as unread; any read action clears the whole mark
   const readFrom = entries.length - (inbox?.unread ?? 0)
@@ -438,83 +437,89 @@ export function OrgInboxModal({ inbox, net, map, slug, toast, close, jumpTo }: O
     <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
       <div className="settings wide" onClick={(e) => e.stopPropagation()}>
         <h3><PublicIcon fontSize="inherit" /> The org inbox</h3>
-        <div className="hint">
-          Outside parties — external Claude Code sessions (chatq), other
-          organizations, and remote orgs via the mail hub — see this org as a
-          single recipient. Their mail lands here and wakes the <b>audience
-          holders</b> (only): they coordinate internally and one replies for
-          the org. The first outside mail auto-grants the senior top-level
-          agent; drag an agent onto the mailbox to grant it the audience.
-        </div>
-        <div className="row" style={{ alignItems: 'center', flexWrap: 'wrap' }}>
-          <span className="field-label">audience holders:</span>
-          {holders.length === 0 && <span className="dim">none — the first
-            outside mail auto-grants the senior top-level agent</span>}
-          {holders.map((h) => (
-            <span key={h} className="badge free"><HearingIcon fontSize="inherit" />{h}
-              <button className="chip-x" title="revoke this inbox audience"
-                onClick={() => audienceAction(slug, 'revoke', h, EXTERN)
-                  .then(() => toast([`org-inbox audience for ${h} rescinded`]))
-                  .catch((e: Error) => toast([`error: ${e.message}`]))}>
-                <CloseIcon fontSize="inherit" /></button>
-            </span>
-          ))}
-          {candidates.length > 0 && <>
-            <select value={grantee} onChange={(e) => setGrantee(e.target.value)}>
-              <option value="">grant to…</option>
-              {candidates.map((n) => <option key={n.id} value={n.id}>{n.id}</option>)}
-            </select>
-            <button disabled={!grantee}
-              onClick={() => audienceAction(slug, 'grant', grantee, 'extern')
-                .then(() => { toast([`${grantee} now reads and answers the org inbox`]); setGrantee('') })
-                .catch((e: Error) => toast([`error: ${e.message}`]))}>grant</button>
-          </>}
-        </div>
-        {/* the SAME webmail interface as every other inbox (user ruling) —
-            folders + list + reading pane; only the deviations above (audience
-            granting) and the outbound sender attribution differ */}
-        <div className="mailwrap">
-          <MailFolders folder={folder} setFolder={setFolder}
-            unread={inn.filter((r) => r._wait0).length} />
-          <div className="mailpane">
-            {folder === 'inbox'
-              ? <MailList pending={inn.filter((r) => r._wait0)}
-                  delivered={inn.filter((r) => !r._wait0)}
-                  waitLabel="unread" onRead={markRead} jumpTo={jumpTo} />
-              : <MailList delivered={out} outgoing jumpTo={jumpTo}
-                  sender={(id, m) => (
-                    /* outbound attribution (user spec): @agent as @org → @recipient */
-                    <span><b>{m?._by ? `@${m._by}` : '@?'}</b>
-                      <span className="dim"> as </span><b>@{slug}</b>
-                      <span className="dim"> → </span><b>{id}</b>
-                      {m && glyph(m)}</span>
-                  )} />}
+        {hubsVisible && (
+          <div className="adv-tabs">
+            <button className={'adv-tab' + (tab === 'mail' ? ' on' : '')}
+              onClick={() => setTab('mail')}>mail</button>
+            <button className={'adv-tab' + (tab === 'servers' ? ' on' : '')}
+              onClick={() => setTab('servers')}>mailservers</button>
           </div>
+        )}
+        {tab === 'mail' ? (<>
+          <div className="row" style={{ alignItems: 'center', flexWrap: 'wrap' }}>
+            {holders.map((h) => (
+              <span key={h} className="badge free"><HearingIcon fontSize="inherit" />{h}
+                <button className="chip-x" title="revoke this inbox audience"
+                  onClick={() => audienceAction(slug, 'revoke', h, EXTERN)
+                    .then(() => toast([`org-inbox audience for ${h} rescinded`]))
+                    .catch((e: Error) => toast([`error: ${e.message}`]))}>
+                  <CloseIcon fontSize="inherit" /></button>
+              </span>
+            ))}
+            <span className="dim" style={{ fontSize: 11.5 }}>
+              {holders.length === 0
+                ? 'inbound mail auto-grants the senior top-level agent — or drag an agent onto the mailbox to choose who reads it'
+                : 'these agents read and answer outside mail — drag an agent onto the mailbox to add one'}
+            </span>
+          </div>
+          {/* the SAME webmail interface as every other inbox (user ruling) —
+              folders + list + reading pane; only the outbound sender
+              attribution differs */}
+          <div className="mailwrap">
+            <MailFolders folder={folder} setFolder={setFolder}
+              unread={inn.filter((r) => r._wait0).length} />
+            <div className="mailpane">
+              {folder === 'inbox'
+                ? <MailList pending={inn.filter((r) => r._wait0)}
+                    delivered={inn.filter((r) => !r._wait0)}
+                    waitLabel="unread" onRead={markRead} jumpTo={jumpTo} />
+                : <MailList delivered={out} outgoing jumpTo={jumpTo}
+                    sender={(id, m) => (
+                      /* outbound attribution (user spec): @agent as @org → @recipient */
+                      <span><b>{m?._by ? `@${m._by}` : '@?'}</b>
+                        <span className="dim"> as </span><b>@{slug}</b>
+                        <span className="dim"> → </span><b>{id}</b>
+                        {m && glyph(m)}</span>
+                    )} />}
+            </div>
+          </div>
+        </>) : (
+          <NetSection net={net} />
+        )}
+        <div className="row">
+          {tab === 'mail' && (
+            <button className="primary" onClick={() => setComposing(true)}>
+              <EditIcon fontSize="inherit" /> compose mail</button>
+          )}
+          <span className="spacer" />
+          <button onClick={close}>close</button>
         </div>
-        <ComposeBar slug={slug} net={net} entries={entries} toast={toast} />
-        {(net?.hubs ?? []).some((h) => !h.hidden) && <NetSection net={net} />}
-        <div className="row"><span className="spacer" />
-          <button onClick={close}>close</button></div>
+        {composing && (
+          <ComposeModal slug={slug} net={net} entries={entries} toast={toast}
+            close={() => setComposing(false)} />
+        )}
       </div>
     </div>
   )
 }
 
-// ---- F-06: the user composes extern mail straight from the mailbox ----
+// ---- F-06: the user composes extern mail from its own MODAL (user spec
+// 2026-08-05: the inline bar was cramped; recipients are selectable CHIPS) ----
 // recipients come from "the extern list": hub roster peers (@net:) plus every
 // past correspondent in the log, deduped — plus a free-typed address (FR-07:
 // addressing must never require a live roster; the spool holds @net: mail
 // until the hub is reachable). The user bypasses the audience gate
 // (they outrank it); attachments stage first and are refused for the
 // text-only transports (@ext:/@mcp:) by the server with a clear message.
-const OTHER_ADDR = ' other'      // sentinel — no address can collide
-function ComposeBar({ slug, net, entries, toast }: {
+function ComposeModal({ slug, net, entries, toast, close }: {
   slug: string
   net?: TreePayload['net']
   entries: OrgInboxEntry[]
   toast: ToastFn
+  close: () => void
 }) {
-  const [to, setTo] = useState('')
+  const [to, setTo] = useState('')          // the picked chip's address
+  const [other, setOther] = useState(false) // the free-entry "other" chip
   // FR-07: a free-typed address — offline addressing must never be gated on
   // a live roster; @net:<slug> needs only the slug string, and the spool
   // holds the mail until the hub is back
@@ -525,77 +530,95 @@ function ComposeBar({ slug, net, entries, toast }: {
   const fileRef = useRef<HTMLInputElement | null>(null)
   const opts = (() => {
     const seen = new Set<string>()
-    const out: { addr: string; label: string }[] = []
+    const out: { addr: string; name: string; kind: string
+      online?: boolean }[] = []
     for (const h of net?.hubs ?? []) {
       if (h.hidden) continue
       for (const r of h.roster) {
         const addr = `@net:${r.slug}`
         if (!seen.has(addr)) {
           seen.add(addr)
-          out.push({ addr,
-            label: `${r.org_name || r.slug}`
-              + (r.kind === 'chat' ? ' (chat)' : '') + ` (${addr})`
-              + (r.online ? ' · online' : '') })
+          out.push({ addr, name: r.org_name || r.slug.split('.')[0]!,
+            kind: r.kind === 'chat' ? 'chat' : 'org', online: !!r.online })
         }
       }
     }
     for (const e of entries) {
       if (!seen.has(e.peer) && e.peer.startsWith('@')) {
         seen.add(e.peer)
-        out.push({ addr: e.peer, label: e.peer })
+        out.push({ addr: e.peer, name: e.peer.replace(/^@\w+:/, ''),
+          kind: e.peer.slice(1, e.peer.indexOf(':')) })
       }
     }
     return out
   })()
-  const dest = to === OTHER_ADDR ? freeTo.trim() : to
+  const dest = other ? freeTo.trim() : to
   const attachable = dest.startsWith('@net:') || dest.startsWith('@org:')
   const send = () => {
-    if (!dest || !text.trim()) return
+    if (!dest || !text.trim() || busy) return
     setBusy(true)
     orgInboxSend(slug, dest, text, staged.map((s) => s.id))
       .then((r) => {
         toast(r.warnings.length ? r.warnings : ['sent — as the org, by you'])
-        setText(''); setStaged([])
+        close()
       })
-      .catch((e: Error) => toast([`error: ${e.message}`]))
-      .finally(() => setBusy(false))
+      .catch((e: Error) => { toast([`error: ${e.message}`]); setBusy(false) })
   }
   return (
-    <div className="row oi-compose" style={{ alignItems: 'center', flexWrap: 'wrap' }}>
-      <select value={to} onChange={(e) => setTo(e.target.value)}>
-        <option value="">write to…</option>
-        {opts.map((o) => <option key={o.addr} value={o.addr}>{o.label}</option>)}
-        <option value={OTHER_ADDR}>other address…</option>
-      </select>
-      {to === OTHER_ADDR && (
-        <input style={{ width: 200 }} placeholder="@net:slug / @org:slug / @ext:id"
-          value={freeTo} onChange={(e) => setFreeTo(e.target.value)} />
-      )}
-      <input style={{ flex: 1, minWidth: 160 }} placeholder="message — goes out as the org, sent by you"
-        value={text} onChange={(e) => setText(e.target.value)}
-        onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } }} />
-      <input ref={fileRef} type="file" multiple hidden
-        onChange={(e) => {
-          for (const f of [...(e.target.files ?? [])].slice(0, 10)) {
-            orgInboxUpload(slug, f)
-              .then((r) => setStaged((s) => [...s, { id: r.id, name: r.name }]))
-              .catch((err: Error) => toast([`upload failed: ${err.message}`]))
-          }
-          e.target.value = ''
-        }} />
-      {staged.map((s) => (
-        <span key={s.id} className="badge free"><FileIcon fontSize="inherit" />{s.name}
-          <button className="chip-x" onClick={() =>
-            setStaged((st) => st.filter((x) => x.id !== s.id))}>
-            <CloseIcon fontSize="inherit" /></button></span>
-      ))}
-      <button title={attachable ? 'attach files'
-        : 'attachments ride @net:/@org: mail only'}
-        disabled={!attachable}
-        onClick={() => fileRef.current?.click()}>
-        <AttachIcon fontSize="inherit" /></button>
-      <button className="primary" disabled={busy || !dest || !text.trim()}
-        onClick={send}>send</button>
+    <div className="overlay" onClick={close}
+      onPointerDown={(e) => e.stopPropagation()}>
+      <div className="settings cmp-modal" onClick={(e) => e.stopPropagation()}>
+        <h3><EditIcon fontSize="inherit" /> Compose mail
+          <span className="dim"> — goes out as the org, sent by you</span></h3>
+        <div className="field-label">to</div>
+        <div className="cmp-chips">
+          {opts.map((o) => (
+            <button key={o.addr} type="button" disabled={busy}
+              className={'cmp-chip' + (!other && to === o.addr ? ' on' : '')}
+              title={o.addr}
+              onClick={() => { setTo(o.addr); setOther(false) }}>
+              <span className={'oi-dot' + (o.online ? ' ok' : '')} />
+              {o.name}
+              <span className="dim">{o.kind}</span>
+            </button>
+          ))}
+          <button type="button" disabled={busy}
+            className={'cmp-chip' + (other ? ' on' : '')}
+            onClick={() => setOther(true)}>other address…</button>
+        </div>
+        {other && (
+          <input autoFocus placeholder="@net:slug / @org:slug / @ext:id"
+            value={freeTo} onChange={(e) => setFreeTo(e.target.value)} />
+        )}
+        <textarea rows={5} placeholder="the message…" value={text}
+          disabled={busy} onChange={(e) => setText(e.target.value)} />
+        <div className="row" style={{ alignItems: 'center', flexWrap: 'wrap' }}>
+          <input ref={fileRef} type="file" multiple hidden
+            onChange={(e) => {
+              for (const f of [...(e.target.files ?? [])].slice(0, 10)) {
+                orgInboxUpload(slug, f)
+                  .then((r) => setStaged((s) => [...s, { id: r.id, name: r.name }]))
+                  .catch((err: Error) => toast([`upload failed: ${err.message}`]))
+              }
+              e.target.value = ''
+            }} />
+          {staged.map((s) => (
+            <span key={s.id} className="badge free"><FileIcon fontSize="inherit" />{s.name}
+              <button className="chip-x" onClick={() =>
+                setStaged((st) => st.filter((x) => x.id !== s.id))}>
+                <CloseIcon fontSize="inherit" /></button></span>
+          ))}
+          <button title={attachable ? 'attach files'
+            : 'attachments ride @net:/@org: mail only'}
+            disabled={!attachable}
+            onClick={() => fileRef.current?.click()}>
+            <AttachIcon fontSize="inherit" /></button>
+          <span className="spacer" />
+          <button onClick={close} disabled={busy}>cancel</button>
+          <button className="primary" disabled={busy || !dest || !text.trim()}
+            onClick={send}>{busy ? 'sending…' : 'send'}</button>
+        </div>
+      </div>
     </div>
   )
 }
@@ -604,9 +627,8 @@ function ComposeBar({ slug, net, entries, toast }: {
 function NetSection({ net }: { net?: TreePayload['net'] }) {
   return (
     <div className="oi-net">
-      <div className="field-label">mailservers
-        {net?.slug && <span className="dim"> · this org is <b>{net.slug}</b></span>}
-      </div>
+      {net?.slug && <div className="dim" style={{ paddingBottom: 4 }}>
+        this org is <b>{net.slug}</b></div>}
       {(net?.hubs ?? []).filter((h) => !h.hidden).map((h) => (
         <div key={h.id} className="oi-hub">
           <div className="oi-hub-head">
@@ -620,21 +642,35 @@ function NetSection({ net }: { net?: TreePayload['net'] }) {
               {h.queued > 0 ? ` · ${h.queued} queued outbound` : ''}
             </span>
           </div>
-          {h.roster.length > 0 && (
-            <div className="oi-roster">
-              {h.roster.map((r) => (
-                <span key={r.slug} className="oi-peer"
-                  title={(r.blurb || '') + (r.last_seen
-                    ? ` · last seen ${r.last_seen.slice(5, 16).replace('T', ' ')}` : '')}>
-                  <span className={'oi-dot' + (r.online ? ' ok' : '')} />
-                  {r.org_name || r.slug.split('.')[0]}
-                  {r.kind === 'chat' &&
-                    <span className="dim"> (chat)</span>}
-                  <span className="dim mono-sm">·{r.slug.split('.').pop()}</span>
-                </span>
-              ))}
-            </div>
-          )}
+          {h.roster.length > 0 && (() => {
+            // FR-11 parity in-app: group by ORIGIN — the slug's username
+            // segment, shared by every org and session registered from one
+            // machine profile — so "who is this cluster of clients" reads
+            // at a glance, same as the hub's own web UI
+            const groups = new Map<string, typeof h.roster>()
+            for (const r of h.roster) {
+              const origin = r.slug.split('.')[1] ?? '?'
+              groups.set(origin, [...(groups.get(origin) ?? []), r])
+            }
+            return [...groups.entries()].sort().map(([origin, rs]) => (
+              <div key={origin}>
+                <div className="oi-origin">{origin} · {rs.length}</div>
+                <div className="oi-roster">
+                  {rs.map((r) => (
+                    <span key={r.slug} className="oi-peer"
+                      title={(r.blurb || '') + (r.last_seen
+                        ? ` · last seen ${r.last_seen.slice(5, 16).replace('T', ' ')}` : '')}>
+                      <span className={'oi-dot' + (r.online ? ' ok' : '')} />
+                      {r.org_name || r.slug.split('.')[0]}
+                      {r.kind === 'chat' &&
+                        <span className="dim"> (chat)</span>}
+                      <span className="dim mono-sm">·{r.slug.split('.').pop()}</span>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ))
+          })()}
           {h.connected && !h.roster.length &&
             <div className="dim pad-s">no other orgs on this hub yet</div>}
         </div>

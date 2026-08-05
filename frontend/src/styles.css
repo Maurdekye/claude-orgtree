@@ -95,10 +95,22 @@ nav { display: flex; flex-direction: column; gap: 2px; }
 /* F-06: delivery-ladder glyph on org-inbox out rows */
 .net-state { color: var(--dim); font-size: 11px; }
 .net-state.read { color: var(--ok); }
-/* F-06: the mailbox compose bar + network section */
-.oi-compose { border-top: 1px solid var(--line-soft); padding-top: 8px; }
-.oi-net { border-top: 1px solid var(--line-soft); padding-top: 8px;
-  margin-top: 8px; }
+/* F-06: the mailbox network section (its own TAB since the 2026-08-05
+   rework) + the compose MODAL with selectable recipient chips */
+.oi-net { padding-top: 4px; }
+.oi-origin { color: var(--dim); font-size: 10.5px; text-transform: uppercase;
+  letter-spacing: 0.06em; margin: 6px 0 0 15px; }
+.cmp-modal { width: min(560px, 90vw); }
+.cmp-modal textarea { width: 100%; resize: vertical; }
+.cmp-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.cmp-chip { display: inline-flex; align-items: center; gap: 6px;
+  background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: 11px; padding: 2px 10px; font-size: 12px;
+  color: var(--ink); cursor: pointer; }
+.cmp-chip:hover:not(:disabled) { border-color: var(--dim); }
+.cmp-chip.on { border-color: var(--accent); color: var(--ink-strong);
+  background: var(--accent-soft); }
+.cmp-chip .dim { font-size: 10.5px; }
 .oi-hub { margin: 6px 0 2px; }
 .oi-hub-head { display: flex; align-items: center; gap: 8px;
   flex-wrap: wrap; font-size: 12.5px; }
