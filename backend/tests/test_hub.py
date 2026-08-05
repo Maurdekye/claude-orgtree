@@ -108,6 +108,12 @@ def gap(label, why, fn) -> None:
 
 # ------------------------------------------------------------------ the wire
 _transport = httpx.ASGITransport(app=hubapp.app)
+# FR-10: the same app behind the PUBLIC wrapper — every request made through
+# `preq` is one a remote client could make over the tunnel
+from mailhub.public import PublicHub                             # noqa: E402
+
+_public = PublicHub(hubapp.app)
+_ptransport = httpx.ASGITransport(app=_public)   # type: ignore[arg-type]
 
 
 def req(method: str, path: str, *, auth: str = "", json_body=None,
@@ -121,6 +127,19 @@ def req(method: str, path: str, *, auth: str = "", json_body=None,
                 method, path,
                 headers={"x-org-auth": auth} if auth else None,
                 json=json_body, content=content, params=params, timeout=30)
+    return asyncio.run(go())
+
+
+def preq(method: str, path: str, *, auth: str = "", json_body=None,
+         params=None) -> httpx.Response:
+    """One request through the PUBLIC listener (FR-10)."""
+    async def go():
+        async with httpx.AsyncClient(transport=_ptransport,
+                                     base_url="http://hub") as c:
+            return await c.request(
+                method, path,
+                headers={"x-org-auth": auth} if auth else None,
+                json=json_body, params=params, timeout=30)
     return asyncio.run(go())
 
 
@@ -819,6 +838,117 @@ def sec_ui() -> None:
           _ui_is_unauthenticated_by_design)
 
 
+
+# ==================================================================== §10
+def sec_public_face() -> None:
+    """FR-10 — the public listener is a ROUTE SPLIT, and a split is only worth
+    what its blocked half proves. The hub's UI is an unauthenticated view of
+    EVERYONE's mail, so the question is not 'do the api routes work through
+    the wrapper' but 'is there any way at all to reach /ui or / from
+    outside'."""
+    print("\n§10  FR-10 the public face — what the tunnel exposes")
+
+    def _ui_is_gone():
+        for path in ("/", "/ui/data", "/ui/messages"):
+            r = preq("GET", path)
+            assert r.status_code == 404, f"{path} → {r.status_code}"
+        # and the same paths ARE served on the private listener, so the 404s
+        # above are the wrapper's doing and not a missing route
+        assert req("GET", "/ui/messages").status_code == 200
+    check("public · /, /ui/data and /ui/messages 404 through the public "
+          "listener while the private one still serves them", _ui_is_gone)
+
+    def _api_and_health_pass():
+        me = new_org()
+        r = preq("GET", "/api/roster", auth=pair(*me))
+        assert r.status_code == 200 and r.json()["roster"], r.text
+        assert preq("GET", "/healthz").status_code == 200
+    check("public · /api/* and /healthz still work through it", _api_and_health_pass)
+
+    def _every_api_route_still_needs_credentials():
+        # the split's OTHER half: everything it lets through must gate itself
+        probes = [("POST", "/api/register", {"slug": "x.y.z"}),
+                  ("POST", "/api/poll", {}),
+                  ("POST", "/api/ack", {"ids": []}),
+                  ("POST", "/api/send", {"to": "x", "body": "y"}),
+                  ("POST", "/api/receipts", {"ids": []}),
+                  ("GET", "/api/roster", None),
+                  ("GET", "/api/attachments/deadbeef", None)]
+        for method, path, body in probes:
+            r = preq(method, path, json_body=body)
+            assert r.status_code in (401, 403), (
+                f"{method} {path} answered {r.status_code} with NO "
+                f"credentials through the public face")
+    check("public · every route the wrapper admits refuses an unauthenticated "
+          "caller (401/403) — enumerated, not assumed",
+          _every_api_route_still_needs_credentials)
+
+    def _path_tricks_do_not_reach_the_ui():
+        tricks = ["//ui/messages", "/api/../ui/messages", "/API/roster",
+                  "/UI/messages", "/healthz/../ui/messages", "/ui//messages",
+                  "/./ui/messages", "/healthz/", "/api", "/apiX/roster"]
+        for p in tricks:
+            r = preq("GET", p)
+            assert r.status_code == 404, f"{p} → {r.status_code}"
+            assert b"messages" not in r.content[:200], p
+    check("public · dot-segments, double slashes, case and prefix tricks all "
+          "404 without reaching the UI", _path_tricks_do_not_reach_the_ui)
+
+    def _attachment_rights_hold_through_the_public_face():
+        owner, other, rcpt = new_org(), new_org(), new_org()
+        up = req("POST", "/api/attachments", auth=pair(*owner),
+                 content=b"secret bytes", params={"name": "plan.md"})
+        aid = up.json()["id"]
+        send(owner, rcpt[0], "with a file", attachments=[{"id": aid,
+                                                          "name": "plan.md"}])
+        assert preq("GET", f"/api/attachments/{aid}",
+                    auth=pair(*owner)).status_code == 200
+        assert preq("GET", f"/api/attachments/{aid}",
+                    auth=pair(*other)).status_code == 403, "a stranger read it"
+    check("public · attachment custody (owner or recipient only) is unchanged "
+          "through the wrapper", _attachment_rights_hold_through_the_public_face)
+
+    def _non_http_scopes_are_rejected():
+        # was a ⚑ GAP — fixed 2026-08-05: PublicHub now admits ONLY http and
+        # lifespan scopes to the inner app; a websocket handshake is closed
+        # (1008) and any unknown future scope type is dropped. Driven
+        # behaviorally against a counting stub, not read from the source: a
+        # future live-feed route must be admitted here DELIBERATELY, and
+        # this check names the day that conversation has to happen.
+        ws = [r for r in hubapp.app.routes
+              if type(r).__name__ == "WebSocketRoute"]
+        assert not ws, (
+            f"a websocket route now exists: {ws} — decide its public "
+            f"exposure deliberately (PublicHub currently refuses it)")
+        reached: list[str] = []
+
+        async def inner(scope, receive, send):
+            reached.append(str(scope.get("type")))
+
+        pub = PublicHub(inner)
+        sent: list[dict] = []
+
+        async def _send(msg):
+            sent.append(msg)
+
+        async def _recv():
+            return {"type": "websocket.connect"}
+
+        async def drive():
+            await pub({"type": "websocket", "path": "/api/poll"}, _recv, _send)
+            await pub({"type": "asgi.future.type", "path": "/api/poll"},
+                      _recv, _send)
+            await pub({"type": "lifespan"}, _recv, _send)
+        asyncio.run(drive())
+        assert reached == ["lifespan"], (
+            f"a non-HTTP scope reached the inner app: {reached}")
+        assert any(m.get("type") == "websocket.close" for m in sent), (
+            "the websocket handshake was dropped without a close frame")
+    check("public · non-HTTP scopes never reach the inner app (websocket "
+          "closed, unknown types dropped, lifespan admitted)",
+          _non_http_scopes_are_rejected)
+
+
 def main() -> int:
     print("orgtree · the mail hub (F-06 Phase B)")
     sec_register()
@@ -830,6 +960,7 @@ def main() -> int:
     sec_attachments()
     sec_retention()
     sec_ui()
+    sec_public_face()
 
     print()
     if GAPS:

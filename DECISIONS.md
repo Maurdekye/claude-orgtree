@@ -291,6 +291,25 @@ machines"); the user reversed the mechanism one day later for the
 unattended-host case, and the inheritance objection is handled by the strip
 rather than dismissed.
 
+### D-100 · presenting a document needs a DIRECT user audience
+Ruling (user, 2026-08-05, on the redteam's FR-03 finding that
+`present_document` bypassed the org chart): document presentation to the
+user is allowed ONLY for agents with a direct user audience — top-level
+(directly subordinate to the user) or holding a user-audience grant. All
+other agents are REFUSED outright — no auto-bridge. This is a deliberate
+asymmetry with ask_user (D-090), which ROUTES an ungated agent's question
+to its superior: a question needs an answer from somewhere, but a
+document is a standing claim on the user's screen, and the refusal tells
+the agent to hand it up the chain itself (orgtree_message, or ask for a
+grant). Exception carved by the same wave, no ruling needed: headless
+orgs refuse presents for ask_user's §9.6 ② reason (the reader IS the UI),
+and the newest-10 prune logs `present_evicted` + names evicted cards in
+the presenter's result (redteam gaps 2 and 3, same report).
+Was. FR-03 shipped (6e230c7) with only the liveness gate — every agent at
+every depth could put a card on the user's screen; the redteam measured
+it and declined to pick a direction; the user picked refusal over the
+docket's suggested routing bridge.
+
 ### D-099 · independent chats are first-class hub clients (FR-06)
 Ruling (user, 2026-08-05 — an explicit REVERSAL of the spec §12 line
 "strictly org-to-org; the hub does not relay @ext:/@mcp:"): any Claude

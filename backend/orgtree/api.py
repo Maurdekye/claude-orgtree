@@ -1979,7 +1979,10 @@ def document_get(slug: str, did: str) -> dict[str, Any]:
         raise HTTPException(404, str(e))
     doc = next((x for x in org.d.get("documents", []) if x["id"] == did), None)
     if doc is None:
-        raise HTTPException(404, f"no document {did!r}")
+        raise HTTPException(
+            404, f"no document {did!r} — it was dismissed, or evicted by "
+                 f"later presentations (newest 10 per agent are kept; "
+                 f"evictions are in the org log)")
     return {"id": doc["id"], "node": doc["node"], "title": doc["title"],
             "body": doc["body"], "at": doc["at"]}
 

@@ -3227,8 +3227,31 @@ class Org:
         agent's node; clicking it opens the markdown in-page. Non-blocking
         (the present parks like an ask but nothing voids it — a document is
         a standing artifact, not a pending question). `replaces` updates an
-        earlier presentation in place instead of stacking a second card."""
+        earlier presentation in place instead of stacking a second card.
+
+        Gate (user ruling 2026-08-05, D-100): presentation needs a DIRECT
+        user audience — top-level or a held user-audience grant. Unlike
+        ask_user there is NO auto-bridge: everyone else is refused. A
+        document card is a standing claim on the user's screen, so the
+        chain of command applies to it harder than to a question, not
+        softer. Headless orgs refuse for ask_user's reason (§9.6 ②): the
+        reader IS the UI, and there is no screen to put the card on."""
         self._require_live(nid)
+        if self.d.get("headless"):
+            raise LedgerError(
+                "this org runs HEADLESS: no user is present and there is no "
+                "screen to put a document card on. Hand the file over with "
+                "orgtree_send_file (a durable download the user collects "
+                "later), or record what you produced with orgtree_status")
+        n = self.node(nid)
+        if n["parent"] is not None and not self._has_audience(nid, USER):
+            raise LedgerError(
+                "presenting a document needs a DIRECT user audience — you "
+                "are neither top-level nor hold a user-audience grant, and "
+                "unlike a question a document is not routed for you (user "
+                "ruling 2026-08-05). Send it to your superior with "
+                "orgtree_message and let them present it, or ask them to "
+                "grant you a user audience")
         t = str(title or "").strip()[:120]
         b = str(body or "")
         if not t:
@@ -3256,16 +3279,34 @@ class Org:
         did = "d" + uuid.uuid4().hex[:8]
         docs.append({"id": did, "node": nid, "title": t, "body": b,
                      "at": now()})
+        # both prunes log what they drop (redteam gap 2026-08-05): the
+        # reader fetches the body by id on open, so an eviction can 404 a
+        # document the user is reading — the log entry is the trace, and
+        # the presenting agent is told in its own result below
+        evicted: list[dict[str, Any]] = []
         mine = [x for x in docs if x["node"] == nid]
         for x in mine[:-10]:                  # newest 10 per node…
             docs.remove(x)
-        del docs[:-100]                       # …100 org-wide
+            evicted.append(x)
+        for x in docs[:-100]:                 # …100 org-wide
+            evicted.append(x)
+        del docs[:-100]
+        for x in evicted:
+            self._log("present_evicted", x["node"],
+                      {"id": x["id"], "title": str(x["title"])[:60],
+                       "by": did}, [])
         self._log("present", nid, {"id": did, "title": t[:60]}, [])
         return {"presented": did,
                 "status": "the document is on the user's screen as a card "
                           "beside your desk — non-blocking, keep working. "
                           "Present again with replaces set to this id to "
-                          "update it in place."}
+                          "update it in place."
+                          + (f" ⚠ this pushed {len(evicted)} older card(s) "
+                             f"off the screen (newest 10 per agent are "
+                             f"kept): "
+                             + ", ".join(f"{x['id']} “{str(x['title'])[:40]}”"
+                                         for x in evicted)
+                             if evicted else "")}
 
     def dismiss_document(self, did: str) -> dict[str, Any]:
         """The card's ✕ — the user removes a presented document."""

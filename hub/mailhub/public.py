@@ -23,11 +23,24 @@ class PublicHub:
 
     async def __call__(self, scope: dict[str, Any], receive: Any,
                        send: Any) -> None:
-        if scope.get("type") == "http":
-            path = str(scope.get("path") or "")
-            if not (path.startswith("/api/") or path == "/healthz"):
-                await send({"type": "http.response.start", "status": 404,
-                            "headers": [(b"content-type", b"text/plain")]})
-                await send({"type": "http.response.body", "body": b"not found"})
-                return
+        st = str(scope.get("type") or "")
+        if st == "lifespan":                  # startup/shutdown plumbing
+            await self.inner(scope, receive, send)
+            return
+        if st != "http":
+            # redteam FR-10 finding (2026-08-05): only http and lifespan
+            # scopes may reach the inner app through the public face. A
+            # websocket (none exists today) — or whatever scope type ASGI
+            # grows next — must be admitted here DELIBERATELY, not
+            # inherited the day someone adds a live-feed route to the
+            # operator UI.
+            if st == "websocket":
+                await send({"type": "websocket.close", "code": 1008})
+            return
+        path = str(scope.get("path") or "")
+        if not (path.startswith("/api/") or path == "/healthz"):
+            await send({"type": "http.response.start", "status": 404,
+                        "headers": [(b"content-type", b"text/plain")]})
+            await send({"type": "http.response.body", "body": b"not found"})
+            return
         await self.inner(scope, receive, send)
