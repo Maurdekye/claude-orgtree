@@ -155,6 +155,9 @@ def _mint_uid(name: str) -> dict[str, Any]:
         fd = os.open(_id_path(name), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(fresh, f, indent=1)
+            f.flush()
+            os.fsync(f.fileno())      # §2d: the mint is as torn-proof as the
+                                      # save — this uid is the ONLY copy
         try:
             os.chmod(_id_path(name), 0o600)
         except OSError:

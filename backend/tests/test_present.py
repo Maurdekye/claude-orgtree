@@ -286,6 +286,84 @@ def sec_neighbours() -> None:
           _dismiss_round_trip)
 
 
+# ═══════════════════════════════════════════════ §4 (redteam, post-D-100)
+def sec_after_the_ruling() -> None:
+    """The D-100 wave closed three gaps; this section asks what it opened.
+    The eviction notice added for the third gap reports the ORG-WIDE prune to
+    whoever triggered it — and the org-wide prune evicts OTHER agents' cards."""
+    print("\n§4  what the fix opened")
+
+    def _eviction_notice_does_not_leak_other_agents_titles():
+        _n[0] += 1
+        o = Org.create(f"zz leak {_n[0]}", dirs=["E:/work"])
+        # 11 top-level agents: each holds a user audience by being top level,
+        # and the per-node cap is 10, so 11 x 10 crosses the 100 org-wide cap
+        for i in range(11):
+            o.hire(USER, None, "haiku", 2, f"a{i:02d}")
+        for i in range(10):
+            for j in range(10):
+                o.present_document(f"a{i:02d}", f"a{i:02d} secret plan {j}",
+                                   "body")
+        # the eleventh agent's presentations start pushing a00's cards out
+        statuses = [o.present_document("a10", f"mine {j}", "body")["status"]
+                    for j in range(10)]
+        leaked = [st for st in statuses if "secret plan" in st]
+        assert not leaked, (
+            "an agent's own result named another agent's document titles: "
+            + leaked[0][-160:])
+    # promoted from gap() 2026-08-05, fixed same day: the result names only
+    # evictions where x['node'] == nid; the org-wide prune stays log-only
+    # (the org log is the USER's view, and there the cross-agent detail is
+    # correct)
+    check("leak · the eviction notice never names a document belonging to "
+          "another agent",
+          _eviction_notice_does_not_leak_other_agents_titles)
+
+    def _revoked_audience_cannot_update_its_own_card():
+        o = org3()
+        o.audience_grant(USER, "kid", USER)
+        did = o.present_document("kid", "granted", "v1")["presented"]
+        # the grant goes away (the user or the superior revokes it)
+        o.d["audiences"] = [a for a in o.d["audiences"]
+                            if not (a.get("grantee") == "kid"
+                                    and a.get("grantor") == USER)]
+        try:
+            o.present_document("kid", "granted", "v2", replaces=did)
+            raise AssertionError(
+                "an agent whose user audience was revoked still updated the "
+                "card on the user's screen")
+        except LedgerError as e:
+            assert "audience" in str(e).lower(), e
+        assert docs(o, "kid")[0]["body"] == "v1", "the card changed anyway"
+    check("ruling · a revoked user audience stops the agent updating a card "
+          "it already put on the screen (the gate is at the top, so "
+          "`replaces` is covered too)", _revoked_audience_cannot_update_its_own_card)
+
+    def _refusal_names_the_way_out():
+        o = org3()
+        try:
+            o.present_document("grandkid", "blocked", "body")
+            raise AssertionError("the gate did not refuse")
+        except LedgerError as e:
+            msg = str(e).lower()
+            assert "orgtree_message" in msg or "superior" in msg, e
+            assert "grant" in msg, e
+    check("ruling · the refusal tells the agent both ways forward (send it to "
+          "the superior, or be granted an audience) — a refusal with no "
+          "route is how agents get stuck", _refusal_names_the_way_out)
+
+    def _headless_refusal_names_the_alternative():
+        o = org3()
+        o.d["headless"] = True
+        try:
+            o.present_document("boss", "nobody home", "body")
+            raise AssertionError("the headless gate did not refuse")
+        except LedgerError as e:
+            assert "orgtree_send_file" in str(e) or "orgtree_status" in str(e), e
+    check("ruling · the headless refusal points at the durable alternatives "
+          "rather than just saying no", _headless_refusal_names_the_alternative)
+
+
 # ═════════════════════════════════════════════════════════════════════════ main
 
 def main() -> None:
@@ -293,6 +371,7 @@ def main() -> None:
     sec_caps()
     sec_replaces()
     sec_neighbours()
+    sec_after_the_ruling()
 
     print(f"\n{'═' * 70}\n{PASS} checks passed, {len(FAIL)} failed, "
           f"{len(GAPS)} gaps")

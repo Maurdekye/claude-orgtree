@@ -527,15 +527,11 @@ def sec_crash() -> None:
             "an interrupted save left the identity file as "
             f"{after[:40]!r} — open(path, 'w') truncates BEFORE anything is "
             "written, so the credential is destroyed by the attempt")
-    gap("crash · an interrupted save leaves the previous identity intact",
-        "_save_ident opens the live file with mode 'w', which truncates "
-        "immediately; anything that interrupts the dump (power, disk full, a "
-        "kill) leaves a zero-byte credential and, per the gap above, the next "
-        "register mints a new address. The standard fix is three lines: dump "
-        "to <name>.json.tmp, flush + os.fsync, then os.replace onto the real "
-        "path — atomic on both platforms, and it makes the mint path's "
-        "missing fsync moot.",
-        _an_interrupted_save_does_not_destroy_the_old_identity)
+    # promoted from gap() 2026-08-05: _save_ident is tmp + fsync + replace
+    # since 5ef6028 — the interrupted dump dies in the .tmp file and the
+    # live credential survives untouched
+    check("crash · an interrupted save leaves the previous identity intact",
+          _an_interrupted_save_does_not_destroy_the_old_identity)
 
     def _stale_listener_lock_is_recoverable():
         # the outage also left .listening locks behind for all three sessions;
@@ -557,6 +553,71 @@ def io_read(path: str) -> str:
         return open(path, encoding="utf-8").read()
     except OSError:
         return ""
+
+
+# ══════════════════════════════════════════════ §2d (redteam, post-fix)
+def sec_mint_durability() -> None:
+    """The 5ef6028 fix made _save_ident durable (tmp + fsync + replace). The
+    OTHER writer — _mint_uid, the O_EXCL create that brings an identity into
+    existence — still writes buffered. That is the highest-risk window in the
+    whole flow, because the hub's copy of the fingerprint IS durable: the
+    remote side remembers an address whose local secret was never flushed."""
+    print("\n§2d  durability of the MINT path (the fix's other half)")
+
+    def _fsync_probe(fn):
+        """Run fn with os.fsync counted. Returns the call count."""
+        seen = [0]
+        real = hubtool.os.fsync
+
+        def counting(fd):
+            seen[0] += 1
+            return real(fd)
+        hubtool.os.fsync = counting          # type: ignore[assignment]
+        try:
+            fn()
+        finally:
+            hubtool.os.fsync = real          # type: ignore[assignment]
+        return seen[0]
+
+    def _save_is_durable():
+        """ANTI-VACUITY: the same probe must SEE the fsync the fix added, or
+        the gap below would 'pass' on a broken probe rather than a real hole."""
+        fresh_ident()
+        n = _fsync_probe(lambda: hubtool._save_ident(
+            "durable-probe", {"uid": "d" * 64, "name": "durable-probe"}))
+        assert n >= 1, "the probe cannot see _save_ident's fsync"
+    check("mint · the probe sees _save_ident's fsync (so the next check is a "
+          "real absence)", _save_is_durable)
+
+    def _mint_is_durable():
+        fresh_ident()
+        n = _fsync_probe(lambda: hubtool._mint_uid("newborn"))
+        assert n >= 1, (
+            "_mint_uid created the identity file with no flush/fsync — a "
+            "power cut between the mint and the OS flush leaves the file "
+            "empty while the hub already holds sha256(uid), which is exactly "
+            "the stranded-address shape the 2026-08-05 outage produced")
+    # promoted from gap() 2026-08-05, fixed same day (§2d): _mint_uid now
+    # flush+fsyncs inside the O_EXCL handle before register() hands the hub
+    # a durable fingerprint of a secret that exists only in that file
+    check("mint · the O_EXCL mint fsyncs the file it just created",
+          _mint_is_durable)
+
+    def _quarantine_keeps_the_wreck():
+        # the fix's own promise, measured: a corrupt file is preserved as
+        # evidence rather than overwritten
+        fresh_ident()
+        hubtool._ident("wrecked")
+        with open(hubtool._id_path("wrecked"), "w", encoding="utf-8") as f:
+            f.write("\x00\x00\x00")
+        hubtool._CUR.clear()
+        hubtool._ident("wrecked")
+        wrecks = [f for f in os.listdir(hubtool._ID_DIR)
+                  if f.startswith("wrecked.json.corrupt-")]
+        assert wrecks, os.listdir(hubtool._ID_DIR)
+    check("mint · a corrupt identity is quarantined as .corrupt-<ts>, not "
+          "overwritten — the wreck survives for post-mortem",
+          _quarantine_keeps_the_wreck)
 
 
 # ══════════════════════════════════════════════════════════════════════ §3
@@ -771,6 +832,7 @@ def main() -> int:
     sec_race()
     sec_names()
     sec_crash()
+    sec_mint_durability()
     sec_secret()
     sec_listen()
     sec_kind()

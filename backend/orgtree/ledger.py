@@ -3281,17 +3281,20 @@ class Org:
                      "at": now()})
         # both prunes log what they drop (redteam gap 2026-08-05): the
         # reader fetches the body by id on open, so an eviction can 404 a
-        # document the user is reading — the log entry is the trace, and
-        # the presenting agent is told in its own result below
+        # document the user is reading — the log entry is the trace. Only
+        # the presenter's OWN evicted cards are named in its result: the
+        # org-wide prune evicts OTHER agents' cards, and handing their ids
+        # and titles to whoever happened to present the 101st document is a
+        # cross-agent disclosure (redteam finding on ff33072) — those stay
+        # log-only.
         evicted: list[dict[str, Any]] = []
         mine = [x for x in docs if x["node"] == nid]
         for x in mine[:-10]:                  # newest 10 per node…
             docs.remove(x)
             evicted.append(x)
-        for x in docs[:-100]:                 # …100 org-wide
-            evicted.append(x)
+        foreign = list(docs[:-100])           # …100 org-wide
         del docs[:-100]
-        for x in evicted:
+        for x in evicted + foreign:
             self._log("present_evicted", x["node"],
                       {"id": x["id"], "title": str(x["title"])[:60],
                        "by": did}, [])
@@ -3301,9 +3304,9 @@ class Org:
                           "beside your desk — non-blocking, keep working. "
                           "Present again with replaces set to this id to "
                           "update it in place."
-                          + (f" ⚠ this pushed {len(evicted)} older card(s) "
-                             f"off the screen (newest 10 per agent are "
-                             f"kept): "
+                          + (f" ⚠ this pushed {len(evicted)} of your older "
+                             f"card(s) off the screen (newest 10 per agent "
+                             f"are kept): "
                              + ", ".join(f"{x['id']} “{str(x['title'])[:40]}”"
                                          for x in evicted)
                              if evicted else "")}
