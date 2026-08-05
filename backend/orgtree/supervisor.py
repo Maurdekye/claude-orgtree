@@ -1498,6 +1498,15 @@ def _run_one_turn(slug: str, nid: str,
             sid = org.node(nid)["session_id"]
             res = {}
             pend_toks: list[str] = []   # journal batches written, not yet consumed (C1)
+            # the CLI reports a session limit as a SYNTHETIC assistant record
+            # (model "<synthetic>" / isApiErrorMessage) followed by a CLEAN
+            # result and exit 0 — is_error unset, stderr empty. Neither of the
+            # gates below ever saw it, so the card rendered while the node
+            # never froze, the turn was booked as completed, and queued mail
+            # kept feeding a session that could not answer (redteam diagnosis
+            # 2026-08-05, harvested from this machine's real transcripts).
+            # Capture the limit text here; the result/err_blob paths adopt it.
+            synth_limit_txt = ""
             turn_occ = 0        # context size = LAST assistant call's usage (№24)
             turn_out = 0        # cumulative output tokens (killed-turn accounting)
             dbuf, dlast = "", time.time()   # token-stream delta batcher (~8 Hz)
@@ -1662,6 +1671,18 @@ def _run_one_turn(slug: str, nid: str,
                         continue
                     if ev.get("type") == "assistant":
                         dbuf = ""     # the full message supersedes the draft
+                        _msg = ev.get("message", {})
+                        if _msg.get("model") == "<synthetic>" \
+                                or ev.get("isApiErrorMessage") \
+                                or _msg.get("isApiErrorMessage"):
+                            # transcript records carry content as a STRING;
+                            # stream events as blocks — accept both
+                            _c = _msg.get("content")
+                            _t = _c if isinstance(_c, str) else " ".join(
+                                str(b.get("text") or "") for b in (_c or [])
+                                if isinstance(b, dict))
+                            if _looks_like_usage_limit(_t):
+                                synth_limit_txt = _t.strip()[:400]
                         u = ev.get("message", {}).get("usage") or {}
                         t = (u.get("input_tokens", 0)
                              + u.get("cache_read_input_tokens", 0)
@@ -1671,7 +1692,9 @@ def _run_one_turn(slug: str, nid: str,
                         # killed-turn accounting: the result event never comes,
                         # so the stream's per-message usage is the only record
                         turn_out += u.get("output_tokens", 0) or 0
-                        for b in ev.get("message", {}).get("content", []):
+                        for b in ev.get("message", {}).get("content") or []:
+                            if not isinstance(b, dict):
+                                continue    # string-content synthetics
                             if b.get("type") == "text" and b.get("text", "").strip():
                                 fold_thought()
                                 live_row(slug, nid, {"kind": "text",
@@ -1702,8 +1725,22 @@ def _run_one_turn(slug: str, nid: str,
                         # against a live limit, and only the first turn's text
                         # was kept for replay. Leaving them queued lets the
                         # freeze below stop them for real.
-                        limited = bool(ev.get("is_error")) and \
-                            _looks_like_usage_limit(str(ev.get("result") or ""))
+                        _res_txt = str(ev.get("result") or "")
+                        if ev.get("is_error"):
+                            limited = _looks_like_usage_limit(_res_txt)
+                        else:
+                            # the synthetic-record limit (captured above) — and,
+                            # as independent hardening, a limit named in a
+                            # "clean" result. The predicate is broad, so the
+                            # result-text fallback only fires on SHORT
+                            # standalone texts (the CLI's limit card is one
+                            # line); a long genuine answer that merely
+                            # discusses limits must not freeze its author
+                            limited = bool(synth_limit_txt) or (
+                                len(_res_txt.strip()) < 200
+                                and _looks_like_usage_limit(_res_txt))
+                            if limited and not synth_limit_txt:
+                                synth_limit_txt = _res_txt.strip()[:400]
                         nxt = None
                         with _state_lock:
                             st["responding"] = False
@@ -1777,6 +1814,13 @@ def _run_one_turn(slug: str, nid: str,
             err_blob = " / ".join((err or "").strip().splitlines()[-3:]) \
                 if proc.returncode != 0 else (
                     str(res.get("result", "")) if res.get("is_error") else "")
+            if not err_blob and synth_limit_txt:
+                # the synthetic-record limit: exit 0, is_error unset — adopt
+                # the captured text so the freeze machinery below fires, the
+                # turn is NOT booked as completed, and the failure gets its
+                # durable turn_error_log row (before the interrupt check, so
+                # a manual ⏸ still clears everything)
+                err_blob = synth_limit_txt
             with _state_lock:
                 if st.pop("interrupted", None):
                     err_blob = ""     # a manual ⏸ pause is not a failure
