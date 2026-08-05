@@ -1788,6 +1788,28 @@ Groundwork (researcher, 2026-08-05):
 - Agent tool: `orgtree_present {title, body (markdown), replaces?}` mirroring `orgtree_ask`'s
   shape — parked, never blocking.
 
+### F-11 · batched asks — multiple questions in one card
+> multiple questions should be askable at once in a batch. see the attached images for how it
+> looks in claude code's ui.
+
+*(user request 2026-08-05, with reference screenshots of Claude Code's AskUserQuestion batch
+form. NOT BUILT — queued behind the F-06 wave.)*
+
+The reference (from the screenshots): ONE card holding several questions as a **tab strip**
+across the top (short headers as tab labels, e.g. `Kind · Area · Images · Handoff`), the active
+tab underlined; each tab shows its own question with the usual option rows (+Other); answered
+tabs keep their selection when you switch back; a single **`N Submit answers`** bar at the
+bottom carrying the answered-count; ✕/Esc cancels the whole batch.
+
+Groundwork:
+- `orgtree_ask` grows a `questions: [{question, header, options, multi}]` array form (1–4,
+  mirroring the single-question fields; the single form stays and normalizes to a 1-batch).
+- One ask entry in the ledger holds the batch; ALL answers travel as ONE user mail (per-tab
+  answers labeled by header), driving one turn. Voiding/amending applies to the whole batch.
+- AskCard renders the tab strip above the existing option rows (the `ask-tab` chip row is
+  already there for the single header — it becomes the strip); submit disabled until every
+  non-skipped tab has a selection or free text.
+
 ## D-54 · `--expose-admin` moves from argv to an environment variable
 > Move exposed to an environment variable.
 
