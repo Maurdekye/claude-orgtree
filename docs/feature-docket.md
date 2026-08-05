@@ -23,7 +23,7 @@ all unimplemented FRs except mobile. Gear-panel start/release runs `claude remot
 the turn gate refuses), the server is leashed to the backend process, and stale control flags clear
 at `reconcile()`. Sandboxed agents are refused outright. ☞ The FIRST live start doubles as the
 user-present enrollment experiment the groundwork below called for — by construction, not as a
-separate step.)*
+separate step. **Hardened same day**: a redteam pass (4f69f83a) found 5 gaps, all fixed (`d21093b`).)*
 
 Feasibility unknown — **investigate before scoping**. Open questions: what the slash command
 actually does in the pinned CLI; whether it works at all in a headless `-p` session (orgtree already
@@ -387,7 +387,8 @@ chatq's own registry by name. "No integration in either direction" makes that li
 there too, once orgtree sessions never have reason to touch chatq's registry at all. Noted here so
 the full picture lives in one place; out of scope for anyone working in this repo.
 
-**BLOCKER FOUND, 2026-08-05 — NOT EXECUTED; candidate resolution proposed same day, see below.**
+**RULED + EXECUTED same day (`3574bc1`, deployed).** See the resolution and ruling at the bottom of
+this entry — blocker history kept below for the record.
 During the same-day feature wave the implementer investigated actually starting this and stopped
 rather than build past a real architectural mismatch (reported directly, logged here at their
 request):
@@ -446,6 +447,27 @@ precedent, where nobody addresses "any of Alice's orgs," they pick one — or do
 "reach the whole family, fan out to whichever session is live" concept that doesn't exist for orgs
 either? The org precedent suggests the former is the consistent default, but it's worth someone
 stating explicitly rather than letting it fall out by accident.
+
+**Ruled + executed same day (`3574bc1`), user ruling direct to the implementer's session — not
+quite the shared-name version proposed above, and a cleaner resolution than that draft was:** each
+session mints its OWN unique, semantically-appropriate name at register (chosen by the session
+itself, from its own context/purpose), persisted for reuse — not one shared name across a profile's
+sessions distinguished only by fingerprint, as the proposal above assumed. Storage moved from the
+single `~/.orgtree/hub-client.json` to a directory, `~/.orgtree/hub-clients/<name>.json`
+(`O_EXCL`-minted per name, `0600`, matching FR-06's hardening pattern); the legacy single-identity
+file is adopted under its own already-chosen name rather than orphaned.
+
+**The grouping insight this entry started from still holds, automatically, via the piece that was
+never in question:** the address stays `<name>.<username>.<fp[:6]>`, and since every one of a
+profile's sessions still shares `username`, FR-11's UI grouping — built to group by that exact
+field — clusters them together with no changes needed. Grouping came from `username` all along, not
+from sharing a name; the ruling confirms that's the correct load-bearing part.
+
+**The fan-out question above is resolved by construction, not by picking an answer:** since names
+are no longer shared, addressing a specific name reaches that ONE session's identity — org-precedent
+style, exactly as guessed — and there is no "which of Alice's sessions" ambiguity left to resolve,
+because there is no shared "Alice" name for multiple sessions to be confused under in the first
+place.
 
 ---
 
