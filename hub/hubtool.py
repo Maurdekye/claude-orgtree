@@ -11,22 +11,28 @@ MCP server (what a session adds):
   hub_read, hub_wait (bounded long-poll).
 
 Listener (the chatq-shape delivery half — arm it once with the Monitor tool):
-    python hub/hubtool.py listen
+    python hub/hubtool.py listen <name>       (or MAILHUB_NAME=<name>)
   Emits one line per inbound mail (long-polling the hub, acking after print),
   which is exactly how chatq delivers today — making the hub a candidate
-  end-to-end chatq replacement.
+  end-to-end chatq replacement. The name selects WHICH session identity
+  listens; use the name this session registered with.
 
-Identity (user-ruled): the client's UID — minted once per user profile at
-~/.orgtree/hub-client.json and reused forever — is the secret; the hub stores
-sha256(uid). On FIRST registration the user's session must choose a display
-NAME, which is persisted beside the uid and becomes part of the address:
+Identity (user-ruled 2026-08-05, superseding the per-profile single
+identity): EACH SESSION mints its own unique identity, keyed by a NAME the
+session chooses itself — semantically appropriate to its own context /
+directive / purpose (e.g. "orgtree-redteam", "nebula-builder"). Identities
+live one-per-file at ~/.orgtree/hub-clients/<name>.json: the 256-bit uid in
+the file is the secret (the hub stores sha256(uid)), and the address is
     <name>.<username>.<sha256(uid)[:6]>        (kind: chat)
-Orgs address a chat as @net:<that slug>, exactly like a remote org; the chat
-addresses anyone on the roster by their slug. The dial-out direction of the
-connection is preserved: the chat polls the hub; nothing ever reaches in.
+The session REMEMBERS its chosen name and registers with it again to resume
+the same address — the name is the key, so a different name is a different
+identity (which is exactly what makes N concurrent sessions safe: each has
+its own address and its own deliver-once mailbox, no racing). Orgs address a
+chat as @net:<slug>; the dial-out direction is preserved (the chat polls the
+hub; nothing ever reaches in).
 
-Env: MAILHUB_URL (default http://127.0.0.1:7370) · MAILHUB_NAME (pre-seeds
-the name choice; useful for scripts).
+Env: MAILHUB_URL (default http://127.0.0.1:7370) · MAILHUB_NAME (pre-seeds /
+selects the name; the listener requires one).
 """
 
 from __future__ import annotations
@@ -44,83 +50,115 @@ import uuid
 from typing import Any, cast
 
 HUB = os.environ.get("MAILHUB_URL", "http://127.0.0.1:7370").rstrip("/")
-_ID_PATH = os.path.expanduser("~/.orgtree/hub-client.json")
+_ID_DIR = os.path.expanduser("~/.orgtree/hub-clients")
+_LEGACY_ID = os.path.expanduser("~/.orgtree/hub-client.json")
 _NAME_RE = re.compile(r"[^a-z0-9-]+")
+_CUR: list[str] = []            # this process's active identity NAME
 
 
-def _load_ident() -> dict[str, Any]:
+def _user() -> str:
+    return _NAME_RE.sub("-", getpass.getuser().lower()).strip("-") or "user"
+
+
+def _norm_name(raw: str) -> str:
+    """Sanitize + length-budget a chosen name (the hub's slug cap is 128;
+    username + fingerprint are fixed width, so the budget is exact —
+    redteam ②: an over-long IMMUTABLE name bricked the client)."""
+    pick = _NAME_RE.sub("-", str(raw or "").strip().lower()).strip("-")
+    budget = 128 - len(_user()) - 6 - 2
+    return pick[:max(1, budget)].strip("-")
+
+
+def _id_path(name: str) -> str:
+    return os.path.join(_ID_DIR, f"{name}.json")
+
+
+def _active_name(explicit: str | None = None) -> str:
+    if explicit:
+        return _norm_name(explicit)
+    if _CUR:
+        return _CUR[0]
+    return _norm_name(os.environ.get("MAILHUB_NAME") or "")
+
+
+def _load_ident(name: str) -> dict[str, Any]:
     try:
-        d = json.load(open(_ID_PATH, encoding="utf-8"))
+        d = json.load(open(_id_path(name), encoding="utf-8"))
         if isinstance(d, dict) and cast("dict[str, Any]", d).get("uid"):
             return cast("dict[str, Any]", d)
+    except (OSError, ValueError):
+        pass
+    # one-time adoption of the pre-ruling single-profile identity: if the
+    # legacy file carries THIS name, its uid moves here so the already-
+    # registered address keeps working (the hub is first-write-wins)
+    try:
+        legacy = json.load(open(_LEGACY_ID, encoding="utf-8"))
+        if isinstance(legacy, dict) \
+                and cast("dict[str, Any]", legacy).get("uid") \
+                and _norm_name(str(cast("dict[str, Any]",
+                                        legacy).get("name") or "")) == name:
+            d2 = cast("dict[str, Any]", legacy)
+            _save_ident(name, d2)
+            return d2
     except (OSError, ValueError):
         pass
     return {}
 
 
-def _save_ident(d: dict[str, Any]) -> None:
-    os.makedirs(os.path.dirname(_ID_PATH), exist_ok=True)
-    with open(_ID_PATH, "w", encoding="utf-8") as f:
+def _save_ident(name: str, d: dict[str, Any]) -> None:
+    os.makedirs(_ID_DIR, exist_ok=True)
+    with open(_id_path(name), "w", encoding="utf-8") as f:
         json.dump(d, f, indent=1)
     try:
         # the uid IS the credential (redteam ④): owner-only on POSIX
-        os.chmod(_ID_PATH, 0o600)
+        os.chmod(_id_path(name), 0o600)
     except OSError:
         pass
 
 
-def _mint_uid() -> dict[str, Any]:
-    """Mint the shared per-profile uid ATOMICALLY (redteam ①): two chats
-    starting together must end up with ONE uid — the losing writer of an
-    unlocked read-modify-write registered an address whose secret died at
-    its restart, stranding the slug on the first-write-wins hub forever.
-    O_EXCL means exactly one minter wins; everyone else adopts the file."""
-    os.makedirs(os.path.dirname(_ID_PATH), exist_ok=True)
+def _mint_uid(name: str) -> dict[str, Any]:
+    """Mint this identity's uid ATOMICALLY (redteam ①): two processes
+    choosing the SAME name concurrently must end up with ONE uid — the
+    losing writer of an unlocked read-modify-write registered an address
+    whose secret died at its restart, stranding the slug on the
+    first-write-wins hub forever. O_EXCL means exactly one minter wins;
+    everyone else adopts the file."""
+    os.makedirs(_ID_DIR, exist_ok=True)
     fresh = {"uid": uuid.uuid4().hex + uuid.uuid4().hex}     # 256-bit uid
     try:
-        fd = os.open(_ID_PATH, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        fd = os.open(_id_path(name), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(fresh, f, indent=1)
         try:
-            os.chmod(_ID_PATH, 0o600)
+            os.chmod(_id_path(name), 0o600)
         except OSError:
             pass
         return fresh
     except FileExistsError:
-        return _load_ident()          # the other starter won — adopt theirs
+        return _load_ident(name)      # the other starter won — adopt theirs
 
 
 def _ident(name: str | None = None) -> dict[str, Any]:
-    """The persistent client identity. The uid is minted ONCE per user
-    profile; the NAME must be chosen on first registration (user ruling) and
-    is immutable thereafter (the fingerprint suffix rides the address, so a
-    rename would change the address — same immutability rule as orgs)."""
-    d = _load_ident()
+    """The persistent PER-SESSION identity (user ruling 2026-08-05): keyed
+    by the session's self-chosen name — ~/.orgtree/hub-clients/<name>.json.
+    Registering with a remembered name resumes the same uid and therefore
+    the same address; the name is immutable per identity (the fingerprint
+    suffix rides the address, so a rename would change it — same rule as
+    orgs). No name resolved → empty dict; hub_register must supply one."""
+    nm = _active_name(name)
+    if not nm:
+        return {}
+    d = _load_ident(nm)
     if not d.get("uid"):
-        d = _mint_uid()
+        d = _mint_uid(nm)
         if not d.get("uid"):          # corrupt file lost the race — rare
             d = {"uid": uuid.uuid4().hex + uuid.uuid4().hex}
-            _save_ident(d)
+            _save_ident(nm, d)
     fp = hashlib.sha256(str(d["uid"]).encode()).hexdigest()
-    user = _NAME_RE.sub("-", getpass.getuser().lower()).strip("-") or "user"
-    if not d.get("name"):
-        pick = (name or os.environ.get("MAILHUB_NAME") or "").strip().lower()
-        pick = _NAME_RE.sub("-", pick).strip("-")
-        # the hub's slug cap is 128 (redteam ②): an over-long IMMUTABLE name
-        # bricked the client — every register 422'd and no rename exists.
-        # username + fingerprint are fixed width, so the budget is exact.
-        budget = 128 - len(user) - 6 - 2
-        pick = pick[:max(1, budget)].strip("-")
-        if not pick:
-            return d          # unnamed — hub_register must supply a name
-        d["name"] = pick
-        _save_ident(d)
-        # read BACK (redteam ①): a concurrent chooser may have won the name
-        # write — adopt whatever the file holds so both agree with the disk
-        d = _load_ident()
-    if d.get("name"):
-        d["slug"] = f"{d['name']}.{user}.{fp[:6]}"
-        _save_ident(d)
+    d["name"] = nm
+    d["slug"] = f"{nm}.{_user()}.{fp[:6]}"
+    _save_ident(nm, d)
+    _CUR[:] = [nm]
     return d
 
 
@@ -171,13 +209,14 @@ def take_fresh(out: dict[str, Any]) -> list[dict[str, Any]]:
     msgs = cast("list[dict[str, Any]]", out.get("messages") or [])
     if not msgs:
         return []
-    d = _load_ident()
+    nm = _active_name()
+    d = _load_ident(nm)
     ring = [str(x) for x in cast("list[Any]", d.get("seen_ids") or [])]
     fresh = [m for m in msgs if str(m.get("id")) not in ring]
     if fresh:
         ring.extend(str(m.get("id")) for m in fresh)
         d["seen_ids"] = ring[-200:]
-        _save_ident(d)
+        _save_ident(nm, d)
     try:
         ack([str(m["id"]) for m in msgs])
     except Exception:                                            # noqa: BLE001
@@ -192,12 +231,18 @@ def fmt(m: dict[str, Any]) -> str:
 
 # ─────────────────────────────────────────────── the Monitor-armable listener
 
-def listen() -> None:
-    d = _ident()
+def listen(name: str | None = None) -> None:
+    """python hub/hubtool.py listen <name>   (or MAILHUB_NAME) — the name
+    selects WHICH session identity listens; per-session identities are the
+    whole point (user ruling 2026-08-05), so an unnamed listener would be
+    ambiguous and is refused."""
+    d = _ident(name)
     if not d.get("slug"):
-        print("no identity yet — run hub_register with a name first",
-              flush=True)
+        print("no identity name — pass one (python hubtool.py listen "
+              "<name>) or set MAILHUB_NAME; use the name this session "
+              "registered with", flush=True)
         return
+    print(f"listening as {d['slug']} …", flush=True)
     try:
         register()
     except Exception:                                            # noqa: BLE001
@@ -215,13 +260,19 @@ def listen() -> None:
 TOOLS: list[dict[str, Any]] = [
     {"name": "hub_register",
      "description": (
-         "Join the mail hub as this chat. FIRST call must include `name` — "
-         "it becomes part of your permanent address "
-         "(<name>.<user>.<fingerprint>) and cannot change later. Idempotent "
-         "afterwards; returns your address and the roster."),
+         "Join the mail hub as THIS SESSION. Choose a UNIQUE, semantically "
+         "appropriate `name` that reflects this session's own context / "
+         "directive / purpose (e.g. 'orgtree-redteam', 'terrain-pipeline') "
+         "— every session has its own identity, and the name is the key. "
+         "REMEMBER the name you chose: registering with it again later "
+         "resumes the SAME address (<name>.<user>.<fingerprint>); a "
+         "different name is a different identity. Immutable once minted. "
+         "Returns your address and the roster."),
      "inputSchema": {"type": "object", "properties": {
          "name": {"type": "string",
-                  "description": "your chosen display name (first call only)"},
+                  "description": "this session's self-chosen identity name "
+                                 "— unique, purpose-describing, reused on "
+                                 "every later register"},
      }}},
     {"name": "hub_list",
      "description": "Everyone on the hub — orgs and chats — with kind, "
@@ -250,7 +301,9 @@ def dispatch(tool: str, args: dict[str, Any]) -> str:
     d = _ident()
     if not d.get("slug"):
         return json.dumps({"error": "not registered — call hub_register "
-                                    "with a name first"})
+                                    "with this session's self-chosen name "
+                                    "first (pick one from your purpose; "
+                                    "reuse it every session)"})
     if tool == "hub_list":
         out = _call("/api/roster", None, method="GET")
         return json.dumps(out.get("roster") or [])
@@ -310,6 +363,6 @@ def serve() -> None:
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "listen":
-        listen()
+        listen(sys.argv[2] if len(sys.argv) > 2 else None)
     else:
         serve()

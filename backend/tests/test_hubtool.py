@@ -57,7 +57,10 @@ import hubtool                                                   # noqa: E402
 from mailhub import app as hubapp, db as hubdb                   # noqa: E402
 
 hubapp.print = lambda *a, **k: None
-hubtool._ID_PATH = os.path.join(_TMP, "home", ".orgtree", "hub-client.json")
+# per-session name-keyed identities (user ruling 2026-08-05) — one file per
+# chosen name under hub-clients/, legacy single-file adopted by name
+hubtool._ID_DIR = os.path.join(_TMP, "home", ".orgtree", "hub-clients")
+hubtool._LEGACY_ID = os.path.join(_TMP, "home", ".orgtree", "hub-client.json")
 
 PASS = 0
 FAIL: list[tuple[str, str]] = []
@@ -152,37 +155,35 @@ hubtool.urllib.request.urlopen = _urlopen      # type: ignore[assignment]
 
 
 def fresh_ident():
-    """Forget this profile's client identity — i.e. a brand-new machine."""
+    """Forget every client identity — i.e. a brand-new machine."""
+    shutil.rmtree(hubtool._ID_DIR, ignore_errors=True)
     try:
-        os.remove(hubtool._ID_PATH)
+        os.remove(hubtool._LEGACY_ID)
     except OSError:
         pass
+    hubtool._CUR.clear()
+    os.environ.pop("MAILHUB_NAME", None)
 
 
 def ident_file():
+    """The ACTIVE identity's file (per-session name-keyed since the
+    2026-08-05 ruling)."""
+    nm = hubtool._active_name()
+    if not nm:
+        return {}
     try:
-        return json.load(open(hubtool._ID_PATH, encoding="utf-8"))
+        return json.load(open(hubtool._id_path(nm), encoding="utf-8"))
     except (OSError, ValueError):
         return {}
 
 
-_IDENTS = os.path.join(_TMP, "idents")
-
-
 def become(name: str) -> str:
     """Switch this process to a named client identity, creating and
-    registering it the first time. hubtool keeps ONE identity per profile, so
-    driving two clients in one process means swapping the file — which is
-    exactly what two chats on one machine do, one after another."""
-    os.makedirs(_IDENTS, exist_ok=True)
-    saved = os.path.join(_IDENTS, name + ".json")
-    if os.path.exists(saved):
-        shutil.copy(saved, hubtool._ID_PATH)
-    else:
-        fresh_ident()
-        hubtool._ident(name)
-        hubtool.register()
-        shutil.copy(hubtool._ID_PATH, saved)
+    registering it the first time. Since the per-session ruling this is the
+    NORMAL shape — each name IS its own persisted identity file, so
+    switching is just re-activating a name (no file swapping needed)."""
+    hubtool._ident(name)
+    hubtool.register()
     return str(ident_file()["slug"])
 
 
@@ -210,17 +211,23 @@ def sec_identity() -> None:
     check("the uid is 256-bit, the name is slugified, the address has 3 parts",
           _mint_and_shape)
 
-    def _minted_once():
+    def _minted_once_per_name():
+        # per-session ruling (2026-08-05): the NAME is the identity key.
+        # The same name always resumes the same uid/slug; a DIFFERENT name
+        # is deliberately a different identity — that is what lets N
+        # concurrent sessions each have their own deliver-once mailbox.
         fresh_ident()
         first = dict(hubtool._ident("stable"))
         for _ in range(3):
-            again = hubtool._ident("something else entirely")
+            again = hubtool._ident("stable")
             assert again["uid"] == first["uid"], "the uid was re-minted"
-            assert again["name"] == first["name"], (
-                "the NAME changed after first choice — it rides the permanent "
-                "address, so it must be immutable")
             assert again["slug"] == first["slug"]
-    check("uid and name are minted ONCE and immutable thereafter", _minted_once)
+        other = dict(hubtool._ident("something-else-entirely"))
+        assert other["uid"] != first["uid"] and other["slug"] != first["slug"], (
+            "two different session names shared one identity — sessions "
+            "would race for each other's mail")
+    check("a name resumes its own identity; a different name is a different "
+          "identity", _minted_once_per_name)
 
     def _unnamed_refuses_rather_than_guesses():
         fresh_ident()
@@ -253,17 +260,13 @@ def sec_identity() -> None:
             f"a {len(d['slug'])}-character address was minted and PERSISTED. "
             f"The hub's slug regex caps at 128, so every register returns 422 "
             f"'malformed slug' — and because the name is immutable, the "
-            f"client can never fix itself: the only remedy is deleting "
-            f"{hubtool._ID_PATH} by hand")
-    gap("an over-long name cannot brick the client identity",
-        "hubtool._ident() sanitises the chosen name but never LENGTHS it, and "
-        "the name is immutable by ruling. A name over ~110 characters produces "
-        "a slug the hub's _SLUG_RE (max 128) refuses, so registration 422s "
-        "for ever and the client has no way back — hub_register cannot pick a "
-        "new name. Truncate to fit (the fingerprint suffix and username are "
-        "fixed-width, so the budget is computable), or validate before the "
-        "first save.",
-        _long_name_is_capped)
+            f"client can never fix itself: the only remedy is deleting its "
+            f"file under {hubtool._ID_DIR} by hand")
+    # was a gap: an over-long immutable name bricked the client (every
+    # register 422'd). Fixed 2026-08-05: _norm_name budgets the name to
+    # 128 − len(user) − 6 − 2 before anything persists.
+    check("an over-long name cannot brick the client identity",
+          _long_name_is_capped)
 
 
 # ══════════════════════════════════════════════════════════════════════ §2
@@ -271,36 +274,56 @@ def sec_race() -> None:
     print("\n§2  two chats registering at the same moment")
 
     def _concurrent_first_registration():
-        # promoted from gap() 2026-08-05 — the fix is an O_EXCL mint: exactly
-        # one starter creates the file; every other starter's os.open raises
-        # FileExistsError and ADOPTS the file's uid (and, via the read-back,
-        # the first chooser's name). The original replay deleted the file to
-        # simulate the race, which bypasses the very mechanism — this one
-        # exercises the real interleaving: B completes fully between A's
-        # (absent) read and A's mint attempt.
+        # promoted from gap() 2026-08-05; re-keyed for the per-session
+        # ruling the same day. The race now only exists when two processes
+        # pick the SAME name — the O_EXCL mint makes exactly one starter
+        # create that name's file; the other's os.open raises FileExistsError
+        # and ADOPTS the file's uid. This exercises the real interleaving:
+        # B completes fully between A's (absent) read and A's mint attempt.
         fresh_ident()
-        pre = dict(hubtool._load_ident())     # A reads: absent
+        pre = dict(hubtool._load_ident("gamma"))   # A reads: absent
         assert not pre.get("uid"), "fixture: A saw no identity"
-        b = dict(hubtool._ident("beta"))      # B completes first
-        a = dict(hubtool._ident("alpha"))     # A mints → EEXIST → adopts
+        b = dict(hubtool._ident("gamma"))          # B completes first
+        a = dict(hubtool._ident("gamma"))          # A mints → EEXIST → adopts
         assert a["uid"] == b["uid"], (
-            "two racing starters ended with DIFFERENT uids — the loser will "
-            "register an address whose secret dies at its restart, and the "
-            "first-write-wins hub strands that slug forever")
-        assert a["slug"] == b["slug"], \
-            "…and the adopted identity carries the first chooser's name"
-    check("two chats minting an identity at once do not strand an address",
-          _concurrent_first_registration)
+            "two racing starters of ONE name ended with DIFFERENT uids — the "
+            "loser will register an address whose secret dies at its restart, "
+            "and the first-write-wins hub strands that slug forever")
+        assert a["slug"] == b["slug"]
+    check("two processes minting the SAME name at once do not strand an "
+          "address", _concurrent_first_registration)
 
-    def _same_profile_reuses_one_identity():
-        # the property the fix must preserve: sequential chats SHARE the
-        # profile identity rather than each minting their own
+    def _returning_session_resumes_its_identity():
+        # the ruling's persistence half: the session saves its name and
+        # REUSES it — a later process registering the remembered name gets
+        # the same uid and therefore the same address back
         fresh_ident()
         first = dict(hubtool._ident("shared"))
-        again = dict(hubtool._ident())         # a second chat, later
+        hubtool._CUR.clear()                       # a fresh process, later
+        again = dict(hubtool._ident("shared"))
         assert again["uid"] == first["uid"] and again["slug"] == first["slug"]
-    check("chats started sequentially share the profile's one identity",
-          _same_profile_reuses_one_identity)
+    check("a returning session resumes its named identity (same address)",
+          _returning_session_resumes_its_identity)
+
+    def _legacy_single_identity_is_adopted():
+        # the pre-ruling single-profile file: its uid must move to the new
+        # per-name store so the already-registered address keeps working
+        # (the hub is first-write-wins — a re-mint would strand it)
+        fresh_ident()
+        os.makedirs(os.path.dirname(hubtool._LEGACY_ID), exist_ok=True)
+        legacy = {"uid": "e" * 64, "name": "old-timer"}
+        with open(hubtool._LEGACY_ID, "w", encoding="utf-8") as f:
+            json.dump(legacy, f)
+        d = hubtool._ident("old-timer")
+        assert d["uid"] == "e" * 64, (
+            "the legacy identity was re-minted instead of adopted — its "
+            "registered address is now unreachable forever")
+        other = hubtool._ident("newcomer")
+        assert other["uid"] != "e" * 64, (
+            "a DIFFERENT name adopted the legacy uid — every session would "
+            "collapse back into one identity")
+    check("the pre-ruling single-profile identity is adopted by ITS name "
+          "only", _legacy_single_identity_is_adopted)
 
 
 # ══════════════════════════════════════════════════════════════════════ §3
@@ -347,7 +370,7 @@ def sec_secret() -> None:
         fresh_ident()
         hubtool._ident("perms")
         if os.name != "nt":
-            mode = os.stat(hubtool._ID_PATH).st_mode & 0o777
+            mode = os.stat(hubtool._id_path("perms")).st_mode & 0o777
             assert mode & 0o077 == 0, (
                 f"the identity file holding the SECRET is mode {mode:o} — on "
                 f"a shared machine any other user can read it and become "
@@ -403,16 +426,12 @@ def sec_listen() -> None:
             f"while the ack was failing: hubtool has no dedupe, so an ack "
             f"outage repeats every unacked message on every pass — the org "
             f"client keeps a seen-ring for exactly this")
-    gap("a failing ack does not repeat the same message every pass",
-        "hubtool.listen()/hub_read surface messages and THEN ack. With no "
-        "seen-ring, an ack that fails — hub blip, network, a crash between the "
-        "two — means the next poll returns the same messages and shows them "
-        "again, on every pass until the ack succeeds. The org client solved "
-        "this with a persisted ring; the chat client sits on the same "
-        "at-least-once hub with none of the protection. A small ring in "
-        "~/.orgtree/hub-client.json (or acking BEFORE surfacing, trading a "
-        "duplicate for a loss) is the choice to make.",
-        _failed_ack_redelivers_with_no_dedupe)
+    # was a gap: no seen-ring, so an ack outage repeated every unacked
+    # message on every pass. Fixed 2026-08-05: take_fresh keeps a persisted
+    # 200-id ring in the (now name-keyed) identity file; the ack is still
+    # attempted for every delivered id.
+    check("a failing ack does not repeat the same message every pass",
+          _failed_ack_redelivers_with_no_dedupe)
 
 
 # ══════════════════════════════════════════════════════════════════════ §5
