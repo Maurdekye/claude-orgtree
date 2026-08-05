@@ -182,12 +182,16 @@ restarts the backend in the background with a health check. `update.sh` also
 runs under Git Bash on Windows.
 
 Both accept a deliberately awkward `-ExposeAdmin` / `--expose-admin` switch,
-which binds the **admin** API to `0.0.0.0` instead of loopback. The admin API
-has no password, token or login — reaching the port *is* the credential — so
-only do this behind a VPN, an SSH tunnel, or an authenticating reverse proxy.
-It is command-line only on purpose: no setting, org doc or environment
-variable can turn it on, which means no agent can either. To share one org
-with someone, make it a kiosk instead.
+which sets `ORGTREE_EXPOSE_ADMIN` and binds the **admin** API to `0.0.0.0`
+instead of loopback. The admin API has no password, token or login —
+reaching the port *is* the credential — so only do this behind a VPN, an SSH
+tunnel, or an authenticating reverse proxy. The environment variable is what
+actually gates it, on purpose: a service definition (Task Scheduler,
+systemd) can set it directly with no switch needed, which the old
+command-line-only design couldn't offer. What's unchanged is that no *org
+setting or doc key* can turn it on, and it's stripped from every agent's own
+environment regardless (`clean_env`) — so no agent can either. To share one
+org with someone, make it a kiosk instead.
 
 Open **http://127.0.0.1:7360**, create an organization, hover the eye, and
 hire your first agent. The full interaction manual — hiring chips, credit-bar

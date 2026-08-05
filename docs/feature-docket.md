@@ -374,3 +374,78 @@ second needs a real change in `hub/`'s own server, mirroring the split orgtree's
 already makes between its loopback-only admin surface and the public kiosk gateway.
 
 Not decided here — flagging the wrinkle is the point, not picking a side.
+
+---
+
+### FR-11 · hub UI: group orgs by client, color-code apart from independent chats
+> group orgs in the mailserver ui by client, and color-code them differently to independently
+> connected clients so they appear visually distinct
+
+*(user request 2026-08-05, recorded by the curator.)*
+
+**Good news: this is a pure frontend change — the backend already sends everything it needs.**
+Traced the whole path, `hub/mailhub/`:
+
+- **Schema already has the grouping key.** `db.py:32-39` — the `orgs` table carries `slug` (PK),
+  **`username`**, and **`kind`** (`'org' | 'chat'`, default `'org'` — added for FR-06's independent
+  chats). `username` is exactly "which client" — every org (or chat) registered from the same
+  orgtree instance / `hubtool.py` profile shares it, since it's `getpass.getuser()` on the
+  registering machine (`app.py:185`, `hub/hubtool.py`'s `register()`).
+- **The API already returns both.** `/ui/data`'s `_roster()` (`app.py:130-136`) selects `slug,
+  org_name, username, blurb, last_seen, kind` and returns all of it per row — `username` and `kind`
+  are already in every object the frontend receives today.
+- **The frontend just doesn't use them yet.** `hub/mailhub/static/index.html`'s `refresh()`
+  (lines 91–114) reads `o.slug`, `o.online`, `o.last_seen`, `o.blurb`, `o.queued` and renders one
+  flat list, sorted by slug — `o.username` and `o.kind` are never referenced, even though
+  `o.slug.split('.')` already incidentally displays the username as text (just not as a grouping or
+  color key). No grouping exists; the only color signal today is the online/offline dot.
+
+**The shape of the fix, entirely in `static/index.html` (single file, no build step, no backend
+changes):**
+1. Group the `d.orgs` array by `o.username` before rendering the `#orgs` sidebar — a header/divider
+   per client, sorted groups instead of one flat sorted-by-slug list.
+2. Color-code **`kind`**, not `username`, as the thing that makes two rows "visually distinct" —
+   org rows and chat rows need a stable, obvious difference (icon, dot color, left-border accent)
+   wherever they appear, since a mixed client (an orgtree instance's orgs *and* someone's
+   `hubtool.py` chat identity can share one `username`) should still read as two different kinds of
+   thing at a glance, not just two different clients.
+3. The CSS already has a small named palette to extend rather than invent from
+   (`--accent`/`--ok`/`--bad`/`--sky`, `index.html:10-17`) — matches the "follows the orgtree
+   ui-guide visual language" comment already at the top of the file's `<style>` block.
+
+**One open question worth a ruling, not an assumption:** should per-*client* grouping also get a
+distinct color per group (so client A's cluster and client B's cluster are each a different hue),
+on top of the org/chat kind-marker within each group — or is grouping (spatial) enough on its own
+and color should be spent entirely on the org-vs-chat distinction? The request names both
+("group... by client, AND color-code... to independently connected clients"), which reads as two
+separate signals, not one — but stacking two color dimensions (per-client hue *and* per-kind marker)
+on a small sidebar row risks the "generic dashboard with too many simultaneous colors" trap. Left
+for whoever builds it.
+
+---
+
+### FR-12 · implementer, redteam, and curator charter presets
+> new feature: add implementer, redteam, and curator charter presets to the docs. i want this to be
+> taken care of by the implementer, not you.
+>
+> based off of the three of your current team roles
+
+*(user request 2026-08-05, recorded by the curator — **build explicitly routed to the implementer,
+not this role.** Relayed directly over chatq rather than left for someone to notice in the docket,
+given the explicit routing instruction.)*
+
+**What a charter preset mechanically is**, for whoever picks this up: a file in `docs/charters/*.md`
+is a selectable role card offered at hire time (`configuration.md` §③, `api.py:1141`). Two exist
+today — `coordinator.md` and `business.md` — no others. This entry is deliberately **not** a draft
+of the three new ones; the user was explicit that authoring them belongs to the implementer.
+
+**The source material, confirmed by the user rather than guessed at:** the three charters are
+"based off of the three of your current team roles" — i.e., how this session's own chatq-coordinated
+collaboration has actually operated: **implementer** (`8385c4e9` — builds, reviews, commits),
+**redteam** (`4f69f83a` — per the user's own naming; this session's docket has mostly called that
+role test-author/researcher, and the FR-06 hardening pass's "committed redteam suite" is the
+closest existing precedent for what adversarial work under that name has looked like here), and
+**curator** (this role — read-only over code, documentation and feature-docket management, no
+commits). Turning a live, organically-arrived-at three-way division of labor into hire-time charter
+presets is a genuinely interesting bit of reflexivity worth the implementer knowing about
+explicitly — the product is being asked to formalize the exact process that built it.
