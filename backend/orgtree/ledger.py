@@ -331,14 +331,36 @@ class Org:
                 fz.pop("until", None)
         # FABLE-2 (redteam + user report 2026-08-06): a fable_lock that
         # recorded a reset time releases itself once it passes — the same
-        # rule the per-node freeze follows. Silent like the retag above (a
-        # load-time hook must not notify on every read); the next save
-        # persists it. A TIMELESS lock still waits for clear_fable_lock.
+        # rule the per-node freeze follows. A TIMELESS lock still waits for
+        # clear_fable_lock. FABLE-3: the halt was LOUD (parent asked to
+        # cover the work, peers and the node told), so the release
+        # announces itself to the same parties. Announcing from a load hook
+        # is safe for the same reason the release is: the TRIGGER (the
+        # lock) is consumed in the same mutation, so once any save persists
+        # this copy no later load re-announces, and unsaved copies die with
+        # their load and re-derive identically — every reader sees exactly
+        # one announcement.
         _fl = self.d.get("fable_lock") or {}
         if _fl.get("until_ts") and _time.time() >= float(_fl["until_ts"]):
+            _freed = [k for k, v in self.nodes.items()
+                      if v.get("limit_locked")]
             self.d.pop("fable_lock", None)
             for n in self.nodes.values():
                 n.pop("limit_locked", None)
+            for k in _freed:
+                _p = self.nodes[k]["parent"]
+                self._notify([_p] + self._peers_of(_p, k),
+                             f'"{k}" is RELEASED from the weekly-Fable halt '
+                             f'— the limit reset. It runs again; no need to '
+                             f'keep covering its work.')
+                self._notify([k], "The weekly Fable limit has reset: you "
+                                  "are no longer halted. Carry on.")
+            if _freed:
+                self.d.setdefault("user_inbox", []).append({
+                    "from": SYSTEM, "kind": "notice", "at": now(),
+                    "body": "Weekly Fable limit reset — halted fable "
+                            "agent(s) released: " + ", ".join(sorted(_freed))
+                            + ". Their superiors were told to stop covering."})
         # org holdings carry RW/RO modes (user ruling — configured on the eye's
         # gear, mirroring per-agent folder access); legacy string lists migrate
         self.d["dirs"] = norm_dirs(self.d.get("dirs"))
@@ -3759,10 +3781,22 @@ class Org:
                 "converted": converted}
 
     def clear_fable_lock(self) -> None:
+        """FABLE-3 (redteam 2026-08-06): the manual exit announces the
+        release like the timed one — the halt asked superiors to cover the
+        halted agents' work, and nothing ever told them to stop."""
+        freed = [k for k, v in self.nodes.items() if v.get("limit_locked")]
         self.d.pop("fable_lock", None)
         for v in self.nodes.values():
             v.pop("limit_locked", None)
-        self._log("fable_unlock", USER, {}, [])
+        for k in freed:
+            p = self.nodes[k]["parent"]
+            self._notify([p] + self._peers_of(p, k),
+                         f'"{k}" is RELEASED from the weekly-Fable halt (the '
+                         f'user cleared it). It runs again; no need to keep '
+                         f'covering its work.')
+            self._notify([k], "The Fable lock was cleared by the user: you "
+                              "are no longer halted. Carry on.")
+        self._log("fable_unlock", USER, {"freed": freed}, [])
 
     # ------------------------------------------------------- lineage (§8)
     def compact_split(self, nid: str, new_session_id: str) -> str:

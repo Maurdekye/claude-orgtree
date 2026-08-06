@@ -623,7 +623,15 @@ def _looks_like_weekly_fable_limit(blob: str) -> bool:
     tier's ordinary limit must freeze the one agent, with a reset time and
     auto-resume, fable included. Only a blob that positively says WEEKLY is
     the org-wide quota; the CLI's weekly-limit phrasing carries the word,
-    the session phrasing ('hit your session limit — resets …') does not."""
+    the session phrasing ('hit your session limit — resets …') does not.
+
+    ⚠ DELIBERATE false negative (redteam probe, on record): a weekly limit
+    phrased without the literal word ('your usage limit for this week')
+    does NOT escalate — it fails SAFE into the ordinary per-agent freeze
+    with a reset time and auto-resume, which is strictly the better error.
+    Do not widen this predicate to catch such phrasings: widening it is
+    exactly how the original bug (session limit → org-wide perma-freeze)
+    comes back."""
     b = blob.lower()
     return "limit" in b and "weekly" in b
 
@@ -3845,16 +3853,17 @@ def reconcile(slug: str) -> list[str]:
                 org.d.setdefault("notices", {}).setdefault(dnid, [])[0:0] = nots
         if dlv:
             store.save_org(org)
-        # drain-on-start RETIRED (user ruling 2026-08-06: "unread intra-org
-        # mail between agents in the same org or inbound in an org inbox
-        # needs to persist between restarts"). Undelivered mail stays BOXED
-        # and unread across a restart — visible on the node's badge and in
-        # its inbox, delivered whenever the node is next driven naturally.
-        # The old revive turned every restart into an org-wide wake-everyone
-        # event that consumed the unread state, and self-update (FR-14)
-        # makes restarts routine. Only a turn that was actually INTERRUPTED
-        # mid-flight still resumes below — its own envelope drain picks the
-        # box up, exactly as the dying turn would have.
+        # drain-on-start (user clarification 2026-08-06 — an earlier reading
+        # briefly retired this; the actual ruling is about mail never being
+        # LOST in program state across a refresh, not about suppressing the
+        # startup drive): undelivered mail persists in the org doc, so any
+        # live node with a waiting mailbox simply gets driven again. The
+        # doc + the delivery journal are the durable carriers; RAM is not.
+        resumed = {k for k, _ in inflight}
+        revive = [nid for nid, n in org.nodes.items()
+                  if n["state"] == "live" and nid not in marked
+                  and nid not in resumed and not n.get("frozen")
+                  and (org.d.get("mail") or {}).get(nid)]
     for nid, inf in inflight:
         print(f"[orgtree] {slug}/{nid}: resuming the turn interrupted by shutdown")
         send_message(slug, nid,
@@ -3864,6 +3873,11 @@ def reconcile(slug: str) -> list[str]:
                      "part of it; check your recent work and CONTINUE from where "
                      "you left off (do not redo finished steps).\n\n"
                      + (inf.get("text") or ""))
+    for nid in revive:
+        print(f"[orgtree] {slug}/{nid}: driving mail that waited across restart")
+        send_message(slug, nid,
+                     "(orgtree) You have mail above — some of it waited across "
+                     "an orgtree restart. Handle it as appropriate.")
     return marked
 
 

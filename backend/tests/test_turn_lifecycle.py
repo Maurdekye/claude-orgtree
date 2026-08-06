@@ -57,6 +57,7 @@ import glob
 import json
 import os
 import re
+import time as _time
 import shutil
 import socket
 import subprocess
@@ -472,6 +473,66 @@ def hermetic() -> None:
     check("fable · a halt whose limit has a known reset time is releasable "
           "without the user's hand",
           _a_halted_fable_node_can_be_released_by_time)
+
+    def _the_lock_release_tells_the_people_the_halt_told():
+        """FABLE-3, on d40dd82's own fix. The halt is loud and the release is
+        silent, so the org is reorganised around a state nobody is told has
+        ended.
+
+        `fable_limit_hit` notifies three parties per halted node — the parent
+        ("decide how to cover its work"), the peers, and the node itself — and
+        writes a user-inbox row. The timed release (`Org.__init__`'s load hook)
+        pops the lock and clears every `limit_locked` in a loop with no
+        notification at all. The load-hook comment gives the reason and it is
+        a good one: it runs on EVERY read, and notifying there would spam. But
+        the conclusion drawn from it — notify nobody — is not the only option.
+
+        Measured: halt = 1 user-inbox row + notices to parent/peers/self;
+        release = 0 rows, no notices, on the load that performs it."""
+        org = store.create_org("zz fable quiet")
+        org.hire(USER, None, "opus", 20, "boss", **hspec())
+        org.hire("boss", "boss", "fable", 10, "f1", **hspec())
+        store.save_org(org)
+        org.fable_limit_hit("f1", "weekly limit reached",
+                            until_ts=_time.time() - 1)
+        store.save_org(org)
+        # ⚠ baseline from the HELD org object, never a load (implementer, on
+        # promotion): the fix announces from the load hook itself — the same
+        # place that releases, idempotent because the lock is consumed in
+        # the same mutation — so EVERY load after expiry carries the
+        # announcement row, and a load-derived `seen` would already include
+        # it, hiding the very delta this check measures. The org we called
+        # fable_limit_hit on predates its own lock, so it holds exactly the
+        # halt's rows.
+        fixture(bool(org.d.get("user_inbox")),
+                "the halt itself told nobody — wrong fixture, not the finding")
+        seen = len(org.d.get("user_inbox") or [])
+        # the load that RELEASES it (the lock is already expired above)
+        rel = store.load_org(org.d["slug"])
+        fixture(not rel.node("f1").get("limit_locked"),
+                "the lock did not release — this check tests the wrong thing")
+        after = len(rel.d.get("user_inbox") or [])
+        assert after > seen, (
+            "a fable halt announces itself to the parent ('decide how to "
+            "cover its work'), the peers and the node, and writes a "
+            "user-inbox row — and then un-halts in total silence. Everyone "
+            "who reorganised around the halt is left believing it still "
+            "holds, and the agent itself was told 'you are halted' with no "
+            "matching 'you are not'")
+    # ← FIXED (promoted out of gap(), 2026-08-06, same day): both exits now
+    # announce — the timed release notifies parent+peers+node and writes a
+    # user-inbox row FROM THE LOAD HOOK ITSELF, and clear_fable_lock (the
+    # manual exit) does the same. Deviation from the finding's notify-from-
+    # the-resuming-path suggestion, deliberate: the resuming path only runs
+    # when auto_resume is on or ▶ is pressed, so a release could still go
+    # unannounced for hours; the load-hook announcement is idempotent for
+    # the same reason the release is (the lock — the trigger — is consumed
+    # in the same mutation, so one save persists exactly one copy and every
+    # unsaved load re-derives the identical announcement). Baseline read
+    # from the raw saved doc on promotion — see the note in the body.
+    check("fable · the timed lock release is announced to the parties the "
+          "halt was announced to",
+          _the_lock_release_tells_the_people_the_halt_told)
 
     # ---- USER REPORT 2026-08-06 ------------------------------------------
     # "new org inbox mail didn't arrive at an agent until its turn ended, not
@@ -1819,19 +1880,12 @@ def live_reconcile() -> None:
                                           "node": nid})
     # rehire drives it; kill before it can land
     stop_backend(hard=True)
-    # INVERTED (user ruling 2026-08-06: unread mail PERSISTS across
-    # restarts): the old drain-on-start drove every waiting mailbox at
-    # startup, consuming the unread state org-wide — and self-update (FR-14)
-    # makes restarts routine. A restart is now a non-event for boxed mail:
-    # it stays in the mailbox, visible and unread, until the next NATURAL
-    # drive delivers it.
-    check("reconcile · mail waiting at startup stays boxed and unread", lambda: (
+    # (this pin was briefly inverted 2026-08-06 on a misread of a user
+    # ruling; the user clarified same day — the drain-on-start STAYS. The
+    # ruling is about mail never being LOST in program state across a
+    # refresh, which the doc + journal carriers guarantee.)
+    check("reconcile · mail waiting at startup is driven", lambda: (
         start_backend(),
-        None if (not wait_delivered(tok, 10)
-                 and any(carriers(slug, nid, tok).values()))
-        else (_ for _ in ()).throw(AssertionError(carriers(slug, nid, tok))))[-1])
-    check("reconcile · the next natural drive delivers the waited mail", lambda: (
-        send(slug, nid, f"nudge {token()}"),
         None if wait_delivered(tok, 40)
         else (_ for _ in ()).throw(AssertionError(carriers(slug, nid, tok))))[-1])
     wait_idle(slug, nid, 20)
@@ -1889,20 +1943,9 @@ def live_reconcile() -> None:
     with open(os.path.join(DATA, "orgs", slug4 + ".json"), "w",
               encoding="utf-8") as f:
         json.dump(d, f, indent=2)
-    # ruling 2026-08-06 (unread persists): the fold-back RESTORES the mail —
-    # and it then WAITS, boxed and unread, like any mail across a restart;
-    # the retired drain-on-start no longer delivers it. The next natural
-    # drive does, and nothing is lost either way.
-    check("reconcile · an unconfirmed batch folds back into the mailbox",
+    check("reconcile · an unconfirmed batch folds back and is delivered",
           lambda: (
               start_backend(),
-              None if wait_for(
-                  lambda: carriers(slug4, nid4, tokj)["mailbox"], 20)
-              else (_ for _ in ()).throw(AssertionError(
-                  carriers(slug4, nid4, tokj))))[-1])
-    check("reconcile · a natural drive then delivers the folded-back mail",
-          lambda: (
-              send(slug4, nid4, f"nudge {token()}"),
               None if wait_delivered(tokj, 40)
               else (_ for _ in ()).throw(AssertionError(
                   carriers(slug4, nid4, tokj))))[-1])
