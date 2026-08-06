@@ -655,3 +655,169 @@ closest existing precedent for what adversarial work under that name has looked 
 commits). Turning a live, organically-arrived-at three-way division of labor into hire-time charter
 presets is a genuinely interesting bit of reflexivity worth the implementer knowing about
 explicitly — the product is being asked to formalize the exact process that built it.
+
+---
+
+### FR-13 · agent-requestable permission scope increases
+> lay on the docket as a future feature request: the ability for an agent to request *any*
+> permission scope increase that it can only get from you: access to a new folder, a tool, etc.
+
+*(user request 2026-08-06, recorded by the curator. Not built — logged for triage.)*
+
+**What "you" resolves to, and why it isn't `orgtree_ask`.** Read literally against the product's
+own model, the grantor here is the human — the same party who sets `dirs` (`--add-dir`) and
+`allowedTools` today, at org creation (`store.create_org`, `api.py:730`) or via a later PATCH
+(`api.py:1525`, `permission_mode` "rides the ceiling" per the kiosk-ceiling spec). `orgtree_ask`
+already routes a question to the user, but it is Q&A shaped — an answer, not a capability grant —
+and nothing today turns an ask's answer into an actual `dirs`/`allowedTools` change on the running
+org. `orgtree_audience` is the nearest-sounding existing verb but grants *reach* (who an agent may
+address), not *capability* (what it may touch on disk or call as a tool) — a different axis
+entirely, easy to conflate by name alone.
+
+**The gap, concretely.** Scope is set once, outside the agent's own turn loop, by a human editing
+config — there is no in-band "agent asks for more, human clicks grant, agent's next turn already
+has it" path. Building this needs at minimum: a new ask-shaped verb (or an `orgtree_ask` extension)
+whose payload names a *concrete* grant — a path to add, a tool to allow — rather than free text;
+a UI affordance for the user to approve/deny that reads as a permission dialog, not a chat answer;
+and a live-apply path that mutates the running session's `--add-dir`/`--allowedTools` (or restarts
+the turn loop with the new ceiling) without waiting for the next full config edit.
+
+**Worth deciding before scoping, not assumed here:** does a granted scope increase persist across
+the org's config (so it survives restarts, like `dirs` does today), or is it session-scoped and
+lost on the next relaunch — and can a superior agent grant a subordinate's scope request itself
+(mirroring how `orgtree_audience` lets a superior grant reach), or does every capability grant
+specifically require the human, with no delegation at all? The request's own wording — "that it can
+only get from you" — reads as ruling the second half already: no agent-to-agent delegation for
+this class of grant, human-only.
+
+---
+
+### FR-14 · one batch card, mixed request kinds (question / credit / scope grant tabs together)
+> also, the ability for an agent to wrap multiple requests into one batch in the same way multiple
+> questions can be asked at once: one tab has a question, one has a credit request increase, one
+> has a folder grant request, etc.
+
+*(user request 2026-08-06, recorded by the curator. Follows directly from FR-13 above — this is the
+batching shape for it and for `orgtree_request_credits`, not a new request kind of its own. Not
+built — logged for triage.)*
+
+**What exists today, and why this isn't a small extension of FR-04.** `orgtree_ask`'s `questions`
+array (`mcptool.py:142-160`, shipped as FR-04) already batches 1-4 tabs into ONE card — but every
+tab in that array is the *same kind*, a question with options. `orgtree_request_credits`
+(`mcptool.py:209-236`) is a structurally different tool entirely: its own card shape (a requested
+`new_limit` + `reason`, not options), its own resolution shape (the user can grant the ask, more,
+less, or reduce — not just pick an option), and — the real obstacle — its own **mutual-exclusion
+rule** with asks: *"one active request per agent... a new credit request replaces a question too"*
+(`mcptool.py:117`, `orgtree_ask`'s own description). Today these two request kinds don't coexist for
+one agent even sequentially, let alone in one card. FR-13's not-yet-built permission-scope-grant
+would presumably need to slot into this same "one active request" family, making it a THIRD kind
+competing for the same single slot.
+
+**So this request is really asking to invert that invariant**, not just widen `questions`'s array:
+instead of "the newest request evicts the old one, and all batched tabs are one kind," the model
+would need to become "one active **batch**, whose tabs may each be a different kind, resolved
+together or independently." That's a bigger structural change than FR-04 was — FR-04 batched
+multiple instances of one schema; this batches multiple *different* schemas (question, credit
+request, scope grant, and whatever comes after) under one card and one submit action, which likely
+means a shared discriminated-union tab shape (`{kind: "question"|"credits"|"scope", ...kind-specific
+fields}`) replacing today's ask-only `questions` array, plus deciding whether the whole batch
+resolves as one user action or whether individual tabs can be answered/granted independently while
+others stay pending (a credit ask might warrant more deliberation than a yes/no question sitting
+next to it in the same card).
+
+**Worth deciding before scoping:** does the "one active request per agent" ceiling stay (one batch
+at a time, now multi-kind) or does this fold into a more general per-agent request queue — and does
+`orgtree_withdraw_ask`'s all-or-nothing withdraw (`mcptool.py:166-177`, "withdraw your own ACTIVE
+request") need to become per-tab, so an agent can pull back just the credit-request tab if its
+premise changes without losing the still-relevant question tab beside it? Left for whoever scopes
+this — FR-13 landing first would settle what the third tab kind's payload even looks like.
+
+---
+
+### FR-15 · large feature exploration: external model providers beyond Claude Code
+> large feature exploration: feasibility of incorporating external providers not offered in claude
+> code
+
+*(user request 2026-08-06, recorded by the curator. Exploration, not a build spec — traced the
+actual coupling in the running code rather than reasoning about it abstractly. No implementation
+here; this is the grounding whoever scopes it would otherwise have to redo.)*
+
+**"External providers" is two very different requests wearing one phrase, and they have wildly
+different costs.** Worth separating explicitly before scoping anything:
+
+**(A) Alternate HOSTING of Claude itself — Bedrock, Vertex AI.** Claude Code CLI already supports
+routing through AWS Bedrock or Google Vertex as the backing infrastructure for Claude models
+(`CLAUDE_CODE_USE_BEDROCK`/`CLAUDE_CODE_USE_VERTEX`-shaped env vars on the CLI side) — same models,
+same protocol, different plumbing behind Anthropic's API. Orgtree's own coupling point for this is
+already exactly where it would need to be: `supervisor.py`'s `CLAUDE` resolution
+(`supervisor.py:164-170`) treats the CLI as an external binary found via `ORGTREE_CLAUDE` env, a
+pinned npm install, or `PATH`, and `_claude_argv()`/the per-turn `env` dict (e.g. the
+`ANTHROPIC_API_KEY` handling at `:602,1531`) is where alternate-hosting env vars would simply get
+added alongside it. **This is genuinely cheap** — no protocol change, no new stream parser, likely
+a per-org settings field plus a handful of new env vars threaded through the same `env` dict that
+already exists.
+
+**(B) Genuinely different model providers — GPT, Gemini, local/open-weight models via a different
+CLI or SDK.** Claude Code CLI does not support this at all — it is an Anthropic-only client, full
+stop, and (A)'s door does not open any further than "Claude, hosted differently." This is the
+expensive branch, and the coupling runs much deeper than "swap a binary name":
+
+- **Orgtree shells out to the actual `claude` binary as a subprocess, not an abstracted SDK layer**
+  (`supervisor.py:164-170`, resolving `@anthropic-ai/claude-code`'s own CLI entry point). Every turn
+  is built as a literal argv for that specific binary: `-p --output-format stream-json
+  --input-format stream-json --include-partial-messages --model … --permission-mode …
+  --append-system-prompt … --settings … --strict-mcp-config --effort … --disallowed-tools …
+  --mcp-config …` (`supervisor.py:1275-1343`). None of that vocabulary — `permission-mode`,
+  `strict-mcp-config`, `effort`, the JSON `settings`/deny-rule syntax (`Edit(path/**)`) — exists on
+  any other provider's tooling; it would all need a provider-specific equivalent, or to go unmapped.
+- **The turn loop parses Claude Code's own streaming JSON event shapes directly**, not a normalized
+  internal format — `tool_use`/`tool_use_id` blocks are read and correlated throughout the turn
+  loop, mail rendering, AND the credit ledger's cost accounting (`supervisor.py:1632,1751-1756,
+  2280,2320,3129-3135,4083,4189-4262` — `by_tool_id` lookups feeding cost/result display). A second
+  provider's differently-shaped stream would need its own parser feeding the *same* downstream mail
+  and ledger code, which means that code needs a normalized turn-event representation it doesn't
+  have today — non-trivial, since cost accounting is currently keyed directly off Claude-specific
+  IDs, not an abstraction over "a tool call happened."
+- **The credit/tier model is priced against Claude specifically, not a generic notion of "model
+  cost."** `TIERS`/`MODELS` (`ledger.py:39,51-54`) hardcode exactly four entries — `fable`/`opus`/
+  `sonnet`/`haiku` — mapped 1:1 to Claude model strings (`claude-fable-5`, `claude-opus-5`, etc.),
+  with credit costs (10/5/3/1) reflecting Anthropic's own relative pricing ladder. A GPT or Gemini
+  model doesn't have a natural slot in that ladder — either credits become provider-relative (two
+  different "sonnet"-priced tiers meaning different real costs depending on provider, which breaks
+  the flat mental model the whole ledger UI assumes), or a new cross-provider cost-normalization
+  scheme has to be invented from scratch. This is a design problem, not just a schema change.
+
+**The one genuinely good sign: the tool/capability layer is NOT Anthropic-locked.** Orgtree's own
+tool surface (`orgtree_ask`, `orgtree_hire`, mail, etc.) is delivered to the agent as an **MCP
+server** (`mcptool.py`, wired in at `supervisor.py:1327-1342`) — MCP is an open, provider-agnostic
+protocol, not a Claude Code exclusive. In principle, any agent runtime that speaks MCP could attach
+to orgtree's *exact same* tool surface with zero changes to `mcptool.py` itself. That means a
+hypothetical second-provider adapter would only need to solve the process-spawn/streaming/turn-loop
+problem above — it would not need to reinvent hiring, mail, credits, or asks a second time.
+
+**What a real build would concretely need, if pursued:**
+1. A pluggable runtime-adapter abstraction behind today's hardcoded `_claude_argv()`/`CLAUDE`
+   resolution, so a node's provider choice routes to a different subprocess command and flag
+   vocabulary entirely.
+2. A provider-specific stream parser per provider, feeding a new **normalized** internal turn-event
+   representation — decoupling the mail/ledger code at the sites listed above from Claude Code's
+   specific JSON shapes, which they are not decoupled from today.
+3. A cross-provider cost/tier model replacing (or sitting alongside) `TIERS`/`MODELS`'s current
+   four-Claude-model assumption.
+4. Per-provider translation of permission/tool-allow semantics (`permission-mode`,
+   `--disallowed-tools`, the `Edit()/Write()` deny-rule syntax) — or an explicit decision that some
+   providers simply can't express the same granularity and orgtree degrades gracefully for them.
+
+**Feasibility, in one line each:** (A) alternate Claude hosting — cheap, buildable as a
+config/env-var addition to code paths that already exist for this purpose. (B) genuinely different
+providers — feasible in principle (the tool layer is already provider-agnostic via MCP), but a
+substantial architectural undertaking on the scale of FR-09's chatq-removal refactor: it touches the
+turn loop, the credit ledger's accounting, and the permission model simultaneously, not any one of
+them in isolation. Not something to start on this entry's say-so — flagging the shape and the real
+cost is the point, not proposing a build order.
+
+**Scope confirmed, same day:** the user named Gemini and ChatGPT explicitly — this is branch (B),
+not (A). The four numbered build requirements above are the ones that apply.
+
+**HELD, same day — explicit user instruction: "don't begin implementation now, hold off."**
+Exploration only; no build to start on this entry until the user gives a separate go-ahead.
