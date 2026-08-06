@@ -3513,17 +3513,17 @@ def launch_self_update(slug: str, nid: str, target: str) -> dict[str, Any]:
     launched: list[str] = []
     warnings: list[str] = []
     if target in ("org", "both"):
-        if os.name != "nt":
-            warnings.append(
-                "this install has no POSIX update script (update.ps1 is "
-                "Windows) — the backend was NOT updated; the operator "
-                "updates it manually")
-        else:
+        # Linux is a first-class install target (user ruling 2026-08-06):
+        # update.sh mirrors update.ps1 step for step
+        if os.name == "nt":
             _detached_spawn(
                 ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
                  "-File", os.path.join(repo, "update.ps1")], repo, logpath)
-            launched.append("org backend (git pull + rebuild + restart — "
-                            "EVERY org on this machine restarts)")
+        else:
+            _detached_spawn(
+                ["bash", os.path.join(repo, "update.sh")], repo, logpath)
+        launched.append("org backend (git pull + rebuild + restart — "
+                        "EVERY org on this machine restarts)")
     if target in ("mailhub", "both"):
         hubdir = os.path.join(repo, "hub")
         if not os.path.isfile(os.path.join(hubdir, "compose.yaml")):

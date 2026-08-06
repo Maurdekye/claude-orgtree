@@ -105,6 +105,25 @@ There's a per-agent interrupt (the desk composer's ■ STOP), an org-wide
 subagents, MCP servers, org visibility) enforced server-side, org-wide hire
 defaults on the eye's gear, and real-dollar tracking per node and per org.
 
+**A mail hub connects everything beyond one org.** The bundled
+**mailserver** (`hub/`, one Docker container) gives every org and every
+plain Claude Code session on the network a durable address — orgs
+correspond org-to-org across machines (`@net:` mail with a queued → sent →
+delivered → read receipt ladder, spooled offline and retried forever),
+independent chats join as first-class clients, and a read-only web UI shows
+the whole network's traffic with connected clients sorted first. Orgs on
+the same machine can also mail each other directly (`@org:`) and reach
+polling external sessions (`@mcp:`) as zero-setup shortcuts; bare recipient
+names resolve their transport automatically. Robust installations stand up
+a local hub and prefer `@net:`.
+
+**Orgs maintain themselves.** A top-level agent (or any user-audience
+holder) can run `orgtree_self_update` to pull the latest published code and
+redeploy its own backend — and rebuild the machine's mail hub — without an
+outside operator session. Updates run detached with a log file; every org
+auto-resumes after the restart, so the cost is bounded at some mid-turn
+progress. Works on Windows (`update.ps1`) and Linux/macOS (`update.sh`).
+
 **Share an org with the world — kiosk mode.** Any org can be exposed
 through a **preauthenticated secret URL** on a separate public listener,
 with hard caps on credits, spend, and workspace storage; the admin app
@@ -196,7 +215,11 @@ model: [hub/README.md](hub/README.md) and
 `./update.sh` on Linux/macOS — the two are step-for-step equivalents. Either
 pulls the latest changes, rebuilds the UI, installs any new dependencies, and
 restarts the backend in the background with a health check. `update.sh` also
-runs under Git Bash on Windows.
+runs under Git Bash on Windows. Agents can trigger the same update from
+inside an org with the `orgtree_self_update` tool (top-level or
+user-audience holders; both platforms) — the update runs detached, every
+org auto-resumes after the restart, and the hub container can be rebuilt in
+the same call without ever touching its data volume.
 
 Both accept a deliberately awkward `-ExposeAdmin` / `--expose-admin` switch,
 which sets `ORGTREE_EXPOSE_ADMIN` and binds the **admin** API to `0.0.0.0`

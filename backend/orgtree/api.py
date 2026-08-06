@@ -880,13 +880,28 @@ def org_net(slug: str, request: Request) -> dict[str, Any]:
             "autoconnect": bool(org.d.get("net_autoconnect", True))}
 
 
+_tree_slow_warned: set[str] = set()
+
+
 @app.get("/api/orgs/{slug}")
 def org_tree(slug: str, request: Request) -> dict[str, Any]:
     try:
         org = store.load_org(slug)
     except LedgerError as e:
         raise HTTPException(404, str(e))
+    _t0 = time.perf_counter()
     tree = org.tree()
+    # user ruling 2026-08-06 on the redteam's O(n²) Org.children finding:
+    # "not relevant until the typical execution time exceeds one second" —
+    # this makes the threshold self-announcing instead of relying on someone
+    # noticing. Once per org per process; the fix, when it matters, is a
+    # children index (or, per the ruling, a rewrite in Rust).
+    _dt = time.perf_counter() - _t0
+    if _dt > 1.0 and slug not in _tree_slow_warned:
+        _tree_slow_warned.add(slug)
+        print(f"[orgtree] ⚠ tree() for {slug!r} took {_dt:.2f}s — the ruled "
+              f"one-second threshold is crossed; the O(n²) children scan "
+              f"is now relevant (see the 2026-08-06 ruling)", flush=True)
 
     def annotate(node: dict[str, Any]) -> None:
         st = supervisor.state(slug, node["id"])

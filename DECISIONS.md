@@ -291,6 +291,41 @@ machines"); the user reversed the mechanism one day later for the
 unattended-host case, and the inheritance objection is handled by the strip
 rather than dismissed.
 
+### D-103 · robustness priorities: @net is the robust path; pins, not fixes
+Ruling (user, 2026-08-06, batch): ① gaps in the @mcp:/@org: transports are
+NOT critical while they don't obstruct immediate usage — every robust
+orgtree installation stands up a local mail hub, @net is the preferred
+path, and @org:/@mcp: are quick shortcuts for when a hub does not properly
+exist. (Deployment philosophy, not a resolution-order change: bare-name
+resolution keeps the ruled near-tier-first order.) ② The unbounded live
+queues (notices/mail pools, redteam-measured triangular growth) stay
+unbounded — PINNED as a known notable pain point to be aware of if it ever
+bites. ③ Org.children's O(n²) is ignorable until tree()'s typical
+execution exceeds ONE SECOND (self-announcing: api.py warns once per org
+past the threshold); if raw performance ever truly matters, the answer is
+a Rust rewrite, not incremental shaving. ④ Remote control stays
+experimental/partially implemented; the working pattern for now is an
+external ordinary Claude Code chat (where remote control is known-good)
+acting as liaison to org chats over the mailserver or other transports.
+⑤ Docket statuses: FR-13 (scope requests) and FR-14 (mixed-kind batch
+cards) are HELD-BUT-WILL-APPROACH when implementer capacity frees; FR-02
+(mobile) and FR-15 (external providers) are backlogged indefinitely.
+
+### D-102 · self-update: unrestricted for user-authority agents; the remote is the trust root; Linux is first-class
+Ruling (user, 2026-08-06, closing the two FR-14 questions): ① an agent
+with direct user authority (top-level or held user audience — the existing
+gate) runs the restart path WITHOUT further restriction or warning. The
+cross-org blast radius is accepted as-is: every org auto-resumes on
+startup, so the cost is bounded at some mid-turn progress (a command run,
+some thinking). No cross-org consent gate, no busy-refusal. (The 5-minute
+one-launch-at-a-time guard stays — it serializes concurrent git pulls, an
+operational interlock rather than a permission.) ② The trust assumption is
+VALIDATED and acceptable as stated: the agent does not choose the code,
+the tracked remote does, and only the user pushes there. ③ Self-update
+must also function on LINUX — update.sh mirrors update.ps1 step for step
+(venv, esbuild self-heal, stale-pid restart check), since Linux is where
+orgtree is installed in plenty of locations.
+
 ### D-101 · mailserver ports stay exactly as they are (7370 open, no migration)
 Ruling (user, 2026-08-06, two parts, second direct): ① leave nova-desk's
 7370 open on the LAN; do NOT flip HUB_BIND to loopback. ② "nobody should
