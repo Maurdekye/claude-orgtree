@@ -291,6 +291,19 @@ machines"); the user reversed the mechanism one day later for the
 unattended-host case, and the inheritance objection is handled by the strip
 rather than dismissed.
 
+### D-101 · nova-desk's 7370 stays open on the LAN (deliberate hold)
+Ruling (user, 2026-08-06, relayed via the curator, on the live-confirmed
+exposure — the unauthenticated all-mail UI on 7370 was bound 0.0.0.0 and
+LAN-reachable): leave 7370 open on the LAN for now; do NOT flip HUB_BIND
+to loopback yet. An informed hold, not an oversight: the operator knows
+the trust model (hub reachability = read access to all mail) and accepts
+it on this network. The machinery for the close is already staged and
+verified — HUB_BIND compose knob (c8aa65e, default 0.0.0.0), HUB_PUBLIC=1
+live on nova-desk with the API-only 7378 listener answering, and the
+remote org asked to migrate its entry to :7378. When the user gives the
+word, the flip is one .env line (HUB_BIND=127.0.0.1) + `docker compose
+up -d`, gated only on the remote confirming it is off 7370.
+
 ### D-100 · presenting a document needs a DIRECT user audience
 Ruling (user, 2026-08-05, on the redteam's FR-03 finding that
 `present_document` bypassed the org chart): document presentation to the
