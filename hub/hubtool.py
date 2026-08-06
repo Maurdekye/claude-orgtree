@@ -370,6 +370,31 @@ def ack(ids: list[str], hub: str | None = None) -> None:
         _call("/api/ack", {"ids": ids}, hub=hub)
 
 
+def _receipts(msgs: list[dict[str, Any]], state: str,
+              hub: str | None = None) -> None:
+    """Chat-side receipt push (user report 2026-08-06: an org's messages
+    climb to `read` on the sender's ladder while a chat's stop at `fetched`
+    — hubtool spoke register/poll/ack/send and never /api/receipts, so half
+    the hub's clients never completed the F-06 ladder; the hub itself needs
+    no change, it accepts any recipient's receipt).
+
+    Mapping onto what an org already means by each rung: DELIVERED = the
+    listener surfaced the line (sent AFTER the print, beside mark_seen/ack
+    — reporting a delivery ahead of the surface would recreate the
+    missed-mail class in receipt form); READ = hub_read/hub_wait returned
+    the message into the caller's context. A session that only ever LISTENS
+    correctly tops out at ✓✓ delivered — that is the diagnostic, not a
+    shortfall. Best-effort: a lost receipt costs display state only."""
+    rc = [{"id": str(m.get("id")), "state": state}
+          for m in msgs if m.get("id")]
+    if not rc:
+        return
+    try:
+        _call("/api/receipts", {"receipts": rc}, hub=hub)
+    except Exception:                                            # noqa: BLE001
+        pass
+
+
 def _ring_key(d: dict[str, Any], hub: str | None) -> str:
     return hub.rstrip("/") if hub else _hubs(d)[0]
 
@@ -570,6 +595,9 @@ def listen(name: str | None = None) -> None:
                     ack(all_ids, hub=h)
                 except Exception:                                # noqa: BLE001
                     pass   # unacked → redelivered → the ring collapses it
+                # DELIVERED receipt for what was actually surfaced — after
+                # the print, with mark_seen/ack (see _receipts)
+                _receipts(fresh, "delivered", hub=h)
             except Exception:                                    # noqa: BLE001
                 registered = False   # re-register on reconnect
                 stop.wait(5.0)
@@ -784,7 +812,13 @@ def dispatch(tool: str, args: dict[str, Any]) -> str:
         rows: list[dict[str, Any]] = []
         for h in hubs:
             try:
-                for m in take_fresh(poll(per, hub=h), hub=h):
+                fresh = take_fresh(poll(per, hub=h), hub=h)
+                # READ receipt: for these two verbs the return value IS the
+                # message entering the caller's context. Sent from the raw
+                # fresh dicts (which carry `id`) — the tool's return shape
+                # deliberately stays id-free.
+                _receipts(fresh, "read", hub=h)
+                for m in fresh:
                     rows.append({"from": m.get("from"),
                                  "body": m.get("body"),
                                  "received_at": m.get("received_at"),

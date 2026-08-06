@@ -838,6 +838,86 @@ def sec_second_consumer() -> None:
           "mailbox", _the_listener_lock_does_not_cover_readers)
 
 
+# ══════════════════════════════════════════════════ §4c (redteam, user report)
+def sec_chat_receipts() -> None:
+    """USER REPORT 2026-08-06: "when an org reads a message it goes to `read`,
+    when a chat reads it only goes to `fetched`."
+
+    The hub's ladder has two carriers, not one: `state` (queued → fetched) is
+    moved by /api/ack, and `delivered_at` / `read_at` are moved by
+    /api/receipts. Orgs drive BOTH — net.py keeps a _dlv_q and a _read_q and
+    flushes them — so an org recipient walks ▫ → ✓ → ✓✓ → read. hubtool calls
+    /api/ack and NOTHING ELSE, so a chat recipient stops at ✓ forever and the
+    sender can never tell "the chat has it" from "the chat has read it".
+
+    That is not a hub asymmetry: /api/receipts authorises on `to_slug IN
+    (my slugs)` with no notion of kind, so a chat's receipts would be accepted
+    today. The gap is entirely on the client side."""
+    print("\n§4c  chat clients and the delivery ladder (user report)")
+
+    def _a_chat_reports_delivery_like_an_org_does():
+        me = become("ladder-reader")
+        become("ladder-sender")
+        hubtool.dispatch("hub_send", {"to": me, "body": "walk the ladder"})
+        become("ladder-reader")
+        out = json.loads(hubtool.dispatch("hub_read", {}))
+        fixture([m["body"] for m in out["messages"]] == ["walk the ladder"],
+                f"the fixture message never arrived: {out}")
+        row = hub_rows("SELECT state, fetched_at, delivered_at, read_at "
+                       "FROM messages WHERE to_slug = ?", (me,))[0]
+        fixture(row["state"] == "fetched",
+                f"the ack half did not run either: {row}")
+        assert row["delivered_at"] or row["read_at"], (
+            f"a chat consumed the message through hub_read — the call's "
+            f"RETURN VALUE is the message entering the agent's context, "
+            f"which is the same event an org reports as `read` — and the hub "
+            f"row still carries delivered_at=None read_at=None. The sender "
+            f"sees ✓ and never ✓✓: {row}")
+    # ← FIXED (promoted out of gap(), 2026-08-06, same day): hubtool grew
+    # `_receipts` and speaks /api/receipts in exactly the prescribed shape —
+    # `listen` sends DELIVERED after the print, beside mark_seen/ack (a
+    # failed surface reports no delivery); hub_read/hub_wait send READ from
+    # the raw fresh dicts (which carry `id`; the tools' return shape stays
+    # id-free). A listen-only session correctly tops out at ✓✓ delivered —
+    # the diagnostic, not a shortfall. Best-effort: a lost receipt costs
+    # display state only.
+    check("receipts · a chat that consumes a message reports it, like an "
+          "org does (user report 2026-08-06)",
+          _a_chat_reports_delivery_like_an_org_does)
+
+    def _the_hub_would_accept_them_today():
+        """ANTI-VACUITY for the gap above: if the hub REFUSED a chat's
+        receipts, the fix would be a two-sided change and the finding would be
+        pointing at the wrong file. It does not — the same call an org makes
+        is accepted for a chat's own inbound message."""
+        me = become("ladder-proof")
+        become("ladder-proof-sender")
+        hubtool.dispatch("hub_send", {"to": me, "body": "receipt me"})
+        become("ladder-proof")
+        json.loads(hubtool.dispatch("hub_read", {}))
+        # ⚠ the id comes from the HUB, not from hub_read's return: the tool's
+        # projection drops it (measured — KeyError 'id'), even though the raw
+        # poll response carries it and `listen` already acks with those very
+        # ids. Worth knowing for the fix: a receipt can be sent from INSIDE
+        # hubtool without plumbing anything new to the caller.
+        mid = hub_rows("SELECT id FROM messages WHERE to_slug = ? "
+                       "ORDER BY received_at DESC LIMIT 1", (me,))[0]["id"]
+        r = hubtool._call("/api/receipts",
+                          {"receipts": [{"id": mid, "state": "read"}]})
+        row = hub_rows("SELECT read_at FROM messages WHERE id = ?", (mid,))[0]
+        assert row["read_at"], row
+        # re-pinned on the fix (implementer): hub_read now sends the READ
+        # receipt itself, so read_at is already set by the time this manual
+        # copy arrives and the hub's read_at-IS-NULL guard records 0. That
+        # proves BOTH halves at once — the hub accepted the client's
+        # in-band receipt (read_at is set), and duplicates are idempotent
+        # (recorded 0, the timestamp never overwritten).
+        assert r.get("recorded") == 0, r
+    check("receipts · the hub ACCEPTS a chat's receipt for its own mail "
+          "(so the gap above is one-sided — client work, no hub change)",
+          _the_hub_would_accept_them_today)
+
+
 # ══════════════════════════════════════════════════════════════════════ §5
 def sec_kind() -> None:
     print("\n§5  kind — who claims it, and can it be flipped")
@@ -946,6 +1026,7 @@ def main() -> int:
     sec_secret()
     sec_listen()
     sec_second_consumer()
+    sec_chat_receipts()
     sec_kind()
     sec_migration()
 
