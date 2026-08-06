@@ -291,18 +291,21 @@ machines"); the user reversed the mechanism one day later for the
 unattended-host case, and the inheritance objection is handled by the strip
 rather than dismissed.
 
-### D-101 · nova-desk's 7370 stays open on the LAN (deliberate hold)
-Ruling (user, 2026-08-06, relayed via the curator, on the live-confirmed
-exposure — the unauthenticated all-mail UI on 7370 was bound 0.0.0.0 and
-LAN-reachable): leave 7370 open on the LAN for now; do NOT flip HUB_BIND
-to loopback yet. An informed hold, not an oversight: the operator knows
-the trust model (hub reachability = read access to all mail) and accepts
-it on this network. The machinery for the close is already staged and
-verified — HUB_BIND compose knob (c8aa65e, default 0.0.0.0), HUB_PUBLIC=1
-live on nova-desk with the API-only 7378 listener answering, and the
-remote org asked to migrate its entry to :7378. When the user gives the
-word, the flip is one .env line (HUB_BIND=127.0.0.1) + `docker compose
-up -d`, gated only on the remote confirming it is off 7370.
+### D-101 · mailserver ports stay exactly as they are (7370 open, no migration)
+Ruling (user, 2026-08-06, two parts, second direct): ① leave nova-desk's
+7370 open on the LAN; do NOT flip HUB_BIND to loopback. ② "nobody should
+change their default ports for the mailserver, keep everything as-is" —
+the remote org's planned :7378 migration is CALLED OFF (they were
+notified), the compose default stays `${HUB_BIND:-0.0.0.0}`, and no
+client is asked to move off 7370. An informed acceptance of the trust
+model (hub reachability = read access to all mail) on this network, not
+an oversight — neoja's safe-by-default argument (silent exposure,
+indistinguishable from working state) was put to the user before part ②.
+The machinery stays available but idle: HUB_BIND knob (c8aa65e),
+HUB_PUBLIC=1 live on nova-desk with the API-only 7378 listener answering
+— any future close is one .env line + a client port edit, no code.
+Was. Part ① alone read as a hold pending the remote's 7378 migration;
+part ② closed the migration itself.
 
 ### D-100 · presenting a document needs a DIRECT user audience
 Ruling (user, 2026-08-05, on the redteam's FR-03 finding that
