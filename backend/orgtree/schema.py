@@ -168,6 +168,10 @@ class NodeDoc(TypedDict):
     remote_controlled: NotRequired[dict[str, Any] | None]  # FR-01 {at, pid} — the node is parked while the user drives its session directly
     limit_locked: NotRequired[bool]
     oracle_exchanges: NotRequired[list[OracleExchange]]
+    # CLI-side compact boundaries seen in this node's session JSONL (1b,
+    # 2026-08-06): absent = never observed (the first observation baselines
+    # WITHOUT minting); each later increment mints a lost-generation record
+    cli_compactions: NotRequired[int]
 
 
 class AudienceGrant(TypedDict):

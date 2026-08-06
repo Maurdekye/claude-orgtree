@@ -56,6 +56,7 @@ from __future__ import annotations
 import glob
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -139,6 +140,47 @@ def hspec(**over):
 
 
 _hn = [0]
+
+
+def fixture(ok, msg) -> None:
+    """A PRECONDITION inside a gap body — raised as a RuntimeError so `gap`
+    below re-reports it as a broken check instead of swallowing it as the
+    finding.
+
+    ⚠ Learned the expensive way (2026-08-06, test_batched_asks). A gap
+    body's whole contract is "this assert fails", so a fixture assert and the
+    assert that measures the defect are indistinguishable: gap() catches the
+    first AssertionError it meets and files it as the finding. A credit
+    request for 8 against a grant of 20 took the at-or-below no-op branch, so
+    no row ever existed — the gap fired on its own scaffolding while the
+    defect it named was real but unexercised. Use fixture(...) for every setup
+    precondition in a gap body; keep a bare `assert` for the property under
+    test."""
+    if not ok:
+        raise RuntimeError(f"fixture: {msg}")
+
+
+GAPS: list[tuple[str, str, str]] = []
+
+
+def gap(label, why, fn) -> None:
+    """SHOULD hold, currently does not — asserts the SAFE property, is expected
+    to FAIL today, keeps the suite green, and turns RED the day it is fixed.
+
+    ⚠ Set preconditions with `fixture(...)`, never a bare assert — see there."""
+    global PASS
+    try:
+        fn()
+    except AssertionError as e:
+        GAPS.append((label, why, str(e).split("\n")[0][:300]))
+        print(f"  ⚑ GAP    {label}")
+        return
+    except Exception:                                            # noqa: BLE001
+        FAIL.append((label + " (gap check errored)", traceback.format_exc()))
+        print(f"  FAIL     {label} — the gap check itself broke")
+        return
+    PASS += 1
+    print(f"  ok {PASS:3d}  {label}  ← FIXED: promote this out of gap()")
 
 
 def horg(nodes: int = 1) -> tuple[str, list[str]]:
@@ -335,6 +377,161 @@ def hermetic() -> None:
     check("delivering · via='turn' rides out to the caller", lambda: (
         None if supervisor.delivering_mail(org, nid)[0].get("via") == "turn"
         else (_ for _ in ()).throw(AssertionError())))
+
+    # ---- USER REPORT 2026-08-06 ------------------------------------------
+    # "system thinks that session limit hit counts as a fable limit hit and
+    # perma-freezes fable agents when hit."
+    #
+    # Confirmed by reading, and the two halves sit 1,350 lines apart:
+    #
+    #   · `_looks_like_usage_limit` is deliberately broad enough to catch the
+    #     ORDINARY session limit — its own comment says so: "the CLI's
+    #     session-limit phrasing is 'You've hit your session limit — resets
+    #     1:40pm', which matched NONE of the original second set". It matches
+    #     on "session", "hit your", "resets". Correct for its job: ANY model's
+    #     usage limit should freeze the agent.
+    #   · the escalation right after it reads, in full,
+    #         if o2.node(nid)["model"] == "fable":
+    #             o2.fable_limit_hit(nid, err_blob)
+    #     — the ONLY test is the node's tier. Nothing asks whether the limit
+    #     was the WEEKLY FABLE QUOTA that `fable_limit_hit` documents itself as
+    #     handling ("Weekly Fable usage limit exhausted").
+    #
+    # So a fable agent hitting the same five-hour session limit every tier
+    # shares is recorded as org-wide Fable exhaustion.
+    def _the_fable_escalation_needs_a_weekly_marker():
+        src = open(os.path.join(_REPO, "backend", "orgtree", "supervisor.py"),
+                   encoding="utf-8").read()
+        i = src.find("fable_limit_hit(")
+        fixture(i > 0, "the fable escalation moved — re-read this check")
+        seg = "\n".join(ln for ln in src[max(0, i - 500):i + 120].splitlines()
+                        if not ln.lstrip().startswith("#"))
+        fixture('"fable"' in seg, "the tier test is not where this check expects")
+        assert re.search(r"weekly|fable_quota|_looks_like_fable", seg), (
+            "the ONLY condition for declaring org-wide Fable exhaustion is "
+            "that the node's tier is fable. An ordinary session limit — which "
+            "_looks_like_usage_limit matches on purpose, by its own comment — "
+            "is therefore read as the weekly Fable quota running out")
+    gap("fable · declaring the weekly Fable limit needs positive evidence, "
+        "not just a fable-tier node hitting some limit",
+        "USER REPORT 2026-08-06. `_looks_like_usage_limit` is tier-agnostic "
+        "and matches the five-hour session limit deliberately (its comment "
+        "names that exact phrasing as the case it was widened for). The "
+        "escalation beside it adds only `model == \"fable\"`. Every limit a "
+        "fable agent can hit therefore becomes `fable_limit_hit`, whose own "
+        "docstring says 'Weekly Fable usage limit exhausted'. The signal to "
+        "test on is available in the same blob — the weekly wording — and "
+        "`_looks_like_usage_limit` already greps for the word 'weekly'; it "
+        "just does not keep the answer. Suggest a second predicate ("
+        "`_looks_like_weekly_limit`) gating the escalation only, leaving the "
+        "ordinary freeze exactly as it is: a fable agent that hits a session "
+        "limit then freezes with an `until_ts` and auto-resumes like any "
+        "other tier, which is the behaviour the user expected.",
+        _the_fable_escalation_needs_a_weekly_marker)
+
+    def _a_halted_fable_node_can_be_released_by_time():
+        """The second half — the one that makes a misclassification PERMANENT
+        rather than merely wrong for five hours.
+
+        The ordinary limit freeze carries `until_ts` and clears itself
+        (auto_resume / ▶). `fable_limit_hit`'s halt policy instead sets
+        `limit_locked` on EVERY live fable node org-wide, and the only writer
+        that removes it is `clear_fable_lock` — a user action. The resume path
+        skips a `limit_locked` node by design. So the node holds a freeze that
+        WOULD have expired and a lock that never does."""
+        org = store.create_org("zz fable perma")
+        org.hire(USER, None, "fable", 20, "f1", **hspec())
+        store.save_org(org)
+        org.fable_limit_hit("f1", "You've hit your session limit — resets 1:40pm")
+        store.save_org(org)          # ⚠ or the reload below reads a doc that
+                                     # never saw the lock and the check passes
+                                     # for a reason that is not the finding —
+                                     # measured, first draft did exactly that
+        fixture(bool(org.node("f1").get("limit_locked")),
+                "the halt policy did not lock the node")
+        fixture(bool(store.load_org(org.d["slug"]).node("f1").get("limit_locked")),
+                "the lock did not survive the save — the fixture, not the code")
+        # everything short of the user's own hand: a fresh load, a resume
+        # sweep, the passage of time
+        org2 = store.load_org(org.d["slug"])
+        assert not org2.node("f1").get("limit_locked"), (
+            "a fable node halted by a limit that carries a RESET TIME stays "
+            "halted forever: `limit_locked` has no time-based release, the "
+            "resume path skips any node that has it, and only "
+            "clear_fable_lock (a user action, or a user fable-hire) removes "
+            "it. Combined with the misclassification above, one session "
+            "limit on one fable agent perma-freezes every fable agent in the "
+            "org")
+    gap("fable · a halt whose limit has a known reset time is releasable "
+        "without the user's hand",
+        "USER REPORT 2026-08-06, second half. Even if the classification "
+        "were right, the recovery is asymmetric: the ordinary freeze records "
+        "`until_ts` and auto-resumes, while `limit_locked` has no expiry and "
+        "no writer but `clear_fable_lock`. `_ensure_frozen` has already "
+        "parsed a reset time out of the SAME blob by the time the escalation "
+        "runs, so the information needed to release it is in hand and "
+        "discarded. Suggest: carry the reset onto the lock ("
+        "fable_lock[\"until_ts\"]) and have the resume sweep clear the lock "
+        "and the per-node limit_locked once it passes — the same rule the "
+        "per-node freeze already follows. ⚠ Note the blast radius while this "
+        "stands: the halt policy locks EVERY live fable node, not just the "
+        "one that hit the limit, and under the `dissolve` policy the same "
+        "misread would RETIRE every fable node's entire subtree. That is the "
+        "one to fix first.",
+        _a_halted_fable_node_can_be_released_by_time)
+
+    # ---- USER REPORT 2026-08-06 ------------------------------------------
+    # "new org inbox mail didn't arrive at an agent until its turn ended, not
+    # at its next post-event hook."
+    #
+    # Bounded by measurement before being written down, so the report is not
+    # guessed at:
+    #   · the inbound path is UNIFORM — every outside route (hub poll, @org:,
+    #     @mcp:) reaches supervisor.deliver_org_inbox → send_message, the same
+    #     function node-to-node mail uses, and takes the same steer branch;
+    #   · steering demonstrably WORKS on this machine — the live resonite
+    #     org's `steered_log` carries 17 mid-turn deliveries.
+    # So org-inbox mail is not riding a second-class path, and the parking
+    # decision itself is right (a PostToolUse hook is the soonest delivery
+    # that does not interrupt — user ruling).
+    #
+    # What is missing is the ability to tell the two OUTCOMES apart. A message
+    # accepted while a node is responding is answered {"steering": true} and
+    # parked in st["steer"], where only a hook can collect it. If the turn
+    # makes no further tool call, the result boundary folds the leftovers into
+    # the FRONT of the queue (`st["queue"][0:0] = leftover`) and they arrive
+    # at the next turn — which is exactly "it waited for the turn to end".
+    # That fold is silent.
+    def _the_steer_fold_back_leaves_a_record():
+        src = open(os.path.join(_REPO, "backend", "orgtree", "supervisor.py"),
+                   encoding="utf-8").read()
+        folds = [m.start() for m in re.finditer(
+            r'st\["queue"\]\[0:0\] = leftover', src)]
+        fixture(len(folds) >= 1,
+                f"the steer fold-back site moved (found {len(folds)}) — "
+                f"re-read this check before trusting it")
+        for i in folds:
+            seg = "\n".join(ln for ln in src[max(0, i - 700):i + 400].splitlines()
+                            if not ln.lstrip().startswith("#"))
+            assert re.search(r"steered_log|_log\(|node_event|_emit", seg), (
+                "a message parked for steering is folded back into the queue "
+                "with no record: the API answered {\"steering\": true}, no "
+                "hook ever collected it, and it will now arrive at the NEXT "
+                "turn instead. Nothing in the org record, the node events or "
+                "the steered log separates 'delivered mid-turn' from 'waited "
+                "for the boundary' — so the reported experience is invisible "
+                "to anyone trying to confirm it from the durable record")
+    # ← FIXED (promoted out of gap(), 2026-08-06, same day): both fold sites
+    # now call `_steer_fold_log` (outside _state_lock, pop_steer's lock
+    # order) — a `fold`-marked steered_log row that read_chat renders as a
+    # dim SYSTEM line ("N mid-turn message(s) missed the steer window —
+    # delivered at the next turn"), never a user-message impersonation. The
+    # steer window itself is unchanged, exactly per this finding's own
+    # not-asking note; only the silence is gone. steered_log now records
+    # misses beside successes, so reading it no longer overstates steering.
+    check("steer · a message parked for steering leaves a record when it "
+          "falls back to the queue undelivered",
+          _the_steer_fold_back_leaves_a_record)
 
     print("\npop_steer — one write, or the message is briefly homeless:")
     slug, (nid,) = horg()
@@ -1391,10 +1588,15 @@ def live_timeout() -> None:
     slug, (nid,) = make_org("timeout")
     tok = token()
     send(slug, nid, f"hang forever {tok}")
+    # either watchdog may win the race to kill a hung turn (implementer note
+    # on landing): the 6 s turn ceiling says "timed out", the idle watchdog
+    # says "turn killed: no CLI output" — both are the kill-and-report path
+    # this check exists to prove, so it accepts both phrasings
     check("timeout · the turn is killed and reported", lambda: (
-        None if wait_for(lambda: "timed out" in str(
+        None if wait_for(lambda: any(w in str(
             api("GET", f"/api/orgs/{slug}/nodes/{nid}/chat?last=3")
-            .get("last_error") or ""), 30)
+            .get("last_error") or "") for w in ("timed out", "turn killed")),
+            30)
         else (_ for _ in ()).throw(AssertionError(
             api("GET", f"/api/orgs/{slug}/nodes/{nid}/chat?last=3")))))
     check("timeout · the mail is not lost with the killed turn", lambda: (

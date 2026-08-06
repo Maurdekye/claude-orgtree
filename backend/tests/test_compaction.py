@@ -74,6 +74,7 @@ from __future__ import annotations
 import glob
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -134,6 +135,49 @@ def exception(label: str, why: str) -> None:
     elsewhere, reported rather than hidden. Never silently tolerated."""
     EXCEPTIONS.append((label, why))
     print(f"  EXCEPT   {label}\n           {why}")
+
+
+def fixture(ok, msg) -> None:
+    """A PRECONDITION inside a gap body — raised as a RuntimeError so `gap`
+    below re-reports it as a broken check instead of swallowing it as the
+    finding.
+
+    ⚠ Learned the expensive way (2026-08-06, test_batched_asks). A gap
+    body's whole contract is "this assert fails", so a fixture assert and the
+    assert that measures the defect are indistinguishable: gap() catches the
+    first AssertionError it meets and files it as the finding. A credit
+    request for 8 against a grant of 20 took the at-or-below no-op branch, so
+    no row ever existed — the gap fired on its own scaffolding while the
+    defect it named was real but unexercised. Use fixture(...) for every setup
+    precondition in a gap body; keep a bare `assert` for the property under
+    test."""
+    if not ok:
+        raise RuntimeError(f"fixture: {msg}")
+
+
+GAPS: list[tuple[str, str, str]] = []
+
+
+def gap(label, why, fn) -> None:
+    """SHOULD hold, currently does not — asserts the SAFE property, is expected
+    to FAIL today, keeps the suite green, and turns RED the day it is fixed.
+    (Same idiom as test_hub / test_net_transport; `EXCEPTIONS` above records a
+    behaviour with no fix pending, this records one with a fix prescribed.)
+
+    ⚠ Set preconditions with `fixture(...)`, never a bare assert — see there."""
+    global PASS
+    try:
+        fn()
+    except AssertionError as e:
+        GAPS.append((label, why, str(e).split("\n")[0][:300]))
+        print(f"  ⚑ GAP    {label}")
+        return
+    except Exception:                                            # noqa: BLE001
+        FAIL.append((label + " (gap check errored)", traceback.format_exc()))
+        print(f"  FAIL     {label} — the gap check itself broke")
+        return
+    PASS += 1
+    print(f"  ok {PASS:3d}  {label}  ← FIXED: promote this out of gap()")
 
 
 def token() -> str:
@@ -638,6 +682,87 @@ def thresholds() -> None:
         run_after(org, a, 9000, {"modelUsage": {"m": {"contextWindow": 10000}}})
         check("threshold · an unpinned tier falls back to the CLI's contextWindow",
               lambda: _true(bool(calls)))
+
+        # ---- the CLI can compact first, and then nothing splits ----------------
+        # USER REPORT 2026-08-06: "when an agent auto-compacts I don't see its
+        # retired pre-compacted sessions behind itself."
+        #
+        # The stack behind a card is `node.lineage` (ledger.tree → lineage_stack),
+        # and the only thing that ever writes a lineage entry is `compact_split`,
+        # reached from `_maybe_compact` when `occ / cw >= compact_at`. So "no card
+        # behind it" means the split never ran — and these two checks are about
+        # WHY it can fail to run on a turn that visibly compacted.
+        def _occupancy_is_sampled_at_its_PEAK():
+            """`turn_occ = t` (supervisor.py, the stream loop) OVERWRITES on every
+            assistant message, so what reaches `_after_turn` is the LAST call's
+            context size, not the turn's high-water mark. A turn that climbs past
+            the threshold and is then compacted BY THE CLI ends small, and the
+            crossing is never observed — no split, no bearer, no stack.
+
+            ⚠ Reading `max` here does NOT reintroduce the bug the docstring at
+            `_after_turn` warns about. That one was the RESULT event's `usage`,
+            which is cumulative across the turn's API calls (it read a 19%-full
+            context as 123%). Per-MESSAGE usage is point-in-time — input +
+            cache_read + cache_creation is the context size at that call — so the
+            maximum over messages is a real peak, not a sum."""
+            src = open(os.path.join(_REPO, "backend", "orgtree", "supervisor.py"),
+                       encoding="utf-8").read()
+            body = "\n".join(ln for ln in src.splitlines()
+                             if not ln.lstrip().startswith("#"))
+            fixture("turn_occ" in body,
+                    "the sampling site moved — re-read this check")
+            assert re.search(r"turn_occ\s*=\s*max\(turn_occ,", body), (
+                "occupancy is sampled as the LAST assistant call, not the peak: a "
+                "turn whose context crossed the threshold mid-flight and was then "
+                "compacted by the CLI reports its small post-compaction size, so "
+                "_maybe_compact never fires and the node never gains a knowledge "
+                "bearer — the user sees the compaction in the transcript and no "
+                "card behind the agent")
+            assert not re.search(r"turn_occ\s*=\s*t\b", body), (
+                "a plain last-write assignment coexists with the max — the "
+                "overwrite would still lose the peak on whichever path runs it")
+        # ← FIXED (promoted out of gap(), 2026-08-06, same day): the stream
+        # loop samples `turn_occ = max(turn_occ, t)`. Matcher repaired on
+        # promotion (implementer): the original anchored a 2600-char window
+        # at `turn_occ = 0`, but the sampling site sits ~180 lines below the
+        # init — outside the window — so the check could never have flipped
+        # on the fix; it now scans the whole module for the max-form AND the
+        # absence of any plain overwrite.
+        check("sampling · context occupancy reaches _after_turn as the turn's "
+              "PEAK, not its last call", _occupancy_is_sampled_at_its_PEAK)
+
+        def _a_cli_compaction_is_noticed_by_the_TURN_path():
+            """The signal exists and is already parsed — just not where it could
+            act. `read_chat` reads `system/compact_boundary` out of the session
+            JSONL and renders "— context compacted — · Nk tokens" (that is how the
+            user SEES the compaction they are reporting), and
+            `compactMetadata.preTokens` is the pre-compaction size sitting right
+            there. The live turn path never looks."""
+            src = open(os.path.join(_REPO, "backend", "orgtree", "supervisor.py"),
+                       encoding="utf-8").read()
+            fixture("compact_boundary" in src,
+                    "the boundary parser is gone — re-read this check")
+            i = src.index("def _after_turn")
+            j = src.index("def _fork_result")
+            seg = src[i:j]
+            assert "compact_boundary" in seg or "preTokens" in seg, (
+                "the turn path never learns that the CLI compacted this session, "
+                "so the one event that MAKES a generation — the context being "
+                "replaced by a summary — passes without recording one. The "
+                "transcript shows '— context compacted —' and the canvas shows no "
+                "card behind the agent: the same event, told two different ways")
+        # ← FIXED (promoted out of gap(), 2026-08-06, same day): the exact
+        # prescribed shape — `_count_cli_compactions` scans the session JSONL
+        # for compact_boundary records after each turn; a NEW boundary mints
+        # `record_cli_compaction` (reseed's lost-generation precedent:
+        # generation bumped, lineage entry bearer_state="lost", session id
+        # unchanged) and SKIPS the occ-threshold split that turn, since the
+        # peak may predate the CLI's compaction. First observation BASELINES
+        # without minting, so long-lived orgs are not restructured
+        # retroactively on the deploy turn.
+        check("boundary · a CLI-side auto-compaction is recorded as a "
+              "generation, not silently absorbed",
+              _a_cli_compaction_is_noticed_by_the_TURN_path)
 
         print("\ncooldown after a failed split (№28):")
         org, (a,) = horg()

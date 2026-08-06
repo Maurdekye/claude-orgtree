@@ -3771,6 +3771,49 @@ class Org:
         self._log("compact_split", SYSTEM, {"node": nid, "predecessor": pred_id}, [])
         return pred_id
 
+    def record_cli_compaction(self, nid: str,
+                              pre_tokens: int | None = None) -> str:
+        """The CLI compacted the session ITSELF (redteam 1b, user report
+        2026-08-06): orgtree lost the race, and the pre-compaction context is
+        already gone — so this mints the RECORD, never a bearer. Same shape
+        as reseed's lost generation (bearer_state="lost": visible in the
+        lineage stack, honestly unconsultable — its content survives only in
+        the CLI's summary), generation bumped, session id UNCHANGED (the CLI
+        compacted in place; there is no fork)."""
+        n = self.node(nid)
+        gen = n.get("generation", 0)
+        pred_id = f"{nid}@{gen}"
+        pred = cast(NodeDoc, dict(n))  # dict() copy loses the TypedDict
+        pred.update({
+            "state": "archived", "archived_at": now(), "grant": 0,
+            "bearer_state": "lost", "successor": nid,
+            "predecessor": n.get("predecessor"),
+            "ui_order": n.get("ui_order", 0) + 0.001,
+            "cost_usd": 0.0, "last_status": None, "frozen": None,
+            "inflight": None,
+            "scope": {**n["scope"],
+                      "add_dirs": cast("list[DirGrant]",
+                                       [dict(d) for d in n["scope"].get("add_dirs", [])]),
+                      "tools": {"bash": False, "web": False, "edit": False,
+                                "subagents": False, "mcp": []}},
+        })
+        self.nodes[pred_id] = pred
+        n["generation"] = gen + 1
+        n["predecessor"] = pred_id
+        self._notify([n["parent"]],
+                     f'"{nid}" was auto-compacted BY THE CLI (now generation '
+                     f'{gen + 1}'
+                     + (f'; ~{pre_tokens / 1000:.0f}k tokens summarized'
+                        if pre_tokens else '')
+                     + f'). The pre-compaction context was replaced by a '
+                       f'summary before orgtree could preserve it — '
+                       f'"{pred_id}" is recorded as a LOST generation '
+                       f'(visible, not consultable).')
+        self._log("cli_compact", SYSTEM,
+                  {"node": nid, "predecessor": pred_id,
+                   **({"pre_tokens": pre_tokens} if pre_tokens else {})}, [])
+        return pred_id
+
     def mark_unrecoverable(self, nid: str, reason: str) -> None:
         """№31: ledger said live, the session cannot actually resume."""
         n = self.node(nid)

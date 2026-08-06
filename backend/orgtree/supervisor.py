@@ -1532,7 +1532,9 @@ def _run_one_turn(slug: str, nid: str,
             # 2026-08-05, harvested from this machine's real transcripts).
             # Capture the limit text here; the result/err_blob paths adopt it.
             synth_limit_txt = ""
-            turn_occ = 0        # context size = LAST assistant call's usage (№24)
+            turn_occ = 0        # context-size HIGH-WATER over the turn's calls
+                                # (per-message point-in-time usage — see the
+                                # max() site; №24 was about the result event)
             turn_out = 0        # cumulative output tokens (killed-turn accounting)
             dbuf, dlast = "", time.time()   # token-stream delta batcher (~8 Hz)
             think_t0, think_buf = 0.0, ""   # the in-progress thought
@@ -1713,7 +1715,15 @@ def _run_one_turn(slug: str, nid: str,
                              + u.get("cache_read_input_tokens", 0)
                              + u.get("cache_creation_input_tokens", 0))
                         if t:                     # zero-usage synthetics don't count
-                            turn_occ = t
+                            # HIGH-WATER mark, not last-write (redteam 1a,
+                            # 2026-08-06): a turn that climbs past compact_at
+                            # and is then compacted BY THE CLI ends small —
+                            # last-write never observes the crossing, so no
+                            # split, no bearer, no stack. Safe as a max:
+                            # per-MESSAGE usage is point-in-time context size
+                            # (unlike the RESULT event's cumulative usage the
+                            # №24 bug was about — see _after_turn).
+                            turn_occ = max(turn_occ, t)
                         # killed-turn accounting: the result event never comes,
                         # so the stream's per-message usage is the only record
                         turn_out += u.get("output_tokens", 0) or 0
@@ -1782,6 +1792,9 @@ def _run_one_turn(slug: str, nid: str,
                             if st["queue"] and not limited:
                                 nxt = st["queue"].pop(0)
                                 st["responding"] = True
+                        if leftover:
+                            _steer_fold_log(slug, nid, len(leftover),
+                                            "result boundary")
                         if nxt is not None:
                             # queued texts are RAW (mail stays in the doc until
                             # delivery — restart durability): envelope now,
@@ -1838,6 +1851,8 @@ def _run_one_turn(slug: str, nid: str,
                     st["steer"] = []
                     if leftover:
                         st["queue"][0:0] = leftover
+                if leftover:
+                    _steer_fold_log(slug, nid, len(leftover), "turn exit")
             if timed_out.is_set():
                 _charge_killed_turn(slug, nid, turn_out)
                 raise RuntimeError(timeout_why[0]
@@ -2182,11 +2197,75 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
     # Anything unusable falls back to the configured default rather than
     # guessing a number the operator did not choose.
     compact_at = _threshold(org.d.get("compact_at"), COMPACT_AT)
+    # 1b (redteam gap 2026-08-06, user report "no retired sessions behind an
+    # auto-compacted agent"): the CLI can compact FIRST. When it has, the
+    # pre-compaction messages are already gone from the session, so a split
+    # now would mint a knowledge bearer holding POST-compaction state and
+    # label it the pre-compaction self — worse than nothing. What the org
+    # gets instead is the RECORD: a lineage entry marked lost (reseed's
+    # precedent — visible, honestly unconsultable) and a generation bump.
+    # And the occ-threshold split below is SKIPPED this turn: with 1a's peak
+    # sampling, occ may still carry the pre-compaction high-water mark.
+    cli_cnt, cli_pre = _count_cli_compactions(org, nid)
+    seen_raw = n.get("cli_compactions")
+    if seen_raw is None:
+        # first observation of this node under the feature: BASELINE without
+        # minting — retroactively minting a generation per historical
+        # boundary would restructure long-lived orgs on the deploy turn
+        with store.DOC_LOCK:
+            o2 = store.load_org(slug)
+            if nid in o2.nodes:
+                o2.node(nid)["cli_compactions"] = cli_cnt
+                store.save_org(o2)
+    elif cli_cnt > int(seen_raw):
+        with store.DOC_LOCK:
+            o2 = store.load_org(slug)
+            if nid not in o2.nodes:
+                return
+            n2 = o2.node(nid)
+            have = int(n2.get("cli_compactions") or 0)
+            for _ in range(max(0, cli_cnt - have)):
+                o2.record_cli_compaction(nid, cli_pre)
+            n2["cli_compactions"] = cli_cnt
+            store.save_org(o2)
+        notify(slug, nid, "compacted")
+        return
     if occ and cw and occ / cw >= compact_at:
         # №28: a failing compaction used to re-fire after EVERY turn, holding
         # a turn slot for up to 10 minutes each time — cool down between tries
         if time.time() >= state(slug, nid).get("compact_retry_at", 0):
             _compact_split(slug, nid)
+
+
+def _count_cli_compactions(org: Org, nid: str) -> tuple[int, int | None]:
+    """How many times the CLI has compacted this node's session, read off the
+    session JSONL the same way read_chat renders it: `system` records with
+    subtype `compact_boundary` (compactMetadata.preTokens rides along — the
+    LAST boundary's value is returned for the notice). Substring-gated before
+    any JSON parse, so the per-turn cost is one linear scan."""
+    try:
+        n = org.node(nid)
+        tpath = transcript_path(n["session_id"], _transcript_root(org))
+        if not tpath:
+            return 0, None
+        cnt, pre = 0, None
+        with open(tpath, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if '"compact_boundary"' not in line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if rec.get("type") == "system" \
+                        and rec.get("subtype") == "compact_boundary":
+                    cnt += 1
+                    p = (rec.get("compactMetadata") or {}).get("preTokens")
+                    if isinstance(p, (int, float)):
+                        pre = int(p)
+        return cnt, pre
+    except (OSError, LedgerError):
+        return 0, None
 
 
 def _fork_result(out: str) -> dict[str, Any]:
@@ -3331,6 +3410,33 @@ def start_auto_resume_loop() -> None:
     threading.Thread(target=loop, daemon=True).start()
 
 
+def _steer_fold_log(slug: str, nid: str, n: int, where: str) -> None:
+    """The steer MISS record (redteam gap 2026-08-06, user report: 'org
+    inbox mail didn't arrive until the turn ended'). A message accepted
+    with {steering: true} that no hook ever collected folds back into the
+    queue at the boundary — parking is correct (ruling stands); its SILENCE
+    was not: steered_log held only successes, so a miss could be neither
+    confirmed nor refuted from the durable record, and the accept-time
+    answer was never revised. One row per fold, `fold`-marked; read_chat
+    renders it as a dim system line where the wait actually happened.
+    Best-effort by design — the diagnostic must never break the turn path,
+    and it is called OUTSIDE _state_lock (same lock order as pop_steer)."""
+    try:
+        with store.DOC_LOCK:
+            org = store.load_org(slug)
+            if nid not in org.nodes:
+                return
+            log = org.d.setdefault("steered_log", {}).setdefault(nid, [])
+            log.append({"at": now_iso(), "fold": n, "where": where,
+                        "text": f"{n} mid-turn message(s) missed the steer "
+                                f"window ({where}: no further tool call) — "
+                                f"delivered at the next turn"})
+            del log[:-40]
+            store.save_org(org)
+    except Exception:                                        # noqa: BLE001
+        pass
+
+
 def pop_steer(slug: str, nid: str) -> list[str]:
     """The steering hook's fetch: everything pending for this node, atomically.
     The fetch puts the text into the agent's tool-result context, so it is the
@@ -4105,8 +4211,16 @@ def read_chat(org: Org, nid: str, last: int | None = None) -> dict[str, Any]:
     # vanished from the chat forever once its live row aged out. The
     # steered log is the durable copy; interleave by timestamp.
     for e in (org.d.get("steered_log") or {}).get(nid, []):
-        row = {"role": "user", "text": e.get("text") or "", "tools": [],
-               "ts": e.get("at"), "steered": True}
+        if e.get("fold"):
+            # a steer MISS (see _steer_fold_log): a dim system line where
+            # the wait happened, never a user-message impersonation
+            row = {"role": "system", "text": "— " + (e.get("text") or
+                   "mid-turn mail missed the steer window — delivered at "
+                   "the next turn") + " —",
+                   "tools": [], "ts": e.get("at"), "steer_fold": True}
+        else:
+            row = {"role": "user", "text": e.get("text") or "", "tools": [],
+                   "ts": e.get("at"), "steered": True}
         at = e.get("at") or ""
         pos = len(msgs)
         for j, m in enumerate(msgs):
