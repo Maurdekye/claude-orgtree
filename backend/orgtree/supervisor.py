@@ -3845,14 +3845,16 @@ def reconcile(slug: str) -> list[str]:
                 org.d.setdefault("notices", {}).setdefault(dnid, [])[0:0] = nots
         if dlv:
             store.save_org(org)
-        # drain-on-start: undelivered mail persists in the org doc (messages
-        # ARE mail — user ruling), so any live node with a waiting mailbox
-        # simply gets driven again. No shadow queue to mirror or replay.
-        resumed = {k for k, _ in inflight}
-        revive = [nid for nid, n in org.nodes.items()
-                  if n["state"] == "live" and nid not in marked
-                  and nid not in resumed and not n.get("frozen")
-                  and (org.d.get("mail") or {}).get(nid)]
+        # drain-on-start RETIRED (user ruling 2026-08-06: "unread intra-org
+        # mail between agents in the same org or inbound in an org inbox
+        # needs to persist between restarts"). Undelivered mail stays BOXED
+        # and unread across a restart — visible on the node's badge and in
+        # its inbox, delivered whenever the node is next driven naturally.
+        # The old revive turned every restart into an org-wide wake-everyone
+        # event that consumed the unread state, and self-update (FR-14)
+        # makes restarts routine. Only a turn that was actually INTERRUPTED
+        # mid-flight still resumes below — its own envelope drain picks the
+        # box up, exactly as the dying turn would have.
     for nid, inf in inflight:
         print(f"[orgtree] {slug}/{nid}: resuming the turn interrupted by shutdown")
         send_message(slug, nid,
@@ -3862,11 +3864,6 @@ def reconcile(slug: str) -> list[str]:
                      "part of it; check your recent work and CONTINUE from where "
                      "you left off (do not redo finished steps).\n\n"
                      + (inf.get("text") or ""))
-    for nid in revive:
-        print(f"[orgtree] {slug}/{nid}: driving mail that waited across restart")
-        send_message(slug, nid,
-                     "(orgtree) You have mail above — some of it waited across "
-                     "an orgtree restart. Handle it as appropriate.")
     return marked
 
 

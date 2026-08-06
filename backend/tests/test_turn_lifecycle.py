@@ -1819,8 +1819,19 @@ def live_reconcile() -> None:
                                           "node": nid})
     # rehire drives it; kill before it can land
     stop_backend(hard=True)
-    check("reconcile · mail waiting at startup is driven", lambda: (
+    # INVERTED (user ruling 2026-08-06: unread mail PERSISTS across
+    # restarts): the old drain-on-start drove every waiting mailbox at
+    # startup, consuming the unread state org-wide — and self-update (FR-14)
+    # makes restarts routine. A restart is now a non-event for boxed mail:
+    # it stays in the mailbox, visible and unread, until the next NATURAL
+    # drive delivers it.
+    check("reconcile · mail waiting at startup stays boxed and unread", lambda: (
         start_backend(),
+        None if (not wait_delivered(tok, 10)
+                 and any(carriers(slug, nid, tok).values()))
+        else (_ for _ in ()).throw(AssertionError(carriers(slug, nid, tok))))[-1])
+    check("reconcile · the next natural drive delivers the waited mail", lambda: (
+        send(slug, nid, f"nudge {token()}"),
         None if wait_delivered(tok, 40)
         else (_ for _ in ()).throw(AssertionError(carriers(slug, nid, tok))))[-1])
     wait_idle(slug, nid, 20)
@@ -1878,9 +1889,20 @@ def live_reconcile() -> None:
     with open(os.path.join(DATA, "orgs", slug4 + ".json"), "w",
               encoding="utf-8") as f:
         json.dump(d, f, indent=2)
-    check("reconcile · an unconfirmed batch folds back and is delivered",
+    # ruling 2026-08-06 (unread persists): the fold-back RESTORES the mail —
+    # and it then WAITS, boxed and unread, like any mail across a restart;
+    # the retired drain-on-start no longer delivers it. The next natural
+    # drive does, and nothing is lost either way.
+    check("reconcile · an unconfirmed batch folds back into the mailbox",
           lambda: (
               start_backend(),
+              None if wait_for(
+                  lambda: carriers(slug4, nid4, tokj)["mailbox"], 20)
+              else (_ for _ in ()).throw(AssertionError(
+                  carriers(slug4, nid4, tokj))))[-1])
+    check("reconcile · a natural drive then delivers the folded-back mail",
+          lambda: (
+              send(slug4, nid4, f"nudge {token()}"),
               None if wait_delivered(tokj, 40)
               else (_ for _ in ()).throw(AssertionError(
                   carriers(slug4, nid4, tokj))))[-1])

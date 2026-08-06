@@ -98,6 +98,11 @@
             border: none; padding: 6px 8px; border-radius: 5px; cursor: pointer;
             font: inherit; }
   .allbtn:hover, .allbtn.current { background: var(--panel-2); }
+  /* the disconnected dropdown (user spec 2026-08-06) */
+  .offhead { color: var(--dim); font-size: 11px; padding: 8px 8px 4px;
+             margin-top: 8px; border-top: 1px solid var(--line-soft);
+             cursor: pointer; user-select: none; }
+  .offhead:hover { color: var(--ink); }
 </style>
 </head>
 <body>
@@ -120,6 +125,8 @@ let filter = ''       // '' = global · '<slug>' = one client row ·
                       // 'client:<username>' = a whole client group
 let sel = ''          // selected message id — '' = nothing (the default)
 let MSGS = []         // accumulated newest-first (top window + paged-in tail)
+let showOff = false   // the disconnected section (user spec 2026-08-06):
+                      // online rows on top, offline behind this dropdown
 // lazy loading (user spec 2026-08-05, the orgtree inbox shape): render a
 // WINDOW of rows and page in near the bottom — first from what is already
 // fetched, then by cursor-fetching older mail from the hub. One page per
@@ -208,38 +215,55 @@ async function refresh () {
     // §11c: the grouping key is FOLDED (lowercase, _ → -) so a chat's raw
     // username (ncola_k8bx) and an org's sanitized slug segment
     // (ncola-k8bx) land in ONE group — the same fold the server applies
-    // to ?client=, so the header filter always matches its own group
+    // to ?client=, so the header filter always matches its own group.
+    // Connected/disconnected split (user spec 2026-08-06): ONLINE rows sit
+    // at the top (grouped as before); every OFFLINE row lives behind one
+    // collapsible "offline" section, collapsed by default. A client with
+    // members in both states appears in both sections; its header filters
+    // the same either way.
     const fold = (s) => String(s || '').toLowerCase().replace(/_/g, '-')
-    const groups = new Map()
-    for (const o of d.orgs) {
-      const client = fold(o.username || o.slug.split('.')[1] || '?')
-      if (!groups.has(client)) groups.set(client, [])
-      groups.get(client).push(o)
+    const orgRow = (o) => {
+      const parts = o.slug.split('.')
+      const fp = parts.length > 2 ? parts.pop() : ''
+      const kind = o.kind === 'chat' ? 'chat' : 'org'
+      return '<div class="org k-' + kind
+        + (filter === o.slug ? ' current' : '')
+        + '" onclick="pick(\'' + esc(o.slug) + '\')">'
+        + '<span class="dot' + (o.online ? ' on' : '') + '"></span>'
+        + '<span><div class="slug">' + esc(parts.join('.'))
+        + ' <span class="fp">·' + esc(fp) + '</span>'
+        + (kind === 'chat' ? ' <span class="kindtag">chat</span>' : '')
+        + '</div>'
+        + '<div class="last">' + (o.online ? 'online' : ago(o.last_seen))
+        + (o.blurb ? ' · ' + esc(o.blurb) : '') + '</div></span>'
+        + (o.queued ? '<span class="q">' + o.queued + ' queued</span>' : '')
+        + '</div>'
     }
-    for (const client of [...groups.keys()].sort()) {
-      const rows = groups.get(client).sort(
-        (a, b) => a.slug < b.slug ? -1 : 1)
-      side.push('<div class="client' + (filter === 'client:' + client
-        ? ' current' : '') + '" title="all mail touching this client"'
-        + ' onclick="pick(\'client:' + esc(client) + '\')">' + esc(client)
-        + ' · ' + rows.length + '</div>')
+    const section = (rows) => {
+      const groups = new Map()
       for (const o of rows) {
-        const parts = o.slug.split('.')
-        const fp = parts.length > 2 ? parts.pop() : ''
-        const kind = o.kind === 'chat' ? 'chat' : 'org'
-        side.push('<div class="org k-' + kind
-          + (filter === o.slug ? ' current' : '')
-          + '" onclick="pick(\'' + esc(o.slug) + '\')">'
-          + '<span class="dot' + (o.online ? ' on' : '') + '"></span>'
-          + '<span><div class="slug">' + esc(parts.join('.'))
-          + ' <span class="fp">·' + esc(fp) + '</span>'
-          + (kind === 'chat' ? ' <span class="kindtag">chat</span>' : '')
-          + '</div>'
-          + '<div class="last">' + (o.online ? 'online' : ago(o.last_seen))
-          + (o.blurb ? ' · ' + esc(o.blurb) : '') + '</div></span>'
-          + (o.queued ? '<span class="q">' + o.queued + ' queued</span>' : '')
-          + '</div>')
+        const client = fold(o.username || o.slug.split('.')[1] || '?')
+        if (!groups.has(client)) groups.set(client, [])
+        groups.get(client).push(o)
       }
+      const out = []
+      for (const client of [...groups.keys()].sort()) {
+        const rs = groups.get(client).sort((a, b) => a.slug < b.slug ? -1 : 1)
+        out.push('<div class="client' + (filter === 'client:' + client
+          ? ' current' : '') + '" title="all mail touching this client"'
+          + ' onclick="pick(\'client:' + esc(client) + '\')">' + esc(client)
+          + ' · ' + rs.length + '</div>')
+        for (const o of rs) out.push(orgRow(o))
+      }
+      return out
+    }
+    const on = d.orgs.filter((o) => o.online)
+    const off = d.orgs.filter((o) => !o.online)
+    side.push(...section(on))
+    if (off.length) {
+      side.push('<div class="offhead" onclick="toggleOff()">'
+        + (showOff ? '▼' : '▶') + ' ' + off.length + ' disconnected</div>')
+      if (showOff) side.push(...section(off))
     }
     el('orgs').innerHTML = side.join('')
     const m = await (await fetch('/ui/messages?limit=' + TOP
@@ -290,8 +314,10 @@ function pick (slug) {
   refresh()
 }
 function selmsg (id) { sel = (sel === id ? '' : id); renderMail() }
+function toggleOff () { showOff = !showOff; refresh() }
 window.pick = pick
 window.selmsg = selmsg
+window.toggleOff = toggleOff
 el('mlist').addEventListener('scroll', () => {
   const l = el('mlist')
   if (l.scrollHeight - l.scrollTop - l.clientHeight < 240) more()
