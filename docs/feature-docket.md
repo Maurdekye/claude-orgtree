@@ -662,7 +662,9 @@ explicitly — the product is being asked to formalize the exact process that bu
 > lay on the docket as a future feature request: the ability for an agent to request *any*
 > permission scope increase that it can only get from you: access to a new folder, a tool, etc.
 
-*(user request 2026-08-06, recorded by the curator. Not built — logged for triage.)*
+*(user request 2026-08-06, recorded by the curator. **Status ruled (`DECISIONS.md` D-103 §⑤,
+`eedd139`): HELD-BUT-WILL-APPROACH when implementer capacity frees** — distinct from FR-02/FR-15's
+indefinite backlog below; this one is queued, not shelved.)*
 
 **What "you" resolves to, and why it isn't `orgtree_ask`.** Read literally against the product's
 own model, the grantor here is the human — the same party who sets `dirs` (`--add-dir`) and
@@ -698,8 +700,9 @@ this class of grant, human-only.
 > has a folder grant request, etc.
 
 *(user request 2026-08-06, recorded by the curator. Follows directly from FR-13 above — this is the
-batching shape for it and for `orgtree_request_credits`, not a new request kind of its own. Not
-built — logged for triage.)*
+batching shape for it and for `orgtree_request_credits`, not a new request kind of its own.
+**Status ruled (`DECISIONS.md` D-103 §⑤, `eedd139`): HELD-BUT-WILL-APPROACH when implementer
+capacity frees**, same as FR-13.)*
 
 **What exists today, and why this isn't a small extension of FR-04.** `orgtree_ask`'s `questions`
 array (`mcptool.py:142-160`, shipped as FR-04) already batches 1-4 tabs into ONE card — but every
@@ -821,3 +824,43 @@ not (A). The four numbered build requirements above are the ones that apply.
 
 **HELD, same day — explicit user instruction: "don't begin implementation now, hold off."**
 Exploration only; no build to start on this entry until the user gives a separate go-ahead.
+
+**Formalized same day (`DECISIONS.md` D-103 §⑤, `eedd139`): BACKLOGGED INDEFINITELY** — a stronger,
+distinct status from FR-13/FR-14's "held but will approach" above; grouped with FR-02 (mobile) as
+the two entries with no queued approach date.
+
+---
+
+### FR-16 · indent the agent tray by hierarchy (bottom-left, expandable agents list)
+> add a feature to the docket: indent agents in the expandable agents list of the canvas bottom
+> left based on their hierarchy: all direct subordinates of a given agent appear immediately after
+> their superior in the list, and indented a bit compared to it.
+
+*(user request 2026-08-06, recorded by the curator — corrected mid-turn from "bottom right" to
+"bottom left," the actual location; matched below. Not built — logged for triage.)*
+
+**Located: the agent TRAY, not a canvas panel.** `frontend/src/canvas/OrgCanvas.tsx:1290-1378` — the
+component's own comment calls it "**a flat list of every agent**," and that's accurate today, not
+just a stale label: the row order (`:1316-1320`) sorts purely by each node's **canvas position**
+(`pa.y - pb.y || pa.x - pb.x`, via `posOf(a.id)`), with zero awareness of who reports to whom. A
+child hired far from its parent on the canvas currently lands nowhere near it in the tray.
+
+**The hierarchy data this needs already exists and is already used two lines below the sort.**
+`n.parent` is read at `:1327` (`map.get(n.id)?.parent`) for the pile-front logic when a hidden
+agent is picked from the tray — so building a parent→children tree from the same `map` the sort
+already iterates needs no new backend plumbing, just a different traversal: depth-first, each
+superior immediately followed by its full subtree, in place of the position sort.
+
+**Indentation itself is new, not a toggle on existing styling.** `.tray-row`/`.tray-main`
+(`styles.css:1850-1864`) have no depth-based padding today — this needs an actual new visual
+dimension (e.g. `padding-left: {depth * N}px` on `.tray-row`, threaded from the depth the new
+traversal computes), not a CSS class that already half-exists elsewhere in the tray.
+
+**One open question worth a ruling before building, not assumed here:** the tray filters rows by
+name (`trayQ`) and by archived-state (`trayArch`) *before* rendering (`:1312-1315`). With a
+position sort that's harmless — every remaining row stands alone. With a hierarchy sort, filtering
+out an ancestor whose *descendant* still matches the name filter (or whose child is live while it
+itself is archived and hidden) leaves that descendant indented under a gap with no visible parent
+above it. Whoever builds this should decide: keep filtered-out ancestors visible (dimmed, e.g. via
+the existing `.off` class already used for non-live rows) purely to preserve the indent's meaning,
+or accept orphaned indentation as a rare, tolerable edge case of a name-filtered view.
