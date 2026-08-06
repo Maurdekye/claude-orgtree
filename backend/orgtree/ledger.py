@@ -3806,6 +3806,63 @@ class Org:
         return {"policy": policy, "locked": locked, "dissolved": dissolved,
                 "converted": converted}
 
+    def unstick(self, actor: str, nid: str) -> dict[str, Any]:
+        """⭐ User ruling 2026-08-06, verbatim: "i should be able to, as the
+        user, manually locate and unstick any agent frozen for any reason,
+        overriding built in locks that might prevent other agents from
+        unsticking it, such as session limits, weekly limits, or fable
+        specific limits."
+
+        USER AUTHORITY ONLY — that restriction is the entire safety story:
+        an agent that could unstick itself (or a peer) walks straight
+        through a spend cap; the ruling says the USER overrides the locks,
+        not that the locks stop being locks. Clears, in ONE action: the
+        node's frozen record REGARDLESS of kind flags (the test is "the
+        user said so", never a kind allowlist — an allowlist reintroduces
+        this bug with the next freeze kind), the node's limit_locked, and
+        the org-wide fable_lock when this node was its last holder.
+        RECORDS rather than erases: the freeze moves onto n["unstuck"]
+        {by, at, was} — an override leaves MORE evidence, not less.
+
+        NOT folded in (per the same capture, different verbs own them):
+        remote_controlled (release) and archived (rehire). Org-level
+        spend/storage freezes are admin controls with their own UI — the
+        result WARNS when one still holds, because unsticking the agent
+        does not turn off the org's meters."""
+        if actor_kind(actor) != "user":
+            raise LedgerError(
+                "only the user may unstick an agent — these locks exist "
+                "precisely so agents cannot walk themselves (or each other) "
+                "through a limit; ask the user")
+        n = self.node(nid)
+        released: list[str] = []
+        was = n.pop("frozen", None)
+        if was:
+            released.append("frozen")
+        if n.pop("limit_locked", None):
+            released.append("limit_locked")
+        if self.d.get("fable_lock") and not any(
+                v.get("limit_locked") for v in self.nodes.values()):
+            self.d.pop("fable_lock", None)
+            released.append("fable_lock (org-wide — this was its last holder)")
+        if not released:
+            return {"status": f"{nid} is not stuck — nothing to release",
+                    "released": []}
+        cast("dict[str, Any]", n)["unstuck"] = {
+            "by": USER, "at": now(), **({"was": was} if was else {})}
+        self._notify([nid], "The user manually UNSTUCK you (override) — "
+                            "any limit that held you is released; continue.")
+        self._log("unstick", actor, {"node": nid, "released": released}, [])
+        warnings: list[str] = []
+        if self.d.get("spend_frozen"):
+            warnings.append("the org-wide SPEND freeze still holds — turns "
+                            "stay refused until the limit is raised in "
+                            "settings")
+        return {"released": released,
+                "resume_texts": [str(t) for t in cast(
+                    "list[Any]", (was or {}).get("resume_texts") or [])],
+                **({"warnings": warnings} if warnings else {})}
+
     def clear_fable_lock(self) -> None:
         """FABLE-3 (redteam 2026-08-06): the manual exit announces the
         release like the timed one — the halt asked superiors to cover the

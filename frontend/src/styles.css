@@ -239,6 +239,15 @@ main {
    as the saturated credit-bar cyan sitting right beside the card */
 .sq.frozen { border-color: #6b93ab; }
 .badge.frozen { color: var(--ice); border-color: #46647a; }
+/* ⭐ the per-node unstick (user ruling 2026-08-06): the desk button, and the
+   card's freeze badge doubling as the control */
+.badge.unstick {
+  background: none; border: 1px solid var(--accent); color: var(--accent);
+  cursor: pointer; font-weight: 600;
+}
+.badge.unstick:hover { background: color-mix(in srgb, var(--accent) 15%, transparent); }
+button.badge.frozen { cursor: pointer; font: inherit; font-size: inherit; }
+button.badge.frozen:hover { border-color: var(--accent); }
 .resume-all {
   /* resume = thaw: ice-tinted, matching what it resumes (was haiku-green,
      which made a frozen-org control wear a model tier's color) */

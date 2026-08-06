@@ -115,6 +115,12 @@ export const interruptNode = (
   req(`/api/orgs/${slug}/nodes/${nid}/interrupt`, { method: 'POST' })
 export const compactNode = (slug: string, nid: string): Promise<{ started: boolean }> =>
   req(`/api/orgs/${slug}/nodes/${nid}/compact`, { method: 'POST' })
+/** ⭐ the user's per-node override (ruling 2026-08-06): releases EVERY lock
+ *  holding the agent — any freeze kind, limit_locked, the org fable_lock if
+ *  last holder — and re-drives it */
+export const unstickNode = (slug: string, nid: string):
+  Promise<{ released: string[]; status?: string; warnings?: string[] }> =>
+  req(`/api/orgs/${slug}/nodes/${nid}/unstick`, { method: 'POST' })
 export const creditDecide = (
   slug: string, id: string, action: string,
   // F-05: `granted` = the counter-offer amount; `dry` = validate + stranding

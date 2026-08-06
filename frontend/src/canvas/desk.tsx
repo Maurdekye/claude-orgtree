@@ -12,7 +12,8 @@ import type {
 } from '../types'
 import {
   audienceAction, BASE, compactNode, fileUrl, getChat, getHistory,
-  getScratch, interruptNode, retractMail, saveScope, sendMessage, uploadFile,
+  getScratch, interruptNode, retractMail, saveScope, sendMessage,
+  unstickNode, uploadFile,
 } from '../api'
 import {
   ArrowDownIcon, ArrowUpIcon, AutorenewIcon, CloseIcon, DocIcon, DotIcon,
@@ -402,6 +403,19 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
               ? ` · resumes ${node.frozen.until}` : ''}</span>}
         {node.limit_locked &&
           <span className="badge dim"><LockIcon fontSize="inherit" /> limit</span>}
+        {/* ⭐ the user's per-node override (ruling 2026-08-06): one click
+            releases EVERY lock holding this agent and re-drives it —
+            pub (visitor) views never get it */}
+        {!pub && (node.frozen || node.limit_locked) &&
+          <button className="badge unstick"
+            title="release every lock holding this agent (user override) and resume it"
+            onClick={() => unstickNode(slug, node.id)
+              .then((r) => toast([r.released?.length
+                ? `${node.id} unstuck (${r.released.join(', ')})`
+                : (r.status ?? 'nothing to release'),
+                ...(r.warnings ?? [])]))
+              .catch((e: Error) => toast([`error: ${e.message}`]))}>
+            unstick</button>}
         {!compact && (node.generation ?? 0) > 0 &&
           <button className="badge stackbadge"
             onClick={onLineage}>gen {node.generation} <LayersIcon fontSize="inherit" /></button>}

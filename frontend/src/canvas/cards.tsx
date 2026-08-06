@@ -7,7 +7,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { ToastFn, TreePayload } from '../types'
-import { audienceAction, getCharters, saveKiosk } from '../api'
+import { audienceAction, getCharters, saveKiosk, unstickNode } from '../api'
 import {
   AutorenewIcon, CheckIcon, CloseIcon, FocusIcon, FrozenIcon, LayersIcon,
   LockIcon, MailIcon, SettingsIcon,
@@ -835,11 +835,27 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, m
           {node.last_status &&
             <span className={'statuschip ' + node.last_status.status}
               title={node.last_status.summary}>{node.last_status.status}</span>}
+          {/* ⭐ clickable (user ruling 2026-08-06): the freeze badge IS the
+              per-node unstick — the control lives where the user finds the
+              agent, not only in org-level panels */}
           {node.frozen &&
-            <span className="badge frozen"
-              title={node.frozen.error ?? undefined}><FrozenIcon fontSize="inherit" />{' '}
+            <button className="badge frozen"
+              title={(node.frozen.error ? node.frozen.error + ' — ' : '')
+                + 'click to UNSTICK (user override: releases every lock '
+                + 'and resumes)'}
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation()
+                if (pub) return
+                unstickNode(slug, node.id)
+                  .then((r) => toast([r.released?.length
+                    ? `${node.id} unstuck (${r.released.join(', ')})`
+                    : (r.status ?? 'nothing to release'),
+                    ...(r.warnings ?? [])]))
+                  .catch((e2: Error) => toast([`error: ${e2.message}`]))
+              }}><FrozenIcon fontSize="inherit" />{' '}
               {node.limit_locked ? 'halted'
-                : node.frozen.connection ? 'net' : 'limit'}</span>}
+                : node.frozen.connection ? 'net' : 'limit'}</button>}
           {node.remote_controlled &&
             <span className="badge frozen"
               title="the user is driving this session from another device — mail queues until release (gear panel)">

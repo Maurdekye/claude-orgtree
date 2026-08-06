@@ -2099,6 +2099,32 @@ async def ask_answer(slug: str, aid: str, body: AskAnswer) -> dict[str, Any]:
     return {"answered": aid, "node": r["node"]}
 
 
+@app.post("/api/orgs/{slug}/nodes/{nid}/unstick")
+async def node_unstick(slug: str, nid: str) -> dict[str, Any]:
+    """⭐ The user's per-node override (ruling 2026-08-06): release EVERY
+    lock holding this agent — freeze of any kind, limit_locked, and the org
+    fable_lock if this was its last holder — then drive the node with its
+    kept replay texts (or a nudge), exactly as ▶ resume would have. This
+    endpoint is loopback-admin like every other user control; there is
+    deliberately NO agent verb for it."""
+    with store.DOC_LOCK:
+        try:
+            org = store.load_org(slug)
+            r = org.unstick(USER, nid)
+        except LedgerError as e:
+            raise HTTPException(422, str(e))
+        store.save_org(org)
+    if r.get("released"):
+        texts = cast("list[str]", r.get("resume_texts") or []) or [
+            "(orgtree) The user manually UNSTUCK you (override) — handle "
+            "any mail above and continue from where you left off."]
+        for t in texts:
+            supervisor.send_message(slug, nid, t)
+        supervisor.notify(slug, nid, "turn_started")
+    await hub.changed(slug)
+    return r
+
+
 @app.get("/api/orgs/{slug}/inbox")
 def user_inbox(slug: str) -> dict[str, Any]:
     """Same shape as a node's inbox (user ruling — the two interfaces function

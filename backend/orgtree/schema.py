@@ -179,6 +179,9 @@ class NodeDoc(TypedDict):
     # consecutive network-classified turn failures (user report 2026-08-06);
     # reset by any completed turn, capped at NET_RETRY_MAX then manual
     net_fail_run: NotRequired[int]
+    # ⭐ the user-override record (ruling 2026-08-06): Org.unstick moves the
+    # released freeze here {by, at, was} — evidence, never erasure
+    unstuck: NotRequired[dict[str, Any]]
 
 
 class AudienceGrant(TypedDict):
