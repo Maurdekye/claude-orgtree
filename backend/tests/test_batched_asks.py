@@ -252,6 +252,49 @@ def sec_attack() -> None:
     check("retire · archiving an agent takes its open request with it",
           _retiring_the_asker_takes_its_card_with_it)
 
+    def _the_moot_credit_request_keeps_its_history_too():
+        """The other half of the same event. Retiring an agent moots BOTH its
+        active kinds (abd9cf3), but the two leave different traces: a mooted
+        question stays in the payload as a nulled card explaining itself,
+        while a mooted credit request is filtered out of `asks` (the
+        `status not in ("withdrawn", "moot")` clause) and out of
+        `credit_requests` (pending only), so it vanishes with no record.
+
+        The filter predates the fix — `moot` was already the credit-approve
+        fallback's status — but retirement is a far more common act than that
+        fallback, so the same line now hides a case a user performs by hand
+        and may well want explained. This suite's own neighbouring check pins
+        the opposite rule for questions ("the superseded question stays in
+        the nulled history")."""
+        org = org2()
+        # ⚠ fixture repair (implementer, on promotion): the original asked
+        # for 8 against a grant of 20 — the ≤-current no-op branch, so no
+        # request ever existed and the gap fired on the fixture, not the
+        # filter. A request must EXCEED the current grant to be pending.
+        org.request_credits("boss", 30, "need more room")
+        org.retire(USER, "boss")
+        doc = [r["status"] for r in org.d.get("credit_requests", [])]
+        assert doc == ["moot"], f"fixture: expected one mooted request, {doc}"
+        t = org.tree()
+        shown = [a for a in t["asks"] if a.get("kind") == "credit"]
+        assert shown, (
+            "the mooted credit request is in the doc but reaches no payload: "
+            f"asks={[(a.get('kind'), a['status']) for a in t['asks']]}, "
+            f"credit_requests={[r['status'] for r in t['credit_requests']]}. "
+            "Retire an agent holding a QUESTION and the user gets a nulled "
+            "card saying the asker was retired; retire one holding a CREDIT "
+            "REQUEST and the card just disappears — same event, same ruling, "
+            "two different histories")
+    # ← FIXED (promoted out of gap(), 2026-08-06, same day): both tree()'s
+    # `asks` and node_ask's pool now hide ONLY `withdrawn` — a mooted credit
+    # request renders as a nulled card like its question twin, exactly the
+    # smallest-fix shape the finding prescribed. (Fixture repaired on
+    # promotion: the original 8-against-20 request was the no-op branch and
+    # never created the row the check meant to trace.)
+    check("retire · a mooted CREDIT request keeps its history like a mooted "
+          "question does",
+        _the_moot_credit_request_keeps_its_history_too)
+
     def _extra_answers_are_not_silently_dropped():
         org = org2()
         org.ask_user("boss", questions=QS[:2])

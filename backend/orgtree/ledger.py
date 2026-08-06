@@ -3591,9 +3591,13 @@ class Org:
         """The ask the UI should show on this node's desk: the open one, or
         the most recently resolved one within its linger window (the nulled
         card carries WHY it nulled — grey answered / orange interrupted)."""
+        # `withdrawn` stays hidden (the agent taking its own request back is
+        # nothing for the user to read); `moot` RENDERS as a nulled card
+        # (redteam 2026-08-06: retirement made mooting ordinary, and a card
+        # that just vanishes tells the user less than one that says why)
         pool = ([a for a in self.d.get("asks", []) if a["node"] == nid]
                 + [{**r, "kind": "credit"} for r in self.d.get("credit_requests", [])
-                   if r["node"] == nid and r["status"] not in ("withdrawn", "moot")])
+                   if r["node"] == nid and r["status"] != "withdrawn"])
         if not pool:
             return None
 
@@ -3956,10 +3960,13 @@ class Org:
             # F-04: everything the user's inbox interleaves as ask cards —
             # open first-class, resolved for the nulled history; the header
             # ask-icon glows iff asks_open > 0
+            # withdrawn hidden, moot SHOWN — same rule as node_ask (redteam
+            # 2026-08-06: a mooted credit request reached no reader at all,
+            # while its question twin left a nulled card explaining itself)
             "asks": (self.d.get("asks", [])
                      + [{**r, "kind": "credit"}
                         for r in self.d.get("credit_requests", [])
-                        if r["status"] not in ("withdrawn", "moot")])[-60:],
+                        if r["status"] != "withdrawn"])[-60:],
             "asks_open": sum(1 for a in self.d.get("asks", [])
                              if a["status"] == "open")
                          + sum(1 for r in self.d.get("credit_requests", [])
