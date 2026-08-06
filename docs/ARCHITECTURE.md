@@ -294,3 +294,20 @@ disk and the frontend have no automated tests and there is no CI: a green
 `pyright` + `tsc` + ledger-suite run proves nothing about the turn loop,
 mail journal, kiosk gateway, or disk mounts. Those paths are verified by
 scripted live drills at change time — keep drilling them.
+
+## Test-tree authorship
+
+`backend/tests/` and `frontend/tests/` have a **single** adversarial
+author — this repo's redteam seat; the implementer lands and deploys. Set
+2026-08-06, on a deconfliction request from another org running this same
+codebase (neoja) after they hired their own redteam. External or cross-org
+findings arrive as **reports**, not commits — inline test bodies in the
+report are welcome, but the redteam seat adapts them into suite idiom before
+they land, and origin credit goes in the commit message rather than the
+authorship. Rationale (worth keeping verbatim): two adversarial seats must
+never author one tree, because a merge conflict in a test tree gets resolved
+by picking a side rather than understanding both.
+
+Naming follows the same split: bare "redteam" means this repo's own seat; a
+remote org's seat is named explicitly — the `@net:` prefix, or possessive
+("neoja's redteam") — never left bare.
