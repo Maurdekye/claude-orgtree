@@ -58,6 +58,13 @@ app = FastAPI(title="orgtree mail hub", lifespan=_lifespan)
 
 HUB_NAME = (os.environ.get("HUB_NAME") or "").strip() or socket.gethostname()
 RETENTION_DAYS = int(os.environ.get("HUB_RETENTION_DAYS", "30"))
+# roster hygiene (user report 2026-08-06, redteam gap: the hub could never
+# forget a client — every identity that ever registered was permanent).
+# Longer than message retention so an org outlives its own queued mail; a
+# returning client re-registers as itself (same secret → same fingerprint,
+# first-write-wins is satisfied by its own hash) and the org side re-registers
+# on any 401 (net.py self-heal, same wave).
+ORG_RETENTION_DAYS = int(os.environ.get("HUB_ORG_RETENTION_DAYS", "45"))
 MAX_FILE_BYTES = 25 * 1024 * 1024      # mirror the orgtree caps
 MAX_FILES_PER_MESSAGE = 10
 BODY_MAX = 20000                       # mirror the org-inbox truncation
@@ -198,6 +205,31 @@ async def register(request: Request) -> dict[str, Any]:
         _bump()
         return {"ok": True, "name": HUB_NAME,
                 "retention_days": RETENTION_DAYS, "roster": _roster(con)}
+    finally:
+        con.close()
+
+
+# ---------------------------------------------------------------- unregister
+
+@app.post("/api/unregister")
+async def unregister(request: Request) -> dict[str, Any]:
+    """The polite exit (redteam gap 2026-08-06): an authenticated client
+    removes ITS OWN roster row(s). Queued messages age out via the normal
+    retention sweep; re-registering later with the same secret re-mints the
+    identical address (first-write-wins is satisfied by the client's own
+    fingerprint)."""
+    con = db.connect()
+    try:
+        slugs = _auth(request, con)
+        if not slugs:
+            raise HTTPException(401, "no valid org credentials in X-Org-Auth")
+        for s in slugs:
+            con.execute("DELETE FROM orgs WHERE slug=?", (s,))
+            _parked.pop(s, None)
+            _seen_mono.pop(s, None)
+        con.commit()
+        _bump()
+        return {"unregistered": slugs}
     finally:
         con.close()
 
@@ -602,10 +634,28 @@ async def _sweep_loop() -> None:
                             (cutoff,))
                 n = con.execute("DELETE FROM messages WHERE received_at < ?",
                                 (cutoff,)).rowcount
+                # roster prune (redteam gap 2026-08-06): a client not seen
+                # for ORG_RETENTION_DAYS ages out — EXCEPT one that still
+                # has queued mail in custody (never strand a delivery). A
+                # returning client re-registers as itself; the org side
+                # self-heals its registered flag on the 401.
+                org_cutoff = (datetime.now(timezone.utc)
+                              - timedelta(days=ORG_RETENTION_DAYS)) \
+                    .isoformat(timespec="milliseconds").replace("+00:00", "Z")
+                pruned = [r["slug"] for r in con.execute(
+                    "SELECT slug FROM orgs WHERE "
+                    "COALESCE(last_seen, registered_at) < ? AND slug NOT IN "
+                    "(SELECT DISTINCT to_slug FROM messages "
+                    " WHERE state='queued')", (org_cutoff,)).fetchall()]
+                if pruned:
+                    ph = ",".join("?" * len(pruned))
+                    con.execute(f"DELETE FROM orgs WHERE slug IN ({ph})",
+                                (*pruned,))
                 con.commit()
-                if n:
-                    print(json.dumps({"ts": _now_iso(), "sweep": n}),
-                          flush=True)
+                if n or pruned:
+                    print(json.dumps({"ts": _now_iso(), "sweep": n,
+                                      **({"orgs_pruned": pruned}
+                                         if pruned else {})}), flush=True)
             finally:
                 con.close()
         except Exception as e:                                   # noqa: BLE001

@@ -551,6 +551,28 @@ def _groups(parts: dict[str, dict[str, Any]]) \
     return g
 
 
+def _clear_registration(slug: str, hub_id: str) -> None:
+    """The 401 self-heal (neoja finding + the roster-prune wave,
+    2026-08-06): a hub answering 401 means it does not know us — a pruned
+    row, a manual unregister, or a rebuilt data volume. `registered_at` was
+    written exactly once and nothing ever cleared it, so an org whose hub
+    row vanished believed it was registered and 401'd forever with no
+    self-heal — the failure mode that made any roster prune unsafe.
+    Clearing the flag makes the register loop re-register on its next pass
+    (idempotent: same secret → same fingerprint → the hub re-mints the
+    identical address, first-write-wins satisfied by our own hash)."""
+    from . import store
+    try:
+        with store.DOC_LOCK:
+            org = store.load_org(slug)
+            cell = (org.d.get("net_state") or {}).get(hub_id)
+            if cell and cell.get("registered_at"):
+                cell["registered_at"] = None
+                store.save_org(org)
+    except Exception:                                            # noqa: BLE001
+        pass
+
+
 def _register_pending(parts: dict[str, dict[str, Any]]) -> None:
     from . import store
     for slug, p in parts.items():
@@ -668,6 +690,14 @@ def _drain_spools(parts: dict[str, dict[str, Any]]) -> None:
                     _spool_done(slug, hid, str(e["id"]))
                     _set_status(slug, hid, True)
                     _ok(addr)
+                elif r.status_code == 401:
+                    # the hub does not recognize the SENDER (pruned row /
+                    # rebuilt volume): heal the registration and surface it;
+                    # the entry retries after the re-register
+                    _clear_registration(slug, hid)
+                    _bump_try(slug, hid, str(e["id"]),
+                              "hub did not recognize this org — "
+                              "re-registering, will retry")
                 elif r.status_code == 422:
                     # unknown recipient: the append-time hub pick is a
                     # one-shot guess, so a refuted guess is re-checked here —
@@ -1113,6 +1143,11 @@ def _poll_pass(parts: dict[str, dict[str, Any]]) -> bool:
             _fail(addr)
             for s, hid in members.items():
                 _set_status(s, hid, False, f"HTTP {r.status_code}")
+            if r.status_code == 401:
+                # the hub does not know us — clear the durable flag so the
+                # register loop re-registers next pass (see _clear_registration)
+                for s, hid in members.items():
+                    _clear_registration(s, hid)
             continue
         _ok(addr)
         data = cast("dict[str, Any]", r.json())

@@ -31,6 +31,7 @@ transcripts land there), its own port, and every org is deleted at the end.
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import shutil
@@ -112,6 +113,24 @@ DATA = os.path.join(TMP, "data")
 CFG = os.path.join(TMP, "fakecli.json")
 os.makedirs(HOME, exist_ok=True)
 os.makedirs(DATA, exist_ok=True)
+
+# ⚠ THE MAIL HUB IS NOT ISOLATED BY ORGTREE_DATA (user report 2026-08-06:
+# "hundreds of disconnected orgs … crowding the connected client list").
+# Every org this rig creates is born with a `local` hub entry at
+# net.DEFAULT_HUB_ADDRESS — 127.0.0.1:7370, the user's REAL hub — and the
+# backend's net daemon registers it there. A fresh identity per run means one
+# new roster row per fixture per run, kept for 30 days, unregisterable.
+# `net_autoconnect` cannot be turned off from here (orgs_create reads it from
+# the request body, default True); `net_hub_address` CAN — defaults.json is
+# read out of THIS data root — so the local entry is pointed at a dead port
+# and registration fails harmlessly into the backoff.
+# Same spirit as ORGTREE_BRIDGE_PORT=0 below: never touch anything the user's
+# real install owns.
+DEAD_HUB = "http://127.0.0.1:9"     # discard port: refuses instantly
+os.makedirs(DATA, exist_ok=True)
+with io.open(os.path.join(DATA, "defaults.json"), "w", encoding="utf-8") as _f:
+    json.dump({"net_hub_address": DEAD_HUB}, _f)
+
 
 
 def free_port() -> int:

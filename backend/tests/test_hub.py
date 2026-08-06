@@ -1191,6 +1191,56 @@ def sec_group_key() -> None:
           "(which is why the bug looks like 'only orgs show up')",
           _orgs_are_unaffected)
 
+    # ---- USER REPORT 2026-08-06 ------------------------------------------
+    # "hundreds of disconnected orgs … crowding the connected client list."
+    #
+    # The immediate cause was test pollution and is fixed in the rigs (three
+    # live suites registered their throwaway orgs against the REAL hub at
+    # 127.0.0.1:7370, one fresh identity per run). This is the OTHER half:
+    # why they are still there afterwards, and why any orgtree that ever
+    # touches a hub is permanent.
+    def _the_hub_can_forget_a_client():
+        """Messages have a 30-day retention sweep. ORGS have nothing: no
+        unregister route, no last_seen-based prune, no admin delete. Every
+        identity that ever registers is in the roster forever — a deleted
+        org, a reinstalled machine, a retired chat identity, a test fixture.
+        The roster is the compose picker's source and the outbound hub
+        chooser's evidence, so it is not merely cosmetic clutter: a stale
+        name is a selectable recipient that can never receive anything."""
+        slug, secret = new_org("goes away")
+        fixture(any(r["slug"] == slug for r in rows("SELECT slug FROM orgs")),
+                "the fixture org never registered")
+        # everything the hub offers a client that wants to leave
+        gone = [p for p in ("/api/unregister", "/api/forget", "/api/leave")
+                if req("POST", p, auth=pair(slug, secret),
+                       json_body={"slug": slug}).status_code != 404]
+        # …and everything time offers: make it ancient and sweep
+        backdate("UPDATE orgs SET last_seen = ? WHERE slug = ?",
+                 ("2020-01-01T00:00:00Z", slug))
+        db.sweep_retention() if hasattr(db, "sweep_retention") else None
+        left = rows("SELECT slug FROM orgs WHERE slug = ?", (slug,))
+        assert not left or gone, (
+            "a client that has not been seen since 2020 is still in the "
+            "roster and there is no route to remove it: no unregister verb, "
+            "no age-based prune, no admin delete. The message retention "
+            "sweep covers messages only, so the client list grows "
+            "monotonically for the life of the hub")
+    # ← FIXED (promoted out of gap(), 2026-08-06, same day): BOTH prescribed
+    # shapes landed — POST /api/unregister (authenticated, own slugs only;
+    # queued mail ages out via retention; re-registering with the same
+    # secret re-mints the identical address) and an age-based prune in the
+    # hourly sweep (HUB_ORG_RETENTION_DAYS, default 45 — longer than message
+    # retention; never prunes a row with queued mail in custody). The prune
+    # is SAFE because the org side now self-heals on 401 (net.py
+    # _clear_registration: a hub that answers 401 clears registered_at, so
+    # the register loop re-registers — closing neoja's peers-401-forever
+    # trap that made any prune dangerous). The ~370 fixture rows on the
+    # live hub were pruned as a one-off with a pre-delete backup.
+    check("roster · the hub can forget a client that has gone away",
+          _the_hub_can_forget_a_client)
+
+
+
 
 def main() -> int:
     print("orgtree · the mail hub (F-06 Phase B)")
