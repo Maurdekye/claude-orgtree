@@ -6,7 +6,12 @@ services:
                                      # own autostart (Docker Desktop default;
                                      # `systemctl enable docker` on Linux)
     ports:
-      - "7370:7370"
+      # HUB_BIND (cross-org find 2026-08-06, neoja's shape): which interface
+      # the FULL app — including the unauthenticated all-mail UI — listens
+      # on. Default stays 0.0.0.0 so existing LAN deployments keep working;
+      # set HUB_BIND=127.0.0.1 in .env once every remote client is on the
+      # API-only public port below (the sanctioned LAN-facing surface).
+      - "${HUB_BIND:-0.0.0.0}:7370:7370"
       # FR-10: the PUBLIC listener (API-only — no UI, no /). Inert unless
       # HUB_PUBLIC is set; tunnel THIS host port, never 7370 (the full port
       # serves the unauthenticated all-mail UI).
