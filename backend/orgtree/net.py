@@ -236,15 +236,23 @@ def spool_append(org: "Org", peer: str, body: str, oid: str,
         # weak evidence — a hub can be connected with a roster that has never
         # synced (fresh registration, container restart), and picking it over
         # a hub that actually knows the peer is a silent misroute in list
-        # order. Prefer a connected hub whose roster HAS content; fall back
-        # to any connected hub only when every roster is cold.
+        # order. Prefer a connected hub whose roster knows OTHER parties;
+        # fall back to any connected hub only when every roster is cold.
+        # ⚠ MEMBERSHIP, not cardinality (neoja's proof 2026-08-06 on the
+        # first cut): a hub's roster INCLUDES the registering org itself, so
+        # bare truthiness was satisfied for every hub we are on and the
+        # strict pass degenerated to list order — measured with one message
+        # either side of the boundary, both misfiled identically. "Knows
+        # someone besides us" is the signal the tier was built to read.
         oslug = str(org.d.get("slug") or "")
+        own = str((org.d.get("net_identity") or {}).get("slug") or "")
         for need_roster in (True, False):
             for h in hubs:
                 with _status_lock:
                     st = _status.get((oslug, str(h.get("id")))) or {}
                     roster = _rosters.get(str(h.get("address") or "")) or []
-                if st.get("connected") and (roster or not need_roster):
+                others = any(str(r.get("slug")) != own for r in roster)
+                if st.get("connected") and (others or not need_roster):
                     hub_id = str(h["id"])
                     break
             if hub_id is not None:
