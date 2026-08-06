@@ -104,10 +104,30 @@ def contract(label, fn) -> None:
 GAPS: list[tuple[str, str, str]] = []
 
 
+def fixture(ok, msg) -> None:
+    """A PRECONDITION inside a gap body — raised as a RuntimeError so `gap`
+    below re-reports it as a broken check instead of swallowing it as the
+    finding.
+
+    ⚠ Learned twice in one day (2026-08-06). A gap body's whole contract is
+    "this assert fails", so an assert that sets the fixture up is
+    indistinguishable from the assert that measures the defect: a finding can
+    be reported for a reason that has nothing to do with it. It happened here
+    — a credit request for 8 against a grant of 20 takes the ≤-current no-op
+    branch (motto A3), so no request existed, and the gap fired on its own
+    scaffolding while the defect it named was real but unexercised. Use
+    `fixture(...)` for every setup precondition in a gap body; keep bare
+    `assert` for the property under test."""
+    if not ok:
+        raise RuntimeError(f"fixture: {msg}")
+
+
 def gap(label, why, fn) -> None:
     """SHOULD hold, currently does not — inverted so the suite stays green and
     turns RED the day it is fixed. (The gate above predates the build; these
-    are findings against the shipped code.)"""
+    are findings against the shipped code.)
+
+    ⚠ Set preconditions with `fixture(...)`, never a bare assert — see there."""
     global PASS
     try:
         fn()
@@ -274,7 +294,7 @@ def sec_attack() -> None:
         org.request_credits("boss", 30, "need more room")
         org.retire(USER, "boss")
         doc = [r["status"] for r in org.d.get("credit_requests", [])]
-        assert doc == ["moot"], f"fixture: expected one mooted request, {doc}"
+        fixture(doc == ["moot"], f"expected one mooted request, got {doc}")
         t = org.tree()
         shown = [a for a in t["asks"] if a.get("kind") == "credit"]
         assert shown, (
