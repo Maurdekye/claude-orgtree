@@ -18,7 +18,13 @@ set -u
 [ -n "${ORGTREE_NODE:-}" ] && exit 0
 case "$PWD" in "$HOME/orgtree/scratch/"*) exit 0;; esac
 
-HUBTOOL="E:/Libraries/Desktop/claude-orgtree/hub/hubtool.py"
+# self-locating (cross-org report 2026-08-06: this used to hardcode one
+# machine's clone path, so any other install handed every new session
+# instructions pointing at a hubtool that was not there). `pwd -W` is the
+# git-bash spelling that yields a Windows drive path python.exe can open
+# (a /e/... MSYS path cannot be); plain pwd is the POSIX fallback.
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && { pwd -W 2>/dev/null || pwd; })"
+HUBTOOL="$HERE/hubtool.py"
 [ -f "$HUBTOOL" ] || exit 0
 
 # names already registered on this machine (one file per identity)
