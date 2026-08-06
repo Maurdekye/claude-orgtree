@@ -111,6 +111,10 @@ class FrozenInfo(TypedDict, total=False):
     # live 2026-08-04 by the turn-lifecycle suite. Setting this flag takes the
     # retag's `not any(v is True …)` guard out of the picture by construction.
     limit: bool
+    # the transient/connection kind (user report 2026-08-06): a network drop
+    # freezes with a short exponential until_ts; ▶/auto-resume own it like
+    # `limit` (resume_frozen's owned-kinds exemption names both)
+    connection: bool
     spend: bool
     spend_error: str | None
     # prompts to replay when the freeze lifts (supervisor queues them)
@@ -172,6 +176,9 @@ class NodeDoc(TypedDict):
     # 2026-08-06): absent = never observed (the first observation baselines
     # WITHOUT minting); each later increment mints a lost-generation record
     cli_compactions: NotRequired[int]
+    # consecutive network-classified turn failures (user report 2026-08-06);
+    # reset by any completed turn, capped at NET_RETRY_MAX then manual
+    net_fail_run: NotRequired[int]
 
 
 class AudienceGrant(TypedDict):

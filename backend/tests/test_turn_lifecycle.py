@@ -399,6 +399,79 @@ def hermetic() -> None:
         else (_ for _ in ()).throw(AssertionError())))
 
     # ---- USER REPORT 2026-08-06 ------------------------------------------
+    # "network interruptions appear to halt chats in the middle of a turn;
+    # they should restart automatically once connectivity resumes."
+    #
+    # Traced, and the shape is a MISSING CLASS rather than a broken path. A
+    # turn's error blob is sorted into exactly three buckets:
+    #   · _looks_like_filtered      → the fable content-filter policy
+    #   · _looks_like_usage_limit   → a FREEZE with until_ts, which
+    #                                 start_auto_resume_loop then restarts —
+    #                                 including the reset-less case, probed on
+    #                                 a 5-minute floor rather than left for a
+    #                                 human (redteam gap 2026-08-05)
+    #   · everything else           → `raise RuntimeError("turn failed: …")`
+    # A dropped connection lands in the third bucket. What happens next is
+    # correct as far as it goes and stops one step short:
+    #   ✔ the drained mail FOLDS BACK into the mailbox (nothing is lost)
+    #   ✔ last_error + a durable row put the failure in the conversation
+    #   ✘ no `frozen` record is written, and start_auto_resume_loop iterates
+    #     ONLY nodes carrying one — so nothing ever re-drives the node
+    # The node then sits idle until a human nudges it or new mail arrives.
+    # Restart durability exists (reconcile() re-drives on boot), but a backend
+    # that keeps running never retries, which is exactly the reported case.
+    def _a_transient_failure_is_classified_and_retried():
+        src = open(os.path.join(_REPO, "backend", "orgtree", "supervisor.py"),
+                   encoding="utf-8").read()
+        fixture("_looks_like_usage_limit" in src and "_looks_like_filtered" in src,
+                "the failure-classification predicates moved — re-read this")
+        assert re.search(r"def _looks_like_(transient|connection|network|offline)",
+                         src), (
+            "there is no predicate for a connection-class failure, so a "
+            "dropped network lands in the terminal `turn failed` bucket "
+            "beside a bad argv and a crashed CLI. The two buckets that DO "
+            "exist are both positively classified from the blob; this is the "
+            "third case and it has no classifier at all")
+    # ← FIXED (promoted out of gap(), 2026-08-06, same day): the exact
+    # prescribed shape — `_looks_like_connection_failure`, narrow and
+    # positive (node/undici + errno spellings, never a catch-all), REUSING
+    # the freeze machinery: fz["connection"]=True with an exponential
+    # 30s→300s until_ts, NET_RETRY_MAX consecutive attempts (counter reset
+    # by any completed turn), then a terminal failure with an honest
+    # resume-manually label. resume_texts/fold-back correctness inherited.
+    check("transient · a connection-class turn failure is classified, not "
+          "swept into the terminal bucket (user report 2026-08-06)",
+          _a_transient_failure_is_classified_and_retried)
+
+    def _the_resume_loop_can_see_a_transiently_failed_node():
+        """The second half: even given a classifier, the restarter has to be
+        able to SEE the node. start_auto_resume_loop selects on
+        `n.get("frozen")` alone, so a node parked any other way is invisible
+        to it — which is why the fix belongs in the freeze shape rather than
+        beside it."""
+        src = open(os.path.join(_REPO, "backend", "orgtree", "supervisor.py"),
+                   encoding="utf-8").read()
+        i = src.index("def start_auto_resume_loop")
+        seg = "\n".join(ln for ln in src[i:i + 3000].splitlines()
+                        if not ln.lstrip().startswith("#"))
+        fixture('n.get("frozen")' in seg or "fz := n.get" in seg,
+                "the resume loop's selection moved — re-read this check")
+        assert re.search(r"transient|connection|last_error", seg), (
+            "the auto-resume loop selects exclusively on a `frozen` record, "
+            "so a node halted by a network drop — which writes last_error "
+            "and no freeze — is invisible to the one mechanism that could "
+            "restart it")
+    # ← FIXED (promoted out of gap(), 2026-08-06, same day): closed by the
+    # first-of-the-two-ways — the transient case IS a freeze, so the
+    # selector sees it unchanged (fz["connection"] rides beside "limit" in
+    # resume_frozen's owned-kinds exemption and the timer's timeless
+    # branch). The auto_resume toggle is respected exactly as flagged: with
+    # it off, a network-frozen node waits for ▶, never auto-restarted.
+    check("transient · the auto-resume loop can see a node halted by "
+          "something other than a limit",
+          _the_resume_loop_can_see_a_transiently_failed_node)
+
+    # ---- USER REPORT 2026-08-06 ------------------------------------------
     # "system thinks that session limit hit counts as a fable limit hit and
     # perma-freezes fable agents when hit."
     #

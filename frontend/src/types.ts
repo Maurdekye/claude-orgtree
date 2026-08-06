@@ -173,6 +173,9 @@ export interface TreeFrozen {
   until: string | null
   until_ts: number | null
   error: string | null
+  /** the transient kind (2026-08-06): a network drop, not a usage limit —
+   *  same resume machinery, different badge label */
+  connection?: boolean | null
 }
 
 // ledger.py tree(): one entry of the node's lineage stack (§8)

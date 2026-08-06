@@ -211,8 +211,8 @@ export default function App() {
         // toasts only here — the tree refetch is the shared one below (each
         // branch used to call refreshTree and then fall through to it again,
         // two fetches per event)
-        if (data.event === 'frozen') {   // usage-limit popup (user ruling)
-          toast([`${data.node} hit a usage limit and is FROZEN — use the resume button in the top bar when the limit resets`])
+        if (data.event === 'frozen') {   // usage-limit / network popup
+          toast([`${data.node} is FROZEN (usage limit or network interruption) — the resume button in the top bar releases it once the wait passes; auto-resume handles it for you if enabled`])
         }
         if (data.event === 'spend_frozen') {
           toast(['SPEND LIMIT REACHED — every agent is frozen; raise the limit in the org’s settings (⚙) to resume'])
@@ -427,7 +427,9 @@ export default function App() {
                         <PlayIcon fontSize="inherit" /> resume {frozen.length}
                       </button>
                       <span className="resume-note">
-                        usage limit hit — {frozen.length} agent{frozen.length > 1 ? 's' : ''} frozen
+                        {frozen.every((n) => n.frozen.connection)
+                          ? 'network interruption'
+                          : 'usage limit hit'} — {frozen.length} agent{frozen.length > 1 ? 's' : ''} frozen
                         {until ? ` · resumable ${until}` : ''}
                       </span>
                       {!tree.public &&

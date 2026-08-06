@@ -392,7 +392,9 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
           </span>}
         {node.frozen &&
           <span className="badge frozen" title={node.frozen.error ?? undefined}>
-            <FrozenIcon fontSize="inherit" /> usage limit{node.frozen.until ? ` · resumes ${node.frozen.until}` : ''}</span>}
+            <FrozenIcon fontSize="inherit" />{' '}
+            {node.frozen.connection ? 'network' : 'usage limit'}
+            {node.frozen.until ? ` · resumes ${node.frozen.until}` : ''}</span>}
         {node.limit_locked &&
           <span className="badge dim"><LockIcon fontSize="inherit" /> limit</span>}
         {!compact && (node.generation ?? 0) > 0 &&

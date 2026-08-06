@@ -758,6 +758,12 @@ TOOLS: list[dict[str, Any]] = [
      "inputSchema": {"type": "object", "properties": {
          "to": {"type": "string"}, "body": {"type": "string"}},
          "required": ["to", "body"]}},
+    {"name": "hub_unregister",
+     "description": "The polite exit: remove this identity's row from every "
+                    "hub on its list (queued mail for you ages out on the "
+                    "hub's retention). Your local identity is KEPT — "
+                    "registering again later resumes the identical address.",
+     "inputSchema": {"type": "object", "properties": {}}},
     {"name": "hub_read",
      "description": "Fetch (and consume) any mail waiting for you right now "
                     "— across ALL your hubs; each message carries `hub` so "
@@ -784,6 +790,32 @@ TOOLS: list[dict[str, Any]] = [
 ]
 
 
+def unregister_identity(name: str | None = None) -> dict[str, Any]:
+    """The polite exit made reachable (redteam finding 2026-08-06: the hub's
+    /api/unregister existed with NO client verb — the route built for
+    clients could only be hand-POSTed). Removes this identity's roster row
+    on EVERY hub on its list. Local identity state is deliberately KEPT —
+    the uid is preserved, so a later register/listen brings back the
+    IDENTICAL address; dropping the hub row and deleting local identity are
+    different destructive acts and this verb performs only the first."""
+    d = _ident(name, mint=False)
+    if not d.get("uid"):
+        return {"error": f"no identity named {_active_name(name)!r} — "
+                         f"known: {', '.join(_known_names()) or 'none'}"}
+    done: list[str] = []
+    errors: dict[str, str] = {}
+    for h in _hubs(d):
+        try:
+            _call("/api/unregister", {}, hub=h)
+            done.append(h)
+        except Exception as e:                                   # noqa: BLE001
+            errors[h] = str(e)
+    return {"unregistered_on": done,
+            **({"errors": errors} if errors else {}),
+            "note": "the local identity file is kept — registering again "
+                    "resumes the identical address"}
+
+
 def dispatch(tool: str, args: dict[str, Any]) -> str:
     if tool == "hub_register":
         return json.dumps(register(str(args.get("name") or "") or None))
@@ -798,6 +830,8 @@ def dispatch(tool: str, args: dict[str, Any]) -> str:
     if tool == "hub_send":
         return json.dumps(_send(d, str(args.get("to") or ""),
                                 str(args.get("body") or "")))
+    if tool == "hub_unregister":
+        return json.dumps(unregister_identity(str(d["name"])))
     if tool == "hub_hubs":
         add, rem = str(args.get("add") or ""), str(args.get("remove") or "")
         if not add and not rem:
@@ -933,6 +967,13 @@ def cli(argv: list[str]) -> int:
                   + (f"  on {', '.join(cast('list[str]', r['hubs']))}"
                      if r.get("hubs") else ""), flush=True)
         return 0
+    if verb == "unregister":
+        if len(argv) < 2:
+            print("usage: hubtool.py unregister <name>", flush=True)
+            return 2
+        out = unregister_identity(argv[1])
+        print(json.dumps(out), flush=True)
+        return 1 if out.get("error") else 0
     if verb in ("addhub", "drophub"):
         if len(argv) < 3:
             print(f"usage: hubtool.py {verb} <name> <address>", flush=True)

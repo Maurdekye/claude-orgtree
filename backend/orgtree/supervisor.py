@@ -636,6 +636,28 @@ def _looks_like_weekly_fable_limit(blob: str) -> bool:
     return "limit" in b and "weekly" in b
 
 
+NET_RETRY_MAX = 4      # then fall to manual with an honest label
+
+
+def _looks_like_connection_failure(blob: str) -> bool:
+    """USER REPORT 2026-08-06 ('network interruptions halt chats mid-turn;
+    they should restart automatically once connectivity resumes'): the
+    MISSING third class — filtered and usage-limit are positively
+    classified, a dropped connection fell into the terminal turn-failed
+    bucket where nothing ever re-drives the node while the backend stays
+    up. Narrow and POSITIVE like _looks_like_filtered, never a catch-all:
+    'retry any failure' turns a bad argv or a missing CLI into an infinite
+    loop burning turn slots and real cost (№28's hazard). Phrasings are the
+    node/undici and OS errno spellings the CLI emits when the wire drops."""
+    b = blob.lower()
+    return any(p in b for p in (
+        "econnrefused", "econnreset", "etimedout", "econnaborted",
+        "enetunreach", "ehostunreach", "enotfound", "eai_again",
+        "socket hang up", "fetch failed", "network error", "networkerror",
+        "connection refused", "connection reset", "connection error",
+        "getaddrinfo", "dns lookup failed"))
+
+
 def _looks_like_filtered(blob: str) -> bool:
     """A model-side content filter flagged the message (user spec — Fable
     carries extra safety filters). Phrases seen from the API/CLI on filter
@@ -2003,6 +2025,45 @@ def _run_one_turn(slug: str, nid: str,
                     if org.node(nid)["model"] == "fable" \
                             and _looks_like_weekly_fable_limit(err_blob):
                         notify(slug, nid, "fable_limit")
+                elif _looks_like_connection_failure(err_blob):
+                    # the transient class (user report 2026-08-06): REUSE the
+                    # freeze machinery rather than a second retry path — the
+                    # freeze already solves what a bespoke retry would get
+                    # wrong (resume_texts replays only what the CLI CONSUMED;
+                    # an unconsumed batch folds back as MAIL — never a double
+                    # delivery). Exponential 30s→300s, NET_RETRY_MAX attempts,
+                    # then manual with the honest label below. The restart
+                    # itself is auto_resume's (or ▶'s) — a user with the
+                    # toggle off has asked not to be auto-restarted, and a
+                    # network drop does not override them (redteam constraint).
+                    run = 0
+                    with store.DOC_LOCK:
+                        o2 = store.load_org(slug)
+                        if nid in o2.nodes:
+                            n2 = o2.node(nid)
+                            run = int(n2.get("net_fail_run") or 0) + 1
+                            n2["net_fail_run"] = run
+                            if run <= NET_RETRY_MAX:
+                                fz = _ensure_frozen(n2)
+                                fz["connection"] = True
+                                delay = min(300.0, 30.0 * (2 ** (run - 1)))
+                                fz["until_ts"] = time.time() + delay
+                                fz["until"] = (f"network interruption — retry "
+                                               f"{run}/{NET_RETRY_MAX} in "
+                                               f"~{int(delay)}s")
+                                fz["error"] = err_blob[:300]
+                                if not is_cmd and not pend_toks:
+                                    fz.setdefault("resume_texts",
+                                                  []).append(text[-8000:])
+                            store.save_org(o2)
+                    if 0 < run <= NET_RETRY_MAX:
+                        notify(slug, nid, "frozen")
+                    elif run > NET_RETRY_MAX:
+                        raise RuntimeError(
+                            f"turn failed after {run} network-classified "
+                            f"attempts — the connection trouble is not "
+                            f"passing; resume manually (▶ or new mail): "
+                            f"{err_blob[:300]}")
                 raise RuntimeError(f"turn failed: {err_blob[:400] or 'no output'}")
             st["last_error"] = None
             st["turns_run"] += 1
@@ -2142,6 +2203,9 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
             if nid not in o2.nodes:
                 return
             n = o2.node(nid)
+            # a completed turn ends any network-failure run — the retry
+            # counter is CONSECUTIVE by design (user report 2026-08-06)
+            n.pop("net_fail_run", None)
             if cost:
                 n["cost_usd"] = round(float(n.get("cost_usd") or 0.0) + cost, 6)
             # persisted so the UI context wheel survives server restarts
@@ -3262,7 +3326,11 @@ def resume_frozen(slug: str) -> list[str]:
             # limit-frozen agent, i.e. exactly the bug the marker was added to
             # prevent, from the other end. Caught immediately by the
             # turn-lifecycle suite's three freeze checks.
-            if any(k != "limit" and v is True for k, v in fz.items()):
+            # `connection` joined `limit` 2026-08-06: both kinds are OWNED by
+            # ▶/auto-resume — a network-frozen node must not read as "another
+            # mechanism's record"
+            if any(k not in ("limit", "connection") and v is True
+                   for k, v in fz.items()):
                 continue
             n.pop("frozen", None)
             resumed.append((nid, fz.get("resume_texts") or []))
@@ -3416,7 +3484,8 @@ def start_auto_resume_loop() -> None:
                         if isinstance(_fl, dict) and _fl.get("until_ts"):
                             tss.append(_fl["until_ts"])
                         timeless_limit = any(
-                            fz.get("limit") and not fz.get("until_ts")
+                            (fz.get("limit") or fz.get("connection"))
+                            and not fz.get("until_ts")
                             for n in org.nodes.values()
                             if n["state"] == "live" and (fz := n.get("frozen")))
                         last = float(org.d.get("auto_resume_last") or 0)

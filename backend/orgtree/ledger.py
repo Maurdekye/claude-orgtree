@@ -4024,7 +4024,11 @@ class Org:
                 # the `if n.get("frozen")` guard proves the key present — the
                 # Any view sidesteps pyright's NotRequired-[] access flag
                 "frozen": ({**{k: cast(Any, n)["frozen"].get(k)
-                               for k in ("at", "until", "until_ts")},
+                               for k in ("at", "until", "until_ts",
+                                         # the badge label needs the KIND
+                                         # (a network freeze is not a
+                                         # "usage limit", 2026-08-06)
+                                         "connection")},
                             # №41: freeze kinds are commutative — surface
                             # whichever reason(s) exist without overwriting
                             "error": " · ".join(
