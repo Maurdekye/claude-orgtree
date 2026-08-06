@@ -2864,6 +2864,12 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                                       questions=a.get("questions"))
             elif body.tool == "orgtree_withdraw_ask":
                 result = org.withdraw_ask(body.node)
+            elif body.tool == "orgtree_self_update":
+                # gate + org-log first (raises on refusal, and the log rides
+                # this request's save); the launch itself is detached
+                org.self_update_gate(body.node)
+                result = supervisor.launch_self_update(
+                    body.org, body.node, str(a.get("target") or "org"))
             elif body.tool == "orgtree_present":
                 # FR-03: a reading card beside the node — non-blocking
                 result = org.present_document(body.node,

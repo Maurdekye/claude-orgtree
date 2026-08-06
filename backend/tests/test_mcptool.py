@@ -362,8 +362,8 @@ def _():
 @t("tools/list returns the catalogue and every card is well-formed")
 def _():
     tools = BOSS.rpc("tools/list")["result"]["tools"]
-    # +orgtree_present (FR-03, 2026-08-05); +orgtree_withdraw_ask (2026-08-06)
-    assert len(tools) == 21, [x["name"] for x in tools]
+    # +orgtree_present (FR-03); +orgtree_withdraw_ask; +orgtree_self_update
+    assert len(tools) == 22, [x["name"] for x in tools]
     for c in tools:
         assert c["name"].startswith("orgtree_"), c
         assert len(c["description"]) > 20, c
@@ -510,14 +510,15 @@ _AGENT_CALL = API_SRC[API_SRC.index('@app.post("/api/agent")'):
 _DISPATCH = sorted(set(__import__("re").findall(r'"(orgtree_\w+)"', _AGENT_CALL)))
 
 
-@t("the catalogue and the /api/agent dispatch name exactly the same 21 verbs")
+@t("the catalogue and the /api/agent dispatch name exactly the same 22 verbs")
 def _():
     assert sorted(CARDS) == _DISPATCH, \
         f"drift: cards {sorted(set(CARDS) - set(_DISPATCH))}, " \
         f"dispatch-only {sorted(set(_DISPATCH) - set(CARDS))}"
     # +orgtree_present (FR-03, 2026-08-05); +orgtree_withdraw_ask (the
-    # manual-invalidation ruling, 2026-08-06)
-    assert len(CARDS) == 21, len(CARDS)
+    # manual-invalidation ruling, 2026-08-06); +orgtree_self_update (FR-14,
+    # 2026-08-06)
+    assert len(CARDS) == 22, len(CARDS)
 
 
 @t("no tool name is duplicated and every card carries an inputSchema")
@@ -607,10 +608,13 @@ def _():
     contracted = {"orgtree_rehire", "orgtree_dissolve", "orgtree_reallocate"}
     absent = sorted(n for n in CARDS
                     if n not in recital and n.split("orgtree_")[1] not in recital)
+    # orgtree_self_update joined the absent set 2026-08-06 (FR-14): a rare
+    # org-shaping verb the tool card itself documents fully — deliberately
+    # not added to the recital paragraph
     assert absent == ["orgtree_list_orgs", "orgtree_move",
                       "orgtree_read_scratch", "orgtree_read_transcript",
-                      "orgtree_rename", "orgtree_send_file",
-                      "orgtree_switch_model"], \
+                      "orgtree_rename", "orgtree_self_update",
+                      "orgtree_send_file", "orgtree_switch_model"], \
         f"the recital gap changed — update or retire this pin: {absent}"
     # C0 (2026-08-05): the org-inbox paragraph now names the TOOL itself —
     # "orgtree_audience action=grant target=extern" — for top-level agents

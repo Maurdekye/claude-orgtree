@@ -176,6 +176,33 @@ TOOLS: list[dict[str, Any]] = [
         "inputSchema": {"type": "object", "properties": {}, "required": []},
     },
     {
+        "name": "orgtree_self_update",
+        "description": (
+            "Update THIS MACHINE's orgtree install and/or its mail hub to "
+            "the latest published code (git pull + rebuild + restart) "
+            "without waiting for an outside operator chat. target: 'org' "
+            "(the backend — ⚠ RESTARTS EVERY ORG on this machine; your own "
+            "turn may be cut mid-flight and the org resumes on the new "
+            "build), 'mailhub' (rebuilds the hub container in place — its "
+            "data volume, ports and .env are NEVER touched), or 'both'. "
+            "Runs detached and returns immediately with a log-file path. "
+            "Verification: your own next turn existing IS the liveness "
+            "check; a quiet remote peer is NOT evidence of breakage (the "
+            "peer transport is unbounded). No automatic rollback — if the "
+            "update misbehaves, tell the user. Top-level agents and "
+            "user-audience holders only; kiosks sealed; one launch per 5 "
+            "minutes machine-wide."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "target": {"type": "string",
+                           "enum": ["org", "mailhub", "both"],
+                           "description": "what to update (default 'org')"},
+            },
+            "required": [],
+        },
+    },
+    {
         "name": "orgtree_present",
         "description": (
             "Present a DOCUMENT to the user for in-page reading — a plan, a "

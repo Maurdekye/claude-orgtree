@@ -3440,6 +3440,112 @@ def start_auto_resume_loop() -> None:
     threading.Thread(target=loop, daemon=True).start()
 
 
+_self_update_at = [0.0]        # machine-wide one-at-a-time guard
+_self_update_log = [""]        # the last launch's log path
+
+
+def _detached_spawn(args: list[str], cwd: str, logpath: str) -> None:
+    """Launch a process that SURVIVES this backend dying — which is the
+    point: update.ps1 stops and restarts the very process spawning it."""
+    lf = open(logpath, "ab")
+    kwargs: dict[str, Any] = {}
+    if os.name == "nt":
+        # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+        kwargs["creationflags"] = 0x00000008 | 0x00000200
+    else:
+        kwargs["start_new_session"] = True
+    try:
+        subprocess.Popen(args, cwd=cwd, stdout=lf, stderr=subprocess.STDOUT,
+                         stdin=subprocess.DEVNULL, **kwargs)
+    finally:
+        lf.close()      # the child holds its own handle
+
+
+def launch_self_update(slug: str, nid: str, target: str) -> dict[str, Any]:
+    """FR-14 (user request 2026-08-06): an org updates ITSELF — the shared
+    backend install and/or the machine's mail hub — without an outside
+    operator chat. The gate (ledger.self_update_gate) has already run.
+
+    Design constraints carried in from the cross-org (neoja) field reports,
+    2026-08-06, learned on a live production box:
+      · the hub DATA VOLUME is never touched — the rebuild is
+        `docker compose up -d --build`, never `down`, never `-v` (a rollback
+        that loses the volume strands every peer permanently: they believe
+        they are registered, never re-register, and 401 forever);
+      · port bindings and .env are never modified — a bind change is
+        comms-substrate class (the news of its failure travels on the
+        channel it broke) and stays a human decision;
+      · NO automatic rollback in v1: a correct dead-man's switch needs the
+        alive/reachable split (local bounded invariant vs unbounded peer
+        signal) and their first three designs each failed a different way —
+        shipping none is safer than shipping a confident wrong one;
+      · verification guidance to the agent: your own next turn existing IS
+        the liveness check; a quiet peer is NOT evidence of breakage.
+    """
+    if target not in ("org", "mailhub", "both"):
+        raise ValueError(f"unknown self-update target {target!r}")
+    repo = os.path.normpath(os.path.join(BACKEND_DIR, ".."))
+    data = os.path.expanduser(os.environ.get("ORGTREE_DATA") or "~/orgtree")
+    os.makedirs(data, exist_ok=True)
+    now_t = time.time()
+    with _state_lock:
+        since = now_t - _self_update_at[0]
+        if since < 300:
+            return {"status": f"a self-update was already launched "
+                              f"{int(since)}s ago — one at a time, "
+                              f"machine-wide; read its log first",
+                    "log": _self_update_log[0]}
+        _self_update_at[0] = now_t
+    logpath = os.path.join(
+        data, "self-update-" + now_iso().replace(":", "-") + ".log")
+    _self_update_log[0] = logpath
+    with open(logpath, "ab") as lf:
+        lf.write(f"== self-update launched by {slug}/{nid} "
+                 f"target={target} at {now_iso()} ==\n".encode())
+    launched: list[str] = []
+    warnings: list[str] = []
+    if target in ("org", "both"):
+        if os.name != "nt":
+            warnings.append(
+                "this install has no POSIX update script (update.ps1 is "
+                "Windows) — the backend was NOT updated; the operator "
+                "updates it manually")
+        else:
+            _detached_spawn(
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                 "-File", os.path.join(repo, "update.ps1")], repo, logpath)
+            launched.append("org backend (git pull + rebuild + restart — "
+                            "EVERY org on this machine restarts)")
+    if target in ("mailhub", "both"):
+        hubdir = os.path.join(repo, "hub")
+        if not os.path.isfile(os.path.join(hubdir, "compose.yaml")):
+            warnings.append("no hub/compose.yaml in this clone — mail hub "
+                            "skipped")
+        else:
+            # "both": update.ps1 owns the git pull; the hub leg only waits
+            # for it and rebuilds (two concurrent pulls race the git index).
+            # "mailhub" alone pulls for itself first.
+            if target == "both":
+                cmd_nt = "Start-Sleep 45; docker compose up -d --build"
+                cmd_px = "sleep 45 && docker compose up -d --build"
+            else:
+                cmd_nt = "git pull; docker compose up -d --build"
+                cmd_px = "git pull && docker compose up -d --build"
+            _detached_spawn(
+                ["powershell", "-NoProfile", "-Command", cmd_nt]
+                if os.name == "nt" else ["bash", "-lc", cmd_px],
+                hubdir, logpath)
+            launched.append("mail hub container (rebuilt in place — the "
+                            "data volume, ports and .env are never touched)")
+    return {"launched": launched, "log": logpath,
+            **({"warnings": warnings} if warnings else {}),
+            "status": ("update running detached — if the backend restarts, "
+                       "your turn may be cut and the org resumes on the new "
+                       "build. Your own next turn existing IS the liveness "
+                       "check; a quiet remote peer is NOT evidence of "
+                       "breakage. The log tells the story: " + logpath)}
+
+
 def _steer_fold_log(slug: str, nid: str, n: int, where: str) -> None:
     """The steer MISS record (redteam gap 2026-08-06, user report: 'org
     inbox mail didn't arrive until the turn ended'). A message accepted

@@ -3542,6 +3542,24 @@ class Org:
         self._log("ask_answered", USER, {"id": aid, "node": a["node"]}, [])
         return {"node": a["node"], "body": body}
 
+    def self_update_gate(self, nid: str) -> None:
+        """FR-14 gate (user request 2026-08-06): a self-update restarts the
+        SHARED install — every org on this machine — so it takes the same
+        gate as asking the user directly: top-level, or a held user
+        audience. Kiosks are sealed outright. The launch itself lives in
+        supervisor.launch_self_update; this only authorizes and records."""
+        self._require_live(nid)
+        if self.is_kiosk:
+            raise LedgerError("kiosk orgs are sealed — no self-update")
+        n = self.node(nid)
+        if n["parent"] is not None and not self._has_audience(nid, USER):
+            raise LedgerError(
+                "a self-update restarts the shared orgtree install for "
+                "EVERY org on this machine — only top-level agents (or "
+                "holders of a user audience) may trigger it; ask your "
+                "superior to run it, or to grant you a user audience")
+        self._log("self_update", nid, {}, [])
+
     def _moot_asks(self, nid: str, why: str) -> None:
         """The asker leaving the org moots its active request (redteam gap
         2026-08-06 on the manual-only ruling: retirement removes the party
