@@ -83,6 +83,24 @@ def check(label, fn) -> None:
     print(f"  ok {PASS:3d}  {label}")
 
 
+def fixture(ok, msg) -> None:
+    """A PRECONDITION inside a gap body — raised as a RuntimeError so `gap`
+    below re-reports it as a broken check instead of swallowing it as the
+    finding.
+
+    ⚠ Learned the expensive way (2026-08-06, test_batched_asks). A gap
+    body's whole contract is "this assert fails", so a fixture assert and the
+    assert that measures the defect are indistinguishable: gap() catches the
+    first AssertionError it meets and files it as the finding. A credit
+    request for 8 against a grant of 20 took the at-or-below no-op branch, so
+    no row ever existed — the gap fired on its own scaffolding while the
+    defect it named was real but unexercised. Use fixture(...) for every setup
+    precondition in a gap body; keep a bare `assert` for the property under
+    test."""
+    if not ok:
+        raise RuntimeError(f"fixture: {msg}")
+
+
 def gap(label, why, fn) -> None:
     """Inverted expectation (see test_rename.py): asserts the SAFE property,
     is expected to FAIL today, keeps the suite green, and turns RED the day it
