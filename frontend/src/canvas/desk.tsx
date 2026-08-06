@@ -393,8 +393,13 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
         {node.frozen &&
           <span className="badge frozen" title={node.frozen.error ?? undefined}>
             <FrozenIcon fontSize="inherit" />{' '}
-            {node.frozen.connection ? 'network' : 'usage limit'}
-            {node.frozen.until ? ` · resumes ${node.frozen.until}` : ''}</span>}
+            {/* a limit_locked node's freeze clock can never fire (the
+                resume path skips locked nodes) — say HALTED, never a
+                reset time that is a lie (redteam 2026-08-06) */}
+            {node.limit_locked ? 'HALTED — fable lock'
+              : node.frozen.connection ? 'network' : 'usage limit'}
+            {!node.limit_locked && node.frozen.until
+              ? ` · resumes ${node.frozen.until}` : ''}</span>}
         {node.limit_locked &&
           <span className="badge dim"><LockIcon fontSize="inherit" /> limit</span>}
         {!compact && (node.generation ?? 0) > 0 &&

@@ -377,6 +377,16 @@ class Org:
                     "body": "Weekly Fable limit reset — halted fable "
                             "agent(s) released: " + ", ".join(sorted(_freed))
                             + ". Their superiors were told to stop covering."})
+        # …and ORPHANED node flags (redteam 2026-08-06, the neoja card): a
+        # limit_locked with NO fable_lock behind it is the same artifact
+        # class as the timeless lock — the org lock went away without the
+        # node sweep, and resume_frozen skips flagged nodes forever, so a
+        # healthy freeze underneath advertised a reset that could never
+        # fire ("resumes 3pm", waits past 3pm, nothing). No announcement:
+        # the freeze underneath resumes through its own machinery.
+        if not self.d.get("fable_lock"):
+            for n in self.nodes.values():
+                n.pop("limit_locked", None)
         # org holdings carry RW/RO modes (user ruling — configured on the eye's
         # gear, mirroring per-agent folder access); legacy string lists migrate
         self.d["dirs"] = norm_dirs(self.d.get("dirs"))

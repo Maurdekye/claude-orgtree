@@ -864,3 +864,62 @@ itself is archived and hidden) leaves that descendant indented under a gap with 
 above it. Whoever builds this should decide: keep filtered-out ancestors visible (dimmed, e.g. via
 the existing `.off` class already used for non-live rows) purely to preserve the indent's meaning,
 or accept orphaned indentation as a rare, tolerable edge case of a name-filtered view.
+
+---
+
+### FR-17 · feature suite: screenshots + remote-piloted browser (click, DOM inspection, the full works)
+> new feature suite to dock: ability for agents to take screenshots and remote-pilot a web browser
+> (clicking, interactivity, DOM-inspection, the full works)
+
+*(user request 2026-08-06, recorded by the curator. Not built as orgtree-specific code — but the
+grounding below found this is substantially closer to "already possible" than "needs building,"
+which changes what "not built" should mean here. Read carefully before scoping.)*
+
+**The load-bearing fact: orgtree's tool surface for an agent is not closed — it's whatever MCP
+servers are registered.** `registered_mcp_servers()` (`supervisor.py:703-709`) doesn't maintain its
+own list; it reads straight from **`~/.claude.json`'s global `mcpServers`**, the same registry every
+Claude Code session on the machine shares. A node is granted a subset of that registry via
+`tools.mcp` (`supervisor.py:1344,1316-1319` — `expand_mcp`), the same mechanism used for any other
+MCP server. Nothing in that path is scoped to "web tools" or "orgtree-approved" servers — it's the
+whole registry, filtered by grant and kiosk ceiling.
+
+**What that means concretely: real, existing browser-automation MCP servers (Playwright MCP,
+Puppeteer MCP — screenshot, click, type, DOM query, the actual feature list asked for) are not a
+new orgtree feature to build; they're a server to `claude mcp add` once, globally, and then grant to
+a node exactly like any other MCP server.** No orgtree code changes that path at all. If the ask is
+"can an agent do this," the honest answer for a **non-sandboxed** node is: largely yes, today,
+with an install step outside this repo — this docket entry may be closer to a `setup-guide.md`
+addition than a build.
+
+**Where it stops being "already possible": sandboxed agents.** `sandbox_mcp_enabled()`
+(`supervisor.py:712-716`) states the design plainly: MCP servers are **excluded from sandboxes on
+purpose** — "external contact points the sandbox restricts." The experimental opt-in
+(`ORGTREE_SANDBOX_MCP`, `sandbox_mcp_passthrough`, `:719-729`) only forwards URL-based servers and
+a narrow allowlist of "portable" stdio commands (`npx`/`node`/`python`/`python3`/`uvx`/`uv`), with
+**no guarantee a given server runs** — and the docstring's own framing (an agent reaching out to
+control a real browser, which itself reaches the open internet) is close to the exact shape the
+sandbox boundary exists to contain. A browser-automation server *launched* via `npx` would clear the
+portability allowlist, but what it then does — drive a real browser process, hit real URLs — is
+precisely the kind of external contact the sandbox's design note is warning about, not a false
+positive of an overly broad filter.
+
+**Screenshots specifically may need nothing from this at all.** Claude Code's built-in `Read` tool
+already accepts image files — a browser-automation MCP server that saves a screenshot to disk,
+combined with the agent's own `Read`, delivers "take a screenshot and look at it" without any new
+orgtree plumbing beyond the MCP grant above. Worth separating from the interactive-control half
+(click/type/DOM-inspect), which does need the live MCP connection, not just a file on disk.
+
+**What would make this an actual orgtree FEATURE, rather than a setup-guide entry pointing at
+someone else's MCP server:** likely one or more of — (a) **bundling** a known-good browser-automation
+server as a first-class, pre-registered option (so it's a checkbox at hire time, not a manual global
+install the user has to know to do first); (b) a **sandbox-safe path**, since today's story for
+sandboxed agents is "experimental, unguaranteed, and arguably against the sandbox's own stated
+purpose" — deciding whether browser automation should ever be sandbox-reachable, or should require
+dropping sandboxing, is a real design question, not an implementation detail; (c) surfacing
+screenshots taken this way somewhere in the UI (a display surface, the way `orgtree_present` gave
+documents one) rather than leaving them as files the agent has to separately `Read` and describe.
+
+**Not decided here — the point of this entry is that "build a browser tool" may be the wrong frame
+for at least the non-sandboxed half of the ask.** Whoever picks this up should start by checking
+whether granting an existing browser-automation MCP server to a live test node already satisfies
+most of what was asked, before writing any orgtree code.

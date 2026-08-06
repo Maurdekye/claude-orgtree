@@ -454,6 +454,178 @@ def hermetic() -> None:
           "releases itself (user report 2026-08-06)",
           _a_pre_fix_lock_releases_itself_like_a_new_one)
 
+    # ---- USER RULING 2026-08-06 -------------------------------------------
+    # "I should be able to, as the user, manually locate and unstick any agent
+    #  frozen for any reason, overriding built-in locks that might prevent
+    #  other agents from unsticking it, such as session limits, weekly limits,
+    #  or fable specific limits."
+    #
+    # Today there is no such verb. Every gate has its OWN release and each one
+    # refuses on behalf of a mechanism rather than a person:
+    #   node.frozen (limit/connection)  → ▶ resume / auto-resume own it
+    #   node.frozen (any other kind)    → resume SKIPS it ("that kind's clear")
+    #   node.limit_locked               → clear_fable_lock ONLY, and the UI
+    #                                     gates that control on tree.fable_lock
+    #   org.fable_lock                  → clear_fable_lock (org-level, ⚙ only)
+    # A node can hold several at once — neoja's field data has one node with a
+    # past-due freeze UNDER a lock — so releasing any single gate is not
+    # enough, and the user has no per-node control for any of them.
+    #
+    # These pin the RULING, not an implementation. They fail until a
+    # user-authority unstick exists; the shape is argued in the gap texts.
+    def _the_user_can_unstick_a_node_holding_every_gate_at_once():
+        org = store.create_org("zz unstick all")
+        org.hire(USER, None, "fable", 20, "f1", **hspec())
+        store.save_org(org)
+        n = org.node("f1")
+        fz = supervisor._ensure_frozen(n)
+        fz["limit"] = True                    # a usage-limit freeze…
+        fz["spend"] = True                    # …plus a kind ▶ refuses to own
+        fz["until_ts"] = _time.time() - 3600  # …whose reset has passed
+        n["limit_locked"] = True              # …under a fable halt
+        # ⚠ the halt needs a LIVE org lock behind it, with a future until_ts:
+        # a timeless lock is released at load (STUCK-1) and an ORPHANED
+        # limit_locked with no lock behind it is now swept too (the veto
+        # finding's fix (a), ledger.py:381). This check is about a node that
+        # is genuinely stuck under CURRENT code, not a stale artifact.
+        org.d["fable_lock"] = {"at": "2026-08-06T00:00:00.000Z", "policy": "halt",
+                               "detail": "weekly limit reached",
+                               "until_ts": _time.time() + 3600}
+        store.save_org(org)
+        slug = org.d["slug"]
+        fixture(bool(store.load_org(slug).node("f1").get("frozen"))
+                and bool(store.load_org(slug).node("f1").get("limit_locked")),
+                "the fixture did not persist a multiply-gated node")
+        unstick = getattr(Org, "unstick", None)
+        assert callable(unstick), (
+            "there is no user-authority unstick verb. Every gate has its own "
+            "release, each owned by a mechanism rather than a person: ▶ "
+            "resume owns the limit/connection freeze kinds and SKIPS any "
+            "other kind and any limit_locked node; clear_fable_lock owns the "
+            "halt but is org-level and its control is gated on a lock that "
+            "may not be there. A node holding several gates at once — which "
+            "the field data shows is the normal stuck shape — cannot be "
+            "released by any single existing action")
+    gap("unstick · the user can release a node holding every gate at once "
+        "(user ruling 2026-08-06)",
+        "SHAPE. One verb, `Org.unstick(actor, nid)`, USER AUTHORITY ONLY — "
+        "never an agent verb and never reachable from the MCP tool surface. "
+        "That restriction is the whole safety story: an agent that could "
+        "unstick itself would walk straight through a spend cap, and the "
+        "existing gates are exactly the ones written to stop it. The ruling "
+        "says the USER overrides them, not that the locks stop being locks.\n"
+        "IT MUST CLEAR, in one action: `frozen` regardless of which kind "
+        "flags it carries (limit, connection, spend, or a kind added later — "
+        "the check must be 'the user said so', not a kind allowlist, or the "
+        "next kind reintroduces this bug); `limit_locked`; and the org's "
+        "`fable_lock` if the released node was its last holder.\n"
+        "IT MUST RECORD, not erase: keep the released record as "
+        "`unstuck: {by: USER, at, was: <the freeze>}` so the history stays "
+        "honest and a support question six weeks later can still be answered. "
+        "The current ▶ deliberately leaves records intact for whoever can "
+        "act; an override should leave MORE evidence, not less.\n"
+        "REACHABLE FROM THE CARD. The field evidence is unambiguous that an "
+        "org-level-only control fails: neoja's user is looking at a frozen "
+        "card with no clickable release, and the ⚙ control they were told to "
+        "use is gated on a field that is not the one holding their node. The "
+        "ruling says 'locate and unstick ANY agent', so the control belongs "
+        "where the user finds the agent — on the frozen card — with the "
+        "org-wide ▶ kept as the bulk action it already is.",
+        _the_user_can_unstick_a_node_holding_every_gate_at_once)
+
+    def _unstick_is_never_an_agent_capability():
+        """The constraint that keeps the ruling safe rather than a hole, and
+        it holds TODAY (vacuously — there is no verb) and must keep holding
+        the moment one lands. The user overriding a spend cap is a decision;
+        an AGENT overriding one is the failure mode every gate here exists to
+        prevent."""
+        unstick = getattr(Org, "unstick", None)
+        if unstick is None:
+            # nothing to abuse yet — but pin the SURFACE too, so the verb
+            # cannot be born reachable from the agent catalogue
+            src = open(os.path.join(_REPO, "backend", "orgtree",
+                                    "mcptool.py"), encoding="utf-8").read()
+            assert "unstick" not in src, (
+                "an agent-facing `unstick` appeared in mcptool's catalogue. "
+                "The user ruling grants this override to the USER; an agent "
+                "that can clear its own spend freeze makes the cap advisory")
+            return
+        org = store.create_org("zz unstick authority")
+        org.hire(USER, None, "opus", 20, "boss", **hspec())
+        org.hire("boss", "boss", "fable", 10, "f1", **hspec())
+        store.save_org(org)
+        try:
+            unstick(org, "boss", "f1")            # a superior, not the user
+        except Exception as e:                    # noqa: BLE001
+            assert "user" in str(e).lower(), (
+                f"unstick refused a non-user actor, but not on authority "
+                f"grounds: {e}")
+            return
+        raise AssertionError(
+            "an AGENT unstuck another agent — the override must be the "
+            "user's alone")
+    check("unstick · the override is never an agent capability (holds now, "
+          "and pins the agent catalogue so it cannot become one)",
+          _unstick_is_never_an_agent_capability)
+
+    def _a_card_promising_a_reset_can_actually_reset():
+        """PEER EVIDENCE 2026-08-06 (neoja, two user screenshots): a stuck
+        fable agent's card carries BOTH chips at once —
+          ❄ "usage limit · resumes 3pm (Asia/Jerusalem)"   (cards.tsx:841, node.frozen)
+          🔒 "limit"                                        (cards.tsx:846, node.limit_locked)
+        The first advertises a recovery on a clock. The second silently
+        VETOES it: resume_frozen skips any node with limit_locked, and the
+        auto-resume timer resumes through the same function. So the user
+        reads "resumes 3pm", waits past 3pm, and nothing happens — with no
+        per-node control anywhere (the only clear is org-level and gated on
+        tree.fable_lock, so it is not even rendered unless a lock survives).
+
+        This is not the timeless-lock case (STUCK-1, fixed): the freeze here
+        has a perfectly good until_ts. It is the node FLAG outliving whatever
+        set it."""
+        org = store.create_org("zz veto")
+        org.hire(USER, None, "fable", 20, "f1", **hspec())
+        store.save_org(org)
+        n = org.node("f1")
+        fz = supervisor._ensure_frozen(n)
+        fz["limit"] = True
+        fz["until"] = "3pm"
+        fz["until_ts"] = _time.time() - 3600        # the reset has PASSED
+        n["limit_locked"] = True                    # …and the veto is set
+        org.d.pop("fable_lock", None)               # nothing org-level to clear
+        store.save_org(org)
+        slug = org.d["slug"]
+        # ⚠ fixture on the RAW FILE (implementer, on promotion): the (a) fix
+        # releases an orphaned flag AT LOAD, so loading to check the
+        # precondition would consume the state under test — the same trap
+        # the STUCK-1 repair named, third appearance today. The disk carries
+        # both states; the first load IS the release.
+        with open(os.path.join(store.DATA_ROOT, "orgs", slug + ".json"),
+                  encoding="utf-8") as f:
+            _raw = json.load(f)["nodes"]["f1"]
+        fixture(bool(_raw.get("limit_locked")) and bool(_raw.get("frozen")),
+                "the fixture did not persist both states")
+        supervisor.resume_frozen(slug)
+        back = store.load_org(slug)
+        assert not back.node("f1").get("frozen"), (
+            "the card says 'usage limit · resumes 3pm' and the reset has "
+            "passed, but ▶ resume skipped the node because limit_locked is "
+            "also set — and with no fable_lock on the org, the only control "
+            "that clears limit_locked is not rendered at all. The card "
+            "promises a recovery the app cannot perform and offers nothing "
+            "to click")
+    # ← FIXED (promoted out of gap(), 2026-08-06, same day): (a) and (b)
+    # shipped exactly as prescribed — the load hook clears an ORPHANED
+    # limit_locked whenever no fable_lock exists (same artifact class as
+    # the timeless lock; the freeze underneath then resumes through its own
+    # machinery), and while a REAL lock holds a node the freeze chip reads
+    # HALTED with no reset clock (desk + card). (c) deliberately not built:
+    # a per-node control for a state that is now rare-by-construction.
+    # Fixture moved to the raw file on promotion — see the note in the body.
+    check("veto · a node whose freeze reset has passed either resumes or "
+          "stops advertising that it will (peer screenshots 2026-08-06)",
+          _a_card_promising_a_reset_can_actually_reset)
+
     def _driving_a_halted_node_says_it_is_halted():
         """The other half of "doesn't do anything". Every parked state
         announces itself in send_message's RETURN — frozen → {"frozen": True},

@@ -838,7 +838,8 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, m
           {node.frozen &&
             <span className="badge frozen"
               title={node.frozen.error ?? undefined}><FrozenIcon fontSize="inherit" />{' '}
-              {node.frozen.connection ? 'net' : 'limit'}</span>}
+              {node.limit_locked ? 'halted'
+                : node.frozen.connection ? 'net' : 'limit'}</span>}
           {node.remote_controlled &&
             <span className="badge frozen"
               title="the user is driving this session from another device — mail queues until release (gear panel)">

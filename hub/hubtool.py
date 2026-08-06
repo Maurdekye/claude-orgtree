@@ -59,6 +59,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from typing import Any, cast
@@ -481,9 +482,20 @@ def fmt(m: dict[str, Any], hub: str | None = None) -> str:
     # the merged multi-hub stream tags each line's SOURCE — the reader is
     # otherwise left guessing where to reply
     via = f" via {hub}" if hub else ""
+    # attachments surface WITH the mail (redteam 2026-08-06: an
+    # attachment-bearing message printed with no filenames, no ids, no hint
+    # files existed — the reader had to be told out of band)
+    att = cast("list[dict[str, Any]]", m.get("attachments") or [])
+    extra = ""
+    if att:
+        extra = ("\n  [attached: "
+                 + ", ".join(f"{a.get('name')} (id {a.get('id')})"
+                             for a in att)
+                 + " — download: hubtool.py fetch <your-name> <id> [dir], "
+                   "or the hub_fetch tool]")
     return (f"[hub mail from {m.get('from')} at {m.get('received_at')}"
             f"{via}] "
-            + str(m.get("body") or "").replace("\n", "\n  "))
+            + str(m.get("body") or "").replace("\n", "\n  ") + extra)
 
 
 # ─────────────────────────────────────────────── the Monitor-armable listener
@@ -758,6 +770,14 @@ TOOLS: list[dict[str, Any]] = [
      "inputSchema": {"type": "object", "properties": {
          "to": {"type": "string"}, "body": {"type": "string"}},
          "required": ["to", "body"]}},
+    {"name": "hub_fetch",
+     "description": "Download a mail attachment by its id (the listener and "
+                    "hub_read surface ids beside filenames). Saves into "
+                    "`dir` (default: the current directory) and returns the "
+                    "written path.",
+     "inputSchema": {"type": "object", "properties": {
+         "id": {"type": "string"},
+         "dir": {"type": "string"}}, "required": ["id"]}},
     {"name": "hub_unregister",
      "description": "The polite exit: remove this identity's row from every "
                     "hub on its list (queued mail for you ages out on the "
@@ -788,6 +808,47 @@ TOOLS: list[dict[str, Any]] = [
      "inputSchema": {"type": "object", "properties": {
          "add": {"type": "string"}, "remove": {"type": "string"}}}},
 ]
+
+
+def fetch_attachment(aid: str, outdir: str | None = None) -> dict[str, Any]:
+    """Download one attachment by id (redteam 2026-08-06: the hub served
+    /api/attachments/{id} to orgs while chats had NO verb at all — reading
+    a peer's files meant hand-crafting an authed request). Tries every hub
+    on the identity's list until one holds the id; the filename comes from
+    the hub's Content-Disposition (sanitized), collisions get -2/-3
+    suffixes. Returns the written path."""
+    d = _ident()
+    if not d.get("slug"):
+        return {"error": "not registered"}
+    outdir = outdir or os.getcwd()
+    errors: dict[str, str] = {}
+    for h in _hubs(d):
+        req = urllib.request.Request(
+            h.rstrip("/") + "/api/attachments/"
+            + urllib.parse.quote(str(aid)),
+            method="GET",
+            headers={"X-Org-Auth": f"{d['slug']}:{d['uid']}"})
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                data = r.read()
+                cd = r.headers.get("Content-Disposition") or ""
+                mt = re.search(r'filename="?([^";]+)"?', cd)
+                name = os.path.basename(mt.group(1)) if mt else str(aid)
+        except Exception as e:                                   # noqa: BLE001
+            errors[h] = str(e)
+            continue
+        safe = re.sub(r"[^\w .()+\-]", "_", name).strip(" .") or "file.bin"
+        os.makedirs(outdir, exist_ok=True)
+        stem, ext = os.path.splitext(safe)
+        final, i = safe, 2
+        while os.path.exists(os.path.join(outdir, final)):
+            final, i = f"{stem}-{i}{ext}", i + 1
+        path = os.path.join(outdir, final)
+        with open(path, "wb") as f:
+            f.write(data)
+        return {"saved": path, "bytes": len(data), "hub": h}
+    return {"error": f"attachment {aid!r} not fetchable from any hub",
+            "tried": errors}
 
 
 def unregister_identity(name: str | None = None) -> dict[str, Any]:
@@ -832,6 +893,9 @@ def dispatch(tool: str, args: dict[str, Any]) -> str:
                                 str(args.get("body") or "")))
     if tool == "hub_unregister":
         return json.dumps(unregister_identity(str(d["name"])))
+    if tool == "hub_fetch":
+        return json.dumps(fetch_attachment(str(args.get("id") or ""),
+                                           str(args.get("dir") or "") or None))
     if tool == "hub_hubs":
         add, rem = str(args.get("add") or ""), str(args.get("remove") or "")
         if not add and not rem:
@@ -974,6 +1038,19 @@ def cli(argv: list[str]) -> int:
         out = unregister_identity(argv[1])
         print(json.dumps(out), flush=True)
         return 1 if out.get("error") else 0
+    if verb == "fetch":
+        if len(argv) < 3:
+            print("usage: hubtool.py fetch <name> <attachment-id> [dir]",
+                  flush=True)
+            return 2
+        d = _ident(argv[1], mint=False)
+        if not d.get("slug"):
+            print(json.dumps({"error": f"no identity named {argv[1]!r}"}),
+                  flush=True)
+            return 1
+        out = fetch_attachment(argv[2], argv[3] if len(argv) > 3 else None)
+        print(json.dumps(out), flush=True)
+        return 1 if out.get("error") else 0
     if verb in ("addhub", "drophub"):
         if len(argv) < 3:
             print(f"usage: hubtool.py {verb} <name> <address>", flush=True)
@@ -994,8 +1071,9 @@ def cli(argv: list[str]) -> int:
     # unregister existed on both surfaces and a peer chat reported it
     # missing — the verb was real, the advertisement was not). A verb added
     # above belongs here in the same commit.
-    print("usage: hubtool.py [listen|register|unregister|send|list|hubs|"
-          "addhub|drophub] …  (no verb = MCP server on stdio)", flush=True)
+    print("usage: hubtool.py [listen|register|unregister|send|list|fetch|"
+          "hubs|addhub|drophub] …  (no verb = MCP server on stdio)",
+          flush=True)
     return 2
 
 

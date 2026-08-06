@@ -1001,6 +1001,11 @@ def main():
     check("▶ resume leaves a limit_locked node's record untouched (C6)", lambda: (
         (lambda o2: (
             o2.node("fz").__setitem__("limit_locked", True),
+            # a flag needs a LIVE lock behind it since the 2026-08-06 orphan
+            # release (a bare flag with no fable_lock is an artifact and
+            # clears at load); future until_ts so nothing expires mid-check
+            o2.d.__setitem__("fable_lock", {"at": "t", "policy": "halt",
+                                            "until_ts": 9e12}),
             store_mod.save_org(o2),
             (lambda out: None
              if out == [] and store_mod.load_org("freeze").node("fz")["frozen"]
