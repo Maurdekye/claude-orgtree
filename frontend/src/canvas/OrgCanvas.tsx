@@ -1119,9 +1119,11 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
               onJump={(id) => centerOn(id)}
               map={map} op={op} slug={slug} toast={toast}
               compactAt={tree.compact_at} maxTop={tree.max_top_grant ?? 1000}
-              /* asks_open covers pending credit requests AND open questions —
-                 adding credit_requests too would double-count */
-              inboxCount={(tree.user_inbox_count ?? 0) + (tree.asks_open ?? 0)}
+              /* split counts (user spec 2026-08-06): asks OUTRANK mail on the
+                 pip — asksOpen covers pending credit requests AND open
+                 questions (adding credit_requests too would double-count) */
+              inboxCount={tree.user_inbox_count ?? 0}
+              asksOpen={tree.asks_open ?? 0}
               onInbox={() => {
                 const nw = tree.user_inbox_newest ?? new Date().toISOString()
                 localStorage.setItem('orgtree-inbox-seen-' + slug, nw)

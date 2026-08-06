@@ -696,9 +696,26 @@ main {
 /* (the eye's unread-mail glow is gone — user ruling 2026-08-04: attention
    glow means "an agent needs your answer", nothing else; unread mail keeps
    its count badge and the header ask icon carries the pulse) */
+/* two-tier notification pip (user spec 2026-08-06): open ASKS outrank mail.
+   With any ask waiting, the badge shows the ASK count in the vibrant
+   attention terracotta with the same pulse language as .sq.asking — the
+   one thing in the chrome that demands the eye. Plain unread mail renders
+   MUTED (the badge gave up its old full-accent vibrancy so the ask tier
+   has somewhere to stand out to). */
 .eye-inbox .count {
-  position: absolute; top: -5px; right: -7px; background: var(--accent);
-  color: #fff; border-radius: 8px; font-size: 9.5px; padding: 0 4px; font-weight: 700;
+  position: absolute; top: -5px; right: -7px;
+  background: color-mix(in srgb, var(--accent) 42%, var(--panel-2));
+  color: var(--ink-strong); border-radius: 8px; font-size: 9.5px;
+  padding: 0 4px; font-weight: 700;
+}
+.eye-inbox .count.asks, .eye-count.asks {
+  background: var(--accent); color: #fff;
+  animation: askpip 2s ease-in-out infinite;
+}
+@keyframes askpip {
+  0%, 100% { box-shadow: 0 0 5px rgba(217, 119, 87, .55); }
+  50% { box-shadow: 0 0 12px rgba(217, 119, 87, .9),
+                    0 0 0 3px rgba(217, 119, 87, .18); }
 }
 
 /* ------------------------------------ the ask system (F-04 + F-05 cards) */
@@ -708,6 +725,18 @@ main {
   background: color-mix(in srgb, var(--accent) 6%, var(--panel));
   display: flex; flex-direction: column; gap: 6px; font-size: 12.5px;
 }
+/* a marathon question must not swallow the desk (user report 2026-08-06:
+   long bodies overtook the panel and were cut off at the bottom). The
+   PINNED card caps at ~half the desk; the question text and the option
+   rows scroll inside themselves, so the chrome — header chip, tab strip,
+   submit bar — never leaves reach. The card is a direct desk-body child;
+   inbox/mail renderings are inside their own scrollers and stay uncapped. */
+.desk-body > .askcard { max-height: 46%; }
+.desk-body > .askcard .ask-q,
+.desk-body > .askcard .ask-rows { min-height: 0; overflow-y: auto; }
+.desk-body > .askcard .ask-tab,
+.desk-body > .askcard .ask-tabstrip,
+.desk-body > .askcard .ask-submit { flex-shrink: 0; }
 .ask-head { display: flex; align-items: center; gap: 6px; color: var(--ink-strong); }
 .ask-q { white-space: pre-wrap; }
 /* the AskUserQuestion-shaped form (user ruling 2026-08-04, from a
@@ -1688,8 +1717,12 @@ svg.MuiSvgIcon-root {
 .eye-mini path { fill: none; stroke: var(--accent); stroke-width: 2.4; }
 .eye-mini .iris { fill: none; stroke: var(--accent); stroke-width: 2; }
 .eye-mini .pupil { fill: var(--accent); }
+/* muted by default (user spec 2026-08-06) — the vibrant full-accent form is
+   reserved for the .asks tier, see the pip rules by .eye-inbox */
 .eye-count {
-  font-size: 10.5px; background: var(--accent); color: var(--accent-ink);
+  font-size: 10.5px;
+  background: color-mix(in srgb, var(--accent) 42%, var(--panel-2));
+  color: var(--ink-strong);
   border-radius: 8px; padding: 0 5px; font-style: normal; line-height: 1.5;
 }
 /* tabs live IN the head row beside the eye (user spec 2026-07-31 — the old

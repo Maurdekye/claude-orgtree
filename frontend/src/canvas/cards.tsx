@@ -30,6 +30,9 @@ interface UserNodeProps {
   isDrop: boolean
   stats: { circ: number; seats: number; free: number }
   inboxCount: number
+  /** open asks waiting on the user — outranks inboxCount on the pip
+   *  (user spec 2026-08-06) */
+  asksOpen?: number
   seats: Record<string, number>
   kiosk: TreePayload['kiosk']
   pub: boolean
@@ -56,7 +59,7 @@ interface UserNodeProps {
   onOpenDoc?: (id: string) => void
 }
 
-export function UserNode({ pos, isDrop, stats, inboxCount, seats,
+export function UserNode({ pos, isDrop, stats, inboxCount, asksOpen = 0, seats,
   kiosk, pub, kioskRemaining, kioskSegs, pxc, zoom, onInbox, onGear, onSpawn,
   onMailLink,
   focused, eyeW, onFocus, posX, onJump, map, op, slug, toast,
@@ -124,10 +127,16 @@ export function UserNode({ pos, isDrop, stats, inboxCount, seats,
         <circle className="pupil" cx="24" cy="13" r="2.6" />
       </svg>
       {!focused && <div className="user-label">you</div>}
+      {/* two-tier pip (user spec 2026-08-06): open asks outrank unread mail —
+          the ask count wears the vibrant pulsing form, plain unread the
+          muted one */}
       {!focused && <button className="eye-inbox"
         onPointerDown={(e) => e.stopPropagation()}
         onClick={(e) => { e.stopPropagation(); onInbox?.() }}>
-        <MailIcon fontSize="inherit" />{inboxCount > 0 && <span className="count">{inboxCount}</span>}
+        <MailIcon fontSize="inherit" />
+        {(asksOpen > 0 || inboxCount > 0) &&
+          <span className={'count' + (asksOpen > 0 ? ' asks' : '')}>
+            {asksOpen > 0 ? asksOpen : inboxCount}</span>}
       </button>}
       {/* open to visitors too (user ruling): agent-hire defaults are
           configurable by anyone, ceiling-clamped like any grant */}
@@ -142,7 +151,7 @@ export function UserNode({ pos, isDrop, stats, inboxCount, seats,
         maxTier={kiosk?.max_tier} />
       {focused && (
         <EyeDesk map={map} op={op} slug={slug} toast={toast}
-          inboxCount={inboxCount} onInbox={onInbox}
+          inboxCount={inboxCount} asksOpen={asksOpen} onInbox={onInbox}
           onGear={onGear} pub={pub} eyeW={eyeW} posX={posX} onJump={onJump}
           compactAt={compactAt} maxTop={maxTop} pxc={pxc}
           onMailLink={onMailLink} onOpenDoc={onOpenDoc} />
@@ -163,6 +172,8 @@ interface EyeDeskProps {
   slug: string
   toast: ToastFn
   inboxCount: number
+  /** open asks — outranks inboxCount on the ✉ pip (user spec 2026-08-06) */
+  asksOpen?: number
   onInbox?: () => void
   onGear?: () => void
   pub: boolean
@@ -177,7 +188,7 @@ interface EyeDeskProps {
   onOpenDoc?: (id: string) => void
 }
 
-function EyeDesk({ map, op, slug, toast, inboxCount,
+function EyeDesk({ map, op, slug, toast, inboxCount, asksOpen = 0,
   onInbox, onGear, pub, eyeW, posX, onJump, compactAt, maxTop, pxc,
   onMailLink, onOpenDoc }: EyeDeskProps) {
   const agents = [...map.values()].filter((n) =>
@@ -280,8 +291,15 @@ function EyeDesk({ map, op, slug, toast, inboxCount,
           {/* no spacer here (user bug 2026-08-05): .eye-tabs already has
               flex:1, and a second flex:1 sibling split the header 50/50 so
               the tab strip wrapped at half width */}
-          <button className="cc-icon" title="your inbox" onClick={() => onInbox?.()}>
-            <MailIcon fontSize="inherit" />{inboxCount > 0 && <b className="eye-count">{inboxCount}</b>}
+          <button className="cc-icon"
+            title={asksOpen > 0
+              ? `${asksOpen} ask${asksOpen > 1 ? 's' : ''} waiting on your answer`
+              : 'your inbox'}
+            onClick={() => onInbox?.()}>
+            <MailIcon fontSize="inherit" />
+            {(asksOpen > 0 || inboxCount > 0) &&
+              <b className={'eye-count' + (asksOpen > 0 ? ' asks' : '')}>
+                {asksOpen > 0 ? asksOpen : inboxCount}</b>}
           </button>
           <button className="cc-icon" title="agent-hire defaults"
             onClick={() => onGear?.()}><SettingsIcon fontSize="inherit" /></button>

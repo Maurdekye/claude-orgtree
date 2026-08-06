@@ -460,22 +460,24 @@ export default function App() {
                 </span>
                 {/* the SECOND inbox icon (user ruling 2026-08-04): it glows —
                     alone in the whole chrome — iff an un-nulled ask (question
-                    or credit request) is waiting on the user; the count badge
-                    is the FULL unread total (mail + asks), same as the
-                    switchboard's ✉ (user ruling 2026-08-05); click opens the
-                    inbox */}
+                    or credit request) is waiting on the user. Two-tier badge
+                    (user spec 2026-08-06, supersedes the 2026-08-05 full-total
+                    ruling): with asks open the badge shows the ASK count in
+                    the vibrant pulsing form; otherwise the unread-mail count,
+                    muted. Click opens the inbox either way. */}
                 {(() => {
                   const asks = tree.asks_open ?? 0
-                  const unread = (tree.user_inbox_count ?? 0) + asks
+                  const unread = tree.user_inbox_count ?? 0
+                  const n = asks > 0 ? asks : unread
                   return (
                     <button className={'iconbtn ask-bell' + (asks > 0 ? ' glow' : '')}
                       title={asks > 0
                         ? `${asks} ask${asks > 1 ? 's' : ''} waiting on your answer`
-                          + (unread > asks ? ` · ${unread - asks} unread mail` : '')
+                          + (unread > 0 ? ` · ${unread} unread mail` : '')
                         : unread > 0 ? `${unread} unread` : 'your inbox'}
                       onClick={() => { setInboxJump(null); setShowInbox(true) }}>
                       <MailIcon fontSize="inherit" />
-                      {unread > 0 && <b className="eye-count">{unread}</b>}
+                      {n > 0 && <b className={'eye-count' + (asks > 0 ? ' asks' : '')}>{n}</b>}
                     </button>
                   )
                 })()}
