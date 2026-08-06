@@ -331,8 +331,9 @@ class Org:
                 fz.pop("until", None)
         # FABLE-2 (redteam + user report 2026-08-06): a fable_lock that
         # recorded a reset time releases itself once it passes — the same
-        # rule the per-node freeze follows. A TIMELESS lock still waits for
-        # clear_fable_lock. FABLE-3: the halt was LOUD (parent asked to
+        # rule the per-node freeze follows. (The timeless-waits-for-the-user
+        # rule lasted one commit — see STUCK-1 below: timeless now MEANS
+        # artifact.) FABLE-3: the halt was LOUD (parent asked to
         # cover the work, peers and the node told), so the release
         # announces itself to the same parties. Announcing from a load hook
         # is safe for the same reason the release is: the TRIGGER (the
@@ -345,8 +346,18 @@ class Org:
         # ※ An unsaved reader's release being INVISIBLE on disk is the
         # property that makes this safe, not a bug — do NOT "fix" it by
         # saving from this hook, which would turn every read into a write.
+        # STUCK-1 (user report 2026-08-06: already-halted fable agents could
+        # not be unfrozen — the d40dd82 fix was forward-only). A TIMELESS
+        # lock is by construction a pre-fix artifact: since d40dd82 the
+        # escalation always stamps until_ts (the freeze parses a reset or
+        # takes the 300 s probe floor BEFORE fable_limit_hit runs), so no
+        # new lock can be timeless — and most on-disk timeless locks were
+        # written by the misread itself (a session limit recorded as weekly
+        # exhaustion). Release them rather than back-date: back-dating keeps
+        # agents halted for a limit that was never hit.
         _fl = self.d.get("fable_lock") or {}
-        if _fl.get("until_ts") and _time.time() >= float(_fl["until_ts"]):
+        if _fl and (not _fl.get("until_ts")
+                    or _time.time() >= float(_fl["until_ts"])):
             _freed = [k for k, v in self.nodes.items()
                       if v.get("limit_locked")]
             self.d.pop("fable_lock", None)

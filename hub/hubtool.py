@@ -990,8 +990,12 @@ def cli(argv: list[str]) -> int:
             return 1
         print(json.dumps({"hubs": _hubs(d)}), flush=True)
         return 0
-    print("usage: hubtool.py [listen|register|send|list|hubs|addhub|drophub]"
-          " …  (no verb = MCP server on stdio)", flush=True)
+    # ⚠ this line is the CLI's ONLY discovery surface (redteam 2026-08-06:
+    # unregister existed on both surfaces and a peer chat reported it
+    # missing — the verb was real, the advertisement was not). A verb added
+    # above belongs here in the same commit.
+    print("usage: hubtool.py [listen|register|unregister|send|list|hubs|"
+          "addhub|drophub] …  (no verb = MCP server on stdio)", flush=True)
     return 2
 
 

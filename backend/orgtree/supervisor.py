@@ -2762,6 +2762,15 @@ def send_message(slug: str, nid: str, text: str,
         _o = store.load_org(slug)
         if nid in _o.nodes and _o.node(nid).get("frozen"):
             return {"accepted": True, "queued": 0, "frozen": True}
+        if nid in _o.nodes and _o.node(nid).get("limit_locked"):
+            # STUCK-2 (user report 2026-08-06: "messaging them does
+            # nothing"): a limit_locked node is parked like a frozen one but
+            # was missing from these guards — a turn started, died on the
+            # lock inside _run_turn, and the caller got a bare
+            # {accepted: true} identical to a healthy node. Mail is safe in
+            # the mailbox either way; now the answer SAYS why nothing will
+            # happen until the lock clears.
+            return {"accepted": True, "queued": 0, "limit_locked": True}
         if nid in _o.nodes and _o.node(nid).get("remote_controlled"):
             # FR-01: the user is driving this session directly — two writers
             # on one session id corrupt it, so mail waits for release. A

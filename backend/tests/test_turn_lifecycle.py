@@ -398,6 +398,100 @@ def hermetic() -> None:
         None if supervisor.delivering_mail(org, nid)[0].get("via") == "turn"
         else (_ for _ in ()).throw(AssertionError())))
 
+    # ---- USER REPORT 2026-08-06 (after the FABLE-1/2 fix) -----------------
+    # "already-halted fable agents don't seem to be unfreezable; sending them
+    # a message doesn't do anything."
+    #
+    # Reproduced end to end against a PRE-FIX lock shape (fable_lock with no
+    # until_ts, which is what every lock written before d40dd82 looks like on
+    # disk). Every route a user would try, in the order they would try it:
+    #   1. a fresh load (the timed release d40dd82 added) → still locked
+    #   2. sending it a message                           → "accepted", nothing happens
+    #   3. the ▶ resume button                            → returns [], still locked
+    #   4. the auto-resume timer                          → nothing to schedule on
+    #   5. clear_fable_lock (settings ⚙)                  → releases
+    # So the fix is correct and forward-only: it carries until_ts onto NEW
+    # locks and leaves every lock already on disk timeless, which the load
+    # hook deliberately does not touch ("A TIMELESS lock still waits for
+    # clear_fable_lock").
+    def _a_pre_fix_lock_releases_itself_like_a_new_one():
+        org = store.create_org("zz stuck lock")
+        org.hire(USER, None, "fable", 20, "f1", **hspec())
+        store.save_org(org)
+        org.fable_limit_hit("f1", "weekly limit reached",
+                            until_ts=_time.time() - 1)
+        org.d["fable_lock"].pop("until_ts", None)   # the pre-d40dd82 shape
+        store.save_org(org)
+        # ⚠ guard on the RAW FILE, not a loaded Org: since the STUCK-1
+        # migration `store.load_org` is the very thing that releases a
+        # timeless lock, so loading to check the precondition would consume
+        # the state under test and the check would pass vacuously.
+        raw = json.load(open(os.path.join(
+            os.environ["ORGTREE_DATA"], "orgs", org.d["slug"] + ".json"),
+            encoding="utf-8"))
+        fixture(bool((raw.get("fable_lock") or {}))
+                and not (raw.get("fable_lock") or {}).get("until_ts")
+                and bool(raw["nodes"]["f1"].get("limit_locked")),
+                f"the pre-fix shape was not written to disk: "
+                f"{raw.get('fable_lock')}")
+        back = store.load_org(org.d["slug"])
+        assert not back.node("f1").get("limit_locked"), (
+            "a fable_lock written before d40dd82 carries no until_ts, so the "
+            "timed release never fires and the node is halted forever — the "
+            "▶ button skips limit_locked by design, the auto-resume timer "
+            "has no timestamp to schedule on, and only clear_fable_lock "
+            "releases it. Every agent halted before the fix is still halted "
+            "after it")
+    # ← FIXED (promoted out of gap(), 2026-08-06, same day): the load hook
+    # releases TIMELESS locks too — release over back-date, per this
+    # finding's own argument (a timeless lock is by construction a pre-fix
+    # artifact or the misread itself; since d40dd82 every new lock carries
+    # until_ts because the freeze stamps it BEFORE fable_limit_hit runs —
+    # if that ordering ever changes, a legitimate lock could be born
+    # timeless and this release would fire on it: the invariant is
+    # load-bearing).
+    check("stuck · a fable lock written BEFORE the timed-release fix still "
+          "releases itself (user report 2026-08-06)",
+          _a_pre_fix_lock_releases_itself_like_a_new_one)
+
+    def _driving_a_halted_node_says_it_is_halted():
+        """The other half of "doesn't do anything". Every parked state
+        announces itself in send_message's RETURN — frozen → {"frozen": True},
+        archived → {"deferred": …}, remote-controlled → {"remote": True}.
+        limit_locked is the one that does not: the node is not `frozen`, so
+        the early guards fall through, a turn starts, and it dies inside
+        _run_turn on the limit_locked check. The caller is told `accepted`."""
+        org = store.create_org("zz stuck reply")
+        org.hire(USER, None, "fable", 20, "f1", **hspec())
+        store.save_org(org)
+        # ⚠ the lock needs a FUTURE until_ts to survive the reload: since the
+        # STUCK-1 migration a timeless lock is treated as a pre-fix artifact
+        # and released at load. This check is about a LEGITIMATELY halted
+        # node, so it must be one the release does not reach. (First draft
+        # used a timeless lock and the migration landed under it mid-run —
+        # `fixture` reported it as a broken check rather than filing it as
+        # the finding, which is exactly what that helper is for.)
+        org.fable_limit_hit("f1", "weekly limit reached",
+                            until_ts=_time.time() + 3600)
+        store.save_org(org)
+        slug = org.d["slug"]
+        fixture(bool(store.load_org(slug).node("f1").get("limit_locked")),
+                "the fixture node is not halted")
+        r = supervisor.send_message(slug, "f1", "please carry on")
+        assert any(k in r for k in ("halted", "limit_locked", "frozen")), (
+            f"send_message answered {r} for a node that CANNOT act — the "
+            f"same shape it returns for a healthy node. frozen, archived and "
+            f"remote-controlled nodes all name their state here; the halted "
+            f"one does not, which is why the reported experience is "
+            f"'nothing happens' rather than 'it is halted'")
+    # ← FIXED (promoted out of gap(), 2026-08-06, same day): a fourth guard
+    # beside frozen/archived/remote — a limit_locked node answers
+    # {accepted: true, limit_locked: true}, mail boxed as ever. Still
+    # matters for a REAL weekly halt, exactly per the finding's own note.
+    check("stuck · sending mail to a halted node SAYS it is halted, the way "
+          "every other parked state does",
+          _driving_a_halted_node_says_it_is_halted)
+
     # ---- USER REPORT 2026-08-06 ------------------------------------------
     # "network interruptions appear to halt chats in the middle of a turn;
     # they should restart automatically once connectivity resumes."
