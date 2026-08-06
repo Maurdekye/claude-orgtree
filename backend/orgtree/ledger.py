@@ -339,7 +339,12 @@ class Org:
         # lock) is consumed in the same mutation, so once any save persists
         # this copy no later load re-announces, and unsaved copies die with
         # their load and re-derive identically — every reader sees exactly
-        # one announcement.
+        # one announcement. (Redteam-measured 2026-08-06: five unsaved
+        # reads move nothing on disk; the first save persists exactly one
+        # copy; later save cycles add nothing.)
+        # ※ An unsaved reader's release being INVISIBLE on disk is the
+        # property that makes this safe, not a bug — do NOT "fix" it by
+        # saving from this hook, which would turn every read into a write.
         _fl = self.d.get("fable_lock") or {}
         if _fl.get("until_ts") and _time.time() >= float(_fl["until_ts"]):
             _freed = [k for k, v in self.nodes.items()
