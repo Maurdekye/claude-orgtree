@@ -59,7 +59,24 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
   const [, setInboxSeen] = useState(
     () => localStorage.getItem('orgtree-inbox-seen-' + slug) ?? '')
   const seats = tree.tiers ?? { haiku: 1, sonnet: 3, opus: 5, fable: 10 }
-  const vroot = useMemo(() => withDraftTree(tree, draft), [tree, draft])
+  // canonical retired-stack slot (user note 2026-08-06): display-order every
+  // parent's children so archived siblings sit CONTIGUOUSLY at the first
+  // archived ordinal. Buried members take no layout space, so with a
+  // contiguous block the pile's front renders between the same visible
+  // neighbors no matter which member fronts it — switching fronts can no
+  // longer make the stack jump columns. Pure display transform: the doc's
+  // child order is untouched (a drag commits the block order for real).
+  const canonPiles = (n: CanvasNode): CanvasNode => {
+    const kids = (n.children ?? []).map(canonPiles)
+    const arch = kids.filter((c) => c.state === 'archived')
+    if (arch.length < 2) return { ...n, children: kids }
+    const at = kids.findIndex((c) => c.state === 'archived')
+    const before = kids.slice(0, at).filter((c) => c.state !== 'archived')
+    const after = kids.slice(at).filter((c) => c.state !== 'archived')
+    return { ...n, children: [...before, ...arch, ...after] }
+  }
+  const vroot = useMemo(() => canonPiles(withDraftTree(tree, draft)),
+    [tree, draft])   // eslint-disable-line react-hooks/exhaustive-deps
   const map = useMemo(() => flatten(vroot, seats), [vroot])   // eslint-disable-line
   // the mail-link router — STABLE identity (Msg is memoized on its props;
   // the ref carries the fresh closure). user_inbox → the eye's mailbox
@@ -841,18 +858,40 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
     // no (new) target → cosmetic reorder among the current cohort by dropped x
     const cohort = (mapRef.current.get(parent!)?.children ?? [])
       .map((c) => c.id).filter((k) => k !== DRAFT)
-    const sibs = cohort.filter((k) => k !== id)
+    // RETIRED STACK (user note 2026-08-06): dragging the front drags the
+    // WHOLE stack — every member moves as one contiguous block in canonical
+    // (child-list) order, committed member-by-member behind the same anchor.
+    // Anchors are always NON-members: buried cards are invisible and their
+    // layout positions alias the front's, so they cannot order anything.
+    const pile = pileOfRef.current.get(id)
+    const block = pile && pile.kind === 'a' && pile.front === id
+      ? pile.list : [id]
+    const members = new Set(block)
+    const sibs = cohort.filter((k) => !members.has(k))
     if (!sibs.length) { finish(); return }
-    const oldIdx = cohort.indexOf(id)
-    const oldReq = oldIdx > 0 ? { after: cohort[oldIdx - 1] }
-      : { before: cohort[1] }
+    const first = block[0]!
+    const oldIdx = cohort.indexOf(first)
+    const beforeOld = cohort.slice(0, Math.max(oldIdx, 0)).reverse()
+      .find((k) => !members.has(k))
+    const oldReq = beforeOld ? { after: beforeOld }
+      : { before: sibs.find((k) => cohort.indexOf(k) > oldIdx) ?? sibs[0]! }
     const x = springs.current.get(id)?.x ?? 0
     const beforeSib = sibs.find((k) => (targetRef.current.get(k)?.x ?? 0) > x)
     const req = beforeSib ? { before: beforeSib } : { after: sibs[sibs.length - 1] }
+    const chain = async (lead: { before?: string; after?: string }) => {
+      let prev: string | null = null
+      for (const m of block) {
+        await reorderNode(slug, m, prev ? { after: prev } : lead)
+        prev = m
+      }
+    }
     // №17: a successful accidental reorder used to be completely silent
-    reorderNode(slug, id, req)
-      .then(() => toast([`${id} reordered`],
-        () => reorderNode(slug, id, oldReq).catch(() => {})))
+    chain(req)
+      .then(() => toast([block.length > 1
+        ? `${id} reordered (with its ${block.length - 1} stacked sibling`
+          + (block.length > 2 ? 's)' : ')')
+        : `${id} reordered`],
+        () => chain(oldReq).catch(() => {})))
       .catch((err: Error) => toast([`error: ${err.message}`])).finally(finish)
   }
 
