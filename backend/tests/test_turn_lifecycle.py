@@ -412,22 +412,14 @@ def hermetic() -> None:
             "that the node's tier is fable. An ordinary session limit — which "
             "_looks_like_usage_limit matches on purpose, by its own comment — "
             "is therefore read as the weekly Fable quota running out")
-    gap("fable · declaring the weekly Fable limit needs positive evidence, "
-        "not just a fable-tier node hitting some limit",
-        "USER REPORT 2026-08-06. `_looks_like_usage_limit` is tier-agnostic "
-        "and matches the five-hour session limit deliberately (its comment "
-        "names that exact phrasing as the case it was widened for). The "
-        "escalation beside it adds only `model == \"fable\"`. Every limit a "
-        "fable agent can hit therefore becomes `fable_limit_hit`, whose own "
-        "docstring says 'Weekly Fable usage limit exhausted'. The signal to "
-        "test on is available in the same blob — the weekly wording — and "
-        "`_looks_like_usage_limit` already greps for the word 'weekly'; it "
-        "just does not keep the answer. Suggest a second predicate ("
-        "`_looks_like_weekly_limit`) gating the escalation only, leaving the "
-        "ordinary freeze exactly as it is: a fable agent that hits a session "
-        "limit then freezes with an `until_ts` and auto-resumes like any "
-        "other tier, which is the behaviour the user expected.",
-        _the_fable_escalation_needs_a_weekly_marker)
+    # ← FIXED (promoted out of gap(), 2026-08-06, same day): the escalation
+    # is gated on `_looks_like_weekly_fable_limit` (positive WEEKLY wording),
+    # exactly the prescribed second predicate — the ordinary freeze is
+    # untouched, so a fable agent hitting a session limit freezes with an
+    # until_ts and auto-resumes like any other tier.
+    check("fable · declaring the weekly Fable limit needs positive evidence, "
+          "not just a fable-tier node hitting some limit",
+          _the_fable_escalation_needs_a_weekly_marker)
 
     def _a_halted_fable_node_can_be_released_by_time():
         """The second half — the one that makes a misclassification PERMANENT
@@ -442,17 +434,22 @@ def hermetic() -> None:
         org = store.create_org("zz fable perma")
         org.hire(USER, None, "fable", 20, "f1", **hspec())
         store.save_org(org)
-        org.fable_limit_hit("f1", "You've hit your session limit — resets 1:40pm")
+        # deterministic fixture (implementer, on promotion): the original
+        # passed a '1:40pm' phrasing whose parsed reset landed before or
+        # after NOW depending on the wall clock the suite ran at — the
+        # outcome changed with the time of day. The reset now rides the
+        # explicit `until_ts` argument the fix added, set firmly in the past.
+        org.fable_limit_hit("f1", "Weekly Fable usage limit exhausted",
+                            until_ts=time.time() - 60)
         store.save_org(org)          # ⚠ or the reload below reads a doc that
                                      # never saw the lock and the check passes
                                      # for a reason that is not the finding —
                                      # measured, first draft did exactly that
         fixture(bool(org.node("f1").get("limit_locked")),
                 "the halt policy did not lock the node")
-        fixture(bool(store.load_org(org.d["slug"]).node("f1").get("limit_locked")),
-                "the lock did not survive the save — the fixture, not the code")
-        # everything short of the user's own hand: a fresh load, a resume
-        # sweep, the passage of time
+        # (the old second fixture — "the lock survives the reload" — is GONE:
+        # the fix makes the reload the release, which is the property under
+        # test, not a precondition)
         org2 = store.load_org(org.d["slug"])
         assert not org2.node("f1").get("limit_locked"), (
             "a fable node halted by a limit that carries a RESET TIME stays "
@@ -462,23 +459,19 @@ def hermetic() -> None:
             "it. Combined with the misclassification above, one session "
             "limit on one fable agent perma-freezes every fable agent in the "
             "org")
-    gap("fable · a halt whose limit has a known reset time is releasable "
-        "without the user's hand",
-        "USER REPORT 2026-08-06, second half. Even if the classification "
-        "were right, the recovery is asymmetric: the ordinary freeze records "
-        "`until_ts` and auto-resumes, while `limit_locked` has no expiry and "
-        "no writer but `clear_fable_lock`. `_ensure_frozen` has already "
-        "parsed a reset time out of the SAME blob by the time the escalation "
-        "runs, so the information needed to release it is in hand and "
-        "discarded. Suggest: carry the reset onto the lock ("
-        "fable_lock[\"until_ts\"]) and have the resume sweep clear the lock "
-        "and the per-node limit_locked once it passes — the same rule the "
-        "per-node freeze already follows. ⚠ Note the blast radius while this "
-        "stands: the halt policy locks EVERY live fable node, not just the "
-        "one that hit the limit, and under the `dissolve` policy the same "
-        "misread would RETIRE every fable node's entire subtree. That is the "
-        "one to fix first.",
-        _a_halted_fable_node_can_be_released_by_time)
+        assert not org2.d.get("fable_lock"), \
+            "the org-wide lock outlived its own reset time"
+    # ← FIXED (promoted out of gap(), 2026-08-06, same day): the reset rides
+    # onto the lock (fable_limit_hit's new until_ts argument, fed from the
+    # already-parsed fz["until_ts"] at the escalation site) and the RELEASE
+    # lives in the ledger's load hook — every load of an org whose lock has
+    # expired clears fable_lock AND every node's limit_locked, silently like
+    # the pre-№41 retag (the auto-resume timer also wakes on the lock's
+    # time). A TIMELESS lock still waits for clear_fable_lock. Fixture made
+    # deterministic on promotion — see the note in the body.
+    check("fable · a halt whose limit has a known reset time is releasable "
+          "without the user's hand",
+          _a_halted_fable_node_can_be_released_by_time)
 
     # ---- USER REPORT 2026-08-06 ------------------------------------------
     # "new org inbox mail didn't arrive at an agent until its turn ended, not

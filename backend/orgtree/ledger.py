@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import math
 import re
+import time as _time
 import uuid
 from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime, timedelta, timezone
@@ -328,6 +329,16 @@ class Org:
                 fz["spend"] = True
                 fz["spend_error"] = fz.pop("error")
                 fz.pop("until", None)
+        # FABLE-2 (redteam + user report 2026-08-06): a fable_lock that
+        # recorded a reset time releases itself once it passes — the same
+        # rule the per-node freeze follows. Silent like the retag above (a
+        # load-time hook must not notify on every read); the next save
+        # persists it. A TIMELESS lock still waits for clear_fable_lock.
+        _fl = self.d.get("fable_lock") or {}
+        if _fl.get("until_ts") and _time.time() >= float(_fl["until_ts"]):
+            self.d.pop("fable_lock", None)
+            for n in self.nodes.values():
+                n.pop("limit_locked", None)
         # org holdings carry RW/RO modes (user ruling — configured on the eye's
         # gear, mirroring per-agent folder access); legacy string lists migrate
         self.d["dirs"] = norm_dirs(self.d.get("dirs"))
@@ -3649,9 +3660,13 @@ class Org:
         self._log("fable_filter", SYSTEM, {"node": nid, "policy": policy}, [])
         return policy
 
-    def fable_limit_hit(self, detecting_node: str | None, detail: str) -> dict[str, Any]:
-        """Weekly Fable usage limit exhausted. What happens to live fable agents is
-        the org's `fable_limit_policy`:
+    def fable_limit_hit(self, detecting_node: str | None, detail: str,
+                        until_ts: float | None = None) -> dict[str, Any]:
+        """Weekly Fable usage limit exhausted. `until_ts` (FABLE-2,
+        2026-08-06) is the reset time already parsed from the same blob —
+        carried onto the lock so it releases by TIME (load-time expiry +
+        the auto-resume timer), not only by the user's hand.
+        What happens to live fable agents is the org's `fable_limit_policy`:
           halt (default) — nobody retires or converts; fable agents simply halt,
               visibly, and their superiors/coworkers decide what to do.
           opus — every fable agent switches to an opus seat and keeps working
@@ -3665,7 +3680,9 @@ class Org:
             return {"already_locked": True}
         policy = self.d.get("fable_limit_policy", "halt")
         self.d["fable_lock"] = {"at": now(), "detail": detail[:300],
-                                "detected_by": detecting_node, "policy": policy}
+                                "detected_by": detecting_node, "policy": policy,
+                                **({"until_ts": float(until_ts)}
+                                   if until_ts else {})}
         locked: list[str]
         converted: list[str]
         dissolved: list[str]

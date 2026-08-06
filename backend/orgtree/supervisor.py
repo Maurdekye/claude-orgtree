@@ -614,6 +614,20 @@ def _looks_like_usage_limit(blob: str) -> bool:
                                   "quota", "hit your", "resets", "session")))
 
 
+def _looks_like_weekly_fable_limit(blob: str) -> bool:
+    """Gates the ORG-WIDE fable escalation ONLY (redteam FABLE-1, user
+    report 2026-08-06: a five-hour session limit on one fable agent was
+    recorded as weekly Fable exhaustion and perma-froze every fable node in
+    the org — under the dissolve policy it would have retired their whole
+    subtrees). `_looks_like_usage_limit` stays deliberately broad — ANY
+    tier's ordinary limit must freeze the one agent, with a reset time and
+    auto-resume, fable included. Only a blob that positively says WEEKLY is
+    the org-wide quota; the CLI's weekly-limit phrasing carries the word,
+    the session phrasing ('hit your session limit — resets …') does not."""
+    b = blob.lower()
+    return "limit" in b and "weekly" in b
+
+
 def _looks_like_filtered(blob: str) -> bool:
     """A model-side content filter flagged the message (user spec — Fable
     carries extra safety filters). Phrases seen from the API/CLI on filter
@@ -1966,11 +1980,20 @@ def _run_one_turn(slug: str, nid: str,
                             # position 0) so a lost one is lost, not degraded
                             if not is_cmd and not pend_toks:
                                 fz.setdefault("resume_texts", []).append(text[-8000:])
-                            if o2.node(nid)["model"] == "fable":
-                                o2.fable_limit_hit(nid, err_blob)
+                            # FABLE-1 (user report 2026-08-06): tier alone is
+                            # not evidence — escalate org-wide only on the
+                            # WEEKLY wording; a session limit freezes this
+                            # one agent like any tier and auto-resumes. The
+                            # parsed reset rides onto the lock (FABLE-2) so
+                            # even a real weekly halt releases by time.
+                            if o2.node(nid)["model"] == "fable" \
+                                    and _looks_like_weekly_fable_limit(err_blob):
+                                o2.fable_limit_hit(nid, err_blob,
+                                                   until_ts=fz.get("until_ts"))
                             store.save_org(o2)
                     notify(slug, nid, "frozen")
-                    if org.node(nid)["model"] == "fable":
+                    if org.node(nid)["model"] == "fable" \
+                            and _looks_like_weekly_fable_limit(err_blob):
                         notify(slug, nid, "fable_limit")
                 raise RuntimeError(f"turn failed: {err_blob[:400] or 'no output'}")
             st["last_error"] = None
@@ -3377,6 +3400,13 @@ def start_auto_resume_loop() -> None:
                         tss = [fz.get("until_ts")
                                for n in org.nodes.values()
                                if n["state"] == "live" and (fz := n.get("frozen"))]
+                        # a timed fable_lock wakes the timer too (FABLE-2):
+                        # the load above already released it if expired (the
+                        # ledger's load hook), so its appearance here means
+                        # it is still pending — schedule the wake for it
+                        _fl = org.d.get("fable_lock")
+                        if isinstance(_fl, dict) and _fl.get("until_ts"):
+                            tss.append(_fl["until_ts"])
                         timeless_limit = any(
                             fz.get("limit") and not fz.get("until_ts")
                             for n in org.nodes.values()
