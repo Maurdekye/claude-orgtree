@@ -908,7 +908,14 @@ def sec_chat_receipts() -> None:
                 f"cli() no longer handles unregister at all: {sorted(handled)}")
         m = re.search(r'usage: hubtool\.py \[([^\]]*)\]', body)
         fixture(bool(m), "the catch-all usage line moved — re-read this check")
-        advertised = set(m.group(1).split("|"))
+        # ⚠ the usage string is SPLIT across source lines, so a raw
+        # split("|") captures a token like '\"\n          \"hubs'.
+        # Strip the concatenation artefacts or the check invents a
+        # missing verb that is plainly there (measured: it reported
+        # `hubs` missing while the line advertises it).
+        advertised = {v.strip().strip('\"').strip()
+                      for v in m.group(1).split("|")}
+        advertised = {v.split('\"')[-1].strip() for v in advertised}
         missing = sorted(handled - advertised)
         assert not missing, (
             f"cli() handles {missing} but the usage line advertises only "
@@ -916,28 +923,16 @@ def sec_chat_receipts() -> None:
             f"peer chat reported exactly this for `unregister`: they read "
             f"the usage line, did not see it, and concluded the verb was not "
             f"available to them")
-    gap("verbs · every verb cli() handles appears in the usage line it "
-        "prints (peer report 2026-08-06)",
-        "hubtool.cli() dispatches `unregister` (and prints its own "
-        "`usage: hubtool.py unregister <name>` when called without a name), "
-        "but the catch-all usage line at the bottom lists "
-        "[listen|register|send|list|hubs|addhub|drophub] — seven of eight. "
-        "That line is the ONLY discovery surface a CLI caller has: there is "
-        "no --help, and a bare invocation or an unknown verb both land on "
-        "it. One word fixes today's instance; the check is written as a "
-        "SET COMPARISON so the next verb added cannot repeat it, which is "
-        "the actual value — this is the second time a hub capability has "
-        "existed with no way for its intended caller to reach it (the first "
-        "was /api/unregister itself, shipped with no client verb at all).\n"
-        "⚠ SECOND, INDEPENDENT CAUSE worth checking before anyone calls this "
-        "closed: the MCP tool list is fixed when a session's MCP server "
-        "STARTS. `hub_unregister` entered TOOLS in 4a4b635 (~15:30 today), so "
-        "any chat whose server started before that has the old list in "
-        "context and will not see the tool however correct the file is — it "
-        "needs an MCP reload or a new session. If the reporting chat reaches "
-        "hubtool over MCP rather than Bash, THAT is their cause and the "
-        "usage line is a separate, real, but different bug.",
-        _every_cli_verb_is_advertised)
+    # ← FIXED: the implementer added `unregister` (and `fetch`) to the
+    # usage line. Promoted 2026-08-06 under the redteam bug-fix grant,
+    # after repairing a FALSE POSITIVE in this check itself: the usage
+    # string is split across source lines, so the old raw split("|") read one
+    # token as the tail of a broken string literal and reported `hubs`
+    # missing while the line plainly advertises it. The check now
+    # strips the concatenation artefacts before comparing.
+    check("verbs · every verb cli() handles appears in the usage line "
+          "it prints (peer report 2026-08-06)",
+          _every_cli_verb_is_advertised)
 
     def _the_hub_would_accept_them_today():
         """ANTI-VACUITY for the gap above: if the hub REFUSED a chat's

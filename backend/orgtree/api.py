@@ -218,6 +218,16 @@ def _public_denied(method: str, rest: str, slug: str) -> tuple[int, str] | None:
         or (method == "DELETE"
             and re.fullmatch(r"/api/orgs/[^/]+", rest) is not None)
         or rest.endswith("/settings")                        # org settings
+        # ⚠ the user's per-node override (ruling 2026-08-06). `node_unstick`
+        # passes USER as the actor UNCONDITIONALLY, so this route IS the
+        # authority boundary — `Org.unstick`'s user-only check can say
+        # nothing about a request that arrives already wearing the user's
+        # name. Unfrozen, a share-token holder could clear a fable halt and a
+        # usage-limit freeze on any node of the org and re-drive it. (The
+        # org-level spend_frozen flag is checked separately at turn start and
+        # unstick does not touch it, so this was never a way past the spend
+        # cap — only past every other lock the owner relies on.)
+        or rest.endswith("/unstick")                         # user-only override
         # /scope is OPEN (ceiling spec §2): visitors retool freely WITHIN the
         # kiosk permission ceiling — the ledger clamps, never a 403 here
         or rest.endswith("/kiosk")                           # kiosk caps/token/ceiling

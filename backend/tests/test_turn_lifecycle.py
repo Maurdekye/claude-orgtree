@@ -145,7 +145,8 @@ for d in (HDATA, DATA, HOME):
 os.environ["ORGTREE_DATA"] = HDATA        # BEFORE importing orgtree (store
                                           # resolves it at import time)
 
-from orgtree import store, supervisor                            # noqa: E402
+from orgtree import store, supervisor
+from orgtree import api as _apimod                            # noqa: E402
 from orgtree.ledger import USER, Org                             # noqa: E402
 
 
@@ -567,6 +568,49 @@ def hermetic() -> None:
     check("unstick · the override is never an agent capability (holds now, "
           "and pins the agent catalogue so it cannot become one)",
           _unstick_is_never_an_agent_capability)
+
+    def _unstick_is_not_reachable_from_the_kiosk_gateway():
+        """⚠ THE AUTHORITY IS AIRTIGHT AT THE LEDGER AND OPEN AT THE DOOR.
+
+        `Org.unstick` refuses any actor but the user — I pin that above and it
+        holds. But `node_unstick` (api.py) hardcodes `org.unstick(USER, nid)`,
+        so authority is decided by WHO CAN REACH THE ENDPOINT, and the public
+        gateway is a DENYLIST (`_public_denied`'s `frozen_config`), not an
+        allowlist: every /api/orgs/<slug>/… path not explicitly frozen is
+        reachable by a kiosk visitor holding only a share token. `/unstick`
+        is not on that list. Its docstring says "this endpoint is
+        loopback-admin like every other user control" — that is an assertion,
+        not an enforcement.
+
+        Measured, not argued: _public_denied returns None (allow) for it,
+        while the neighbouring /settings returns 403."""
+        denied = _apimod._public_denied(
+            "POST", "/api/orgs/demo/nodes/f1/unstick", "demo")
+        control = _apimod._public_denied("POST", "/api/orgs/demo/settings", "demo")
+        fixture(control is not None,
+                "the /settings control is no longer frozen — the denylist "
+                "moved and this check is measuring the wrong thing")
+        assert denied is not None, (
+            "a KIOSK VISITOR can call the user's per-node override. The "
+            "handler passes USER as the actor unconditionally, so the "
+            "ledger's user-only authority — the whole safety story of this "
+            "ruling — is decided entirely by who can reach the door, and the "
+            "gateway lets them. A visitor can clear a fable halt and a "
+            "usage-limit freeze on any node of the org whose token they hold, "
+            "and the same call re-drives the node. (Bounded, and worth "
+            "saying: the ORG-level spend_frozen flag is checked separately at "
+            "turn start and unstick does not touch it, so this is not a way "
+            "past the spend cap itself — it is a way past every OTHER lock "
+            "the owner relies on.)")
+    # ← FIXED 2026-08-06 under the redteam bug-fix grant (implementer
+    # limit-halted): `or rest.endswith("/unstick")` added to
+    # frozen_config. The route IS the authority boundary — node_unstick
+    # passes USER unconditionally, so Org.unstick's user-only check can
+    # say nothing about a request that already arrives wearing the
+    # user's name. Promoted out of gap().
+    check("public · the user's unstick override is not reachable from "
+          "the kiosk gateway",
+          _unstick_is_not_reachable_from_the_kiosk_gateway)
 
     def _a_card_promising_a_reset_can_actually_reset():
         """PEER EVIDENCE 2026-08-06 (neoja, two user screenshots): a stuck
