@@ -250,8 +250,9 @@ export interface CreditRequest {
 }
 
 /** ledger.node_ask / tree.asks — one ask card (F-04 question or F-05 credit
- *  request), open or nulled. `status`: open|pending = live; answered/denied =
- *  grey null; interrupted = orange null (`reason` says why). */
+ *  request), open or nulled. `status`: open|pending = live; answered/denied/
+ *  dismissed/withdrawn/superseded = grey null; interrupted = orange null
+ *  (historical — the wake-void was retired 2026-08-06; `reason` says why). */
 export interface AskInfo {
   id: string
   node: string

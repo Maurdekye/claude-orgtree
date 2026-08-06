@@ -971,8 +971,8 @@ def org_tree(slug: str, request: Request) -> dict[str, Any]:
         # from the same data the bare-name resolver consults.
         local_net = {str(o.get("net_slug")) for o in store.list_orgs()
                      if o.get("net_slug") and not o.get("kiosk")}
-        for h in tree["net"].get("hubs") or []:
-            for r in h.get("roster") or []:
+        for h in cast("list[dict[str, Any]]", tree["net"].get("hubs") or []):
+            for r in cast("list[dict[str, Any]]", h.get("roster") or []):
                 r["transports"] = (["org", "net"]
                                    if str(r.get("slug")) in local_net
                                    else ["net"])
@@ -2059,9 +2059,9 @@ class AskAnswer(Body):
 async def ask_answer(slug: str, aid: str, body: AskAnswer) -> dict[str, Any]:
     """Answer an agent's question (F-04) — from the desk card or the inbox
     card, whichever the user reached first. Marking happens before the mail
-    is posted, under one doc lock, so the turn the answer starts can never
-    void its own question; every other rendering of the card nulls to grey
-    "answered" on the next payload."""
+    is posted, under one doc lock; every other rendering of the card nulls
+    to grey "answered" on the next payload. (The wake-void this ordering
+    once guarded against was retired 2026-08-06 — see withdraw_ask.)"""
     with store.DOC_LOCK:
         try:
             org = store.load_org(slug)
@@ -2862,6 +2862,8 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                                       multi=bool(a.get("multi")),
                                       header=a.get("header"),
                                       questions=a.get("questions"))
+            elif body.tool == "orgtree_withdraw_ask":
+                result = org.withdraw_ask(body.node)
             elif body.tool == "orgtree_present":
                 # FR-03: a reading card beside the node — non-blocking
                 result = org.present_document(body.node,

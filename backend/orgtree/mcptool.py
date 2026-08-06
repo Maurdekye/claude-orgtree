@@ -110,11 +110,13 @@ TOOLS: list[dict[str, Any]] = [
             "Several related questions go in ONE card: pass `questions` "
             "(1-4 entries, each with its own options/multi/header) and the "
             "user answers every tab before one combined answer mail arrives. "
-            "⚠ If any OTHER mail wakes you before the user answers, the "
-            "question is VOIDED everywhere and you must re-ask. Re-asking "
-            "while one is open amends (replaces) it. If you hold no user "
-            "audience and are not top-level, the question is routed to your "
-            "superior as mail instead."),
+            "The question STAYS OPEN across turns — other mail waking you "
+            "does NOT void it. It ends only when the user answers or "
+            "dismisses it, you withdraw it (orgtree_withdraw_ask), or you "
+            "pose a new request (one active request per agent — re-asking "
+            "amends/replaces, and a new credit request replaces a question "
+            "too). If you hold no user audience and are not top-level, the "
+            "question is routed to your superior as mail instead."),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -161,6 +163,19 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "orgtree_withdraw_ask",
+        "description": (
+            "Withdraw your own ACTIVE request — the open question or pending "
+            "credit request you posed earlier — when you realize it no "
+            "longer applies (the situation resolved itself, the premise "
+            "died, you found the answer). The card on the user's screen is "
+            "nulled and no answer will arrive. Benign no-op if you have "
+            "nothing active. This is one of the only three ways a request "
+            "ends besides the user acting on it: withdraw, pose a new "
+            "request (replaces the old), or the user answers/dismisses."),
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
         "name": "orgtree_present",
         "description": (
             "Present a DOCUMENT to the user for in-page reading — a plan, a "
@@ -202,10 +217,12 @@ TOOLS: list[dict[str, Any]] = [
             "amount, MORE, LESS, or even reduce your grant — their decision "
             "arrives as mail, and you may take it as-is, re-ask, or route "
             "around it. If there are genuinely ZERO credits available to "
-            "grant, the request is refused outright with no card. ⚠ Like a "
-            "question, the pending request is VOIDED if other mail wakes you "
-            "first — re-ask then. One pending request at a time; asking "
-            "again amends it."),
+            "grant, the request is refused outright with no card. The "
+            "request STAYS PENDING across turns — other mail does not void "
+            "it; it ends only by the user's decision, your withdrawal "
+            "(orgtree_withdraw_ask), or a newer request (one active request "
+            "per agent — asking again amends, and a new question replaces a "
+            "pending credit request too)."),
         "inputSchema": {
             "type": "object",
             "properties": {

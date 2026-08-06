@@ -932,7 +932,11 @@ def identity_prompt(org: Org, nid: str) -> str:
         f"real question card (2-4 options with descriptions, multi-select, free "
         f"text; several related questions batch into one card via `questions`) "
         f"on your desk and in the user's inbox; ask, then END YOUR TURN — "
-        f"the answer arrives as mail. Never attempt AskUserQuestion (it is "
+        f"the answer arrives as mail. The question STAYS OPEN across turns "
+        f"(other mail does not void it; one active request per agent): it ends "
+        f"only when the user answers or dismisses it, you pose a new request, "
+        f"or you withdraw it with orgtree_withdraw_ask when it no longer "
+        f"applies. Never attempt AskUserQuestion (it is "
         f"blocked). To ask another AGENT, send orgtree_message kind=question and "
         f"end your turn; their reply arrives as a future turn. To put a PLAN or "
         f"report in front of the user for reading, orgtree_present renders it "
@@ -1469,15 +1473,11 @@ def _run_one_turn(slug: str, nid: str,
             with store.DOC_LOCK:
                 o2 = store.load_org(slug)
                 if nid in o2.nodes:
-                    # F-04 wake-void (user ruling): a turn starting while this
-                    # node has an open ask means its context moves on before
-                    # the answer — null the ask everywhere and TELL the agent
-                    # in this very turn. The answer-carrying turn never trips
-                    # this: answering marks the ask first, under this lock.
-                    voided = o2.void_open_asks(nid)
-                    if voided:
-                        text = ("[PENDING ASK VOIDED] " + " · ".join(voided)
-                                + "\n\n") + text
+                    # The F-04 wake-void is RETIRED (user ruling 2026-08-06):
+                    # a turn starting on other mail leaves an open ask
+                    # standing. Requests die only by the user's hand
+                    # (answer/dismiss/deny) or the agent's own (withdraw_ask,
+                    # or posing a new request, which replaces the old).
                     # the cmd marker makes the flag durable: both replayers
                     # (reconcile, ▶ resume) rebuild plain text as prose, which
                     # would bury the "/" mid-string — a command that can't

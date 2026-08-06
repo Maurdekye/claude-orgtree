@@ -362,7 +362,8 @@ def _():
 @t("tools/list returns the catalogue and every card is well-formed")
 def _():
     tools = BOSS.rpc("tools/list")["result"]["tools"]
-    assert len(tools) == 20, [x["name"] for x in tools]   # +orgtree_present (FR-03, 2026-08-05)
+    # +orgtree_present (FR-03, 2026-08-05); +orgtree_withdraw_ask (2026-08-06)
+    assert len(tools) == 21, [x["name"] for x in tools]
     for c in tools:
         assert c["name"].startswith("orgtree_"), c
         assert len(c["description"]) > 20, c
@@ -509,12 +510,14 @@ _AGENT_CALL = API_SRC[API_SRC.index('@app.post("/api/agent")'):
 _DISPATCH = sorted(set(__import__("re").findall(r'"(orgtree_\w+)"', _AGENT_CALL)))
 
 
-@t("the catalogue and the /api/agent dispatch name exactly the same 20 verbs")
+@t("the catalogue and the /api/agent dispatch name exactly the same 21 verbs")
 def _():
     assert sorted(CARDS) == _DISPATCH, \
         f"drift: cards {sorted(set(CARDS) - set(_DISPATCH))}, " \
         f"dispatch-only {sorted(set(_DISPATCH) - set(CARDS))}"
-    assert len(CARDS) == 20, len(CARDS)   # +orgtree_present (FR-03, 2026-08-05)
+    # +orgtree_present (FR-03, 2026-08-05); +orgtree_withdraw_ask (the
+    # manual-invalidation ruling, 2026-08-06)
+    assert len(CARDS) == 21, len(CARDS)
 
 
 @t("no tool name is duplicated and every card carries an inputSchema")

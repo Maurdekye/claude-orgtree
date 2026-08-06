@@ -133,26 +133,51 @@ def main():
         expect_error(lambda: org.ask_answer(aid), "answer needs")
     check("an empty answer is refused", _answer_needs_content)
 
-    def _void():
+    # REWRITTEN 2026-08-06 (user ruling): the wake-void is RETIRED. A request
+    # is invalidated ONLY manually — the user answers/dismisses/denies, the
+    # agent withdraws it (withdraw_ask), or the agent poses a NEW request
+    # (one active request per agent, across BOTH kinds).
+    def _single_active():
         org = org2()
         org.ask_user("boss", "pending question")
+        # a new CREDIT request replaces the open question
         org.request_credits("boss", 30, "need more")
-        notes = org.void_open_asks("boss")
-        assert len(notes) == 2, notes
-        assert all("VOIDED" in n for n in notes)
-        assert org.d["asks"][0]["status"] == "interrupted"
+        assert org.d["asks"][0]["status"] == "superseded"
+        assert "newer request" in org.d["asks"][0]["reason"]
         req = org.d["credit_requests"][0]
-        assert req["status"] == "interrupted"
-        assert "woken" in req["reason"]
-    check("a wake voids the open question AND the pending credit request", _void)
+        assert req["status"] == "pending"
+        # …and a new QUESTION replaces a pending credit request
+        org.ask_user("boss", "changed my mind — which color?")
+        assert req["status"] == "superseded"
+        assert org.d["asks"][-1]["status"] == "open"
+    check("one active request per agent: the newer request supersedes the "
+          "older, across kinds in both directions", _single_active)
 
-    def _void_not_answered():
+    def _withdraw():
+        org = org2()
+        org.ask_user("boss", "still relevant?")
+        r = org.withdraw_ask("boss")
+        a = org.d["asks"][0]
+        assert a["status"] == "withdrawn" and "asking agent" in a["reason"]
+        assert any("question" in w for w in r["withdrawn"])
+        # nothing active → benign no-op result, never an error
+        assert "no active request" in org.withdraw_ask("boss")["status"]
+        expect_error(lambda: org.ask_answer(a["id"], text="late"),
+                     "already withdrawn")
+    check("the agent withdraws its own request: nulled, final, and a second "
+          "withdraw is a benign no-op", _withdraw)
+
+    def _no_wake_void():
         org = org2()
         aid = org.ask_user("boss", "q")["asked"]
+        assert not hasattr(org, "void_open_asks"), \
+            "the wake-void is retired (user ruling 2026-08-06) — nothing " \
+            "may void an ask because a turn started"
+        assert org.d["asks"][0]["status"] == "open"
         org.ask_answer(aid, text="a")
-        assert org.void_open_asks("boss") == [], \
-            "an ANSWERED ask must never be voided by the turn its answer starts"
-    check("the answer's own turn voids nothing", _void_not_answered)
+        assert org.d["asks"][0]["status"] == "answered"
+    check("the wake-void is GONE: an open ask stands until answered, "
+          "dismissed, withdrawn, or replaced", _no_wake_void)
 
     def _node_ask():
         org = org2()
@@ -292,14 +317,20 @@ def main():
         org.ask_user("boss", "q?")
         org.request_credits("boss", 30, "more")
         t = org.tree()
-        assert t["asks_open"] == 2
+        # one ACTIVE request per agent (ruling 2026-08-06): the credit
+        # request SUPERSEDED the question, so the open count reads 1 —
+        # this line used to pin 2, which is now exactly the double-card
+        # state the ruling forbids
+        assert t["asks_open"] == 1
         boss = next(n for n in t["roots"] if n["id"] == "boss")
         assert boss["ask"] is not None
+        assert boss["ask"].get("status") == "pending", boss["ask"]
         kid = boss["children"][0]
         assert kid.get("ask") is None
-        assert len(t["asks"]) == 2
-    check("the tree payload carries per-node asks and the open count",
-          _tree_payload)
+        assert len(t["asks"]) == 2, \
+            "the superseded question stays in the nulled history"
+    check("the tree payload carries per-node asks and the open count "
+          "(1 active + the superseded history entry)", _tree_payload)
 
     print(f"\nasks: all {PASS} checks passed")
     return 0

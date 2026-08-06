@@ -2883,6 +2883,15 @@ class Org:
                               f"made. Free credits (retire a sibling, hand "
                               f"back unused grant) or ask the user to raise "
                               f"the cap."}
+        # single active request per agent (user ruling 2026-08-06): a new
+        # credit request replaces an open QUESTION too — one card per agent,
+        # whichever kind came last
+        for a0 in self.d.get("asks", []):
+            if a0["node"] == nid and a0["status"] == "open":
+                a0["status"] = "superseded"
+                a0["reason"] = "replaced by a newer request from the same agent"
+                a0["resolved_at"] = now()
+                self._log("ask_superseded", nid, {"id": a0["id"]}, [])
         if pending is not None:
             # amend in place: the card the user eventually clicks always
             # shows the CURRENT figure, never a stale one
@@ -3196,13 +3205,19 @@ class Org:
         card on the agent's desk AND in the user's inbox; the answer arrives
         as ordinary user mail. Gate = the user-mail gate (top-level or a held
         user audience); anyone else has the question ROUTED to their superior
-        as mail instead of refused (the auto-bridge motto). One open question
-        per node — re-asking amends it (the ratified idempotent-ask pattern).
+        as mail instead of refused (the auto-bridge motto).
+
+        Lifetime (user ruling 2026-08-06, RETIRES the 2026-08-04 wake-void):
+        a request is invalidated ONLY manually — the user answers/dismisses
+        it, the agent withdraws it (withdraw_ask), or the agent poses a NEW
+        request, which replaces the old one. Other mail waking the agent
+        leaves the card standing. One ACTIVE request per agent across both
+        kinds: posing a question supersedes a pending credit request too.
 
         FR-04 (2026-08-05): `questions` batches 1–4 questions into ONE card
-        (a tab strip in the UI). A batch is a single ask entry — one open ask
-        per node still holds, a wake voids the WHOLE card, an amend replaces
-        the whole batch, and every tab's answer travels in one user mail."""
+        (a tab strip in the UI). A batch is a single ask entry — one active
+        request per node still holds, an amend replaces the whole batch, and
+        every tab's answer travels in one user mail."""
         self._require_live(nid)
         if self.d.get("headless"):
             # §9.6 ②: never park a card nobody will answer
@@ -3240,6 +3255,17 @@ class Org:
                               f"mailed to your superior \"{sup}\"; their "
                               f"answer arrives as mail"}
         asks = self.d.setdefault("asks", [])
+        # single active request per agent (user ruling 2026-08-06): a NEW
+        # question replaces a pending CREDIT request too — the desk shows one
+        # card, and "pose a new request" is one of the only three ways an
+        # active request ever dies
+        for r0 in self.d.get("credit_requests", []):
+            if r0["node"] == nid and r0["status"] == "pending":
+                r0["status"] = "superseded"
+                r0["reason"] = "replaced by a newer request from the same agent"
+                r0["resolved_at"] = now()
+                self._log("credit_request_superseded", nid,
+                          {"id": r0["id"]}, [])
         entry = next((a for a in asks
                       if a["node"] == nid and a["status"] == "open"), None)
         mirror: dict[str, Any] = {
@@ -3271,9 +3297,11 @@ class Org:
         return {"asked": aid,
                 "status": "parked — the question is on the user's screen; the "
                           "answer will arrive as mail. Do NOT wait for it in "
-                          "this turn: wrap up and end the turn. ⚠ If any other "
-                          "mail wakes you first, the question is VOIDED and "
-                          "must be re-asked."}
+                          "this turn: wrap up and end the turn. The question "
+                          "STAYS OPEN across turns (other mail waking you does "
+                          "not void it) until the user answers or dismisses "
+                          "it, you withdraw it (orgtree_withdraw_ask), or you "
+                          "pose a new request."}
 
     DOC_BODY_MAX = 65536          # FR-03: a plan, not a data dump
 
@@ -3403,8 +3431,9 @@ class Org:
                    rev: int | None = None) -> dict[str, Any]:
         """Mark a question answered and return the composed answer body — the
         caller delivers it as ordinary user mail (which is what drives the
-        turn). Marking happens FIRST, under the same doc lock, so the turn the
-        answer starts can never void its own question.
+        turn). Marking happens FIRST, under the same doc lock. (Historical:
+        this ordering guarded the retired wake-void; it stays because an
+        answered card must never render open while its mail is in flight.)
 
         `rev` is the compare-and-swap stamp (redteam 2026-08-05): answers are
         POSITIONAL, so an answer composed against the card as it rendered
@@ -3492,37 +3521,34 @@ class Org:
         self._log("ask_answered", USER, {"id": aid, "node": a["node"]}, [])
         return {"node": a["node"], "body": body}
 
-    def void_open_asks(self, nid: str) -> list[str]:
-        """Wake-voids (user ruling 2026-08-04): a turn that starts while an
-        ask is open means the agent's context moved on before the answer —
-        the ask is nulled EVERYWHERE and the agent is told to re-ask. Applies
-        to questions and pending credit requests alike."""
+    def withdraw_ask(self, nid: str) -> dict[str, Any]:
+        """The agent withdraws its OWN active request (user ruling
+        2026-08-06, which also RETIRED the 2026-08-04 wake-void: a request
+        now dies only by the user's hand — answer, dismiss, deny — or the
+        asking agent's own: this explicit withdraw, or posing a new request,
+        which replaces it. A turn starting on other mail leaves the card
+        standing). Covers both kinds; a benign no-op result when nothing is
+        active, so an agent double-checking costs nothing."""
+        self._require_live(nid)
         gone: list[str] = []
         for a in self.d.get("asks", []):
             if a["node"] == nid and a["status"] == "open":
-                a["status"] = "interrupted"
-                a["reason"] = "the agent was woken by other input before an answer arrived"
+                a["status"] = "withdrawn"
+                a["reason"] = "withdrawn by the asking agent"
                 a["resolved_at"] = now()
-                nq = len(a.get("questions") or [])
-                # redteam: a voided BATCH must say the whole card died, or
-                # the agent's natural repair — re-ask the one question the
-                # notice named — silently drops the rest
-                label = (f"your {nq}-question card "
-                         f"(first: {a['question'][:60]!r})" if nq > 1
-                         else f"your question ({a['question'][:100]!r})")
-                gone.append(f"{label} was VOIDED — re-ask "
-                            + ("all of it that still matters" if nq > 1
-                               else "it if still needed"))
+                gone.append(f"question {a['id']}")
         for r in self.d.get("credit_requests", []):
             if r["node"] == nid and r["status"] == "pending":
-                r["status"] = "interrupted"
-                r["reason"] = "the agent was woken by other input before an answer arrived"
+                r["status"] = "withdrawn"
+                r["reason"] = "withdrawn by the asking agent"
                 r["resolved_at"] = now()
-                gone.append(f"your credit request ({r['old']:g} → {r['new']:g}) "
-                            f"was VOIDED — re-ask it if still needed")
+                gone.append(f"credit request {r['id']}")
         if gone:
-            self._log("asks_voided", nid, {"n": len(gone)}, [])
-        return gone
+            self._log("ask_withdrawn", nid, {"which": gone}, [])
+            return {"withdrawn": gone,
+                    "status": "withdrawn — the card on the user's screen is "
+                              "nulled; no answer will arrive for it"}
+        return {"status": "you have no active request to withdraw"}
 
     def _prune_asks(self) -> None:
         """Open asks are never pruned; resolved ones keep a short history."""

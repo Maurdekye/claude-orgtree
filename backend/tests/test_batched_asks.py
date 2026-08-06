@@ -197,20 +197,23 @@ def sec_attack() -> None:
     check("amend · a stale answer is refused (rev CAS); the current card "
           "still answers", _amend_then_stale_answer_is_refused)
 
-    def _void_notice_names_the_whole_card():
+    def _withdraw_nulls_the_whole_batch():
+        # REWRITTEN 2026-08-06 (user ruling): the wake-void is RETIRED — a
+        # batch now dies only manually. The whole-card concern the old void
+        # check pinned still applies to the withdraw path: one card, one
+        # fate, never a tab at a time.
         org = org2()
         org.ask_user("boss", questions=QS)
-        gone = org.void_open_asks("boss")
-        assert gone, "fixture: something must have been voided"
-        msg = gone[0]
-        assert ("3" in msg or "questions" in msg.lower()), (
-            "the void notice names only the first question of a 3-question "
-            f"card: {msg!r} — the agent cannot tell the other two died too")
-    # was a gap: the notice named only tab 1's question, so the agent's
-    # natural repair (re-ask that one) dropped the rest. Fixed 2026-08-05:
-    # a multi-question card's notice carries the question count.
-    check("void · voiding a batch tells the agent the WHOLE card died",
-          _void_notice_names_the_whole_card)
+        assert not hasattr(org, "void_open_asks"), \
+            "the wake-void is retired — nothing voids a card on turn start"
+        r = org.withdraw_ask("boss")
+        assert r.get("withdrawn"), r
+        a = org.d["asks"][0]
+        assert a["status"] == "withdrawn", a["status"]
+        assert len(a["questions"]) == 3, \
+            "the withdrawn card must still carry every tab for the record"
+    check("withdraw · the agent's withdraw nulls the WHOLE batch, one fate "
+          "for all tabs", _withdraw_nulls_the_whole_batch)
 
     def _extra_answers_are_not_silently_dropped():
         org = org2()
@@ -384,24 +387,22 @@ def main() -> int:
             "a question the agent has already moved past")
     contract("re-asking replaces the entire batch", _amend_replaces_the_whole_batch)
 
-    def _void_is_all_or_nothing():
-        # NB (build 2026-08-05): the void fires at WAKE time — the turn-start
-        # `void_open_asks` call (supervisor.py:1461) — not at post time. That
-        # is deliberate: mail queued behind a busy node leaves the card
-        # answerable until the turn actually starts, and an answer landing in
-        # that window still validly reaches the same turn. So this check
-        # exercises the void hook itself, which is what every wake path runs.
+    def _wake_leaves_the_batch_standing():
+        # REWRITTEN 2026-08-06 (user ruling — INVERTS the old contract): the
+        # wake-void is retired, so the exact sequence that used to kill the
+        # card (other mail arriving, a turn starting) now leaves it OPEN and
+        # answerable. The card dies only by the user's hand or the agent's.
         org = org2()
         org.ask_user("boss", questions=QS)
         aid = open_asks(org)[0]["id"]
         org.post_mail(USER, "boss", "something else entirely")
-        org.void_open_asks("boss")                    # = the wake's turn start
         left = [a for a in org.d["asks"] if a["id"] == aid][0]
-        assert left["status"] != "open", "the batch survived a wake"
-        assert not any(q.get("answer") for q in left.get("questions", [])), (
-            "a voided batch kept per-tab answers — the void is the whole card")
-    contract("any wake voids the WHOLE batch, not the unanswered tabs",
-             _void_is_all_or_nothing)
+        assert left["status"] == "open", (
+            "other mail must NOT touch an open card (ruling 2026-08-06)")
+        r = org.ask_answer(aid, selected=["sqlite", "flag", "alice"])
+        assert "sqlite" in r["body"], "the surviving card still answers"
+    contract("other mail leaves the WHOLE batch standing and answerable",
+             _wake_leaves_the_batch_standing)
 
     def _answer_requires_every_tab():
         # the UI disables submit until every tab is answered; the SERVER must
