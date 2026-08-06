@@ -215,6 +215,43 @@ def sec_attack() -> None:
     check("withdraw · the agent's withdraw nulls the WHOLE batch, one fate "
           "for all tabs", _withdraw_nulls_the_whole_batch)
 
+    def _retiring_the_asker_takes_its_card_with_it():
+        """The ruling of 2026-08-06 names every way a request may die: the
+        user answers, dismisses or denies it; the agent poses a NEWER one; the
+        agent withdraws it. Retirement is not on that list, and it is the one
+        event that removes the party who could withdraw.
+
+        ⚠ NOT a regression from that ruling — measured against the old
+        wake-void too, this was already true: the void fired at TURN START,
+        and an archived node never takes another turn. The ruling makes it
+        legible rather than causing it, by turning 'nothing sweeps a request'
+        from an accident into a stated design property. Retirement is where
+        that property has no hand left to act."""
+        org = org2()
+        org.ask_user("boss", questions=QS)                 # a 3-tab card
+        aid = open_asks(org)[0]["id"]
+        org.retire(USER, "boss")
+        assert org.node("boss")["state"] == "archived", "fixture: not archived"
+        t = org.tree()
+        assert t["asks_open"] == 0, (
+            f"the header ask-bell still glows for {t['asks_open']} request(s) "
+            f"belonging to an agent that no longer exists; the card sits in "
+            f"the user's inbox addressed to an archived node. It is CLEARABLE "
+            f"— ask_dismiss still works — so this is a wart, not a trap: the "
+            f"user must dismiss a question on behalf of an agent that cannot "
+            f"be asking anything any more")
+    # ← FIXED (promoted out of gap(), 2026-08-06, same day): retire and each
+    # node of a dissolved subtree now run `_moot_asks` — a distinct `moot`
+    # status with reason "the asking agent was retired/dissolved …" rather
+    # than the suggested withdraw_ask, because "withdrawn by the asking
+    # agent" would be a false record for an agent that never acted; `moot`
+    # is the status credit-approval already uses for a no-longer-live node.
+    # `delete` additionally sweeps d["asks"] like it swept credit_requests
+    # (the re-minted-namesake hazard, the sweep's fifth site). ask_answer
+    # deliberately still accepts late answers, per this finding's own note.
+    check("retire · archiving an agent takes its open request with it",
+          _retiring_the_asker_takes_its_card_with_it)
+
     def _extra_answers_are_not_silently_dropped():
         org = org2()
         org.ask_user("boss", questions=QS[:2])

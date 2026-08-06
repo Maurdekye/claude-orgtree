@@ -1140,15 +1140,24 @@ def main():
     orgD.hire(USER, None, "opus", 10, "chief4")
     orgD.request_credits("chief4", 30, "expansion")
     orgD.retire(USER, "chief4")
+    # retire itself moots the request now (redteam gap 2026-08-06) — this
+    # used to stay pending until an approve tripped the moot fallback
+    check("retiring the asker moots its pending credit request", lambda: (
+        (lambda r: None if r["status"] == "moot" and "retired" in r["reason"]
+         else (_ for _ in ()).throw(AssertionError(r))
+         )(next(r for r in orgD.d["credit_requests"] if r["node"] == "chief4"))))
+    # the approve-time moot fallback stays pinned for OTHER liveness losses
+    # (a row that somehow outlives its node must clear, never stick) — the
+    # row is hand-revived to pending to reach that path
     check("approving a dead node's request clears it as moot (not stuck)", lambda: (
-        (lambda rid: (
+        (lambda row: (
+            row.__setitem__("status", "pending"),
             (lambda r: None
              if r["status"] == "moot"
              and not any(q["status"] == "pending" for q in orgD.d["credit_requests"])
              else (_ for _ in ()).throw(AssertionError(r))
-             )(orgD.credit_request_action(rid, "approve")))
-         )(next(r["id"] for r in orgD.d["credit_requests"]
-                if r["node"] == "chief4"))))
+             )(orgD.credit_request_action(row["id"], "approve")))[-1]
+         )(next(r for r in orgD.d["credit_requests"] if r["node"] == "chief4"))))
 
     # -- node-mail id backfill (review LOW)
     check("legacy node mail gets ids on load", lambda: (

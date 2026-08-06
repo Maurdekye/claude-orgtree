@@ -1911,6 +1911,8 @@ class Org:
         freed = self.seat_cost(nid) + n["grant"]
         n["state"] = "archived"
         n["archived_at"] = now()
+        self._moot_asks(nid, "the asking agent was retired before an answer "
+                             "arrived")
         # user ruling (2026-07-31): retire is PAGING (§4.3) — audiences survive
         # it, exactly like dirs and tools, and come back live on rehire. Only
         # delete destroys them. (The UI filters archived holders at render.)
@@ -2133,6 +2135,8 @@ class Org:
                 freed += self.seat_cost(k) + n["grant"]
                 n["state"] = "archived"
                 n["archived_at"] = now()
+                self._moot_asks(k, "the asking agent was dissolved with its "
+                                   "subtree before an answer arrived")
             # audiences survive dissolve too (paging, user ruling) — see retire
         who = "the user" if actor == USER else f'"{actor}"'
         self._notify([p for p in [parent] if p != actor],
@@ -2195,6 +2199,12 @@ class Org:
         self.d["credit_requests"] = [
             r for r in self.d.get("credit_requests", [])
             if r.get("node") not in doomed_set]
+        # …and neither must an ask (redteam gap 2026-08-06, the fifth site of
+        # the same sweep): a deleted agent's open question would re-bind its
+        # answer to a re-minted namesake exactly like the credit row above
+        self.d["asks"] = [
+            a for a in self.d.get("asks", [])
+            if a.get("node") not in doomed_set]
         extra = len(doomed_set) - 1
         self._notify([parent],
                      f'The user permanently DELETED your report "{nid}"'
@@ -3520,6 +3530,26 @@ class Org:
             body += ("\nAnswer: " if not sel else "\nAlso: ") + txt
         self._log("ask_answered", USER, {"id": aid, "node": a["node"]}, [])
         return {"node": a["node"], "body": body}
+
+    def _moot_asks(self, nid: str, why: str) -> None:
+        """The asker leaving the org moots its active request (redteam gap
+        2026-08-06 on the manual-only ruling: retirement removes the party
+        who could withdraw, and a zombie card would invite the user to
+        answer someone who cannot read the answer). NOT a wake-void revival
+        — retire/dissolve is itself a manual act by the user or a superior,
+        so this stays inside the ruling's only-by-hand rule."""
+        for a in self.d.get("asks", []):
+            if a["node"] == nid and a["status"] == "open":
+                a["status"] = "moot"
+                a["reason"] = why
+                a["resolved_at"] = now()
+                self._log("ask_moot", nid, {"id": a["id"]}, [])
+        for r in self.d.get("credit_requests", []):
+            if r["node"] == nid and r["status"] == "pending":
+                r["status"] = "moot"
+                r["reason"] = why
+                r["resolved_at"] = now()
+                self._log("credit_moot", nid, {"id": r["id"]}, [])
 
     def withdraw_ask(self, nid: str) -> dict[str, Any]:
         """The agent withdraws its OWN active request (user ruling

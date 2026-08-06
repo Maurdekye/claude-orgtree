@@ -1344,33 +1344,92 @@ def sec_hub_pick_heal() -> None:
         return mid, (where[0] if where else None)
 
     # ---- the append-time gate ------------------------------------------
+    def _a_hubs_roster_contains_ourselves():
+        """THE FACT THE FIXTURES BELOW REST ON, measured against a real hub
+        rather than assumed — because assuming it wrong is what made the
+        first cut of this section certify an inert gate.
+
+        `/register` answers with the hub's whole roster, and the org that
+        just registered is in it: there is one roster builder and it takes no
+        requester argument, so no implementation of it could filter the
+        caller. `status_block` strips our own row when it builds the payload,
+        which is downstream and does not change what `_rosters` holds. So a
+        roster is EMPTY only before the first successful register — after
+        that it is never empty on a hub we are on, and "does this roster have
+        content" answers yes everywhere. (Cross-org finding 2026-08-06, with
+        two live messages either side of the boundary as proof.)"""
+        _fresh_rosters()
+        a = mkorg(hubs=(HUB_A,))
+        ladder(a)
+        with net._status_lock:
+            roster = list(net._rosters.get(HUB_A) or [])
+        mine = net_slug(a)
+        assert any(str(r.get("slug")) == mine for r in roster), (
+            f"the hub's roster does not contain the registering org — the "
+            f"whole membership argument below rests on this: "
+            f"{[r.get('slug') for r in roster][:6]}")
+        # …and the PAYLOAD layer strips it again, which is exactly why the raw
+        # cache is misleading: everything a human ever sees has self removed,
+        # so "the roster has content" reads as a fact about OTHERS when the
+        # value `spool_append` consults means nothing of the kind
+        block = net.status_block(store.load_org(a).d) or {}
+        shown = [r.get("slug") for h in block.get("hubs", [])
+                 for r in h.get("roster", [])]
+        assert mine not in shown, (
+            f"status_block stopped stripping our own row; the two layers no "
+            f"longer differ and this check's premise is stale: {shown[:6]}")
+        # the "alone on the hub" case the fixtures below stub is NOT reproduced
+        # live on purpose: this suite's hub DB accumulates every org every
+        # earlier check registered, so by here the roster holds dozens. The
+        # measured fact is the INCLUSION; aloneness is stated by construction.
+    check("hub-pick · a hub's roster INCLUDES the org that registered — "
+          "measured, because it is why a truthiness gate reads as satisfied "
+          "everywhere", _a_hubs_roster_contains_ourselves)
+
     def _cold_connected_loses_to_warm_connected():
+        """⚠ The rosters here carry OUR OWN slug, as a real one always does.
+        The first version of this check seeded the cold hub with `[]`, a state
+        that cannot occur on a hub we are registered with — so it passed
+        against a gate that was inert in production (it read cardinality, and
+        cardinality is always true). Modelling the real shape is what makes
+        this discriminate: under a truthiness gate hub A qualifies and list
+        order wins; only a MEMBERSHIP test reaches hub B."""
         _fresh_rosters()
         a, ids, addrs = two_hub_org()
         connect(a, ids[0]); connect(a, ids[1])
+        mine = net_slug(a)
         with net._status_lock:
-            net._rosters[addrs[0]] = []                      # never synced
-            net._rosters[addrs[1]] = [{"slug": "someone.else.111111"}]
+            net._rosters[addrs[0]] = [{"slug": mine}]        # registered, alone
+            net._rosters[addrs[1]] = [{"slug": mine},
+                                      {"slug": "someone.else.111111"}]
         _mid, hid = file_to(a, "stranger.other.abcdef")
         assert hid == ids[1], (
             f"filed onto {hid} — the FIRST hub is connected but its roster "
-            f"has never synced, so 'connected' picked a hub that may know "
-            f"nobody at all while a hub with a live roster sat second")
-    check("hub-pick · a connected hub whose roster never synced loses to a "
-          "connected hub with a live roster (the cross-org misroute)",
+            f"knows nobody except us, so the gate degenerated to list order "
+            f"while a hub that has actually synced other parties sat second")
+    check("hub-pick · a connected hub that knows only US loses to one that "
+          "knows other parties (membership, not cardinality — the gate the "
+          "cross-org proof showed was inert)",
           _cold_connected_loses_to_warm_connected)
 
     def _all_cold_still_files_somewhere():
         """FR-07, restated at the new gate: a cold world must never refuse or
-        stall — the spool exists precisely to hold mail until a hub is back."""
+        stall — the spool exists precisely to hold mail until a hub is back.
+        'Cold' now means "knows nobody but us", which is the state every hub
+        is in on a fresh machine."""
         _fresh_rosters()
-        a, ids, _addrs = two_hub_org()
+        a, ids, addrs = two_hub_org()
         connect(a, ids[0]); connect(a, ids[1])
+        mine = net_slug(a)
+        with net._status_lock:
+            net._rosters[addrs[0]] = [{"slug": mine}]
+            net._rosters[addrs[1]] = [{"slug": mine}]
         _mid, hid = file_to(a, "stranger.other.abcdef")
         assert hid == ids[0], (
-            f"filed onto {hid}: with every roster cold the gate must fall "
-            f"through to any connected hub in list order, not refuse")
-    check("hub-pick · when EVERY roster is cold the gate falls through "
+            f"filed onto {hid}: with every roster knowing only us the gate "
+            f"must fall through to any connected hub in list order, not "
+            f"refuse and not stall")
+    check("hub-pick · when every roster knows only us the gate falls through "
           "instead of refusing (FR-07 offline addressing)",
           _all_cold_still_files_somewhere)
 
