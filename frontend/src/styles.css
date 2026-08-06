@@ -913,6 +913,27 @@ main {
 }
 .mailrow.unread .l1 .mfrom { color: var(--accent); font-weight: 700; }
 .mailrow.unread .l2 { color: var(--ink); }
+/* request mails stand apart in the list (user spec 2026-08-06): the
+   askcard's accent family — a solid left bar + faint tint while the ask is
+   OPEN, plus a kind chip naming the request family. A resolved ask keeps
+   only a quiet edge; selection stays visibly stronger than the tint. */
+.mailrow.ask {
+  border-left: 3px solid var(--accent); padding-left: 7px;
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+.mailrow.ask:hover { background: color-mix(in srgb, var(--accent) 11%, var(--panel-2)); }
+.mailrow.ask.on { background: color-mix(in srgb, var(--accent) 16%, var(--bg)); }
+.mailrow.ask.askdone {
+  background: none;
+  border-left-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+}
+.mailrow.ask.askdone.on { background: color-mix(in srgb, var(--accent) 13%, var(--bg)); }
+.askkind {
+  flex: none; font-size: 9px; line-height: 1.6; color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line));
+  border-radius: 8px; padding: 0 5px;
+}
+.mailrow.askdone .askkind { color: var(--dim); border-color: var(--line); }
 .mailer-read { flex: 1; min-width: 0; overflow-y: auto; padding: 10px 14px; }
 .mailer-head {
   display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline;

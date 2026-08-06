@@ -174,6 +174,10 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
               }
             }}
             className={'mailrow' + (m === cur ? ' on' : '') + (m._wait ? ' unread' : '')
+              /* request mails wear the askcard's accent family in the list
+                 (user spec 2026-08-06); resolved asks keep a quiet edge */
+              + (m._ask ? (m._ask.status === 'open' || m._ask.status === 'pending'
+                ? ' ask' : ' ask askdone') : '')
               + (jumpTo && keyOf(m) === jumpTo ? ' jflash' : '')}
             onClick={() => {
               if (cur && keyOf(m) === keyOf(cur)) {
@@ -189,6 +193,7 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
               <span className="mfrom">
                 {outgoing ? '→ ' : ''}{party(m) === USER ? '@user' : party(m)}
               </span>
+              {m._ask && <span className="askkind">{m.kind ?? 'ask'}</span>}
               {rowMark?.(m)}
               <span className="mtime">{when(m.at)}</span>
               {m._wait && m.id && onRetract && (
