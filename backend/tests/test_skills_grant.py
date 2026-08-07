@@ -51,7 +51,7 @@ os.environ["ORGTREE_DATA"] = DATA
 os.environ["ORGTREE_PORT"] = "7409"
 
 from orgtree import sandbox as sbx, store, supervisor            # noqa: E402
-from orgtree.ledger import USER, LedgerError                     # noqa: E402
+from orgtree.ledger import PM_LEVELS, USER, LedgerError          # noqa: E402
 
 PFX = "zzskl-"
 assert DATA != os.path.expanduser("~/orgtree"), "refusing to run on the real data root"
@@ -88,7 +88,7 @@ def _cleanup():
     shutil.rmtree(DATA, ignore_errors=True)
 
 
-def mkorg(name, *, sandboxed=False):
+def mkorg(name, *, sandboxed=False, grant=2):
     org = store.create_org(PFX + name)
     slug = org.d["slug"]
     assert slug.startswith(PFX), slug
@@ -99,7 +99,7 @@ def mkorg(name, *, sandboxed=False):
             store.save_org(o)
     with store.DOC_LOCK:
         o = store.load_org(slug)
-        o.hire(USER, None, "haiku", 2, "alice")
+        o.hire(USER, None, "haiku", grant, "alice")
         store.save_org(o)
     return slug
 
@@ -275,19 +275,21 @@ def _():
 print("\n§4  who may set bypassPermissions — the security property")
 
 
-@t("☠ orgtree_retool does not expose permission_mode to agents")
+# ⚠ SUPERSEDED PIN. This check used to assert the OPPOSITE — that
+# orgtree_retool must never expose permission_mode, so no agent could raise a
+# report. User ruling 2026-08-07 (D-102) reversed it: agents DO adjust their
+# subordinates' mode, capped at their own. The cap, not the absence of the
+# tool, is now the security property, and §5 below is where it is proven.
+@t("orgtree_retool exposes permission_mode (D-102 reverses the old pin)")
 def _():
-    import json as _json
     from orgtree import mcptool
-    src = open(mcptool.__file__, encoding="utf-8").read()
-    # the tool schema is the whole surface an agent can reach; if the key ever
-    # appears there, an agent can raise its own report to unguarded mode
-    i = src.find('"orgtree_retool"')
-    assert i > 0, "orgtree_retool not found — this check has gone stale"
-    j = src.find('"orgtree_', i + 20)
-    body = src[i:j if j > 0 else i + 4000]
-    assert "permission_mode" not in body, body[:1200]
-    del _json
+    tool = next(t for t in mcptool.TOOLS if t["name"] == "orgtree_retool")
+    props = tool["inputSchema"]["properties"]
+    assert "permission_mode" in props, sorted(props)
+    assert props["permission_mode"]["enum"] == list(PM_LEVELS), \
+        props["permission_mode"]
+    # the schema must SAY the cap — an agent reads this text, not the ledger
+    assert "CAPPED AT YOUR OWN" in props["permission_mode"]["description"]
 
 
 @t("the USER may raise a node through set_scope")
@@ -367,6 +369,132 @@ def _():
     assert "permission_mode" in api.Settings.model_fields
     assert api._public_denied("POST", f"/api/orgs/{PLAIN}/settings", PLAIN), \
         "/settings is reachable by a kiosk visitor — the admin-only claim fails"
+
+
+# ====================================== §5 the cap: nobody grants above self
+print("\n§5  agents adjust their subordinates' mode, capped at their own")
+CHAIN = mkorg("chain", grant=20)   # alice (top) → bob → carol
+with store.DOC_LOCK:
+    _o = store.load_org(CHAIN)
+    _o.hire("alice", "alice", "haiku", 6, "bob", add_dirs=[],
+            tools={"bash": False, "web": False, "edit": True,
+                   "subagents": False, "mcp": []},
+            org_visibility="team", charter="a report")
+    _o.hire("bob", "bob", "haiku", 0, "carol", add_dirs=[],
+            tools={"bash": False, "web": False, "edit": True,
+                   "subagents": False, "mcp": []},
+            org_visibility="team", charter="a grandreport")
+    store.save_org(_o)
+
+
+@t("everyone starts at the org default")
+def _():
+    o = store.load_org(CHAIN)
+    for k in ("alice", "bob", "carol"):
+        assert o.node(k)["scope"]["permission_mode"] == "acceptEdits", k
+
+
+@t("☠ an agent CANNOT raise a report above its own mode")
+def _():
+    with store.DOC_LOCK:
+        o = store.load_org(CHAIN)
+        try:
+            o.set_scope("alice", "bob", permission_mode="bypassPermissions")
+        except LedgerError as e:
+            assert "exceeds the parent" in str(e), str(e)
+        else:
+            raise AssertionError("alice granted above herself")
+        assert o.node("bob")["scope"]["permission_mode"] == "acceptEdits"
+
+
+@t("…nor lift itself — set_scope refuses a self-retool outright")
+def _():
+    with store.DOC_LOCK:
+        o = store.load_org(CHAIN)
+        try:
+            o.set_scope("alice", "alice", permission_mode="bypassPermissions")
+        except LedgerError:
+            pass
+        else:
+            raise AssertionError("alice retooled herself")
+
+
+@t("an agent CAN lower a report below its own")
+def _():
+    with store.DOC_LOCK:
+        o = store.load_org(CHAIN)
+        o.set_scope("alice", "bob", permission_mode="default")
+        assert o.node("bob")["scope"]["permission_mode"] == "default"
+        store.save_org(o)
+
+
+@t("☞ …and lowering carries the whole subtree down with it")
+def _():
+    o = store.load_org(CHAIN)
+    assert o.node("carol")["scope"]["permission_mode"] == "default", \
+        "carol kept a mode her superior no longer holds"
+
+
+@t("a hire is born capped at its PARENT, not at the org default")
+def _():
+    # bob sits at "default" now; the org default is still acceptEdits. Before
+    # D-102 the new node copied the ORG value and outranked its own superior.
+    with store.DOC_LOCK:
+        o = store.load_org(CHAIN)
+        assert o.d["permission_mode"] == "acceptEdits"
+        o.hire("bob", "bob", "haiku", 0, "dave", add_dirs=[],
+               tools={"bash": False, "web": False, "edit": True,
+                      "subagents": False, "mcp": []},
+               org_visibility="team", charter="born under a lowered parent")
+        assert o.node("dave")["scope"]["permission_mode"] == "default", \
+            o.node("dave")["scope"]["permission_mode"]
+        store.save_org(o)
+
+
+@t("the USER is exempt from the parent clamp — D-101's one-act raise")
+def _():
+    # the live case this preserves: the user raised `consultant` above its own
+    # superior `coordinator` on 2026-08-07. A strict clamp for every actor
+    # would have refused that, and it is the point of the per-node control.
+    with store.DOC_LOCK:
+        o = store.load_org(CHAIN)
+        o.set_scope(USER, "carol", permission_mode="bypassPermissions")
+        assert o.node("carol")["scope"]["permission_mode"] == "bypassPermissions"
+        assert o.node("bob")["scope"]["permission_mode"] == "default", \
+            "raising the child moved the parent"
+        store.save_org(o)
+
+
+# ⚠ THE SILENT-REVOCATION GUARD. The subtree sweep runs on ANY capability
+# change, so a routine folder retool anywhere up the chain must not quietly
+# undo the user's deliberate above-parent grant. The sweep re-clamps
+# DESCENDANTS against the edited node, never the edited node against its own
+# parent (_sweep_dirs clamp_root=False); a MOVE still clamps its root.
+@t("☠ an unrelated retool upstream does NOT revoke that user grant")
+def _():
+    with store.DOC_LOCK:
+        o = store.load_org(CHAIN)
+        o.set_scope(USER, "bob", org_visibility="self")   # a cap change: sweeps
+        assert o.node("carol")["scope"]["permission_mode"] == "bypassPermissions", \
+            "a visibility retool silently revoked a user-granted mode"
+        store.save_org(o)
+
+
+# …and the same-value guard must not become a hole: a REAL lowering still
+# propagates. bob already sits at "default", so re-sending "default" is inert
+# (that is check 30's rule) — raise him first, then lower for real.
+@t("☞ …but a REAL lowering still reaches the reports below it")
+def _():
+    with store.DOC_LOCK:
+        o = store.load_org(CHAIN)
+        assert o.node("carol")["scope"]["permission_mode"] == "bypassPermissions"
+        o.set_scope(USER, "bob", permission_mode="acceptEdits")     # raise
+        assert o.node("carol")["scope"]["permission_mode"] == "bypassPermissions", \
+            "a RAISE swept the subtree — only lowering may"
+        o.set_scope(USER, "bob", permission_mode="default")         # lower
+        assert o.node("carol")["scope"]["permission_mode"] == "default", \
+            "revoking a superior's mode left the grant it covered in place"
+        store.save_org(o)
 
 
 # ============================================================== the report

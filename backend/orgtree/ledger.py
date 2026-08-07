@@ -1951,7 +1951,12 @@ class Org:
             "ui_order": max([self.nodes[s].get("ui_order", 0) for s in sibs],
                             default=-1.0) + 1.0,
             "scope": {
-                "permission_mode": self.d["permission_mode"],
+                # D-102: the ORG default, capped at the parent's own. Before
+                # the cap this read `self.d["permission_mode"]` flat, so in an
+                # org whose default outranked a node, that node's reports were
+                # born ABOVE it — escalation by inheritance, no actor required.
+                "permission_mode": self._clamp_pm(
+                    self.d["permission_mode"], parent, strict=False)[0],
                 "add_dirs": dirs,
                 "tools": tools,
                 "org_visibility": vis,
@@ -2647,6 +2652,31 @@ class Org:
             return pv, True
         return requested, False
 
+    def _clamp_pm(self, requested: str, parent: str | None,
+                  strict: bool) -> tuple[str, bool]:
+        """D-102 (user ruling 2026-08-07): permission_mode is a CAPABILITY —
+        child ≤ parent, exactly like dirs, tools and visibility. Returns
+        (pm, clamped); strict=True raises instead of clamping.
+
+        ⚠ Before this existed, `permission_mode` was the ONE scope field with
+        no parent clamp: it was checked against the kiosk ceiling and nothing
+        else, and `_new_node` copied the ORG default into every hire. So in an
+        org whose default outranked a node, that node's reports were born
+        ABOVE it — an escalation by inheritance that no actor had to ask for.
+        Capping at the parent closes that as a side effect of exposing the
+        field to agents, which is why the two ship together."""
+        if parent is None or requested not in PM_LEVELS:
+            return requested, False        # top level answers to the user
+        pp = self.node(parent)["scope"].get("permission_mode", "acceptEdits")
+        if pp in PM_LEVELS and PM_LEVELS.index(requested) > PM_LEVELS.index(pp):
+            if strict:
+                raise LedgerError(
+                    f"permission_mode {requested!r} exceeds the parent's own "
+                    f"{pp!r} — a permission mode is a capability and only "
+                    f"shrinks downward; nobody grants above themselves")
+            return pp, True
+        return requested, False
+
     def _check_top_grant(self, new_grant: float, ctx: str) -> None:
         """D-014 (user ruling 2026-08-01): `max_top_grant` is a REAL ledger
         precondition — no op, user-actor cascades included, may push a
@@ -2659,14 +2689,31 @@ class Org:
                 f"the org's top-level grant cap of {cap} — raise the cap in "
                 f"the org settings, or lower the ask")
 
-    def _sweep_dirs(self, nid: str) -> list[str]:
-        """After a move or scope shrink: clamp the subtree's dirs, tools AND
-        visibility to each parent in turn (№30 + D-021 — capability sets stay
-        ⊆ all the way down)."""
+    def _sweep_dirs(self, nid: str, clamp_root: bool = True,
+                    sweep_pm: bool = True) -> list[str]:
+        """After a move or scope shrink: clamp the subtree's dirs, tools,
+        visibility AND permission mode to each parent in turn (№30 + D-021 +
+        D-102 — capability sets stay ⊆ all the way down).
+
+        `clamp_root=False` starts the walk at nid's CHILDREN, leaving nid's own
+        scope alone. A scope edit passes False (the caller just decided what
+        nid holds); a MOVE passes True, because a relocated node has to fit the
+        chain it landed in.
+
+        ⚠ `sweep_pm=False` leaves permission_mode alone entirely, and a scope
+        edit that did not touch the mode passes it. permission_mode is the one
+        capability the USER may deliberately hold ABOVE a node's parent
+        (D-101 — raising one agent is one act), so unlike dirs/tools/vis it
+        cannot be re-derived from the chain on every unrelated edit. Sweeping
+        it from a folder or visibility retool would mean any later retool
+        anywhere up the chain silently revoked that grant. It is swept when
+        the mode ITSELF is lowered (that is what revoking means) and on a
+        move (relocation is not an exception, it is a new chain)."""
         dropped: list[str] = []
 
         def clamp(k: str, allowed: dict[str, str] | None,
-                  ptools: ToolGrant | None, pvis: str | None) -> None:
+                  ptools: ToolGrant | None, pvis: str | None,
+                  ppm: str | None = None) -> None:
             sc = self.nodes[k]["scope"]
             kept, lost = self._clamp_dirs(sc["add_dirs"], allowed, strict=False)
             sc["add_dirs"] = kept
@@ -2686,15 +2733,34 @@ class Org:
                     and VIS_LEVELS.index(v) > VIS_LEVELS.index(pvis)):
                 sc["org_visibility"] = pvis
                 dropped.append(f"visibility:{k}→{pvis}")
+            pm = sc.get("permission_mode", "acceptEdits")
+            if (sweep_pm and ppm in PM_LEVELS and pm in PM_LEVELS
+                    and PM_LEVELS.index(pm) > PM_LEVELS.index(ppm)):
+                # D-102: LOWERING a node drops its whole subtree with it —
+                # otherwise revoking a mode would leave the reports it was
+                # inherited by still holding it
+                sc["permission_mode"] = ppm
+                dropped.append(f"permission_mode:{k}→{ppm}")
             own: dict[str, str] = {d["path"]: d["mode"] for d in kept}
             for ch in self.children(k, live_only=False):
-                clamp(ch, own, tkept, sc.get("org_visibility", "full"))
+                clamp(ch, own, tkept, sc.get("org_visibility", "full"),
+                      sc.get("permission_mode", "acceptEdits"))
 
-        parent = self.node(nid)["parent"]
-        clamp(nid, self.effective_dirs(parent),
-              None if parent is None else self.node(parent)["scope"]["tools"],
-              None if parent is None
-              else self.node(parent)["scope"].get("org_visibility", "full"))
+        if clamp_root:
+            parent = self.node(nid)["parent"]
+            clamp(nid, self.effective_dirs(parent),
+                  None if parent is None else self.node(parent)["scope"]["tools"],
+                  None if parent is None
+                  else self.node(parent)["scope"].get("org_visibility", "full"),
+                  None if parent is None
+                  else self.node(parent)["scope"].get("permission_mode",
+                                                      "acceptEdits"))
+        else:
+            own = self.node(nid)["scope"]
+            for ch in self.children(nid, live_only=False):
+                clamp(ch, self.effective_dirs(nid), own["tools"],
+                      own.get("org_visibility", "full"),
+                      own.get("permission_mode", "acceptEdits"))
         return sorted(set(dropped))
 
     # ------------------------------------------------------------- node scope
@@ -2776,6 +2842,7 @@ class Org:
         want_dirs: list[DirGrant] | None = None
         want_tools: ToolGrant | None = None
         want_vis: str | None = None
+        want_pm: str | None = None
         if add_dirs is not None:
             want_dirs, _ = self._clamp_dirs(
                 norm_dirs(add_dirs), self.effective_dirs(n["parent"]), strict=True)
@@ -2789,9 +2856,18 @@ class Org:
             # D-021: parent clamp first (strict, like dirs/tools here), then
             # the kiosk ceiling
             want_vis, _ = self._clamp_vis(org_visibility, n["parent"], strict=True)
-        if permission_mode is not None and permission_mode not in PM_LEVELS:
-            raise LedgerError(                     # D-030 hardening
-                f"permission_mode must be one of {PM_LEVELS}")
+        if permission_mode is not None:
+            if permission_mode not in PM_LEVELS:
+                raise LedgerError(                 # D-030 hardening
+                    f"permission_mode must be one of {PM_LEVELS}")
+            # D-102: parent clamp first (strict, like dirs/tools/vis above),
+            # then the kiosk ceiling below — the same two-pass order D-021
+            # fixed for visibility. The USER is exempt: they are above the
+            # tree, so their own per-node override answers to the ceiling only
+            # (this is the route the ⚙ panel and `unstick` already take).
+            want_pm = (permission_mode if actor_kind(actor) in ("user", "system")
+                       else self._clamp_pm(permission_mode, n["parent"],
+                                           strict=True)[0])
         # user-approved (2026-07-31): thinking effort as a per-agent setting,
         # adjusted from the gear — never a hire-row control. "" clears back to
         # the CLI default. (No ultracode tier: orgtree replaces subagent
@@ -2828,15 +2904,32 @@ class Org:
             bridged = bridged or b
             sc["org_visibility"] = cast(str, vis2)  # vis in ⇒ vis out
             changed_caps = True   # lowering sweeps the subtree like the others
+        lowered_pm = False
+        if want_pm is not None:
+            _t, _d, _v, pm2, b = self._apply_ceiling(
+                pm=want_pm, raise_ceiling=raise_ceiling, warnings=warnings)
+            bridged = bridged or b
+            prev_pm = sc.get("permission_mode", "acceptEdits")
+            sc["permission_mode"] = cast(str, pm2)  # pm in ⇒ pm out
+            # ⚠ only a genuine LOWERING sweeps. Not "was passed" — the ⚙ panel
+            # sends every field on every save, so a charter edit would carry
+            # an unchanged permission_mode and revoke a deliberately-raised
+            # report as a side effect. Same-value writes must be inert here.
+            lowered_pm = (prev_pm in PM_LEVELS and pm2 in PM_LEVELS
+                          and PM_LEVELS.index(cast(str, pm2))
+                          < PM_LEVELS.index(prev_pm))
+            changed_caps = changed_caps or lowered_pm
         if changed_caps:
-            swept = self._sweep_dirs(nid)
+            # ⚠ clamp_root=False: the caller just decided what nid holds, so
+            # the sweep re-clamps its DESCENDANTS, never nid against its own
+            # parent. sweep_pm only when the MODE itself moved — a folder or
+            # visibility retool must not silently revoke a mode the user
+            # deliberately granted below (D-101/D-102). Both flags were added
+            # after the suite caught the second case revoking a live grant.
+            swept = self._sweep_dirs(nid, clamp_root=False,
+                                     sweep_pm=lowered_pm)
             if swept:
                 warnings.append(f"subtree grants clamped to the new set (№30): {swept}")
-        if permission_mode is not None:
-            _t, _d, _v, pm2, b = self._apply_ceiling(
-                pm=permission_mode, raise_ceiling=raise_ceiling, warnings=warnings)
-            bridged = bridged or b
-            sc["permission_mode"] = cast(str, pm2)  # pm in ⇒ pm out
         if effort is not None:
             if effort:
                 sc["effort"] = effort

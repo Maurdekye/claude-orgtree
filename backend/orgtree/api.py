@@ -2974,6 +2974,10 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                                        add_dirs=rdirs,
                                        tools=a.get("tools"),
                                        org_visibility=a.get("org_visibility"),
+                                       # D-102: capped at the actor's own by
+                                       # set_scope's strict parent clamp —
+                                       # nobody grants above themselves
+                                       permission_mode=a.get("permission_mode"),
                                        charter=a.get("charter"),
                                        team_charter=a.get("team_charter"),
                                        effort=a.get("effort"))

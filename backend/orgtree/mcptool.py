@@ -307,7 +307,8 @@ TOOLS: list[dict[str, Any]] = [
         "name": "orgtree_retool",
         "description": (
             "Re-scope an existing agent in your subtree: change its folder grants, "
-            "tool set, MCP servers, org visibility, charter, team charter, or its "
+            "tool set, MCP servers, org visibility, permission mode, charter, team "
+            "charter, or its "
             "thinking effort (a cost/quality dial for your REPORTS — you never set "
             "your own). Only the fields you pass change. The capability rule still "
             "binds — you cannot grant anything you do not hold yourself, and "
@@ -326,6 +327,22 @@ TOOLS: list[dict[str, Any]] = [
                 "tools": TOOLS_SCHEMA,
                 "org_visibility": {"type": "string",
                                    "enum": ["self", "team", "subtree", "full"]},
+                "permission_mode": {
+                    "type": "string",
+                    "enum": ["default", "acceptEdits", "bypassPermissions"],
+                    "description":
+                        "how much this report is asked before acting. "
+                        "'default' asks (and a headless turn cannot answer, so "
+                        "it fails); 'acceptEdits' auto-approves file edits, the "
+                        "normal seat; 'bypassPermissions' asks nothing at all "
+                        "and is the only mode that can write a path containing "
+                        "a .claude segment. CAPPED AT YOUR OWN — you cannot set "
+                        "a report above the mode you hold, and lowering yours "
+                        "lowers your whole subtree with it. Raising a report to "
+                        "bypassPermissions removes its guardrails on every path "
+                        "on the machine, not just the one you had in mind: do "
+                        "it when the work genuinely needs it, not as a "
+                        "convenience, and say why in the same breath."},
                 "charter": {"type": "string",
                             "description": "its standing role card (every turn)"},
                 "team_charter": {"type": "string",

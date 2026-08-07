@@ -807,30 +807,49 @@ def section_clamping():
               true(any("mcp:*" in w for w in rr["warnings"]), rr["warnings"]))[-1]
           )(os_.set_scope(USER, "p", tools=dict(ALL_TOOLS, mcp=["alpha"]))))
 
-    # ⚑ permission_mode is the one scope field with no parent clamp
+    # ✓ D-C FIXED (user ruling 2026-08-07, D-102). This was a `defect()` pin —
+    # "permission_mode is the one scope field with no parent clamp… Fix = the
+    # `_clamp_vis` treatment, i.e. a capability ruling like D-021 — not this
+    # session's call to make." The ruling arrived: agents adjust their
+    # subordinates' mode, capped at their own. These are now positive checks.
     opm = Org.create("pm")
     opm.hire(USER, None, "opus", 100, "mgr")
     opm.hire(USER, "mgr", "haiku", 5, "rep")
     opm.set_scope(USER, "mgr", permission_mode="default")
-    defect("D-C", "permission_mode is not clamped to the parent, nor swept",
-           lambda: (opm.set_scope(USER, "rep",
-                                  permission_mode="bypassPermissions"),
-                    eq(opm.nodes["rep"]["scope"]["permission_mode"],
-                       "bypassPermissions"),
-                    eq(opm.nodes["mgr"]["scope"]["permission_mode"], "default"),
-                    opm.set_scope(USER, "mgr", permission_mode="default"),
-                    eq(opm.nodes["rep"]["scope"]["permission_mode"],
-                       "bypassPermissions",
-                       "an ancestor sweep does not touch permission_mode"))[-1],
-           "dirs/tools/org_visibility all clamp to the parent and sweep the "
-           "subtree; `permission_mode` does neither — `set_scope` sends it "
-           "straight to `_apply_ceiling`, and `_sweep_dirs` ignores it. A "
-           "child can outrank its parent on the single most dangerous field. "
-           "Reachable only by the USER and by a kiosk visitor (bounded by the "
-           "ceiling there) — agents cannot pass permission_mode at all "
-           "(mcptool's retool does not plumb it). Fix = the `_clamp_vis` "
-           "treatment, i.e. a capability ruling like D-021 — not this "
-           "session's call to make.")
+    check("an AGENT cannot raise a report above its own permission_mode",
+          lambda: expect_error(
+              lambda: opm.set_scope("mgr", "rep",
+                                    permission_mode="bypassPermissions"),
+              "exceeds the parent"))
+    # …while the USER may: the per-node control exists precisely so one agent
+    # can be raised without moving its superior (D-101, exercised live the day
+    # it shipped). The clamp binds delegation, not the operator.
+    check("the USER may still hold a node above its parent (D-101)",
+          lambda: (opm.set_scope(USER, "rep",
+                                 permission_mode="bypassPermissions"),
+                   eq(opm.nodes["rep"]["scope"]["permission_mode"],
+                      "bypassPermissions"),
+                   eq(opm.nodes["mgr"]["scope"]["permission_mode"], "default"))[-1])
+    # ⚠ the same-value guard: the ⚙ sends EVERY field on every save, so a
+    # charter edit carries an unchanged permission_mode. Re-asserting a mode
+    # must not revoke a grant made below it.
+    check("re-asserting an unchanged mode does NOT sweep the subtree",
+          lambda: (opm.set_scope(USER, "mgr", permission_mode="default"),
+                   eq(opm.nodes["rep"]["scope"]["permission_mode"],
+                      "bypassPermissions",
+                      "a same-value write revoked a deliberate grant"))[-1])
+    check("nor does an unrelated capability retool on the ancestor",
+          lambda: (opm.set_scope(USER, "mgr", org_visibility="self"),
+                   eq(opm.nodes["rep"]["scope"]["permission_mode"],
+                      "bypassPermissions",
+                      "a visibility retool revoked a deliberate grant"))[-1])
+    # …but a genuine LOWERING does reach it — that is what revoking means
+    check("☞ lowering the ancestor's OWN mode sweeps the subtree with it",
+          lambda: (opm.set_scope(USER, "mgr", permission_mode="acceptEdits"),
+                   opm.set_scope(USER, "rep",
+                                 permission_mode="bypassPermissions"),
+                   opm.set_scope(USER, "mgr", permission_mode="default"),
+                   eq(opm.nodes["rep"]["scope"]["permission_mode"], "default"))[-1])
 
     # --- moving into a stricter branch clamps
     o3 = Org.create("movesweep", dirs=["E:/w", "E:/r"])
@@ -1481,26 +1500,37 @@ def section_edges():
           lambda: true(len(wd.org_children("p")) <= wd.d["max_children"],
                        f"{len(wd.org_children('p'))} vs {wd.d['max_children']}"))
 
-    # ⚑ D-C is RULED WON'T-FIX (user, 2026-08-04): permission_mode stays
-    # independent per agent and is deliberately NOT clamped or swept —
-    # "an agent's read/write/tool use access is decided independently of its
-    # permission mode, which is basically everything permission mode already
-    # handles on its own. so there's basically no reason to audit it."
-    # The dirs/tools/mcp grants ARE clamped against the parent chain and the
-    # kiosk ceiling, and those are what bound what an agent can reach;
-    # permission_mode only decides how the CLI prompts within that boundary.
-    # Asserted as intended behaviour so a future "fix" has to argue with the
-    # ruling rather than silently narrow it.
+    # D-102 SUPERSEDES the 2026-08-04 won't-fix that used to be pinned here.
+    # That ruling answered "does permission_mode need a clamp for its own
+    # sake" — no, because dirs/tools bound what an agent can REACH. The
+    # 2026-08-07 ruling answers a different question: may an agent hand the
+    # mode to a subordinate? Yes, and the cap at the actor's own mode is what
+    # makes that safe. This block was written to force that argument rather
+    # than allow a silent narrowing, and it did its job — the rewrite is the
+    # argument, not a bypass of it.
+    #
+    # ⚠ The second check below was ALSO mislabelled: it said "when an ancestor
+    # LOWERS its own" while its setup went default→acceptEdits, which is a
+    # RAISE. It would have passed under the new sweep too, for the wrong
+    # reason. Both directions are now asserted separately.
     pm = deep_org()
     pm.set_scope(USER, "top", permission_mode="default")
     pm.set_scope(USER, "mid-a", permission_mode="bypassPermissions")
-    check("permission_mode is per-agent BY RULING: no parent clamp",
+    check("the USER may hold a node above its parent's mode (D-101)",
           lambda: eq(pm.node("mid-a")["scope"]["permission_mode"],
                      "bypassPermissions"))
-    pm.set_scope(USER, "top", permission_mode="acceptEdits")
-    check("…and no subtree sweep when an ancestor lowers its own",
+    check("☠ an AGENT may not — the cap binds delegation (D-102)",
+          lambda: expect_error(
+              lambda: pm.set_scope("top", "mid-a",
+                                   permission_mode="bypassPermissions"),
+              "exceeds the parent"))
+    pm.set_scope(USER, "top", permission_mode="acceptEdits")   # a RAISE
+    check("an ancestor RAISING its own mode leaves the subtree alone",
           lambda: eq(pm.node("mid-a")["scope"]["permission_mode"],
                      "bypassPermissions"))
+    pm.set_scope(USER, "top", permission_mode="default")       # a LOWERING
+    check("☞ …but LOWERING it sweeps the subtree down with it",
+          lambda: eq(pm.node("mid-a")["scope"]["permission_mode"], "default"))
 
     # --- unknown ids raise LedgerError, never KeyError
     u = deep_org()

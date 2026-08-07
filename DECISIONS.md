@@ -625,9 +625,9 @@ list, and the warning must say so because future registry additions stop
 auto-flowing.
 Bounds (ruled by the user, 2026-08-01): `org_visibility` JOINS the parent
 clamp — child ≤ parent, mirroring the tools pattern, with a subtree sweep
-when a manager's visibility is lowered. `permission_mode` remains org-wide
-by construction ("parent clamp" is inapplicable to it; the set_scope
-docstring overpromised and is fix-listed).
+when a manager's visibility is lowered. `permission_mode` JOINS it too
+(user, 2026-08-07) — see D-102 for the delegation rule and the two
+exceptions the sweep has to make for it.
 Was. until 2026-08-01 the clamp covered `add_dirs` and `tools` only — a
 vis="self" manager could hire a vis="full" report (live-verified), while
 the agent-facing docs promised the shrink-only rule.
@@ -857,6 +857,40 @@ does not expose the field.
 non-retroactivity property demonstrated rather than asserted: the user raised
 exactly ONE node of a five-node org to `bypassPermissions`; its four siblings
 and the org default stayed `acceptEdits`. Raising one agent stayed one act.
+
+### D-102 · agents set their reports' permission mode, capped at their own
+Ruling (user, 2026-08-07): `permission_mode` is exposed on `orgtree_retool`,
+so an agent adjusts any subordinate in its purview — capped at its own mode,
+like every other restriction. Nobody grants above themselves: the clamp is
+STRICT for agent actors (it raises, matching dirs/tools/visibility), and a
+hire is born at min(org default, parent) instead of the org default flat.
+Why: D-100 made the mode the difference between an agent that can do a job
+and one that cannot, so leaving delegation to the user alone made every such
+need a stop-and-ask. Capping at the actor's own mode is what makes delegating
+it safe — the authority an agent hands down is bounded by what it holds, which
+is the same rule that already governs folders, tools and visibility.
+Bounds — the sweep has TWO exceptions the other capabilities do not need, both
+found by tests before shipping: ① the USER is exempt from the parent clamp
+(D-101 exists precisely so one agent is raised without moving its superior,
+exercised live the day it shipped); ② the subtree sweep fires only on a
+genuine LOWERING of a node's own mode, never on a same-value write or an
+unrelated retool. Without ② the ⚙ panel — which sends every field on every
+save — would have revoked a deliberately-raised report as a side effect of a
+charter edit. Revocation must propagate; re-assertion must be inert.
+Load-bearing: modes are totally ordered (`PM_LEVELS`), so "≤ parent" is
+decidable. `orgtree_hire` still does not take the field: a hire is capped
+automatically and adjusted with retool, so the D-022 "state everything
+explicitly" contract is untouched.
+Was. RULED WON'T-FIX by the user on 2026-08-04, when the question was whether
+the field needed auditing at all: "an agent's read/write/tool use access is
+decided independently of its permission mode, which is basically everything
+permission mode already handles on its own. so there's basically no reason to
+audit it." That reading was pinned in `test_ledger_authority.py` as intended
+behaviour, deliberately, so a later fix would have to argue with the ruling
+rather than quietly narrow it — which is exactly what happened here. The
+2026-08-07 ruling supersedes it on a different question: not "does the field
+need a clamp for its own sake" but "may an agent hand it to a subordinate",
+where the cap IS the safety property that makes the answer yes.
 
 ### D-004 · personal hooks and MCP servers do not run in agent sessions
 Ruling (invariant since the v0 spikes; mechanism corrected 2026-08-01): the
