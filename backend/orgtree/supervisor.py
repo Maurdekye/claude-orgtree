@@ -928,9 +928,12 @@ def identity_prompt(org: Org, nid: str) -> str:
                if sc.get("permission_mode") == "bypassPermissions" else
                "WRITING is the constrained half: any path containing a "
                ".claude segment is gated ABOVE the permission system, and at "
-               "your mode a write there is refused outright. If you need one, "
-               "say so through your superior — do not conclude the file is "
-               "unreachable and do not work around the refusal. "))
+               "your mode such a write raises a permission REQUEST that a "
+               "headless turn has no way to answer — so it fails and nothing "
+               "is written. It is not a hard deny and the file is not "
+               "corrupt or missing; there is simply nobody present to "
+               "approve. If you need one, say so through your superior — do "
+               "not work around it. "))
     tools = sc.get("tools", {})
     off = [label for key, label in (("bash", "the terminal"), ("web", "web access"),
                                     ("edit", "file editing"), ("subagents", "subagents"))

@@ -799,6 +799,16 @@ clears it. So the grant is unconditional (reads work for every unsandboxed
 seat) while the write stays a deliberate user act. The grant is also precisely
 scoped, measured from a live seat: `~/.claude/skills` reads succeed while
 `~/.claude/settings.json` still refuses.
+The gate keys on the `.claude` SEGMENT and nothing else — proven symmetric on
+one build by a live seat: home, a granted workspace and the agent's own cwd
+each produced the identical message, while a control write into the SAME
+granted folder minus the `.claude` component succeeded. Scope is irrelevant;
+neither the standing `--add-dir`, nor a workspace grant, nor being the cwd
+changes it. ※ It is NOT a classifier deny: the write raises a permission
+REQUEST, and a headless turn has no approver to answer it. An interactive
+seat answers it and the same write lands — which is why one agent's "it
+works" and another's "it fails" were both true measurements, and why the
+identity prompt says so in those terms rather than calling it a refusal.
 Bounds: the grant is skipped when the directory does not exist — an
 `--add-dir` on a missing path is not a grant. The prompt line states the gate
 honestly rather than promising a capability the mode withholds (D-004's

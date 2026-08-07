@@ -224,12 +224,26 @@ def _():
         p[-800:]
 
 
-@t("☞ …and that at acceptEdits the WRITE is refused, on the .claude segment")
+@t("☞ …and that at acceptEdits the WRITE fails, on the .claude segment")
 def _():
     p = supervisor.identity_prompt(store.load_org(PLAIN), "alice")
     assert "bypassPermissions" not in p or "gated ABOVE" in p, p[-800:]
     assert ".claude segment is gated ABOVE the permission system" in p, p[-800:]
-    assert "refused outright" in p, p[-800:]
+    assert "permission REQUEST" in p and "nobody present to approve" in p, \
+        p[-800:]
+
+
+# ⚠ the distinction that resolved the original disagreement, and the reason
+# store.py's docstring was corrected in 0474a53: it is NOT a classifier deny.
+# An interactive seat HAS an approver and the same write succeeds; a headless
+# turn does not, so the request cannot be answered and the write fails.
+# "Refused outright" reads as a hard deny and sends the next debugger looking
+# for a rule to change instead of an approver to supply.
+@t("☞ …and does NOT call it a hard refusal — there is no rule denying it")
+def _():
+    p = supervisor.identity_prompt(store.load_org(PLAIN), "alice")
+    assert "refused outright" not in p, p[-800:]
+    assert "not a hard deny" in p, p[-800:]
 
 
 @t("a bypassPermissions agent is told it CAN write them")
@@ -240,7 +254,9 @@ def _():
         store.save_org(o)
     p = supervisor.identity_prompt(store.load_org(PLAIN), "alice")
     assert SKILLS in p
-    assert "refused outright" not in p, p[-800:]
+    # the acceptEdits branch's warning must be ABSENT, not merely the old
+    # wording — this is the pair that keeps §3 from passing on both branches
+    assert "permission REQUEST" not in p, p[-800:]
     assert "Writing either is fine" in p, p[-800:]
     with store.DOC_LOCK:
         o = store.load_org(PLAIN)
