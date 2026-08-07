@@ -825,9 +825,15 @@ the silence it replaced — silence let an agent look, while naming the home
 scope as the only loadable one steered it away from the folder it can write
 and toward the one it cannot. Pinned by `test_skills_grant.py` §3.
 Load-bearing: the sensitive-path gate is a CLI behavior, not ours. If it ever
-stops applying, `test_skills_grant.py` §1's "the node's mode is still
-acceptEdits" check is the tripwire, and the bypassPermissions requirement can
-be dropped everywhere at once.
+stops applying AT acceptEdits, `test_skills_grant.py` §1's "the node's mode is
+still acceptEdits" check is the tripwire, and the bypassPermissions
+requirement can be dropped everywhere at once.
+※ The bypassPermissions branch is no longer an inference from six negative
+measurements — it has a live positive. A seat raised by the user wrote into
+BOTH scopes (home and a granted `.claude/skills`) in one turn, no permission
+request and no message. The gate held at acceptEdits until the mode changed
+and stopped holding the moment it did, in the same session, which is the
+cleanest confirmation of the model available: the mode is the whole variable.
 
 ### D-101 · permission mode is editable after creation, at both levels
 Ruling (user report, 2026-08-07): the mode was write-once at org creation and
@@ -847,6 +853,10 @@ visitor-open `/defaults` endpoint that carries tools and visibility, because
 unlike those it is not clamped into meaninglessness by a ceiling a visitor
 already sits under. Agents cannot set it at either level — `orgtree_retool`
 does not expose the field.
+※ Observed working within the hour of shipping, which is also the
+non-retroactivity property demonstrated rather than asserted: the user raised
+exactly ONE node of a five-node org to `bypassPermissions`; its four siblings
+and the org default stayed `acceptEdits`. Raising one agent stayed one act.
 
 ### D-004 · personal hooks and MCP servers do not run in agent sessions
 Ruling (invariant since the v0 spikes; mechanism corrected 2026-08-01): the
