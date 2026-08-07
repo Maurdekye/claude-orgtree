@@ -206,14 +206,30 @@ def _():
     assert SKILLS in p, p[-700:]
 
 
-@t("☞ …and that acceptEdits cannot write them")
+# ⚠ THE REGRESSION THIS PINS. The first version of the line said the home
+# scope "holds the skills you actually load — your own folders hold none, so
+# a skill written anywhere else will never be available to you". An agent
+# measured that false from a live seat: `reso-limits` resolved to
+# <granted dir>/.claude/skills/reso-limits with the cwd elsewhere. Discovery
+# reads the cwd and every granted directory too, so the line steered agents
+# away from the folder they CAN write and toward the one they cannot.
+@t("☞ …and NOT told the home scope is the only one — granted folders count")
 def _():
     p = supervisor.identity_prompt(store.load_org(PLAIN), "alice")
-    assert "bypassPermissions" in p, p[-700:]
     low = p.lower()
-    i = low.find(os.path.normcase(SKILLS).lower())
-    assert i >= 0
-    assert "will not load" in low or "never be available" in low, p[i:i + 500]
+    for lie in ("your own folders hold none", "never be available",
+                "will not load", "the only place"):
+        assert lie not in low, f"the corrected prompt still claims: {lie!r}"
+    assert ".claude/skills folder inside your cwd or any folder granted" in p, \
+        p[-800:]
+
+
+@t("☞ …and that at acceptEdits the WRITE is refused, on the .claude segment")
+def _():
+    p = supervisor.identity_prompt(store.load_org(PLAIN), "alice")
+    assert "bypassPermissions" not in p or "gated ABOVE" in p, p[-800:]
+    assert ".claude segment is gated ABOVE the permission system" in p, p[-800:]
+    assert "refused outright" in p, p[-800:]
 
 
 @t("a bypassPermissions agent is told it CAN write them")
@@ -224,7 +240,8 @@ def _():
         store.save_org(o)
     p = supervisor.identity_prompt(store.load_org(PLAIN), "alice")
     assert SKILLS in p
-    assert "you do not have" not in p, p[-700:]
+    assert "refused outright" not in p, p[-800:]
+    assert "Writing either is fine" in p, p[-800:]
     with store.DOC_LOCK:
         o = store.load_org(PLAIN)
         o.node("alice")["scope"]["permission_mode"] = "acceptEdits"

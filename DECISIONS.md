@@ -788,22 +788,32 @@ the file tools to simulate the access; an agent that must WRITE a skill is
 raised to `permission_mode: bypassPermissions`, which only the user can do
 (the ⚙ panel and the scope API — `orgtree_retool` deliberately does not
 expose it, so no agent can raise its own report).
-Why: the reported bug ("agents cannot update their own skills") was two
-facts, and only naming both makes it fixable. ① A headless turn's cwd is its
-own scratch dir, so project-scope discovery (`<cwd>/.claude/skills`) finds
-nothing and a rich skills folder inside a granted workspace is
-writable-but-never-loadable — agents were editing files that could not affect
-them. ② A write to any path carrying a `.claude` segment hits a
-SENSITIVE-PATH gate ABOVE the permission system: an `Edit(<path>/**)` allow
-rule, an explicit `--add-dir`, `--permission-mode dontAsk` and a PreToolUse
-hook returning `permissionDecision=allow` were each measured and each still
-refused. Only `bypassPermissions` clears it. So the grant is unconditional
-(reads work for every unsandboxed seat, and the loadable path is finally
-NAMED in the identity prompt) while the write stays a deliberate user act.
+Why: the reported bug ("agents cannot update their own skills") was a write
+refusal, not a discovery failure. A write to any path carrying a `.claude`
+segment hits a SENSITIVE-PATH gate ABOVE the permission system: an
+`Edit(<path>/**)` allow rule, an explicit `--add-dir`, `--permission-mode
+dontAsk` and a PreToolUse hook returning `permissionDecision=allow` were each
+measured and each still refused — verbatim "… which is a sensitive file",
+re-confirmed byte-identical after this grant shipped. Only `bypassPermissions`
+clears it. So the grant is unconditional (reads work for every unsandboxed
+seat) while the write stays a deliberate user act. The grant is also precisely
+scoped, measured from a live seat: `~/.claude/skills` reads succeed while
+`~/.claude/settings.json` still refuses.
 Bounds: the grant is skipped when the directory does not exist — an
 `--add-dir` on a missing path is not a grant. The prompt line states the gate
 honestly rather than promising a capability the mode withholds (D-004's
 sibling rule: never promise what the config drops).
+Was. This entry originally carried a second cause: that a seat loads skills
+ONLY from the home scope, because its cwd is an empty scratch dir, making a
+granted workspace's `.claude/skills` "writable but never loadable". **That is
+false and the identity prompt asserted it for one deploy.** An agent measured
+the refutation the same day: `reso-limits` invoked from a seat whose cwd was
+its scratch dir resolved to `⟨granted dir⟩/.claude/skills/reso-limits`.
+Discovery reads the cwd AND every granted directory, and for most seats here
+that is where nearly every skill comes from. The wrong line was worse than
+the silence it replaced — silence let an agent look, while naming the home
+scope as the only loadable one steered it away from the folder it can write
+and toward the one it cannot. Pinned by `test_skills_grant.py` §3.
 Load-bearing: the sensitive-path gate is a CLI behavior, not ours. If it ever
 stops applying, `test_skills_grant.py` §1's "the node's mode is still
 acceptEdits" check is the tripwire, and the bypassPermissions requirement can

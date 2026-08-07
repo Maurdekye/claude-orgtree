@@ -905,20 +905,32 @@ def identity_prompt(org: Org, nid: str) -> str:
                     + (", ".join(d["path"] for d in dirs)
                        or "only your own scratch folder")
                     + (f". Read-only: {', '.join(ro)}" if ro else "") + ". ")
-        # the reported bug was not a refused write — it was agents editing a
-        # skills folder they do not load from, and never being told which one
-        # they do. Name it, and be honest about the write gate.
+        # ⚠ THE FIRST VERSION OF THIS LINE WAS WRONG, and wrong in the more
+        # damaging direction (agent report 2026-08-07, measured not inferred:
+        # `reso-limits` invoked from a seat whose cwd is its scratch dir,
+        # resolving to <granted dir>/.claude/skills/reso-limits). Skill
+        # discovery is NOT home-only: a `.claude/skills` folder inside the cwd
+        # OR any granted directory contributes too, and for most seats here
+        # that is where nearly every skill they have comes from. Naming the
+        # home scope as the only loadable one steered agents AWAY from the
+        # route that works and TOWARD the one location they cannot write —
+        # worse than the silence it replaced, which at least let them look.
+        # State both scopes, and put the gate on the `.claude` SEGMENT (what
+        # is actually measured) rather than on a directory.
         skills_line = (
-            f"Skills: {GLOBAL_SKILLS} holds the skills you actually load — your "
-            f"own folders hold none, so a skill written anywhere else will "
-            f"never be available to you. You may read it"
-            + (", and write it: a skill you add or edit there is live for "
-               "sessions on this machine. " if sc.get("permission_mode")
-               == "bypassPermissions" else
-               "; WRITING it needs permission mode bypassPermissions, which "
-               "you do not have — ask the user (through your superior) to "
-               "raise you rather than editing a skills folder that will not "
-               "load. "))
+            "Skills: you load them from two places — this machine's global "
+            f"{GLOBAL_SKILLS}, and a .claude/skills folder inside your cwd or "
+            "any folder granted to you (most of yours may come from the "
+            "latter; check before assuming). Reading either is fine. "
+            + ("Writing either is fine too — your permission mode clears the "
+               "sensitive-path gate. A skill you add or edit is live for "
+               "sessions that load from that folder. "
+               if sc.get("permission_mode") == "bypassPermissions" else
+               "WRITING is the constrained half: any path containing a "
+               ".claude segment is gated ABOVE the permission system, and at "
+               "your mode a write there is refused outright. If you need one, "
+               "say so through your superior — do not conclude the file is "
+               "unreachable and do not work around the refusal. "))
     tools = sc.get("tools", {})
     off = [label for key, label in (("bash", "the terminal"), ("web", "web access"),
                                     ("edit", "file editing"), ("subagents", "subagents"))
