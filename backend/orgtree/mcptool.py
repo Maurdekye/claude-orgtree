@@ -205,7 +205,12 @@ TOOLS: list[dict[str, Any]] = [
             "peer transport is unbounded). No automatic rollback — if the "
             "update misbehaves, tell the user. Top-level agents and "
             "user-audience holders only; kiosks sealed; one launch per 5 "
-            "minutes machine-wide."),
+            "minutes machine-wide. ⚠ target 'org'/'both' REFUSES while any "
+            "agent on this machine is mid-turn, and names them — the restart "
+            "would cut them off. That refusal is the precondition working: "
+            "wait for the machine to go idle and call again. Run this when "
+            "you have learned this install is BEHIND a newer version, not "
+            "speculatively."),
         "inputSchema": {
             "type": "object",
             "properties": {

@@ -608,14 +608,25 @@ def _():
     contracted = {"orgtree_rehire", "orgtree_dissolve", "orgtree_reallocate"}
     absent = sorted(n for n in CARDS
                     if n not in recital and n.split("orgtree_")[1] not in recital)
-    # orgtree_self_update joined the absent set 2026-08-06 (FR-14): a rare
-    # org-shaping verb the tool card itself documents fully — deliberately
-    # not added to the recital paragraph
+    # orgtree_self_update LEFT the absent set 2026-08-07 (D-104): the user
+    # ruled that an agent learning this install is behind should update it
+    # unprompted, and an instruction to act unprompted has to be in the
+    # standing prompt — a tool card is only read once the agent has already
+    # decided to reach for the tool. It rides the top-level/audience branch,
+    # which is why `boss` sees it and the two below do not (asserted just
+    # below, so the gating is pinned and not merely intended).
     assert absent == ["orgtree_list_orgs", "orgtree_move",
                       "orgtree_read_scratch", "orgtree_read_transcript",
-                      "orgtree_rename", "orgtree_self_update",
+                      "orgtree_rename",
                       "orgtree_send_file", "orgtree_switch_model"], \
         f"the recital gap changed — update or retire this pin: {absent}"
+    assert "orgtree_self_update" in recital, \
+        "the D-104 update instruction left the top-level recital"
+    for lower in ("mid", "worker"):
+        assert "orgtree_self_update" not in supervisor.identity_prompt(
+            org, lower), \
+            f"{lower} is told to self-update, but the gate refuses it — a " \
+            f"prompt that promises what the ledger denies (D-004's sibling)"
     # C0 (2026-08-05): the org-inbox paragraph now names the TOOL itself —
     # "orgtree_audience action=grant target=extern" — for top-level agents
     # and holders (the recital under test is a top-level's)

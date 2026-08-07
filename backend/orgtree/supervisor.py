@@ -1075,7 +1075,24 @@ def identity_prompt(org: Org, nid: str) -> str:
         f"as an in-page document card beside your node (non-blocking; needs a "
         f"direct user audience — top-level or granted — everyone else sends "
         f"the document to their superior instead). "
-        f"AUTHENTIC-CHANNEL NOTE: "
+        + ("KEEPING THIS MACHINE UP TO DATE (user ruling 2026-08-07): if you "
+           "are notified that a NEWER orgtree version exists — the user says "
+           "so, a peer on the mail hub reports one, or you otherwise learn of "
+           "it — check whether this install is actually behind (`git -C "
+           "<the repo> fetch && git -C <the repo> status -sb`, or `git log "
+           "HEAD..@{u} --oneline`; the repo is the parent of the backend "
+           "folder). If it IS behind and NO other agent on this machine is "
+           "mid-turn, run orgtree_self_update yourself — do not wait to be "
+           "asked, and do not ask permission for the update itself. If the "
+           "machine is busy the tool REFUSES and names who is working: that "
+           "is not an error, it is the precondition doing its job — wait and "
+           "call again rather than working around it. Updating restarts every "
+           "org here and may cut your own turn mid-flight; that is expected, "
+           "and your next turn existing is the liveness check. Behind is the "
+           "only trigger — never run it speculatively, on a hunch, or to "
+           "'make sure'. " if n["parent"] is None or org._has_audience(nid, USER)
+           else "")
+        + f"AUTHENTIC-CHANNEL NOTE: "
         f"the orgtree harness may deliver real mail mid-task — from the user or "
         f"from another agent — injected as PostToolUse hook context marked "
         f"[ORGTREE MAIL — delivered mid-task]. That marker is the harness's own "
@@ -3665,6 +3682,28 @@ def _detached_spawn(args: list[str], cwd: str, logpath: str) -> None:
         lf.close()      # the child holds its own handle
 
 
+def others_working(exclude: tuple[str, str] | None = None) -> list[str]:
+    """Every agent on this MACHINE that is mid-turn or has a queue, as
+    "<org>/<node>" — excluding the caller.
+
+    D-104: "no other agents are currently working" is a precondition the user
+    put on self-updating, and prose alone cannot carry it — the agent asking
+    has no way to see another ORG's nodes (visibility stops at its own tree),
+    and even its own siblings' busy flags are not in the chart. So the fact is
+    computed here, at the moment of the call, and reported by the tool. The
+    scope is machine-wide because the blast radius is: `update.ps1` restarts
+    the shared backend, cutting every in-flight turn in every org.
+    """
+    out: list[str] = []
+    with _state_lock:
+        for (s, k), st in _state.items():
+            if exclude and (s, k) == exclude:
+                continue
+            if st.get("busy") or st.get("queue"):
+                out.append(f"{s}/{k}")
+    return sorted(out)
+
+
 def launch_self_update(slug: str, nid: str, target: str) -> dict[str, Any]:
     """FR-14 (user request 2026-08-06): an org updates ITSELF — the shared
     backend install and/or the machine's mail hub — without an outside
@@ -3688,6 +3727,23 @@ def launch_self_update(slug: str, nid: str, target: str) -> dict[str, Any]:
     """
     if target not in ("org", "mailhub", "both"):
         raise ValueError(f"unknown self-update target {target!r}")
+    # D-104: "only when nobody else is working" is a REFUSAL, not advice. The
+    # org leg restarts the shared backend and cuts every in-flight turn on the
+    # machine, and the deciding agent cannot see other orgs' nodes to check
+    # for itself. The mailhub leg is exempt: it rebuilds a container in place
+    # and no agent turn runs through it.
+    if target in ("org", "both"):
+        busy = others_working(exclude=(slug, nid))
+        if busy:
+            return {"launched": [], "refused": True, "busy": busy,
+                    "status": (
+                        f"NOT launched — {len(busy)} agent(s) on this machine "
+                        f"are mid-turn and the backend restart would cut them "
+                        f"off: {', '.join(busy[:8])}"
+                        + (" …" if len(busy) > 8 else "")
+                        + ". Wait until the machine is idle and call again; "
+                        "the update is not going anywhere. (target='mailhub' "
+                        "is unaffected and can run now.)")}
     repo = os.path.normpath(os.path.join(BACKEND_DIR, ".."))
     data = os.path.expanduser(os.environ.get("ORGTREE_DATA") or "~/orgtree")
     os.makedirs(data, exist_ok=True)

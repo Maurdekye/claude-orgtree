@@ -858,6 +858,31 @@ non-retroactivity property demonstrated rather than asserted: the user raised
 exactly ONE node of a five-node org to `bypassPermissions`; its four siblings
 and the org default stayed `acceptEdits`. Raising one agent stayed one act.
 
+### D-104 · an agent updates a behind install itself, when the machine is idle
+Ruling (user, 2026-08-07): an agent notified that a newer orgtree exists,
+whose install is actually behind, and with no other agent on the machine
+working, runs `orgtree_self_update` on its own — no permission needed for the
+update itself. The instruction rides the STANDING prompt (top-level and
+user-audience holders — the same gate the tool has), not just the tool card:
+acting unprompted has to be told before the agent has decided to reach for a
+tool. It carries how to check "behind" concretely (`git fetch` + `git log
+HEAD..@{u}`), because otherwise the condition is a vibe.
+Why: the machine goes stale between operator visits, and the agents on it are
+the only ones present to notice. "Behind" is the ONLY trigger — never a hunch,
+never a periodic "make sure" — because the org leg restarts every org here.
+Bounds — the idle precondition is a REFUSAL in `launch_self_update`, not
+advice: `target` org/both returns `refused` and NAMES who is mid-turn. Prose
+could not carry it, for a reason worth stating: the deciding agent cannot see
+another ORG's nodes at all (visibility stops at its own tree), while the blast
+radius is machine-wide. An agent could satisfy the rule as written, honestly,
+and still cut four strangers off mid-turn. `others_working` counts a QUEUE as
+working — queued-not-started is still work a restart disrupts — and excludes
+the caller, or a lone agent could never update. `target='mailhub'` is exempt:
+it rebuilds a container in place and no turn runs through it.
+Load-bearing: a refusal must spend nothing — it leaves the 5-minute
+machine-wide rate limit untouched, or one refused call would strand an
+idle machine for five minutes over a no-op. Pinned.
+
 ### D-103 · an agent withdraws its own question when it stops mattering
 Ruling (user, 2026-08-07): agents must know to dismiss a question they asked
 once the answer is no longer relevant — typically because new information

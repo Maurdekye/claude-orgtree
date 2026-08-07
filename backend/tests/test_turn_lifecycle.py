@@ -1188,6 +1188,64 @@ def hermetic() -> None:
         else (_ for _ in ()).throw(AssertionError(r))
     )(supervisor._envelope(slug, "nope", "plain")))
 
+    # ---- USER RULING 2026-08-07 (D-104): an agent that learns this install
+    # is behind updates it ITSELF — but only when nobody else is mid-turn.
+    # That precondition cannot live in prose: the deciding agent cannot see
+    # another ORG's nodes at all, and the blast radius IS machine-wide (the
+    # org leg restarts the shared backend and cuts every in-flight turn). So
+    # it is a refusal in `launch_self_update`, and these pin the refusal
+    # rather than the instruction.
+    su_slug, (su_nid,) = horg()
+    other_slug, (other_nid,) = horg()
+
+    def _sees_a_busy_peer_in_another_org():
+        supervisor.state(other_slug, other_nid)["busy"] = True
+        try:
+            got = supervisor.others_working(exclude=(su_slug, su_nid))
+            assert f"{other_slug}/{other_nid}" in got, got
+            # …and never the caller itself, or a lone agent could never update
+            assert f"{su_slug}/{su_nid}" not in got, got
+        finally:
+            supervisor.state(other_slug, other_nid)["busy"] = False
+    check("selfupdate · a busy agent in ANOTHER org is visible machine-wide",
+          _sees_a_busy_peer_in_another_org)
+
+    def _a_queued_agent_counts_as_working():
+        # queued, not yet started, is still work the restart would disrupt
+        supervisor.state(other_slug, other_nid)["queue"] = ["pending job"]
+        try:
+            assert f"{other_slug}/{other_nid}" in supervisor.others_working()
+        finally:
+            supervisor.state(other_slug, other_nid)["queue"] = []
+    check("selfupdate · …and so is one with a QUEUE but no live turn",
+          _a_queued_agent_counts_as_working)
+
+    def _org_target_refuses_while_busy():
+        supervisor.state(other_slug, other_nid)["busy"] = True
+        try:
+            r = supervisor.launch_self_update(su_slug, su_nid, "org")
+            assert r.get("refused") and not r["launched"], r
+            assert f"{other_slug}/{other_nid}" in r["busy"], r
+            # the refusal must NAME who, or the agent cannot judge the wait
+            assert other_nid in r["status"], r["status"]
+        finally:
+            supervisor.state(other_slug, other_nid)["busy"] = False
+    check("☠ selfupdate · target 'org' REFUSES while another agent is "
+          "mid-turn, and names them", _org_target_refuses_while_busy)
+
+    def _refusal_launches_nothing_and_burns_no_rate_limit():
+        # a refusal that consumed the 5-minute machine-wide slot would leave
+        # an idle machine unable to update for five minutes over a no-op
+        supervisor.state(other_slug, other_nid)["busy"] = True
+        try:
+            supervisor.launch_self_update(su_slug, su_nid, "org")
+        finally:
+            supervisor.state(other_slug, other_nid)["busy"] = False
+        assert supervisor._self_update_at[0] == 0.0, \
+            "the refused call started the rate-limit clock"
+    check("selfupdate · a refusal spends nothing — the rate limit is untouched",
+          _refusal_launches_nothing_and_burns_no_rate_limit)
+
 
 # ================================================================= live rig
 
