@@ -809,6 +809,25 @@ stops applying, `test_skills_grant.py` §1's "the node's mode is still
 acceptEdits" check is the tripwire, and the bypassPermissions requirement can
 be dropped everywhere at once.
 
+### D-101 · permission mode is editable after creation, at both levels
+Ruling (user report, 2026-08-07): the mode was write-once at org creation and
+had no control anywhere — not on the org, not on a node. Both are now
+editable: the org field is the BORN-WITH default `_new_node` copies into every
+hire (org ⚙, admin-only), and each node carries its own (agent ⚙). Changing
+the org default is never retroactive — live agents keep the mode they were
+hired with and are raised one at a time, deliberately.
+Why: D-100 made the mode the difference between an agent that can maintain
+the machine's skills and one that cannot, so an unsettable field became a
+dead end. Non-retroactivity is the safety property: raising one agent is a
+considered act, and a default that swept the whole org would turn it into an
+accident.
+Bounds: admin surface only. The org field rides `/settings`, which
+`_public_denied` freezes for kiosk visitors; it is deliberately NOT on the
+visitor-open `/defaults` endpoint that carries tools and visibility, because
+unlike those it is not clamped into meaninglessness by a ceiling a visitor
+already sits under. Agents cannot set it at either level — `orgtree_retool`
+does not expose the field.
+
 ### D-004 · personal hooks and MCP servers do not run in agent sessions
 Ruling (invariant since the v0 spikes; mechanism corrected 2026-08-01): the
 contract is stated as behavior — **your personal hooks and MCP servers do

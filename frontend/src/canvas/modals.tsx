@@ -84,6 +84,8 @@ export function UserConfig({ tree, slug, toast, close }: UserConfigProps) {
   const setDefTools = set<ToolGrant>('defTools', defTools)
   const vis = val('vis', tree.default_visibility ?? 'full')
   const setVis = set<string>('vis', vis)
+  const pm = val('pm', tree.permission_mode ?? 'acceptEdits')
+  const setPm = set<string>('pm', pm)
   // the org's folder holdings (workspace excluded — it is permanent RW).
   // These double as the folder defaults for every hire.
   const srvDirs = useMemo<DirGrant[]>(
@@ -173,6 +175,20 @@ export function UserConfig({ tree, slug, toast, close }: UserConfigProps) {
         <select value={vis} onChange={(e) => setVis(e.target.value)}>
           {VIS_OPTIONS.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
         </select>
+        {/* D-100: the born-with mode, editable post-creation. Admin-only —
+            it rides /settings (frozen for kiosk visitors), never the
+            visitor-open defaults endpoint. It is a DEFAULT: existing agents
+            keep the mode they were hired with and change one at a time in
+            their own ⚙. */}
+        {!pub && <>
+          <div className="field-label">permission mode for NEW agents — existing
+            ones keep theirs (change those in the agent&apos;s own ⚙)</div>
+          <select value={pm} onChange={(e) => setPm(e.target.value)}>
+            <option value="default">default — asks (headless: auto-denies)</option>
+            <option value="acceptEdits">acceptEdits — the normal seat</option>
+            <option value="bypassPermissions">bypassPermissions ⚠ unguarded</option>
+          </select>
+        </>}
         <div className="row">
           <button className="primary" onClick={() =>
             // defaults ride their own visitor-open, ceiling-clamped endpoint;
@@ -181,7 +197,8 @@ export function UserConfig({ tree, slug, toast, close }: UserConfigProps) {
               saveHireDefaults(slug, { default_tools: defTools,
                                        default_visibility: vis }),
               pub ? Promise.resolve<{ warnings?: string[] }>({})
-                : saveSettings(slug, { org_dirs: orgDirs }),
+                : saveSettings(slug, { org_dirs: orgDirs,
+                                       permission_mode: pm }),
             ])
               .then(([r, r2]) => {
                 const warns = [...(r.warnings ?? []), ...(r2.warnings ?? [])]

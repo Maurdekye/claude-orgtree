@@ -280,6 +280,62 @@ def _():
         assert o.node("alice")["scope"]["permission_mode"] == "acceptEdits"
 
 
+# The ORG-level half of the same gap (user report 2026-08-07: "no way of
+# modifying an org or node's permission level post org creation"). The org
+# field is the BORN-WITH default `_new_node` copies into every hire.
+@t("the org's born-with mode is editable after creation")
+def _():
+    with store.DOC_LOCK:
+        o = store.load_org(PLAIN)
+        assert o.d["permission_mode"] == "acceptEdits"
+        o.set_hire_defaults(permission_mode="bypassPermissions")
+        assert o.d["permission_mode"] == "bypassPermissions"
+        store.save_org(o)
+
+
+@t("…and a hire made after the change is born with it")
+def _():
+    with store.DOC_LOCK:
+        o = store.load_org(PLAIN)
+        o.hire(USER, None, "haiku", 2, "bob")
+        assert o.node("bob")["scope"]["permission_mode"] == "bypassPermissions"
+        store.save_org(o)
+
+
+@t("☞ …while agents already hired keep the mode they were hired with")
+def _():
+    o = store.load_org(PLAIN)
+    assert o.node("alice")["scope"]["permission_mode"] == "acceptEdits", \
+        "changing the org default retroactively raised a live agent"
+
+
+@t("the org default is validated too — no arbitrary string reaches the argv")
+def _():
+    with store.DOC_LOCK:
+        o = store.load_org(PLAIN)
+        try:
+            o.set_hire_defaults(permission_mode="plan")
+        except LedgerError:
+            pass
+        else:
+            raise AssertionError("'plan' was accepted as an org default")
+        assert o.d["permission_mode"] == "bypassPermissions"
+        o.set_hire_defaults(permission_mode="acceptEdits")
+        store.save_org(o)
+
+
+# the visitor-open defaults endpoint must never carry it: /defaults is open to
+# kiosk visitors by ruling, /settings is frozen for them (api._public_denied)
+@t("☠ the visitor-open hire-defaults body has no permission_mode field")
+def _():
+    from orgtree import api
+    assert "permission_mode" not in api.HireDefaults.model_fields, \
+        sorted(api.HireDefaults.model_fields)
+    assert "permission_mode" in api.Settings.model_fields
+    assert api._public_denied("POST", f"/api/orgs/{PLAIN}/settings", PLAIN), \
+        "/settings is reachable by a kiosk visitor — the admin-only claim fails"
+
+
 # ============================================================== the report
 if NOTES:
     print(f"\n{len(NOTES)} NOTE(S):")

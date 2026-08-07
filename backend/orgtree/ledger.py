@@ -855,6 +855,7 @@ class Org:
 
     def set_hire_defaults(self, default_tools: Mapping[str, Any] | None = None,
                           default_visibility: str | None = None,
+                          permission_mode: str | None = None,
                           raise_ceiling: bool = False) -> dict[str, Any]:
         """The org's agent-hire defaults (the eye's gear). Kiosk VISITORS may
         set these too (user ruling 2026-07-31) — a default is just a pre-filled
@@ -878,11 +879,25 @@ class Org:
                 warnings=warnings)
             self.d["default_visibility"] = cast(str, v2)  # vis in ⇒ vis out
             bridged = bridged or b
+        if permission_mode is not None:
+            # the org's BORN-WITH mode: `_new_node` reads `d["permission_mode"]`
+            # into every hire's scope. Existing nodes keep the mode they were
+            # born with — each is changed on its own in the ⚙ panel — so this
+            # is a default, never a retroactive grant.
+            if permission_mode not in PM_LEVELS:
+                raise LedgerError(f"permission_mode must be one of {PM_LEVELS}")
+            _t, _d, _v, p2, b = self._apply_ceiling(
+                pm=permission_mode, raise_ceiling=raise_ceiling,
+                warnings=warnings)
+            self.d["permission_mode"] = cast(str, p2)      # pm in ⇒ pm out
+            bridged = bridged or b
         self._log("set_defaults", USER,
                   {"tools": self.d.get("default_tools"),
-                   "visibility": self.d.get("default_visibility")}, warnings)
+                   "visibility": self.d.get("default_visibility"),
+                   "permission_mode": self.d.get("permission_mode")}, warnings)
         res: dict[str, Any] = {"default_tools": self.d.get("default_tools"),
                                "default_visibility": self.d.get("default_visibility"),
+                               "permission_mode": self.d.get("permission_mode"),
                                "warnings": warnings}
         if bridged:
             res["bridge"] = {"raise_ceiling": True}
@@ -4170,6 +4185,9 @@ class Org:
             "compact_at": self.d.get("compact_at", 0.80),
             "default_tools": self.d.get("default_tools"),
             "default_visibility": self.d.get("default_visibility", "full"),
+            # the mode NEW hires are born with — editable post-creation
+            # (D-100); each existing node carries its own in `scope`
+            "permission_mode": self.d.get("permission_mode", "acceptEdits"),
             # "" = CLI default (user ruling 2026-08-01: visible inherit — an
             # unset node effort falls back to this at TURN time, live)
             "default_effort": self.d.get("default_effort", ""),

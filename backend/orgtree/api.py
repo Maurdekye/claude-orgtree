@@ -1094,6 +1094,10 @@ class Settings(Body):
     fable_filter_policy: str | None = None  # halt | opus (content-filter flags)
     default_tools: dict[str, Any] | None = None  # {bash, web, edit, subagents, mcp: []|["*"]}
     default_visibility: str | None = None   # self|team|subtree|full
+    permission_mode: str | None = None      # default|acceptEdits|bypassPermissions
+                                            # — the mode NEW hires are born with
+                                            # (existing nodes keep theirs; the ⚙
+                                            # panel changes those one at a time)
     default_effort: str | None = None       # ""=CLI default | low..max (live inherit)
     auto_resume: bool | None = None         # restart limit-frozen agents at reset+1min
     cascade_hire: bool | None = None        # hires bubble costs up the chain (§4.6)
@@ -1248,7 +1252,8 @@ def _org_settings_locked(slug: str, body: Settings) -> dict[str, Any]:
         org.d["fable_limit_policy"] = body.fable_limit_policy
     if body.fable_filter_policy in ("halt", "opus"):
         org.d["fable_filter_policy"] = body.fable_filter_policy
-    if body.default_tools is not None or body.default_visibility in VIS_LEVELS:
+    if (body.default_tools is not None or body.default_visibility in VIS_LEVELS
+            or body.permission_mode is not None):
         # agent defaults: applied to unspecified hires — top level directly,
         # deeper as ∩ with the superior's capability (clamped at hire time).
         # Routed through the ledger so the kiosk ceiling clamps stored
@@ -1258,6 +1263,9 @@ def _org_settings_locked(slug: str, body: Settings) -> dict[str, Any]:
             default_visibility=(body.default_visibility
                                 if body.default_visibility in VIS_LEVELS
                                 else None),
+            # admin surface only — /settings is frozen for kiosk visitors, so
+            # a share-token holder can never raise the born-with mode
+            permission_mode=body.permission_mode,
             raise_ceiling=bool((org.d.get("kiosk") or {}).get("auto_raise")))
         warnings.extend(r.get("warnings") or [])
     if body.default_effort is not None \
