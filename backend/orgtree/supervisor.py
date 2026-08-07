@@ -1392,6 +1392,19 @@ def _build_cmd(org: Org, nid: str) -> list[str]:
     # Bash, the web tools and MCP tools all prompt — and a headless prompt is
     # an auto-DENY (an agent saw python "blocked by a permission hook") — so
     # every granted capability must be explicitly allowlisted.
+    #
+    # ⚠ "acceptEdits auto-approves FILE tools" is true in general and FALSE for
+    # a SENSITIVE PATH (anything under a `.claude` segment). Measured
+    # 2026-08-07 after a live report that agents cannot edit their own skills:
+    # the sensitive-path check is a second gate above this one, and it is not
+    # satisfiable from here — an Edit(//path/**) allow rule, an explicit
+    # --add-dir on the path, --permission-mode dontAsk and a PreToolUse hook
+    # returning permissionDecision=allow were each tried and each still got
+    # "… which is a sensitive file". Only bypassPermissions clears it.
+    # ∴ an unsandboxed agent that must maintain the GLOBAL skills is given
+    # permission_mode=bypassPermissions per node (set_scope already accepts it;
+    # PM_LEVELS already ranks it) — user ruling 2026-08-07, which also ruled
+    # that nothing may be plumbed over the file tools to simulate the access.
     allowed = [f"mcp__{k}" for k in sorted(chosen)]
     if tools.get("bash", True):
         # both shells the CLI actually exposes (probed on the pinned 2.1.220:

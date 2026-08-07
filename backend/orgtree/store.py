@@ -1,8 +1,22 @@
 # pyright: strict
 """Multi-org persistence (№36). One JSON file per org under the DATA root.
 
-Data root is ~/orgtree (NOT ~/.claude — spike finding 4: Claude tools refuse writes into
-~/.claude as sensitive, and node scratch dirs live beside the ledger data):
+Data root is ~/orgtree (NOT ~/.claude — spike finding 4, and node scratch dirs live
+beside the ledger data).
+
+⚠ SPIKE FINDING 4, RESTATED 2026-08-07 (six measurements against the pinned CLI, after
+it misled a diagnosis): the file tools do not "refuse" a ~/.claude path — they raise a
+PERMISSION REQUEST ("… which is a sensitive file"). An interactive seat can answer it;
+a HEADLESS turn has no approver, so it surfaces as a refusal. The distinction matters
+because the gate is not a classifier you can satisfy: an Edit(//path/**) allow rule, an
+explicit --add-dir on the path, --permission-mode dontAsk, and a PreToolUse hook
+returning permissionDecision=allow were each measured and each still refused. The gate
+sits ABOVE the allow-rule, add-dir and hook layers. Only --permission-mode
+bypassPermissions clears it, and that bypasses every other check too (user ruling
+2026-08-07: agents that want to write the global skills run bypassPermissions; nothing
+is plumbed over the file tools to fake it).
+
+Layout:
 
     ~/orgtree/
       orgs/<slug>.json          the ledger documents
