@@ -430,7 +430,19 @@ export function OrgInboxModal({ inbox, net, map, slug, toast, close, jumpTo }: O
   const hubsVisible = (net?.hubs ?? []).some((h) => !h.hidden)
   // the org inbox tracks read state as ONE high-water mark over the log — the
   // tail beyond it renders as unread; any read action clears the whole mark
-  const readFrom = entries.length - (inbox?.unread ?? 0)
+  //
+  // ⚠ These rows come from the TREE payload (a prop), which refreshes on a 6 s
+  // heartbeat — so the mark used to sit there for seconds after the read POST
+  // had already returned (user bug 2026-08-07, same shape as the user inbox's).
+  // `ackLen` is a LOCAL high-water: everything that existed when the read
+  // landed is read, whatever the prop still says. Stored as a LENGTH, not a
+  // count — a count would subtract against a later `unread` that had grown
+  // with new arrivals and silently mark genuinely-new mail read. Set only
+  // when the POST RESOLVES (D-089: never arm state on a failed write), and
+  // monotone: max() with the server's own mark, so it can only ever agree
+  // sooner, never disagree.
+  const [ackLen, setAckLen] = useState(0)
+  const readFrom = Math.max(entries.length - (inbox?.unread ?? 0), ackLen)
   const rows: MailRow[] = entries.map((e, i) => ({
     id: e.id, at: e.at, body: e.body, from: e.peer, to: e.peer, _by: e.by,
     kind: e.dir === 'in' ? 'message' : 'reply', _wait0: i >= readFrom,
@@ -441,7 +453,12 @@ export function OrgInboxModal({ inbox, net, map, slug, toast, close, jumpTo }: O
   }))
   const inn = rows.filter((r) => r.kind === 'message')
   const out = rows.filter((r) => r.kind === 'reply')
-  const markRead = () => { if (inbox?.unread) orgInboxRead(slug).catch(() => {}) }
+  const markRead = () => {
+    if (!inbox?.unread) return
+    const len = entries.length          // captured BEFORE the round trip
+    orgInboxRead(slug).then(() => setAckLen((n) => Math.max(n, len)))
+      .catch(() => {})                  // a failed write arms nothing (D-089)
+  }
   // F-06: the @net: delivery ladder glyph — ▫ queued · ✓ sent (hub custody)
   // · ✓✓ delivered · ✓✓ read (green). "Delivered, not yet read" is the
   // diagnostic that matters (peer down/busy) — the tooltip says it plainly.

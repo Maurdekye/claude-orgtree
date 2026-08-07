@@ -1044,7 +1044,16 @@ function InboxPanel({ slug, tree, toast, refresh, close, jumpTo }: {
   // G5: mail arrives, and audience requests are raised by agents, while this
   // panel sits open. Polled while mounted rather than fetched once — the same
   // gate as everywhere else: "is anyone looking at this".
-  const box = usePolled(() => getInbox(slug), [slug])
+  //
+  // ⚠ `readBump` is what makes marking-read FEEL instant (user bug 2026-08-07:
+  // "takes several seconds to process"). The POST answers in ~5 ms; the delay
+  // was entirely here. These rows come from getInbox, but onRead refreshed the
+  // TREE — a different payload that does not carry them — so the row kept its
+  // unread mark until the next 5 s poll tick: 0–5 s, ~2.5 s typical. Bumping a
+  // dep restarts the effect, which ticks immediately. No optimistic local
+  // state: the server answer still decides, it is just asked for now.
+  const [readBump, setReadBump] = useState(0)
+  const box = usePolled(() => getInbox(slug), [slug, readBump])
   const aud = usePolled(() => getAudiences(slug), [slug])
   // №10: the record loads on demand — and keeps loading while that tab is up
   const events = usePolled(
@@ -1128,7 +1137,8 @@ function InboxPanel({ slug, tree, toast, refresh, close, jumpTo }: {
                   renderBody={renderAskBody}
                   waitLabel="unread" jumpTo={jumpTo}
                   onRead={(m: MailEntry) => markRead(slug, [m.id])
-                    .then(() => { refresh?.() }).catch(() => {})}
+                    .then(() => { setReadBump((n) => n + 1); refresh?.() })
+                    .catch(() => {})}
                   onReply={(m: MailEntry, text: string) => {
                     // the desk composer's optimistic ghost, which this
                     // composer never had (D-54): a reply sent from the inbox

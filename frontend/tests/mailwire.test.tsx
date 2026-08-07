@@ -21,7 +21,7 @@
 //
 // Run:  cd frontend && node tests/run.mjs mailwire
 
-import { flush, inAct, mountView, realClock, useFakeClock } from './harness'
+import { flush, inAct, installFetch, mountView, realClock, useFakeClock } from './harness'
 import test from 'node:test'
 import type { TestContext } from 'node:test'
 import assert from 'node:assert/strict'
@@ -429,4 +429,79 @@ uiTest('§10.6 the WS event drives the spark on its own — the dev hook is not 
     const p = sparkAt(c.el)
     assert.ok(dist(p, c.mailbox) < dist(p, c.agent),
       'and it travels the same direction the hook does')
+  })
+
+// ═══════════════════════════════════════════════════════════════════════ §11
+// READ LATENCY — a read mark must not wait for the next poll
+// ═══════════════════════════════════════════════════════════════════════ §11
+//
+// User bug 2026-08-07: "marking mail as read in my inbox takes several seconds
+// to process." The server was never the cause — /inbox/read answers in ~5 ms,
+// measured against the live backend. The delay was entirely in the client:
+// these rows come from a payload that refreshes on a HEARTBEAT (the org inbox
+// from the 6 s tree poll, the user inbox from a 5 s usePolled), and the read
+// action refreshed either nothing or the wrong payload. So the row kept its
+// unread mark for 0–6 s after the write had already landed.
+//
+// The test that proves the fix must therefore NEVER refresh the prop: if the
+// row goes read while the server-supplied `unread` still says otherwise, the
+// acknowledgement is local and immediate, which is the whole fix. Refreshing
+// the prop would pass with or without it.
+
+/** the org inbox marks read on click-OFF, like every MailList: select an
+ *  unread row, then select another. Returns the rows after the handover. */
+async function readFirstRow(el: HTMLElement) {
+  const rows = () => q(el, '.mailrow') as HTMLElement[]
+  assert.ok(rows().length >= 2, 'fixture needs two rows to click between')
+  await inAct(() => { rows()[0].click() })
+  await inAct(() => { rows()[1].click() })
+  await flush()
+  return rows()
+}
+
+uiTest('§11.1 an org-inbox row goes read on the POST, not on the next tree '
+  + 'poll — the prop never changes here', async ({ mount }) => {
+    installFetch(new (await import('./harness')).FakeServer())
+    // unread: 2 over two entries ⇒ BOTH rows start unread, and the prop that
+    // says so is never re-rendered for the life of this test
+    const net = { slug: 'mine.ncola.abc123', hubs: [] }
+    const entries = [
+      { ...inRow, id: 'e-1', at: '2026-08-05T09:00:00Z' },
+      { ...inRow, id: 'e-2', at: '2026-08-05T09:30:00Z' },
+    ]
+    const { el } = await mount(
+      <OrgInboxModal
+        inbox={{ entries, unread: 2, holders: ['ceo'], visible: true }}
+        net={net} map={new Map<string, CanvasNode>()} slug="mine"
+        toast={noop} close={noop} jumpTo={null} />)
+    await flush()
+    assert.equal(q(el, '.mailrow.unread').length, 2,
+      'fixture: both rows should start unread')
+    await readFirstRow(el)
+    assert.equal(q(el, '.mailrow.unread').length, 0,
+      'the rows still render unread after the read POST resolved — the mark '
+      + 'is waiting for the 6 s tree poll, which is the reported bug')
+  })
+
+uiTest('§11.2 …and a write that FAILS arms nothing (D-089)',
+  async ({ mount }) => {
+    const h = await import('./harness')
+    const srv = new h.FakeServer()
+    srv.fail = 500                       // the read POST rejects
+    installFetch(srv)
+    const net = { slug: 'mine.ncola.abc123', hubs: [] }
+    const entries = [
+      { ...inRow, id: 'e-1', at: '2026-08-05T09:00:00Z' },
+      { ...inRow, id: 'e-2', at: '2026-08-05T09:30:00Z' },
+    ]
+    const { el } = await mount(
+      <OrgInboxModal
+        inbox={{ entries, unread: 2, holders: ['ceo'], visible: true }}
+        net={net} map={new Map<string, CanvasNode>()} slug="mine"
+        toast={noop} close={noop} jumpTo={null} />)
+    await flush()
+    await readFirstRow(el)
+    assert.equal(q(el, '.mailrow.unread').length, 2,
+      'a REFUSED read still cleared the unread mark — the UI would show mail '
+      + 'as read that the server never recorded')
   })
