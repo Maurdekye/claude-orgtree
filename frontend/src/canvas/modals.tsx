@@ -447,6 +447,8 @@ export function NodeConfig({ node, map, tree, slug, op, toast, close }: NodeConf
   const setModel = set<string>('model', model)
   const effort = val('effort', scope.effort ?? '')
   const setEffort = set<string>('effort', effort)
+  const pm = val('pm', scope.permission_mode ?? 'acceptEdits')
+  const setPm = set<string>('pm', pm)
   // a model VERSION is a subcategory of the TIER, so it lives here in the gear
   // and never on a chip (user ruling 2026-08-04). It resets when the tier
   // changes: a version belongs to one tier, and the ledger re-validates it
@@ -682,6 +684,21 @@ export function NodeConfig({ node, map, tree, slug, op, toast, close }: NodeConf
           <option value="max">max</option>
         </select>
 
+        {/* user ruling 2026-08-07: writing the machine's GLOBAL skills is
+            gated above every allow-rule and hook — only bypassPermissions
+            clears it, so the mode had to become settable per node. It was
+            reachable by API alone before this; agents still cannot set it
+            (orgtree_retool does not expose it), so raising one is the
+            user's act. */}
+        <div className="field-label">permission mode — bypassPermissions is
+          the ONLY mode that can write ~/.claude/skills, and it removes this
+          agent&apos;s prompts for everything else too</div>
+        <select value={pm} onChange={(e) => setPm(e.target.value)}>
+          <option value="default">default — asks (headless: auto-denies)</option>
+          <option value="acceptEdits">acceptEdits — the normal seat</option>
+          <option value="bypassPermissions">bypassPermissions ⚠ unguarded</option>
+        </select>
+
         <div className="field-label">charter</div>
         <textarea rows={10} className="charterbox" value={charter}
           onChange={(e) => setCharter(e.target.value)} />
@@ -709,6 +726,7 @@ export function NodeConfig({ node, map, tree, slug, op, toast, close }: NodeConf
               : Promise.resolve())
               .then(() => saveScope(slug, node.id,
                 { add_dirs: dirs, tools, org_visibility: vis,
+                  permission_mode: pm,
                   charter, team_charter: teamCharter, effort,
                   model_version: versions.includes(modelVersion)
                     ? modelVersion : '' }))
@@ -720,6 +738,7 @@ export function NodeConfig({ node, map, tree, slug, op, toast, close }: NodeConf
                   { label: 'raise ceiling & apply',
                     fn: () => saveScope(slug, node.id,
                       { add_dirs: dirs, tools, org_visibility: vis,
+                        permission_mode: pm,
                         charter, team_charter: teamCharter, effort,
                         model_version: versions.includes(modelVersion)
                           ? modelVersion : '',

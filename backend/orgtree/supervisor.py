@@ -175,6 +175,16 @@ CLAUDE = (os.environ.get("ORGTREE_CLAUDE")
 CLAUDE_CLI_JS = os.environ.get("ORGTREE_CLAUDE_CLI", os.path.join(
     os.path.dirname(CLAUDE), "node_modules", "@anthropic-ai", "claude-code", "cli.js"))
 
+# The machine's GLOBAL (home-scope) skills — the only skills directory a
+# headless agent actually loads from, since its cwd is its own empty scratch
+# dir and project-scope discovery is `<cwd>/.claude/skills`. User ruling
+# 2026-08-07: every UNSANDBOXED agent on this machine gets it read+write;
+# sandboxed agents do not (nothing on the host is theirs to touch, and it is
+# not mounted). Writes additionally need permission_mode=bypassPermissions —
+# see the sensitive-path note in _build_cmd — but the grant is unconditional
+# so reads work for everyone and raising the mode is the ONLY step left.
+GLOBAL_SKILLS = os.path.join(os.path.expanduser("~"), ".claude", "skills")
+
 
 _cli_version_cache: tuple[str, float, str] | None = None   # (pkg_path, mtime, ver)
 
@@ -889,11 +899,26 @@ def identity_prompt(org: Org, nid: str) -> str:
             dir_line += (f"({len(outside)} external folder grant(s) exist on "
                          f"the host but are NOT mounted in the sandbox — "
                          f"they are unreachable from here.) ")
+        skills_line = ""      # host home is not mounted; nothing to promise
     else:
         dir_line = ("Folders you may work in: "
                     + (", ".join(d["path"] for d in dirs)
                        or "only your own scratch folder")
                     + (f". Read-only: {', '.join(ro)}" if ro else "") + ". ")
+        # the reported bug was not a refused write — it was agents editing a
+        # skills folder they do not load from, and never being told which one
+        # they do. Name it, and be honest about the write gate.
+        skills_line = (
+            f"Skills: {GLOBAL_SKILLS} holds the skills you actually load — your "
+            f"own folders hold none, so a skill written anywhere else will "
+            f"never be available to you. You may read it"
+            + (", and write it: a skill you add or edit there is live for "
+               "sessions on this machine. " if sc.get("permission_mode")
+               == "bypassPermissions" else
+               "; WRITING it needs permission mode bypassPermissions, which "
+               "you do not have — ask the user (through your superior) to "
+               "raise you rather than editing a skills folder that will not "
+               "load. "))
     tools = sc.get("tools", {})
     off = [label for key, label in (("bash", "the terminal"), ("web", "web access"),
                                     ("edit", "file editing"), ("subagents", "subagents"))
@@ -939,7 +964,7 @@ def identity_prompt(org: Org, nid: str) -> str:
         f"{purpose_line}{position}\n{charter_line}"
         f"Credits: seat {org.seat_cost(nid)}, grant {n['grant']}, free {org.free(nid):g} "
         f"— credits bound concurrent agent capacity, not tokens. "
-        f"{dir_line}{tool_line}{fable_line}"
+        f"{dir_line}{skills_line}{tool_line}{fable_line}"
         + ("" if n["parent"] is None else
            "Cross-session mail systems (the machine's mail hub, hubtool, or "
            "any successor) are OFF-LIMITS to you: never register an identity "
@@ -1421,6 +1446,11 @@ def _build_cmd(org: Org, nid: str) -> list[str]:
     cmd += ["--allowedTools", ",".join(allowed)]
     for p, _m in grant_dirs:
         cmd += ["--add-dir", p]
+    if not sandboxed and os.path.isdir(GLOBAL_SKILLS):
+        # standing grant, no scope entry needed (user ruling 2026-08-07). A
+        # sandboxed agent never gets it: the host home is not mounted, and the
+        # container's own ~/.claude is transcripts, not skills.
+        cmd += ["--add-dir", GLOBAL_SKILLS]
     # §7.6 read-down: a node's file tools reach its own scratch (cwd) plus every
     # descendant's — regenerated per turn, so re-parenting never leaves stale access
     seen = set()

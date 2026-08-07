@@ -779,6 +779,36 @@ default it on.
 
 ## Agent runtime
 
+### D-100 · the machine's global skills are granted to unsandboxed agents
+Ruling (user, 2026-08-07): every UNSANDBOXED agent gets `~/.claude/skills`
+read+write as a standing grant — no scope row, no per-org opt-in. Sandboxed
+agents do not: the host home is not mounted, and the exclusion holds even for
+a sandboxed node raised to `bypassPermissions`. Nothing may be plumbed over
+the file tools to simulate the access; an agent that must WRITE a skill is
+raised to `permission_mode: bypassPermissions`, which only the user can do
+(the ⚙ panel and the scope API — `orgtree_retool` deliberately does not
+expose it, so no agent can raise its own report).
+Why: the reported bug ("agents cannot update their own skills") was two
+facts, and only naming both makes it fixable. ① A headless turn's cwd is its
+own scratch dir, so project-scope discovery (`<cwd>/.claude/skills`) finds
+nothing and a rich skills folder inside a granted workspace is
+writable-but-never-loadable — agents were editing files that could not affect
+them. ② A write to any path carrying a `.claude` segment hits a
+SENSITIVE-PATH gate ABOVE the permission system: an `Edit(<path>/**)` allow
+rule, an explicit `--add-dir`, `--permission-mode dontAsk` and a PreToolUse
+hook returning `permissionDecision=allow` were each measured and each still
+refused. Only `bypassPermissions` clears it. So the grant is unconditional
+(reads work for every unsandboxed seat, and the loadable path is finally
+NAMED in the identity prompt) while the write stays a deliberate user act.
+Bounds: the grant is skipped when the directory does not exist — an
+`--add-dir` on a missing path is not a grant. The prompt line states the gate
+honestly rather than promising a capability the mode withholds (D-004's
+sibling rule: never promise what the config drops).
+Load-bearing: the sensitive-path gate is a CLI behavior, not ours. If it ever
+stops applying, `test_skills_grant.py` §1's "the node's mode is still
+acceptEdits" check is the tripwire, and the bypassPermissions requirement can
+be dropped everywhere at once.
+
 ### D-004 · personal hooks and MCP servers do not run in agent sessions
 Ruling (invariant since the v0 spikes; mechanism corrected 2026-08-01): the
 contract is stated as behavior — **your personal hooks and MCP servers do
