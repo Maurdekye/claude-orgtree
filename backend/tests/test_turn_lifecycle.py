@@ -802,21 +802,102 @@ def hermetic() -> None:
     #
     # So a fable agent hitting the same five-hour session limit every tier
     # shares is recorded as org-wide Fable exhaustion.
+    # ---- USER REPORT 2026-08-07: a REAL Fable-tier limit at neoja --------
+    # The captured message, verbatim, from their running org doc (both their
+    # fable nodes identical):
+    #
+    #   "You've reached your Fable 5 limit. Run /usage-credits to continue
+    #    or switch models with /model."
+    #
+    # It refuted TWO of my beliefs at once, and both were written down here
+    # as if settled:
+    #  ① the gate was `"weekly" in blob`. The real message never says
+    #    "weekly", so the escalation did NOT fire on a genuine tier limit —
+    #    their nodes froze independently 55 s apart instead of halting
+    #    together under the org policy. The false negative I had recorded as
+    #    "deliberate, fails safe" was the COMMON case.
+    #  ② I had assumed a weekly reset would be DAYS OUT and merely parsed
+    #    wrong. There is no reset in the message AT ALL — the CLI offers an
+    #    action ("run /usage-credits, or switch models"), not a time.
+    # The gate is now the model name (`_looks_like_fable_tier_limit`), and a
+    # tier limit with no parseable reset marks its lock `no_reset` instead of
+    # inheriting the 300-second probe floor.
+    def _a_tier_limit_with_no_reset_does_not_take_the_probe_floor():
+        """The floor means 'no reset known, retry soon' — right for the
+        rate-limit class it was written for, catastrophic as a tier-quota
+        horizon: the lock would self-release five minutes into a week-long
+        limit, un-halt every fable node, announce a reset that did not
+        happen, re-hit the wall and re-halt — roughly 288 cycles a day, each
+        one notifying the parent, the peers, the node AND the user inbox."""
+        real = ("You've reached your Fable 5 limit. Run /usage-credits to "
+                "continue or switch models with /model.")
+        assert supervisor._looks_like_fable_tier_limit(real), (
+            "the captured Fable-tier message no longer reads as one")
+        assert supervisor._parse_limit_reset_ts(real) is None, (
+            "the fixture assumes this message carries no reset — if the "
+            "parser learned it, re-read this check")
+        org = store.create_org("zz tier noreset")
+        org.hire(USER, None, "fable", 20, "f1", **hspec())
+        store.save_org(org)
+        org.fable_limit_hit("f1", real,
+                            until_ts=supervisor._parse_limit_reset_ts(real))
+        store.save_org(org)
+        lock = store.load_org(org.d["slug"]).d.get("fable_lock") or {}
+        assert lock.get("no_reset") is True and not lock.get("until_ts"), (
+            f"a tier limit with no published reset took a horizon anyway: "
+            f"{lock}. If that horizon is the 300 s probe floor the lock "
+            f"self-releases in five minutes and the release-storm is back")
+
+    def _a_no_reset_lock_survives_the_artifact_sweep():
+        """…and the marker is what keeps it alive. A bare timeless lock is
+        the pre-fix ARTIFACT shape, released on the next load (STUCK-1); a
+        lock that positively says its reset is unknown must not be swept
+        with it, or the escalation would undo itself on the very next read."""
+        real = ("You've reached your Fable 5 limit. Run /usage-credits to "
+                "continue or switch models with /model.")
+        org = store.create_org("zz tier survives")
+        org.hire(USER, None, "fable", 20, "f1", **hspec())
+        org.hire(USER, None, "fable", 20, "f2", **hspec())
+        store.save_org(org)
+        org.fable_limit_hit("f1", real, until_ts=None)
+        store.save_org(org)
+        slug = org.d["slug"]
+        for _ in range(3):                     # three separate reads
+            store.load_org(slug)
+        back = store.load_org(slug)
+        assert back.d.get("fable_lock"), (
+            "the no_reset lock was swept as a pre-fix artifact — the "
+            "escalation now undoes itself on the next load, which is worse "
+            "than never firing")
+        assert sorted(k for k, v in back.nodes.items()
+                      if v.get("limit_locked")) == ["f1", "f2"], (
+            "the org-wide halt did not survive with its lock")
+    check("tier-limit · a Fable-tier limit with no published reset marks its "
+          "lock no_reset instead of taking the 5-minute probe floor",
+          _a_tier_limit_with_no_reset_does_not_take_the_probe_floor)
+    check("tier-limit · …and that lock survives the pre-fix artifact sweep",
+          _a_no_reset_lock_survives_the_artifact_sweep)
+
     def _the_fable_escalation_needs_a_weekly_marker():
         src = open(os.path.join(_REPO, "backend", "orgtree", "supervisor.py"),
                    encoding="utf-8").read()
         i = src.find("fable_limit_hit(")
         fixture(i > 0, "the fable escalation moved — re-read this check")
-        seg = "\n".join(ln for ln in src[max(0, i - 500):i + 120].splitlines()
+        # ⚠ widened from 500 to 1200 chars of lead-in 2026-08-07: the
+        # escalation grew an explanatory comment block, and comments are
+        # stripped below, so the tier test drifted out of a 500-char window
+        # and the FIXTURE tripped rather than the check. Measured, not
+        # guessed — the guard was reporting on the wrong span.
+        seg = "\n".join(ln for ln in src[max(0, i - 1200):i + 120].splitlines()
                         if not ln.lstrip().startswith("#"))
         fixture('"fable"' in seg, "the tier test is not where this check expects")
-        assert re.search(r"weekly|fable_quota|_looks_like_fable", seg), (
+        assert re.search(r"_looks_like_fable_tier_limit", seg), (
             "the ONLY condition for declaring org-wide Fable exhaustion is "
             "that the node's tier is fable. An ordinary session limit — which "
             "_looks_like_usage_limit matches on purpose, by its own comment — "
             "is therefore read as the weekly Fable quota running out")
     # ← FIXED (promoted out of gap(), 2026-08-06, same day): the escalation
-    # is gated on `_looks_like_weekly_fable_limit` (positive WEEKLY wording),
+    # is gated on `_looks_like_fable_tier_limit` (positive WEEKLY wording),
     # exactly the prescribed second predicate — the ordinary freeze is
     # untouched, so a fable agent hitting a session limit freezes with an
     # until_ts and auto-resumes like any other tier.

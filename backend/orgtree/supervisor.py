@@ -614,26 +614,43 @@ def _looks_like_usage_limit(blob: str) -> bool:
                                   "quota", "hit your", "resets", "session")))
 
 
-def _looks_like_weekly_fable_limit(blob: str) -> bool:
+def _looks_like_fable_tier_limit(blob: str) -> bool:
     """Gates the ORG-WIDE fable escalation ONLY (redteam FABLE-1, user
     report 2026-08-06: a five-hour session limit on one fable agent was
-    recorded as weekly Fable exhaustion and perma-froze every fable node in
-    the org — under the dissolve policy it would have retired their whole
-    subtrees). `_looks_like_usage_limit` stays deliberately broad — ANY
-    tier's ordinary limit must freeze the one agent, with a reset time and
-    auto-resume, fable included. Only a blob that positively says WEEKLY is
-    the org-wide quota; the CLI's weekly-limit phrasing carries the word,
-    the session phrasing ('hit your session limit — resets …') does not.
+    recorded as Fable exhaustion and perma-froze every fable node in the org
+    — under the dissolve policy it would have retired their whole subtrees).
+    `_looks_like_usage_limit` stays deliberately broad — ANY tier's ordinary
+    limit must freeze the one agent, with a reset time and auto-resume,
+    fable included. This one asks the narrower question: is the blob about
+    the FABLE TIER's own quota rather than a limit a fable agent merely
+    happened to hit?
 
-    ⚠ DELIBERATE false negative (redteam probe, on record): a weekly limit
-    phrased without the literal word ('your usage limit for this week')
-    does NOT escalate — it fails SAFE into the ordinary per-agent freeze
-    with a reset time and auto-resume, which is strictly the better error.
-    Do not widen this predicate to catch such phrasings: widening it is
-    exactly how the original bug (session limit → org-wide perma-freeze)
-    comes back."""
+    ⚠ WAS `"weekly" in b`, and that was WRONG — corrected 2026-08-07 against
+    the first CAPTURED genuine message (neoja, live, both their fable nodes
+    identical):
+
+        "You've reached your Fable 5 limit. Run /usage-credits to continue
+         or switch models with /model."
+
+    The real message never says "weekly". So the predicate returned False on
+    a REAL Fable-tier limit, the escalation never fired, and the org's
+    `fable_limit_policy` never applied — their two fable nodes froze
+    independently 55 s apart, each as it individually hit the wall, instead
+    of halting together. The false negative I recorded here as "deliberate,
+    fails safe" turned out to be the COMMON case, not the edge.
+
+    The discriminator is the MODEL NAME, which the real message carries and
+    the session message does not. `session` is excluded explicitly so that a
+    future phrasing mentioning both ("session limit for Fable 5") cannot
+    resurrect the original bug — the session limit must never escalate,
+    whatever else it says.
+
+    ⚠ Still do NOT widen this to any limit a fable agent hits. The gate is
+    "the blob is about the tier", not "the node is a fable node" — the node's
+    tier is checked separately at the call site, and checking only that is
+    precisely the bug FABLE-1 fixed."""
     b = blob.lower()
-    return "limit" in b and "weekly" in b
+    return "limit" in b and "fable" in b and "session" not in b
 
 
 NET_RETRY_MAX = 4      # then fall to manual with an honest label
@@ -2017,13 +2034,25 @@ def _run_one_turn(slug: str, nid: str,
                             # parsed reset rides onto the lock (FABLE-2) so
                             # even a real weekly halt releases by time.
                             if o2.node(nid)["model"] == "fable" \
-                                    and _looks_like_weekly_fable_limit(err_blob):
-                                o2.fable_limit_hit(nid, err_blob,
-                                                   until_ts=fz.get("until_ts"))
+                                    and _looks_like_fable_tier_limit(err_blob):
+                                # ⚠ re-parse rather than reading fz["until_ts"]
+                                # (2026-08-07). By here that field may be the
+                                # 300-SECOND PROBE FLOOR, which means "no
+                                # reset known, retry soon" — right for a rate
+                                # limit, catastrophic as a tier-quota horizon:
+                                # the lock would self-release five minutes
+                                # into a week-long limit, un-halt every fable
+                                # node, announce a reset that did not happen,
+                                # re-hit the wall and re-halt, ~288 times a
+                                # day. Passing None instead marks the lock
+                                # `no_reset` and it waits for the user.
+                                o2.fable_limit_hit(
+                                    nid, err_blob,
+                                    until_ts=_parse_limit_reset_ts(err_blob))
                             store.save_org(o2)
                     notify(slug, nid, "frozen")
                     if org.node(nid)["model"] == "fable" \
-                            and _looks_like_weekly_fable_limit(err_blob):
+                            and _looks_like_fable_tier_limit(err_blob):
                         notify(slug, nid, "fable_limit")
                 elif _looks_like_connection_failure(err_blob):
                     # the transient class (user report 2026-08-06): REUSE the

@@ -923,3 +923,165 @@ documents one) rather than leaving them as files the agent has to separately `Re
 for at least the non-sandboxed half of the ask.** Whoever picks this up should start by checking
 whether granting an existing browser-automation MCP server to a live test node already satisfies
 most of what was asked, before writing any orgtree code.
+
+---
+
+### FR-18 · watchdogs — persistent (survives orgtree restarts) event-triggered turns
+> new fr: watchdogs. an agent can set up a process that will notify it with a turn when a certain
+> process or command or file produces an event matching a pattern that it sets up. unqiue to the
+> monitor command, as they're persistent between orgtree restarts. what's the feasibility of this,
+> existing cc infra that we can borrow, and the shapes of potential agent usecases?
+
+*(user request 2026-08-07, recorded by the curator. Three explicit questions — feasibility,
+borrowable infra, use-case shapes — answered in that order below. Not built.)*
+
+**Feasibility: yes, and orgtree already has every load-bearing piece except the generic
+pattern-watcher itself.** Three existing precedents compose almost directly into this:
+
+1. **"Poll a condition, persist state, inject a wake-worthy event on match" already exists,**
+   hardcoded to one condition. `cred-watch` (`supervisor.py:3801`, spawned by a
+   `threading.Thread(daemon=True, name="cred-watch")`) polls every 6 hours, persists its own dedup
+   state on the org doc (`org.d["cred_warned_at"]`, survives restarts because the doc does), and on
+   match appends a `"from": "@system"` entry to `user_inbox`. A generic watchdog is this same shape
+   with the condition and the target made agent-supplied instead of hardcoded.
+2. **"Re-arm persisted state at startup" already exists** as the dedicated mechanism for exactly
+   this class of problem. `reconcile()` (`supervisor.py:3847+`) runs per-org at backend startup and
+   already handles several restart-recovery cases that all rhyme with "a thing must resume/clean up
+   because the process died mid-flight": marking unrecoverable nodes, killing stale remote-control
+   PIDs by the pid recorded before the crash, auto-resuming mid-turn agents from persisted inflight
+   text. A watchdog registry is a persisted list on the org doc (target, pattern, owner) the same
+   way `net_hubs`/`add_dirs`/etc. already are — `reconcile()` re-spawning a watcher thread per
+   registered watchdog is the same pattern as its existing PID-cleanup step, not a new one.
+3. **"Survive the OWNER process being down, not just resume after" already has a shipped precedent
+   — FR-07's spool.** The mailserver's outbound spool (`net.py`, FR-07 above) doesn't try to keep a
+   live connection alive across a hub outage; it queues locally and drains on reconnect. The same
+   shape answers the harder version of this question: what happens to an event that fires *while
+   orgtree itself is down*? For a **file** target, nothing is lost — diff the file's state against
+   what it was at last shutdown, same as `reconcile()`'s transcript-index walk already does. For a
+   **live process's transient output**, anything during the downtime window is genuinely
+   unrecoverable unless the watcher itself runs independently of orgtree (see infra below) — worth
+   naming as a real limit, not glossed over.
+
+**Existing Claude Code infra — what actually transfers, and what doesn't (the user's second
+question, answered directly):**
+
+- **The Monitor tool itself is explicitly the wrong shape, and the request already says so.**
+  Monitor's task-notification delivery is tied to the running harness session/process — it does not
+  outlive the session, let alone an orgtree backend restart. It's the right reference for the
+  *interface* (arm once, get woken on a match) and the wrong one for the *lifetime* — which is
+  exactly the distinction the request draws.
+- **Claude Code hooks (SessionStart, PostToolUse, etc.) don't solve the general case either.** They
+  fire on the CLI's own internal lifecycle events (a session starting, a tool call completing) —
+  useful for "notice when THIS agent edits a file," not for "watch an arbitrary external file,
+  process, or command this agent never touches directly." Not zero relevance (a hook COULD watch the
+  agent's own tool-call stream for a pattern), but that's a narrower feature than what's asked.
+  `hub/session-start.sh` is the one hook already in this repo's own use — a config-injection
+  pattern, not a watch-and-notify one, so not directly reusable either.
+  
+  Not consulted directly (no MCP/web access from this seat) — worth a targeted check by whoever
+  scopes this: whether Claude Code ships a **general-purpose file-watcher tool** (distinct from
+  Monitor) that could be driven headlessly and outlive a single turn. If one exists it likely still
+  inherits Monitor's session-lifetime limit; if it doesn't, this backs the "orgtree has to build
+  it" conclusion further.
+- **What DOES transfer cleanly: the wake mechanism itself needs no new invention.** A fired
+  watchdog just needs to become another inbound mail to the owning agent — `deliver_org_inbox`
+  (`supervisor.py:3375-3418`) → `_run_turn` (`:1412`) is the exact same path mail, hub delivery, and
+  `cred-watch`'s system notices already use. The interesting engineering is entirely on the
+  **watching** side (registration, persistence, restart-survival); the **firing** side is a solved
+  problem this can reuse verbatim.
+
+**The one real architectural fork, worth a ruling before building:** in-process poll threads
+(cheap, `reconcile()`-friendly, but genuinely blind to anything that happens while orgtree itself is
+down — matches FR-07's spool model only for file targets, not live process output) **vs.**
+standalone OS-level watcher processes that run independently of orgtree's own process lifetime and
+report back over HTTP when it's up (survives orgtree being down for real, at the cost of a second
+class of process this repo now has to spawn, track, and clean up — a genuinely new operational
+surface, the same category of complexity `sandbox.py`/the container lifecycle already carries for a
+different reason). Not decided here.
+
+**Shapes of potential agent use-cases (the third question):**
+- **Long-running external jobs an agent would otherwise poll for.** A render/build/deploy the
+  agent kicked off and would normally check on repeatedly across turns (burning turns and credits
+  on "still not done?") — watch the log or output directory for a completion marker, get woken once,
+  at the actual moment it matters.
+- **Cross-boundary dependencies.** "Wake me when this file another team/process owns changes" — the
+  same shape as this session's own cross-org mail exchanges, but for a filesystem artifact instead
+  of a message; a natural fit for an org whose work is gated on someone else's output landing.
+  FR-13's scope-grant requests are one plausible SOURCE of watch targets — an agent granted a new
+  folder might immediately want to watch it.
+- **Proactive failure detection.** Watching a service's health-check output or a log for an error
+  pattern (a crash, an OOM) so an agent gets interrupted with the bad news instead of discovering it
+  cold on its next unrelated turn — closer to an alarm than a poll.
+- **Handoff drops.** A directory an external process or a human is expected to drop a file into —
+  the recovery-browser's storage-browser pattern already establishes "a place things get dropped for
+  later pickup" as a familiar shape in this repo; a watchdog turns that into "notified the moment it
+  happens" instead of "checked on next login."
+- **A process-liveness dog, literally.** Watch a PID (or a port, or a health endpoint) for it going
+  DOWN rather than a pattern appearing — the inverse of "wake me when X happens," useful for an
+  agent that started something long-running and needs to know if it died silently.
+
+Not scoping a build here — this entry is the grounding, per the user's three explicit questions.
+
+**Visual spec, added same day — extends this entry, not a new FR number (same feature's canvas
+half).**
+> since watchdogs will "send mail", but not be full on intelligent agents of their own, i want to
+> see a visual representation of them in the canvas: a tiny little rectangle, maybe 1/4 or 1/8 the
+> area of a full node, connected to their "owner" with a wire. named, and clicking on them shows a
+> description of the process / command / file theyre running / watching. they have a mail tab
+> showing the events theyve sent out, and everytime they send one, a spark runs up the wire to
+> their attached agent.
+
+**The genuinely good news: almost this entire spec is already-built infrastructure, not new
+rendering work.** Traced the actual canvas code rather than assuming:
+
+- **The wire is not a new rendering system — it's a new edge KIND in one that already exists.**
+  `OrgCanvas.tsx`'s `edges` SVG (`:1051-1103`) already draws several distinct edge kinds between
+  entities — parent-child, peer (`edge peer`), audience-grant (`edge aud-line`), and a **`tether`**
+  (`:1103`) — a line connecting a small satellite entity to an owner node that ISN'T itself part of
+  the tree layout. A watchdog↔owner wire is a sixth edge kind in the same SVG.
+- **The satellite-entity-offset-from-its-owner pattern already exists, for a different purpose —
+  "bearer" lineage cards.** `isBearerOf` entities (`:191-197`) are explicitly NOT positioned by the
+  general tree-layout pass; they're placed as a manual offset from their target's already-computed
+  position (`p.x + 42 + 18*n.bearerIndex`, stacking multiple). A watchdog is the same shape: a small
+  non-agent visual entity, offset-positioned near its owner rather than laid out in the hierarchy,
+  connected by a tether-like wire. This is the closest existing precedent in the codebase for
+  exactly what's being asked, just built for org lineage history rather than live watching.
+- **The spark animation is not new — it's the EXACT mechanism mail already uses, unmodified.**
+  `launchSpark(from, to)` (`:341-414`) already rides a spark along a wire between any two entities
+  on a mail event (`mailEvt` → `launchSpark`), rendered as `<circle className="spark">`
+  (`:1127-1133`). "Every time [a watchdog] sends one, a spark runs up the wire to their attached
+  agent" is describing this exact function called with the watchdog's id as `from` and the owner's
+  id as `to` — no new animation to build, assuming the watchdog is a `map`-indexed entity with a
+  wire entry, which the edge-kind point above already covers.
+- **Sizing has a real base to scale against.** Full nodes are `NODE_W = NODE_H = 124`
+  (`shared.ts:208`). "1/4 to 1/8 the AREA" (the user's own framing) is ~62×62 down to ~44×44 in
+  side-length — small enough that the existing per-node chrome (tier badge, context wheel, activity
+  dot) likely doesn't fit and needs its own minimal treatment: name + a static "watching" glyph is
+  probably the ceiling of what fits, which matches "clicking shows the description" doing the
+  detail work instead of cramming it into the tray-sized box.
+
+**What's genuinely new, not reused:** (1) a watchdog needs to exist as a lighter-weight entity in
+whatever the frontend calls its node map — NOT a full agent (no charter, no tier, no turn cost,
+none of `TIERS`/`MODELS`) but present enough to have an id, an owner, a position, and a wire; (2)
+the small-rectangle shape itself, since every existing node visual is the full 124×124 box; (3) the
+click-through detail panel showing the watched process/command/file and a description — a much
+smaller cousin of the existing per-node config panel, read-only, no hire/charter/tool-grant knobs
+since a watchdog isn't hired; (4) the "mail tab" of events it sent — the events themselves are
+already ordinary mail once fired (FR-18's finding above: firing reuses `deliver_org_inbox`), so this
+is very likely a filtered view of the SAME mail data the owner agent already receives, scoped to
+"sent by this watchdog," not a new mail-storage concept.
+
+Not scoping a build here either — same status as the rest of FR-18, folded in as the visual half of
+the same not-yet-built feature.
+
+**Ruling, added same day: watchdogs are framed as "pets" for agents, and cost no credits to
+spawn.** A real, load-bearing design decision, not just a naming flourish — it settles what would
+otherwise be an open question this docket would have had to flag. Confirmed against the actual
+gate: `orgtree_hire`'s seat cost (`TIERS`, `ledger.py:39` — haiku 1, sonnet 3, opus 5, fable 10) is
+deducted from the hiring agent's free-credit balance at hire time, the same balance FR-13's
+scope-request grants and FR-14's batch cards above are reasoning about. "No credits to spawn" is an
+explicit exception to that gate, not an oversight to close later — a watchdog never enters `TIERS`/
+`MODELS` at all (consistent with point (1) in the visual-spec note above: no tier, no turn cost), so
+whoever builds this should treat "free to create" as a stated requirement, not default to gating it
+like a hire and need a later ruling to remove the check. The "pet" framing also reads as informing
+the small/non-agent visual treatment above: something owned and cared for, not staffed.

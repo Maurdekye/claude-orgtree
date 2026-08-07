@@ -355,9 +355,23 @@ class Org:
         # written by the misread itself (a session limit recorded as weekly
         # exhaustion). Release them rather than back-date: back-dating keeps
         # agents halted for a limit that was never hit.
+        # ⚠ …EXCEPT a lock that positively says its reset time is UNKNOWN
+        # (`no_reset`). Added 2026-08-07 with the captured Fable-tier message
+        # (neoja, live): "You've reached your Fable 5 limit. Run
+        # /usage-credits to continue or switch models with /model." — it
+        # carries NO horizon at all, so the assumption above ("no new lock
+        # can be timeless") stopped being true the moment the escalation
+        # started firing on it. Without this marker such a lock is
+        # indistinguishable from a pre-fix artifact and gets released on the
+        # very next load. `no_reset` is the difference between "nobody told
+        # this lock when it ends" and "this lock predates the field": the
+        # first waits for the user, who now HAS controls for it (the ⚙ clear
+        # and the per-node unstick override) — which is what the original
+        # timeless-waits-for-the-user rule assumed and did not yet have.
         _fl = self.d.get("fable_lock") or {}
-        if _fl and (not _fl.get("until_ts")
-                    or _time.time() >= float(_fl["until_ts"])):
+        if _fl and not _fl.get("no_reset") and (
+                not _fl.get("until_ts")
+                or _time.time() >= float(_fl["until_ts"])):
             _freed = [k for k, v in self.nodes.items()
                       if v.get("limit_locked")]
             self.d.pop("fable_lock", None)
@@ -3745,10 +3759,17 @@ class Org:
         if self.d.get("fable_lock"):
             return {"already_locked": True}
         policy = self.d.get("fable_limit_policy", "halt")
+        # `no_reset` (2026-08-07): the captured Fable-tier message carries NO
+        # horizon, so a caller that could not parse one says so POSITIVELY
+        # rather than leaving the lock bare — a bare lock is the pre-fix
+        # artifact shape and the load hook releases it immediately. Marked,
+        # it waits for the user, which is the honest state for a quota whose
+        # own message offers no time and tells the user what to do instead
+        # ("Run /usage-credits … or switch models").
         self.d["fable_lock"] = {"at": now(), "detail": detail[:300],
                                 "detected_by": detecting_node, "policy": policy,
                                 **({"until_ts": float(until_ts)}
-                                   if until_ts else {})}
+                                   if until_ts else {"no_reset": True})}
         locked: list[str]
         converted: list[str]
         dissolved: list[str]
