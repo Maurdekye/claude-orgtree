@@ -1244,7 +1244,14 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
             onPointerDown={(e) => e.stopPropagation()}
             onClick={() => setOiOpen(true)}>
             <div className="oi-head">
-              <PublicIcon fontSize="inherit" /> org inbox
+              {/* the label is its own element so it can ELLIPSIS instead of
+                  wrapping. As a bare text node it was an anonymous flex item
+                  that wrapped to two lines the moment the unread badge
+                  competed for width — measured 13.5px → 25.5px — which
+                  flex-shrank .oi-last to 2.3px inside the fixed-height tile
+                  and clipped the last recipient (user bug 2026-08-07) */}
+              <PublicIcon fontSize="inherit" />
+              <span className="oi-title">org inbox</span>
               {(() => {   // F-06: hub connectivity at a glance on the mailbox
                 const hubs = (tree.net?.hubs ?? [])
                   .filter((h) => h.enabled && !h.hidden)

@@ -1818,18 +1818,38 @@ svg.MuiSvgIcon-root {
   background: linear-gradient(180deg, rgba(169, 194, 216, .07), var(--panel) 75%);
 }
 .sq.orginbox:hover { border-color: #6d8496; }
+/* ⚠ the head must stay ONE line. The tile's height is fixed (INBOX_H, the
+   canvas layout depends on it), so anything that grows the head steals from
+   .oi-last below it — and .oi-last clips its own overflow, so the theft is
+   silent. Measured 2026-08-07: with an unread badge the bare "org inbox" text
+   node wrapped, head 13.5px → 25.5px, and .oi-last was flex-shrunk to 2.3px
+   against a 14px line. nowrap + an ellipsis-able title element fixes the
+   cause; the flex-shrink guards below make the symptom unreachable even if
+   something else in the head grows later. */
 .oi-head {
-  display: flex; align-items: center; gap: 5px; position: relative;
+  display: flex; align-items: center; gap: 4px; position: relative;
   font-family: var(--mono); font-weight: 700; font-size: 11px;
   color: #b9cdde; letter-spacing: .04em;
+  white-space: nowrap; flex: 0 0 auto;
 }
+/* shrinks and ellipsises — the badge and the hub dot never do. Measured with
+   the badge in: icon+gaps+dot+badge left 102px of a 107px need, so the label
+   truncated to "org inb…". The 5px comes back from the gaps and the badge's
+   padding (below) rather than from the label, which is a fixed string users
+   read as the tile's name. The ellipsis stays as the graceful fallback for a
+   3-digit count — a truncated LABEL is cosmetic; the clipped LAST LINE this
+   whole block exists to prevent was a lost fact. */
+.oi-title { min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  letter-spacing: .02em; }
 .oi-head .count {
   background: var(--accent); color: #fff; border-radius: 8px;
-  font-size: 9.5px; padding: 0 5px; margin-left: auto;
+  font-size: 9.5px; padding: 0 4px; margin-left: auto; flex: 0 0 auto;
 }
+.oi-head .oi-dot { flex: 0 0 auto; }
 .oi-last {
   font-family: var(--mono); font-size: 9px; color: var(--dim);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  flex: 0 0 auto;
 }
 /* the viewer itself is the SHARED webmail interface (.mailwrap/.mailer) — the
    org inbox renders no bespoke thread UI (user ruling: identical to every

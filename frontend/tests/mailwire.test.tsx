@@ -505,3 +505,68 @@ uiTest('§11.2 …and a write that FAILS arms nothing (D-089)',
       'a REFUSED read still cleared the unread mark — the UI would show mail '
       + 'as read that the server never recorded')
   })
+
+// ═══════════════════════════════════════════════════════════════════════ §12
+// THE ORG-INBOX TILE — the unread badge must not evict the last-mail line
+// ═══════════════════════════════════════════════════════════════════════ §12
+//
+// User bug 2026-08-07: "when there are unread mails in the org inbox, the
+// tooltip showing the last outbound recipient gets pushed off the bottom and
+// cut off."
+//
+// MEASURED IN A REAL BROWSER (Edge via tools/ui_probe's driver), because this
+// is a layout fault and jsdom has no layout at all:
+//   without a badge   .oi-head 13.5px · .oi-last 10.5px · not clipped
+//   WITH a badge      .oi-head 25.5px · .oi-last  2.3px · CLIPPED
+// The label "org inbox" was a bare text node — an anonymous flex item, and
+// those wrap. The badge competing for width made it two lines, the tile's
+// height is fixed (INBOX_H, the canvas layout depends on it), so .oi-last was
+// flex-shrunk to a sliver and clipped its own overflow. Silently: nothing
+// errors, the fact just disappears.
+//
+// ⚠ WHAT THIS TEST CAN AND CANNOT DO. jsdom reports every height as 0, so it
+// cannot re-measure the fault — asserting heights here would pass forever, on
+// broken CSS included. It pins the STRUCTURAL cause instead: the label lives
+// in its own element rather than sitting loose in the flex row. That is the
+// edit a future refactor would undo, and undoing it brings the wrap back.
+// The pixel proof lives in the commit message and the CSS comment.
+
+uiTest('§12.1 the org-inbox label is an element, not a loose text node — a '
+  + 'bare one wraps under the unread badge and evicts the last-mail line',
+async ({ mount }) => {
+  const c = await canvas(mount)
+  const head = c.el.querySelector('.oi-head')
+  assert.ok(head, 'the org-inbox tile did not render a head')
+  const title = head.querySelector('.oi-title')
+  assert.ok(title, 'the label is not in its own element — as a bare text node '
+    + 'it is an anonymous flex item, and those WRAP when the badge takes width')
+  assert.equal((title.textContent ?? '').trim(), 'org inbox')
+  // nothing else may sit loose in the row either, for the same reason
+  const loose = [...head.childNodes].filter((n) =>
+    n.nodeType === 3 && (n.textContent ?? '').trim() !== '')
+  assert.equal(loose.length, 0,
+    `${loose.length} bare text node(s) in .oi-head: `
+    + JSON.stringify(loose.map((n) => n.textContent)))
+})
+
+uiTest('§12.2 …and the last-mail line renders ALONGSIDE the badge, not '
+  + 'instead of it', async ({ mount }) => {
+  const { OrgCanvas } = await import('../src/canvas/OrgCanvas')
+  const t = tree(['ceo'])
+  // unread > 0 is the whole precondition of the bug
+  const withUnread = { ...t, org_inbox: { ...t.org_inbox!, unread: 4 } }
+  const { el } = await mount(
+    <OrgCanvas tree={withUnread as TreePayload} op={() => Promise.resolve({} as never)}
+      slug="mine" toast={noop} mailEvt={null} />)
+  await flush()
+  const tile = el.querySelector('.sq.orginbox')
+  assert.ok(tile, 'no org-inbox tile')
+  assert.equal(txt(tile.querySelector('.count') as HTMLElement), '4',
+    'the unread badge did not render')
+  const last = tile.querySelector('.oi-last')
+  assert.ok(last && (last.textContent ?? '').trim(),
+    'the last-mail line vanished when the badge appeared — it carries the '
+    + 'only on-canvas record of who was last written to')
+  assert.match(last!.textContent ?? '', /faraway/,
+    'the last line does not name the peer it should')
+})
