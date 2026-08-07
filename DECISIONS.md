@@ -858,6 +858,31 @@ non-retroactivity property demonstrated rather than asserted: the user raised
 exactly ONE node of a five-node org to `bypassPermissions`; its four siblings
 and the org default stayed `acceptEdits`. Raising one agent stayed one act.
 
+### D-103 · an agent withdraws its own question when it stops mattering
+Ruling (user, 2026-08-07): agents must know to dismiss a question they asked
+once the answer is no longer relevant — typically because new information
+arrived from the user or another agent. `orgtree_withdraw_ask` already
+existed; nothing prompted anyone to reach for it. So the obligation is stated
+in three places: the ask tool (asking creates a thing you must maintain), the
+withdraw tool (the trigger is new information, named), and — the one that
+actually fires — a PER-TURN line in the identity prompt that quotes the open
+question back and tells the agent to re-read it in light of what just arrived.
+Why: a turn only runs because something arrived, and that something is the
+most likely reason the question died. The moment a turn BEGINS with a request
+still open is therefore exactly when to re-check it, and nothing was saying
+so. The cost of the omission lands on the user, not the agent: a stale card
+is a chore on their screen with someone else's name on it, and they have to
+dispose of a question they already settled by other means.
+Bounds: the per-turn line appears ONLY when a request is genuinely open —
+unconditional it would be noise on almost every turn and would name a question
+that does not exist. It reads from `open_request`, which is deliberately
+NOT `node_ask`: the desk card lingers recently-resolved asks by design, and
+prompting an agent to withdraw an answered one is nonsense. The line also
+says explicitly not to re-ask, because re-asking REPLACES rather than ends.
+Load-bearing: withdrawal is cheap and re-asking later is free, so the
+asymmetry the guidance leans on is real — a wrongly-withdrawn question costs
+one more ask, a wrongly-kept one costs the user's attention.
+
 ### D-102 · agents set their reports' permission mode, capped at their own
 Ruling (user, 2026-08-07): `permission_mode` is exposed on `orgtree_retool`,
 so an agent adjusts any subordinate in its purview — capped at its own mode,

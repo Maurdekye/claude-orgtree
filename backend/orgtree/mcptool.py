@@ -115,7 +115,14 @@ TOOLS: list[dict[str, Any]] = [
             "dismisses it, you withdraw it (orgtree_withdraw_ask), or you "
             "pose a new request (one active request per agent — re-asking "
             "amends/replaces, and a new credit request replaces a question "
-            "too). If you hold no user audience and are not top-level, the "
+            "too). ⚠ BECAUSE it outlives the turn, it is YOURS to take back: "
+            "if a later turn brings information that answers it or makes it "
+            "moot — the user says something that settles it, a peer reports "
+            "the fact you were missing, the premise dies, you work it out "
+            "yourself — withdraw it immediately instead of leaving the user a "
+            "card they still have to deal with. An unanswered question they "
+            "no longer need is a chore you handed them. If you hold no user "
+            "audience and are not top-level, the "
             "question is routed to your superior as mail instead."),
         "inputSchema": {
             "type": "object",
@@ -166,10 +173,17 @@ TOOLS: list[dict[str, Any]] = [
         "name": "orgtree_withdraw_ask",
         "description": (
             "Withdraw your own ACTIVE request — the open question or pending "
-            "credit request you posed earlier — when you realize it no "
-            "longer applies (the situation resolved itself, the premise "
-            "died, you found the answer). The card on the user's screen is "
-            "nulled and no answer will arrive. Benign no-op if you have "
+            "credit request you posed earlier — as soon as it stops "
+            "applying. The usual trigger is NEW INFORMATION arriving in a "
+            "later turn: the user answers something else that settles it, a "
+            "peer or your superior tells you the fact you were missing, the "
+            "work moves on, the premise dies, or you simply work it out "
+            "yourself. Check your open request whenever a turn brings you "
+            "something new — a question left standing after it stopped "
+            "mattering is a chore on the user's screen with your name on it. "
+            "Withdrawing is cheap and re-asking later is fine; leaving a dead "
+            "card up is neither. The card is nulled and no answer will "
+            "arrive. Benign no-op if you have "
             "nothing active. This is one of the only three ways a request "
             "ends besides the user acting on it: withdraw, pose a new "
             "request (replaces the old), or the user answers/dismisses."),

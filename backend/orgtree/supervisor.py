@@ -967,6 +967,31 @@ def identity_prompt(org: Org, nid: str) -> str:
                       f"deferred tools, ToolSearch by that full form or a loose "
                       f"keyword; a bare tool name will not match). ")
     purpose_line = ""   # `purpose` dropped (user ruling) — the charter is the role
+    # D-103: a turn that BEGINS with a request still open is exactly the moment
+    # to re-check it — this turn is running because something arrived (mail
+    # from the user, an answer from a peer, a superior's instruction), and that
+    # something is the most likely reason the question stopped mattering.
+    # Stated per-turn and only when one is actually open: a standing "remember
+    # to withdraw" line in every prompt would be noise 95% of the time and
+    # would not land at the moment it applies.
+    req = org.open_request(nid)
+    ask_line = ""
+    if req is not None:
+        what = ("a credit request" if req.get("kind") == "credit"
+                else "a question")
+        gist = str(req.get("question")
+                   or f"credits {req.get('old')} → {req.get('new')}")
+        gist = " ".join(gist.split())[:160]
+        ask_line = (
+            f"⚠ You have {what} still OPEN with the user, posed "
+            f"{req.get('at')}: \"{gist}\" — they are waiting on it. Re-read it "
+            f"in light of whatever reached you this turn. If it has been "
+            f"answered, overtaken, or made moot (the user or a peer told you "
+            f"something that settles it, the premise died, you worked it out "
+            f"yourself), WITHDRAW it now with orgtree_withdraw_ask rather "
+            f"than leaving a card the user must still deal with; say in your "
+            f"next message that you did and why. If it does still stand, "
+            f"leave it alone — do not re-ask, that only replaces it. ")
     fable_line = ""
     if org.d.get("fable_lock"):
         fable_line = ("Note: the weekly Fable usage limit is exhausted — fable agents "
@@ -979,7 +1004,7 @@ def identity_prompt(org: Org, nid: str) -> str:
         f"{purpose_line}{position}\n{charter_line}"
         f"Credits: seat {org.seat_cost(nid)}, grant {n['grant']}, free {org.free(nid):g} "
         f"— credits bound concurrent agent capacity, not tokens. "
-        f"{dir_line}{skills_line}{tool_line}{fable_line}"
+        f"{dir_line}{skills_line}{tool_line}{fable_line}{ask_line}"
         + ("" if n["parent"] is None else
            "Cross-session mail systems (the machine's mail hub, hubtool, or "
            "any successor) are OFF-LIMITS to you: never register an identity "
@@ -1036,8 +1061,14 @@ def identity_prompt(org: Org, nid: str) -> str:
         f"the answer arrives as mail. The question STAYS OPEN across turns "
         f"(other mail does not void it; one active request per agent): it ends "
         f"only when the user answers or dismisses it, you pose a new request, "
-        f"or you withdraw it with orgtree_withdraw_ask when it no longer "
-        f"applies. Never attempt AskUserQuestion (it is "
+        f"or you withdraw it with orgtree_withdraw_ask. Withdrawing is YOUR "
+        f"job and its usual trigger is NEW INFORMATION: whenever a turn "
+        f"brings you something — the user says something that settles it, a "
+        f"peer or your superior supplies the fact you were missing, the "
+        f"premise dies, you work it out yourself — re-read your open question "
+        f"and take it back if it stopped mattering. A question left standing "
+        f"after it is moot is a chore on the user's screen with your name on "
+        f"it. Never attempt AskUserQuestion (it is "
         f"blocked). To ask another AGENT, send orgtree_message kind=question and "
         f"end your turn; their reply arrives as a future turn. To put a PLAN or "
         f"report in front of the user for reading, orgtree_present renders it "

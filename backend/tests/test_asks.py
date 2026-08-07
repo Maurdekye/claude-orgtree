@@ -332,6 +332,71 @@ def main():
     check("the tree payload carries per-node asks and the open count "
           "(1 active + the superseded history entry)", _tree_payload)
 
+    # ── D-103: the agent must be TOLD, every turn, that its request is still
+    # standing. `orgtree_withdraw_ask` already existed — nothing ever prompted
+    # anyone to reach for it, so a question the user had settled by other
+    # means sat on their screen until they dealt with it a second time.
+    def _open_request_accessor():
+        org = org2()
+        assert org.open_request("boss") is None, "nothing open yet"
+        org.ask_user("boss", "ship now or wait?")
+        r = org.open_request("boss")
+        assert r and r["kind"] == "question" and "ship now" in r["question"], r
+        assert org.open_request("kid") is None, "another node's request leaked"
+        org.withdraw_ask("boss")
+        assert org.open_request("boss") is None, "a withdrawn ask reads open"
+    check("open_request reports the node's ACTIVE request, and only its own",
+          _open_request_accessor)
+
+    def _open_request_credit():
+        org = org2()
+        org.request_credits("boss", 30, "more")
+        r = org.open_request("boss")
+        assert r and r["kind"] == "credit" and r["new"] == 30, r
+    check("…including a pending CREDIT request, tagged as one",
+          _open_request_credit)
+
+    def _open_request_excludes_resolved():
+        # `node_ask` deliberately lingers recently-resolved cards for the
+        # DESK. open_request must not: a nulled card is not something the
+        # user waits on, and telling an agent to withdraw one is nonsense.
+        org = org2()
+        org.ask_user("boss", "q?")
+        aid = open_asks(org)[0]["id"]
+        org.ask_answer(aid, text="yes")
+        assert org.node_ask("boss") is not None, \
+            "fixture: the desk should still linger the resolved card"
+        assert org.open_request("boss") is None, \
+            "an ANSWERED ask reads as open — agents would be told to " \
+            "withdraw a question the user already dealt with"
+    check("…and never a resolved one, unlike the desk card",
+          _open_request_excludes_resolved)
+
+    def _prompt_names_the_open_request():
+        from orgtree import supervisor
+        org = org2()
+        bare = supervisor.identity_prompt(org, "boss")
+        # the STANDING guidance names the tool in every prompt (that is the
+        # tool catalogue, and it now names the trigger too). What must be
+        # conditional is the PER-TURN nudge about a specific live request —
+        # unconditional, it would be noise on 95% of turns and would name a
+        # question that does not exist.
+        assert "orgtree_withdraw_ask" in bare, \
+            "the standing guidance stopped naming the tool at all"
+        assert "still OPEN" not in bare, \
+            "the per-turn nudge fires with no request open — it would tell " \
+            "an agent to re-read a question it never asked"
+        org.ask_user("boss", "ship now or wait?")
+        p = supervisor.identity_prompt(org, "boss")
+        assert "still OPEN" in p and "orgtree_withdraw_ask" in p, p[-600:]
+        assert "ship now or wait?" in p, \
+            "the prompt does not quote the question, so the agent cannot " \
+            "judge whether it still stands"
+        # and it must not suggest re-asking: that REPLACES, it does not end
+        assert "do not re-ask" in p, p[-600:]
+    check("☞ the identity prompt names an open request and says to withdraw "
+          "it if this turn made it moot", _prompt_names_the_open_request)
+
     print(f"\nasks: all {PASS} checks passed")
     return 0
 

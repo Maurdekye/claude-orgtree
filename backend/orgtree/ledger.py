@@ -3786,6 +3786,20 @@ class Org:
         for a in resolved[:-30]:
             asks.remove(a)
 
+    def open_request(self, nid: str) -> dict[str, Any] | None:
+        """This node's ACTIVE request — the open question or pending credit
+        request — or None. Distinct from `node_ask`, which is the DESK CARD
+        and deliberately includes recently-resolved ones inside a linger
+        window: this answers "is the user still waiting on you", which is the
+        question the identity prompt asks every turn (D-103)."""
+        for a in self.d.get("asks", []):
+            if a["node"] == nid and a.get("status") == "open":
+                return {**a, "kind": "question"}
+        for r in self.d.get("credit_requests", []):
+            if r["node"] == nid and r.get("status") == "pending":
+                return {**r, "kind": "credit"}
+        return None
+
     def node_ask(self, nid: str) -> dict[str, Any] | None:
         """The ask the UI should show on this node's desk: the open one, or
         the most recently resolved one within its linger window (the nulled
