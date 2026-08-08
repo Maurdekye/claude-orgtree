@@ -892,6 +892,11 @@ direct superior, which is the case both were written against.
 Not yet extended to `hire`: a hire's grant still clamps to the parent
 (user-actor) or refuses (agent-actor) per D-021/D-022. Flagged to the user
 rather than assumed, since those are their own earlier rulings.
+A folder that bubbles all the way to a TOP-LEVEL agent joins the ORG's own
+holdings (user report 2026-08-08). Without it the eye listed fewer folders
+than its own top-level agent held, and a later top-level hire did not inherit
+a path the org demonstrably had. Union-only, matching the bubble: revoking one
+node's grant is not the org losing the folder.
 
 ### D-104 · an agent updates a behind install itself, when the machine is idle
 Ruling (user, 2026-08-07): an agent notified that a newer orgtree exists,

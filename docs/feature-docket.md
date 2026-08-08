@@ -1085,3 +1085,60 @@ explicit exception to that gate, not an oversight to close later — a watchdog 
 whoever builds this should treat "free to create" as a stated requirement, not default to gating it
 like a hire and need a later ruling to remove the check. The "pet" framing also reads as informing
 the small/non-agent visual treatment above: something owned and cared for, not staffed.
+
+---
+
+### FR-19 · "generate a name" button — AI-suggested hire name from the charter
+> new feature: a "generate a name" button that uses ai to generate an appropriate name for a new
+> hire based on their charter. it should generate a simple name of 1-3 words, formatted in
+> kebab-case
+
+*(user request 2026-08-08, recorded by the curator. Not built. One piece of the ask is already free
+— see below.)*
+
+**Located precisely: the draft hire card, not a separate form.** `frontend/src/canvas/cards.tsx`'s
+`DraftNode` component has the actual fields — `df-name` (`:597`, plain text input, currently just
+`placeholder="name…"`) sitting in the same header row as the tier token, and the charter box
+(`:634-648`, textarea + preset chips compiled via `finalCharter()`, `:552-553`) directly below it.
+A "generate" button belongs next to `df-name`, reading whatever `finalCharter()` currently resolves
+to as its input.
+
+**One requirement is already free, not something to build.** Kebab-case formatting doesn't need new
+code: `slugify()` (`ledger.py:162-163`, `re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")`)
+already runs on **every** hire name at hire time (`ledger.py:1706`, inside `hire()`), regardless of
+what typed or generated it. Whatever the AI returns — even "Field Ops Coordinator" with spaces and
+caps — becomes `field-ops-coordinator` automatically before it ever becomes a node id. The button's
+job is only the 1-3-word CONTENT choice; the formatting half of the spec is already guaranteed
+by existing backend behavior.
+
+**What actually needs building: this repo has zero precedent for calling a model outside a full
+agent turn.** Checked directly — no `anthropic` SDK import, no direct `messages.create`-style call,
+nothing resembling a "generate/suggest" endpoint anywhere in `backend/orgtree/api.py` or the rest of
+the backend. Every existing path to a model response is the full `supervisor.py` turn machinery:
+spawn the Claude Code CLI as a subprocess, stream-json the whole conversation, run it through the
+turn loop, mail delivery, and cost/ledger accounting (the same machinery FR-15's exploration traced
+in depth). A one-off "give me three words" call has no existing lightweight path to reuse.
+
+**The real design fork, not decided here:**
+1. **A minimal one-shot CLI call** — the same `claude` binary orgtree already shells out to
+   (`supervisor.py:164-170`), invoked once with just the charter text and no MCP tools, no node, no
+   turn/mail plumbing, output captured directly rather than streamed into the turn loop. Reuses the
+   existing binary/auth (subscription or org API key) with no new dependency, but is comparatively
+   heavyweight machinery — a full CLI process spin-up — for a three-word answer, and needs its own
+   thin harness distinct from every existing turn-spawn path.
+2. **A direct Anthropic API call** — a new dependency (`anthropic` SDK) the backend has never taken
+   on before, needing its own credential story. `org.d.get("api_key")` already exists as an optional
+   per-org key (`ledger.py`, used for orgs running key-based rather than subscription auth) and could
+   plausibly be reused here, but plenty of orgs run subscription-only with no key set — the button
+   would need its own fallback (an orgtree-level key in settings, or gracefully degrading to
+   unavailable when neither exists).
+
+**One more open question, following FR-18's "pets" precedent above:** does generating a name cost
+anything? A UI-assist action with no node behind it yet doesn't obviously belong on any org's
+credit ledger — the same reasoning that made watchdogs explicitly free likely applies here too, but
+it isn't automatic: unlike a watchdog, this DOES call a model, so "free" would mean orgtree eating a
+small, real inference cost per click rather than a genuinely zero-cost operation. Worth a deliberate
+ruling rather than a default either way.
+
+Not scoping a build here — the grounding is the point: one piece of the request is already solved
+by existing code, and the interesting design question is the model-access path, not the UI.

@@ -506,6 +506,65 @@ def _():
         store.save_org(o)
 
 
+# ============================ §6 the cascade carries folders into the org
+print("\n§6  a bubbled folder grant becomes an ORG folder")
+DIRS = mkorg("dirs", grant=30)
+with store.DOC_LOCK:
+    _o = store.load_org(DIRS)
+    _o.hire(USER, "alice", "haiku", 4, "bob", add_dirs=[],
+            tools={"bash": False, "web": False, "edit": True,
+                   "subagents": False, "mcp": []},
+            org_visibility="team", charter="a report")
+    store.save_org(_o)
+NEWDIR = os.path.join(DATA, "granted-later")
+os.makedirs(NEWDIR, exist_ok=True)
+
+
+@t("a folder granted DEEP bubbles to every superior")
+def _():
+    with store.DOC_LOCK:
+        o = store.load_org(DIRS)
+        r = o.set_scope(USER, "bob", add_dirs=[{"path": NEWDIR, "mode": "rw"}])
+        assert any(d["path"] == NEWDIR
+                   for d in o.node("alice")["scope"]["add_dirs"]), \
+            o.node("alice")["scope"]["add_dirs"]
+        assert r.get("cascaded") == ["alice"], r.get("cascaded")
+        store.save_org(o)
+
+
+# ⚠ the user report this section exists for: the bubble reached the top-level
+# agent, so the ORG demonstrably holds the folder — but its own holdings list
+# did not say so. The eye showed fewer folders than its own agent held, and a
+# later top-level hire would not have inherited it.
+@t("☞ …and the ORG's own holdings record it once it reaches a top-level")
+def _():
+    o = store.load_org(DIRS)
+    assert any(d["path"] == NEWDIR for d in o.d["dirs"]), \
+        [d["path"] for d in o.d["dirs"]]
+
+
+@t("…so a NEW top-level hire inherits it by default")
+def _():
+    with store.DOC_LOCK:
+        o = store.load_org(DIRS)
+        o.hire(USER, None, "haiku", 1, "carol")
+        assert any(d["path"] == NEWDIR
+                   for d in o.node("carol")["scope"]["add_dirs"]), \
+            o.node("carol")["scope"]["add_dirs"]
+        store.save_org(o)
+
+
+@t("☠ …but revoking one agent's grant does NOT strip the org's holding")
+def _():
+    with store.DOC_LOCK:
+        o = store.load_org(DIRS)
+        o.set_scope(USER, "bob", add_dirs=[])
+        assert any(d["path"] == NEWDIR for d in o.d["dirs"]), \
+            "the union is monotone — one node losing a grant is not the org " \
+            "losing the folder"
+        store.save_org(o)
+
+
 # ============================================================== the report
 if NOTES:
     print(f"\n{len(NOTES)} NOTE(S):")

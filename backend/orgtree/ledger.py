@@ -3087,6 +3087,38 @@ class Org:
                 cascaded = list(raised)
                 warnings.insert(before, "cascaded permission increase to "
                                         "agents " + ", ".join(raised))
+        # …and when the cascade reaches a TOP-LEVEL agent, the folder has
+        # entered the org itself — record it in the org's holdings (user
+        # report 2026-08-08: "bubbling up a folder grant does not add it to
+        # the list of folders already in the org"). Without this the eye's
+        # folder list showed FEWER folders than its own top-level agent held,
+        # and a later top-level hire would not inherit the path the org
+        # demonstrably has. Union-only, like the bubble: revoking one node's
+        # grant does not mean the org lost the folder.
+        if want_dirs is not None:
+            top_touched = [k for k in [nid, *bubble]
+                           if self.nodes[k]["parent"] is None]
+            if top_touched:
+                held = {d["path"]: d["mode"] for d in self.d["dirs"]}
+                added: list[str] = []
+                for k in top_touched:
+                    for d in self.nodes[k]["scope"]["add_dirs"]:
+                        if d["path"] not in held:
+                            self.d["dirs"].append({"path": d["path"],
+                                                   "mode": d["mode"]})
+                            held[d["path"]] = d["mode"]
+                            added.append(f"{d['path']} {d['mode']}")
+                        elif held[d["path"]] == "ro" and d["mode"] == "rw":
+                            for row in self.d["dirs"]:
+                                if row["path"] == d["path"]:
+                                    row["mode"] = "rw"
+                            held[d["path"]] = "rw"
+                            added.append(f"{d['path']} ro→rw")
+                if added:
+                    warnings.append(
+                        "the organization now holds " + ", ".join(added)
+                        + " (a top-level agent was granted it, so it is an "
+                          "org folder and new top-level hires inherit it)")
         if changed_caps:
             # ⚠ clamp_root=False: the caller just decided what nid holds, so
             # the sweep re-clamps its DESCENDANTS, never nid against its own
