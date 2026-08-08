@@ -198,3 +198,44 @@ test('⑧  nothing on screen is retired on a clock', () => {
   assert.ok(!/setInterval/.test(desk),
     'the desk owns no timer of its own — the store does')
 })
+
+// --------------------------------------------------------------------- ⑨
+test('⑨  every read-marking call refreshes the payload its rows come from',
+  () => {
+    // TWO user bug reports, one defect, 2026-08-07 and 2026-08-08: "marking
+    // mail as read takes several seconds". The server answers in ~5 ms both
+    // times. The rows come from getInbox (a 5 s usePolled) or from the tree
+    // prop (a 6 s heartbeat), and a read call that refreshes neither leaves
+    // the mark sitting there until an unrelated tick.
+    //
+    // ⚠ The server's `changed` broadcast does NOT rescue it: that makes
+    // clients refetch the TREE, and the user-inbox rows are not in the tree.
+    // That is exactly why the per-mail path had to bump its own dep — and why
+    // fixing it did not fix "mark all read", a SIBLING CALL SITE I missed.
+    // One missed sibling is the whole reason this is a family guard and not
+    // another per-case test: it fails on the next one too.
+    const CALLS = /\b(markRead|clearInbox|orgInboxRead)\s*\(/g
+    // documented exception: the modal-CLOSE acknowledgement in OrgCanvas. Its
+    // only visible effect is the canvas tile's badge, which IS tree-backed —
+    // so the server's broadcast genuinely does refresh it.
+    const EXEMPT = [/if \(tree\.org_inbox\?\.unread\) orgInboxRead/]
+    const bad: string[] = []
+    for (const f of ['App.tsx', 'canvas/mail.tsx', 'canvas/OrgCanvas.tsx']) {
+      for (const { n, l } of lines(f)) {
+        if (/^\s*(\/\/|\*)/.test(l)) continue
+        if (!CALLS.test(l)) { CALLS.lastIndex = 0; continue }
+        CALLS.lastIndex = 0
+        if (/^\s*(export )?const (markRead|clearInbox|orgInboxRead)/.test(l)) continue
+        if (EXEMPT.some((re) => re.test(l))) continue
+        // the refresh may ride the same line or the next two (formatting)
+        const near = lines(f).filter((x) => x.n >= n && x.n <= n + 3)
+          .map((x) => x.l).join(' ')
+        if (!/\.then\(/.test(near)) {
+          bad.push(`${f}:${n}  ${l.trim().slice(0, 80)}`)
+        }
+      }
+    }
+    assert.deepEqual(bad, [],
+      'a read-marking call with no .then() refresh — its rows will keep their '
+      + 'unread mark until the next poll:\n  ' + bad.join('\n  '))
+  })

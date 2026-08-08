@@ -597,9 +597,16 @@ class Org:
 
     @staticmethod
     def _clamp_dirs(requested: list[DirGrant], parent_map: Mapping[str, str] | None,
-                    strict: bool) -> tuple[list[DirGrant], list[str]]:
-        """Intersect a dir list with a parent capability map, downgrading rw→ro where
-        the parent only holds ro. strict=True raises instead of dropping (hire-time)."""
+                    strict: bool, who: str = "the parent",
+                    ) -> tuple[list[DirGrant], list[str]]:
+        """Intersect a dir list with a capability map, downgrading rw→ro where the
+        holder only holds ro. strict=True raises instead of dropping (hire-time).
+
+        `who` names the holder in the refusal. It matters since D-106 moved
+        set_scope's referent from the target's PARENT to the GRANTER's own
+        holdings: an agent told "the parent does not hold it" would go and
+        inspect the wrong node. `hire` still says "the parent", correctly.
+        """
         if parent_map is None:
             return list(requested), []
         kept: list[DirGrant] = []
@@ -609,12 +616,13 @@ class Org:
             if held is None:
                 if strict:
                     raise LedgerError(
-                        f"cannot grant dirs the parent does not hold (№30): [{d['path']!r}]")
+                        f"cannot grant dirs {who} does not hold (№30): [{d['path']!r}]")
                 lost.append(d["path"])
             elif held == "ro" and d["mode"] == "rw":
                 if strict:
                     raise LedgerError(
-                        f"parent holds {d['path']!r} read-only; cannot grant read/write (№30)")
+                        f"{who} holds {d['path']!r} read-only; cannot grant "
+                        f"read/write (№30)")
                 kept.append({"path": d["path"], "mode": "ro"})
                 lost.append(f"{d['path']} (downgraded to ro)")
             else:
@@ -2975,7 +2983,9 @@ class Org:
         want_pm: str | None = None
         if add_dirs is not None:
             want_dirs, _ = self._clamp_dirs(
-                norm_dirs(add_dirs), cap_dirs, strict=True)
+                norm_dirs(add_dirs), cap_dirs, strict=True,
+                who="you" if actor_kind(actor) not in ("user", "system")
+                else "this org")
         if tools is not None:
             want_tools, _ = self._clamp_tools(tools, cap_tools, strict=True)
         if org_visibility is not None:

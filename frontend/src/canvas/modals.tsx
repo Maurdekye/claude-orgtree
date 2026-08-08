@@ -659,9 +659,19 @@ export function NodeConfig({ node, map, tree, slug, op, toast, close }: NodeConf
               </select>
             </div>
           )}
-          {(!parent || parent === USER) && (
+          {/* ⚠ this used to be gated on (!parent || parent === USER) — a free
+              path could only be typed for a TOP-LEVEL node, because a deeper
+              grant had to fit the parent. D-106 removed that constraint from
+              the ledger (the chain is raised instead of the grant refused),
+              and the user asked for new DIRECTORIES specifically, so the
+              control has to be able to express it at any depth. Owner only:
+              a kiosk visitor's grants clamp to the ceiling's folder list and
+              their payload carries basenames, not host paths. */}
+          {!tree.public && (
             <div className="dirrow">
-              <input placeholder="or any absolute path (top-level: you grant freely)"
+              <input placeholder={parent && parent !== USER
+                ? 'or any absolute path — superiors are raised to carry it'
+                : 'or any absolute path (top-level: you grant freely)'}
                 value={newPath} onChange={(e) => setNewPath(e.target.value)} />
               <button type="button" className="iconbtn" title="browse for a folder"
                 onClick={() => pickFolder().then((r) => {

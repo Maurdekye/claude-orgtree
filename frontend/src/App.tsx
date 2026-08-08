@@ -1166,8 +1166,16 @@ function InboxPanel({ slug, tree, toast, refresh, close, jumpTo }: {
                   sender={(id: string) => <SenderChip id={id} nodes={nodes} />} />}
         </div>
         <div className="row">
+          {/* ⚠ the bump is not optional here. These rows come from getInbox,
+              and the server's own `changed` broadcast only makes clients
+              refetch the TREE — a different payload that does not carry them.
+              So without this the button's effect waited for the 5 s poll: the
+              per-mail path was fixed first and this sibling call site was
+              missed, which is the same bug reported twice (2026-08-07/08). */}
           {folder === 'inbox' && (box?.pending.length ?? 0) > 0 && <button onClick={() =>
-            clearInbox(slug).catch((e: Error) => toast([`error: ${e.message}`]))}>mark all read</button>}
+            clearInbox(slug)
+              .then(() => { setReadBump((n) => n + 1); refresh?.() })
+              .catch((e: Error) => toast([`error: ${e.message}`]))}>mark all read</button>}
           <button className="primary" onClick={close}>close</button>
         </div>
       </div>
