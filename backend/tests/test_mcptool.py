@@ -620,10 +620,24 @@ def _():
     # card only speaks once it has already reached for that tool. Same shape
     # of reason as self_update above — the prompt is where behaviour that
     # must fire UNPROMPTED belongs.
+    # 2026-08-09 prompt audit: read_transcript + read_scratch left the absent
+    # set too. A manager's default when a report's answer does not add up is
+    # to ASK — a whole round trip that returns the agent's account of events
+    # instead of the events. Reading is instant, downward-only and costs the
+    # report nothing, so the trigger belongs where the moment happens.
+    # The four that REMAIN absent are deliberate: rename/move/list_orgs/
+    # switch_model have no moment that arrives unbidden — an agent reaches for
+    # them having already decided to reorganize, and finds them in their cards.
     assert absent == ["orgtree_list_orgs", "orgtree_move",
-                      "orgtree_read_scratch", "orgtree_read_transcript",
                       "orgtree_rename", "orgtree_switch_model"], \
         f"the recital gap changed — update or retire this pin: {absent}"
+    # …and the read-down pair is gated on HAVING reports: an agent with none
+    # would be told to go read a subtree it does not have
+    assert "orgtree_read_transcript" in recital, "the manager recital lost it"
+    leaf = supervisor.identity_prompt(org, "worker")
+    assert "orgtree_read_transcript" not in leaf, \
+        "an agent with no reports is told to read its reports' transcripts"
+    assert "RETIRE IT" not in leaf, "…and to retire reports it does not have"
     # …and it must reach EVERY agent, not just the audience holders: any of
     # them can be asked for a file by their superior's relay or the user
     for who in ("boss", "mid", "worker"):

@@ -1041,6 +1041,30 @@ def identity_prompt(org: Org, nid: str) -> str:
            "for a larger grant — state the new TOTAL and a reason; the user "
            "approves or denies with one click)" if n["parent"] is None else "")
         + ". "
+        # ── prompt audit 2026-08-09 (user question: which tools do agents have
+        # but never reach for?). Six were never NAMED in a top-level's prompt.
+        # Two of them fail a manager in a way that costs the user real turns,
+        # so they get a trigger here rather than a mention in a tool card:
+        # LOOKING at a report instead of interrogating it, and freeing a seat
+        # that finished work is still holding. The other four (rename, move,
+        # list_orgs, switch_model) have no MOMENT that arrives unbidden — you
+        # reach for them once you have already decided to reorganize — so they
+        # stay in their cards, where a decided agent will find them.
+        + ("WHEN A REPORT'S ANSWER DOES NOT ADD UP, LOOK — do not interrogate. "
+           "orgtree_read_transcript reads any descendant's actual conversation "
+           "and orgtree_read_scratch reads the files in its working folder; "
+           "both are downward-only, both are instant, and neither costs the "
+           "agent a turn. Asking it a clarifying question costs a whole "
+           "round trip and gets you its account of events rather than the "
+           "events, so read FIRST and ask only what reading cannot answer. "
+           "Verify a claimed result the same way: if a report says it wrote a "
+           "file, open the file. "
+           "AND WHEN A REPORT IS FINISHED, RETIRE IT — a live agent holds its "
+           "seat and its grant whether or not it is doing anything, so an "
+           "idle-but-live team is capacity you cannot spend. Retiring keeps "
+           "its context; rehire brings it back exactly as it was, so this is "
+           "reversible and not a judgement on its work. "
+           if org.children(nid) else "")
         + ("THE ORG INBOX: mail from @org:<slug> (another organization), "
            "@mcp:<id> (a polling external "
            "chat) or @net:<slug> (a chat or org elsewhere, via the mail hub) "
