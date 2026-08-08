@@ -409,6 +409,64 @@ const VIS_OPTIONS = [
   ['full', 'full (default)'],
 ] as const
 
+/* D-106 (user ruling 2026-08-07): a grant deeper than the chain can carry no
+ * longer refuses — every agent BETWEEN the granter and the grantee is raised
+ * to hold it. The user is the granter here, so the chain is every ancestor of
+ * the target, and they asked to be WARNED BEFORE saving rather than told
+ * after: which agents this grant is about to expand, and in what.
+ *
+ * Computed client-side from the tree the panel already has — the same union
+ * the ledger performs (ledger._raise_along), so the preview and the outcome
+ * are one rule expressed twice. ⚠ That duplication is the risk: if the two
+ * drift, the warning lies. It is worth it because the alternative is a
+ * round-trip on every keystroke, but the ledger stays the authority — its
+ * answer, `cascaded`, is what the toast reports after the fact. */
+const PM_RANK = ['default', 'acceptEdits', 'bypassPermissions']
+const VIS_RANK = ['self', 'team', 'subtree', 'full']
+
+export function cascadePreview(
+  map: Map<string, CanvasNode>, nodeId: string, want: {
+    dirs?: DirGrant[]; tools?: ToolGrant; vis?: string; pm?: string
+  },
+): { id: string; gains: string[] }[] {
+  const out: { id: string; gains: string[] }[] = []
+  let cur = map.get(nodeId)?.parent ?? null
+  while (cur && cur !== USER) {
+    const n = map.get(cur)
+    if (!n?.scope) break
+    const gains: string[] = []
+    if (want.dirs) {
+      const held = new Map((n.scope.add_dirs ?? []).map((d) => [d.path, d.mode]))
+      for (const d of want.dirs) {
+        if (!held.has(d.path)) gains.push(`${d.path} ${d.mode}`)
+        else if (held.get(d.path) === 'ro' && d.mode === 'rw') gains.push(`${d.path} ro→rw`)
+      }
+    }
+    if (want.tools) {
+      for (const k of ['bash', 'web', 'edit', 'subagents'] as const) {
+        if (want.tools[k] && !(n.scope.tools as Record<string, unknown>)?.[k]) gains.push(k)
+      }
+      const have = (n.scope.tools?.mcp ?? []) as string[]
+      const wm = want.tools.mcp ?? []
+      if (wm.includes('*') && !have.includes('*')) gains.push('mcp:*')
+      else if (!have.includes('*')) {
+        for (const s of wm) if (!have.includes(s)) gains.push(`mcp:${s}`)
+      }
+    }
+    if (want.vis) {
+      const c = n.scope.org_visibility ?? 'full'
+      if (VIS_RANK.indexOf(want.vis) > VIS_RANK.indexOf(c)) gains.push(`visibility ${c}→${want.vis}`)
+    }
+    if (want.pm) {
+      const c = n.scope.permission_mode ?? 'acceptEdits'
+      if (PM_RANK.indexOf(want.pm) > PM_RANK.indexOf(c)) gains.push(`mode ${c}→${want.pm}`)
+    }
+    if (gains.length) out.push({ id: cur, gains })
+    cur = n.parent ?? null
+  }
+  return out
+}
+
 const TOOL_LABELS = [
   ['bash', 'terminal (Bash)'],
   ['web', 'web browsing (search + fetch)'],
@@ -466,6 +524,10 @@ export function NodeConfig({ node, map, tree, slug, op, toast, close }: NodeConf
   const setEffort = set<string>('effort', effort)
   const pm = val('pm', scope.permission_mode ?? 'acceptEdits')
   const setPm = set<string>('pm', pm)
+  // D-106: who this pending grant would raise, recomputed as the form changes
+  const cascade = useMemo(
+    () => cascadePreview(map, node.id,
+      { dirs, tools, vis, pm }), [map, node.id, dirs, tools, vis, pm])
   // a model VERSION is a subcategory of the TIER, so it lives here in the gear
   // and never on a chip (user ruling 2026-08-04). It resets when the tier
   // changes: a version belongs to one tier, and the ledger re-validates it
@@ -735,6 +797,17 @@ export function NodeConfig({ node, map, tree, slug, op, toast, close }: NodeConf
                 </div>))}
             </div>
           </>
+        )}
+        {/* D-106: the cascade preview, BEFORE the save (user ruling) — the
+            grant is legal either way, so this warns, never blocks */}
+        {cascade.length > 0 && (
+          <div className="cascade-warn" title={cascade.map((c) =>
+            `${c.id} gains ${c.gains.join(', ')}`).join('\n')}>
+            ⚠ this also raises {cascade.length === 1 ? 'the agent' : 'the agents'}
+            {' '}between you and {node.id}:{' '}
+            <b>{cascade.map((c) => c.id).join(', ')}</b>
+            {' — hover for exactly what each one gains'}
+          </div>
         )}
         <div className="row">
           <button className="primary" onClick={() =>

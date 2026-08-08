@@ -2652,6 +2652,94 @@ class Org:
             return pv, True
         return requested, False
 
+    # ------------------------------------------------ D-106: grants bubble up
+    def _actor_cap(self, actor: str) -> tuple[
+            dict[str, str] | None, ToolGrant | None, str, str]:
+        """What this actor may grant, at most: (dirs, tools, visibility, mode).
+
+        The USER (and SYSTEM) is capped by nothing here — `_apply_ceiling`
+        still binds them to a kiosk's ceiling, which is the "or kiosk cap"
+        half of the ruling. An AGENT is capped by its OWN scope: `None` for
+        dirs/tools means unbounded, so only the user gets it.
+        """
+        if actor_kind(actor) in ("user", "system"):
+            return None, None, VIS_LEVELS[-1], PM_LEVELS[-1]
+        sc = self.node(actor)["scope"]
+        return (self.effective_dirs(actor), sc["tools"],
+                sc.get("org_visibility", "full"),
+                sc.get("permission_mode", "acceptEdits"))
+
+    def _raise_along(self, chain: list[str], warnings: list[str],
+                     dirs: list[DirGrant] | None = None,
+                     tools: ToolGrant | None = None,
+                     vis: str | None = None, pm: str | None = None) -> list[str]:
+        """Give every node on `chain` whatever the grant below it needs
+        (user ruling 2026-08-07, D-106).
+
+        A permission granted deep used to be REFUSED when an intermediate did
+        not hold it, because the chain must stay monotone (child ⊆ parent) and
+        the ledger enforced that by rejecting the leaf. The ruling inverts the
+        repair: raise the middle instead. `chain` is the nodes between the
+        granter and the grantee — the granter itself is never on it (nobody is
+        raised to grant), and the request has already been clamped to the
+        granter's own cap, so this can never exceed it.
+
+        ⚠ This EXPANDS the authority of agents who did not ask for it, which is
+        exactly what was requested — so it is never silent. Every raise is
+        named in `warnings`, per node and per capability, and the ids are
+        RETURNED so callers report them without parsing prose back out.
+        """
+        raised: list[str] = []
+        for k in chain:
+            sc = self.nodes[k]["scope"]
+            gained: list[str] = []
+            if dirs:
+                held = {d["path"]: d["mode"] for d in sc["add_dirs"]}
+                for d in dirs:
+                    if held.get(d["path"]) == d["mode"]:
+                        continue
+                    if d["path"] not in held:
+                        sc["add_dirs"].append({"path": d["path"], "mode": d["mode"]})
+                        gained.append(f"{d['path']} {d['mode']}")
+                    elif held[d["path"]] == "ro" and d["mode"] == "rw":
+                        for row in sc["add_dirs"]:
+                            if row["path"] == d["path"]:
+                                row["mode"] = "rw"
+                        gained.append(f"{d['path']} ro→rw")
+            if tools:
+                for tk in TOOL_KEYS:
+                    if tools.get(tk) and not sc["tools"].get(tk):
+                        sc["tools"][tk] = True
+                        gained.append(tk)
+                want_mcp = list(tools.get("mcp") or [])
+                have = list(sc["tools"].get("mcp") or [])
+                if "*" in want_mcp and "*" not in have:
+                    sc["tools"]["mcp"] = ["*"]
+                    gained.append("mcp:*")
+                elif "*" not in have:
+                    add = [s for s in want_mcp if s not in have]
+                    if add:
+                        sc["tools"]["mcp"] = sorted(set(have) | set(add))
+                        gained += [f"mcp:{s}" for s in add]
+            if vis is not None:
+                cur = sc.get("org_visibility", "full")
+                if (cur in VIS_LEVELS and vis in VIS_LEVELS
+                        and VIS_LEVELS.index(vis) > VIS_LEVELS.index(cur)):
+                    sc["org_visibility"] = vis
+                    gained.append(f"visibility {cur}→{vis}")
+            if pm is not None:
+                cur = sc.get("permission_mode", "acceptEdits")
+                if (cur in PM_LEVELS and pm in PM_LEVELS
+                        and PM_LEVELS.index(pm) > PM_LEVELS.index(cur)):
+                    sc["permission_mode"] = pm
+                    gained.append(f"permission_mode {cur}→{pm}")
+            if gained:
+                raised.append(k)
+                warnings.append(
+                    f"bubbled up to {k} so the grant below it is reachable: "
+                    + ", ".join(gained))
+        return raised
+
     def _clamp_pm(self, requested: str, parent: str | None,
                   strict: bool) -> tuple[str, bool]:
         """D-102 (user ruling 2026-08-07): permission_mode is a CAPABILITY —
@@ -2826,12 +2914,46 @@ class Org:
         Kiosk ceiling (spec §2): permission fields clamp against parent ∩
         ceiling; charter/team_charter/effort pass unclamped (not permissions —
         effort is a cost dial by user ruling and applies under any ceiling)."""
-        self._require_authority(actor, nid)
+        # D-105 (user ruling 2026-08-07): an agent may edit its OWN team
+        # charter and nothing else. The two charters are different objects
+        # wearing similar names: `charter` is the role card its SUPERIOR wrote
+        # for it, injected into its own prompt — self-editing that is an agent
+        # rewriting its own instructions, which is the one thing the hierarchy
+        # exists to prevent. `team_charter` is the standing instruction IT
+        # issues to ITS subtree; that is its own management to do, and the
+        # ledger's own cascade already guarantees it cannot leak upward
+        # (identity_prompt walks `ancestors`, which starts at the PARENT — a
+        # node's own team charter never appears in its own prompt, so this
+        # cannot become self-direction by the back door). Pinned in test_asks.
+        self_edit = (actor == nid and actor_kind(actor) not in ("user", "system"))
+        if self_edit:
+            if charter is not None:
+                raise LedgerError(
+                    "you may not rewrite your OWN charter — it is the role "
+                    "your superior set for you. Ask them to change it "
+                    "(orgtree_message), or edit your TEAM charter instead, "
+                    "which is the standing instruction you give your reports")
+            offered = [k for k, v in (
+                ("add_dirs", add_dirs), ("tools", tools),
+                ("org_visibility", org_visibility),
+                ("permission_mode", permission_mode), ("effort", effort),
+                ("model_version", model_version)) if v is not None]
+            if offered:
+                raise LedgerError(
+                    f"a self-retool may carry team_charter and nothing else; "
+                    f"drop {', '.join(offered)} (your own scope is your "
+                    f"superior's to set — ask them)")
+            if team_charter is None:
+                raise LedgerError(
+                    "nothing to do: a self-retool sets team_charter only")
+        else:
+            self._require_authority(actor, nid)
         n = self.node(nid)
         sc = n["scope"]
         warnings: list[str] = []
         changed_caps = False
         bridged = False
+        cascaded: list[str] = []       # D-106: agents this grant expanded
         # ATOMICITY (2026-08-04): every refusal happens in THIS block, before a
         # single field is written. The three capability fields used to be
         # validated-and-applied one at a time, so a call carrying a legal
@@ -2839,35 +2961,44 @@ class Org:
         # never ran the subtree sweep — half a retool, reported as a failure.
         # `_apply_ceiling(raise_ceiling=True)` also grows the ceiling itself, so
         # every strict parent clamp has to pass before ANY of it runs.
+        # D-106 (user ruling 2026-08-07): the clamp is against the GRANTER's
+        # own capability, not the target's parent, and an intermediate that
+        # lacks what was granted below it is RAISED rather than the grant
+        # refused. Every one of these four used to clamp strictly against
+        # `n["parent"]`, so granting a deep report anything its middle
+        # managers happened not to hold was simply rejected — the operator's
+        # only route was to walk down the chain retooling by hand.
+        cap_dirs, cap_tools, cap_vis, cap_pm = self._actor_cap(actor)
         want_dirs: list[DirGrant] | None = None
         want_tools: ToolGrant | None = None
         want_vis: str | None = None
         want_pm: str | None = None
         if add_dirs is not None:
             want_dirs, _ = self._clamp_dirs(
-                norm_dirs(add_dirs), self.effective_dirs(n["parent"]), strict=True)
+                norm_dirs(add_dirs), cap_dirs, strict=True)
         if tools is not None:
-            ptools = (None if n["parent"] is None
-                      else self.node(n["parent"])["scope"]["tools"])
-            want_tools, _ = self._clamp_tools(tools, ptools, strict=True)
+            want_tools, _ = self._clamp_tools(tools, cap_tools, strict=True)
         if org_visibility is not None:
             if org_visibility not in VIS_LEVELS:
                 raise LedgerError(f"org_visibility must be one of {VIS_LEVELS}")
-            # D-021: parent clamp first (strict, like dirs/tools here), then
-            # the kiosk ceiling
-            want_vis, _ = self._clamp_vis(org_visibility, n["parent"], strict=True)
+            if VIS_LEVELS.index(org_visibility) > VIS_LEVELS.index(cap_vis):
+                raise LedgerError(
+                    f"org_visibility {org_visibility!r} exceeds your own "
+                    f"{cap_vis!r} — nobody grants above themselves")
+            want_vis = org_visibility
         if permission_mode is not None:
             if permission_mode not in PM_LEVELS:
                 raise LedgerError(                 # D-030 hardening
                     f"permission_mode must be one of {PM_LEVELS}")
-            # D-102: parent clamp first (strict, like dirs/tools/vis above),
-            # then the kiosk ceiling below — the same two-pass order D-021
-            # fixed for visibility. The USER is exempt: they are above the
-            # tree, so their own per-node override answers to the ceiling only
-            # (this is the route the ⚙ panel and `unstick` already take).
-            want_pm = (permission_mode if actor_kind(actor) in ("user", "system")
-                       else self._clamp_pm(permission_mode, n["parent"],
-                                           strict=True)[0])
+            # D-102's cap survives verbatim; only its REFERENT moved from the
+            # target's parent to the actor's own mode (identical for a direct
+            # superior, which is the case D-102 was written against).
+            if PM_LEVELS.index(permission_mode) > PM_LEVELS.index(cap_pm):
+                raise LedgerError(
+                    f"permission_mode {permission_mode!r} exceeds the parent's "
+                    f"own {cap_pm!r} — a permission mode is a capability and "
+                    f"only shrinks downward; nobody grants above themselves")
+            want_pm = permission_mode
         # user-approved (2026-07-31): thinking effort as a per-agent setting,
         # adjusted from the gear — never a hire-row control. "" clears back to
         # the CLI default. (No ultracode tier: orgtree replaces subagent
@@ -2919,6 +3050,33 @@ class Org:
                           and PM_LEVELS.index(cast(str, pm2))
                           < PM_LEVELS.index(prev_pm))
             changed_caps = changed_caps or lowered_pm
+        # D-106: raise the chain BETWEEN the granter and this node so what was
+        # just granted is actually reachable. Runs on the POST-ceiling values
+        # (`sc`, not the request), so a kiosk ceiling that clamped the grant
+        # clamps the bubble identically — an intermediate can never end up
+        # holding more than the leaf it was raised for. Only RAISES: a
+        # lowering is the subtree sweep's job, just below, and pushing a
+        # revocation upward would strip a manager for its report's sake.
+        bubble = [k for k in self._path_down(
+            actor if actor_kind(actor) not in ("user", "system") else USER, nid)
+            if k != nid]
+        if bubble:
+            before = len(warnings)
+            raised = self._raise_along(
+                bubble, warnings,
+                dirs=cast("list[DirGrant]", sc["add_dirs"]) if want_dirs is not None else None,
+                tools=cast(ToolGrant, sc["tools"]) if want_tools is not None else None,
+                vis=sc.get("org_visibility") if want_vis is not None else None,
+                pm=sc.get("permission_mode") if want_pm is not None else None)
+            # user ruling 2026-08-07: the ACTOR must be told plainly, in the
+            # tool's own answer, which agents its grant just expanded — the
+            # per-node detail lines below are the evidence, this is the
+            # sentence an agent will actually read. Named `cascaded` so the
+            # caller can surface it without parsing prose.
+            if raised:
+                cascaded = list(raised)
+                warnings.insert(before, "cascaded permission increase to "
+                                        "agents " + ", ".join(raised))
         if changed_caps:
             # ⚠ clamp_root=False: the caller just decided what nid holds, so
             # the sweep re-clamps its DESCENDANTS, never nid against its own
@@ -2946,7 +3104,13 @@ class Org:
             n["charter"] = charter.strip()[:4000] or None
         if team_charter is not None:
             n["team_charter"] = team_charter.strip()[:4000] or None
-        if actor == USER:
+        if self_edit:
+            # D-105: notifying an agent that it changed its own team charter
+            # is a letter to itself. Its reports need no notice either — the
+            # cascade injects a superior's team charter into their prompt
+            # LIVE every turn, so the next turn already carries it.
+            pass
+        elif actor == USER:
             self._notify([nid], "The user changed your configuration (folders, tools, "
                                 "charter, or org visibility). Your current scope is "
                                 "stated in your system prompt each turn.")
@@ -2956,6 +3120,8 @@ class Org:
                                 f'current scope is stated in your system prompt each turn.')
         self._log("set_scope", actor, {"node": nid, "scope": sc}, warnings)
         res: dict[str, Any] = {"scope": sc, "warnings": warnings}
+        if cascaded:
+            res["cascaded"] = cascaded      # D-106: structured, for the UI
         if bridged:
             res["bridge"] = {"raise_ceiling": True}
         return res

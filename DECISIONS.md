@@ -858,6 +858,41 @@ non-retroactivity property demonstrated rather than asserted: the user raised
 exactly ONE node of a five-node org to `bypassPermissions`; its four siblings
 and the org default stayed `acceptEdits`. Raising one agent stayed one act.
 
+### D-106 · a grant raises the chain beneath it instead of being refused
+Ruling (user, 2026-08-07): a permission change at ANY depth, by the user or an
+agent, bubbles — every agent BETWEEN the granter and the grantee receives what
+it was missing, up to the granter's own cap. The cap is the granter's own
+scope for an agent; for the user it is unbounded except by a kiosk ceiling.
+The grant is REPORTED both ways: the ⚙ warns before saving which agents it
+will raise (amber, hover for per-agent detail), and an agent's tool answer
+carries `cascaded` plus the sentence "cascaded permission increase to agents
+x, y, z".
+Why: the chain must stay monotone (child ⊆ parent), and the ledger used to
+enforce that by REFUSING the leaf — so granting a deep report anything its
+middle managers happened not to hold was rejected, and the only route was to
+walk down the chain retooling by hand. The ruling inverts the repair: fix the
+middle, not the request.
+Bounds — the cascade is ONE-DIRECTIONAL, and the asymmetry is the design, not
+an omission. A raise travels UP to the granter; a revocation travels DOWN into
+the subtree (the existing sweep). Pushing a revocation upward would strip a
+manager for its report's sake. It also runs on POST-ceiling values, so a kiosk
+ceiling that clamped the grant clamps the bubble identically — an intermediate
+can never end up holding more than the leaf it was raised for.
+Load-bearing: this is a real expansion of agents who did not ask for it, so it
+is never silent — every raise is named per node and per capability. The UI
+preview restates the ledger's union rule in TypeScript; that duplication is
+the known risk (if they drift, the warning lies), accepted because the
+alternative is a round-trip per keystroke, with the ledger's own `cascaded`
+as the after-the-fact authority.
+Was. Supersedes half of D-101 ("raising one agent is one act"): that still
+holds for the ORG DEFAULT, which is never retroactive, but a per-node raise
+now moves the managers above it too. Also relocates D-021's and D-102's strict
+clamp from the TARGET'S PARENT to the GRANTER'S OWN cap — identical for a
+direct superior, which is the case both were written against.
+Not yet extended to `hire`: a hire's grant still clamps to the parent
+(user-actor) or refuses (agent-actor) per D-021/D-022. Flagged to the user
+rather than assumed, since those are their own earlier rulings.
+
 ### D-104 · an agent updates a behind install itself, when the machine is idle
 Ruling (user, 2026-08-07): an agent notified that a newer orgtree exists,
 whose install is actually behind, and with no other agent on the machine
@@ -882,6 +917,27 @@ it rebuilds a container in place and no turn runs through it.
 Load-bearing: a refusal must spend nothing — it leaves the 5-minute
 machine-wide rate limit untouched, or one refused call would strand an
 idle machine for five minutes over a no-op. Pinned.
+
+### D-105 · an agent may edit its own TEAM charter, never its own charter
+Ruling (user, 2026-08-07): an agent self-retools exactly one field —
+`team_charter`, the standing instruction binding its own subtree. Its
+individual `charter`, scope, tools and mode stay its superior's to set. A
+self-retool carrying anything else is refused WHOLE, not partially applied.
+Editing agents in its subtree is unchanged and unrestricted: any depth, every
+charter, every boundary capped to its own (D-106).
+Why: the two wear similar names and are opposite objects. `charter` is the
+role card the SUPERIOR wrote into this agent's own prompt — self-editing it is
+an agent rewriting its own instructions, the one thing the hierarchy exists to
+prevent. `team_charter` is what this agent writes into its REPORTS' prompts;
+how its team works is its own management to do, and revising it as the work
+teaches you something is expected rather than a liberty.
+Load-bearing: the ban rests on a node's own team charter NOT reaching its own
+prompt — otherwise it is self-direction by the back door. `identity_prompt`
+walks `ancestors`, which starts at the PARENT, so it cannot. Asserted in
+`test_ledger_authority`, because the ruling is only as good as that fact.
+The prompt now also SHOWS a manager its own team charter (it could not read
+what it may edit), and the self-edit sends no notification — a letter to
+yourself, and the reports get it live in their next prompt anyway.
 
 ### D-103 · an agent withdraws its own question when it stops mattering
 Ruling (user, 2026-08-07): agents must know to dismiss a question they asked

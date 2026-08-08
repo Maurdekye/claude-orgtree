@@ -867,6 +867,14 @@ def identity_prompt(org: Org, nid: str) -> str:
     charter_bits = []
     if n.get("charter"):
         charter_bits.append(f"Your charter: {n['charter']}")
+    # D-105: a manager may now edit its OWN team charter, so it has to be able
+    # to READ it — the §15 cascade below shows a node its ANCESTORS' team
+    # charters (that is what binds it), never its own, which is what it binds
+    # others with. Shown only when set and only when it has someone to bind.
+    if n.get("team_charter") and org.children(nid):
+        charter_bits.append(
+            f"The standing charter YOU give your team (yours to edit — "
+            f"orgtree_retool on your own id, team_charter): {n['team_charter']}")
     chain = [a for a in reversed(org.ancestors(nid)) if a != USER]
     for a in chain:                       # §15 cascade: ancestors bind their subtrees
         tc = org.nodes[a].get("team_charter")
@@ -1024,7 +1032,11 @@ def identity_prompt(org: Org, nid: str) -> str:
         f"ANYONE — a new hire sits idle until you send it a message, so every "
         f"hire is TWO calls: hire, then orgtree_message telling it what to do "
         f"now), orgtree_retire/rehire/dissolve/"
-        f"reallocate, orgtree_retool (re-scope an existing report), orgtree_chart"
+        f"reallocate, orgtree_retool (re-scope any agent in your subtree, at "
+        f"any depth — and on YOUR OWN id it accepts exactly one field, "
+        f"team_charter: the standing instruction binding your team is yours "
+        f"to write and to revise as you learn what the work needs. Your own "
+        f"charter and scope are your superior's — ask them), orgtree_chart"
         + (", orgtree_request_credits (top-level privilege: ask the user directly "
            "for a larger grant — state the new TOTAL and a reason; the user "
            "approves or denies with one click)" if n["parent"] is None else "")

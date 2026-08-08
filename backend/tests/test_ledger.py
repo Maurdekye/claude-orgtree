@@ -1445,9 +1445,23 @@ def main():
         else (_ for _ in ()).throw(AssertionError(r))
     )(orgV.hire(USER, "boss", "haiku", 0, "quiet",
                 org_visibility="full", tools=dict(ALL_TOOLS))))
-    check("retool above the parent's visibility refused (strict)", lambda: expect_error(
-        lambda: orgV.set_scope(USER, "quiet", org_visibility="subtree"),
-        "visibility"))
+    # ⚠ D-106 (user ruling 2026-08-07) reversed this one. A retool above the
+    # TARGET'S PARENT is no longer refused — the parent is raised to carry it,
+    # up to the GRANTER's own cap, and the raise is reported. The refusal that
+    # remains is against the granter's own ceiling, checked just below.
+    check("retool above the parent's visibility BUBBLES the parent (D-106)",
+          lambda: (lambda r: None
+                   if orgV.nodes["quiet"]["scope"]["org_visibility"] == "subtree"
+                   and orgV.nodes["boss"]["scope"]["org_visibility"] == "subtree"
+                   and r.get("cascaded") == ["boss"]
+                   and any(w.startswith("cascaded permission increase")
+                           for w in r["warnings"])
+                   else (_ for _ in ()).throw(AssertionError(r))
+                   )(orgV.set_scope(USER, "quiet", org_visibility="subtree")))
+    check("…while an AGENT granting above its OWN visibility is still refused",
+          lambda: expect_error(
+              lambda: orgV.set_scope("boss", "quiet", org_visibility="full"),
+              "exceeds your own"))
     check("lowering a manager's visibility sweeps the subtree", lambda: (
         orgV.set_scope(USER, "boss", org_visibility="subtree"),
         orgV.set_scope(USER, "quiet", org_visibility="subtree"),

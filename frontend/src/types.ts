@@ -826,6 +826,10 @@ export interface OpResult {
   /** the one-action kiosk-ceiling bridge (ledger.py:714-715): present when
    *  something was clamped and re-sending with raise_ceiling would fit it */
   bridge?: { raise_ceiling?: boolean }
+  /** D-106: agents whose permissions this grant raised on its way down the
+   *  chain (ledger.set_scope). The ledger is the authority — the panel's
+   *  pre-save preview is a courtesy, this is what actually happened. */
+  cascaded?: string[]
   [k: string]: unknown
 }
 

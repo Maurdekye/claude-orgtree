@@ -451,17 +451,24 @@ def _():
         store.save_org(o)
 
 
-@t("the USER is exempt from the parent clamp — D-101's one-act raise")
+@t("the USER may raise a deep node — and D-106 CASCADES the chain to it")
 def _():
-    # the live case this preserves: the user raised `consultant` above its own
-    # superior `coordinator` on 2026-08-07. A strict clamp for every actor
-    # would have refused that, and it is the point of the per-node control.
+    # the live case: the user raised `consultant` under `coordinator` on
+    # 2026-08-07. Under D-101 alone that left coordinator behind and the chain
+    # non-monotone; D-106 (later, same day) rules that the agents BETWEEN the
+    # granter and the grantee receive what they were missing instead.
     with store.DOC_LOCK:
         o = store.load_org(CHAIN)
-        o.set_scope(USER, "carol", permission_mode="bypassPermissions")
+        r = o.set_scope(USER, "carol", permission_mode="bypassPermissions")
         assert o.node("carol")["scope"]["permission_mode"] == "bypassPermissions"
-        assert o.node("bob")["scope"]["permission_mode"] == "default", \
-            "raising the child moved the parent"
+        assert o.node("bob")["scope"]["permission_mode"] == "bypassPermissions", \
+            "the chain between the user and carol was left below her"
+        assert o.node("alice")["scope"]["permission_mode"] == "bypassPermissions", \
+            "the cascade stopped short — every node up to the granter rises"
+        # and the actor is TOLD, in the words the ruling asked for
+        assert r.get("cascaded") == ["alice", "bob"], r.get("cascaded")
+        assert any(w.startswith("cascaded permission increase to agents")
+                   for w in r["warnings"]), r["warnings"]
         store.save_org(o)
 
 
@@ -481,19 +488,21 @@ def _():
 
 
 # …and the same-value guard must not become a hole: a REAL lowering still
-# propagates. bob already sits at "default", so re-sending "default" is inert
-# (that is check 30's rule) — raise him first, then lower for real.
+# propagates DOWN. Note the asymmetry D-106 introduces and this pins: a raise
+# travels UP to the granter (the cascade), a revocation travels DOWN into the
+# subtree (the sweep). Neither direction is the other's inverse — pushing a
+# revocation upward would strip a manager for its report's sake.
 @t("☞ …but a REAL lowering still reaches the reports below it")
 def _():
     with store.DOC_LOCK:
         o = store.load_org(CHAIN)
+        # the cascade above left the whole chain at bypassPermissions
         assert o.node("carol")["scope"]["permission_mode"] == "bypassPermissions"
-        o.set_scope(USER, "bob", permission_mode="acceptEdits")     # raise
-        assert o.node("carol")["scope"]["permission_mode"] == "bypassPermissions", \
-            "a RAISE swept the subtree — only lowering may"
-        o.set_scope(USER, "bob", permission_mode="default")         # lower
+        o.set_scope(USER, "bob", permission_mode="default")         # a lowering
         assert o.node("carol")["scope"]["permission_mode"] == "default", \
             "revoking a superior's mode left the grant it covered in place"
+        assert o.node("alice")["scope"]["permission_mode"] == "bypassPermissions", \
+            "a lowering travelled UPWARD and stripped the manager above it"
         store.save_org(o)
 
 

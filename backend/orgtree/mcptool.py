@@ -325,13 +325,20 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "orgtree_retool",
         "description": (
-            "Re-scope an existing agent in your subtree: change its folder grants, "
+            "Re-scope an agent in your subtree — ANY depth, not just direct "
+            "reports: its folder grants, "
             "tool set, MCP servers, org visibility, permission mode, charter, team "
             "charter, or its "
             "thinking effort (a cost/quality dial for your REPORTS — you never set "
             "your own). Only the fields you pass change. The capability rule still "
             "binds — you cannot grant anything you do not hold yourself, and "
-            "shrinking a grant clamps everything beneath the target too."),
+            "shrinking a grant clamps everything beneath the target too. "
+            "ON YOURSELF (node = your own id) exactly ONE field is legal: "
+            "team_charter, the standing instruction you give your own subtree — "
+            "how your team works is yours to direct, and re-stating it as you "
+            "learn what the work needs is expected, not a liberty. Your OWN "
+            "charter, scope, tools and mode are your superior's to set: ask "
+            "them with orgtree_message."),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -363,9 +370,15 @@ TOOLS: list[dict[str, Any]] = [
                         "it when the work genuinely needs it, not as a "
                         "convenience, and say why in the same breath."},
                 "charter": {"type": "string",
-                            "description": "its standing role card (every turn)"},
+                            "description": "its standing role card (every turn). "
+                                           "A REPORT's only — you cannot rewrite "
+                                           "your own; ask your superior"},
                 "team_charter": {"type": "string",
-                                 "description": "standing instructions binding its whole subtree"},
+                                 "description": "standing instructions binding "
+                                                "its whole subtree. You may set "
+                                                "YOUR OWN (node = your own id): "
+                                                "how your team works is yours to "
+                                                "direct"},
                 "effort": {"type": "string",
                            "enum": ["low", "medium", "high", "xhigh", "max", ""],
                            "description": "thinking effort for this report "

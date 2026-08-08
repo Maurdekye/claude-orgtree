@@ -516,10 +516,16 @@ def section_atomicity():
     o5.hire(USER, "p", "haiku", 5, "c")
     o5.set_scope(USER, "c", add_dirs=[])
     fp5 = fingerprint(o5)
+    # ⚠ D-106 moved the referent of "illegal": a grant is no longer measured
+    # against the TARGET'S PARENT (an intermediate that lacks it is now raised
+    # instead of the grant refused) but against the GRANTER'S OWN cap. So this
+    # atomicity check — still exactly as valuable — needs an actor who is
+    # actually capped. `p` holds E:/w and lacks `web`; the USER is capped by
+    # nothing, so the old form is now a legal cascade, pinned two checks down.
     check("a set_scope with a legal add_dirs and an illegal tools grant "
           "applies NEITHER",
           lambda: (expect_error(
-              lambda: o5.set_scope(USER, "c",
+              lambda: o5.set_scope("p", "c",
                                    add_dirs=[{"path": "E:/w", "mode": "rw"}],
                                    tools=dict(ALL_TOOLS)), "does not hold"),
               eq(fingerprint(o5), fp5, "half-applied retool"))[-1])
@@ -821,20 +827,41 @@ def section_clamping():
               lambda: opm.set_scope("mgr", "rep",
                                     permission_mode="bypassPermissions"),
               "exceeds the parent"))
-    # …while the USER may: the per-node control exists precisely so one agent
-    # can be raised without moving its superior (D-101, exercised live the day
-    # it shipped). The clamp binds delegation, not the operator.
-    check("the USER may still hold a node above its parent (D-101)",
+    # …while the USER may grant it — and since D-106 the grant BUBBLES: every
+    # node between the granter and the grantee receives what it was missing,
+    # rather than the grant being refused or the chain left non-monotone.
+    # ⚠ This supersedes half of D-101. That entry said "raising one agent is
+    # one act"; it still holds for the ORG DEFAULT (never retroactive), but a
+    # per-node raise now moves the managers above it too, up to the granter.
+    check("the USER may raise a node — and the chain between rises with it "
+          "(D-106 supersedes D-101's one-act raise)",
           lambda: (opm.set_scope(USER, "rep",
                                  permission_mode="bypassPermissions"),
                    eq(opm.nodes["rep"]["scope"]["permission_mode"],
                       "bypassPermissions"),
-                   eq(opm.nodes["mgr"]["scope"]["permission_mode"], "default"))[-1])
+                   eq(opm.nodes["mgr"]["scope"]["permission_mode"],
+                      "bypassPermissions"))[-1])
+    # a REAL gap to bubble across: lower the manager first (which sweeps the
+    # report down with it), then grant the report back up
+    opm.set_scope(USER, "mgr", org_visibility="self")
+    check("☞ the bubble is REPORTED, never silent — it expands an agent "
+          "nobody asked about",
+          lambda: (lambda r: (
+              eq(opm.nodes["mgr"]["scope"]["org_visibility"], "full"),
+              true(any("bubbled up to mgr" in w for w in r["warnings"]),
+                   r["warnings"]))[-1]
+          )(opm.set_scope(USER, "rep", org_visibility="full")))
     # ⚠ the same-value guard: the ⚙ sends EVERY field on every save, so a
     # charter edit carries an unchanged permission_mode. Re-asserting a mode
     # must not revoke a grant made below it.
+    # (the cascade above left mgr at bypassPermissions too, so re-sending THAT
+    # is the same-value write — the state is asserted, not assumed, because
+    # this check is worthless if it silently becomes a lowering)
     check("re-asserting an unchanged mode does NOT sweep the subtree",
-          lambda: (opm.set_scope(USER, "mgr", permission_mode="default"),
+          lambda: (eq(opm.nodes["mgr"]["scope"]["permission_mode"],
+                      "bypassPermissions", "fixture"),
+                   opm.set_scope(USER, "mgr",
+                                 permission_mode="bypassPermissions"),
                    eq(opm.nodes["rep"]["scope"]["permission_mode"],
                       "bypassPermissions",
                       "a same-value write revoked a deliberate grant"))[-1])
@@ -850,6 +877,67 @@ def section_clamping():
                                  permission_mode="bypassPermissions"),
                    opm.set_scope(USER, "mgr", permission_mode="default"),
                    eq(opm.nodes["rep"]["scope"]["permission_mode"], "default"))[-1])
+
+    # --- D-105: self-edit is exactly one field wide
+    # "agents should be able to self-edit their own team charter, but not
+    # their individual charter" (user, 2026-08-07). The two wear similar
+    # names and are opposite objects: `charter` is what the SUPERIOR wrote
+    # into this agent's own prompt; `team_charter` is what this agent writes
+    # into its REPORTS' prompts.
+    sc_ = Org.create("selfedit")
+    sc_.hire(USER, None, "opus", 100, "mgr")
+    sc_.hire(USER, "mgr", "haiku", 5, "rep")
+    sc_.set_scope(USER, "mgr", charter="the role the user set")
+    check("an agent may set its OWN team charter",
+          lambda: (sc_.set_scope("mgr", "mgr", team_charter="ship small"),
+                   eq(sc_.nodes["mgr"]["team_charter"], "ship small"))[-1])
+    check("☠ …but NOT its own charter",
+          lambda: expect_error(
+              lambda: sc_.set_scope("mgr", "mgr", charter="I decide my role"),
+              "may not rewrite your OWN charter"))
+    check("☠ …and the refusal leaves the charter exactly as it was",
+          lambda: eq(sc_.nodes["mgr"]["charter"], "the role the user set"))
+    # the interesting attack is not `charter` — it is smuggling a capability
+    # through on the same call that carries a legal team_charter
+    check("☠ a self-retool carrying team_charter AND a capability is refused "
+          "whole",
+          lambda: expect_error(
+              lambda: sc_.set_scope("mgr", "mgr", team_charter="fine",
+                                    permission_mode="bypassPermissions"),
+              "team_charter and nothing else"))
+    check("☠ …changing neither (atomic refusal, not a partial apply)",
+          lambda: (eq(sc_.nodes["mgr"]["team_charter"], "ship small"),
+                   eq(sc_.nodes["mgr"]["scope"]["permission_mode"],
+                      "acceptEdits"))[-1])
+    check("a self-retool with nothing to set is refused, not a silent no-op",
+          lambda: expect_error(lambda: sc_.set_scope("mgr", "mgr"),
+                               "team_charter only"))
+    # ☞ THE BACK DOOR THIS RULING DEPENDS ON BEING SHUT. If a node's own team
+    # charter reached its own prompt, "you may not write your own charter"
+    # would be words: it could write itself instructions through the team
+    # charter instead. identity_prompt walks `ancestors`, which starts at the
+    # PARENT — so it cannot. Asserted, because the ban rests on it.
+    def _own_team_charter_is_not_self_direction():
+        from orgtree import supervisor
+        sc_.set_scope("mgr", "mgr", team_charter="ZZ-SENTINEL-TEAM")
+        own = supervisor.identity_prompt(sc_, "mgr")
+        rep = supervisor.identity_prompt(sc_, "rep")
+        true("ZZ-SENTINEL-TEAM" in rep,
+             "the team charter never reached the report it is meant to bind")
+        true("Standing charter from your superior" not in own
+             or "ZZ-SENTINEL-TEAM" not in own.split("Standing charter")[1],
+             "a node's OWN team charter is injected as an instruction TO "
+             "itself — self-direction through the back door")
+    check("☞ a self-set team charter binds the REPORTS, never the author",
+          _own_team_charter_is_not_self_direction)
+    # and the user's clarification: subtree authority is unchanged
+    check("a superior still sets a REPORT's individual charter",
+          lambda: (sc_.set_scope("mgr", "rep", charter="do the thing"),
+                   eq(sc_.nodes["rep"]["charter"], "do the thing"))[-1])
+    check("☠ …and a peer/outsider still cannot touch either charter",
+          lambda: expect_error(
+              lambda: sc_.set_scope("rep", "mgr", team_charter="nope"),
+              "authority is downward only"))
 
     # --- moving into a stricter branch clamps
     o3 = Org.create("movesweep", dirs=["E:/w", "E:/r"])
@@ -1513,21 +1601,29 @@ def section_edges():
     # LOWERS its own" while its setup went default→acceptEdits, which is a
     # RAISE. It would have passed under the new sweep too, for the wrong
     # reason. Both directions are now asserted separately.
+    # ⚠ ORDER MATTERS HERE, since D-106: the user's grant to mid-a CASCADES
+    # top upward, so the agent-cap refusal has to be tested BEFORE it — after
+    # the cascade `top` holds bypassPermissions and the same call is legal.
+    # Sequencing was left implicit once already in this block (see above); it
+    # is explicit now, and each check asserts the state it depends on.
     pm = deep_org()
-    pm.set_scope(USER, "top", permission_mode="default")
-    pm.set_scope(USER, "mid-a", permission_mode="bypassPermissions")
-    check("the USER may hold a node above its parent's mode (D-101)",
-          lambda: eq(pm.node("mid-a")["scope"]["permission_mode"],
-                     "bypassPermissions"))
-    check("☠ an AGENT may not — the cap binds delegation (D-102)",
+    pm.set_scope(USER, "top", permission_mode="acceptEdits")
+    check("☠ an AGENT may not grant above its own mode (D-102's cap)",
           lambda: expect_error(
               lambda: pm.set_scope("top", "mid-a",
                                    permission_mode="bypassPermissions"),
               "exceeds the parent"))
-    pm.set_scope(USER, "top", permission_mode="acceptEdits")   # a RAISE
+    check("the USER may — and D-106 cascades the chain up to the granter",
+          lambda: (pm.set_scope(USER, "mid-a",
+                                permission_mode="bypassPermissions"),
+                   eq(pm.node("mid-a")["scope"]["permission_mode"],
+                      "bypassPermissions"),
+                   eq(pm.node("top")["scope"]["permission_mode"],
+                      "bypassPermissions", "the chain between was left below"))[-1])
     check("an ancestor RAISING its own mode leaves the subtree alone",
-          lambda: eq(pm.node("mid-a")["scope"]["permission_mode"],
-                     "bypassPermissions"))
+          lambda: (pm.set_scope(USER, "top", permission_mode="bypassPermissions"),
+                   eq(pm.node("mid-a")["scope"]["permission_mode"],
+                      "bypassPermissions"))[-1])
     pm.set_scope(USER, "top", permission_mode="default")       # a LOWERING
     check("☞ …but LOWERING it sweeps the subtree down with it",
           lambda: eq(pm.node("mid-a")["scope"]["permission_mode"], "default"))

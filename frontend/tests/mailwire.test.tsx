@@ -570,3 +570,78 @@ uiTest('§12.2 …and the last-mail line renders ALONGSIDE the badge, not '
   assert.match(last!.textContent ?? '', /faraway/,
     'the last line does not name the peer it should')
 })
+
+// ═══════════════════════════════════════════════════════════════════════ §13
+// THE CASCADE PREVIEW — who else a grant is about to raise
+// ═══════════════════════════════════════════════════════════════════════ §13
+//
+// D-106 (user ruling 2026-08-07): a grant deeper than the chain can carry no
+// longer refuses — every agent BETWEEN the granter and the grantee is raised
+// to hold it. The user asked to be warned BEFORE saving, so the panel
+// computes the affected set from the tree it already has.
+//
+// ⚠ That is the ledger's rule expressed a second time, in another language.
+// If the two drift, the warning lies — so what these pin is the SHAPE of the
+// agreement: same union rule, same monotone comparison, stops at the granter.
+// The ledger stays the authority (its `cascaded` is what the toast reports);
+// this is the courtesy that has to be honest.
+
+import { cascadePreview } from '../src/canvas/modals'
+
+/** a chain user → top → mid → leaf, each holding progressively less */
+function chain(): Map<string, CanvasNode> {
+  const mk = (id: string, parent: string | null, sc: Record<string, unknown>) =>
+    [id, { id, state: 'live', tier: 'haiku', children: [], parent,
+           scope: sc } as unknown as CanvasNode] as const
+  return new Map([
+    mk('top', null, { add_dirs: [{ path: 'E:/w', mode: 'ro' }],
+      tools: { bash: true, web: false, edit: true, subagents: true, mcp: [] },
+      org_visibility: 'team', permission_mode: 'acceptEdits' }),
+    mk('mid', 'top', { add_dirs: [], tools: { bash: true, web: false,
+      edit: false, subagents: false, mcp: [] },
+      org_visibility: 'self', permission_mode: 'default' }),
+    mk('leaf', 'mid', { add_dirs: [], tools: { bash: false, web: false,
+      edit: false, subagents: false, mcp: [] },
+      org_visibility: 'self', permission_mode: 'default' }),
+  ])
+}
+
+test('§13.1 the preview names every ancestor a grant would raise, and what '
+  + 'each one gains', () => {
+  const got = cascadePreview(chain(), 'leaf', {
+    dirs: [{ path: 'E:/w', mode: 'rw' }],
+    tools: { bash: true, web: true, edit: true, subagents: true, mcp: ['alpha'] },
+    vis: 'full', pm: 'bypassPermissions',
+  })
+  assert.deepEqual(got.map((g) => g.id), ['mid', 'top'],
+    'the chain between the user and leaf was not walked in order')
+  const mid = got[0]!.gains
+  // mid holds NOTHING of this: a fresh dir, three tools, a server, both ranks
+  assert.ok(mid.includes('E:/w rw'), mid)
+  assert.ok(mid.includes('web') && mid.includes('edit'), mid)
+  assert.ok(mid.includes('mcp:alpha'), mid)
+  assert.ok(mid.some((g) => g.startsWith('visibility self→full')), mid)
+  assert.ok(mid.some((g) => g.startsWith('mode default→bypassPermissions')), mid)
+  // top holds E:/w read-only — an UPGRADE, not a fresh grant, and it must say so
+  const top = got[1]!.gains
+  assert.ok(top.includes('E:/w ro→rw'), top)
+  assert.ok(!top.includes('bash'), `top already holds bash: ${top}`)
+})
+
+test('§13.2 …and lists nobody when the chain already carries the grant', () => {
+  // everything asked for is at or below what mid and top already hold
+  const got = cascadePreview(chain(), 'leaf', {
+    dirs: [], tools: { bash: true, web: false, edit: false, subagents: false, mcp: [] },
+    vis: 'self', pm: 'default',
+  })
+  assert.deepEqual(got, [],
+    'the warning fires on a grant that raises nobody — it would cry wolf on '
+    + 'every ordinary save and stop being read')
+})
+
+test('§13.3 a downgrade raises nobody — the cascade is one-directional', () => {
+  // revoking travels DOWN (the ledger sweeps the subtree); it must never
+  // strip a manager on its way up
+  const got = cascadePreview(chain(), 'leaf', { vis: 'self', pm: 'default' })
+  assert.deepEqual(got, [], JSON.stringify(got))
+})
