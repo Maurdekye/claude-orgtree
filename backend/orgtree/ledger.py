@@ -567,7 +567,8 @@ class Org:
     @staticmethod
     def _clamp_tools(requested: Mapping[str, Any] | None,
                      parent_tools: Mapping[str, Any] | None,
-                     strict: bool) -> tuple[ToolGrant, list[str]]:
+                     strict: bool, who: str = "parent",
+                     ) -> tuple[ToolGrant, list[str]]:
         """Bound a tool grant by the parent's own: an agent cannot pass on a tool or
         MCP server it does not itself hold. parent_tools None = the user (everything)."""
         req = norm_tools(requested)
@@ -577,7 +578,7 @@ class Org:
         for k in TOOL_KEYS:
             if req[k] and not parent_tools.get(k, True):
                 if strict:
-                    raise LedgerError(f"parent does not hold {k!r}; cannot grant it")
+                    raise LedgerError(f"{who} does not hold {k!r}; cannot grant it")
                 req[k] = False
                 lost.append(k)
         # "*" = the universal server set: ∩ with a concrete parent list = that list
@@ -590,7 +591,7 @@ class Org:
             if extra:
                 if strict:
                     raise LedgerError(
-                        f"parent does not hold MCP server(s) {extra}; cannot grant")
+                        f"{who} does not hold MCP server(s) {extra}; cannot grant")
                 req["mcp"] = [s for s in req["mcp"] if s in held]
                 lost += [f"mcp:{s}" for s in extra]
         return req, lost
@@ -2987,7 +2988,10 @@ class Org:
                 who="you" if actor_kind(actor) not in ("user", "system")
                 else "this org")
         if tools is not None:
-            want_tools, _ = self._clamp_tools(tools, cap_tools, strict=True)
+            want_tools, _ = self._clamp_tools(
+                tools, cap_tools, strict=True,
+                who="you" if actor_kind(actor) not in ("user", "system")
+                else "this org")
         if org_visibility is not None:
             if org_visibility not in VIS_LEVELS:
                 raise LedgerError(f"org_visibility must be one of {VIS_LEVELS}")
@@ -3087,38 +3091,79 @@ class Org:
                 cascaded = list(raised)
                 warnings.insert(before, "cascaded permission increase to "
                                         "agents " + ", ".join(raised))
-        # …and when the cascade reaches a TOP-LEVEL agent, the folder has
-        # entered the org itself — record it in the org's holdings (user
-        # report 2026-08-08: "bubbling up a folder grant does not add it to
-        # the list of folders already in the org"). Without this the eye's
-        # folder list showed FEWER folders than its own top-level agent held,
-        # and a later top-level hire would not inherit the path the org
-        # demonstrably has. Union-only, like the bubble: revoking one node's
-        # grant does not mean the org lost the folder.
-        if want_dirs is not None:
-            top_touched = [k for k in [nid, *bubble]
-                           if self.nodes[k]["parent"] is None]
-            if top_touched:
-                held = {d["path"]: d["mode"] for d in self.d["dirs"]}
-                added: list[str] = []
-                for k in top_touched:
-                    for d in self.nodes[k]["scope"]["add_dirs"]:
+        # …and when the cascade reaches a TOP-LEVEL agent the capability has
+        # entered the ORG, so the org's own defaults absorb it — for EVERY
+        # capability, not only folders (user report 2026-08-08 about folders;
+        # generalized on the user's follow-up ruling the same day).
+        #
+        # Why it is needed at all: a top-level agent has no parent to inherit
+        # from, so the org document IS its ceiling and the record of what this
+        # organization can reach. Leaving it behind made the org claim less
+        # than its own top-level agent demonstrably held — the eye's panel
+        # showed an incomplete picture, and a later top-level hire (which
+        # defaults from these very fields) did not inherit it.
+        #
+        # Union/raise ONLY, in the bubble's own direction: revoking one node's
+        # grant is never the org losing the capability. And only the user can
+        # reach here — a top-level node has no agent ancestors, so no agent
+        # actor's `bubble` can contain one — but the gate is written out
+        # rather than left as an inference, since the ruling says "user-
+        # triggered" and a future authority change must not silently widen it.
+        top_touched = ([k for k in [nid, *bubble]
+                        if self.nodes[k]["parent"] is None]
+                       if actor_kind(actor) in ("user", "system") else [])
+        if top_touched:
+            absorbed: list[str] = []
+            for k in top_touched:
+                ksc = self.nodes[k]["scope"]
+                if want_dirs is not None:
+                    held = {d["path"]: d["mode"] for d in self.d["dirs"]}
+                    for d in ksc["add_dirs"]:
                         if d["path"] not in held:
                             self.d["dirs"].append({"path": d["path"],
                                                    "mode": d["mode"]})
-                            held[d["path"]] = d["mode"]
-                            added.append(f"{d['path']} {d['mode']}")
+                            absorbed.append(f"{d['path']} {d['mode']}")
                         elif held[d["path"]] == "ro" and d["mode"] == "rw":
                             for row in self.d["dirs"]:
                                 if row["path"] == d["path"]:
                                     row["mode"] = "rw"
-                            held[d["path"]] = "rw"
-                            added.append(f"{d['path']} ro→rw")
-                if added:
-                    warnings.append(
-                        "the organization now holds " + ", ".join(added)
-                        + " (a top-level agent was granted it, so it is an "
-                          "org folder and new top-level hires inherit it)")
+                            absorbed.append(f"{d['path']} ro→rw")
+                if want_tools is not None:
+                    dt = norm_tools(self.d.get("default_tools"))
+                    for tk in TOOL_KEYS:
+                        if ksc["tools"].get(tk) and not dt.get(tk):
+                            dt[tk] = True
+                            absorbed.append(tk)
+                    have, want = list(dt["mcp"]), list(ksc["tools"].get("mcp") or [])
+                    if "*" in want and "*" not in have:
+                        dt["mcp"] = ["*"]
+                        absorbed.append("mcp:*")
+                    elif "*" not in have:
+                        add = [s for s in want if s not in have]
+                        if add:
+                            dt["mcp"] = sorted(set(have) | set(add))
+                            absorbed += [f"mcp:{s}" for s in add]
+                    self.d["default_tools"] = dt
+                if want_vis is not None:
+                    cur = self.d.get("default_visibility", "full")
+                    new = ksc.get("org_visibility", "full")
+                    if (cur in VIS_LEVELS and new in VIS_LEVELS
+                            and VIS_LEVELS.index(new) > VIS_LEVELS.index(cur)):
+                        self.d["default_visibility"] = new
+                        absorbed.append(f"visibility {cur}→{new}")
+                if want_pm is not None:
+                    cur = self.d.get("permission_mode", "acceptEdits")
+                    new = ksc.get("permission_mode", "acceptEdits")
+                    if (cur in PM_LEVELS and new in PM_LEVELS
+                            and PM_LEVELS.index(new) > PM_LEVELS.index(cur)):
+                        self.d["permission_mode"] = new
+                        absorbed.append(f"permission mode {cur}→{new}")
+            if absorbed:
+                warnings.append(
+                    "the organization now holds " + ", ".join(absorbed)
+                    + " — a top-level agent was granted it, so it is an org "
+                      "capability and NEW top-level hires inherit it "
+                      "(existing agents are unchanged)")
         if changed_caps:
             # ⚠ clamp_root=False: the caller just decided what nid holds, so
             # the sweep re-clamps its DESCENDANTS, never nid against its own

@@ -1142,3 +1142,57 @@ ruling rather than a default either way.
 
 Not scoping a build here — the grounding is the point: one piece of the request is already solved
 by existing code, and the interesting design question is the model-access path, not the UI.
+
+---
+
+### FR-20 · pinned "last user turn" chip in the desk chat view
+> potential idea: mimic claude code's pinned last user turn: the last message they sent in the
+> chat. it stays at the top when offscreen, and clicking it jumps to it.
+
+*(user request 2026-08-08, recorded by the curator, framed as "potential idea" rather than a firm
+ask — recorded as such. Not built.)*
+
+**Almost exactly the mirror of a chip that already exists, one screen away.**
+`frontend/src/canvas/desk.tsx`'s chat view already has this shape, just pointed the other direction:
+`showJump`/`toBottom` (`:217-253`) render a sticky **bottom**-anchored `jumpbottom` chip
+(`:640-644`, "↓ jump to bottom") whenever the reader has scrolled away from the newest message
+(`nearBottom()`/`setStuck`, `:218-253,520`), sticky *inside* the scroller as its last child — chosen
+deliberately, per the comment at `:636-639`, because the desk's flex chain is "documented as
+fragile" and sticky-as-last-child needs no new layout box. A **top**-anchored "pinned last user
+turn" chip is the same mechanism — conditional render based on scroll position, sticky inside the
+same scroller, a click handler that scrolls to a target — aimed at a specific earlier row instead of
+"the newest," and stuck to the top edge instead of the bottom.
+
+**The one real design question, and it's not a mechanical one: what counts as "the last message
+they sent," given orgtree's chat isn't Claude Code's chat.** Transcript rows already carry
+`m.role === 'user'` (`:1072-1086`) — the raw Claude Code CLI role, present because each desk is
+explicitly "a miniature Claude Code session" (file header). In **actual** Claude Code, every
+`user`-role turn genuinely IS the human — there's no other sender it could be. In orgtree, a node's
+`user`-role transcript rows are envelope-wrapped turn INPUT from *any* sender the mail system
+delivers — a sibling, a superior, the org inbox — not only the actual human operator. Naively
+pinning "the last `role === 'user'` row" would misattribute a chip captioned "them" to a sibling
+agent's mail on a node the human hasn't personally messaged in a while. The identification this
+needs already has a working precedent one screen up: pending mail is filtered `m.from === USER`
+(`:600`, the same sentinel used throughout the frontend for "the actual human") — the pinned chip
+almost certainly wants that same filter applied to durable transcript rows, not bare `role`, and
+whoever builds this should confirm the durable message shape actually carries a comparable
+`from`/sender field to filter on (the pending-mail shape does; worth checking whether the persisted
+transcript row does too, or only the live/pending paths retain sender identity distinctly from
+CLI role).
+
+**Mechanics, briefly — the scroll-to-target half, not just the visibility-toggle half.** Existing
+rows are keyed by `m.seq` (`:550`, "the server's pre-slice ordinal"), and `toBottom` scrolls via the
+existing `scroller` ref (`:518`) to `scrollHeight` — a fixed target. Scrolling to an arbitrary
+earlier row instead of the end needs either a per-row ref map keyed by `seq` (to call
+`scrollIntoView` on the right element) or an equivalent DOM query — a small but real addition, since
+nothing today needs to target a row that isn't "the end."
+
+**One directional nuance worth stating plainly, since the request only describes one direction.**
+"Stays at the top when offscreen" reads as: pin only while the target row has scrolled *above* the
+visible viewport (reader has scrolled up past their own last message into older history) — if the
+reader is instead scrolled *down* past it toward newer content, that's already `jumpbottom`'s
+territory, not a case this new chip needs to also handle. Two independent sticky chips, top and
+bottom, each covering the direction its own name implies.
+
+Not scoping a build here — mechanically small given the existing `jumpbottom` precedent; the
+attribution question above is the one thing worth a ruling before writing it.

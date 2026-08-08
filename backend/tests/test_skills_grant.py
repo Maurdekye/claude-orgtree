@@ -38,6 +38,7 @@ ORGTREE_DATA, and is removed at exit. Nothing is written to `~/.claude`.
 from __future__ import annotations
 
 import atexit
+import json
 import os
 import shutil
 import sys
@@ -322,9 +323,16 @@ def _():
 def _():
     with store.DOC_LOCK:
         o = store.load_org(PLAIN)
-        assert o.d["permission_mode"] == "acceptEdits"
+        # ⚠ NOT acceptEdits any more, and the reason is worth stating: the
+        # check above raised the TOP-LEVEL alice to bypassPermissions, and
+        # since 2026-08-08 a capability reaching a top-level agent is ABSORBED
+        # into the org's own defaults. Absorption is union-only, so putting
+        # alice back did not put the org back — the org ⚙ is the way down.
+        assert o.d["permission_mode"] == "bypassPermissions", \
+            "the top-level raise did not absorb into the org default"
+        o.set_hire_defaults(permission_mode="acceptEdits")
+        assert o.d["permission_mode"] == "acceptEdits", "…and it can be lowered"
         o.set_hire_defaults(permission_mode="bypassPermissions")
-        assert o.d["permission_mode"] == "bypassPermissions"
         store.save_org(o)
 
 
@@ -563,6 +571,66 @@ def _():
             "the union is monotone — one node losing a grant is not the org " \
             "losing the folder"
         store.save_org(o)
+
+
+# ── the same rule for EVERY capability, not just folders (user follow-up
+# ruling 2026-08-08). A top-level agent has no parent to inherit from, so the
+# org document IS its ceiling and the record of what this org can reach.
+@t("☞ tools, visibility and MODE absorb into the org the same way")
+def _():
+    with store.DOC_LOCK:
+        o = store.load_org(DIRS)
+        o.d["default_tools"] = {"bash": False, "web": False, "edit": False,
+                                "subagents": False, "mcp": []}
+        o.d["default_visibility"] = "self"
+        o.node("alice")["scope"]["tools"] = dict(o.d["default_tools"])
+        o.node("alice")["scope"]["org_visibility"] = "self"
+        r = o.set_scope(USER, "bob",
+                        tools={"bash": True, "web": True, "edit": False,
+                               "subagents": False, "mcp": ["alpha"]},
+                        org_visibility="full",
+                        permission_mode="bypassPermissions")
+        dt = o.d["default_tools"]
+        assert dt["bash"] and dt["web"], dt
+        assert not dt["edit"] and not dt["subagents"], \
+            "the org absorbed a capability that was never granted"
+        assert "alpha" in dt["mcp"], dt
+        assert o.d["default_visibility"] == "full", o.d["default_visibility"]
+        assert o.d["permission_mode"] == "bypassPermissions", \
+            o.d["permission_mode"]
+        assert any("the organization now holds" in w for w in r["warnings"]), \
+            r["warnings"]
+        store.save_org(o)
+
+
+# ⚠ the consequence of absorbing the MODE, stated as its own check because it
+# is the widest blast radius in this feature: every FUTURE top-level hire is
+# born at the raised mode. Existing agents are untouched (D-101).
+@t("☠ …so a NEW top-level hire is born at the absorbed mode")
+def _():
+    with store.DOC_LOCK:
+        o = store.load_org(DIRS)
+        o.hire(USER, None, "haiku", 1, "dave")
+        assert o.node("dave")["scope"]["permission_mode"] == "bypassPermissions", \
+            o.node("dave")["scope"]["permission_mode"]
+        store.save_org(o)
+
+
+@t("☠ an AGENT actor never reaches the org level, whatever it grants")
+def _():
+    with store.DOC_LOCK:
+        o = store.load_org(DIRS)
+        before = json.dumps(o.d["default_tools"], sort_keys=True)
+        # alice is top-level; a grant she makes to bob cannot touch the org
+        # doc, because the bubble between her and bob is empty and she is
+        # never on it herself
+        # only what alice herself holds — the point here is the ORG doc, not
+        # the cap (which §5 covers); granting above her own would refuse first
+        o.set_scope("alice", "bob", tools={"bash": True, "web": True,
+                                           "edit": False, "subagents": False,
+                                           "mcp": []})
+        assert json.dumps(o.d["default_tools"], sort_keys=True) == before, \
+            "an agent's grant rewrote the ORG's defaults"
 
 
 # ============================================================== the report

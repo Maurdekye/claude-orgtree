@@ -892,11 +892,22 @@ direct superior, which is the case both were written against.
 Not yet extended to `hire`: a hire's grant still clamps to the parent
 (user-actor) or refuses (agent-actor) per D-021/D-022. Flagged to the user
 rather than assumed, since those are their own earlier rulings.
-A folder that bubbles all the way to a TOP-LEVEL agent joins the ORG's own
-holdings (user report 2026-08-08). Without it the eye listed fewer folders
-than its own top-level agent held, and a later top-level hire did not inherit
-a path the org demonstrably had. Union-only, matching the bubble: revoking one
-node's grant is not the org losing the folder.
+A capability that bubbles all the way to a TOP-LEVEL agent is ABSORBED into
+the org's own defaults — folders into `dirs`, tools into `default_tools`,
+visibility into `default_visibility`, mode into `permission_mode` (user report
+about folders 2026-08-08, generalized to all four by the follow-up ruling the
+same day). A top-level agent has no parent to inherit from, so the org
+document IS its ceiling and the record of what this organization can reach;
+leaving it behind made the org claim less than its own agent demonstrably
+held, and a later top-level hire did not inherit it. Union/raise-only, in the
+bubble's own direction, and user-triggered only — an agent actor's bubble can
+never contain a top-level node, but the gate is written out rather than
+inferred.
+※ The MODE is the sharp one and the asymmetry is worth knowing: unlike a
+folder (inert until used), absorbing `bypassPermissions` means every FUTURE
+top-level hire is born unguarded, and because absorption is union-only,
+lowering the agent again does NOT lower the org. The org ⚙'s permission-mode
+control (D-101) is the way back down.
 
 ### D-104 · an agent updates a behind install itself, when the machine is idle
 Ruling (user, 2026-08-07): an agent notified that a newer orgtree exists,
