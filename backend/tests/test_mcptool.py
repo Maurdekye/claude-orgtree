@@ -615,11 +615,21 @@ def _():
     # decided to reach for the tool. It rides the top-level/audience branch,
     # which is why `boss` sees it and the two below do not (asserted just
     # below, so the gating is pinned and not merely intended).
+    # orgtree_send_file ALSO left the absent set 2026-08-08 (user ruling): a
+    # request for a file is a moment the agent must recognise, and the tool
+    # card only speaks once it has already reached for that tool. Same shape
+    # of reason as self_update above — the prompt is where behaviour that
+    # must fire UNPROMPTED belongs.
     assert absent == ["orgtree_list_orgs", "orgtree_move",
                       "orgtree_read_scratch", "orgtree_read_transcript",
-                      "orgtree_rename",
-                      "orgtree_send_file", "orgtree_switch_model"], \
+                      "orgtree_rename", "orgtree_switch_model"], \
         f"the recital gap changed — update or retire this pin: {absent}"
+    # …and it must reach EVERY agent, not just the audience holders: any of
+    # them can be asked for a file by their superior's relay or the user
+    for who in ("boss", "mid", "worker"):
+        p = supervisor.identity_prompt(org, who)
+        assert "orgtree_send_file" in p, f"{who} is never told how to send a file"
+        assert "a path is not a delivery" in p, who
     assert "orgtree_self_update" in recital, \
         "the D-104 update instruction left the top-level recital"
     for lower in ("mid", "worker"):

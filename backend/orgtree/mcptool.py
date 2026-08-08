@@ -506,10 +506,17 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Deliver a FILE to the user as a downloadable attachment: it is "
             "copied into your outbox/ (in your working folder) and appears in "
-            "your chat as a download card. Sendable paths: files in your "
+            "your chat as a DOWNLOAD CARD. ☞ This is THE answer whenever the "
+            "user asks for a file — 'send me', 'give me', 'can I have' — a "
+            "log, an export, an image, a build artifact. It is the only way "
+            "they can actually receive the bytes: pasting the contents into a "
+            "message, or naming the path it sits at, is not a delivery. "
+            "Sendable paths: files in your "
             "working folder (relative paths resolve there), the workspace, or "
             "any folder you hold. Announce the file in your reply or report — "
-            "the card sits at the point in the chat where you sent it."),
+            "the card sits at the point in the chat where you sent it. "
+            "(For a document meant to be READ in-page rather than downloaded, "
+            "orgtree_present is the other surface.)"),
         "inputSchema": {"type": "object",
                         "properties": {
                             "path": {"type": "string",
