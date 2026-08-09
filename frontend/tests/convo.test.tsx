@@ -751,3 +751,56 @@ convoTest('§5.3 an unmount mid-fetch is not a crash and not a leak',
     await advance(30000)
     assert.equal(s.requests.length, before, 'nothing kept polling')
   })
+
+// ═══════════════════════════════════════════════════════════════════════ §6
+// COMMAND GHOSTS — a command that becomes a turn is not a command that vanishes
+// ═══════════════════════════════════════════════════════════════════════ §6
+//
+// User bug 2026-08-09: "messages sent to an idle chat appear immediately,
+// commands don't appear until the turn starts." The send path dropped the
+// optimistic ghost for anything carrying `command: true`, on the reasoning
+// that a command never enters pending_mail and so has nothing to graduate
+// against. That reasoning holds for the IMMEDIATE shape only (a throwaway
+// session fork whose output rides the live feed, writing no transcript row).
+// An ordinary command is delivered VERBATIM as its own user event, so a row
+// IS coming — dropping its ghost left the desk blank until the turn started.
+//
+// desk.tsx now keys the drop on `immediate || compacting`. What THIS suite can
+// prove is the half the fix depends on: that keeping such a ghost terminates —
+// it graduates on the row like any message, rather than sitting forever.
+
+convoTest('§6.1 a ghost for a command graduates on the transcript row it '
+  + 'eventually becomes', async ({ SL, ND, s, desk }) => {
+    s.assistantMsg('idle')
+    const d = await desk()
+    await advance(100)
+    // the desk keeps the ghost for a non-immediate command (desk.tsx)
+    await inAct(() => { addPending(SL, ND, '/status') })
+    assert.equal(d.now().pending.length, 1,
+      'the ghost is what the user sees between send and turn start')
+    // …the turn starts and the command lands verbatim as its own user event
+    s.userMsg('/status')
+    await inAct(() => refreshConvo(SL, ND, { force: true }))
+    await advance(100)
+    assert.equal(d.now().pending.length, 0,
+      'the ghost never retired against its own transcript row — kept, it '
+      + 'would sit on the desk forever, which is why the drop existed')
+    const rows = (d.now().chat?.messages ?? []).filter((m) => m.text === '/status')
+    assert.equal(rows.length, 1, 'the command should appear exactly once')
+  })
+
+convoTest('§6.2 …and an IMMEDIATE command, which never becomes a row, is the '
+  + 'case the explicit drop still exists for', async ({ SL, ND, s, desk }) => {
+    s.assistantMsg('idle')
+    const d = await desk()
+    await advance(100)
+    await inAct(() => { addPending(SL, ND, '/context') })
+    // no transcript row is EVER written for this shape — only live-feed output
+    await inAct(() => refreshConvo(SL, ND, { force: true }))
+    await advance(100)
+    assert.equal(d.now().pending.length, 1,
+      'without an explicit drop this ghost is immortal — the store cannot '
+      + 'retire what the server never shows, so desk.tsx must drop it')
+    await inAct(() => { dropPending(SL, ND, '/context') })
+    assert.equal(d.now().pending.length, 0)
+  })

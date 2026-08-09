@@ -1196,3 +1196,70 @@ bottom, each covering the direction its own name implies.
 
 Not scoping a build here — mechanically small given the existing `jumpbottom` precedent; the
 attribution question above is the one thing worth a ruling before writing it.
+
+---
+
+### FR-21 · attachments on agent → user mail, reusing the send_file download card
+> agents should also know about the ability to embed attachments in mail to the user
+> *(then, after being told the capability doesn't exist)* what about the file download card as
+> user mail attachments?
+
+*(user request 2026-08-09, across two messages, routed to the curator by the redteam (4f69f83a) on
+the user's own instruction — judged nontrivial, handed over rather than built under the redteam's
+bug-fix-only authority. **The grounding below is the redteam's own trace, reported to this seat
+essentially complete; recorded here rather than re-derived**, per their explicit request. Not
+built.)*
+
+**Why this needed a docket entry rather than a prompt fix.** The user's first message assumed
+agents could already attach files to mail addressed to them. They cannot —
+`orgtree_message`'s `attachments` field is **`@net:`-only**; the backend refuses anything else at
+the door (`api.py` ~2857: *"attachments ride `@net:` mail only (v1) — for local recipients use
+`orgtree_send_file` or paths"*). Writing prompt guidance for a capability that 422s at runtime would
+have been the wrong fix, hence the redteam declined and explained instead — producing the second
+message this entry is titled after.
+
+**The current attachment matrix, so this isn't re-derived later:**
+
+| direction | status |
+|---|---|
+| user → agent | supported — files land in the agent's `uploads/` |
+| agent → `@net:` peer | supported |
+| agent → user | **not supported** — `orgtree_send_file` is the only route today: copies to `<sender scratch>/outbox/<name>`, renders a download card in the chat |
+| agent → local peer | not supported |
+
+**What the bridge actually costs — traced before it reached this seat, so triage doesn't retrace
+it:**
+
+*Already there:* `orgtree_send_file` already returns exactly the shape mail attachments use
+(`{name, path: outbox/<file>, bytes}`, `api.py`'s `_agent_send_file`). `GET
+/api/orgs/{slug}/nodes/{nid}/file?path=…` already serves those bytes, org-scoped — the kiosk public
+gateway already passes it through. `MailList` already renders a download-chip row from
+`cur.attachments`, the same component the user's inbox itself uses — live in the **node** inbox
+today, just not reachable from the direction this entry asks for.
+
+*Missing, exactly two things:* (1) **backend** — permit `attachments` when `to == 'user'`, routing
+each path through the *existing* `_agent_send_file` validate-and-copy rather than a second
+implementation, so the reuse inherits its capability-root enforcement, traversal guard, 25 MB cap,
+storage-block check, and sandbox path translation for free. (2) **frontend** — the user's inbox
+passes `fileHref` keyed on the **sender** (`fileUrl(slug, m.from, path)`, since the file sits in
+that agent's own outbox) to every `MailList` call site except this one; the node inbox already
+passes it, which is why its attachments are already downloadable and the user's inbox's aren't.
+
+**The one design point flagged for the implementer to decide, not decided here:** built naively this
+creates two mechanisms for one outcome (a standalone `send_file` card, and now a mail-attachment
+path, doing the same copy independently). The better shape: one mechanism, two entry points —
+`send_file` stays the actual copier, and mail's `attachments` field calls it internally, so a file
+sent either way lands identically. This also lets an agent say "here are the results" *and* ship the
+files in the same message, instead of a message plus a detached card wherever the chat happened to
+land.
+
+**One thing flagged to leave alone, not a bug:** the ORG inbox's attachment chips are inert **by
+design** — inbound `@net:` attachments land in the *receiving agent's* `uploads/`, not at an
+org-level path, so `mail.tsx` maps them with `path = a.name` and a link there would point at
+`undefined` (per the code's own comment). Unrelated to this entry; noted only so it doesn't get
+"fixed" as a drive-by while someone's in this code for FR-21.
+
+**Sizing, per the redteam's own estimate, offered for triage rather than as a commitment:** roughly
+30 backend lines, one frontend prop, plus tests — "small because the parts already line up, not
+because the surface is trivial." The redteam has offered to supply an expanded trace or a written
+spec on request if whoever picks this up wants either.

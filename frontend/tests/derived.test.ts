@@ -271,3 +271,26 @@ test('⑩  no destructive op fires straight off a click — each one asks first'
       'a destructive op fires directly from a click, with no confirmation:\n  '
       + bad.join('\n  '))
   })
+
+// --------------------------------------------------------------------- ⑪
+test('⑪  the command-ghost drop is keyed on the shapes that write no row',
+  () => {
+    // User bug 2026-08-09. The drop was `if (r.command)` — true for ALL three
+    // command shapes, including the ordinary one that IS delivered verbatim as
+    // its own user event and therefore does get a transcript row. Dropping its
+    // ghost left an idle desk blank between send and turn start.
+    //
+    // convo.test §6 proves the store half (a kept ghost graduates on the row,
+    // and an immediate one would be immortal without the drop). This pins the
+    // BRANCH, which lives in desk.tsx and no store test can reach.
+    const src = code('canvas/desk.tsx')
+    const m = /if \(r\.(\w+)(?:\s*\|\|\s*r\.(\w+))?\)\s*dropPending/.exec(src)
+    assert.ok(m, 'the command-ghost drop is gone entirely — a ghost for an '
+      + 'immediate command would now sit on the desk forever')
+    const keys = [m[1], m[2]].filter(Boolean).sort()
+    assert.deepEqual(keys, ['compacting', 'immediate'],
+      `the drop is keyed on ${keys.join('+')}. It must be exactly the shapes `
+      + 'that never write a transcript row: `command` alone also catches the '
+      + 'ordinary command, whose ghost is the only thing on screen until its '
+      + 'turn starts')
+  })

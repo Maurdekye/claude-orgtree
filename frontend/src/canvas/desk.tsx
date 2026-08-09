@@ -315,12 +315,23 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
                 : r.deferred ? 'deferred — delivers at rehire'
                   : (r.queued ?? 0) > 0 ? `queued (${r.queued} ahead)` : 'delivering')
         if (r.warnings?.length) toast(r.warnings)
-        // A COMMAND is not correspondence: it never enters pending_mail, and an
-        // IMMEDIATE command may never reach this node's transcript either (it
-        // runs in a throwaway fork and its output rides the live feed), so its
-        // ghost has no evidence to graduate against and would sit there
-        // forever. Retire it here — the "command sent" receipt is the feedback.
-        if (r.command) dropPending(slug, node.id, t)
+        // A command is not correspondence — it never enters pending_mail — so
+        // the question for its ghost is only ever "will a transcript row ever
+        // appear?". THREE shapes answer differently, and this used to drop the
+        // ghost for all of them on the `command` flag alone (user bug
+        // 2026-08-09: "messages sent to an idle chat appear immediately,
+        // commands don't appear until the turn starts"):
+        //   immediate  — a throwaway session fork; the output rides the live
+        //                feed and no row is ever written. Nothing to graduate
+        //                against, so the ghost must go or it sits forever.
+        //   compacting — /compact runs the org split; likewise never a row.
+        //   otherwise  — the command is delivered VERBATIM as its own user
+        //                event, so a row IS coming: on an idle node the turn
+        //                starts at once, and behind a busy one it waits. KEEP
+        //                the ghost; it graduates on the row, exactly like a
+        //                message, and until then the dimmed bubble is the
+        //                truth (this is queued).
+        if (r.immediate || r.compacting) dropPending(slug, node.id, t)
         return refresh(true)
       })
       .catch((e: Error) => {
