@@ -102,6 +102,29 @@ ledger, supervisor, the gateways, or the canvas.
 
 ## Supervisor & turns
 
+- **An agent-triggered update MUST be detached — that path is the only one it
+  has.** The update stops and restarts the backend, which tears down the very
+  turn that asked for it, so any update script spawned as a child of an
+  agent's own shell dies mid-flight with its session. Measured on a peer
+  install 2026-08-09 (neoja): an agent ran `update.ps1` from a backgrounded
+  shell job, the log stopped at `== building the UI ==`, the backend never
+  restarted, and the repo was left advanced with the old code still running.
+  An OPERATOR's console outlives the restart; an agent has no console that
+  does. ⚠ This is why the mute-log bug below mattered far more than it looked:
+  the detached spawn is not one of two routes for an agent, it is the ONLY
+  one, and it was the route that reported nothing.
+- **`_detached_spawn` must not use `DETACHED_PROCESS` on Windows.** That flag
+  detaches the child from the console and carries the redirected stdout handle
+  away with it: measured 0/4 lines reaching the log vs 4/4 under
+  `CREATE_NO_WINDOW`, across `Write-Host`, `Write-Output`, `[Console]::Out`
+  and a native child. Every Windows self-update logged nothing but the banner
+  the Python side writes, from the feature's introduction until 2026-08-09.
+  It hid this long because NO local deploy exercises the path — an operator
+  runs `update.ps1` through a shell that has a console. Survival does not
+  depend on the flag (a Windows child already outlives its parent;
+  `DETACHED_PROCESS` governs the console, not the lifetime — verified by
+  killing the parent mid-spawn).
+
 - **Hook isolation is enumerated, not categorical.** Agents get a
   `--settings` with an explicit entry for every known hook event — empty
   arrays REPLACE inherited user-global hooks (live-tested), while the
