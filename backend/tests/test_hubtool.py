@@ -886,6 +886,66 @@ def sec_chat_receipts() -> None:
           "org does (user report 2026-08-06)",
           _a_chat_reports_delivery_like_an_org_does)
 
+    # ---- 2026-08-09, from investigating the delivered-vs-read asymmetry.
+    # The ASYMMETRY itself is deliberate and documented (read = provable entry
+    # into context; a listener cannot prove it). What was NOT deliberate sat
+    # beside it: `_receipts` swallowed a failed POST with `except: pass`,
+    # while the org side has always RE-QUEUED (net._flush_receipts). So one
+    # refused receipt — a hub blip, a restart — left the sender's ladder
+    # saying `fetched` forever for mail that HAD been delivered, and the two
+    # halves of one ladder degraded differently under the same fault.
+    def _a_refused_receipt_is_retried_not_dropped():
+        calls: list[list[str]] = []
+        down = {"on": True}
+        real = hubtool._call
+
+        def flaky(path, payload, hub=None):                       # noqa: ANN001
+            if path != "/api/receipts":
+                return real(path, payload, hub=hub)
+            calls.append([r["id"] for r in payload["receipts"]])
+            if down["on"]:
+                raise RuntimeError("hub refused the receipt")
+            return {}
+
+        hubtool._call = flaky                                     # type: ignore[assignment]
+        try:
+            with hubtool._RC_LOCK:
+                hubtool._RC_RETRY.clear()
+            hubtool._receipts([{"id": "r1"}, {"id": "r2"}], "delivered", hub="H")
+            fixture(bool(hubtool._RC_RETRY.get("H")),
+                    "the fixture's POST did not fail, so nothing was queued")
+            down["on"] = False
+            hubtool._receipts([{"id": "r3"}], "delivered", hub="H")
+        finally:
+            hubtool._call = real                                  # type: ignore[assignment]
+            with hubtool._RC_LOCK:
+                hubtool._RC_RETRY.clear()
+        assert calls[-1] == ["r1", "r2", "r3"], (
+            f"the receipts refused on the first cycle were dropped instead of "
+            f"being retried on the next — the sender's ladder would sit at "
+            f"`fetched` forever for mail that WAS delivered. Sent: {calls}")
+    check("receipts · a refused receipt is retried on a later cycle, as the "
+          "org side has always done", _a_refused_receipt_is_retried_not_dropped)
+
+    def _the_retry_queue_is_bounded():
+        """A hub down for hours must not grow this without limit — the oldest
+        display states are the ones least worth catching up on."""
+        real = hubtool._call
+        hubtool._call = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("down"))  # noqa: ANN001
+        try:
+            with hubtool._RC_LOCK:
+                hubtool._RC_RETRY.clear()
+            for i in range(300):
+                hubtool._receipts([{"id": f"b{i}"}], "delivered", hub="B")
+            n = len(hubtool._RC_RETRY.get("B", []))
+        finally:
+            hubtool._call = real                                  # type: ignore[assignment]
+            with hubtool._RC_LOCK:
+                hubtool._RC_RETRY.clear()
+        assert n <= 200, f"the retry queue grew unbounded to {n}"
+    check("receipts · …and that retry queue is bounded",
+          _the_retry_queue_is_bounded)
+
     # ---- PEER REPORT relayed by the user 2026-08-06 ----------------------
     # "an independent claude chat says unregister isn't an available verb to
     # them."

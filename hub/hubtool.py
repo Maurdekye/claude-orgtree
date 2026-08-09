@@ -385,15 +385,38 @@ def _receipts(msgs: list[dict[str, Any]], state: str,
     missed-mail class in receipt form); READ = hub_read/hub_wait returned
     the message into the caller's context. A session that only ever LISTENS
     correctly tops out at ✓✓ delivered — that is the diagnostic, not a
-    shortfall. Best-effort: a lost receipt costs display state only."""
+    shortfall. Best-effort: a lost receipt costs display state only.
+
+    ⚠ A FAILED receipt RE-QUEUES and is retried on a later cycle. It used to
+    be dropped on the floor — `except: pass` — which meant one refused POST
+    (hub blip, restart, transient network) left the sender's ladder saying
+    `fetched` forever for mail that HAD been delivered. The org side has
+    always re-queued (`net._flush_receipts`); this side silently did not, so
+    the two halves of one ladder degraded differently under the same fault.
+    Still best-effort in the sense that matters: receipts never block
+    correspondence, and the queue is memory-only (a listener restart drops
+    it, which is a lost display state, not a lost message).
+    """
     rc = [{"id": str(m.get("id")), "state": state}
           for m in msgs if m.get("id")]
+    with _RC_LOCK:                      # anything a previous cycle could not send
+        rc = _RC_RETRY.pop(hub or "", []) + rc
     if not rc:
         return
     try:
         _call("/api/receipts", {"receipts": rc}, hub=hub)
     except Exception:                                            # noqa: BLE001
-        pass
+        with _RC_LOCK:
+            # newest last, and bounded: a hub down for hours must not grow
+            # this without limit — the oldest display states are the ones
+            # least worth catching up on
+            q = (_RC_RETRY.setdefault(hub or "", []) + rc)[-200:]
+            _RC_RETRY[hub or ""] = q
+
+
+# receipts a cycle could not deliver, per hub — see _receipts
+_RC_RETRY: dict[str, list[dict[str, Any]]] = {}
+_RC_LOCK = threading.Lock()
 
 
 def _ring_key(d: dict[str, Any], hub: str | None) -> str:
