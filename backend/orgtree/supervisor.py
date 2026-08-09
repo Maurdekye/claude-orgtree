@@ -3742,8 +3742,24 @@ def _detached_spawn(args: list[str], cwd: str, logpath: str,
     lf = open(logpath, "ab")
     kwargs: dict[str, Any] = {}
     if os.name == "nt":
-        # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
-        kwargs["creationflags"] = 0x00000008 | 0x00000200
+        # ⚠ CREATE_NO_WINDOW, *not* DETACHED_PROCESS — this is the whole cause
+        # of the peer's "log has only the launch banner" (neoja 2026-08-09).
+        # MEASURED, three flag sets against one probe script that writes via
+        # Write-Host, Write-Output, [Console]::Out and a native child:
+        #   DETACHED_PROCESS|NEW_GROUP   0/4 lines reached the log — NOTHING
+        #   CREATE_NO_WINDOW|NEW_GROUP   4/4
+        #   NEW_GROUP alone              4/4
+        # DETACHED_PROCESS detaches the child from the console, and with it
+        # goes every write to the redirected handle. So EVERY self-update on
+        # Windows has always logged nothing at all; the failure was never
+        # specific to their machine, and no local deploy exercises this path
+        # (an operator runs update.ps1 through a shell that has a console).
+        # Survival is not lost by the swap: a Windows child already outlives
+        # its parent — DETACHED_PROCESS governs the console, not the lifetime
+        # — verified by killing the parent with os._exit mid-flight and
+        # watching the child finish and write.
+        # CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
+        kwargs["creationflags"] = 0x08000000 | 0x00000200
     else:
         kwargs["start_new_session"] = True
     if env is not None:

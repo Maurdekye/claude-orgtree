@@ -1233,6 +1233,16 @@ def hermetic() -> None:
     check("☠ selfupdate · target 'org' REFUSES while another agent is "
           "mid-turn, and names them", _org_target_refuses_while_busy)
 
+    def _spawn_flags() -> int:
+        """The creationflags _detached_spawn would pass on Windows, read from
+        the source: the value never reaches a return, and a probe alone would
+        not catch DETACHED_PROCESS coming back on a POSIX dev box."""
+        src = open(supervisor.__file__, encoding="utf-8").read()
+        m = re.search(r'kwargs\["creationflags"\]\s*=\s*([0-9xA-Fa-f]+)\s*\|'
+                      r'\s*([0-9xA-Fa-f]+)', src)
+        assert m, "creationflags are no longer set the way this check reads them"
+        return int(m.group(1), 16) | int(m.group(2), 16)
+
     def _self_update_asks_for_only_if_behind():
         """Peer report 2026-08-09 (neoja): a self-update restarted every org on
         their machine and advanced HEAD by nothing. An operator deploy MUST
@@ -1291,6 +1301,41 @@ def hermetic() -> None:
             "could not say why the pull did nothing"
     check("selfupdate · …and both scripts read that flag and exit on it",
           _the_scripts_honour_that_flag)
+
+    def _detached_spawn_keeps_the_childs_output():
+        """☠ THE PEER'S ACTUAL BUG (neoja 2026-08-09), root-caused here rather
+        than on their machine: every Windows self-update logged NOTHING but the
+        Python-written banner, because DETACHED_PROCESS detaches the child from
+        the console and takes the redirected stdout handle with it. Measured
+        0/4 lines against CREATE_NO_WINDOW's 4/4.
+
+        No local deploy exercises this path — an operator runs update.ps1
+        through a shell that has a console — which is exactly why it survived
+        this long. So the flag is pinned, and on Windows the behaviour is
+        re-measured for real rather than asserted from the constant."""
+        assert not (0x00000008 & _spawn_flags()), \
+            "DETACHED_PROCESS is back — the child's output will vanish again"
+        if os.name != "nt":
+            return
+        probe = os.path.join(TMP, "spawnprobe.ps1")
+        with open(probe, "w", encoding="utf-8") as f:
+            f.write('Write-Host "H"\nWrite-Output "O"\n'
+                    '& cmd /c echo N\n')
+        log = os.path.join(TMP, "spawnprobe.log")
+        open(log, "wb").close()
+        supervisor._detached_spawn(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+             "-File", probe], TMP, log)
+        for _ in range(60):                       # the child is detached
+            time.sleep(0.25)
+            body = open(log, encoding="utf-8", errors="replace").read()
+            if all(x in body for x in ("H", "O", "N")):
+                return
+        raise AssertionError(
+            f"a spawned child's output never reached the log — a self-update "
+            f"would report nothing at all. Log: {body!r}")
+    check("☠ selfupdate · a detached child's output actually reaches the log",
+          _detached_spawn_keeps_the_childs_output)
 
     def _refusal_launches_nothing_and_burns_no_rate_limit():
         # a refusal that consumed the 5-minute machine-wide slot would leave
