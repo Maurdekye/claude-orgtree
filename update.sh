@@ -134,9 +134,26 @@ BEFORE=$(git rev-parse --short HEAD 2>/dev/null) || die "not a git checkout: $RO
 echo "== orgtree update (currently $BEFORE) =="
 
 # -- 1 - pull ---------------------------------------------------------------
-git pull --ff-only || die "git pull failed -- resolve manually (local changes?)"
+# report a DIRTY TREE before pulling, always (peer report 2026-08-09, neoja):
+# their self-update restarted every org, advanced nothing, and logged no
+# reason. --ff-only refuses on some dirt and sails past the rest; an operator
+# reading the log must be able to see which.
+DIRTY=$(git status --porcelain)
+if [ -n "$DIRTY" ]; then
+  echo "-- working tree is DIRTY (the pull may refuse):"
+  echo "$DIRTY"
+fi
+git pull --ff-only || die "git pull FAILED -- resolve manually. Nothing was rebuilt and nothing was restarted."
 AFTER=$(git rev-parse --short HEAD)
 if [ "$AFTER" = "$BEFORE" ]; then
+  # ORGTREE_ONLY_IF_BEHIND is the SELF-UPDATE's flag, never an operator's: a
+  # manual deploy ships the commit just made locally, where HEAD does not move
+  # during the pull. An AGENT self-updating is asking for NEW code, and
+  # restarting every org to deliver none is pure disruption (neoja).
+  if [ "${ORGTREE_ONLY_IF_BEHIND:-}" = "1" ]; then
+    echo "already up to date ($AFTER) -- NOT restarting: a self-update with nothing to deploy would cut every org's turn for no gain"
+    exit 0
+  fi
   echo "already up to date ($AFTER) -- redeploying anyway"
 else
   echo "updated $BEFORE -> $AFTER"

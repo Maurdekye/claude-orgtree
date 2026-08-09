@@ -23,7 +23,12 @@ param(
     # trigger runs THIS mode instead: listener alive -> silent no-op; dead ->
     # relaunch only (no pull, no build, no pip). install-autostart.ps1
     # registers both triggers.
-    [switch]$EnsureUp
+    [switch]$EnsureUp,
+    # -OnlyIfBehind (peer report 2026-08-09): exit BEFORE the rebuild+restart
+    # when the pull advanced nothing. Passed by orgtree_self_update, never by
+    # an operator deploy -- see the branch that reads it for why the two
+    # callers must differ.
+    [switch]$OnlyIfBehind
 )
 
 $ErrorActionPreference = 'Stop'
@@ -46,15 +51,37 @@ if (-not $EnsureUp) {
 Write-Host "== orgtree update (currently $before) =="
 
 # -- 1 - pull ---------------------------------------------------------------
+# A DIRTY TREE is reported before the pull, always (peer report 2026-08-09,
+# neoja): their self-update restarted every org and advanced nothing, and the
+# log said nothing at all about why. Whatever stopped that particular pull,
+# an operator reading a log has to be able to SEE the working-tree state --
+# `--ff-only` refuses on some dirt and sails past the rest, and "which was
+# it?" should never require going to the machine to find out.
+$dirty = (git status --porcelain) | Out-String
+if ($dirty.Trim()) {
+    Write-Host "-- working tree is DIRTY (the pull may refuse):" -ForegroundColor Yellow
+    Write-Host $dirty.TrimEnd()
+}
 git pull --ff-only
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "git pull failed -- resolve manually (local changes?)" -ForegroundColor Red
+    Write-Host "git pull FAILED (exit $LASTEXITCODE) -- resolve manually. Nothing was rebuilt and nothing was restarted." -ForegroundColor Red
     exit 1
 }
 }
 $after = (git rev-parse --short HEAD).Trim()
 if (-not $EnsureUp) {
 if ($after -eq $before) {
+    # ⚠ -OnlyIfBehind is the SELF-UPDATE's flag, not the operator's. A manual
+    # `update.ps1` deploys the commit you just made locally, where HEAD never
+    # moves during the pull -- gating that on "HEAD advanced" would break
+    # every deploy this repo actually does. But an AGENT self-updating is
+    # asking for NEW code, and restarting every org on the machine to deliver
+    # none of it is pure disruption (neoja, 2026-08-09). Same script, two
+    # honest jobs.
+    if ($OnlyIfBehind) {
+        Write-Host "already up to date ($after) -- NOT restarting: a self-update with nothing to deploy would cut every org's turn for no gain"
+        exit 0
+    }
     Write-Host "already up to date ($after) -- redeploying anyway"
 } else {
     Write-Host "updated $before -> $after"

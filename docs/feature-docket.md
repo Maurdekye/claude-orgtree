@@ -1263,3 +1263,74 @@ org-level path, so `mail.tsx` maps them with `path = a.name` and a link there wo
 30 backend lines, one frontend prop, plus tests — "small because the parts already line up, not
 because the surface is trivial." The redteam has offered to supply an expanded trace or a written
 spec on request if whoever picks this up wants either.
+
+---
+
+### FR-22 · rescind — retire that also permanently claws back the superior's grant
+> new feature: rescind. sits alongside retire. when agent is rescinded, that agents subtree is
+> retired / dissolved, *and* the agent's superior also immediately loses the credit grant that was
+> used to hire them from their total, preventing them from being rehired
+
+*(user request 2026-08-09, recorded by the curator. Not built. The credit-mechanics half is more
+precisely answerable than it first looks — traced against `ledger.py` rather than assumed.)*
+
+**The subtree half is already built — `retire()` already does exactly this on encounter.**
+`retire()` (`ledger.py:1988-2028`) already auto-bridges to `dissolve()` (`:2227-2252`, recursive
+archive, deepest-first, "takes the whole lineage stack") the moment it finds live children —
+*"a superior retiring a node with live reports auto-DISSOLVES the subtree, with a warning."*
+Rescind's "that agent's subtree is retired/dissolved" is not new work; it's calling the same path
+`retire()` already calls, unmodified.
+
+**The claw-back half is genuinely new, and the reason it's needed is precise, not hand-wavy.**
+Today, retiring a node returns nothing to the parent explicitly — there is no "refund" mutation to
+undo. `committed(nid)` (`:487-488`) sums `seat_cost + grant` over a node's **live** children only
+(`children()`, `:479-485`, filters `state != "archived"`), and `free(nid)` (`:490-493`) is the
+*derived* value `grant - committed`. The instant a node is archived it drops out of its parent's
+`committed()` sum, and the parent's `free()` recomputes upward automatically — no code runs to
+"give the credits back," they were simply never counted against the parent once the child stopped
+being live. **That auto-recompute is exactly the mechanism that makes retired nodes rehireable
+today, and exactly what rescind needs to defeat.**
+
+**The mechanism that defeats it, and why it's safe:** after archiving (same as retire), explicitly
+subtract `freed = seat_cost(nid) + n["grant"]` — the *same* quantity `retire()` already computes,
+just applied as a real mutation instead of a report — from the immediate superior's own stored
+`n["grant"]` field. Traced through the arithmetic: before rescind, `parent.free = parent.grant -
+parent.committed`. Archiving drops `freed` from `parent.committed` (automatic, as above); explicitly
+subtracting the same `freed` from `parent.grant` leaves `parent.free` **exactly where it was before
+the hire ever happened** — net zero headroom gained, versus a plain retire's net `+freed`. This
+can't go negative: `committed(parent) ≥ freed` always held while the child was live (that's what
+funded it), so `parent.grant ≥ freed` must already hold too.
+
+**The one subtlety worth stating precisely: which superior, when the original hire cascaded.**
+`_chain_acquire` (`:1852-1929`) lets a hire's cost bubble up past the immediate parent when the
+parent alone couldn't afford it — but critically, cascading inflates the **immediate parent's own
+`grant` field too** (`:1913-1917`, every hop strictly below the contributing ancestor gets inflated,
+"grants inflating down the path so every hop's invariant holds"). So the immediate parent's stored
+`grant` always fully reflects what it needed to afford this specific child, regardless of whether
+that capacity originally came from itself or bubbled down from further up — meaning subtracting
+`freed` from just the **immediate** superior (matching the user's own wording, "the agent's
+superior," singular) is always arithmetically correct on its own terms, with no need to walk the
+original funding chain. The residual case — a grandparent (or higher) whose grant was permanently
+inflated to fund the original cascade stays inflated after a rescind, since rescind only touches the
+immediate parent — is a **pre-existing characteristic of the credit-cascade system itself, not
+something rescind introduces.** The system already tells the user this today, verbatim, on every
+cascaded hire: *"grants below it were inflated to carry them down — reclaim with `reallocate`."*
+Not this entry's problem to solve.
+
+**What "rescind" needs beyond retire's existing tool, concretely:** (1) the explicit `parent.grant
+-= freed` mutation described above, on top of retire's existing archive-and-cascade-to-dissolve path;
+(2) a new verb/menu action distinct from `orgtree_retire` (`mcptool.py:391-403`), since the two have
+materially different consequences for the superior and conflating them would surprise whoever clicks
+the wrong one; (3) a decision on **authority** — `orgtree_retire` is agent-callable within one's own
+subtree today, but rescind's punitive effect lands on a THIRD party (the rescinded node's superior),
+not just the rescinded node itself. Worth a deliberate ruling on who may invoke it: the same
+subtree-authority rule as retire (an ancestor rescinding a descendant, including possibly punishing
+an intermediate superior who isn't the actor), self-rescind by the superior itself (voluntarily
+taking the credit hit for its own bad hire), user-only (mirroring `delete()`'s "permanent removal is
+the user's alone" ruling, on the reasoning that clawing back another node's resources is a
+comparably weighty, hard-to-reverse action even though the session itself is preserved) — not
+assumed here.
+
+Not scoping a build here — the subtree-dissolve half is a straight reuse; the claw-back half is a
+small, precisely-safe mutation once traced; the authority question is the one real ruling needed
+before writing it.

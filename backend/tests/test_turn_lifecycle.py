@@ -1233,6 +1233,65 @@ def hermetic() -> None:
     check("☠ selfupdate · target 'org' REFUSES while another agent is "
           "mid-turn, and names them", _org_target_refuses_while_busy)
 
+    def _self_update_asks_for_only_if_behind():
+        """Peer report 2026-08-09 (neoja): a self-update restarted every org on
+        their machine and advanced HEAD by nothing. An operator deploy MUST
+        keep redeploying an unmoved HEAD (that is how a locally-made commit
+        ships) — so the difference has to travel with the CALL, not live in
+        the script. Pinned as argv/env, because a silent revert here is
+        exactly the disruption the peer reported."""
+        seen: list[tuple[list[str], dict[str, str] | None]] = []
+        real = supervisor._detached_spawn
+        real_busy = supervisor.others_working
+        supervisor._detached_spawn = (                       # type: ignore[assignment]
+            lambda args, cwd, logpath, env=None: seen.append((args, env)))
+        # by now this suite has left other nodes busy, so the D-104 refusal
+        # would fire before the spawn — that gate has its own checks above
+        supervisor.others_working = lambda exclude=None: []   # type: ignore[assignment]
+        try:
+            supervisor._self_update_at[0] = 0.0
+            supervisor.launch_self_update(su_slug, su_nid, "org")
+        finally:
+            supervisor._detached_spawn = real                # type: ignore[assignment]
+            supervisor.others_working = real_busy             # type: ignore[assignment]
+            supervisor._self_update_at[0] = 0.0
+        assert seen, "nothing was spawned at all"
+        args, env = seen[0]
+        if os.name == "nt":
+            assert "-OnlyIfBehind" in args, args
+        else:
+            assert (env or {}).get("ORGTREE_ONLY_IF_BEHIND") == "1", env
+    check("selfupdate · the launch asks the script NOT to restart when the "
+          "pull advances nothing", _self_update_asks_for_only_if_behind)
+
+    def _the_scripts_honour_that_flag():
+        """…and the flag has to MEAN something on the other side. Both scripts
+        are read as text: the branch that exits before the rebuild must exist
+        and must be reached from the same name the launch passes."""
+        repo = os.path.normpath(os.path.join(
+            os.path.dirname(os.path.abspath(supervisor.__file__)), "..", ".."))
+        ps1 = open(os.path.join(repo, "update.ps1"), encoding="utf-8").read()
+        sh = open(os.path.join(repo, "update.sh"), encoding="utf-8").read()
+        assert "$OnlyIfBehind" in ps1 and "[switch]$OnlyIfBehind" in ps1, \
+            "update.ps1 does not declare/read the switch the launch passes"
+        assert "ORGTREE_ONLY_IF_BEHIND" in sh, \
+            "update.sh does not read the env var the launch sets"
+        # the BRANCH, not the first mention — the param block names it too
+        for name, src, needle in (
+                ("update.ps1", ps1, "if ($OnlyIfBehind) {"),
+                ("update.sh", sh, 'ORGTREE_ONLY_IF_BEHIND:-')):
+            i = src.find(needle)
+            assert i > 0, f"{name} has no branch on the flag ({needle!r})"
+            assert "exit 0" in src[i:i + 400], \
+                f"{name} branches on the flag but does not EXIT — it would " \
+                f"fall through to the rebuild and restart anyway"
+        # and a dirty tree is reported rather than silently changing the answer
+        assert "porcelain" in ps1 and "porcelain" in sh, \
+            "neither script reports a dirty working tree; the peer's log " \
+            "could not say why the pull did nothing"
+    check("selfupdate · …and both scripts read that flag and exit on it",
+          _the_scripts_honour_that_flag)
+
     def _refusal_launches_nothing_and_burns_no_rate_limit():
         # a refusal that consumed the 5-minute machine-wide slot would leave
         # an idle machine unable to update for five minutes over a no-op

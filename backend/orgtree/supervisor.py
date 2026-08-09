@@ -3727,9 +3727,18 @@ _self_update_at = [0.0]        # machine-wide one-at-a-time guard
 _self_update_log = [""]        # the last launch's log path
 
 
-def _detached_spawn(args: list[str], cwd: str, logpath: str) -> None:
+def _detached_spawn(args: list[str], cwd: str, logpath: str,
+                    env: dict[str, str] | None = None) -> None:
     """Launch a process that SURVIVES this backend dying — which is the
-    point: update.ps1 stops and restarts the very process spawning it."""
+    point: update.ps1 stops and restarts the very process spawning it.
+
+    ⚠ The spawn itself is RECORDED in the log, argv and pid, before anything
+    the child might say. A peer hit a self-update whose log held the launch
+    banner and nothing else (neoja 2026-08-09) — and with only that, "the
+    child never started", "it started and died mute" and "its output never
+    reached this file" are indistinguishable, which is why their report could
+    not name a cause. With this line they are three different logs.
+    """
     lf = open(logpath, "ab")
     kwargs: dict[str, Any] = {}
     if os.name == "nt":
@@ -3737,9 +3746,19 @@ def _detached_spawn(args: list[str], cwd: str, logpath: str) -> None:
         kwargs["creationflags"] = 0x00000008 | 0x00000200
     else:
         kwargs["start_new_session"] = True
+    if env is not None:
+        kwargs["env"] = env
     try:
-        subprocess.Popen(args, cwd=cwd, stdout=lf, stderr=subprocess.STDOUT,
-                         stdin=subprocess.DEVNULL, **kwargs)
+        try:
+            p = subprocess.Popen(args, cwd=cwd, stdout=lf,
+                                 stderr=subprocess.STDOUT,
+                                 stdin=subprocess.DEVNULL, **kwargs)
+        except OSError as e:
+            # a spawn that never happened must not read as a spawn that said
+            # nothing — this is the branch that used to raise past the log
+            lf.write(f"!! SPAWN FAILED: {args} in {cwd}: {e}\n".encode())
+            raise
+        lf.write(f"-- spawned pid {p.pid}: {args} (cwd {cwd})\n".encode())
     finally:
         lf.close()      # the child holds its own handle
 
@@ -3829,13 +3848,21 @@ def launch_self_update(slug: str, nid: str, target: str) -> dict[str, Any]:
     if target in ("org", "both"):
         # Linux is a first-class install target (user ruling 2026-08-06):
         # update.sh mirrors update.ps1 step for step
+        # -OnlyIfBehind: an agent self-updating wants NEW code; if the pull
+        # advances nothing there is nothing to deploy, and restarting every
+        # org on the machine to deliver nothing is pure disruption (peer
+        # report 2026-08-09, neoja — their run restarted every org and left
+        # HEAD where it was). An OPERATOR deploy passes neither flag and keeps
+        # redeploying, because that is how a locally-made commit ships.
         if os.name == "nt":
             _detached_spawn(
                 ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-                 "-File", os.path.join(repo, "update.ps1")], repo, logpath)
+                 "-File", os.path.join(repo, "update.ps1"),
+                 "-OnlyIfBehind"], repo, logpath)
         else:
             _detached_spawn(
-                ["bash", os.path.join(repo, "update.sh")], repo, logpath)
+                ["bash", os.path.join(repo, "update.sh")], repo, logpath,
+                env={**os.environ, "ORGTREE_ONLY_IF_BEHIND": "1"})
         launched.append("org backend (git pull + rebuild + restart — "
                         "EVERY org on this machine restarts)")
     if target in ("mailhub", "both"):
