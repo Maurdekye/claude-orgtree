@@ -130,6 +130,21 @@ case "$PY" in
 esac
 echo "python: $PY ($("$PY" -c 'import sys; print(sys.version.split()[0])'))$PY_KIND"
 
+# ---- ONE DEPLOY AT A TIME -------------------------------------------------
+# Nothing serialized these until 2026-08-09 (peer question, neoja). Two runs
+# race on the git index, on npm's node_modules, and on stopping/starting the
+# same port. `flock` on a lockfile beside the data root; the FD is held for
+# the life of the process, so the lock releases however this exits.
+_LOCK="${ORGTREE_DATA:-$HOME/orgtree}/.update.lock"
+mkdir -p "$(dirname "$_LOCK")" 2>/dev/null || true
+if command -v flock >/dev/null 2>&1; then
+  exec 9>"$_LOCK"
+  if ! flock -n 9; then
+    echo "another orgtree update is already running -- this one exits rather than racing it on git, npm and the port."
+    exit 0
+  fi
+fi
+
 BEFORE=$(git rev-parse --short HEAD 2>/dev/null) || die "not a git checkout: $ROOT"
 echo "== orgtree update (currently $BEFORE) =="
 
