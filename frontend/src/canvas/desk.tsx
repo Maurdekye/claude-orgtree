@@ -193,7 +193,12 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
     modeTimer.current = m ? setTimeout(() => setSendMode(''), SENDMODE_MS) : null
   }, [])
   useEffect(() => () => { if (modeTimer.current) clearTimeout(modeTimer.current) }, [])
-  const [asking, setAsking] = useState(false)
+  // 'dissolve' | 'retire' — retire JOINED this (user bug 2026-08-09: "retire
+  // on desk view has no confirmation"). It sat alone as the one seat-freeing
+  // action that fired straight off the click, next to a dissolve button that
+  // asks; a mis-click stopped an agent mid-work and the undo lived in a toast
+  // that scrolls away.
+  const [asking, setAsking] = useState<'dissolve' | 'retire' | null>(null)
   const [askCompact, setAskCompact] = useState(false)
   // F-01 footer: retired reports collapsed behind one chip (user ruling)
   const [showRetired, setShowRetired] = useState(false)
@@ -459,14 +464,10 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
             the full chrome (actions, tabs, gear) */}
         {!compact && <span className="cc-actions">
           {live && !liveKids &&
-            <button className="danger"
-              onClick={() => op({ op: 'retire', node: node.id }).then(() =>
-                toast([`${node.id} retired`],
-                  () => op({ op: 'rehire', node: node.id }).catch(() => {})))
-                .catch(() => {})}>
+            <button className="danger" onClick={() => setAsking('retire')}>
               retire · {node.seat! + node.grant!}</button>}
           {live && liveKids &&
-            <button className="danger" onClick={() => setAsking(true)}>
+            <button className="danger" onClick={() => setAsking('dissolve')}>
               dissolve · {node.seat! + node.grant!}</button>}
           {!live && <button onClick={() => op({ op: 'rehire', node: node.id })}>rehire</button>}
         </span>}
@@ -492,12 +493,26 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
           <NavChip n={map.get(node.parent)!} dir="up" onJump={onJump} />
         </div>
       )}
-      {asking && (
+      {asking === 'dissolve' && (
         <ConfirmModal title={`dissolve ${node.id}?`}
           body="Its entire suborganization is retired with it. Context is kept; rehire brings nodes back."
           confirmLabel="dissolve"
           onConfirm={() => op({ op: 'dissolve', node: node.id })}
-          close={() => setAsking(false)} />
+          close={() => setAsking(null)} />
+      )}
+      {asking === 'retire' && (
+        <ConfirmModal title={`retire ${node.id}?`}
+          body={`It stops working and frees ${(node.seat ?? 0) + (node.grant ?? 0)} credit(s) back to its superior. Its context is KEPT — rehire brings it back exactly as it was.`
+            + (node.busy || chat?.busy
+              ? ' ⚠ It is mid-turn right now; that turn is cut off.' : '')}
+          confirmLabel="retire"
+          // the undo toast stays: the confirm stops the mis-click, the toast
+          // catches the changed mind a moment later
+          onConfirm={() => op({ op: 'retire', node: node.id }).then(() =>
+            toast([`${node.id} retired`],
+              () => op({ op: 'rehire', node: node.id }).catch(() => {})))
+            .catch(() => {})}
+          close={() => setAsking(null)} />
       )}
       {askCompact && (
         <ConfirmModal title={`compact ${node.id} now?`}
@@ -861,6 +876,10 @@ export function LineagePanel({ node, op, slug, close }: LineagePanelProps) {
   // №12: READING an archived bearer's transcript is free — rehiring is for
   // asking it questions, not for looking at what it holds
   const [reading, setReading] = useState<string | null>(null)     // bearer id being read
+  // retiring a knowledge bearer asks too (user bug 2026-08-09) — every other
+  // seat-freeing button in the app confirms, and this one drops a whole
+  // consultable generation off the end of the lineage
+  const [retiring, setRetiring] = useState<string | null>(null)
   const [readChat, setReadChat] = useState<Pick<ChatPayload, 'messages'> | null>(null)
   const readingRef = useRef<string | null>(null)
   const openRead = (bid: string) => {
@@ -926,8 +945,7 @@ export function LineagePanel({ node, op, slug, close }: LineagePanelProps) {
               ) : (
                 <>
                   <span className="badge free">consultable</span>
-                  <button className="danger" onClick={() =>
-                    op({ op: 'retire', node: b.id }).then(close).catch(() => {})}>
+                  <button className="danger" onClick={() => setRetiring(b.id)}>
                     retire · frees {SEAT[b.tier]}</button>
                 </>
               )}
@@ -947,6 +965,14 @@ export function LineagePanel({ node, op, slug, close }: LineagePanelProps) {
           <div className="dim pad">no prior generations — this agent has never compacted</div>}
         <div className="row"><button onClick={close}>close</button></div>
       </div>
+      {retiring && (
+        <ConfirmModal title={`retire generation ${retiring}?`}
+          body="It stops being consultable and frees its seat. Its transcript is kept and rehire brings it back — but reading a bearer's transcript is free and needs no rehire at all."
+          confirmLabel="retire"
+          onConfirm={() => op({ op: 'retire', node: retiring })
+            .then(close).catch(() => {})}
+          close={() => setRetiring(null)} />
+      )}
     </div>
   )
 }

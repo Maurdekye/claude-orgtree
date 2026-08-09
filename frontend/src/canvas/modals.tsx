@@ -485,7 +485,8 @@ interface NodeConfigProps {
 
 export function NodeConfig({ node, map, tree, slug, op, toast, close }: NodeConfigProps) {
   useEsc(close)
-  const [asking, setAsking] = useState<'delete' | 'dissolve' | null>(null)   // null | 'delete' | 'dissolve'
+  const [asking, setAsking] =
+    useState<'delete' | 'dissolve' | 'retire' | null>(null)
   // every card that opens a config panel carries a scope (real nodes and
   // bearer stubs both) — only the eye root and drafts lack one
   const scope = node.scope!
@@ -589,9 +590,11 @@ export function NodeConfig({ node, map, tree, slug, op, toast, close }: NodeConf
         )}
 
         <div className="row">
+          {/* retire asks too (user bug 2026-08-09) — it sat as the one
+              seat-freeing action firing straight off the click, beside a
+              dissolve button that asks */}
           {node.state === 'live' && !node.children.some((c) => c.state !== 'archived') &&
-            <button className="danger" onClick={() =>
-              op({ op: 'retire', node: node.id }).then(close).catch(() => {})}>
+            <button className="danger" onClick={() => setAsking('retire')}>
               retire · {node.seat! + node.grant!}</button>}
           {node.state === 'live' && node.children.some((c) => c.state !== 'archived') &&
             <button className="danger" onClick={() => setAsking('dissolve')}>
@@ -853,6 +856,14 @@ export function NodeConfig({ node, map, tree, slug, op, toast, close }: NodeConf
           <button onClick={close}>cancel</button>
         </div>
       </div>
+      {asking === 'retire' && (
+        <ConfirmModal title={`retire ${node.id}?`}
+          body={`It stops working and frees ${(node.seat ?? 0) + (node.grant ?? 0)} credit(s) back to its superior. Its context is KEPT — rehire brings it back exactly as it was.`}
+          confirmLabel="retire"
+          onConfirm={() => op({ op: 'retire', node: node.id })
+            .then(close).catch(() => {})}
+          close={() => setAsking(null)} />
+      )}
       {asking === 'dissolve' && (
         <ConfirmModal title={`dissolve ${node.id}?`}
           body="Its entire suborganization is retired with it. Context is kept; rehire brings nodes back."

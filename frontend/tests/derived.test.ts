@@ -239,3 +239,35 @@ test('⑨  every read-marking call refreshes the payload its rows come from',
       'a read-marking call with no .then() refresh — its rows will keep their '
       + 'unread mark until the next poll:\n  ' + bad.join('\n  '))
   })
+
+// --------------------------------------------------------------------- ⑩
+test('⑩  no destructive op fires straight off a click — each one asks first',
+  () => {
+    // User bug 2026-08-09: "retire on desk view has no confirmation". It was
+    // the ONE seat-freeing action wired directly to onClick, sitting next to
+    // a dissolve button that asks — and a mis-click stops an agent mid-turn,
+    // with the undo living in a toast that scrolls away.
+    //
+    // Three call sites had it (the desk action bar, the ⚙ panel, the lineage
+    // bearer row) and only the reporter's route was named. That is the same
+    // shape as the read-marking miss in ⑨: fix the family, not the instance.
+    //
+    // The rule: an op whose effect is to STOP or DESTROY something reaches
+    // `op({op: ...})` from a ConfirmModal's onConfirm, never from an onClick
+    // handler. Detected structurally — an onClick line that also carries the
+    // op call is the defect; a setAsking/setRetiring hand-off is the fix.
+    const DESTRUCTIVE = /op\(\{\s*op:\s*'(retire|dissolve|delete)'/
+    const bad: string[] = []
+    for (const f of ['canvas/desk.tsx', 'canvas/modals.tsx', 'canvas/cards.tsx',
+      'canvas/OrgCanvas.tsx', 'App.tsx']) {
+      for (const { n, l } of lines(f)) {
+        if (/^\s*(\/\/|\*)/.test(l)) continue
+        if (DESTRUCTIVE.test(l) && /onClick/.test(l)) {
+          bad.push(`${f}:${n}  ${l.trim().slice(0, 90)}`)
+        }
+      }
+    }
+    assert.deepEqual(bad, [],
+      'a destructive op fires directly from a click, with no confirmation:\n  '
+      + bad.join('\n  '))
+  })

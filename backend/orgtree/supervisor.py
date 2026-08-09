@@ -1065,6 +1065,21 @@ def identity_prompt(org: Org, nid: str) -> str:
            "its context; rehire brings it back exactly as it was, so this is "
            "reversible and not a judgement on its work. "
            if org.children(nid) else "")
+        # the other half of that loop (user ruling 2026-08-09), and it must be
+        # said to EVERY agent, not only current managers: an agent with no
+        # live reports is exactly the one that would otherwise hire a stranger
+        # for work a retired specialist already did.
+        + ("RETIRED AGENTS ARE NOT GONE — REHIRE THEM. An archived agent keeps "
+           "its whole transcript, so rehiring one restores an expert that "
+           "already knows the codebase, the decisions and the dead ends. "
+           "Before hiring someone NEW, look at who you have already retired "
+           "(orgtree_chart shows them) and ask whether one of them did this "
+           "work before: rehiring costs the same seat as a fresh hire and "
+           "starts with the context a new agent would spend turns rebuilding. "
+           "Hire new for genuinely new ground, rehire for ground already "
+           "covered. And to READ what a retired agent knew you need not "
+           "rehire at all — orgtree_read_transcript works on it as it stands. "
+           if org.children(nid, live_only=False) else "")
         + ("THE ORG INBOX: mail from @org:<slug> (another organization), "
            "@mcp:<id> (a polling external "
            "chat) or @net:<slug> (a chat or org elsewhere, via the mail hub) "
