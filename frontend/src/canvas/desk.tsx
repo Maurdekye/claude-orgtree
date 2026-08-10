@@ -415,8 +415,17 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
                 reset time that is a lie (redteam 2026-08-06) */}
             {node.limit_locked ? 'HALTED — fable lock'
               : node.frozen.connection ? 'network' : 'usage limit'}
+            {/* ⚠ "resumes X" is a LIMIT's phrasing — there X is a reset time
+                and something does resume at it. A connection freeze's label
+                is a statement of fact ("network interruption — attempt 1/4"),
+                because whether anything retries depends on the org's
+                auto-resume toggle, which the org banner knows and a node
+                badge does not. Saying "resumes" here promised a retry that,
+                with the toggle off, nobody performs (2026-08-10). */}
             {!node.limit_locked && node.frozen.until
-              ? ` · resumes ${node.frozen.until}` : ''}</span>}
+              ? ` · ${node.frozen.connection
+                ? node.frozen.until.replace(/^network interruption — /, '')
+                : `resumes ${node.frozen.until}`}` : ''}</span>}
         {node.limit_locked &&
           <span className="badge dim"><LockIcon fontSize="inherit" /> limit</span>}
         {/* ⭐ the user's per-node override (ruling 2026-08-06): one click

@@ -426,11 +426,24 @@ export default function App() {
                           .catch((e: Error) => toast([`error: ${e.message}`]))}>
                         <PlayIcon fontSize="inherit" /> resume {frozen.length}
                       </button>
+                      {/* ⚠ this line is the ONLY place that knows both the
+                          freeze kind and whether anything will act on it, so
+                          it is the only place allowed to say. A connection
+                          freeze names the attempt and then who resumes it:
+                          with auto off — the default — NOTHING does, and the
+                          old wording ("resumable in ~30s") promised a retry
+                          no component performs (2026-08-10). */}
                       <span className="resume-note">
                         {frozen.every((n) => n.frozen.connection)
-                          ? 'network interruption'
-                          : 'usage limit hit'} — {frozen.length} agent{frozen.length > 1 ? 's' : ''} frozen
-                        {until ? ` · resumable ${until}` : ''}
+                          ? <>network interruption — {frozen.length} agent
+                            {frozen.length > 1 ? 's' : ''} frozen
+                            {until ? ` · ${until.replace(/^network interruption — /, '')}` : ''}
+                            {tree.auto_resume
+                              ? ' · retrying automatically'
+                              : ' · press ▶ to retry'}</>
+                          : <>usage limit hit — {frozen.length} agent
+                            {frozen.length > 1 ? 's' : ''} frozen
+                            {until ? ` · resumable ${until}` : ''}</>}
                       </span>
                       {!tree.public &&
                         <button className={'auto-resume' + (tree.auto_resume ? ' on' : '')}

@@ -2250,9 +2250,19 @@ def _run_one_turn(slug: str, nid: str,
                                 fz["connection"] = True
                                 delay = min(300.0, 30.0 * (2 ** (run - 1)))
                                 fz["until_ts"] = time.time() + delay
-                                fz["until"] = (f"network interruption — retry "
-                                               f"{run}/{NET_RETRY_MAX} in "
-                                               f"~{int(delay)}s")
+                                # ⚠ a STATEMENT OF FACT, not a promise. This
+                                # said "retry {run}/{MAX} in ~{delay}s", and
+                                # on an org with auto_resume off — the default
+                                # — nothing performs that retry: the restart
+                                # belongs to auto_resume or ▶, deliberately
+                                # (see the note above). A label cannot know
+                                # which, because the toggle can flip after the
+                                # freeze is written, so it states the attempt
+                                # and lets the DESK say who acts on it from
+                                # the org's live setting (peer report
+                                # 2026-08-10, user report behind it).
+                                fz["until"] = (f"network interruption — "
+                                               f"attempt {run}/{NET_RETRY_MAX}")
                                 fz["error"] = err_blob[:300]
                                 if not is_cmd and not pend_toks:
                                     fz.setdefault("resume_texts",

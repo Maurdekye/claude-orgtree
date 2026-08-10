@@ -614,6 +614,13 @@ def sec_attack_the_fix() -> None:
             fixture(bool(n.get("frozen")),
                     f"attempt {i + 1} did not freeze (run="
                     f"{n.get('net_fail_run')!r})")
+            lbl = (n["frozen"].get("until") or "").lower()
+            assert "retry" not in lbl and "in ~" not in lbl, (
+                "the freeze label PROMISES a retry. Nothing in the backend "
+                "performs one unless the org's auto_resume toggle is on — off "
+                "is the default and the deliberate policy — and the toggle can "
+                "flip after this string is written, so the label must state "
+                f"the attempt and leave WHO to the desk: {n['frozen']['until']!r}")
             # ⚠ un-park by clearing the record, NOT with resume_frozen: that
             # SPAWNS a replay turn, which fails on the same dead wire and
             # increments the counter again — the run reached 7 inside four
@@ -696,7 +703,7 @@ def _sec_wake_body() -> None:
     store.save_org(org)
     now = time.time()
     _freeze(slug, a, connection=True, until_ts=now - 5,
-            until="network interruption — retry 1/4 in ~30s")
+            until="network interruption — attempt 1/4")
     _freeze(slug, b, limit=True, until_ts=now + 7 * 86400,
             until="weekly limit")
 
