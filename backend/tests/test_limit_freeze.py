@@ -592,6 +592,46 @@ def sec_attack_the_fix() -> None:
           "owns it rather than deferring to a mechanism that does not exist)",
           _resume_works)
 
+    # ── what state the node is REALLY in after the last network attempt ─────
+    slug_n, nid_n = probe_org()
+    NETERR = "API Error: fetch failed (ECONNREFUSED 127.0.0.1:443)"
+
+    def _terminal_network_failure_leaves_the_node_unfrozen():
+        """A peer read supervisor.py:2263-2268 and reported that its message —
+        "resume manually (▶ or new mail)" — names an escape hatch that does
+        not work, since a FROZEN node accepts mail and starts nothing. Half
+        right, and the wrong half: measured here, the terminal attempt writes
+        NO freeze (the record is only written while run <= NET_RETRY_MAX), so
+        the node ends unfrozen. It is ▶ that does nothing at that point —
+        resume_frozen finds no record to clear — while new mail is the one
+        thing that DOES drive it. The sentence is wrong in the opposite
+        direction from the report, which is why it is measured and not
+        reasoned about."""
+        set_mode("iserror", limit_text=NETERR)
+        for i in range(supervisor.NET_RETRY_MAX):
+            run_turn(slug_n, nid_n, "keeps dropping")
+            n = node(slug_n, nid_n)
+            fixture(bool(n.get("frozen")),
+                    f"attempt {i + 1} did not freeze (run="
+                    f"{n.get('net_fail_run')!r})")
+            # ⚠ un-park by clearing the record, NOT with resume_frozen: that
+            # SPAWNS a replay turn, which fails on the same dead wire and
+            # increments the counter again — the run reached 7 inside four
+            # loop passes and sailed past the cap before the loop finished.
+            org = store.load_org(slug_n)
+            org.nodes[nid_n].pop("frozen", None)
+            store.save_org(org)
+        run_turn(slug_n, nid_n, "and again")
+        n = node(slug_n, nid_n)
+        assert (n.get("net_fail_run") or 0) > supervisor.NET_RETRY_MAX, \
+            f"never reached the terminal attempt: {n.get('net_fail_run')}"
+        assert not n.get("frozen"), (
+            "the node is frozen after the terminal attempt, so its own "
+            f"message's ▶ half would be the working one: {n['frozen']}")
+    check("transient · the attempt PAST the retry cap leaves the node "
+          "unfrozen — so 'new mail' resumes it and ▶ is the dead half",
+          _terminal_network_failure_leaves_the_node_unfrozen)
+
     def _replayed_for_real():
         # ▶ hands the replay to a worker thread (supervisor.py:2951), so the
         # measurement has to wait for the turn, not for the call

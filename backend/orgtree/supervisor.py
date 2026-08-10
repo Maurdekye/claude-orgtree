@@ -2261,11 +2261,18 @@ def _run_one_turn(slug: str, nid: str,
                     if 0 < run <= NET_RETRY_MAX:
                         notify(slug, nid, "frozen")
                     elif run > NET_RETRY_MAX:
+                        # ⚠ NOT "▶ or new mail" (peer report 2026-08-10, whose
+                        # halves were the other way round). This branch writes
+                        # NO freeze — the record is only written while
+                        # run <= NET_RETRY_MAX — so the node ends here
+                        # UNFROZEN. ▶ is the dead half: resume_frozen finds no
+                        # record to clear. Any new turn, mail included, drives
+                        # it normally. Measured in test_limit_freeze §4.
                         raise RuntimeError(
                             f"turn failed after {run} network-classified "
                             f"attempts — the connection trouble is not "
-                            f"passing; resume manually (▶ or new mail): "
-                            f"{err_blob[:300]}")
+                            f"passing; the agent is no longer frozen, so send "
+                            f"it anything to try again: {err_blob[:300]}")
                 raise RuntimeError(f"turn failed: {err_blob[:400] or 'no output'}")
             st["last_error"] = None
             st["turns_run"] += 1
@@ -2955,11 +2962,19 @@ def send_message(slug: str, nid: str, text: str,
     steers instead: the PostToolUse hook delivers right after its next tool
     call — soonest possible without interrupting (user ruling). Restart
     durability is inherent: undelivered mail lives in the org doc and
-    reconcile() re-drives it. Attached nodes (№17: open in the user's
-    terminal) only queue."""
+    reconcile() re-drives it — EXCEPT for a frozen node, which reconcile
+    skips (the two guards near the end of this file). The mail is still safe
+    in the mailbox, but nothing re-drives it, so a node frozen before a
+    restart comes back frozen into a backend that reconciles everything
+    else; only ▶ or auto_resume moves it (peer report 2026-08-10, and the
+    reason a power-cycle reads as "stuck forever"). Attached nodes (№17:
+    open in the user's terminal) only queue."""
     st = state(slug, nid)
-    # a FROZEN node (usage limit) runs nothing: mail stays safe in its mailbox
-    # (not drained) until the org-wide ▶ resume
+    # a FROZEN node runs nothing: mail stays safe in its mailbox (not drained)
+    # until the org-wide ▶ resume. Both freeze kinds land here — the usage
+    # limit and, since 2026-08-06, the connection backoff, which reuses the
+    # same flag. So NEW MAIL IS NOT AN ESCAPE HATCH from a freeze of either
+    # kind: it is accepted, queued: 0, and nothing starts.
     with store.DOC_LOCK:
         _o = store.load_org(slug)
         if nid in _o.nodes and _o.node(nid).get("frozen"):
