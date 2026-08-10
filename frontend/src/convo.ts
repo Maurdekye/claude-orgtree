@@ -31,6 +31,12 @@ export const MAX_WINDOW = 1000        // the API's own cap
 const BUSY_POLL_MS = 2500      // heartbeat while the payload says busy
 const IDLE_POLL_MS = 7000      // heartbeat otherwise — slower, never off
 const NUDGE_MS = 200           // burst coalescing for the post-event refetch
+/** How long an unsettled fetch may hold the refresh gate before a later tick
+ *  is allowed past it. Comfortably above the request ceiling api.ts imposes,
+ *  so in ordinary operation this never fires — it exists for the case where
+ *  that ceiling is itself unavailable (no AbortSignal.timeout) or is somehow
+ *  not honoured, because a frozen desk must not be reachable by ANY route. */
+export const STALL_MS = 60_000
 
 /** An optimistic ghost, plus HOW MANY copies of its text the server already
  *  showed when it was created.
@@ -148,6 +154,10 @@ interface Entry {
   nudge: ReturnType<typeof setTimeout> | null
   poll: ReturnType<typeof setTimeout> | null
   inflight: boolean
+  /** when the in-flight fetch STARTED. `inflight` alone cannot be trusted as
+   *  a gate: it is cleared by the fetch settling, so a request that never
+   *  settles latches it forever (see refreshConvo). */
+  inflightAt: number
   /** when the last fetch COMPLETED — a live row may only expire after a fetch
    *  has had the chance to cover it (otherwise the timer races the fetch and
    *  the row vanishes into a gap) */
@@ -176,7 +186,8 @@ function entry(k: string): Entry {
   if (!e) {
     e = { s: BLANK, subs: new Set(), thinkT0: 0, clock: null, nudge: null,
           staleDraft: false, staleThink: false, staleAt: 0, streamAt: 0,
-          poll: null, inflight: false, fetchedAt: 0, installed: 0, dirty: false }
+          poll: null, inflight: false, inflightAt: 0, fetchedAt: 0,
+          installed: 0, dirty: false }
     M.set(k, e)
   }
   return e
@@ -264,9 +275,23 @@ export function refreshConvo(slug: string, nid: string,
                              opts: { force?: boolean } = {}): Promise<void> {
   const k = key(slug, nid)
   const e = entry(k)
-  if (e.inflight && !opts.force) return Promise.resolve()
+  // ⚠ `inflight` is a LATCH, and a latch needs a way out that does not depend
+  // on the thing it is waiting for. It is cleared only by the fetch settling,
+  // so a request that never settles — the backend accepting the connection and
+  // then going quiet — used to hold it true for the life of the tab: every
+  // later beat() tick called this, took the early return, and the desk stopped
+  // updating entirely while a just-sent message sat unconfirmed at the bottom,
+  // unable to graduate (no payload) or retire (no error). Recovering needed a
+  // page reload (user report 2026-08-10). api.ts now bounds the request, which
+  // is the real fix; this is the belt to that pair of braces, because "the
+  // request always settles" is exactly the assumption that just failed.
+  const now = Date.now()
+  if (e.inflight && !opts.force && now - e.inflightAt < STALL_MS) {
+    return Promise.resolve()
+  }
   e.inflight = true
-  const startedAt = Date.now()
+  e.inflightAt = now
+  const startedAt = now
   return getChat(slug, nid, e.s.win).then((c) => {
     e.inflight = false
     e.fetchedAt = Date.now()
@@ -573,6 +598,7 @@ export function resetConvos(): void {
     e.staleAt = 0
     e.streamAt = 0
     e.inflight = false
+    e.inflightAt = 0
     e.fetchedAt = 0
     e.installed = 0
     e.dirty = false

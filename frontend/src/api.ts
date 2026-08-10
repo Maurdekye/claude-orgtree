@@ -44,11 +44,41 @@ function noteInstance(r: Response): void {
   location.reload()
 }
 
+/** A request that never answers is worse than one that fails.
+ *
+ *  `fetch` has NO timeout. A backend that accepts the connection and then
+ *  never responds — wedged update thread, a handler blocked on something
+ *  upstream, a half-open socket after the machine slept — leaves the promise
+ *  unsettled for minutes, and every caller that gates on it stalls with it.
+ *  On the desk that is visible as a sent message stuck unconfirmed at the
+ *  bottom of the conversation: its ghost cannot graduate (no payload) and
+ *  cannot retire (no error), so it sits there looking queued forever
+ *  (user report 2026-08-10).
+ *
+ *  A ceiling turns that into an ordinary failure, which every caller already
+ *  handles. It is deliberately GENEROUS — this is a liveness backstop, not a
+ *  latency policy, and a slow-but-alive request must never be cut off. Calls
+ *  that legitimately outlast it (uploads, org creation, sweeps) pass their
+ *  own. */
+const DEFAULT_TIMEOUT_MS = 45_000
+/** for the handful that provision, format or transfer — still bounded, so a
+ *  hung one cannot stall its caller for the life of the tab */
+const SLOW_TIMEOUT_MS = 600_000
+const timeoutSignal = (ms: number): AbortSignal | undefined => {
+  // AbortSignal.timeout is unavailable on older Safari; without it the call
+  // simply behaves as it always did rather than failing to be made
+  const f = (AbortSignal as { timeout?: (n: number) => AbortSignal }).timeout
+  return typeof f === 'function' ? f(ms) : undefined
+}
+
 // the one wire-boundary cast in the app: runtime JSON is untyped, and each
 // endpoint's declared Promise<T> return type is the contract that types it.
 // T infers from that declared return at every call site - no `any` escapes.
-const req = <T,>(path: string, init?: RequestInit): Promise<T> =>
-  fetch(u(path), init).then((r) => {
+const req = <T,>(path: string, init?: RequestInit,
+                 timeoutMs: number = DEFAULT_TIMEOUT_MS): Promise<T> =>
+  fetch(u(path), init?.signal || !timeoutMs
+    ? init
+    : { ...init, signal: timeoutSignal(timeoutMs) }).then((r) => {
     // before the ok/not-ok split: a restart is worth noticing even when the
     // call it rode in on failed
     noteInstance(r)
@@ -67,7 +97,8 @@ export const createOrg = (
   diskMb: number | null = null,
   netAutoconnect = true, netHubs: string[] = [],
 ): Promise<{ slug: string }> =>
-  req('/api/orgs', {
+  // provisions a sandbox and can format a disk image — minutes, legitimately
+  req<{ slug: string }>('/api/orgs', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -79,7 +110,7 @@ export const createOrg = (
       // sandboxed non-kiosk orgs: virtual-disk size (4096 MB minimum)
       ...(sandbox && !kiosk && diskMb != null ? { disk_mb: diskMb } : {}),
     }),
-  })
+  }, SLOW_TIMEOUT_MS)
 export const getTree = (slug: string): Promise<TreePayload> =>
   req(`/api/orgs/${slug}`)
 export const deleteOrg = (slug: string): Promise<{ ok: boolean }> =>
@@ -251,9 +282,10 @@ export const retractMail = (
 ): Promise<{ retracted: string }> =>
   req(`/api/orgs/${slug}/nodes/${nid}/mail/${mid}`, { method: 'DELETE' })
 export const uploadFile = (slug: string, nid: string, file: File): Promise<UploadResult> =>
-  req(`/api/orgs/${slug}/nodes/${nid}/upload?name=${encodeURIComponent(file.name)}`, {
+  // a large file over a slow link legitimately outlasts the default ceiling
+  req<UploadResult>(`/api/orgs/${slug}/nodes/${nid}/upload?name=${encodeURIComponent(file.name)}`, {
     method: 'POST', body: file,
-  })
+  }, SLOW_TIMEOUT_MS)
 // direct <a href> download target (browser handles the transfer) — BASE-aware
 // so kiosk visitors download through their token prefix
 export const fileUrl = (slug: string, nid: string, path: string): string =>

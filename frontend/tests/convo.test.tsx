@@ -25,7 +25,7 @@ import assert from 'node:assert/strict'
 import { useEffect } from 'react'
 import {
   addPending, CHAT_WINDOW, dropPending, ingestPulse, ingestStream, loadOlder,
-  MAX_WINDOW, markBusy, refreshConvo, resetConvos, useConvo,
+  MAX_WINDOW, markBusy, refreshConvo, resetConvos, STALL_MS, useConvo,
 } from '../src/convo'
 import type { Convo } from '../src/convo'
 import type { StreamEvent } from '../src/canvas/shared'
@@ -803,4 +803,57 @@ convoTest('§6.2 …and an IMMEDIATE command, which never becomes a row, is the 
       + 'retire what the server never shows, so desk.tsx must drop it')
     await inAct(() => { dropPending(SL, ND, '/context') })
     assert.equal(d.now().pending.length, 0)
+  })
+
+// ═══════════════════════════════════════════════════════════════════════ §7
+// A REQUEST THAT NEVER ANSWERS MUST NOT FREEZE THE DESK
+// ═══════════════════════════════════════════════════════════════════════ §7
+//
+// User report 2026-08-10: "unconfirmed messages in flight get stuck during API
+// outages — chiefly a frontend bug." Traced to a latch. `refreshConvo` gates
+// on `inflight`, and `inflight` is cleared only by the fetch SETTLING. `fetch`
+// has no timeout, so a backend that accepts the connection and then goes quiet
+// — a wedged update thread, a half-open socket — held the gate true for the
+// life of the tab: every later poll tick took the early return and the desk
+// stopped updating, with the just-sent message pinned at the bottom as a ghost
+// that could neither graduate (no payload) nor retire (no error).
+//
+// Two independent fixes, because a frozen desk must not be reachable by ANY
+// route: api.ts bounds every request, and the gate below expires. This suite
+// can only exercise the second — the stub's `holdAll` IS a request that never
+// answers, which is precisely the condition an AbortSignal would end.
+
+convoTest('§7.1 a fetch that never answers does not stop the desk from ever '
+  + 'fetching again', async ({ SL, ND, s, desk }) => {
+    s.assistantMsg('idle')
+    const d = await desk()
+    await advance(100)
+    // the transport handle: same server, same stub, but now we can hold
+    const t = installFetch(s)
+    await inAct(() => { addPending(SL, ND, 'sent during the outage') })
+    assert.equal(d.now().pending.length, 1, 'precondition: the ghost exists')
+
+    t.holdAll = true
+    void refreshConvo(SL, ND)          // goes out, and never comes back
+    await advance(1000)
+    const during = t.requests
+    assert.ok(during >= 1, 'the held request never left the client')
+
+    // …the poll keeps ticking, and before the fix every one of those ticks
+    // early-returned on the latched gate. Past the stall window one must get
+    // through, or nothing on this desk can ever recover without a reload.
+    await advance(STALL_MS + 10_000)
+    assert.ok(t.requests > during,
+      'no request was issued in the 70 s after the first one hung: the '
+      + 'refresh gate is latched by a fetch that never settles, so the desk '
+      + `is frozen until the tab is reloaded (requests ${during} → ${t.requests})`)
+
+    // and when the wire comes back the desk catches up — the ghost graduates
+    // against the server's own copy rather than sitting there
+    s.userMsg('sent during the outage')
+    t.holdAll = false
+    t.release()
+    await advance(10_000)      // > one idle poll interval
+    assert.equal(d.now().pending.length, 0,
+      'the ghost survived a payload that carries its own message')
   })
