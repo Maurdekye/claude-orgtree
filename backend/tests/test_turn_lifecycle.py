@@ -755,16 +755,22 @@ def hermetic() -> None:
 
     def _the_resume_loop_can_see_a_transiently_failed_node():
         """The second half: even given a classifier, the restarter has to be
-        able to SEE the node. start_auto_resume_loop selects on
-        `n.get("frozen")` alone, so a node parked any other way is invisible
-        to it — which is why the fix belongs in the freeze shape rather than
-        beside it."""
+        able to SEE the node. The selection is on a `frozen` record alone, so
+        a node parked any other way is invisible to it — which is why the fix
+        belongs in the freeze shape rather than beside it.
+
+        (2026-08-10: the selection moved OUT of start_auto_resume_loop into
+        `auto_resume_ready` + `_resumable` when readiness became per-node.
+        Same question, two smaller functions — this reads them where they
+        now live.)"""
         src = open(os.path.join(_REPO, "backend", "orgtree", "supervisor.py"),
                    encoding="utf-8").read()
-        i = src.index("def start_auto_resume_loop")
+        i = src.index("def auto_resume_ready")
         seg = "\n".join(ln for ln in src[i:i + 3000].splitlines()
                         if not ln.lstrip().startswith("#"))
-        fixture('n.get("frozen")' in seg or "fz := n.get" in seg,
+        j = src.index("def _resumable")
+        pick = src[j:j + 800]
+        fixture('n.get("frozen")' in pick and "_resumable(n)" in seg,
                 "the resume loop's selection moved — re-read this check")
         assert re.search(r"transient|connection|last_error", seg), (
             "the auto-resume loop selects exclusively on a `frozen` record, "

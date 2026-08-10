@@ -3507,11 +3507,33 @@ def interrupt_all(slug: str) -> dict[str, Any]:
     return {"interrupted": stopped}
 
 
-def resume_frozen(slug: str) -> list[str]:
+def _resumable(n: NodeDoc) -> FrozenInfo | None:
+    """The freeze record ▶ would actually act on, or None if some OTHER
+    mechanism owns this node. Extracted from resume_frozen 2026-08-10 so the
+    auto-resume timer can ask the same question per node BEFORE calling —
+    a node resume would refuse must never be counted as "waiting to wake",
+    or the timer re-attempts it every tick forever."""
+    fz = n.get("frozen")
+    if not isinstance(fz, dict):
+        return None
+    if n["state"] != "live" or n.get("limit_locked"):
+        return None
+    if any(k not in ("limit", "connection") and v is True for k, v in fz.items()):
+        return None
+    return fz
+
+
+def resume_frozen(slug: str, only: Iterable[str] | None = None) -> list[str]:
     """The ▶ button: un-freeze every usage-limit-frozen agent at once and replay
     the turn(s) the limit interrupted; waiting mailbox mail rides along on the
     turn's own envelope drain. A kiosk SPEND freeze blocks resume until the
-    admin raises the limit (the storage limit never freezes — it write-blocks)."""
+    admin raises the limit (the storage limit never freezes — it write-blocks).
+
+    `only` restricts the sweep to named nodes — the auto-resume timer passes
+    the nodes whose OWN wake time has arrived. ▶ itself passes nothing and
+    keeps its all-at-once meaning: a human pressing resume has judged the
+    whole org ready, which is a different claim from a timer's."""
+    pick = None if only is None else set(only)
     resumed: list[tuple[str, list[str]]] = []
     with store.DOC_LOCK:
         org = store.load_org(slug)
@@ -3519,8 +3541,7 @@ def resume_frozen(slug: str) -> list[str]:
             raise RuntimeError("the kiosk spend limit was reached — raise the "
                                "limit from the admin dashboard to resume")
         for nid, n in org.nodes.items():
-            fz = n.get("frozen")
-            if not isinstance(fz, dict):
+            if pick is not None and nid not in pick:
                 continue
             # review C6: the old unconditional pop discarded replay texts for
             # nodes that CANNOT restart. ▶ is now the third participant in the
@@ -3528,20 +3549,19 @@ def resume_frozen(slug: str) -> list[str]:
             # nothing runs; limit_locked — only clear_fable_lock releases;
             # another freeze kind still flagged — that kind's clear owns it),
             # leaving their record intact for whoever can actually act.
-            if n["state"] != "live" or n.get("limit_locked"):
-                continue
-            # ⚠ `limit` is excluded: it is the kind ▶ resume ITSELF owns. The
-            # guard means "another mechanism owns this record" — adding a
-            # positive marker for the usage-limit kind (FrozenInfo.limit) put
-            # that kind's own flag in scope and made ▶ skip every
-            # limit-frozen agent, i.e. exactly the bug the marker was added to
-            # prevent, from the other end. Caught immediately by the
-            # turn-lifecycle suite's three freeze checks.
+            #
+            # ⚠ `limit` is excluded from the other-kind test: it is the kind ▶
+            # resume ITSELF owns. That test means "another mechanism owns this
+            # record" — adding a positive marker for the usage-limit kind
+            # (FrozenInfo.limit) put that kind's own flag in scope and made ▶
+            # skip every limit-frozen agent, i.e. exactly the bug the marker
+            # was added to prevent, from the other end. Caught immediately by
+            # the turn-lifecycle suite's three freeze checks.
             # `connection` joined `limit` 2026-08-06: both kinds are OWNED by
             # ▶/auto-resume — a network-frozen node must not read as "another
-            # mechanism's record"
-            if any(k not in ("limit", "connection") and v is True
-                   for k, v in fz.items()):
+            # mechanism's record". (All of it now lives in `_resumable`.)
+            fz = _resumable(n)
+            if fz is None:
                 continue
             n.pop("frozen", None)
             resumed.append((nid, fz.get("resume_texts") or []))
@@ -3660,15 +3680,63 @@ def interorg_send(src_slug: str, dst_slug: str, body: str) -> str | None:
 _auto_resume_started = False
 
 
+def auto_resume_ready(org: Org, now: float | None = None) -> set[str]:
+    """Which frozen nodes the timer should wake RIGHT NOW — asked PER NODE.
+
+    ⚠ This was an org-wide `max(every frozen node's until_ts)` gate until
+    2026-08-10, and that starved short freezes (peer report, source-traced):
+    ONE node parked on a long timer — a weekly fable limit hours or days out —
+    held back auto-resume for every other frozen node in the same org,
+    including a 30-second connection backoff. The org-wide shape was not
+    arbitrary: `resume_frozen` un-freezes the WHOLE org, so waking early for
+    one node would have un-parked the long-frozen one too. Both halves are
+    fixed together — readiness is per node here, and the wake passes those
+    nodes to `resume_frozen(only=…)` rather than sweeping the org.
+
+    A node another mechanism owns (`_resumable` → None) is never "ready": it
+    would be skipped by the resume it triggered, so counting it would re-fire
+    the sweep every tick forever.
+
+    Timed freezes wake at their own `until_ts`, plus a minute's grace for the
+    LIMIT kind only — there the timestamp is the API's claim about someone
+    else's clock and a hair early means re-freezing. A connection backoff is
+    OUR OWN timer measured from our own failure; padding it just makes the
+    node wait longer than the label it already showed the user.
+
+    A limit/connection freeze with NO time known is probed on the 5-minute
+    floor instead of waiting for a human forever (redteam gap 2026-08-05);
+    that floor is org-wide (`auto_resume_last`), since a probe is a guess and
+    guessing once per org per 5 minutes is enough.
+    """
+    now = time.time() if now is None else now
+    last = float(org.d.get("auto_resume_last") or 0)
+    ready: set[str] = set()
+    for nid, n in org.nodes.items():
+        fz = _resumable(n)
+        if fz is None:
+            continue
+        ts = fz.get("until_ts")
+        if ts:
+            if now >= float(ts) + (0.0 if fz.get("connection") else 60.0):
+                ready.add(nid)
+        elif (fz.get("limit") or fz.get("connection")) and now - last >= 300:
+            ready.add(nid)
+    return ready
+
+
 def start_auto_resume_loop() -> None:
     """Background timer for the inline org toggle (user spec): when
     `auto_resume` is on, usage-limit-frozen agents restart on their own ONE
-    MINUTE after the latest reported reset time. A LIMIT freeze with no
+    MINUTE after THEIR OWN reported reset time. A LIMIT freeze with no
     parseable reset time (a rate-limit-style text — the class the synthetic
     detector admits) is retried on the 5-minute floor instead of waiting for
     a human forever (redteam gap 2026-08-05): a failed attempt re-freezes,
     so the worst case is one probe per 5 minutes, not a dead node. Non-limit
-    freezes without a time stay manual — their own mechanism owns them."""
+    freezes without a time stay manual — their own mechanism owns them.
+
+    Readiness is decided PER NODE (`auto_resume_ready`) and only the ready
+    nodes are woken; "their own" above used to read "the latest", org-wide,
+    which let one long freeze starve every short one. See that function."""
     global _auto_resume_started
     if _auto_resume_started:
         return
@@ -3684,42 +3752,21 @@ def start_auto_resume_loop() -> None:
                         org = store.load_org(slug)
                         if not org.d.get("auto_resume") or org.d.get("spend_frozen"):
                             continue
-                        tss = [fz.get("until_ts")
-                               for n in org.nodes.values()
-                               if n["state"] == "live" and (fz := n.get("frozen"))]
-                        # a timed fable_lock wakes the timer too (FABLE-2):
-                        # the load above already released it if expired (the
-                        # ledger's load hook), so its appearance here means
-                        # it is still pending — schedule the wake for it
-                        _fl = org.d.get("fable_lock")
-                        if isinstance(_fl, dict) and _fl.get("until_ts"):
-                            tss.append(_fl["until_ts"])
-                        timeless_limit = any(
-                            (fz.get("limit") or fz.get("connection"))
-                            and not fz.get("until_ts")
-                            for n in org.nodes.values()
-                            if n["state"] == "live" and (fz := n.get("frozen")))
-                        last = float(org.d.get("auto_resume_last") or 0)
-                    known = [t for t in tss if t]
-                    if not tss:
-                        continue
-                    if known:
-                        if time.time() < max(known) + 60 \
-                                or time.time() - last < 300:
-                            continue
-                    elif timeless_limit:
-                        # reset-less LIMIT freeze: probe on the 5-minute
-                        # floor rather than never
-                        if time.time() - last < 300:
-                            continue
-                    else:
+                        # (a timed fable_lock needs no entry here any more: the
+                        # nodes it holds read as limit_locked, so they are not
+                        # ready until the ledger's load hook releases the lock,
+                        # and then they wake on their own until_ts. FABLE-2 put
+                        # the lock in the old org-wide max() to schedule a wake
+                        # for it; a 30-second tick already provides that.)
+                        ready = auto_resume_ready(org)
+                    if not ready:
                         continue
                     with store.DOC_LOCK:
                         org = store.load_org(slug)
                         org.d["auto_resume_last"] = time.time()
                         store.save_org(org)
                     try:
-                        resume_frozen(slug)
+                        resume_frozen(slug, only=ready)
                     except RuntimeError:
                         pass
             except Exception:

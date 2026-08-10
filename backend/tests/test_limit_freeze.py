@@ -33,6 +33,10 @@ written the failure down. A limit that reached `err_blob` would have left both.
     §2  the shapes, end to end, through the real turn loop with a CLI stand-in
         that reports the limit the way the CLI does
     §3  what the reader is left with: the card, the button, the record
+    §4  the fix, attacked — false positives and the way out
+    §5  WHICH frozen node the auto-resume timer wakes, and when (peer report
+        2026-08-10: an org-wide gate starved every short freeze behind the
+        longest one). Needs no CLI, so it runs first.
 
 Hermetic-ish: throwaway ORGTREE_DATA + HOME, no port, no Docker, no real CLI,
 no network. §2 spawns `node` (the stand-in) — skipped with a note if absent.
@@ -588,6 +592,153 @@ def sec_attack_the_fix() -> None:
     check("resume · and the replay actually reaches the CLI", _replayed_for_real)
 
 
+def _freeze(slug: str, nid: str, **fz) -> None:
+    """Write a freeze record straight onto the doc — §4 is about WHEN the
+    timer wakes a node, not about how it came to be frozen, and the CLI
+    stand-in cannot produce a second node frozen on a different clock."""
+    org = store.load_org(slug)
+    org.nodes[nid]["frozen"] = fz
+    store.save_org(org)
+
+
+def sec_wake() -> None:
+    """§4 — WHICH frozen node the auto-resume timer wakes, and when.
+
+    Peer report (neoja, 2026-08-10), source-traced and confirmed here: the
+    timer gated on `max(until_ts across every frozen node in the org)`, so one
+    node parked on a long timer — a weekly fable limit, hours or days out —
+    suppressed auto-resume for EVERY other frozen node in that org, including
+    a 30-second connection backoff. Two nodes, two clocks, one gate.
+
+    Hermetic: no CLI, no turns — the freeze records are written directly and
+    the two decision functions are called by hand.
+
+    ⚠ `resume_frozen` SPAWNS A REPLAY TURN per node it wakes, and this section
+    runs before the ones that measure what the CLI stand-in was served. Left
+    live, those threads raced the later sections through the shared synthetic
+    config and `served.log` — two unrelated checks failed, intermittently,
+    with nothing wrong in the code under test. `_run_turn` is stubbed out for
+    the section: §4 already proves a resumed node's replay reaches the CLI;
+    what is measured HERE is only which nodes got picked.
+    """
+    print("\n§5 which node wakes, and when (auto_resume_ready) "
+          "— runs early: it needs no CLI:")
+
+    real_run_turn = supervisor._run_turn
+    supervisor._run_turn = lambda *a, **k: None                  # type: ignore[assignment]
+    try:
+        _sec_wake_body()
+    finally:
+        supervisor._run_turn = real_run_turn                     # type: ignore[assignment]
+
+
+def _sec_wake_body() -> None:
+    slug, a = probe_org()
+    org = store.load_org(slug)
+    b = org.hire(USER, None, "haiku", 20, "slow",
+                 add_dirs=[], tools={"bash": False, "web": False, "edit": False,
+                                     "subagents": False, "mcp": []},
+                 org_visibility="team", charter="the long freeze")["node"]
+    org.d["auto_resume"] = True
+    store.save_org(org)
+    now = time.time()
+    _freeze(slug, a, connection=True, until_ts=now - 5,
+            until="network interruption — retry 1/4 in ~30s")
+    _freeze(slug, b, limit=True, until_ts=now + 7 * 86400,
+            until="weekly limit")
+
+    def _short_freeze_is_not_starved_by_a_long_one():
+        ready = supervisor.auto_resume_ready(store.load_org(slug))
+        assert a in ready, (
+            "a 30-second connection backoff whose time has passed was NOT "
+            "woken, because a sibling node in the same org is frozen until "
+            "next week. One clock cannot speak for another: the org-wide "
+            f"max() gate starves every short freeze behind the longest — {ready}")
+        assert b not in ready, f"the long freeze woke early: {ready}"
+    check("wake · a due connection backoff is not starved by a sibling frozen "
+          "until next week (peer report 2026-08-10)",
+          _short_freeze_is_not_starved_by_a_long_one)
+
+    def _the_wake_resumes_only_the_due_node():
+        supervisor.resume_frozen(slug, only=supervisor.auto_resume_ready(
+            store.load_org(slug)))
+        assert not node(slug, a).get("frozen"), "the due node stayed frozen"
+        assert node(slug, b).get("frozen"), (
+            "waking the due node un-froze the one whose limit has NOT reset — "
+            "which is exactly what the org-wide gate existed to prevent, so "
+            "the per-node readiness must be paired with a per-node resume")
+    check("wake · …and waking it leaves the not-yet-due node frozen",
+          _the_wake_resumes_only_the_due_node)
+
+    def _play_still_means_the_whole_org():
+        _freeze(slug, a, connection=True, until_ts=time.time() - 5)
+        assert set(supervisor.resume_frozen(slug)) == {a, b}, (
+            "▶ with no filter must keep its all-at-once meaning: a human "
+            "pressing resume has judged the whole org ready, which is a "
+            "different claim from a timer's")
+    check("wake · ▶ itself still resumes the whole org, time or no time",
+          _play_still_means_the_whole_org)
+
+    def _a_node_another_mechanism_owns_is_never_ready():
+        _freeze(slug, a, limit=True, until_ts=time.time() - 600)
+        org2 = store.load_org(slug)
+        org2.nodes[a]["limit_locked"] = True
+        # ⚠ the flag needs a lock BEHIND it or the ledger's load hook sweeps it
+        # as an orphan (ledger.py ~401, redteam 2026-08-06) — a limit_locked
+        # with no fable_lock is an artifact, and the hook is right to clear it.
+        # `no_reset` keeps the lock pending instead of releasing on load.
+        org2.d["fable_lock"] = {"no_reset": True, "at": "now", "by": a}
+        store.save_org(org2)
+        fixture(store.load_org(slug).nodes[a].get("limit_locked") is True,
+                "the load hook cleared limit_locked — this check needs a node "
+                "that is genuinely owned by the fable lock")
+        assert a not in supervisor.auto_resume_ready(store.load_org(slug)), (
+            "a limit_locked node is one resume_frozen SKIPS, so counting it as "
+            "ready re-fires the sweep every 30 s forever while nothing changes")
+    check("wake · a node another mechanism owns is never counted ready",
+          _a_node_another_mechanism_owns_is_never_ready)
+
+    def _grace_applies_to_the_kind_that_needs_it():
+        org3 = store.load_org(slug)
+        org3.d.pop("fable_lock", None)          # the load hook then sweeps the flag
+        store.save_org(org3)
+        org3 = store.load_org(slug)
+        org3.nodes[a].pop("limit_locked", None)
+        store.save_org(org3)
+        t = time.time()
+        _freeze(slug, a, limit=True, until_ts=t - 5)
+        assert a not in supervisor.auto_resume_ready(store.load_org(slug)), (
+            "a LIMIT reset time is the API's claim about someone else's clock; "
+            "waking on the dot re-freezes. The minute of grace is the point")
+        _freeze(slug, a, limit=True, until_ts=t - 61)
+        assert a in supervisor.auto_resume_ready(store.load_org(slug)), \
+            "a limit past reset+1min must wake"
+        _freeze(slug, a, connection=True, until_ts=t - 1)
+        assert a in supervisor.auto_resume_ready(store.load_org(slug)), (
+            "a connection backoff is OUR OWN timer measured from our own "
+            "failure — padding it makes the node wait longer than the "
+            "'retry in ~30s' label it already showed the user")
+    check("wake · the minute of grace is a LIMIT's, not a connection backoff's",
+          _grace_applies_to_the_kind_that_needs_it)
+
+    def _a_reset_less_freeze_still_probes():
+        org4 = store.load_org(slug)
+        org4.d["auto_resume_last"] = 0.0
+        store.save_org(org4)
+        _freeze(slug, a, limit=True)          # no until_ts at all
+        assert a in supervisor.auto_resume_ready(store.load_org(slug)), (
+            "a reset-less limit freeze is probed on the 5-minute floor rather "
+            "than left for a human forever (redteam gap 2026-08-05) — the "
+            "per-node rewrite must not have dropped that branch")
+        org5 = store.load_org(slug)
+        org5.d["auto_resume_last"] = time.time()
+        store.save_org(org5)
+        assert a not in supervisor.auto_resume_ready(store.load_org(slug)), \
+            "the 5-minute probe floor stopped applying"
+    check("wake · a reset-less freeze still probes on the 5-minute floor",
+          _a_reset_less_freeze_still_probes)
+
+
 def _flat(tree: dict) -> list[dict]:
     out: list[dict] = []
 
@@ -605,6 +756,7 @@ def _flat(tree: dict) -> list[dict]:
 def main() -> None:
     print("═══ usage-limit freeze — the shape the CLI actually reports ═══")
     sec_detect()
+    sec_wake()
     if not shutil.which("node"):
         note("node is not on PATH — §2/§3 skipped (they need the CLI stand-in)")
     else:
