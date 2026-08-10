@@ -78,6 +78,19 @@ if len(sys.argv) > 2 and sys.argv[1] == "--crash-child":
 _TMP = tempfile.mkdtemp(prefix="orgtree-persist-")
 os.environ["ORGTREE_DATA"] = os.path.join(_TMP, "data")
 
+# ⚠ a throwaway ORGTREE_DATA does NOT isolate the MAIL HUB: net._default_address
+# falls back to net.DEFAULT_HUB_ADDRESS — the operator's real hub — when this
+# root has no defaults.json, and any rig that starts the net daemon then
+# registers its fixture orgs there permanently. Measured twice (user report
+# 2026-08-06; ~45 fixture orgs again on 2026-08-10). The discard port refuses
+# instantly, so registration fails harmlessly into the backoff.
+# Guarded over this whole directory by test_external_mail §1.
+os.makedirs(os.environ["ORGTREE_DATA"], exist_ok=True)
+with open(os.path.join(os.environ["ORGTREE_DATA"], "defaults.json"), "w",
+          encoding="utf-8") as _f:
+    _f.write('{"net_hub_address": "http://127.0.0.1:9"}')
+
+
 from orgtree import store                                  # noqa: E402
 from orgtree.ledger import USER, LedgerError, Org          # noqa: E402
 

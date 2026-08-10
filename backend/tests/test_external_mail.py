@@ -29,7 +29,10 @@ exercised only at the ledger level, never through delivery.
 
 ⚠ HYGIENE. Nothing here touches port 7360 or looks at the real orgs;
 §9's uvicorn binds 7406 only. (The chatq redirect that used to live here
-went with the bridge — user ruling 2026-08-05.)
+went with the bridge — user ruling 2026-08-05.) That claim was FALSE for the
+mail hub until 2026-08-10: a throwaway ORGTREE_DATA does not isolate the hub,
+and §9's backend registered every fixture org against the operator's real one.
+See the DEAD_HUB block below, and §1's guard over every rig in this directory.
 
     §1  fixtures + the shape of the funnel
     §2  the inbound funnel — deliver_org_inbox end to end
@@ -98,6 +101,24 @@ HERMETIC = "--hermetic" in sys.argv
 # makes fixtures collide with the operator's real orgs
 DATA = tempfile.mkdtemp(prefix="orgtree-extmail-")
 os.environ["ORGTREE_DATA"] = DATA
+# ⚠ THE MAIL HUB IS NOT ISOLATED BY ORGTREE_DATA. The rig fix for the user's
+# 2026-08-06 report ("hundreds of disconnected orgs … crowding the connected
+# client list") went into three suites and MISSED THIS ONE — measured
+# 2026-08-10, when a peer flagged ~45 fixture names in the operator's live
+# roster (arch, capnode, lonedead, norescue, order2 …) in two batches whose
+# timestamps matched this suite's two runs that morning exactly.
+# `net._default_address` reads `net_hub_address` out of defaults.json; a fresh
+# data root has none, so the fallback is net.DEFAULT_HUB_ADDRESS — the REAL
+# hub on 127.0.0.1:7370 — and §9's live backend registers every org it finds
+# there. The roster is the compose picker's source, so each row is a
+# selectable recipient that can never receive anything.
+# `net_autoconnect` cannot be turned off from here (orgs_create reads it from
+# the request body, default True); `net_hub_address` CAN, so the local entry
+# is pointed at a dead port and registration fails harmlessly into the backoff.
+DEAD_HUB = "http://127.0.0.1:9"     # discard port: refuses instantly
+os.makedirs(DATA, exist_ok=True)
+with open(os.path.join(DATA, "defaults.json"), "w", encoding="utf-8") as _f:
+    json.dump({"net_hub_address": DEAD_HUB}, _f)
 os.environ["ORGTREE_PORT"] = "7406"
 os.environ["ORGTREE_PUBLIC_PORT"] = "7406"
 os.environ.pop("ORGTREE_EXPOSE_ADMIN", None)
@@ -326,6 +347,34 @@ def s1_fixtures():
     def _():
         o = mkorg("virgin")
         assert "org_inbox" not in o.d
+
+    @t("every rig in this directory points the mail hub at a dead port")
+    def _():
+        """The guard for the thing this suite got wrong TWICE OVER. The
+        2026-08-06 fix for "hundreds of disconnected orgs" isolated three
+        rigs; nothing then checked the other twenty-odd, and this file — the
+        one that boots a live backend — was among the ones missed, so the
+        same pollution recurred on 2026-08-10 with ~45 fixture orgs.
+
+        An isolated ORGTREE_DATA is not isolation from the hub: the fallback
+        address is the operator's real one. So the property is checked over
+        the whole directory rather than trusted per file — any rig that mints
+        a throwaway data root must also write `net_hub_address`."""
+        here = os.path.dirname(os.path.abspath(__file__))
+        missing = []
+        for fn in sorted(os.listdir(here)):
+            if not fn.startswith("test_") or not fn.endswith(".py"):
+                continue
+            src = open(os.path.join(here, fn), encoding="utf-8").read()
+            if 'ORGTREE_DATA"] =' not in src and "ORGTREE_DATA'] =" not in src:
+                continue                      # no data root of its own
+            if "net_hub_address" not in src:
+                missing.append(fn)
+        assert not missing, (
+            "these rigs mint their own ORGTREE_DATA but never redirect "
+            "net_hub_address, so every org they create is registered against "
+            "the operator's REAL hub at net.DEFAULT_HUB_ADDRESS and stays in "
+            f"the roster as an unreachable recipient: {missing}")
 
 
 # ============================================================================ §2
