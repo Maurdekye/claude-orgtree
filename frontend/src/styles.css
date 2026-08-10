@@ -1855,11 +1855,10 @@ svg.MuiSvgIcon-root {
    whole block exists to prevent was a lost fact. */
 .oi-title { min-width: 0; overflow: hidden; text-overflow: ellipsis;
   letter-spacing: .02em; }
-.oi-head .count {
-  background: var(--accent); color: #fff; border-radius: 8px;
-  font-size: 9.5px; padding: 0 4px; margin-left: auto; flex: 0 0 auto;
-}
-.oi-head .oi-dot { flex: 0 0 auto; }
+/* (the unread badge that used to sit here is gone — user 2026-08-10: org-inbox
+   mail is the organization's to read, not the user's. The rule below keeps the
+   hub-status dot from being the next thing to shrink into the label.) */
+.oi-head .oi-dot { flex: 0 0 auto; margin-left: auto; }
 .oi-last {
   font-family: var(--mono); font-size: 9px; color: var(--dim);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;

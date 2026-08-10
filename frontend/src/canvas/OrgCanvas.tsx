@@ -1263,8 +1263,14 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
                     + (h.connected ? 'connected' : h.error || 'connecting…'))
                     .join(' · ')} />
               })()}
-              {tree.org_inbox.unread > 0 &&
-                <b className="count">{tree.org_inbox.unread}</b>}
+              {/* NO unread badge here (user 2026-08-10). Org-inbox mail is
+                  addressed to the ORGANIZATION and answered by its agents —
+                  the user is not its reader. An unread count asks them to
+                  clear something that was never theirs to clear, which is a
+                  standing obligation invented by the UI. The tile still shows
+                  the last correspondent and opens on click, so nothing is
+                  hidden; only the demand is gone. The `unread` field itself
+                  stays — the server and the agents use it. */}
             </div>
             <div className="oi-last">
               {(() => {

@@ -507,7 +507,7 @@ uiTest('§11.2 …and a write that FAILS arms nothing (D-089)',
   })
 
 // ═══════════════════════════════════════════════════════════════════════ §12
-// THE ORG-INBOX TILE — the unread badge must not evict the last-mail line
+// THE ORG-INBOX TILE — nothing may evict the last-mail line, and no badge
 // ═══════════════════════════════════════════════════════════════════════ §12
 //
 // User bug 2026-08-07: "when there are unread mails in the org inbox, the
@@ -530,6 +530,15 @@ uiTest('§11.2 …and a write that FAILS arms nothing (D-089)',
 // in its own element rather than sitting loose in the flex row. That is the
 // edit a future refactor would undo, and undoing it brings the wrap back.
 // The pixel proof lives in the commit message and the CSS comment.
+//
+// ⚠ THE BADGE ITSELF IS GONE (user 2026-08-10): "the org inbox doesn't need an
+// unread mail number tag, the user isn't meant to read them." Org-inbox mail
+// is addressed to the ORGANIZATION and answered by its agents, so a count
+// aimed at the user was an obligation the UI invented. That removes the
+// specific competitor for width, and NOT the structural rule — the hub-status
+// dot still shares the row, and a loose text node would wrap under it exactly
+// as it did under the badge. §12.1 stands unchanged; §12.2 now pins the
+// absence, so restoring a count trips a test rather than a user.
 
 uiTest('§12.1 the org-inbox label is an element, not a loose text node — a '
   + 'bare one wraps under the unread badge and evicts the last-mail line',
@@ -549,11 +558,12 @@ async ({ mount }) => {
     + JSON.stringify(loose.map((n) => n.textContent)))
 })
 
-uiTest('§12.2 …and the last-mail line renders ALONGSIDE the badge, not '
-  + 'instead of it', async ({ mount }) => {
+uiTest('§12.2 …and unread org mail adds NO badge, while the last-mail line '
+  + 'still renders', async ({ mount }) => {
   const { OrgCanvas } = await import('../src/canvas/OrgCanvas')
   const t = tree(['ceo'])
-  // unread > 0 is the whole precondition of the bug
+  // unread > 0 was the whole precondition of the 2026-08-07 clipping bug, and
+  // is now the precondition of the badge's absence
   const withUnread = { ...t, org_inbox: { ...t.org_inbox!, unread: 4 } }
   const { el } = await mount(
     <OrgCanvas tree={withUnread as TreePayload} op={() => Promise.resolve({} as never)}
@@ -561,12 +571,14 @@ uiTest('§12.2 …and the last-mail line renders ALONGSIDE the badge, not '
   await flush()
   const tile = el.querySelector('.sq.orginbox')
   assert.ok(tile, 'no org-inbox tile')
-  assert.equal(txt(tile.querySelector('.count') as HTMLElement), '4',
-    'the unread badge did not render')
+  assert.equal(tile.querySelector('.count'), null,
+    'the org inbox is showing an unread count. That mail is addressed to the '
+    + 'organization and answered by its agents — a badge asks the user to '
+    + 'clear something that was never theirs (user 2026-08-10)')
   const last = tile.querySelector('.oi-last')
   assert.ok(last && (last.textContent ?? '').trim(),
-    'the last-mail line vanished when the badge appeared — it carries the '
-    + 'only on-canvas record of who was last written to')
+    'the last-mail line vanished — it carries the only on-canvas record of '
+    + 'who was last written to')
   assert.match(last!.textContent ?? '', /faraway/,
     'the last line does not name the peer it should')
 })

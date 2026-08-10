@@ -165,7 +165,12 @@ export default function App() {
     if (location.pathname !== want) history.pushState(null, '', want)
   }, [slug])
   useEffect(() => {                    // №38: the tab title carries the unread
-    const n = (tree?.user_inbox_count ?? 0) + (tree?.org_inbox?.unread ?? 0)
+    // ⚠ the USER's inbox only. Org-inbox mail is addressed to the organization
+    // and answered by its agents, so counting it here billed the user for
+    // someone else's correspondence — and once the tile's badge went (user
+    // 2026-08-10), a tab reading "(3)" would have pointed at nothing the user
+    // could find or clear.
+    const n = tree?.user_inbox_count ?? 0
     document.title = (n > 0 ? `(${n}) ` : '')
       + (tree?.name ? `${tree.name} — orgtree` : 'orgtree')
   }, [tree])
