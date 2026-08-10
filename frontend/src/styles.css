@@ -736,11 +736,13 @@ button.badge.frozen:hover { border-color: var(--accent); }
 }
 /* a marathon question must not swallow the desk (user report 2026-08-06:
    long bodies overtook the panel and were cut off at the bottom). The
-   PINNED card caps at ~half the desk; the question text and the option
+   PINNED card caps at three quarters of the desk (user 2026-08-10, raised
+   from 46%: half left long questions scrolling in a letterbox while the
+   conversation above them sat idle); the question text and the option
    rows scroll inside themselves, so the chrome — header chip, tab strip,
    submit bar — never leaves reach. The card is a direct desk-body child;
    inbox/mail renderings are inside their own scrollers and stay uncapped. */
-.desk-body > .askcard { max-height: 46%; }
+.desk-body > .askcard { max-height: 75%; }
 .desk-body > .askcard .ask-q,
 .desk-body > .askcard .ask-rows { min-height: 0; overflow-y: auto; }
 .desk-body > .askcard .ask-tab,
