@@ -4316,6 +4316,22 @@ class Org:
                      f'"{nid}" compacted (now generation {gen + 1}). Its pre-compaction '
                      f'self is archived as "{pred_id}" — rehire it to consult the full '
                      f'detail the summary flattened.')
+        # …AND THE NODE ITSELF (user ruling 2026-08-10). This used to go only to
+        # the parent, which is the one participant that did not lose anything:
+        # the compacted agent cannot know it has a bearer, because knowing was
+        # exactly what compaction took from it. `orgtree_rehire` offers to wake
+        # "YOUR OWN knowledge bearer", and on the default org_visibility the
+        # agent could neither see that it had one nor learn its id — a tool
+        # advertising a capability its holder had no way to reach.
+        self._notify([nid],
+                     f'You were compacted: you are now generation {gen + 1}, and '
+                     f'the context you had before it is NOT in your summary in '
+                     f'full. Your pre-compaction self is archived as "{pred_id}" '
+                     f'and is CONSULTABLE — orgtree_rehire on that id brings it '
+                     f'back as your own subordinate, with everything you no '
+                     f'longer remember, and you may retire it again when done. '
+                     f'Reach for it when the answer you need is detail the '
+                     f'summary flattened rather than something you can rederive.')
         self._log("compact_split", SYSTEM, {"node": nid, "predecessor": pred_id}, [])
         return pred_id
 
@@ -4357,6 +4373,19 @@ class Org:
                        f'summary before orgtree could preserve it — '
                        f'"{pred_id}" is recorded as a LOST generation '
                        f'(visible, not consultable).')
+        # the same courtesy as compact_split, with the OPPOSITE content — and
+        # saying so is the point. Here there is no bearer to wake, so telling
+        # the agent it has one would send it to a refusal; telling it nothing
+        # leaves it to discover the same refusal on its own. It is told that
+        # this generation is lost, precisely so it does not go looking.
+        self._notify([nid],
+                     f'You were auto-compacted by the CLI: you are now '
+                     f'generation {gen + 1} and the context you had before it '
+                     f'survives only as your summary. Unlike an orgtree '
+                     f'compaction there is NO consultable bearer — "{pred_id}" '
+                     f'is a LOST generation and cannot be rehired, so anything '
+                     f'the summary dropped is gone. Ask whoever gave you the '
+                     f'work rather than hunting for a past self.')
         self._log("cli_compact", SYSTEM,
                   {"node": nid, "predecessor": pred_id,
                    **({"pre_tokens": pre_tokens} if pre_tokens else {})}, [])

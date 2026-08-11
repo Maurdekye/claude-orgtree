@@ -335,6 +335,22 @@ def lineage_algebra() -> None:
     check("split · …the list itself is copied too",
           lambda: _eq(len(org2.nodes[p2]["scope"]["add_dirs"]), 1))
 
+    # ---- the AGENT is told, not only its superior (user ruling 2026-08-10)
+    def _notes(o, k):
+        return " ".join(x["text"] for x in (o.d.get("notices") or {}).get(k, []))
+
+    check("split · the compacted agent is told it HAS a bearer, and its id",
+          lambda: _true(pred in _notes(org, a),
+                        f"the node's own notices: {_notes(org, a)!r}"))
+    check("split · …and that rehiring it is the way to consult it — knowing "
+          "is exactly what compaction took away, so nothing else can tell it",
+          lambda: _true("orgtree_rehire" in _notes(org, a)
+                        and "subordinate" in _notes(org, a),
+                        _notes(org, a)))
+    check("split · the superior is still told (the old notice is unchanged)",
+          lambda: _true(pred in _notes(org, org.node(a)["parent"] or USER)
+                        or org.node(a)["parent"] is None))
+
     check("split · the split is logged",
           lambda: _true(any(e["op"] == "compact_split"
                             for e in org.d["events"])))
