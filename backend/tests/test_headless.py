@@ -438,16 +438,51 @@ def sec_selectors() -> None:
           _host_key_does_not_reach_a_keyless_org)
 
     def _org_key_is_injected_unsandboxed():
+        # ⚠ this check used to RE-IMPLEMENT the injection here and assert
+        # against its own copy — vacuously green no matter what production
+        # did, which is how two spawns came to run keyless (user report
+        # 2026-08-10). It calls the real seam now.
         org = mkorg(headless=True, persist=True)
         o = store.load_org(org.d["slug"])
-        env = supervisor.clean_env()
-        if o.d.get("api_key") and not sbx.is_sandboxed(o):
-            env["ANTHROPIC_API_KEY"] = str(o.d["api_key"])
-        assert env["ANTHROPIC_API_KEY"] == KEY
+        env = supervisor.spawn_env(o)
+        assert env["ANTHROPIC_API_KEY"] == KEY, \
+            "the org's own key is not in the environment its processes get"
         assert "ANTHROPIC_API_KEY" not in supervisor.clean_env(), \
-            "the injection must be per-turn, not a mutation of the base env"
+            "the injection must be per-spawn, not a mutation of the base env"
     check("an org's own key is injected for its turns only",
           _org_key_is_injected_unsandboxed)
+
+    def _every_claude_spawn_uses_the_keyed_env():
+        """USER REPORT 2026-08-10: "I ran a compaction on a headless agent with
+        an API key and it said it hit the WEEKLY usage limit, as though it were
+        still on a subscription." A weekly limit is a subscription's ceiling; a
+        metered key has none, so the message itself said the key was absent.
+
+        clean_env() strips the key unconditionally and only the TURN spawn put
+        it back, so the COMPACTION fork and the ORACLE fork ran keyless and
+        fell through to the user's plan. Both are forks — the expensive kind —
+        and a compaction that dies on a limit leaves the node uncompacted, so
+        the org cannot spend its own money to escape a full context.
+
+        The property is "no spawn uses the keyless env", which is checkable at
+        the source rather than by launching real CLIs."""
+        src = open(os.path.join(_HERE, "..", "orgtree", "supervisor.py"),
+                   encoding="utf-8").read()
+        i = src.find("def spawn_env(")
+        assert i > 0, "spawn_env is gone — the key injection has moved again"
+        # …excluding spawn_env's OWN body, which is the one legitimate caller
+        # of the keyless env (it is what it adds the key to). Without this the
+        # guard fires on its own implementation.
+        j = src.index("\ndef ", i + 1)
+        rest = src[:i] + src[j:]
+        bare = rest.count("env=clean_env()") + rest.count("env = clean_env()")
+        assert bare == 0, (
+            f"{bare} process spawn(s) still use the KEYLESS env. clean_env "
+            "strips ANTHROPIC_API_KEY unconditionally, so an org with its own "
+            "key silently bills the user's subscription there — visible only "
+            "as a usage limit a metered key would never hit")
+    check("every claude spawn gets the org's key, not just the turn one "
+          "(user report 2026-08-10)", _every_claude_spawn_uses_the_keyed_env)
 
     def _sandbox_precedence():
         # org.d.api_key > kiosk.api_key > ORGTREE_SANDBOX_API_KEY > proxied

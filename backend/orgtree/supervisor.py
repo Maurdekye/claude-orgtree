@@ -614,6 +614,35 @@ def clean_env() -> dict[str, str]:
     return env
 
 
+def spawn_env(org: Org) -> dict[str, str]:
+    """`clean_env` plus THIS org's own API key — the complete environment for
+    any `claude` process this org owns.
+
+    ⚠ The two halves belong together and were not (user report 2026-08-10:
+    "I ran a compaction on a headless agent with an API key and it said it hit
+    the WEEKLY usage limit, as though it were still on a subscription"). The
+    strip above is unconditional, and only the TURN spawn put the key back —
+    so every OTHER `claude` this org starts ran with no key at all and fell
+    through to the user's subscription. That is the observed message: a weekly
+    limit is a subscription's ceiling; a metered key has none.
+
+    Three spawns exist and two were wrong: the compaction fork and the
+    oracle/consult fork. Both are the expensive ones — a fork replays a whole
+    session — so the misbilling landed hardest exactly where the org had paid
+    to avoid it. Worse, a compaction that dies on a limit leaves the node
+    uncompacted, so the org cannot get out from under a full context by
+    spending its own money.
+
+    Sandboxed orgs are excluded here on purpose: their key reaches the process
+    through the container's own environment (sandbox.py), and setting it on the
+    host-side `docker exec` would leak it into an argv/env the container does
+    not own."""
+    env = clean_env()
+    if org.d.get("api_key") and not sbx.is_sandboxed(org):
+        env["ANTHROPIC_API_KEY"] = str(org.d["api_key"] or "")
+    return env
+
+
 def _looks_like_usage_limit(blob: str) -> bool:
     # №8 adjacent fix: the CLI's session-limit phrasing is "You've hit your
     # session limit — resets 1:40pm", which matched NONE of the original
@@ -1739,16 +1768,15 @@ def _run_one_turn(slug: str, nid: str,
                 # actionable RuntimeError (no Docker / no API key) surfaces as
                 # the node's last_error through the except path below
                 sandbox_name = sbx.ensure_container(org)
-            env = clean_env()
+            # §9.5: a per-org API key reaches exactly THIS org's processes —
+            # metered spend against the org's own key: no refresh-token
+            # ceiling, no competition with the user's plan. (The key injection
+            # moved into spawn_env 2026-08-10 so the FORK spawns get it too;
+            # they had been running keyless. See spawn_env.)
+            env = spawn_env(org)
             env["ORGTREE_ORG"], env["ORGTREE_NODE"] = slug, nid
             env["ORGTREE_PORT"] = os.environ.get("ORGTREE_PORT", "7360")
             env["PYTHONPATH"] = BACKEND_DIR + os.pathsep + env.get("PYTHONPATH", "")
-            # §9.5: a per-org API key reaches exactly THIS org's turns (the
-            # unsandboxed seam — sandboxed orgs get theirs via the container
-            # env in sandbox.py). Metered spend against the org's own key: no
-            # refresh-token ceiling, no competition with the user's plan.
-            if org.d.get("api_key") and not sbx.is_sandboxed(org):
-                env["ANTHROPIC_API_KEY"] = str(org.d.get("api_key") or "")
             proc = subprocess.Popen(
                 _build_cmd(org, nid), cwd=scratch_dir(slug, nid), env=env,
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -2664,7 +2692,7 @@ def _compact_split_body(slug: str, nid: str) -> None:
                    "--settings", json.dumps({"disableAllHooks": True}),
                    "--strict-mcp-config"]
     try:
-        proc = subprocess.Popen(argv, cwd=scratch_dir(slug, nid), env=clean_env(),
+        proc = subprocess.Popen(argv, cwd=scratch_dir(slug, nid), env=spawn_env(org),
                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, text=True, encoding="utf-8",
                                 errors="replace")
@@ -3420,7 +3448,7 @@ def immediate_command(slug: str, nid: str, text: str) -> bool:
                            "--settings", json.dumps({"disableAllHooks": True}),
                            "--strict-mcp-config"]
             proc = subprocess.Popen(argv, cwd=scratch_dir(slug, nid),
-                                    env=clean_env(), stdin=subprocess.PIPE,
+                                    env=spawn_env(org), stdin=subprocess.PIPE,
                                     stdout=subprocess.PIPE,
                                     stderr=subprocess.PIPE, text=True,
                                     encoding="utf-8", errors="replace")
