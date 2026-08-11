@@ -339,3 +339,23 @@ test('⑬  the agent tray lists by hierarchy, with filtered ancestors kept',
       'the ghost-ancestor path is gone — a name filter now orphans matching '
       + 'descendants under an invisible parent')
   })
+
+// --------------------------------------------------------------------- ⑭
+test('⑭  the pinned last-user-turn chip attributes by envelope, not role',
+  () => {
+    // FR-20 (user idea 2026-08-08). In orgtree a user-ROLE transcript record
+    // is envelope-wrapped input from ANY sender — a sibling's mail pinned as
+    // "you" misattributes someone else's words to the human. The durable twin
+    // of pending-mail's `m.from === USER` filter is the envelope's FROM line.
+    const src = code('canvas/desk.tsx')
+    assert.ok(/`\^FROM \$\{USER\} \\\(`/.test(src)
+      || /\^FROM \$\{USER\}/.test(src),
+      'lastUser no longer keys on the envelope FROM line — bare role would '
+      + 'pin a sibling\'s mail as "you"')
+    assert.ok(/pinUser && lastUser/.test(src),
+      'the chip render lost its visibility gate — it must only show while '
+      + 'the target row is above the scrollport')
+    assert.ok(/getBoundingClientRect\(\)\.bottom < /.test(src),
+      'calcPin no longer measures the row against the scrollport — a chip '
+      + 'shown while the row is BELOW the viewport points the wrong way')
+  })

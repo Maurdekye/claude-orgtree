@@ -567,6 +567,17 @@ button.badge.frozen:hover { border-color: var(--accent); }
   opacity: .92;
 }
 .jumpbottom:hover { opacity: 1; border-color: var(--accent); }
+/* FR-20: the pinned last-user-turn chip — jumpbottom's mirror at the top
+   edge. Ellipsised to one line: it is a pointer, not a reading surface. */
+.pinuser {
+  position: sticky; top: 4px; align-self: center; z-index: 3;
+  max-width: 85%; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; font-size: 11px; padding: 3px 10px;
+  border-radius: 999px; background: var(--panel); color: var(--ink);
+  border: 1px solid var(--line); box-shadow: var(--shadow); cursor: pointer;
+  opacity: .92;
+}
+.pinuser:hover { opacity: 1; border-color: var(--accent); }
 .msg {
   max-width: 100%; min-width: 0; font-size: 14px;
   line-height: 1.45; white-space: pre-wrap; overflow-wrap: break-word;
