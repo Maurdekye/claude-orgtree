@@ -13,7 +13,7 @@ import {
   LockIcon, MailIcon, SettingsIcon,
 } from '../icons'
 import {
-  DESK_SCALE, deskDpi, DRAFT, NODE_H, NODE_W, TIER_LETTER, TIERS, USER,
+  ago, DESK_SCALE, deskDpi, DRAFT, NODE_H, NODE_W, TIER_LETTER, TIERS, USER,
   USER_H, USER_W,
 } from './shared'
 import type {
@@ -744,6 +744,9 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, m
   const stackN = (node.lineage ?? []).length
   if (!focused && stackN) cls.push('stack' + Math.min(stackN, 3))
   const live = node.state === 'live'
+  // FR-23: the most recent completed turn (killed included — TurnStat.at is
+  // written unconditionally at completion, unlike NodeStatus.at)
+  const lastTurn = node.turns?.[node.turns.length - 1]
   // the card never changes size or place — the desk fades in over it (design
   // ruling). (Every real/bearer card carries the credit trio — only the eye
   // root omits it, and it never renders through NodeSquare — hence the `!`s.)
@@ -835,6 +838,21 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, m
           {node.last_status &&
             <span className={'statuschip ' + node.last_status.status}
               title={node.last_status.summary}>{node.last_status.status}</span>}
+          {/* FR-23 (user request 2026-08-09): the end of the most recent turn,
+              glanceable on the CANVAS — the desk already had it, hover-gated,
+              and that surfacing evidently wasn't enough or the request would
+              not exist. Source: TurnStat.at (written unconditionally at turn
+              completion, killed turns included) — NOT NodeStatus.at, which
+              only exists when the agent chose to report a status. Hidden
+              while busy (the activity dot owns that state; "3m ago" under a
+              running turn reads as a contradiction) and absent when no turn
+              ever ran (a fresh hire shows nothing rather than "never"). */}
+          {!node.busy && lastTurn &&
+            <span className="badge dim turnago"
+              title={'last turn ended '
+                + (lastTurn.at ?? '').slice(0, 16).replace('T', ' ')
+                + (lastTurn.killed ? ' (killed)' : '')}>
+              {ago(lastTurn.at)}</span>}
           {/* ⭐ clickable (user ruling 2026-08-06): the freeze badge IS the
               per-node unstick — the control lives where the user finds the
               agent, not only in org-level panels */}

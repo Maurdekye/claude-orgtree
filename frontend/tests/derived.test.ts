@@ -294,3 +294,27 @@ test('⑪  the command-ghost drop is keyed on the shapes that write no row',
       + 'ordinary command, whose ghost is the only thing on screen until its '
       + 'turn starts')
   })
+
+// --------------------------------------------------------------------- ⑫
+test('⑫  the canvas turn-end stamp reads TurnStat, never NodeStatus',
+  () => {
+    // FR-23 (user request 2026-08-09). Two `at` fields exist and only one is
+    // authoritative for "when did the last turn END": TurnStat.at is written
+    // unconditionally at turn completion (killed turns included), while
+    // NodeStatus.at exists only when the agent chose to report a status — a
+    // node that never reports would show "never" while turning daily. The
+    // badge must also hide while busy: "3m ago" under a running turn is a
+    // contradiction the activity dot already answers.
+    const src = code('canvas/cards.tsx')
+    const m = /const lastTurn = node\.turns\?\.\[node\.turns\.length - 1\]/.exec(src)
+    assert.ok(m, 'lastTurn is no longer derived from node.turns — if the '
+      + 'stamp moved to last_status.at, nodes that never self-report show '
+      + 'nothing however many turns they run')
+    assert.ok(/!node\.busy && lastTurn/.test(src),
+      'the turnago badge lost its !busy gate — a stale "Nm ago" now renders '
+      + 'under a running turn, contradicting the activity indicator')
+    assert.ok(!/last_status\S*\.at/.test(code('canvas/cards.tsx')),
+      'cards.tsx reads last_status.at — the glanceable stamp must come from '
+      + 'TurnStat (see FR-23: NodeStatus.at depends on the agent having '
+      + 'reported at all)')
+  })
