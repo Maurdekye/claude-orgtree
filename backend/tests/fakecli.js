@@ -188,6 +188,30 @@ async function serve(text) {
       await sleep(cfg.deltaMs)
     }
   }
+  // SUBAGENT (Task) output — the shape the real CLI emits, verified against
+  // cli.js: every assistant/user event carries `parent_tool_use_id`, null for
+  // the agent's own output and the spawning Task's id for anything from
+  // inside a subagent. The CLI's own consumer drops the non-null ones from
+  // the persisted list, so the TRANSCRIPT records them as isSidechain — which
+  // is what makes them unretirable live rows if the stream side forgets.
+  // Deliberately BIG usage: a subagent's context is not the parent's.
+  for (let i = 0; i < (cfg.subagents | 0); i += 1) {
+    const pid = 'toolu_parenttask'
+    const sid = 'toolu_sub' + i
+    const blocks = [
+      { type: 'tool_use', id: sid, name: 'Grep', input: { pattern: 'x' } },
+      { type: 'text', text: 'SUBAGENT-CHATTER-' + i },
+    ]
+    for (const b of blocks) {
+      say({ type: 'assistant', parent_tool_use_id: pid,
+            message: { role: 'assistant', model: 'fake', content: [b],
+                       usage: { input_tokens: 900000 } } })
+      record({ type: 'assistant', isSidechain: true,
+               message: { role: 'assistant', model: 'fake', content: [b],
+                          usage: { input_tokens: 900000 } } })
+    }
+    await sleep(cfg.toolMs)
+  }
   for (let i = 0; i < (cfg.tools | 0); i += 1) {
     const id = 'toolu_' + Math.random().toString(16).slice(2, 10)
     const block = { type: 'tool_use', id, name: 'Bash', input: { command: 'echo hi' } }

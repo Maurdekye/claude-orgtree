@@ -1713,6 +1713,97 @@ def served_messages(session_id: str) -> int:
     return n
 
 
+def live_subagents() -> None:
+    """USER REPORT 2026-08-11: "when an agent spawns ephemeral subagents (not
+    hires), their message fragments visually stack up in the UI and don't go
+    away until the turn ends, flooding the output with misordered greyed-out
+    tool usages and messages."
+
+    The two halves of the live/durable contract disagreed. `read_chat` drops
+    `isSidechain` rows, so a subagent fragment NEVER gets a durable twin —
+    and `_sweep_live` retires a live row only when its twin appears. So every
+    subagent fragment was unretirable by construction and sat on the desk
+    until the end-of-turn clear. Parallel subagents interleave: the misorder.
+
+    The fake CLI now emits the real shape (assistant events carrying
+    `parent_tool_use_id`, recorded as isSidechain), with a 900k-token usage
+    that a parent's context could never have — which is how the occupancy
+    half is measured too."""
+    print("\nephemeral subagents (user report 2026-08-11):")
+    start_backend()
+    # slow enough that the turn is still running when we look at it
+    # `tools: 1` is the POSITIVE CONTROL. Without an agent-owned live row to
+    # find, "no subagent rows" would also be satisfied by a filter that
+    # suppressed everything, and the check would pass on a broken feed.
+    set_cfg({**FAST, "subagents": 3, "tools": 1, "toolMs": 250,
+             "resultMs": 2500})
+    slug, (nid,) = make_org("subag")
+    tok = token()
+    send(slug, nid, f"go wide {tok}")
+
+    seen: dict[str, object] = {"rows": [], "looked": 0}
+
+    def _watch() -> None:
+        """Poll the payload WHILE the turn runs — after it ends the live list
+        is cleared either way, so a check that only looked afterwards would
+        pass on the broken code."""
+        for _ in range(120):
+            c = api("GET", f"/api/orgs/{slug}/nodes/{nid}/chat?last=20")
+            live = c.get("live") or []
+            if live:
+                seen["looked"] = int(seen["looked"]) + 1        # type: ignore[call-overload]
+                for r in live:
+                    cast_rows = seen["rows"]
+                    assert isinstance(cast_rows, list)
+                    cast_rows.append(r.get("text") or "")
+            if not c.get("busy") and seen["looked"]:
+                break
+            time.sleep(0.25)
+        rows = seen["rows"]
+        assert isinstance(rows, list)
+        # THE STIMULUS HAS TO BE PROVEN, or "no subagent rows" is satisfied
+        # by a stand-in that never emitted any. The agent's own tool row is
+        # useless as a control here — the stand-in records its durable twin in
+        # the same breath, so _sweep_live retires it within milliseconds and a
+        # poll rarely catches it. The transcript is the durable proof that the
+        # subagent events really happened: the stand-in writes them as
+        # isSidechain, exactly as the real CLI does.
+        fixture("SUBAGENT-CHATTER" in transcript_text(),
+                "the stand-in never emitted subagent events, so this run "
+                "proves nothing about what the live feed filters")
+        chatter = [t for t in rows if "SUBAGENT-CHATTER" in str(t)
+                   or str(t).startswith("Grep")]
+        assert not chatter, (
+            f"{len(chatter)} subagent fragment(s) reached the live feed. They "
+            f"have no durable twin (read_chat drops isSidechain), so _sweep_live "
+            f"can never retire them and they pile up until the turn ends: "
+            f"{chatter[:5]}")
+    check("subagents · a subagent's fragments never enter the live feed",
+          _watch)
+
+    wait_idle(slug, nid, 30)
+    check("subagents · …and the agent's own reply still arrives", lambda: (
+        None if wait_delivered(tok, 30)
+        else (_ for _ in ()).throw(AssertionError(carriers(slug, nid, tok)))))
+
+    def _no_spurious_compaction() -> None:
+        """⚠ Measure the COMPACTION, not the occupancy reading. Occupancy is
+        the obvious field and it is the wrong one: a 900k reading crosses the
+        threshold, the split runs, and the split RESETS the successor's
+        occupancy — so the broken code ends with a small number and a check on
+        it passes for the wrong reason, its evidence erased by the damage.
+        The generation and the bearer are durable."""
+        n = doc(slug)["nodes"][nid]
+        assert not n.get("predecessor") and (n.get("generation") or 0) == 0, (
+            f"the agent was COMPACTED by its subagent's context size — "
+            f"generation {n.get('generation')}, bearer {n.get('predecessor')}. "
+            f"Occupancy drives the split, and a subagent has its own window, "
+            f"so a big one compacts a parent nowhere near its own limit")
+    check("subagents · …and a subagent's context never compacts the AGENT",
+          _no_spurious_compaction)
+    set_cfg(FAST)
+
+
 def live_kill_sweep() -> None:
     """Kill the BACKEND at eight points across ONE turn — before the drain,
     between drain and hand-off, before the echo, after the echo, after the
@@ -2701,6 +2792,7 @@ def main() -> None:
         # section key == the label prefix its checks carry, so --only picks
         # BOTH the section that runs and the checks that report
         sections = [
+            ("subag", live_subagents),
             ("kill", live_kill_sweep),
             ("leash", live_leash),
             ("clicrash", live_cli_death),

@@ -1959,7 +1959,39 @@ def _run_one_turn(slug: str, nid: str,
                         }
                         continue
                     if ev.get("type") == "assistant":
-                        dbuf = ""     # the full message supersedes the draft
+                        # ⚠ IS THIS THE AGENT, OR ONE OF ITS SUBAGENTS?
+                        # (user report 2026-08-11: "when an agent spawns
+                        # ephemeral subagents their message fragments visually
+                        # stack up in the UI and don't go away until the turn
+                        # ends, flooding the output with misordered greyed-out
+                        # tool usages and messages.")
+                        #
+                        # The CLI marks every assistant/user event with
+                        # `parent_tool_use_id`: null for the agent's own
+                        # output, the spawning Task's id for anything from
+                        # inside a subagent (cli.js, the agent_progress
+                        # branch). Its OWN consumer drops the non-null ones
+                        # from the persisted message list, which is why the
+                        # transcript writes them as `isSidechain` and why
+                        # read_chat skips them.
+                        #
+                        # The live feed had no such rule, so the two halves
+                        # disagreed — and that disagreement is the bug, not a
+                        # cosmetic one: `_sweep_live` retires a live row only
+                        # when its DURABLE TWIN appears, and a sidechain row
+                        # has no durable twin BY CONSTRUCTION. So every
+                        # subagent fragment was unretirable and sat on the
+                        # desk until the end-of-turn clear. Parallel subagents
+                        # interleave, which is the "misordered" half.
+                        #
+                        # Usage accounting still reads these events (see
+                        # below) — they cost real money — and so does the
+                        # usage-limit detection: a subagent hitting the
+                        # account's ceiling stops the parent's work just as
+                        # surely, so it should still freeze the node.
+                        sub = ev.get("parent_tool_use_id")
+                        if not sub:
+                            dbuf = ""   # the full message supersedes the draft
                         _msg = ev.get("message", {})
                         if _msg.get("model") == "<synthetic>" \
                                 or ev.get("isApiErrorMessage") \
@@ -1976,7 +2008,7 @@ def _run_one_turn(slug: str, nid: str,
                         t = (u.get("input_tokens", 0)
                              + u.get("cache_read_input_tokens", 0)
                              + u.get("cache_creation_input_tokens", 0))
-                        if t:                     # zero-usage synthetics don't count
+                        if t and not sub:         # zero-usage synthetics don't count
                             # HIGH-WATER mark, not last-write (redteam 1a,
                             # 2026-08-06): a turn that climbs past compact_at
                             # and is then compacted BY THE CLI ends small —
@@ -1985,10 +2017,25 @@ def _run_one_turn(slug: str, nid: str,
                             # per-MESSAGE usage is point-in-time context size
                             # (unlike the RESULT event's cumulative usage the
                             # №24 bug was about — see _after_turn).
+                            #
+                            # ⚠ `not sub` above is not tidiness. Occupancy is
+                            # THIS agent's context size, and a subagent has its
+                            # own window — a big one would have been read as
+                            # the parent filling up and could have tripped the
+                            # compaction split on an agent that was nowhere
+                            # near its limit. Found while fixing the live rows;
+                            # same root, quieter symptom.
                             turn_occ = max(turn_occ, t)
                         # killed-turn accounting: the result event never comes,
-                        # so the stream's per-message usage is the only record
+                        # so the stream's per-message usage is the only record.
+                        # Subagent output IS counted here, deliberately and
+                        # unlike occupancy: those tokens were really billed, so
+                        # a killed turn that spent them must say so.
                         turn_out += u.get("output_tokens", 0) or 0
+                        if sub:
+                            # nothing below this line describes the agent: no
+                            # live rows, no thought folding, no draft handover
+                            continue
                         for b in ev.get("message", {}).get("content") or []:
                             if not isinstance(b, dict):
                                 continue    # string-content synthetics
