@@ -27,10 +27,16 @@ export interface ConfirmModalProps {
   confirmLabel: ReactNode
   onConfirm: () => void
   close: () => void
+  /** FR-24: an optional SECOND way through — same confirmation gate, a
+   *  different action (the compact dialog offers cheap-compact beside the
+   *  normal fork). Both run through close-then-act like onConfirm. */
+  altLabel?: ReactNode
+  onAlt?: () => void
 }
 
 // in-page confirmation (user ruling: never a native OS dialog)
-export function ConfirmModal({ title, body, confirmLabel, onConfirm, close }: ConfirmModalProps) {
+export function ConfirmModal({ title, body, confirmLabel, onConfirm, close,
+  altLabel, onAlt }: ConfirmModalProps) {
   useEsc(close)
   return (
     <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
@@ -40,6 +46,9 @@ export function ConfirmModal({ title, body, confirmLabel, onConfirm, close }: Co
         <div className="row">
           <button className="danger solid"
             onClick={() => { close(); onConfirm() }}>{confirmLabel}</button>
+          {altLabel && onAlt &&
+            <button className="danger"
+              onClick={() => { close(); onAlt() }}>{altLabel}</button>}
           <button onClick={close}>cancel</button>
         </div>
       </div>

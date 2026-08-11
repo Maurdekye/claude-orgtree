@@ -414,6 +414,27 @@ TOOLS: list[dict[str, Any]] = [
                         "required": ["node"]},
     },
     {
+        "name": "orgtree_cheap_compact",
+        "description": (
+            "Replace a report with a FRESH agent instead of compacting it — "
+            "the cache-cheap alternative when a long-context report has been "
+            "idle for hours or days. A normal compact re-reads its ENTIRE "
+            "transcript at that moment's cache price (cold = near-full input "
+            "cost); this retires the report, hires a same-tier, same-grant, "
+            "same-charter replacement under the same superior (net-zero on "
+            "credits), and grants the replacement the predecessor's working "
+            "folder READ-ONLY — transcript.jsonl included — so it pays only "
+            "for the history it actually chooses to read. The replacement "
+            "starts with ZERO context: prefer a plain compact for an agent "
+            "whose summarized memory must carry over seamlessly, and prefer "
+            "this when the context is big, cold, and mostly consultable "
+            "rather than needed up front. Refused on yourself and on nodes "
+            "with live reports (retire or dissolve those first)."),
+        "inputSchema": {"type": "object",
+                        "properties": {"node": {"type": "string"}},
+                        "required": ["node"]},
+    },
+    {
         "name": "orgtree_rehire",
         "description": (
             "Rehire an archived node in your subtree; it resumes with its full "

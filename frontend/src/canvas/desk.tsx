@@ -570,15 +570,34 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
             .catch(() => {})}
           close={() => setAsking(null)} />
       )}
-      {askCompact && (
-        <ConfirmModal title={`compact ${node.id} now?`}
-          body="Same as the automatic split: the session forks and compacts — the successor carries on under this name; the pre-compaction self is archived in place as a consultable knowledge bearer."
+      {askCompact && (() => {
+        // FR-24: is the prompt cache likely cold? Idle past the 5-minute TTL
+        // means the compact fork re-reads the ENTIRE transcript at near-full
+        // input price — exactly the case cheap compact exists for.
+        const lastAt = node.turns?.[node.turns.length - 1]?.at
+        const cold = !!lastAt && Date.now() - Date.parse(lastAt) > 5 * 60e3
+        return <ConfirmModal title={`compact ${node.id} now?`}
+          body={'Same as the automatic split: the session forks and compacts — '
+            + 'the successor carries on under this name; the pre-compaction '
+            + 'self is archived in place as a consultable knowledge bearer.'
+            + (cold ? ` ⚠ Idle ${ago(lastAt)} — past the cache window, so this `
+              + 'fork re-reads the whole transcript at near-full price. CHEAP '
+              + 'COMPACT instead retires the agent and hires a fresh '
+              + 'replacement (same tier/grant/charter) that reads the old '
+              + 'transcript selectively, read-only, only as needed.'
+              : ' Cheap compact is the fresh-replacement alternative: zero '
+              + 'starting context, the old transcript granted read-only.')}
           confirmLabel="compact"
           onConfirm={() => compactNode(slug, node.id)
             .then(() => toast([`compaction of ${node.id} started`]))
             .catch((e: Error) => toast([`error: ${e.message}`]))}
+          altLabel="cheap compact"
+          onAlt={() => op({ op: 'cheap_compact', node: node.id })
+            .then((r) => toast([`${node.id} cheap-compacted — replacement: ${
+              (r as { node?: string })?.node ?? '?'}`]))
+            .catch((e: Error) => toast([`error: ${e.message}`]))}
           close={() => setAskCompact(false)} />
-      )}
+      })()}
       {/* last_error moved INTO the chat stream (it renders at the end, where
           it actually occurred). On the non-chat tabs it would otherwise be the
           only surface showing a failed turn, so it still renders here for

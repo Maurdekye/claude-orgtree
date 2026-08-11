@@ -375,8 +375,9 @@ def _():
 @t("tools/list returns the catalogue and every card is well-formed")
 def _():
     tools = BOSS.rpc("tools/list")["result"]["tools"]
-    # +orgtree_present (FR-03); +orgtree_withdraw_ask; +orgtree_self_update
-    assert len(tools) == 22, [x["name"] for x in tools]
+    # +orgtree_present (FR-03); +orgtree_withdraw_ask; +orgtree_self_update;
+    # +orgtree_cheap_compact (FR-24)
+    assert len(tools) == 23, [x["name"] for x in tools]
     for c in tools:
         assert c["name"].startswith("orgtree_"), c
         assert len(c["description"]) > 20, c
@@ -523,15 +524,15 @@ _AGENT_CALL = API_SRC[API_SRC.index('@app.post("/api/agent")'):
 _DISPATCH = sorted(set(__import__("re").findall(r'"(orgtree_\w+)"', _AGENT_CALL)))
 
 
-@t("the catalogue and the /api/agent dispatch name exactly the same 22 verbs")
+@t("the catalogue and the /api/agent dispatch name exactly the same 23 verbs")
 def _():
     assert sorted(CARDS) == _DISPATCH, \
         f"drift: cards {sorted(set(CARDS) - set(_DISPATCH))}, " \
         f"dispatch-only {sorted(set(_DISPATCH) - set(CARDS))}"
     # +orgtree_present (FR-03, 2026-08-05); +orgtree_withdraw_ask (the
     # manual-invalidation ruling, 2026-08-06); +orgtree_self_update (FR-14,
-    # 2026-08-06)
-    assert len(CARDS) == 22, len(CARDS)
+    # 2026-08-06); +orgtree_cheap_compact (FR-24, 2026-08-11)
+    assert len(CARDS) == 23, len(CARDS)
 
 
 @t("no tool name is duplicated and every card carries an inputSchema")
@@ -2176,6 +2177,40 @@ def _():
         assert quiet.q.empty(), "the server wrote an unsolicited line to stdout"
     finally:
         quiet.close()
+
+
+@t("FR-24: cheap_compact replaces a report — same tier/grant/charter, "
+   "predecessor marked, replacement notified, net-zero on credits")
+def _():
+    r = BOSS.ok("orgtree_hire", {
+        "parent": "boss", "tier": "haiku", "grant": 2, "name": "oldhand",
+        "charter": "keeps the ledger", "add_dirs": [],
+        "org_visibility": "team",
+        "tools": {"bash": False, "web": False, "edit": True,
+                  "subagents": False, "mcp": []}})
+    assert r["node"] == "oldhand", r
+    free0 = store.load_org(A).free("boss")
+    r = BOSS.ok("orgtree_cheap_compact", {"node": "oldhand"})
+    o = store.load_org(A)
+    new = r["node"]
+    assert o.nodes["oldhand"]["state"] == "archived", r
+    assert o.nodes[new]["state"] == "live" and new != "oldhand", r
+    assert o.nodes[new]["model"] == "haiku" and o.nodes[new]["grant"] == 2, r
+    assert o.nodes[new].get("charter") == "keeps the ledger", r
+    assert o.nodes[new].get("predecessor") == "oldhand", r
+    assert o.free("boss") == free0, (free0, o.free("boss"))
+    notes = (o.d.get("notices") or {}).get(new) or []
+    assert any("replacement" in p["text"] for p in notes), notes
+
+
+@t("FR-24: cheap_compact refuses self and refuses a node with live reports")
+def _():
+    # self falls to the downward-only authority gate (an agent's own session
+    # is mid-turn running the call), before any FR-24-specific check
+    txt = MID.refuse("orgtree_cheap_compact", {"node": "mid"})
+    assert "downward" in txt or "authority" in txt, txt
+    txt = BOSS.refuse("orgtree_cheap_compact", {"node": "mid"})
+    assert "live reports" in txt, txt
 
 
 @t("the org doc is intact after the whole run (the ledger's own audit)")

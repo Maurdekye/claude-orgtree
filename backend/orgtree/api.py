@@ -3011,6 +3011,12 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                     result.setdefault("warnings", []).extend(dwarns)
             elif body.tool == "orgtree_retire":
                 result = org.retire(body.node, a.get("node"))  # type: ignore[arg-type]  # node() 422s on None
+            elif body.tool == "orgtree_cheap_compact":
+                # FR-24: superior-only by _require_authority; the transcript
+                # copy rides the same locked save window as the ledger change
+                result = org.cheap_compact(body.node, a.get("node"))  # type: ignore[arg-type]
+                supervisor.export_predecessor_transcript(
+                    org, str(a.get("node") or ""))
             elif body.tool == "orgtree_rehire":
                 # `grant` now goes through _arg_int like every other int
                 # argument. It was the ONE that did not, so {"grant": "abc"}
@@ -3118,7 +3124,8 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
         except LedgerError as e:
             raise HTTPException(422, str(e))
         store.save_org(org)
-    if body.tool in ("orgtree_retire", "orgtree_dissolve", "orgtree_rename"):
+    if body.tool in ("orgtree_retire", "orgtree_dissolve", "orgtree_rename",
+                     "orgtree_cheap_compact"):
         # FR-01 (redteam): agents removing/re-keying seats must not orphan a
         # running remote-control server either
         supervisor.remote_reap(body.org)
@@ -4063,7 +4070,7 @@ def org_op(slug: str, body: Op, request: Request) -> dict[str, Any]:
         result = _org_op_locked(slug, body, allow_raise=not pub)
     # FR-01 (redteam): retire/dissolve/delete must not orphan a running
     # remote-control server — reap any whose seat is gone or no longer live
-    if body.op in ("retire", "dissolve", "delete", "rescind"):
+    if body.op in ("retire", "dissolve", "delete", "rescind", "cheap_compact"):
         supervisor.remote_reap(slug)
     if pub and isinstance(result, dict):
         # the bridge is the ADMIN affordance — a visitor has no legal path to
@@ -4112,6 +4119,12 @@ def _org_op_locked(slug: str, body: Op, allow_raise: bool = False) -> dict[str, 
             # the actor field is honest for them); visitors act as @user
             # inside the ceiling per D-001, same as delete
             result = org.rescind(body.actor, body.node)  # type: ignore[arg-type]
+        elif body.op == "cheap_compact":
+            # FR-24 (opt-in ruling 2026-08-11): retire + fresh hire instead
+            # of a cache-cold /compact fork; the transcript copy into the
+            # predecessor's scratch rides the same save window
+            result = org.cheap_compact(body.actor, body.node)  # type: ignore[arg-type]
+            supervisor.export_predecessor_transcript(org, cast(str, body.node))
         elif body.op == "rehire":
             result = org.rehire(body.actor, body.node, body.grant, tier=body.tier,  # type: ignore[arg-type]
                                 raise_ceiling=rc)

@@ -151,6 +151,11 @@ class NodeDoc(TypedDict):
     # back; the marker makes a second rescind a no-op instead of a
     # double-subtraction
     rescinded_at: NotRequired[str]
+    # FR-24: set by cheap_compact() on the REPLACEMENT — the archived node it
+    # replaces. The supervisor grants that node's scratch read-only every
+    # turn (the transcript copy lives there), for selective, cache-cheap
+    # recall instead of /compact's forced full reload
+    predecessor: NotRequired[str]
     pid: int | None
     ui_order: float
     scope: NodeScope

@@ -585,6 +585,32 @@ def rename_node(slug: str, nid: str, new_name: str,
     return new_slug_probe
 
 
+def export_predecessor_transcript(org: Org, nid: str) -> str | None:
+    """FR-24 cheap compact: copy the archived node's raw CLI transcript into
+    its own scratch as transcript.jsonl — the one folder the replacement is
+    granted (read-only, via the `predecessor` read-down in _build_cmd).
+
+    The copy exists because the LIVE transcript is unreachable by design: it
+    sits under ~/.claude/projects on the host home, and any path carrying a
+    .claude segment is gated above the permission system (D-100) — an agent
+    cannot be granted it. Moving the evidence to where the grant already
+    points costs one file copy at compact time. Failure is non-fatal: the
+    replacement still works, it just cannot read history that this couldn't
+    find (a session that never ran a turn has no transcript at all)."""
+    n = org.nodes.get(nid)
+    if not n or not n.get("session_id"):
+        return None
+    src = transcript_path(n["session_id"], _transcript_root(org))
+    if not src:
+        return None
+    dst = os.path.join(scratch_dir(org.d["slug"], nid), "transcript.jsonl")
+    try:
+        shutil.copy2(src, dst)
+        return dst
+    except OSError:
+        return None
+
+
 def _transcript_root(org: Org) -> str | None:
     """Sandboxed kiosk orgs write transcripts inside the container's home,
     which is bind-mounted from the host sandbox dir — readable natively."""
@@ -1093,6 +1119,11 @@ def identity_prompt(org: Org, nid: str) -> str:
            "idle-but-live team is capacity you cannot spend. Retiring keeps "
            "its context; rehire brings it back exactly as it was, so this is "
            "reversible and not a judgement on its work. "
+           "AND WHEN A LONG-CONTEXT REPORT HAS SAT IDLE FOR HOURS, prefer "
+           "orgtree_cheap_compact over letting its context grow further: it "
+           "replaces the report with a fresh same-tier hire that reads the "
+           "old transcript selectively, read-only — instead of a compaction "
+           "that re-reads the whole cold transcript at near-full price. "
            if org.children(nid) else "")
         # the other half of that loop (user ruling 2026-08-09), and it must be
         # said to EVERY agent, not only current managers: an agent with no
@@ -1493,6 +1524,17 @@ def _build_cmd(org: Org, nid: str) -> list[str]:
     else:
         grant_dirs = [(d["path"], d["mode"]) for d in sc["add_dirs"]]
     ro_paths = [p for p, m in grant_dirs if m == "ro"]
+    # FR-24 cheap compact: the replacement reads its PREDECESSOR's scratch —
+    # transcript.jsonl and every working file — read-only, regenerated per
+    # turn like the §7.6 read-down below. Read-only because the predecessor's
+    # record is evidence, not workspace: the replacement quotes it, never
+    # rewrites it.
+    pred = n.get("predecessor")
+    pred_dir = None
+    if pred and pred in org.nodes:
+        pred_dir = (sbx.cpath_scratch(slug, pred) if sandboxed
+                    else scratch_dir(org.d["slug"], pred))
+        ro_paths = ro_paths + [pred_dir]
     if ro_paths:
         # read-only enforcement: permission deny rules on the writing tools
         deny = []
@@ -1619,6 +1661,9 @@ def _build_cmd(org: Org, nid: str) -> list[str]:
         if p not in seen:
             seen.add(p)
             cmd += ["--add-dir", p]
+    if pred_dir and pred_dir not in seen:
+        # FR-24: the predecessor's scratch (deny rules above make it ro)
+        cmd += ["--add-dir", pred_dir]
     if n.get("bearer_state") == "preserving":
         # §8.4: preserving oracle — resume + fork, converse, discard. The canonical
         # session is never written; we simply never record the fork's session id.

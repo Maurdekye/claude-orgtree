@@ -2114,6 +2114,90 @@ class Org:
             out["nodes"] = r["nodes"]
         return out
 
+    # --------------------------------------------------------- cheap compact
+    def cheap_compact(self, actor: str, nid: str) -> dict[str, Any]:
+        """FR-24 (user request 2026-08-10, ruled OPT-IN 2026-08-11): retire +
+        fresh hire instead of a cache-cold `/compact` fork.
+
+        Why it exists: /compact RESUMES the prior CLI session, reloading the
+        full transcript as input. Idle past the prompt-cache TTL (5 min) that
+        reload pays close to full input price — the code's own comment calls
+        the fork "often the most expensive call the system makes". This verb
+        starts the replacement at ZERO context: it only pays for predecessor
+        history it actively chooses to read, selectively, from the granted
+        transcript — never the forced all-or-nothing reload
+        (docs/cache-economics.md has the arithmetic).
+
+        Mechanics: retire the node (transcript untouched, seat+grant freed to
+        the parent) → hire a same-tier/same-grant/same-charter/same-scope
+        replacement under the same parent (the freed stake funds it exactly —
+        net-zero, cannot fail on credits) → mark `predecessor`, which makes
+        the supervisor grant the predecessor's scratch READ-ONLY every turn
+        (the api layer also copies the raw transcript into that scratch). The
+        replacement is told all of this in its first-turn notices.
+
+        Deliberately refused: self (its own session is mid-turn running this
+        call) and nodes with live reports (a replacement would orphan the
+        team — retire/dissolve them first, or use a plain /compact, or move
+        the reports after; auto-moving them is a scope decision left open)."""
+        # downward-only (allow_self stays False): an agent's own session is
+        # mid-turn running this very call — self cheap-compact would retire
+        # the caller under itself. The superior does it.
+        self._require_authority(actor, nid)
+        n = self.node(nid)
+        if n["state"] != "live":
+            raise LedgerError(f"{nid} is {n['state']} — cheap-compact "
+                              f"replaces a LIVE agent")
+        live_kids = self.children(nid)
+        if live_kids:
+            raise LedgerError(
+                f"{nid} has live reports {live_kids} — a fresh replacement "
+                f"would orphan them. Retire or dissolve them first (or use a "
+                f"plain compact, which keeps the session and the team)")
+        parent = n["parent"]
+        sc = n["scope"]
+        keep = {"tier": n["model"], "grant": n["grant"],
+                "charter": n.get("charter"),
+                "add_dirs": list(sc["add_dirs"]), "tools": dict(sc["tools"]),
+                "vis": sc.get("org_visibility"), "effort": sc.get("effort"),
+                "pm": sc.get("permission_mode")}
+        self.retire(actor, nid)
+        r = self.hire(actor, parent, cast(str, keep["tier"]),
+                      cast(int, keep["grant"]), nid,
+                      cast("list[DirGrant]", keep["add_dirs"]),
+                      tools=cast(ToolGrant, keep["tools"]),
+                      org_visibility=cast("str | None", keep["vis"]),
+                      charter=cast("str | None", keep["charter"]))
+        new = cast(str, r["node"])
+        # effort/permission-mode ride set_scope (hire does not take them).
+        # Clamps cannot refuse: predecessor ⊆ parent ⊆ actor holds by the
+        # D-102 invariant, and the copied value is the predecessor's own.
+        if keep["effort"] or keep["pm"]:
+            self.set_scope(actor, new,
+                           effort=cast("str | None", keep["effort"]),
+                           permission_mode=cast("str | None", keep["pm"]))
+        self.nodes[new]["predecessor"] = nid
+        self._notify([new],
+                     f'You are the replacement for "{nid}", which was '
+                     f'cheap-compacted (retired with its transcript kept) '
+                     f'rather than summarized. You start with NO memory of '
+                     f'its work. Its working folder — transcript.jsonl (the '
+                     f'full conversation) and every file it wrote — is '
+                     f'granted to you read-only; Grep/Read the parts you '
+                     f'actually need instead of reading it whole. You may '
+                     f'also orgtree_rehire "{nid}" as your own subordinate '
+                     f'to interrogate it directly, and retire it again when '
+                     f'done.')
+        self._log("cheap_compact", actor,
+                  {"retired": nid, "node": new}, [])
+        out: dict[str, Any] = {"retired": nid, "node": new,
+                               "warnings": r.get("warnings") or []}
+        if new != nid:
+            out["warnings"].append(
+                f"the replacement is named {new} — {nid} keeps its name in "
+                f"the archive")
+        return out
+
     # ---------------------------------------------------------------- rehire
     def rehire(self, actor: str, nid: str, grant: int | None = None,
                tier: str | None = None, raise_ceiling: bool = False) -> dict[str, Any]:
