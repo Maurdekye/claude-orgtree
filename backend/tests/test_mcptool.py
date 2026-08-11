@@ -2203,6 +2203,50 @@ def _():
     assert any("replacement" in p["text"] for p in notes), notes
 
 
+@t("FR-24: the replacement can REALLY rehire its predecessor, exactly as its "
+   "own notice tells it to (redteam, reproduced 2026-08-11)")
+def _():
+    """The notice cheap_compact sends says: "You may also orgtree_rehire
+    <predecessor> as your own subordinate to interrogate it directly." It was
+    refused, twice over, and each refusal had a different cause.
+
+    ① AUTHORITY. `rehire` recognises "your own bearer" as
+       nodes[pred]["successor"] == actor and nothing else. cheap_compact set
+       the FORWARD link only, so the replacement fell through to
+       _require_authority — and the predecessor is its SIBLING under the same
+       parent, not a subordinate. Measured: "kid-2 has no authority over kid
+       — authority is downward only (§7.1)".
+    ② ARITHMETIC, and deterministic. rehire with no explicit grant restores
+       the node's STORED grant, so the call cost seat_cost(1) + G while the
+       replacement had inherited exactly G. One credit short, always, by
+       construction. Measured: "61 needed, only 60 free". compact_split's
+       bearer is minted with grant 0 for exactly this reason.
+
+    Both are fixed in cheap_compact, so this drives the promise as WORDED —
+    no explicit grant, the way an agent reading its notice would call it."""
+    r = BOSS.ok("orgtree_hire", {
+        "parent": "boss", "tier": "haiku", "grant": 3, "name": "consultme",
+        "charter": "knows where it is buried", "add_dirs": [],
+        "org_visibility": "team",
+        "tools": {"bash": False, "web": False, "edit": False,
+                  "subagents": False, "mcp": []}})
+    assert r["node"] == "consultme", r
+    new = BOSS.ok("orgtree_cheap_compact", {"node": "consultme"})["node"]
+    o = store.load_org(A)
+    assert o.nodes["consultme"].get("successor") == new, (
+        "no backlink: rehire cannot recognise this as the replacement's own "
+        f"bearer, so the notice's promise is refused — {o.nodes['consultme']}")
+    # the replacement calls it the way its notice words it: no grant argument
+    seat = Mcp(A, new)
+    seat.ok("orgtree_rehire", {"node": "consultme"})
+    o = store.load_org(A)
+    assert o.nodes["consultme"]["parent"] == new, (
+        f"the predecessor did not join as the replacement's subordinate: "
+        f"parent is {o.nodes['consultme']['parent']}")
+    assert o.nodes["consultme"]["state"] == "live", o.nodes["consultme"]
+    assert not store.load_org(A).audit()["problems"], "the rehire unbalanced the ledger"
+
+
 @t("FR-24: cheap_compact refuses self and refuses a node with live reports")
 def _():
     # self falls to the downward-only authority gate (an agent's own session

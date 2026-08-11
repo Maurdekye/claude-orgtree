@@ -2177,6 +2177,37 @@ class Org:
                            effort=cast("str | None", keep["effort"]),
                            permission_mode=cast("str | None", keep["pm"]))
         self.nodes[new]["predecessor"] = nid
+        # ⚠ AND THE BACKLINK, or the notice below is a promise the ledger
+        # refuses (redteam, reproduced 2026-08-11). `rehire` recognises "your
+        # own bearer" as `nodes[nid]["successor"] == actor` and nothing else;
+        # with only the forward link the replacement falls through to
+        # `_require_authority`, and the predecessor is its SIBLING under the
+        # same parent, not a subordinate — measured refusal: "kid-2 has no
+        # authority over kid — authority is downward only (§7.1)".
+        #
+        # `bearer_state` follows for the same reason: it is what tells a
+        # reader's chart "knowledge bearer — consultable" apart from a LOST
+        # generation, and here the transcript really does survive. It also
+        # arms the headroom→oracle transition, which is what a rehired
+        # predecessor answering questions should do.
+        #
+        # Consequence worth seeing, not hidden: a node carrying `successor`
+        # leaves the ORG axis (`org_children` filters it), so the predecessor
+        # now reads as a lineage generation rather than a retired sibling —
+        # exactly what compact_split's bearer does, and the model this
+        # notice already assumed.
+        self.nodes[nid]["successor"] = new
+        self.nodes[nid]["bearer_state"] = "knowledge"
+        # …and the stake, or the promise fails a SECOND time, arithmetically
+        # and always. rehire with no explicit grant restores the node's STORED
+        # grant, so consulting the predecessor cost seat_cost(1) + G while the
+        # replacement inherited exactly G — one credit short, every time, by
+        # construction (measured: "61 needed, only 60 free"). compact_split's
+        # bearer is minted with grant 0 for precisely this reason: a bearer
+        # exists to be READ, not to work, and its successor holds the budget
+        # it used to hold. The credits are not lost — retire already returned
+        # this stake to the parent, which then funded the replacement.
+        self.nodes[nid]["grant"] = 0
         self._notify([new],
                      f'You are the replacement for "{nid}", which was '
                      f'cheap-compacted (retired with its transcript kept) '
