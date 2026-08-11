@@ -327,8 +327,10 @@ interface SpawnChipsProps {
   seats: Record<string, number>
   maxTier?: string | null
   /** F-03: render as a vertical column on this edge — the chips hire a
-   *  COWORKER (same superior, placed to that side), not a report */
-  side?: 'left' | 'right'
+   *  COWORKER (same superior, placed to that side), not a report.
+   *  FR-25: 'top' is the third variant — a horizontal row above the card
+   *  whose hire SPLICES IN as the anchor's new superior. */
+  side?: 'left' | 'right' | 'top'
 }
 
 function SpawnChips({ onSpawn, free, seats, maxTier, side }: SpawnChipsProps) {
@@ -350,10 +352,14 @@ function SpawnChips({ onSpawn, free, seats, maxTier, side }: SpawnChipsProps) {
               ? `${t}: needs ${seat} free (has ${free}) — the kiosk credit `
                 + 'cap is fully held; drag an agent’s credit bar down '
                 + 'or retire one to free credits'
-              : side
-                ? `hire ${/^[aeiou]/.test(t) ? 'an' : 'a'} ${t} COWORKER — same `
-                  + `superior, to the ${side} (seat ${seat})`
-                : `hire ${/^[aeiou]/.test(t) ? 'an' : 'a'} ${t} (seat ${seat})`}
+              : side === 'top'
+                ? `insert ${/^[aeiou]/.test(t) ? 'an' : 'a'} ${t} SUPERIOR — `
+                  + `hired under this agent's current superior, then this `
+                  + `agent moves underneath it (seat ${seat})`
+                : side
+                  ? `hire ${/^[aeiou]/.test(t) ? 'an' : 'a'} ${t} COWORKER — same `
+                    + `superior, to the ${side} (seat ${seat})`
+                  : `hire ${/^[aeiou]/.test(t) ? 'an' : 'a'} ${t} (seat ${seat})`}
             onClick={(e) => { e.stopPropagation(); onSpawn(t) }}>
             {TIER_LETTER[t]}
           </button>
@@ -681,6 +687,8 @@ interface NodeSquareProps {
   onSpawn: (tier: string) => void
   /** F-03: hire a sibling to this side (absent on piles/crowds — see render) */
   onSpawnSide?: (tier: string, side: 'left' | 'right') => void
+  /** FR-25: the top-edge chips — hire a new SUPERIOR spliced above this node */
+  onSpawnTop?: (tier: string) => void
   onConfig: () => void
   onInbox: () => void
   onLineage: () => void
@@ -704,7 +712,7 @@ interface NodeSquareProps {
 }
 
 export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, map, op, slug,
-  toast, pxc, zoom, onSpawn, onSpawnSide, onConfig, onInbox, onLineage, onOpenDoc,
+  toast, pxc, zoom, onSpawn, onSpawnSide, onSpawnTop, onConfig, onInbox, onLineage, onOpenDoc,
   onRecenter, onJump, pub, kioskRemaining, cascadeAlloc, maxTop, pile, compactAt, maxTier,
   onMailLink, onDragStart, onDragMove, onDragEnd, onDragCancel }: NodeSquareProps) {
   // pile fronts zoom on a plain CENTER click (user spec) — track the
@@ -712,16 +720,17 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, m
   const downAt = useRef<Pt | null>(null)
   // NEAREST-EDGE chip gating (user ruling 2026-08-04): only the set at the
   // edge the cursor is closest to shows — bottom hires a report, left/right
-  // hire a coworker. Tracked here from the card's own pointer moves;
-  // normalized distances so the card's aspect ratio doesn't bias the pick.
-  const [edge, setEdge] = useState<'b' | 'l' | 'r'>('b')
+  // hire a coworker, top (FR-25) inserts a superior. Tracked here from the
+  // card's own pointer moves; normalized distances so the card's aspect
+  // ratio doesn't bias the pick.
+  const [edge, setEdge] = useState<'b' | 'l' | 'r' | 't'>('b')
   const trackEdge = (e: React.PointerEvent<HTMLDivElement>) => {
     const r = e.currentTarget.getBoundingClientRect()
     if (!r.width || !r.height) return
     const x = (e.clientX - r.left) / r.width
     const y = (e.clientY - r.top) / r.height
-    const d = Math.min(x, 1 - x, 1 - y)
-    const next = d === 1 - y ? 'b' : d === x ? 'l' : 'r'
+    const d = Math.min(x, 1 - x, 1 - y, y)
+    const next = d === 1 - y ? 'b' : d === y ? 't' : d === x ? 'l' : 'r'
     setEdge((cur) => (cur === next ? cur : next))
   }
   const cls = ['sq', node.state, focused ? 'desk' : lod, 'tier-' + node.tier,
@@ -915,6 +924,13 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, m
           <SpawnChips side="right" onSpawn={(t) => onSpawnSide(t, 'right')}
             free={kioskRemaining ?? Infinity} seats={seats} maxTier={maxTier} />
         </>
+      )}
+      {/* FR-25: top-edge chips SPLICE a new superior above this node — hire
+          under the anchor's current superior, then move the anchor beneath
+          the fresh hire. Same pile/bearer exclusions as the side chips. */}
+      {live && !node.isBearerOf && !node.bearer_state && !pile && onSpawnTop && (
+        <SpawnChips side="top" onSpawn={(t) => onSpawnTop(t)}
+          free={kioskRemaining ?? Infinity} seats={seats} maxTier={maxTier} />
       )}
     </div>
   )

@@ -359,3 +359,21 @@ test('⑭  the pinned last-user-turn chip attributes by envelope, not role',
       'calcPin no longer measures the row against the scrollport — a chip '
       + 'shown while the row is BELOW the viewport points the wrong way')
   })
+
+// --------------------------------------------------------------------- ⑮
+test('⑮  the insert-parent splice is loud on failure, never best-effort',
+  () => {
+    // FR-25 (user request 2026-08-10). The F-03 reorder next to this code IS
+    // best-effort (cosmetic, its own ruling) — the splice move is NOT: it is
+    // the entire point of the top chip, and a silently swallowed failure
+    // leaves the org shaped differently than the gesture promised, with no
+    // sign anything went wrong.
+    const src = code('canvas/OrgCanvas.tsx')
+    const m = /op\(\{ op: 'move', node: above\.anchor, new_parent: born \}\)\s*\n\s*\.catch\(\(e: Error\) => toast\(/.exec(src)
+    assert.ok(m, 'the splice move lost its loud failure path — a failed '
+      + 'insert-parent now looks like a plain side hire and nobody is told')
+    assert.ok(/const spawnAbove = /.test(src)
+      && /above: \{ anchor: n\.id \}/.test(src),
+      'spawnAbove is gone or no longer records the anchor — confirmDraft '
+      + 'cannot know what to move under the fresh hire')
+  })

@@ -155,6 +155,12 @@ export interface DraftState {
    *  the hire lands under the same superior, and after birth a reorder pins
    *  the chosen ordering (left = before, right = after). */
   beside?: { anchor: string; side: 'left' | 'right' }
+  /** FR-25 insert parent: hired as a SIBLING of `anchor` (same parent
+   *  resolution as `beside`), then on hire success the anchor is MOVED under
+   *  the new node — the top-edge chips' splice. `move()` is budget-neutral
+   *  (release and acquire cancel hop by hop), so the fresh hire never needs
+   *  spare grant to absorb the anchor. */
+  above?: { anchor: string }
 }
 /** the staged pre-hire permissions (DraftScopeModal → confirmDraft); also
  *  the shape of the would-inherit prefill, whose tools may lack mcp */
@@ -248,12 +254,15 @@ export function withDraftTree(tree: TreePayload, draft: DraftState | null): Canv
     seat: 0, grant: 0, free: 0,
   })
   // a side-hire draft (F-03) sits ADJACENT to its anchor sibling, so the form
-  // previews the ordering the hire will pin; a plain draft appends at the end
+  // previews the ordering the hire will pin; an insert-parent draft (FR-25)
+  // sits just before its anchor for the same near-the-anchor preview; a
+  // plain draft appends at the end
   const place = (kids: CanvasNode[]): CanvasNode[] => {
     const b = draft!.beside
-    const i = b ? kids.findIndex((k) => k.id === b.anchor) : -1
-    if (!b || i < 0) return [...kids, draftNode()]
-    const at = b.side === 'left' ? i : i + 1
+    const anchor = b?.anchor ?? draft!.above?.anchor
+    const i = anchor ? kids.findIndex((k) => k.id === anchor) : -1
+    if (i < 0) return [...kids, draftNode()]
+    const at = b?.side === 'right' ? i + 1 : i
     return [...kids.slice(0, at), draftNode(), ...kids.slice(at)]
   }
   const mk = (n: TreeNode): CanvasNode => ({

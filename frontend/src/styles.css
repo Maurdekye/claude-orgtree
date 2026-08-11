@@ -1168,9 +1168,20 @@ button.badge.frozen:hover { border-color: var(--accent); }
 }
 .hsof.side-l { left: -21px; transform: translateY(-50%) scale(var(--invzf, 1)); transform-origin: center right; }
 .hsof.side-r { right: -21px; transform: translateY(-50%) scale(var(--invzf, 1)); transform-origin: center left; }
+/* FR-25 insert-parent chips: a horizontal row riding the TOP edge — the
+   bottom row's mirror, same hover gate and counter-scaling */
+.hsof.side-t {
+  left: 50%; right: auto; bottom: auto; top: -21px;
+  transform: translateX(-50%) scale(var(--invzf, 1));
+  transform-origin: bottom center;
+  flex-direction: row;
+}
+.sq.edge-t:hover > .hsof.side-t { opacity: 1; pointer-events: auto; }
 /* at desk fill the panel is opaque — push the columns fully outside */
 .sq.desk > .hsof.side-l { left: -24px; }
 .sq.desk > .hsof.side-r { right: -24px; }
+.sq.desk > .hsof.side-t { top: -24px; }
+.sq.desk.edge-t > .hsof.side-t { opacity: 1; pointer-events: auto; }
 /* the desk and the switchboard KEEP their hire chips (user spec): no hover
    gate — but still one edge at a time, following the cursor. Pushed fully
    below the border (1px-inside is right at overview zoom but buries the row

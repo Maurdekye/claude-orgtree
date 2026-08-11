@@ -965,6 +965,16 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
     setTimeout(() => centerOn(
       DRAFT, Math.min(2.05, Math.max(1.7, viewRef.current.z))), 60)
   }
+  // FR-25: insert a PARENT — hire under the anchor's own superior (the exact
+  // parent resolution spawnBeside uses), then confirmDraft moves the anchor
+  // beneath the fresh hire. move() is budget-neutral, so the chain needs no
+  // credit headroom beyond the hire itself.
+  const spawnAbove = (n: CanvasNode, tier: string) => {
+    setDraft({ parent: !n.parent || n.parent === USER ? null : n.parent, tier,
+               above: { anchor: n.id } })
+    setTimeout(() => centerOn(
+      DRAFT, Math.min(2.05, Math.max(1.7, viewRef.current.z))), 60)
+  }
   const confirmDraft = (name: string, grant: number, charter: string,
     scope: DraftScope | null) => {
     op({ op: 'hire', parent: draft!.parent, tier: draft!.tier, grant, name,
@@ -996,6 +1006,20 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
           void reorderNode(slug, born, beside.side === 'left'
             ? { before: beside.anchor } : { after: beside.anchor })
             .catch(() => {})   // the broadcast refetch shows the final order
+        }
+        // FR-25: the SPLICE — the anchor moves under the node just hired.
+        // NOT best-effort like the reorder above: the move is the entire
+        // point of the top chip, so a failure is reported loudly with the
+        // manual completion named (a drag finishes what the chain started).
+        // Sequenced AFTER hire success by construction; move() itself is
+        // budget-neutral and cycle-checked server-side.
+        const above = draft?.above
+        if (typeof born === 'string' && born && above) {
+          op({ op: 'move', node: above.anchor, new_parent: born })
+            .catch((e: Error) => toast([
+              `hired ${born}, but the splice failed: ${e.message}`,
+              `${above.anchor} still reports to its old superior — drag it `
+              + `onto ${born} to finish the insert`]))
         }
         setDraft(null)
       }).catch((e: Error) => toast([`hire failed: ${e.message}`]))
@@ -1190,6 +1214,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
               pxc={pxPerCredit} zoom={view.z}
               onSpawn={(t) => spawn(n.id, t)}
               onSpawnSide={(t, side) => spawnBeside(n, t, side)}
+              onSpawnTop={(t) => spawnAbove(n, t)}
               onConfig={() => setConfigId(n.id)}
               onInbox={() => setInboxId(n.id)} onLineage={() => setLineageId(n.id)}
               onOpenDoc={setDocView}
