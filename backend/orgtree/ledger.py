@@ -1088,6 +1088,12 @@ class Org:
                     "to the user — escalate to your superior instead (§7.5)")
             ue: UserMailEntry = {"id": uuid.uuid4().hex[:8], "from": sender,
                                  "kind": kind, "body": body, "at": now()}
+            if attachments:
+                # FR-21: download-card metas — the api layer already routed
+                # each path through _agent_send_file (validate-and-copy into
+                # the SENDER's outbox), so `path` here is outbox-relative and
+                # the inbox serves it via the sender's /file endpoint
+                ue["attachments"] = list(attachments)[:10]
             self.d.setdefault("user_inbox", []).append(ue)
             if self.d.get("headless"):
                 # §9.6 ☞: NEVER deny mail to the user — the inbox is the audit
@@ -3078,8 +3084,8 @@ class Org:
             before = len(warnings)
             raised = self._raise_along(
                 bubble, warnings,
-                dirs=cast("list[DirGrant]", sc["add_dirs"]) if want_dirs is not None else None,
-                tools=cast(ToolGrant, sc["tools"]) if want_tools is not None else None,
+                dirs=sc["add_dirs"] if want_dirs is not None else None,
+                tools=sc["tools"] if want_tools is not None else None,
                 vis=sc.get("org_visibility") if want_vis is not None else None,
                 pm=sc.get("permission_mode") if want_pm is not None else None)
             # user ruling 2026-08-07: the ACTOR must be told plainly, in the

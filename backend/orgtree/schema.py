@@ -218,6 +218,10 @@ UserMailEntry = TypedDict("UserMailEntry", {
     "kind": str,
     "body": str,
     "at": str,
+    # FR-21: download-card metas [{name, path, bytes}], path relative to the
+    # SENDER's scratch (its outbox/ — _agent_send_file's card shape); the
+    # inbox renders them with fileUrl keyed on `from`
+    "attachments": NotRequired[list[dict[str, Any]]],
 })
 
 

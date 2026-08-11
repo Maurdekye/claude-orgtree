@@ -75,8 +75,13 @@ TOOLS: list[dict[str, Any]] = [
                     "items": {"type": "string"},
                     "description": "files to send WITH the mail — paths "
                                    "relative to your working folder, ≤25 MB "
-                                   "each. '@net:' recipients only (v1); they "
-                                   "land in the receiving agents' uploads/",
+                                   "each. Recipients: 'user' (they get "
+                                   "download cards on the mail — say what "
+                                   "you attached in the body) and '@net:' "
+                                   "peers (files land in the receiving "
+                                   "agents' uploads/). Local agent "
+                                   "recipients: use orgtree_send_file or "
+                                   "just tell them the path",
                 },
             },
             "required": ["to", "body"],

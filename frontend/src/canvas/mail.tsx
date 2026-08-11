@@ -35,7 +35,10 @@ export interface MailListProps {
   onReply?: (m: MailRow, text: string) => void
   onRetract?: (m: MailRow) => void
   jumpTo?: string | null
-  fileHref?: (path: string) => string
+  /** FR-21: the mail rides along so a call site whose files live under the
+   *  SENDER's scratch (the user inbox — each row a different agent's outbox)
+   *  can key the URL on `m.from`; fixed-node call sites ignore it */
+  fileHref?: (path: string, m: MailRow) => string
   /** custom reading-pane body — return non-null to REPLACE the md body AND
    *  the reply UI (asks: the response form IS the body, user ruling
    *  2026-08-04). Null falls through to the normal rendering. */
@@ -229,7 +232,7 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
                     link would point at "undefined"; show a plain chip */}
                 {cur.attachments!.map((a) => (fileHref && a.path
                   ? <a key={a.path} className="attach-chip" title="download"
-                      href={fileHref(a.path)} download={a.name}>
+                      href={fileHref(a.path, cur)} download={a.name}>
                       <DownloadIcon fontSize="inherit" /> {a.name}
                       <span className="dim"> {a.bytes != null ? `${Math.round(a.bytes / 1024)} KB` : ''}</span></a>
                   : <span key={a.path ?? a.name} className="attach-chip">

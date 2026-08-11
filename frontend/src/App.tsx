@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import {
   audienceAction, BASE, clearInbox, createOrg, deleteOrg,
-  getAudiences, getDefaults, getEvents, getHost, getInbox, getOrgMd,
+  fileUrl, getAudiences, getDefaults, getEvents, getHost, getInbox, getOrgMd,
   getOrgNet, getSweepPreview, getTree, killAll, listOrgs, markRead, openWs,
   probeHub, putOrgMd,
   resumeFrozen, runOp, saveDefaults, saveKiosk, saveSettings, sendMessage,
@@ -1156,6 +1156,11 @@ function InboxPanel({ slug, tree, toast, refresh, close, jumpTo }: {
               ? <MailList pending={[...box.pending, ...askPending]}
                   delivered={[...box.delivered, ...askDone]}
                   renderBody={renderAskBody}
+                  // FR-21: this was the ONE MailList call site without
+                  // fileHref, which is why the node inbox's attachments were
+                  // downloadable and the user's were not. Keyed on the
+                  // SENDER — the file sits in that agent's own outbox/.
+                  fileHref={(p, m) => fileUrl(slug, m.from, p)}
                   waitLabel="unread" jumpTo={jumpTo}
                   onRead={(m: MailEntry) => markRead(slug, [m.id])
                     .then(() => { setReadBump((n) => n + 1); refresh?.() })

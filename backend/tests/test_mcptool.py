@@ -742,6 +742,49 @@ def _():
                for m in store.load_org(A).d.get("user_inbox", []))
 
 
+@t("FR-21: mail to the user carries attachments as download-card metas")
+def _():
+    d = supervisor.scratch_dir(A, "boss")
+    with open(os.path.join(d, "findings.txt"), "w", encoding="utf-8") as f:
+        f.write("the findings")
+    r = BOSS.ok("orgtree_message", {"to": "user", "body": "report attached",
+                                    "attachments": ["findings.txt"]})
+    assert r["delivered"] == "user_inbox", r
+    m = next(m for m in store.load_org(A).d.get("user_inbox", [])
+             if m["body"] == "report attached")
+    # the meta is _agent_send_file's exact card shape: the file was COPIED to
+    # the sender's outbox (edits after send cannot rewrite what was sent) and
+    # the path is outbox-relative — the same URL the standalone card uses
+    a = (m.get("attachments") or [{}])[0]
+    assert a.get("name") == "findings.txt" and a.get("path") == "outbox/findings.txt" \
+        and a.get("bytes", 0) > 0, m
+    assert os.path.isfile(os.path.join(d, "outbox", "findings.txt"))
+
+
+@t("FR-21: an attachment that escapes every held root refuses BEFORE any mail "
+   "is recorded (send_file's guards are inherited, not re-implemented)")
+def _():
+    before = len(store.load_org(A).d.get("user_inbox", []))
+    outside = os.path.join(DATA, "not-yours.txt")
+    with open(outside, "w", encoding="utf-8") as f:
+        f.write("x")
+    BOSS.refuse("orgtree_message", {"to": "user", "body": "smuggle",
+                                    "attachments": [outside]})
+    assert len(store.load_org(A).d.get("user_inbox", [])) == before, \
+        "a refused send recorded mail anyway"
+
+
+@t("FR-21: attachments to a LOCAL agent recipient still refuse, naming the "
+   "send_file route")
+def _():
+    d = supervisor.scratch_dir(A, "worker")
+    with open(os.path.join(d, "peer.txt"), "w", encoding="utf-8") as f:
+        f.write("x")
+    txt = WORKER.refuse("orgtree_message", {"to": "boss", "body": "here",
+                                            "attachments": ["peer.txt"]})
+    assert "send_file" in txt, txt
+
+
 @t("orgtree_status done reports upward and leaves the node idle")
 def _():
     DRIVEN.clear()

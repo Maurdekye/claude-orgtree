@@ -2851,37 +2851,63 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                         "user to enable a hub (settings → mailserver) before "
                         "addressing @net: mail")
                 net_atts: list[str] = []
+                user_atts: list[dict[str, Any]] = []
                 raw_atts = [str(x) for x in
                             cast("list[Any]", a.get("attachments") or [])]
                 if raw_atts:
-                    if not str(a.get("to", "")).startswith("@net:"):
-                        raise LedgerError(
-                            "attachments ride @net: mail only (v1) — for "
-                            "local recipients use orgtree_send_file or paths")
+                    # FR-21 (user request 2026-08-09): branch on the RESOLVED
+                    # recipient, not the raw string — 'user' is a sentinel,
+                    # and a bare name that auto-resolves to @net: used to be
+                    # refused here despite delivering over the hub. Resolution
+                    # raises exactly what post_mail would have raised, and
+                    # BEFORE anything is recorded or copied.
+                    dest = org._resolve_recipient(str(a.get("to", "")),
+                                                  outward=True)
                     if len(raw_atts) > 10:
                         raise LedgerError("at most 10 attachments")
-                    ab = os.path.realpath(
-                        supervisor.scratch_dir(body.org, body.node))
-                    for rel in raw_atts:
-                        rel = _no_nul(rel).strip().lstrip("/\\")
-                        full = os.path.realpath(os.path.join(ab, rel))
-                        # separator-anchored containment (send_file pattern)
-                        if full != ab and not full.startswith(ab + os.sep):
-                            raise LedgerError(f"attachment escapes your "
-                                              f"scratch space: {rel}")
-                        if not os.path.isfile(full):
-                            raise LedgerError(f"attachment not found: {rel}")
-                        # cap under its own name: the user-upload cap's
-                        # identifier is test_mcptool's source-slice END
-                        # ANCHOR for the dispatch-verb extraction — writing
-                        # that token here (even in a comment) truncates the
-                        # slice and the drift guard fires
-                        if os.path.getsize(full) > _NET_ATT_MAX:
-                            raise LedgerError(
-                                f"attachment over 25 MB: {rel}")
-                        net_atts.append(full)
+                    if dest == USER:
+                        # agent → user: ONE mechanism, two entry points — each
+                        # path goes through the exact _agent_send_file
+                        # validate-and-copy that the standalone card uses, so
+                        # this inherits its capability-root enforcement,
+                        # traversal guard, 25 MB cap, storage block and
+                        # sandbox path translation. The metas it returns are
+                        # already the shape MailList renders. (If post_mail
+                        # refuses below, the outbox copies remain without a
+                        # card — the same residue as a send_file the agent
+                        # never announced, counted by storage metering.)
+                        for rel in raw_atts:
+                            user_atts.append(_agent_send_file(
+                                org, body.node, {"path": rel})["sent"])
+                    elif dest.startswith("@net:"):
+                        ab = os.path.realpath(
+                            supervisor.scratch_dir(body.org, body.node))
+                        for rel in raw_atts:
+                            rel = _no_nul(rel).strip().lstrip("/\\")
+                            full = os.path.realpath(os.path.join(ab, rel))
+                            # separator-anchored containment (send_file pattern)
+                            if full != ab and not full.startswith(ab + os.sep):
+                                raise LedgerError(f"attachment escapes your "
+                                                  f"scratch space: {rel}")
+                            if not os.path.isfile(full):
+                                raise LedgerError(f"attachment not found: {rel}")
+                            # cap under its own name: the user-upload cap's
+                            # identifier is test_mcptool's source-slice END
+                            # ANCHOR for the dispatch-verb extraction — writing
+                            # that token here (even in a comment) truncates the
+                            # slice and the drift guard fires
+                            if os.path.getsize(full) > _NET_ATT_MAX:
+                                raise LedgerError(
+                                    f"attachment over 25 MB: {rel}")
+                            net_atts.append(full)
+                    else:
+                        raise LedgerError(
+                            "attachments ride mail to the user or @net: "
+                            "peers — for local agent recipients use "
+                            "orgtree_send_file or paths")
                 result = org.post_mail(body.node, a.get("to", ""), a.get("body", ""),
-                                       a.get("kind", "message"))
+                                       a.get("kind", "message"),
+                                       attachments=user_atts or None)
                 delivered = result.get("delivered")
                 if delivered and delivered.startswith("@"):
                     # spark on the wire (user spec 2026-08-05): outbound
