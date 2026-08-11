@@ -466,10 +466,22 @@ export function useEsc(close: () => void) {
  */
 export function usePolled<T>(
   fetcher: () => Promise<T>, deps: DependencyList, ms = 5000,
+  refreshKey: unknown = 0,
 ): T | null {
   const [v, setV] = useState<T | null>(null)
   const ref = useRef(fetcher)
   ref.current = fetcher
+  // ⚠ a DEPS change is an IDENTITY change (new folder, new node, new org) —
+  // the previous identity's data must not stay on screen until the new fetch
+  // lands (redteam finding, render.test §6.10: a slow fetch left folder A's
+  // listing rendered under folder B's path). Reset here, once, rather than
+  // per call site — patching one panel recreates the N-writers problem the
+  // state review opens with. `refreshKey` is the OTHER kind of restart: same
+  // identity, fetch again now (the read-ack bump, 89fecd9) — resetting there
+  // would blank the inbox on every mark-read, so it deliberately does not.
+  useEffect(() => { setV(null) },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [...deps])
   useEffect(() => {
     let dead = false
     const tick = () => {
@@ -481,6 +493,6 @@ export function usePolled<T>(
     // the fetcher rides a ref on purpose; `deps` is the identity of the thing
     // being fetched (slug, node, folder), which is what should restart it
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [...deps, ms])
+  }, [...deps, ms, refreshKey])
   return v
 }

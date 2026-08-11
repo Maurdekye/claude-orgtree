@@ -1071,7 +1071,10 @@ function InboxPanel({ slug, tree, toast, refresh, close, jumpTo }: {
   // dep restarts the effect, which ticks immediately. No optimistic local
   // state: the server answer still decides, it is just asked for now.
   const [readBump, setReadBump] = useState(0)
-  const box = usePolled(() => getInbox(slug), [slug, readBump])
+  // readBump rides the REFRESH key, not deps: deps changes reset the value to
+  // null (identity changed — §6.10), and blanking the inbox on every
+  // mark-read would regress the instant-ack this bump exists to provide
+  const box = usePolled(() => getInbox(slug), [slug], 5000, readBump)
   const aud = usePolled(() => getAudiences(slug), [slug])
   // №10: the record loads on demand — and keeps loading while that tab is up
   const events = usePolled(

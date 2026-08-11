@@ -261,17 +261,13 @@ domTest('§6.10 a panel showing folder A never renders A’s rows under B',
     await advance(100)
     assert.notEqual(shown().join('|'), root,
       'the previous folder’s listing is still on screen under the new path')
-  },
-  // ⚑ REPORTED, NOT FIXED — and deliberately not patched at this one call
-  // site. `usePolled` (canvas/shared.ts, G5) keeps its last value across a
-  // DEPS CHANGE, so every panel it drives renders the previous identity's
-  // data until the next fetch lands: this folder, and the node inbox when the
-  // node changes, and the org inbox when the org does. Fixing one call site
-  // recreates the N-writers problem the state review opens with. The fix is
-  // one line in usePolled — reset to null when `deps` change — and that file
-  // is outside this agent's write territory.
-  { todo: 'usePolled keeps the previous identity’s data across a deps change '
-    + '(canvas/shared.ts) — fix belongs in the hook, not at this call site' })
+  })
+  // ← PROMOTED 2026-08-11 (implementer): `usePolled` now resets to null when
+  // `deps` change — in the hook, exactly where the redteam's report said the
+  // fix belonged, never per call site. The read-ack bump (89fecd9) moved to a
+  // separate `refreshKey` argument on purpose: it restarts the fetch on the
+  // SAME identity, and resetting there would blank the inbox on every
+  // mark-read.
 
 // ===================================================================== §7
 // D-56 — PAGING ON SCROLL
