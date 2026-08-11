@@ -858,6 +858,57 @@ non-retroactivity property demonstrated rather than asserted: the user raised
 exactly ONE node of a five-node org to `bypassPermissions`; its four siblings
 and the org default stayed `acceptEdits`. Raising one agent stayed one act.
 
+### D-107 · rescind is the user's alone; the claw-back is total and clamped
+Ruling (user, 2026-08-11, choosing among three offered options): FR-22's
+rescind — retire whose freed seat+grant is permanently subtracted from the
+immediate superior's grant — is **user-only**, mirroring D-00x's delete
+ruling. No mcptool verb exists, deliberately: the claw-back lands on a THIRD
+party (the superior), which is no agent's to invoke; visitors act as @user
+inside the ceiling per D-001, same as delete. Implementation choices made
+under the ruling: the subtraction is `min(stake, free(parent))` so a
+late rescind (after a plain retire, after reallocations) claws what is still
+reclaimable, warns about the remainder, and can never push free negative; a
+`rescinded_at` marker makes a second rescind a no-op; a top-level rescind
+degrades to the archive alone and says so. Rehire prevention is ECONOMIC
+(the headroom is gone), not a hard ban — a superior granted new capacity may
+still rehire the seat, which is the capacity-granting ancestor's call.
+**Why.** Rescind's effect on the superior is punitive in shape even when the
+intent is bookkeeping; delete set the precedent that hard-to-reverse
+third-party effects are the user's.
+
+### D-108 · cheap compact ships opt-in; the compact dialog carries both doors
+Ruling (user, 2026-08-11): FR-24's retire-plus-fresh-hire is an explicit
+verb (`orgtree_cheap_compact`, superior-only) and a second button on the
+desk's compact confirmation — never an automatic default when the transcript
+is cache-cold. Revisit auto-defaulting only with real numbers, i.e. after
+cache telemetry (docs/cache-economics.md ⑪) exists. Supporting decisions:
+the replacement copies tier/grant/charter/scope (net-zero on credits, cannot
+fail); live reports refuse (auto-moving a team under the replacement is its
+own scope decision, not assumed); the predecessor's transcript is COPIED
+into its scratch at compact time because the live transcript sits under
+~/.claude/projects, which no agent can be granted (D-100's segment gate) —
+the docket's "transcript is in the scratch dir" premise was wrong and the
+copy is the fix. The compact dialog warns when the node is idle past the
+cache TTL, which is the moment the choice actually matters.
+
+### D-110 · FR-19's name-gen button: held on the access path, free when built
+Ruling (user, 2026-08-11, partial): the model-access fork (one-shot CLI call
+vs a direct `anthropic` SDK dependency) is deliberately UNDECIDED — "skip
+this for now, we'll figure it out later" — so FR-19 stays unbuilt. The cost
+half IS ruled: generating a name will be **free** (orgtree eats the small
+inference cost; FR-18's "pets are free" family), recorded now so the build
+doesn't need to re-ask.
+
+### D-109 · a deploy refuses a dirty tree it would build
+Decision (implementer, 2026-08-11, from a redteam hazard flag): update.ps1 /
+update.sh refuse when `git status` shows uncommitted changes in files the
+build would ship, because they build the WORKING TREE, not HEAD — two seats
+share one tree, and a deploy mid-edit ships a backend no commit contains.
+Doc-only dirt (docs/, *.md) passes: the curator's working copy is the normal
+standing state and builds nothing. Overrides: `-AllowDirty` /
+`ORGTREE_ALLOW_DIRTY=1`, operator-only by convention; the self-update path
+never passes them.
+
 ### D-106 · a grant raises the chain beneath it instead of being refused
 Ruling (user, 2026-08-07): a permission change at ANY depth, by the user or an
 agent, bubbles — every agent BETWEEN the granter and the grantee receives what
