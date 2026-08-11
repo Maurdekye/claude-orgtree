@@ -1300,9 +1300,11 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
         <button title="zoom in" onClick={() => zoomStep(1.3)}><AddIcon fontSize="inherit" /></button>
         <button title="zoom out" onClick={() => zoomStep(1 / 1.3)}><RemoveIcon fontSize="inherit" /></button>
       </div>
-      {/* the agent TRAY (user spec): a flat list of every agent — tier token,
-          name, context wheel, working state — in the nodes' own visual
-          language; a row click glides to that agent */}
+      {/* the agent TRAY (user spec): every agent — tier token, name, context
+          wheel, working state — in the nodes' own visual language; a row
+          click glides to that agent. FR-16 (2026-08-11): listed by HIERARCHY
+          — each superior immediately followed by its subtree, indented per
+          depth — not by canvas position */}
       <div className="tray-wrap" onPointerDown={(e) => e.stopPropagation()}>
         {trayOpen && (
           <div className="tray">
@@ -1321,17 +1323,47 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
                 </button>
               )
             })()}
-            {[...map.values()]
-              .filter((n) => n.id !== USER && n.id !== DRAFT && !n.isBearerOf)
-              .filter((n) => trayArch || n.state === 'live')
-              .filter((n) => !trayQ.trim()
-                || n.id.toLowerCase().includes(trayQ.trim().toLowerCase()))
-              .sort((a, b) => {
+            {(() => {
+              // FR-16 (user request 2026-08-06): the tray lists by HIERARCHY —
+              // every direct report immediately after its superior, indented a
+              // step — replacing the old canvas-position sort, which put a
+              // child hired far from its parent nowhere near it in the list.
+              // Sibling order keeps the position sort, so the tray still
+              // tracks the canvas arrangement locally.
+              const all = [...map.values()]
+                .filter((n) => n.id !== USER && n.id !== DRAFT && !n.isBearerOf)
+              const q = trayQ.trim().toLowerCase()
+              const match = (n: CanvasNode) =>
+                (trayArch || n.state === 'live')
+                && (!q || n.id.toLowerCase().includes(q))
+              const kids = new Map<string, CanvasNode[]>()
+              for (const n of all) {
+                const p = n.parent && map.has(n.parent) && n.parent !== USER
+                  ? n.parent : USER
+                kids.set(p, [...(kids.get(p) ?? []), n])
+              }
+              const byPos = (a: CanvasNode, b: CanvasNode) => {
                 const pa = posOf(a.id) ?? { x: 0, y: 0 }
                 const pb = posOf(b.id) ?? { x: 0, y: 0 }
                 return pa.y - pb.y || pa.x - pb.x
-              })
-              .map((n) => {
+              }
+              // a filtered-out ANCESTOR of a matching row still renders, as a
+              // dim ghost: with indentation carrying meaning, dropping it
+              // would leave the descendant indented under a gap with no
+              // visible parent (the docket's own open question — resolved
+              // toward keeping the indent readable)
+              const anyMatch = (n: CanvasNode): boolean =>
+                match(n) || (kids.get(n.id) ?? []).some(anyMatch)
+              const rows: { n: CanvasNode; depth: number; ghost: boolean }[] = []
+              const walk = (id: string, depth: number) => {
+                for (const c of (kids.get(id) ?? []).sort(byPos)) {
+                  if (!anyMatch(c)) continue
+                  rows.push({ n: c, depth, ghost: !match(c) })
+                  walk(c.id, depth + 1)
+                }
+              }
+              walk(USER, 0)
+              return rows.map(({ n, depth, ghost }) => {
                 // a piled-away agent comes to the FRONT of its pile when
                 // picked from the tray, then the glide lands on it — the key
                 // names the pile KIND (retired |a vs live crowd |c)
@@ -1348,7 +1380,13 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
                   ?? (n.prev_status ? { ...n.prev_status, _stale: true } : null)
                 return (
                 <div key={n.id} role="button" tabIndex={0}
-                  className={'tray-row' + (n.state !== 'live' ? ' off' : '')}
+                  className={'tray-row' + (n.state !== 'live' ? ' off' : '')
+                    + (ghost ? ' ghost' : '')}
+                  style={{ paddingLeft: 8 + depth * 14 }}
+                  title={ghost
+                    ? 'shown for context — this row does not match the '
+                      + 'current filter, but a report under it does'
+                    : undefined}
                   onClick={go}
                   onKeyDown={(e) => { if (e.key === 'Enter') go() }}>
                   <div className="tray-main">
@@ -1381,10 +1419,11 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
                   )}
                 </div>
                 )
-              })}
+              })
+            })()}
           </div>
         )}
-        <button className="tray-toggle" title="every agent, flat"
+        <button className="tray-toggle" title="every agent, by hierarchy"
           onClick={() => setTrayOpen((o) => !o)}>
           <ViewListIcon fontSize="inherit" /> agents
         </button>

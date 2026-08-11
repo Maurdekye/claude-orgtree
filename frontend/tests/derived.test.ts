@@ -318,3 +318,24 @@ test('⑫  the canvas turn-end stamp reads TurnStat, never NodeStatus',
       + 'TurnStat (see FR-23: NodeStatus.at depends on the agent having '
       + 'reported at all)')
   })
+
+// --------------------------------------------------------------------- ⑬
+test('⑬  the agent tray lists by hierarchy, with filtered ancestors kept',
+  () => {
+    // FR-16 (user request 2026-08-06). The old tray sorted every row by
+    // canvas position alone, so a child hired far from its parent landed
+    // nowhere near it. The hierarchy walk must exist, sibling order may still
+    // use position, and a filtered-out ancestor of a matching row renders as
+    // a ghost — dropping it would leave the descendant's indent pointing at a
+    // gap.
+    const src = code('canvas/OrgCanvas.tsx')
+    assert.ok(/const walk = \(id: string, depth: number\)/.test(src),
+      'the tray hierarchy walk is gone — rows are no longer grouped under '
+      + 'their superior')
+    assert.ok(/paddingLeft: 8 \+ depth \* \d+/.test(src),
+      'the depth indent is gone — hierarchy order without indentation reads '
+      + 'as an arbitrary shuffle')
+    assert.ok(/anyMatch/.test(src) && /ghost/.test(src),
+      'the ghost-ancestor path is gone — a name filter now orphans matching '
+      + 'descendants under an invisible parent')
+  })
