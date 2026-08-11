@@ -28,7 +28,12 @@ param(
     # when the pull advanced nothing. Passed by orgtree_self_update, never by
     # an operator deploy -- see the branch that reads it for why the two
     # callers must differ.
-    [switch]$OnlyIfBehind
+    [switch]$OnlyIfBehind,
+    # -AllowDirty (redteam hazard flag 2026-08-11): override the dirty-tree
+    # refusal and deploy the working tree exactly as it stands, uncommitted
+    # edits included. For the operator who KNOWS the dirt is theirs and wants
+    # it shipped; never passed by the self-update path.
+    [switch]$AllowDirty
 )
 
 $ErrorActionPreference = 'Stop'
@@ -77,6 +82,24 @@ $dirty = (git status --porcelain) | Out-String
 if ($dirty.Trim()) {
     Write-Host "-- working tree is DIRTY (the pull may refuse):" -ForegroundColor Yellow
     Write-Host $dirty.TrimEnd()
+    # ⚠ REFUSE, don't just report (redteam hazard flag 2026-08-11): this
+    # script builds the WORKING TREE, not HEAD. A deploy over someone's
+    # half-finished edits ships a backend that exists in no commit, and the
+    # only symptom afterwards is behaviour nobody can reproduce from the
+    # repo. Printing the dirt (2026-08-09) was necessary and not sufficient:
+    # the operator reading it is usually not the one who made the edits.
+    # Doc-only dirt (docs/, *.md) is the curator's normal working state and
+    # builds nothing, so it passes.
+    $building = @($dirty.TrimEnd() -split "`r?`n" | Where-Object {
+        $p = $_.Substring(3)
+        ($p -notmatch '^docs/') -and ($p -notmatch '\.md$')
+    })
+    if ($building.Count -gt 0 -and -not $AllowDirty) {
+        Write-Host "REFUSING to deploy: uncommitted changes in files this build would ship:" -ForegroundColor Red
+        $building | ForEach-Object { Write-Host "    $_" }
+        Write-Host "Commit or revert them first -- or pass -AllowDirty to ship the tree exactly as it stands." -ForegroundColor Red
+        exit 1
+    }
 }
 git pull --ff-only
 if ($LASTEXITCODE -ne 0) {

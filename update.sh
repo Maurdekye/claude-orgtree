@@ -157,6 +157,17 @@ DIRTY=$(git status --porcelain)
 if [ -n "$DIRTY" ]; then
   echo "-- working tree is DIRTY (the pull may refuse):"
   echo "$DIRTY"
+  # ⚠ REFUSE, don't just report (redteam hazard flag 2026-08-11): this script
+  # builds the WORKING TREE, not HEAD — a deploy over someone's half-finished
+  # edits ships a backend no commit contains. Doc-only dirt (docs/, *.md) is
+  # the curator's normal working state and builds nothing, so it passes.
+  # ORGTREE_ALLOW_DIRTY=1 overrides, for the operator who owns the dirt.
+  BUILDING=$(echo "$DIRTY" | cut -c4- | grep -vE '^docs/' | grep -vE '\.md$' || true)
+  if [ -n "$BUILDING" ] && [ "${ORGTREE_ALLOW_DIRTY:-}" != "1" ]; then
+    echo "REFUSING to deploy: uncommitted changes in files this build would ship:"
+    echo "$BUILDING" | sed 's/^/    /'
+    die "Commit or revert them first -- or ORGTREE_ALLOW_DIRTY=1 to ship the tree as it stands."
+  fi
 fi
 git pull --ff-only || die "git pull FAILED -- resolve manually. Nothing was rebuilt and nothing was restarted."
 AFTER=$(git rev-parse --short HEAD)
