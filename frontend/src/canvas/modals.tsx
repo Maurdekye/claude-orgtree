@@ -486,7 +486,7 @@ interface NodeConfigProps {
 export function NodeConfig({ node, map, tree, slug, op, toast, close }: NodeConfigProps) {
   useEsc(close)
   const [asking, setAsking] =
-    useState<'delete' | 'dissolve' | 'retire' | null>(null)
+    useState<'delete' | 'dissolve' | 'retire' | 'rescind' | null>(null)
   // every card that opens a config panel carries a scope (real nodes and
   // bearer stubs both) — only the eye root and drafts lack one
   const scope = node.scope!
@@ -603,6 +603,13 @@ export function NodeConfig({ node, map, tree, slug, op, toast, close }: NodeConf
             <button className="primary" onClick={() =>
               op({ op: 'rehire', node: node.id }).then(close).catch(() => {})}>
               rehire (context intact)</button>}
+          {/* FR-22: rescind — retire whose freed stake is CLAWED BACK from the
+              superior's grant (user-only; agents have no verb). Only where a
+              superior exists to claw from: top-level rescind degrades to a
+              plain retire and earns no separate button. */}
+          {node.state === 'live' && node.parent && node.parent !== USER &&
+            <button className="danger" onClick={() => setAsking('rescind')}>
+              rescind</button>}
           <span style={{ flex: 1 }} />
           <button className="danger delete"
             onClick={() => setAsking('delete')}><DeleteIcon fontSize="inherit" /> delete permanently</button>
@@ -869,6 +876,14 @@ export function NodeConfig({ node, map, tree, slug, op, toast, close }: NodeConf
           body="Its entire suborganization is retired with it. Context is kept; rehire brings nodes back."
           confirmLabel="dissolve"
           onConfirm={() => op({ op: 'dissolve', node: node.id }).then(close).catch(() => {})}
+          close={() => setAsking(null)} />
+      )}
+      {asking === 'rescind' && (
+        <ConfirmModal title={`rescind ${node.id}?`}
+          body={`Retired (subtree included), AND its superior's grant shrinks by the ${(node.seat ?? 0) + (node.grant ?? 0)}-credit stake — the freed headroom does not return. Rehiring this seat later needs new capacity granted from above. Context is kept.`}
+          confirmLabel="rescind"
+          onConfirm={() => op({ op: 'rescind', node: node.id })
+            .then(close).catch(() => {})}
           close={() => setAsking(null)} />
       )}
       {asking === 'delete' && (() => {

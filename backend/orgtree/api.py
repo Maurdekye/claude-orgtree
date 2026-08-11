@@ -4063,7 +4063,7 @@ def org_op(slug: str, body: Op, request: Request) -> dict[str, Any]:
         result = _org_op_locked(slug, body, allow_raise=not pub)
     # FR-01 (redteam): retire/dissolve/delete must not orphan a running
     # remote-control server — reap any whose seat is gone or no longer live
-    if body.op in ("retire", "dissolve", "delete"):
+    if body.op in ("retire", "dissolve", "delete", "rescind"):
         supervisor.remote_reap(slug)
     if pub and isinstance(result, dict):
         # the bridge is the ADMIN affordance — a visitor has no legal path to
@@ -4107,6 +4107,11 @@ def _org_op_locked(slug: str, body: Op, allow_raise: bool = False) -> dict[str, 
         # hence the arg-type ignores below rather than a behavior-changing check
         elif body.op == "retire":
             result = org.retire(body.actor, body.node)  # type: ignore[arg-type]
+        elif body.op == "rescind":
+            # FR-22: user-only in the LEDGER (agents have no mcptool verb and
+            # the actor field is honest for them); visitors act as @user
+            # inside the ceiling per D-001, same as delete
+            result = org.rescind(body.actor, body.node)  # type: ignore[arg-type]
         elif body.op == "rehire":
             result = org.rehire(body.actor, body.node, body.grant, tier=body.tier,  # type: ignore[arg-type]
                                 raise_ceiling=rc)

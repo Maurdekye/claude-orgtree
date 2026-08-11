@@ -256,7 +256,7 @@ test('⑩  no destructive op fires straight off a click — each one asks first'
     // `op({op: ...})` from a ConfirmModal's onConfirm, never from an onClick
     // handler. Detected structurally — an onClick line that also carries the
     // op call is the defect; a setAsking/setRetiring hand-off is the fix.
-    const DESTRUCTIVE = /op\(\{\s*op:\s*'(retire|dissolve|delete)'/
+    const DESTRUCTIVE = /op\(\{\s*op:\s*'(retire|dissolve|delete|rescind)'/
     const bad: string[] = []
     for (const f of ['canvas/desk.tsx', 'canvas/modals.tsx', 'canvas/cards.tsx',
       'canvas/OrgCanvas.tsx', 'App.tsx']) {

@@ -2033,6 +2033,87 @@ class Org:
         self._log("retire", actor, {"node": nid, "freed": freed}, [])
         return {"freed": freed, "warnings": []}
 
+    # --------------------------------------------------------------- rescind
+    def rescind(self, actor: str, nid: str) -> dict[str, Any]:
+        """FR-22 (user request 2026-08-09, ruled 2026-08-11): retire that also
+        PERMANENTLY claws back the superior's grant. The subtree half is
+        retire()'s own path unmodified (auto-dissolve on live reports); the
+        new mutation is `parent.grant -= stake` afterwards, which nets the
+        parent's headroom to exactly where it was before the hire ever
+        happened — versus a plain retire's +stake. That freed-headroom
+        recompute is what makes retired seats rehireable, and defeating it is
+        the point: a rehire now needs NEW capacity from above, not the
+        remains of the rescinded seat.
+
+        USER-ONLY (ruling 2026-08-11, mirroring delete()): the claw-back
+        lands on a THIRD party — the superior — which is no agent's to
+        invoke. Deliberately NO mcptool verb exists for this.
+
+        Arithmetic safety: while the child is live, committed(parent) ≥ stake
+        (that is what funded it), so grant ≥ stake and free ends exactly
+        where it started. The min() below extends totality to the
+        already-archived case, where a reallocate may have moved the freed
+        headroom since: the claw-back takes what is reclaimable and says so,
+        and never pushes free(parent) negative.
+
+        ⚠ Cascaded hires need no chain walk: _chain_acquire inflates the
+        IMMEDIATE parent's own grant when a hire bubbles, so the parent's
+        stored grant always fully reflects this child's stake. Residual
+        grandparent inflation is the cascade system's own pre-existing
+        characteristic ("reclaim with reallocate"), not this verb's problem."""
+        if actor_kind(actor) != "user":
+            raise LedgerError(
+                "only the user may rescind — it permanently claws back the "
+                "superior's grant; retire within your subtree instead, and "
+                "ask the user if a permanent claw-back is truly warranted")
+        n = self.node(nid)
+        if n.get("rescinded_at"):
+            return {"freed": 0, "clawed": 0,
+                    "warnings": [f"{nid} was already rescinded — nothing to do"]}
+        parent = n["parent"]
+        stake = self.seat_cost(nid) + n["grant"]
+        warnings: list[str] = []
+        if n["state"] == "archived":
+            # design motto: rescinding an already-retired seat is the same
+            # decision made later — claw back without re-archiving anything
+            r: dict[str, Any] = {"freed": 0}
+            warnings.append(f"{nid} was already archived — rescind only "
+                            f"claws back the grant")
+        else:
+            live_kids = self.children(nid)
+            r = self.dissolve(USER, nid) if live_kids else self.retire(USER, nid)
+            warnings.extend(r.get("warnings") or [])
+        n = self.node(nid)                       # re-read post-archive
+        n["rescinded_at"] = now()
+        clawed = 0
+        if parent is None:
+            warnings.append(
+                f"{nid} was top-level — there is no superior grant to claw "
+                f"back; the rescind is the archive alone")
+        else:
+            p = self.node(parent)
+            # free() is float-typed for USER's math.inf; a real parent's free
+            # is whole-credit arithmetic, so int() truncates nothing
+            clawed = int(min(stake, self.free(parent)))
+            p["grant"] -= clawed
+            if clawed < stake:
+                warnings.append(
+                    f"only {clawed} of the {stake}-credit stake could be "
+                    f"reclaimed from {parent} — the freed headroom was "
+                    f"already moved or spent since the archive")
+            self._notify([parent],
+                         f'Your report "{nid}" was RESCINDED by the user: it '
+                         f'is archived and your grant was reduced by {clawed} '
+                         f'— rehiring it (or replacing the seat) needs new '
+                         f'capacity from above, not the freed headroom.')
+        self._log("rescind", actor,
+                  {"node": nid, "stake": stake, "clawed": clawed}, [])
+        out = {"freed": r.get("freed", 0), "clawed": clawed,
+               "warnings": warnings}
+        if r.get("nodes"):
+            out["nodes"] = r["nodes"]
+        return out
+
     # ---------------------------------------------------------------- rehire
     def rehire(self, actor: str, nid: str, grant: int | None = None,
                tier: str | None = None, raise_ceiling: bool = False) -> dict[str, Any]:

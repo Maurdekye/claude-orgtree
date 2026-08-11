@@ -147,6 +147,10 @@ class NodeDoc(TypedDict):
     charter: str | None
     created: str
     archived_at: str | None
+    # FR-22: set by rescind() — archived AND the superior's grant clawed
+    # back; the marker makes a second rescind a no-op instead of a
+    # double-subtraction
+    rescinded_at: NotRequired[str]
     pid: int | None
     ui_order: float
     scope: NodeScope

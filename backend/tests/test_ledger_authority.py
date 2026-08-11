@@ -245,6 +245,9 @@ GRANT_WRITE_SITES = {
     'self.nodes[hop]["grant"] -= c': "_move release — only shrinks",
     'self.nodes[hop]["grant"] += c': "_move acquire — §1 fix",
     'n["grant"] = 0': "reseed of a lost bearer — zeroes, never raises",
+    # FR-22 rescind: SUBTRACTION only, min-clamped at free(parent) so it can
+    # neither exceed max_top_grant (it never raises) nor push free negative
+    'p["grant"] -= clawed': "rescind claw-back — only shrinks, clamped at free",
 }
 
 

@@ -1543,6 +1543,61 @@ def main():
             else (_ for _ in ()).throw(AssertionError(org.children(None, False))))[-1]
     )(org.audit()))
 
+    print("rescind (FR-22, user ruling 2026-08-11 — user-only claw-back):")
+    orgX = Org.create("rescinds")
+    orgX.hire(USER, None, "opus", 20, "top")
+    orgX.hire(USER, "top", "sonnet", 4, "mid")     # stake = 3 + 4 = 7
+    orgX.hire(USER, "mid", "haiku", 0, "kid")      # inside mid's grant
+    check("rescind is user-only — an agent actor is refused", lambda:
+          expect_error(lambda: orgX.rescind("top", "mid"), "only the user"))
+    check("rescind nets the parent's free to pre-hire exactly (claw = stake), "
+          "auto-dissolving the live subtree", lambda: (
+        lambda free0, grant0: (
+            lambda r: None if (
+                r["clawed"] == 7
+                and orgX.nodes["mid"]["state"] == "archived"
+                and orgX.nodes["kid"]["state"] == "archived"
+                and orgX.nodes["mid"].get("rescinded_at")
+                and orgX.nodes["top"]["grant"] == grant0 - 7
+                # the whole point: free did NOT rise by the freed stake
+                and orgX.free("top") == free0)
+            else (_ for _ in ()).throw(AssertionError(
+                (r, free0, orgX.free("top"), orgX.nodes["top"]["grant"])))
+        )(orgX.rescind(USER, "mid"))
+    )(orgX.free("top"), orgX.nodes["top"]["grant"]))
+    check("a second rescind is a no-op, never a double subtraction", lambda: (
+        lambda g0: (
+            lambda r: None if r["clawed"] == 0 and "already rescinded" in
+            (r["warnings"] or [""])[0] and orgX.nodes["top"]["grant"] == g0
+            else (_ for _ in ()).throw(AssertionError(r))
+        )(orgX.rescind(USER, "mid"))
+    )(orgX.nodes["top"]["grant"]))
+    check("credit conservation holds after a rescind", lambda:
+          orgX.audit() and None)
+    check("top-level rescind archives with a no-superior warning, claws "
+          "nothing", lambda: (
+        lambda r: None if r["clawed"] == 0
+        and any("top-level" in w for w in r["warnings"])
+        and orgX.nodes["top"]["state"] == "archived"
+        else (_ for _ in ()).throw(AssertionError(r))
+    )(orgX.rescind(USER, "top")))
+    orgX2 = Org.create("rescind-late")
+    orgX2.hire(USER, None, "opus", 20, "boss")
+    orgX2.hire(USER, "boss", "haiku", 3, "worker")   # stake = 1 + 3 = 4
+    orgX2.retire(USER, "worker")                      # plain retire first
+    orgX2.hire(USER, "boss", "sonnet", 12, "spender")  # eats most freed room
+    check("rescind after retire claws only what free still covers, with a "
+          "warning — free never goes negative", lambda: (
+        lambda free0: (
+            lambda r: None if (
+                r["clawed"] == min(4, free0)
+                and orgX2.free("boss") >= 0
+                and (r["clawed"] == 4
+                     or any("could be reclaimed" in w for w in r["warnings"])))
+            else (_ for _ in ()).throw(AssertionError((r, free0)))
+        )(orgX2.rescind(USER, "worker"))
+    )(orgX2.free("boss")))
+
     print(f"\nALL {PASS} CHECKS PASS")
 
 
