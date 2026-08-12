@@ -830,6 +830,7 @@ function NewOrg({ onCreate }: {
               </select></label>
               <label>mode ≤ <select value={ceilPm}
                 onChange={(e) => setCeilPm(e.target.value)}>
+                <option value="plan">plan (read-only)</option>
                 <option value="default">default (asks)</option>
                 <option value="acceptEdits">acceptEdits</option>
                 <option value="bypassPermissions">bypassPermissions</option>
@@ -1092,13 +1093,26 @@ function InboxPanel({ slug, tree, toast, refresh, close, jumpTo }: {
   // their nulled state (grey answered/denied, orange interrupted).
   const askRow = (a: AskInfo): MailRow => ({
     id: 'ask:' + a.id, from: a.node, at: a.at,
-    kind: (a.kind === 'credit' || a.old != null) ? 'credit request' : 'question',
-    body: a.question ?? `asks for credits: ${a.old} → ${a.new}`,
+    kind: a.kind === 'batch' ? 'request batch'
+      : (a.kind === 'credit' || a.old != null) ? 'credit request'
+      : a.kind === 'scope' ? 'scope request' : 'question',
+    body: a.kind === 'batch'
+      ? `${(a.tabs ?? []).length} request(s) awaiting one submit`
+      : a.kind === 'scope'
+        ? 'requests scope: ' + (a.items ?? [])
+          .map((it) => it.kind === 'dir' ? it.path
+            : it.kind === 'permission_mode' ? `mode ${it.mode}`
+            : it.tool ?? it.server ?? it.kind).join(', ')
+        : a.question ?? `asks for credits: ${a.old} → ${a.new}`,
     _ask: a,
   } as MailRow)
   const askOpen = (a: AskInfo) => a.status === 'open' || a.status === 'pending'
   const asks = tree.asks ?? []
-  const askPending = asks.filter(askOpen).map(askRow)
+  // FR-14: an agent's OPEN requests render as its ONE composed batch card
+  // (node.ask, kind 'batch') — never as separate per-kind rows. The raw
+  // per-store entries keep feeding the resolved history below.
+  const askPending = [...nodes.values()]
+    .filter((n) => n.ask && askOpen(n.ask)).map((n) => askRow(n.ask!))
   const askDone = asks.filter((a) => !askOpen(a)).slice(-8).map(askRow)
   const renderAskBody = (m: MailRow) => {
     if (!m._ask) return null
@@ -1465,6 +1479,17 @@ function SettingsPanel({ tree, toast, close }: {
   const setCascadeHire = set('cascadeHire', cascadeHire)
   const cascadeAlloc = val('cascadeAlloc', tree.cascade_alloc !== false)
   const setCascadeAlloc = set('cascadeAlloc', cascadeAlloc)
+  // FR-24b: auto cheap-compact on wake — org defaults; per-node overrides
+  // live in each agent's own gear panel
+  const acc = tree.auto_cheap_compact ?? null
+  const accOn = val('accOn', !!acc?.enabled)
+  const setAccOn = set('accOn', accOn)
+  const accOcc = val<number | string>('accOcc',
+    Math.round(((acc?.occ ?? 0.5) as number) * 100))
+  const setAccOcc = set('accOcc', accOcc)
+  const accIdle = val<number | string>('accIdle',
+    Math.round(((acc?.idle_s ?? 300) as number) / 60))
+  const setAccIdle = set('accIdle', accIdle)
   const srvCeil = useMemo(() => (ms ? {
     bash: !!ms.tools?.bash, web: !!ms.tools?.web, edit: !!ms.tools?.edit,
     subagents: !!ms.tools?.subagents } : null), [ms])
@@ -1610,6 +1635,26 @@ function SettingsPanel({ tree, toast, close }: {
               <option value="halt">halt (default)</option>
               <option value="opus">switch to opus + retry</option>
             </select>
+            {/* FR-24b (user request 2026-08-12): swap a cold, heavy session
+                for a fresh one at the WAKE, before the resume re-pays the
+                whole context. Off by default; per-agent overrides in each
+                gear panel. Especially suited to headless orgs. */}
+            <div className="field-label">auto cheap-compact on wake (waking a
+              long-idle, high-context agent resets its session instead of
+              re-paying the cold-cache reload; the old self stays consultable)</div>
+            <label className="checkline">
+              <input type="checkbox" checked={accOn}
+                onChange={(e) => setAccOn(e.target.checked)} />
+              enabled (org default — agents can override in their ⚙)
+            </label>
+            {accOn && <div className="row">
+              <label>context ≥ <input type="number" min="5" max="95" step="5"
+                style={{ width: '5em' }} value={accOcc}
+                onChange={(e) => setAccOcc(e.target.value)} />%</label>
+              <label>idle ≥ <input type="number" min="0" step="1"
+                style={{ width: '5em' }} value={accIdle}
+                onChange={(e) => setAccIdle(e.target.value)} /> min</label>
+            </div>}
             {/* §4.6 cost-bubbling toggles (user spec, both ON by default) */}
             <div className="field-label">credit cost bubbling</div>
             <label className="checkline">
@@ -1725,7 +1770,10 @@ function SettingsPanel({ tree, toast, close }: {
                   fable_filter_policy: filterPolicy,
                   default_effort: defEffort,
                   cascade_hire: cascadeHire,
-                  cascade_alloc: cascadeAlloc }),
+                  cascade_alloc: cascadeAlloc,
+                  auto_cheap_compact: { enabled: accOn,
+                    occ: (+accOcc || 50) / 100,
+                    idle_s: Math.round((+accIdle || 5) * 60) } }),
               orgMd != null ? putOrgMd(tree.slug, orgMd).then(() => ({}))
                 : Promise.resolve({}),
             ]

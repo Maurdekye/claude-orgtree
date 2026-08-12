@@ -99,8 +99,12 @@ external_candidates: Callable[[str], dict[str, list[str]]] = \
 
 VIS_LEVELS: Final = ("self", "team", "subtree", "full")   # org-structure knowledge tiers
 TOOL_KEYS: Final = ("bash", "web", "edit", "subagents")   # the built-in tool switches
-# permission_mode rank order (kiosk-ceiling spec §2): later = more permissive
-PM_LEVELS: Final = ("default", "acceptEdits", "bypassPermissions")
+# permission_mode rank order (kiosk-ceiling spec §2): later = more permissive.
+# `plan` (user request 2026-08-12, with FR-13): the CLI's read-only planning
+# mode — MOST restrictive, so it ranks below `default`. Inserted at index 0:
+# every comparison in this file is relative (index max/greater-than), so the
+# existing three keep their order and nothing stored re-ranks.
+PM_LEVELS: Final = ("plan", "default", "acceptEdits", "bypassPermissions")
 
 
 def norm_tools(t: Mapping[str, Any] | None) -> ToolGrant:
@@ -2116,118 +2120,95 @@ class Org:
 
     # --------------------------------------------------------- cheap compact
     def cheap_compact(self, actor: str, nid: str) -> dict[str, Any]:
-        """FR-24 (user request 2026-08-10, ruled OPT-IN 2026-08-11): retire +
-        fresh hire instead of a cache-cold `/compact` fork.
+        """FR-24 (user request 2026-08-10, ruled OPT-IN 2026-08-11; REWORKED
+        2026-08-12 to compact_split's in-place shape): replace a cold, heavy
+        SESSION, never the seat.
 
-        Why it exists: /compact RESUMES the prior CLI session, reloading the
-        full transcript as input. Idle past the prompt-cache TTL (5 min) that
-        reload pays close to full input price — the code's own comment calls
-        the fork "often the most expensive call the system makes". This verb
-        starts the replacement at ZERO context: it only pays for predecessor
-        history it actively chooses to read, selectively, from the granted
-        transcript — never the forced all-or-nothing reload
+        Why it exists: /compact resumes the prior CLI session, reloading the
+        full transcript as input — idle past the cache TTL that reload pays
+        near-full input price. This resets the session instead: the seat
+        keeps its id, parent, scope, charter, grant and TEAM; only
+        `session_id` is replaced (fresh id ⇒ the next turn starts empty), so
+        the successor pays only for the history it actively chooses to read
         (docs/cache-economics.md has the arithmetic).
 
-        Mechanics: retire the node (transcript untouched, seat+grant freed to
-        the parent) → hire a same-tier/same-grant/same-charter/same-scope
-        replacement under the same parent (the freed stake funds it exactly —
-        net-zero, cannot fail on credits) → mark `predecessor`, which makes
-        the supervisor grant the predecessor's scratch READ-ONLY every turn
-        (the api layer also copies the raw transcript into that scratch). The
-        replacement is told all of this in its first-turn notices.
+        The pre-compact session archives IN PLACE as a knowledge bearer
+        `nid@gen` — compact_split's exact lineage shape (0 credits, tools
+        stripped, successor backlink, rehireable as the node's own
+        subordinate). The one difference from a CLI compaction: the
+        successor starts EMPTY rather than with a summary, and its notice
+        says so.
 
-        Deliberately refused: self (its own session is mid-turn running this
-        call) and nodes with live reports (a replacement would orphan the
-        team — retire/dissolve them first, or use a plain /compact, or move
-        the reports after; auto-moving them is a scope decision left open)."""
-        # downward-only (allow_self stays False): an agent's own session is
-        # mid-turn running this very call — self cheap-compact would retire
-        # the caller under itself. The superior does it.
+        Was. (shipped 2ca1a14, reworked before ever deployed to a live org):
+        retire + fresh hire under a suffixed name (`nid-2`) — which broke
+        addressing (every peer mailing the old name deferred into an
+        archived mailbox) and orphaned teams (a live-reports refusal). The
+        in-place shape has neither problem, so BOTH are gone: reports keep
+        their superior, correspondents keep their address.
+
+        The seat's open request batch is MOOTED: the successor session never
+        asked, and an answer arriving to it would read as someone else's
+        mail (same reasoning as retire's mooting)."""
         self._require_authority(actor, nid)
         n = self.node(nid)
         if n["state"] != "live":
             raise LedgerError(f"{nid} is {n['state']} — cheap-compact "
-                              f"replaces a LIVE agent")
-        live_kids = self.children(nid)
-        if live_kids:
-            raise LedgerError(
-                f"{nid} has live reports {live_kids} — a fresh replacement "
-                f"would orphan them. Retire or dissolve them first (or use a "
-                f"plain compact, which keeps the session and the team)")
-        parent = n["parent"]
-        sc = n["scope"]
-        keep = {"tier": n["model"], "grant": n["grant"],
-                "charter": n.get("charter"),
-                "add_dirs": list(sc["add_dirs"]), "tools": dict(sc["tools"]),
-                "vis": sc.get("org_visibility"), "effort": sc.get("effort"),
-                "pm": sc.get("permission_mode")}
-        self.retire(actor, nid)
-        r = self.hire(actor, parent, cast(str, keep["tier"]),
-                      cast(int, keep["grant"]), nid,
-                      cast("list[DirGrant]", keep["add_dirs"]),
-                      tools=cast(ToolGrant, keep["tools"]),
-                      org_visibility=cast("str | None", keep["vis"]),
-                      charter=cast("str | None", keep["charter"]))
-        new = cast(str, r["node"])
-        # effort/permission-mode ride set_scope (hire does not take them).
-        # Clamps cannot refuse: predecessor ⊆ parent ⊆ actor holds by the
-        # D-102 invariant, and the copied value is the predecessor's own.
-        if keep["effort"] or keep["pm"]:
-            self.set_scope(actor, new,
-                           effort=cast("str | None", keep["effort"]),
-                           permission_mode=cast("str | None", keep["pm"]))
-        self.nodes[new]["predecessor"] = nid
-        # ⚠ AND THE BACKLINK, or the notice below is a promise the ledger
-        # refuses (redteam, reproduced 2026-08-11). `rehire` recognises "your
-        # own bearer" as `nodes[nid]["successor"] == actor` and nothing else;
-        # with only the forward link the replacement falls through to
-        # `_require_authority`, and the predecessor is its SIBLING under the
-        # same parent, not a subordinate — measured refusal: "kid-2 has no
-        # authority over kid — authority is downward only (§7.1)".
-        #
-        # `bearer_state` follows for the same reason: it is what tells a
-        # reader's chart "knowledge bearer — consultable" apart from a LOST
-        # generation, and here the transcript really does survive. It also
-        # arms the headroom→oracle transition, which is what a rehired
-        # predecessor answering questions should do.
-        #
-        # Consequence worth seeing, not hidden: a node carrying `successor`
-        # leaves the ORG axis (`org_children` filters it), so the predecessor
-        # now reads as a lineage generation rather than a retired sibling —
-        # exactly what compact_split's bearer does, and the model this
-        # notice already assumed.
-        self.nodes[nid]["successor"] = new
-        self.nodes[nid]["bearer_state"] = "knowledge"
-        # …and the stake, or the promise fails a SECOND time, arithmetically
-        # and always. rehire with no explicit grant restores the node's STORED
-        # grant, so consulting the predecessor cost seat_cost(1) + G while the
-        # replacement inherited exactly G — one credit short, every time, by
-        # construction (measured: "61 needed, only 60 free"). compact_split's
-        # bearer is minted with grant 0 for precisely this reason: a bearer
-        # exists to be READ, not to work, and its successor holds the budget
-        # it used to hold. The credits are not lost — retire already returned
-        # this stake to the parent, which then funded the replacement.
-        self.nodes[nid]["grant"] = 0
-        self._notify([new],
-                     f'You are the replacement for "{nid}", which was '
-                     f'cheap-compacted (retired with its transcript kept) '
-                     f'rather than summarized. You start with NO memory of '
-                     f'its work. Its working folder — transcript.jsonl (the '
-                     f'full conversation) and every file it wrote — is '
-                     f'granted to you read-only; Grep/Read the parts you '
-                     f'actually need instead of reading it whole. You may '
-                     f'also orgtree_rehire "{nid}" as your own subordinate '
-                     f'to interrogate it directly, and retire it again when '
-                     f'done.')
+                              f"replaces a LIVE agent's session")
+        gen = n.get("generation", 0)
+        pred_id = f"{nid}@{gen}"
+        old_sid = n["session_id"]
+        pred = cast(NodeDoc, dict(n))  # dict() copy loses the TypedDict
+        pred.update({
+            "state": "archived", "archived_at": now(), "grant": 0,
+            "bearer_state": "knowledge", "successor": nid,
+            "predecessor": n.get("predecessor"),
+            "ui_order": n.get("ui_order", 0) + 0.001,
+            # same accounting hygiene as compact_split: the bearer starts
+            # clean; the successor keeps the real numbers
+            "cost_usd": 0.0, "last_status": None, "frozen": None,
+            "inflight": None,
+            "scope": {**n["scope"],
+                      "add_dirs": cast("list[DirGrant]",
+                                       [dict(d) for d in
+                                        n["scope"].get("add_dirs", [])]),
+                      "tools": {"bash": False, "web": False, "edit": False,
+                                "subagents": False, "mcp": []}},
+        })
+        self.nodes[pred_id] = pred
+        n["session_id"] = str(uuid.uuid4())
+        n["generation"] = gen + 1
+        n["predecessor"] = pred_id
+        n["occupancy"] = None            # the context wheel resets with it
+        self._moot_asks(nid, "the asking session was cheap-compacted — the "
+                             "successor starts fresh and never posed it")
+        kids = self.children(nid)
+        team = (f" Your team ({', '.join(kids)}) is UNCHANGED and reports "
+                f"to you — they remember you; you do not remember them, so "
+                f"read the transcript before directing them." if kids else "")
+        self._notify([nid],
+                     f'You were CHEAP-COMPACTED: your seat, scope, team and '
+                     f'budget are unchanged, but this session is FRESH — you '
+                     f'have NO memory of your predecessor\'s work, and '
+                     f'unlike a normal compaction there is no summary. READ '
+                     f'breadcrumbs.md in your working folder FIRST — your '
+                     f'predecessor kept it as a realtime log of decisions '
+                     f'and findings for exactly this moment (keep it up '
+                     f'yourself). The full transcript is at transcript.jsonl '
+                     f'beside it; Grep/Read the parts you need instead of '
+                     f'reading it whole. You may also orgtree_rehire '
+                     f'"{pred_id}" as your own subordinate to interrogate it '
+                     f'directly, and retire it again when done.{team}')
+        self._notify([p for p in [n["parent"]] if p is not None
+                      and p != actor],
+                     f'Your report "{nid}" was cheap-compacted by '
+                     f'{"the user" if actor == USER else "the system (auto)" if actor_kind(actor) == "system" else actor}: '
+                     f'same seat and team, fresh session — its prior self is '
+                     f'consultable as "{pred_id}".')
         self._log("cheap_compact", actor,
-                  {"retired": nid, "node": new}, [])
-        out: dict[str, Any] = {"retired": nid, "node": new,
-                               "warnings": r.get("warnings") or []}
-        if new != nid:
-            out["warnings"].append(
-                f"the replacement is named {new} — {nid} keeps its name in "
-                f"the archive")
-        return out
+                  {"node": nid, "bearer": pred_id, "old_session": old_sid},
+                  [])
+        return {"node": nid, "bearer": pred_id, "old_session": old_sid,
+                "warnings": []}
 
     # ---------------------------------------------------------------- rehire
     def rehire(self, actor: str, nid: str, grant: int | None = None,
@@ -2509,6 +2490,11 @@ class Org:
         self.d["asks"] = [
             a for a in self.d.get("asks", [])
             if a.get("node") not in doomed_set]
+        # …nor a scope request (FR-13, same re-bind hazard as both above:
+        # a stale approval would grant folders to a re-minted namesake)
+        self.d["scope_requests"] = [
+            r for r in self.d.get("scope_requests", [])
+            if r.get("node") not in doomed_set]
         extra = len(doomed_set) - 1
         self._notify([parent],
                      f'The user permanently DELETED your report "{nid}"'
@@ -3119,6 +3105,7 @@ class Org:
                   permission_mode: str | None = None,
                   charter: str | None = None, team_charter: str | None = None,
                   effort: str | None = None, model_version: str | None = None,
+                  auto_cheap_compact: Mapping[str, Any] | None = None,
                   raise_ceiling: bool = False) -> dict[str, Any]:
         """Per-node configuration (the ⚙): dir grants with modes, the full tool set
         (built-ins + MCP servers), org-structure visibility. Superior-only.
@@ -3148,7 +3135,8 @@ class Org:
                 ("add_dirs", add_dirs), ("tools", tools),
                 ("org_visibility", org_visibility),
                 ("permission_mode", permission_mode), ("effort", effort),
-                ("model_version", model_version)) if v is not None]
+                ("model_version", model_version),
+                ("auto_cheap_compact", auto_cheap_compact)) if v is not None]
             if offered:
                 raise LedgerError(
                     f"a self-retool may carry team_charter and nothing else; "
@@ -3387,6 +3375,22 @@ class Org:
                 sc["model_version"] = model_version
             else:
                 sc.pop("model_version", None)   # "" clears ⇒ the tier default
+        if auto_cheap_compact is not None:
+            # FR-24b per-node override: like effort, a cost dial, not a
+            # permission — no ceiling clamp. {} clears back to org inherit.
+            acc = dict(auto_cheap_compact)
+            if acc:
+                keep: dict[str, Any] = {}
+                if "enabled" in acc:
+                    keep["enabled"] = bool(acc["enabled"])
+                if "occ" in acc:
+                    keep["occ"] = min(0.95, max(0.05,
+                                                float(acc.get("occ", 0.5))))
+                if "idle_s" in acc:
+                    keep["idle_s"] = max(0, int(acc.get("idle_s", 300)))
+                sc["auto_cheap_compact"] = keep
+            else:
+                sc.pop("auto_cheap_compact", None)
         # §15 cascade: charter = this node's role card · team_charter = standing
         # instructions binding this node's whole subtree (manager-owned)
         if charter is not None:
@@ -3529,20 +3533,18 @@ class Org:
                               f"made. Free credits (retire a sibling, hand "
                               f"back unused grant) or ask the user to raise "
                               f"the cap."}
-        # single active request per agent (user ruling 2026-08-06): a new
-        # credit request replaces an open QUESTION too — one card per agent,
-        # whichever kind came last
-        for a0 in self.d.get("asks", []):
-            if a0["node"] == nid and a0["status"] == "open":
-                a0["status"] = "superseded"
-                a0["reason"] = "replaced by a newer request from the same agent"
-                a0["resolved_at"] = now()
-                self._log("ask_superseded", nid, {"id": a0["id"]}, [])
+        # FR-14 (user ruling 2026-08-12): a credit request JOINS the agent's
+        # open batch — it no longer evicts an open question. It stays ONE tab:
+        # a second request amends the existing figure in place (two
+        # contradictory numbers on one card would be nonsense), which is the
+        # append ruling's credits-shaped case.
         if pending is not None:
             # amend in place: the card the user eventually clicks always
-            # shows the CURRENT figure, never a stale one
+            # shows the CURRENT figure, never a stale one. rev is the batch
+            # resolve's CAS stamp for this tab.
             pending.update({"old": old, "new": new_limit,
-                            "reason": str(reason).strip(), "at": now()})
+                            "reason": str(reason).strip(), "at": now(),
+                            "rev": int(pending.get("rev") or 1) + 1})
             self._log("credit_request", nid,
                       {"old": old, "new": new_limit, "amended": pending["id"]}, [])
             return {"requested": new_limit, "increase": new_limit - old,
@@ -3550,11 +3552,337 @@ class Org:
                               "user will approve or deny"}
         req = {"id": f"cr{len(reqs) + 1}", "node": nid, "old": old,
                "new": new_limit, "reason": str(reason).strip(),
-               "at": now(), "status": "pending"}
+               "at": now(), "rev": 1, "status": "pending"}
         reqs.append(req)
         self._log("credit_request", nid, {"old": old, "new": new_limit}, [])
         return {"requested": new_limit, "increase": new_limit - old,
                 "status": "pending — the user will approve or deny"}
+
+    # ------------------------------------------------ FR-13 scope requests
+    SCOPE_KINDS: Final = ("dir", "tool", "mcp", "permission_mode")
+
+    def _scope_item_key(self, it: dict[str, Any]) -> str:
+        k = it["kind"]
+        return (f"dir:{it['path']}" if k == "dir"
+                else f"tool:{it['tool']}" if k == "tool"
+                else f"mcp:{it['server']}" if k == "mcp"
+                else "permission_mode")
+
+    def _scope_item_label(self, it: dict[str, Any]) -> str:
+        k = it["kind"]
+        return (f"folder {it['path']} ({it['mode']})" if k == "dir"
+                else f"tool: {it['tool']}" if k == "tool"
+                else f"MCP server: {it['server']}" if k == "mcp"
+                else f"permission mode → {it['mode']}"
+                     + (" ⚠ UNGUARDED — removes every prompt"
+                        if it["mode"] == "bypassPermissions" else ""))
+
+    def _holds_scope_item(self, nid: str, it: dict[str, Any]) -> bool:
+        sc = self.node(nid)["scope"]
+        k = it["kind"]
+        if k == "dir":
+            held = {d["path"]: d["mode"] for d in sc["add_dirs"]}
+            m = held.get(it["path"])
+            return m == "rw" or m == it["mode"]
+        if k == "tool":
+            return bool(sc["tools"].get(it["tool"]))
+        if k == "mcp":
+            mcp = sc["tools"].get("mcp") or []
+            return "*" in mcp or it["server"] in mcp
+        cur = sc.get("permission_mode", "acceptEdits")
+        return (cur in PM_LEVELS and it["mode"] in PM_LEVELS
+                and PM_LEVELS.index(cur) >= PM_LEVELS.index(it["mode"]))
+
+    def request_scope(self, nid: str, items: list[Any],
+                      reason: Any) -> dict[str, Any]:
+        """FR-13 (user request 2026-08-06, ruled 2026-08-11/12): an agent asks
+        the USER for a permission-scope increase — a folder, a built-in tool,
+        an MCP server, or a permission-mode raise (`plan` through
+        `bypassPermissions`, the latter loudly labeled). USER-ONLY grantor by
+        ruling: a superior that already holds the capability can simply
+        orgtree_retool the requester, and the refusal/routing text says so.
+
+        The request rides the agent's ONE open batch (FR-14): items merge
+        into the pending scope request by identity (a re-ask of the same
+        path/tool amends that item), questions and a credit request coexist
+        beside it, and the batch resolves at the user's single submit —
+        approve/deny/skip per item, applied as the user via set_scope, so a
+        deep grant D-106-cascades the chain automatically."""
+        self._require_live(nid)
+        n = self.node(nid)
+        if self.d.get("headless"):
+            raise LedgerError(
+                "this org runs HEADLESS: no user is present and scope "
+                "requests are auto-denied. Work within the scope you hold, "
+                "or record the blocker with orgtree_status(blocked, …)")
+        if not (reason and str(reason).strip()):
+            raise LedgerError("a reason is required — say what the access is for")
+        if not isinstance(items, list) or not items:   # pyright: ignore[reportUnnecessaryIsInstance]  # wire Any
+            raise LedgerError("items must be a non-empty list")
+        if len(items) > 8:
+            raise LedgerError("at most 8 items per request")
+        norm: list[dict[str, Any]] = []
+        for i, raw_any in enumerate(items):
+            if not isinstance(raw_any, dict):
+                raise LedgerError(f"items[{i}] must be an object with `kind`")
+            raw = cast("dict[str, Any]", raw_any)
+            k = str(raw.get("kind") or "")
+            if k == "dir":
+                p = str(raw.get("path") or "").strip()
+                m = str(raw.get("mode") or "rw").strip()
+                if not p:
+                    raise LedgerError(f"items[{i}]: dir needs `path`")
+                if m not in ("ro", "rw"):
+                    raise LedgerError(f"items[{i}]: mode must be ro|rw")
+                norm.append({"kind": "dir", "path": p, "mode": m})
+            elif k == "tool":
+                t = str(raw.get("tool") or "").strip()
+                if t not in TOOL_KEYS:
+                    raise LedgerError(
+                        f"items[{i}]: tool must be one of {TOOL_KEYS}")
+                norm.append({"kind": "tool", "tool": t})
+            elif k == "mcp":
+                s = str(raw.get("server") or "").strip()
+                if not s:
+                    raise LedgerError(f"items[{i}]: mcp needs `server`")
+                norm.append({"kind": "mcp", "server": s})
+            elif k == "permission_mode":
+                m = str(raw.get("mode") or "").strip()
+                if m not in PM_LEVELS:
+                    raise LedgerError(
+                        f"items[{i}]: mode must be one of {PM_LEVELS}")
+                norm.append({"kind": "permission_mode", "mode": m})
+            else:
+                raise LedgerError(
+                    f"items[{i}]: kind must be one of {self.SCOPE_KINDS}")
+        # motto A3: asking for what you already hold is a no-op, per item
+        held = [it for it in norm if self._holds_scope_item(nid, it)]
+        norm = [it for it in norm if not self._holds_scope_item(nid, it)]
+        if not norm:
+            return {"status": "you already hold everything you asked for — "
+                              "nothing to request"}
+        # the user-mail gate, same shape as questions: a deep agent with no
+        # user audience ROUTES the request to its superior instead — who may
+        # grant what it holds directly (orgtree_retool) or escalate
+        if n["parent"] is not None and not self._has_audience(nid, USER):
+            sup = n["parent"]
+            body = ("[SCOPE REQUEST — needs a grant or an escalation]\n"
+                    + "\n".join("- " + self._scope_item_label(it)
+                                for it in norm)
+                    + f"\nReason: {str(reason).strip()}"
+                    + "\nIf you hold these, grant them directly with "
+                      "orgtree_retool; otherwise escalate up your chain — "
+                      "only the user can grant past your own scope.")
+            r = self.post_mail(nid, sup, body, kind="request")
+            return {"routed": sup, "deferred": bool(r.get("deferred")),
+                    "status": f"you hold no user audience — the request was "
+                              f"mailed to your superior \"{sup}\"; they can "
+                              f"grant what they hold, or escalate"}
+        reqs = self.d.setdefault("scope_requests", [])
+        pending = next((r for r in reqs
+                        if r["node"] == nid and r["status"] == "pending"),
+                       None)
+        note = (f" ({len(held)} item(s) you already hold were dropped)"
+                if held else "")
+        if pending is not None:
+            cur = {self._scope_item_key(it): it
+                   for it in cast("list[dict[str, Any]]", pending["items"])}
+            for it in norm:
+                cur[self._scope_item_key(it)] = it
+            if len(cur) > 8:
+                raise LedgerError(
+                    "your pending scope request already carries 8 items — "
+                    "withdraw the batch or wait for the user's submit")
+            pending["items"] = list(cur.values())
+            pending.update({"reason": str(reason).strip(), "at": now(),
+                            "rev": int(pending.get("rev") or 1) + 1})
+            self._log("scope_request", nid,
+                      {"id": pending["id"], "amended": True,
+                       "items": [self._scope_item_key(x) for x in norm]}, [])
+            return {"requested": [self._scope_item_label(x) for x in norm],
+                    "status": f"pending (merged into your open batch — now "
+                              f"{len(pending['items'])} scope item(s)){note} "
+                              f"— the user decides per item at one submit; "
+                              f"do NOT wait for it in this turn"}
+        rid = "sr" + uuid.uuid4().hex[:8]
+        reqs.append({"id": rid, "node": nid, "items": norm,
+                     "reason": str(reason).strip(), "at": now(), "rev": 1,
+                     "status": "pending"})
+        self._log("scope_request", nid,
+                  {"id": rid,
+                   "items": [self._scope_item_key(x) for x in norm]}, [])
+        return {"requested": [self._scope_item_label(x) for x in norm],
+                "status": f"pending — on the user's screen as part of your "
+                          f"request batch{note}. The user approves, denies "
+                          f"or skips each item at one submit; the outcome "
+                          f"arrives as mail. Do NOT wait for it in this "
+                          f"turn: wrap up and end the turn."}
+
+    def resolve_batch(self, nid: str, revs: Mapping[str, Any],
+                      answers: list[Any] | None = None,
+                      credits: Mapping[str, Any] | None = None,
+                      scope: list[Any] | None = None) -> dict[str, Any]:
+        """FR-14: the user's ONE submit over the node's whole batch —
+        question tabs (positional answers, explicit null = skipped), the
+        credits tab (granted N / deny / skip) and the scope tabs (approve /
+        deny / skip per item) resolve together, under one lock, into ONE
+        composed mail. Every open component must be echoed in `revs` (the
+        CAS stamp per store — an append mid-render refuses the stale submit)
+        and must carry a decision payload; a skipped tab is an EXPLICIT
+        skip, never a hole (FR-04's miscount guard survives)."""
+        ask = next((a for a in self.d.get("asks", [])
+                    if a["node"] == nid and a["status"] == "open"), None)
+        cr = next((r for r in self.d.get("credit_requests", [])
+                   if r["node"] == nid and r["status"] == "pending"), None)
+        sr = next((r for r in self.d.get("scope_requests", [])
+                   if r["node"] == nid and r["status"] == "pending"), None)
+        if not (ask or cr or sr):
+            raise LedgerError(f"{nid} has no open request batch")
+        for key, comp in (("ask", ask), ("credits", cr), ("scope", sr)):
+            if comp is None:
+                continue
+            got = revs.get(key)
+            if got is None or int(got) != int(comp.get("rev") or 1):
+                raise LedgerError(
+                    "the card changed after it rendered (a request was "
+                    "appended or amended) — re-read the batch and submit "
+                    "what it shows now")
+        sections: list[str] = []
+        # ---- question tabs
+        if ask is not None:
+            qs = cast("list[dict[str, Any]]", ask.get("questions") or [])
+            per = list(answers or [])
+            if len(per) != len(qs):
+                raise LedgerError(
+                    f"the batch has {len(qs)} question tab(s) and the submit "
+                    f"carried {len(per)} answer slot(s) — exactly one per "
+                    f"tab (null = explicitly skipped)")
+            norm: list[Any] = []
+            for item in per:
+                if item is None:
+                    norm.append(None)
+                elif isinstance(item, list):
+                    norm.append([str(x).strip()
+                                 for x in cast("list[Any]", item)
+                                 if str(x).strip()] or None)
+                else:
+                    norm.append(str(item or "").strip() or None)
+            answered = sum(1 for v in norm if v is not None)
+            ask["status"] = "answered" if answered else "dismissed"
+            ask["reason"] = ("answered" if answered
+                             else "every question was skipped at submit")
+            flat: list[str] = [
+                str(x) for v in norm if v is not None
+                for x in (cast("list[Any]", v)
+                          if isinstance(v, list) else [v])]
+            if flat:
+                ask["answer"] = {"selected": flat}
+            lines: list[str] = []
+            for i, (qd, v) in enumerate(zip(qs, norm)):
+                label = qd.get("header") or f"Q{i + 1}"
+                if v is None:
+                    lines.append(f"{label} — {qd['question']}\n→ (skipped — "
+                                 f"the user left this one unanswered)")
+                else:
+                    qd["answer"] = v
+                    ans = (" · ".join(str(x) for x in cast("list[Any]", v))
+                           if isinstance(v, list) else str(v))
+                    lines.append(f"{label} — {qd['question']}\n→ {ans}")
+            ask["resolved_at"] = now()
+            sections.append(("[ANSWERS to your questions]\n"
+                             if answered else
+                             "[your questions were SKIPPED]\n")
+                            + "\n".join(lines))
+            self._log("ask_answered", USER,
+                      {"id": ask["id"], "node": nid,
+                       "skipped": len(qs) - answered}, [])
+        # ---- the credits tab
+        if cr is not None:
+            c = dict(credits or {})
+            if not c:
+                raise LedgerError("the batch has a credits tab — the submit "
+                                  "must decide it (granted N, deny, or skip)")
+            if c.get("skip"):
+                cr["status"] = "dismissed"
+                cr["reason"] = "skipped at batch submit"
+                cr["resolved_at"] = now()
+                sections.append(f"[CREDIT REQUEST skipped] Your ask "
+                                f"({cr['old']:g} → {cr['new']:g}) was left "
+                                f"undecided — you may re-ask later.")
+                self._log("credit_dismissed", USER, {"id": cr["id"]}, [])
+            else:
+                r = self.credit_request_action(
+                    cr["id"], "deny" if c.get("deny") else "approve",
+                    granted=(None if c.get("granted") is None
+                             else int(c["granted"])))
+                if r.get("notice"):
+                    sections.append(str(r["notice"]))
+        # ---- the scope tabs
+        if sr is not None:
+            its = cast("list[dict[str, Any]]", sr["items"])
+            dec = [str(x or "").strip() for x in (scope or [])]
+            if len(dec) != len(its):
+                raise LedgerError(
+                    f"the batch has {len(its)} scope item(s) and the submit "
+                    f"carried {len(dec)} decision(s) — exactly one "
+                    f"(approve|deny|skip) per item")
+            if any(d not in ("approve", "deny", "skip") for d in dec):
+                raise LedgerError("scope decisions must be approve|deny|skip")
+            sc = self.node(nid)["scope"]
+            add_dirs: list[dict[str, Any]] | None = None
+            tools: dict[str, Any] | None = None
+            pm: str | None = None
+            for it, d in zip(its, dec):
+                it["decision"] = d
+                if d != "approve":
+                    continue
+                if it["kind"] == "dir":
+                    add_dirs = add_dirs if add_dirs is not None else \
+                        [dict(x) for x in sc["add_dirs"]]
+                    i = next((j for j, x in enumerate(add_dirs)
+                              if x["path"] == it["path"]), None)
+                    if i is None:
+                        add_dirs.append({"path": it["path"],
+                                         "mode": it["mode"]})
+                    elif it["mode"] == "rw":
+                        add_dirs[i]["mode"] = "rw"
+                elif it["kind"] == "tool":
+                    tools = tools if tools is not None else dict(sc["tools"])
+                    tools[it["tool"]] = True
+                elif it["kind"] == "mcp":
+                    tools = tools if tools is not None else dict(sc["tools"])
+                    mcp = list(cast("list[str]", tools.get("mcp") or []))
+                    if "*" not in mcp and it["server"] not in mcp:
+                        mcp.append(it["server"])
+                    tools["mcp"] = mcp
+                else:
+                    pm = str(it["mode"])
+            granted_lines: list[str] = []
+            if add_dirs is not None or tools is not None or pm is not None:
+                # applied AS THE USER — set_scope carries the kiosk-ceiling
+                # clamp and the D-106 upward cascade, so a deep grant raises
+                # the chain and reports it exactly like a manual ⚙ grant
+                r = self.set_scope(USER, nid, add_dirs=add_dirs, tools=tools,
+                                   permission_mode=pm)
+                for w in cast("list[str]", r.get("warnings") or []):
+                    granted_lines.append(f"({w})")
+            sr["status"] = "answered"
+            sr["reason"] = "decided at batch submit"
+            sr["resolved_at"] = now()
+            outcome = "\n".join(
+                f"- {self._scope_item_label(it)} → "
+                + {"approve": "GRANTED — live from your next turn",
+                   "deny": "denied",
+                   "skip": "skipped (undecided — you may re-ask)"}[
+                    str(it['decision'])]
+                for it in its)
+            sections.append("[SCOPE REQUEST decided]\n" + outcome
+                            + ("\n" + "\n".join(granted_lines)
+                               if granted_lines else ""))
+            self._log("scope_decided", USER,
+                      {"id": sr["id"],
+                       "decisions": [str(x["decision"]) for x in its]}, [])
+        return {"node": nid, "body": "\n\n".join(sections)}
 
     def rename(self, actor: str, nid: str, new_name: str) -> dict[str, Any]:
         """FULL identity rename (user ruling 2026-08-05): the id itself
@@ -3611,6 +3939,9 @@ class Org:
             if a.get("node") in renamed:
                 a["node"] = renamed[a["node"]]
         for r in self.d.get("credit_requests", []):
+            if r.get("node") in renamed:
+                r["node"] = renamed[r["node"]]
+        for r in self.d.get("scope_requests", []):
             if r.get("node") in renamed:
                 r["node"] = renamed[r["node"]]
         # the display title (set at hire from the raw name) follows the
@@ -3901,40 +4232,56 @@ class Org:
                               f"mailed to your superior \"{sup}\"; their "
                               f"answer arrives as mail"}
         asks = self.d.setdefault("asks", [])
-        # single active request per agent (user ruling 2026-08-06): a NEW
-        # question replaces a pending CREDIT request too — the desk shows one
-        # card, and "pose a new request" is one of the only three ways an
-        # active request ever dies
-        for r0 in self.d.get("credit_requests", []):
-            if r0["node"] == nid and r0["status"] == "pending":
-                r0["status"] = "superseded"
-                r0["reason"] = "replaced by a newer request from the same agent"
-                r0["resolved_at"] = now()
-                self._log("credit_request_superseded", nid,
-                          {"id": r0["id"]}, [])
+        # FR-14 (user ruling 2026-08-12): a new ask APPENDS to the open batch.
+        # It no longer evicts a pending credit request — the agent's batch is
+        # the UNION of every open request kind, finished only by the user's
+        # submit or the agent's explicit withdraw — and it no longer replaces
+        # the earlier questions. A tab with the SAME question text is replaced
+        # in place (re-asking with sharper options amends that one tab);
+        # everything else joins the card.
         entry = next((a for a in asks
                       if a["node"] == nid and a["status"] == "open"), None)
+        if entry is not None:
+            merged = [dict(x) for x in
+                      cast("list[dict[str, Any]]", entry.get("questions")
+                           or [])]
+            for qd in batch:
+                i = next((j for j, x in enumerate(merged)
+                          if x["question"] == qd["question"]), None)
+                if i is None:
+                    merged.append(qd)
+                else:
+                    merged[i] = qd
+            if len(merged) > 8:
+                raise LedgerError(
+                    f"your open batch would grow to {len(merged)} questions "
+                    f"(cap 8) — withdraw it (orgtree_withdraw_ask) and ask "
+                    f"only what still matters, or wait for the user's submit")
+            first0 = merged[0]
+            entry["questions"] = merged
+            entry["question"] = first0["question"]
+            for k in ("options", "multi", "header"):
+                if first0.get(k):
+                    entry[k] = first0[k]
+                else:
+                    entry.pop(k, None)
+            # redteam (2026-08-05): answers are POSITIONAL, so an answer
+            # composed against the card as it rendered BEFORE this append
+            # must not silently attach to shifted tabs — the rev is the
+            # compare-and-swap stamp the batch resolve requires
+            entry["rev"] = int(entry.get("rev") or 1) + 1
+            self._log("ask", nid, {"id": entry["id"],
+                                   "appended": len(batch)}, [])
+            return {"asked": entry["id"],
+                    "status": f"parked (appended to your open batch — it now "
+                              f"carries {len(merged)} question(s), resolved "
+                              f"together at the user's one submit) — do NOT "
+                              f"wait for it in this turn"}
         mirror: dict[str, Any] = {
             "question": first["question"], "questions": batch, "at": now(),
             **({"options": first["options"]} if first.get("options") else {}),
             **({"multi": True} if first.get("multi") else {}),
             **({"header": first["header"]} if first.get("header") else {})}
-        if entry is not None:
-            entry.update(mirror)
-            # an amend REPLACES the batch — stale mirror keys must not linger
-            for k in ("options", "multi", "header"):
-                if k not in mirror:
-                    entry.pop(k, None)
-            # redteam (2026-08-05): answers are POSITIONAL, so an answer
-            # composed against the card as it rendered BEFORE this amend
-            # must not silently attach to the replaced questions — the rev
-            # is the compare-and-swap stamp ask_answer requires
-            entry["rev"] = int(entry.get("rev") or 1) + 1
-            self._log("ask", nid, {"id": entry["id"], "amended": True}, [])
-            return {"asked": entry["id"],
-                    "status": "parked (amended your earlier question) — the "
-                              "answer will arrive as mail; do NOT wait for it "
-                              "in this turn"}
         aid = "q" + uuid.uuid4().hex[:8]
         asks.append({"id": aid, "node": nid, "kind": "question", **mirror,
                      "rev": 1, "status": "open"})
@@ -4204,6 +4551,12 @@ class Org:
                 r["reason"] = why
                 r["resolved_at"] = now()
                 self._log("credit_moot", nid, {"id": r["id"]}, [])
+        for r in self.d.get("scope_requests", []):
+            if r["node"] == nid and r["status"] == "pending":
+                r["status"] = "moot"
+                r["reason"] = why
+                r["resolved_at"] = now()
+                self._log("scope_moot", nid, {"id": r["id"]}, [])
 
     def withdraw_ask(self, nid: str) -> dict[str, Any]:
         """The agent withdraws its OWN active request (user ruling
@@ -4227,6 +4580,12 @@ class Org:
                 r["reason"] = "withdrawn by the asking agent"
                 r["resolved_at"] = now()
                 gone.append(f"credit request {r['id']}")
+        for r in self.d.get("scope_requests", []):
+            if r["node"] == nid and r["status"] == "pending":
+                r["status"] = "withdrawn"
+                r["reason"] = "withdrawn by the asking agent"
+                r["resolved_at"] = now()
+                gone.append(f"scope request {r['id']}")
         if gone:
             self._log("ask_withdrawn", nid, {"which": gone}, [])
             return {"withdrawn": gone,
@@ -4253,31 +4612,79 @@ class Org:
         for r in self.d.get("credit_requests", []):
             if r["node"] == nid and r.get("status") == "pending":
                 return {**r, "kind": "credit"}
+        for r in self.d.get("scope_requests", []):
+            if r["node"] == nid and r.get("status") == "pending":
+                return {**r, "kind": "scope"}
         return None
 
     def node_ask(self, nid: str) -> dict[str, Any] | None:
-        """The ask the UI should show on this node's desk: the open one, or
-        the most recently resolved one within its linger window (the nulled
-        card carries WHY it nulled — grey answered / orange interrupted)."""
+        """The card the UI should show on this node's desk: the open BATCH
+        (FR-14: the union of the open question tabs, the pending credit
+        request and the pending scope items, resolved together at one
+        submit), or the most recently resolved single entry within its
+        linger window (the nulled card carries WHY it nulled)."""
+        ask = next((a for a in self.d.get("asks", [])
+                    if a["node"] == nid and a["status"] == "open"), None)
+        cr = next((r for r in self.d.get("credit_requests", [])
+                   if r["node"] == nid and r["status"] == "pending"), None)
+        sr = next((r for r in self.d.get("scope_requests", [])
+                   if r["node"] == nid and r["status"] == "pending"), None)
+        if ask or cr or sr:
+            tabs: list[dict[str, Any]] = []
+            revs: dict[str, int] = {}
+            if ask is not None:
+                revs["ask"] = int(ask.get("rev") or 1)
+                for qd in cast("list[dict[str, Any]]",
+                               ask.get("questions") or []):
+                    tabs.append({"kind": "question", **qd})
+            if cr is not None:
+                revs["credits"] = int(cr.get("rev") or 1)
+                tabs.append({"kind": "credits", "id": cr["id"],
+                             "old": cr["old"], "new": cr["new"],
+                             "reason": cr["reason"]})
+            if sr is not None:
+                revs["scope"] = int(sr.get("rev") or 1)
+                for it in cast("list[dict[str, Any]]", sr["items"]):
+                    tabs.append({"kind": "scope", "id": sr["id"],
+                                 "item": it, "reason": sr["reason"],
+                                 "label": self._scope_item_label(it)})
+            base = cast("dict[str, Any]", ask or cr or sr)
+            first = tabs[0]
+            return {"id": str(base["id"]), "node": nid, "kind": "batch",
+                    "status": "open",
+                    "at": min(str(x["at"]) for x in (ask, cr, sr)
+                              if x is not None),
+                    "tabs": tabs, "revs": revs,
+                    # legacy mirror: older surfaces title the card off these
+                    "question": first.get("question")
+                                or first.get("label")
+                                or (f"credits {first.get('old')} → "
+                                    f"{first.get('new')}"
+                                    if first["kind"] == "credits" else ""),
+                    **({"rev": revs["ask"]} if ask is not None else {})}
         # `withdrawn` stays hidden (the agent taking its own request back is
         # nothing for the user to read); `moot` RENDERS as a nulled card
         # (redteam 2026-08-06: retirement made mooting ordinary, and a card
         # that just vanishes tells the user less than one that says why)
         pool = ([a for a in self.d.get("asks", []) if a["node"] == nid]
                 + [{**r, "kind": "credit"} for r in self.d.get("credit_requests", [])
+                   if r["node"] == nid and r["status"] != "withdrawn"]
+                + [{**r, "kind": "scope",
+                    "question": "scope request: " + "; ".join(
+                        self._scope_item_label(cast("dict[str, Any]", it))
+                        for it in cast("list[Any]", r["items"]))}
+                   for r in self.d.get("scope_requests", [])
                    if r["node"] == nid and r["status"] != "withdrawn"])
         if not pool:
             return None
 
         def stamp(a: dict[str, Any]) -> str:
             return str(a.get("resolved_at") or a["at"])
-        opens = [a for a in pool if a.get("status") in ("open", "pending")]
-        best = max(opens, key=stamp) if opens else max(pool, key=stamp)
-        if best.get("status") not in ("open", "pending"):
-            cutoff = (datetime.now(timezone.utc)
-                      - timedelta(minutes=15)).strftime("%Y-%m-%dT%H:%M:%SZ")
-            if (best.get("resolved_at") or best["at"]) < cutoff:
-                return None
+        best = max(pool, key=stamp)
+        cutoff = (datetime.now(timezone.utc)
+                  - timedelta(minutes=15)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        if (best.get("resolved_at") or best["at"]) < cutoff:
+            return None
         return best
 
     def fable_filter_hit(self, nid: str, detail: str) -> str:
@@ -4795,10 +5202,15 @@ class Org:
             "asks": (self.d.get("asks", [])
                      + [{**r, "kind": "credit"}
                         for r in self.d.get("credit_requests", [])
+                        if r["status"] != "withdrawn"]
+                     + [{**r, "kind": "scope"}
+                        for r in self.d.get("scope_requests", [])
                         if r["status"] != "withdrawn"])[-60:],
             "asks_open": sum(1 for a in self.d.get("asks", [])
                              if a["status"] == "open")
                          + sum(1 for r in self.d.get("credit_requests", [])
+                               if r["status"] == "pending")
+                         + sum(1 for r in self.d.get("scope_requests", [])
                                if r["status"] == "pending"),
             "tiers": self.d["tiers"],
             "audiences": self.d["audiences"],
@@ -4811,6 +5223,9 @@ class Org:
             "spend_frozen": bool(self.d.get("spend_frozen")),
             "storage_blocked": bool(self.d.get("storage_blocked")),
             "auto_resume": bool(self.d.get("auto_resume")),
+            # FR-24b: the org-level auto-cheap-compact config (nodes carry
+            # their overrides in scope.auto_cheap_compact, already shipped)
+            "auto_cheap_compact": self.d.get("auto_cheap_compact"),
             "fable_limit_policy": self.d.get("fable_limit_policy", "halt"),
             "fable_filter_policy": self.d.get("fable_filter_policy", "halt"),
             "cascade_hire": bool(self.d.get("cascade_hire", True)),

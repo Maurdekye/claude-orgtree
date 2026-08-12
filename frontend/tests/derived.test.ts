@@ -377,3 +377,23 @@ test('⑮  the insert-parent splice is loud on failure, never best-effort',
       'spawnAbove is gone or no longer records the anchor — confirmDraft '
       + 'cannot know what to move under the fresh hire')
   })
+
+// --------------------------------------------------------------------- (16)
+test('(16)  open requests render as ONE composed batch card per agent',
+  () => {
+    // FR-14 (user ruling 2026-08-12). Open per-kind rows would resurrect the
+    // multi-card state the batch model replaced: the inbox derives its open
+    // rows from the NODES' composed `ask` (kind batch), while the raw
+    // per-store entries feed only the resolved history.
+    const src = code('App.tsx')
+    assert.ok(/\[\.\.\.nodes\.values\(\)\]\s*\n?\s*\.filter\(\(n\) => n\.ask && askOpen\(n\.ask\)\)/.test(src),
+      'askPending no longer derives from the composed node batches — open '
+      + 'components now render as separate per-kind rows')
+    const asks = code('canvas/asks.tsx')
+    assert.ok(/ask\.kind === 'batch' && ask\.tabs\?\.length/.test(asks),
+      'AskCard lost its batch dispatch — composed cards fall through to the '
+      + 'single-kind forms and the submit shape breaks')
+    assert.ok(/skiprow/.test(asks) && /skip: true/.test(asks),
+      'the explicit-skip affordance is gone — a tab the user wants to leave '
+      + 'unanswered has no honest path, and close-all loses its meaning')
+  })

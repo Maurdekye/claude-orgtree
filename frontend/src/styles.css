@@ -2195,3 +2195,8 @@ svg.MuiSvgIcon-root {
   text-decoration: none; max-width: 100%; overflow: hidden;
 }
 a.attach-chip:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); color: var(--accent); }
+
+/* FR-14: the explicit-skip row on a batch tab — dimmer than an option row,
+   so "leave unanswered" never reads as just another choice */
+.ask-row.skiprow { opacity: .7; font-style: italic; }
+.ask-row.skiprow.on { opacity: 1; }

@@ -569,6 +569,28 @@ def hermetic() -> None:
           "and pins the agent catalogue so it cannot become one)",
           _unstick_is_never_an_agent_capability)
 
+    def _breadcrumbs_line_reaches_writing_agents_only():
+        """FR-24c (user ruling 2026-08-12): agents write their own compaction
+        log in realtime — breadcrumbs.md in the working folder — because a
+        cheap-compact successor starts with NOTHING and that file is the
+        first thing its notice points it at. The line only renders for an
+        agent that can actually write (edit or bash); telling a read-only
+        seat to keep a file is an instruction it cannot follow."""
+        org = store.create_org("zz bc prompt")
+        org.hire(USER, None, "haiku", 0, "w")
+        store.save_org(org)
+        p = supervisor.identity_prompt(org, "w")
+        assert "breadcrumbs.md" in p and "realtime" in p, p[-500:]
+        org.set_scope(USER, "w", tools={"bash": False, "web": False,
+                                        "edit": False, "subagents": False,
+                                        "mcp": []})
+        store.save_org(org)
+        p2 = supervisor.identity_prompt(org, "w")
+        assert "breadcrumbs.md" not in p2, (
+            "a read-only seat is told to maintain a file it cannot write")
+    check("breadcrumbs · the realtime-log doctrine reaches every seat that "
+          "can write, and only those", _breadcrumbs_line_reaches_writing_agents_only)
+
     def _unstick_is_not_reachable_from_the_kiosk_gateway():
         """⚠ THE AUTHORITY IS AIRTIGHT AT THE LEDGER AND OPEN AT THE DOOR.
 
@@ -2607,6 +2629,85 @@ def live_auto_resume() -> None:
     drop_orgs()
 
 
+def live_auto_cheap_compact() -> None:
+    """FR-24b (user request 2026-08-12): a wake past BOTH thresholds swaps
+    the session in place BEFORE the resume pays the cold-context reload —
+    same seat, same team, mailbox untouched; the successor's first turn
+    carries the compact notice AND the waking mail together. Disabled by
+    default; the per-node override outranks the org setting."""
+    print("\nauto cheap-compact on wake (FR-24b):")
+    start_backend()
+    set_cfg(FAST)
+    slug, (nid,) = make_org("acc")
+    tok0 = token()
+    send(slug, nid, f"warm up {tok0}")
+    wait_idle(slug, nid, 30)
+    stop_backend()
+    d = doc(slug)
+    n = d["nodes"][nid]
+    sid0 = n["session_id"]
+    if not n.get("turns"):
+        raise AssertionError("fixture: the warm-up turn left no ring entry")
+    # arm: org config on with thresholds the next wake trivially crosses,
+    # plus the two facts the hook reads — a high occupancy high-water and a
+    # last-turn stamp already past the idle window (idle_s 0)
+    d["auto_cheap_compact"] = {"enabled": True, "occ": 0.5, "idle_s": 0}
+    n["occupancy"] = 150_000
+    n["context_window"] = 200_000
+    with open(os.path.join(DATA, "orgs", slug + ".json"), "w",
+              encoding="utf-8") as f:
+        json.dump(d, f, indent=2)
+    set_cfg(FAST)
+    start_backend()
+    tok = token()
+    send(slug, nid, f"wake up {tok}")
+    check("acc · the wake swapped the session IN PLACE (same id, fresh "
+          "session)", lambda: (
+        None if wait_for(lambda:
+            doc(slug)["nodes"][nid]["session_id"] != sid0, 30)
+        else (_ for _ in ()).throw(AssertionError(doc(slug)["nodes"][nid]))))
+    wait_idle(slug, nid, 30)
+
+    def _lineage() -> None:
+        d2 = doc(slug)
+        n2 = d2["nodes"][nid]
+        bearer = d2["nodes"].get(nid + "@0") or {}
+        assert n2.get("generation") == 1 and n2.get("predecessor") \
+            == nid + "@0", n2.get("generation")
+        assert bearer.get("state") == "archived" \
+            and bearer.get("bearer_state") == "knowledge" \
+            and bearer.get("session_id") == sid0 \
+            and bearer.get("successor") == nid, bearer
+    check("acc · compact_split's exact lineage shape: bearer nid@0 holds "
+          "the OLD session", _lineage)
+    check("acc · the waking mail still reached the successor's first turn",
+          lambda: (None if wait_delivered(tok, 30)
+                   else (_ for _ in ()).throw(AssertionError(tok))))
+    check("acc · …alongside the compact notice, in the same envelope",
+          lambda: (None if "CHEAP-COMPACTED" in transcript_text()
+                   else (_ for _ in ()).throw(AssertionError(
+                       "the successor was never told what happened"))))
+
+    # the per-node override OUTRANKS the org setting — and off means off
+    stop_backend()
+    d3 = doc(slug)
+    d3["nodes"][nid]["scope"]["auto_cheap_compact"] = {"enabled": False}
+    d3["nodes"][nid]["occupancy"] = 150_000
+    d3["nodes"][nid]["context_window"] = 200_000
+    with open(os.path.join(DATA, "orgs", slug + ".json"), "w",
+              encoding="utf-8") as f:
+        json.dump(d3, f, indent=2)
+    set_cfg(FAST)
+    start_backend()
+    send(slug, nid, f"wake again {token()}")
+    wait_idle(slug, nid, 30)
+    check("acc · the per-node OFF override wins over the org's ON", lambda: (
+        None if doc(slug)["nodes"][nid].get("generation") == 1
+        else (_ for _ in ()).throw(AssertionError(
+            doc(slug)["nodes"][nid].get("generation")))))
+    drop_orgs()
+
+
 def live_reconcile() -> None:
     print("\nreconcile at startup:")
     start_backend()
@@ -2808,6 +2909,7 @@ def main() -> None:
             ("freeze", live_freeze),
             ("frozenq", live_frozen_queue),
             ("autoresume", live_auto_resume),
+            ("acc", live_auto_cheap_compact),
             ("reconcile", live_reconcile),
             ("compact", live_compaction),
             ("killswitch", live_interrupt),

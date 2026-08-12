@@ -116,11 +116,14 @@ TOOLS: list[dict[str, Any]] = [
             "(1-4 entries, each with its own options/multi/header) and the "
             "user answers every tab before one combined answer mail arrives. "
             "The question STAYS OPEN across turns — other mail waking you "
-            "does NOT void it. It ends only when the user answers or "
-            "dismisses it, you withdraw it (orgtree_withdraw_ask), or you "
-            "pose a new request (one active request per agent — re-asking "
-            "amends/replaces, and a new credit request replaces a question "
-            "too). ⚠ BECAUSE it outlives the turn, it is YOURS to take back: "
+            "does NOT void it. You have ONE open request BATCH: asking again "
+            "APPENDS more question tabs to it (re-asking the same question "
+            "text amends that tab), and a credit or scope request joins the "
+            "SAME card as its own tabs — everything resolves together at the "
+            "user's single submit (they may skip tabs; a skipped tab returns "
+            "unanswered). The batch ends only at that submit or when you "
+            "withdraw it (orgtree_withdraw_ask). "
+            "⚠ BECAUSE it outlives the turn, it is YOURS to take back: "
             "if a later turn brings information that answers it or makes it "
             "moot — the user says something that settles it, a peer reports "
             "the fact you were missing, the premise dies, you work it out "
@@ -177,9 +180,11 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "orgtree_withdraw_ask",
         "description": (
-            "Withdraw your own ACTIVE request — the open question or pending "
-            "credit request you posed earlier — as soon as it stops "
-            "applying. The usual trigger is NEW INFORMATION arriving in a "
+            "Withdraw your own ACTIVE request batch — every open question "
+            "tab, the pending credit request and the pending scope items "
+            "together — as soon as it stops "
+            "applying. (Withdrawal is whole-batch: re-ask the tabs that "
+            "still matter afterwards.) The usual trigger is NEW INFORMATION arriving in a "
             "later turn: the user answers something else that settles it, a "
             "peer or your superior tells you the fact you were missing, the "
             "work moves on, the premise dies, or you simply work it out "
@@ -277,10 +282,12 @@ TOOLS: list[dict[str, Any]] = [
             "around it. If there are genuinely ZERO credits available to "
             "grant, the request is refused outright with no card. The "
             "request STAYS PENDING across turns — other mail does not void "
-            "it; it ends only by the user's decision, your withdrawal "
-            "(orgtree_withdraw_ask), or a newer request (one active request "
-            "per agent — asking again amends, and a new question replaces a "
-            "pending credit request too)."),
+            "it. It rides your ONE open request BATCH as its own tab, beside "
+            "any question or scope tabs (asking again amends the figure in "
+            "place — the card always shows your CURRENT ask). The batch "
+            "resolves together at the user's single submit; it ends only by "
+            "their decision there, or your withdrawal "
+            "(orgtree_withdraw_ask)."),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -290,6 +297,59 @@ TOOLS: list[dict[str, Any]] = [
                            "description": "why you need it — required"},
             },
             "required": ["new_limit", "reason"],
+        },
+    },
+    {
+        "name": "orgtree_request_scope",
+        "description": (
+            "Ask the USER for a permission-scope increase you cannot get "
+            "any other way: access to a folder, a built-in tool (bash, web, "
+            "edit, subagents), an MCP server, or a higher permission mode. "
+            "USER-ONLY grantor: if your SUPERIOR already holds what you "
+            "need, just ask them — they can grant it directly with "
+            "orgtree_retool, no card needed; this tool is for capabilities "
+            "nobody below the user holds. Requests ride your ONE open batch "
+            "beside any question or credit tabs: re-requesting merges items "
+            "by identity, and the user decides approve/deny/skip PER ITEM "
+            "at one submit — the outcome arrives as mail, and an approved "
+            "grant is live from your next turn (a deep grant raises your "
+            "whole chain automatically). Items you already hold are dropped "
+            "as no-ops. If you hold no user audience and are not top-level, "
+            "the request is mailed to your superior instead. It parks: "
+            "request, then WRAP UP AND END YOUR TURN."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array", "minItems": 1, "maxItems": 8,
+                    "description": "what you are asking for — each item is "
+                                   "one concrete grant",
+                    "items": {"type": "object", "properties": {
+                        "kind": {"type": "string",
+                                 "enum": ["dir", "tool", "mcp",
+                                          "permission_mode"]},
+                        "path": {"type": "string",
+                                 "description": "dir: the absolute folder "
+                                                "path"},
+                        "mode": {"type": "string",
+                                 "description": "dir: ro|rw (default rw); "
+                                                "permission_mode: plan|"
+                                                "default|acceptEdits|"
+                                                "bypassPermissions"},
+                        "tool": {"type": "string",
+                                 "enum": ["bash", "web", "edit",
+                                          "subagents"],
+                                 "description": "tool: which built-in "
+                                                "switch"},
+                        "server": {"type": "string",
+                                   "description": "mcp: the server name"},
+                    }, "required": ["kind"]},
+                },
+                "reason": {"type": "string",
+                           "description": "what the access is for — "
+                                          "required"},
+            },
+            "required": ["items", "reason"],
         },
     },
     {
@@ -367,9 +427,12 @@ TOOLS: list[dict[str, Any]] = [
                                    "enum": ["self", "team", "subtree", "full"]},
                 "permission_mode": {
                     "type": "string",
-                    "enum": ["default", "acceptEdits", "bypassPermissions"],
+                    "enum": ["plan", "default", "acceptEdits",
+                             "bypassPermissions"],
                     "description":
                         "how much this report is asked before acting. "
+                        "'plan' is a read-only planning seat (it reasons, "
+                        "never edits); "
                         "'default' asks (and a headless turn cannot answer, so "
                         "it fails); 'acceptEdits' auto-approves file edits, the "
                         "normal seat; 'bypassPermissions' asks nothing at all "

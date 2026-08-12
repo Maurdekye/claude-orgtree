@@ -86,14 +86,20 @@ def main():
     check("the card's ✕ dismisses: nulled grey, agent told, final", _dismiss)
 
     def _amend():
+        # FR-14 (2026-08-12): a DIFFERENT question appends a tab; the SAME
+        # question text still amends its own tab in place
         org = org2()
         org.ask_user("boss", "v1?")
         r = org.ask_user("boss", "v2 — sharper question", options=["a", "b"])
-        assert "amended" in r["status"]
+        assert "appended" in r["status"], r["status"]
         opens = open_asks(org)
-        assert len(opens) == 1, "re-asking amends, never stacks"
-        assert opens[0]["question"].startswith("v2")
-    check("re-asking amends the open ask in place", _amend)
+        assert len(opens) == 1, "re-asking joins the one open entry"
+        qs = opens[0]["questions"]
+        assert [q["question"] for q in qs] == ["v1?", "v2 — sharper question"]
+        org.ask_user("boss", "v1?", options=["x"])   # same text ⇒ tab amend
+        qs = open_asks(org)[0]["questions"]
+        assert len(qs) == 2 and qs[0].get("options"), qs
+    check("re-asking appends a tab; same-text re-asks amend theirs", _amend)
 
     def _route():
         org = org2()
@@ -133,25 +139,31 @@ def main():
         expect_error(lambda: org.ask_answer(aid), "answer needs")
     check("an empty answer is refused", _answer_needs_content)
 
-    # REWRITTEN 2026-08-06 (user ruling): the wake-void is RETIRED. A request
-    # is invalidated ONLY manually — the user answers/dismisses/denies, the
-    # agent withdraws it (withdraw_ask), or the agent poses a NEW request
-    # (one active request per agent, across BOTH kinds).
-    def _single_active():
+    # ← INVERTED 2026-08-12 (user ruling, FR-14): the batch model. A new
+    # request of another kind no longer evicts — it JOINS the agent's one
+    # open batch, and everything resolves together at the user's single
+    # submit. The old cross-supersede was exactly the data loss the append
+    # ruling forbids.
+    def _batch_union():
         org = org2()
         org.ask_user("boss", "pending question")
-        # a new CREDIT request replaces the open question
         org.request_credits("boss", 30, "need more")
-        assert org.d["asks"][0]["status"] == "superseded"
-        assert "newer request" in org.d["asks"][0]["reason"]
+        assert org.d["asks"][0]["status"] == "open", (
+            "a credit request must JOIN the open batch, not evict the "
+            "question (FR-14 append ruling)")
         req = org.d["credit_requests"][0]
         assert req["status"] == "pending"
-        # …and a new QUESTION replaces a pending credit request
-        org.ask_user("boss", "changed my mind — which color?")
-        assert req["status"] == "superseded"
-        assert org.d["asks"][-1]["status"] == "open"
-    check("one active request per agent: the newer request supersedes the "
-          "older, across kinds in both directions", _single_active)
+        org.ask_user("boss", "also — which color?")
+        assert req["status"] == "pending", (
+            "a question must not evict the pending credit request either")
+        a = org.d["asks"][0]
+        assert a["status"] == "open" and len(a["questions"]) == 2, a
+        card = org.node_ask("boss")
+        kinds = [t["kind"] for t in card["tabs"]]
+        assert kinds == ["question", "question", "credits"], kinds
+        assert set(card["revs"]) == {"ask", "credits"}, card["revs"]
+    check("one active BATCH per agent: new requests append across kinds, "
+          "nothing is evicted", _batch_union)
 
     def _withdraw():
         org = org2()
@@ -317,20 +329,22 @@ def main():
         org.ask_user("boss", "q?")
         org.request_credits("boss", 30, "more")
         t = org.tree()
-        # one ACTIVE request per agent (ruling 2026-08-06): the credit
-        # request SUPERSEDED the question, so the open count reads 1 —
-        # this line used to pin 2, which is now exactly the double-card
-        # state the ruling forbids
-        assert t["asks_open"] == 1
+        # FR-14 (2026-08-12): both components stay OPEN as one batch — the
+        # count reads 2 open components, and the node's card composes them
+        # into tabs (kind "batch"). The 2026-08-06 single-active reading is
+        # superseded by the append ruling.
+        assert t["asks_open"] == 2
         boss = next(n for n in t["roots"] if n["id"] == "boss")
         assert boss["ask"] is not None
-        assert boss["ask"].get("status") == "pending", boss["ask"]
+        assert boss["ask"].get("kind") == "batch", boss["ask"]
+        assert [x["kind"] for x in boss["ask"]["tabs"]] \
+            == ["question", "credits"], boss["ask"]["tabs"]
         kid = boss["children"][0]
         assert kid.get("ask") is None
         assert len(t["asks"]) == 2, \
-            "the superseded question stays in the nulled history"
-    check("the tree payload carries per-node asks and the open count "
-          "(1 active + the superseded history entry)", _tree_payload)
+            "both raw components ride the asks history pool"
+    check("the tree payload carries the composed batch card and the open "
+          "component count", _tree_payload)
 
     # ── D-103: the agent must be TOLD, every turn, that its request is still
     # standing. `orgtree_withdraw_ask` already existed — nothing ever prompted
@@ -396,6 +410,159 @@ def main():
         assert "do not re-ask" in p, p[-600:]
     check("☞ the identity prompt names an open request and says to withdraw "
           "it if this turn made it moot", _prompt_names_the_open_request)
+
+    print("FR-13/FR-14 · scope requests + the one-submit batch:")
+
+    def _scope_request_basics():
+        org = org2()
+        # the fixture hire holds EVERY tool — shrink first, or the requests
+        # drop as already-held no-ops (motto A3)
+        org.set_scope(USER, "boss", tools={"bash": False, "web": False,
+                                           "edit": True, "subagents": False,
+                                           "mcp": []})
+        r = org.request_scope("boss", [
+            {"kind": "dir", "path": "E:/data", "mode": "ro"},
+            {"kind": "tool", "tool": "web"},
+            {"kind": "permission_mode", "mode": "bypassPermissions"}],
+            "need the dataset and the docs sites")
+        assert "pending" in r["status"], r
+        sr = org.d["scope_requests"][0]
+        assert sr["status"] == "pending" and len(sr["items"]) == 3
+        # re-requesting MERGES by identity: same path upgrades in place,
+        # a new tool appends
+        org.request_scope("boss", [
+            {"kind": "dir", "path": "E:/data", "mode": "rw"},
+            {"kind": "tool", "tool": "bash"}], "now writing results too")
+        sr = org.d["scope_requests"][0]
+        assert len(sr["items"]) == 4, sr["items"]
+        d = next(x for x in sr["items"] if x["kind"] == "dir")
+        assert d["mode"] == "rw", "same-path re-ask must upgrade in place"
+        assert sr["rev"] == 2, "a merge must bump the CAS rev"
+    check("scope requests park, merge by identity, and bump rev",
+          _scope_request_basics)
+
+    def _scope_already_held_is_noop():
+        org = org2()   # fixture boss holds edit already
+        r = org.request_scope("boss", [{"kind": "tool", "tool": "edit"}],
+                              "want to edit")
+        assert "already hold" in r["status"], (
+            r, org.node("boss")["scope"]["tools"])
+    check("asking for scope you already hold is a no-op, per item",
+          _scope_already_held_is_noop)
+
+    def _scope_routes_without_audience():
+        org = org2()
+        org.set_scope(USER, "kid", tools={"bash": False, "web": False,
+                                          "edit": True, "subagents": False,
+                                          "mcp": []})
+        r = org.request_scope("kid", [{"kind": "tool", "tool": "web"}],
+                              "research task")
+        assert r.get("routed") == "boss", r
+        assert not org.d.get("scope_requests"), "routed ⇒ no pending card"
+        assert any("orgtree_retool" in m["body"]
+                   for m in org.d["mail"]["boss"]), (
+            "the superior must be told they can grant what they hold")
+    check("a deep agent's scope request routes to its superior as mail",
+          _scope_routes_without_audience)
+
+    def _one_submit_resolves_everything():
+        org = org2()
+        org.set_scope(USER, "boss", tools={"bash": False, "web": False,
+                                           "edit": True, "subagents": False,
+                                           "mcp": []})
+        org.ask_user("boss", "which db?", options=["sqlite", "pg"])
+        org.request_credits("boss", 30, "more compute")
+        org.request_scope("boss", [
+            {"kind": "dir", "path": "E:/data", "mode": "ro"},
+            {"kind": "tool", "tool": "web"}], "the dataset")
+        card = org.node_ask("boss")
+        assert [t["kind"] for t in card["tabs"]] \
+            == ["question", "credits", "scope", "scope"], card["tabs"]
+        r = org.resolve_batch("boss", card["revs"],
+                              answers=["sqlite"],
+                              credits={"granted": 25},
+                              scope=["approve", "deny"])
+        body = r["body"]
+        assert "sqlite" in body and "COUNTER-OFFERED" in body, body
+        assert "GRANTED" in body and "denied" in body, body
+        # the grants LANDED: the dir is on the node, the tool is not
+        sc = org.node("boss")["scope"]
+        assert any(d["path"] == "E:/data" and d["mode"] == "ro"
+                   for d in sc["add_dirs"]), sc["add_dirs"]
+        assert not sc["tools"]["web"], "the denied tool must NOT be granted"
+        assert org.node("boss")["grant"] == 25
+        # every store resolved — the batch is finished
+        assert org.node_ask("boss")["status"] != "open"
+        assert org.d["asks"][0]["status"] == "answered"
+        assert org.d["credit_requests"][0]["status"] == "answered"
+        assert org.d["scope_requests"][0]["status"] == "answered"
+    check("ONE submit answers, counter-offers, grants and denies together",
+          _one_submit_resolves_everything)
+
+    def _skips_are_explicit_never_holes():
+        org = org2()
+        org.ask_user("boss", questions=[{"question": "a?"},
+                                        {"question": "b?"}])
+        org.request_credits("boss", 30, "more")
+        card = org.node_ask("boss")
+        # a hole (wrong count) still refuses — FR-04's miscount guard lives
+        expect_error(lambda: org.resolve_batch(
+            "boss", card["revs"], answers=["yes"], credits={"skip": True}),
+            "exactly one per")
+        r = org.resolve_batch("boss", card["revs"],
+                              answers=["yes", None],
+                              credits={"skip": True})
+        assert "(skipped" in r["body"] and "undecided" in r["body"], r["body"]
+        assert org.d["credit_requests"][0]["status"] == "dismissed"
+        qs = org.d["asks"][0]["questions"]
+        assert qs[0].get("answer") == "yes" and "answer" not in qs[1], qs
+    check("skips are explicit nulls; holes still refuse (FR-04 guard "
+          "survives)", _skips_are_explicit_never_holes)
+
+    def _stale_batch_submit_is_refused():
+        org = org2()
+        org.set_scope(USER, "boss", tools={"bash": False, "web": False,
+                                           "edit": True, "subagents": False,
+                                           "mcp": []})
+        org.ask_user("boss", "q1?")
+        card = org.node_ask("boss")
+        org.request_scope("boss", [{"kind": "tool", "tool": "web"}], "x")
+        expect_error(lambda: org.resolve_batch(
+            "boss", card["revs"], answers=["yes"]),
+            "changed after it rendered")
+    check("a submit against a pre-append render is refused (batch CAS)",
+          _stale_batch_submit_is_refused)
+
+    def _withdraw_covers_the_whole_batch():
+        org = org2()
+        org.set_scope(USER, "boss", tools={"bash": False, "web": False,
+                                           "edit": True, "subagents": False,
+                                           "mcp": []})
+        org.ask_user("boss", "q?")
+        org.request_credits("boss", 30, "more")
+        org.request_scope("boss", [{"kind": "tool", "tool": "web"}], "x")
+        r = org.withdraw_ask("boss")
+        assert len(r["withdrawn"]) == 3, r
+        assert org.d["scope_requests"][0]["status"] == "withdrawn"
+    check("withdraw nulls every component of the batch", _withdraw_covers_the_whole_batch)
+
+    def _pm_grant_applies_and_plan_ranks_lowest():
+        org = org2()
+        org.request_scope("boss", [
+            {"kind": "permission_mode", "mode": "bypassPermissions"}],
+            "must write the global skills")
+        card = org.node_ask("boss")
+        assert "UNGUARDED" in card["tabs"][0]["label"], card["tabs"][0]
+        org.resolve_batch("boss", card["revs"], scope=["approve"])
+        assert org.node("boss")["scope"]["permission_mode"] \
+            == "bypassPermissions"
+        # `plan` (user request 2026-08-12) is a real, LOWEST-ranked mode:
+        # holding acceptEdits already covers a plan request (no-op)
+        r = org.request_scope("boss", [
+            {"kind": "permission_mode", "mode": "plan"}], "x")
+        assert "already hold" in r["status"], r
+    check("an approved permission-mode raise applies; plan ranks lowest",
+          _pm_grant_applies_and_plan_ranks_lowest)
 
     print(f"\nasks: all {PASS} checks passed")
     return 0

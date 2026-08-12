@@ -274,6 +274,11 @@ export interface AskInfo {
   /** FR-04: the batch — 1-4 tabs; both ask forms normalize to this. The
    *  top-level question/options/header mirror tab 0 for older surfaces. */
   questions?: AskQuestion[]
+  /** FR-14 (kind === 'batch'): the COMPOSED card — question tabs + the
+   *  credits tab + one tab per scope item, resolved together at one submit.
+   *  `revs` carries the per-store CAS stamps the submit must echo. */
+  tabs?: AskTab[]
+  revs?: { ask?: number; credits?: number; scope?: number }
   /** card revision — bumped on every amend; the answer echoes it (CAS: a
    *  stale submission is refused instead of attaching positionally to
    *  questions the user never saw) */
@@ -283,6 +288,10 @@ export interface AskInfo {
   new?: number
   granted?: number
   notice?: string
+  /** scope kind (ledger scope_requests shape): the requested items, each
+   *  stamped with its decision once the batch resolves */
+  items?: { kind: string; path?: string; mode?: string; tool?: string
+    server?: string; decision?: string }[]
   [k: string]: unknown
 }
 
@@ -294,6 +303,25 @@ export interface AskQuestion {
   multi?: boolean
   /** set once answered — the tab's answer (list for a multi tab) */
   answer?: string | string[]
+}
+
+/** FR-14: one tab of the composed batch card (ledger node_ask) */
+export interface AskTab {
+  kind: 'question' | 'credits' | 'scope'
+  // question tabs carry AskQuestion's fields
+  question?: string
+  header?: string
+  options?: ({ label: string; description?: string } | string)[]
+  multi?: boolean
+  // the credits tab
+  id?: string
+  old?: number
+  new?: number
+  reason?: string
+  // scope tabs: one item each, pre-labeled server-side
+  item?: { kind: string; path?: string; mode?: string; tool?: string
+    server?: string }
+  label?: string
 }
 
 export type AudienceRequest = Record<string, unknown>
@@ -450,6 +478,8 @@ export interface TreePayload {
   /** the org's virtual disk (sandboxed, migrated orgs only) — the persistent
    *  hard-full alert and the storage chip render from this state */
   disk?: TreeDisk
+  /** FR-24b: org-level auto-cheap-compact config (null/absent = off) */
+  auto_cheap_compact?: { enabled?: boolean; occ?: number; idle_s?: number } | null
   auto_resume: boolean
   fable_limit_policy: string
   fable_filter_policy: string
@@ -753,6 +783,8 @@ export interface ScopeRequest {
   team_charter?: string | null
   effort?: string | null
   model_version?: string | null
+  /** FR-24b per-node override; {} clears back to org inherit */
+  auto_cheap_compact?: { enabled?: boolean; occ?: number; idle_s?: number } | null
   raise_ceiling?: boolean
 }
 
@@ -772,6 +804,8 @@ export interface SettingsRequest {
   permission_mode?: string | null
   default_effort?: string | null
   auto_resume?: boolean | null
+  /** FR-24b: auto cheap-compact on wake (org level; disabled by default) */
+  auto_cheap_compact?: { enabled?: boolean; occ?: number; idle_s?: number } | null
   cascade_hire?: boolean | null
   cascade_alloc?: boolean | null
   // F-06

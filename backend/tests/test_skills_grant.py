@@ -367,15 +367,20 @@ def _():
 
 @t("the org default is validated too — no arbitrary string reaches the argv")
 def _():
+    # ('plan' was this check's invalid probe until 2026-08-12, when the user
+    # made it a REAL mode — D-113, ranked lowest. The probe string changed;
+    # the property it pins did not.)
     with store.DOC_LOCK:
         o = store.load_org(PLAIN)
         try:
-            o.set_hire_defaults(permission_mode="plan")
+            o.set_hire_defaults(permission_mode="yolo")
         except LedgerError:
             pass
         else:
-            raise AssertionError("'plan' was accepted as an org default")
+            raise AssertionError("'yolo' was accepted as an org default")
         assert o.d["permission_mode"] == "bypassPermissions"
+        o.set_hire_defaults(permission_mode="plan")   # D-113: plan is real
+        assert o.d["permission_mode"] == "plan"
         o.set_hire_defaults(permission_mode="acceptEdits")
         store.save_org(o)
 

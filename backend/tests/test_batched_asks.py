@@ -213,21 +213,27 @@ def sec_attack() -> None:
             {"question": "deploy tonight?", "header": "Deploy"},
             {"question": "notify the on-call?", "header": "Oncall"},
             {"question": "roll back at what error rate?", "header": "Budget"}])
-        assert open_asks(org)[0]["id"] == aid, "fixture: the amend re-used the id"
-        assert open_asks(org)[0]["rev"] == 2, "the amend must bump rev"
+        assert open_asks(org)[0]["id"] == aid, "fixture: the append re-used the id"
+        assert open_asks(org)[0]["rev"] == 2, "the append must bump rev"
+        # FR-14 (2026-08-12): the re-ask APPENDS, so the card now carries 6
+        # tabs — a 3-answer submit is stale in the CAS sense AND in shape.
+        # Both refusals still protect the same thing: an answer composed
+        # against the pre-append render never attaches to shifted tabs.
         for stale in ({"rev": rev0}, {}):     # echoed-stale AND unstamped
             try:
                 org.ask_answer(aid, selected=["sqlite", "flag", "alice"],
                                **stale)
                 raise AssertionError(
                     f"a stale submission ({stale or 'no stamp'}) was "
-                    f"accepted against the amended card")
+                    f"accepted against the appended-to card")
             except LedgerError as e:
                 assert "re-read" in str(e), e
-        # the honest path still works: answer against the CURRENT rev
-        r = org.ask_answer(aid, selected=["yes", "yes", "5%"], rev=2)
+        # the honest path still works: answer every CURRENT tab at rev 2
+        r = org.ask_answer(aid, selected=["sqlite", "flag", "alice",
+                                          "yes", "yes", "5%"], rev=2)
         assert "deploy tonight?" in r["body"], r["body"]
-    check("amend · a stale answer is refused (rev CAS); the current card "
+        assert "sqlite" in r["body"], r["body"]
+    check("append · a stale answer is refused (rev CAS); the current card "
           "still answers", _amend_then_stale_answer_is_refused)
 
     def _withdraw_nulls_the_whole_batch():
@@ -404,13 +410,18 @@ def main() -> int:
           _single_form_unchanged)
 
     def _one_open_ask_per_node():
+        # FR-14 (2026-08-12): still ONE open entry — but a new question
+        # APPENDS a tab to it rather than replacing the text
         org = org2()
         org.ask_user("boss", "first?")
         org.ask_user("boss", "second?")
         assert len(open_asks(org)) == 1, open_asks(org)
-        assert open_asks(org)[0]["question"] == "second?", \
-            "re-asking must AMEND the open card, not stack a second one"
-    check("one open ask per node — re-asking amends", _one_open_ask_per_node)
+        a = open_asks(org)[0]
+        assert [q["question"] for q in a["questions"]] == ["first?", "second?"], \
+            "re-asking must APPEND to the one open card, not stack a second " \
+            "entry and not replace the first tab"
+    check("one open ask entry per node — re-asking appends a tab",
+          _one_open_ask_per_node)
 
     print("\n§2  the batch's shape")
 
@@ -488,17 +499,34 @@ def main() -> int:
 
     print("\n§3  the lifecycle — amend, void, answer")
 
-    def _amend_replaces_the_whole_batch():
+    # ← INVERTED 2026-08-12 (user ruling, FR-14): re-asking APPENDS to the
+    # open batch — the idempotent action for a new inquiry is joining the
+    # card, and the batch ends only at the user's submit or an explicit
+    # withdraw. A tab with the SAME question text still amends in place (the
+    # sharper-options re-ask), and every append bumps the rev so a submit
+    # composed against the pre-append card is refused (CAS).
+    def _reask_appends_to_the_batch():
         org = org2()
         org.ask_user("boss", questions=QS)
+        rev0 = open_asks(org)[0].get("rev") or 1
         org.ask_user("boss", questions=[{"question": "changed my mind",
                                          "header": "New"}])
         assert len(open_asks(org)) == 1
         a = open_asks(org)[0]
-        assert len(a["questions"]) == 1 and a["questions"][0]["header"] == "New", (
-            "amending a batch must REPLACE it — a merge would leave tabs from "
-            "a question the agent has already moved past")
-    contract("re-asking replaces the entire batch", _amend_replaces_the_whole_batch)
+        assert len(a["questions"]) == len(QS) + 1, (
+            "a new question must APPEND to the open batch (FR-14), never "
+            "replace it")
+        assert a["questions"][-1]["header"] == "New"
+        assert (a.get("rev") or 1) > rev0, "an append must bump the CAS rev"
+        # same-text re-ask amends that ONE tab, not the card
+        org.ask_user("boss", questions=[{
+            "question": "changed my mind", "header": "New",
+            "options": ["now with options"]}])
+        a = open_asks(org)[0]
+        assert len(a["questions"]) == len(QS) + 1, "same text ⇒ in-place amend"
+        assert a["questions"][-1].get("options"), a["questions"][-1]
+    contract("re-asking APPENDS; same-text re-asks amend their tab",
+             _reask_appends_to_the_batch)
 
     def _wake_leaves_the_batch_standing():
         # REWRITTEN 2026-08-06 (user ruling — INVERTS the old contract): the
@@ -591,7 +619,10 @@ def main() -> int:
             f"counts CARDS, not questions")
         node = next(n for n in t["roots"] if n["id"] == "boss")
         assert node["ask"] is not None
-        assert len(node["ask"].get("questions") or []) == 3
+        # FR-14: the desk card is the composed BATCH — its question tabs
+        # carry the same three questions
+        qt = [x for x in node["ask"]["tabs"] if x["kind"] == "question"]
+        assert len(qt) == 3, node["ask"]["tabs"]
     contract("the tree payload counts one card and carries its questions",
              _tree_payload_counts_the_card_once)
 

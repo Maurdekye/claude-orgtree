@@ -891,6 +891,79 @@ the docket's "transcript is in the scratch dir" premise was wrong and the
 copy is the fix. The compact dialog warns when the node is idle past the
 cache TTL, which is the moment the choice actually matters.
 
+### D-115 · agents write their own compaction log, in realtime
+Ruling (user, 2026-08-12, completing D-114): every agent that can write
+maintains `breadcrumbs.md` in its working folder — important events,
+decisions, findings and open threads appended AS THEY HAPPEN, "effectively
+creating their compaction log in realtime". The point is cheap compact's
+shape: the successor starts with NOTHING, the working folder survives
+unchanged, and its first-turn notice points at breadcrumbs.md FIRST (then
+transcript.jsonl). Prompt-side doctrine only — no new verb, no server state;
+the line renders only for seats holding edit or bash (a read-only seat
+cannot follow it). This is docs/cache-economics.md measure ① made concrete.
+
+### D-111 · scope requests: the user grants, superiors are the cheap path
+Ruling (user, 2026-08-12, FR-13): an agent's permission-scope request —
+folder, built-in tool, MCP server, or a permission-mode raise — is granted by
+the **user only**. `orgtree_request_scope` parks the items on the user's
+batch card; a superior that already holds the capability is the cheap path
+(orgtree_retool, no card), and both the tool text and the no-audience routing
+(the request mails the superior, naming retool) keep that path visible.
+Approvals apply as the user via `set_scope`, so a deep grant D-106-cascades
+the chain and a kiosk ceiling clamps it exactly like a manual ⚙ grant. Items
+the agent already holds drop as no-ops (motto A3); `bypassPermissions`
+requests are loudly labeled UNGUARDED on the card.
+
+### D-112 · one batch per agent; a new request APPENDS; one submit resolves
+Ruling (user, 2026-08-12, FR-14, their own wording): "the idempotent action
+to sending another user inquiry should be to APPEND to the current batch —
+the batch is only finished when submitted or explicitly invalidated." This
+**supersedes the 2026-08-06 single-active-request eviction** in both
+directions: questions, the credit request and scope items coexist as ONE
+composed card (`node_ask` kind "batch"), and nothing evicts anything.
+Resolution is ONE submit with **skippable tabs**: a skip travels as an
+explicit null/skip (FR-04's miscount guard survives — holes still refuse),
+skipped requests resolve as unanswered/dismissed, and one composed mail
+returns. Per-store `rev` stamps are the CAS: an append mid-render refuses
+the stale submit. Implementation judgments under the ruling: a second CREDIT
+request amends the existing figure in place (two contradictory numbers on
+one card is nonsense — the append ruling's credits-shaped case); question
+tabs dedupe by question text (same text = amend that tab); scope items merge
+by identity; caps of 8 question tabs / 8 scope items with a loud refusal;
+withdraw stays WHOLE-batch (re-ask what still matters).
+Was. one active request per agent, newest evicts across kinds (2026-08-06).
+
+### D-113 · `plan` joins the permission-mode ladder, ranked lowest
+Ruling (user, 2026-08-12): the CLI's read-only planning mode is a first-class
+`PM_LEVELS` entry below `default` — a plan seat can look and reason but not
+edit. Inserted at rank 0: every comparison in the ledger is relative, so
+existing stored modes keep their order. Selectable in both ⚙ panels and the
+kiosk ceiling, requestable via FR-13.
+
+### D-114 · cheap compact is IN-PLACE, and may fire automatically on wake
+Rulings (user, 2026-08-12, three messages during the build): ① cheap compact
+"should work fine with reports, just like a normal compact" and ② "retain
+them the same way a normal compact works" — so the verb was REWORKED before
+ever running on a live org: the seat keeps its id, parent, scope, charter,
+grant and team; only `session_id` is replaced (fresh id ⇒ empty next turn),
+and the pre-compact session archives as the `nid@gen` knowledge bearer —
+compact_split's exact lineage shape, successor backlink included. The
+live-reports refusal and the `nid-2` renaming are gone (the old shape broke
+addressing: peers mailing the old name deferred into an archived mailbox).
+The seat's open request batch is mooted (the successor never asked).
+③ AUTO ON WAKE (FR-24b): a turn starting on a node past BOTH thresholds —
+context occupancy ≥ `occ` AND idle since the last turn ≥ `idle_s` — runs
+cheap_compact first, in the same lock, so the resume never pays the cold
+reload; the compact notice drains into the same first envelope as the waking
+mail. Config `auto_cheap_compact {enabled, occ, idle_s}` at org level,
+overridden key-by-key per node; **disabled by default** (D-108's opt-in
+stays the rule), defaults 0.5 / 300 s. A refusal falls through to a normal
+turn — the swap is an optimization, never a gate. Especially suited to
+headless orgs (infrequent wakes, cold resumes; the auto path needs no user
+present, and cheap_compact carries no headless refusal).
+Was. D-108's retire-plus-fresh-hire mechanism (2ca1a14) with a live-reports
+refusal and a suffixed replacement name.
+
 ### D-110 · FR-19's name-gen button: held on the access path, free when built
 Ruling (user, 2026-08-11, partial): the model-access fork (one-shot CLI call
 vs a direct `anthropic` SDK dependency) is deliberately UNDECIDED — "skip

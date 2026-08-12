@@ -193,6 +193,7 @@ export function UserConfig({ tree, slug, toast, close }: UserConfigProps) {
           <div className="field-label">permission mode for NEW agents — existing
             ones keep theirs (change those in the agent&apos;s own ⚙)</div>
           <select value={pm} onChange={(e) => setPm(e.target.value)}>
+            <option value="plan">plan — read-only planning seat</option>
             <option value="default">default — asks (headless: auto-denies)</option>
             <option value="acceptEdits">acceptEdits — the normal seat</option>
             <option value="bypassPermissions">bypassPermissions ⚠ unguarded</option>
@@ -430,7 +431,7 @@ const VIS_OPTIONS = [
  * drift, the warning lies. It is worth it because the alternative is a
  * round-trip on every keystroke, but the ledger stays the authority — its
  * answer, `cascaded`, is what the toast reports after the fact. */
-const PM_RANK = ['default', 'acceptEdits', 'bypassPermissions']
+const PM_RANK = ['plan', 'default', 'acceptEdits', 'bypassPermissions']
 const VIS_RANK = ['self', 'team', 'subtree', 'full']
 
 export function cascadePreview(
@@ -534,6 +535,18 @@ export function NodeConfig({ node, map, tree, slug, op, toast, close }: NodeConf
   const setEffort = set<string>('effort', effort)
   const pm = val('pm', scope.permission_mode ?? 'acceptEdits')
   const setPm = set<string>('pm', pm)
+  // FR-24b: per-node auto-cheap-compact override — '' inherit | 'on' | 'off'
+  const srvAcc = (scope as { auto_cheap_compact?: { enabled?: boolean
+    occ?: number; idle_s?: number } }).auto_cheap_compact
+  const accMode = val('accMode',
+    srvAcc == null ? '' : srvAcc.enabled ? 'on' : 'off')
+  const setAccMode = set<string>('accMode', accMode)
+  const accOcc = val<number | string>('accOcc',
+    Math.round((srvAcc?.occ ?? 0.5) * 100))
+  const setAccOcc = set('accOcc', accOcc)
+  const accIdle = val<number | string>('accIdle',
+    Math.round((srvAcc?.idle_s ?? 300) / 60))
+  const setAccIdle = set('accIdle', accIdle)
   // D-106: who this pending grant would raise, recomputed as the form changes
   const cascade = useMemo(
     () => cascadePreview(map, node.id,
@@ -802,10 +815,28 @@ export function NodeConfig({ node, map, tree, slug, op, toast, close }: NodeConf
           the ONLY mode that can write ~/.claude/skills, and it removes this
           agent&apos;s prompts for everything else too</div>
         <select value={pm} onChange={(e) => setPm(e.target.value)}>
+          <option value="plan">plan — read-only planning seat</option>
           <option value="default">default — asks (headless: auto-denies)</option>
           <option value="acceptEdits">acceptEdits — the normal seat</option>
           <option value="bypassPermissions">bypassPermissions ⚠ unguarded</option>
         </select>
+
+        {/* FR-24b: waking a long-idle, high-context agent resets its session
+            (cheap compact, in place) instead of re-paying the cold reload */}
+        <div className="field-label">auto cheap-compact on wake</div>
+        <select value={accMode} onChange={(e) => setAccMode(e.target.value)}>
+          <option value="">inherit the org setting</option>
+          <option value="on">on for this agent</option>
+          <option value="off">off for this agent</option>
+        </select>
+        {accMode === 'on' && <div className="row">
+          <label>context ≥ <input type="number" min="5" max="95" step="5"
+            style={{ width: '5em' }} value={accOcc}
+            onChange={(e) => setAccOcc(e.target.value)} />%</label>
+          <label>idle ≥ <input type="number" min="0" step="1"
+            style={{ width: '5em' }} value={accIdle}
+            onChange={(e) => setAccIdle(e.target.value)} /> min</label>
+        </div>}
 
         <div className="field-label">charter</div>
         <textarea rows={10} className="charterbox" value={charter}
@@ -847,6 +878,10 @@ export function NodeConfig({ node, map, tree, slug, op, toast, close }: NodeConf
                 { add_dirs: dirs, tools, org_visibility: vis,
                   permission_mode: pm,
                   charter, team_charter: teamCharter, effort,
+                  auto_cheap_compact: accMode === '' ? {}
+                    : { enabled: accMode === 'on',
+                        occ: (+accOcc || 50) / 100,
+                        idle_s: Math.round((+accIdle || 5) * 60) },
                   model_version: versions.includes(modelVersion)
                     ? modelVersion : '' }))
               .then((r) => {
@@ -859,6 +894,10 @@ export function NodeConfig({ node, map, tree, slug, op, toast, close }: NodeConf
                       { add_dirs: dirs, tools, org_visibility: vis,
                         permission_mode: pm,
                         charter, team_charter: teamCharter, effort,
+                        auto_cheap_compact: accMode === '' ? {}
+                          : { enabled: accMode === 'on',
+                              occ: (+accOcc || 50) / 100,
+                              idle_s: Math.round((+accIdle || 5) * 60) },
                         model_version: versions.includes(modelVersion)
                           ? modelVersion : '',
                         raise_ceiling: true })

@@ -32,7 +32,7 @@ from collections.abc import Callable, Iterable, Mapping
 from typing import Any, cast
 
 from . import net, sandbox as sbx, store
-from .ledger import EXTERN, USER, LedgerError, Org, expand_mcp, now as now_iso
+from .ledger import EXTERN, SYSTEM, USER, LedgerError, Org, expand_mcp, now as now_iso
 from .schema import (Denial, FrozenInfo, InflightInfo, KioskCfg, MailEntry,
                      NodeDoc, NoticeEntry, TurnStat)
 
@@ -585,22 +585,32 @@ def rename_node(slug: str, nid: str, new_name: str,
     return new_slug_probe
 
 
-def export_predecessor_transcript(org: Org, nid: str) -> str | None:
-    """FR-24 cheap compact: copy the archived node's raw CLI transcript into
-    its own scratch as transcript.jsonl — the one folder the replacement is
-    granted (read-only, via the `predecessor` read-down in _build_cmd).
+def export_predecessor_transcript(org: Org, nid: str,
+                                  old_sid: str | None = None) -> str | None:
+    """FR-24 cheap compact: copy the pre-compact session's raw CLI
+    transcript into the (unchanged) node's OWN scratch as transcript.jsonl —
+    the folder the successor session already works in, sandboxed included.
 
-    The copy exists because the LIVE transcript is unreachable by design: it
+    `old_sid` is the session the compact just archived (the live node's
+    session_id is already the FRESH one by the time this runs); without it,
+    fall back to the node's own session (the pre-rework call shape).
+
+    The copy exists because the live transcript is unreachable by design: it
     sits under ~/.claude/projects on the host home, and any path carrying a
     .claude segment is gated above the permission system (D-100) — an agent
-    cannot be granted it. Moving the evidence to where the grant already
-    points costs one file copy at compact time. Failure is non-fatal: the
-    replacement still works, it just cannot read history that this couldn't
-    find (a session that never ran a turn has no transcript at all)."""
+    cannot be granted it. Moving the evidence to where the agent already
+    works costs one file copy at compact time. Failure is non-fatal: the
+    successor still works, it just cannot read history this couldn't find
+    (a session that never ran a turn has no transcript at all). A later
+    cheap-compact overwrites the copy with the newer generation's — earlier
+    generations stay reachable by rehiring their bearers."""
     n = org.nodes.get(nid)
-    if not n or not n.get("session_id"):
+    if not n:
         return None
-    src = transcript_path(n["session_id"], _transcript_root(org))
+    sid = old_sid or n.get("session_id")
+    if not sid:
+        return None
+    src = transcript_path(sid, _transcript_root(org))
     if not src:
         return None
     dst = os.path.join(scratch_dir(org.d["slug"], nid), "transcript.jsonl")
@@ -995,13 +1005,21 @@ def identity_prompt(org: Org, nid: str) -> str:
                "headless turn has no way to answer — so it fails and nothing "
                "is written. It is not a hard deny and the file is not "
                "corrupt or missing; there is simply nobody present to "
-               "approve. If you need one, say so through your superior — do "
+               "approve. If you need one, request the raise with "
+               "orgtree_request_scope (permission_mode) — do "
                "not work around it. "))
     tools = sc.get("tools", {})
     off = [label for key, label in (("bash", "the terminal"), ("web", "web access"),
                                     ("edit", "file editing"), ("subagents", "subagents"))
            if not tools.get(key, True)]
     tool_line = (f"Disabled for you: {', '.join(off)}. " if off else "")
+    if off or not (tools.get("mcp") or ["*"]):
+        # FR-13: an agent facing a wall must know the wall is negotiable —
+        # the request verb is only named for agents actually missing something
+        tool_line += ("A capability you lack but need is REQUESTABLE: your "
+                      "superior grants what they hold (ask by mail — "
+                      "orgtree_retool is theirs); past that, "
+                      "orgtree_request_scope asks the user directly. ")
     if tools.get("bash", True):
         # keep in step with _build_cmd's allowlist — promising a capability the
         # config drops is a bug class already hit once here. A Linux sandbox
@@ -1197,6 +1215,18 @@ def identity_prompt(org: Org, nid: str) -> str:
         f"only when they wanted to READ a document in-page rather than have "
         f"the file. Say in your reply what you sent; the card sits where you "
         f"sent it. "
+        + ("BREADCRUMBS (user ruling 2026-08-12): maintain `breadcrumbs.md` "
+           "in your working folder — append important events, decisions, "
+           "findings and open threads AS THEY HAPPEN, a few lines each, "
+           "newest last. You are writing your own compaction log in "
+           "realtime: a compaction (cheap compact especially) may replace "
+           "your session with a successor that remembers NOTHING, and that "
+           "file — which survives in the same folder — is the first thing "
+           "it reads. Write for that stranger: what was decided and why, "
+           "what is in flight, where the bodies are buried. A few seconds "
+           "per turn; skip only turns where nothing durable happened. "
+           if sc.get("tools", {}).get("edit", True)
+           or sc.get("tools", {}).get("bash", True) else "")
         + ("KEEPING THIS MACHINE UP TO DATE (user ruling 2026-08-07): if you "
            "are notified that a NEWER orgtree version exists — the user says "
            "so, a peer on the mail hub reports one, or you otherwise learn of "
@@ -1532,9 +1562,14 @@ def _build_cmd(org: Org, nid: str) -> list[str]:
     pred = n.get("predecessor")
     pred_dir = None
     if pred and pred in org.nodes:
-        pred_dir = (sbx.cpath_scratch(slug, pred) if sandboxed
-                    else scratch_dir(org.d["slug"], pred))
-        ro_paths = ro_paths + [pred_dir]
+        host_pd = scratch_dir(org.d["slug"], pred)
+        # in-place cheap compact (2026-08-12): the bearer's scratch only
+        # exists once the bearer has been rehired and worked — --add-dir on a
+        # missing path is a CLI error, not a silent no-op
+        if os.path.isdir(host_pd):
+            pred_dir = (sbx.cpath_scratch(slug, pred) if sandboxed
+                        else host_pd)
+            ro_paths = ro_paths + [pred_dir]
     if ro_paths:
         # read-only enforcement: permission deny rules on the writing tools
         deny = []
@@ -1673,6 +1708,27 @@ def _build_cmd(org: Org, nid: str) -> list[str]:
     return cmd
 
 
+def _auto_cheap_cfg(org: Org, nid: str) -> dict[str, float] | None:
+    """FR-24b (user request 2026-08-12): the resolved auto-cheap-compact
+    thresholds for this node, or None when the feature is off. Org-level
+    `auto_cheap_compact` {enabled, occ, idle_s} is overridden key-by-key by
+    the node scope's entry of the same name; DISABLED unless some level says
+    enabled (D-108's opt-in stays the rule). Defaults: occ 0.5 (half the
+    context window), idle_s 300 (the prompt-cache TTL — beyond it the resume
+    is cold and the swap pays for itself)."""
+    base = cast("dict[str, Any]", org.d.get("auto_cheap_compact") or {})
+    ov = cast("dict[str, Any]",
+              org.node(nid)["scope"].get("auto_cheap_compact") or {})
+    cfg: dict[str, Any] = {**base, **ov}
+    if not cfg.get("enabled"):
+        return None
+    try:
+        return {"occ": float(cfg.get("occ", 0.5)),
+                "idle_s": float(cfg.get("idle_s", 300))}
+    except (TypeError, ValueError):
+        return {"occ": 0.5, "idle_s": 300.0}
+
+
 def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
     """Run a turn, then keep running whatever the queue has, until it is empty.
 
@@ -1758,6 +1814,46 @@ def _run_one_turn(slug: str, nid: str,
                 # a slash command skips the drain entirely: the "/" must be
                 # the first character the CLI sees, and the mail stays boxed
                 # for the next normal turn (user-approved 2026-07-31)
+                # FR-24b (user request 2026-08-12): auto cheap-compact at
+                # the WAKE — swap the cold, heavy session for a fresh one
+                # BEFORE the resume pays the full cold-context reload.
+                # In-place (same seat, team, mailbox — a normal compact's
+                # retention), so nothing needs rerouting, and the notice it
+                # posts drains into THIS turn's envelope, so the successor
+                # learns what happened in the same wake. Especially valuable
+                # for headless orgs, whose agents wake infrequently and
+                # would otherwise re-pay their whole context every time.
+                # A refusal (raced state change) falls through to a normal
+                # turn — the swap is an optimization, never a gate.
+                if not is_cmd:
+                    _c = _auto_cheap_cfg(org, nid)
+                    if _c is not None:
+                        _n0 = org.node(nid)
+                        _occ = _n0.get("occupancy")
+                        _cw = _n0.get("context_window")
+                        _t0 = cast("list[dict[str, Any]]",
+                                   _n0.get("turns") or [])
+                        _last = str(_t0[-1]["at"]) if _t0 else None
+                        _idle_ok = _last is not None and (
+                            _dtm.datetime.now(_dtm.timezone.utc)
+                            - _dtm.datetime.fromisoformat(
+                                _last.replace("Z", "+00:00"))
+                        ).total_seconds() >= _c["idle_s"]
+                        if (_idle_ok and _occ and _cw
+                                and float(_occ) / float(_cw) >= _c["occ"]):
+                            try:
+                                _r0 = org.cheap_compact(SYSTEM, nid)
+                                export_predecessor_transcript(
+                                    org, nid,
+                                    old_sid=str(_r0.get("old_session")
+                                                or ""))
+                                store.save_org(org)
+                                print(f"[orgtree] {slug}/{nid}: auto "
+                                      f"cheap-compact (context "
+                                      f"{100 * float(_occ) / float(_cw):.0f}"
+                                      f"%, idle past {int(_c['idle_s'])}s)")
+                            except LedgerError:
+                                pass
                 pending = None if is_cmd \
                     else (org.d.get("notices") or {}).pop(nid, None)
                 mail = [] if is_cmd else org.take_mail(nid)

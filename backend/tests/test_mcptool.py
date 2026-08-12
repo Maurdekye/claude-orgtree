@@ -376,8 +376,8 @@ def _():
 def _():
     tools = BOSS.rpc("tools/list")["result"]["tools"]
     # +orgtree_present (FR-03); +orgtree_withdraw_ask; +orgtree_self_update;
-    # +orgtree_cheap_compact (FR-24)
-    assert len(tools) == 23, [x["name"] for x in tools]
+    # +orgtree_cheap_compact (FR-24); +orgtree_request_scope (FR-13)
+    assert len(tools) == 24, [x["name"] for x in tools]
     for c in tools:
         assert c["name"].startswith("orgtree_"), c
         assert len(c["description"]) > 20, c
@@ -531,8 +531,9 @@ def _():
         f"dispatch-only {sorted(set(_DISPATCH) - set(CARDS))}"
     # +orgtree_present (FR-03, 2026-08-05); +orgtree_withdraw_ask (the
     # manual-invalidation ruling, 2026-08-06); +orgtree_self_update (FR-14,
-    # 2026-08-06); +orgtree_cheap_compact (FR-24, 2026-08-11)
-    assert len(CARDS) == 23, len(CARDS)
+    # 2026-08-06); +orgtree_cheap_compact (FR-24, 2026-08-11);
+    # +orgtree_request_scope (FR-13, 2026-08-12)
+    assert len(CARDS) == 24, len(CARDS)
 
 
 @t("no tool name is duplicated and every card carries an inputSchema")
@@ -2179,9 +2180,13 @@ def _():
         quiet.close()
 
 
-@t("FR-24: cheap_compact replaces a report — same tier/grant/charter, "
-   "predecessor marked, replacement notified, net-zero on credits")
+@t("FR-24 (in-place, 2026-08-12): cheap_compact keeps the SEAT — id, scope, "
+   "charter, grant — and swaps only the session; the old self is nid@gen")
 def _():
+    # REWORKED per the user's rulings: reports and identity are retained
+    # exactly the way a normal compact retains them. The old retire+fresh-
+    # hire shape broke addressing (peers deferring into an archived mailbox)
+    # and refused teams — both gone.
     r = BOSS.ok("orgtree_hire", {
         "parent": "boss", "tier": "haiku", "grant": 2, "name": "oldhand",
         "charter": "keeps the ledger", "add_dirs": [],
@@ -2189,72 +2194,66 @@ def _():
         "tools": {"bash": False, "web": False, "edit": True,
                   "subagents": False, "mcp": []}})
     assert r["node"] == "oldhand", r
-    free0 = store.load_org(A).free("boss")
+    o0 = store.load_org(A)
+    free0, sid0 = o0.free("boss"), o0.nodes["oldhand"]["session_id"]
     r = BOSS.ok("orgtree_cheap_compact", {"node": "oldhand"})
+    assert r["node"] == "oldhand" and r["bearer"] == "oldhand@0", r
     o = store.load_org(A)
-    new = r["node"]
-    assert o.nodes["oldhand"]["state"] == "archived", r
-    assert o.nodes[new]["state"] == "live" and new != "oldhand", r
-    assert o.nodes[new]["model"] == "haiku" and o.nodes[new]["grant"] == 2, r
-    assert o.nodes[new].get("charter") == "keeps the ledger", r
-    assert o.nodes[new].get("predecessor") == "oldhand", r
+    n = o.nodes["oldhand"]
+    assert n["state"] == "live" and n["session_id"] != sid0, (
+        "the seat must stay live under its own id with a FRESH session")
+    assert n["model"] == "haiku" and n["grant"] == 2
+    assert n.get("charter") == "keeps the ledger"
+    assert n["generation"] == 1 and n["predecessor"] == "oldhand@0"
+    bearer = o.nodes["oldhand@0"]
+    assert bearer["state"] == "archived" and bearer["grant"] == 0
+    assert bearer["bearer_state"] == "knowledge" \
+        and bearer["successor"] == "oldhand"
+    assert bearer["session_id"] == sid0, "the OLD session lives on the bearer"
     assert o.free("boss") == free0, (free0, o.free("boss"))
-    notes = (o.d.get("notices") or {}).get(new) or []
-    assert any("replacement" in p["text"] for p in notes), notes
+    notes = (o.d.get("notices") or {}).get("oldhand") or []
+    assert any("CHEAP-COMPACTED" in p["text"] for p in notes), notes
+    assert not o.audit()["problems"]
 
 
-@t("FR-24: the replacement can REALLY rehire its predecessor, exactly as its "
-   "own notice tells it to (redteam, reproduced 2026-08-11)")
+@t("FR-24: the successor can rehire its own bearer, exactly as its notice "
+   "says (redteam finding f327b39, re-proven on the in-place shape)")
 def _():
-    """The notice cheap_compact sends says: "You may also orgtree_rehire
-    <predecessor> as your own subordinate to interrogate it directly." It was
-    refused, twice over, and each refusal had a different cause.
-
-    ① AUTHORITY. `rehire` recognises "your own bearer" as
-       nodes[pred]["successor"] == actor and nothing else. cheap_compact set
-       the FORWARD link only, so the replacement fell through to
-       _require_authority — and the predecessor is its SIBLING under the same
-       parent, not a subordinate. Measured: "kid-2 has no authority over kid
-       — authority is downward only (§7.1)".
-    ② ARITHMETIC, and deterministic. rehire with no explicit grant restores
-       the node's STORED grant, so the call cost seat_cost(1) + G while the
-       replacement had inherited exactly G. One credit short, always, by
-       construction. Measured: "61 needed, only 60 free". compact_split's
-       bearer is minted with grant 0 for exactly this reason.
-
-    Both are fixed in cheap_compact, so this drives the promise as WORDED —
-    no explicit grant, the way an agent reading its notice would call it."""
-    r = BOSS.ok("orgtree_hire", {
-        "parent": "boss", "tier": "haiku", "grant": 3, "name": "consultme",
-        "charter": "knows where it is buried", "add_dirs": [],
-        "org_visibility": "team",
-        "tools": {"bash": False, "web": False, "edit": False,
-                  "subagents": False, "mcp": []}})
-    assert r["node"] == "consultme", r
-    new = BOSS.ok("orgtree_cheap_compact", {"node": "consultme"})["node"]
+    # ① AUTHORITY: rehire recognises the bearer via successor == actor.
+    # ② ARITHMETIC: the bearer holds grant 0, so the rehire costs seat only
+    #    — affordable from the successor's own free by construction.
+    seat = Mcp(A, "oldhand")
+    seat.ok("orgtree_rehire", {"node": "oldhand@0"})
     o = store.load_org(A)
-    assert o.nodes["consultme"].get("successor") == new, (
-        "no backlink: rehire cannot recognise this as the replacement's own "
-        f"bearer, so the notice's promise is refused — {o.nodes['consultme']}")
-    # the replacement calls it the way its notice words it: no grant argument
-    seat = Mcp(A, new)
-    seat.ok("orgtree_rehire", {"node": "consultme"})
-    o = store.load_org(A)
-    assert o.nodes["consultme"]["parent"] == new, (
-        f"the predecessor did not join as the replacement's subordinate: "
-        f"parent is {o.nodes['consultme']['parent']}")
-    assert o.nodes["consultme"]["state"] == "live", o.nodes["consultme"]
-    assert not store.load_org(A).audit()["problems"], "the rehire unbalanced the ledger"
+    assert o.nodes["oldhand@0"]["parent"] == "oldhand", (
+        f"the bearer did not join as the successor's subordinate: "
+        f"parent is {o.nodes['oldhand@0']['parent']}")
+    assert o.nodes["oldhand@0"]["state"] == "live"
+    assert not o.audit()["problems"], "the rehire unbalanced the ledger"
+    seat.ok("orgtree_retire", {"node": "oldhand@0"})   # and back to rest
+    seat.close()
 
 
-@t("FR-24: cheap_compact refuses self and refuses a node with live reports")
+@t("FR-24: cheap_compact refuses self; a node WITH live reports keeps its "
+   "team (user ruling 2026-08-12 — retention like a normal compact)")
 def _():
     # self falls to the downward-only authority gate (an agent's own session
     # is mid-turn running the call), before any FR-24-specific check
     txt = MID.refuse("orgtree_cheap_compact", {"node": "mid"})
     assert "downward" in txt or "authority" in txt, txt
-    txt = BOSS.refuse("orgtree_cheap_compact", {"node": "mid"})
-    assert "live reports" in txt, txt
+    # a manager compacts fine — its reports keep their superior, and the
+    # successor's notice names the team it no longer remembers
+    kids0 = store.load_org(A).children("mid")
+    assert kids0, "fixture: mid must have live reports for this to prove anything"
+    BOSS.ok("orgtree_cheap_compact", {"node": "mid"})
+    o = store.load_org(A)
+    assert o.nodes["mid"]["state"] == "live"
+    assert o.children("mid") == kids0, (
+        "the team must be UNCHANGED — cheap compact retains reports exactly "
+        "like a normal compact")
+    notes = (o.d.get("notices") or {}).get("mid") or []
+    assert any("Your team" in p["text"] for p in notes), notes
+    assert not o.audit()["problems"]
 
 
 @t("the org doc is intact after the whole run (the ledger's own audit)")

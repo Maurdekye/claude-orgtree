@@ -1112,6 +1112,11 @@ class Settings(Body):
                                             # an api_key (both directions)
     api_key: str | None = None              # §9.5: per-org ANTHROPIC_API_KEY
     clear_api_key: bool = False             # refused while headless is on
+    # FR-24b: auto cheap-compact on wake — {enabled, occ (0..1 fraction of
+    # the context window), idle_s (seconds since the last turn)}. Disabled by
+    # default; per-node scope entries override key-by-key. Especially suited
+    # to headless orgs (infrequent wakes, cold resumes).
+    auto_cheap_compact: dict[str, Any] | None = None
 
 
 # ------------------------------------------- global default org settings
@@ -1279,6 +1284,12 @@ def _org_settings_locked(slug: str, body: Settings) -> dict[str, Any]:
         org.d["cascade_hire"] = bool(body.cascade_hire)
     if body.cascade_alloc is not None:
         org.d["cascade_alloc"] = bool(body.cascade_alloc)
+    if body.auto_cheap_compact is not None:
+        acc = body.auto_cheap_compact
+        org.d["auto_cheap_compact"] = {
+            "enabled": bool(acc.get("enabled")),
+            "occ": min(0.95, max(0.05, float(acc.get("occ", 0.5)))),
+            "idle_s": max(0, int(acc.get("idle_s", 300)))}
     # ---- §9.5/§9.6: per-org API key + headless (couplings are HARD rules) --
     if body.api_key is not None and body.api_key.strip():
         org.d["api_key"] = body.api_key.strip()
@@ -1560,6 +1571,8 @@ class Scope(Body):
     team_charter: str | None = None         # §15: binds this node's whole subtree
     effort: str | None = None               # thinking effort: low|medium|high|"" clears
     model_version: str | None = None        # a VERSION inside the tier ("" clears)
+    # FR-24b: {enabled?, occ?, idle_s?} per-node override; {} clears to inherit
+    auto_cheap_compact: dict[str, Any] | None = None
     raise_ceiling: bool = False             # the one-action bridge (spec §1)
 
 
@@ -1587,6 +1600,7 @@ def node_scope(slug: str, nid: str, body: Scope,
                                    team_charter=body.team_charter,
                                    effort=body.effort,
                                    model_version=body.model_version,
+                                   auto_cheap_compact=body.auto_cheap_compact,
                                    raise_ceiling=rc)
         except LedgerError as e:
             raise HTTPException(422, str(e))
@@ -2115,6 +2129,46 @@ async def ask_answer(slug: str, aid: str, body: AskAnswer) -> dict[str, Any]:
             "question — proceed accordingly.")
     await hub.changed(slug)
     return {"answered": aid, "node": r["node"]}
+
+
+class BatchResolve(Body):
+    # FR-14: the user's ONE submit over a node's whole request batch. Every
+    # open component must be echoed in `revs` (per-store CAS stamps from the
+    # rendered card) and must carry its decision payload — a skipped tab is
+    # an EXPLICIT null/skip, never a hole.
+    revs: dict[str, int]
+    # question tabs, positional; null = explicitly skipped
+    answers: list[str | list[str] | None] | None = None
+    # the credits tab: {"granted": N} | {"deny": true} | {"skip": true}
+    credits: dict[str, Any] | None = None
+    # scope items, positional: "approve" | "deny" | "skip"
+    scope: list[str] | None = None
+
+
+@app.post("/api/orgs/{slug}/nodes/{nid}/batch")
+async def batch_resolve(slug: str, nid: str, body: BatchResolve) -> dict[str, Any]:
+    """FR-14: resolve a node's whole request batch — question answers, the
+    credit decision and per-item scope grants — in one submit, one lock, one
+    composed answer mail. The desk card and the inbox card both land here."""
+    with store.DOC_LOCK:
+        try:
+            org = store.load_org(slug)
+            r = org.resolve_batch(nid, body.revs, answers=body.answers,
+                                  credits=body.credits, scope=body.scope)
+            _kiosk_cap_check(org)
+            drive = not org.post_mail(USER, r["node"], r["body"]).get("deferred")
+        except LedgerError as e:
+            raise HTTPException(422, str(e))
+        store.save_org(org)
+    if drive:
+        mail_notify(slug, USER, r["node"])
+        supervisor.send_message(
+            slug, r["node"],
+            "(orgtree) The mail above resolves your request batch — act on "
+            "it now. A skipped tab returned unanswered; re-ask it later if "
+            "it still matters.")
+    await hub.changed(slug)
+    return {"resolved": nid}
 
 
 @app.post("/api/orgs/{slug}/nodes/{nid}/unstick")
@@ -2941,6 +2995,13 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
             elif body.tool == "orgtree_request_credits":
                 result = org.request_credits(body.node, a.get("new_limit"),
                                              a.get("reason"))
+            elif body.tool == "orgtree_request_scope":
+                # FR-13: user-only grantor; the ledger routes deep agents
+                # without a user audience to their superior as mail
+                result = org.request_scope(
+                    body.node,
+                    cast("list[Any]", a.get("items") or []),
+                    a.get("reason"))
             elif body.tool == "orgtree_ask":
                 result = org.ask_user(body.node, a.get("question") or "",
                                       options=a.get("options"),
@@ -2961,11 +3022,6 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                                               a.get("title") or "",
                                               a.get("body") or "",
                                               a.get("replaces"))
-                # no user audience → the question rode to the superior as
-                # mail; drive them like any other delivery
-                routed = result.get("routed")
-                if routed and not result.get("deferred"):
-                    drive.append(routed)
             elif body.tool == "orgtree_hire":
                 hdirs, dwarns = supervisor.sandbox_dirs_to_host(
                     org, a.get("add_dirs"))
@@ -3016,7 +3072,8 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                 # copy rides the same locked save window as the ledger change
                 result = org.cheap_compact(body.node, a.get("node"))  # type: ignore[arg-type]
                 supervisor.export_predecessor_transcript(
-                    org, str(a.get("node") or ""))
+                    org, str(a.get("node") or ""),
+                    old_sid=cast(str, result.get("old_session")))
             elif body.tool == "orgtree_rehire":
                 # `grant` now goes through _arg_int like every other int
                 # argument. It was the ONE that did not, so {"grant": "abc"}
@@ -3120,6 +3177,18 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                 drive.extend(result.pop("drive", []))
             else:
                 raise LedgerError(f"unknown orgtree tool {body.tool!r}")
+            # a verb whose result ROUTED to a superior as mail (an ask or a
+            # scope request without a user audience) drives them like any
+            # other delivery. ⚠ This block used to sit INSIDE the
+            # orgtree_present branch — present_document never returns
+            # `routed`, so a routed QUESTION never drove its superior: the
+            # mail sat until something else woke them (found 2026-08-12
+            # while wiring request_scope; moved to the chain tail so every
+            # routed verb, present and future, gets the same drive).
+            if isinstance(result, dict):
+                routed = result.get("routed")
+                if routed and not result.get("deferred"):
+                    drive.append(str(routed))
             _kiosk_cap_check(org)
         except LedgerError as e:
             raise HTTPException(422, str(e))
@@ -4124,7 +4193,9 @@ def _org_op_locked(slug: str, body: Op, allow_raise: bool = False) -> dict[str, 
             # of a cache-cold /compact fork; the transcript copy into the
             # predecessor's scratch rides the same save window
             result = org.cheap_compact(body.actor, body.node)  # type: ignore[arg-type]
-            supervisor.export_predecessor_transcript(org, cast(str, body.node))
+            supervisor.export_predecessor_transcript(
+                org, cast(str, body.node),
+                old_sid=cast(str, result.get("old_session")))
         elif body.op == "rehire":
             result = org.rehire(body.actor, body.node, body.grant, tier=body.tier,  # type: ignore[arg-type]
                                 raise_ceiling=rc)

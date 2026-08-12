@@ -28,7 +28,7 @@ from typing_extensions import NotRequired, TypedDict
 NodeState = Literal["live", "archived", "unrecoverable"]   # №31
 DirMode = Literal["rw", "ro"]
 Visibility = Literal["self", "team", "subtree", "full"]     # VIS_LEVELS
-PermissionMode = Literal["default", "acceptEdits", "bypassPermissions"]  # PM_LEVELS
+PermissionMode = Literal["plan", "default", "acceptEdits", "bypassPermissions"]  # PM_LEVELS
 # §8 lineage. "lost" = a generation whose transcript is gone — kept for the
 # record, never consultable (Org.reseed writes it; rehire refuses on it).
 BearerState = Optional[Literal["knowledge", "preserving", "lost"]]
@@ -63,6 +63,9 @@ class NodeScope(TypedDict):
     # the node (ledger sc["effort"]; supervisor reads sc.get("effort")).
     # Absent = the CLI default ("" clears by popping the key).
     effort: NotRequired[str]
+    # FR-24b: per-node auto-cheap-compact override — {enabled?, occ?, idle_s?}
+    # merged key-by-key over the org's `auto_cheap_compact`; absent = inherit
+    auto_cheap_compact: NotRequired[dict[str, Any]]
     # which model VERSION inside the tier (ledger.MODEL_VERSIONS) — a
     # subcategory of the tier, not a tier of its own. Absent = the tier
     # default. Neither a permission nor a price, so it clamps against nothing,
@@ -151,15 +154,15 @@ class NodeDoc(TypedDict):
     # back; the marker makes a second rescind a no-op instead of a
     # double-subtraction
     rescinded_at: NotRequired[str]
-    # FR-24: set by cheap_compact() on the REPLACEMENT — the archived node it
-    # replaces. The supervisor grants that node's scratch read-only every
-    # turn (the transcript copy lives there), for selective, cache-cheap
-    # recall instead of /compact's forced full reload
-    predecessor: NotRequired[str]
     pid: int | None
     ui_order: float
     scope: NodeScope
-    # §8 lineage axis — second axis, never an org edge
+    # §8 lineage axis — second axis, never an org edge. FR-24's cheap-compact
+    # replacement uses the same pair: `predecessor` on the replacement points
+    # at the archived original (whose scratch the supervisor grants read-only
+    # each turn, transcript copy included), and f327b39 sets the `successor`
+    # backlink + bearer_state so rehire recognises it as the replacement's
+    # own consultable bearer — a lineage generation, not a retired sibling
     lineage: str
     generation: int
     predecessor: str | None
@@ -332,6 +335,14 @@ class OrgDoc(TypedDict):
     steered_log: NotRequired[dict[str, list[dict[str, Any]]]]  # per-NODE steer history, org-keyed
     turn_error_log: NotRequired[dict[str, list[dict[str, Any]]]]  # per-NODE turn failures {at, text} — the durable half of last_error
     asks: NotRequired[list[dict[str, Any]]]  # F-04 questions-to-the-user {id, node, kind, question, options?, multi?, questions?, at, status, reason?, answer?, resolved_at?}
+    # FR-13: pending permission-scope requests {id, node, items: [{kind:
+    # dir|tool|mcp|permission_mode, ...}], reason, at, rev, status} — one
+    # pending entry per node (items merge by identity); a tab family of the
+    # FR-14 batch beside asks + credit_requests
+    scope_requests: NotRequired[list[dict[str, Any]]]
+    # FR-24b: org-level auto-cheap-compact-on-wake config
+    # {enabled: bool, occ: float 0..1, idle_s: int} — disabled by default
+    auto_cheap_compact: NotRequired[dict[str, Any]]
     documents: NotRequired[list[dict[str, Any]]]  # FR-03 presented documents {id, node, title, body, at} — newest 10/node, 100/org
     org_inbox: NotRequired[list[OrgInboxEntry]]
     org_inbox_read: NotRequired[int]
