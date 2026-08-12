@@ -272,6 +272,13 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
       const m = ms[i]
       if (m?.role === 'user' && m.seq != null
           && new RegExp(`^FROM ${USER} \\(`, 'm').test(m.text ?? '')) {
+        // a restart replay wears the user's envelope but renders as a FOLDED
+        // one-line marker — jumping there shows nothing (live-caught
+        // 2026-08-12: the chip read "[ORGTREE RESTART] …" and the target
+        // looked empty). Same machine-chrome class as command bubbles; the
+        // ORIGINAL delivery of that message sits earlier in the transcript,
+        // so skipping the replay finds the row the reader actually means.
+        if (isRestart(splitNotices(m.text).rest)) continue
         const label = stripEnvelope(splitNotices(m.text).rest)
           .split('\n').map((l) => l.trim())
           .filter((l) => l && !/^\*\*[^*]+\*\*$/.test(l))[0] ?? ''
@@ -627,8 +634,21 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
           {pinUser && lastUser && (
             <button className="pinuser"
               title="jump to your last message"
-              onClick={() => lastUserRef.current?.scrollIntoView(
-                { block: 'start', behavior: 'smooth' })}>
+              onClick={() => {
+                // ⚠ NOT scrollIntoView: it scrolls EVERY scrollable ancestor,
+                // and overflow:hidden boxes (.desk-over, the subpanel chain)
+                // ARE programmatically scrollable — it shifted the whole desk
+                // inside its panel (blank band at the bottom, header pushed
+                // out the top; live-caught 2026-08-12). Move the transcript
+                // scroller alone, by rect delta.
+                const el = scroller.current, tr = lastUserRef.current
+                if (!el || !tr) return
+                el.scrollTo({
+                  top: el.scrollTop + tr.getBoundingClientRect().top
+                    - el.getBoundingClientRect().top - 6,
+                  behavior: 'smooth',
+                })
+              }}>
               ↑ you: {lastUser.label || 'your last message'}
             </button>)}
           {/* paging is automatic (the onScroll above pages in within a screen
