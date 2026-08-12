@@ -1598,6 +1598,84 @@ def main():
         )(orgX2.rescind(USER, "worker"))
     )(orgX2.free("boss")))
 
+    print("watchdogs (FR-18, rulings 2026-08-12 — pets: free, bounded, "
+          "capability-shaped):")
+    orgW = Org.create("dogs")
+    orgW.hire(USER, None, "opus", 20, "boss")
+    orgW.hire(USER, "boss", "haiku", 2, "kid")
+    orgW.set_scope(USER, "kid", tools={"bash": False, "web": False,
+                                       "edit": True, "subagents": False,
+                                       "mcp": []})
+    check("create validates: kind, command-needs-pattern, process shape, "
+          "pattern compile", lambda: (
+        expect_error(lambda: orgW.watchdog_create("boss", "x", "cron",
+                                                  "y"), "kind"),
+        expect_error(lambda: orgW.watchdog_create("boss", "x", "command",
+                                                  "echo hi"), "pattern"),
+        expect_error(lambda: orgW.watchdog_create("boss", "x", "process",
+                                                  "svc:9"), "pid|port"
+                     if False else "pid"),
+        expect_error(lambda: orgW.watchdog_create("boss", "x", "file",
+                                                  "a.log", pattern="["),
+                     "compile"))[-1])
+    check("a bash-less owner may not keep command/stream dogs (they run "
+          "with the OWNER's hands)", lambda: expect_error(
+        lambda: orgW.watchdog_create("kid", "k", "stream", "tail -f x"),
+        "bash"))
+    check("create parks an armed dog; the interval takes the floor", lambda: (
+        lambda r: None if (r["id"].startswith("wd") and "armed" in r["status"]
+                           and orgW.d["watchdogs"][0]["interval_s"] == 15)
+        else (_ for _ in ()).throw(AssertionError(r))
+    )(orgW.watchdog_create("boss", "Build Watch!", "file", "E:/b.log",
+                           pattern="ERROR", interval_s=1)))
+    check("fire: the event lands as MAIL in the owner's box, rides the ring, "
+          "and returns the owner to drive", lambda: (
+        lambda wid: (
+            lambda owner: None if (
+                owner == "boss"
+                and orgW.d["mail"]["boss"][-1]["from"] == "build-watch"
+                and orgW.d["mail"]["boss"][-1]["kind"] == "watchdog"
+                and orgW.d["watchdogs"][0]["fired"] == 1
+                and len(orgW.d["watchdogs"][0]["events"]) == 1)
+            else (_ for _ in ()).throw(AssertionError(orgW.d["watchdogs"]))
+        )(orgW.watchdog_fire(wid, "ERROR boom", "[WATCHDOG] ERROR boom"))
+    )(orgW.d["watchdogs"][0]["id"]))
+    check("authority: a non-ancestor peer cannot manage; an ancestor can; "
+          "paused dogs do not fire", lambda: (
+        lambda wid: (
+            expect_error(lambda: orgW.watchdog_action("kid", wid, "pause"),
+                         "authority"),
+            orgW.watchdog_action("boss", wid, "pause"),
+            None if orgW.watchdog_fire(wid, "x", "y") is None
+            else (_ for _ in ()).throw(AssertionError("a paused dog fired")),
+            orgW.watchdog_action(USER, wid, "resume"))[-1] and None
+    )(orgW.d["watchdogs"][0]["id"]))
+    check("lifecycle: firing at an ARCHIVED owner pauses the dog (ruling); "
+          "rename remaps; delete kills the dogs", lambda: (
+        orgW.watchdog_create("kid", "kidfile", "file", "k.log"),
+        orgW.retire(USER, "kid"),
+        None if orgW.watchdog_fire(
+            next(w["id"] for w in orgW.d["watchdogs"]
+                 if w["owner"] == "kid"), "x", "y") is None
+        and next(w["state"] for w in orgW.d["watchdogs"]
+                 if w["owner"] == "kid") == "paused"
+        else (_ for _ in ()).throw(AssertionError(orgW.d["watchdogs"])),
+        orgW.rehire(USER, "kid"),
+        orgW.rename(USER, "kid", "junior"),
+        None if any(w["owner"] == "junior" for w in orgW.d["watchdogs"])
+        else (_ for _ in ()).throw(AssertionError("rename lost the dog")),
+        orgW.delete(USER, "junior"),
+        None if not any(w["owner"] in ("kid", "junior")
+                        for w in orgW.d["watchdogs"])
+        else (_ for _ in ()).throw(AssertionError("delete left a dog"))
+    )[-1])
+    check("caps: the 8-per-agent ceiling refuses the ninth", lambda: (
+        [orgW.watchdog_create("boss", f"d{i}", "file", f"f{i}.log")
+         for i in range(7)],
+        expect_error(lambda: orgW.watchdog_create("boss", "d9", "file",
+                                                  "f9.log"), "watchdogs")
+    )[-1])
+
     print(f"\nALL {PASS} CHECKS PASS")
 
 

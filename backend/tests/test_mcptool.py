@@ -376,8 +376,9 @@ def _():
 def _():
     tools = BOSS.rpc("tools/list")["result"]["tools"]
     # +orgtree_present (FR-03); +orgtree_withdraw_ask; +orgtree_self_update;
-    # +orgtree_cheap_compact (FR-24); +orgtree_request_scope (FR-13)
-    assert len(tools) == 24, [x["name"] for x in tools]
+    # +orgtree_cheap_compact (FR-24); +orgtree_request_scope (FR-13);
+    # +orgtree_watchdog (FR-18)
+    assert len(tools) == 25, [x["name"] for x in tools]
     for c in tools:
         assert c["name"].startswith("orgtree_"), c
         assert len(c["description"]) > 20, c
@@ -532,8 +533,8 @@ def _():
     # +orgtree_present (FR-03, 2026-08-05); +orgtree_withdraw_ask (the
     # manual-invalidation ruling, 2026-08-06); +orgtree_self_update (FR-14,
     # 2026-08-06); +orgtree_cheap_compact (FR-24, 2026-08-11);
-    # +orgtree_request_scope (FR-13, 2026-08-12)
-    assert len(CARDS) == 24, len(CARDS)
+    # +orgtree_request_scope (FR-13) + orgtree_watchdog (FR-18, 2026-08-12)
+    assert len(CARDS) == 25, len(CARDS)
 
 
 @t("no tool name is duplicated and every card carries an inputSchema")

@@ -2200,3 +2200,30 @@ a.attach-chip:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--
    so "leave unanswered" never reads as just another choice */
 .ask-row.skiprow { opacity: .7; font-style: italic; }
 .ask-row.skiprow.on { opacity: 1; }
+
+/* FR-18: watchdog satellite chips — the user's spec: a tiny named rect wired
+   to its owner; the state glyph is the only chrome that fits, the panel
+   carries the rest */
+.wd-chip {
+  position: absolute; top: 0; left: 0; z-index: 2;
+  display: flex; align-items: center; gap: 4px; padding: 0 6px;
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 6px; cursor: pointer; font-size: 9px;
+  color: var(--ink); box-shadow: var(--shadow);
+}
+.wd-chip .wd-name {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: var(--mono);
+}
+.wd-chip .wd-glyph { flex: none; font-size: 10px; }
+.wd-chip.armed .wd-glyph { color: var(--ok, #4a9); }
+.wd-chip.paused { opacity: .6; }
+.wd-chip.exited { border-color: var(--accent); }
+.wd-chip.exited .wd-glyph { color: var(--accent); }
+.edge.tether.wd.off { opacity: .3; }
+.wd-events {
+  max-height: 220px; overflow-y: auto; border: 1px solid var(--line);
+  border-radius: 6px; padding: 6px 8px; font-size: 12px;
+}
+.wd-event { padding: 2px 0; border-bottom: 1px dotted var(--line); }
+.wd-event:last-child { border-bottom: none; }

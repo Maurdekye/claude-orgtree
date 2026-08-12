@@ -787,6 +787,11 @@ def sec_compose() -> None:
     def _send_rides_the_spool():
         a, b = mkorg(), mkorg()
         _c, j = upload(a, b"the attachment")
+        # the unknown-recipient gate (user ruling 2026-08-12) consults the
+        # roster before anything spools — this rig has no live hub, so the
+        # recipient is seeded where a real registration would have put it
+        net._rosters.setdefault(HUB_A, []).append(
+            {"slug": net_slug(b), "online": True})
         code, r = api_call(api.app, "POST", f"/api/orgs/{a}/org_inbox/send",
                            {"to": f"@net:{net_slug(b)}",
                             "body": "from the user",
@@ -835,6 +840,9 @@ def sec_compose() -> None:
         before = set(os.listdir(stage_dir())) if os.path.isdir(stage_dir()) \
             else set()
         _c, j = upload(a, b"x" * 1000, name="leaked.bin")
+        # seed the roster past the unknown-recipient gate (2026-08-12)
+        net._rosters.setdefault(HUB_A, []).append(
+            {"slug": net_slug(b), "online": True})
         api_call(api.app, "POST", f"/api/orgs/{a}/org_inbox/send",
                  {"to": f"@net:{net_slug(b)}", "body": "sent",
                   "attachments": [j["id"]]})

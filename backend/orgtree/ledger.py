@@ -2508,6 +2508,11 @@ class Org:
         self.d["scope_requests"] = [
             r for r in self.d.get("scope_requests", [])
             if r.get("node") not in doomed_set]
+        # FR-18 lifecycle ruling: dogs DIE with a deleted owner (archive only
+        # pauses them — watchdog_fire handles that lazily)
+        self.d["watchdogs"] = [
+            w for w in self.d.get("watchdogs", [])
+            if w.get("owner") not in doomed_set]
         extra = len(doomed_set) - 1
         self._notify([parent],
                      f'The user permanently DELETED your report "{nid}"'
@@ -3919,6 +3924,144 @@ class Org:
                        "decisions": [str(x["decision"]) for x in its]}, [])
         return {"node": nid, "body": "\n\n".join(sections)}
 
+    # ---------------------------------------------------- FR-18 watchdogs
+    WATCHDOG_KINDS: Final = ("file", "command", "process", "stream")
+    WATCHDOG_PER_AGENT: Final = 8       # runaway insurance (№34 spirit) —
+    WATCHDOG_PER_ORG: Final = 32        # pets are free, never unbounded
+    WATCHDOG_MIN_INTERVAL: Final = 15   # poll floor (s); streams: min fire gap 5
+    WATCHDOG_EVENTS_KEEP: Final = 50    # the sent-events ring per dog
+
+    def _watchdog(self, wid: str) -> dict[str, Any]:
+        d = next((w for w in self.d.get("watchdogs") or []
+                  if w["id"] == wid), None)
+        if d is None:
+            raise LedgerError(f"no watchdog {wid!r}")
+        return d
+
+    def watchdog_create(self, owner: str, name: Any, kind: Any, target: Any,
+                        pattern: Any = None,
+                        interval_s: Any = 60) -> dict[str, Any]:
+        """FR-18 (user request 2026-08-07, rulings 2026-08-12): a PET — a
+        persistent watcher that mails its owner when its target produces a
+        matching event. Free by ruling (never enters TIERS), bounded
+        numerically. Kinds:
+          file     poll a path; new content matching `pattern` fires (the
+                   high-water diff also recovers events from orgtree's OWN
+                   downtime — the FR-07-spool property, for files)
+          command  run a command each interval; matching output fires
+          process  liveness — `pid:N` or `port:N`; fires on the DOWN edge
+          stream   a persistent LISTENING command: each matching stdout line
+                   surfaces the moment it occurs (user ruling: the realtime
+                   alternative to a cadence); dies with orgtree, re-armed by
+                   the engine at startup — downtime output is honestly lost
+        Capability rule (ruling): a dog runs with its OWNER's hands —
+        command/stream require the owner to hold bash and run inside the
+        owner's sandbox when sandboxed; file paths are containment-checked
+        at the API boundary against the owner's readable roots."""
+        self._require_live(owner)
+        name = re.sub(r"[^a-z0-9-]+", "-",
+                      str(name or "").strip().lower()).strip("-")[:24]
+        if not name:
+            raise LedgerError("a watchdog needs a short name")
+        if kind not in self.WATCHDOG_KINDS:
+            raise LedgerError(f"kind must be one of {self.WATCHDOG_KINDS}")
+        tgt = str(target or "").strip()
+        if not tgt:
+            raise LedgerError("target is required — the path, command, or "
+                              "pid:N / port:N to watch")
+        if kind in ("command", "stream") \
+                and not self.node(owner)["scope"]["tools"].get("bash"):
+            raise LedgerError(
+                "a command/stream watchdog runs with YOUR hands — it needs "
+                "the bash you do not hold; ask for it (orgtree_request_scope) "
+                "or watch a file instead")
+        if kind == "process":
+            m = re.fullmatch(r"(pid|port):(\d+)", tgt)
+            if not m:
+                raise LedgerError("process targets are `pid:N` or `port:N`")
+        pat = str(pattern).strip() if pattern else None
+        if pat:
+            try:
+                re.compile(pat)
+            except re.error as e:
+                raise LedgerError(f"pattern does not compile: {e}")
+        elif kind in ("command",):
+            raise LedgerError("a command watchdog needs a pattern — "
+                              "'ran and printed something' is not an event")
+        try:
+            iv = max(int(interval_s or 60), self.WATCHDOG_MIN_INTERVAL
+                     if kind != "stream" else 5)
+        except (TypeError, ValueError):
+            raise LedgerError("interval_s must be a number of seconds")
+        dogs = self.d.setdefault("watchdogs", [])
+        if sum(1 for w in dogs if w["owner"] == owner) \
+                >= self.WATCHDOG_PER_AGENT:
+            raise LedgerError(f"you already keep {self.WATCHDOG_PER_AGENT} "
+                              f"watchdogs — remove one first")
+        if len(dogs) >= self.WATCHDOG_PER_ORG:
+            raise LedgerError(f"the org already keeps "
+                              f"{self.WATCHDOG_PER_ORG} watchdogs")
+        wid = "wd" + uuid.uuid4().hex[:8]
+        dogs.append({"id": wid, "owner": owner, "name": name, "kind": kind,
+                     "target": tgt, **({"pattern": pat} if pat else {}),
+                     "interval_s": iv, "state": "armed", "at": now(),
+                     "fired": 0, "events": []})
+        self._log("watchdog_create", owner,
+                  {"id": wid, "name": name, "kind": kind}, [])
+        return {"id": wid, "name": name,
+                "status": f"armed — {kind} watchdog"
+                          + (f" every {iv}s" if kind != "stream"
+                             else " (realtime stream)")
+                          + ". A matching event arrives as mail from "
+                            f"\"{name}\" and wakes you; it costs no credits."}
+
+    def watchdog_action(self, actor: str, wid: str,
+                        action: str) -> dict[str, Any]:
+        """pause | resume | remove — the owner itself, any ancestor of the
+        owner (downward authority), or the user."""
+        w = self._watchdog(wid)
+        if actor != w["owner"]:
+            self._require_authority(actor, w["owner"])
+        if action == "pause":
+            w["state"] = "paused"
+        elif action == "resume":
+            w["state"] = "armed"
+            w.pop("exit", None)
+        elif action == "remove":
+            self.d.setdefault("watchdogs", []).remove(w)
+        else:
+            raise LedgerError("action must be pause|resume|remove")
+        self._log("watchdog_" + action, actor,
+                  {"id": wid, "name": w["name"]}, [])
+        return {"id": wid, "name": w["name"], "state":
+                ("removed" if action == "remove" else w["state"])}
+
+    def watchdog_fire(self, wid: str, gist: str,
+                      body: str) -> str | None:
+        """The engine's hand: record the event and put the mail in the
+        OWNER's box. Returns the owner to drive, or None (paused owner /
+        archived owner — archived pauses the dog per the lifecycle ruling)."""
+        w = self._watchdog(wid)
+        if w["state"] != "armed":
+            return None
+        owner = str(w["owner"])
+        if owner not in self.nodes or self.node(owner)["state"] != "live":
+            w["state"] = "paused"      # lifecycle ruling: pause on archive
+            return None
+        w["fired"] = int(w.get("fired") or 0) + 1
+        w["last_fired"] = now()
+        ev = cast("list[dict[str, Any]]", w.setdefault("events", []))
+        ev.append({"at": now(), "gist": gist[:200]})
+        del ev[:-self.WATCHDOG_EVENTS_KEEP]
+        box = cast("dict[str, list[dict[str, Any]]]",
+                   self.d.setdefault("mail", {}))
+        box.setdefault(owner, []).append({
+            "id": uuid.uuid4().hex[:12], "from": w["name"],
+            "kind": "watchdog", "body": body[:8000], "at": now(),
+            "relationship": "your watchdog"})
+        self._log("watchdog_fire", owner, {"id": wid, "gist": gist[:80]}, [])
+        return owner
+
     def rename(self, actor: str, nid: str, new_name: str) -> dict[str, Any]:
         """FULL identity rename (user ruling 2026-08-05): the id itself
         changes and the whole doc re-keys — nodes (lineage generations
@@ -3979,6 +4122,9 @@ class Org:
         for r in self.d.get("scope_requests", []):
             if r.get("node") in renamed:
                 r["node"] = renamed[r["node"]]
+        for w in self.d.get("watchdogs", []):
+            if w.get("owner") in renamed:
+                w["owner"] = renamed[w["owner"]]
         # the display title (set at hire from the raw name) follows the
         # identity — tree() ships it beside the id, so a stale title would
         # show exactly the name the rename was meant to replace
@@ -5261,6 +5407,9 @@ class Org:
             # FR-24b: the org-level auto-cheap-compact config (nodes carry
             # their overrides in scope.auto_cheap_compact, already shipped)
             "auto_cheap_compact": self.d.get("auto_cheap_compact"),
+            # FR-18: the canvas renders dogs as satellite entities; the
+            # events ring IS the sent-mail tab
+            "watchdogs": self.d.get("watchdogs") or [],
             "fable_limit_policy": self.d.get("fable_limit_policy", "halt"),
             "fable_filter_policy": self.d.get("fable_filter_policy", "halt"),
             "cascade_hire": bool(self.d.get("cascade_hire", True)),

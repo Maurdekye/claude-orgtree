@@ -336,6 +336,39 @@ def status_block(org_d: dict[str, Any]) -> dict[str, Any] | None:
     return {"slug": ident.get("slug"), "hubs": hubs_out}
 
 
+def probe_peer(target: str) -> bool:
+    """User ruling 2026-08-12 (the unknown-recipient send gate): is `target`
+    on ANY known hub's roster RIGHT NOW? The local cache answers first
+    (offline-cheap, the common case); a miss earns exactly one live GET
+    /api/roster per known hub — a freshly registered peer must not be
+    refused for the crime of beating the next poll pass. Each live answer
+    also refreshes the cache, so the miss cost amortizes. Hub unreachable →
+    the cache's answer stands (an absent peer refuses; the message says a
+    fresh registration appears on the next refresh)."""
+    with _status_lock:
+        addrs = list(_rosters.keys())
+        for roster in _rosters.values():
+            if any(str(r.get("slug") or "") == target for r in roster):
+                return True
+    found = False
+    for addr in addrs:
+        try:
+            with _client() as c:
+                r = c.get(f"{addr}/api/roster")
+            if r.status_code != 200:
+                continue
+            body = cast("dict[str, Any]", r.json() or {})
+            roster = cast("list[dict[str, Any]]",
+                          body.get("roster") or [])
+            with _status_lock:
+                _rosters[addr] = list(roster)
+            if any(str(x.get("slug") or "") == target for x in roster):
+                found = True
+        except Exception:                                        # noqa: BLE001
+            continue
+    return found
+
+
 def remote_peers() -> list[dict[str, Any]]:
     """Roster rows for orgtree_list_orgs — every known remote peer across all
     connected hubs, deduped by network slug."""

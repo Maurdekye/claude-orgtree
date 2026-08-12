@@ -543,6 +543,9 @@ async def _wire_notify() -> None:  # type: ignore[unused-function]  # registered
     # §9.2: warn EARLY when the subscription's refresh token nears expiry —
     # an unattended box discovers an auth lapse as a pile of failed turns
     supervisor.start_cred_watcher()
+    # FR-18: the watchdog scanner — polls due dogs and re-arms stream dogs'
+    # children, which is also their restart-recovery (the doc is the registry)
+    supervisor.start_watchdog_engine()
     # one-time migration of the retired v1 env-var kiosk mode into the org doc
     legacy = os.environ.get("ORGTREE_KIOSK")
     if legacy:
@@ -2171,6 +2174,25 @@ async def batch_resolve(slug: str, nid: str, body: BatchResolve) -> dict[str, An
     return {"resolved": nid}
 
 
+class WatchdogAction(Body):
+    id: str
+    action: str          # pause | resume | remove
+
+
+@app.post("/api/orgs/{slug}/watchdogs")
+async def watchdog_action(slug: str, body: WatchdogAction) -> dict[str, Any]:
+    """FR-18: the user manages any dog from the canvas detail panel."""
+    with store.DOC_LOCK:
+        try:
+            org = store.load_org(slug)
+            r = org.watchdog_action(USER, body.id, body.action)
+        except LedgerError as e:
+            raise HTTPException(422, str(e))
+        store.save_org(org)
+    await hub.changed(slug)
+    return r
+
+
 @app.post("/api/orgs/{slug}/nodes/{nid}/unstick")
 async def node_unstick(slug: str, nid: str) -> dict[str, Any]:
     """⭐ The user's per-node override (ruling 2026-08-06): release EVERY
@@ -2485,6 +2507,13 @@ def org_inbox_send(slug: str, body: OrgInboxSend,
                 h.get("enabled") for h in org.d.get("net_hubs") or []):
             raise HTTPException(422, "no mailserver is configured — enable a "
                                      "hub in settings → mailserver first")
+        if to.startswith("@net:"):
+            # user ruling 2026-08-12: same door as the agent path — an
+            # unknown hub recipient refuses before anything is recorded
+            try:
+                _require_net_peer(to[5:])
+            except LedgerError as e:
+                raise HTTPException(422, str(e))
         oid = org._org_inbox_log("out", to, body.body, by="user")
         if to.startswith("@net:"):
             net.spool_append(org, to[5:], body.body, oid=oid,
@@ -2904,19 +2933,23 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                         "no mailserver is configured for this org — ask the "
                         "user to enable a hub (settings → mailserver) before "
                         "addressing @net: mail")
+                # resolve ONCE, before anything records (a refused send
+                # writes nothing): 'user' is a sentinel, bare names
+                # auto-resolve, and the resolution raises exactly what
+                # post_mail would
+                dest = org._resolve_recipient(str(a.get("to", "")),
+                                              outward=True)
+                if dest.startswith("@net:"):
+                    # user ruling 2026-08-12: an unknown hub recipient
+                    # refuses at the door, never spools into a void
+                    _require_net_peer(dest[5:])
                 net_atts: list[str] = []
                 user_atts: list[dict[str, Any]] = []
                 raw_atts = [str(x) for x in
                             cast("list[Any]", a.get("attachments") or [])]
                 if raw_atts:
                     # FR-21 (user request 2026-08-09): branch on the RESOLVED
-                    # recipient, not the raw string — 'user' is a sentinel,
-                    # and a bare name that auto-resolves to @net: used to be
-                    # refused here despite delivering over the hub. Resolution
-                    # raises exactly what post_mail would have raised, and
-                    # BEFORE anything is recorded or copied.
-                    dest = org._resolve_recipient(str(a.get("to", "")),
-                                                  outward=True)
+                    # recipient, not the raw string
                     if len(raw_atts) > 10:
                         raise LedgerError("at most 10 attachments")
                     if dest == USER:
@@ -2995,6 +3028,58 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
             elif body.tool == "orgtree_request_credits":
                 result = org.request_credits(body.node, a.get("new_limit"),
                                              a.get("reason"))
+            elif body.tool == "orgtree_watchdog":
+                act = str(a.get("action") or "")
+                if act == "create":
+                    kind = str(a.get("kind") or "")
+                    tgt = str(a.get("target") or "").strip()
+                    if kind == "file":
+                        # capability containment (the send_file rule): only
+                        # trees the OWNER holds are watchable. Sandboxed
+                        # agents watch files with an in-container stream dog
+                        # instead (`tail -f` runs with their own hands) —
+                        # host-path translation has no honest answer for a
+                        # path the container cannot even name.
+                        if sandbox.is_sandboxed(org):
+                            raise LedgerError(
+                                "sandboxed agents watch files with a STREAM "
+                                "watchdog instead (e.g. target: tail -n0 -f "
+                                "<path>) — it runs inside your container "
+                                "with your own hands")
+                        wroot = os.path.realpath(
+                            supervisor.scratch_dir(body.org, body.node))
+                        roots = [wroot]
+                        if org.d.get("workspace"):
+                            roots.append(os.path.realpath(
+                                cast(str, org.d["workspace"])))
+                        for dd in org.node(body.node)["scope"]["add_dirs"]:
+                            roots.append(os.path.realpath(dd["path"]))
+                        full = os.path.realpath(
+                            tgt if os.path.isabs(tgt)
+                            else os.path.join(wroot, tgt))
+                        if not any(full == r or full.startswith(r + os.sep)
+                                   for r in roots):
+                            raise LedgerError(
+                                f"cannot watch {tgt} — only files in your "
+                                f"working folder, the workspace, or a "
+                                f"folder you hold are watchable "
+                                f"(orgtree_request_scope can ask for more)")
+                        tgt = full
+                    result = org.watchdog_create(
+                        body.node, a.get("name"), kind, tgt,
+                        a.get("pattern"), a.get("interval_s") or 60)
+                elif act == "list":
+                    result = {"watchdogs": [
+                        {k: w.get(k) for k in
+                         ("id", "owner", "name", "kind", "target",
+                          "pattern", "interval_s", "state", "fired",
+                          "last_fired")}
+                        for w in org.d.get("watchdogs") or []
+                        if w["owner"] == body.node
+                        or org.is_ancestor(body.node, str(w["owner"]))]}
+                else:
+                    result = org.watchdog_action(
+                        body.node, str(a.get("id") or ""), act)
             elif body.tool == "orgtree_request_scope":
                 # FR-13: user-only grantor; the ledger routes deep agents
                 # without a user audience to their superior as mail
@@ -3286,6 +3371,23 @@ async def node_upload(slug: str, nid: str, request: Request,
 # outbox/ is agent→user — orgtree_send_file snapshots a file there and the
 # chat renders a download card pointing at the /file endpoint below.
 _SENDFILE_MAX = 256 * 1048576
+
+
+def _require_net_peer(target: str) -> None:
+    """User ruling 2026-08-12: a @net: send REFUSES when the recipient does
+    not exist on any connected hub's roster — a spool entry addressed to
+    nobody sits 'queued' forever, which is the @ext: black-hole class the
+    2026-08-05 ruling killed. The check reads the net daemon's local roster
+    cache (offline-cheap, no hub round trip); an empty cache — hub down
+    since boot — refuses too, and says so."""
+    if not net.probe_peer(target):
+        peers = {str(p.get("slug") or "").removeprefix("@net:")
+                 for p in net.remote_peers()}
+        peers.discard("")
+        hint = ", ".join(sorted(peers)[:8])             or "none known (is the hub reachable?)"
+        raise LedgerError(
+            f"no such recipient on the mail hub: {target!r} — nothing would "
+            f"ever deliver it. Known peers: {hint}.")
 
 
 def _agent_send_file(org: Org, nid: str, a: dict[str, Any]) -> dict[str, Any]:

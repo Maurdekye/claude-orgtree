@@ -891,6 +891,45 @@ the docket's "transcript is in the scratch dir" premise was wrong and the
 copy is the fix. The compact dialog warns when the node is idle past the
 cache TTL, which is the moment the choice actually matters.
 
+### D-118 · a @net: send to a recipient the hub doesn't know REFUSES
+Ruling (user, 2026-08-12): mail to a hub recipient that does not exist in
+the mail hub's ledger fails at the door — both doors, the agent verb and
+the user's org-inbox compose. A spool entry addressed to nobody sits
+"queued" forever, which is the @ext: black-hole class the 2026-08-05 ruling
+killed. Mechanism: the local roster cache answers first (offline-cheap); a
+miss earns exactly ONE live GET /api/roster per known hub before refusing
+(`net.probe_peer` — a freshly registered peer must not be refused for
+beating the next poll pass, and each live answer refreshes the cache).
+Bare names that auto-resolve to @net: come FROM the roster, so the gate
+really bites explicit `@net:<slug>` strings. Hermetic rigs seed
+`net._rosters` where a real registration would have written.
+
+### D-117 · watchdogs: free pets, both engine shapes, the owner's hands
+Rulings (user, 2026-08-12, FR-18 design session): ① BOTH engine shapes ship
+— cadenced in-process polls (file / command / process kinds; the file kind's
+high-water diff recovers events from orgtree's own downtime, the FR-07-spool
+property) AND a realtime persistent LISTENING command (`stream` kind: each
+matching stdout line surfaces the moment it occurs; the child dies with
+orgtree and the scanner re-arms it at startup — downtime output honestly
+lost). ② Capability rule: a dog runs with its OWNER's hands — command/stream
+require the owner's bash and run inside the owner's sandbox when sandboxed
+(docker exec); file targets containment-check against the owner's readable
+roots at the API boundary (sandboxed agents watch files with an in-container
+stream dog instead — host translation has no honest answer there); process
+liveness (pid:N / port:N, DOWN-edge-triggered) is read-only and free.
+③ Authority: self-create; ancestors manage downward; the user manages all
+from the canvas panel. Free per the 2026-08-06 pets ruling — bounded
+numerically instead (8/agent, 32/org, 15 s poll floor, 5 s stream fire gap,
+50-event ring). ④ Lifecycle: pause on the owner's archive (resume on
+rehire), die on delete, rename remaps, cheap-compact leaves them untouched
+(the seat persists). A fired dog is ordinary MAIL (`relationship: your
+watchdog`) — frozen owners queue, no special wake power, and a dog-wake is
+a wake for FR-24b's auto-compact. One verb (`orgtree_watchdog`,
+create/list/pause/resume/remove — verb 25), a standing prompt line ("never
+burn turns polling"), and the canvas spec verbatim: a ~60×36 named chip
+wired to its owner, `launchSpark` riding the wire per event, click-through
+detail panel with the sent-events ring.
+
 ### D-116 · sonnet seats cost 2 (input pricing locked in at $2/M)
 Ruling (user, 2026-08-12): the sonnet seat drops 3 → 2 in `TIERS`. Because
 per-org tier tables are frozen ADD-only copies (the 2026-08-04 lesson), a

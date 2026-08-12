@@ -593,8 +593,15 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
             .catch((e: Error) => toast([`error: ${e.message}`]))}
           altLabel="cheap compact"
           onAlt={() => op({ op: 'cheap_compact', node: node.id })
-            .then((r) => toast([`${node.id} cheap-compacted — replacement: ${
-              (r as { node?: string })?.node ?? '?'}`]))
+            .then(() => {
+              // the session just changed under this desk — ask for the chat
+              // NOW rather than letting the old transcript sit until the
+              // next heartbeat (user report 2026-08-12; the 89fecd9 class:
+              // the client must refetch the thing it is actually rendering)
+              void refresh(true)
+              toast([`${node.id} cheap-compacted — fresh session; its old `
+                + 'self is consultable in its lineage'])
+            })
             .catch((e: Error) => toast([`error: ${e.message}`]))}
           close={() => setAskCompact(false)} />
       })()}

@@ -343,6 +343,12 @@ class OrgDoc(TypedDict):
     # FR-24b: org-level auto-cheap-compact-on-wake config
     # {enabled: bool, occ: float 0..1, idle_s: int} — disabled by default
     auto_cheap_compact: NotRequired[dict[str, Any]]
+    # FR-18: watchdogs — persistent pets {id, owner, name, kind:
+    # file|command|process|stream, target, pattern?, interval_s, state:
+    # armed|paused|exited, high_water?, fired, last_check?, last_fired?,
+    # events: [{at, gist}], exit?}. Free by ruling; engine =
+    # supervisor.start_watchdog_engine
+    watchdogs: NotRequired[list[dict[str, Any]]]
     documents: NotRequired[list[dict[str, Any]]]  # FR-03 presented documents {id, node, title, body, at} — newest 10/node, 100/org
     org_inbox: NotRequired[list[OrgInboxEntry]]
     org_inbox_read: NotRequired[int]

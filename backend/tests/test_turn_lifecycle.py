@@ -2708,6 +2708,110 @@ def live_auto_cheap_compact() -> None:
     drop_orgs()
 
 
+def live_watchdogs() -> None:
+    """FR-18 end-to-end: a FILE dog's event lands as mail and drives a real
+    turn (draining into the envelope); a PORT dog fires on the DOWN edge
+    only; a STREAM dog surfaces its command's lines in realtime and marks
+    itself exited when the command dies. The engine ticks every ~5s, so the
+    waits here are its cadence, not slack."""
+    print("\nwatchdogs (FR-18):")
+    start_backend()
+    set_cfg(FAST)
+    slug, (nid,) = make_org("dogs")
+    logp = os.path.join(DATA, "dogged.log").replace("\\", "/")
+    with open(logp, "w", encoding="utf-8") as f:
+        f.write("calm before\n")
+    # the file dog watches a path OUTSIDE the node's roots → a 422 refusal
+    # (capability containment at the api boundary)
+    import urllib.error as _uerr
+    try:
+        api("POST", "/api/agent", {"org": slug, "node": nid,
+                                   "tool": "orgtree_watchdog",
+                                   "args": {"action": "create",
+                                            "name": "outside",
+                                            "kind": "file",
+                                            "target": logp,
+                                            "pattern": "BOOM"}})
+        raise AssertionError("an out-of-roots file target was accepted")
+    except _uerr.HTTPError as e:
+        detail = e.read().decode("utf-8", errors="replace")
+        assert e.code == 422 and "cannot watch" in detail, (e.code, detail)
+    # …so grant the folder, then create for real
+    api("POST", f"/api/orgs/{slug}/nodes/{nid}/scope",
+        {"add_dirs": [{"path": os.path.dirname(logp), "mode": "ro"}]})
+    r = api("POST", "/api/agent", {"org": slug, "node": nid,
+                                   "tool": "orgtree_watchdog",
+                                   "args": {"action": "create",
+                                            "name": "log-dog",
+                                            "kind": "file",
+                                            "target": logp,
+                                            "pattern": "BOOM",
+                                            "interval_s": 15}})
+    assert "armed" in json.dumps(r), r
+    # let the engine take its baseline high-water, THEN append the event —
+    # content that predates the first check must not fire retroactively here
+    time.sleep(8)
+    with open(logp, "a", encoding="utf-8") as f:
+        f.write("BOOM the build fell over\n")
+    tok = "BOOM the build fell over"
+    check("dogs · file: the event fires, mails the owner, and DRIVES a turn",
+          lambda: (None if wait_delivered(tok, 45)
+                   else (_ for _ in ()).throw(AssertionError(
+                       doc(slug).get("watchdogs")))))
+    check("dogs · file: the ring + counters recorded it", lambda: (
+        lambda w: None if (w["fired"] >= 1 and w["events"]
+                           and "BOOM" in w["events"][-1]["gist"])
+        else (_ for _ in ()).throw(AssertionError(w))
+    )(next(w for w in doc(slug)["watchdogs"] if w["name"] == "log-dog")))
+    wait_idle(slug, nid, 30)
+
+    # PORT dog: fires on the DOWN edge, not on being down from birth
+    import socket as _socket
+    srv = _socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    port = srv.getsockname()[1]
+    api("POST", "/api/agent", {"org": slug, "node": nid,
+                               "tool": "orgtree_watchdog",
+                               "args": {"action": "create",
+                                        "name": "port-dog",
+                                        "kind": "process",
+                                        "target": f"port:{port}",
+                                        "interval_s": 15}})
+    time.sleep(8)          # one tick observes it UP (arms the edge)
+    srv.close()            # …and now it goes down
+    check("dogs · port: the DOWN edge fires", lambda: (
+        None if wait_for(lambda: any(
+            w["name"] == "port-dog" and w.get("fired", 0) >= 1
+            for w in doc(slug)["watchdogs"]), 60)
+        else (_ for _ in ()).throw(AssertionError(doc(slug)["watchdogs"]))))
+    wait_idle(slug, nid, 30)
+
+    # STREAM dog: a live command's lines surface without any cadence rerun,
+    # and its death is announced + marked
+    pyexe = sys.executable.replace("\\", "/")
+    emit = (f'"{pyexe}" -u -c "import time; print(\'evt one\', flush=True); '
+            f'time.sleep(1); print(\'evt two\', flush=True)"')
+    api("POST", "/api/agent", {"org": slug, "node": nid,
+                               "tool": "orgtree_watchdog",
+                               "args": {"action": "create",
+                                        "name": "streamer",
+                                        "kind": "stream",
+                                        "target": emit,
+                                        "pattern": "evt",
+                                        "interval_s": 5}})
+    check("dogs · stream: realtime lines fire without a rerun cadence",
+          lambda: (None if wait_delivered("evt one", 45)
+                   else (_ for _ in ()).throw(AssertionError(
+                       doc(slug).get("watchdogs")))))
+    check("dogs · stream: the command's death is marked `exited`", lambda: (
+        None if wait_for(lambda: any(
+            w["name"] == "streamer" and w.get("state") == "exited"
+            for w in doc(slug)["watchdogs"]), 60)
+        else (_ for _ in ()).throw(AssertionError(doc(slug)["watchdogs"]))))
+    drop_orgs()
+
+
 def live_reconcile() -> None:
     print("\nreconcile at startup:")
     start_backend()
@@ -2910,6 +3014,7 @@ def main() -> None:
             ("frozenq", live_frozen_queue),
             ("autoresume", live_auto_resume),
             ("acc", live_auto_cheap_compact),
+            ("dogs", live_watchdogs),
             ("reconcile", live_reconcile),
             ("compact", live_compaction),
             ("killswitch", live_interrupt),

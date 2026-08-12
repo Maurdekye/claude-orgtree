@@ -349,9 +349,15 @@ export function layout(root: CanvasNode, hidden: Map<string, string> = new Map()
   return out
 }
 
+/** FR-18: watchdog satellite cards — the user's own sizing ("1/4 to 1/8 the
+ *  area" of a 124x124 node ⇒ ~a 60x36 chip; name + state glyph is all that
+ *  fits, the click-through panel carries the detail) */
+export const DOG_W = 60, DOG_H = 36
+
 export function sizeOf(id: string): { w: number; h: number } {
   if (id === USER) return { w: USER_W, h: USER_H }
   if (id === INBOX) return { w: USER_W, h: INBOX_H }
+  if (id.startsWith('dog:')) return { w: DOG_W, h: DOG_H }
   return { w: NODE_W, h: NODE_H }
 }
 

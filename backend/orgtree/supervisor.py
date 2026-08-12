@@ -24,6 +24,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import threading
@@ -1215,6 +1216,12 @@ def identity_prompt(org: Org, nid: str) -> str:
         f"only when they wanted to READ a document in-page rather than have "
         f"the file. Say in your reply what you sent; the card sits where you "
         f"sent it. "
+        + ("WATCHDOGS: never burn turns polling for a condition — a build "
+           "or deploy finishing, an error appearing in a log, a file "
+           "landing, a service going down. Keep a WATCHDOG instead "
+           "(orgtree_watchdog): a free, persistent pet that wakes you with "
+           "mail the moment its target fires, and — unlike anything bound "
+           "to your session — survives orgtree restarts. ")
         + ("BREADCRUMBS (user ruling 2026-08-12): maintain `breadcrumbs.md` "
            "in your working folder — append important events, decisions, "
            "findings and open threads AS THEY HAPPEN, a few lines each, "
@@ -4381,6 +4388,302 @@ def start_cred_watcher() -> None:
             time.sleep(6 * 3600)
 
     threading.Thread(target=run, daemon=True, name="cred-watch").start()
+
+
+# ------------------------------------------------------ FR-18 watchdog engine
+_wd_started = False
+# (slug, wid) → {"proc", "buf": list[str], "last_fire": float} — STREAM dogs'
+# live children. In-memory only: the doc is the durable registry, this is the
+# runtime attachment, re-derived every tick (which is also what re-arms
+# streams after a backend restart — the reconcile property for free).
+_wd_streams: dict[tuple[str, str], dict[str, Any]] = {}
+_wd_lock = threading.Lock()
+
+
+def _wd_proc_alive(target: str) -> bool:
+    """process-kind liveness — `pid:N` (stdlib, both platforms) or `port:N`
+    (a loopback connect)."""
+    m = re.fullmatch(r"(pid|port):(\d+)", target)
+    if not m:
+        return False
+    num = int(m.group(2))
+    if m.group(1) == "port":
+        s = socket.socket()
+        s.settimeout(2)
+        try:
+            s.connect(("127.0.0.1", num))
+            return True
+        except OSError:
+            return False
+        finally:
+            s.close()
+    if os.name == "nt":
+        import ctypes
+        h = ctypes.windll.kernel32.OpenProcess(0x1000, False, num)
+        if not h:
+            return False
+        code = ctypes.c_ulong()
+        ok = ctypes.windll.kernel32.GetExitCodeProcess(h, ctypes.byref(code))
+        ctypes.windll.kernel32.CloseHandle(h)
+        return bool(ok) and code.value == 259          # STILL_ACTIVE
+    try:
+        os.kill(num, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _wd_popen(org: Org, owner: str, cmd: str) -> subprocess.Popen[str]:
+    """Spawn a dog's command WITH THE OWNER'S HANDS (capability ruling):
+    inside the owner's sandbox container when sandboxed, else a host shell in
+    the owner's scratch. clean_env like every agent process."""
+    slug = org.d["slug"]
+    if sbx.is_sandboxed(org):
+        argv: list[str] | str = sbx.exec_argv(
+            sbx.container_name(slug),
+            sbx.cpath_scratch(slug, owner)) + ["sh", "-lc", cmd]
+        shell = False
+    else:
+        argv, shell = cmd, True
+    return subprocess.Popen(
+        argv, shell=shell, cwd=scratch_dir(slug, owner),
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, encoding="utf-8", errors="replace",
+        # spawn_env, not clean_env (the d840331 family rule): the dog runs
+        # with the OWNER's hands, and the owner's own processes carry the
+        # org's key — a keyless fork is exactly the misbilling class that
+        # guard exists to catch
+        env=spawn_env(org),
+        creationflags=(subprocess.CREATE_NO_WINDOW      # type: ignore[attr-defined]
+                       if os.name == "nt" else 0))
+
+
+def _wd_fire(slug: str, wid: str, name: str, lines: list[str],
+             prefix: str = "") -> None:
+    """Record + mail + drive + spark. Every step tolerates the dog or owner
+    having changed since the check ran."""
+    body = (f"[WATCHDOG {name}]{prefix} {len(lines)} event(s):\n"
+            + "\n".join(x[:500] for x in lines[:20])
+            + (f"\n… {len(lines) - 20} more" if len(lines) > 20 else ""))
+    owner = None
+    try:
+        with store.DOC_LOCK:
+            org = store.load_org(slug)
+            owner = org.watchdog_fire(wid, lines[0] if lines else "event",
+                                      body)
+            store.save_org(org)
+    except LedgerError:
+        return
+    if owner:
+        mail_spark(slug, "dog:" + wid, owner)
+        send_message(slug, owner,
+                     "(orgtree) Your watchdog fired — the mail above carries "
+                     "the event(s); handle them as appropriate.")
+
+
+def _wd_check_poll(slug: str, w: dict[str, Any],
+                   org: Org) -> tuple[list[str], dict[str, Any]]:
+    """One due check OUTSIDE any lock. Returns (matching lines, high_water
+    updates to store)."""
+    kind, tgt = str(w["kind"]), str(w["target"])
+    pat = re.compile(str(w["pattern"])) if w.get("pattern") else None
+    hw = dict(cast("dict[str, Any]", w.get("high_water") or {}))
+    lines: list[str] = []
+    if kind == "file":
+        try:
+            size = os.path.getsize(tgt)
+        except OSError:
+            return [], hw                       # absent file: nothing yet
+        off = int(hw.get("off") or 0)
+        if size < off:
+            off = 0                             # rotated/truncated: restart
+        if size > off:
+            try:
+                with open(tgt, "r", encoding="utf-8", errors="replace") as f:
+                    f.seek(off)
+                    chunk = f.read(1_000_000)   # bounded per check
+            except OSError:
+                return [], hw
+            hw["off"] = off + len(chunk.encode("utf-8", errors="replace"))
+            for ln in chunk.splitlines():
+                if not ln.strip():
+                    continue
+                if pat is None or pat.search(ln):
+                    lines.append(ln)
+        return lines, hw
+    if kind == "process":
+        up = _wd_proc_alive(tgt)
+        was_up = hw.get("up")
+        hw["up"] = up
+        if was_up is True and not up:           # the DOWN edge, only
+            return [f"{tgt} went DOWN"], hw
+        return [], hw
+    # command: run it, match output
+    try:
+        proc = _wd_popen(org, str(w["owner"]), tgt)
+        out, _ = proc.communicate(timeout=60)
+    except subprocess.TimeoutExpired:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+        return [f"(watchdog command timed out after 60s: {tgt[:100]})"], hw
+    except OSError as e:
+        return [f"(watchdog command failed to start: {e})"], hw
+    for ln in (out or "").splitlines():
+        if pat is not None and pat.search(ln):
+            lines.append(ln)
+    return lines, hw
+
+
+def _wd_tick() -> None:
+    for o in store.list_orgs():
+        slug = str(o["slug"])
+        try:
+            org = store.load_org(slug)
+        except LedgerError:
+            continue
+        dogs = cast("list[dict[str, Any]]",
+                    org.d.get("watchdogs") or [])
+        if not dogs:
+            continue
+        now_t = time.time()
+        for w in list(dogs):
+            wid, kind = str(w["id"]), str(w["kind"])
+            key = (slug, wid)
+            if kind == "stream":
+                _wd_ensure_stream(slug, org, w, key)
+                continue
+            if w.get("state") != "armed":
+                continue
+            last = w.get("_last_check_ts") or 0
+            if now_t - float(last) < float(w.get("interval_s") or 60):
+                continue
+            lines, hw = _wd_check_poll(slug, w, org)
+            with store.DOC_LOCK:
+                o2 = store.load_org(slug)
+                try:
+                    w2 = o2._watchdog(wid)
+                except LedgerError:
+                    continue                    # removed mid-check
+                w2["high_water"] = hw
+                w2["last_check"] = now_iso()
+                w2["_last_check_ts"] = now_t
+                store.save_org(o2)
+            if lines:
+                _wd_fire(slug, wid, str(w["name"]), lines)
+    # streams whose dog was removed/paused since spawn: reap
+    with _wd_lock:
+        live_keys = list(_wd_streams.keys())
+    for key in live_keys:
+        slug, wid = key
+        try:
+            org = store.load_org(slug)
+            w = org._watchdog(wid)
+            if w.get("state") == "armed":
+                continue
+        except LedgerError:
+            pass
+        _wd_reap_stream(key)
+
+
+def _wd_ensure_stream(slug: str, org: Org, w: dict[str, Any],
+                      key: tuple[str, str]) -> None:
+    """A stream dog's child runs while the dog is armed; each matching stdout
+    line buffers and fires coalesced (min gap = interval_s, floor 5s). Exit
+    is an event of its own + state 'exited' — resume re-spawns."""
+    with _wd_lock:
+        ent = _wd_streams.get(key)
+    if w.get("state") != "armed":
+        if ent:
+            _wd_reap_stream(key)
+        return
+    if ent is not None and ent["proc"].poll() is None:
+        # running — flush a due buffer
+        gap = max(5.0, float(w.get("interval_s") or 5))
+        with _wd_lock:
+            due = (ent["buf"]
+                   and time.time() - ent["last_fire"] >= gap)
+            batch = list(ent["buf"]) if due else []
+            if due:
+                ent["buf"].clear()
+                ent["last_fire"] = time.time()
+        if batch:
+            _wd_fire(slug, key[1], str(w["name"]), batch)
+        return
+    if ent is not None:
+        # exited — final flush, notify, mark
+        code = ent["proc"].poll()
+        with _wd_lock:
+            tail = list(ent["buf"])
+            _wd_streams.pop(key, None)
+        _wd_fire(slug, key[1], str(w["name"]),
+                 tail + [f"(stream exited with code {code})"],
+                 prefix=" STREAM EXITED —")
+        with store.DOC_LOCK:
+            try:
+                o2 = store.load_org(slug)
+                w2 = o2._watchdog(key[1])
+                w2["state"] = "exited"
+                w2["exit"] = {"code": code, "at": now_iso()}
+                store.save_org(o2)
+            except LedgerError:
+                pass
+        return
+    # not running — spawn + reader
+    try:
+        proc = _wd_popen(org, str(w["owner"]), str(w["target"]))
+    except OSError:
+        return
+    ent = {"proc": proc, "buf": [], "last_fire": 0.0}
+    with _wd_lock:
+        _wd_streams[key] = ent
+    pat = re.compile(str(w["pattern"])) if w.get("pattern") else None
+
+    def read() -> None:
+        try:
+            for ln in proc.stdout or []:
+                ln = ln.rstrip("\r\n")
+                if not ln.strip():
+                    continue
+                if pat is None or pat.search(ln):
+                    with _wd_lock:
+                        if len(ent["buf"]) < 200:
+                            ent["buf"].append(ln)
+        except (OSError, ValueError):
+            pass
+    threading.Thread(target=read, daemon=True,
+                     name=f"wd-stream-{key[1]}").start()
+
+
+def _wd_reap_stream(key: tuple[str, str]) -> None:
+    with _wd_lock:
+        ent = _wd_streams.pop(key, None)
+    if ent is not None:
+        try:
+            ent["proc"].kill()
+        except OSError:
+            pass
+
+
+def start_watchdog_engine() -> None:
+    """FR-18: the one scanner daemon — polls due dogs, keeps stream dogs'
+    children alive (which is also what re-arms them after a restart: the doc
+    is the registry, this loop is just its runtime attachment)."""
+    global _wd_started
+    if _wd_started:
+        return
+    _wd_started = True
+
+    def run() -> None:
+        while True:
+            try:
+                _wd_tick()
+            except Exception:                                    # noqa: BLE001
+                pass
+            time.sleep(5)
+
+    threading.Thread(target=run, daemon=True, name="watchdogs").start()
 
 
 def uuid_hex8() -> str:

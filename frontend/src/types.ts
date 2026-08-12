@@ -324,6 +324,24 @@ export interface AskTab {
   label?: string
 }
 
+/** FR-18: a watchdog — a free persistent pet (ledger `watchdogs`) */
+export interface Watchdog {
+  id: string
+  owner: string
+  name: string
+  kind: 'file' | 'command' | 'process' | 'stream'
+  target: string
+  pattern?: string
+  interval_s: number
+  state: 'armed' | 'paused' | 'exited'
+  at: string
+  fired: number
+  last_check?: string
+  last_fired?: string
+  events?: { at: string; gist: string }[]
+  exit?: { code?: number | null; at?: string }
+}
+
 export type AudienceRequest = Record<string, unknown>
 
 // api.py org_tree: the kiosk block (admin fields scrubbed for visitors)
@@ -478,6 +496,8 @@ export interface TreePayload {
   /** the org's virtual disk (sandboxed, migrated orgs only) — the persistent
    *  hard-full alert and the storage chip render from this state */
   disk?: TreeDisk
+  /** FR-18: the org's watchdogs (canvas satellites + detail panels) */
+  watchdogs?: Watchdog[]
   /** FR-24b: org-level auto-cheap-compact config (null/absent = off) */
   auto_cheap_compact?: { enabled?: boolean; occ?: number; idle_s?: number } | null
   auto_resume: boolean

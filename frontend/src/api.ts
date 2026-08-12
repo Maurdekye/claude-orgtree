@@ -177,6 +177,15 @@ export const answerAsk = (
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
+/** FR-18: the user manages a watchdog from its detail panel */
+export const watchdogAction = (
+  slug: string, id: string, action: 'pause' | 'resume' | 'remove',
+): Promise<{ id: string; name: string; state: string }> =>
+  req(`/api/orgs/${slug}/watchdogs`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id, action }),
+  })
 /** FR-14: the ONE submit over a node's whole request batch — question
  *  answers (null = explicitly skipped), the credits decision, and per-item
  *  scope grants; `revs` echoes the composed card's per-store CAS stamps */

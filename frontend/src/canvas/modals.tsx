@@ -8,17 +8,17 @@ import { useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import type {
-  ChatInit, DirGrant, ToastFn, ToolGrant, TreePayload,
+  ChatInit, DirGrant, ToastFn, ToolGrant, TreePayload, Watchdog,
 } from '../types'
 import {
   dissolveAll, getChat, getMcpServers, remoteControl, saveHireDefaults,
-  saveScope, saveSettings,
+  saveScope, saveSettings, watchdogAction,
 } from '../api'
 import { pickFolder } from '../picker'
 import {
   CloseIcon, DeleteIcon, FolderIcon, LayersIcon, SettingsIcon,
 } from '../icons'
-import { MODEL_VERSIONS, TIER_LETTER, TIER_SEAT, TIERS, USER, useEsc } from './shared'
+import { ago, MODEL_VERSIONS, TIER_LETTER, TIER_SEAT, TIERS, USER, useEsc } from './shared'
 import type { CanvasNode, DraftScope, DraftState, OpFn, Pile } from './shared'
 
 export interface ConfirmModalProps {
@@ -55,6 +55,75 @@ export function ConfirmModal({ title, body, confirmLabel, onConfirm, close,
     </div>
   )
 }
+// FR-18: the watchdog detail panel — the click-through half of the user's
+// spec ("clicking on them shows a description of the process / command /
+// file they're watching. they have a mail tab showing the events they've
+// sent out"). Read-only over the dog's config (a dog is re-created, not
+// edited) + the user's pause/resume/remove.
+export function WatchdogPanel({ slug, dog, toast, close }: {
+  slug: string
+  dog: Watchdog
+  toast: ToastFn
+  close: () => void
+}) {
+  useEsc(close)
+  const act = (a: 'pause' | 'resume' | 'remove') =>
+    watchdogAction(slug, dog.id, a)
+      .then((r) => { toast([`${dog.name}: ${r.state}`]); if (a === 'remove') close() })
+      .catch((e: Error) => toast([`error: ${e.message}`]))
+  return (
+    <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
+      <div className="settings" onClick={(e) => e.stopPropagation()}>
+        <h3>🐕 {dog.name} <span className="dim">· watchdog · {dog.state}</span></h3>
+        <div className="field-label">owner</div>
+        <div className="chip mono">{dog.owner}</div>
+        <div className="field-label">{dog.kind === 'file' ? 'watched file'
+          : dog.kind === 'process' ? 'watched process'
+          : dog.kind === 'stream' ? 'listening command (realtime)'
+          : 'command (each interval)'}</div>
+        <div className="chip mono grow">{dog.target}</div>
+        {dog.pattern && <>
+          <div className="field-label">fires on lines matching</div>
+          <div className="chip mono grow">{dog.pattern}</div>
+        </>}
+        <div className="dim">
+          {dog.kind === 'stream'
+            ? `realtime — fires at most every ${dog.interval_s}s (coalesced)`
+            : `checked every ${dog.interval_s}s`}
+          {' · '}{dog.fired} event{dog.fired === 1 ? '' : 's'} sent
+          {dog.last_fired ? ` · last ${ago(dog.last_fired)} ago` : ''}
+          {' · free (a pet, not a seat)'}
+        </div>
+        {dog.exit && (
+          <div className="ask-warn">stream exited
+            {dog.exit.code != null ? ` (code ${dog.exit.code})` : ''} — resume
+            re-spawns it</div>
+        )}
+        <div className="field-label">events sent
+          ({(dog.events ?? []).length} kept)</div>
+        <div className="wd-events">
+          {(dog.events ?? []).length === 0 &&
+            <div className="dim">none yet — it is watching</div>}
+          {[...(dog.events ?? [])].reverse().map((e, i) => (
+            <div key={i} className="wd-event">
+              <span className="dim">{ago(e.at)} ago</span> {e.gist}
+            </div>
+          ))}
+        </div>
+        <div className="row">
+          {dog.state === 'armed'
+            ? <button onClick={() => act('pause')}>pause</button>
+            : <button className="primary" onClick={() => act('resume')}>
+                {dog.state === 'exited' ? 'resume (re-spawn)' : 'resume'}</button>}
+          <span style={{ flex: 1 }} />
+          <button className="danger" onClick={() => act('remove')}>remove</button>
+          <button onClick={close}>close</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ⚙ on the overseer — the org's agent-hire defaults, symmetric with each
 // agent's own config modal. Granted to hires that don't state tools: top-level
 // agents get exactly this; deeper hires get the ∩ with the superior's

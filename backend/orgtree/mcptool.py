@@ -353,6 +353,55 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "orgtree_watchdog",
+        "description": (
+            "Keep a WATCHDOG — a free, persistent pet that mails you (waking "
+            "you with a turn) when its target produces a matching event. It "
+            "survives orgtree restarts, unlike your session-bound Monitor "
+            "shapes, so it is THE tool for 'tell me when X happens' across "
+            "hours or days: a build/deploy finishing, an error appearing in "
+            "a log, a file another process drops, a service going down. "
+            "Kinds: file (poll a path; new content matching `pattern` fires "
+            "— events during orgtree's own downtime are recovered), command "
+            "(run a command each interval, matching output fires), process "
+            "(pid:N or port:N liveness — fires on the DOWN edge), stream (a "
+            "persistent LISTENING command, e.g. a tail; each matching output "
+            "line fires the moment it occurs — realtime, but output during "
+            "orgtree downtime is lost). A command/stream dog runs WITH YOUR "
+            "HANDS (needs your bash; runs in your sandbox if you have one). "
+            "Costs no credits; capped at 8 per agent. Actions: create, list, "
+            "pause, resume, remove — superiors may manage their subtree's. "
+            "Prefer a watchdog over burning turns polling for a condition "
+            "yourself."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string",
+                           "enum": ["create", "list", "pause", "resume",
+                                    "remove"]},
+                "name": {"type": "string",
+                         "description": "create: a short name, e.g. "
+                                        "build-watch"},
+                "kind": {"type": "string",
+                         "enum": ["file", "command", "process", "stream"]},
+                "target": {"type": "string",
+                           "description": "the path, command line, or "
+                                          "pid:N / port:N"},
+                "pattern": {"type": "string",
+                            "description": "regex an event line must match "
+                                           "(required for command; optional "
+                                           "for file/stream = any line)"},
+                "interval_s": {"type": "integer", "minimum": 5,
+                               "description": "poll cadence (floor 15s); "
+                                              "for stream: the minimum gap "
+                                              "between fires (floor 5s)"},
+                "id": {"type": "string",
+                       "description": "pause/resume/remove: the watchdog id"},
+            },
+            "required": ["action"],
+        },
+    },
+    {
         "name": "orgtree_hire",
         "description": (
             "Hire a subagent under you (or deeper in your subtree). There are NO "

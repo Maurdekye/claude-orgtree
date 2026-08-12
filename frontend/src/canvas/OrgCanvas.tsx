@@ -12,7 +12,7 @@ import {
   AddIcon, FrozenIcon, FullscreenIcon, PublicIcon, RemoveIcon, ViewListIcon,
 } from '../icons'
 import {
-  ago, DRAFT, ease, EXTERN, flatten, INBOX, INBOX_H, layout, NODE_H, NODE_W, orgPxc, segD,
+  ago, DOG_H, DOG_W, DRAFT, ease, EXTERN, flatten, INBOX, INBOX_H, layout, NODE_H, NODE_W, orgPxc, segD,
   segPoint, sizeOf, smooth, SPRING_C, SPRING_K, TIER_LETTER, USER, USER_H,
   USER_W, withDraftTree, Z_DESK, Z_MAX, Z_MINI,
 } from './shared'
@@ -23,7 +23,7 @@ import type {
 import { Activity, ContextWheel, LineagePanel } from './desk'
 import { DocReader } from './docs'
 import { NodeInboxModal, OrgInboxModal } from './mail'
-import { NodeConfig, PilePicker, UserConfig } from './modals'
+import { NodeConfig, PilePicker, UserConfig, WatchdogPanel } from './modals'
 import { DraftNode, NodeSquare, UserNode } from './cards'
 
 export interface OrgCanvasProps {
@@ -53,6 +53,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
   // the org inbox for outbound. Jump ids clear when the modal closes.
   const [nodeInboxJump, setNodeInboxJump] = useState<string | null>(null)
   const [oiJump, setOiJump] = useState<string | null>(null)
+  const [dogView, setDogView] = useState<string | null>(null)  // FR-18 panel
   // the eye's unread-mail GLOW is gone (user ruling 2026-08-04: only agents
   // that need the user's answer glow; the header ask icon carries the rest).
   // The seen-stamp bookkeeping stays: the inbox count badge still uses it.
@@ -195,6 +196,23 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
         t.set(n.id, {
           x: p.x + 42 + 18 * n.bearerIndex!,
           y: p.y - (NODE_H + 26) - 20 * n.bearerIndex!,
+        })
+      }
+    }
+    // FR-18: watchdogs float to the LEFT of their owner (bearers own the
+    // upper-right), stacking downward — satellite entities, never laid out
+    // in the hierarchy. Having a target position is ALL a spark needs, so
+    // launchSpark(dog → owner) works with zero animation code.
+    {
+      const perOwner: Record<string, number> = {}
+      for (const w of tree.watchdogs ?? []) {
+        if (!t.has(w.owner)) continue
+        const p = t.get(w.owner)!
+        const i = perOwner[w.owner] ?? 0
+        perOwner[w.owner] = i + 1
+        t.set('dog:' + w.id, {
+          x: p.x - (DOG_W + 26),
+          y: p.y + 4 + (DOG_H + 10) * i,
         })
       }
     }
@@ -1126,6 +1144,15 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
               d={`M ${a.x + NODE_W - 10} ${a.y + 8} L ${b.x + 10} ${b.y + NODE_H - 8}`}
               className="edge tether" />
           })}
+          {/* FR-18: the watchdog wire — the user's spec verbatim ("connected
+              to their owner with a wire"); the spark rides it on each fire */}
+          {(tree.watchdogs ?? []).map((w) => {
+            const a = posOf('dog:' + w.id), b = posOf(w.owner)
+            if (!a || !b) return null
+            return <path key={'w' + w.id}
+              d={`M ${a.x + DOG_W - 4} ${a.y + DOG_H / 2} L ${b.x + 4} ${b.y + 24}`}
+              className={'edge tether wd' + (w.state !== 'armed' ? ' off' : '')} />
+          })}
           {tree.org_inbox?.visible && posOf(INBOX) && (() => {
             // no box↔eye tether (user revision) — the panel stands alone;
             // only audience lines to its holders. Those connect FACING sides:
@@ -1257,6 +1284,27 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
               </div>
               {square}
             </span>
+          )
+        })}
+        {/* FR-18: watchdog chips — tiny satellite cards beside their owner
+            (the user's spec: named; click for the detail + sent-events
+            panel). Not agents: no chrome beyond name + state glyph. */}
+        {(tree.watchdogs ?? []).map((w) => {
+          const p = posOf('dog:' + w.id)
+          if (!p || hidden.has(w.owner)) return null
+          return (
+            <button key={'dog' + w.id}
+              className={'wd-chip ' + w.state}
+              style={{ transform: `translate(${p.x}px, ${p.y}px)`,
+                       width: DOG_W, height: DOG_H }}
+              title={`watchdog "${w.name}" (${w.kind}) — ${w.state}; `
+                + 'click for detail'}
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => { e.stopPropagation(); setDogView(w.id) }}>
+              <span className="wd-glyph">{w.state === 'armed' ? '◉'
+                : w.state === 'paused' ? '◫' : '✕'}</span>
+              <span className="wd-name">{w.name}</span>
+            </button>
           )
         })}
         {tree.org_inbox?.visible && posOf(INBOX) && (
@@ -1460,6 +1508,11 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
       {lineageId && map.get(lineageId) && (
         <LineagePanel node={map.get(lineageId)!} op={op} slug={slug}
           close={() => setLineageId(null)} />
+      )}
+      {dogView && (tree.watchdogs ?? []).some((w) => w.id === dogView) && (
+        <WatchdogPanel slug={slug} toast={toast}
+          dog={(tree.watchdogs ?? []).find((w) => w.id === dogView)!}
+          close={() => setDogView(null)} />
       )}
       {docView && (
         <DocReader slug={slug} docId={docView} toast={toast}
