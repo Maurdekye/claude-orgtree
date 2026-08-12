@@ -891,6 +891,23 @@ the docket's "transcript is in the scratch dir" premise was wrong and the
 copy is the fix. The compact dialog warns when the node is idle past the
 cache TTL, which is the moment the choice actually matters.
 
+### D-120 · liveness, not the successor link, decides the org axis
+Ruling (user, 2026-08-12, verbatim in the redteam session — provenance
+verified by the implementer against the session's own queue log): "keep the
+successor link, but amend the rule to only hide retired predecessors with a
+successor link. just having a successor link alone shouldnt be enough to
+cause it to not be rendered." So `org_children` hides a node only when it
+has a successor AND is not live: an archived bearer still steps off the org
+axis (§8.5 holds for the dead), while a REHIRED one — standalone or
+subordinate — is an org child like any other, with the full card, desk and
+controls. Supersedes the FR-24-era acceptance that filtered on the link
+alone, which left a live, spending session visible-at-best and inoperable
+(and, via an unplaced-node spark, crashed the canvas — that guard is the
+companion fix, not the ruling). frontend `flatten()` now synthesizes lineage
+pseudo-cards only for non-live, non-archived generations: a live bearer
+arrives through `children`, and a pseudo for the same id would let sibling
+order decide which card wins. (a7d0bb2 + the flatten tightening)
+
 ### D-119 · a command dog's runtime is off the scheduler's thread
 Engine-shape decision (implementer, 2026-08-12, from a redteam measurement):
 `_wd_tick` walked every org serially and ran command checks inline, so ONE

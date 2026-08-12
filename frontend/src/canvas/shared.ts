@@ -297,10 +297,16 @@ export function flatten(root: CanvasNode, seats: Record<string, number>): Map<st
   const map = new Map<string, CanvasNode>()
   const walk = (n: CanvasNode, parent: string | null) => {
     map.set(n.id, { ...n, parent })
-    // live (rehired) lineage bearers surface as consultable cards beside their
-    // successor — never as org children (§8.5)
+    // pseudo-cards are for lineage entries the org axis does NOT carry.
+    // User ruling 2026-08-12 (a7d0bb2): a LIVE bearer is an org child again —
+    // it arrives through `children` as a full node, so synthesizing a pseudo
+    // for it here would set the same id twice and let SIBLING ORDER decide
+    // which card wins (bearer before successor ⇒ the pseudo overwrites the
+    // real card, and the affordance gap the ruling killed quietly returns).
+    // Only non-live, non-archived entries (e.g. an unrecoverable generation)
+    // still float beside their successor.
     ;(n.lineage ?? []).forEach((b, i) => {
-      if (b.state !== 'archived') {
+      if (b.state !== 'archived' && b.state !== 'live') {
         map.set(b.id, {
           id: b.id, title: b.id, tier: b.tier, state: b.state,
           bearer_state: b.bearer_state, generation: b.generation,
