@@ -4079,6 +4079,9 @@ class Org:
         elif action == "resume":
             w["state"] = "armed"
             w.pop("exit", None)
+            # an engine-side pause explains itself (supervisor `_wd_pause`);
+            # resuming is the answer to it, so the reason goes with it
+            w.pop("paused_why", None)
         elif action == "remove":
             self.d.setdefault("watchdogs", []).remove(w)
         else:

@@ -4470,6 +4470,55 @@ def _wd_popen(org: Org, owner: str, cmd: str) -> subprocess.Popen[str]:
                        if os.name == "nt" else 0))
 
 
+def _wd_owner_lost(org: Org, w: dict[str, Any]) -> str | None:
+    """Why this armed dog must stop, or None to let it run — the authority
+    re-check the tick loop was missing (redteam, 2026-08-12).
+
+    A dog's authority was established once, at `watchdog_create`, and never
+    looked at again. Two ways that went wrong, both measured:
+
+      · the lifecycle ruling says an ARCHIVED owner PAUSES its dogs, but
+        `watchdog_fire` was the only thing that could pause one — so the
+        pause depended on the dog happening to fire. A stream dog whose
+        output never matched kept its CHILD PROCESS running, on the host,
+        with the org's key in its environment, for an owner that had been
+        retired. Nothing would ever have stopped it.
+      · `watchdog_create` refuses a command/stream dog to an owner without
+        bash, and correctly still does — but revoking bash afterwards left
+        the existing dog executing its command every interval. A capability
+        that outlives its revocation is not a capability, it is a leak.
+
+    Both are the same root: the hands are checked when the dog is armed, and
+    a dog outlives the moment it was armed. So the check belongs here, on
+    every tick, where the rule can actually hold."""
+    owner = str(w["owner"])
+    n = org.nodes.get(owner)
+    if n is None:
+        return "its owner is gone from the org"
+    if n["state"] != "live":
+        return f"its owner is {n['state']}"
+    if str(w["kind"]) in ("command", "stream") \
+            and not n["scope"]["tools"].get("bash"):
+        return "its owner no longer holds bash — the hands it runs with"
+    return None
+
+
+def _wd_pause(slug: str, wid: str, why: str) -> None:
+    """Persist an engine-side pause with its reason, so `resume` is an
+    informed choice rather than a guess (the reason clears on resume)."""
+    with store.DOC_LOCK:
+        try:
+            org = store.load_org(slug)
+            w = org._watchdog(wid)
+            if w.get("state") != "armed":
+                return
+            w["state"] = "paused"
+            w["paused_why"] = why
+            store.save_org(org)
+        except LedgerError:
+            return
+
+
 def _wd_fire(slug: str, wid: str, name: str, lines: list[str],
              prefix: str = "") -> None:
     """Record + mail + drive + spark. Every step tolerates the dog or owner
@@ -4563,6 +4612,12 @@ def _wd_tick() -> None:
         for w in list(dogs):
             wid, kind = str(w["id"]), str(w["kind"])
             key = (slug, wid)
+            if w.get("state") == "armed":
+                why = _wd_owner_lost(org, w)
+                if why:
+                    _wd_pause(slug, wid, why)
+                    _wd_reap_stream(key)
+                    continue
             if kind == "stream":
                 _wd_ensure_stream(slug, org, w, key)
                 continue

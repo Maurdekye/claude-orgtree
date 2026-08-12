@@ -1669,6 +1669,70 @@ def main():
                         for w in orgW.d["watchdogs"])
         else (_ for _ in ()).throw(AssertionError("delete left a dog"))
     )[-1])
+    def _authority_is_rechecked_every_tick():
+        # The lifecycle check above proves `watchdog_fire` pauses on an
+        # archived owner — but firing was the ONLY thing that could pause a
+        # dog, so the rule held only for dogs that happened to fire. Measured
+        # 2026-08-12: a stream dog whose output never matched its pattern kept
+        # its CHILD PROCESS alive on the host, with the org's key in its
+        # environment, for an owner that had been retired — nothing would ever
+        # have stopped it. Same root, second face: `watchdog_create` refuses a
+        # command dog to an owner without bash (and still does), but revoking
+        # bash afterwards left the existing dog executing every interval.
+        # The engine now re-asks on every tick, before it polls a dog or keeps
+        # a stream's child alive. This is the predicate it asks.
+        from orgtree import supervisor                          # noqa: PLC0415
+        o = Org.create("wd-authority", dirs=["E:/w"])
+        o.hire(USER, None, "haiku", 5, "keeper")
+        o.set_scope(USER, "keeper", tools={"bash": True, "web": False,
+                                           "edit": True, "subagents": False,
+                                           "mcp": []})
+        o.watchdog_create("keeper", "s", "stream", "tail -f x",
+                          pattern="ERROR")
+        o.watchdog_create("keeper", "f", "file", "E:/w/b.log")
+        dog = {w["name"]: w for w in o.d["watchdogs"]}
+        assert supervisor._wd_owner_lost(o, dog["s"]) is None
+        # bash revoked: the hands the command runs with are gone…
+        o.set_scope(USER, "keeper", tools={"bash": False, "web": False,
+                                           "edit": True, "subagents": False,
+                                           "mcp": []})
+        assert "bash" in (supervisor._wd_owner_lost(o, dog["s"]) or ""), \
+            supervisor._wd_owner_lost(o, dog["s"])
+        # …but a FILE dog never needed them, and keeps watching
+        assert supervisor._wd_owner_lost(o, dog["f"]) is None
+        # archived owner: every kind stops, fire or no fire
+        o.retire(USER, "keeper")
+        for k in ("s", "f"):
+            assert "archived" in (supervisor._wd_owner_lost(o, dog[k]) or ""), k
+        o.rehire(USER, "keeper", grant=0)
+        assert supervisor._wd_owner_lost(o, dog["f"]) is None
+        # a deleted owner is gone rather than archived — dogs die with it, so
+        # this predicate is the belt to that braces
+        o.delete(USER, "keeper")
+        assert supervisor._wd_owner_lost(o, dog["f"]) == \
+            "its owner is gone from the org"
+    check("authority: an armed dog's hands are re-checked, not remembered "
+          "from the moment it was armed", _authority_is_rechecked_every_tick)
+
+    def _the_tick_actually_asks():
+        # drift guard: the predicate above is only worth anything if the tick
+        # consults it BEFORE the two things that act on a dog — polling it and
+        # keeping a stream's child alive.
+        import inspect                                          # noqa: PLC0415
+        from orgtree import supervisor                          # noqa: PLC0415
+        src = inspect.getsource(supervisor._wd_tick)
+        assert "_wd_owner_lost" in src, \
+            "the tick no longer re-checks the owner at all"
+        i = src.index("_wd_owner_lost")
+        for later in ("_wd_ensure_stream", "_wd_check_poll"):
+            assert src.index(later) > i, (
+                f"{later} now runs before the authority check — a dog with no "
+                f"owner would act once more before stopping")
+        assert "_wd_reap_stream" in src[i:], (
+            "the pause no longer kills the stream's child; the process would "
+            "outlive the dog that owns it")
+    check("authority: …and the tick asks before it acts", _the_tick_actually_asks)
+
     check("caps: the 8-per-agent ceiling refuses the ninth", lambda: (
         [orgW.watchdog_create("boss", f"d{i}", "file", f"f{i}.log")
          for i in range(7)],
