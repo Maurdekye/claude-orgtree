@@ -107,6 +107,17 @@ if ($dirty.Trim()) {
         exit 1
     }
 }
+# The LOCKFILE leg of the guard (redteam objection to the 4b2729e pass-list):
+# a lockfile is the ONE pass-listed file that changes what the build ships, so
+# its exemption is verified rather than trusted. Snapshot its dirty hash now;
+# after `npm install` runs, dirt the install did not itself reproduce -- a
+# hand edit npm rewrites -- refuses BEFORE the restart (nothing has shipped
+# yet). Residual, on the record: a hand edit npm reproduces verbatim passes
+# both this and any before/after shape; package.json edits (the way dependency
+# changes actually arrive) are caught by the main guard above.
+$lockPath = Join-Path $root 'frontend\package-lock.json'
+$lockDirtyBefore = ((git status --porcelain -- frontend/package-lock.json) | Out-String).Trim()
+$lockHashBefore = if ($lockDirtyBefore) { (Get-FileHash $lockPath -Algorithm SHA256).Hash } else { $null }
 git pull --ff-only
 if ($LASTEXITCODE -ne 0) {
     Write-Host "git pull FAILED (exit $LASTEXITCODE) -- resolve manually. Nothing was rebuilt and nothing was restarted." -ForegroundColor Red
@@ -178,6 +189,15 @@ Write-Host "`n== building the UI =="
 Set-Location (Join-Path $root 'frontend')
 npm install --no-audit --no-fund
 if ($LASTEXITCODE -ne 0) { Write-Host "npm install failed" -ForegroundColor Red; exit 1 }
+if ($lockHashBefore -and -not $AllowDirty) {
+    $lockHashAfter = (Get-FileHash $lockPath -Algorithm SHA256).Hash
+    if ($lockHashAfter -ne $lockHashBefore) {
+        Write-Host "REFUSING to continue: frontend/package-lock.json was dirty BEFORE the install and the install rewrote it -- that dirt was a hand edit, not npm's own recomputation. Nothing was restarted." -ForegroundColor Red
+        Write-Host "Commit or checkout the lockfile, then redeploy (or -AllowDirty to override)." -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "note: package-lock.json carries npm's own recomputation (stable under this npm) -- tolerated; consider committing it once"
+}
 
 # esbuild self-heal. Vite builds with esbuild, whose binary ships as an
 # OPTIONAL per-platform package (@esbuild/<os>-<cpu>) rather than a postinstall

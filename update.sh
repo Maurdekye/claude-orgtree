@@ -167,6 +167,16 @@ if [ -n "$DIRTY" ]; then
   # ORGTREE_ALLOW_DIRTY=1 overrides, for the operator who owns the dirt.
   BUILDING=$(echo "$DIRTY" | cut -c4- | grep -vE '^docs/' | grep -vE '\.md$' \
              | grep -vE '^frontend/package-lock\.json$' || true)
+  # the lockfile leg (redteam objection to the 4b2729e pass-list): the
+  # exemption above is VERIFIED after npm install rather than trusted —
+  # snapshot the dirty lockfile's hash now; dirt the install does not itself
+  # reproduce (a hand edit npm rewrites) refuses before the restart.
+  # Residual on the record: a hand edit npm reproduces verbatim passes both
+  # shapes; package.json edits are caught by the main guard.
+  LOCK_HASH_BEFORE=""
+  if git status --porcelain -- frontend/package-lock.json | grep -q .; then
+    LOCK_HASH_BEFORE=$(git hash-object frontend/package-lock.json)
+  fi
   if [ -n "$BUILDING" ] && [ "${ORGTREE_ALLOW_DIRTY:-}" != "1" ]; then
     echo "REFUSING to deploy: uncommitted changes in files this build would ship:"
     echo "$BUILDING" | sed 's/^/    /'
@@ -194,6 +204,13 @@ fi
 printf '\n== building the UI ==\n'
 cd "$ROOT/frontend" || die "no frontend/ directory"
 npm install --no-audit --no-fund || die "npm install failed"
+if [ -n "${LOCK_HASH_BEFORE:-}" ] && [ "${ORGTREE_ALLOW_DIRTY:-}" != "1" ]; then
+  LOCK_HASH_AFTER=$(git hash-object package-lock.json)
+  if [ "$LOCK_HASH_AFTER" != "$LOCK_HASH_BEFORE" ]; then
+    die "REFUSING: frontend/package-lock.json was dirty BEFORE the install and the install rewrote it — that dirt was a hand edit, not npm's own recomputation. Commit or checkout the lockfile, then redeploy (ORGTREE_ALLOW_DIRTY=1 overrides). Nothing was restarted."
+  fi
+  echo "note: package-lock.json carries npm's own recomputation (stable under this npm) — tolerated; consider committing it once"
+fi
 
 # esbuild self-heal. Vite builds with esbuild, whose binary ships as an
 # OPTIONAL per-platform package (@esbuild/<os>-<cpu>) rather than a postinstall
