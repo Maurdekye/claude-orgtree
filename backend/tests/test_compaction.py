@@ -461,10 +461,24 @@ def bearer_rules() -> None:
                             for w in r.get("warnings", []))))
     check("rehire · a live bearer still carries bearer_state",
           lambda: _eq(org.nodes[pred]["bearer_state"], "knowledge"))
-    check("rehire · a live bearer pays a seat but stays OFF the org chart "
-          "(§8.5 — it is lineage, not an org edge)",
+    # USER RULING 2026-08-12, replacing the older "a live bearer stays OFF the
+    # org chart" rule this check used to pin: the `successor` link stays, but
+    # it is not on its own enough to hide a node. A REHIRED bearer works —
+    # takes turns, spends credits, answers mail — and hiding a live spending
+    # session from the axis its operator manages by cost the user control of
+    # it (the neoja org hit it as a canvas crash: a node in the map that
+    # `layout` never placed). Retired AND succeeded hides; succeeded alone
+    # does not.
+    check("rehire · a REHIRED bearer is on the org chart — the successor "
+          "link alone does not hide a working agent (user ruling)",
           lambda: _true(pred in org.children(a)
-                        and pred not in org.org_children(a)))
+                        and pred in org.org_children(a)))
+    check("rehire · …and the OTHER half of that ruling still holds: retire "
+          "it again and the archived bearer leaves the org axis",
+          lambda: (org.retire(USER, pred),
+                   _true(pred in org.children(a, live_only=False)
+                         and pred not in org.org_children(a)),
+                   org.rehire(USER, pred, grant=0))[1])
     check("rehire · …so the successor's committed credit counts it",
           lambda: _true(org.committed(a) >= org.seat_cost(pred)))
 

@@ -543,10 +543,21 @@ class Org:
         return a == USER or a in self.ancestors(nid)
 
     def org_children(self, nid: str | None) -> list[str]:
-        """Children on the ORG axis only — lineage predecessors (nodes with a
-        `successor`) share the parent slot but are NOT organizational children (§8.5)."""
+        """Children on the ORG axis only — an ARCHIVED lineage predecessor
+        shares the parent slot but is not an organizational child (§8.5).
+
+        User ruling 2026-08-12: the `successor` link stays, but it is not on
+        its own enough to hide a node. A predecessor that has been REHIRED is
+        a working agent — it takes turns, spends credits and answers mail like
+        any report — and the filter used to drop it from the org axis on the
+        strength of the link alone. That cost the operator the whole point of
+        the axis: a live, spending session with no card, no desk tab and no
+        controls, which the neoja org hit as a canvas crash (a node in the
+        map that `layout` never placed). So the test is retired AND
+        succeeded, not succeeded alone."""
         return [k for k in self.children(nid, live_only=False)
-                if not self.nodes[k].get("successor")]
+                if not (self.nodes[k].get("successor")
+                        and self.nodes[k]["state"] != "live")]
 
     def lineage_stack(self, nid: str) -> list[str]:
         """Predecessor chain of nid, newest first."""

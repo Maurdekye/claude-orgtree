@@ -385,6 +385,23 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
     }
     const a = norm(from), b = norm(to)
     if (a === b || !m.has(a) || !m.has(b)) return
+    // ⚠ presence in `m` is NOT a position (neoja org, 2026-08-12 — a crash,
+    // not a cosmetic gap). The seg builders assert `posOf(id)!` and the
+    // contract at the top of this block says every caller pre-checks BOTH
+    // endpoints; this caller pre-checked the node map instead. A node that
+    // the backend returns but `layout` never places — a live lineage bearer
+    // whose successor is archived is the case that bit, since bearers are
+    // positioned only relative to a positioned successor — then reached
+    // `b.x` on undefined and took the WHOLE canvas down, deterministically,
+    // on every spark to or from it. Refreshing could not help.
+    //
+    // The guard is on the ids actually used, not just the endpoints: the
+    // tree path walks ancestors and the sibling path walks a row, and any
+    // of those may be unplaced for the same reason. An unplaceable spark is
+    // simply not drawn — the animation is decoration, and no decoration is
+    // worth a blank canvas.
+    const placed = (id: string) => posOf(id) !== undefined
+    if (!placed(a) || !placed(b)) return
     const segs: (Seg & { rev: boolean })[] = []
     const aud = audSetRef.current
     if (aud.has(a + '→' + b) || aud.has(b + '→' + a)) {
@@ -392,7 +409,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
       segs.push({ ...audSeg(g, e), rev: g !== a })
     } else if (a !== USER && b !== USER && m.get(a)?.parent === m.get(b)?.parent) {
       const sibs = (m.get(m.get(a)!.parent!)?.children ?? []).map((c) => c.id)
-        .filter((k) => m.has(k) && k !== DRAFT)
+        .filter((k) => m.has(k) && k !== DRAFT && placed(k))
         .sort((p, q) => (targetRef.current.get(p)?.x ?? 0) - (targetRef.current.get(q)?.x ?? 0))
       const ia = sibs.indexOf(a), ib = sibs.indexOf(b)
       if (ia < 0 || ib < 0) return
@@ -409,6 +426,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
         return out
       }
       const ca = chain(a), cb = chain(b)
+      if (!ca.every(placed) || !cb.every(placed)) return
       const inB = new Set(cb)
       const lca = ca.find((k) => inB.has(k))!   // both chains end at USER
       for (let i = 0; ca[i] !== lca; i++) segs.push({ ...treeSeg(ca[i + 1]!, ca[i]!), rev: true }) // nUIA: lca ∈ ca ⇒ i+1 stays in range
