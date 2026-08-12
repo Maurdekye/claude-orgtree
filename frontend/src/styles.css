@@ -2206,16 +2206,16 @@ a.attach-chip:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--
    carries the rest */
 .wd-chip {
   position: absolute; top: 0; left: 0; z-index: 2;
-  display: flex; align-items: center; gap: 4px; padding: 0 6px;
+  display: flex; align-items: center; gap: 3px; padding: 0 4px;
   background: var(--panel); border: 1px solid var(--line);
-  border-radius: 6px; cursor: pointer; font-size: 9px;
+  border-radius: 5px; cursor: pointer; font-size: 8.5px;
   color: var(--ink); box-shadow: var(--shadow);
 }
 .wd-chip .wd-name {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  font-family: var(--mono);
+  font-family: var(--mono); min-width: 0;
 }
-.wd-chip .wd-glyph { flex: none; font-size: 10px; }
+.wd-chip .wd-glyph { flex: none; font-size: 8.5px; }
 .wd-chip.armed .wd-glyph { color: var(--ok, #4a9); }
 .wd-chip.paused { opacity: .6; }
 .wd-chip.exited { border-color: var(--accent); }
@@ -2227,3 +2227,14 @@ a.attach-chip:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--
 }
 .wd-event { padding: 2px 0; border-bottom: 1px dotted var(--line); }
 .wd-event:last-child { border-bottom: none; }
+/* user bug 2026-08-12: the target/pattern chips truncate long commands with
+   no way to read the rest. Click toggles this on: drop the single-line
+   ellipsis and let the text wrap in place instead. Three classes to match
+   (and, by appearing later in the sheet, win the tie against) `.settings
+   .chip.grow`'s forced `white-space: nowrap` — two classes alone would lose
+   on specificity regardless of source order. */
+.wd-cmd { cursor: pointer; }
+.chip.grow.wd-expand {
+  overflow: visible; text-overflow: clip; white-space: pre-wrap;
+  word-break: break-all;
+}

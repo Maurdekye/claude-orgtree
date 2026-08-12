@@ -67,6 +67,10 @@ export function WatchdogPanel({ slug, dog, toast, close }: {
   close: () => void
 }) {
   useEsc(close)
+  // user bug 2026-08-12: the command/pattern chips truncate long values with
+  // no way to read the rest — click either to toggle full, wrapped text.
+  const [expTarget, setExpTarget] = useState(false)
+  const [expPattern, setExpPattern] = useState(false)
   const act = (a: 'pause' | 'resume' | 'remove') =>
     watchdogAction(slug, dog.id, a)
       .then((r) => { toast([`${dog.name}: ${r.state}`]); if (a === 'remove') close() })
@@ -81,10 +85,14 @@ export function WatchdogPanel({ slug, dog, toast, close }: {
           : dog.kind === 'process' ? 'watched process'
           : dog.kind === 'stream' ? 'listening command (realtime)'
           : 'command (each interval)'}</div>
-        <div className="chip mono grow">{dog.target}</div>
+        <div className={'chip mono grow wd-cmd' + (expTarget ? ' wd-expand' : '')}
+          title="click to see the full text"
+          onClick={() => setExpTarget((v) => !v)}>{dog.target}</div>
         {dog.pattern && <>
           <div className="field-label">fires on lines matching</div>
-          <div className="chip mono grow">{dog.pattern}</div>
+          <div className={'chip mono grow wd-cmd' + (expPattern ? ' wd-expand' : '')}
+            title="click to see the full text"
+            onClick={() => setExpPattern((v) => !v)}>{dog.pattern}</div>
         </>}
         <div className="dim">
           {dog.kind === 'stream'
