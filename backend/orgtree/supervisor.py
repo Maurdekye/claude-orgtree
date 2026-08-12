@@ -4948,15 +4948,40 @@ def _sweep_live(slug: str, nid: str, msgs: list[dict[str, Any]]) -> list[dict[st
     is dropped on a clock: a row survives until its durable twin is visible.
 
     Sticky rows (immediate /context output) are in no transcript, ever, so
-    they are never swept — only the turn's end clears them."""
-    tail = msgs[-12:]
+    they are never swept — only the turn's end clears them.
+
+    ⚠ The match window is PER KIND, and that is the whole point of this
+    block (redteam, 2026-08-12, on a report from the neoja org; measured: a
+    20-step unwatched turn stranded 8 rows whose twins were all present).
+    The sweep runs only inside `read_chat`, and the desk polls only while
+    someone is looking — so a turn that ran unwatched presents its whole
+    backlog at the first poll. Judging that backlog against a fixed 12-row
+    tail retired the last handful and STRANDED the rest for the remainder of
+    the turn: the sweep's quality must not depend on when a human happened to
+    open the desk.
+      · tool — the whole transcript. `tool_use_id` is globally unique, so a
+        match IS the durable twin, and there is no false-retire to fear.
+      · text — this TURN (everything after the last user row). Text has no
+        id and is matched by its first 300 chars, so the window is not
+        arbitrary caution: widening it to all of history would let a phrase
+        the agent used yesterday retire today's live row. Per-turn is the
+        largest window that cannot collide with history, and any strand
+        inside it is bounded by the turn the row belongs to anyway.
+      · thought — unchanged; it has neither id nor text and rides the
+        ordering rule below.
+    D-50 holds throughout: every retirement still names the evidence."""
+    turn = msgs
+    for i in range(len(msgs) - 1, -1, -1):
+        if msgs[i].get("role") == "user":
+            turn = msgs[i + 1:]
+            break
 
     def head_of(r: dict[str, Any]) -> str:
         return (r.get("text") or "")[:300]
 
     def durable_texts(head: str) -> int:
-        """How many durable assistant rows in the tail carry this text."""
-        return sum(1 for m in tail if m.get("role") == "assistant"
+        """How many durable assistant rows in THIS TURN carry this text."""
+        return sum(1 for m in turn if m.get("role") == "assistant"
                    and (m.get("text") or "").startswith(head))
 
     def covered(r: dict[str, Any], budget: dict[str, int]) -> bool:
@@ -4965,7 +4990,7 @@ def _sweep_live(slug: str, nid: str, msgs: list[dict[str, Any]]) -> list[dict[st
         kind = r.get("kind")
         if kind == "tool":
             return any(t.get("id") and t["id"] == r.get("id")
-                       for m in tail for t in (m.get("tools") or []))
+                       for m in msgs for t in (m.get("tools") or []))
         if kind == "text":
             # ⚠ COUNTED, not merely matched. An agent that says the same thing
             # twice in one turn ("done." after two edits) used to have its
@@ -5357,11 +5382,17 @@ def read_chat(org: Org, nid: str, last: int | None = None) -> dict[str, Any]:
     # scrolled off the 300-row window (review)
     for i, m in enumerate(msgs):
         m["seq"] = i
+    # ⚠ the sweep judges against the WHOLE transcript, never the slice below
+    # (redteam, 2026-08-12): `last` is the viewer's window, and a live row's
+    # twin scrolling out of it is not evidence the twin does not exist. Under
+    # the old order a small `last` silently narrowed the reconciliation and
+    # stranded rows the client had already been shown. Slice for the payload,
+    # reconcile against everything.
+    out["live"] = _sweep_live(org.d["slug"], nid, msgs)
     if last is not None and last > 0:
         msgs = msgs[-last:]
     out["messages"] = msgs
     out["occupancy"] = occupancy
-    out["live"] = _sweep_live(org.d["slug"], nid, msgs)
     if n.get("bearer_state") == "preserving":
         for ex in n.get("oracle_exchanges", []):
             out["messages"].append({"role": "user", "text": ex["q"], "tools": [],

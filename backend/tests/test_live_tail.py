@@ -600,7 +600,7 @@ def main() -> int:
                   run_shape(s, len(s), tu, think_body="hmm", label="stream"))
 
     # ------------------------------------------------------- ⑤ long turns
-    print("\nlong turns (the tail slides past the 12-row match window)")
+    print("\nlong turns, unwatched turns, and the limits of the match window")
 
     def _long_turn():
         w = World("long")
@@ -622,24 +622,77 @@ def main() -> int:
 
     def _burst_then_poll():
         # the whole turn streams before a single poll lands (a fast turn, or a
-        # browser that missed its heartbeat)
+        # desk nobody had open — the sweep runs ONLY inside read_chat, so an
+        # unwatched turn presents its entire backlog at the first look).
+        # ⚠ N must EXCEED the match window by a wide margin, or this check
+        # cannot fail the way the real defect failed: it stood at 6 steps —
+        # 12 durable rows, exactly the old fixed tail — and so passed against
+        # a sweep that stranded everything older than 12 (measured 2026-08-12:
+        # 8 of 20 rows left on screen for the rest of the turn, every one of
+        # them with its durable twin already written).
         w = World("burst")
+        N = 20
         try:
             w.write_user("go")
-            for i in range(6):
+            for i in range(N):
                 w.emit_thought(1)
                 w.emit_tool(f"t{i}")
+                w.write_text(f"step {i}")
                 w.write_think()
                 w.write_tool(f"t{i}")
             c = w.poll()
             assert c["live"] == [], f"one poll retires the lot ({c['live']})"
             steps = durable_steps(c)
-            assert steps.count("think") == 6 and \
-                sum(1 for s in steps if s.startswith("tool:")) == 6
+            assert steps.count("think") == N and \
+                sum(1 for s in steps if s.startswith("tool:")) == N
         finally:
             w.destroy()
     check("a whole turn streamed before the first poll reconciles in one go",
           _burst_then_poll)
+
+    def _sweep_ignores_the_viewers_window():
+        # the other half of the same contract: `last` is the SIZE OF THE
+        # CLIENT'S WINDOW, not evidence about what the transcript holds. The
+        # sweep used to run on the sliced list, so a desk asking for a short
+        # tail silently narrowed the reconciliation and stranded rows it had
+        # already been shown.
+        w = World("window")
+        try:
+            w.write_user("go")
+            for i in range(20):
+                w.emit_tool(f"t{i}")
+                w.write_tool(f"t{i}")
+            c = supervisor.read_chat(store.load_org(w.slug), w.nid, last=3)
+            assert len(c["messages"]) == 3, len(c["messages"])
+            assert c["live"] == [], (
+                "the viewer's 3-row window decided the sweep: "
+                + repr(c["live"]))
+        finally:
+            w.destroy()
+    check("a narrow read window narrows the payload, never the sweep",
+          _sweep_ignores_the_viewers_window)
+
+    def _history_never_supplies_a_twin():
+        # …and the widening stops where identity stops. A text row is matched
+        # by its first 300 chars, so its window is THIS TURN: the same
+        # sentence in an earlier turn must not retire today's live row (the
+        # false-retire this bound exists to prevent — D-50).
+        w = World("hist")
+        try:
+            w.write_user("go")
+            w.write_text("done.")          # last turn said it, and it landed
+            w.write_user("again")
+            w.emit_text("done.")           # this turn says it, not yet durable
+            c = w.poll()
+            assert live_steps(c) == ["text:done."], (
+                "a phrase from an earlier turn retired this turn's live row: "
+                + repr(c["live"]))
+            w.write_text("done.")          # now its own twin lands
+            assert w.poll()["live"] == []
+        finally:
+            w.destroy()
+    check("an identical text in an EARLIER turn is not a twin",
+          _history_never_supplies_a_twin)
 
     # ------------------------------------------------------------ ⑥ epilogue
     print()
