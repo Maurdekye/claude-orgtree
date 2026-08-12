@@ -3046,19 +3046,20 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                                 "watchdog instead (e.g. target: tail -n0 -f "
                                 "<path>) — it runs inside your container "
                                 "with your own hands")
+                        # ⚠ ONE containment rule, shared with the tick loop's
+                        # re-check (`supervisor.wd_file_contained`). This used
+                        # to be checked only here, at create time — so
+                        # revoking the folder grant afterwards left the dog
+                        # reading it and mailing its contents to the owner.
+                        # Two copies of a rule are two chances to drift; the
+                        # roots are computed in one place now.
                         wroot = os.path.realpath(
                             supervisor.scratch_dir(body.org, body.node))
-                        roots = [wroot]
-                        if org.d.get("workspace"):
-                            roots.append(os.path.realpath(
-                                cast(str, org.d["workspace"])))
-                        for dd in org.node(body.node)["scope"]["add_dirs"]:
-                            roots.append(os.path.realpath(dd["path"]))
                         full = os.path.realpath(
                             tgt if os.path.isabs(tgt)
                             else os.path.join(wroot, tgt))
-                        if not any(full == r or full.startswith(r + os.sep)
-                                   for r in roots):
+                        if not supervisor.wd_file_contained(
+                                org, body.node, full):
                             raise LedgerError(
                                 f"cannot watch {tgt} — only files in your "
                                 f"working folder, the workspace, or a "

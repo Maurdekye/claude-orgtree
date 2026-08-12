@@ -1733,6 +1733,98 @@ def main():
             "outlive the dog that owns it")
     check("authority: …and the tick asks before it acts", _the_tick_actually_asks)
 
+    def _rehire_wakes_only_the_archive_pause():
+        # D-117 ④ reads "pause on the owner's archive (RESUME ON REHIRE)".
+        # The pause shipped; the resume did not — a rehired agent got its seat
+        # back with every pet asleep and no sign of why. Which pauses a rehire
+        # may undo has to be decidable, so an archive-pause says so and only
+        # that reason auto-resumes.
+        o = Org.create("wd-rehire", dirs=["E:/w"])
+        o.hire(USER, None, "haiku", 5, "keeper")
+        a = o.watchdog_create("keeper", "auto", "file", "E:/w/a.log")
+        m = o.watchdog_create("keeper", "manual", "file", "E:/w/m.log")
+        o.watchdog_action("keeper", m["id"], "pause")     # a deliberate one
+        o.retire(USER, "keeper")
+        o.watchdog_fire(a["id"], "x", "y")                # the lazy pause
+        st = {w["name"]: w["state"] for w in o.d["watchdogs"]}
+        assert st == {"auto": "paused", "manual": "paused"}, st
+        r = o.rehire(USER, "keeper", grant=0)
+        st = {w["name"]: w["state"] for w in o.d["watchdogs"]}
+        assert st == {"auto": "armed", "manual": "paused"}, (
+            "a rehire must wake the dogs the ARCHIVE stopped and leave the "
+            f"owner's own pause alone: {st}")
+        assert any("watchdog" in x for x in r.get("warnings") or []), r
+        # …and the reason goes with the state, both ways
+        assert not any(w.get("paused_why") for w in o.d["watchdogs"]
+                       if w["state"] == "armed")
+    check("lifecycle: a rehire wakes the dogs the ARCHIVE paused, and only "
+          "those", _rehire_wakes_only_the_archive_pause)
+
+    def _file_dog_containment_and_high_water():
+        # Two more faces of "checked once, never again", plus the arithmetic
+        # underneath. All three measured 2026-08-12.
+        import tempfile as _tf                             # noqa: PLC0415
+        from orgtree import store as _store, supervisor    # noqa: PLC0415
+        o = _store.create_org("zz wd file rules")
+        try:
+            slug = o.d["slug"]
+            o.hire(USER, None, "haiku", 5, "k")
+            _store.save_org(o)
+            d = _tf.mkdtemp(prefix="wd-roots-")
+            log = os.path.join(d, "app.log")
+            with open(log, "w", encoding="utf-8") as fh:
+                fh.write("ERROR one\n")
+            w = {"id": "w", "owner": "k", "kind": "file", "target": log,
+                 "pattern": "ERROR", "state": "armed"}
+            # ① containment is the SAME rule at create time and every tick —
+            # revoking the folder used to leave the dog reading it and mailing
+            # its contents to the owner
+            o.set_scope(USER, "k", add_dirs=[{"path": d, "mode": "ro"}])
+            assert supervisor._wd_owner_lost(o, w) is None
+            o.set_scope(USER, "k", add_dirs=[])
+            assert "folder" in (supervisor._wd_owner_lost(o, w) or ""), \
+                supervisor._wd_owner_lost(o, w)
+            o.set_scope(USER, "k", add_dirs=[{"path": d, "mode": "ro"}])
+            _store.save_org(o)
+
+            def poll():
+                lines, hw = supervisor._wd_check_poll(slug, w, o)
+                w["high_water"] = hw
+                return lines
+
+            # ② the high-water counts BYTES CONSUMED. It used to be
+            # len(text.encode()) after a text-mode read, and one invalid UTF-8
+            # byte re-encodes to three — the offset ran PAST end-of-file and
+            # every later append was skipped (then a quiet check saw
+            # size < off and re-fired the whole file).
+            poll()
+            with open(log, "ab") as fb:
+                fb.write(b"\xff\xfe junk\n")
+            poll()
+            assert w["high_water"]["off"] == os.path.getsize(log), (
+                "the high-water left the real file position: "
+                f"{w['high_water']} vs {os.path.getsize(log)} bytes")
+            with open(log, "a", encoding="utf-8") as fh:
+                fh.write("ERROR after the junk\n")
+            assert poll() == ["ERROR after the junk"], "the event was lost"
+            # ③ a line is an event only once it is WHOLE: a writer flushing
+            # mid-line used to have its line split across two checks, and a
+            # pattern spanning the split matched neither half
+            with open(log, "a", encoding="utf-8") as fh:
+                fh.write("ERR")
+            assert poll() == [], "a half-written line fired as an event"
+            with open(log, "a", encoding="utf-8") as fh:
+                fh.write("OR whole\n")
+            assert poll() == ["ERROR whole"], "the rejoined line never fired"
+        finally:
+            try:
+                _store.delete_org(o.d["slug"])
+            except Exception:                              # noqa: BLE001
+                pass
+    check("file dogs: containment re-checked, the high-water counts bytes, "
+          "and a line is an event only when whole",
+          _file_dog_containment_and_high_water)
+
     check("caps: the 8-per-agent ceiling refuses the ninth", lambda: (
         [orgW.watchdog_create("boss", f"d{i}", "file", f"f{i}.log")
          for i in range(7)],

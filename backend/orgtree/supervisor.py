@@ -4487,6 +4487,11 @@ def _wd_owner_lost(org: Org, w: dict[str, Any]) -> str | None:
         bash, and correctly still does — but revoking bash afterwards left
         the existing dog executing its command every interval. A capability
         that outlives its revocation is not a capability, it is a leak.
+      · the same for a FILE dog's containment (measured 2026-08-12): the API
+        boundary checks the target against the owner's readable roots at
+        create time, and revoking the folder grant afterwards left the dog
+        reading that folder and MAILING its contents to the owner. The
+        confidentiality face of the same defect.
 
     Both are the same root: the hands are checked when the dog is armed, and
     a dog outlives the moment it was armed. So the check belongs here, on
@@ -4496,11 +4501,45 @@ def _wd_owner_lost(org: Org, w: dict[str, Any]) -> str | None:
     if n is None:
         return "its owner is gone from the org"
     if n["state"] != "live":
-        return f"its owner is {n['state']}"
-    if str(w["kind"]) in ("command", "stream") \
-            and not n["scope"]["tools"].get("bash"):
+        # the exact wording D-117 ④'s resume-on-rehire keys on, for the
+        # archived case; any other non-live state names itself
+        return (Org.WATCHDOG_ARCHIVE_PAUSE if n["state"] == "archived"
+                else f"its owner is {n['state']}")
+    kind = str(w["kind"])
+    if kind in ("command", "stream") and not n["scope"]["tools"].get("bash"):
         return "its owner no longer holds bash — the hands it runs with"
+    if kind == "file":
+        if sbx.is_sandboxed(org):
+            # the org moved into a container after the dog was armed; the
+            # host path it watches is not one the owner can even name now
+            return "its owner now runs sandboxed — watch the file with a " \
+                   "stream dog inside the container instead"
+        if not wd_file_contained(org, owner, str(w["target"])):
+            return "its owner no longer holds the folder it watches"
     return None
+
+
+def wd_file_roots(org: Org, owner: str) -> list[str]:
+    """The trees a file dog's target may live in — the owner's own scratch,
+    the org workspace, and every folder its scope grants. Shared with the API
+    boundary deliberately: a containment rule checked at create time and a
+    containment rule checked every tick must be the SAME rule, or one of them
+    is a fiction."""
+    roots = [os.path.realpath(scratch_dir(org.d["slug"], owner))]
+    if org.d.get("workspace"):
+        roots.append(os.path.realpath(cast(str, org.d["workspace"])))
+    try:
+        for dd in org.node(owner)["scope"]["add_dirs"]:
+            roots.append(os.path.realpath(dd["path"]))
+    except LedgerError:
+        pass
+    return roots
+
+
+def wd_file_contained(org: Org, owner: str, target: str) -> bool:
+    full = os.path.realpath(target)
+    return any(full == r or full.startswith(r + os.sep)
+               for r in wd_file_roots(org, owner))
 
 
 def _wd_pause(slug: str, wid: str, why: str) -> None:
@@ -4559,13 +4598,41 @@ def _wd_check_poll(slug: str, w: dict[str, Any],
         if size < off:
             off = 0                             # rotated/truncated: restart
         if size > off:
+            # ⚠ BINARY, and the offset counts the bytes actually consumed
+            # (redteam, 2026-08-12). This read text mode and set the offset
+            # to `len(chunk.encode(...))` — a round-trip that is not
+            # byte-exact: one invalid UTF-8 byte decodes to U+FFFD and
+            # re-encodes to THREE, so the offset RAN PAST the end of the file
+            # and every later append was skipped. Measured: a 21-byte log
+            # containing one 0xFF left the high-water at 25, and the next
+            # "ERROR" line never fired at all. (The next quiet check would
+            # then see size < off and reset to 0 — re-firing the whole file.
+            # The same defect loses events and floods, depending only on
+            # timing.) CRLF translation skewed it the other way. Counting the
+            # bytes we actually read cannot drift, by construction.
             try:
-                with open(tgt, "r", encoding="utf-8", errors="replace") as f:
-                    f.seek(off)
-                    chunk = f.read(1_000_000)   # bounded per check
+                with open(tgt, "rb") as fb:
+                    fb.seek(off)
+                    raw = fb.read(1_000_000)    # bounded per check
             except OSError:
                 return [], hw
-            hw["off"] = off + len(chunk.encode("utf-8", errors="replace"))
+            # …and a line is only an event once it is WHOLE. A writer that
+            # flushes mid-line used to have its line split across two checks,
+            # and a pattern spanning the split matched neither half —
+            # measured: "ERR" + "OR boom\n" never fired for /ERROR boom/.
+            # Hold the trailing fragment back by rewinding the offset to its
+            # start; the next check reads it complete. A 1 MB chunk with no
+            # newline at all is not a line, it is a blob — take it rather
+            # than stall forever.
+            keep = raw
+            if raw and not raw.endswith((b"\n", b"\r")):
+                cut = max(raw.rfind(b"\n"), raw.rfind(b"\r"))
+                if cut >= 0:
+                    keep = raw[:cut + 1]
+                elif len(raw) < 1_000_000:
+                    keep = b""
+            hw["off"] = off + len(keep)
+            chunk = keep.decode("utf-8", errors="replace")
             for ln in chunk.splitlines():
                 if not ln.strip():
                     continue

@@ -2376,6 +2376,22 @@ class Org:
         n["state"] = "live"
         n["grant"] = grant
         n["archived_at"] = None
+        # D-117 ④: "pause on the owner's archive (RESUME ON REHIRE)". The
+        # pause shipped; the resume did not, so a rehired agent got its seat
+        # back with every pet still asleep and no sign of why. Only the
+        # archive-pause is undone here — a dog the owner paused by hand, or
+        # one the engine stopped because a capability was revoked, stays
+        # paused with its reason intact (the rehire does not answer either).
+        woke = [w for w in self.d.get("watchdogs") or []
+                if w["owner"] == nid and w.get("state") == "paused"
+                and w.get("paused_why") == self.WATCHDOG_ARCHIVE_PAUSE]
+        for w in woke:
+            w["state"] = "armed"
+            w.pop("paused_why", None)
+        if woke:
+            warnings.append(
+                f"{len(woke)} watchdog(s) paused by the archive are armed "
+                f"again: " + ", ".join(str(w["name"]) for w in woke))
         who = "the user" if actor == USER else f'"{actor}"'
         self._notify([p for p in [parent] if p != actor],
                      f'Your report "{nid}" was rehired by {who} (grant {grant}).')
@@ -3982,6 +3998,12 @@ class Org:
     WATCHDOG_PER_ORG: Final = 32        # pets are free, never unbounded
     WATCHDOG_MIN_INTERVAL: Final = 15   # poll floor (s); streams: min fire gap 5
     WATCHDOG_EVENTS_KEEP: Final = 50    # the sent-events ring per dog
+    # D-117 ④ says "pause on the owner's archive (resume on rehire)". Which
+    # pauses a rehire may undo has to be decidable, or the resume would also
+    # re-arm a dog the owner deliberately paused, and one the engine stopped
+    # for a reason the rehire does not answer (a revoked folder or bash). So
+    # an archive-pause says so, and ONLY this reason auto-resumes.
+    WATCHDOG_ARCHIVE_PAUSE: Final = "its owner was archived"
 
     def _watchdog(self, wid: str) -> dict[str, Any]:
         d = next((w for w in self.d.get("watchdogs") or []
@@ -4102,6 +4124,7 @@ class Org:
         owner = str(w["owner"])
         if owner not in self.nodes or self.node(owner)["state"] != "live":
             w["state"] = "paused"      # lifecycle ruling: pause on archive
+            w["paused_why"] = self.WATCHDOG_ARCHIVE_PAUSE
             return None
         w["fired"] = int(w.get("fired") or 0) + 1
         w["last_fired"] = now()
