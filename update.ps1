@@ -89,10 +89,16 @@ if ($dirty.Trim()) {
     # repo. Printing the dirt (2026-08-09) was necessary and not sufficient:
     # the operator reading it is usually not the one who made the edits.
     # Doc-only dirt (docs/, *.md) is the curator's normal working state and
-    # builds nothing, so it passes.
+    # builds nothing, so it passes. So does dirt THE BUILD ITSELF WRITES
+    # (external report via redteam 2026-08-12): some npm versions recompute
+    # frontend/package-lock.json on every install, and that write lands
+    # AFTER this guard runs — so deploy N's install would trip deploy N+1's
+    # guard forever, training operators to reach for -AllowDirty. A guard a
+    # normal, correct deploy can trip is worse than no guard.
     $building = @($dirty.TrimEnd() -split "`r?`n" | Where-Object {
         $p = $_.Substring(3)
-        ($p -notmatch '^docs/') -and ($p -notmatch '\.md$')
+        ($p -notmatch '^docs/') -and ($p -notmatch '\.md$') -and
+        ($p -notmatch '^frontend/package-lock\.json$')
     })
     if ($building.Count -gt 0 -and -not $AllowDirty) {
         Write-Host "REFUSING to deploy: uncommitted changes in files this build would ship:" -ForegroundColor Red

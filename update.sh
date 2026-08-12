@@ -160,9 +160,13 @@ if [ -n "$DIRTY" ]; then
   # ⚠ REFUSE, don't just report (redteam hazard flag 2026-08-11): this script
   # builds the WORKING TREE, not HEAD — a deploy over someone's half-finished
   # edits ships a backend no commit contains. Doc-only dirt (docs/, *.md) is
-  # the curator's normal working state and builds nothing, so it passes.
+  # the curator's normal working state and builds nothing, so it passes. So
+  # does dirt THE BUILD ITSELF WRITES (external report 2026-08-12): some npm
+  # versions recompute frontend/package-lock.json on install, which lands
+  # AFTER this guard — deploy N would trip deploy N+1 forever.
   # ORGTREE_ALLOW_DIRTY=1 overrides, for the operator who owns the dirt.
-  BUILDING=$(echo "$DIRTY" | cut -c4- | grep -vE '^docs/' | grep -vE '\.md$' || true)
+  BUILDING=$(echo "$DIRTY" | cut -c4- | grep -vE '^docs/' | grep -vE '\.md$' \
+             | grep -vE '^frontend/package-lock\.json$' || true)
   if [ -n "$BUILDING" ] && [ "${ORGTREE_ALLOW_DIRTY:-}" != "1" ]; then
     echo "REFUSING to deploy: uncommitted changes in files this build would ship:"
     echo "$BUILDING" | sed 's/^/    /'
