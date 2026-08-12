@@ -4731,7 +4731,17 @@ def _wd_cmd_submit(slug: str, w: dict[str, Any], org: Org,
         if lines:
             _wd_fire(slug, wid, str(w["name"]), lines)
 
-    _wd_cmd_pool.submit(_wd_run_command, org, dict(w)).add_done_callback(done)
+    try:
+        fut = _wd_cmd_pool.submit(_wd_run_command, org, dict(w))
+    except RuntimeError:
+        # pool shut down (redteam hardening note 2026-08-12): without this,
+        # the key stays in the in-flight set and the dog NEVER runs again,
+        # silently, for the life of the process — a silent-death class in a
+        # subsystem whose whole job is to notice things
+        with _wd_lock:
+            _wd_cmd_inflight.discard(key)
+        return
+    fut.add_done_callback(done)
 
 
 def _wd_tick() -> None:
