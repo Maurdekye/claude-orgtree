@@ -3755,7 +3755,14 @@ class Org:
             if comp is None:
                 continue
             got = revs.get(key)
-            if got is None or int(got) != int(comp.get("rev") or 1):
+            try:
+                stale = got is None or int(got) != int(comp.get("rev") or 1)
+            except (TypeError, ValueError):
+                # redteam nit 2026-08-12: the API's pydantic model coerces
+                # revs to ints, so this is unreachable over the wire — but a
+                # hermetic caller's junk must refuse honestly, never 500
+                stale = True
+            if stale:
                 raise LedgerError(
                     "the card changed after it rendered (a request was "
                     "appended or amended) — re-read the batch and submit "

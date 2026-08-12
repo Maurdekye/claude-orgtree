@@ -1833,12 +1833,22 @@ def _run_one_turn(slug: str, nid: str,
                         _cw = _n0.get("context_window")
                         _t0 = cast("list[dict[str, Any]]",
                                    _n0.get("turns") or [])
-                        _last = str(_t0[-1]["at"]) if _t0 else None
-                        _idle_ok = _last is not None and (
-                            _dtm.datetime.now(_dtm.timezone.utc)
-                            - _dtm.datetime.fromisoformat(
-                                _last.replace("Z", "+00:00"))
-                        ).total_seconds() >= _c["idle_s"]
+                        _last = str(_t0[-1].get("at") or "") if _t0 else ""
+                        # defensive parse (redteam hardening 2026-08-12):
+                        # every writer of turns[].at uses now_iso today, but
+                        # a malformed stamp here would kill the very turn the
+                        # swap was trying to cheapen — an optimization must
+                        # never be the reason a turn dies
+                        _idle_ok = False
+                        if _last:
+                            try:
+                                _idle_ok = (
+                                    _dtm.datetime.now(_dtm.timezone.utc)
+                                    - _dtm.datetime.fromisoformat(
+                                        _last.replace("Z", "+00:00"))
+                                ).total_seconds() >= _c["idle_s"]
+                            except (ValueError, TypeError):
+                                pass
                         if (_idle_ok and _occ and _cw
                                 and float(_occ) / float(_cw) >= _c["occ"]):
                             try:
