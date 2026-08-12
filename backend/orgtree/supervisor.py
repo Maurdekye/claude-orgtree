@@ -4410,6 +4410,17 @@ _wd_started = False
 # streams after a backend restart — the reconcile property for free).
 _wd_streams: dict[tuple[str, str], dict[str, Any]] = {}
 _wd_lock = threading.Lock()
+# COMMAND dogs run on this pool, never on the scheduler thread (redteam
+# measurement 2026-08-12: one command dog sleeping 5s added 5.10s to the
+# WHOLE engine's pass — every org's dogs, including realtime stream flushes,
+# behind one subprocess; the bound was 60s × command dogs across ALL orgs,
+# uncapped). The tick loop is 0.01s without them, so it stays serial and
+# cheap; commands are submitted here and their results applied by a done-
+# callback on the worker. Four workers is deliberate: it bounds the process
+# storm a 32-dog org could start, at the price of cadence stretch under
+# saturation — which harms only the saturating org's own command dogs.
+_wd_cmd_pool: Any = None                  # ThreadPoolExecutor, made on start
+_wd_cmd_inflight: set[tuple[str, str]] = set()   # one in-flight check per dog
 
 
 def _wd_proc_alive(target: str) -> bool:
@@ -4646,22 +4657,72 @@ def _wd_check_poll(slug: str, w: dict[str, Any],
         if was_up is True and not up:           # the DOWN edge, only
             return [f"{tgt} went DOWN"], hw
         return [], hw
-    # command: run it, match output
+    # command dogs never reach here — they run on _wd_cmd_pool via
+    # _wd_run_command, off the scheduler thread
+    return lines, hw
+
+
+def _wd_run_command(org: Org, w: dict[str, Any]) -> list[str]:
+    """One command-dog check, on a POOL WORKER — its runtime (up to the 60s
+    communicate ceiling) must never sit on the scheduler thread. Returns the
+    matching lines; the caller's done-callback applies them."""
+    tgt = str(w["target"])
+    pat = re.compile(str(w["pattern"])) if w.get("pattern") else None
     try:
         proc = _wd_popen(org, str(w["owner"]), tgt)
         out, _ = proc.communicate(timeout=60)
     except subprocess.TimeoutExpired:
         try:
             proc.kill()
-        except OSError:
+            # drain + reap after the kill (redteam, 2026-08-12): kill()
+            # without a second communicate() leaks the pipe buffers and the
+            # zombie — tolerable when checks were serial, a real leak once
+            # several run concurrently on this pool
+            proc.communicate(timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
             pass
-        return [f"(watchdog command timed out after 60s: {tgt[:100]})"], hw
+        return [f"(watchdog command timed out after 60s: {tgt[:100]})"]
     except OSError as e:
-        return [f"(watchdog command failed to start: {e})"], hw
+        return [f"(watchdog command failed to start: {e})"]
+    lines: list[str] = []
     for ln in (out or "").splitlines():
         if pat is not None and pat.search(ln):
             lines.append(ln)
-    return lines, hw
+    return lines
+
+
+def _wd_cmd_submit(slug: str, w: dict[str, Any], org: Org,
+                   now_t: float) -> None:
+    """Submit a due command check to the pool — at most one in flight per
+    dog, so a command slower than its interval stretches its own cadence
+    instead of stacking processes."""
+    wid = str(w["id"])
+    key = (slug, wid)
+    with _wd_lock:
+        if _wd_cmd_pool is None or key in _wd_cmd_inflight:
+            return
+        _wd_cmd_inflight.add(key)
+
+    def done(fut: Any) -> None:
+        with _wd_lock:
+            _wd_cmd_inflight.discard(key)
+        try:
+            lines = cast("list[str]", fut.result())
+        except Exception:                                        # noqa: BLE001
+            return
+        with store.DOC_LOCK:
+            try:
+                o2 = store.load_org(slug)
+                w2 = o2._watchdog(wid)
+            except LedgerError:
+                return                          # removed mid-check
+            w2["last_check"] = now_iso()
+            w2["_last_check_ts"] = now_t
+            store.save_org(o2)
+        if lines:
+            _wd_fire(slug, wid, str(w["name"]), lines)
+
+    _wd_cmd_pool.submit(_wd_run_command, org, dict(w)).add_done_callback(done)
 
 
 def _wd_tick() -> None:
@@ -4692,6 +4753,13 @@ def _wd_tick() -> None:
                 continue
             last = w.get("_last_check_ts") or 0
             if now_t - float(last) < float(w.get("interval_s") or 60):
+                continue
+            if kind == "command":
+                # off-thread (redteam measurement 2026-08-12): a command's
+                # runtime on this thread delayed EVERY org's dogs — the pool
+                # runs it, a done-callback applies it, and the in-flight set
+                # keeps a slow command from stacking behind itself
+                _wd_cmd_submit(slug, w, org, now_t)
                 continue
             lines, hw = _wd_check_poll(slug, w, org)
             with store.DOC_LOCK:
@@ -4804,10 +4872,13 @@ def start_watchdog_engine() -> None:
     """FR-18: the one scanner daemon — polls due dogs, keeps stream dogs'
     children alive (which is also what re-arms them after a restart: the doc
     is the registry, this loop is just its runtime attachment)."""
-    global _wd_started
+    global _wd_started, _wd_cmd_pool
     if _wd_started:
         return
     _wd_started = True
+    from concurrent.futures import ThreadPoolExecutor
+    _wd_cmd_pool = ThreadPoolExecutor(max_workers=4,
+                                      thread_name_prefix="wd-cmd")
 
     def run() -> None:
         while True:
