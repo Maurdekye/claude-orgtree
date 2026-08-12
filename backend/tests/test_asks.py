@@ -564,6 +564,74 @@ def main():
     check("an approved permission-mode raise applies; plan ranks lowest",
           _pm_grant_applies_and_plan_ranks_lowest)
 
+    def _deep_grant_cascades_and_absorbs():
+        # surface #1 of the 2026-08-12 redteam handover, driven here: a DEEP
+        # agent's approved grant raises the whole chain (D-106) and a
+        # top-level absorption records it on the org
+        org = Org.create("cascade-asks", dirs=["E:/w"])
+        org.hire(USER, None, "opus", 20, "top")
+        org.hire(USER, "top", "haiku", 2, "mid")
+        org.hire(USER, "mid", "haiku", 0, "leaf")
+        for k in ("top", "mid", "leaf"):
+            org.set_scope(USER, k, tools={"bash": False, "web": False,
+                                          "edit": True, "subagents": False,
+                                          "mcp": []})
+        org.d["audiences"].append({"grantee": "leaf", "grantor": USER,
+                                   "granted_at": "t", "reason": "test"})
+        org.request_scope("leaf", [{"kind": "tool", "tool": "bash"},
+                                   {"kind": "dir", "path": "E:/new",
+                                    "mode": "ro"}], "needs both")
+        card = org.node_ask("leaf")
+        r = org.resolve_batch("leaf", card["revs"],
+                              scope=["approve", "approve"])
+        assert "cascaded permission increase" in r["body"], r["body"]
+        for k in ("top", "mid", "leaf"):
+            sc = org.node(k)["scope"]
+            assert sc["tools"]["bash"], (k, sc["tools"])
+            assert any(d["path"] == "E:/new" for d in sc["add_dirs"]), k
+        assert any(d["path"] == "E:/new"
+                   for d in org.d.get("dirs") or []), (
+            "the top-level absorption must record the folder on the ORG")
+        assert not org.audit()["problems"]
+    check("a deep scope grant D-106-cascades the chain and absorbs at the "
+          "org", _deep_grant_cascades_and_absorbs)
+
+    def _kiosk_clamp_verdict_is_honest():
+        # found DRIVING this surface (2026-08-12): the ceiling clamped an
+        # approved item away entirely while the verdict said "GRANTED — live
+        # from your next turn". The verdict is now measured against the
+        # post-apply scope.
+        org = Org.create("kiosk-asks", dirs=["E:/w"])
+        org.d["kiosk"] = {"enabled": True, "token": "t", "credits": 500}
+        org = Org(org.d)
+        org.set_kiosk_ceiling({"tools": {"bash": False, "web": False,
+                                         "edit": True, "subagents": False,
+                                         "mcp": []},
+                               "add_dirs": [{"path": "E:/w", "mode": "rw"}],
+                               "org_visibility": "full",
+                               "permission_mode": "acceptEdits"})
+        org.hire(USER, None, "haiku", 5, "boss")
+        org.set_scope(USER, "boss", tools={"bash": False, "web": False,
+                                           "edit": True, "subagents": False,
+                                           "mcp": []})
+        org.request_scope("boss", [
+            {"kind": "tool", "tool": "bash"},
+            {"kind": "permission_mode", "mode": "bypassPermissions"}],
+            "over the ceiling")
+        card = org.node_ask("boss")
+        r = org.resolve_batch("boss", card["revs"],
+                              scope=["approve", "approve"])
+        assert "CLAMPED" in r["body"] and "NOT in effect" in r["body"], \
+            r["body"]
+        assert "live from your next turn" not in r["body"], (
+            "an entirely-clamped approval still promises the grant: "
+            + r["body"])
+        sc = org.node("boss")["scope"]
+        assert not sc["tools"]["bash"] \
+            and sc.get("permission_mode") == "acceptEdits", sc
+    check("a ceiling-clamped approval SAYS so — never 'granted' for a "
+          "capability the scope does not hold", _kiosk_clamp_verdict_is_honest)
+
     print(f"\nasks: all {PASS} checks passed")
     return 0
 

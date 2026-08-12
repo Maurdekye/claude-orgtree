@@ -3886,12 +3886,27 @@ class Org:
                                    permission_mode=pm)
                 for w in cast("list[str]", r.get("warnings") or []):
                     granted_lines.append(f"({w})")
+            # ⚠ the verdict is measured, not assumed (found driving the
+            # kiosk composition 2026-08-12): a ceiling can clamp an approved
+            # item away ENTIRELY, and "GRANTED — live from your next turn"
+            # for a capability the scope does not hold is an unkeepable
+            # promise. Re-check each approval against the ACTUAL post-apply
+            # scope and say what really happened.
+            for it in its:
+                if it["decision"] == "approve" \
+                        and not self._holds_scope_item(nid, it):
+                    it["decision"] = "approve (clamped — not in effect)"
             sr["status"] = "answered"
             sr["reason"] = "decided at batch submit"
             sr["resolved_at"] = now()
             outcome = "\n".join(
                 f"- {self._scope_item_label(it)} → "
                 + {"approve": "GRANTED — live from your next turn",
+                   "approve (clamped — not in effect)":
+                       "approved by the user, but the kiosk permission "
+                       "ceiling CLAMPED it — NOT in effect (see the clamp "
+                       "note below; ask the user to raise the ceiling if "
+                       "you truly need it)",
                    "deny": "denied",
                    "skip": "skipped (undecided — you may re-ask)"}[
                     str(it['decision'])]
