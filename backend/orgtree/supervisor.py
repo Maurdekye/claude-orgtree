@@ -892,7 +892,16 @@ def _render_chart(org: Org, root_ids: list[str], mark: str, indent: int = 0) -> 
         tags = [] if n["state"] == "live" else [n["state"]]
         bs = n.get("bearer_state")
         if bs == "knowledge":
-            tags.append("knowledge bearer — consultable")
+            # ⚠ a REHIRED bearer is live and WORKING, and calling it
+            # "consultable" then states something false about a running agent
+            # (neoja org report 2026-08-12: a rehired bearer was busy at ~373k
+            # occupancy, executing its task, while every chart still annotated
+            # it as a thing to consult). The bearer marker earns its place —
+            # this reader has no other view of the org — but it must say which
+            # of the two a bearer currently is.
+            tags.append("knowledge bearer — "
+                        + ("REHIRED, live and working like any report"
+                           if n["state"] == "live" else "consultable"))
         elif bs == "preserving":
             tags.append("preserving oracle")
         elif bs == "lost":

@@ -620,6 +620,31 @@ def bearer_rules() -> None:
         check("extern · a rehired bearer holds no audience, so it stays excluded",
               lambda: _true(p10 not in rec))
 
+    def _live_bearer_is_not_called_consultable():
+        # neoja org report 2026-08-12: a REHIRED bearer was busy at ~373k
+        # occupancy, running Bash and reading files — and every chart still
+        # annotated it "knowledge bearer — consultable". The chart is an
+        # agent's only view of the org, so that is a false statement about a
+        # running agent, made to the one reader who cannot check it.
+        o = Org.create("bearer-chart", dirs=["E:/w"])
+        o.hire(USER, None, "haiku", 10, "boss")
+        o.hire(USER, "boss", "haiku", 5, "deployer")
+        pred = o.compact_split("deployer", "sess-2")
+
+        def line() -> str:
+            return next(x for x in supervisor._render_chart(o, [pred], "")
+                        if pred in x)
+
+        assert "consultable" in line(), line()
+        o.rehire(USER, pred, grant=0)
+        _eq(o.node(pred)["state"], "live")
+        _true("consultable" not in line(),
+              f"a live, working bearer is still advertised as a thing to "
+              f"consult: {line()}")
+        _true("live" in line(), line())
+    check("chart · a REHIRED bearer reads as live and working, not as "
+          "consultable", _live_bearer_is_not_called_consultable)
+
     # ---- the read-down, where a lineage rule meets the turn command line.
     # Reported by the neoja org 2026-08-12: Write/Edit denied on ordinary
     # files in a seat's OWN scratch — reads fine, Bash writes fine, and the
