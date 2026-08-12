@@ -891,6 +891,22 @@ the docket's "transcript is in the scratch dir" premise was wrong and the
 copy is the fix. The compact dialog warns when the node is idle past the
 cache TTL, which is the moment the choice actually matters.
 
+### D-119 · a command dog's runtime is off the scheduler's thread
+Engine-shape decision (implementer, 2026-08-12, from a redteam measurement):
+`_wd_tick` walked every org serially and ran command checks inline, so ONE
+command dog sleeping 5s delayed the whole engine's pass by 5.10s — every
+org's dogs, including realtime stream flushes, behind one subprocess, with a
+bound of communicate(timeout=60) × command dogs across ALL orgs (the dog
+caps bound memory/mail, not this). Shape: the scheduling loop stays serial
+(0.01s without commands); command checks run on a four-worker pool (bounds
+the process storm a 32-dog org could start) whose done-callback applies the
+doc update + fire exactly as the inline path did; ONE in-flight check per
+dog, so a slow command stretches its own cadence instead of stacking.
+Saturation harms only the saturating org's command dogs — never streams,
+files, or other orgs. The TimeoutExpired kill now drains (second
+communicate) — concurrent zombies were about to become real. Measured after:
+tick with a 5s command dog = 0.006s. (6e39b89)
+
 ### D-118 · a @net: send to a recipient the hub doesn't know REFUSES
 Ruling (user, 2026-08-12): mail to a hub recipient that does not exist in
 the mail hub's ledger fails at the door — both doors, the agent verb and
