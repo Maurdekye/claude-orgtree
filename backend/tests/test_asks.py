@@ -632,6 +632,58 @@ def main():
     check("a ceiling-clamped approval SAYS so — never 'granted' for a "
           "capability the scope does not hold", _kiosk_clamp_verdict_is_honest)
 
+    def _kiosk_partial_clamp_says_what_landed():
+        # the INVERSE of the check above (redteam, 2026-08-12): a ceiling
+        # MEETS rather than annihilates, so an approval can land REAL BUT
+        # SHORT — `rw` as `ro`, `bypassPermissions` as a genuine plan →
+        # acceptEdits raise. Calling either "NOT in effect" is the same
+        # unkeepable-promise class inverted: the agent then declines to use
+        # access it actually holds. Both cases are driven here, plus the
+        # no-movement case that must STILL read "not in effect".
+        org = Org.create("kiosk-partial", dirs=["E:/w", "E:/half"])
+        org.d["kiosk"] = {"enabled": True, "token": "t", "credits": 500}
+        org = Org(org.d)
+        org.set_kiosk_ceiling({"tools": {"bash": False, "web": False,
+                                         "edit": True, "subagents": False,
+                                         "mcp": []},
+                               "add_dirs": [{"path": "E:/w", "mode": "rw"},
+                                            {"path": "E:/half", "mode": "ro"}],
+                               "org_visibility": "full",
+                               "permission_mode": "acceptEdits"})
+        org.hire(USER, None, "haiku", 5, "boss")
+        org.set_scope(USER, "boss",
+                      tools={"bash": False, "web": False, "edit": True,
+                             "subagents": False, "mcp": []},
+                      add_dirs=[{"path": "E:/w", "mode": "rw"}],  # no E:/half
+                      permission_mode="plan")
+        org.request_scope("boss", [
+            {"kind": "dir", "path": "E:/half", "mode": "rw"},
+            {"kind": "permission_mode", "mode": "bypassPermissions"}],
+            "both will be met, not annihilated")
+        card = org.node_ask("boss")
+        body = org.resolve_batch("boss", card["revs"],
+                                 scope=["approve", "approve"])["body"]
+        assert "NOT in effect" not in body, (
+            "a grant that really moved is reported as nothing: " + body)
+        assert body.count("PARTIALLY clamped") == 2, body
+        assert "you now hold E:/half (ro)" in body, body
+        assert "you now hold permission mode acceptEdits" in body, body
+        sc = org.node("boss")["scope"]
+        assert any(d["path"] == "E:/half" and d["mode"] == "ro"
+                   for d in sc["add_dirs"]), sc["add_dirs"]
+        assert sc["permission_mode"] == "acceptEdits", sc
+        # …and the discrimination cuts the other way too: re-asking rw for a
+        # folder now held ro moves nothing, so it is NOT partial
+        org.request_scope("boss", [{"kind": "dir", "path": "E:/half",
+                                    "mode": "rw"}], "again")
+        card = org.node_ask("boss")
+        body = org.resolve_batch("boss", card["revs"], scope=["approve"])["body"]
+        assert "NOT in effect" in body and "PARTIALLY" not in body, body
+        assert not org.audit()["problems"]
+    check("a PARTIAL ceiling clamp reports what actually landed, and a "
+          "no-movement clamp still reads 'not in effect'",
+          _kiosk_partial_clamp_says_what_landed)
+
     print(f"\nasks: all {PASS} checks passed")
     return 0
 

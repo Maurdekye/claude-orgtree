@@ -3611,6 +3611,28 @@ class Org:
         return (cur in PM_LEVELS and it["mode"] in PM_LEVELS
                 and PM_LEVELS.index(cur) >= PM_LEVELS.index(it["mode"]))
 
+    def _scope_item_state(self, nid: str, it: dict[str, Any]) -> str:
+        """What the node ACTUALLY holds for this item right now, as a
+        comparable label. A kiosk ceiling MEETS rather than annihilates —
+        `rw` can land as `ro`, and a `bypassPermissions` ask still raises a
+        `plan` node to `acceptEdits`. Comparing this before and after the
+        apply is what tells a real-but-short grant apart from nothing at
+        all, which `_holds_scope_item` (asked-for or not) cannot."""
+        sc = self.node(nid)["scope"]
+        k = it["kind"]
+        if k == "dir":
+            m = next((d["mode"] for d in sc["add_dirs"]
+                      if d["path"] == it["path"]), None)
+            return f"{it['path']} ({m})" if m else "nothing"
+        if k == "tool":
+            return f"tool {it['tool']}" if sc["tools"].get(it["tool"]) \
+                else "nothing"
+        if k == "mcp":
+            mcp = sc["tools"].get("mcp") or []
+            return (f"MCP server {it['server']}"
+                    if "*" in mcp or it["server"] in mcp else "nothing")
+        return f"permission mode {sc.get('permission_mode', 'acceptEdits')}"
+
     def request_scope(self, nid: str, items: list[Any],
                       reason: Any) -> dict[str, Any]:
         """FR-13 (user request 2026-08-06, ruled 2026-08-11/12): an agent asks
@@ -3854,6 +3876,10 @@ class Org:
             if any(d not in ("approve", "deny", "skip") for d in dec):
                 raise LedgerError("scope decisions must be approve|deny|skip")
             sc = self.node(nid)["scope"]
+            # the BEFORE half of the three-valued verdict below — captured
+            # here, while `sc` is still untouched by set_scope
+            pre_state = {self._scope_item_key(it):
+                         self._scope_item_state(nid, it) for it in its}
             add_dirs: list[dict[str, Any]] | None = None
             tools: dict[str, Any] | None = None
             pm: str | None = None
@@ -3897,24 +3923,50 @@ class Org:
             # for a capability the scope does not hold is an unkeepable
             # promise. Re-check each approval against the ACTUAL post-apply
             # scope and say what really happened.
+            #
+            # …and the measurement is THREE-valued, because a ceiling MEETS
+            # rather than annihilates (redteam, 2026-08-12): `E:/x rw` can
+            # land as `E:/x ro`, and a `bypassPermissions` ask still raises a
+            # `plan` node to `acceptEdits`. Both are real grants the agent
+            # did not hold a moment ago. Reporting them as "NOT in effect" is
+            # the same unkeepable-promise class inverted — the agent then
+            # declines to use access it genuinely has — so a grant that moved
+            # but fell short says exactly what it moved to. Only a state that
+            # did not move at all is "not in effect".
+            partial: dict[str, str] = {}
             for it in its:
-                if it["decision"] == "approve" \
-                        and not self._holds_scope_item(nid, it):
+                if it["decision"] != "approve" \
+                        or self._holds_scope_item(nid, it):
+                    continue
+                key = self._scope_item_key(it)
+                got = self._scope_item_state(nid, it)
+                if got == pre_state.get(key):
                     it["decision"] = "approve (clamped — not in effect)"
+                else:
+                    it["decision"] = "approve (partial)"
+                    partial[key] = got
             sr["status"] = "answered"
             sr["reason"] = "decided at batch submit"
             sr["resolved_at"] = now()
+            def _verdict(it: dict[str, Any]) -> str:
+                d = str(it["decision"])
+                if d == "approve (partial)":
+                    return ("approved by the user, then PARTIALLY clamped by "
+                            "the kiosk permission ceiling — you now hold "
+                            + partial[self._scope_item_key(it)]
+                            + ", which is real and live from your next turn, "
+                              "but less than you asked for (ask the user to "
+                              "raise the ceiling for the rest)")
+                return {"approve": "GRANTED — live from your next turn",
+                        "approve (clamped — not in effect)":
+                            "approved by the user, but the kiosk permission "
+                            "ceiling CLAMPED it — NOT in effect (see the "
+                            "clamp note below; ask the user to raise the "
+                            "ceiling if you truly need it)",
+                        "deny": "denied",
+                        "skip": "skipped (undecided — you may re-ask)"}[d]
             outcome = "\n".join(
-                f"- {self._scope_item_label(it)} → "
-                + {"approve": "GRANTED — live from your next turn",
-                   "approve (clamped — not in effect)":
-                       "approved by the user, but the kiosk permission "
-                       "ceiling CLAMPED it — NOT in effect (see the clamp "
-                       "note below; ask the user to raise the ceiling if "
-                       "you truly need it)",
-                   "deny": "denied",
-                   "skip": "skipped (undecided — you may re-ask)"}[
-                    str(it['decision'])]
+                f"- {self._scope_item_label(it)} → " + _verdict(it)
                 for it in its)
             sections.append("[SCOPE REQUEST decided]\n" + outcome
                             + ("\n" + "\n".join(granted_lines)
