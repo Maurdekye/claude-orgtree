@@ -481,6 +481,16 @@ def bearer_rules() -> None:
                    org.rehire(USER, pred, grant=0))[1])
     check("rehire · …so the successor's committed credit counts it",
           lambda: _true(org.committed(a) >= org.seat_cost(pred)))
+    # "retired" at the ruling's word (redteam deviation catch 2026-08-12):
+    # the first cut hid `state != "live"`, which also dropped an
+    # UNRECOVERABLE generation — the state whose own notice says "rehire to
+    # re-seed, or retire to free the credits", i.e. a node the operator MUST
+    # be able to reach. Off the axis it rendered nowhere at all when its
+    # successor was archived. Only archived steps off.
+    check("rehire · an UNRECOVERABLE bearer stays ON the org axis — the "
+          "operator must be able to re-seed or retire it",
+          lambda: (org.mark_unrecoverable(pred, "session gone"),
+                   _true(pred in org.org_children(a)))[1])
 
     # the superior-rehired path: stays a coworker in the OLD slot
     org2, (b,) = horg(grant=20)

@@ -554,10 +554,19 @@ class Org:
         the axis: a live, spending session with no card, no desk tab and no
         controls, which the neoja org hit as a canvas crash (a node in the
         map that `layout` never placed). So the test is retired AND
-        succeeded, not succeeded alone."""
+        succeeded, not succeeded alone.
+
+        "Retired" is taken at the ruling's word (redteam deviation catch,
+        2026-08-12): the first cut tested `state != "live"`, which also hid
+        an UNRECOVERABLE generation — the state whose own notice says
+        "rehire to re-seed, or retire to free the credits", i.e. precisely a
+        node the operator must be able to reach. Off the axis it rendered
+        NOWHERE when its successor was archived (a pseudo-card positions
+        only via a placed successor): an unreachable node holding a seat.
+        Archived is the one state that steps off the axis."""
         return [k for k in self.children(nid, live_only=False)
                 if not (self.nodes[k].get("successor")
-                        and self.nodes[k]["state"] != "live")]
+                        and self.nodes[k]["state"] == "archived")]
 
     def lineage_stack(self, nid: str) -> list[str]:
         """Predecessor chain of nid, newest first."""

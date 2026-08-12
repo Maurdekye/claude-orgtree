@@ -293,29 +293,20 @@ export function orgPxc(tree: TreePayload): number {
   return Math.min((NODE_H * 1.25) / avg, (NODE_H * 1.6) / max)
 }
 
-export function flatten(root: CanvasNode, seats: Record<string, number>): Map<string, CanvasNode> {
+export function flatten(root: CanvasNode, _seats: Record<string, number>): Map<string, CanvasNode> {
   const map = new Map<string, CanvasNode>()
   const walk = (n: CanvasNode, parent: string | null) => {
     map.set(n.id, { ...n, parent })
-    // pseudo-cards are for lineage entries the org axis does NOT carry.
-    // User ruling 2026-08-12 (a7d0bb2): a LIVE bearer is an org child again —
-    // it arrives through `children` as a full node, so synthesizing a pseudo
-    // for it here would set the same id twice and let SIBLING ORDER decide
-    // which card wins (bearer before successor ⇒ the pseudo overwrites the
-    // real card, and the affordance gap the ruling killed quietly returns).
-    // Only non-live, non-archived entries (e.g. an unrecoverable generation)
-    // still float beside their successor.
-    ;(n.lineage ?? []).forEach((b, i) => {
-      if (b.state !== 'archived' && b.state !== 'live') {
-        map.set(b.id, {
-          id: b.id, title: b.id, tier: b.tier, state: b.state,
-          bearer_state: b.bearer_state, generation: b.generation,
-          seat: seats?.[b.tier] ?? 0, grant: 0, free: 0, children: [],
-          lineage: [], parent, model_id: b.tier, scope: { tools: {}, add_dirs: [] },
-          isBearerOf: n.id, bearerIndex: i,
-        })
-      }
-    })
+    // NO lineage pseudo-cards (D-120, final form). The org axis and the
+    // pseudo-card path must carry DISJOINT id sets — same id from both lets
+    // sibling order decide which card wins, silently — and after the ruling's
+    // predicate settled on "hide iff successor AND archived", the axis
+    // carries every non-archived generation (live and unrecoverable alike)
+    // while archived ones were always skipped here. Nothing qualifies: the
+    // synthesis that used to sit here is dead by construction, and dead
+    // rendering paths get deleted, not fenced. `isBearerOf` and its gates
+    // remain in the types for the tether/position plumbing until a full
+    // sweep retires them — with no producer they never fire.
     n.children.forEach((c) => walk(c, n.id))
   }
   walk(root, null)

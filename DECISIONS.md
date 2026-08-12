@@ -907,6 +907,15 @@ companion fix, not the ruling). frontend `flatten()` now synthesizes lineage
 pseudo-cards only for non-live, non-archived generations: a live bearer
 arrives through `children`, and a pseudo for the same id would let sibling
 order decide which card wins. (a7d0bb2 + the flatten tightening)
+Final form (redteam deviation catch, same day): "retired" is taken at the
+ruling's word — the predicate is `successor AND state == "archived"`, not
+`!= "live"`, because an UNRECOVERABLE generation is the state whose own
+notice says "rehire to re-seed, or retire to free the credits" and off the
+axis it rendered nowhere at all under an archived successor. With the axis
+carrying every non-archived generation, flatten()'s lineage pseudo-card
+synthesis qualifies for nothing and is DELETED (the invariant: the axis and
+the pseudo path must carry disjoint id sets — a double-set fails silently
+by sibling order). `isBearerOf` gates remain, producerless, pending a sweep.
 
 ### D-119 · a command dog's runtime is off the scheduler's thread
 Engine-shape decision (implementer, 2026-08-12, from a redteam measurement):
