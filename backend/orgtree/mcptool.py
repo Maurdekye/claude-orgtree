@@ -360,7 +360,7 @@ TOOLS: list[dict[str, Any]] = [
             "standing instructions — injected into every one of its turns, "
             "editable later via orgtree_retool), and state exactly which "
             "folders, tools and org visibility it needs — you cannot grant "
-            "anything you do not hold yourself. Seat costs: haiku 1, sonnet 3, "
+            "anything you do not hold yourself. Seat costs: haiku 1, sonnet 2, "
             "opus 5, fable 10; seat + grant must fit within YOUR free credits. "
             "⚠ HIRING DOES NOT START ANYONE. A new hire sits IDLE until it "
             "receives its first message — the charter is who it is, not a task "
@@ -630,7 +630,7 @@ TOOLS: list[dict[str, Any]] = [
             "turn runs the new model. Cheaper tier: the seat difference becomes "
             "the agent's own free allocation. Pricier: paid from its free first, "
             "any shortfall bubbles up the chain to YOU — refused only if the "
-            "whole chain lacks it. Tiers: haiku 1 · sonnet 3 · opus 5 · fable 10."),
+            "whole chain lacks it. Tiers: haiku 1 · sonnet 2 · opus 5 · fable 10."),
         "inputSchema": {"type": "object",
                         "properties": {"node": {"type": "string"},
                                        "tier": {"type": "string",

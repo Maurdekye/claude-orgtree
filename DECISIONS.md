@@ -891,6 +891,15 @@ the docket's "transcript is in the scratch dir" premise was wrong and the
 copy is the fix. The compact dialog warns when the node is idle past the
 cache TTL, which is the moment the choice actually matters.
 
+### D-116 · sonnet seats cost 2 (input pricing locked in at $2/M)
+Ruling (user, 2026-08-12): the sonnet seat drops 3 → 2 in `TIERS`. Because
+per-org tier tables are frozen ADD-only copies (the 2026-08-04 lesson), a
+price CHANGE gets its own load-hook migration: only the old shipped default
+(3) migrates — any other stored value is an operator customisation and
+stays, which the customisation-survives pin in the authority suite already
+proves. The effect on a live org is strictly loosening: committed drops by 1
+per live sonnet seat, free rises, no invariant tightens.
+
 ### D-115 · agents write their own compaction log, in realtime
 Ruling (user, 2026-08-12, completing D-114): every agent that can write
 maintains `breadcrumbs.md` in its working folder — important events,

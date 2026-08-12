@@ -36,7 +36,11 @@ from .schema import (AudienceGrant, DirGrant, MailEntry, NodeDoc,
 
 # §3.1 — derived from published API pricing (output:input is 5:1 for every model, so the
 # scale is not a judgment call). Sonnet is 3, not its introductory 2 (expires 2026-08-31).
-TIERS: Final[dict[str, int]] = {"fable": 10, "opus": 5, "sonnet": 3, "haiku": 1}
+# sonnet 3 → 2 (user ruling 2026-08-12: sonnet input pricing locked in at
+# $2/M tokens — the seat can comfortably drop). Existing orgs migrate in the
+# load hook below IF they still carry the old shipped default; a customised
+# table keeps its own number.
+TIERS: Final[dict[str, int]] = {"fable": 10, "opus": 5, "sonnet": 2, "haiku": 1}
 
 # №34 runaway insurance, and NOTHING else (user ruling 2026-08-04): "no need to
 # have any practical limit other than to prevent infinite recursion from a bug
@@ -317,6 +321,15 @@ class Org:
             cur = cast("dict[str, Any]", _doc.setdefault(key, {}))
             for k, v in table.items():
                 cur.setdefault(k, v)
+        # ☞ a price CHANGE (not an addition) needs its own migration under
+        # the add-only rule: sonnet 3 → 2 (user ruling 2026-08-12, $2/M input
+        # locked in). Only the OLD SHIPPED DEFAULT migrates — any other value
+        # is an operator customisation and stays. Effect on a live org is
+        # strictly loosening: committed drops by 1 per live sonnet seat, so
+        # free rises and no invariant tightens.
+        _t = cast("dict[str, Any]", _doc.get("tiers") or {})
+        if _t.get("sonnet") == 3:
+            _t["sonnet"] = 2
         # pre-№41 spend freezes wrote the usage-limit keys (error, until=None);
         # re-tag them so clear_hard_freeze("spend") actually clears them
         # instead of leaving a stale-reason freeze the API reports as cleared

@@ -1546,7 +1546,7 @@ def main():
     print("rescind (FR-22, user ruling 2026-08-11 — user-only claw-back):")
     orgX = Org.create("rescinds")
     orgX.hire(USER, None, "opus", 20, "top")
-    orgX.hire(USER, "top", "sonnet", 4, "mid")     # stake = 3 + 4 = 7
+    orgX.hire(USER, "top", "sonnet", 4, "mid")     # stake = 2 + 4 = 6
     orgX.hire(USER, "mid", "haiku", 0, "kid")      # inside mid's grant
     check("rescind is user-only — an agent actor is refused", lambda:
           expect_error(lambda: orgX.rescind("top", "mid"), "only the user"))
@@ -1554,11 +1554,11 @@ def main():
           "auto-dissolving the live subtree", lambda: (
         lambda free0, grant0: (
             lambda r: None if (
-                r["clawed"] == 7
+                r["clawed"] == 6
                 and orgX.nodes["mid"]["state"] == "archived"
                 and orgX.nodes["kid"]["state"] == "archived"
                 and orgX.nodes["mid"].get("rescinded_at")
-                and orgX.nodes["top"]["grant"] == grant0 - 7
+                and orgX.nodes["top"]["grant"] == grant0 - 6
                 # the whole point: free did NOT rise by the freed stake
                 and orgX.free("top") == free0)
             else (_ for _ in ()).throw(AssertionError(
