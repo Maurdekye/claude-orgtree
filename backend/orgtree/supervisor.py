@@ -1568,11 +1568,23 @@ def _build_cmd(org: Org, nid: str) -> list[str]:
     # rewrites it.
     pred = n.get("predecessor")
     pred_dir = None
-    if pred and pred in org.nodes:
+    # ⚠ …but ONLY when the predecessor is a different WORKING FOLDER (redteam,
+    # 2026-08-12, on a report from the neoja org; reproduced: one in-place
+    # cheap compact is enough). `scratch_dir` maps a lineage id `name@gen`
+    # onto `name` on purpose — "lineage nodes share their successor's
+    # scratch", they are the same self at different times. After the in-place
+    # rework the predecessor IS `nid@gen`, so this read-down resolved to the
+    # LIVE node's own cwd and wrote Write/Edit/NotebookEdit deny rules over
+    # it: the seat could read its own folder and write it from Bash, but not
+    # with the file tools — while the charter requires it to keep
+    # breadcrumbs.md there, through those tools. A read-down onto one's own
+    # desk is not a permission at all; there is nothing to grant and nothing
+    # to deny, because the successor already holds those files, writably.
+    if pred and pred in org.nodes and pred.split("@")[0] != nid.split("@")[0]:
         host_pd = scratch_dir(org.d["slug"], pred)
-        # in-place cheap compact (2026-08-12): the bearer's scratch only
-        # exists once the bearer has been rehired and worked — --add-dir on a
-        # missing path is a CLI error, not a silent no-op
+        # a SEPARATE bearer's scratch only exists once it has been rehired
+        # and worked — --add-dir on a missing path is a CLI error, not a
+        # silent no-op
         if os.path.isdir(host_pd):
             pred_dir = (sbx.cpath_scratch(slug, pred) if sandboxed
                         else host_pd)

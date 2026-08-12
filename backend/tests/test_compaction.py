@@ -620,6 +620,48 @@ def bearer_rules() -> None:
         check("extern · a rehired bearer holds no audience, so it stays excluded",
               lambda: _true(p10 not in rec))
 
+    # ---- the read-down, where a lineage rule meets the turn command line.
+    # Reported by the neoja org 2026-08-12: Write/Edit denied on ordinary
+    # files in a seat's OWN scratch — reads fine, Bash writes fine, and the
+    # charter meanwhile REQUIRES breadcrumbs.md be kept there through those
+    # very tools. The FR-24 read-down grants the predecessor's scratch
+    # read-only, and `scratch_dir` deliberately maps `name@gen` onto `name`
+    # (lineage nodes share their successor's folder — same self, different
+    # times). After the in-place rework the predecessor IS `nid@gen`, so the
+    # read-down resolved onto the live node's own cwd and denied it.
+    org11 = store.create_org("zz compaction readdown")
+    s11 = org11.d["slug"]
+    try:
+        org11.hire(USER, None, "haiku", 5, "solo")
+        store.save_org(org11)
+        own = supervisor.scratch_dir(s11, "solo").replace("\\", "/").rstrip("/")
+
+        def _deny() -> list[str]:
+            cmd = supervisor._build_cmd(store.load_org(s11), "solo")
+            st = json.loads(cmd[cmd.index("--settings") + 1])
+            return list((st.get("permissions") or {}).get("deny") or [])
+
+        check("read-down · a fresh seat is denied nothing",
+              lambda: _eq(_deny(), []))
+        o11 = store.load_org(s11)
+        o11.cheap_compact(USER, "solo")
+        store.save_org(o11)
+        check("read-down · the in-place predecessor shares the seat's scratch",
+              lambda: _eq(supervisor.scratch_dir(
+                  s11, store.load_org(s11).node("solo")["predecessor"]),
+                  supervisor.scratch_dir(s11, "solo")))
+        check("read-down · …so the seat is STILL free to write its own "
+              "working folder with the file tools",
+              lambda: _true(not any(own in d for d in _deny()),
+                            f"denied in its own cwd: {_deny()}"))
+        check("read-down · and nothing else was denied either",
+              lambda: _eq(_deny(), []))
+    finally:
+        try:
+            store.delete_org(s11)
+        except Exception:                                        # noqa: BLE001
+            pass
+
 
 # =============================== 3. hermetic: the threshold arithmetic
 
