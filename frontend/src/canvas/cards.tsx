@@ -427,6 +427,15 @@ export function CreditBar({ seat = 0, grant, committed, segments = [], draftMode
     if (!draftMode && v !== grant) onCommit?.(v - grant)
     if (draftMode) onRelease?.()
   }
+  /* a UA-initiated cancel (touch scroll arbitration, capture loss) must
+     ABORT the drag — routing it through `end` committed a live reallocation
+     from a gesture the browser itself abandoned (mobile audit §0 class;
+     endNodeDrag got this fix 2026-08-01, this bar was missed) */
+  const cancel = () => {
+    if (!drag) return
+    onDragValue?.(drag.g0)
+    setDrag(null)
+  }
   // ruler rungs mark REAL quantities: every 5 credits, or every 25 when the
   // scale is too fine for 5s to resolve (user ruling — never equal-spaced fluff)
   const rung = (5 * pxc >= 4 ? 5 : 25) * pxc
@@ -440,7 +449,7 @@ export function CreditBar({ seat = 0, grant, committed, segments = [], draftMode
           transparent 1px, transparent ${rung}px), var(--input)`,
       }}
       onPointerDown={start} onPointerMove={move}
-      onPointerUp={end} onPointerCancel={end}
+      onPointerUp={end} onPointerCancel={cancel}
       onWheel={(e) => e.stopPropagation()}>
       {/* while adjusting a non-top-level bar, a transparent ghost shows the
           ceiling the drag can reach (seat + grant + the parent's free) */}

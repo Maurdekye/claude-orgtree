@@ -6,7 +6,12 @@
      now GIVEN: the compact-screen desk sheet is approved (D-123,
      2026-08-14) — no open questions remain, only the go-ahead. Spec
      author: the read-only secondary session, from a 6-surface audit of the
-     strict-TS frontend. -->
+     strict-TS frontend.
+     2026-08-14 (later, "prepare the mobile wave"): DRIFT AUDIT APPENDED as
+     §9-§11 — the §0-§8 analysis substantially HOLDS at HEAD, but ~5k lines
+     of frontend growth added surfaces this spec never saw (watchdogs, the
+     ask system, edge-gated hire chips, drag-only granting). §11 lists the
+     decisions that growth reopened; the wave itself remains HELD. -->
 
 # orgtree — mobile responsiveness: build-ready spec
 
@@ -372,3 +377,158 @@ disk is hard-full and a phone has no hover. Disk-full banner wraps, is dismissib
 
 Steps 1-2 are worth landing even if the wave stops there: they fix real desktop bugs and remove
 the corruption hazard.
+
+---
+
+## 9. Drift audit — 2026-08-14, at HEAD past `ddb66fa`
+
+Two independent re-surveys ("prepare the mobile wave"): a claim-by-claim verification of §0-§8
+against current source, and an enumeration of every surface added in the 91 frontend commits
+(~5.1k added lines) since this spec's audit baseline (`a126421`). Line numbers below are current;
+the §0-§8 cites are stale (styles.css 1,732 → 2,247 lines, OrgCanvas.tsx → 1,578) but their
+*claims* were re-verified individually.
+
+### 9.1 What was fixed since (do not re-do)
+
+- **§0 is cleared for node drags.** `abortNodeDrag` (OrgCanvas.tsx:852) restores bases and posts
+  nothing; cards route `onPointerCancel` to it (cards.tsx:780). Landed 2026-08-01 (`a126421`)
+  with the two §1 cliffs (sub-346px no-desk; landscape switchboard gate — `centerOn` now floors
+  at `Z_DESK`).
+- **§3 item 1 done.** Items 2-10 remain open (verified: CreditBar threshold still absent, both
+  armed-delete sites still `onMouseLeave`-disarmed at App.tsx:1392 + DiskBrowser.tsx:217, all
+  four `opacity: 0` controls intact, index.html meta unchanged, still zero
+  resize/visualViewport/matchMedia listeners, still only one `@media` — `prefers-reduced-motion`).
+- **§2-③'s TS-side duplication is half-fixed**: `DESK_SCALE = 0.13333` is now the one TS
+  definition (shared.ts:238), but the CSS literal survives at styles.css:447, so the CSS↔TS split
+  stands.
+- **A second §0 instance was found and fixed in THIS audit**: `CreditBar` routed `onPointerCancel`
+  into its commit path (`end` fires `onCommit(v - grant)`) — a UA-cancelled gesture committed a
+  live reallocation. Now aborts via a dedicated `cancel` (cards.tsx, beside `end`), restoring the
+  pre-drag grant.
+
+### 9.2 What changed against the spec
+
+| §0-§8 claim | status at HEAD |
+|---|---|
+| `.viewport` `touch-action: none`, the only touch declaration | HOLDS (styles.css:165) |
+| `focusId` camera-derived, no `selectedId` anywhere | HOLDS (OrgCanvas.tsx:948-971) |
+| spring-follow yields only to `panRef`/`animBusyRef` | HOLDS (:575-591) — the "third guard" is still unbuilt |
+| counter-scale identity | CHANGED: `--desk-dpi` now divides width and multiplies scale (styles.css:444-448), product invariant; `deskDpi()` (shared.ts:241) is a user text-size dial 0.5-3.0. The equation gained a variable, not slack. |
+| `stopPropagation` unconditional at card pointerdown | CHANGED: an interactive-widget carve-out precedes it (OrgCanvas.tsx:805) — but no threshold, capture still immediate (:820). The ⑤ constraint stands. |
+| two competing `setPointerCapture` | CHANGED: **three** (viewport :759, card :820, CreditBar cards.tsx:409) |
+| canvas-hosted modals to portal | CHANGED: **8** (spec's six + `WatchdogPanel` :1544, `OrgInboxModal` :1567) plus tray (:1412) and zoom HUD (:1394); `ConfirmModal` non-portaled at 10 nested sites; `ComposeModal` is a **modal nested inside a modal** (mail.tsx:661 inside OrgInboxModal). ⚠ These overlays are `position: fixed` so they *render* outside the world transform — but they are DOM descendants of `.viewport`, so `touch-action: none` still kills their scrollers on touch. Portal need unchanged. |
+| `vh` sites | CHANGED: 10 (the 9 the spec's list actually enumerated + `.doc-reader { max-height: 86vh }` styles.css:804) |
+| hover-revealed `opacity: 0` controls | GREW: `.user-label` (:1134) and `.cbar-tip` (:1284) added; `.hsof`/`.cbar-tip` carry `pointer-events: none` (not blind targets), `.org-del`/`.gearbtn`/`.mailbtn` still are |
+| zoom clamp | `0.24` is a magic literal at two sites (OrgCanvas.tsx:630, :737); no `Z_MIN` const. `SX/SY/PAD` are module-private (shared.ts:217). |
+| `title=` census | 112 → **140** |
+
+### 9.3 New surfaces the wave must additionally cover
+
+Adaptation verdicts follow §5's vocabulary; ⚑ marks the ones needing a §11 ruling.
+
+- **Watchdogs (FR-18)** ⚑ — world-scaled 50×26 chips in rows of 3 below the owner
+  (OrgCanvas.tsx:202-231, :1323-1340), `font-size: 7px` two-line names (styles.css:2207), all
+  state `title=`-only, tap-through to `WatchdogPanel`. At compact-map zoom a chip is ~20×10 CSS
+  px. Proposed: HIDE from the compact map; REPLACE with a count-dot in the map caption + a
+  watchdog list in the desk-sheet header (the panel itself becomes a full-bleed sheet like every
+  overlay).
+- **The ask system (asks.tsx, 613 lines)** — ask cards mount in the counter-scaled desk
+  (desk.tsx:794-801, capped `max-height: 75%` styles.css:756) and in the user-inbox reading pane
+  (App.tsx:1121-1133). D-123's sheet absorbs the desk mount at 1:1 — asks get *better* on
+  compact. Two exceptions: the 18px-wide vertical credit-drag bar (styles.css:858, hover tip
+  deliberately killed :868) falls under §6's drag-to-reallocate rule → REPLACE with the stepper
+  at compact; `NulledAsk` renders uncapped in the inbox pane. The screen-space attention chrome
+  (header bell App.tsx:492-507, eye pip cards.tsx:133) must survive the orgbar collapse (§11-E).
+- **Edge-gated hire chips (F-03 sides + FR-25 top)** ⚑ — four `.hsof` sets now hover-gated AND
+  cursor-nearest-edge-gated (`trackEdge` on every card pointermove, cards.tsx:726-735;
+  `.sq.edge-t:hover > .hsof.side-t` styles.css:1179). **No touch equivalent exists** — a tap
+  yields at most one move event, so the gate may never open. 22×22px targets held screen-constant
+  by the new unclamped `--invzf` (OrgCanvas.tsx:1122). Confirms §5.1's REPLACE (full-screen hire
+  form at compact) — but the form must now carry *placement*: below (child), side (ordering),
+  above (FR-25 splice).
+- **Drag-only granting** ⚑ — the org-mailbox tile is a world-scaled drop target
+  (OrgCanvas.tsx:784-791) and `endNodeDrag` converts a card drop into an extern grant (:884-891);
+  the UI names no tap alternative (mail.tsx:513). Audience granting by drag-to-eye predates the
+  spec with the same property. Compact hides card drag entirely (§5.1) → a tap path must exist:
+  proposed "+ holder" picker chip in the OrgInboxModal holders row (works for desktop too).
+- **Retired stacks** — whole-stack drag (OrgCanvas.tsx:910-946) falls under the compact drag
+  HIDE; `PilePicker` is the tap path and already planned as a bottom sheet. The stack margins
+  (5/10/15px, hover-grown :985-987) stay desktop-mechanism; the count badge is the compact
+  affordance (§5.1 unchanged).
+- **Mail sparks** — decorative SVG circles rAF-animating over bezier paths (OrgCanvas.tsx:375-398,
+  :1209-1216); each spark re-renders the canvas for ~420ms. ADAPT: cull with the §5.1 perf row
+  (30Hz / culling), or HIDE at compact.
+- **Doc chips / DocReader (FR-03)** — 21×21 world-scaled chips *outside* the card edge
+  (styles.css:779, eating the 62px sibling gutter; titles `title=`-only docs.tsx:27); reader is a
+  screen-space overlay (`min(760px, 92vw)`). ADAPT: chips fold into the sheet header's doc badges
+  at compact (already exist, desk.tsx:508-513); reader becomes a full-bleed sheet; `.md table`
+  needs an `overflow-x` wrapper.
+- **Hierarchical tray (FR-16)** — bottom-left screen chrome, depth-indented (14px/level inside
+  `max-width: 280px`), five `title=`-only row facts (OrgCanvas.tsx:1490-1515). It is §5.3's
+  primary-navigation candidate — the promotion to a bottom-sheet roster stands, but the indent
+  needs a cap (or path-abbreviation) and the title data must become row text.
+- **Resume banner (D-122) + orgbar growth** ⚑ — the orgbar now carries 8-12 chips plus a
+  three-item frozen-agents banner (App.tsx:419-467) that wraps to 3-4 rows on narrow viewports
+  and pushes the canvas down with nothing re-measuring (§2-⑦). The §5.4 one-row collapse must
+  absorb: banner (→ status chip; resume-all + auto-resume toggle into ⋯), bell (stays visible —
+  it is the attention surface), working-count, connectivity.
+- **Card badge growth (FR-23 `turnago`, unstick, HALTED, remote)** — `.sq-badges` gained a
+  timestamp, a *clickable* unstick button (~40×14 world px, warning `title=`-only,
+  cards.tsx:868-885) and remote/HALTED labels. The compact map LOD (§5.1) replaces the card face
+  wholesale — its caption should carry a status dot + `turnago`; unstick moves to the sheet
+  header (it already exists there, desk.tsx:477-486).
+- **Desk-internal additions (FR-20 pinned message, nav chips, SlashHints, effort popover,
+  notice/sealed lines, file cards, `convo.ts` windowing status rows)** — all inside `.desk-inner`,
+  all inherit D-123's 1:1 sheet for free. One check: the pinned chip's manual `scrollTo`
+  (desk.tsx:638-643) and `.jumpbottom` assume the desk's own scroller — they survive the sheet
+  but must be re-verified after the portal (§2-⑧'s moved-hazard note).
+- **Eye desk full-aspect expansion** — the focused eye card now expands to the viewport aspect
+  (OrgCanvas.tsx:1228-1230) with `innerW = (eyeW-4)/(DESK_SCALE·dpi)` (cards.tsx:247): on a
+  375px phone that is a ~2,800px-virtual panel — tabs at ~2px. Moot at compact (switchboard is
+  HIDE per §5.1) but reinforces the min-side gate for medium.
+- **Remote control (FR-01)** — gear-panel rows + a card badge whose semantics are `title=`-only.
+  Experimental (per the 2026-08-06 ruling it stays so); no mobile adaptation beyond the badge
+  data joining the sheet header. It is NOT a substitute for this wave — it hands one agent's
+  session to claude.ai, it does not operate the org.
+- **livebus (D-124)** — every polled surface refetches on any mutation + ws change. On cellular
+  this raises background volume; the sheet/roster surfaces ride the same bus (no new work, noted
+  for §5.1's perf row).
+
+### 9.4 New prerequisites (append to §3)
+
+11. **`CreditBar` pointercancel aborts** — DONE in this audit (see 9.1).
+12. Portal list is now 8 modals + tray + HUD; `ComposeModal` must portal *with* its parent or
+    flatten into it; the 10 nested `ConfirmModal` sites ride the desk/modal portals.
+13. `trackEdge`/`edge-*` gating needs a `(hover: none)` bypass — on touch the hire affordance
+    must not depend on cursor proximity (superseded at compact by the hire form; medium tier
+    still needs it).
+14. `.md table` horizontal-scroll wrapper (transcript + DocReader).
+15. `Z_MIN` extracted from the two `0.24` literals; export `SX/SY/PAD` for the map-LOD work.
+
+---
+
+## 10. What did NOT change
+
+No responsive CSS appeared (`@media` count: one, `prefers-reduced-motion`), no `dvh`/`svh`, no
+safe-area, no `overscroll-behavior`, no text-size-adjust, no pinch/touch handling, no resize or
+visualViewport listener, no portal beyond `DraftScopeModal`. The §2 hard-parts constraints (①
+focus, ② nesting, ③ counter-scale, ④ chip exclusivity, ⑤ arbitration, ⑥ pinch, ⑦ resize, ⑧ perf
+traps) all stand as written. The build order (§8) stands with §9.4 spliced into steps 1-2.
+
+---
+
+## 11. Decisions reopened by the drift (awaiting ruling)
+
+- **A. 1600×900 deskHost rounding** — §4-B's flagged edge is still unruled: `min(vp) = 772` is
+  8px under the 780 sheet predicate, so the most common desktop resolution would flip to sheet
+  on a browser-chrome pixel. Proposed: keep 780 but sheet only when *also* `(pointer: coarse)`
+  or width ≤ 640 — fine-pointer desktops always keep the card desk.
+- **B. Watchdogs at compact** — hide from the map + count-dot caption + sheet-header list
+  (proposed), or shrink-and-keep the chips.
+- **C. Hire form carries placement** — the compact full-screen hire form gains a placement
+  selector (below / side-ordering / above-splice) so F-03 + FR-25 semantics survive touch.
+- **D. Tap path for granting** — "+ holder" picker in the org-inbox holders row (and the
+  equivalent for eye-audience grants), shipping on desktop too, since the gesture is currently
+  drag-only.
+- **E. Compact orgbar consolidation** — the §5.4 one-row collapse absorbing the resume banner
+  (→ chip + ⋯ actions) and keeping the ask bell visible in-row.
