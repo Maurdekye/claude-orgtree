@@ -5161,6 +5161,20 @@ def _ts_gap_secs(a: str | None, b: str | None) -> int | None:
         return None
 
 
+def _iso_back(ts: str, secs: float) -> str:
+    """`ts` moved `secs` into the past, in ledger.now()'s millisecond-Z shape
+    (so plain string comparison keeps working) — '' when the stamp does not
+    parse, which makes the chronology backstop below stand down rather than
+    guess."""
+    try:
+        from datetime import datetime, timedelta
+        d = (datetime.fromisoformat(ts.replace("Z", "+00:00"))
+             - timedelta(seconds=secs))
+    except ValueError:
+        return ""
+    return d.strftime("%Y-%m-%dT%H:%M:%S.") + f"{d.microsecond // 1000:03d}Z"
+
+
 def _sweep_live(slug: str, nid: str, msgs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Retire live rows the transcript has caught up on, and return the rest.
 
@@ -5193,6 +5207,24 @@ def _sweep_live(slug: str, nid: str, msgs: list[dict[str, Any]]) -> list[dict[st
         inside it is bounded by the turn the row belongs to anyway.
       · thought — unchanged; it has neither id nor text and rides the
         ordering rule below.
+
+    ⚠ THE CHRONOLOGY BACKSTOP (user report 2026-08-14: "temporary greyed out"
+    rows render out of order — the desk draws the durable block first and the
+    whole live tail below it, so a live row that outlives its on-screen twin
+    sinks beneath events that happened after it). The CLI writes its
+    transcript strictly in order, so a durable record NEWER than a live row
+    is proof the row's own record is already written — its twin is on screen
+    (or deliberately filtered), whatever the matching above concluded. Any
+    non-sticky row older than the newest durable stamp minus 2 s therefore
+    retires. This is not the old drop-on-a-clock timer (that one raced the
+    transcript write with no evidence at all); the evidence here is ORDER,
+    and the 2 s guard only absorbs the stamp jitter between a stream event's
+    server-side `at` and the CLI's own record `ts` (same machine clock; the
+    known hazard is a queued user message whose record cuts the line while
+    an assistant message is still streaming). A strand now outlives its twin
+    by one poll cycle, not the rest of the turn. Sticky rows are exempt: they
+    have no record EVER, and their bottom anchor is design (immediate command
+    output stays visible under the composer).
     D-50 holds throughout: every retirement still names the evidence."""
     turn = msgs
     for i in range(len(msgs) - 1, -1, -1):
@@ -5204,9 +5236,17 @@ def _sweep_live(slug: str, nid: str, msgs: list[dict[str, Any]]) -> list[dict[st
         return (r.get("text") or "")[:300]
 
     def durable_texts(head: str) -> int:
-        """How many durable assistant rows in THIS TURN carry this text."""
-        return sum(1 for m in turn if m.get("role") == "assistant"
-                   and (m.get("text") or "").startswith(head))
+        """How many durable rows in THIS TURN carry this text — assistant
+        text AND system `cmd_out`. A slash command's output streams live as
+        a plain text row, but its durable twin is a SYSTEM row whose body
+        rides `cmd_out` (read_chat's local_command branch); counting only
+        assistant rows left those live rows unmatchable, duplicated beside
+        their own twin until something newer landed for the backstop."""
+        return sum(1 for m in turn
+                   if (m.get("role") == "assistant"
+                       and (m.get("text") or "").startswith(head))
+                   or bool(m.get("cmd_out")
+                           and str(m["cmd_out"]).startswith(head)))
 
     def covered(r: dict[str, Any], budget: dict[str, int]) -> bool:
         if r.get("sticky"):
@@ -5231,6 +5271,16 @@ def _sweep_live(slug: str, nid: str, msgs: list[dict[str, Any]]) -> list[dict[st
             return True
         return True
 
+    # the chronology backstop's cutoff (docstring above): the newest durable
+    # stamp, moved 2 s into the past. Stays '' — backstop off — when the
+    # transcript is empty or its newest stamp does not parse.
+    newest_ts = max((m.get("ts") or "" for m in msgs), default="")
+    cutoff = _iso_back(newest_ts, 2.0) if newest_ts else ""
+
+    def stale(r: dict[str, Any]) -> bool:
+        at = r.get("at")
+        return bool(cutoff and at and at < cutoff and not r.get("sticky"))
+
     st = state(slug, nid)
     with _state_lock:
         rows = cast("list[dict[str, Any]]", st.get("live") or [])
@@ -5254,14 +5304,17 @@ def _sweep_live(slug: str, nid: str, msgs: list[dict[str, Any]]) -> list[dict[st
         # here compares strings or clocks; it reads the order both sides agree
         # on.
         budget: dict[str, int] = {}
-        # forward, so the counted text budget is spent oldest-first
-        cov = [False if r.get("kind") == "thought" else covered(r, budget)
+        # forward, so the counted text budget is spent oldest-first. `stale`
+        # ORs in per kind: a stale thought's own record is provably written
+        # (in-order transcript), so it no longer needs a covered successor.
+        cov = [stale(r) if r.get("kind") == "thought"
+               else (covered(r, budget) or stale(r))
                for r in rows]
         # backward, so each thought can see whether anything after it landed
         later = False
         for i in range(len(rows) - 1, -1, -1):
             if rows[i].get("kind") == "thought":
-                cov[i] = later
+                cov[i] = cov[i] or later
             elif cov[i]:
                 later = True
         keep = [r for r, c in zip(rows, cov) if not c]

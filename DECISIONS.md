@@ -891,6 +891,28 @@ the docket's "transcript is in the scratch dir" premise was wrong and the
 copy is the fix. The compact dialog warns when the node is idle past the
 cache TTL, which is the moment the choice actually matters.
 
+### D-121 · the greyed live tail is a strict suffix of the conversation
+Decision (implementer, 2026-08-14, from a user report: "temporary greyed out
+[rows] rendering out of order has been a persistent issue"). The desk renders
+the durable transcript block, then the whole live tail below it — so the seam
+is chronological if and only if every surviving live row is genuinely newer
+than every durable row. The sweep's matching cannot guarantee that alone
+(some rows have no matchable twin: a thought mid-run, a slash command's
+output whose twin is a system `cmd_out` row), so `_sweep_live` gains a
+CHRONOLOGY BACKSTOP: the CLI writes its transcript strictly in order,
+therefore a durable record newer than a live row proves the row's own record
+is already written and on screen — any non-sticky row older than the newest
+durable stamp minus 2 s retires on that proof. This is order-evidence, not
+the old drop-on-a-timer (D-50 still holds: no retirement without the
+replacement provably in hand); the 2 s guard absorbs emit-vs-write stamp
+jitter, the known hazard being a queued user message's record cutting the
+line mid-stream. Two companions: `durable_texts` now counts system `cmd_out`
+twins, so slash-command output stops duplicating beside its own twin; and
+STICKY rows stay bottom-anchored by design — they have no transcript record
+ever, so "immediate command output stays visible under the composer" wins
+over strict chronology for that one class. Worst case after this: a
+strand outlives its twin by one poll cycle instead of the rest of the turn.
+
 ### D-120 · liveness, not the successor link, decides the org axis
 Ruling (user, 2026-08-12, verbatim in the redteam session — provenance
 verified by the implementer against the session's own queue log): "keep the
