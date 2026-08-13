@@ -7,6 +7,7 @@
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 import { useEffect, useRef, useState } from 'react'
+import { onLiveBump } from '../livebus'
 import type { DependencyList } from 'react'
 import type {
   ActivityInfo, AskInfo, DirGrant, MailEntry, NodeState, NodeStatus,
@@ -504,7 +505,13 @@ export function usePolled<T>(
     }
     tick()
     const t = setInterval(tick, ms)
-    return () => { dead = true; clearInterval(t) }
+    // the client's G2 (livebus.ts): every mutation and every ws 'changed'
+    // wakes this surface immediately — the interval above is only the
+    // fallback for a dropped ws. This is what makes a grant rescinded in
+    // one panel disappear from another within a beat instead of a poll
+    // interval (user bug 2026-08-14).
+    const off = onLiveBump(tick)
+    return () => { dead = true; clearInterval(t); off() }
     // the fetcher rides a ref on purpose; `deps` is the identity of the thing
     // being fetched (slug, node, folder), which is what should restart it
     // eslint-disable-next-line react-hooks/exhaustive-deps

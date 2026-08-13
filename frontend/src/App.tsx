@@ -8,6 +8,7 @@ import {
   resumeFrozen, runOp, saveDefaults, saveKiosk, saveSettings, sendMessage,
   sweepLegacy,
 } from './api'
+import { bumpLive } from './livebus'
 import { ConfirmModal, MailFolders, MailList, OrgCanvas, OrgRecord, useEsc } from './Canvas'
 import { DiskBrowser, DiskFullAlert } from './DiskBrowser'
 import {
@@ -230,6 +231,10 @@ export default function App() {
         }
       }
       refreshTree(slug)
+      // the client's G2 (livebus.ts): a 'changed' means SOMEONE saved the
+      // org doc — agents, the supervisor, another tab — so every mounted
+      // polled surface refetches too, not just the tree
+      bumpLive()
     }
     connect()
     return () => { dead = true; clearTimeout(timer!); wsRef.current?.close() }

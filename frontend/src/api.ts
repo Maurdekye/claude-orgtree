@@ -1,6 +1,7 @@
 // kiosk v2: when the SPA is served from a preauthenticated public URL
 // (/k/<token>/…), every API call and the WS must carry the token prefix —
 // the public listener serves nothing outside it.
+import { bumpLive } from './livebus'
 import type {
   AudiencesPayload, ChartersPayload, ChatPayload, DefaultsPayload,
   DiskDeleteResult, DiskDirPayload, DiskPayload, EventsPayload, FsPayload,
@@ -87,6 +88,10 @@ const req = <T,>(path: string, init?: RequestInit,
         throw new Error(b.detail || r.statusText)
       })
     }
+    // the client's G2 (see livebus.ts): every successful mutation THIS tab
+    // makes wakes every mounted polled surface — centrally, so no call site
+    // has to remember a refetch and none can be forgotten
+    if ((init?.method ?? 'GET') !== 'GET') bumpLive()
     return r.json() as Promise<T>
   })
 

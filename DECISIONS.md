@@ -913,6 +913,30 @@ ever, so "immediate command output stays visible under the composer" wins
 over strict chronology for that one class. Worst case after this: a
 strand outlives its twin by one poll cycle instead of the rest of the turn.
 
+### D-124 · client liveness rides one bus, mirroring the server's G2
+Decision (implementer, 2026-08-14, from a user report: audience-grant
+rescinds sat stale in the inbox modal — "another missing websocket send").
+The diagnosis was sharper than the report: the send was NOT missing. G2
+already broadcasts 'changed' on every `store.save_org`; what was missing
+was the CLIENT half — the ws handler refreshed only the tree, and every
+other surface (audiences, both inboxes, events, history, scratch) sat on
+its own 5 s `usePolled` interval, so every mutation was instant on the
+canvas and up to a poll late everywhere else. That is a CLASS, not a bug:
+any new panel inherited it by default.
+The pattern (livebus.ts): one dependency-free bus with exactly two central
+producers — `req()` bumps after every successful non-GET (the mutation
+this tab just made), and the ws 'changed' handler bumps (mutations made
+anywhere else) — and one central consumer: `usePolled` subscribes every
+polled surface; its interval survives only as the fallback for a dropped
+ws. Bumps coalesce 120 ms. No per-call-site refetch to remember, so no
+future surface or endpoint can be forgotten — the same shape as G2 on the
+server, which replaced ~30 endpoints remembering `hub_changed()`.
+Bounds: one-shot fetches remain legitimate for form INITIAL values, static
+preset lists, probes, and click-driven reveals — auto-refetching an open
+editor would stomp the user's draft (G5's own caution). File-state panels
+(scratch, disk) keep meaning from their poll: agents change files without
+a doc save, so no 'changed' ever announces those.
+
 ### D-122 · a network interruption always retries itself; the toggle governs limits
 Ruling (user, 2026-08-14, verbatim: "network outages should always attempt
 to autorestart, regardless of the setting"). The auto-resume timer wakes
