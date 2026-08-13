@@ -974,10 +974,22 @@ never sheet.)
 ### D-125 · mobile-wave drift rulings: coarse-pointer gate, watchdogs off the map, hire placement (dormant)
 Rulings (user, 2026-08-14, the "prepare the mobile wave" drift audit —
 docs/mobile-spec.md §9-§11; all dormant until FR-02 builds, same footing as
-D-123): ① the desk-sheet predicate becomes `min(vpW, vpH) < 780` AND
-(`pointer: coarse` OR width ≤ 640) — resolves the spec's flagged 1600×900
-cliff (min side 772, 8px under 780) in favor of the card desk on every
-fine-pointer desktop. ② Watchdogs HIDE from the compact map: a count-dot
+D-123): ① mobile UI exists ONLY on phone/tablet OSes — a device-class
+allowlist evaluated once at boot (`Android` UA, `iPhone`/`iPad` UA, or
+Mac-platform + `maxTouchPoints > 1` for iPadOS's Macintosh-UA disguise;
+real Macs report 0), stamped as a root class that ALL mobile CSS scopes
+under. Windows, macOS, Linux and ChromeOS never get mobile UI regardless
+of touchscreen, tablet mode, pointer coarseness, or window size — desktop
+stays bit-identical at every window width, and the spec's width tiers +
+the `min(vp) < 780` sheet test apply only WITHIN allowlisted devices
+(1600×900 is thereby moot). Escape hatches: "request desktop site" flips
+a tablet to desktop view; a settings override covers the reverse.
+Was. (same day, hours earlier) `min(vpW, vpH) < 780` AND (`pointer:
+coarse` OR width ≤ 640) — superseded when the user asked to guarantee
+mobile "absolutely only shows on phones & tablets and nowhere else": a
+Windows 2-in-1 in tablet mode reports `pointer: coarse`, and no media
+query distinguishes it from an Android tablet; only the OS class does.
+② Watchdogs HIDE from the compact map: a count-dot
 in the owner's caption, the list in the desk sheet's header, the detail
 panel a full-bleed sheet (the 7px-font 50×26 chips are illegible and
 untappable at any phone-fitting zoom). ③ The compact full-screen hire form

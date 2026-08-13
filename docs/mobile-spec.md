@@ -11,10 +11,13 @@
      §9-§11 — the §0-§8 analysis substantially HOLDS at HEAD, but ~5k lines
      of frontend growth added surfaces this spec never saw (watchdogs, the
      ask system, edge-gated hire chips, drag-only granting). §11's reopened
-     decisions were RULED the same day (D-125): coarse-pointer sheet gate,
-     watchdogs off the compact map, hire-form placement; tap-granting and
-     the orgbar absorption NOT taken. Scope ruling: spec-refresh only — the
-     wave (including §8 steps 1-2) remains HELD until the go-ahead. -->
+     decisions were RULED the same day (D-125): mobile UI gates on a
+     phone/tablet OS ALLOWLIST (html.mobile root class — desktop OSes never
+     get mobile UI at any window size or touch mode; supersedes the
+     capability-based Axis C as the outer gate), watchdogs off the compact
+     map, hire-form placement; tap-granting and the orgbar absorption NOT
+     taken. Scope ruling: spec-refresh only — the wave (including §8 steps
+     1-2) remains HELD until the go-ahead. -->
 
 # orgtree — mobile responsiveness: build-ready spec
 
@@ -525,9 +528,23 @@ traps) all stand as written. The build order (§8) stands with §9.4 spliced int
 All five were put to the user the day of the drift audit; the wave itself remains HELD
 ("spec-refresh only" was the chosen scope — even §8 steps 1-2 wait for the go-ahead).
 
-- **A. 1600×900 deskHost — RULED: card, coarse-pointer required.** §4-B's predicate becomes
-  `deskHost = 'sheet'` iff `min(vpW, vpH) < 780` **AND** (`(pointer: coarse)` OR width ≤ 640).
-  Fine-pointer desktops keep the in-card desk at every window size; the 772-vs-780 cliff is gone.
+- **A. Mobile is device-gated, not capability-gated — RULED (amended same day: "absolutely
+  only shows on phones & tablets and nowhere else").** A device-class allowlist evaluated once
+  at boot — `Android` UA, `iPhone`/`iPad` UA, or Mac-platform + `maxTouchPoints > 1` (iPadOS
+  reports a Macintosh UA by default; real Macs report 0) — stamped as a root class (`html.mobile`)
+  that ALL mobile CSS scopes under. This **supersedes §4's Axis C as the outer gate**: Windows,
+  macOS, Linux and ChromeOS never get any mobile UI — not the sheet, not the compact tiers —
+  regardless of touchscreen, tablet mode, `pointer: coarse` (a Windows 2-in-1 in tablet mode
+  reports coarse and no media query can tell it from an Android tablet), or window size.
+  Desktop layout is bit-identical at every window width; narrowing a desktop window never flips
+  the UI. §4's Axis A width tiers and Axis B `min(vp) < 780` sheet test apply only *within*
+  allowlisted devices (the 772-vs-780 cliff is moot — no Windows resolution can sheet).
+  Media queries cannot express an OS allowlist, so the §4 rule "media queries for screen-space
+  chrome" becomes "`.mobile`-scoped rules for everything mobile; `(pointer: coarse)` etc. may
+  further refine only inside that scope". Escape hatches: "request desktop site" on a tablet
+  yields the desktop view (accepted); a settings override toggle covers the reverse. An earlier
+  same-day ruling ("card, coarse-pointer required") sat between the original spec and this one —
+  see D-125's Was. slot.
 - **B. Watchdogs at compact — RULED: hide from the map.** The compact map shows only a count-dot
   in the owner's caption; the watchdog list (name, state, detail links) lives in the desk sheet's
   header; `WatchdogPanel` becomes a full-bleed sheet like every overlay.
