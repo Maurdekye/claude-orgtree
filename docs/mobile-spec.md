@@ -1,4 +1,7 @@
-<!-- ⚠ IMPLEMENTATION HELD by direct user instruction (2026-08-01,
+<!-- ✔ BUILT 2026-08-14 (commit 0b1b487, "proceed with the full end to
+     end implementation") — see §12 for what shipped and the deliberate
+     deviations. Historical banner below kept for the record.
+     ⚠ IMPLEMENTATION HELD by direct user instruction (2026-08-01,
      reaffirmed "wait for now" 2026-08-14): do not build this wave until the
      user gives the go-ahead. The spec is stored build-ready. §0 (safety)
      and the two desktop bugs it names were fixed independently — they were
@@ -558,3 +561,58 @@ All five were put to the user the day of the drift audit; the wave itself remain
 - **E. Compact orgbar consolidation — NOT approved as proposed** (offered same day, not
   selected). The §5.4 one-row collapse stands as originally written, but the specific
   banner→chip + bell-in-row absorption was not taken; re-ask when the layout tier builds.
+
+
+---
+
+## 12. Build record — 2026-08-14, commit `0b1b487`
+
+The wave shipped the same day the go-ahead landed ("proceed with the full end
+to end implementation"), on top of the drift audit (§9-§11) and all rulings
+(D-123, D-125 incl. the OS allowlist and the orgbar one-row/banner→chip
+answer). What shipped, and where it deliberately deviates from §2-§8:
+
+**Shipped as specified.** The OS-allowlist root class (`mobile.tsx`;
+`html.mobile` scopes every mobile rule — desktop CSS/DOM byte-identical);
+per-pointerId pan/pinch with synchronous `viewRef` writes (②⑥); cards take no
+capture on mobile so a finger on a card pans (⑤); compact zoom clamp
+`[0.3, 1.6]` retires `Z_DESK`; the D-123 sheet (portaled, 1:1, `DeskChat
+bare`, hardware-back closes); tray rows open the sheet and the tray is
+bottom-docked primary navigation (§5.3); compact map LOD (tier + 2-line
+counter-scaled name + status dot + FR-23 stamp); watchdogs off the map with
+count-dot + sheet-header list (D-125 ②); HireSheet with placement (D-125 ③);
+orgbar one-row collapse with the ⋯ panel (banner→chip ruling); ask credit
+steppers; full-bleed overlays + stacked mailer at compact; dot grid and
+sparks off; resize/visualViewport re-fit (⑦); Enter-newline on soft
+keyboards; safety items §3.1-4 + §9.4-11 (all four now done); `.md table`
+scroll wrapper (§9.4-14).
+
+**Deliberate deviations (all bounded by D-125's desktop-bit-identity rule):**
+- **Portals are mobile-conditional** (`MaybePortal`), not unconditional as
+  §3.5 assumed — the allowlist makes desktop portals pure regression risk
+  with no benefit. Consequence: desktop keeps its trapped-modal DOM; if
+  desktop touch-action work is ever wanted, §3.5 reopens.
+- **§2-① is solved by partition, not by a camera guard**: at compact the
+  clamp keeps `z < Z_DESK` so camera-derived focus never fires while the
+  sheet's explicit state exists; on ≥641px tablets the classic zoom-to-desk
+  path runs unchanged. No third guard was built.
+- **Drag is desktop-only on ALL mobile tiers** — §5.1's medium-tier
+  long-press drag is deferred. Reorder/reparent/drag-to-grant need the
+  desktop view (the granting gap is D-125 ④, surfaced in the holders tip).
+- **The eye at compact is a "you" map marker** that opens the user inbox —
+  §5.1 said HIDE + orgbar ⋯; a marker keeps the audience wires and layout
+  sane and gives the inbox a spatial home. Switchboard stays hidden.
+- **Momentum pan and double-tap zoom are not built** (pinch + the ± HUD
+  cover zoom); §5.1's spring 30Hz/culling perf work is deferred.
+- **iOS keyboard pinning is best-effort**: `interactive-widget` +`dvh` +
+  visualViewport re-fit, but no composer-follows-keyboard transform. Known
+  rough edge on iOS Safari.
+- **DiskBrowser 56px two-line rows and the remaining title=-only promotions
+  (§5.4, §9.3)** are deferred — full-bleed + 3s disarm shipped; the data
+  promotions are follow-up polish.
+
+**Verification state.** tsc clean, frontend tests 83/83, vite build green.
+No browser automation exists in-repo: real-device verification (the §7
+matrix) is OUTSTANDING and owned by whoever next opens the app on a phone —
+the `orgtree-mobile` localStorage override (`'1'`/`'0'`) forces the class
+for DevTools emulation.

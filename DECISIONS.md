@@ -1000,7 +1000,9 @@ granting (stays drag-only — with compact hiding card drag, granting has NO
 compact path; the builder surfaces that gap rather than inventing one) and
 the specific orgbar banner→chip absorption (re-ask at the layout tier).
 Scope ruling: "spec-refresh only" — even §8 steps 1-2 (safety +
-structural) wait for the go-ahead. Shipped with the audit as a live-bug
+structural) wait for the go-ahead. (Superseded hours later by "proceed
+with the full end to end implementation" — the wave BUILT same day,
+0b1b487; build record + deviations in docs/mobile-spec.md §12.) Shipped with the audit as a live-bug
 rider (a126421 precedent): CreditBar's pointercancel committed a live
 reallocation; it now aborts (b9f3664).
 
