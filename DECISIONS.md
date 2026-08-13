@@ -967,7 +967,30 @@ until FR-02 builds (the wave itself stays HELD, reaffirmed the same day),
 recorded now so the implementer who builds it does not read the sheet as a
 D-073 violation and revert it. The arithmetic that forced the fork: at
 375px viewport width a world-scaled desk renders ≈4.4px text — no zoom
-makes it both legible and framed.
+makes it both legible and framed. (Sheet predicate amended by D-125: a
+coarse pointer or ≤640px width is also required, so fine-pointer desktops
+never sheet.)
+
+### D-125 · mobile-wave drift rulings: coarse-pointer gate, watchdogs off the map, hire placement (dormant)
+Rulings (user, 2026-08-14, the "prepare the mobile wave" drift audit —
+docs/mobile-spec.md §9-§11; all dormant until FR-02 builds, same footing as
+D-123): ① the desk-sheet predicate becomes `min(vpW, vpH) < 780` AND
+(`pointer: coarse` OR width ≤ 640) — resolves the spec's flagged 1600×900
+cliff (min side 772, 8px under 780) in favor of the card desk on every
+fine-pointer desktop. ② Watchdogs HIDE from the compact map: a count-dot
+in the owner's caption, the list in the desk sheet's header, the detail
+panel a full-bleed sheet (the 7px-font 50×26 chips are illegible and
+untappable at any phone-fitting zoom). ③ The compact full-screen hire form
+carries a placement selector — below / side-ordering / above-splice — so
+the F-03 + FR-25 edge-chip semantics (cursor-proximity-gated, no touch
+equivalent) survive. Offered and NOT taken the same day: a tap path for
+granting (stays drag-only — with compact hiding card drag, granting has NO
+compact path; the builder surfaces that gap rather than inventing one) and
+the specific orgbar banner→chip absorption (re-ask at the layout tier).
+Scope ruling: "spec-refresh only" — even §8 steps 1-2 (safety +
+structural) wait for the go-ahead. Shipped with the audit as a live-bug
+rider (a126421 precedent): CreditBar's pointercancel committed a live
+reallocation; it now aborts (b9f3664).
 
 ### D-120 · liveness, not the successor link, decides the org axis
 Ruling (user, 2026-08-12, verbatim in the redteam session — provenance

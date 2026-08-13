@@ -10,8 +10,11 @@
      2026-08-14 (later, "prepare the mobile wave"): DRIFT AUDIT APPENDED as
      §9-§11 — the §0-§8 analysis substantially HOLDS at HEAD, but ~5k lines
      of frontend growth added surfaces this spec never saw (watchdogs, the
-     ask system, edge-gated hire chips, drag-only granting). §11 lists the
-     decisions that growth reopened; the wave itself remains HELD. -->
+     ask system, edge-gated hire chips, drag-only granting). §11's reopened
+     decisions were RULED the same day (D-125): coarse-pointer sheet gate,
+     watchdogs off the compact map, hire-form placement; tap-granting and
+     the orgbar absorption NOT taken. Scope ruling: spec-refresh only — the
+     wave (including §8 steps 1-2) remains HELD until the go-ahead. -->
 
 # orgtree — mobile responsiveness: build-ready spec
 
@@ -517,18 +520,24 @@ traps) all stand as written. The build order (§8) stands with §9.4 spliced int
 
 ---
 
-## 11. Decisions reopened by the drift (awaiting ruling)
+## 11. Decisions reopened by the drift — RULED 2026-08-14 (D-125)
 
-- **A. 1600×900 deskHost rounding** — §4-B's flagged edge is still unruled: `min(vp) = 772` is
-  8px under the 780 sheet predicate, so the most common desktop resolution would flip to sheet
-  on a browser-chrome pixel. Proposed: keep 780 but sheet only when *also* `(pointer: coarse)`
-  or width ≤ 640 — fine-pointer desktops always keep the card desk.
-- **B. Watchdogs at compact** — hide from the map + count-dot caption + sheet-header list
-  (proposed), or shrink-and-keep the chips.
-- **C. Hire form carries placement** — the compact full-screen hire form gains a placement
-  selector (below / side-ordering / above-splice) so F-03 + FR-25 semantics survive touch.
-- **D. Tap path for granting** — "+ holder" picker in the org-inbox holders row (and the
-  equivalent for eye-audience grants), shipping on desktop too, since the gesture is currently
-  drag-only.
-- **E. Compact orgbar consolidation** — the §5.4 one-row collapse absorbing the resume banner
-  (→ chip + ⋯ actions) and keeping the ask bell visible in-row.
+All five were put to the user the day of the drift audit; the wave itself remains HELD
+("spec-refresh only" was the chosen scope — even §8 steps 1-2 wait for the go-ahead).
+
+- **A. 1600×900 deskHost — RULED: card, coarse-pointer required.** §4-B's predicate becomes
+  `deskHost = 'sheet'` iff `min(vpW, vpH) < 780` **AND** (`(pointer: coarse)` OR width ≤ 640).
+  Fine-pointer desktops keep the in-card desk at every window size; the 772-vs-780 cliff is gone.
+- **B. Watchdogs at compact — RULED: hide from the map.** The compact map shows only a count-dot
+  in the owner's caption; the watchdog list (name, state, detail links) lives in the desk sheet's
+  header; `WatchdogPanel` becomes a full-bleed sheet like every overlay.
+- **C. Hire form carries placement — APPROVED.** The compact full-screen hire form gains a
+  placement selector (below / side-ordering / above-splice) so F-03 + FR-25 semantics survive
+  touch.
+- **D. Tap path for granting — NOT approved** (offered same day, not selected). Granting remains
+  drag-only; note the consequence for the builder: with card drag hidden at compact (§5.1),
+  extern/audience granting has **no compact path at all** until this is revisited. Do not invent
+  one — surface the gap when the wave builds.
+- **E. Compact orgbar consolidation — NOT approved as proposed** (offered same day, not
+  selected). The §5.4 one-row collapse stands as originally written, but the specific
+  banner→chip + bell-in-row absorption was not taken; re-ask when the layout tier builds.
