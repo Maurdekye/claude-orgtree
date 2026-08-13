@@ -433,19 +433,18 @@ export default function App() {
                       </button>
                       {/* ⚠ this line is the ONLY place that knows both the
                           freeze kind and whether anything will act on it, so
-                          it is the only place allowed to say. A connection
-                          freeze names the attempt and then who resumes it:
-                          with auto off — the default — NOTHING does, and the
-                          old wording ("resumable in ~30s") promised a retry
-                          no component performs (2026-08-10). */}
+                          it is the only place allowed to say. D-122 (user
+                          ruling 2026-08-14): a pure connection freeze always
+                          retries itself, so the promise is unconditional now
+                          — the toggle governs only limit freezes. A record
+                          carrying BOTH flags falls to the limit branch: its
+                          wake waits on the toggle like any limit's. */}
                       <span className="resume-note">
-                        {frozen.every((n) => n.frozen.connection)
+                        {frozen.every((n) => n.frozen.connection && !n.frozen.limit)
                           ? <>network interruption — {frozen.length} agent
                             {frozen.length > 1 ? 's' : ''} frozen
                             {until ? ` · ${until.replace(/^network interruption — /, '')}` : ''}
-                            {tree.auto_resume
-                              ? ' · retrying automatically'
-                              : ' · press ▶ to retry'}</>
+                            {' · retrying automatically'}</>
                           : <>usage limit hit — {frozen.length} agent
                             {frozen.length > 1 ? 's' : ''} frozen
                             {until ? ` · resumable ${until}` : ''}</>}

@@ -34,7 +34,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable, Generator
-from typing import Any
+from typing import Any, cast
 
 from .ledger import LedgerError, Org, slugify
 
@@ -353,7 +353,8 @@ def list_orgs() -> list[dict[str, Any]]:
                     # the PUBLIC half of the org's hub identity (never the
                     # secret) — lets listings mark a local org as also
                     # hub-reachable (transport sets, user spec 2026-08-05)
-                    "net_slug": (doc.get("net_identity") or {}).get("slug"),
+                    "net_slug": cast("dict[str, Any]",
+                                     doc.get("net_identity") or {}).get("slug"),
                     "created": doc.get("created")})
     return out
 

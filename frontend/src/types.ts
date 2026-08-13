@@ -176,6 +176,9 @@ export interface TreeFrozen {
   /** the transient kind (2026-08-06): a network drop, not a usage limit —
    *  same resume machinery, different badge label */
   connection?: boolean | null
+  /** D-122: present so the banner can tell a PURE connection freeze (always
+   *  self-retries) from a record carrying both kinds (waits on the toggle) */
+  limit?: boolean | null
 }
 
 // ledger.py tree(): one entry of the node's lineage stack (§8)

@@ -1,10 +1,12 @@
-<!-- ⚠ IMPLEMENTATION HELD by direct user instruction (2026-08-01): do not
-     build this wave until the user gives the go-ahead. The spec is stored
-     build-ready. §0 (safety) and the two desktop bugs it names were fixed
-     independently — they were live defects, not mobile work. ⚑ One design
-     ruling is REQUIRED before building: see DECISIONS.md §Open (compact
-     desk sheet vs desk-over-card). Spec author: the read-only secondary
-     session, from a 6-surface audit of the strict-TS frontend. -->
+<!-- ⚠ IMPLEMENTATION HELD by direct user instruction (2026-08-01,
+     reaffirmed "wait for now" 2026-08-14): do not build this wave until the
+     user gives the go-ahead. The spec is stored build-ready. §0 (safety)
+     and the two desktop bugs it names were fixed independently — they were
+     live defects, not mobile work. The design ruling this spec needed is
+     now GIVEN: the compact-screen desk sheet is approved (D-123,
+     2026-08-14) — no open questions remain, only the go-ahead. Spec
+     author: the read-only secondary session, from a 6-surface audit of the
+     strict-TS frontend. -->
 
 # orgtree — mobile responsiveness: build-ready spec
 

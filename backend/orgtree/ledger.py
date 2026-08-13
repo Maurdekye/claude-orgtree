@@ -5427,8 +5427,14 @@ class Org:
                                for k in ("at", "until", "until_ts",
                                          # the badge label needs the KIND
                                          # (a network freeze is not a
-                                         # "usage limit", 2026-08-06)
-                                         "connection")},
+                                         # "usage limit", 2026-08-06);
+                                         # `limit` rides along for D-122 —
+                                         # the banner promises "retrying
+                                         # automatically" only for a PURE
+                                         # connection freeze, and a record
+                                         # carrying both flags waits on the
+                                         # auto_resume toggle
+                                         "connection", "limit")},
                             # №41: freeze kinds are commutative — surface
                             # whichever reason(s) exist without overwriting
                             "error": " · ".join(

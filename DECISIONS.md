@@ -913,6 +913,38 @@ ever, so "immediate command output stays visible under the composer" wins
 over strict chronology for that one class. Worst case after this: a
 strand outlives its twin by one poll cycle instead of the rest of the turn.
 
+### D-122 · a network interruption always retries itself; the toggle governs limits
+Ruling (user, 2026-08-14, verbatim: "network outages should always attempt
+to autorestart, regardless of the setting"). The auto-resume timer wakes
+PURE connection-kind freezes unconditionally — `auto_resume` now governs
+only the LIMIT kind, where restarting spends against a quota and opt-in is
+the right default. A freeze record carrying BOTH flags waits on the toggle
+like any limit freeze (the retry would spend). The desk banner's connection
+branch promises "retrying automatically" unconditionally, and keys on
+`connection && !limit` (the `limit` flag joins the tree() frozen projection
+for exactly this); the freeze label itself still states only the attempt —
+c7e169d's fact-not-promise wording survives the policy reversal unchanged,
+which was its design goal. The backoff shape (30s→300s exponential,
+NET_RETRY_MAX=4, then unfrozen-with-error) is unchanged.
+Why: a limit freeze is a budget event, but a connection drop interrupts
+work the user already set in motion — waking from it restores their intent
+rather than overriding it.
+Was. "a user with the toggle off has asked not to be auto-restarted, and a
+network drop does not override them" (redteam constraint, 2026-08-06) — the
+call was flagged then as the user's to make, and they have now made it the
+other way.
+
+### D-123 · the compact-screen desk is a full-screen sheet (approved, dormant)
+Ruling (user, 2026-08-14: "the compact screen exception is approved, for
+whenever the mobile wave proceeds"). On compact screens — the mobile spec's
+`min(vpW, vpH) < 780px` test — the desk opens as a full-screen 1:1 sheet
+instead of fading in over the card; desktop keeps D-073 unchanged. Dormant
+until FR-02 builds (the wave itself stays HELD, reaffirmed the same day),
+recorded now so the implementer who builds it does not read the sheet as a
+D-073 violation and revert it. The arithmetic that forced the fork: at
+375px viewport width a world-scaled desk renders ≈4.4px text — no zoom
+makes it both legible and framed.
+
 ### D-120 · liveness, not the successor link, decides the org axis
 Ruling (user, 2026-08-12, verbatim in the redteam session — provenance
 verified by the implementer against the session's own queue log): "keep the
@@ -1076,13 +1108,18 @@ present, and cheap_compact carries no headless refusal).
 Was. D-108's retire-plus-fresh-hire mechanism (2ca1a14) with a live-reports
 refusal and a suffixed replacement name.
 
-### D-110 · FR-19's name-gen button: held on the access path, free when built
-Ruling (user, 2026-08-11, partial): the model-access fork (one-shot CLI call
-vs a direct `anthropic` SDK dependency) is deliberately UNDECIDED — "skip
-this for now, we'll figure it out later" — so FR-19 stays unbuilt. The cost
-half IS ruled: generating a name will be **free** (orgtree eats the small
-inference cost; FR-18's "pets are free" family), recorded now so the build
-doesn't need to re-ask.
+### D-110 · FR-19 (name-gen button) is DISMISSED — no viable access path
+Ruling (user, 2026-08-14): the feature is dropped entirely. Both branches of
+the access fork fail its size: "an entire cli turn is excessive, expensive,
+and high latency for such a simple feature, and requiring an api key
+otherwise is too high friction for a user to make it practical." The fork
+itself remains the template question for any FUTURE built-in inference —
+this dismissal answers it for name-gen, not for a feature big enough to
+carry the cost.
+Was. (2026-08-11, partial) the model-access fork (one-shot CLI call vs a
+direct `anthropic` SDK dependency) deliberately UNDECIDED — "skip this for
+now, we'll figure it out later"; the cost half ruled free (FR-18's "pets
+are free" family).
 
 ### D-109 · a deploy refuses a dirty tree it would build
 Decision (implementer, 2026-08-11, from a redteam hazard flag): update.ps1 /
@@ -1878,6 +1915,7 @@ stays a plain card), symmetric so the eye's centre never moves.
 Why: an origin hung off the tree's extent shifts the eye between orgs and on
 every widening hire; a card that resized on focus would reflow the tree
 under the user's cursor.
+(Compact-screen exception approved 2026-08-14, dormant until FR-02: D-123.)
 
 ### D-074 · direct manipulation, not buttons
 Ruling (user): structural and quantitative edits are done by dragging —
@@ -2051,15 +2089,8 @@ the ruling recorded.
 
 ## Open — awaiting a ruling
 
-- **The compact-screen desk: sheet or card?** D-073 rules the desk fades in
-  OVER the card at the same size — the chat living inside the tree is the
-  card metaphor's point. The mobile spec (docs/mobile-spec.md, held)
-  concludes by arithmetic that no zoom makes a world-scaled desk both
-  legible and framed on a phone (desk text ≈4.4 px at 375 px width), and
-  proposes a full-screen 1:1 sheet on compact screens ONLY, keeping D-073
-  on desktop. That contradicts a written ruling, so it needs the user's
-  decision before the mobile wave builds — recorded here so an implementer
-  does not read the sheet as a bug and revert it.
+*(empty as of 2026-08-14 — the compact-desk sheet question resolved into
+D-123)*
 
 *(The seven items ruled 2026-08-01 live in their domain entries: D-021
 Bounds, D-014 Load-bearing, D-063, D-023, D-071, D-069; the mobile wave's

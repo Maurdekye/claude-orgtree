@@ -676,7 +676,7 @@ def spawn_env(org: Org) -> dict[str, str]:
     not own."""
     env = clean_env()
     if org.d.get("api_key") and not sbx.is_sandboxed(org):
-        env["ANTHROPIC_API_KEY"] = str(org.d["api_key"] or "")
+        env["ANTHROPIC_API_KEY"] = str(org.d.get("api_key") or "")
     return env
 
 
@@ -949,7 +949,8 @@ def identity_prompt(org: Org, nid: str) -> str:
     if n.get("team_charter") and org.children(nid):
         charter_bits.append(
             f"The standing charter YOU give your team (yours to edit — "
-            f"orgtree_retool on your own id, team_charter): {n['team_charter']}")
+            f"orgtree_retool on your own id, team_charter): "
+            f"{n.get('team_charter')}")
     chain = [a for a in reversed(org.ancestors(nid)) if a != USER]
     for a in chain:                       # §15 cascade: ancestors bind their subtrees
         tc = org.nodes[a].get("team_charter")
@@ -2489,9 +2490,10 @@ def _run_one_turn(slug: str, nid: str,
                     # an unconsumed batch folds back as MAIL — never a double
                     # delivery). Exponential 30s→300s, NET_RETRY_MAX attempts,
                     # then manual with the honest label below. The restart
-                    # itself is auto_resume's (or ▶'s) — a user with the
-                    # toggle off has asked not to be auto-restarted, and a
-                    # network drop does not override them (redteam constraint).
+                    # itself is the auto-resume timer's (or ▶'s) — and since
+                    # D-122 (user ruling 2026-08-14) the timer wakes PURE
+                    # connection freezes regardless of the auto_resume
+                    # toggle, which governs only limit-kind freezes now.
                     run = 0
                     with store.DOC_LOCK:
                         o2 = store.load_org(slug)
@@ -4004,8 +4006,11 @@ def auto_resume_ready(org: Org, now: float | None = None) -> set[str]:
 
 
 def start_auto_resume_loop() -> None:
-    """Background timer for the inline org toggle (user spec): when
-    `auto_resume` is on, usage-limit-frozen agents restart on their own ONE
+    """Background timer for frozen-agent wakes. Two regimes since D-122
+    (user ruling 2026-08-14): PURE connection freezes always retry on their
+    own timer, toggle or no toggle — a network drop interrupted work the
+    user already set in motion. The `auto_resume` toggle governs the LIMIT
+    kind: when it is on, usage-limit-frozen agents restart on their own ONE
     MINUTE after THEIR OWN reported reset time. A LIMIT freeze with no
     parseable reset time (a rate-limit-style text — the class the synthetic
     detector admits) is retried on the 5-minute floor instead of waiting for
@@ -4029,7 +4034,7 @@ def start_auto_resume_loop() -> None:
                     slug = o["slug"]
                     with store.DOC_LOCK:
                         org = store.load_org(slug)
-                        if not org.d.get("auto_resume") or org.d.get("spend_frozen"):
+                        if org.d.get("spend_frozen"):
                             continue
                         # (a timed fable_lock needs no entry here any more: the
                         # nodes it holds read as limit_locked, so they are not
@@ -4038,6 +4043,22 @@ def start_auto_resume_loop() -> None:
                         # the lock in the old org-wide max() to schedule a wake
                         # for it; a 30-second tick already provides that.)
                         ready = auto_resume_ready(org)
+                        if not org.d.get("auto_resume"):
+                            # D-122 (user ruling 2026-08-14): a network
+                            # interruption ALWAYS retries itself, toggle or no
+                            # toggle. auto_resume governs the freezes where
+                            # restarting spends against a limit — that one is
+                            # opt-in; a connection drop interrupted work the
+                            # user had already set in motion, and waking from
+                            # it restores their intent rather than overriding
+                            # it. Only PURE connection records pass: one that
+                            # also carries `limit` waits for the toggle like
+                            # any other limit freeze.
+                            ready = {nid for nid in ready
+                                     if (fz := _resumable(org.node(nid)))
+                                     is not None
+                                     and fz.get("connection")
+                                     and not fz.get("limit")}
                     if not ready:
                         continue
                     with store.DOC_LOCK:
