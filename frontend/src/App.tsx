@@ -91,6 +91,9 @@ export default function App() {
   const [doomedOrg, setDoomedOrg] = useState<OrgListEntry | null>(null)   // org row pending deletion
   const [showDefaults, setShowDefaults] = useState(false)   // global new-org defaults
   const [killArmed, setKillArmed] = useState(false)  // the killswitch latch
+  // mobile compact orgbar (D-125 ruling 2026-08-14, 'one row, banner→chip'):
+  // the detail chips + resume banner collapse behind a ⋯ toggle
+  const [barMore, setBarMore] = useState(false)
   const [nowTick, setNowTick] = useState(Date.now()) // drives the resume-red clock
   const wsRef = useRef<WebSocket | null>(null)
   useEffect(() => {
@@ -330,6 +333,26 @@ export default function App() {
                 {!tree.public &&
                   <button className="iconbtn" onClick={() => setDrawer(true)}><MenuIcon fontSize="inherit" /></button>}
                 <h2>{tree.name}</h2>
+                {/* MOBILE-ONLY merged status chip (D-125 orgbar ruling): live
+                    count · working · frozen in one glance; tapping it opens
+                    the same ⋯ panel. display:none on desktop (.mob-only). */}
+                {(() => {
+                  const ns = [...flatNodes(tree).values()].filter((n) => n.state === 'live')
+                  const busy = ns.filter((n) => n.busy).length
+                  const froz = ns.filter((n) => n.frozen).length
+                  return (
+                    <button className={'chip mstat mob-only' + (froz ? ' bad' : '')}
+                      onClick={() => setBarMore((v) => !v)}>
+                      {ns.length} live{busy > 0 ? ` · ${busy}⟳` : ''}
+                      {froz > 0 ? ` · ${froz} frozen` : ''}
+                    </button>
+                  )
+                })()}
+                {/* desktop: display:contents — the chips stay direct flex
+                    items of the orgbar, byte-identical layout. Compact: the
+                    whole run collapses behind ⋯ (D-125 orgbar ruling; the
+                    resume banner + auto-resume toggle live in here). */}
+                <div className={'bar-detail' + (barMore ? ' open' : '')}>
                 {/* the ledger self-audit only speaks when something is wrong;
                     credit totals live on the eye's bar */}
                 {!tree.audit.no_overdraft &&
@@ -465,6 +488,26 @@ export default function App() {
                     </>
                   )
                 })()}
+                {/* compact ⋯ panel extras — desktop hides these (.mob-only);
+                    the real settings/kill controls sit right of the spacer
+                    and are display:none at compact */}
+                {!tree.public &&
+                  <button className="mob-only bar-row"
+                    onClick={() => { setBarMore(false); setShowSettings(true) }}>
+                    <SettingsIcon fontSize="inherit" /> settings</button>}
+                <span className="kill mob-only">
+                  <button className={'kill-latch' + (killArmed ? ' open' : '')}
+                    onClick={() => setKillArmed((a) => !a)}>
+                    {killArmed ? <LockOpenIcon fontSize="inherit" /> : <LockIcon fontSize="inherit" />}</button>
+                  <button className="kill-btn" disabled={!killArmed}
+                    onClick={() => {
+                      setKillArmed(false); setBarMore(false)
+                      killAll(slug)
+                        .then((r) => { toast([`interrupted ${r.interrupted.length} agent(s); queues cleared`]); refreshTree(slug) })
+                        .catch((e: Error) => toast([`error: ${e.message}`]))
+                    }}><StopIcon fontSize="inherit" /> STOP ALL</button>
+                </span>
+                </div>
                 <span style={{ flex: 1 }} />
                 {/* the killswitch: unlatch, then press — interrupts EVERY
                     active agent and clears their queues */}
@@ -505,6 +548,8 @@ export default function App() {
                     </button>
                   )
                 })()}
+                <button className="iconbtn barmore mob-only" title="more"
+                  onClick={() => setBarMore((v) => !v)}>⋯</button>
                 {!tree.public &&
                   <button onClick={() => setShowSettings(true)}><SettingsIcon fontSize="inherit" /> settings</button>}
                 <a className="gh-link" href="https://github.com/Maurdekye/claude-orgtree"
@@ -1373,6 +1418,15 @@ function CeilDirs({ dirs, onChange }: {
 function SweepBlock({ slug, toast }: { slug: string; toast: ToastFn }) {
   const [prev, setPrev] = useState<SweepPreview | null>(null)
   const [armed, setArmed] = useState(false)
+
+  // mobile audit §3.3: onMouseLeave never fires on touch, so the armed latch
+  // used to stay live indefinitely — a multi-GB delete degraded to a single
+  // tap. A 3s timeout disarms everywhere (mouse users keep the leave path).
+  useEffect(() => {
+    if (!armed) return
+    const t = setTimeout(() => setArmed(false), 3000)
+    return () => clearTimeout(t)
+  }, [armed])
   const [busy, setBusy] = useState(false)
   useEffect(() => {
     getSweepPreview(slug).then(setPrev).catch(() => setPrev(null))

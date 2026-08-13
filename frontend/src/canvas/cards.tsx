@@ -22,6 +22,7 @@ import type {
 } from './shared'
 import { Activity, ContextWheel, DeskChat } from './desk'
 import { DocChips } from './docs'
+import { isMobile } from '../mobile'
 import { DraftScopeModal } from './modals'
 
 // ------------------------------------------------------------- the overseer
@@ -404,12 +405,21 @@ export function CreditBar({ seat = 0, grant, committed, segments = [], draftMode
   const len = Math.max(6, (seat + cur) * pxc)
   const start = (e: React.PointerEvent<HTMLDivElement>) => {
     if (!draftMode && !onCommit) return
+    // §6 of the mobile spec: drag-to-reallocate is desktop-only by design —
+    // precision is ~2px per credit and a finger cannot resolve one credit.
+    // Touch devices get the ask card's stepper instead; the bar stays a
+    // read-only gauge under a finger.
+    if (isMobile) return
     e.stopPropagation(); e.preventDefault()
     setDrag({ y0: e.clientY, g0: grant, val: grant })
     e.currentTarget.setPointerCapture(e.pointerId)
   }
   const move = (e: React.PointerEvent<HTMLDivElement>) => {
     if (!drag) return
+    // mobile audit §3.2: a 6px dead zone before the drag stages anything —
+    // without it any press that drifted a pixel past a rounding boundary
+    // committed a live reallocation on release
+    if (Math.abs(e.clientY - drag.y0) < 6) return
     const dg = (drag.y0 - e.clientY) / (pxc * zoom)
     const v = Math.round(Math.max(min, Math.min(max ?? Infinity, drag.g0 + dg)))
     if (draftMode) onDragValue?.(v)
@@ -661,7 +671,7 @@ export function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRem
             <textarea className="df-charter"
               placeholder="charter (optional): standing role notes…"
               value={charter} onChange={(e) => setCharter(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && ok) { e.preventDefault(); hire() } }} />
+              onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && ok && !isMobile) { e.preventDefault(); hire() } }} />
           </div>
           <div className="df-foot">
             <span className="spacer" />
@@ -718,12 +728,20 @@ interface NodeSquareProps {
   onDragEnd: (e: React.PointerEvent<HTMLDivElement>, id: string,
     node: CanvasNode, focused: boolean) => void
   onDragCancel: (e: React.PointerEvent<HTMLDivElement>, id: string) => void
+  /** compact map tier (mobile wave §5.1): the card renders as a MAP marker —
+   *  tier block, name, status, last-turn stamp — no desk, no chips, no drag.
+   *  Taps are arbitrated by the viewport (the sheet opens there). */
+  mapMode?: boolean
+  /** D-125 ②: watchdogs hide from the compact map; the owner card carries
+   *  their count as a dot instead */
+  dogs?: number
 }
 
 export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, map, op, slug,
   toast, pxc, zoom, onSpawn, onSpawnSide, onSpawnTop, onConfig, onInbox, onLineage, onOpenDoc,
   onRecenter, onJump, pub, kioskRemaining, cascadeAlloc, maxTop, pile, compactAt, maxTier,
-  onMailLink, onDragStart, onDragMove, onDragEnd, onDragCancel }: NodeSquareProps) {
+  onMailLink, onDragStart, onDragMove, onDragEnd, onDragCancel,
+  mapMode, dogs }: NodeSquareProps) {
   // pile fronts zoom on a plain CENTER click (user spec) — track the
   // pointer-down point so a drag's trailing click doesn't re-zoom
   const downAt = useRef<Pt | null>(null)
@@ -773,6 +791,32 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, m
     transform: `translate(${pos.x}px, ${pos.y}px)`,
     width: NODE_W, height: NODE_H,
     zIndex: focused ? 5 : dragging ? 8 : undefined,
+  }
+  // compact MAP tier (mobile wave, D-123/D-125): the card is a locator, not a
+  // work surface — the desk lives in the full-screen sheet. Tier block, name,
+  // status, last-turn stamp (FR-23 stays glanceable), watchdog count-dot
+  // (D-125 ②). NO pointer handlers: the viewport arbitrates taps (a finger
+  // that lands on a card must still be able to pan), and drag is hidden at
+  // compact by design (§6). The `asking` aura class rides `cls` unchanged.
+  if (mapMode) {
+    const stat = node.last_status
+    return (
+      <div className={cls.join(' ') + ' maplod'} style={style}>
+        <div className="map-top">
+          <span className={'tier t-' + node.tier}>{TIER_LETTER[node.tier!] ?? '?'}</span>
+          {node.busy
+            ? <span className="statusdot waiting" />
+            : node.frozen ? <FrozenIcon fontSize="inherit" className="tray-frozen" />
+            : node.state !== 'live' ? <span className="map-off">{node.state}</span>
+            : stat ? <span className={'statusdot ' + stat.status} />
+            : <span className="statusdot idle" />}
+          {(dogs ?? 0) > 0 && <span className="map-dogs">◉{dogs}</span>}
+        </div>
+        <span className="map-name">{node.id}</span>
+        {lastTurn && !node.busy &&
+          <span className="map-ago">{ago(lastTurn.at)}{lastTurn.killed ? ' ✕' : ''}</span>}
+      </div>
+    )
   }
   return (
     <div className={cls.join(' ')} style={style}

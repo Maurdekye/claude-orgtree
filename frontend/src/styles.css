@@ -134,9 +134,10 @@ nav { display: flex; flex-direction: column; gap: 2px; }
 .hub-hint { font-size: 11.5px; margin: 2px 0 6px 22px; }
 .org-del {
   background: none; border: none; padding: 0 2px; font-size: 11px;
-  color: var(--dim); opacity: 0; transition: opacity .12s; line-height: 1;
+  color: var(--dim); opacity: 0; visibility: hidden;
+  transition: opacity .12s, visibility .12s; line-height: 1;
 }
-.org:hover .org-del { opacity: .8; }
+.org:hover .org-del { opacity: .8; visibility: visible; }
 .org-del:hover { color: var(--bad); opacity: 1; background: none; }
 .home {
   background: none; border: none; text-align: left; padding: 4px 10px;
@@ -223,18 +224,20 @@ main {
 .gearbtn {
   position: absolute; top: 6px; right: 6px; z-index: 3;
   border: none; background: none; padding: 0 2px; font-size: 12px;
-  color: var(--dim); opacity: 0; transition: opacity .15s; line-height: 1;
+  color: var(--dim); opacity: 0; visibility: hidden;
+  transition: opacity .15s, visibility .15s; line-height: 1;
 }
-.sq:hover .gearbtn { opacity: .8; }
+.sq:hover .gearbtn { opacity: .8; visibility: visible; }
 .gearbtn:hover { opacity: 1 !important; color: var(--ink-strong); background: none; }
 /* ✉ on every card — same interface as the eye's; always visible while mail waits */
 .mailbtn {
   position: absolute; top: 6px; right: 24px; z-index: 3;
   border: none; background: none; padding: 0 2px; font-size: 12px;
-  color: var(--dim); opacity: 0; transition: opacity .15s; line-height: 1;
+  color: var(--dim); opacity: 0; visibility: hidden;
+  transition: opacity .15s, visibility .15s; line-height: 1;
 }
-.sq:hover .mailbtn { opacity: .8; }
-.mailbtn.has { opacity: .9; }
+.sq:hover .mailbtn { opacity: .8; visibility: visible; }
+.mailbtn.has { opacity: .9; visibility: visible; }
 /* frozen by a usage limit — pale ICE (whiter, desaturated) so it never reads
    as the saturated credit-bar cyan sitting right beside the card */
 .sq.frozen { border-color: #6b93ab; }
@@ -2245,3 +2248,207 @@ a.attach-chip:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--
      events list off the modal */
   overflow-y: auto; max-height: 200px;
 }
+
+/* ============================================================ mobile wave
+   D-125: EVERY rule below scopes under html.mobile — the class is stamped
+   once at boot from the phone/tablet OS allowlist (mobile.tsx). Desktop
+   OSes never carry the class, at any window size or touch mode, so this
+   whole section is inert there by construction. Width media queries appear
+   only INSIDE the .mobile scope (the D-125 ruling's one permitted use).
+   The sheet + map tier follow D-123 and the mobile spec (docs/mobile-spec.md). */
+
+html.mobile {
+  -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+}
+html.mobile body { overscroll-behavior: none; }
+/* .mob-only elements exist for the compact orgbar; anywhere else they hide */
+.mob-only { display: none; }
+
+/* ---- the desk sheet (D-123): full-screen, authored 1:1, portaled ---- */
+html.mobile .mobsheet {
+  position: fixed; inset: 0; z-index: 30;
+  display: flex; flex-direction: column;
+  background: var(--bg);
+  height: 100dvh;
+  padding-bottom: env(safe-area-inset-bottom);
+  overscroll-behavior: contain;
+}
+html.mobile .mobsheet-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px; border-bottom: 1px solid var(--line);
+  background: var(--panel); flex: none;
+}
+html.mobile .mobsheet-head .spacer { flex: 1; }
+html.mobile .ms-name {
+  font-size: 15px; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; min-width: 0;
+}
+html.mobile .ms-btn {
+  min-width: 40px; min-height: 40px; font-size: 17px;
+  background: var(--input); border: 1px solid var(--line);
+  border-radius: 8px; color: var(--ink); flex: none;
+}
+html.mobile .ms-close { font-size: 15px; }
+html.mobile .ms-doglist {
+  display: flex; flex-direction: column; border-bottom: 1px solid var(--line);
+  background: var(--panel); flex: none; max-height: 40dvh; overflow-y: auto;
+}
+html.mobile .ms-doglist button {
+  display: flex; gap: 8px; align-items: center; text-align: left;
+  min-height: 44px; padding: 0 14px; font-size: 13px;
+  background: none; border: none; border-top: 1px solid var(--line-soft);
+  color: var(--ink);
+}
+html.mobile .mobsheet-body {
+  flex: 1; min-height: 0; display: flex; flex-direction: column;
+  touch-action: pan-y;
+}
+/* DeskChat `bare` fills the sheet; its own .msgs scroller does the work */
+html.mobile .mobsheet-body .desk-body {
+  flex: 1; min-height: 0; display: flex; flex-direction: column;
+  height: 100%;
+}
+html.mobile .mobsheet-body .msgs { touch-action: pan-y; }
+html.mobile .mobsheet-body textarea,
+html.mobile .mobsheet-body input {
+  font-size: 16px;   /* under 16px iOS Safari force-zooms the page on focus */
+}
+
+/* ---- overlays: every modal is a full-bleed sheet at compact (spec 5.4) ---- */
+html.mobile .overlay > * { max-width: 96vw; }
+@media (max-width: 640px) {
+  html.mobile .overlay { place-items: stretch; }
+  html.mobile .overlay > * {
+    width: 100% !important; max-width: 100vw !important;
+    height: 100dvh; max-height: 100dvh !important;
+    border-radius: 0 !important; border-left: none; border-right: none;
+    padding-bottom: calc(14px + env(safe-area-inset-bottom));
+    box-sizing: border-box;
+  }
+  /* the two-pane mailer stacks: list above, reading pane below */
+  html.mobile .settings .mailpane { flex-direction: column; height: auto; flex: 1; min-height: 0; }
+  html.mobile .mailer-list {
+    width: 100%; max-width: none; min-width: 0;
+    max-height: 34dvh; flex: none;
+  }
+}
+html.mobile .overlay { z-index: 40; }   /* above the sheet (z 30) */
+html.mobile .settings { -webkit-overflow-scrolling: touch; touch-action: pan-y; }
+html.mobile button { min-height: 32px; }
+html.mobile .chip-x { min-width: 28px; min-height: 28px; }
+
+/* ---- compact canvas: the map tier ---- */
+@media (max-width: 640px) {
+  /* the dot grid is the worst paint on a mobile GPU and conveys nothing */
+  html.mobile .space { background-image: none; }
+  /* map marker cards (NodeSquare mapMode) */
+  html.mobile .sq.maplod {
+    display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 6px; padding: 6px;
+    overflow: hidden;
+  }
+  html.mobile .sq.maplod .map-top {
+    display: flex; align-items: center; gap: 6px;
+    /* counter-scaled so the STATUS stays readable at map zoom */
+    transform: scale(calc(var(--invz, 1)));
+  }
+  html.mobile .sq.maplod .map-name {
+    font-size: 13px; line-height: 1.25; text-align: center;
+    max-width: 100%; overflow: hidden;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    word-break: break-all;
+    /* readable caption at any zoom: counter-scale toward screen px, capped
+       so it cannot outgrow the card at high zoom */
+    transform: scale(calc(min(var(--invz, 1) * 1.15, 2.2)));
+  }
+  html.mobile .sq.maplod .map-ago { font-size: 10px; color: var(--dim);
+    transform: scale(calc(var(--invz, 1))); }
+  html.mobile .sq.maplod .map-off { font-size: 10px; color: var(--dim); }
+  html.mobile .sq.maplod .map-dogs { font-size: 10px; color: var(--dim); }
+  html.mobile .sq.maplod.eye-map .map-name { font-size: 15px; }
+  html.mobile .sq.maplod .eye-count { position: absolute; top: -8px; right: -8px; }
+  /* desktop card affordances that have no meaning on the map */
+  html.mobile .hsof, html.mobile .doc-chips, html.mobile .gearbtn,
+  html.mobile .mailbtn, html.mobile .user-label { display: none !important; }
+
+  /* ---- HUD: fit + zoom pair at 44px, safe-area cleared ---- */
+  html.mobile .zoomhud { bottom: calc(10px + env(safe-area-inset-bottom)); }
+  html.mobile .zoomhud button { width: 44px; height: 44px; font-size: 18px; }
+  html.mobile .zoomhud .hud-eye { display: none; }  /* switchboard is hidden */
+
+  /* ---- the agents tray becomes primary navigation (spec 5.3) ---- */
+  html.mobile .tray-wrap {
+    position: fixed; left: 0; right: 0;
+    bottom: 0; z-index: 25;
+    padding: 0 10px calc(8px + env(safe-area-inset-bottom));
+  }
+  html.mobile .tray {
+    min-width: 0; max-width: none; width: 100%;
+    max-height: 52dvh; overscroll-behavior: contain; touch-action: pan-y;
+  }
+  html.mobile .tray-row { min-height: 44px; }
+  html.mobile .tray-toggle { min-height: 40px; padding: 0 16px; font-size: 14px; }
+
+  /* ---- orgbar: one 44px row; detail behind the ellipsis (D-125) ---- */
+  html.mobile main { padding: 6px 0 0; height: 100dvh; }
+  html.mobile .orgbar {
+    flex-wrap: nowrap; overflow: hidden; align-items: center;
+    margin: 0 8px 6px; min-height: 44px; gap: 6px;
+  }
+  html.mobile .orgbar h2 {
+    font-size: 15px; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; min-width: 0;
+  }
+  /* hide the desktop-only right-side controls; the ellipsis panel carries
+     their mobile twins */
+  html.mobile .orgbar > .kill:not(.mob-only),
+  html.mobile .orgbar > .gh-link { display: none; }
+  html.mobile .orgbar > button:not(.iconbtn):not(.mob-only) { display: none; }
+  html.mobile .mob-only { display: inline-flex; align-items: center; gap: 5px; }
+  html.mobile .bar-detail { display: none; }
+  html.mobile .bar-detail.open {
+    display: flex; flex-direction: column; align-items: stretch; gap: 8px;
+    position: fixed; top: 52px; left: 8px; right: 8px; z-index: 45;
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 12px; box-shadow: var(--shadow);
+    max-height: 70dvh; overflow-y: auto; touch-action: pan-y;
+  }
+  html.mobile .bar-detail.open .chip,
+  html.mobile .bar-detail.open .resume-all,
+  html.mobile .bar-detail.open .auto-resume,
+  html.mobile .bar-detail.open .bar-row { min-height: 40px; }
+  html.mobile .bar-detail.open .resume-note { white-space: normal; }
+  html.mobile .barmore { font-size: 20px; min-width: 40px; }
+}
+/* desktop keeps the chips inline — the wrapper has no box at all */
+html:not(.mobile) .bar-detail { display: contents; }
+@media (min-width: 641px) {
+  html.mobile .bar-detail { display: contents; }
+}
+
+/* ---- ask credit stepper (mobile replaces the bar drag, spec 6) ---- */
+html.mobile .ask-step {
+  display: flex; align-items: center; gap: 10px; margin-top: 8px;
+  justify-content: center;
+}
+html.mobile .ask-step button {
+  min-width: 44px; min-height: 40px; font-size: 18px;
+  background: var(--input); border: 1px solid var(--line);
+  border-radius: 8px; color: var(--ink);
+}
+html.mobile .ask-step b { min-width: 34px; text-align: center; font-size: 15px; }
+
+/* ---- compact hire form (D-125 item 3) ---- */
+html.mobile .hire-sheet .hs-tiers { display: flex; flex-direction: column; gap: 6px; }
+html.mobile .hire-sheet .hs-tier {
+  display: flex; align-items: center; gap: 10px; min-height: 48px;
+  background: var(--input); border: 1px solid var(--line);
+  border-radius: 8px; color: var(--ink); padding: 0 12px; font-size: 14px;
+}
+html.mobile .hire-sheet .hs-tier.on { border-color: var(--accent); background: var(--accent-soft); }
+html.mobile .hire-sheet .hs-place { display: flex; flex-direction: column; gap: 4px; }
+html.mobile .hire-sheet input { font-size: 16px; min-height: 44px; }
+
+/* ---- markdown tables must scroll inside their own box (spec 9.4-14) ---- */
+html.mobile .md table { display: block; overflow-x: auto; max-width: 100%; }

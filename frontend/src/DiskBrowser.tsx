@@ -59,6 +59,15 @@ export function DiskBrowser({ slug, isPublic, toast, close, initialMode }: {
   const [curPath, setCurPath] = useState('')
   const [sel, setSel] = useState<Map<string, SelMeta>>(() => new Map())
   const [armed, setArmed] = useState(false)   // two-click delete latch
+
+  // mobile audit §3.3: onMouseLeave never fires on touch, so the armed latch
+  // used to stay live indefinitely — a multi-GB delete degraded to a single
+  // tap. A 3s timeout disarms everywhere (mouse users keep the leave path).
+  useEffect(() => {
+    if (!armed) return
+    const t = setTimeout(() => setArmed(false), 3000)
+    return () => clearTimeout(t)
+  }, [armed])
   const [busy, setBusy] = useState(false)
   const [growTo, setGrowTo] = useState('')
   const selRef = useRef(sel)

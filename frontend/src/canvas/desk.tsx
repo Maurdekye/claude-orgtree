@@ -32,6 +32,7 @@ import type {
 import { ConfirmModal } from './modals'
 import { InboxView } from './mail'
 import { AskCard } from './asks'
+import { isMobile } from '../mobile'
 
 interface ContextWheelProps {
   occ?: number | null
@@ -879,7 +880,9 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
             }
           }}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() }
+            // mobile: soft keyboards emit Enter with shiftKey:false and no
+            // gesture recovers the newline — send is the button's job there
+            if (e.key === 'Enter' && !e.shiftKey && !isMobile) { e.preventDefault(); send() }
           }} />
         {!pub && (
           <EffortButton value={node.scope?.effort ?? ''}

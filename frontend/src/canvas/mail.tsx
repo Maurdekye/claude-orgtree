@@ -18,6 +18,7 @@ import {
 } from '../icons'
 import { EXTERN, md, USER, useEsc, usePolled } from './shared'
 import type { CanvasNode, MailRow } from './shared'
+import { isMobile } from '../mobile'
 
 // One mail interface, everywhere (user ruling: the user's and the agents'
 // inboxes function identically), laid out like a webmail client: the list on
@@ -245,7 +246,7 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
                   placeholder={`reply to ${party(cur)}…`}
                   onChange={(e) => setDraft(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey && draft.trim()) {
+                    if (e.key === 'Enter' && !e.shiftKey && draft.trim() && !isMobile) {
                       e.preventDefault()
                       onReply!(cur, draft.trim())
                       setDraft('')
@@ -512,6 +513,10 @@ export function OrgInboxModal({ inbox, net, map, slug, toast, close, jumpTo }: O
               {holders.length === 0
                 ? 'inbound mail auto-grants the senior top-level agent — or drag an agent onto the mailbox to choose who reads it'
                 : 'these agents read and answer outside mail — drag an agent onto the mailbox to add one'}
+              {/* D-125 ④: granting stays drag-only by explicit ruling — the
+                  tap path was offered and not taken, so the compact gap is
+                  SURFACED here rather than papered over */}
+              {isMobile && ' (dragging needs the desktop view)'}
             </span>
           </div>
           {/* the SAME webmail interface as every other inbox (user ruling) —

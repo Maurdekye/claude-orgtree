@@ -1,5 +1,6 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
+import './mobile'   // D-125: stamp html.mobile before first paint
 import App from './App'
 import './styles.css'
 

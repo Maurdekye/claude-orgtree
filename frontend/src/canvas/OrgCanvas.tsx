@@ -13,18 +13,19 @@ import {
 } from '../icons'
 import {
   ago, DOG_H, DOG_W, DRAFT, ease, EXTERN, flatten, INBOX, INBOX_H, layout, NODE_H, NODE_W, orgPxc, segD,
-  segPoint, sizeOf, smooth, SPRING_C, SPRING_K, TIER_LETTER, USER, USER_H,
+  segPoint, sizeOf, smooth, SPRING_C, SPRING_K, TIER_LETTER, TIERS, USER, USER_H,
   USER_W, withDraftTree, Z_DESK, Z_MAX, Z_MINI,
 } from './shared'
 import type {
   CanvasNode, DraftScope, DraftState, MailEvent, MailLinkFn,
   OpFn, Pile, Pt, Seg, Spring, StreamEvent, View,
 } from './shared'
-import { Activity, ContextWheel, LineagePanel } from './desk'
+import { Activity, ContextWheel, DeskChat, LineagePanel } from './desk'
 import { DocReader } from './docs'
 import { NodeInboxModal, OrgInboxModal } from './mail'
 import { NodeConfig, PilePicker, UserConfig, WatchdogPanel } from './modals'
 import { DraftNode, NodeSquare, UserNode } from './cards'
+import { isCompact, isMobile, MaybePortal, sheetGate } from '../mobile'
 
 export interface OrgCanvasProps {
   tree: TreePayload
@@ -54,6 +55,17 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
   const [nodeInboxJump, setNodeInboxJump] = useState<string | null>(null)
   const [oiJump, setOiJump] = useState<string | null>(null)
   const [dogView, setDogView] = useState<string | null>(null)  // FR-18 panel
+  // ---- mobile wave (D-123/D-125) ----
+  // the desk SHEET: explicit state, mobile-only. This deliberately does NOT
+  // touch focusId — at compact the zoom clamps below Z_DESK so the camera-
+  // derived focus never fires, and the two sources of truth never coexist
+  // (the spec's §2-① haunting dissolves by partition, not by a third guard).
+  const [sheetId, setSheetId] = useState<string | null>(null)
+  const [sheetDogs, setSheetDogs] = useState(false)   // header dog list open
+  const [hireOpen, setHireOpen] = useState(false)     // compact hire form
+  const [, setVpTick] = useState(0)                   // re-render on resize
+  const compact = isCompact()
+  const compactRef = useRef(compact); compactRef.current = compact
   // the eye's unread-mail GLOW is gone (user ruling 2026-08-04: only agents
   // that need the user's answer glow; the header ask icon carries the rest).
   // The seen-stamp bookkeeping stays: the inbox count badge still uses it.
@@ -167,7 +179,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
     for (const p of piles.values()) for (const m of p.list) out.set(m, p)
     pileOfRef.current = out
   }, [piles])
-  const hidden = useMemo(() => {         // piled-away id → its pile's front id
+  const hiddenMemo = useMemo(() => {     // piled-away id → its pile's front id
     const out = new Map<string, string>()
     const bury = (n: CanvasNode, front: string) => {
       out.set(n.id, front)
@@ -187,6 +199,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
     walk(vroot)
     return out
   }, [vroot, piles])
+  const hidden = hiddenMemo
   const target = useMemo(() => {
     const t = layout(vroot, hidden)
     for (const n of map.values()) {           // live bearers float ABOVE the successor
@@ -281,6 +294,14 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
     id: string; sx: number; sy: number
     bases: Map<string, Pt>; moved: boolean
   } | null>(null)     // {id, sx, sy, ox, oy, moved}
+  // mobile pointer bookkeeping (spec §2-⑥): a real per-pointerId map — the
+  // desktop path keeps its single panRef untouched. Two pointers = pinch;
+  // during a pinch panRef holds a moved:true sentinel so the spring-follow
+  // and the tap path both yield (one guard vocabulary, not three).
+  const pointersRef = useRef(new Map<number, Pt>())
+  const pinchRef = useRef<{ d0: number; z0: number } | null>(null)
+  const tapRef = useRef<{ x: number; y: number; t: number; target: Element | null } | null>(null)
+  const hiddenRef = useRef(hidden); hiddenRef.current = hidden
 
   const posOf = (id: string): Pt | undefined =>
     springs.current.get(id) ?? targetRef.current.get(id)
@@ -370,6 +391,9 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
   // a mail event rides the org's wires: down/up the tree, along the peer line
   // between coworkers, or along a direct audience line when one connects the two
   const launchSpark = useCallback((from: string, to: string) => {
+    // compact map: sparks re-render the whole canvas at 60fps for 420ms per
+    // mail — the worst paint on a mobile GPU for pure decoration (§5.1 perf)
+    if (compactRef.current) return
     const m = mapRef.current
     const norm = (x: string) => (!x || x === 'user' || x === 'user_inbox' || x === USER) ? USER : x
     // org-inbox mail (user spec 2026-08-05): a spark rides the mailbox↔node
@@ -627,7 +651,8 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
   const zoomStep = useCallback((factor: number) => {
     const vp = viewportRef.current?.getBoundingClientRect()
     const v = viewRef.current
-    const z = Math.min(Z_MAX, Math.max(0.24, v.z * factor))
+    const lim = compactRef.current ? { min: 0.3, max: 1.6 } : { min: 0.24, max: Z_MAX }
+    const z = Math.min(lim.max, Math.max(lim.min, v.z * factor))
     if (!vp || z === v.z) return
     const cx = vp.width / 2, cy = vp.height / 2
     const wx = (cx - v.x) / v.z, wy = (cy - v.y) / v.z
@@ -693,6 +718,49 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
     if (animate) animateTo(to, ms)
     else setView(to)
   }, [animateTo])
+  // mobile zoom range (spec §5.1): compact retires Z_DESK — the map never
+  // reaches desk zoom, so the camera-derived focusId never fires and the
+  // sheet is the only desk. Desktop keeps [0.24, Z_MAX] untouched.
+  const zLim = () => compactRef.current
+    ? { min: 0.3, max: 1.6 } : { min: 0.24, max: Z_MAX }
+  // mobile spec §2-⑦: nothing re-ran on resize — on rotate the camera math
+  // targeted the old rect forever. Mobile-only: re-render on any resize and
+  // re-fit the camera once it settles (visualViewport covers the iOS soft
+  // keyboard, where window.resize never fires).
+  useEffect(() => {
+    if (!isMobile) return
+    let t: ReturnType<typeof setTimeout> | null = null
+    const onR = () => {
+      setVpTick((v) => v + 1)
+      if (t) clearTimeout(t)
+      t = setTimeout(() => { fitAll(false) }, 250)
+    }
+    window.addEventListener('resize', onR)
+    window.visualViewport?.addEventListener('resize', onR)
+    return () => {
+      if (t) clearTimeout(t)
+      window.removeEventListener('resize', onR)
+      window.visualViewport?.removeEventListener('resize', onR)
+    }
+  }, [fitAll])
+  // sub-panels reset whenever the sheet's subject changes or it closes
+  useEffect(() => { setSheetDogs(false); setHireOpen(false) }, [sheetId])
+  // the hardware/gesture BACK closes the sheet before leaving the org (spec
+  // §5.2): opening pushes a history entry; back pops it and closes; closing
+  // via ✕ consumes the entry so the next back doesn't no-op visibly
+  useEffect(() => {
+    if (!sheetId || !isMobile) return
+    window.history.pushState({ sheet: sheetId }, '')
+    const onPop = () => setSheetId(null)
+    window.addEventListener('popstate', onPop)
+    return () => {
+      window.removeEventListener('popstate', onPop)
+      const st: unknown = window.history.state
+      if (st && typeof st === 'object' && (st as { sheet?: string }).sheet === sheetId) {
+        window.history.back()
+      }
+    }
+  }, [sheetId])
   // opening an org: wake on the eye, then drift out to the whole tree.
   // Wheel and drag both cancel the shared camera animation, so the intro is
   // interruptible at any moment. Keyed on the LOADED org's slug — switching
@@ -750,22 +818,103 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
     return { x: (e.clientX - r.left - v.x) / v.z, y: (e.clientY - r.top - v.y) / v.z }
   }
 
-  // background pan
+  // background pan (+ mobile pinch/tap — desktop keeps the exact old path)
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return
     cancelAnimationFrame(animRef.current!)
     animBusyRef.current = false
+    if (isMobile) {
+      pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
+      if (pointersRef.current.size === 2) {
+        // second finger: any pan/tap in flight ABORTS (spec §2-⑥c) and the
+        // gesture becomes a pinch. The sentinel panRef keeps the follow off.
+        const [a, b] = [...pointersRef.current.values()] as [Pt, Pt]
+        pinchRef.current = { d0: Math.hypot(a.x - b.x, a.y - b.y), z0: viewRef.current.z }
+        panRef.current = { sx: 0, sy: 0, ox: 0, oy: 0, moved: true }
+        tapRef.current = null
+        e.currentTarget.setPointerCapture(e.pointerId)
+        return
+      }
+      // remember the touch for tap arbitration on release — cards take no
+      // capture on mobile, so a finger landing on one can still pan (§2-⑤)
+      tapRef.current = { x: e.clientX, y: e.clientY, t: performance.now(),
+        target: e.target as Element }
+    }
     panRef.current = { sx: e.clientX, sy: e.clientY, ox: viewRef.current.x, oy: viewRef.current.y, moved: false }
     e.currentTarget.setPointerCapture(e.pointerId)
   }
   const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (isMobile && pointersRef.current.has(e.pointerId)) {
+      pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
+    }
+    if (pinchRef.current) {
+      if (pointersRef.current.size < 2) return
+      const [a, b] = [...pointersRef.current.values()] as [Pt, Pt]
+      const d = Math.hypot(a.x - b.x, a.y - b.y)
+      const pin = pinchRef.current
+      if (d <= 0 || pin.d0 <= 0) return
+      const lim = zLim()
+      const z = Math.min(lim.max, Math.max(lim.min, pin.z0 * (d / pin.d0)))
+      const r = viewportRef.current?.getBoundingClientRect()
+      if (!r) return
+      const v = viewRef.current
+      const mx = (a.x + b.x) / 2 - r.left, my = (a.y + b.y) / 2 - r.top
+      const wx = (mx - v.x) / v.z, wy = (my - v.y) / v.z
+      const nv = { x: mx - wx * z, y: my - wy * z, z }
+      // synchronous ref coherence (§2-⑥b): several moves land per commit at
+      // 120Hz, and each must compute from the LAST write, not the last render
+      viewRef.current = nv
+      setView(nv)
+      return
+    }
     const d = panRef.current
     if (!d) return
     const dx = e.clientX - d.sx, dy = e.clientY - d.sy
     if (Math.abs(dx) + Math.abs(dy) > 3) d.moved = true
     if (d.moved) setView((v) => ({ ...v, x: d.ox + dx, y: d.oy + dy }))
   }
-  const onPointerUp = () => { panRef.current = null }
+  const onPointerUp = (e?: React.PointerEvent<HTMLDivElement>) => {
+    if (isMobile && e) {
+      pointersRef.current.delete(e.pointerId)
+      if (pinchRef.current) {
+        if (pointersRef.current.size < 2) { pinchRef.current = null; panRef.current = null }
+        return
+      }
+      // tap arbitration: a still finger that landed on a card opens it —
+      // as the full-screen sheet under the D-123 gate, or the classic
+      // zoom-to-desk glide on larger tablets. Interactive elements (buttons,
+      // the mailbox tile, piles, chips) already handle their own clicks.
+      const tap = tapRef.current
+      tapRef.current = null
+      if (tap && !panRef.current?.moved && e.type !== 'pointercancel'
+          && performance.now() - tap.t < 600
+          && !tap.target?.closest(
+            'button, input, textarea, select, a, .wd-chip, .sq.orginbox, '
+            + '.desk-over, .overlay, .cbar, .hsof, .doc-chips, .pile-stack')) {
+        const w = toWorld({ clientX: tap.x, clientY: tap.y })
+        let hit: string | null = null
+        for (const [id] of targetRef.current) {
+          if (id === DRAFT || id === INBOX || id.startsWith('dog:')) continue
+          if (hiddenRef.current.has(id)) continue
+          if (!mapRef.current.has(id)) continue
+          const p = posOf(id)
+          if (!p) continue
+          const { w: cw, h: ch } = sizeOf(id)
+          if (w.x >= p.x && w.x <= p.x + cw && w.y >= p.y && w.y <= p.y + ch) { hit = id; break }
+        }
+        if (hit === USER) {
+          // compact hides the switchboard (§5.1) — the eye tap opens the
+          // user inbox instead; tablets keep the zoom-in
+          if (compactRef.current) onInbox?.()
+          else centerOn(USER)
+        } else if (hit && mapRef.current.get(hit)?.state !== 'draft') {
+          if (sheetGate()) setSheetId(hit)
+          else centerOn(hit)
+        }
+      }
+    }
+    panRef.current = null
+  }
 
   // ----------------------------------------------------------- node dragging
   const descendantsOf = (id: string) => {
@@ -802,6 +951,11 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
 
   const startNodeDrag = (e: React.PointerEvent<HTMLDivElement>, id: string) => {
     if (e.button !== 0) return
+    // mobile: drag-to-reparent/reorder is desktop-only (spec §6 — no hover
+    // preview, no unoccluded drop target, no cheap escape under a finger).
+    // No capture and no stopPropagation: the press bubbles to the viewport,
+    // which pans on move and opens the card on a still release.
+    if (isMobile) return
     if ((e.target as Element).closest('button, input, textarea, select, .cbar, .desk-body')) return
     if (mapRef.current.get(id)?.isBearerOf) {   // lineage cards are not org nodes
       e.stopPropagation()
@@ -1082,6 +1236,14 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
     ? Math.max(0, tree.kiosk.credits - (tree.audit?.top_level_holds ?? 0))
     : null
 
+  // D-125 ②: at compact the watchdog chips leave the map; owners carry the
+  // count as a dot and the sheet header lists them
+  const dogsByOwner = useMemo(() => {
+    const out: Record<string, number> = {}
+    for (const w of tree.watchdogs ?? []) out[w.owner] = (out[w.owner] ?? 0) + 1
+    return out
+  }, [tree.watchdogs])
+
   const orgStats = useMemo(() => {
     let free = 0
     const walk = (n: TreeNode) => {
@@ -1176,8 +1338,9 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
               className="edge tether" />
           })}
           {/* FR-18: the watchdog wire — the user's spec verbatim ("connected
-              to their owner with a wire"); the spark rides it on each fire */}
-          {(tree.watchdogs ?? []).map((w) => {
+              to their owner with a wire"); the spark rides it on each fire.
+              Hidden at compact with the chips (D-125 ②). */}
+          {!compact && (tree.watchdogs ?? []).map((w) => {
             const a = posOf('dog:' + w.id), b = posOf(w.owner)
             if (!a || !b) return null
             return <path key={'w' + w.id}
@@ -1219,6 +1382,19 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
           const p = posOf(n.id)
           if (!p) return null
           if (n.id === USER) {
+            if (compact) {
+              // §5.1: the switchboard is desktop-idea-shaped (N-up parallel
+              // desks) — at compact the eye is a plain marker; tapping it
+              // opens the user inbox (viewport tap arbitration above)
+              return <div key={USER} className="sq user maplod eye-map"
+                style={{ transform: `translate(${p.x}px, ${p.y}px)`,
+                         width: USER_W, height: USER_H }}>
+                <span className="map-name">you</span>
+                {(tree.asks_open ?? 0) + (tree.user_inbox_count ?? 0) > 0 &&
+                  <b className={'eye-count' + ((tree.asks_open ?? 0) > 0 ? ' asks' : '')}>
+                    {(tree.asks_open ?? 0) > 0 ? tree.asks_open : tree.user_inbox_count}</b>}
+              </div>
+            }
             const vp = viewportRef.current?.getBoundingClientRect()
             // the eye is the ONLY cell that expands in width to the screen's
             // FULL aspect ratio when focused (user spec — room for the
@@ -1284,7 +1460,8 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
               maxTop={tree.max_top_grant ?? 1000} maxTier={tree.kiosk?.max_tier}
               pile={pileHere} compactAt={tree.compact_at}
               onDragStart={startNodeDrag} onDragMove={moveNodeDrag}
-              onDragEnd={endNodeDrag} onDragCancel={abortNodeDrag} />
+              onDragEnd={endNodeDrag} onDragCancel={abortNodeDrag}
+              mapMode={compact} dogs={dogsByOwner[n.id] ?? 0} />
           )
           if (!pileHere) return square
           // the pile's stack layers render BEHIND the front card as real
@@ -1319,8 +1496,11 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
         })}
         {/* FR-18: watchdog chips — tiny satellite cards beside their owner
             (the user's spec: named; click for the detail + sent-events
-            panel). Not agents: no chrome beyond name + state glyph. */}
-        {(tree.watchdogs ?? []).map((w) => {
+            panel). Not agents: no chrome beyond name + state glyph.
+            D-125 ②: HIDDEN at compact — 7px names are illegible and 50×26
+            untappable at any phone-fitting zoom; the owner card carries a
+            count-dot and the sheet header carries the list. */}
+        {!compact && (tree.watchdogs ?? []).map((w) => {
           const p = posOf('dog:' + w.id)
           if (!p || hidden.has(w.owner)) return null
           return (
@@ -1409,6 +1589,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
           click glides to that agent. FR-16 (2026-08-11): listed by HIERARCHY
           — each superior immediately followed by its subtree, indented per
           depth — not by canvas position */}
+      <MaybePortal>
       <div className="tray-wrap" onPointerDown={(e) => e.stopPropagation()}>
         {trayOpen && (
           <div className="tray">
@@ -1476,7 +1657,11 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
                     const par = map.get(n.id)?.parent
                     setFront(par! + (n.state === 'archived' ? '|a' : '|c'), n.id)
                   }
-                  centerOn(n.id)
+                  // mobile sheet gate: the tray is primary navigation at
+                  // compact (§5.3) — a row opens the desk sheet directly
+                  // (centerOn would glide past the compact zoom clamp)
+                  if (sheetGate()) { setSheetId(n.id); setTrayOpen(false) }
+                  else centerOn(n.id)
                 }
                 // №13: the status summary is TEXT here, not a tooltip — and a
                 // finished status survives the next turn as prev_status (dim)
@@ -1532,47 +1717,205 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
           <ViewListIcon fontSize="inherit" /> agents
         </button>
       </div>
+      </MaybePortal>
+      {/* every overlay rides MaybePortal (mobile wave §2-②): `.viewport`
+          carries touch-action:none, and a scroller nested inside it can
+          never scroll by touch — the portal moves the overlay out of that
+          DOM subtree ON MOBILE ONLY; desktop renders exactly as before. */}
       {configId && map.get(configId) && (
-        <NodeConfig node={map.get(configId)!} map={map} tree={tree} slug={slug}
-          op={op} toast={toast} close={() => setConfigId(null)} />
+        <MaybePortal><NodeConfig node={map.get(configId)!} map={map} tree={tree} slug={slug}
+          op={op} toast={toast} close={() => setConfigId(null)} /></MaybePortal>
       )}
       {lineageId && map.get(lineageId) && (
-        <LineagePanel node={map.get(lineageId)!} op={op} slug={slug}
-          close={() => setLineageId(null)} />
+        <MaybePortal><LineagePanel node={map.get(lineageId)!} op={op} slug={slug}
+          close={() => setLineageId(null)} /></MaybePortal>
       )}
       {dogView && (tree.watchdogs ?? []).some((w) => w.id === dogView) && (
-        <WatchdogPanel slug={slug} toast={toast}
+        <MaybePortal><WatchdogPanel slug={slug} toast={toast}
           dog={(tree.watchdogs ?? []).find((w) => w.id === dogView)!}
-          close={() => setDogView(null)} />
+          close={() => setDogView(null)} /></MaybePortal>
       )}
       {docView && (
-        <DocReader slug={slug} docId={docView} toast={toast}
-          close={() => setDocView(null)} />
+        <MaybePortal><DocReader slug={slug} docId={docView} toast={toast}
+          close={() => setDocView(null)} /></MaybePortal>
       )}
       {userCfg && (
-        <UserConfig tree={tree} slug={slug} toast={toast}
-          close={() => setUserCfg(false)} />
+        <MaybePortal><UserConfig tree={tree} slug={slug} toast={toast}
+          close={() => setUserCfg(false)} /></MaybePortal>
       )}
       {inboxId && map.get(inboxId) && (
-        <NodeInboxModal node={map.get(inboxId)!} slug={slug}
+        <MaybePortal><NodeInboxModal node={map.get(inboxId)!} slug={slug}
           jumpTo={nodeInboxJump}
-          close={() => { setInboxId(null); setNodeInboxJump(null) }} />
+          close={() => { setInboxId(null); setNodeInboxJump(null) }} /></MaybePortal>
       )}
       {pileOpen && piles.get(pileOpen) && (
-        <PilePicker pile={piles.get(pileOpen)!} map={map} op={op} toast={toast}
+        <MaybePortal><PilePicker pile={piles.get(pileOpen)!} map={map} op={op} toast={toast}
           onPick={(nid) => { setFront(pileOpen, nid); setPileOpen(null) }}
-          close={() => setPileOpen(null)} />
+          close={() => setPileOpen(null)} /></MaybePortal>
       )}
       {oiOpen && (
-        <OrgInboxModal inbox={tree.org_inbox} net={tree.net} map={map} slug={slug} toast={toast}
+        <MaybePortal><OrgInboxModal inbox={tree.org_inbox} net={tree.net} map={map} slug={slug} toast={toast}
           jumpTo={oiJump}
           close={() => {
             setOiOpen(false); setOiJump(null)
             // closing the panel acknowledges the whole log (same idiom as the
             // eye's glow: opening acknowledges attention)
             if (tree.org_inbox?.unread) orgInboxRead(slug).catch(() => {})
-          }} />
+          }} /></MaybePortal>
       )}
+      {/* ---- the desk SHEET (D-123, mobile only): full-screen, portaled,
+          authored 1:1 — DeskChat's `bare` mode is exactly the unscaled desk
+          body the sheet needs. Explicit state; the camera never moves. */}
+      {sheetId && map.get(sheetId) && (() => {
+        const n = map.get(sheetId)!
+        const myDogs = (tree.watchdogs ?? []).filter((w) => w.owner === sheetId)
+        return (
+          <MaybePortal>
+            <div className="mobsheet">
+              <header className="mobsheet-head">
+                <span className={'tier t-' + n.tier}>{TIER_LETTER[n.tier ?? ''] ?? '?'}</span>
+                <b className="ms-name">{n.id}</b>
+                {n.busy && <Activity act={n.activity} dotOnly />}
+                {n.state !== 'live' && <span className="dim">{n.state}</span>}
+                <span className="spacer" />
+                {myDogs.length > 0 &&
+                  <button className="ms-btn" onClick={() => setSheetDogs((v) => !v)}>
+                    ◉ {myDogs.length}</button>}
+                {n.state === 'live' && !tree.public &&
+                  <button className="ms-btn" title="hire a report"
+                    onClick={() => setHireOpen(true)}>＋</button>}
+                <button className="ms-btn" title="inbox"
+                  onClick={() => setInboxId(sheetId)}>✉</button>
+                {!tree.public &&
+                  <button className="ms-btn" title="permissions & settings"
+                    onClick={() => setConfigId(sheetId)}>⚙</button>}
+                <button className="ms-btn ms-close" onClick={() => setSheetId(null)}>✕</button>
+              </header>
+              {sheetDogs && myDogs.length > 0 && (
+                <div className="ms-doglist">
+                  {myDogs.map((w) => (
+                    <button key={w.id}
+                      onClick={() => { setDogView(w.id); setSheetDogs(false) }}>
+                      <span className="wd-glyph">{w.state === 'armed' ? '◉'
+                        : w.state === 'paused' ? '◫' : '✕'}</span>
+                      {w.name} · {w.state}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <div className="mobsheet-body">
+                <DeskChat bare node={n} map={map} op={op} slug={slug}
+                  toast={toast} pub={!!tree.public} compactAt={tree.compact_at}
+                  maxTop={tree.max_top_grant ?? 1000} pxc={pxPerCredit}
+                  onMailLink={openMail} onOpenDoc={setDocView}
+                  onLineage={() => setLineageId(sheetId)}
+                  onConfig={() => setConfigId(sheetId)}
+                  onJump={(id) => {
+                    if (id !== USER && mapRef.current.has(id)) setSheetId(id)
+                  }} />
+              </div>
+            </div>
+          </MaybePortal>
+        )
+      })()}
+      {hireOpen && sheetId && map.get(sheetId) && (
+        <MaybePortal>
+          <HireSheet anchor={map.get(sheetId)!} seats={seats}
+            defaultGrant={!map.get(sheetId)!.parent ? (tree.default_top_grant ?? 50) : 0}
+            onClose={() => setHireOpen(false)}
+            onHire={(tier, name, grant, placement) => {
+              const a = map.get(sheetId)!
+              const parentOf = !a.parent || a.parent === USER ? null : a.parent
+              const parent = placement === 'below' ? a.id : parentOf
+              op({ op: 'hire', parent, tier, grant, name })
+                .then((r) => {
+                  const born = r?.node
+                  if (typeof born === 'string' && born) {
+                    // same follow-ups as the desktop chips: side = pin the
+                    // promised ordering (best-effort, cosmetic); above = the
+                    // FR-25 splice (loud on failure — it IS the point)
+                    if (placement === 'left' || placement === 'right') {
+                      void reorderNode(slug, born, placement === 'left'
+                        ? { before: a.id } : { after: a.id }).catch(() => {})
+                    }
+                    if (placement === 'above') {
+                      op({ op: 'move', node: a.id, new_parent: born })
+                        .catch((e: Error) => toast([
+                          `hired ${born}, but the splice failed: ${e.message}`]))
+                    }
+                    toast([`hired ${born}`])
+                  }
+                  setHireOpen(false)
+                })
+                .catch((e: Error) => toast([`hire failed: ${e.message}`]))
+            }} />
+        </MaybePortal>
+      )}
+    </div>
+  )
+}
+
+/** compact hire form (D-125 ③): the four edge-gated chip sets depend on
+ *  cursor-proximity tracking with no touch equivalent, so at compact hiring
+ *  is a full-screen form — and it carries PLACEMENT, so the F-03 side-hire
+ *  and FR-25 splice semantics survive: below (report), left/right (coworker
+ *  ordering), above (new superior — the anchor moves under the hire). */
+function HireSheet({ anchor, seats, defaultGrant, onHire, onClose }: {
+  anchor: CanvasNode
+  seats: Record<string, number>
+  defaultGrant: number
+  onHire: (tier: string, name: string, grant: number,
+    placement: 'below' | 'left' | 'right' | 'above') => void
+  onClose: () => void
+}) {
+  const [tier, setTier] = useState('sonnet')
+  const [name, setName] = useState('')
+  const [grant, setGrant] = useState(defaultGrant)
+  const [placement, setPlacement] =
+    useState<'below' | 'left' | 'right' | 'above'>('below')
+  const ok = /^[a-z][a-z0-9-]{1,29}$/.test(name.trim())
+  return (
+    <div className="overlay" onPointerDown={(e) => e.stopPropagation()}>
+      <div className="settings hire-sheet">
+        <h3>hire{placement === 'below' ? ` under ${anchor.id}`
+          : placement === 'above' ? ` above ${anchor.id}`
+          : ` beside ${anchor.id}`}</h3>
+        <div className="field-label">model tier</div>
+        <div className="hs-tiers">
+          {TIERS.map((t) => (
+            <button key={t} className={'hs-tier t-' + t + (tier === t ? ' on' : '')}
+              onClick={() => setTier(t)}>
+              <span className={'tier t-' + t}>{TIER_LETTER[t]}</span>
+              {t} · seat {seats[t] ?? '?'}
+            </button>
+          ))}
+        </div>
+        <div className="field-label">placement</div>
+        <div className="hs-place">
+          {([['below', 'report — under ' + anchor.id],
+             ['left', 'coworker — before it'],
+             ['right', 'coworker — after it'],
+             ['above', 'superior — ' + anchor.id + ' moves under the hire']] as const)
+            .map(([p, lbl]) => (
+              <button key={p} className={'ask-row' + (placement === p ? ' on' : '')}
+                onClick={() => setPlacement(p)}>
+                <span className={'ask-dot' + (placement === p ? ' on' : '')} />
+                <span className="ask-row-body">{lbl}</span>
+              </button>
+            ))}
+        </div>
+        <div className="field-label">name</div>
+        <input value={name} placeholder="lowercase-slug"
+          onChange={(e) => setName(e.target.value.toLowerCase())} />
+        <div className="field-label">credit grant</div>
+        <input type="number" min={0} value={grant}
+          onChange={(e) => setGrant(Math.max(0, Math.round(Number(e.target.value) || 0)))} />
+        <div className="row">
+          <button className="primary" disabled={!ok}
+            onClick={() => onHire(tier, name.trim(), grant, placement)}>hire</button>
+          <button onClick={onClose}>cancel</button>
+        </div>
+      </div>
     </div>
   )
 }
