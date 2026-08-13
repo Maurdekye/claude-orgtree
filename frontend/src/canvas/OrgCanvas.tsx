@@ -199,20 +199,33 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
         })
       }
     }
-    // FR-18: watchdogs float to the LEFT of their owner (bearers own the
-    // upper-right), stacking downward — satellite entities, never laid out
-    // in the hierarchy. Having a target position is ALL a spark needs, so
-    // launchSpark(dog → owner) works with zero animation code.
+    // FR-18: watchdogs fan out BELOW their owner like a miniature subtree,
+    // in the corridor between the agent and its reports (user revision
+    // 2026-08-14 — the old left-side column crossed into an adjacent card
+    // by 14px). Rows of 3 centered on the owner: a full row is 162px
+    // against the 186px sibling pitch, so it never reaches a neighboring
+    // card and clears even a maxed-out sibling's own chips by 24px. Only
+    // dogs 7–8 open a third row, which can brush the children's row 200px
+    // down — the 8-per-agent cap keeps that the rare case. Having a target
+    // position is ALL a spark needs, so launchSpark(dog → owner) works
+    // with zero animation code.
     {
-      const perOwner: Record<string, number> = {}
+      const byOwner: Record<string, number> = {}
+      for (const w of tree.watchdogs ?? [])
+        if (t.has(w.owner)) byOwner[w.owner] = (byOwner[w.owner] ?? 0) + 1
+      const seen: Record<string, number> = {}
+      const PER_ROW = 3, GX = 6, GY = 4
       for (const w of tree.watchdogs ?? []) {
         if (!t.has(w.owner)) continue
         const p = t.get(w.owner)!
-        const i = perOwner[w.owner] ?? 0
-        perOwner[w.owner] = i + 1
+        const i = seen[w.owner] ?? 0
+        seen[w.owner] = i + 1
+        const row = Math.floor(i / PER_ROW), col = i % PER_ROW
+        const inRow = Math.min(PER_ROW, byOwner[w.owner]! - row * PER_ROW)
+        const rowW = inRow * DOG_W + (inRow - 1) * GX
         t.set('dog:' + w.id, {
-          x: p.x - (DOG_W + 26),
-          y: p.y + 4 + (DOG_H + 10) * i,
+          x: p.x + NODE_W / 2 - rowW / 2 + col * (DOG_W + GX),
+          y: p.y + NODE_H + 8 + row * (DOG_H + GY),
         })
       }
     }
@@ -1168,7 +1181,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
             const a = posOf('dog:' + w.id), b = posOf(w.owner)
             if (!a || !b) return null
             return <path key={'w' + w.id}
-              d={`M ${a.x + DOG_W - 4} ${a.y + DOG_H / 2} L ${b.x + 4} ${b.y + 24}`}
+              d={`M ${a.x + DOG_W / 2} ${a.y + 4} L ${b.x + NODE_W / 2} ${b.y + NODE_H - 8}`}
               className={'edge tether wd' + (w.state !== 'armed' ? ' off' : '')} />
           })}
           {tree.org_inbox?.visible && posOf(INBOX) && (() => {
