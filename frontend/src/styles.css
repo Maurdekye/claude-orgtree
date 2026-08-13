@@ -2206,16 +2206,20 @@ a.attach-chip:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--
    carries the rest */
 .wd-chip {
   position: absolute; top: 0; left: 0; z-index: 2;
-  display: flex; align-items: center; gap: 3px; padding: 0 4px;
+  display: flex; align-items: center; gap: 2px; padding: 0 3px;
   background: var(--panel); border: 1px solid var(--line);
-  border-radius: 5px; cursor: pointer; font-size: 8.5px;
+  border-radius: 5px; cursor: pointer; font-size: 7px;
   color: var(--ink); box-shadow: var(--shadow);
 }
 .wd-chip .wd-name {
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  font-family: var(--mono); min-width: 0;
+  font-family: var(--mono); min-width: 0; line-height: 1.3;
+  /* user 2026-08-14: at 8.5px one nowrap line the name truncated almost
+     every time — smaller type on TWO clamped lines fits typical names
+     inside the same 50×26 chip (the size itself is a user ruling) */
+  white-space: normal; word-break: break-all; overflow: hidden;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
 }
-.wd-chip .wd-glyph { flex: none; font-size: 8.5px; }
+.wd-chip .wd-glyph { flex: none; font-size: 8px; }
 .wd-chip.armed .wd-glyph { color: var(--ok, #4a9); }
 .wd-chip.paused { opacity: .6; }
 .wd-chip.exited { border-color: var(--accent); }
@@ -2235,6 +2239,9 @@ a.attach-chip:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--
    on specificity regardless of source order. */
 .wd-cmd { cursor: pointer; }
 .chip.grow.wd-expand {
-  overflow: visible; text-overflow: clip; white-space: pre-wrap;
-  word-break: break-all;
+  text-overflow: clip; white-space: pre-wrap; word-break: break-all;
+  /* expanded is now the DEFAULT state of the detail panel (2026-08-14), so a
+     screen-filling command scrolls inside the chip instead of pushing the
+     events list off the modal */
+  overflow-y: auto; max-height: 200px;
 }

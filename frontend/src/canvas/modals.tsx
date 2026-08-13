@@ -67,10 +67,12 @@ export function WatchdogPanel({ slug, dog, toast, close }: {
   close: () => void
 }) {
   useEsc(close)
-  // user bug 2026-08-12: the command/pattern chips truncate long values with
-  // no way to read the rest — click either to toggle full, wrapped text.
-  const [expTarget, setExpTarget] = useState(false)
-  const [expPattern, setExpPattern] = useState(false)
+  // user bug 2026-08-12 + 2026-08-14: long commands were unreadable — first
+  // truncated with no recourse, then the full text hid behind a click nobody
+  // found. The detail panel now OPENS with the whole target/pattern wrapped
+  // in view; the click survives as a collapse for a screen-filling one.
+  const [expTarget, setExpTarget] = useState(true)
+  const [expPattern, setExpPattern] = useState(true)
   const act = (a: 'pause' | 'resume' | 'remove') =>
     watchdogAction(slug, dog.id, a)
       .then((r) => { toast([`${dog.name}: ${r.state}`]); if (a === 'remove') close() })
@@ -86,12 +88,12 @@ export function WatchdogPanel({ slug, dog, toast, close }: {
           : dog.kind === 'stream' ? 'listening command (realtime)'
           : 'command (each interval)'}</div>
         <div className={'chip mono grow wd-cmd' + (expTarget ? ' wd-expand' : '')}
-          title="click to see the full text"
+          title={expTarget ? 'click to collapse' : 'click to see the full text'}
           onClick={() => setExpTarget((v) => !v)}>{dog.target}</div>
         {dog.pattern && <>
           <div className="field-label">fires on lines matching</div>
           <div className={'chip mono grow wd-cmd' + (expPattern ? ' wd-expand' : '')}
-            title="click to see the full text"
+            title={expPattern ? 'click to collapse' : 'click to see the full text'}
             onClick={() => setExpPattern((v) => !v)}>{dog.pattern}</div>
         </>}
         <div className="dim">

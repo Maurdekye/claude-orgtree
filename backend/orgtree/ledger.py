@@ -4151,12 +4151,21 @@ class Org:
         ev = cast("list[dict[str, Any]]", w.setdefault("events", []))
         ev.append({"at": now(), "gist": gist[:200]})
         del ev[:-self.WATCHDOG_EVENTS_KEEP]
+        entry: MailEntry = {
+            "id": uuid.uuid4().hex[:12], "from": str(w["name"]),
+            "kind": "watchdog", "body": body[:8000], "at": now(),
+            "relationship": "your watchdog"}
         box = cast("dict[str, list[dict[str, Any]]]",
                    self.d.setdefault("mail", {}))
-        box.setdefault(owner, []).append({
-            "id": uuid.uuid4().hex[:12], "from": w["name"],
-            "kind": "watchdog", "body": body[:8000], "at": now(),
-            "relationship": "your watchdog"})
+        box.setdefault(owner, []).append(dict(entry))
+        # mirror into mail_log like every other sender: the inbox tab shows
+        # DELIVERED mail from the archive, and `mail` is only the pending
+        # queue — a fired dog's mail vanished from the panel the moment the
+        # owner's turn drained it (user bug 2026-08-14). Same `at`/body as
+        # the queued copy, or node_inbox's (at, from, body) dedup breaks.
+        log = self.d.setdefault("mail_log", {}).setdefault(owner, [])
+        log.append(cast(MailEntry, dict(entry)))
+        del log[:-100]
         self._log("watchdog_fire", owner, {"id": wid, "gist": gist[:80]}, [])
         return owner
 
