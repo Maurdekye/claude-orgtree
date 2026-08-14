@@ -1344,6 +1344,11 @@ before writing it.
 exist** — traced before assuming this needed building from scratch. The real gap, if there is one,
 is visibility, not data. Not built as a new, glanceable feature.)*
 
+**CLOSED — BUILT (`22482cb`, 2026-08-11).** The canvas reading (№2 below) shipped: an aged stamp
+(`3m`, `2h`) on the badge row at norm lod, sourced from `TurnStat.at` — never `NodeStatus.at` —
+hidden while busy, absent when no turn ever ran; hover gives the full timestamp + killed marker.
+`derived.test` ⑫ pins all three choices, answering both open questions this entry left.
+
 **Two separate turn-end timestamps already exist, already recorded on every turn.**
 
 1. `TurnStat.at` (`schema.py:80-92`, the "per-node turn ring, capped at 20", №15) — written at
@@ -1405,6 +1410,16 @@ whoever picks this up should design the DISPLAY (where, always-visible vs. on-ho
 *(user request 2026-08-10, recorded by the curator. The premise checked out precisely against both
 Anthropic's own cache-TTL documentation and orgtree's actual compaction code — not assumed. Not
 built.)*
+
+**CLOSED — BUILT, then REWORKED IN-PLACE (D-108 → D-114, 2026-08-11/12).** Ships opt-in as
+`orgtree_cheap_compact` (superior-only) plus a second door on the desk's compact dialog — never an
+automatic default; auto-defaulting revisits only with cache telemetry. One premise below was wrong:
+the live transcript sits under `~/.claude/projects`, which no agent can be granted (D-100), so it
+is **copied into the predecessor's scratch at compact time** instead. D-114 then reshaped the
+mechanism away from retire-plus-fresh-hire: the seat keeps its id, parent, scope, charter, grant
+and team — only `session_id` is replaced, the pre-compact session archiving as the `nid@gen`
+knowledge bearer. FR-24b adds auto-on-wake (occ ≥ 0.5 AND idle ≥ 300 s thresholds, org-level
+config, **disabled by default**; a refusal falls through to a normal turn).
 
 **The premise is correct, and precisely so.** Prompt cache entries expire on a TTL — 5 minutes by
 default, up to 1 hour with the explicit `ttl` option (Anthropic API reference, loaded fresh for this
@@ -1496,6 +1511,13 @@ a new flag first. FR-24's mechanism stands as the workaround until/unless that c
 *(user request 2026-08-10, recorded by the curator. Almost entirely a recombination of two
 primitives that already exist and are already proven safe together — traced both before writing
 this up. Not built.)*
+
+**CLOSED — BUILT (`696636c`, 2026-08-11).** Exactly the three predicted pieces: the `'top'`
+SpawnChips variant, `DraftState.above` carrying the anchor, and one chained `move()` in
+`confirmDraft` after hire success — deliberately loud on failure (toast names the manual
+completion). The open question below was confirmed against `test_ledger`'s audience-sweep-on-move
+checks: the old superior remains an ancestor after a splice, so ancestral grants survive, exactly
+as a plain drag-reparent. `derived.test` ⑮ pins the plumbing.
 
 **Step 1 of this feature is already shipped, verbatim — it just doesn't stop where this request
 needs it to.** `spawnBeside` (`OrgCanvas.tsx:960-967`, **F-03**, already shipped per the docket
