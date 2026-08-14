@@ -258,19 +258,20 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
   // seq is the PRE-slice ordinal, so a non-zero first seq means older rows exist
   const hasOlder = (chat?.messages[0]?.seq ?? 0) > 0
   const toBottom = () => { setStuck(true); pin() }
-  // FR-20 (user idea 2026-08-08): the HUMAN's last message, pinned at the top
-  // while it sits above the viewport — the mirror of jumpbottom, aimed at a
-  // specific earlier row instead of "the newest".
+  // FR-20 (user idea 2026-08-08; retarget-up 2026-08-14): the HUMAN's nearest
+  // message ABOVE the viewport, pinned at the top — the mirror of jumpbottom,
+  // aimed at a specific earlier row instead of "the newest". Scrolling up past
+  // the target hands the chip to the next user turn further up the chain, so
+  // it stays until the transcript above runs out of user turns.
   // ⚠ Attribution is NOT `role === 'user'`: in orgtree a user-role transcript
   // record is envelope-wrapped turn input from ANY sender (sibling, superior,
   // org inbox) — the human is identified by the envelope's own FROM line,
   // the durable twin of pending-mail's `m.from === USER` filter. Command
   // bubbles are excluded on purpose: the chip is for the conversational turn,
   // and a `/command` is machine-shaped chrome.
-  const lastUser = useMemo(() => {
-    const ms = chat?.messages ?? []
-    for (let i = ms.length - 1; i >= 0; i--) {
-      const m = ms[i]
+  const userTurns = useMemo(() => {
+    const out: { seq: number, label: string }[] = []
+    for (const m of chat?.messages ?? []) {
       if (m?.role === 'user' && m.seq != null
           && new RegExp(`^FROM ${USER} \\(`, 'm').test(m.text ?? '')) {
         // a restart replay wears the user's envelope but renders as a FOLDED
@@ -283,23 +284,35 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
         const label = stripEnvelope(splitNotices(m.text).rest)
           .split('\n').map((l) => l.trim())
           .filter((l) => l && !/^\*\*[^*]+\*\*$/.test(l))[0] ?? ''
-        return { seq: m.seq, label: label.slice(0, 80) }
+        out.push({ seq: m.seq, label: label.slice(0, 80) })
       }
     }
-    return null
+    return out
   }, [chat])
-  const lastUserRef = useRef<HTMLDivElement | null>(null)
-  const [pinUser, setPinUser] = useState(false)
+  const userSeqs = useMemo(() => new Set(userTurns.map((u) => u.seq)), [userTurns])
+  const userRowEls = useRef(new Map<number, HTMLDivElement>())
+  const [pinSeq, setPinSeq] = useState<number | null>(null)
   // rect-based, not offsetTop: the row's offsetParent is not reliably the
-  // scroller. Only "row fully above the scrollport" pins — a reader who
-  // scrolled UP past it has the row BELOW them, and surfacing a chip that
-  // points the wrong way is jumpbottom's territory, not this chip's.
+  // scroller. Only a row fully above the scrollport can be the target — a
+  // reader who scrolled UP past every user turn has them all BELOW, and a
+  // chip that points the wrong way is jumpbottom's territory, not this one's.
   const calcPin = () => {
-    const el = scroller.current, t = lastUserRef.current
-    const v = !!el && !!t
-      && t.getBoundingClientRect().bottom < el.getBoundingClientRect().top + 4
-    setPinUser((s) => (s === v ? s : v))   // only re-render on a real flip
+    const el = scroller.current
+    let v: number | null = null
+    if (el) {
+      const top = el.getBoundingClientRect().top + 4
+      // newest→oldest: the LAST user turn above the scrollport is the nearest
+      // one, i.e. the row "↑" actually points at from where the reader stands
+      for (let i = userTurns.length - 1; i >= 0; i--) {
+        const u = userTurns[i]
+        const t = u && userRowEls.current.get(u.seq)
+        if (u && t && t.getBoundingClientRect().bottom < top) { v = u.seq; break }
+      }
+    }
+    setPinSeq((s) => (s === v ? s : v))   // only re-render on a real flip
   }
+  const pinTarget = pinSeq == null ? null
+    : userTurns.find((u) => u.seq === pinSeq) ?? null
   const loadOlder = () => {
     const el = scroller.current
     if (!el) return
@@ -632,17 +645,20 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
               (the desk's flex chain is documented as fragile). Top-sticky
               only pins while its static position is above the scrollport,
               which is exactly the visibility rule calcPin enforces. */}
-          {pinUser && lastUser && (
+          {pinTarget && (
             <button className="pinuser"
-              title="jump to your last message"
+              title="jump to your message"
               onClick={() => {
                 // ⚠ NOT scrollIntoView: it scrolls EVERY scrollable ancestor,
                 // and overflow:hidden boxes (.desk-over, the subpanel chain)
                 // ARE programmatically scrollable — it shifted the whole desk
                 // inside its panel (blank band at the bottom, header pushed
                 // out the top; live-caught 2026-08-12). Move the transcript
-                // scroller alone, by rect delta.
-                const el = scroller.current, tr = lastUserRef.current
+                // scroller alone, by rect delta. Landing there puts THIS
+                // target on screen, so calcPin hands the chip to the turn
+                // above it — repeated clicks walk up the chain.
+                const el = scroller.current
+                const tr = pinSeq == null ? null : userRowEls.current.get(pinSeq)
                 if (!el || !tr) return
                 el.scrollTo({
                   top: el.scrollTop + tr.getBoundingClientRect().top
@@ -650,7 +666,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
                   behavior: 'smooth',
                 })
               }}>
-              ↑ you: {lastUser.label || 'your last message'}
+              ↑ you: {pinTarget.label || 'your message'}
             </button>)}
           {/* paging is automatic (the onScroll above pages in within a screen
               of the top) — this is a status line, not a control. It still
@@ -679,10 +695,16 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
               // sliding CHAT_WINDOW-row window remounted every row (and collapsed
               // every open ToolChip) each time one message scrolled off
               <div key={m.seq ?? i}
-                // FR-20: the scroll-to anchor — nothing else in the desk needs
-                // to target a row that isn't "the end", hence the single ref
-                ref={lastUser && m.seq === lastUser.seq
-                  ? (el) => { lastUserRef.current = el } : undefined}>
+                // FR-20: scroll-to anchors — every user turn is a potential
+                // chip target now that scrolling past one retargets to the
+                // next up the chain, so each keeps its row in the seq→el map
+                // (deleted on unmount: the window slides rows out mid-list)
+                ref={m.seq != null && userSeqs.has(m.seq)
+                  ? (el) => {
+                    const seq = m.seq!
+                    if (el) userRowEls.current.set(seq, el)
+                    else userRowEls.current.delete(seq)
+                  } : undefined}>
                 {gapMs > 5 * 60e3 && (
                   <div className="msg sys">— {gapMs > 5400e3
                     ? `${Math.round(gapMs / 3600e3)} h`

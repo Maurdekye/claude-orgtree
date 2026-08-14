@@ -352,12 +352,18 @@ test('⑭  the pinned last-user-turn chip attributes by envelope, not role',
       || /\^FROM \$\{USER\}/.test(src),
       'lastUser no longer keys on the envelope FROM line — bare role would '
       + 'pin a sibling\'s mail as "you"')
-    assert.ok(/pinUser && lastUser/.test(src),
+    assert.ok(/\{pinTarget && \(/.test(src),
       'the chip render lost its visibility gate — it must only show while '
-      + 'the target row is above the scrollport')
+      + 'a target row is above the scrollport')
     assert.ok(/getBoundingClientRect\(\)\.bottom < /.test(src),
       'calcPin no longer measures the row against the scrollport — a chip '
       + 'shown while the row is BELOW the viewport points the wrong way')
+    // retarget-up (user request 2026-08-14): scrolling past the target hands
+    // the chip to the next user turn up the chain — calcPin must scan ALL
+    // user turns newest→oldest, not test a single latest row
+    assert.ok(/for \(let i = userTurns\.length - 1; i >= 0; i--\)/.test(src),
+      'calcPin lost its newest→oldest scan — scrolling above the latest user '
+      + 'turn must retarget the chip to the next one up, not hide it')
   })
 
 // --------------------------------------------------------------------- ⑮
