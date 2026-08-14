@@ -1334,3 +1334,219 @@ assumed here.
 Not scoping a build here — the subtree-dissolve half is a straight reuse; the claw-back half is a
 small, precisely-safe mutation once traced; the authority question is the one real ruling needed
 before writing it.
+
+---
+
+### FR-23 · timestamp the end of the most recent turn, glanceably
+> new feature: timestamp the end of the most recent turn after it finishes
+
+*(user request 2026-08-09, recorded by the curator. **The data and a surfacing of it already
+exist** — traced before assuming this needed building from scratch. The real gap, if there is one,
+is visibility, not data. Not built as a new, glanceable feature.)*
+
+**Two separate turn-end timestamps already exist, already recorded on every turn.**
+
+1. `TurnStat.at` (`schema.py:80-92`, the "per-node turn ring, capped at 20", №15) — written at
+   `supervisor.py:2425` as `now_iso()` the moment a turn's CLI `result` event is processed, i.e.
+   the actual completion instant, alongside `cost`, `ms` (duration), and `denials`. A killed turn
+   gets its own ring entry the same way (`:2340`, `_charge_killed_turn`).
+2. `NodeStatus.at` (`types.ts:162-167`) — the timestamp on an agent's own self-reported
+   `last_status` summary, which effectively doubles as "when the agent last said something about
+   itself at/near turn end."
+
+**Both are already surfaced in the frontend — but neither is glanceable; both require opening the
+node and, for one of them, hovering.**
+
+- `TurnStat.at` renders in the `$` cost badge's **hover title** inside the opened desk panel
+  (`desk.tsx:462-471`): the last 5 turns, each formatted `MM-DD HH:MM · $cost · Ns · N denied`,
+  visible only on mouseover, and only once a node has spent something (`cost_usd > 0` gates the
+  badge's existence at all).
+- `NodeStatus.at` renders inline as `· {ago(stat.at)} ago` next to the last status summary in the
+  desk's chat stream (traced during FR-16/FR-20 research) — present, but embedded in scrolling chat
+  content, not a standing label.
+- **Neither appears on the canvas node square itself** (`cards.tsx`'s `NodeSquare`, `:819-837`) —
+  the collapsed/overview representation shows only a colored status dot/chip with the summary in a
+  `title` attribute; no timestamp renders there at all, hover or otherwise.
+
+**So the open question is precisely: what does "new feature" mean here, given the data already
+exists twice over?** Two readings, not decided here:
+1. **Make an existing timestamp always-visible instead of hover-gated** — e.g. a small "3m ago"
+   label always shown next to the `$` badge or the status chip inside the desk, no hover required.
+2. **Put it somewhere it isn't today at all — the canvas node square**, so a glance at the whole
+   org (without opening any single node) shows which agents finished a turn recently vs. long ago.
+   This is the more likely reading of "new feature" given both existing surfacings already satisfy
+   "visible on request inside the desk" — if that were sufficient there would be little reason to
+   ask for it as a new item.
+
+**If it's the canvas reading:** `NodeSquare` already conditionally renders `last_status` at
+`lod === 'mini'` (`:819`) — a glanceable end-of-last-turn stamp most naturally sits beside it,
+reusing whichever of the two existing `at` fields is more reliable (`TurnStat.at` is written by the
+turn-completion code path unconditionally; `NodeStatus.at` depends on the agent having reported a
+status at all, which not every turn does) — worth a decision on which source is authoritative for
+this display, or whether idle nodes with no status yet should show nothing versus "never" versus the
+node's creation time.
+
+Not scoping a build here — recording that the underlying capability already exists twice, so
+whoever picks this up should design the DISPLAY (where, always-visible vs. on-hover, which existing
+`at` field is authoritative) rather than re-invent time-tracking machinery that's already in place.
+
+---
+
+### FR-24 · "cheap compact" — retire + fresh hire instead of a cache-cold `/compact` fork
+> "cheap compact". normal compaction reads the entire context of an agent's transcript in order to
+> produce a summary of their content. normally, this is fine; the context is cached and the
+> compaction is a negligible cost. but if its been several hours or days since the agent was last
+> interacted with, then their chat context likely will have been dropped, and will need to be
+> reuploaded in full again, recurring those api costs. a cheaper compaction strategy would be to
+> just retire the agent directly, hire a new one to replace it as its superior, and then tell the
+> new agent, "you're so-and-so's replacement, if you want to know what they were working on, read
+> their transcript"
+
+*(user request 2026-08-10, recorded by the curator. The premise checked out precisely against both
+Anthropic's own cache-TTL documentation and orgtree's actual compaction code — not assumed. Not
+built.)*
+
+**The premise is correct, and precisely so.** Prompt cache entries expire on a TTL — 5 minutes by
+default, up to 1 hour with the explicit `ttl` option (Anthropic API reference, loaded fresh for this
+entry) — so "several hours or days" since last interaction is unambiguously past any cache lifetime;
+there is no configuration under which that context survives. The next read of that transcript pays
+close to full input-token price, not the ~0.1× cached-read rate.
+
+**Orgtree's compaction doesn't avoid this — it's built directly on top of it.** Traced
+`_compact_split_body` (`supervisor.py:2628-2648`): compaction **resumes the actual prior CLI
+session** — `claude -p --resume <old_session_id> --fork-session ... ` — and pipes the literal
+`/compact` slash command in as input. This is not a lightweight summarization call; it is an
+ordinary session resume, which necessarily reloads and reprocesses the *entire* prior transcript as
+input before it can act on `/compact` at all. It is subject to exactly the same cache economics as
+any other turn — nothing about the compaction path is cache-exempt. Telling confirmation, in the
+code's **own words**, one line below the fork: *"the fork is a real API call — often the most
+expensive one the system makes"* (`:2679-2682`) — this cost concern is already a known, named
+problem in this codebase, just not yet connected to the cache-TTL cause the user is naming here.
+
+**The proposed alternative maps cleanly onto primitives that already exist — this is close to a
+zero-new-code build, not a new subsystem:**
+
+1. **Retire the agent** — `retire()` (`ledger.py:1988-2028`, already cited in FR-22 above) already
+   does exactly "archive it, free seat+grant back to the parent." Per `orgtree_retire`'s own
+   description (`mcptool.py:391-403`): *"Its session is preserved and can be rehired with context
+   intact"* — retiring does not touch or delete the transcript on disk. Reuse unmodified.
+2. **Hire a replacement** — `orgtree_hire` is a **fresh session**, not a resume: no `--resume`, no
+   prior transcript reloaded into context at all. Its only cost is the seat + whatever charter text
+   the hiring agent writes — a small, one-time system-prompt-sized input, categorically cheaper than
+   reprocessing an entire cold transcript regardless of that transcript's length. The freed
+   seat+grant from step 1 is exactly what funds this hire, the same accounting FR-22 traced for
+   `retire()`'s effect on the parent's `free()`.
+3. **"Read their transcript" — this needs a directory grant, not new backend code, for the baseline
+   version.** A retired node's transcript is an ordinary file under that node's own scratch directory
+   (`scratch_dir(slug, old_nid)`), untouched by retirement. Granting the new hire's `add_dirs` a
+   **read-only** entry pointing at the predecessor's scratch dir lets the new agent `Read`/`Grep` the
+   raw transcript directly with tools it already has — no new orgtree verb required for this to work
+   at all.
+
+**One real quality-of-life gap, not required but worth naming.** The raw transcript is Claude Code's
+own JSONL session format — readable, but not the friendly rendering a human gets. `read_chat`
+(`supervisor.py:4469-4491`) already does exactly this parsing — tool chips, compaction boundaries,
+collapsed results — but it's wired to the **frontend UI only** (the desk chat view), not exposed as
+an agent-facing tool. A `orgtree_read_predecessor_transcript`-shaped verb that hands the new hire
+`read_chat`'s already-parsed output, scoped to a specific archived node, would be nicer than raw JSONL
+grepping — but the feature works end-to-end without it, using primitives that exist today.
+
+**The real tradeoff, not a flaw to fix — worth the user knowing before this gets built.**
+`/compact`'s actual output is an **LLM-generated summary** that becomes the new session's context
+baseline — the successor starts already knowing the gist, no action required. "Retire + fresh hire"
+starts the replacement with **zero context by default**; it only pays anything to learn the
+predecessor's history if it actively chooses to go read the transcript, and can do so selectively
+(the relevant section, not the whole thing) rather than being forced to reprocess it wholesale like
+`/compact` is. That's exactly the shape of the savings: close to free when the replacement doesn't
+end up needing the old history, and only as expensive as what it actually chooses to read when it
+does — never the forced, all-or-nothing reload `/compact` performs regardless of relevance.
+
+**What "cheap compact" would concretely need to become an actual feature, not a manual
+recipe:** (1) a combined verb (or a documented charter/prompt pattern) that does retire → hire →
+grant-predecessor-dir → charter-mentions-predecessor in one motion, since today those are four
+separate manual steps; (2) a ruling on whether this becomes the **default** compaction path when
+the transcript is likely cache-cold (e.g. gated on elapsed idle time since the node's last turn,
+which `TurnStat.at`/`NodeStatus.at` from FR-23 above already track) or stays an opt-in alternative
+the user or a superior agent chooses explicitly; (3) the read-transcript ergonomics gap named above,
+if a friendlier surface than raw JSONL is wanted.
+
+Not scoping a build here — the mechanism is real, grounded, and mostly assembled from parts that
+already exist; the open questions are policy (when to prefer this over `/compact`) and polish (the
+transcript-reading tool), not feasibility.
+
+**Follow-up checked, same day: extending the cache window instead is not currently possible.** The
+user asked whether the requested cache TTL could simply be raised for active chats, avoiding the
+cold-cache problem at its source rather than working around it. The underlying Anthropic API does
+support a longer TTL (`cache_control: {type: "ephemeral", ttl: "1h"}`, at 2× write cost instead of
+the default 5-minute window's 1.25×) — but orgtree never constructs that request itself; it shells
+out to the Claude Code CLI, which owns prompt caching internally. Checked the actual pinned CLI's
+full `--help` output (`v2.1.220`, the install `supervisor.py` prefers) directly rather than
+assuming: **no flag exists for cache TTL at all** — nothing to opt into the 1-hour window, only
+`--exclude-dynamic-system-prompt-sections`, which is about cross-*user* cache reuse, not extending
+duration. Not something orgtree's own code could add either; it would need the CLI itself to expose
+a new flag first. FR-24's mechanism stands as the workaround until/unless that changes.
+
+---
+
+### FR-25 · "insert parent" — hire tokens on a node's top edge that splice a new superior above it
+> feature: insert parent. add a new set of hire tokes on the top edge of an agent: hiring an agent
+> from there hires a new subordinate of the agent's superior, and then moved the old agent
+> underneath it as its new superior.
+
+*(user request 2026-08-10, recorded by the curator. Almost entirely a recombination of two
+primitives that already exist and are already proven safe together — traced both before writing
+this up. Not built.)*
+
+**Step 1 of this feature is already shipped, verbatim — it just doesn't stop where this request
+needs it to.** `spawnBeside` (`OrgCanvas.tsx:960-967`, **F-03**, already shipped per the docket
+history above) is *exactly* "hire a new subordinate of the agent's superior": it resolves the new
+hire's parent as `n.parent` (the **anchor's own parent**, not the anchor itself) and spawns the
+draft form beside it. The rendering half is `SpawnChips` (`cards.tsx:334-360`, left/right variants
+wired at `:893-899`) — a small `side` prop (`'left' | 'right'`) that only drives a CSS class
+(`side-${side[0]}`) and the tooltip copy; nothing about the component is architecturally two-sided.
+A third `side="top"` variant is a CSS rule and a prop-type widening, not new component design.
+
+**Step 2 — reparenting the anchor under the freshly hired node — is also an existing, already-hardened
+primitive: `move()`.** `ledger.py:2448-2465` (`§4.5`, "the capability the design derived... only the
+user could reach until now") is a **unified promote/demote verb** with real teeth already built in
+and already fought for: cycle detection covering not just the moved node but its whole lineage stack
+(`:2476-2493`, citing a real 2-cycle bug the credit-conservation fuzzer reproduced and closed), and
+depth/children-cap enforcement measured against the *whole* moved subtree's deepest leaf, not just
+the moved node itself (`:2497-2514`, closing a hole where drags could bypass the runaway-growth caps
+that `hire` already enforced). This is not a naive parent-pointer swap; it's already survived an
+adversarial pass.
+
+**The one property that makes chaining these two safe, worth stating explicitly since it answers the
+first question anyone would ask:** `_move`'s own docstring — *"Release P_old→L and acquire L→P_new
+cancel hop by hop, so every node's free is unchanged — budget-neutral, cannot fail on credits"*
+(`:2467-2469`). The freshly hired node does **not** need spare grant capacity to "afford" absorbing
+the anchor underneath it — the credit accounting nets to exactly zero on every node touched,
+regardless of the new parent's own balance. So "insert parent" composes these two primitives with no
+new credit-safety work required; `move()` already proved that part.
+
+**What's actually new, concretely:**
+1. **The top-edge chip itself** — `SpawnChips`'s `side` type widens to include `'top'`; a `.side-t`
+   CSS rule positions it above the node instead of beside it (`cards.tsx:340`'s class-string already
+   derives cleanly from `side[0]`, so `'top'` → `side-t` costs nothing extra there); a third render
+   call alongside the existing left/right pair at `:893-899`.
+2. **A new spawn handler distinct from `spawnBeside`.** `spawnBeside` computes the SAME parent
+   resolution "insert parent" needs (`!n.parent || n.parent === USER ? null : n.parent`) — that part
+   is copy-paste — but `spawnBeside` never reparents anything afterward. The new handler needs to
+   remember which node it's inserting above (something `DraftState` doesn't currently track — no
+   existing draft flow needs to act on a *third* node after the hire completes) and thread that
+   through to confirmation.
+3. **A chained second operation in `confirmDraft`** (`OrgCanvas.tsx:968+`). Today `confirmDraft`
+   fires one `op({op:'hire', ...})` and stops. This needs, on hire success, a follow-up
+   `move(nid: <anchor>, new_parent: <the id the hire response just returned>)` — the only genuinely
+   new sequencing logic in this whole feature, everything either side of it already exists.
+
+**One open design question, not decided here:** what happens to the anchor's **existing** relationships
+during the splice — its audience grants, its own children, any pending mail — given `move()`'s
+existing behavior already governs all of that for a plain drag-to-reparent today. The likely answer
+is "nothing special — `move()`'s existing guarantees already cover this exact case since a splice
+*is* a move, just with a freshly hired new parent," but that should be confirmed against `move()`'s
+own tests rather than assumed, since "insert parent" is the first caller that pairs a fresh hire with
+an immediate move on the same node in one user action rather than as two separate, human-paced steps.
+
+Not scoping a build here — the pieces are proven independently; the remaining work is a UI affordance
+and one new chained call, not new backend design.
