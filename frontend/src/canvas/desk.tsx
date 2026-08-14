@@ -648,7 +648,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
           {pinTarget && (
             <button className="pinuser"
               title="jump to your message"
-              onClick={() => {
+              onClick={(e) => {
                 // ⚠ NOT scrollIntoView: it scrolls EVERY scrollable ancestor,
                 // and overflow:hidden boxes (.desk-over, the subpanel chain)
                 // ARE programmatically scrollable — it shifted the whole desk
@@ -656,15 +656,37 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
                 // out the top; live-caught 2026-08-12). Move the transcript
                 // scroller alone, by rect delta. Landing there puts THIS
                 // target on screen, so calcPin hands the chip to the turn
-                // above it — repeated clicks walk up the chain.
+                // above it — repeated clicks walk up the chain. The landing
+                // clears the chip's own footprint (sticky top:4px + height):
+                // the retargeted chip stays pinned over the top edge, and a
+                // 6px offset parked the message's first line underneath it
+                // (user, 2026-08-14 — "the beginning must be fully visible").
                 const el = scroller.current
                 const tr = pinSeq == null ? null : userRowEls.current.get(pinSeq)
                 if (!el || !tr) return
-                el.scrollTo({
-                  top: el.scrollTop + tr.getBoundingClientRect().top
-                    - el.getBoundingClientRect().top - 6,
-                  behavior: 'smooth',
-                })
+                const pad = e.currentTarget.offsetHeight + 12
+                const target = () => el.scrollTop + tr.getBoundingClientRect().top
+                  - el.getBoundingClientRect().top - pad
+                el.scrollTo({ top: target(), behavior: 'smooth' })
+                // rows above the target can reflow while the smooth scroll is
+                // in flight (images decode, chips settle), so a one-shot delta
+                // can land with the message's first line off-screen (user,
+                // 2026-08-14). Wait for the animation to stop, re-measure,
+                // and snap the residual — bounded, and dropped if the row
+                // remounted from under us (window slide).
+                let last = -1, still = 0, hops = 0
+                const settle = () => {
+                  if (!el.isConnected || !tr.isConnected || ++hops > 300) return
+                  if (el.scrollTop === last) {
+                    if (++still >= 3) {
+                      const d = target()
+                      if (Math.abs(d - el.scrollTop) > 4) el.scrollTop = d
+                      return
+                    }
+                  } else { last = el.scrollTop; still = 0 }
+                  requestAnimationFrame(settle)
+                }
+                requestAnimationFrame(settle)
               }}>
               ↑ you: {pinTarget.label || 'your message'}
             </button>)}
