@@ -753,6 +753,10 @@ button.badge.frozen:hover { border-color: var(--accent); }
   background: color-mix(in srgb, var(--accent) 6%, var(--panel));
   display: flex; flex-direction: column; gap: 6px; font-size: 12.5px;
 }
+/* live cards are click-focusable (tabIndex=-1) so ctrl+enter / alt+↑/↓ land
+   on the card the user last touched — but the focus is a keyboard routing
+   detail, not a selection to outline */
+.askcard:focus { outline: none; }
 /* a marathon question must not swallow the desk (user report 2026-08-06:
    long bodies overtook the panel and were cut off at the bottom). The
    PINNED card caps at three quarters of the desk (user 2026-08-10, raised
