@@ -445,8 +445,17 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
     <>
       <div className="cc-head">
         <span className={'tier t-' + node.tier}>{TIER_LETTER[node.tier!] ?? '?'}</span>
-        <span className="cc-name"
-          title={(node.charter || '').split('\n')[0] || node.id}>{node.id}</span>
+        {/* in a switchboard panel the NAME is also a jump: focus this
+            agent's own desk — same glide as clicking its card (user
+            feature 2026-08-17; the tab strip's ⌖ button stays) */}
+        {bare && onJump ? (
+          <button className="cc-name cc-name-jump"
+            title={`focus ${node.id}'s desk`}
+            onClick={() => onJump(node.id)}>{node.id}</button>
+        ) : (
+          <span className="cc-name"
+            title={(node.charter || '').split('\n')[0] || node.id}>{node.id}</span>
+        )}
         <ContextWheel occ={chat?.occupancy ?? node.occupancy} cw={node.context_window}
           compactAt={compactAt}
           onCompact={live && !node.bearer_state
