@@ -891,6 +891,67 @@ the docket's "transcript is in the scratch dir" premise was wrong and the
 copy is the fix. The compact dialog warns when the node is idle past the
 cache TTL, which is the moment the choice actually matters.
 
+### D-130 · api_fallback: the key is a spare lane, and expiry is the only revert
+Decision (session seat, 2026-08-17, from the user's feature request "switch
+temporarily to an API key when usage limits are hit; automatically revert"):
+org option `api_fallback` inverts the meaning of a stored `api_key` — the
+subscription bills routine turns, and a usage-limit freeze opens a window
+(`api_fallback_until` = the limit's own reset, floor 15 min) during which
+spawn_env injects the key and the bridge `/anthropic` proxy re-auths with
+`x-api-key`. **Reverting is pure expiry**: nothing writes the state back,
+the key simply stops being chosen once the reset passes — no revert step
+can be missed. The resume timer wakes subscription-side limit freezes
+immediately while the window is open, `auto_resume` on or off (the option
+is its own consent — same shape as D-122's connection rule); a freeze
+earned ON the key lane is stamped `on_fallback` and waits for its own
+reset, which is what stops an insta-wake loop against the key's own
+limits. Bounds: fable-TIER quotas stay with `fable_limit_policy` (a policy
+lane, not a billing lane); headless and api_fallback refuse each other
+(headless needs the key full-time); a sandboxed fallback org stays in
+PROXIED mode because container env is fixed at `docker run` — the auth
+flip lives host-side in the proxy.
+
+### D-129 · the AUTO resume may cheap-compact first; the manual ▶ never does
+Decision (session seat, 2026-08-17, user feature): org option
+`auto_resume_compact` — when the auto-resume timer wakes a usage-limit
+freeze, cheap-compact the node first: a limit freeze has outlived the
+cache TTL by construction, so the swap dodges the cold transcript reload
+(D-114's arithmetic) and the replay texts drain into the successor's
+first envelope. Guards: limit-kind records only (a connection freeze is
+seconds old and warm), only when a transcript exists to reload, skipped
+while an api_fallback window is open (a fallback wake is seconds behind
+the freeze — the opposite case), and a ledger refusal falls through to a
+plain resume. The manual ▶ resumes sessions exactly as they are: a human
+pressing resume has judged the org ready, not asked for surgery.
+
+### D-128 · a summary-less successor gets breadcrumbs spliced into its prompt
+Decision (session seat, 2026-08-17, user feature): a session minted EMPTY
+— cheap_compact's successor, and reseed's equally-empty one — carries the
+node marker `cheap_compacted`, and identity_prompt splices the working
+folder's `breadcrumbs.md` (D-115's realtime compaction log) into the
+system prompt on every spawn of that session, instead of only pointing at
+the file. Mirrors how a normal compaction's summary lives inside the CLI
+session — which is also why the marker RIDES the whole generation (the
+CLI re-applies the append file on resume; dropping it after turn one
+would un-remember it) and why a normal compaction clears it (that
+successor has its own summary). Tail-taken at 12k chars (the file's
+convention is newest-last), cut declared in the block header per the
+truncation doctrine; safe from argv limits because the prompt rides
+D-126's file. The cheap-compact notice now states the splice rather than
+ordering a read.
+
+### D-127 · edge jump cards: off-screen coworkers, next sibling only
+Decision (session seat, 2026-08-17, user spec): at desk zoom, one small
+screen-space card per side hugs the SCREEN edge for the focused agent's
+NEXT live sibling in that direction — at the neighbor's own screen
+elevation (clamped into view), suppressed whenever the neighbor's card
+actually intersects the viewport (a visible card needs no proxy), gliding
+the camera on click. Screen-space HUD chrome (same layer and
+pointerdown-stop discipline as the zoomhud/tray), desktop only — the
+mobile sheet world has no camera-derived desk. Only the immediate
+neighbor renders, not the whole row: the cards are a walking aid, and the
+tray already lists everyone.
+
 ### D-126 · the identity prompt rides a file, never argv
 Decision (session seat, 2026-08-17, from a live failure): a report's mail to
 a coordinator with 24 retired reports killed the turn spawn with `[WinError
