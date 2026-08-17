@@ -9,7 +9,7 @@ import {
   sweepLegacy,
 } from './api'
 import { bumpLive } from './livebus'
-import { ConfirmModal, MailFolders, MailList, OrgCanvas, OrgRecord, useEsc } from './Canvas'
+import { ConfirmModal, MailFolders, MailList, OrgCanvas, OrgRecord, RetiredFold, useEsc } from './Canvas'
 import { DiskBrowser, DiskFullAlert } from './DiskBrowser'
 import {
   AutorenewIcon, BlockIcon, CheckIcon, ChevronRightIcon, CloseIcon, CopyIcon, EyeIcon, LanIcon,
@@ -1135,6 +1135,13 @@ function InboxPanel({ slug, tree, toast, refresh, close, jumpTo }: {
   const act = (action: string, node: string, target?: string | null) =>
     audienceAction(slug, action, node, target)
       .catch((e: Error) => toast([`error: ${e.message}`]))
+  const audBadge = (g: string, dim = false) => (
+    <span key={g} className={'badge ' + (dim ? 'dim' : 'free')}>
+      <HearingIcon fontSize="inherit" /> {g}
+      <button className="chip-x" title="rescind"
+        onClick={() => act('revoke', g)}><CloseIcon fontSize="inherit" /></button>
+    </span>
+  )
   // Asks ride the inbox as their OWN mail rows (user ruling 2026-08-04),
   // interleaved chronologically with real mail — the only difference is the
   // reading pane shows the response UI as the body instead of a reply box.
@@ -1197,13 +1204,12 @@ function InboxPanel({ slug, tree, toast, refresh, close, jumpTo }: {
           <>
             <div className="field-label">audience holders</div>
             <div className="row" style={{ flexWrap: 'wrap' }}>
-              {userAud.map((a) => (
-                <span key={a.grantee} className="badge free">
-                  <HearingIcon fontSize="inherit" /> {a.grantee}
-                  <button className="chip-x" title="rescind"
-                    onClick={() => act('revoke', a.grantee)}><CloseIcon fontSize="inherit" /></button>
-                </span>
-              ))}
+              {userAud.filter((a) => nodes.get(a.grantee)?.state === 'live')
+                .map((a) => audBadge(a.grantee))}
+              <RetiredFold
+                ids={userAud.filter((a) =>
+                  nodes.get(a.grantee)?.state !== 'live').map((a) => a.grantee)}
+                render={(g) => audBadge(g, true)} />
             </div>
           </>
         )}

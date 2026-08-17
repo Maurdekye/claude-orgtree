@@ -269,6 +269,28 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
     </div>
   )
 }
+/** Audience chip rows fold their RETIRED entries behind one toggle chip
+ *  (user feature 2026-08-17, "all audience holding types") — the same
+ *  collapse as the desk footer's retired reports (F-01). `ids` are the
+ *  retired entries only; the host draws its own chip shape via `render`,
+ *  so the fold works for user-audience holders, org-inbox holders, and a
+ *  desk's held-audience badges alike. */
+export function RetiredFold({ ids, render }: {
+  ids: string[]
+  render: (id: string) => ReactNode
+}) {
+  const [open, setOpen] = useState(false)
+  if (!ids.length) return null
+  return (<>
+    <button type="button" className="badge dim retired-fold"
+      title={open ? 'collapse the retired entries' : ids.join(', ')}
+      onClick={() => setOpen((o) => !o)}>
+      {open ? 'hide retired' : `${ids.length} retired`}
+    </button>
+    {open && ids.map(render)}
+  </>)
+}
+
 // The node's own mailbox (user ruling: its own tab, separate from history),
 // with the same folders as the user's: inbox + sent.
 interface InboxViewProps {
@@ -486,6 +508,16 @@ export function OrgInboxModal({ inbox, net, map, slug, toast, close, jumpTo }: O
     return <span className={'net-state' + (m._state === 'read' ? ' read' : '')}
       title={tip}> {g}</span>
   }
+  const holderChip = (h: string, dim = false) => (
+    <span key={h} className={'badge ' + (dim ? 'dim' : 'free')}>
+      <HearingIcon fontSize="inherit" />{h}
+      <button className="chip-x" title="revoke this inbox audience"
+        onClick={() => audienceAction(slug, 'revoke', h, EXTERN)
+          .then(() => toast([`org-inbox audience for ${h} rescinded`]))
+          .catch((e: Error) => toast([`error: ${e.message}`]))}>
+        <CloseIcon fontSize="inherit" /></button>
+    </span>
+  )
   return (
     <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
       <div className="settings wide" onClick={(e) => e.stopPropagation()}>
@@ -500,15 +532,11 @@ export function OrgInboxModal({ inbox, net, map, slug, toast, close, jumpTo }: O
         )}
         {tab === 'mail' ? (<>
           <div className="row" style={{ alignItems: 'center', flexWrap: 'wrap' }}>
-            {holders.map((h) => (
-              <span key={h} className="badge free"><HearingIcon fontSize="inherit" />{h}
-                <button className="chip-x" title="revoke this inbox audience"
-                  onClick={() => audienceAction(slug, 'revoke', h, EXTERN)
-                    .then(() => toast([`org-inbox audience for ${h} rescinded`]))
-                    .catch((e: Error) => toast([`error: ${e.message}`]))}>
-                  <CloseIcon fontSize="inherit" /></button>
-              </span>
-            ))}
+            {holders.filter((h) => map.get(h)?.state === 'live')
+              .map((h) => holderChip(h))}
+            <RetiredFold
+              ids={holders.filter((h) => map.get(h)?.state !== 'live')}
+              render={(h) => holderChip(h, true)} />
             <span className="dim" style={{ fontSize: 11.5 }}>
               {holders.length === 0
                 ? 'inbound mail auto-grants the senior top-level agent — or drag an agent onto the mailbox to choose who reads it'

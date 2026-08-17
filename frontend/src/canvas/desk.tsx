@@ -30,7 +30,7 @@ import type {
   ActivityInfo, CanvasNode, LiveRow, MailLinkFn, OpFn,
 } from './shared'
 import { ConfirmModal } from './modals'
-import { InboxView } from './mail'
+import { InboxView, RetiredFold } from './mail'
 import { AskCard } from './asks'
 import { isMobile } from '../mobile'
 
@@ -441,6 +441,21 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
   }
 
   const liveKids = node.children.some((c) => c.state === 'live')
+  // held-audience badges: retired grantor-agents fold behind one chip (user
+  // feature 2026-08-17) — USER/EXTERN are pseudo-peers, always "live"
+  const held = node.audiences_held ?? []
+  const heldRet = held.filter((g) => g !== USER && g !== EXTERN
+    && map.get(g)?.state !== 'live')
+  const heldChip = (g: string, dim = false) => (
+    <span key={g} className={'badge ' + (g === USER ? 'free' : dim ? 'dim' : '')}>
+      <HearingIcon fontSize="inherit" />
+      {g === USER ? 'user' : g === EXTERN ? 'org inbox' : g}
+      <button className="chip-x"
+        onClick={() => audienceAction(slug, 'revoke', node.id, g)
+          .then(() => toast([`audience ${node.id}→${g} rescinded`]))
+          .catch((e: Error) => toast([`error: ${e.message}`]))}><CloseIcon fontSize="inherit" /></button>
+    </span>
+  )
   const content = (
     <>
       <div className="cc-head">
@@ -513,16 +528,10 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
         {!compact && node.bearer_state &&
           <span className={'badge ' + (node.bearer_state === 'preserving' ? 'dim' : '')}>
             {node.bearer_state}</span>}
-        {!compact && node.audiences_held?.map((g) => (
-          <span key={g} className={'badge ' + (g === USER ? 'free' : '')}>
-            <HearingIcon fontSize="inherit" />
-            {g === USER ? 'user' : g === EXTERN ? 'org inbox' : g}
-            <button className="chip-x"
-              onClick={() => audienceAction(slug, 'revoke', node.id, g)
-                .then(() => toast([`audience ${node.id}→${g} rescinded`]))
-                .catch((e: Error) => toast([`error: ${e.message}`]))}><CloseIcon fontSize="inherit" /></button>
-          </span>
-        ))}
+        {!compact && held.filter((g) => !heldRet.includes(g))
+          .map((g) => heldChip(g))}
+        {!compact && <RetiredFold ids={heldRet}
+          render={(g) => heldChip(g, true)} />}
         {/* FR-03: presented documents ride the desk header too (user report
             2026-08-05 — they only lived on the unfocused card, so zooming in
             HID them). Shown in compact/switchboard panels as well: D-100
