@@ -701,6 +701,19 @@ def api_fallback_active(org: Org, now: float | None = None) -> bool:
     return now < float(org.d.get("api_fallback_until") or 0)
 
 
+def _bank_api_cost(org: Org, amount: float) -> None:
+    """api_fallback split (user feature 2026-08-17): dollars billed while the
+    key lane was open accumulate on this org-lifetime counter, surfaced as
+    the hover split on the UI cost card. Callers gate on the lane decision
+    CAPTURED AT SPAWN (a window expiring mid-turn doesn't rewrite where that
+    turn's tokens were billed). Org-level and monotonic on purpose: node
+    deletion banks per-node burn into deleted_cost_usd, and this counter
+    must never need the same dance."""
+    if amount:
+        org.d["api_cost_usd"] = round(
+            float(org.d.get("api_cost_usd") or 0.0) + amount, 6)
+
+
 def _looks_like_usage_limit(blob: str) -> bool:
     # №8 adjacent fix: the CLI's session-limit phrasing is "You've hit your
     # session limit — resets 1:40pm", which matched NONE of the original
@@ -2033,6 +2046,10 @@ def _run_one_turn(slug: str, nid: str,
             # moved into spawn_env 2026-08-10 so the FORK spawns get it too;
             # they had been running keyless. See spawn_env.)
             env = spawn_env(org)
+            # api_fallback cost split: which lane bills THIS turn is decided
+            # here, at spawn — capture it so the accounting below attributes
+            # the whole turn to that lane even if the window expires mid-turn
+            on_fallback_key = api_fallback_active(org)
             env["ORGTREE_ORG"], env["ORGTREE_NODE"] = slug, nid
             env["ORGTREE_PORT"] = os.environ.get("ORGTREE_PORT", "7360")
             env["PYTHONPATH"] = BACKEND_DIR + os.pathsep + env.get("PYTHONPATH", "")
@@ -2458,7 +2475,7 @@ def _run_one_turn(slug: str, nid: str,
                 if leftover:
                     _steer_fold_log(slug, nid, len(leftover), "turn exit")
             if timed_out.is_set():
-                _charge_killed_turn(slug, nid, turn_out)
+                _charge_killed_turn(slug, nid, turn_out, on_fallback_key)
                 raise RuntimeError(timeout_why[0]
                                    or "turn timed out and was killed")
             err_blob = " / ".join((err or "").strip().splitlines()[-3:]) \
@@ -2686,7 +2703,8 @@ def _run_one_turn(slug: str, nid: str,
                                 "at": now_iso()})
                     del log[:-40]
                     store.save_org(o2)
-            _after_turn(slug, nid, org, res, st, turn_occ)
+            _after_turn(slug, nid, org, res, st, turn_occ,
+                        on_key=on_fallback_key)
     except Exception as e:                                  # noqa: BLE001
         st["last_error"] = str(e)
         # the durable half — the banner above is in-memory and now clears at
@@ -2723,7 +2741,8 @@ def _run_one_turn(slug: str, nid: str,
     return follow
 
 
-def _charge_killed_turn(slug: str, nid: str, out_toks: int) -> None:
+def _charge_killed_turn(slug: str, nid: str, out_toks: int,
+                        on_key: bool = False) -> None:
     """A killed turn has no result event, so its spend was never reported —
     the API billed it anyway, and the expensive case (a long opus turn) is
     exactly the one that went unaccounted. Best-effort accounting (user ruling
@@ -2746,6 +2765,8 @@ def _charge_killed_turn(slug: str, nid: str, out_toks: int) -> None:
                 if (out_toks and den) else 0.0
             if est:
                 n["cost_usd"] = round(float(n.get("cost_usd") or 0.0) + est, 6)
+                if on_key:
+                    _bank_api_cost(o2, est)
             entry: TurnStat = {"at": now_iso(), "cost": est, "ms": None,
                                "denials": 0, "killed": True, "toks": out_toks}
             if est:
@@ -2783,7 +2804,8 @@ def _log_turn_error(slug: str, nid: str, text: str) -> None:
 
 
 def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
-                st: dict[str, Any], occ: int = 0) -> None:
+                st: dict[str, Any], occ: int = 0,
+                on_key: bool = False) -> None:
     """Post-turn bookkeeping: dollar cost (№32), context occupancy (№24), and the
     §8 compaction split when occupancy crosses the threshold. Tolerates the node
     having been deleted mid-turn.
@@ -2819,6 +2841,8 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
             n.pop("net_fail_run", None)
             if cost:
                 n["cost_usd"] = round(float(n.get("cost_usd") or 0.0) + cost, 6)
+                if on_key:
+                    _bank_api_cost(o2, cost)
             # persisted so the UI context wheel survives server restarts
             if occ:
                 n["occupancy"] = occ
@@ -3055,6 +3079,8 @@ def _compact_split_body(slug: str, nid: str) -> None:
                    "--model", model,
                    "--settings", json.dumps({"disableAllHooks": True}),
                    "--strict-mcp-config"]
+    # the fork bills whichever lane is open at ITS spawn, same rule as a turn
+    on_fallback_key = api_fallback_active(org)
     try:
         proc = subprocess.Popen(argv, cwd=scratch_dir(slug, nid), env=spawn_env(org),
                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -3108,6 +3134,8 @@ def _compact_split_body(slug: str, nid: str) -> None:
             if fork_cost:
                 org.d["deleted_cost_usd"] = round(
                     float(org.d.get("deleted_cost_usd") or 0.0) + fork_cost, 6)
+                if on_fallback_key:
+                    _bank_api_cost(org, fork_cost)
                 store.save_org(org)
             print(f"[orgtree] {slug}/{nid}: compaction split abandoned — the "
                   f"node was removed while the fork ran")
@@ -3116,6 +3144,8 @@ def _compact_split_body(slug: str, nid: str) -> None:
         n = org.node(nid)
         if fork_cost:
             n["cost_usd"] = round(float(n.get("cost_usd") or 0.0) + fork_cost, 6)
+            if on_fallback_key:
+                _bank_api_cost(org, fork_cost)
         # the successor starts with unknown (post-compact) occupancy — a stale
         # near-full reading kept the wheel hot and let the repeat precheck pass
         n["occupancy"] = None

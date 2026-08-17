@@ -422,6 +422,11 @@ class OrgDoc(TypedDict):
                                             # expiry warning (≤1/day survives
                                             # restarts — redteam finding)
     deleted_cost_usd: NotRequired[float]    # tombstone burn accumulator (cost_total)
+    api_cost_usd: NotRequired[float]        # lifetime burn billed to the key while
+                                            # an api_fallback window was open — the
+                                            # hover split on the UI cost card.
+                                            # Org-level and monotonic: node deletion
+                                            # never has to re-bank it.
     _actors_typed: NotRequired[bool]        # one-shot @-sentinel migration marker
     # ---- legacy keys old docs may still carry (popped/rewritten on load) ----
     default_dirs: NotRequired[list[Any]]    # superseded by `dirs` with modes

@@ -490,6 +490,9 @@ export interface TreePayload {
   roots: TreeNode[]
   audit: AuditReport
   cost_usd_total: number
+  /** slice of cost_usd_total billed to the org's key while an api_fallback
+   *  window was open — the cost chip's hover split */
+  api_cost_usd_total?: number
   /** F-04: every ask card the inbox interleaves (open + recent resolved);
    *  the header ask-icon glows iff asks_open > 0 */
   asks?: AskInfo[]

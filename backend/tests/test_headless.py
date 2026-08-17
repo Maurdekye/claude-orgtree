@@ -502,6 +502,57 @@ def sec_selectors() -> None:
     check("the sandbox key precedence is org → kiosk → env → proxied",
           _sandbox_precedence)
 
+    def _fallback_cost_split_counter():
+        """USER FEATURE 2026-08-17 (split counter): every dollar booked while
+        an api_fallback window is open ALSO lands on the org-lifetime
+        `api_cost_usd` counter, and the tree summary exposes it as
+        `api_cost_usd_total` — the cost card's hover split."""
+        org = mkorg(persist=True)
+        slug = org.d["slug"]
+        o = store.load_org(slug)
+        o.d["api_fallback"] = True
+        o.d["api_fallback_until"] = time.time() + 3600
+        store.save_org(o)
+        o = store.load_org(slug)
+        assert supervisor.api_fallback_active(o), "window should be open"
+        st = supervisor.state(slug, "boss")
+        # a key-lane turn: both the node total and the split counter move
+        supervisor._after_turn(slug, "boss", o, {"total_cost_usd": 0.25},
+                               st, 0, on_key=supervisor.api_fallback_active(o))
+        o2 = store.load_org(slug)
+        assert o2.node("boss")["cost_usd"] == 0.25
+        assert o2.d.get("api_cost_usd") == 0.25, \
+            "a fallback-lane turn did not reach the api_cost_usd counter"
+        assert o2.tree()["api_cost_usd_total"] == 0.25, \
+            "the tree summary does not expose the split"
+        # a subscription-lane turn (the lane is captured AT SPAWN — on_key
+        # False even though the window is still open): total moves, split not
+        supervisor._after_turn(slug, "boss", o2, {"total_cost_usd": 0.10},
+                               st, 0, on_key=False)
+        o3 = store.load_org(slug)
+        assert round(float(o3.node("boss")["cost_usd"]), 6) == 0.35
+        assert o3.d.get("api_cost_usd") == 0.25, \
+            "a subscription-lane turn leaked onto the api counter"
+    check("fallback-lane dollars accumulate on the api_cost_usd split counter",
+          _fallback_cost_split_counter)
+
+    def _fallback_split_reaches_every_booking_point():
+        # the lane decision is captured at SPAWN and threaded to all three
+        # cost-booking points (turn, killed-turn estimate, compaction fork) —
+        # checkable at the source like the keyed-env guard above
+        src = open(os.path.join(_HERE, "..", "orgtree", "supervisor.py"),
+                   encoding="utf-8").read()
+        assert src.count("on_fallback_key = api_fallback_active(org)") == 2, \
+            "the spawn-time lane capture moved (turn + compaction fork)"
+        assert "_charge_killed_turn(slug, nid, turn_out, on_fallback_key)" \
+            in src, "the killed-turn estimate lost its lane flag"
+        assert "on_key=on_fallback_key" in src, \
+            "_after_turn no longer receives the spawn-time lane"
+        assert src.count("_bank_api_cost(") >= 5, \
+            "a cost-booking point dropped its _bank_api_cost call"
+    check("the spawn-time lane reaches every cost-booking point (source)",
+          _fallback_split_reaches_every_booking_point)
+
 
 # ══════════════════════════════════════════════════════════════════════ §6
 def sec_prompt() -> None:

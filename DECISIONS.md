@@ -891,6 +891,24 @@ the docket's "transcript is in the scratch dir" premise was wrong and the
 copy is the fix. The compact dialog warns when the node is idle past the
 cache TTL, which is the moment the choice actually matters.
 
+### D-131 · fallback dollars keep their own ledger; the lane is fixed at spawn
+Decision (session seat, 2026-08-17, user feature): every dollar booked while
+an api_fallback window is open ALSO accumulates on an org-lifetime counter
+(`api_cost_usd`, org doc), surfaced as `api_cost_usd_total` in the tree
+summary and shown as the hover split on the header cost chip ("subscription
+$A · api key $B"). Which lane bills a process is decided where the key is
+(or isn't) injected — at spawn — so the flag is captured there and threaded
+to all three cost-booking points (turn `_after_turn`, killed-turn estimate,
+compaction fork); a window expiring mid-turn doesn't rewrite where that
+turn's tokens were billed. The counter is org-level and monotonic on
+purpose: node deletion banks per-node burn into `deleted_cost_usd`, and the
+split must never need the same dance. The tooltip stays quiet ('' → plain
+"total spend") for orgs that neither hold a fallback key nor ever burned
+one — a "$0.00 api key" lane would be noise, not information. Scope bound:
+a permanent-key org (`api_key` without `api_fallback`) bills the key for
+EVERYTHING, so a split would be vacuous — the counter deliberately tracks
+only fallback-window burn.
+
 ### D-130 · api_fallback: the key is a spare lane, and expiry is the only revert
 Decision (session seat, 2026-08-17, from the user's feature request "switch
 temporarily to an API key when usage limits are hit; automatically revert"):

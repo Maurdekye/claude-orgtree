@@ -30,6 +30,17 @@ import type {
 import type { MailRow } from './canvas/shared'
 
 const TIER_LETTER: Record<string, string> = { haiku: 'H', sonnet: 'S', opus: 'O', fable: 'F' }
+
+/** the cost chip's hover split: how much of the org total was billed to the
+ *  api_fallback key vs the subscription. '' when the org has never used (and
+ *  doesn't hold) a fallback key — the tooltip stays quiet rather than showing
+ *  a meaningless $0.00 lane. */
+const costSplitTitle = (tree: TreePayload): string => {
+  const api = tree.api_cost_usd_total ?? 0
+  if (!(api > 0 || tree.api_fallback)) return ''
+  return `subscription $${Math.max(0, tree.cost_usd_total - api).toFixed(2)}`
+    + ` · api key $${api.toFixed(2)}`
+}
 const USER = '@user'       // typed actor sentinels — a node may be NAMED user/system
 const SYSTEM = '@system'
 
@@ -376,14 +387,16 @@ export default function App() {
                     already shows the same figure against its limit (user
                     spec 2026-07-31) — limitless orgs keep it */}
                 {tree.cost_usd_total > 0 && !tree.kiosk?.spend_limit &&
-                  <span className="chip">${tree.cost_usd_total.toFixed(2)}</span>}
+                  <span className="chip" title={costSplitTitle(tree) || 'total spend'}>
+                    ${tree.cost_usd_total.toFixed(2)}</span>}
                 {tree.fable_lock &&
                   <span className="chip bad" title={tree.fable_lock.at as string | undefined}><BlockIcon fontSize="inherit" /> fable limit</span>}
                 {tree.kiosk?.spend_limit && (
                   tree.spend_frozen
                     ? <span className="chip bad"><BlockIcon fontSize="inherit" /> spend limit reached — agents frozen</span>
                     : <span className={'chip' + (tree.cost_usd_total >= tree.kiosk.spend_limit * 0.9 ? ' bad' : '')}
-                        title="spend / limit">
+                        title={'spend / limit'
+                          + (costSplitTitle(tree) ? ' — ' + costSplitTitle(tree) : '')}>
                         ${tree.cost_usd_total.toFixed(2)} / ${tree.kiosk.spend_limit.toFixed(2)}
                       </span>
                 )}

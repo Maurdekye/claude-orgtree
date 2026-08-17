@@ -5525,6 +5525,11 @@ class Org:
             "roots": [build(c) for c in self.org_children(None)],
             "audit": self.audit(),
             "cost_usd_total": self.cost_total(),
+            # api_fallback split: the slice of cost_usd_total billed to the
+            # org's key while a fallback window was open (supervisor banks it
+            # at every cost-booking point) — the cost card's hover split
+            "api_cost_usd_total": round(
+                float(self.d.get("api_cost_usd") or 0.0), 4),
             "user_inbox_count": len(self.d.get("user_inbox", [])),
             "user_inbox_newest": (self.d.get("user_inbox") or [{}])[-1].get("at"),
             "fable_lock": self.d.get("fable_lock"),

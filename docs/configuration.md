@@ -135,7 +135,7 @@ Editable at any time; takes effect immediately unless noted. Model at `api.py:75
 | `clear_fable_lock` | bool (action) | clears an active Fable lock |
 | `auto_resume` | bool | restart usage-limit-frozen agents 1 min after the reported reset (`supervisor.py:2527`) |
 | `auto_resume_compact` | bool | cheap-compact a limit-frozen node right before the AUTO resume wakes it (the freeze outlived the cache TTL; manual ▶ never compacts) |
-| `api_fallback` | bool | the org's `api_key` becomes a usage-limit SPARE: routine turns bill the subscription; a limit freeze opens a key-billed window that closes at the limit's own reset. Needs `api_key`; mutually exclusive with `headless`; wakes limit-frozen agents immediately even with `auto_resume` off |
+| `api_fallback` | bool | the org's `api_key` becomes a usage-limit SPARE: routine turns bill the subscription; a limit freeze opens a key-billed window that closes at the limit's own reset. Needs `api_key`; mutually exclusive with `headless`; wakes limit-frozen agents immediately even with `auto_resume` off. Dollars burned inside a window accumulate on a separate lifetime counter (`api_cost_usd`) — hover the header cost chip for the subscription/api-key split (D-131) |
 | `cascade_hire` | bool | a hire's cost bubbles up the chain (§4.6) |
 | `cascade_alloc` | bool | allocations and upgrades bubble up |
 
