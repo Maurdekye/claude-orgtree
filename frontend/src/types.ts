@@ -526,6 +526,10 @@ export interface TreePayload {
   net?: NetBlock | null        // F-06 (null for kiosks; absent for visitors)
   headless?: boolean           // §9.6
   api_key_set?: boolean        // §9.5: whether, never the key itself
+  /** 2026-08-17: the key is a usage-limit SPARE (subscription-first) */
+  api_fallback?: boolean
+  /** epoch seconds; the fallback window is open while now < this */
+  api_fallback_until?: number | null
 }
 
 // ----------------------------------------------------------------- org list
@@ -851,6 +855,8 @@ export interface SettingsRequest {
   headless?: boolean | null            // §9.6 (server enforces the couplings)
   api_key?: string | null              // §9.5 (write-only)
   clear_api_key?: boolean
+  /** the key as a usage-limit SPARE — server enforces the couplings */
+  api_fallback?: boolean | null
 }
 
 // F-06: GET /api/orgs/{slug}/net — loopback-admin reveal (the ONE place the

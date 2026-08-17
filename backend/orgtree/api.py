@@ -1122,6 +1122,11 @@ class Settings(Body):
                                             # an api_key (both directions)
     api_key: str | None = None              # §9.5: per-org ANTHROPIC_API_KEY
     clear_api_key: bool = False             # refused while headless is on
+    api_fallback: bool | None = None        # 2026-08-17: the key is a SPARE —
+                                            # subscription bills routine turns;
+                                            # the key takes over only while a
+                                            # usage limit has the lane frozen,
+                                            # reverting at the limit's reset
     # FR-24b: auto cheap-compact on wake — {enabled, occ (0..1 fraction of
     # the context window), idle_s (seconds since the last turn)}. Disabled by
     # default; per-node scope entries override key-by-key. Especially suited
@@ -1308,7 +1313,10 @@ def _org_settings_locked(slug: str, body: Settings) -> dict[str, Any]:
     # ---- §9.5/§9.6: per-org API key + headless (couplings are HARD rules) --
     if body.api_key is not None and body.api_key.strip():
         org.d["api_key"] = body.api_key.strip()
-        warnings.append("API key set — this org's turns now bill the key, "
+        warnings.append("API key set — held as the usage-limit fallback (the "
+                        "subscription still bills routine turns)"
+                        if org.d.get("api_fallback") else
+                        "API key set — this org's turns now bill the key, "
                         "not the subscription")
     if body.clear_api_key:
         if org.d.get("headless"):
@@ -1318,7 +1326,37 @@ def _org_settings_locked(slug: str, body: Settings) -> dict[str, Any]:
                      "nobody is present to perform) — turn headless off "
                      "first")
         org.d.pop("api_key", None)
+        if org.d.pop("api_fallback", None):
+            org.d.pop("api_fallback_until", None)
+            org.d.pop("api_fallback_since", None)
+            warnings.append("API-key fallback off with it — nothing left to "
+                            "fall back to")
         warnings.append("API key cleared — turns use the subscription again")
+    # ---- api_fallback (user feature 2026-08-17): the key as a SPARE lane ----
+    if body.api_fallback is not None:
+        if body.api_fallback and not org.d.get("api_fallback"):
+            if not org.d.get("api_key"):
+                raise HTTPException(
+                    422, "the fallback needs an API key to fall back TO — "
+                         "set one in the same panel first")
+            if org.d.get("headless"):
+                raise HTTPException(
+                    422, "a headless org bills its key full-time "
+                         "(subscription auth ends in an interactive re-login "
+                         "nobody is present to perform) — the fallback shape "
+                         "only fits orgs on the subscription")
+            org.d["api_fallback"] = True
+            warnings.append("API-key fallback ON — turns bill the "
+                            "subscription; the key takes over only while a "
+                            "usage limit has the subscription lane frozen, "
+                            "and reverts at the limit's own reset")
+        elif not body.api_fallback and org.d.get("api_fallback"):
+            org.d.pop("api_fallback", None)
+            org.d.pop("api_fallback_until", None)
+            org.d.pop("api_fallback_since", None)
+            if org.d.get("api_key"):
+                warnings.append("API-key fallback OFF — the stored key bills "
+                                "every turn again")
     if body.headless is not None:
         if body.headless and not org.d.get("headless"):
             if org.d.get("kiosk") is not None:
@@ -1331,6 +1369,12 @@ def _org_settings_locked(slug: str, body: Settings) -> dict[str, Any]:
                          "panel): subscription auth ends in an interactive "
                          "re-login that a headless org, by definition, has "
                          "nobody to perform")
+            if org.d.get("api_fallback"):
+                raise HTTPException(
+                    422, "the API key is currently a usage-limit FALLBACK, "
+                         "which keeps routine turns on the subscription — "
+                         "headless needs the key full-time; turn the "
+                         "fallback option off first")
             halted = [k for k in ("fable_limit_policy", "fable_filter_policy")
                       if org.d.get(k, "halt") == "halt"]
             if halted:
@@ -2753,22 +2797,38 @@ async def anthropic_proxy(path: str, request: Request) -> StreamingResponse:
     from fastapi.concurrency import run_in_threadpool
     from fastapi.responses import StreamingResponse
     from starlette.background import BackgroundTask
-    if not getattr(request.state, "bridge_slug", None):
+    bslug = getattr(request.state, "bridge_slug", None)
+    if not bslug:
         raise HTTPException(403, "bridge only")
+    # api_fallback (user feature 2026-08-17): while the org's fallback window
+    # is open, this passthrough re-auths with the org's KEY instead of the
+    # host OAuth token — same container, same proxy, no recreate; reverting
+    # is the window expiring. (A sandboxed fallback org is kept in proxied
+    # mode by sandbox.ensure_container for exactly this reason.)
+    fb_key = ""
     try:
-        token = await run_in_threadpool(subproxy.get_access_token)
-    except RuntimeError as e:
-        raise HTTPException(502, str(e))
+        _fo = await run_in_threadpool(store.load_org, bslug)
+        if supervisor.api_fallback_active(_fo):
+            fb_key = str(_fo.d.get("api_key") or "")
+    except LedgerError:
+        pass
     headers: dict[str, str] = {}
     for k, v in request.headers.items():
         if k.lower() in ("host", "x-api-key", "authorization", "content-length",
                          "connection", "accept-encoding", "x-orgtree-bridge"):
             continue
         headers[k] = v
-    betas = headers.get("anthropic-beta", "")
-    if "oauth-2025-04-20" not in betas:
-        headers["anthropic-beta"] = (betas + "," if betas else "") + "oauth-2025-04-20"
-    headers["Authorization"] = "Bearer " + token
+    if fb_key:
+        headers["x-api-key"] = fb_key
+    else:
+        try:
+            token = await run_in_threadpool(subproxy.get_access_token)
+        except RuntimeError as e:
+            raise HTTPException(502, str(e))
+        betas = headers.get("anthropic-beta", "")
+        if "oauth-2025-04-20" not in betas:
+            headers["anthropic-beta"] = (betas + "," if betas else "") + "oauth-2025-04-20"
+        headers["Authorization"] = "Bearer " + token
     # identity only: we stream the body RAW — a gzip upstream response with
     # the content-encoding header stripped reads as garbage at the CLI
     headers["Accept-Encoding"] = "identity"

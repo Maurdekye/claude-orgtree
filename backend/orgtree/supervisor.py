@@ -678,9 +678,27 @@ def spawn_env(org: Org) -> dict[str, str]:
     host-side `docker exec` would leak it into an argv/env the container does
     not own."""
     env = clean_env()
-    if org.d.get("api_key") and not sbx.is_sandboxed(org):
-        env["ANTHROPIC_API_KEY"] = str(org.d.get("api_key") or "")
+    key = str(org.d.get("api_key") or "")
+    if key and not sbx.is_sandboxed(org):
+        # api_fallback (user feature 2026-08-17): with the option ON the key
+        # is a SPARE, not the lane — injected only while a usage-limit window
+        # is open; expiry alone reverts the org to the subscription
+        if not org.d.get("api_fallback") or api_fallback_active(org):
+            env["ANTHROPIC_API_KEY"] = key
     return env
+
+
+def api_fallback_active(org: Org, now: float | None = None) -> bool:
+    """User feature 2026-08-17: when a usage limit freezes the subscription
+    lane and the org holds a fallback key (`api_fallback` + `api_key`), turns
+    temporarily bill the key. The window (`api_fallback_until`) is stamped at
+    freeze time to the limit's own reset; reverting is pure expiry — no
+    writer, no timer: spawn_env and the bridge proxy just stop choosing the
+    key. Read wherever billing or readiness needs the answer."""
+    if not (org.d.get("api_fallback") and org.d.get("api_key")):
+        return False
+    now = time.time() if now is None else now
+    return now < float(org.d.get("api_fallback_until") or 0)
 
 
 def _looks_like_usage_limit(blob: str) -> bool:
@@ -2574,6 +2592,27 @@ def _run_one_turn(slug: str, nid: str,
                                 o2.fable_limit_hit(
                                     nid, err_blob,
                                     until_ts=_parse_limit_reset_ts(err_blob))
+                            # api_fallback (user feature 2026-08-17): the org
+                            # holds a key for exactly this moment — open the
+                            # window so the resume timer wakes the node on its
+                            # next tick and spawn_env / the bridge proxy bill
+                            # the key until the subscription's own reset. A
+                            # fable-TIER quota is excluded: that lane is owned
+                            # by fable_limit_policy, not by billing.
+                            _fable_tier = (o2.node(nid)["model"] == "fable"
+                                           and _looks_like_fable_tier_limit(
+                                               err_blob))
+                            if api_fallback_active(o2):
+                                # frozen ON the key lane: this record owns its
+                                # own reset — mark it so readiness never
+                                # insta-wakes it into the same wall
+                                fz["on_fallback"] = True
+                            elif (o2.d.get("api_fallback")
+                                  and o2.d.get("api_key") and not _fable_tier):
+                                o2.d["api_fallback_until"] = max(
+                                    float(fz.get("until_ts") or 0),
+                                    time.time() + 900)
+                                o2.d["api_fallback_since"] = time.time()
                             store.save_org(o2)
                     notify(slug, nid, "frozen")
                     if org.node(nid)["model"] == "fable" \
@@ -3896,7 +3935,10 @@ def _resumable(n: NodeDoc) -> FrozenInfo | None:
         return None
     if n["state"] != "live" or n.get("limit_locked"):
         return None
-    if any(k not in ("limit", "connection") and v is True for k, v in fz.items()):
+    # `on_fallback` is a QUALIFIER on the limit kind (frozen while the key
+    # lane was live), not a kind of its own — exempt like the owned kinds
+    if any(k not in ("limit", "connection", "on_fallback") and v is True
+           for k, v in fz.items()):
         return None
     return fz
 
@@ -3952,7 +3994,10 @@ def resume_frozen(slug: str, only: Iterable[str] | None = None,
             fz = _resumable(n)
             if fz is None:
                 continue
-            if cheap_first and fz.get("limit"):
+            # a fallback wake is seconds behind the freeze — the cache is
+            # still warm, which is the opposite of what cheap_first is for
+            if cheap_first and fz.get("limit") \
+                    and not api_fallback_active(org):
                 try:
                     if transcript_path(n["session_id"],
                                        _transcript_root(org)) is not None:
@@ -4109,10 +4154,17 @@ def auto_resume_ready(org: Org, now: float | None = None) -> set[str]:
     """
     now = time.time() if now is None else now
     last = float(org.d.get("auto_resume_last") or 0)
+    fb = api_fallback_active(org, now)
     ready: set[str] = set()
     for nid, n in org.nodes.items():
         fz = _resumable(n)
         if fz is None:
+            continue
+        if fb and fz.get("limit") and not fz.get("on_fallback"):
+            # api_fallback (2026-08-17): the key lane is open RIGHT NOW —
+            # a subscription-side limit freeze has nothing to wait for.
+            # (A freeze earned ON the key lane keeps its own until_ts.)
+            ready.add(nid)
             continue
         ts = fz.get("until_ts")
         if ts:
@@ -4172,11 +4224,17 @@ def start_auto_resume_loop() -> None:
                             # it. Only PURE connection records pass: one that
                             # also carries `limit` waits for the toggle like
                             # any other limit freeze.
+                            fb = api_fallback_active(org)
                             ready = {nid for nid in ready
                                      if (fz := _resumable(org.node(nid)))
                                      is not None
-                                     and fz.get("connection")
-                                     and not fz.get("limit")}
+                                     and ((fz.get("connection")
+                                           and not fz.get("limit"))
+                                          # api_fallback is its own consent:
+                                          # the option was turned on exactly
+                                          # so limits do not park the org
+                                          or (fb and fz.get("limit")
+                                              and not fz.get("on_fallback")))}
                     if not ready:
                         continue
                     with store.DOC_LOCK:

@@ -1036,7 +1036,9 @@ function AutonomyTab({ tree, toast }: { tree: TreePayload; toast: ToastFn }) {
       <div className="row">
         {tree.api_key_set
           ? <>
-              <span className="badge free">key set — turns bill the key</span>
+              <span className="badge free">{tree.api_fallback
+                ? 'key set — held as the usage-limit fallback'
+                : 'key set — turns bill the key'}</span>
               <button onClick={() => save({ clear_api_key: true },
                 'API key cleared')}>clear</button>
             </>
@@ -1052,6 +1054,25 @@ function AutonomyTab({ tree, toast }: { tree: TreePayload; toast: ToastFn }) {
       <div className="dim hub-hint">an API key removes the subscription's
         refresh-token ceiling — required for headless, useful for any
         unattended org; it never reaches an agent's context</div>
+      {/* api_fallback (2026-08-17): subscription-first billing with the key
+          as the spare lane while a usage limit holds; auto-reverts at the
+          limit's own reset (server-enforced couplings: needs a key, mutually
+          exclusive with headless) */}
+      {tree.api_key_set && <label className="checkline"
+        title="turns bill the subscription; when a usage limit freezes an agent, the org switches to the key and the agent resumes at once — reverting to the subscription when the limit's reset time passes">
+        <input type="checkbox" checked={!!tree.api_fallback}
+          onChange={(e) => save({ api_fallback: e.target.checked },
+            e.target.checked
+              ? 'fallback ON — the key takes over only during usage limits'
+              : 'fallback off — the key bills every turn again')} />
+        use the key only as a usage-limit fallback
+      </label>}
+      {tree.api_fallback
+        && (tree.api_fallback_until ?? 0) * 1000 > Date.now()
+        && <div className="dim hub-hint">fallback ACTIVE — billing the key
+          until {new Date((tree.api_fallback_until ?? 0) * 1000)
+            .toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })},
+          then back to the subscription</div>}
       <label className="checkline"
         title="no user is present: questions, credit requests and user audiences auto-deny; mail to you is stored with a no-reply note; requires an API key and non-halt fable policies">
         <input type="checkbox" checked={!!tree.headless}

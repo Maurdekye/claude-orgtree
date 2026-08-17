@@ -120,6 +120,12 @@ class FrozenInfo(TypedDict, total=False):
     connection: bool
     spend: bool
     spend_error: str | None
+    # api_fallback (2026-08-17): this limit freeze was recorded while the
+    # org's fallback window was already OPEN — i.e. the KEY lane hit a wall,
+    # not the subscription. Readiness must not insta-wake it into the same
+    # wall; it waits for its own until_ts like any limit freeze.
+    # (⚠ exempted in supervisor._resumable's other-kind test, like the kinds.)
+    on_fallback: bool
     # prompts to replay when the freeze lifts (supervisor queues them)
     resume_texts: list[str]
 
@@ -404,6 +410,14 @@ class OrgDoc(TypedDict):
     headless: NotRequired[bool]             # §9.6: no user present; user-bound
                                             # asks auto-deny (requires api_key)
     api_key: NotRequired[str]               # §9.5: per-org ANTHROPIC_API_KEY
+    # api-key FALLBACK (user feature 2026-08-17): with this ON the stored
+    # api_key is a SPARE, not the lane — routine turns bill the subscription,
+    # and only while a usage-limit freeze holds the subscription lane does
+    # spawn_env / the bridge proxy switch to the key. The window closes at
+    # the limit's own reset time; reverting is expiry alone (no writer).
+    api_fallback: NotRequired[bool]
+    api_fallback_until: NotRequired[float]  # epoch; window open while now < it
+    api_fallback_since: NotRequired[float]  # when the current window opened
     cred_warned_at: NotRequired[str]        # §9.2 watcher: last credential-
                                             # expiry warning (≤1/day survives
                                             # restarts — redteam finding)

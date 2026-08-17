@@ -488,8 +488,12 @@ def sec_selectors() -> None:
         # org.d.api_key > kiosk.api_key > ORGTREE_SANDBOX_API_KEY > proxied
         src = open(os.path.join(_HERE, "..", "orgtree", "sandbox.py"),
                    encoding="utf-8").read()
-        i = src.index("key = (str(org.d.get(\"api_key\")")
-        window = src[i:i + 260]
+        # mirror updated 2026-08-17 (api_fallback): a fallback org skips its
+        # own key here so the bridge proxy can flip auth per request — the
+        # precedence order itself is unchanged
+        i = src.index("key = ((\"\" if org.d.get(\"api_fallback\") "
+                      "else str(org.d.get(\"api_key\")")
+        window = src[i:i + 320]
         assert window.index("org.d.get(\"api_key\")") \
             < window.index("k.get(\"api_key\")") \
             < window.index("ORGTREE_SANDBOX_API_KEY"), window

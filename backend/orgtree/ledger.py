@@ -5532,6 +5532,10 @@ class Org:
             "storage_blocked": bool(self.d.get("storage_blocked")),
             "auto_resume": bool(self.d.get("auto_resume")),
             "auto_resume_compact": bool(self.d.get("auto_resume_compact")),
+            # api_fallback (2026-08-17): the option plus the window edge —
+            # the UI derives "active" by comparing against its own clock
+            "api_fallback": bool(self.d.get("api_fallback")),
+            "api_fallback_until": self.d.get("api_fallback_until"),
             # FR-24b: the org-level auto-cheap-compact config (nodes carry
             # their overrides in scope.auto_cheap_compact, already shipped)
             "auto_cheap_compact": self.d.get("auto_cheap_compact"),

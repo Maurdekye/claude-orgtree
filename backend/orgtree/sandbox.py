@@ -487,7 +487,11 @@ def ensure_container(org: Org) -> str:
     # §9.5: the ORG-LEVEL key (settings, any org — promoted out of the kiosk
     # spec) outranks the kiosk field; proxy mode and key mode stay mutually
     # exclusive — a set key wins and the bridge proxy is not used.
-    key = (str(org.d.get("api_key") or "")
+    # api_fallback (2026-08-17): a fallback org must stay PROXIED — container
+    # env is fixed at `docker run`, so the per-request auth flip lives in the
+    # bridge's /anthropic passthrough instead; skipping the org key here is
+    # what routes it there
+    key = (("" if org.d.get("api_fallback") else str(org.d.get("api_key") or ""))
            or k.get("api_key") or os.environ.get("ORGTREE_SANDBOX_API_KEY")
            or "proxied").strip()
     use_proxy = "prox" in key.lower()
