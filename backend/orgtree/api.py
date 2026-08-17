@@ -1106,6 +1106,10 @@ class Settings(Body):
                                             # panel changes those one at a time)
     default_effort: str | None = None       # ""=CLI default | low..max (live inherit)
     auto_resume: bool | None = None         # restart limit-frozen agents at reset+1min
+    auto_resume_compact: bool | None = None  # cheap-compact a limit-frozen node
+                                             # right before the AUTO resume wakes
+                                             # it (the freeze outlived the cache
+                                             # TTL; manual ▶ is untouched)
     cascade_hire: bool | None = None        # hires bubble costs up the chain (§4.6)
     cascade_alloc: bool | None = None       # allocations/upgrades bubble costs up
     net_hub_address: str | None = None      # F-06 (global defaults only): the
@@ -1132,6 +1136,7 @@ _DEFAULTS_BASE = {
     "max_top_grant": 1000, "default_top_grant": 50, "compact_at": 0.80,
     "fable_limit_policy": "halt", "fable_filter_policy": "halt",
     "cascade_hire": True, "cascade_alloc": True, "auto_resume": False,
+    "auto_resume_compact": False,
     # F-06: NOT an org-doc key — popped + translated into the "local" hub
     # entry at creation (orgs_create), shown on the root defaults page
     "net_hub_address": net.DEFAULT_HUB_ADDRESS,
@@ -1174,6 +1179,8 @@ def defaults_set(body: Settings) -> dict[str, Any]:
         d["default_effort"] = body.default_effort
     if body.auto_resume is not None:
         d["auto_resume"] = bool(body.auto_resume)
+    if body.auto_resume_compact is not None:
+        d["auto_resume_compact"] = bool(body.auto_resume_compact)
     if body.cascade_hire is not None:
         d["cascade_hire"] = bool(body.cascade_hire)
     if body.cascade_alloc is not None:
@@ -1286,6 +1293,8 @@ def _org_settings_locked(slug: str, body: Settings) -> dict[str, Any]:
         org.d["default_effort"] = body.default_effort
     if body.auto_resume is not None:
         org.d["auto_resume"] = bool(body.auto_resume)
+    if body.auto_resume_compact is not None:
+        org.d["auto_resume_compact"] = bool(body.auto_resume_compact)
     if body.cascade_hire is not None:
         org.d["cascade_hire"] = bool(body.cascade_hire)
     if body.cascade_alloc is not None:

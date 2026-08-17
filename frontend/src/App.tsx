@@ -1351,6 +1351,11 @@ function DefaultsPanel({ toast, close }: { toast: ToastFn; close: () => void }) 
             onChange={(e) => set('auto_resume', e.target.checked)} />
           auto-resume usage-limit-frozen agents after the reset time
         </label>
+        <label className="checkline">
+          <input type="checkbox" checked={!!d.auto_resume_compact}
+            onChange={(e) => set('auto_resume_compact', e.target.checked)} />
+          cheap-compact limit-frozen agents before auto-resume wakes them
+        </label>
         <div className="hint">
           Existing organizations keep their own settings — these apply only at
           creation.
@@ -1367,6 +1372,7 @@ function DefaultsPanel({ toast, close }: { toast: ToastFn; close: () => void }) 
               cascade_hire: d.cascade_hire !== false,
               cascade_alloc: d.cascade_alloc !== false,
               auto_resume: !!d.auto_resume,
+              auto_resume_compact: !!d.auto_resume_compact,
             }).then(() => { toast(['default org settings saved']); close() })
               .catch((e: Error) => toast([`error: ${e.message}`]))}>save</button>
           <button onClick={close}>cancel</button>
@@ -1554,6 +1560,9 @@ function SettingsPanel({ tree, toast, close }: {
   const accIdle = val<number | string>('accIdle',
     Math.round(((acc?.idle_s ?? 300) as number) / 60))
   const setAccIdle = set('accIdle', accIdle)
+  // pre-resume cheap compact (2026-08-17): rides the AUTO limit resume only
+  const arCompact = val('arCompact', !!tree.auto_resume_compact)
+  const setArCompact = set('arCompact', arCompact)
   const srvCeil = useMemo(() => (ms ? {
     bash: !!ms.tools?.bash, web: !!ms.tools?.web, edit: !!ms.tools?.edit,
     subagents: !!ms.tools?.subagents } : null), [ms])
@@ -1719,6 +1728,15 @@ function SettingsPanel({ tree, toast, close }: {
                 style={{ width: '5em' }} value={accIdle}
                 onChange={(e) => setAccIdle(e.target.value)} /> min</label>
             </div>}
+            {/* 2026-08-17: a usage-limit freeze outlives the cache TTL by
+                construction, so the auto-resume wake can swap the session
+                first and skip the cold reload. The manual ▶ never compacts. */}
+            <label className="checkline"
+              title="applies only to the automatic resume after a usage-limit freeze (auto-resume toggle); pressing ▶ yourself resumes sessions as they are">
+              <input type="checkbox" checked={arCompact}
+                onChange={(e) => setArCompact(e.target.checked)} />
+              cheap-compact limit-frozen agents before auto-resume wakes them
+            </label>
             {/* §4.6 cost-bubbling toggles (user spec, both ON by default) */}
             <div className="field-label">credit cost bubbling</div>
             <label className="checkline">
@@ -1835,6 +1853,7 @@ function SettingsPanel({ tree, toast, close }: {
                   default_effort: defEffort,
                   cascade_hire: cascadeHire,
                   cascade_alloc: cascadeAlloc,
+                  auto_resume_compact: arCompact,
                   auto_cheap_compact: { enabled: accOn,
                     occ: (+accOcc || 50) / 100,
                     idle_s: Math.round((+accIdle || 5) * 60) } }),

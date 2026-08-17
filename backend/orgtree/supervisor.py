@@ -3901,7 +3901,8 @@ def _resumable(n: NodeDoc) -> FrozenInfo | None:
     return fz
 
 
-def resume_frozen(slug: str, only: Iterable[str] | None = None) -> list[str]:
+def resume_frozen(slug: str, only: Iterable[str] | None = None,
+                  cheap_first: bool = False) -> list[str]:
     """The ▶ button: un-freeze every usage-limit-frozen agent at once and replay
     the turn(s) the limit interrupted; waiting mailbox mail rides along on the
     turn's own envelope drain. A kiosk SPEND freeze blocks resume until the
@@ -3910,7 +3911,16 @@ def resume_frozen(slug: str, only: Iterable[str] | None = None) -> list[str]:
     `only` restricts the sweep to named nodes — the auto-resume timer passes
     the nodes whose OWN wake time has arrived. ▶ itself passes nothing and
     keeps its all-at-once meaning: a human pressing resume has judged the
-    whole org ready, which is a different claim from a timer's."""
+    whole org ready, which is a different claim from a timer's.
+
+    `cheap_first` (user option 2026-08-17, `auto_resume_compact`): the auto
+    timer sets it — a LIMIT freeze has by definition outlived the cache TTL,
+    so the node is cheap-compacted right before its wake and the resume never
+    pays the cold transcript reload (D-114's arithmetic; the replay texts
+    drain into the successor's first envelope, breadcrumbs ride its system
+    prompt). Limit-kind records only — a connection freeze is seconds old and
+    its context is warm — and only when the session has a transcript to
+    reload. A refusal falls through to a plain resume, never a gate."""
     pick = None if only is None else set(only)
     resumed: list[tuple[str, list[str]]] = []
     with store.DOC_LOCK:
@@ -3918,7 +3928,8 @@ def resume_frozen(slug: str, only: Iterable[str] | None = None) -> list[str]:
         if org.d.get("spend_frozen"):
             raise RuntimeError("the kiosk spend limit was reached — raise the "
                                "limit from the admin dashboard to resume")
-        for nid, n in org.nodes.items():
+        # list(): cheap_first inserts bearer nodes mid-sweep
+        for nid, n in list(org.nodes.items()):
             if pick is not None and nid not in pick:
                 continue
             # review C6: the old unconditional pop discarded replay texts for
@@ -3941,6 +3952,16 @@ def resume_frozen(slug: str, only: Iterable[str] | None = None) -> list[str]:
             fz = _resumable(n)
             if fz is None:
                 continue
+            if cheap_first and fz.get("limit"):
+                try:
+                    if transcript_path(n["session_id"],
+                                       _transcript_root(org)) is not None:
+                        r0 = org.cheap_compact(SYSTEM, nid)
+                        export_predecessor_transcript(
+                            org, nid,
+                            old_sid=str(r0.get("old_session") or ""))
+                except LedgerError:
+                    pass          # an optimization, never a gate (D-114)
             n.pop("frozen", None)
             resumed.append((nid, fz.get("resume_texts") or []))
         if resumed:
@@ -4162,8 +4183,12 @@ def start_auto_resume_loop() -> None:
                         org = store.load_org(slug)
                         org.d["auto_resume_last"] = time.time()
                         store.save_org(org)
+                        arc = bool(org.d.get("auto_resume_compact"))
                     try:
-                        resume_frozen(slug, only=ready)
+                        # auto_resume_compact (2026-08-17): the timer's wakes
+                        # cheap-compact limit-frozen nodes first — connection
+                        # records pass through untouched (guarded inside)
+                        resume_frozen(slug, only=ready, cheap_first=arc)
                     except RuntimeError:
                         pass
             except Exception:

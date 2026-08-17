@@ -379,6 +379,11 @@ class OrgDoc(TypedDict):
     storage_warned: NotRequired[bool]
     auto_resume: NotRequired[bool]
     auto_resume_last: NotRequired[float]
+    # user option 2026-08-17: cheap-compact a limit-frozen node right before
+    # the auto-resume timer wakes it — the freeze outlived the cache TTL, so
+    # the swap dodges the cold transcript reload (D-114's arithmetic).
+    # Auto-path only; the manual ▶ resumes sessions as they are.
+    auto_resume_compact: NotRequired[bool]
     # ---- @net: mail-hub client (F-06) — net.py owns these ----
     net_identity: NotRequired[dict[str, Any]]   # {secret, fingerprint, slug,
                                                 # minted_at} — the SECRET lives

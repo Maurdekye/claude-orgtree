@@ -507,6 +507,8 @@ export interface TreePayload {
   /** FR-24b: org-level auto-cheap-compact config (null/absent = off) */
   auto_cheap_compact?: { enabled?: boolean; occ?: number; idle_s?: number } | null
   auto_resume: boolean
+  /** cheap-compact a limit-frozen node right before its AUTO resume */
+  auto_resume_compact?: boolean
   fable_limit_policy: string
   fable_filter_policy: string
   cascade_hire: boolean
@@ -755,6 +757,7 @@ export interface DefaultsPayload {
   cascade_hire: boolean
   cascade_alloc: boolean
   auto_resume: boolean
+  auto_resume_compact?: boolean
   default_tools?: ToolGrant
   default_visibility?: string
   default_effort?: string
@@ -835,6 +838,8 @@ export interface SettingsRequest {
   permission_mode?: string | null
   default_effort?: string | null
   auto_resume?: boolean | null
+  /** cheap-compact a limit-frozen node right before its AUTO resume wakes it */
+  auto_resume_compact?: boolean | null
   /** FR-24b: auto cheap-compact on wake (org level; disabled by default) */
   auto_cheap_compact?: { enabled?: boolean; occ?: number; idle_s?: number } | null
   cascade_hire?: boolean | null

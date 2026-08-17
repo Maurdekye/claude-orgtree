@@ -5531,6 +5531,7 @@ class Org:
             "spend_frozen": bool(self.d.get("spend_frozen")),
             "storage_blocked": bool(self.d.get("storage_blocked")),
             "auto_resume": bool(self.d.get("auto_resume")),
+            "auto_resume_compact": bool(self.d.get("auto_resume_compact")),
             # FR-24b: the org-level auto-cheap-compact config (nodes carry
             # their overrides in scope.auto_cheap_compact, already shipped)
             "auto_cheap_compact": self.d.get("auto_cheap_compact"),
