@@ -418,6 +418,29 @@ button.badge.retired-fold:hover { border-color: var(--accent); }
   display: flex; align-items: center; justify-content: center;
 }
 
+/* edge JUMP CARDS (2026-08-17): the focused desk's off-screen coworkers —
+   one card per side hugging the screen edge at the neighbor's own screen
+   elevation (clamped into view); a click glides the camera to that desk.
+   Screen-space HUD chrome, same layer as the zoomhud/tray. */
+.edge-jump {
+  position: absolute; z-index: 7; transform: translateY(-50%);
+  display: inline-flex; align-items: center; gap: 5px;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--panel);
+  color: var(--dim); font-size: 11.5px; padding: 4px 9px; cursor: pointer;
+  box-shadow: var(--shadow); max-width: 180px; white-space: nowrap;
+  transition: color .12s, background .12s, border-color .12s;
+}
+.edge-jump.l { left: 6px; }
+.edge-jump.r { right: 6px; }
+.edge-jump:hover {
+  color: var(--ink-strong);
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+  background: var(--accent-soft);
+}
+.edge-jump .tier { width: 15px; height: 15px; font-size: 9px; }
+.edge-jump .ej-name { overflow: hidden; text-overflow: ellipsis; }
+html.mobile .edge-jump { display: none; }
+
 /* ------------------------------------------------------------ the desk chat
    The desk FADES IN OVER the card at the same size (design ruling) and is
    styled as a MINIATURE CLAUDE CODE CHAT WINDOW: all chrome lives inside the

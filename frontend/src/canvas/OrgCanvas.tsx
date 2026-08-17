@@ -9,7 +9,8 @@ import type { ReactNode } from 'react'
 import type { NodeStatus, ToastFn, TreeNode, TreePayload } from '../types'
 import { audienceAction, orgInboxRead, reorderNode } from '../api'
 import {
-  AddIcon, FrozenIcon, FullscreenIcon, PublicIcon, RemoveIcon, ViewListIcon,
+  AddIcon, AutorenewIcon, ChevronLeftIcon, ChevronRightIcon, FrozenIcon,
+  FullscreenIcon, PublicIcon, RemoveIcon, ViewListIcon,
 } from '../icons'
 import {
   ago, DOG_H, DOG_W, DRAFT, ease, EXTERN, flatten, INBOX, INBOX_H, layout, NODE_H, NODE_W, orgPxc, segD,
@@ -1125,6 +1126,40 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
   }, [view, target, hidden])
   focusRef.current = focusId
 
+  // edge JUMP CARDS (user spec 2026-08-17): at desk zoom the focused agent's
+  // coworkers (live siblings) are usually off-screen — one small card per
+  // side hugs the SCREEN edge at the neighbor's own screen elevation
+  // (clamped into view) and glides the camera there on click. Only the NEXT
+  // sibling over in each direction, and only while that sibling is genuinely
+  // not clickable on-screen — a visible card needs no proxy.
+  const edgeJumps = useMemo(() => {
+    if (!focusId || compact) return []
+    const me = map.get(focusId)
+    if (!me || me.id === USER || me.isBearerOf) return []
+    const vp = viewportRef.current?.getBoundingClientRect()
+    if (!vp || !vp.width) return []
+    const sibs = (map.get(me.parent ?? '')?.children ?? [])
+      .map((c) => c.id)
+      .filter((k) => k !== DRAFT && map.get(k)?.state === 'live'
+        && !map.get(k)?.isBearerOf && !hidden.has(k) && target.has(k))
+      .sort((p, q) => (target.get(p)?.x ?? 0) - (target.get(q)?.x ?? 0))
+    const at = sibs.indexOf(focusId)
+    if (at < 0) return []
+    const out: { n: CanvasNode; side: 'l' | 'r'; y: number }[] = []
+    for (const [k, side] of [[sibs[at - 1], 'l'], [sibs[at + 1], 'r']] as const) {
+      if (!k) continue
+      const n = map.get(k), p = posOf(k)
+      if (!n || !p) continue
+      const { w, h } = sizeOf(k)
+      const x0 = p.x * view.z + view.x, y0 = p.y * view.z + view.y
+      const x1 = (p.x + w) * view.z + view.x, y1 = (p.y + h) * view.z + view.y
+      if (x1 > 0 && x0 < vp.width && y1 > 0 && y0 < vp.height) continue  // visible
+      out.push({ n, side, y: Math.min(vp.height - 26, Math.max(26, (y0 + y1) / 2)) })
+    }
+    return out
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusId, map, target, hidden, view, compact])
+
   const lod = view.z < Z_MINI ? 'mini' : 'norm'
 
   const bounds = useMemo(() => {
@@ -1584,6 +1619,22 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
         <button title="zoom in" onClick={() => zoomStep(1.3)}><AddIcon fontSize="inherit" /></button>
         <button title="zoom out" onClick={() => zoomStep(1 / 1.3)}><RemoveIcon fontSize="inherit" /></button>
       </div>
+      {/* edge jump cards: the focused desk's off-screen coworkers, one per
+          side at the neighbor's own elevation (pointerdown stopped — the
+          pan pointer-capture would swallow the click, see above) */}
+      {edgeJumps.map((e) => (
+        <button key={e.n.id} className={'edge-jump ' + e.side}
+          style={{ top: e.y }} title={`jump to ${e.n.id}`}
+          onPointerDown={(ev) => ev.stopPropagation()}
+          onClick={() => centerOn(e.n.id)}>
+          {e.side === 'l' && <ChevronLeftIcon fontSize="inherit" />}
+          <span className={'tier t-' + e.n.tier}>{TIER_LETTER[e.n.tier!] ?? '?'}</span>
+          <span className="ej-name">{e.n.id}</span>
+          {e.n.busy && <AutorenewIcon fontSize="inherit" className="cc-spin" />}
+          {(e.n.mail_pending ?? 0) > 0 && <b className="eye-count">{e.n.mail_pending}</b>}
+          {e.side === 'r' && <ChevronRightIcon fontSize="inherit" />}
+        </button>
+      ))}
       {/* the agent TRAY (user spec): every agent — tier token, name, context
           wheel, working state — in the nodes' own visual language; a row
           click glides to that agent. FR-16 (2026-08-11): listed by HIERARCHY
