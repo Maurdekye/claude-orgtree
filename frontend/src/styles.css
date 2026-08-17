@@ -238,6 +238,18 @@ main {
 }
 .sq:hover .mailbtn { opacity: .8; visibility: visible; }
 .mailbtn.has { opacity: .9; visibility: visible; }
+/* ⏻ retire from the card (user request 2026-08-17) — the desk action surfaced
+   at overview zoom. Same hover-reveal as the gear/mail pair, one slot left of
+   them; the danger red only arrives on ITS OWN hover so the head row doesn't
+   wear a permanent alarm. Confirm-gated in the component. */
+.retirebtn {
+  position: absolute; top: 6px; right: 42px; z-index: 3;
+  border: none; background: none; padding: 0 2px; font-size: 12px;
+  color: var(--dim); opacity: 0; visibility: hidden;
+  transition: opacity .15s, visibility .15s; line-height: 1;
+}
+.sq:hover .retirebtn { opacity: .8; visibility: visible; }
+.retirebtn:hover { opacity: 1 !important; color: var(--bad); background: none; }
 /* frozen by a usage limit — pale ICE (whiter, desaturated) so it never reads
    as the saturated credit-bar cyan sitting right beside the card */
 .sq.frozen { border-color: #6b93ab; }
@@ -2423,7 +2435,8 @@ html.mobile .chip-x { min-width: 28px; min-height: 28px; }
   html.mobile .sq.maplod .eye-count { position: absolute; top: -8px; right: -8px; }
   /* desktop card affordances that have no meaning on the map */
   html.mobile .hsof, html.mobile .doc-chips, html.mobile .gearbtn,
-  html.mobile .mailbtn, html.mobile .user-label { display: none !important; }
+  html.mobile .mailbtn, html.mobile .retirebtn,
+  html.mobile .user-label { display: none !important; }
 
   /* ---- HUD: fit + zoom pair at 44px, safe-area cleared ---- */
   html.mobile .zoomhud { bottom: calc(10px + env(safe-area-inset-bottom)); }

@@ -6,11 +6,12 @@
 
 import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import type { ToastFn, TreePayload } from '../types'
 import { audienceAction, getCharters, saveKiosk, unstickNode } from '../api'
 import {
   AutorenewIcon, CheckIcon, CloseIcon, FocusIcon, FrozenIcon, LayersIcon,
-  LockIcon, MailIcon, SettingsIcon,
+  LockIcon, MailIcon, RetireIcon, SettingsIcon,
 } from '../icons'
 import {
   ago, DESK_SCALE, deskDpi, DRAFT, NODE_H, NODE_W, TIER_LETTER, TIERS, USER,
@@ -23,7 +24,7 @@ import type {
 import { Activity, ContextWheel, DeskChat } from './desk'
 import { DocChips } from './docs'
 import { isMobile } from '../mobile'
-import { DraftScopeModal } from './modals'
+import { ConfirmModal, DraftScopeModal } from './modals'
 
 // ------------------------------------------------------------- the overseer
 interface UserNodeProps {
@@ -745,6 +746,11 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, m
   // pile fronts zoom on a plain CENTER click (user spec) — track the
   // pointer-down point so a drag's trailing click doesn't re-zoom
   const downAt = useRef<Pt | null>(null)
+  // retire from the CARD (user request 2026-08-17): the seat-freeing action
+  // no longer requires zooming to the desk — same confirm + undo-toast flow,
+  // same retire/dissolve split as the desk's cc-actions
+  const [asking, setAsking] = useState<'dissolve' | 'retire' | null>(null)
+  const liveKids = node.children.some((c) => c.state === 'live')
   // NEAREST-EDGE chip gating (user ruling 2026-08-04): only the set at the
   // edge the cursor is closest to shows — bottom hires a report, left/right
   // hire a coworker, top (FR-25) inserts a superior. Tracked here from the
@@ -874,6 +880,19 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, m
           onClick={(e) => { e.stopPropagation(); onInbox() }}>
           <MailIcon fontSize="inherit" />{(node.mail_pending ?? 0) > 0 && <span className="count">{node.mail_pending}</span>}
         </button>
+        {/* retire without the zoom-in (user request 2026-08-17): hover-revealed
+            like the gear/mail, confirm-gated like the desk button. Wears the
+            desk's retire/dissolve split so it is never a dead control. */}
+        {live && !node.isBearerOf && !node.bearer_state &&
+          <button className="retirebtn"
+            title={liveKids
+              ? `dissolve — retire ${node.id} and its whole suborganization, freeing ${(node.seat ?? 0) + (node.grant ?? 0)} credit(s)`
+              : `retire — frees ${(node.seat ?? 0) + (node.grant ?? 0)} credit(s); context kept, rehire brings it back`}
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation()
+              setAsking(liveKids ? 'dissolve' : 'retire')
+            }}><RetireIcon fontSize="inherit" /></button>}
         {/* ceiling spec §2: visitors retool freely WITHIN the kiosk ceiling —
             the gear is theirs too; the ledger clamps, never a 403 */}
         <button className="gearbtn"
@@ -985,6 +1004,26 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, m
         <SpawnChips side="top" onSpawn={(t) => onSpawnTop(t)}
           free={kioskRemaining ?? Infinity} seats={seats} maxTier={maxTier} />
       )}
+      {/* portal to <body>: the card lives inside the world transform, where
+          position:fixed would resolve against the scaled ancestor (same
+          reason DraftScopeModal portals). Bodies + undo toast mirror the
+          desk's confirms verbatim. */}
+      {asking === 'dissolve' && createPortal(
+        <ConfirmModal title={`dissolve ${node.id}?`}
+          body="Its entire suborganization is retired with it. Context is kept; rehire brings nodes back."
+          confirmLabel="dissolve"
+          onConfirm={() => op({ op: 'dissolve', node: node.id })}
+          close={() => setAsking(null)} />, document.body)}
+      {asking === 'retire' && createPortal(
+        <ConfirmModal title={`retire ${node.id}?`}
+          body={`It stops working and frees ${(node.seat ?? 0) + (node.grant ?? 0)} credit(s) back to its superior. Its context is KEPT — rehire brings it back exactly as it was.`
+            + (node.busy ? ' ⚠ It is mid-turn right now; that turn is cut off.' : '')}
+          confirmLabel="retire"
+          onConfirm={() => op({ op: 'retire', node: node.id }).then(() =>
+            toast([`${node.id} retired`],
+              () => op({ op: 'rehire', node: node.id }).catch(() => {})))
+            .catch(() => {})}
+          close={() => setAsking(null)} />, document.body)}
     </div>
   )
 }
