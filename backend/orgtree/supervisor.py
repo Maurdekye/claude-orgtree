@@ -7,7 +7,10 @@ later `--resume`). Spike-verified flags (spike/FINDINGS.md):
   - prompt goes via STDIN (variadic flags swallow positional prompts)
   - full model ids only (aliases drift)
   - `--permission-mode acceptEdits` + `--add-dir <granted>` = autonomy within dirs (№5)
-  - `--append-system-prompt` is honored on resume → identity regenerated every turn (№29)
+  - `--append-system-prompt` is honored on resume → identity regenerated every turn (№29);
+    since 2026-08-17 it rides `--append-system-prompt-file` (a scratch dotfile, rewritten
+    per spawn) — a big org chart on argv blew Windows' 32,767-char CreateProcess cap
+    ([WinError 206], which is the command-line limit despite its filename wording)
   - `--settings {"disableAllHooks":true}` + `--strict-mcp-config` isolate the node from
     the user's global hooks and MCP servers
   - node cwd must live OUTSIDE ~/.claude → scratch under the data root
@@ -1609,13 +1612,36 @@ def _build_cmd(org: Org, nid: str) -> list[str]:
     head = ((sbx.exec_argv(sbx.container_name(slug),
                            sbx.cpath_scratch(slug, nid)) + ["claude"])
             if sandboxed else _claude_argv())
+    # №29 still holds — the identity prompt regenerates every turn — but it
+    # rides a FILE now, not argv (user order 2026-08-17). Windows CreateProcess
+    # caps the whole command line at 32,767 chars, and a grown org chart pushed
+    # a spawn past it ([WinError 206] "The filename or extension is too long" —
+    # despite the name, that IS the argv cap; live-hit on a coordinator with 24
+    # retired reports, and a full-visibility prompt measures ~22k chars on a
+    # mere 12-node org). `--append-system-prompt-file` is the same system
+    # prompt through the CLI's other door (hidden flag, verified in cli.js
+    # 2.1.31: both flags fill one variable; the sandbox image pins the host
+    # CLI's version, so both spawn shapes have it). The scratch is the one
+    # folder both shapes can read — host path directly, container through its
+    # mount. Rewritten before every spawn, so tampering/deletion self-heals;
+    # the agent may read it, but it is only its own system prompt.
+    ident_file = os.path.join(scratch_dir(slug, nid), ".orgtree-identity.md")
+    ident_new = not os.path.exists(ident_file)
+    with open(ident_file, "w", encoding="utf-8") as f:
+        f.write(identity_prompt(org, nid))
+    if sandboxed and ident_new:
+        # first mint lands root-owned through the UNC view (see chown_agent);
+        # later rewrites truncate in place and keep the owner
+        sbx.chown_agent(org, nid, ".orgtree-identity.md")
     cmd = head + ["-p",
            "--output-format", "stream-json", "--input-format", "stream-json",
            "--include-partial-messages",   # token-level streaming (user spec)
            "--verbose",
            "--model", model,
            "--permission-mode", sc.get("permission_mode", "acceptEdits"),
-           "--append-system-prompt", identity_prompt(org, nid),
+           "--append-system-prompt-file",
+           (f"{sbx.cpath_scratch(slug, nid)}/.orgtree-identity.md"
+            if sandboxed else ident_file),
            "--settings", json.dumps(settings),
            "--strict-mcp-config"]
     # per-agent thinking effort (user-approved 2026-07-31); an UNSET node

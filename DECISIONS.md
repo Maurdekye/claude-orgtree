@@ -891,6 +891,26 @@ the docket's "transcript is in the scratch dir" premise was wrong and the
 copy is the fix. The compact dialog warns when the node is idle past the
 cache TTL, which is the moment the choice actually matters.
 
+### D-126 · the identity prompt rides a file, never argv
+Decision (session seat, 2026-08-17, from a live failure): a report's mail to
+a coordinator with 24 retired reports killed the turn spawn with `[WinError
+206] The filename or extension is too long` — which, despite the wording, is
+Windows' CreateProcess cap on the WHOLE command line (32,767 chars), not a
+filename check. `--append-system-prompt` carried the full identity prompt on
+argv, and that prompt is unbounded: full-visibility chart incl. retired
+nodes plus cascading team charters measured ~22k chars on a mere 12-node
+org. The fix: write the prompt to `<scratch>/.orgtree-identity.md` before
+every spawn and pass `--append-system-prompt-file` — the CLI's other door
+into the SAME append variable (hidden flag; verified in cli.js 2.1.31, and
+mutually exclusive with the inline form). №29 unchanged: rewritten per
+spawn, honored on resume. The scratch is the one folder both spawn shapes
+read — host path directly, container through its mount (first mint chowned
+to the agent; later rewrites truncate in place). The agent can read the
+dotfile, which reveals only its own system prompt. Known dependency: a CLI
+old enough to lack the hidden flag fails the spawn loudly ("unknown
+option") — acceptable, since the sandbox image pins the host CLI version
+and both installs here carry it.
+
 ### D-121 · the greyed live tail is a strict suffix of the conversation
 Decision (implementer, 2026-08-14, from a user report: "temporary greyed out
 [rows] rendering out of order has been a persistent issue"). The desk renders
