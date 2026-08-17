@@ -486,7 +486,11 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
             {node.phase === 'compacting' ? <>compacting…</>
               : node.waiting ? <>queued for a turn slot…</>
                 : <><AutorenewIcon fontSize="inherit" className="cc-spin" /> working
-                  {node.inflight_at ? <span className="dim"> · {ago(node.inflight_at)}</span> : null}</>}
+                  {node.inflight_at ? <span className="dim"> · {ago(node.inflight_at)}</span> : null}
+                  {(node.tasks ?? 0) > 0 && (
+                    // concurrently running subagents — shown only while any
+                    // are actually in flight (user spec 2026-08-17)
+                    <span className="dim"> · {node.tasks} task{node.tasks === 1 ? '' : 's'}</span>)}</>}
           </span>}
         {node.frozen &&
           <span className="badge frozen" title={node.frozen.error ?? undefined}>

@@ -229,6 +229,9 @@ export interface TreeNode {
   responding: boolean
   phase: string | null
   queued: number
+  /** concurrently running subagents (Task/Agent calls in flight) — desk
+   *  header shows it beside the working clock, only when > 0 */
+  tasks?: number
   last_error: string | null
   /** G4: what the agent is doing this instant, derived server-side from the
    *  live tail. The client used to build this itself from websocket events. */

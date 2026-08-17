@@ -925,6 +925,9 @@ def org_tree(slug: str, request: Request) -> dict[str, Any]:
         node["responding"] = bool(st.get("responding"))
         node["phase"] = st.get("phase")     # e.g. "compacting" (№3)
         node["queued"] = len(st["queue"])
+        # concurrently running subagents (Task/Agent tool calls in flight) —
+        # the desk header shows it beside the working clock, only when > 0
+        node["tasks"] = int(st.get("tasks") or 0)
         node["last_error"] = st["last_error"]
         # G4: what the agent is doing RIGHT NOW, derived from the live tail the
         # supervisor already keeps. The client used to accumulate this itself

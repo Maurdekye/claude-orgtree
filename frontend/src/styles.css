@@ -1074,9 +1074,10 @@ button.cc-name:hover {
 /* live streaming feed + oracle exchanges
    (≥10px everywhere in the virtual panel — browser minimum-font-size clamps
    smaller sizes UP and explodes layout; the scale transform does the shrinking) */
-/* streaming text is just dimmer — a dashed border here resurrects a `medium`
-   border on the borderless assistant style (thick marching-ants box) */
-.msg.live { opacity: .75; }
+/* live rows are CANONICAL now (user ruling 2026-08-17): the ordering/retire
+   bugs that made them "unconfirmed" are resolved, so they render exactly like
+   their durable twins — no opacity dim. Thinking/draft chrome keeps its own
+   transient styling below. */
 .msg.live.tools { align-self: flex-start; background: none; border: none; color: var(--dim); font-family: var(--mono); font-size: 12px; padding: 1px 4px; }
 .msg.oracle { border-color: #4a4a55; background: #232328; }
 

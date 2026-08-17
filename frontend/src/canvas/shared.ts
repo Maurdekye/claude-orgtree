@@ -85,6 +85,9 @@ export interface CanvasNode {
   responding?: boolean
   phase?: string | null
   queued?: number
+  /** concurrently running subagents (Task/Agent calls in flight) — desk
+   *  header shows it beside the working clock, only when > 0 */
+  tasks?: number
   last_error?: string | null
 }
 

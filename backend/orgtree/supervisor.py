@@ -1980,6 +1980,16 @@ def _run_one_turn(slug: str, nid: str,
             turn_out = 0        # cumulative output tokens (killed-turn accounting)
             dbuf, dlast = "", time.time()   # token-stream delta batcher (~8 Hz)
             think_t0, think_buf = 0.0, ""   # the in-progress thought
+            # concurrently running subagents, for the desk header's task count:
+            # a Task/Agent tool_use opens one, its tool_result coming home
+            # closes it. Foreground tasks only — a backgrounded agent's
+            # tool_result returns immediately, so it leaves the count then
+            # (the stream carries no reliable end marker for it).
+            run_tasks: set[str] = set()
+
+            def _pub_tasks() -> None:
+                with _state_lock:
+                    st["tasks"] = len(run_tasks)
 
             def fold_thought() -> None:
                 """The thinking block ended because output began: bank it as a
@@ -2226,6 +2236,10 @@ def _run_one_turn(slug: str, nid: str,
                             elif b.get("type") == "tool_use":
                                 arg = _tool_arg(b.get("name", ""), b.get("input"))
                                 fold_thought()
+                                if (b.get("name") in ("Task", "Agent")
+                                        and b.get("id")):
+                                    run_tasks.add(b["id"])
+                                    _pub_tasks()
                                 live_row(slug, nid, {
                                     "kind": "tool",
                                     # the tool_use_id rides along: read_chat
@@ -2235,9 +2249,25 @@ def _run_one_turn(slug: str, nid: str,
                                     "id": b.get("id"),
                                     "text": (b.get("name", "tool")
                                              + (f" · {arg}" if arg else ""))})
+                    elif ev.get("type") == "user" and not ev.get("parent_tool_use_id"):
+                        # a running subagent resolves when its tool_result
+                        # comes home (only ids WE opened — a subagent's own
+                        # nested results never match)
+                        _c = ev.get("message", {}).get("content")
+                        done = [b.get("tool_use_id") for b in _c
+                                if isinstance(b, dict)
+                                and b.get("type") == "tool_result"
+                                and b.get("tool_use_id") in run_tasks] \
+                            if isinstance(_c, list) else []
+                        if done:
+                            run_tasks.difference_update(done)
+                            _pub_tasks()
                     elif ev.get("type") == "result":
                         res = ev
                         budget_t0[0] = time.monotonic()   # fresh ceiling per message
+                        if run_tasks:      # message boundary: nothing tracked survives it
+                            run_tasks.clear()
+                            _pub_tasks()
                         # the response resolved: feed the next queued message
                         # into the same process, or close stdin to end it.
                         # ⚠ …unless the session just said it is out of quota.
@@ -2336,6 +2366,7 @@ def _run_one_turn(slug: str, nid: str,
                 with _state_lock:
                     st["proc"] = None
                     st["responding"] = False
+                    st["tasks"] = 0     # a dead process runs nothing
                     leftover = st.get("steer") or []
                     st["steer"] = []
                     if leftover:
