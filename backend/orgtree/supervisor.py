@@ -866,6 +866,39 @@ def _claudemd_block(org: Org, nid: str) -> str:
     return "\n\n".join(parts)
 
 
+BREADCRUMBS_TAIL = 12_000     # chars of breadcrumbs.md spliced into the prompt
+
+
+def _breadcrumbs_block(org: Org, nid: str) -> str:
+    """User feature 2026-08-17: a CHEAP-compacted (or reseeded) session starts
+    EMPTY — no CLI summary — so the predecessor's realtime compaction log is
+    spliced into the system prompt directly, the way a normal compaction's
+    summary rides inside the CLI's own session, instead of only being pointed
+    at. Rides EVERY spawn of the marked session (the CLI re-applies the append
+    file on resume; dropping it later would un-remember it); a normal
+    compaction clears the marker with the session. Tail-taken — the file's own
+    convention is newest-last — and the cut is declared, not silent."""
+    if not org.node(nid).get("cheap_compacted"):
+        return ""
+    try:
+        p = os.path.join(scratch_dir(org.d["slug"], nid), "breadcrumbs.md")
+        with open(p, encoding="utf-8", errors="replace") as f:
+            txt = f.read().strip()
+    except OSError:
+        return ""
+    if not txt:
+        return ""
+    cut = len(txt) > BREADCRUMBS_TAIL
+    if cut:
+        txt = txt[-BREADCRUMBS_TAIL:]
+    return ("\n\n[BREADCRUMBS — breadcrumbs.md from your working folder, "
+            "spliced in because this session began as a compaction successor "
+            "with no summary"
+            + (f"; TRUNCATED to the newest {BREADCRUMBS_TAIL} chars — read "
+               f"the file itself for the rest" if cut else "")
+            + "]\n" + txt)
+
+
 def _claudemd_caveat(org: Org, nid: str) -> str:
     """User ruling 2026-07-29: top-level agents work directly under the user, so
     CLAUDE.md files apply literally to them. Deeper agents read the same files
@@ -1241,8 +1274,9 @@ def identity_prompt(org: Org, nid: str) -> str:
            "newest last. You are writing your own compaction log in "
            "realtime: a compaction (cheap compact especially) may replace "
            "your session with a successor that remembers NOTHING, and that "
-           "file — which survives in the same folder — is the first thing "
-           "it reads. Write for that stranger: what was decided and why, "
+           "file — which survives in the same folder — is spliced straight "
+           "into the successor's system prompt. Write for that stranger: "
+           "what was decided and why, "
            "what is in flight, where the bodies are buried. A few seconds "
            "per turn; skip only turns where nothing durable happened. "
            if sc.get("tools", {}).get("edit", True)
@@ -1291,6 +1325,7 @@ def identity_prompt(org: Org, nid: str) -> str:
         + _claudemd_caveat(org, nid)
         + (("\n\n[STANDING INSTRUCTIONS from your granted folders]\n" + cmd_block)
            if (cmd_block := _claudemd_block(org, nid)) else "")
+        + _breadcrumbs_block(org, nid)
     )
 
 

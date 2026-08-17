@@ -2207,11 +2207,16 @@ class Org:
                       "tools": {"bash": False, "web": False, "edit": False,
                                 "subagents": False, "mcp": []}},
         })
+        pred.pop("cheap_compacted", None)   # the bearer is the OLD session
         self.nodes[pred_id] = pred
         n["session_id"] = str(uuid.uuid4())
         n["generation"] = gen + 1
         n["predecessor"] = pred_id
         n["occupancy"] = None            # the context wheel resets with it
+        # marks the successor session as summary-less: the supervisor splices
+        # breadcrumbs.md into its system prompt until a normal compaction
+        # (which carries its own summary) clears the marker
+        n["cheap_compacted"] = True
         self._moot_asks(nid, "the asking session was cheap-compacted — the "
                              "successor starts fresh and never posed it")
         kids = self.children(nid)
@@ -2222,11 +2227,12 @@ class Org:
                      f'You were CHEAP-COMPACTED: your seat, scope, team and '
                      f'budget are unchanged, but this session is FRESH — you '
                      f'have NO memory of your predecessor\'s work, and '
-                     f'unlike a normal compaction there is no summary. READ '
-                     f'breadcrumbs.md in your working folder FIRST — your '
-                     f'predecessor kept it as a realtime log of decisions '
-                     f'and findings for exactly this moment (keep it up '
-                     f'yourself). The full transcript is at transcript.jsonl '
+                     f'unlike a normal compaction there is no summary. Your '
+                     f'predecessor\'s breadcrumbs.md — its realtime log of '
+                     f'decisions and findings — is spliced into your system '
+                     f'prompt when it exists (tail-truncated if long), and '
+                     f'survives in your working folder: keep appending to it '
+                     f'yourself. The full transcript is at transcript.jsonl '
                      f'beside it; Grep/Read the parts you need instead of '
                      f'reading it whole. You may also orgtree_rehire '
                      f'"{pred_id}" as your own subordinate to interrogate it '
@@ -5205,10 +5211,14 @@ class Org:
                       "tools": {"bash": False, "web": False, "edit": False,
                                 "subagents": False, "mcp": []}},
         })
+        pred.pop("cheap_compacted", None)   # the bearer is the OLD session
         self.nodes[pred_id] = pred
         n["session_id"] = new_session_id
         n["generation"] = gen + 1
         n["predecessor"] = pred_id
+        # a NORMAL compaction's successor carries the CLI's own summary — the
+        # cheap-compact breadcrumbs splice (if armed) retires with the session
+        n.pop("cheap_compacted", None)
         self._notify([n["parent"]],
                      f'"{nid}" compacted (now generation {gen + 1}). Its pre-compaction '
                      f'self is archived as "{pred_id}" — rehire it to consult the full '
@@ -5356,11 +5366,15 @@ class Org:
                       "tools": {"bash": False, "web": False, "edit": False,
                                 "subagents": False, "mcp": []}},
         })
+        pred.pop("cheap_compacted", None)   # the bearer is the OLD session
         self.nodes[pred_id] = pred
         n["session_id"] = new_session_id
         n["generation"] = gen + 1
         n["predecessor"] = pred_id
         n["state"] = "live"
+        # a reseeded session starts as empty as a cheap-compacted one (and
+        # its predecessor is LOST) — the breadcrumbs splice applies equally
+        n["cheap_compacted"] = True
         who = "the user" if actor == USER else f'"{actor}"'
         self._notify([p for p in [n["parent"]] if p and p != actor],
                      f'Your report "{nid}" was RE-SEEDED by {who}: its dead session '

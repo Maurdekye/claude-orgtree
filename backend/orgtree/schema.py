@@ -191,6 +191,12 @@ class NodeDoc(TypedDict):
     # consecutive network-classified turn failures (user report 2026-08-06);
     # reset by any completed turn, capped at NET_RETRY_MAX then manual
     net_fail_run: NotRequired[int]
+    # cheap-compact marker (user feature 2026-08-17): the CURRENT session was
+    # minted by cheap_compact — it started EMPTY (no CLI summary), so the
+    # supervisor splices breadcrumbs.md into the identity prompt on every
+    # spawn. A normal compaction (whose successor carries its own summary)
+    # clears it.
+    cheap_compacted: NotRequired[bool]
     # ⭐ the user-override record (ruling 2026-08-06): Org.unstick moves the
     # released freeze here {by, at, was} — evidence, never erasure
     unstuck: NotRequired[dict[str, Any]]
