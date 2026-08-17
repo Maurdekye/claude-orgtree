@@ -1886,8 +1886,11 @@ async def node_steer(slug: str, nid: str) -> dict[str, Any]:
     msgs = supervisor.pop_steer(slug, nid)
     if msgs:
         for m in msgs:
+            # the frame stays capped (ws flood control) but a cut is DECLARED —
+            # the durable steered row carries the full text a poll later
             await hub._send(slug, {"type": "node_stream", "org": slug,
-                                   "node": nid, "kind": "steered", "text": m[:2000]})
+                                   "node": nid, "kind": "steered", "text": m[:2000],
+                                   **({"truncated": True} if len(m) > 2000 else {})})
     return {"messages": msgs}
 
 

@@ -601,6 +601,9 @@ export interface ChatMessage {
   oracle?: boolean
   /** interleaved from the durable steered log (supervisor.py:2951) */
   steered?: boolean
+  /** the DISPLAY copy was capped (steered-log per-row cap); the delivery
+   *  itself was whole — the desk renders a marker saying so */
+  truncated?: boolean
   [k: string]: unknown
 }
 
@@ -642,6 +645,8 @@ export interface LiveRowPayload {
   at?: string
   /** per-node monotonic row id — the render key (see LiveRow.n) */
   n?: number
+  /** the live copy was capped at emit time; the durable twin carries it whole */
+  truncated?: boolean
 }
 
 export interface ChatPayload {

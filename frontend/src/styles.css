@@ -939,6 +939,8 @@ button.cc-name:hover {
   border: 1px solid var(--line-soft); border-radius: 6px; overflow: hidden;
   background: var(--bg);
 }
+/* focusable for alt+↑/↓ mail navigation — no ring; row highlight is the state */
+.mailer:focus { outline: none; }
 .mailer-list {
   width: 36%; min-width: 140px; max-width: 340px; overflow-y: auto;
   border-right: 1px solid var(--line-soft);
@@ -1078,6 +1080,11 @@ button.cc-name:hover {
    bugs that made them "unconfirmed" are resolved, so they render exactly like
    their durable twins — no opacity dim. Thinking/draft chrome keeps its own
    transient styling below. */
+/* a message whose DISPLAY copy was capped server-side declares the cut —
+   without it the tail is silently missing (user report 2026-08-17) */
+.trunc-note {
+  color: var(--dim); font-size: 11px; font-style: italic; margin-top: 3px;
+}
 .msg.live.tools { align-self: flex-start; background: none; border: none; color: var(--dim); font-family: var(--mono); font-size: 12px; padding: 1px 4px; }
 .msg.oracle { border-color: #4a4a55; background: #232328; }
 

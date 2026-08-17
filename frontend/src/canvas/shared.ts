@@ -197,6 +197,8 @@ export interface LiveRow {
    *  renames every row below one that retires from the middle (or falls off
    *  the head), remounting them; `n` names the row itself. */
   n?: number
+  /** the live copy was capped at emit time; the durable twin carries it whole */
+  truncated?: boolean
 }
 
 // the canvas exposes its inverse-zoom to CSS; React's CSSProperties has no

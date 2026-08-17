@@ -772,8 +772,14 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
                   // before the transcript refresh renders them as a card
                   ? <div key={f.n ?? 'f' + i} className="msg user live md"
                       dangerouslySetInnerHTML={md(stripEnvelope(splitNotices(f.text).rest))} />
-                  : <div key={f.n ?? 'f' + i} className="msg assistant live md"
-                      dangerouslySetInnerHTML={md(f.text)} />
+                  : <div key={f.n ?? 'f' + i} className="msg assistant live">
+                      <div className="md" dangerouslySetInnerHTML={md(f.text)} />
+                      {/* the live copy is capped at 2000 chars server-side —
+                          declare the cut; the transcript row that replaces
+                          this one carries the whole text */}
+                      {f.truncated && <div className="trunc-note">
+                        ✂ shown truncated — the full text follows shortly</div>}
+                    </div>
           ))}
           {thinkSecs !== null && chat?.busy && (thinking
             // haiku streams its reasoning: the text IS the indicator
@@ -1309,6 +1315,11 @@ const Msg = memo(function Msg({ m, slug, nid, onMailLink }: {
         : <ToolChip key={t.id ?? i} t={t} slug={slug} nid={nid}
             onMailLink={onMailLink} />))}
       {text && <div className="msgtext md" dangerouslySetInnerHTML={md(text)} />}
+      {/* the display copy was capped server-side (steered-log per-row cap) —
+          without this line the tail is just silently missing and the message
+          reads as complete (user report 2026-08-17) */}
+      {m.truncated && <div className="trunc-note">
+        ✂ shown truncated — the agent received the full message</div>}
       {m.oracle && <div className="tools"><SparkIcon fontSize="inherit" /> oracle exchange — not retained by the node</div>}
     </div>
   )

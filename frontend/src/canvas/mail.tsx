@@ -6,7 +6,7 @@
 // split.
 
 import { useEffect, useRef, useState } from 'react'
-import type { ReactNode } from 'react'
+import type { KeyboardEvent, ReactNode } from 'react'
 import type { InboxPayload, OrgEvent, OrgInboxEntry, ToastFn, TreePayload } from '../types'
 import {
   audienceAction, fileUrl, getNodeInbox, orgInboxRead, orgInboxSend,
@@ -141,9 +141,36 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
   const replyable = Boolean(onReply && cur && !outgoing && !cur._ask
     && !String(party(cur) ?? '').startsWith('@'))
   const custom = cur ? renderBody?.(cur) ?? null : null
+  // alt+↑/↓ walks the list (user feature 2026-08-17) — but never while an
+  // ask card owns the chord: focus inside a credit request steps the grant
+  // (asks.tsx preventDefaults), and switching mail mid-answer would unmount
+  // the card and lose the draft, so ANY ask-card focus opts out, not just
+  // credit ones. tabIndex −1 on the root: clicking a (non-focusable) mail
+  // row focuses the nearest tabindex ancestor, so the keydown bubbles here —
+  // the same focus routing the ask cards use.
+  const onKey = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (!e.altKey || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown')) return
+    if (e.defaultPrevented) return
+    if ((e.target as HTMLElement).closest?.('.askcard')) return
+    e.preventDefault()
+    const list = shown.slice(0, vis)
+    if (!list.length) return
+    const idx = cur ? list.findIndex((m) => keyOf(m) === keyOf(cur)) : -1
+    const next = idx < 0 ? 0
+      : e.key === 'ArrowDown' ? Math.min(list.length - 1, idx + 1)
+        : Math.max(0, idx - 1)
+    const m = list[next]!
+    if (cur && keyOf(m) === keyOf(cur)) return
+    leave(cur)
+    setSelId(keyOf(m))
+    // rendered rows mirror list order, so the index addresses the row —
+    // no attribute-selector escaping games with the composite fallback key
+    e.currentTarget.querySelectorAll('.mailrow')[next]
+      ?.scrollIntoView({ block: 'nearest' })
+  }
   if (!all.length) return <div className="dim pad">no mail yet</div>
   return (
-    <div className="mailer">
+    <div className="mailer" tabIndex={-1} onKeyDown={onKey}>
       {/* paging is automatic: within a screen of the bottom, the next window
           is already rendered (user ruling 2026-08-04 — reaching the end of a
           list should not then ask you to press something). `vis` only ever

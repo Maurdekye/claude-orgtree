@@ -2257,8 +2257,13 @@ def _run_one_turn(slug: str, nid: str,
                                 continue    # string-content synthetics
                             if b.get("type") == "text" and b.get("text", "").strip():
                                 fold_thought()
+                                # capped live copy of a long reply: declare the
+                                # cut — the transcript row supersedes it whole
                                 live_row(slug, nid, {"kind": "text",
-                                                     "text": b["text"][:2000]})
+                                                     "text": b["text"][:2000],
+                                                     **({"truncated": True}
+                                                        if len(b["text"]) > 2000
+                                                        else {})})
                             elif b.get("type") == "tool_use":
                                 arg = _tool_arg(b.get("name", ""), b.get("input"))
                                 fold_thought()
@@ -4390,8 +4395,21 @@ def pop_steer(slug: str, nid: str) -> list[str]:
             if out:
                 log = org.d.setdefault("steered_log", {}).setdefault(nid, [])
                 for t in out:
-                    log.append({"at": now_iso(), "text": str(t)[:20000]})
+                    s = str(t)
+                    # this row IS the message's only durable rendering (hook
+                    # context is never transcripted), so a silent cut here cut
+                    # the user's own words on screen forever (user report
+                    # 2026-08-17: "visually cut off"). Cap high, MARK the cut,
+                    # and bound the ring by bytes instead of relying on a low
+                    # per-row cap: 40×20k let the old shape reach 800k/node —
+                    # the byte trim below keeps a strictly smaller worst case.
+                    log.append({"at": now_iso(), "text": s[:100000],
+                                **({"truncated": True}
+                                   if len(s) > 100000 else {})})
                 del log[:-40]
+                while (len(log) > 5
+                       and sum(len(e.get("text") or "") for e in log) > 300000):
+                    log.pop(0)
             drop = set(toks)
             dlmap = org.d.get("delivering") or {}
             dl = dlmap.get(nid)
@@ -5710,7 +5728,11 @@ def read_chat(org: Org, nid: str, last: int | None = None) -> dict[str, Any]:
                    "tools": [], "ts": e.get("at"), "steer_fold": True}
         else:
             row = {"role": "user", "text": e.get("text") or "", "tools": [],
-                   "ts": e.get("at"), "steered": True}
+                   "ts": e.get("at"), "steered": True,
+                   # the display copy was cut (per-row cap at log time) — the
+                   # DELIVERY was whole; the client says so instead of leaving
+                   # a silently missing tail (user report 2026-08-17)
+                   **({"truncated": True} if e.get("truncated") else {})}
         at = e.get("at") or ""
         pos = len(msgs)
         for j, m in enumerate(msgs):
