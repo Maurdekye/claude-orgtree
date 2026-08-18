@@ -69,6 +69,12 @@ aside h1 svg, .welcome-card h1 svg { color: var(--accent); }
 .gh-link:hover { color: var(--ink-strong); }
 .gh-link svg { color: inherit; }
 .h1-gh { margin-left: auto; font-size: 14px; }
+/* the welcome-panel usage button rides in the h1 next to the GitHub link */
+.h1-usage {
+  background: none; border: none; padding: 2px; cursor: pointer;
+  display: inline-flex; align-items: center; color: var(--dim); font-size: 14px;
+}
+.h1-usage:hover { color: var(--ink-strong); background: none; }
 aside footer { margin-top: auto; color: #6e6e6e; font-size: 11px; padding: 0 4px; }
 
 nav { display: flex; flex-direction: column; gap: 2px; }
@@ -1510,6 +1516,26 @@ main.solo { width: 100%; }
 .settings .modebtn { font-size: 12.5px; width: 50px; }
 .settings .hist-row { font-size: 13.5px; padding: 6px 4px; gap: 10px; }
 .settings select option { font-size: 14px; }
+/* the header usage modal: subscription rate-limit bars. Severity colors:
+   accent while healthy, the fable gold as the warning band, --bad critical —
+   matching the meaning those colors already carry elsewhere in the chrome. */
+.usage-modal { width: 520px; }
+.usage-row { display: flex; flex-direction: column; gap: 5px; }
+.usage-row .u-head { display: flex; align-items: baseline; gap: 10px; }
+.usage-row .u-label { font-weight: 600; color: var(--ink-strong); }
+.usage-row .u-reset { font-size: 12.5px; color: var(--dim); }
+.usage-row .u-pct { margin-left: auto; font-weight: 600; font-variant-numeric: tabular-nums; }
+.usage-row .u-pct.warn { color: var(--tier-fable); }
+.usage-row .u-pct.crit { color: var(--bad); }
+.usage-track {
+  height: 8px; border-radius: 4px; background: var(--input); overflow: hidden;
+}
+.usage-fill {
+  height: 100%; border-radius: 4px; background: var(--accent);
+  transition: width .3s;
+}
+.usage-fill.warn { background: var(--tier-fable); }
+.usage-fill.crit { background: var(--bad); }
 .chip.block { align-self: flex-start; padding: 4px 10px; border-radius: 4px; }
 .chip.grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .modebtn { font-family: var(--mono); font-size: 10px; font-weight: 700; width: 36px; }

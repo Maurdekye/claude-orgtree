@@ -754,6 +754,26 @@ export interface HostPayload {
   cli_version: string
 }
 
+/** one bar of the host subscription's rate-limit standing (GET /api/usage —
+ *  the same readout Claude Code shows under /usage). `model` is the display
+ *  name on scoped limits ("Fable"); null on the account-wide ones. */
+export interface UsageLimit {
+  kind: string
+  group: string
+  percent: number | null
+  severity: string | null
+  resets_at: string | null
+  is_active: boolean
+  model: string | null
+}
+
+export interface UsagePayload {
+  available: boolean
+  error?: string
+  limits?: UsageLimit[]
+  plan?: string
+}
+
 // GET /api/defaults — _DEFAULTS_BASE merged with the stored overrides
 export interface DefaultsPayload {
   max_top_grant: number

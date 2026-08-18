@@ -3,7 +3,7 @@ import type { ReactNode } from 'react'
 import {
   audienceAction, BASE, clearInbox, createOrg, deleteOrg,
   fileUrl, getAudiences, getDefaults, getEvents, getHost, getInbox, getOrgMd,
-  getOrgNet, getSweepPreview, getTree, killAll, listOrgs, markRead, openWs,
+  getOrgNet, getSweepPreview, getTree, getUsage, killAll, listOrgs, markRead, openWs,
   probeHub, putOrgMd,
   resumeFrozen, runOp, saveDefaults, saveKiosk, saveSettings, sendMessage,
   sweepLegacy,
@@ -13,7 +13,7 @@ import { ConfirmModal, MailFolders, MailList, OrgCanvas, OrgRecord, RetiredFold,
 import { DiskBrowser, DiskFullAlert } from './DiskBrowser'
 import {
   AutorenewIcon, BlockIcon, CheckIcon, ChevronRightIcon, CloseIcon, CopyIcon, EyeIcon, LanIcon,
-  DeleteIcon, ExpandMoreIcon, GitHubIcon, HearingIcon, HomeIcon, LockIcon,
+  DataUsageIcon, DeleteIcon, ExpandMoreIcon, GitHubIcon, HearingIcon, HomeIcon, LockIcon,
   LockOpenIcon, MailIcon, MenuIcon, PlayIcon, PublicIcon, SettingsIcon,
   SparkIcon, StopIcon, StorageIcon, WarnIcon,
 } from './icons'
@@ -25,7 +25,7 @@ import { addPending, dropPending, ingestPulse, ingestStream, resetConvos } from 
 import type {
   AskInfo, AudiencesPayload, DefaultsPayload, InboxPayload, KioskSpecRequest,
   MailEntry, OpRequest, OrgEvent, OrgListEntry, SweepPreview, ToastFn,
-  ToastUndo, TreeFrozen, TreeNode, TreePayload,
+  ToastUndo, TreeFrozen, TreeNode, TreePayload, UsageLimit,
 } from './types'
 import type { MailRow } from './canvas/shared'
 
@@ -101,6 +101,7 @@ export default function App() {
   const [drawer, setDrawer] = useState(false)
   const [doomedOrg, setDoomedOrg] = useState<OrgListEntry | null>(null)   // org row pending deletion
   const [showDefaults, setShowDefaults] = useState(false)   // global new-org defaults
+  const [showUsage, setShowUsage] = useState(false)         // host subscription usage bars
   const [killArmed, setKillArmed] = useState(false)  // the killswitch latch
   // mobile compact orgbar (D-125 ruling 2026-08-14, 'one row, banner→chip'):
   // the detail chips + resume banner collapse behind a ⋯ toggle
@@ -284,7 +285,11 @@ export default function App() {
       <h1><SparkIcon fontSize="inherit" /> orgtree
         <a className="gh-link h1-gh" href="https://github.com/Maurdekye/claude-orgtree"
           target="_blank" rel="noreferrer" title="orgtree on GitHub">
-          <GitHubIcon fontSize="inherit" /></a></h1>
+          <GitHubIcon fontSize="inherit" /></a>
+        {!BASE &&
+          <button className="h1-usage" title="Claude subscription usage"
+            onClick={() => setShowUsage(true)}>
+            <DataUsageIcon fontSize="inherit" /></button>}</h1>
       {slug && <button className="home" onClick={goHome}><HomeIcon fontSize="inherit" /> all organizations</button>}
       <nav>
         {orgs.map((o) => (
@@ -563,6 +568,14 @@ export default function App() {
                 })()}
                 <button className="iconbtn barmore mob-only" title="more"
                   onClick={() => setBarMore((v) => !v)}>⋯</button>
+                {/* host subscription usage (the Claude Code /usage bars) —
+                    the host account's own standing, so admin only: a kiosk
+                    visitor neither sees the button nor could call the
+                    endpoint (the public gateway 404s it) */}
+                {!tree.public &&
+                  <button className="iconbtn" title="Claude subscription usage"
+                    onClick={() => setShowUsage(true)}>
+                    <DataUsageIcon fontSize="inherit" /></button>}
                 {!tree.public &&
                   <button onClick={() => setShowSettings(true)}><SettingsIcon fontSize="inherit" /> settings</button>}
                 <a className="gh-link" href="https://github.com/Maurdekye/claude-orgtree"
@@ -612,6 +625,9 @@ export default function App() {
 
       {showDefaults && (
         <DefaultsPanel toast={toast} close={() => setShowDefaults(false)} />
+      )}
+      {showUsage && (
+        <UsageModal close={() => setShowUsage(false)} />
       )}
       {doomedOrg && (
         <ConfirmModal title={`permanently delete ${doomedOrg.name}?`}
@@ -679,6 +695,78 @@ function AdvancedOrgModal({ title, close, children, tabs }: {
           </div>
         )}
         {tabs ? tabs[Math.min(tab, tabs.length - 1)]?.content : children}
+        <div className="row">
+          <button className="primary" type="button" onClick={close}>done</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** the header usage modal: the host subscription's rate-limit bars — the
+ *  same session / weekly / weekly-scoped readout Claude Code shows under
+ *  /usage (user feature 2026-08-18). The backend proxies the account usage
+ *  endpoint with the host OAuth token and caches ~30 s; this panel rides
+ *  usePolled, so it is fresh on open and stays live while it sits there.
+ *  Bars render generically from the `limits` array rather than three
+ *  hardcoded rows: when the account gains or loses a scoped limit (a new
+ *  model bucket), it shows up here with no code change. */
+const USAGE_LABEL: Record<string, string> = {
+  session: 'session (5hr)',
+  weekly_all: 'weekly (7 day)',
+}
+
+const usageLabel = (l: UsageLimit): string =>
+  l.kind === 'weekly_scoped' && l.model ? `weekly ${l.model}`
+    : USAGE_LABEL[l.kind] ?? l.kind.replace(/_/g, ' ')
+
+const usageResets = (iso: string | null): string => {
+  if (!iso) return ''
+  const ms = new Date(iso).getTime() - Date.now()
+  if (!Number.isFinite(ms)) return ''
+  if (ms <= 0) return 'resets soon'
+  const h = Math.floor(ms / 3600000)
+  const m = Math.floor((ms % 3600000) / 60000)
+  if (h >= 48) return `resets in ${Math.floor(h / 24)}d ${h % 24}h`
+  return h > 0 ? `resets in ${h}h ${m}m` : `resets in ${m}m`
+}
+
+function UsageModal({ close }: { close: () => void }) {
+  useEsc(close)
+  const u = usePolled(getUsage, [], 60000)
+  return (
+    <div className="overlay" onClick={(e) => { e.stopPropagation(); close() }}>
+      <div className="settings usage-modal" onClick={(e) => e.stopPropagation()}>
+        <h3><DataUsageIcon fontSize="inherit" /> usage</h3>
+        {!u ? <div className="dim">loading…</div>
+          : !u.available ? <div className="error">{u.error ?? 'usage unavailable'}</div>
+          : (
+            <>
+              {u.plan && <div className="dim">Claude {u.plan} · this machine's subscription</div>}
+              {(u.limits ?? []).map((l) => {
+                const pct = Math.max(0, Math.min(100, l.percent ?? 0))
+                // severity straight from upstream when it speaks; percent
+                // thresholds as the fallback so an old shape still colors
+                const sev = l.severity === 'critical' || pct >= 90 ? 'crit'
+                  : (l.severity && l.severity !== 'normal') || pct >= 75 ? 'warn' : ''
+                return (
+                  <div className="usage-row" key={l.kind + (l.model ?? '')}>
+                    <div className="u-head">
+                      <span className="u-label">{usageLabel(l)}</span>
+                      <span className="u-reset">{usageResets(l.resets_at)}</span>
+                      <span className={'u-pct' + (sev ? ' ' + sev : '')}>{Math.round(l.percent ?? 0)}%</span>
+                    </div>
+                    <div className="usage-track">
+                      <div className={'usage-fill' + (sev ? ' ' + sev : '')}
+                        style={{ width: pct + '%' }} />
+                    </div>
+                  </div>
+                )
+              })}
+              {!(u.limits ?? []).length &&
+                <div className="dim">no limits reported</div>}
+            </>
+          )}
         <div className="row">
           <button className="primary" type="button" onClick={close}>done</button>
         </div>

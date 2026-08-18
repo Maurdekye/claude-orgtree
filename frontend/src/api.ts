@@ -10,7 +10,7 @@ import type {
   McpServersPayload, OpRequest, OpResult, OrgListEntry, OrgMdPayload,
   OrgNetReveal, ReorderRequest, ScopeRequest, ScratchPayload, SendMessageResult,
   SettingsRequest, SettingsResult, SweepPreview, SweepResult, TreePayload,
-  UploadResult,
+  UploadResult, UsagePayload,
 } from './types'
 
 export const BASE = (location.pathname.match(/^\/k\/[A-Za-z0-9_-]+/) || [''])[0]
@@ -255,6 +255,7 @@ export const audienceAction = (
     body: JSON.stringify({ action, node, target }),
   })
 export const getHost = (): Promise<HostPayload> => req('/api/host')
+export const getUsage = (): Promise<UsagePayload> => req('/api/usage')
 export const getDefaults = (): Promise<DefaultsPayload> =>
   req('/api/defaults')
 export const saveDefaults = (body: SettingsRequest): Promise<DefaultsPayload> =>

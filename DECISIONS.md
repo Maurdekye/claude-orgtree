@@ -891,6 +891,23 @@ the docket's "transcript is in the scratch dir" premise was wrong and the
 copy is the fix. The compact dialog warns when the node is idle past the
 cache TTL, which is the moment the choice actually matters.
 
+### D-132 · header usage modal: the host's Claude Code /usage bars, admin-only
+Decision (session seat, 2026-08-18, user feature): a ◔ button in the orgbar
+(and beside the GitHub link on the welcome panel) opens a modal with the
+host subscription's rate-limit bars — the same session / weekly /
+weekly-scoped readout Claude Code shows under /usage. `GET /api/usage`
+proxies `api.anthropic.com/api/oauth/usage` with the host OAuth token via
+the machinery subproxy.py already owns (read + in-place refresh of the
+shared credentials file), normalizes the upstream `limits` array
+(kind/percent/severity/resets_at + scoped model display name, "Fable"), and
+caches 30 s with stale-on-error. The UI renders bars GENERICALLY from that
+array rather than three hardcoded rows, so a new scoped bucket upstream
+appears with no code change; the flat five_hour/seven_day fields remain as
+a fallback for an older upstream shape. Admin-only twice over: the button
+gates on `!tree.public`/`!BASE`, and the public gateway 404s any /api path
+outside the kiosk's own org regardless. Severity colors reuse existing
+chrome meanings (accent → fable gold ≥75 / warning → --bad ≥90 / critical).
+
 ### D-131 · fallback dollars keep their own ledger; the lane is fixed at spawn
 Decision (session seat, 2026-08-17, user feature): every dollar booked while
 an api_fallback window is open ALSO accumulates on an org-lifetime counter

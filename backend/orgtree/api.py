@@ -1738,6 +1738,85 @@ def mcp_servers() -> dict[str, Any]:
             "sandbox_mcp": supervisor.sandbox_mcp_enabled()}
 
 
+# the host subscription's rate-limit standing — the same bars Claude Code
+# shows under /usage. Cached briefly (the upstream is a per-account readout;
+# every open modal polling it uncached would be rude), stale-on-error so a
+# blip shows yesterday's bars rather than an error box. Admin-only by
+# construction: the public gateway 404s any /api path outside /api/orgs/<own>.
+_usage_cache: dict[str, Any] = {"at": 0.0, "data": None}
+_USAGE_TTL = 30.0
+
+
+@app.get("/api/usage")
+async def claude_usage() -> dict[str, Any]:
+    from fastapi.concurrency import run_in_threadpool
+    now = time.time()
+    if _usage_cache["data"] is not None and now - _usage_cache["at"] < _USAGE_TTL:
+        return _usage_cache["data"]
+    if not subproxy.available():
+        return {"available": False,
+                "error": "no Claude Code credentials on this host"}
+    try:
+        token = await run_in_threadpool(subproxy.get_access_token)
+    except RuntimeError as e:
+        return {"available": False, "error": str(e)}
+    try:
+        r = await _upstream().get(
+            "/api/oauth/usage",
+            headers={"Authorization": "Bearer " + token,
+                     "anthropic-beta": "oauth-2025-04-20"},
+            timeout=15.0)
+        r.raise_for_status()
+        raw: dict[str, Any] = r.json()
+    except Exception as e:                                    # noqa: BLE001
+        if _usage_cache["data"] is not None:
+            return _usage_cache["data"]
+        return {"available": False, "error": f"usage fetch failed: {e}"}
+    # `limits` is the modern shape (kind/group/percent/severity/resets_at,
+    # scoped entries carry the model display name — "Fable"); the flat
+    # five_hour/seven_day fields are its ancestors, kept as a fallback so an
+    # older upstream still yields the two unscoped bars.
+    limits: list[dict[str, Any]] = []
+    for lim_any in cast("list[Any]", raw.get("limits") or []):
+        if not isinstance(lim_any, dict):
+            continue
+        lim = cast("dict[str, Any]", lim_any)
+        model: Any = None
+        scope_any = lim.get("scope")
+        if isinstance(scope_any, dict):
+            model_any = cast("dict[str, Any]", scope_any).get("model")
+            if isinstance(model_any, dict):
+                model = cast("dict[str, Any]", model_any).get("display_name")
+        limits.append({"kind": lim.get("kind"), "group": lim.get("group"),
+                       "percent": lim.get("percent"),
+                       "severity": lim.get("severity"),
+                       "resets_at": lim.get("resets_at"),
+                       "is_active": bool(lim.get("is_active")),
+                       "model": model})
+    if not limits:
+        for key, kind in (("five_hour", "session"), ("seven_day", "weekly_all")):
+            w_any = raw.get(key)
+            if not isinstance(w_any, dict):
+                continue
+            w = cast("dict[str, Any]", w_any)
+            if w.get("utilization") is not None:
+                limits.append({"kind": kind, "group": kind,
+                               "percent": w["utilization"],
+                               "severity": "normal",
+                               "resets_at": w.get("resets_at"),
+                               "is_active": False, "model": None})
+    plan = ""
+    try:
+        doc: dict[str, Any] = json.load(open(subproxy.CREDS, encoding="utf-8"))
+        oauth = cast("dict[str, Any]", doc.get("claudeAiOauth") or {})
+        plan = str(oauth.get("subscriptionType") or "")
+    except (OSError, json.JSONDecodeError):
+        pass
+    data: dict[str, Any] = {"available": True, "limits": limits, "plan": plan}
+    _usage_cache.update(at=now, data=data)
+    return data
+
+
 @app.get("/api/host")
 def host_info() -> dict[str, Any]:
     """Host capabilities the UI adapts to (e.g. no Docker → the sandbox
