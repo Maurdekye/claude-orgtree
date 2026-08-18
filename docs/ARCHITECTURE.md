@@ -233,6 +233,43 @@ ledger, supervisor, the gateways, or the canvas.
   programmable Claude Code stand-in (timing dials) that turns delivery races
   into reproducible tests. The live tiers of the suites use it; only
   explicitly-marked runs touch a real CLI (haiku only, by user ruling).
+- **A missing transcript means two different things, and №31 condemns on the
+  difference.** `reconcile` marks a live node `unrecoverable` — which makes it
+  REFUSE MAIL — when the transcript for its `session_id` is gone. Absence is
+  only evidence of loss if the session was ever HANDED to the CLI, and two
+  things break that: `cheap_compact`/`reseed` mint an id the CLI has never seen
+  while the seat keeps the `cost_usd` that the sweep reads as “it ran” (hence
+  `NodeDoc.session_unrun`, D-134), and `transcript_index` answers `{}` for an
+  unreadable store exactly as it does for an empty one — so one unmounted org
+  disk condemned every node in that org. Anything asking “did this session
+  run?” must ask about the SESSION, and must distinguish “no transcripts” from
+  “could not look” (`_transcript_evidence`, `transcript_index(strict=True)`).
+  And “could not look” is narrower than it sounds: an entry that is GONE or
+  is not a directory holds nothing and `glob` skips it, so the index is
+  still correct — only an entry that EXISTS and cannot be read makes it
+  short. Raising on the first kind condemned every node in every host org
+  the moment a project dir vanished mid-walk or someone dropped a
+  `desktop.ini` in `projects/`. And at the root, ABSENCE cannot be read
+  off the errno either: a deleted directory, a junction whose target is
+  gone, an unmapped drive and an unreachable share all raise the same
+  `FileNotFoundError` on Windows, and only the first is a deletion
+  (`_store_provably_absent` climbs to an ancestor that answers).
+- **`reconcile` is called per-org from an unguarded FastAPI startup handler**
+  (`api.py`, `@app.on_event("startup")`). Anything it raises stops the backend
+  from starting — and it still has raisers past the transcript lookup
+  (`store.load_org` on a corrupt doc, `float()` on a junk `cost_usd`, the tail
+  `send_message` calls). The durable fix is a `try/except` around the per-org
+  call; hardening one raiser inside an unguarded caller is a partial
+  answer. ⚠ Guard the SWEEP, not the handler: everything that only ARMS
+  something — `start_usage_warm_loop` at `api.py:534`, which just sets a
+  flag and starts a daemon thread — must stay ABOVE the per-org loop at
+  `:573` and outside any guard wrapped around it. Ordering is what makes
+  it safe today. If a warm-loop start ever ended up below a call that can
+  raise, the usage cache would never warm, every usage freeze would fall
+  through to the blind 5-minute probe floor instead of its real reset, and
+  NOTHING would fail loudly — the freezes would simply be timed wrong, and
+  a freeze's length is money (see the `api_fallback` bullet above).
+  (Cross-checked with the D-133 seat, 2026-08-18.)
 - **`DOC_LOCK` is a single-process `threading.RLock`.** File writes are
   atomic (tmp + `os.replace`), which makes a concurrent SECOND backend look
   like it works while silently discarding interleaved load-modify-save

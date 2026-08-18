@@ -2208,10 +2208,26 @@ class Org:
                                 "subagents": False, "mcp": []}},
         })
         pred.pop("cheap_compacted", None)   # the bearer is the OLD session
+        # (`session_unrun` is deliberately NOT popped off the bearer: cheap-
+        # compacting twice with no turn between them archives a session
+        # that genuinely never ran, and the pardon is that fact. It is
+        # belt-and-braces for the sweep, not the thing holding it back —
+        # a bearer is already exempt via `bearer_state`, which nothing
+        # clears, rehire included (redteam 2026-08-18). Kept because the
+        # record is TRUE, and because the exemption should not rest on
+        # one clause. reseed's bearer is the opposite case and pops it.)
         self.nodes[pred_id] = pred
         n["session_id"] = str(uuid.uuid4())
         n["generation"] = gen + 1
         n["predecessor"] = pred_id
+        # user bug 2026-08-18: this id has never been handed to the CLI, so no
+        # transcript for it exists — and the node's `cost_usd` (the successor
+        # keeps the real numbers) makes supervisor.reconcile read that absence
+        # as a DEAD session at the next backend start. Cheap-compacting an
+        # agent and closing orgtree before messaging it therefore marked it
+        # unrecoverable: it refused mail and needed a re-seed. The marker says
+        # "unrun, not lost"; the first completed turn drops it.
+        n["session_unrun"] = True
         n["occupancy"] = None            # the context wheel resets with it
         # marks the successor session as summary-less: the supervisor splices
         # breadcrumbs.md into its system prompt until a normal compaction
@@ -5212,10 +5228,16 @@ class Org:
                                 "subagents": False, "mcp": []}},
         })
         pred.pop("cheap_compacted", None)   # the bearer is the OLD session
+        # a session that just compacted has demonstrably RUN, so neither half
+        # of the split may carry the never-run exemption: the bearer's own
+        # transcript is real (and its loss is real damage), and the
+        # successor's id comes from the CLI's fork, which writes one.
+        pred.pop("session_unrun", None)
         self.nodes[pred_id] = pred
         n["session_id"] = new_session_id
         n["generation"] = gen + 1
         n["predecessor"] = pred_id
+        n.pop("session_unrun", None)
         # a NORMAL compaction's successor carries the CLI's own summary — the
         # cheap-compact breadcrumbs splice (if armed) retires with the session
         n.pop("cheap_compacted", None)
@@ -5268,6 +5290,11 @@ class Org:
                       "tools": {"bash": False, "web": False, "edit": False,
                                 "subagents": False, "mcp": []}},
         })
+        # same invariant reseed holds: a LOST record must not also carry
+        # the never-run pardon — one row cannot assert both "this session
+        # never ran" and "its transcript is gone" (redteam 2026-08-18).
+        # And the CLI compacting in place is itself proof it ran.
+        pred.pop("session_unrun", None)
         self.nodes[pred_id] = pred
         n["generation"] = gen + 1
         n["predecessor"] = pred_id
@@ -5367,10 +5394,21 @@ class Org:
                                 "subagents": False, "mcp": []}},
         })
         pred.pop("cheap_compacted", None)   # the bearer is the OLD session
+        # …and this bearer is stamped LOST — "its transcript is gone".
+        # Inheriting the never-run pardon would make one record assert
+        # both that and "this session never ran", which cannot both be
+        # true (redteam 2026-08-18). cheap_compact's bearer is the
+        # opposite case and keeps it.
+        pred.pop("session_unrun", None)
         self.nodes[pred_id] = pred
         n["session_id"] = new_session_id
         n["generation"] = gen + 1
         n["predecessor"] = pred_id
+        # same mint, same exemption as cheap_compact (user bug 2026-08-18):
+        # re-seeding and then closing orgtree before messaging the node re-
+        # condemned the very node the re-seed just rescued, since the fresh
+        # id has no transcript either.
+        n["session_unrun"] = True
         n["state"] = "live"
         # a reseeded session starts as empty as a cheap-compacted one (and
         # its predecessor is LOST) — the breadcrumbs splice applies equally

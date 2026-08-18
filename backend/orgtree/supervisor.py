@@ -451,7 +451,8 @@ def transcript_path(session_id: str, root: str | None = None) -> str | None:
     return hits[0] if hits else None
 
 
-def transcript_index(root: str | None = None) -> dict[str, str]:
+def transcript_index(root: str | None = None,
+                     strict: bool = False) -> dict[str, str]:
     """`session_id → transcript path`, built with ONE walk of `projects/`.
 
     ⚠ `transcript_path` is a `glob` whose WILDCARD COMPONENT is the project
@@ -466,13 +467,27 @@ def transcript_index(root: str | None = None) -> dict[str, str]:
     Matches `glob`'s semantics deliberately, including skipping dot-prefixed
     directories (`*` does not match a leading dot) — an index that disagreed
     with the direct lookup would make `reconcile` and the turn path reach
-    different verdicts about the same session."""
+    different verdicts about the same session.
+
+    `strict` re-raises instead of swallowing an UNREADABLE directory, so a
+    caller that DRAWS A CONCLUSION FROM ABSENCE can tell "this store holds
+    no transcripts" from "this store could not be read" — two states this
+    returned the same `{}` for, and №31 condemns a whole org on the
+    difference (redteam 2026-08-18). It covers the PARTIAL case too: one
+    unreadable project dir otherwise yields a complete-LOOKING index that
+    is silently missing whatever lived in it.
+
+    ⚠ Unreadable, not merely absent. An entry that is GONE or is not a
+    directory holds nothing and `glob` skips it, so the index is still
+    right and `strict` stays quiet — see the inner handler."""
     base = root or os.path.expanduser("~/.claude")
     proj = os.path.join(base, "projects")
     out: dict[str, str] = {}
     try:
         dirs = os.listdir(proj)
     except OSError:
+        if strict:
+            raise
         return out
     for d in dirs:
         if d.startswith("."):
@@ -480,7 +495,19 @@ def transcript_index(root: str | None = None) -> dict[str, str]:
         p = os.path.join(proj, d)
         try:
             names = os.listdir(p)
+        except (FileNotFoundError, NotADirectoryError):
+            # gone between the two listings (the user's own Claude Code
+            # pruning history alongside us), a dangling symlink, or a
+            # plain file someone dropped in — `desktop.ini` is the one
+            # Explorer writes itself. None of those HOLD anything, and
+            # `glob` skips them silently, so the index stays correct and
+            # `strict` must not fire: raising here made one vanished
+            # directory condemn every node in every org (redteam
+            # 2026-08-18, a regression the first strict pass introduced).
+            continue
         except OSError:
+            if strict:
+                raise      # present and unreadable ⇒ the index is short
             continue
         for f in names:
             if f.endswith(".jsonl"):
@@ -2280,6 +2307,67 @@ def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
         nxt = _run_one_turn(slug, nid, nxt)
 
 
+def spend_unrun_pardon(slug: str, nid: str, sid: str | None) -> bool:
+    """Drop the `session_unrun` pardon once a transcript for `sid` EXISTS.
+
+    The pardon says "this session id was minted and never handed to the CLI,
+    so its missing transcript is not damage" (see schema.NodeDoc). It must be
+    spent the moment that stops being true, or №31 is disarmed for good on
+    that node and a genuinely lost session comes back as silent amnesia — the
+    node keeps its name, credits, team and mailbox, resumes with `--session-id`
+    on an EMPTY session, and nobody is told (redteam finding 2026-08-18).
+
+    Two things this does NOT do, both deliberate:
+
+      * it does not spend on a COMPLETED turn (`_after_turn`). A turn that ran
+        and then failed — usage-limit freeze, network freeze, timeout kill,
+        the backend dying mid-turn — never reaches `_after_turn`, and the CLI
+        has written the transcript regardless. Waiting for a clean turn left
+        the pardon standing over a session that had demonstrably run.
+      * it does not spend on a successful SPAWN either: a spawn that dies
+        before the CLI writes anything would burn the pardon on a session that
+        still never ran, which is the original bug again. The transcript on
+        disk is the evidence; nothing else is.
+
+    `sid` is the session the turn actually LAUNCHED on, and the node's current
+    session is re-read and compared under the lock: `cheap_compact` has no
+    in-flight guard (the user or a superior agent can mint mid-turn), and
+    spending by node id alone ate the successor's fresh pardon.
+
+    Returns True when the pardon was spent."""
+    if not sid:
+        return False
+    try:
+        org = store.load_org(slug)
+        n = org.nodes.get(nid)
+        if n is None or n.get("session_id") != sid or "session_unrun" not in n:
+            return False
+        # the glob is OUTSIDE the doc lock — it walks the user's whole
+        # `projects/` tree (40 ms measured at 3,000 dirs) and holding
+        # DOC_LOCK across it would stall every other org's turn
+        if transcript_path(sid, _transcript_root(org)) is None:
+            return False
+        with store.DOC_LOCK:
+            o2 = store.load_org(slug)
+            n2 = o2.nodes.get(nid)
+            if (n2 is None or n2.get("session_id") != sid
+                    or "session_unrun" not in n2):
+                return False
+            n2.pop("session_unrun", None)
+            store.save_org(o2)
+        return True
+    except (LedgerError, OSError):
+        return False    # bookkeeping, never a reason to fail a turn
+    except Exception as e:                                   # noqa: BLE001
+        # anything else is a SHAPE surprise, and swallowing it silently
+        # disables the turn-side spend on every node in every org with no
+        # signal at all — leaving the pardon to reconcile, i.e. back to
+        # the restart-dependence this call exists to remove (redteam
+        # 2026-08-18)
+        print(f"[orgtree] {slug}/{nid}: never-run pardon not spent: {e!r}")
+        return False
+
+
 def _run_one_turn(slug: str, nid: str,
                   text: str | dict[str, Any]) -> str | dict[str, Any] | None:
     """One turn. Returns the next queued item for the caller to run, or None
@@ -2292,6 +2380,9 @@ def _run_one_turn(slug: str, nid: str,
     # journal a confirmation (a steer/boundary leftover re-queued for a turn)
     toks: list[str] = []
     is_cmd = False
+    # the session this turn actually launched on — NOT whatever the node
+    # points at when the turn ends (a cheap-compact can land mid-turn)
+    ran_sid: str | None = None
     if isinstance(text, dict):
         is_cmd = bool(text.get("cmd"))
         toks, text = list(text.get("toks") or []), text["text"]
@@ -2479,6 +2570,7 @@ def _run_one_turn(slug: str, nid: str,
                 text=True, encoding="utf-8", errors="replace")
             _leash(proc)              # dies with the backend (№29)
             sid = org.node(nid)["session_id"]
+            ran_sid = sid          # the id _build_cmd just handed the CLI
             res = {}
             pend_toks: list[str] = []   # journal batches written, not yet consumed (C1)
             # the CLI reports a session limit as a SYNTHETIC assistant record
@@ -3262,13 +3354,23 @@ def _run_one_turn(slug: str, nid: str,
         _log_turn_error(slug, nid, str(e))
     finally:
         # the turn is over one way or another — it is no longer in-flight
+        pardon_pending = False
         try:
             with store.DOC_LOCK:
                 o2 = store.load_org(slug)
                 if nid in o2.nodes and o2.node(nid).pop("inflight", None) is not None:
                     store.save_org(o2)
+                # cheap pre-check on the doc already in hand: the (rare) node
+                # holding a never-run pardon pays for the transcript lookup,
+                # nobody else does
+                pardon_pending = (nid in o2.nodes
+                                  and "session_unrun" in o2.node(nid))
         except Exception:                                    # noqa: BLE001
             pass
+        if pardon_pending:
+            # …however the turn ended: if the CLI wrote a transcript for the
+            # session it ran, the pardon is spent (see spend_unrun_pardon)
+            spend_unrun_pardon(slug, nid, ran_sid)
         # any drained batch that never reached the process folds back into
         # the mailbox — mail survives a turn that failed to launch. Batches
         # whose text still rides an in-memory carrier stay journaled.
@@ -3919,11 +4021,20 @@ def remote_control_stop(slug: str, nid: str) -> dict[str, Any]:
         except OSError:
             pass
     had_mail = False
+    sid_driven = None
     with store.DOC_LOCK:
         org = store.load_org(slug)
         if nid in org.nodes and org.node(nid).pop("remote_controlled", None):
             had_mail = bool((org.d.get("mail") or {}).get(nid))
+            sid_driven = org.node(nid)["session_id"]
             store.save_org(org)
+    # FR-01 is the one writer that fills the node's CURRENT session from
+    # outside the turn path (the compaction, command and oracle forks all
+    # `--fork-session` onto a NEW id), so it is the one place a never-run
+    # pardon goes stale with no turn ever running to spend it — an idle
+    # node then carries it until the next backend restart (redteam
+    # 2026-08-18).
+    spend_unrun_pardon(slug, nid, sid_driven)
     notify(slug, nid, "remote_control")
     if had_mail:
         send_message(slug, nid,
@@ -5760,6 +5871,128 @@ def forget(slug: str, nids: Iterable[str]) -> None:
         shutil.rmtree(os.path.join(base, nid), ignore_errors=True)
 
 
+def _store_provably_absent(proj: str) -> bool:
+    """True only when `proj` is DEMONSTRABLY not there: some ancestor lists
+    fine and the next component is simply not in it.
+
+    The errno cannot answer this. On Windows a deleted directory, a junction
+    whose target is gone, an unmapped drive letter and an unreachable UNC
+    share ALL raise FileNotFoundError (WinError 3), and only the first is a
+    deletion — the rest are "I could not look" (measured, redteam
+    2026-08-18). №31 condemns a whole org on that difference, so it is
+    proven by walking up to something that answers, never inferred.
+
+    Climbing matters: the WHOLE root can be missing (`<data>/sandboxes/…`
+    for an org whose sandbox dir was never created), which is still a
+    genuine absence as long as some ancestor can be listed without it."""
+    p = os.path.abspath(proj)
+    while True:
+        parent = os.path.dirname(p)
+        if parent == p:
+            return False        # walked to the volume root, nothing listed
+        try:
+            names = os.listdir(parent)
+        except FileNotFoundError:
+            p = parent          # …the parent is missing too; keep climbing
+            continue
+        except NotADirectoryError:
+            return True         # an ancestor is a FILE ⇒ nothing below it
+        except OSError:
+            return False        # could not look ⇒ prove nothing
+        return os.path.basename(p) not in names
+
+
+def _transcript_evidence(org: Org) -> dict[str, str] | None:
+    """This org's `session_id → transcript path` index, or None when the store
+    could not be READ AT ALL — in which case it is not evidence and №31 must
+    reach no verdict from it (redteam finding 2026-08-18).
+
+    `transcript_index` returns `{}` for two states reconcile cannot otherwise
+    tell apart: "this store holds no transcripts" and "this store is not
+    there". For a disk-migrated sandboxed org the second is the NORMAL state
+    after a host reboot — the ext4 image is not loop-mounted until something
+    asks for a container, and the startup sweep runs before anything does. A
+    verdict from that empty index condemns EVERY live node in the org in one
+    pass, and each one then refuses mail.
+
+    Resolving the root can also raise outright (`disk.distro()` fails loud
+    with `DiskError` when WSL is down), and the sweep's caller is a FastAPI
+    startup handler with no guard around it: with Docker Desktop stopped, one
+    disk-migrated org stopped the whole backend from starting.
+
+    ⚠ Three verdicts, and the distinction between the last two is the
+    whole point (redteam 2026-08-18). The walk itself decides — never a
+    separate `isdir`, which answers False for an unreadable directory and
+    True for one that cannot be LISTED (a root-owned `projects/` on an org
+    disk; a transient 9p error over the \\wsl.localhost view), the second
+    of which walks straight back into the empty-index condemnation:
+
+      * PRESENT → the index, and №31 judges normally;
+      * UNREADABLE (any OSError but ENOENT/ENOTDIR) → None. Present-but-
+        unlistable is not evidence of anything;
+      * NOT A DIRECTORY (ENOTDIR) → the store cannot be reached THROUGH
+        that path, which is a verdict rather than a blind spot: `{}` for a
+        host-backed org (see below), None for a sandboxed one;
+      * MISSING (ENOENT) → None for a SANDBOXED org, whose transcripts sit
+        on a disk image that is routinely not mounted yet; and for a
+        host-backed org, `{}` only when the store is PROVABLY absent.
+        Gone must still condemn — skipping the sweep would let a user who
+        deleted their transcript store resume onto silent empty sessions
+        instead of being told, which is the outcome №31 exists to prevent
+        — but "gone" has to be proven, not inferred from the errno: on
+        Windows a deleted `projects/`, a junction whose target is missing,
+        an unmapped drive letter and an unreachable UNC share all raise the
+        SAME FileNotFoundError, and three of those four mean "I could not
+        look" (measured, redteam 2026-08-18 — the first draft justified
+        this branch with an either-there-or-gone dichotomy that does not
+        hold). `_store_provably_absent` is the proof."""
+    try:
+        root = _transcript_root(org)
+    except Exception:                                        # noqa: BLE001
+        return None                     # the root would not even resolve
+    base = root or os.path.expanduser("~/.claude")
+    sandboxed = sbx.is_sandboxed(org)
+    try:
+        return transcript_index(root, strict=True)
+    except NotADirectoryError:
+        return None if sandboxed else {}
+    except FileNotFoundError:
+        if sandboxed:
+            return None
+        return {} if _store_provably_absent(
+            os.path.join(base, "projects")) else None
+    except OSError:
+        return None                     # unreadable ⇒ not evidence
+
+
+def _condemnable(n: NodeDoc, seen: Mapping[str, str]) -> bool:
+    """№31: does this node's ledger row promise a session that is not there?
+
+    Extracted so the rule is testable on its own (the loop below cannot be).
+    Every clause is an EXEMPTION earned the hard way:
+
+      * not live — archived/unrecoverable nodes are not promising anything;
+      * `cost_usd == 0` — it has never run, so nothing is missing;
+      * a `bearer_state` — a knowledge bearer stays consultable, and reseed
+        owns the lost-transcript case for those (review C14);
+      * `session_unrun` — the session id was MINTED and never handed to the
+        CLI (cheap_compact / reseed). Its transcript is absent because it was
+        never written, not because it was lost, and the `cost_usd` that would
+        otherwise condemn it is the SEAT's lifetime spend, carried across the
+        session swap. Without this clause, cheap-compacting an agent and
+        closing orgtree before messaging it condemned it (user bug
+        2026-08-18) — the one path where the node was fine and orgtree broke
+        it.
+    """
+    return (n["state"] == "live" and float(n.get("cost_usd") or 0.0) > 0
+            and not n.get("bearer_state")
+            and not n.get("session_unrun")
+            # audit finding: the root MUST be the org's — sandboxed
+            # transcripts live under <data>/sandboxes/<slug>/home, and
+            # omitting it condemned every sandboxed node at restart
+            and n["session_id"] not in seen)
+
+
 def reconcile(slug: str) -> list[str]:
     """№31 eager pass at startup: any ledger-live node that has demonstrably run
     before (cost > 0) but whose transcript is gone cannot resume — say so now,
@@ -5770,17 +6003,26 @@ def reconcile(slug: str) -> list[str]:
         # ONE walk for the whole pass — see transcript_index. The per-node
         # `transcript_path` this replaces re-listed the user's entire
         # `projects/` directory for every node, once per org, at startup.
-        seen = transcript_index(_transcript_root(org))
-        for nid, n in org.nodes.items():
-            if (n["state"] == "live" and float(n.get("cost_usd") or 0.0) > 0
-                    and not n.get("bearer_state")
-                    # audit finding: the root MUST be the org's — sandboxed
-                    # transcripts live under <data>/sandboxes/<slug>/home, and
-                    # omitting it condemned every sandboxed node at restart
-                    and n["session_id"] not in seen):
-                org.mark_unrecoverable(nid, "transcript missing at startup (№31)")
-                marked.append(nid)
-        if marked:
+        seen = _transcript_evidence(org)
+        healed = False
+        if seen is None:
+            print(f"[orgtree] {slug}: transcript store unreadable — the №31 "
+                  f"sweep is skipped (nothing condemned)")
+        else:
+            for nid, n in org.nodes.items():
+                # self-heal, so the never-run pardon can never be permanent:
+                # the transcript EXISTS, therefore the session ran, therefore
+                # the pardon is spent — the same rule spend_unrun_pardon
+                # applies at every turn's end, re-checked here because a
+                # transcript can appear (or the backend die) out of band.
+                if n["session_id"] in seen and "session_unrun" in n:
+                    n.pop("session_unrun", None)
+                    healed = True
+                if _condemnable(n, seen):
+                    org.mark_unrecoverable(nid,
+                                           "transcript missing at startup (№31)")
+                    marked.append(nid)
+        if marked or healed:
             store.save_org(org)
         # FR-01: a remote-control server is leashed to the backend, so after
         # a restart none can be running — a surviving flag is stale and

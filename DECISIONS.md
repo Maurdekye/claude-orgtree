@@ -891,6 +891,106 @@ the docket's "transcript is in the scratch dir" premise was wrong and the
 copy is the fix. The compact dialog warns when the node is idle past the
 cache TTL, which is the moment the choice actually matters.
 
+### D-134 · “has it run” is a question about the SESSION, not the seat
+Decision (session seat, 2026-08-18, user bug — “cheap-compacting an agent
+and then closing orgtree without messaging it puts it in an unrecoverable
+state”): №31's startup `reconcile` condemns a live node whose transcript is
+missing, and judged “has this ever run” by the seat's lifetime `cost_usd`.
+`cheap_compact` and `reseed` both MINT a session id the CLI has never seen
+while the seat keeps that cost, so the new session's entirely normal lack of
+a transcript read as a dead one. The agent came back `unrecoverable` — a
+state that REFUSES MAIL and is left only by re-seeding, i.e. by discarding
+the session the compact had just minted. `reseed` had the same hole, so the
+op whose whole purpose is rescuing a condemned node re-condemned it at the
+next restart.
+
+The fix is a per-session pardon, `NodeDoc.session_unrun`: set by both mint
+sites, popped by `compact_split` on both halves (a CLI fork's id always has
+a transcript) and off the LOST predecessors that `reseed` and
+`record_cli_compaction` mint (one record must not assert both “never
+ran” and “its transcript is gone”). `_condemnable()` is
+extracted from the sweep so the rule is unit-testable, with the pardon as a
+fourth exemption beside not-live, cost-zero and knowledge-bearer.
+
+**The pardon is spent on EVIDENCE, never on a proxy** — the redteam loop's
+central finding, arrived at by discarding two weaker rules. Spending it on a
+COMPLETED turn misses every turn that ran and then failed (usage-limit
+freeze, network freeze, timeout kill, the backend dying mid-turn): those
+never reach `_after_turn`, but the CLI has written the transcript anyway, so
+the pardon stood over a session that had demonstrably run and №31 was
+disarmed on that node for good — a later transcript loss then resumed it
+onto an empty session with its name, credits, team and mailbox intact and
+nobody told. Spending it on a successful SPAWN is the opposite error: a
+spawn that dies before the CLI writes anything burns the pardon on a session
+that still never ran, which is the original bug again. So
+`spend_unrun_pardon` asks the only question that cannot be wrong — does a
+transcript for this session id exist — from the turn's `finally` on every
+exit path, from `remote_control_stop` (FR-01 is the one writer that fills
+the CURRENT session with no turn running), and from `reconcile` as a
+self-heal, so the pardon can never become permanent.
+
+**It is spent for the session that RAN, never by node id.** `cheap_compact`
+has no in-flight guard, so a compact landing mid-turn had its brand-new
+pardon eaten by the old session's turn — the user's bug back through a race.
+`ran_sid` is captured at `Popen` and re-checked under the doc lock.
+
+**A missing transcript store is not evidence either** (a pre-existing №31
+hole the same reasoning exposed). `transcript_index` answered `{}` both for
+“this store holds nothing” and “this store could not be read”: a sandboxed
+org's ext4 disk is not loop-mounted until something asks for a container and
+the startup sweep runs before anything does, so ONE unmounted disk condemned
+every node in the org; and the root resolver raises `DiskError` with WSL
+down, inside a FastAPI startup handler with no guard, so the backend would
+not start at all. `_transcript_evidence` now reaches three verdicts, and the
+walk decides — never an `isdir`, which waves through a directory that stats
+fine and cannot be LISTED (root-owned on an org disk, a 9p blip over the UNC
+view). Present → judge. Unreadable (any OSError but ENOENT/ENOTDIR) → no
+verdict. `projects` present but NOT A DIRECTORY → nothing is reachable
+through it, which is a verdict: `{}` for a host org, none for a sandboxed
+one. MISSING → no verdict for a sandboxed org, whose disk may simply not be
+mounted; and for a host org `{}` only when the absence is PROVEN. Gone must
+still condemn, or a user who deleted their transcript store resumes onto
+silent empty sessions instead of being told — but gone has to be proven,
+not read off the errno. The first draft justified that branch with “ it is
+either there or genuinely gone”, and measurement killed the dichotomy: on
+Windows a deleted directory, a junction whose target is missing, an unmapped
+drive letter and an unreachable UNC share all raise the SAME
+`FileNotFoundError`, and three of the four mean “I could not look”. So
+`_store_provably_absent` climbs to an ancestor that answers and asks whether
+the name is simply not in it.
+
+⚠ UNREADABLE is not ABSENT, and the first pass at this conflated them —
+the loop's own regression, caught before it shipped. `strict` was made to
+re-raise on any failed listing, which turned one vanished project directory
+(the user's own Claude Code pruning history beside us; a dangling symlink;
+a stray `desktop.ini`, which Explorer writes by itself) into “the whole
+store is gone” and condemned every node in every host org — worse than the
+bug being fixed, and a regression against the code it replaced. An entry
+that is GONE or is not a directory holds no transcripts and `glob` skips it,
+so the index is still CORRECT and the walk stays quiet; only an entry that
+exists and cannot be read makes the index short, and only that re-raises.
+The rule generalises: `strict` reports on what could not be LOOKED AT, never
+on what turned out not to be there.
+
+**Not done, deliberately.** Nodes already stuck at `unrecoverable` from this
+bug are not auto-healed: the only available signal (`unrecoverable` ∧
+`cheap_compacted` ∧ `occupancy is None`) is heuristic, cannot distinguish a
+victim from a node that lost a REAL session, and re-seeding a victim
+discards nothing anyway (a minted session has no transcript to lose). A scan
+of the 15 live org docs found none. The pardon is also not surfaced in
+`tree()` — that projection is an explicit allow-list and its sibling marker
+`cheap_compacted` is not in it either.
+
+Five adversarial rounds, each attacking the previous round's fixes. The
+ran-but-failed turn, the mid-turn mint race and the unmounted-disk sweep
+came out of rounds 1–2; round 3 caught a REGRESSION in round 2's own fix
+(strict listing turned one vanished project directory into “the store is
+gone”); round 4 caught the under-lock half of the race guard being
+untested, its mutant reproducing the original bug, and killed the
+either-there-or-gone claim by measurement. Four guarding tests were proven
+vacuous by mutation before they were made to discriminate — including the
+live wiring, where deleting the whole spend call left every suite green.
+
 ### D-133 · a freeze's reset time is looked up, banded, and bounds the bill
 Decision (session seat, 2026-08-18, user ruling — "all forms of usage freeze
 should have a timestamp associated … that way api key fallback usage never

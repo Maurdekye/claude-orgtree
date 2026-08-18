@@ -1477,6 +1477,579 @@ def aging() -> None:
           "left consultable (reconcile skips bearers)",
           lambda: _eq(store.load_org(org3.d["slug"]).nodes[p3]["state"], "live"))
 
+    # ------ the minted-session hole (user bug 2026-08-18) --------------------
+    # cheap_compact and reseed both replace `session_id` with an id the CLI has
+    # never seen, on a seat whose `cost_usd` is the LIFETIME figure. reconcile
+    # judged "has it ever run" by that cost, so a fresh session's (correct,
+    # expected) absence of a transcript read as a DEAD one: cheap-compacting an
+    # agent and closing orgtree before messaging it came back UNRECOVERABLE —
+    # a state that refuses mail and needs a re-seed to leave.
+    print("\nreconcile · sessions that were minted and never run:")
+
+    org5, (e,) = horg(grant=20)
+    s_e = sid_of(org5, e)
+    _plant_transcript(s_e)
+    org5.node(e)["cost_usd"] = 3.5           # it HAS run, expensively
+    cc = org5.cheap_compact(USER, e)
+    store.save_org(org5)
+    check("mint · cheap_compact marks the successor's session never-run",
+          lambda: _true(store.load_org(org5.d["slug"]).node(e)
+                        .get("session_unrun") is True))
+    check("mint · …and the bearer keeps the OLD session id, which DID run",
+          lambda: _eq(store.load_org(org5.d["slug"])
+                      .nodes[cc["bearer"]]["session_id"], s_e))
+    supervisor.reconcile(org5.d["slug"])
+    check("mint · cheap-compact then RESTART with no message in between "
+          "leaves the agent live (was: unrecoverable, mail refused)",
+          lambda: _eq(store.load_org(org5.d["slug"]).node(e)["state"], "live"))
+    supervisor.reconcile(org5.d["slug"])          # …and again
+    check("mint · …and a second restart does not condemn it either",
+          lambda: _eq(store.load_org(org5.d["slug"]).node(e)["state"], "live"))
+    # the successor is still MAILABLE — the actual user-visible symptom
+    org5b = store.load_org(org5.d["slug"])
+    check("mint · …so mail to it is still accepted",
+          lambda: _true(org5b.post_mail(USER, e, "still there?") is not None))
+
+    # the same hole on the reseed path — the op whose whole purpose is to
+    # RESCUE a condemned node re-condemned it at the next restart
+    org6, (f6,) = horg(grant=20)
+    _plant_transcript(sid_of(org6, f6))
+    org6.node(f6)["cost_usd"] = 1.25
+    org6.mark_unrecoverable(f6, "test")
+    org6.reseed(USER, f6, "reseeded-sid-1")
+    store.save_org(org6)
+    supervisor.reconcile(org6.d["slug"])
+    check("mint · re-seed then RESTART leaves the rescued node live "
+          "(was: straight back to unrecoverable)",
+          lambda: _eq(store.load_org(org6.d["slug"]).node(f6)["state"], "live"))
+
+    # …and the exemption must be SESSION-scoped, not a permanent pardon
+    org7, (g,) = horg(grant=20)
+    _plant_transcript(sid_of(org7, g))
+    org7.node(g)["cost_usd"] = 2.0
+    org7.cheap_compact(USER, g)
+    store.save_org(org7)
+    new_sid = sid_of(store.load_org(org7.d["slug"]), g)
+    _plant_transcript(new_sid)               # the successor's first turn runs
+    supervisor.reconcile(org7.d["slug"])
+    check("mint · reconcile SELF-HEALS: a transcript for the minted id "
+          "spends the exemption on the spot",
+          lambda: _true("session_unrun" not in
+                        store.load_org(org7.d["slug"]).node(g)))
+    os.remove(supervisor.transcript_path(new_sid))   # …and now it is lost
+    supervisor.reconcile(org7.d["slug"])
+    check("mint · …so a session that HAS run and then loses its transcript "
+          "is condemned exactly as before (the pardon is not permanent)",
+          lambda: _eq(store.load_org(org7.d["slug"]).node(g)["state"],
+                      "unrecoverable"))
+
+    # a turn spends it without waiting for a restart — on the EVIDENCE (a
+    # transcript for the session it ran), not on the turn having completed.
+    # A turn that ran and then FAILED (usage limit, network, timeout kill,
+    # backend death) never reaches _after_turn, and the pardon standing over
+    # a session that had demonstrably run disarmed №31 for good on that node
+    # (redteam finding 2026-08-18).
+    org8, (h,) = horg(grant=20)
+    org8.node(h)["cost_usd"] = 1.0
+    org8.cheap_compact(USER, h)
+    store.save_org(org8)
+    sid8 = sid_of(store.load_org(org8.d["slug"]), h)
+    check("mint · a turn that never wrote a transcript does NOT spend it",
+          lambda: _true(not supervisor.spend_unrun_pardon(
+              org8.d["slug"], h, sid8)
+              and "session_unrun" in store.load_org(org8.d["slug"]).node(h)))
+    _plant_transcript(sid8)               # the CLI wrote one; the turn FAILED
+    check("mint · …a failed turn on a session that DID write one spends it",
+          lambda: _true(supervisor.spend_unrun_pardon(org8.d["slug"], h, sid8)
+                        and "session_unrun" not in
+                        store.load_org(org8.d["slug"]).node(h)))
+
+    # the guard that catches a mint landing INSIDE spend_unrun_pardon's own
+    # window — between its unlocked pre-check and its locked write. The
+    # mid-turn check above pins only the DISJUNCTION "at least one sid
+    # guard exists": deleting the under-lock one alone left all 230 checks
+    # green, and that mutant puts the user's original bug back (redteam
+    # 2026-08-18). The transcript lookup is the only call between the two
+    # reads, so firing the compact from there reproduces the race exactly.
+    org21, (k21,) = horg(grant=20)
+    org21.node(k21)["cost_usd"] = 2.0
+    sid21 = sid_of(org21, k21)
+    _plant_transcript(sid21)              # the turn in flight, evidence real
+    org21.node(k21)["session_unrun"] = True   # …itself a minted session
+    store.save_org(org21)
+    _tp21, fired = supervisor.transcript_path, []
+
+    def _compact_mid_lookup(sid, root=None):
+        if not fired:                     # ONCE, inside the window
+            fired.append(True)
+            o = store.load_org(org21.d["slug"])
+            o.cheap_compact(USER, k21)
+            store.save_org(o)
+        return _tp21(sid, root)
+
+    supervisor.transcript_path = _compact_mid_lookup   # type: ignore[assignment]
+    try:
+        spent21 = supervisor.spend_unrun_pardon(org21.d["slug"], k21, sid21)
+    finally:
+        supervisor.transcript_path = _tp21             # type: ignore[assignment]
+    check("mint · the race opens INSIDE the spend — the mint landed after "
+          "the pre-check, so only the under-lock re-check can catch it",
+          lambda: _true(fired and not spent21
+                        and store.load_org(org21.d["slug"])
+                        .node(k21).get("session_unrun") is True,
+                        f"fired={bool(fired)} spent={spent21}"))
+    supervisor.reconcile(org21.d["slug"])
+    check("mint · …so that restart leaves it live too",
+          lambda: _eq(store.load_org(org21.d["slug"]).node(k21)["state"],
+                      "live"))
+
+    # …and it is spent for the session the turn RAN, never by node id: a
+    # cheap-compact landing mid-turn has no in-flight guard, and spending by
+    # id alone ate the successor's brand-new pardon — the user's original bug,
+    # back through a race (redteam finding 2026-08-18).
+    org11, (k11,) = horg(grant=20)
+    org11.node(k11)["cost_usd"] = 2.0
+    sid_running = sid_of(org11, k11)
+    _plant_transcript(sid_running)        # the turn in flight, transcript real
+    org11.cheap_compact(USER, k11)        # …the user compacts it MID-TURN
+    store.save_org(org11)
+    spent = supervisor.spend_unrun_pardon(org11.d["slug"], k11, sid_running)
+    check("mint · a turn ending on the OLD session cannot spend the pardon "
+          "the mint just handed the new one",
+          lambda: _true(not spent and store.load_org(org11.d["slug"])
+                        .node(k11).get("session_unrun") is True))
+    store.save_org(store.load_org(org11.d["slug"]))
+    supervisor.reconcile(org11.d["slug"])
+    check("mint · …so the restart after a mid-turn cheap-compact still "
+          "leaves it live",
+          lambda: _eq(store.load_org(org11.d["slug"]).node(k11)["state"],
+                      "live"))
+
+    # a NORMAL compaction is not a mint: the CLI's fork writes a transcript,
+    # so neither half of the split may inherit the pardon
+    org9, (i9,) = horg(grant=20)
+    _plant_transcript(sid_of(org9, i9))
+    org9.node(i9)["cost_usd"] = 1.0
+    org9.cheap_compact(USER, i9)             # arms the marker…
+    p9 = org9.compact_split(i9, "forked-sid-1")   # …a real compaction clears it
+    store.save_org(org9)
+    check("mint · compact_split clears the marker on BOTH halves",
+          lambda: _true("session_unrun" not in org9.node(i9)
+                        and "session_unrun" not in org9.nodes[p9]))
+    supervisor.reconcile(org9.d["slug"])
+    check("mint · …so a forked session with no transcript is still condemned",
+          lambda: _eq(store.load_org(org9.d["slug"]).node(i9)["state"],
+                      "unrecoverable"))
+
+    # cheap-compacting TWICE with no turn between archives a bearer whose own
+    # session never ran — rehiring it must not walk into the same condemnation
+    org10, (j,) = horg(grant=20)
+    _plant_transcript(sid_of(org10, j))
+    org10.node(j)["cost_usd"] = 4.0
+    org10.cheap_compact(USER, j)
+    c2 = org10.cheap_compact(USER, j)        # the bearer here NEVER ran
+    org10.nodes[c2["bearer"]]["cost_usd"] = 4.0
+    org10.rehire(USER, c2["bearer"], grant=0)
+    store.save_org(org10)
+    supervisor.reconcile(org10.d["slug"])
+    check("mint · a rehired bearer whose own session was never run is not "
+          "condemned either",
+          lambda: _true(store.load_org(org10.d["slug"])
+                        .nodes[c2["bearer"]]["state"] == "live"))
+    # …and that must be the MARKER doing it, not `bearer_state` shadowing it:
+    # the exemption a bearer gets for being a bearer passed this check with
+    # and without the mark (redteam mutation M8, 2026-08-18). The fact the
+    # marker records — "THIS session id was never handed to the CLI" — is
+    # true of the bearer too, so assert it directly, and re-ask the predicate
+    # with the bearer exemption taken away.
+    b10 = store.load_org(org10.d["slug"]).nodes[c2["bearer"]]
+    check("mint · …because the BEARER carries the never-run mark itself",
+          lambda: _true(b10.get("session_unrun") is True))
+    check("mint · …which alone exempts it, with bearer_state out of the way",
+          lambda: _true(not supervisor._condemnable(
+              {**b10, "bearer_state": None}, {})            # type: ignore[arg-type]
+              and supervisor._condemnable(
+                  {k: v for k, v in {**b10, "bearer_state": None}.items()
+                   if k != "session_unrun"}, {})))          # type: ignore[arg-type]
+
+    # ------ an UNREADABLE store is not evidence -----------------------------
+    # `transcript_index` answers `{}` both for "this store holds nothing"
+    # and for "this store could not be read", and reconcile condemns a
+    # whole org on the difference: a sandboxed org's ext4 disk is not
+    # loop-mounted until something asks for a container, and the startup
+    # sweep runs before anything does. Resolving that root can also RAISE
+    # (DiskError, WSL down) inside a FastAPI startup handler with no guard —
+    # the backend would not start at all. But absence only excuses the
+    # SANDBOXED case: a host-backed store is either there or genuinely
+    # gone, and gone must still condemn. (redteam 2026-08-18)
+    print("\nreconcile · when the transcript store cannot be read:")
+
+    def _fresh12():
+        o, xs = horg(3, grant=20)
+        for x in xs:
+            o.node(x)["cost_usd"] = 1.0   # all three demonstrably ran…
+        store.save_org(o)                 # …and NONE has a transcript
+        return o, xs
+
+    def _states(o, xs):
+        d = store.load_org(o.d["slug"])
+        return {x: d.node(x)["state"] for x in xs}
+
+    _root, _ld = supervisor._transcript_root, os.listdir
+
+    def _deny(name):
+        """listdir that traverses but cannot LIST — the case an isdir
+        guard waves through (a root-owned projects/ on an org disk, a 9p
+        blip over the UNC view)."""
+        def f(path, *a, **kw):
+            if os.path.basename(str(path).rstrip(os.sep)) == name:
+                raise PermissionError(13, "permission denied")
+            return _ld(path, *a, **kw)
+        return f
+
+    for why, root_stub, ld_stub in [
+        ("resolving the root RAISES (WSL down, disk-migrated org)",
+         lambda org: (_ for _ in ()).throw(RuntimeError("WSL unavailable")),
+         None),
+        ("projects/ stats fine but cannot be LISTED",
+         None, _deny("projects")),
+        ("ONE project dir inside it cannot be listed (the partial index "
+         "that looks complete)",
+         None, _deny("rig")),
+    ]:
+        org12, ids12 = _fresh12()
+        if root_stub:
+            supervisor._transcript_root = root_stub    # type: ignore[assignment]
+        if ld_stub:
+            os.listdir = ld_stub                       # type: ignore[assignment]
+        try:
+            marked12 = supervisor.reconcile(org12.d["slug"])
+        finally:
+            supervisor._transcript_root = _root        # type: ignore[assignment]
+            os.listdir = _ld                           # type: ignore[assignment]
+        check(f"unreadable · {why} → nothing is condemned",
+              (lambda m=marked12, o=org12, x=ids12: _true(
+                  not m and all(v == "live" for v in _states(o, x).values()),
+                  f"marked {m} · {_states(o, x)}")))
+
+    # ⚠ …but ABSENT is not UNREADABLE, and the first strict pass conflated
+    # them: an entry that vanished mid-walk (the user's own Claude Code
+    # pruning history beside us), a dangling symlink, or a plain file
+    # someone dropped in `projects/` (Explorer writes `desktop.ini` by
+    # itself) holds NO transcripts and `glob` skips it — so the index is
+    # still right. Raising there made one such entry condemn every node in
+    # every host org, which is worse than the bug being fixed, and a
+    # regression against the pre-fix code. (redteam 2026-08-18)
+    org17, ids17 = _fresh12()
+    keep17 = sid_of(org17, ids17[0])
+    _plant_transcript(keep17)             # ids17[0] IS resumable…
+    junk = os.path.join(HOME, ".claude", "projects", "desktop.ini")
+    with io.open(junk, "w", encoding="utf-8") as f:
+        f.write("[.ShellClassInfo]" + chr(10))
+    try:
+        ev17 = supervisor._transcript_evidence(org17)
+        marked17 = supervisor.reconcile(org17.d["slug"])
+    finally:
+        os.remove(junk)
+    check("unreadable · a stray FILE in projects/ does not disable №31 "
+          "(it holds nothing; glob skips it, and so must the index)",
+          lambda: _true(ev17 is not None and keep17 in ev17,
+                        f"evidence {None if ev17 is None else sorted(ev17)}")) 
+    check("unreadable · …and the org is judged normally around it",
+          lambda: _true(sorted(marked17) == sorted(ids17[1:])
+                        and store.load_org(org17.d["slug"])
+                        .node(ids17[0])["state"] == "live",
+                        f"marked {marked17} of {ids17}"))
+
+    # the same shape one level down: a project dir that is gone by the time
+    # the walk reaches it (a real TOCTOU against a live Claude Code)
+    org18, ids18 = _fresh12()
+    keep18 = sid_of(org18, ids18[0])
+    _plant_transcript(keep18)
+    _ld18 = os.listdir
+
+    def _vanish(path, *a, **kw):
+        out = _ld18(path, *a, **kw)
+        if os.path.basename(str(path).rstrip(os.sep)) == "projects":
+            return list(out) + ["gone-between-the-two-listings"]
+        return out
+
+    os.listdir = _vanish                  # type: ignore[assignment]
+    try:
+        ev18 = supervisor._transcript_evidence(org18)
+        marked18 = supervisor.reconcile(org18.d["slug"])
+    finally:
+        os.listdir = _ld18                # type: ignore[assignment]
+    check("unreadable · a project dir that VANISHED mid-walk is skipped, "
+          "not read as the whole store being gone",
+          lambda: _true(ev18 is not None and keep18 in ev18
+                        and sorted(marked18) == sorted(ids18[1:]),
+                        f"evidence {None if ev18 is None else sorted(ev18)} "
+                        f"· marked {marked18}"))
+
+    # …and the sweep still condemns the moment the store IS readable —
+    # the guard must not have disarmed №31 wholesale
+    org12, ids12 = _fresh12()
+    supervisor.reconcile(org12.d["slug"])
+    check("unreadable · …while a READABLE store condemns them as always",
+          lambda: _true(all(v == "unrecoverable"
+                            for v in _states(org12, ids12).values()),
+                        json.dumps(_states(org12, ids12))))
+
+    # a MISSING host store is not the same as an unreadable one: those
+    # sessions really are gone, and the old code said so. Skipping the
+    # sweep there would resume them onto silent empty sessions instead.
+    org13, ids13 = _fresh12()
+    gone = os.path.join(TMP, "no-such-transcript-root")
+    supervisor._transcript_root = lambda org: gone      # type: ignore[assignment]
+    try:
+        marked13 = supervisor.reconcile(org13.d["slug"])
+    finally:
+        supervisor._transcript_root = _root             # type: ignore[assignment]
+    check("unreadable · a MISSING host store still condemns (absence only "
+          "excuses a sandboxed org, whose disk may be unmounted)",
+          lambda: _true(sorted(marked13) == sorted(ids13),
+                        f"marked {marked13} of {ids13}"))
+    # `projects` present but NOT A DIRECTORY: no transcript is reachable
+    # through it, so a host org is judged (and told) rather than left to
+    # resume onto empty sessions — the root ENOTDIR branch, which nothing
+    # covered (redteam mutation M4, 2026-08-18).
+    notdir = os.path.join(TMP, "root-with-a-file")
+    os.makedirs(notdir, exist_ok=True)
+    with io.open(os.path.join(notdir, "projects"), "w",
+                 encoding="utf-8") as f:
+        f.write("not a directory" + chr(10))
+    for label, sandbox, judged in [
+            ("host org is judged", None, True),
+            ("sandboxed org is left alone",
+             {"enabled": True, "secret": "x" * 32}, False)]:
+        orgN, idsN = _fresh12()
+        if sandbox:
+            orgN.d["sandbox"] = sandbox
+            store.save_org(orgN)
+        supervisor._transcript_root = lambda org: notdir  # type: ignore[assignment]
+        try:
+            markedN = supervisor.reconcile(orgN.d["slug"])
+        finally:
+            supervisor._transcript_root = _root           # type: ignore[assignment]
+        check(f"unreadable · projects/ is a FILE → the {label}",
+              (lambda m=markedN, i=idsN, w=judged:
+               _true((sorted(m) == sorted(i)) if w else not m,
+                     f"marked {m}")))
+
+    # THE case the proof exists for, end to end: `projects` is right there
+    # in its parent, but listing it raises ENOENT — a junction whose target
+    # is gone, an unmapped drive, an unreachable share. Inferring "deleted"
+    # from that errno condemns a whole org whose transcripts are fine, and
+    # the unit table below cannot catch it: only this asserts that reconcile
+    # actually CONSULTS the proof (redteam mutation M25, 2026-08-18).
+    org22, ids22 = _fresh12()
+    dangling = os.path.join(TMP, "dangling-root")
+    os.makedirs(os.path.join(dangling, "projects"), exist_ok=True)
+    _ld22 = os.listdir
+
+    def _target_gone(path, *a, **kw):
+        # the LINK resolves in its parent and the TARGET does not
+        if os.path.basename(str(path).rstrip(os.sep)) == "projects":
+            raise FileNotFoundError(2, "the target is gone")
+        return _ld22(path, *a, **kw)
+
+    supervisor._transcript_root = lambda org: dangling  # type: ignore[assignment]
+    os.listdir = _target_gone                           # type: ignore[assignment]
+    try:
+        marked22 = supervisor.reconcile(org22.d["slug"])
+    finally:
+        os.listdir = _ld22                              # type: ignore[assignment]
+        supervisor._transcript_root = _root              # type: ignore[assignment]
+    check("unreadable · a store that is THERE but whose listing raises "
+          "ENOENT is a blind spot, not a deletion — nothing is condemned",
+          lambda: _true(not marked22 and all(
+              v == "live" for v in _states(org22, ids22).values()),
+              f"marked {marked22} · {_states(org22, ids22)}"))
+
+    # the shape that discriminates WHICH path the proof is asked about: the
+    # store root is still there and only `projects/` is gone — a user
+    # clearing their Claude Code history. Asking about the root instead
+    # answers "present", skips the sweep, and resumes every node onto an
+    # empty session unannounced (redteam mutation B11, 2026-08-18).
+    org23, ids23 = _fresh12()
+    kept_root = os.path.join(TMP, "root-without-projects")
+    os.makedirs(kept_root, exist_ok=True)      # the root EXISTS…
+    supervisor._transcript_root = lambda org: kept_root  # type: ignore[assignment]
+    try:
+        marked23 = supervisor.reconcile(org23.d["slug"])
+    finally:
+        supervisor._transcript_root = _root               # type: ignore[assignment]
+    check("unreadable · the store root survives and only projects/ is gone "
+          "— still a real deletion, still condemned",
+          lambda: _true(sorted(marked23) == sorted(ids23),
+                        f"marked {marked23} of {ids23}"))
+
+    # …and the proof the ENOENT branch rests on, in isolation: on Windows a
+    # deleted dir, a dangling junction, an unmapped drive and an unreachable
+    # share ALL raise FileNotFoundError, and only the first is a deletion.
+    absent = supervisor._store_provably_absent
+    here = os.path.join(TMP, "provably")
+    os.makedirs(os.path.join(here, "real"), exist_ok=True)
+    with io.open(os.path.join(here, "afile"), "w", encoding="utf-8") as f:
+        f.write("x")
+    for label, path, want in [
+        ("a name its listable parent does not contain",
+         os.path.join(here, "nope"), True),
+        ("…several levels of it (the whole root is missing)",
+         os.path.join(here, "nope", "deeper", "projects"), True),
+        ("…below a FILE (nothing can exist under it)",
+         os.path.join(here, "afile", "projects"), True),
+        ("a path that IS there", os.path.join(here, "real"), False),
+    ]:
+        check(f"provably-absent · {label} → {want}",
+              (lambda pth=path, w=want: _eq(absent(pth), w)))
+
+    # …and the two "could not look" shapes, built with a stub rather than
+    # a machine-dependent path: an unmapped drive letter passes here only
+    # because that letter happens to be free, fails on a host that maps
+    # it, and is not even absolute on POSIX (redteam 2026-08-18).
+    _lda = os.listdir
+
+    def _always(exc):
+        def f(path, *a, **kw):
+            raise exc
+        return f
+
+    for label, stub in [
+        ("an unreachable share / unmapped drive: EVERY ancestor answers "
+         "ENOENT, so the climb ends at the volume root proving nothing",
+         _always(FileNotFoundError(2, "not found"))),
+        ("a parent that exists and cannot be READ (an ACL'd home, a "
+         "root-owned dir on an org disk)",
+         _always(PermissionError(13, "denied"))),
+    ]:
+        os.listdir = stub                 # type: ignore[assignment]
+        try:
+            got = absent(os.path.join(here, "nope", "projects"))
+        finally:
+            os.listdir = _lda             # type: ignore[assignment]
+        check(f"provably-absent · {label} → False",
+              (lambda g=got: _true(g is False, f"got {g!r}")))
+
+    # …and the case that whole distinction exists FOR: a sandboxed org
+    # keeps its transcripts on an ext4 image that is routinely not
+    # loop-mounted at startup, so the same ENOENT means "not mounted
+    # yet", never "gone". Without this the branch was untested and a
+    # simplifying edit would reinstate the original org-wide condemnation
+    # with every suite green (redteam mutation M-D2, 2026-08-18).
+    org19, ids19 = _fresh12()
+    org19.d["sandbox"] = {"enabled": True, "secret": "x" * 32}
+    store.save_org(org19)
+    supervisor._transcript_root = lambda org: gone   # type: ignore[assignment]
+    try:
+        marked19 = supervisor.reconcile(org19.d["slug"])
+    finally:
+        supervisor._transcript_root = _root          # type: ignore[assignment]
+    check("unreadable · …but a SANDBOXED org's missing store condemns "
+          "nothing — its disk is simply not mounted yet",
+          lambda: _true(not marked19 and all(
+              v == "live" for v in _states(org19, ids19).values()),
+              f"marked {marked19} · {_states(org19, ids19)}"))
+
+    # the OTHER site that mints a LOST bearer holds the same invariant: a
+    # CLI-side compaction keeps the session id, which is itself proof the
+    # session ran (redteam 2026-08-18).
+    org20, (n20,) = horg(grant=20)
+    _plant_transcript(sid_of(org20, n20))
+    org20.node(n20)["cost_usd"] = 1.0
+    org20.cheap_compact(USER, n20)        # arms the pardon
+    lost20 = org20.record_cli_compaction(n20)
+    check("mint · a CLI-side compaction's LOST bearer does not inherit "
+          "the pardon either",
+          lambda: _true(lost20 is not None
+                        and "session_unrun" not in org20.nodes[lost20]
+                        and org20.nodes[lost20]["bearer_state"] == "lost"))
+
+    # FR-01 remote control is the ONE writer that fills the node's CURRENT
+    # session from outside the turn path (the compaction, command and
+    # oracle forks all --fork-session onto a NEW id), so it is the one
+    # place a pardon can go stale with no turn running to spend it: the
+    # user drives the fresh session from a phone, the CLI writes its
+    # transcript, no mail is queued — and an idle node then carries the
+    # pardon until the next restart (redteam 2026-08-18).
+    org16, (n16,) = horg(grant=20)
+    _plant_transcript(sid_of(org16, n16))
+    org16.node(n16)["cost_usd"] = 1.0
+    org16.cheap_compact(USER, n16)
+    store.save_org(org16)
+    sid16 = sid_of(store.load_org(org16.d["slug"]), n16)
+    _plant_transcript(sid16)              # the phone wrote one; no turn ran
+    d16 = store.load_org(org16.d["slug"])
+    d16.node(n16)["remote_controlled"] = {"at": "now", "pid": 0}
+    store.save_org(d16)
+    supervisor.remote_control_stop(org16.d["slug"], n16)
+    check("mint · releasing REMOTE CONTROL spends the pardon the phone-"
+          "driven session earned",
+          lambda: _true("session_unrun" not in
+                        store.load_org(org16.d["slug"]).node(n16)))
+
+    # a LOST bearer cannot also be a never-run one: reseed stamps its
+    # predecessor "its transcript is gone", and the pardon asserts "this
+    # session never ran". One record must not claim both (redteam
+    # 2026-08-18). cheap_compact's bearer is the opposite case and keeps it.
+    org14, (m14,) = horg(grant=20)
+    _plant_transcript(sid_of(org14, m14))
+    org14.node(m14)["cost_usd"] = 1.0
+    org14.cheap_compact(USER, m14)        # arms the pardon on the successor
+    org14.mark_unrecoverable(m14, "test")
+    r14 = org14.reseed(USER, m14, "reseeded-sid-2")
+    check("mint · a re-seeded LOST bearer does not inherit the pardon",
+          lambda: _true("session_unrun" not in
+                        org14.nodes[r14["predecessor"]]
+                        and org14.nodes[r14["predecessor"]]["bearer_state"]
+                        == "lost"))
+
+    # the predicate itself, in isolation — the loop above cannot be unit-tested
+    # the dot-directory skip exists so the index cannot disagree with the
+    # direct `glob` lookup (`*` does not match a leading dot) — removing it
+    # made the index MORE inclusive than the turn path, which would exempt
+    # a node from №31 that the turn path then resumes as new. Nothing pinned
+    # it (redteam mutation M24, 2026-08-18).
+    hidden = os.path.join(HOME, ".claude", "projects", ".hidden-proj")
+    os.makedirs(hidden, exist_ok=True)
+    with io.open(os.path.join(hidden, "sid-in-a-dot-dir.jsonl"), "w",
+                 encoding="utf-8") as f:
+        f.write("{}" + chr(10))
+    try:
+        idx_has = "sid-in-a-dot-dir" in supervisor.transcript_index()
+        direct = supervisor.transcript_path("sid-in-a-dot-dir")
+    finally:
+        shutil.rmtree(hidden, ignore_errors=True)
+    check("index · a dot-prefixed project dir is skipped, exactly as glob "
+          "skips it — the index may never out-reach the turn path",
+          lambda: _true(not idx_has and direct is None,
+                        f"index={idx_has} direct={direct!r}"))
+
+    print("\nreconcile's condemnation predicate (supervisor._condemnable):")
+    BASE = {"state": "live", "cost_usd": 1.0, "session_id": "sid-x"}
+    for over, want, why in [
+        ({}, True, "live, has run, transcript gone → condemned"),
+        ({"cost_usd": 0.0}, False, "never ran → nothing is missing"),
+        ({"cost_usd": None}, False, "cost not booked yet"),
+        ({"state": "archived"}, False, "archived promises nothing"),
+        ({"state": "unrecoverable"}, False, "already said so"),
+        ({"bearer_state": "knowledge"}, False, "a bearer stays consultable"),
+        ({"bearer_state": "lost"}, False, "a lost generation is already lost"),
+        ({"session_unrun": True}, False,
+         "MINTED and never run — absent because unwritten, not lost"),
+        ({"session_unrun": False}, True,
+         "an explicitly false marker is not an exemption"),
+        ({"session_id": "sid-here"}, False, "the transcript is right there"),
+        ({"session_id": "sid-here", "session_unrun": True}, False,
+         "…and a marker over a live transcript still does not condemn"),
+    ]:
+        check(f"condemnable · {why}",
+              (lambda o=over, w=want:
+               _eq(supervisor._condemnable({**BASE, **o},   # type: ignore[arg-type]
+                                           {"sid-here": "/p/sid-here.jsonl"}),
+                   w)))
+
     print("\nreconcile against a big transcript store:")
     # ⚠ `projects/` is the USER's whole Claude Code history, not this org's,
     # and `transcript_path` re-lists it per call. FIXED: one walk per pass.
@@ -2241,6 +2814,55 @@ def live_oracle() -> None:
     drop_orgs()
 
 
+def live_never_run_pardon() -> None:
+    """The pardon must be spent by the TURN, not by the next restart.
+
+    The hermetic checks call `spend_unrun_pardon` directly, so they prove
+    the rule and nothing about the wiring: with the whole `pardon_pending`
+    block deleted from `_run_one_turn`'s `finally` — or `ran_sid` never
+    assigned — every suite stayed green, and the pardon simply lived on
+    until a restart healed it. That is the restart-dependence the turn-side
+    spend exists to remove, so it is asserted here against a real turn."""
+    print("\nlive · the never-run pardon is spent by the TURN:")
+    start_backend()
+    set_cfg(FAST)
+    slug, (nid,) = make_org("pardon")
+    _prime(slug, nid)                     # a session, a cost, a transcript
+    old_sid = node(slug, nid)["session_id"]
+    api("POST", f"/api/orgs/{slug}/ops",
+        {"op": "cheap_compact", "actor": USER, "node": nid})
+    armed = node(slug, nid)
+    check("pardon · a cheap-compact on a LIVE org arms the never-run pardon",
+          lambda: _true(armed.get("session_unrun") is True
+                        and armed["session_id"] != old_sid,
+                        json.dumps({k: armed.get(k) for k in
+                                    ("session_id", "session_unrun")})))
+    tok = token()
+    send(slug, nid, f"after the compact {tok}")
+    ran = wait_for(lambda: carriers(slug, nid, tok)["transcript"], 60)
+    wait_idle(slug, nid)
+    # assert the MECHANISM ran before asserting what it did — a pardon
+    # that vanished because no turn happened proves nothing
+    check("pardon · the successor really ran a turn on the MINTED session",
+          lambda: _true(ran, log_tail(1200)))
+    check("pardon · …and that turn spent the pardon, no restart involved",
+          lambda: _true("session_unrun" not in node(slug, nid),
+                        "the turn left the pardon standing: clearing it now "
+                        "needs a backend restart, which is exactly what "
+                        "the turn-side spend removes"))
+    # …and №31 is ARMED again on that session: ask the real predicate
+    # against the live doc with an empty index — with the pardon gone,
+    # a missing transcript must condemn it like any ordinary node
+    check("pardon · …and the spent pardon re-arms №31 on that session",
+          lambda: _true(
+              supervisor._condemnable(node(slug, nid), {}),  # type: ignore[arg-type]
+              "the node is still shielded after its turn — losing this "
+              "session would now go unreported"))
+    drop_orgs()          # every other live function does; this one left a
+                         # cheap-compacted node for the NEXT test's startup
+                         # sweep to walk over
+
+
 def live_guards() -> None:
     print("\nlive · the /compact preconditions:")
     start_backend()
@@ -2475,6 +3097,7 @@ def main() -> None:
             live_deleted_mid_fork()
             live_split_interrupted()
             live_oracle()
+            live_never_run_pardon()
             live_guards()
             live_spend_frozen_compact()
             live_fairness()

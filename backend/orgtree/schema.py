@@ -229,6 +229,18 @@ class NodeDoc(TypedDict):
     # spawn. A normal compaction (whose successor carries its own summary)
     # clears it.
     cheap_compacted: NotRequired[bool]
+    # user bug 2026-08-18: the CURRENT session id was MINTED (cheap_compact,
+    # reseed) and has never been handed to the CLI — so no transcript for it
+    # exists yet, and that is normal, not damage. №31's startup reconcile
+    # condemns a live node whose transcript is missing, judging "has it ever
+    # run" by the node-lifetime `cost_usd`; a minted session inherits that
+    # cost while owning none of the history, so cheap-compacting an agent and
+    # closing orgtree before messaging it marked the agent UNRECOVERABLE (it
+    # then refuses mail — the seat needs a re-seed to come back). This marker
+    # makes the "has it run" question SESSION-scoped. Cleared by the first
+    # completed turn, and self-healed by reconcile the moment a transcript
+    # for the session id does exist.
+    session_unrun: NotRequired[bool]
     # ⭐ the user-override record (ruling 2026-08-06): Org.unstick moves the
     # released freeze here {by, at, was} — evidence, never erasure
     unstuck: NotRequired[dict[str, Any]]
