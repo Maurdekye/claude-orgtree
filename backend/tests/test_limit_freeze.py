@@ -37,6 +37,9 @@ written the failure down. A limit that reached `err_blob` would have left both.
     §5  WHICH frozen node the auto-resume timer wakes, and when (peer report
         2026-08-10: an org-wide gate starved every short freeze behind the
         longest one). Needs no CLI, so it runs first.
+    §6  WHERE a freeze's reset timestamp comes from, and what it is allowed to
+        cost — the bands, the provenance gates and the api_fallback window
+        (D-133, and ten rounds of adversarial review behind it).
 
 Hermetic-ish: throwaway ORGTREE_DATA + HOME, no port, no Docker, no real CLI,
 no network. §2 spawns `node` (the stand-in) — skipped with a note if absent.
@@ -47,12 +50,15 @@ no network. §2 spawns `node` (the stand-in) — skipped with a note if absent.
 from __future__ import annotations
 
 import json
+import re
 import os
 import shutil
 import sys
+import threading
 import tempfile
 import time
 import traceback
+from typing import Any
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -85,7 +91,7 @@ os.environ["ORGTREE_CLAUDE_CLI"] = _CLI      # read at import time
 os.environ["SYNTHCLI_CONFIG"] = _CFG
 os.environ["SYNTHCLI_COUNT"] = _COUNT
 
-from orgtree import store, supervisor                            # noqa: E402
+from orgtree import limits, sandbox as sbx, store, supervisor    # noqa: E402
 from orgtree.ledger import USER                                  # noqa: E402
 
 PASS = 0
@@ -813,10 +819,1553 @@ def _flat(tree: dict) -> list[dict]:
 
 # ═════════════════════════════════════════════════════════════════════════ main
 
+# ══════════════════════════════════════════════════════════════════ §6 timing
+# User ruling 2026-08-18: "all forms of usage freeze should have a timestamp
+# associated … that way api key fallback usage never accidentally stays
+# permanent and rings up a massive unintended bill."
+#
+# The number under test is money. `api_fallback` bills the ORG'S OWN API KEY
+# for the length of the window a freeze opens, and that window is priced off
+# the freeze's reset timestamp — so every way the timestamp can be wrong is a
+# way to overspend, and every source it can come from needs a band.
+#
+# Hermetic: the usage readout is injected into `limits`' cache by hand. No
+# network, no CLI, no token — a suite that reached the real endpoint would
+# read a different account on every machine and spend a request per run.
+
+
+def _iso(offset_s):
+    import datetime as _d
+    return (_d.datetime.now(_d.timezone.utc)
+            + _d.timedelta(seconds=offset_s)).isoformat()
+
+
+def _readout(*lanes) -> None:
+    """Install a synthetic usage readout as the cached one."""
+    limits._cache.update(at=time.time(), data={
+        "available": True, "plan": "max",
+        "limits": [{"kind": k, "group": g, "percent": p, "severity": sv,
+                    "resets_at": _iso(r), "is_active": act, "model": m}
+                   for k, g, p, sv, r, act, m in lanes]})
+
+
+class _FakeOrg:
+    """Just enough Org for the pure decision functions: `.d` and `.nodes`.
+    (`spawn_env`, `bills_the_key`, `_resumable` and `auto_resume_ready` read
+    nothing else — a real org here would need a data root and a hire.)"""
+
+    def __init__(self, **d):
+        self.d = d
+        self.nodes: dict[str, Any] = {}
+
+
+def _with_window(slug, nid):
+    """The org with a fallback window open — as a REAL limit on some other
+    node would leave it. Used to prove the fast-wake path does not pick up a
+    capped untrusted freeze."""
+    o = store.load_org(slug)
+    o.d["api_key"] = "sk-test"
+    o.d["api_fallback"] = True
+    o.d["api_fallback_until"] = time.time() + 3600
+    return o
+
+
+def sec_reset_timing() -> None:
+    """⚠ Wrapped: an exception raised OUTSIDE a `check()` (a fixture, a
+    `probe_org()` hiccup) used to leave the synthetic readout installed in
+    `limits._cache`, where §2–§4's real freeze path would read it as the
+    account's true standing (redteam 2026-08-18)."""
+    try:
+        _sec_reset_timing_body()
+    finally:
+        limits.invalidate()
+
+
+def _sec_reset_timing_body() -> None:
+    print("\n§6 · where a freeze's reset timestamp comes from, and its bands:")
+    now = time.time()
+    # the suite must never reach the live endpoint: HOME/USERPROFILE are
+    # redirected before orgtree is imported, so there are no credentials to
+    # find. Asserted rather than assumed — a future suite that forgets the
+    # redirect would otherwise start rotating the host's OAuth token.
+    check("hermetic · no host credentials are visible to this suite", lambda: (
+        None if not limits.available()
+        else (_ for _ in ()).throw(AssertionError(
+            "the usage readout can reach the real account from a test"))))
+
+    # ---- the prose classifier -------------------------------------------
+    check("classify · a session limit stays a session limit even when it "
+          "names a model (FABLE-1 in another costume)", lambda: (
+        None if limits.classify("session limit for Fable 5 reached")
+        == ("session", None)
+        else (_ for _ in ()).throw(AssertionError(
+            limits.classify("session limit for Fable 5 reached")))))
+    check("classify · the real Fable-tier wording → the model's weekly pool",
+          lambda: (
+        None if limits.classify(
+            "You've reached your Fable 5 limit. Run /usage-credits to continue")
+        == ("weekly_scoped", "fable")
+        else (_ for _ in ()).throw(AssertionError("fable tier misread"))))
+    check("classify · 'weekly' → the unscoped weekly lane", lambda: (
+        None if limits.classify("Claude usage limit reached (weekly)")
+        == ("weekly_all", None)
+        else (_ for _ in ()).throw(AssertionError("weekly misread"))))
+    check("classify · a bare limit names no lane", lambda: (
+        None if limits.classify("Claude AI usage limit reached") == (None, None)
+        else (_ for _ in ()).throw(AssertionError("invented a lane"))))
+
+    # ---- lane selection out of the readout -------------------------------
+    _readout(("session", "session", 15, "normal", 2 * 3600, False, None),
+             ("weekly_all", "weekly", 65, "normal", 5 * 3600, False, None),
+             ("weekly_scoped", "weekly", 99, "critical", 6 * 3600, True,
+              "Fable"))
+    check("reset_for · the lane the prose names answers", lambda: (
+        None if limits.reset_for("weekly limit reached")[1] == "usage:weekly_all"
+        else (_ for _ in ()).throw(AssertionError(
+            limits.reset_for("weekly limit reached")))))
+    check("reset_for · a scoped lane is matched on the model name", lambda: (
+        None if limits.reset_for("You've reached your Fable 5 limit")[1]
+        == "usage:weekly_scoped"
+        else (_ for _ in ()).throw(AssertionError("scoped lane missed"))))
+    check("reset_for · an unnamed lane takes the SOONEST reset, not the "
+          "is_active one — guessing short costs one re-freeze, guessing long "
+          "costs money (user ruling 2026-08-18)", lambda: (
+        None if limits.reset_for("Claude AI usage limit reached")[1]
+        == "usage:session"
+        else (_ for _ in ()).throw(AssertionError(
+            limits.reset_for("Claude AI usage limit reached")))))
+
+    # ---- the bands --------------------------------------------------------
+    _readout(("session", "session", 99, "critical", -600, True, None))
+    check("reset_for · a reset already in the past is not a horizon", lambda: (
+        None if limits.reset_for("usage limit reached") == (None, "")
+        else (_ for _ in ()).throw(AssertionError("believed a stale reset"))))
+    _readout(("session", "session", 99, "critical", 20 * 3600, True, None))
+    check("reset_for · a 5-hour lane cannot reset 20 hours out", lambda: (
+        None if limits.reset_for("usage limit reached") == (None, "")
+        else (_ for _ in ()).throw(AssertionError("lane band not applied"))))
+
+    # a named lane whose own reset is not believable must not sink the
+    # answer — the ruling is "always a timestamp", and another lane's is
+    # right there
+    _readout(("session", "session", 99, "critical", -600, True, None),
+             ("weekly_all", "weekly", 70, "normal", 4 * 3600, False, None))
+    check("reset_for · a stale named lane falls through to a believable one",
+          lambda: (
+        None if limits.reset_for("session limit reached")[1]
+        == "usage:weekly_all"
+        else (_ for _ in ()).throw(AssertionError(
+            limits.reset_for("session limit reached")))))
+
+    # the correction pass must actually RE-READ: a limit that just fired
+    # changed the standing, so an entry the warm loop filled seconds earlier
+    # predates the event. Served from the ordinary 30 s cache the pass would
+    # hand back the very number the freeze already stamped from.
+    _readout(("session", "session", 99, "critical", 3 * 3600, True, None))
+    _calls = [0]
+
+    def _count_fetch(force=False, max_age=None):
+        _calls.append(max_age)
+        _calls[0] += 1
+        return limits.cached() or {"available": False}
+
+    _rf, limits.fetch = limits.fetch, _count_fetch
+    try:
+        check("re-read · the correction pass tightens the cache window "
+              "instead of accepting a 30-second-old readout", lambda: (
+            None if (limits.reset_for("usage limit reached", allow_fetch=True)
+                     and _calls[0] == 1
+                     and _calls[-1] == limits.REREAD_MAX_AGE
+                     and limits.REREAD_MAX_AGE < limits.CACHE_TTL)
+            else (_ for _ in ()).throw(AssertionError(_calls))))
+    finally:
+        limits.fetch = _rf
+
+    # ---- the freeze path never blocks on the network ----------------------
+    limits.invalidate()
+    _boom = [0]
+
+    def _explode(*a, **k):
+        _boom[0] += 1
+        raise AssertionError("the freeze path fetched under the lock")
+
+    _real_fetch, limits.fetch = limits.fetch, _explode
+    try:
+        check("stamp · the default resolver answers from cache only — a cold "
+              "cache is 'no idea', never a fetch", lambda: (
+            None if supervisor._limit_reset_ts("usage limit reached")
+            == (None, "") and _boom[0] == 0
+            else (_ for _ in ()).throw(AssertionError("it fetched"))))
+    finally:
+        limits.fetch = _real_fetch
+
+    # …and the property that actually matters — no network under DOC_LOCK —
+    # is structural, so it is guarded at the source. The freeze site must not
+    # ask for a fetch, and the correction pass must do its fetching BEFORE it
+    # takes the lock. (Redteam 2026-08-18: the runtime check above cannot see
+    # either of those, and would keep passing if the freeze path started
+    # fetching under the lock tomorrow.)
+    _sup = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "..", "orgtree", "supervisor.py"),
+                encoding="utf-8").read()
+    _api = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "..", "orgtree", "api.py"),
+                encoding="utf-8").read()
+    _code = "\n".join(ln for ln in _sup.splitlines()
+                      if not ln.lstrip().startswith("#"))
+
+    def _freeze_site_does_not_fetch():
+        import inspect
+        i = _code.find("fz[\"limit\"] = True")
+        fixture(i > 0, "the freeze site moved — re-read this check")
+        # through the api_fallback window write, which is where the block
+        # actually ends — a tight window slides off the end unnoticed
+        j = _code.find("store.save_org(o2)", i)
+        fixture(j > i, "the freeze block no longer ends in a save")
+        seg = _code[i:j]
+        assert "_limit_reset_ts(" in seg, "the freeze no longer times itself"
+        assert not re.search(r"allow_fetch\s*=\s*(True|[^F\s)])", seg), (
+            "the freeze site runs inside `with store.DOC_LOCK:` and the usage "
+            "endpoint routinely takes over a second — a fetch here stalls "
+            "every org on the backend, not just this one")
+        # …and the default it relies on is really cache-only (the lexical
+        # check above cannot see a flipped default — redteam 2026-08-18)
+        sig = inspect.signature(supervisor._limit_reset_ts)
+        assert sig.parameters["allow_fetch"].default is False, (
+            "the resolver now fetches by DEFAULT, so every freeze does a "
+            "network round trip under the document lock")
+
+    def _the_correction_fetches_before_it_locks():
+        i = _code.find("def _refresh_freeze_reset(")
+        fixture(i > 0, "the correction pass moved — re-read this check")
+        body = _code[i:i + 3000]
+        f, lock = body.find("allow_fetch=True"), body.find("with store.DOC_LOCK")
+        fixture(f > 0 and lock > 0, "the pass no longer fetches, or no longer locks")
+        assert f < lock, ("the re-read must happen BEFORE the document lock "
+                          "is taken, or it holds the whole backend for the "
+                          "length of an HTTPS round trip")
+    check("lock · the freeze site never asks for a fetch (structural)",
+          _freeze_site_does_not_fetch)
+    check("lock · the correction pass fetches before it locks (structural)",
+          _the_correction_fetches_before_it_locks)
+
+    # The strongest version of the same property: drive a REAL limit turn
+    # through the real loop and watch who calls `fetch`. The freeze runs on
+    # the turn's own thread while holding DOC_LOCK; only the correction pass,
+    # on its own named thread, is allowed to reach the network (redteam
+    # 2026-08-18 — the structural guards above are lexical, and this is not).
+    if shutil.which("node"):
+        _fetchers: list[str] = []
+        _rf2, limits.fetch = limits.fetch, (
+            lambda *a, **k: (_fetchers.append(threading.current_thread().name)
+                             or {"available": False, "error": "probe"}))
+        try:
+            _slug, _nid = probe_org()
+            # a wording with NO parseable marker, so the correction pass is
+            # forced to consult the readout — otherwise prose answers, nobody
+            # fetches, and "no bad fetcher" would be vacuously true
+            set_mode("iserror", limit_text="Claude AI usage limit reached")
+            run_turn(_slug, _nid)
+            _deadline = time.time() + 5
+            while time.time() < _deadline and not _fetchers:
+                time.sleep(0.05)
+            _bad = [t for t in _fetchers if not t.startswith("usage-reset-")]
+            check("lock · a REAL limit turn reaches the network only from the "
+                  "correction thread — never from the freeze itself, which "
+                  "holds DOC_LOCK", lambda: (
+                None if node(_slug, _nid).get("frozen") and _fetchers
+                and not _bad
+                else (_ for _ in ()).throw(AssertionError(
+                    "froze=%s fetchers=%s" % (
+                        bool(node(_slug, _nid).get("frozen")), _fetchers)))))
+        finally:
+            limits.fetch = _rf2
+    else:
+        note("node is absent — the real-turn lock probe was skipped")
+
+    # ⚠ THE GAP THAT SHIPPED A REGRESSION (redteam 2026-08-18): `reset_src`
+    # was only ever asserted against a hand-built freeze record, so nothing
+    # noticed that a REAL freeze arriving by the CLI's `<synthetic>` route was
+    # being classed as agent-authored and throwing away the epoch the CLI had
+    # just published. Drive the real loop, read the real record.
+    if shutil.which("node"):
+        _ep = int(time.time()) + 3 * 86400
+        for _mode, _want in (("iserror", "text"), ("synthetic", "text")):
+            _s2, _n2 = probe_org()
+            set_mode(_mode,
+                     limit_text="Claude AI usage limit reached|%d" % _ep)
+            run_turn(_s2, _n2)
+            check("e2e · a %s limit keeps the epoch the CLI published "
+                  "(reset_src=%s)" % (_mode, _want), (
+                lambda s2=_s2, n2=_n2, w=_want: (
+                    None if (node(s2, n2).get("frozen") or {}).get("reset_src")
+                    == w and abs(float((node(s2, n2).get("frozen")
+                                        or {})["until_ts"]) - _ep) < 2
+                    else (_ for _ in ()).throw(AssertionError(
+                        node(s2, n2).get("frozen"))))))
+
+    # ---- text vs readout precedence ---------------------------------------
+    _readout(("session", "session", 99, "critical", 3 * 3600, True, None))
+    _ep = int(now) + 1800
+    check("stamp · an explicit epoch in the prose wins", lambda: (
+        None if supervisor._limit_reset_ts("usage limit reached|%d" % _ep)
+        == (float(_ep), "text")
+        else (_ for _ in ()).throw(AssertionError("prose epoch ignored"))))
+    check("stamp · unparseable prose falls through to the readout", lambda: (
+        None if supervisor._limit_reset_ts(
+            "Claude AI usage limit reached")[1] == "usage:session"
+        else (_ for _ in ()).throw(AssertionError("no readout fallback"))))
+
+    # ---- the window this prices -------------------------------------------
+    check("window · a 15-minute floor (a 5-minute probe freeze must still "
+          "get a turn out)", lambda: (
+        None if abs(supervisor._fallback_window_until(now + 60, now)
+                    - (now + 900)) < 1
+        else (_ for _ in ()).throw(AssertionError("floor missing"))))
+    check("window · no timestamp at all still bounds to the floor", lambda: (
+        None if abs(supervisor._fallback_window_until(None, now)
+                    - (now + 900)) < 1
+        else (_ for _ in ()).throw(AssertionError("unbounded on None"))))
+    check("window · CEILING — a 60-day 'reset' cannot bill the key for 60 "
+          "days (the unintended-bill guard)", lambda: (
+        None if abs(supervisor._fallback_window_until(now + 60 * 86400, now)
+                    - (now + supervisor.FALLBACK_MAX_WINDOW)) < 1
+        else (_ for _ in ()).throw(AssertionError("no ceiling"))))
+    check("window · a real weekly reset survives the ceiling", lambda: (
+        None if abs(supervisor._fallback_window_until(now + 6.9 * 86400, now)
+                    - (now + 6.9 * 86400)) < 1
+        else (_ for _ in ()).throw(AssertionError("clamped a real weekly"))))
+
+    # ---- the off-lock correction pass -------------------------------------
+    slug, nid = probe_org()
+    _later = now + 4 * 3600
+
+    def _stamped(win):
+        org = store.load_org(slug)
+        org.nodes[nid]["frozen"] = {
+            "at": "x", "limit": True, "until_ts": now + 300,
+            "until": "unknown — probing again in ~5 min", "reset_src": "probe"}
+        org.d["api_key"] = "sk-test"
+        org.d["api_fallback"] = True
+        if win is not None:
+            org.d["api_fallback_until"] = win
+        store.save_org(org)
+
+    _real = supervisor._limit_reset_ts
+    # **kw so a new argument on the real resolver does not silently turn this
+    # stub into a TypeError the retry loop swallows (caught 2026-08-18)
+    supervisor._limit_reset_ts = lambda blob, **kw: (_later, "usage:session")
+    try:
+        _w = supervisor._fallback_window_until(now + 300, now)
+        _stamped(_w)
+        check("refresh · the correction rewrites the freeze it stamped",
+              lambda: (
+            None if supervisor._refresh_freeze_reset(
+                slug, nid, "limit", now + 300, _w)
+            and abs(float(store.load_org(slug).nodes[nid]["frozen"]["until_ts"])
+                    - _later) < 1
+            and store.load_org(slug).nodes[nid]["frozen"]["reset_src"]
+            == "usage:session"
+            else (_ for _ in ()).throw(AssertionError("no correction"))))
+        check("refresh · and re-prices the window it opened", lambda: (
+            None if abs(float(store.load_org(slug).d["api_fallback_until"])
+                        - _later) < 2
+            else (_ for _ in ()).throw(AssertionError(
+                store.load_org(slug).d.get("api_fallback_until")))))
+
+        _stamped(_w)
+        _o = store.load_org(slug)
+        _o.nodes[nid]["frozen"]["until_ts"] = now + 999   # someone else moved it
+        store.save_org(_o)
+        check("refresh · a freeze re-stamped by someone else is not ours to "
+              "move (its WINDOW still is — the two are owned separately)",
+              lambda: (
+            None if supervisor._refresh_freeze_reset(
+                slug, nid, "limit", now + 300, _w)
+            and float(store.load_org(slug).nodes[nid]["frozen"]["until_ts"])
+            == now + 999
+            and abs(float(store.load_org(slug).d["api_fallback_until"])
+                    - _later) < 2
+            else (_ for _ in ()).throw(AssertionError("stomped a peer"))))
+
+        _stamped(_w)
+        _o = store.load_org(slug)
+        _o.d["api_fallback_until"] = now + 12345         # a later freeze's
+        store.save_org(_o)
+        supervisor._refresh_freeze_reset(slug, nid, "limit", now + 300, _w)
+        check("refresh · a window it did not open is left alone", lambda: (
+            None if float(store.load_org(slug).d["api_fallback_until"])
+            == now + 12345
+            else (_ for _ in ()).throw(AssertionError("stomped a window"))))
+
+        _stamped(_w)
+        _o = store.load_org(slug)
+        _o.d.pop("api_fallback")                         # user turned it off
+        store.save_org(_o)
+        supervisor._refresh_freeze_reset(slug, nid, "limit", now + 300, _w)
+        check("refresh · a fallback switched off mid-flight keeps its window "
+              "untouched (the pass re-prices, it must not re-open)", lambda: (
+            None if float(store.load_org(slug).d["api_fallback_until"]) == _w
+            and not store.load_org(slug).d.get("api_fallback")
+            else (_ for _ in ()).throw(AssertionError(
+                store.load_org(slug).d.get("api_fallback_until")))))
+
+        _stamped(_w)
+        _o = store.load_org(slug)
+        _o.nodes[nid]["frozen"] = None          # the user hit ▶ mid-flight
+        store.save_org(_o)
+        supervisor._refresh_freeze_reset(slug, nid, "limit", now + 300, _w)
+        check("refresh · a node resumed mid-flight still gets its WINDOW "
+              "re-priced — the likeliest thing to happen in that second must "
+              "not leave an over-long window with no owner", lambda: (
+            None if abs(float(store.load_org(slug).d["api_fallback_until"])
+                        - _later) < 2
+            else (_ for _ in ()).throw(AssertionError(
+                store.load_org(slug).d.get("api_fallback_until")))))
+
+        supervisor._limit_reset_ts = lambda blob, **kw: (now + 330,
+                                                        "usage:session")
+        _stamped(_w)
+        check("refresh · a move under a minute is not worth a write", lambda: (
+            None if not supervisor._refresh_freeze_reset(
+                slug, nid, "limit", now + 300, _w)
+            else (_ for _ in ()).throw(AssertionError("churned the doc"))))
+    finally:
+        supervisor._limit_reset_ts = _real
+
+    # ---- R2·F1 the UNNAMED lane is capped too -----------------------------
+    _readout(("weekly_all", "weekly", 65, "normal", 6 * 86400, False, None))
+    check("cap · an unnamed limit is not answered from a weekly lane six days "
+          "out — that is the ruling's 'assume the shortest', and the branch "
+          "it was missing from", lambda: (
+        None if limits.reset_for("Claude AI usage limit reached") == (None, "")
+        else (_ for _ in ()).throw(AssertionError(
+            limits.reset_for("Claude AI usage limit reached")))))
+    _readout(("weekly_all", "weekly", 65, "normal", 2 * 3600, False, None))
+    check("cap · …but a weekly lane resetting within the session lane's "
+          "reach is a fine answer for an unnamed limit", lambda: (
+        None if limits.reset_for("Claude AI usage limit reached")[1]
+        == "usage:weekly_all"
+        else (_ for _ in ()).throw(AssertionError("over-tight cap"))))
+
+    # ---- R8 · the guards 89 mutations found unpinned -----------------------
+    # Round 8 mutated the feature 89 ways and the suite missed 22 of them.
+    # Every check below kills at least one of those mutants; several sit on
+    # guards whose own comments name the incident they were written for.
+
+    # ① spawn_env's api_fallback gate — the single load-bearing money seam.
+    # Three mutations were green: always-inject (the option silently becomes a
+    # permanent key lane), never-inject (a paid window that does nothing), and
+    # dropping the sandbox guard (the key lands in a host-side docker exec).
+    _k = "sk-ant-spawn-probe"
+    _shut = _FakeOrg(slug="zz", api_key=_k, api_fallback=True)
+    _open = _FakeOrg(slug="zz", api_key=_k, api_fallback=True,
+                     api_fallback_until=time.time() + 3600)
+    _perm = _FakeOrg(slug="zz", api_key=_k)
+    _sbxd = _FakeOrg(slug="zz", api_key=_k, kiosk={"sandbox": True})
+    check("spawn · a fallback org with the window SHUT bills the "
+          "subscription — no key in the turn's environment", lambda: (
+        None if "ANTHROPIC_API_KEY" not in supervisor.spawn_env(_shut)
+        else (_ for _ in ()).throw(AssertionError("permanent key lane"))))
+    check("spawn · …and gets the key exactly while the window is open",
+          lambda: (
+        None if supervisor.spawn_env(_open).get("ANTHROPIC_API_KEY") == _k
+        else (_ for _ in ()).throw(AssertionError("paid window, no key"))))
+    check("spawn · a permanent-key org gets it always", lambda: (
+        None if supervisor.spawn_env(_perm).get("ANTHROPIC_API_KEY") == _k
+        else (_ for _ in ()).throw(AssertionError("keyless"))))
+    check("spawn · a SANDBOXED org never gets it host-side — the container "
+          "owns its own credential (spawn_env's own docstring)", lambda: (
+        None if "ANTHROPIC_API_KEY" not in supervisor.spawn_env(_sbxd)
+        else (_ for _ in ()).throw(AssertionError("leaked into docker exec"))))
+
+    # ② the on_fallback cluster. Three mutations, three misses, one hole: the
+    # RECORD field was referenced by no test at all.
+    def _org_with(fzd, window=True):
+        o = _FakeOrg(slug="zz", api_key="sk", api_fallback=True,
+                     api_fallback_until=time.time() + (3600 if window else -1),
+                     auto_resume=True)
+        o.nodes = {"n": {"state": "live", "frozen": dict(fzd)}}
+        return o
+    check("lane · a freeze earned ON the key lane is still resumable — "
+          "un-exempting `on_fallback` in _resumable makes ▶ skip the node "
+          "forever (the pre-№41 spend-freeze trap)", lambda: (
+        None if supervisor._resumable(
+            {"state": "live", "frozen": {"limit": True, "on_fallback": True}})
+        is not None
+        else (_ for _ in ()).throw(AssertionError("▶ would skip it"))))
+    check("lane · …and an open window does NOT insta-wake it into the same "
+          "wall it just hit", lambda: (
+        None if "n" not in supervisor.auto_resume_ready(
+            _org_with({"limit": True, "on_fallback": True,
+                       "until_ts": time.time() + 3600}))
+        else (_ for _ in ()).throw(AssertionError("woken into the wall"))))
+    check("lane · …while a SUBSCRIPTION-lane freeze beside it is woken at "
+          "once, which is what the window is for", lambda: (
+        None if "n" in supervisor.auto_resume_ready(
+            _org_with({"limit": True, "until_ts": time.time() + 3600}))
+        else (_ for _ in ()).throw(AssertionError("the window did nothing"))))
+
+    # ②b …and the RECORD's value comes from the lane the turn actually ran
+    # on. Both directions are drivable; the third case — a window that OPENS
+    # mid-turn, which is what made re-reading `api_fallback_active` wrong —
+    # is not, so it is pinned at the source.
+    if shutil.which("node"):
+        for _win, _want, _why in (
+                (True, True, "a turn spawned INSIDE a window froze on the key "
+                             "lane, so it must wait out its own reset"),
+                (False, False, "a turn spawned on the subscription froze on "
+                               "the subscription, whatever the org looks like "
+                               "now — mismarking it makes the fast-wake skip "
+                               "it, and it sleeps for hours beside a paid, "
+                               "open, unused key window")):
+            _ls, _ln = probe_org()
+            _lo = store.load_org(_ls)
+            _lo.d["api_key"] = "sk-test"
+            _lo.d["api_fallback"] = True
+            if _win:
+                _lo.d["api_fallback_until"] = time.time() + 3600
+            store.save_org(_lo)
+            set_mode("iserror", limit_text="Claude AI usage limit reached")
+            run_turn(_ls, _ln)
+            _fzl = (store.load_org(_ls).nodes[_ln].get("frozen") or {})
+            check("lane · %s" % _why, (
+                lambda f=_fzl, w=_want: (
+                    None if bool(f.get("on_fallback")) is w
+                    else (_ for _ in ()).throw(AssertionError(f)))))
+
+    def _the_record_takes_the_spawn_lane():
+        j = _code.find("fz[\"limit\"] = True")
+        fixture(j > 0, "the freeze site moved — re-read this check")
+        seg = _code[j:_code.find("store.save_org(o2)", j)]
+        rhs = re.findall(r'fz\["on_fallback"\]\s*=\s*([^\n]+)', seg)
+        fixture(len(rhs) == 2, "expected both freeze branches to record it")
+        assert all(r.strip() == "on_fallback_key" for r in rhs), (
+            "the flag must be the lane THIS turn ran on, captured at spawn — "
+            "re-reading `api_fallback_active` at freeze time is the bug, and "
+            "hardcoding True is the same bug with no window at all: %r" % rhs)
+    check("lane · both freeze branches record the SPAWN lane (structural — "
+          "a window opening mid-turn is not drivable from a test)",
+          _the_record_takes_the_spawn_lane)
+
+    # ③ `_candidate`'s per-entry lane band, reached the way the mutation did:
+    # through a NAMED blob (the existing check uses an unnamed one, which
+    # exercises `_within` instead and leaves this path bare).
+    _readout(("session", "session", 99, "critical", 20 * 3600, True, None))
+    check("cap · a named SESSION limit is not answered by a session lane "
+          "claiming to reset 20 hours out — same money shape as the "
+          "live-caught 23-hour window, arriving via the readout", lambda: (
+        None if limits.reset_for("You've hit your session limit") == (None, "")
+        else (_ for _ in ()).throw(AssertionError(
+            limits.reset_for("You've hit your session limit")))))
+    limits.invalidate()
+
+    # ④ the org-wide fable trigger's session exclusion — FABLE-1 itself.
+    check("fable · a session limit that MENTIONS Fable does not fire the "
+          "org-wide escalation (FABLE-1: under `dissolve` it archives every "
+          "fable node's subtree)", lambda: (
+        None if not supervisor._looks_like_fable_tier_limit(
+            "You've reached your Fable 5 session limit")
+        and supervisor._looks_like_fable_tier_limit(
+            "You've reached your Fable 5 limit.")
+        else (_ for _ in ()).throw(AssertionError("FABLE-1 is back"))))
+
+    # ⑤ classify: the ordering claim and both _TIER_RE guards were vacuous —
+    # the blob in the "session wins" check does not even match _TIER_RE, so
+    # reordering the branches left it green.
+    for _b, _want, _why in (
+            ("You've reached your Fable 5 session limit", ("session", None),
+             "matches BOTH tests, so it discriminates the order"),
+            ("the sonnet-4-5 model is over its limit", (None, None),
+             "a hyphenated model id is not a tier limit"),
+            ("API Error: overloaded for model fable 5, usage limit reached",
+             (None, None), "no possessive anchor, so not a tier limit")):
+        check("classify · %s" % _why, (
+            lambda b=_b, w=_want: (
+                None if limits.classify(b) == w
+                else (_ for _ in ()).throw(AssertionError(
+                    (b, limits.classify(b)))))))
+
+    # ⑥ the RATE constants, as literals. Round 7 pinned the money ones and
+    # left these comparing against themselves.
+    # ⚠ this read `"time.time() + 300" in _code`, which is a PREFIX of
+    # `+ 3000` — the guard passed on the exact drift it was named for, and a
+    # guard that reports green on its own subject is worse than none (redteam
+    # round 9). The floor is a module constant now, so the check is a literal.
+    check("constants · the self-report cap is 3, the blind probe floor is 5 "
+          "minutes, and the outer horizon is 8 days", lambda: (
+        None if supervisor.UNTRUSTED_LIMIT_RUNS == 3
+        and supervisor.PROBE_FLOOR == 300.0
+        and supervisor.REREAD_TRIES == 3
+        and limits.MAX_HORIZON == 8 * 86400.0
+        and limits.CACHE_TTL == 30.0
+        else (_ for _ in ()).throw(AssertionError(
+            (supervisor.UNTRUSTED_LIMIT_RUNS, supervisor.PROBE_FLOOR,
+             limits.MAX_HORIZON, limits.CACHE_TTL)))))
+
+    # ⑦ /api/usage must not force a fetch — the modal polls, and one cache
+    # for two consumers is the invariant this feature is built on.
+    # ⚠ was a regex over the route's source, which `lambda: fetch(True)` and
+    # `fetch(max_age=0.0)` both walked straight past. Run the route and watch
+    # the call instead (redteam round 9).
+    def _the_modal_route_shares_the_cache():
+        import asyncio
+        from orgtree import api as _apimod
+        seen = []
+        real = limits.fetch
+
+        def _spy(*a, **k):
+            seen.append((a, k))
+            return {"available": True, "limits": [], "plan": "x"}
+        limits.fetch = _spy
+        try:
+            asyncio.run(_apimod.claude_usage())
+        finally:
+            limits.fetch = real
+        assert seen, "the route no longer goes through limits.fetch"
+        # ⚠ and it must still hand the SYNCHRONOUS fetch to a threadpool. The
+        # regex this probe replaced happened to cover that; the probe did not,
+        # and a direct `await`-less call blocks the whole event loop for up to
+        # FETCH_TIMEOUT + a 30 s token refresh — including the bridge
+        # `/anthropic` passthrough every sandboxed turn rides (redteam 10).
+        j = _api.find("async def claude_usage(")
+        fixture(j > 0, "the usage route moved — re-read this check")
+        assert "run_in_threadpool(limits.fetch" in _api[j:j + 700], (
+            "the route must not call the blocking fetch on the event loop")
+        a, k = seen[0]
+        assert not a and not k, (
+            "the modal polls: forcing a fetch per request (%r/%r) defeats the "
+            "single cache the freeze path reads and hammers a "
+            "semi-documented endpoint" % (a, k))
+    check("usage · the modal route shares the cache rather than forcing it "
+          "(runtime)", _the_modal_route_shares_the_cache)
+
+    # ⑧ the identity conjunct in the provenance test: a turn that promoted an
+    # agent sentence AND then exited non-zero is judged on the CLI's stderr.
+    def _provenance_is_a_conjunction():
+        j = _code.find("_trusted_blob = ")
+        fixture(j > 0, "the provenance line moved — re-read this check")
+        seg = _code[j:j + 200]
+        assert "agent_authored" in seg and "err_blob is synth_limit_txt" in seg, (
+            "both halves are needed: the flag says an agent sentence was "
+            "promoted, the identity says it is what actually froze the node")
+    check("trust · provenance is flag AND identity (structural — reaching it "
+          "needs a promotion followed by a non-zero exit)",
+          _provenance_is_a_conjunction)
+
+    # ⑨ the fuzzy proxied matcher, which exists because an exact-match copy
+    # once disagreed with the sandbox about the same string.
+    _envkey2 = os.environ.get("ORGTREE_SANDBOX_API_KEY")
+    os.environ["ORGTREE_SANDBOX_API_KEY"] = "proxy"
+    try:
+        check("lane · `ORGTREE_SANDBOX_API_KEY=proxy` reads as PROXIED on "
+              "both sides — an exact-match copy read it as a key here and as "
+              "proxied in the sandbox", lambda: (
+            None if not supervisor.bills_the_key(
+                _FakeOrg(slug="zz", kiosk={"sandbox": True}), False)
+            else (_ for _ in ()).throw(AssertionError("matchers diverged"))))
+    finally:
+        if _envkey2 is None:
+            os.environ.pop("ORGTREE_SANDBOX_API_KEY", None)
+        else:
+            os.environ["ORGTREE_SANDBOX_API_KEY"] = _envkey2
+
+    # ⑩ the detector's "short standalone text" half.
+    check("detect · a long answer that happens to discuss a usage limit is "
+          "not a limit card", lambda: (
+        None if not supervisor._result_names_a_limit(
+            "Here is what I found. " * 12
+            + "The usage limit resets at 9am, per the docs.")
+        else (_ for _ in ()).throw(AssertionError("froze an essay"))))
+
+    # ⑪ stale-on-error: a blip must not cost the modal its bars.
+    limits.invalidate()
+    limits._cache.update(at=time.time(), data={"available": True, "plan": "x",
+                                               "limits": []})
+    _oa, _ot = limits.subproxy.available, limits.subproxy.get_access_token
+    _oo = limits.urllib.request.urlopen
+    limits.subproxy.available = lambda: True
+    limits.subproxy.get_access_token = lambda: "tok"
+
+    def _boom_open(*a, **k):
+        raise OSError("upstream down")
+    limits.urllib.request.urlopen = _boom_open
+    try:
+        check("stale · an upstream blip serves the last good bars instead of "
+              "an error box", lambda: (
+            None if limits.fetch(force=True).get("available") is True
+            else (_ for _ in ()).throw(AssertionError(
+                limits.fetch(force=True)))))
+    finally:
+        limits.subproxy.available, limits.subproxy.get_access_token = _oa, _ot
+        limits.urllib.request.urlopen = _oo
+        limits.invalidate()
+
+    # ---- R10 · four well-tested functions reached by untested WIRES -------
+    # Each of these mutations passed all 905 checks: the function behind the
+    # wire is pinned, the line that calls it was not. Same shape every time.
+
+    def _freeze_block():
+        j = _code.find("fz[\"limit\"] = True")
+        fixture(j > 0, "the freeze site moved — re-read this check")
+        return _code[j:_code.find("store.save_org(o2)", j)]
+
+    def _the_window_goes_through_the_bounder():
+        seg = _freeze_block()
+        i = seg.find("_stamped_win = ")
+        fixture(i > 0, "the window write moved — re-read this check")
+        rhs = " ".join(seg[i:seg.find("o2.d[", i)].split())
+        assert "_fallback_window_until(" in rhs and "trusted=" in rhs, (
+            "the ONE line that writes api_fallback_until must route through "
+            "the bounder and tell it the provenance — raw, a probe freeze "
+            "opens 300 s (under the documented floor) and an 8-day epoch "
+            "opens 8 days (over the ceiling): %s" % rhs)
+    check("money · the window write is bounded and provenance-aware "
+          "(structural — the wire, not the arithmetic)",
+          _the_window_goes_through_the_bounder)
+
+    def _the_stamp_is_told_the_billing_lane():
+        seg = _freeze_block()
+        i = seg.find("_rts, _rsrc = _limit_reset_ts(")
+        fixture(i > 0, "the stamp call moved — re-read this check")
+        rhs = " ".join(seg[i:seg.find(")", seg.find("trusted=", i))].split())
+        assert "subscription=not _billed_key" in rhs, (
+            "D-133 §WHOSE QUOTA is decided here: told `subscription=True` a "
+            "key-billed org has its freeze timed off the HOST's lanes, and "
+            "the correction pass — still told the truth — declines to "
+            "overwrite it: %s" % rhs)
+    check("lane · the stamp is told the billing lane (structural)",
+          _the_stamp_is_told_the_billing_lane)
+
+    def _the_fable_lock_goes_through_its_own_clock():
+        seg = _freeze_block()
+        i = seg.find("fable_limit_hit(")
+        fixture(i > 0, "the escalation moved — re-read this check")
+        rhs = " ".join(seg[i:i + 260].split())
+        assert "_fable_lock_ts(" in rhs, (
+            "FABLE-2 verbatim: `fz[\"until_ts\"]` may be the 5-minute probe "
+            "floor, so passing it here self-releases a week-long org-wide "
+            "lock ~288 times a day: %s" % rhs)
+    check("fable · the org-wide lock is timed by its own clock, never by the "
+          "node's freeze (structural)", _the_fable_lock_goes_through_its_own_clock)
+
+    # ⑤ the auto_resume toggle, BEHAVIOURALLY. The existing guard greps the
+    # filter's contents, so it stays green when the whole branch goes dead —
+    # the same self-certification family as the PROBE_FLOOR substring guard.
+    _tog = _FakeOrg(slug="zz")
+    _tog.nodes = {"n": {"state": "live",
+                        "frozen": {"limit": True, "until_ts": now - 120}}}
+    check("wake · a limit freeze is ready only when its own reset has passed "
+          "— the timer, not the toggle, owns that", lambda: (
+        None if "n" in supervisor.auto_resume_ready(_tog, now)
+        else (_ for _ in ()).throw(AssertionError("a passed reset is ready"))))
+
+    def _the_toggle_gates_the_limit_kind():
+        j = _code.find("def start_auto_resume_loop(")
+        fixture(j > 0, "the resume loop moved — re-read this check")
+        body = _code[j:_code.find("\ndef ", j + 1)]
+        k = body.find('org.d.get("auto_resume")')
+        fixture(k > 0, "the toggle read moved — re-read this check")
+        seg = " ".join(body[max(0, k - 120):k + 60].split())
+        assert "if not" in seg, (
+            "the toggle must still GATE something — a dead branch makes every "
+            "limit-frozen node auto-wake and spend against the quota the user "
+            "opted out of: %s" % seg)
+    check("wake · the auto_resume toggle still gates the limit kind "
+          "(structural — a dead branch is invisible to a contents grep)",
+          _the_toggle_gates_the_limit_kind)
+
+    # ⑥ the 429 markers the first `is_rate_limit` missed — one hyphen was the
+    # difference between a 15-minute window and a six-day one
+    for _b, _want in (
+            ("API Error: 429 usage limit reached", True),
+            ("…exceeded your weekly rate-limit…", True),
+            ("…exceeded your weekly rate_limit…", True),
+            ("anthropic.RateLimitError: too many requests", True),
+            ("per-minute rate limit exceeded", True),
+            ("Claude AI usage limit reached", False),
+            ("your corporate limit applies", False),
+            ("You've reached your Fable 5 limit.", False)):
+        check("rate-limit · %r → %s" % (_b[:44], _want), (
+            lambda b=_b, w=_want: (
+                None if limits.is_rate_limit(b) is w
+                else (_ for _ in ()).throw(AssertionError(b)))))
+
+    # ⑦ a `critical` lane must actually reach the tightest warm band
+    check("warm · a critical lane reaches the 45 s band — pressure() floors "
+          "it at exactly 95.0, so a strict `> 95` could never see the one "
+          "signal the band exists for", lambda: (
+        None if (_readout(("session", "session", 3, "critical", 3600, True,
+                           None)) or supervisor._warm_interval(
+                               limits.pressure()) == 45)
+        else (_ for _ in ()).throw(AssertionError(limits.pressure()))))
+    limits.invalidate()
+
+    # W3 · the correction pass must tighten the cache window, or it re-reads
+    # the very entry the freeze stamped from
+    check("re-read · the correction's max_age is tighter than the ordinary "
+          "cache TTL", lambda: (
+        None if 0 < limits.REREAD_MAX_AGE < limits.CACHE_TTL
+        else (_ for _ in ()).throw(AssertionError(limits.REREAD_MAX_AGE))))
+
+    # E1 · `_plan` is inside fetch's "never raises" contract
+    _credbak = limits.subproxy.CREDS
+    _bad = os.path.join(_TMP, "badcreds.json")
+    with open(_bad, "w", encoding="utf-8") as _f:
+        _f.write('{"claudeAiOauth": ["not", "a", "dict"]}')
+    limits.subproxy.CREDS = _bad
+    try:
+        check("reshape · a malformed credentials file degrades the plan "
+              "string, it does not raise out of fetch", lambda: (
+            None if limits._plan() == ""
+            else (_ for _ in ()).throw(AssertionError(limits._plan()))))
+    finally:
+        limits.subproxy.CREDS = _credbak
+
+    # ---- R9 · a second, independent ~100-mutation campaign ----------------
+
+    # S28 · the money boundary D-130 writes down and nothing tested: a FABLE
+    # TIER quota is fable_limit_policy's lane, not a billing lane. Dropping
+    # `not _fable_tier` from the window `elif` opens up to 7 days of org-wide
+    # metered billing on it.
+    def _a_fable_tier_quota_opens_no_window():
+        j = _code.find("fz[\"limit\"] = True")
+        fixture(j > 0, "the freeze site moved — re-read this check")
+        seg = _code[j:_code.find("store.save_org(o2)", j)]
+        i = seg.find('o2.d["api_fallback_until"] = _stamped_win')
+        fixture(i > 0, "the window write moved — re-read this check")
+        cond = seg[seg.rfind("elif", 0, i):i]
+        assert "_fable_tier" in cond and "_trusted_blob" in cond, (
+            "the window must not open on a fable TIER quota (D-130: that lane "
+            "belongs to fable_limit_policy, not to billing) nor on untrusted "
+            "evidence — condition was: %s" % " ".join(cond.split()))
+    check("money · a fable-tier quota and untrusted text both open NO "
+          "key-billing window (structural — the tier path needs a real fable "
+          "node and a policy)", _a_fable_tier_quota_opens_no_window)
+
+    # F7 · the correction pass has the FINAL say on both the stamp and the
+    # window, so it must be told the same lane the freeze was.
+    def _the_correction_pass_is_told_the_lane():
+        j = _code.find("_spawn_reset_refresh(slug, nid, err_blob")
+        fixture(j > 0, "the spawn call moved — re-read this check")
+        seg = " ".join(_code[j:j + 260].split())
+        assert "not _billed_key" in seg and "_trusted_blob" in seg, (
+            "the pass rewrites until_ts AND api_fallback_until; told "
+            "`subscription=True` for a key-billed freeze it re-introduces the "
+            "whole-quota bug in the one place that has the last word: %s"
+            % seg)
+    check("lane · the correction pass inherits the freeze's lane and trust "
+          "(structural)", _the_correction_pass_is_told_the_lane)
+
+    # T5 · …and `_billed_key` itself is the spawn capture, not a re-read.
+    def _the_billing_lane_is_the_spawn_capture():
+        f = _code.find("fz[\"limit\"] = True")
+        fixture(f > 0, "the freeze site moved — re-read this check")
+        j = _code.rfind("_billed_key = ", 0, f)
+        fixture(j > 0, "the lane capture moved — re-read this check")
+        rhs = _code[j + len("_billed_key = "):_code.find("\n", j)].strip()
+        assert rhs == "billed_key", (
+            "combining a spawn-captured window with org fields re-read at "
+            "freeze time is the bug the comment names — a mid-turn settings "
+            "change then re-labels a key-billed turn: %r" % rhs)
+    check("lane · the freeze reads the spawn-captured billing lane "
+          "(structural — a mid-turn settings change is not drivable)",
+          _the_billing_lane_is_the_spawn_capture)
+
+    # F3 · the correction's no-op threshold. Both existing checks straddle it
+    # (a 30 s move and a 3.9 h move); neither pins the boundary, so widening
+    # it to 100 minutes let an over-long stamp AND window survive correction.
+    _slug9, _nid9 = probe_org()
+
+    def _stamp9(win):
+        o = store.load_org(_slug9)
+        o.nodes[_nid9]["frozen"] = {"at": "x", "limit": True,
+                                    "until_ts": now + 300, "until": "x",
+                                    "reset_src": "probe"}
+        o.d["api_key"] = "sk-test"
+        o.d["api_fallback"] = True
+        o.d["api_fallback_until"] = win
+        store.save_org(o)
+
+    _real9 = supervisor._limit_reset_ts
+    try:
+        _w9 = supervisor._fallback_window_until(now + 300, now)
+        for _delta, _want, _why in ((45, False, "a move under a minute is "
+                                                "not worth a write"),
+                                    (120, True, "a two-minute move IS")):
+            supervisor._limit_reset_ts = (
+                lambda blob, _d=_delta, **kw: (now + 300 + _d, "usage:session"))
+            _stamp9(_w9)
+            _got = supervisor._refresh_freeze_reset(
+                _slug9, _nid9, "limit", now + 300, _w9)
+            check("refresh · %s (the 60 s threshold, pinned at the boundary)"
+                  % _why, (
+                lambda g=_got, w=_want: (
+                    None if g is w
+                    else (_ for _ in ()).throw(AssertionError(
+                        "wrote=%s wanted=%s" % (g, w))))))
+    finally:
+        supervisor._limit_reset_ts = _real9
+
+    # L2/L1/L28 · `_iso_to_epoch`. The helper the readout checks use only ever
+    # emits `+00:00`, so the `Z` branch — the one this host's 3.10 needs — was
+    # never exercised: dropping it makes EVERY readout return None and the
+    # whole lookup degrade to the blind probe floor.
+    _epoch_cases = (("2026-08-18T15:30:00Z", "the Z suffix 3.10 cannot parse"),
+                    ("2026-08-18T15:30:00+00:00", "an explicit offset"),
+                    ("2026-08-18T15:30:00", "a naive reading (UTC upstream)"))
+    _vals = [limits._iso_to_epoch(t) for t, _ in _epoch_cases]
+    check("iso · every shape the upstream emits parses, and to the SAME "
+          "instant (%s)" % "; ".join(w for _, w in _epoch_cases), lambda: (
+        None if all(v is not None for v in _vals)
+        and max(_vals) - min(_vals) < 1
+        else (_ for _ in ()).throw(AssertionError(list(zip(_epoch_cases,
+                                                           _vals))))))
+
+    # S3 · the past-floor on a parsed reset. The existing check uses a
+    # timestamp over a year old, so widening the floor 1440x was invisible.
+    check("band · a reset five minutes in the past is not a horizon — it "
+          "would make the node 'ready' on every 30 s tick", lambda: (
+        None if supervisor._parse_limit_reset_ts(
+            "usage limit reached|%d" % int(now - 300), None, now=now) is None
+        and supervisor._parse_limit_reset_ts(
+            "usage limit reached|%d" % int(now + 300), None, now=now)
+        is not None
+        else (_ for _ in ()).throw(AssertionError("past floor widened"))))
+
+    # R11/R12 · the toggle-OFF filter. D-122 governs the connection kind; a
+    # record carrying BOTH kinds waits on the toggle, and a key-lane freeze
+    # must not be woken by it either.
+    def _the_toggle_off_filter_is_narrow():
+        j = _code.find("def start_auto_resume_loop(")
+        fixture(j > 0, "the resume loop moved — re-read this check")
+        body = _code[j:_code.find("\ndef ", j + 1)]
+        k = body.find("_resumable(org.node(nid))")
+        fixture(k > 0, "the toggle-off filter moved — re-read this check")
+        seg = " ".join(body[k:k + 400].split())
+        assert 'fz.get("connection") and not fz.get("limit")' in seg, (
+            "a record carrying BOTH kinds must wait on the toggle (D-122)")
+        assert 'not fz.get("on_fallback")' in seg, (
+            "a key-lane freeze must not be woken by the fallback clause")
+    check("wake · the toggle-off filter admits only PURE connection freezes "
+          "and subscription-lane limits (structural)",
+          _the_toggle_off_filter_is_narrow)
+
+    # W2 · the warm loop's org gate — 1920 requests/day on an org-less install
+    def _the_warm_loop_is_gated():
+        j = _code.find("def start_usage_warm_loop(")
+        fixture(j > 0, "the warm loop moved — re-read this check")
+        seg = _code[j:_code.find("\ndef ", j + 1)]
+        assert "limits.available()" in seg and "store.list_orgs()" in seg, (
+            "the loop must be silent with no credentials AND with no orgs")
+    check("warm · the loop is gated on credentials and on there being an org "
+          "to warm the cache for (structural)", _the_warm_loop_is_gated)
+
+    # L18 · a scoped lane answers only for ITS model
+    _readout(("weekly_scoped", "weekly", 90, "normal", 2 * 3600, True, "Opus"),
+             ("weekly_scoped", "weekly", 30, "normal", 5 * 86400, False,
+              "Fable"))
+    check("lane · a model-named limit is answered by THAT model's pool, not "
+          "whichever scoped lane comes first", lambda: (
+        None if abs(limits.reset_for(
+            "You've reached your Fable 5 limit")[0] - (now + 5 * 86400)) < 60
+        else (_ for _ in ()).throw(AssertionError(
+            limits.reset_for("You've reached your Fable 5 limit")))))
+    limits.invalidate()
+
+    # X4 · the container LABEL must read `proxied` the same fuzzy way the
+    # sandbox does — the mirror of the bills_the_key matcher bug
+    _envkey3 = os.environ.get("ORGTREE_SANDBOX_API_KEY")
+    os.environ["ORGTREE_SANDBOX_API_KEY"] = "proxy"
+    try:
+        check("sandbox · the auth LABEL agrees with the runtime auth on "
+              "`=proxy` — a mismatch labels a proxied container `key:<hash>` "
+              "and recreates it forever", lambda: (
+            None if sbx.auth_label(_FakeOrg(slug="zz",
+                                            kiosk={"sandbox": True})) == "proxy"
+            else (_ for _ in ()).throw(AssertionError(
+                sbx.auth_label(_FakeOrg(slug="zz",
+                                        kiosk={"sandbox": True}))))))
+    finally:
+        if _envkey3 is None:
+            os.environ.pop("ORGTREE_SANDBOX_API_KEY", None)
+        else:
+            os.environ["ORGTREE_SANDBOX_API_KEY"] = _envkey3
+
+    # B-1 · a per-minute RATE limit is not a usage LANE
+    _readout(("session", "session", 80, "normal", 4 * 3600, True, None))
+    check("rate-limit · a 429 'per-minute rate limit' is not answered from "
+          "the subscription's 5-hour lane — that parked a node for four "
+          "hours, and billed a fallback org's key for four hours, against a "
+          "wall that lifts in a minute", lambda: (
+        None if supervisor._limit_reset_ts(
+            "API Error: 429 rate_limit_error: Number of request tokens has "
+            "exceeded your per-minute rate limit") == (None, "")
+        else (_ for _ in ()).throw(AssertionError(
+            supervisor._limit_reset_ts(
+                "API Error: 429 rate_limit_error: per-minute rate limit")))))
+    check("rate-limit · …but its own prose still answers, and an ordinary "
+          "usage limit is unaffected", lambda: (
+        None if supervisor._limit_reset_ts(
+            "rate limit exceeded, try again in 2 minutes")[1] == "text"
+        and supervisor._limit_reset_ts(
+            "Claude AI usage limit reached")[1] == "usage:session"
+        else (_ for _ in ()).throw(AssertionError("over-tightened"))))
+    limits.invalidate()
+
+    # ---- R7 · the gaps mutation testing found in the checks above ---------
+    # Each of these was green under a mutation that broke the thing it names.
+
+    # ① `_normalize`'s OUTPUT CONTRACT, end to end. Every readout check above
+    # hand-builds the POST-normalize shape, so renaming an emitted key stayed
+    # green while (a) every readout-sourced freeze silently fell to the blind
+    # probe floor and (b) the modal's reset column went blank — this is the
+    # seam between the two consumers the feature deliberately merged onto one
+    # cache, so it is pinned against a RAW upstream payload.
+    _raw = {"limits": [
+        {"kind": "session", "group": "session", "percent": 92,
+         "severity": "critical", "resets_at": _iso(2 * 3600),
+         "is_active": True, "scope": None},
+        {"kind": "weekly_scoped", "group": "weekly", "percent": 40,
+         "severity": "normal", "resets_at": _iso(5 * 86400),
+         "is_active": False,
+         "scope": {"model": {"display_name": "Fable"}}}]}
+    _norm = limits._normalize(_raw)
+    check("contract · _normalize emits exactly the keys both consumers read "
+          "(reset_for's `kind`/`resets_at`/`is_active`, the modal's "
+          "`percent`/`severity`/`model`/`group`)", lambda: (
+        None if all(set(x) == {"kind", "group", "percent", "severity",
+                               "resets_at", "is_active", "model"}
+                    for x in _norm)
+        and _norm[1]["model"] == "Fable" and _norm[0]["is_active"] is True
+        else (_ for _ in ()).throw(AssertionError(_norm))))
+    limits._cache.update(at=time.time(), data={"available": True, "plan": "max",
+                                               "limits": _norm})
+    check("contract · …and a RAW payload, normalized, actually answers a "
+          "freeze", lambda: (
+        None if limits.reset_for("Claude AI usage limit reached")[1]
+        == "usage:session"
+        else (_ for _ in ()).throw(AssertionError(
+            limits.reset_for("Claude AI usage limit reached")))))
+    limits.invalidate()
+
+    # ② the money constants themselves. The checks above compare against the
+    # constants, so raising the ceiling 7 d → 60 d stayed green. Changing
+    # these is a deliberate act; make it a loud one.
+    check("constants · the key-billing window is 15 min … 7 d + 1 h and the "
+          "readout stops being evidence at 15 min", lambda: (
+        None if (supervisor.FALLBACK_MIN_WINDOW == 900.0
+                 and supervisor.FALLBACK_MAX_WINDOW == 7 * 86400.0 + 3600.0
+                 and limits.MAX_EVIDENCE_AGE == 900.0
+                 and limits.LANE_SECONDS["session"] == 18000.0)
+        else (_ for _ in ()).throw(AssertionError(
+            (supervisor.FALLBACK_MIN_WINDOW, supervisor.FALLBACK_MAX_WINDOW,
+             limits.MAX_EVIDENCE_AGE)))))
+
+    # ③/④ WHICH self-report caps the node, and what the record then says.
+    # ⚠ Driven through REAL turns. The first cut of this check re-implemented
+    # the counting rule inside the test and would have passed against any
+    # production code at all — the very vacuity these rounds keep finding.
+    if shutil.which("node"):
+        _cs, _cn = probe_org()
+        set_mode("plain", reply="Usage limit reached. Try again in 1 minute.")
+        _seq = []
+        for _i in range(supervisor.UNTRUSTED_LIMIT_RUNS + 1):
+            _o = store.load_org(_cs)
+            _o.nodes[_cn].pop("frozen", None)     # a wake, without a turn
+            store.save_org(_o)
+            run_turn(_cs, _cn)
+            _fz = store.load_org(_cs).nodes[_cn].get("frozen") or {}
+            _seq.append((_fz.get("until_ts"), _fz.get("reset_src")))
+        _capped_at = next((i + 1 for i, (t, _) in enumerate(_seq)
+                           if t is None), None)
+        check("cap · the Nth self-report caps, not the N+1th (N = "
+              "UNTRUSTED_LIMIT_RUNS = %d) — an off-by-one here grants a free "
+              "turn every run" % supervisor.UNTRUSTED_LIMIT_RUNS, lambda: (
+            None if _capped_at == supervisor.UNTRUSTED_LIMIT_RUNS
+            else (_ for _ in ()).throw(AssertionError(
+                "capped at %s: %s" % (_capped_at, _seq)))))
+        check("cap · …and the capped record stops claiming a provenance for "
+              "the timestamp it just deleted", lambda: (
+            None if _seq[supervisor.UNTRUSTED_LIMIT_RUNS - 1][1] == "capped"
+            and _seq[0][1] == "text"
+            else (_ for _ in ()).throw(AssertionError(_seq))))
+
+    # ⑤ the freeze site's USE of `_sane_inherited`. The helper has unit
+    # checks; the call site had none, and no test can drive it — a frozen
+    # node runs no turns, so a surviving `until_ts` cannot be reached from
+    # outside. Structural, therefore, and honest about why.
+    def _the_inherited_timestamp_is_banded_at_the_call_site():
+        # anchored on the FREEZE SITE, not the first stamping line in the
+        # file — that one belongs to the correction pass
+        j = _code.find("fz[\"limit\"] = True")
+        fixture(j > 0, "the freeze site moved — re-read this check")
+        i = _code.find("fz[\"until_ts\"] = ", j)
+        fixture(i > j, "the stamping line moved — re-read this check")
+        assert "_sane_inherited(" in _code[i:i + 160], (
+            "an inherited until_ts is the one number in this path that no "
+            "band has seen, and on the trusted branch it prices the "
+            "api_fallback window — clamped only by the 7 d ceiling")
+    check("inherit · the call site bands what it inherits (structural — the "
+          "path is unreachable from a test, a frozen node runs no turns)",
+          _the_inherited_timestamp_is_banded_at_the_call_site)
+
+    # ---- single-flight: a limit STORM costs one request, not N ------------
+    # Nothing pinned this (the property arrived as redteam round 2 item 7 and
+    # only ever had a code review behind it). N nodes freezing together each
+    # spawn a correction thread; without the double-checked `_fetch_lock` they
+    # are N concurrent GETs at a semi-documented endpoint, each serializing
+    # behind subproxy's token lock, and a 429 from that herd puts every one of
+    # them on the stale path.
+    limits.invalidate()
+    _hits = []
+    _orig_avail, _orig_tok = limits.subproxy.available, limits.subproxy.get_access_token
+    _orig_open = limits.urllib.request.urlopen
+
+    class _Slow:
+        def __enter__(self):
+            _hits.append(1)
+            time.sleep(0.25)          # long enough for the herd to pile up
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return b'{"limits": []}'
+
+    limits.subproxy.available = lambda: True
+    limits.subproxy.get_access_token = lambda: "tok"
+    limits.urllib.request.urlopen = lambda *a, **k: _Slow()
+    _orig_load = limits.json.load
+    limits.json.load = lambda fp: {"limits": []}
+    try:
+        _threads = [threading.Thread(target=limits.fetch) for _ in range(8)]
+        for t in _threads:
+            t.start()
+        for t in _threads:
+            t.join(5)
+        check("storm · eight simultaneous freezes cost ONE upstream request, "
+              "not eight", lambda: (
+            None if len(_hits) == 1
+            else (_ for _ in ()).throw(AssertionError("%d requests" % len(_hits)))))
+        check("storm · …and every one of them got the answer", lambda: (
+            None if limits.cached() is not None
+            and bool(limits.cached().get("available"))
+            else (_ for _ in ()).throw(AssertionError(limits.cached()))))
+    finally:
+        limits.subproxy.available = _orig_avail
+        limits.subproxy.get_access_token = _orig_tok
+        limits.urllib.request.urlopen = _orig_open
+        limits.json.load = _orig_load
+        limits.invalidate()
+
+    # ---- R3·F6 `fetch` promises never to raise ----------------------------
+    for _shape in ({"limits": 3}, {"limits": "xx"}, {"limits": [None, 3]},
+                   {"limits": [{"scope": {"model": "str"}}]}, {"five_hour": 7},
+                   []):
+        check("reshape · a %r payload degrades, it does not raise"
+              % (_shape if not isinstance(_shape, dict)
+                 else list(_shape)[:1] or "empty"), (
+            lambda sh=_shape: (
+                None if isinstance(limits._normalize(
+                    sh if isinstance(sh, dict) else {}), list)
+                else (_ for _ in ()).throw(AssertionError(sh)))))
+
+    # ---- R4·F3 an agent may not halt (or dissolve) the org -----------------
+    if shutil.which("node"):
+        _fs, _fn = probe_org()
+        _fo = store.load_org(_fs)
+        _fo.nodes[_fn]["model"] = "fable"
+        store.save_org(_fo)
+        set_mode("plain",
+                 reply="I've reached the Fable limit - try again in 3 hours.")
+        run_turn(_fs, _fn)
+        check("fable · an AGENT'S OWN SENTENCE does not fire the org-wide "
+              "escalation — under the dissolve policy that trigger archives "
+              "every fable node in the org", lambda: (
+            None if not store.load_org(_fs).d.get("fable_lock")
+            else (_ for _ in ()).throw(AssertionError(
+                store.load_org(_fs).d.get("fable_lock")))))
+        _fo = store.load_org(_fs)
+        check("fable · …and the node itself still froze, with a timestamp "
+              "(the cheap half stays)", lambda: (
+            None if (_fo.nodes[_fn].get("frozen") or {}).get("until_ts")
+            else (_ for _ in ()).throw(AssertionError(
+                _fo.nodes[_fn].get("frozen")))))
+
+    # ---- R5·F1 an agent cannot put the ORG on the key, at any rate ---------
+    # Flooring an unvouched window at 15 minutes bounded ONE incident and not
+    # the RATE: the window makes the node immediately resumable (even with
+    # auto_resume off), the resume replays the same prompt, and the same
+    # sentence re-opens it — measured at 95% duty, indefinitely, with the
+    # whole org on the user's metered key (redteam 2026-08-18).
+    if shutil.which("node"):
+        _us, _un = probe_org()
+        _uo = store.load_org(_us)
+        _uo.d["api_key"] = "sk-test"
+        _uo.d["api_fallback"] = True
+        _uo.d["auto_resume"] = True
+        store.save_org(_uo)
+        set_mode("plain",
+                 reply="Usage limit reached. Try again in 1 minute.")
+        run_turn(_us, _un)
+        _after = store.load_org(_us)
+    if shutil.which("node"):
+        _s3, _un2 = probe_org()
+        set_mode("plain", reply=(
+            "Usage limit reached for this account, resets once you re-auth "
+            "at http://corp-sso-refresh/login — try again in 1 minute"))
+        run_turn(_s3, _un2)
+        _after2 = store.load_org(_s3)
+        check("chrome · the agent's own phrasing never becomes the freeze "
+              "LABEL — `until` is projected by ledger.tree() and rendered as "
+              "system chrome in the org header and the node badge, kiosk "
+              "visitors included", lambda: (
+            None if "corp-sso" not in str(
+                (_after2.nodes[_un2].get("frozen") or {}).get("until") or "")
+            and (_after2.nodes[_un2].get("frozen") or {}).get("until")
+            else (_ for _ in ()).throw(AssertionError(
+                (_after2.nodes[_un2].get("frozen") or {}).get("until")))))
+
+        check("rate · a self-reported limit freezes the node but opens NO "
+              "key window — a real wall is always reported BY the CLI, so "
+              "declining costs a genuine limit nothing", lambda: (
+            None if (_after.nodes[_un].get("frozen") or {}).get("limit")
+            and not _after.d.get("api_fallback_until")
+            else (_ for _ in ()).throw(AssertionError(
+                "window=%s frozen=%s" % (_after.d.get("api_fallback_until"),
+                                         _after.nodes[_un].get("frozen"))))))
+        check("rate · …and the freeze is marked untrusted, so a reader can "
+              "tell a floored window from a priced one", lambda: (
+            None if (_after.nodes[_un].get("frozen") or {}).get("untrusted")
+            and _after.nodes[_un].get("untrusted_limit_run") == 1
+            else (_ for _ in ()).throw(AssertionError(
+                _after.nodes[_un].get("frozen")))))
+
+        # …and the run counter ends the loop rather than riding it
+        for _i in range(supervisor.UNTRUSTED_LIMIT_RUNS):
+            _o = store.load_org(_us)
+            _o.nodes[_un].pop("frozen", None)
+            store.save_org(_o)
+            run_turn(_us, _un)
+        _last = store.load_org(_us)
+        # ⚠ BOTH halves, because the first attempt at this passed for the
+        # wrong reason: `untrusted: True` tripped `_resumable`'s
+        # unknown-True-key refusal, which suppressed the timer AND ▶ — the
+        # node could never be woken by anyone, the pre-№41 spend-freeze trap
+        # in a new costume (self-caught 2026-08-18).
+        check("rate · a capped untrusted freeze is still RESUMABLE — the cap "
+              "silences the timer, not the person", lambda: (
+            None if supervisor._resumable(_last.nodes[_un]) is not None
+            else (_ for _ in ()).throw(AssertionError(
+                "▶ would skip this node forever"))))
+        check("rate · …and an open window from another node's REAL limit "
+              "does not drag it along either", lambda: (
+            None if _un not in supervisor.auto_resume_ready(
+                _with_window(_us, _un))
+            else (_ for _ in ()).throw(AssertionError("fast-wake dragged it"))))
+        check("rate · after %d consecutive self-reported limits the node "
+              "stops waking itself and waits for a person"
+              % supervisor.UNTRUSTED_LIMIT_RUNS, lambda: (
+            None if (_last.nodes[_un]["frozen"].get("until_ts") is None
+                     and _un not in supervisor.auto_resume_ready(_last))
+            else (_ for _ in ()).throw(AssertionError(
+                "%s ready=%s" % (_last.nodes[_un]["frozen"],
+                                 supervisor.auto_resume_ready(_last))))))
+        _o = store.load_org(_us)
+        _o.nodes[_un].pop("frozen", None)
+        store.save_org(_o)
+        set_mode("plain", reply="all done, nothing to report")
+        run_turn(_us, _un)
+        check("rate · a completed turn clears the run, like the connection "
+              "kind's — the count is CONSECUTIVE",
+              lambda: (
+            None if not store.load_org(_us).nodes[_un].get(
+                "untrusted_limit_run")
+            else (_ for _ in ()).throw(AssertionError(
+                store.load_org(_us).nodes[_un].get("untrusted_limit_run")))))
+
+    # ---- R2·F8 an unknown lane kind is short, not long ---------------------
+    check("lane · an upstream lane this build has never heard of takes the "
+          "SHORTEST band, not the longest", lambda: (
+        None if limits.lane_horizon("monthly") == limits.lane_horizon("session")
+        else (_ for _ in ()).throw(AssertionError(
+            limits.lane_horizon("monthly")))))
+
+    # ---- R2·F2 the epoch exemption is about PROVENANCE ---------------------
+    # ⚠ through `_limit_reset_ts`, the seam the freeze site actually calls.
+    # Testing `_parse_limit_reset_ts` directly omitted the `kind` argument the
+    # real path always supplies — and the whole defect was that the untrusted
+    # blob got to CHOOSE that kind, so the check was green while the code was
+    # wrong (redteam 2026-08-18).
+    #
+    # The board is deliberately weekly-only: every route an untrusted blob
+    # could take to a 7-day answer (its own epoch, its own "try again in N",
+    # or the readout's genuine weekly lane) has to come back empty, while the
+    # same wording from the CLI still resolves.
+    _readout(("weekly_all", "weekly", 88, "normal", 6 * 86400, False, None))
+    _agent_epoch = "Weekly usage limit reached|%d" % (int(now) + 7 * 86400)
+    _agent_rel = "Your weekly usage limit was reached. Try again in 168 hours."
+    check("trust · an epoch the CLI reported is taken at face value", lambda: (
+        None if supervisor._limit_reset_ts(_agent_epoch)[1] == "text"
+        else (_ for _ in ()).throw(AssertionError("refused the CLI"))))
+    check("trust · the same 38-character text written by the AGENT is refused "
+          "— otherwise a node opens a week-long key-billing window against a "
+          "wall that never existed, by typing one line", lambda: (
+        None if supervisor._limit_reset_ts(_agent_epoch, trusted=False)
+        == (None, "")
+        else (_ for _ in ()).throw(AssertionError(
+            supervisor._limit_reset_ts(_agent_epoch, trusted=False)))))
+    check("trust · …nor by naming the weekly lane in a relative form",
+          lambda: (
+        None if supervisor._limit_reset_ts(_agent_rel, trusted=False)
+        == (None, "")
+        else (_ for _ in ()).throw(AssertionError(
+            supervisor._limit_reset_ts(_agent_rel, trusted=False)))))
+    check("trust · …nor through the READOUT, where an unvouched blob is "
+          "unnamed too and the weekly lane sits outside the session cap",
+          lambda: (
+        None if supervisor._limit_reset_ts(
+            "weekly usage limit reached", trusted=False) == (None, "")
+        else (_ for _ in ()).throw(AssertionError(
+            supervisor._limit_reset_ts("weekly usage limit reached",
+                                       trusted=False)))))
+    # ⚠ the four checks above pin the SEVEN-DAY case. The band an untrusted
+    # blob falls back to is the SESSION lane, so an epoch five hours out was
+    # accepted and priced a five-hour, org-wide key window against a wall that
+    # does not exist — invisible to a test that only measures "not weekly"
+    # (redteam 2026-08-18). Pin the money, not the lane.
+    _agent_5h = "Claude AI usage limit reached|%d" % (int(now) + 5 * 3600)
+    check("trust · an unvouched blob may still WAKE a node on its own "
+          "timestamp", lambda: (
+        None if supervisor._limit_reset_ts(_agent_5h, trusted=False)[0]
+        else (_ for _ in ()).throw(AssertionError("lost the wake time"))))
+    check("trust · …but it may not PRICE a window: an agent's sentence must "
+          "never move the whole org onto the user's metered key", lambda: (
+        None if abs(supervisor._fallback_window_until(
+            now + 5 * 3600, now, trusted=False)
+            - (now + supervisor.FALLBACK_MIN_WINDOW)) < 1
+        and abs(supervisor._fallback_window_until(now + 5 * 3600, now)
+                - (now + 5 * 3600)) < 1
+        else (_ for _ in ()).throw(AssertionError(
+            supervisor._fallback_window_until(now + 5 * 3600, now,
+                                              trusted=False) - now))))
+
+    # ── a NAMED lane bands the epoch too ────────────────────────────────────
+    check("band · 'your session limit …|<epoch 8 days out>' is two pieces of "
+          "evidence contradicting each other — the lane wins", lambda: (
+        None if supervisor._parse_limit_reset_ts(
+            "you have hit your session limit|%d" % (int(now) + 8 * 86400),
+            "session", now=now) is None
+        else (_ for _ in ()).throw(AssertionError("epoch beat its own lane"))))
+    check("band · …and through the seam the freeze site uses, not just the "
+          "parser (the lane has to be DERIVED from that wording)", lambda: (
+        None if supervisor._limit_reset_ts(
+            "you have hit your session limit|%d" % (int(now) + 8 * 86400))[1]
+        != "text"
+        else (_ for _ in ()).throw(AssertionError(
+            supervisor._limit_reset_ts(
+                "you have hit your session limit|%d"
+                % (int(now) + 8 * 86400))))))
+    check("band · …while an epoch with no lane word beside it is still taken "
+          "at face value", lambda: (
+        None if supervisor._parse_limit_reset_ts(
+            "Claude usage limit reached|%d" % (int(now) + 7 * 86400),
+            None, now=now) is not None
+        else (_ for _ in ()).throw(AssertionError("refused a bare epoch"))))
+
+    check("trust · a TRUSTED weekly wording still reaches the weekly lane",
+          lambda: (
+        None if supervisor._limit_reset_ts("weekly usage limit reached")[1]
+        == "usage:weekly_all"
+        else (_ for _ in ()).throw(AssertionError(
+            supervisor._limit_reset_ts("weekly usage limit reached")))))
+
+    # ---- R2·F5 the detector must not inherit the clock's bands -------------
+    for _blob, _want in (("Claude usage limit reached. Resets 9am.", True),
+                         ("Claude usage limit reached. Try again in 20 hours.",
+                          True),
+                         ("Claude usage limit reached. Try again in 2 hours.",
+                          True),
+                         ("the rate limit resets nightly, so I stopped here",
+                          False)):
+        check("detect · %r freezes=%s" % (_blob[:46], _want), (
+            lambda b=_blob, w=_want: (
+                None if supervisor._result_names_a_limit(b) == w
+                else (_ for _ in ()).throw(AssertionError(b)))))
+
+    # ---- R2·F4 a session-length time may never time a WEEKLY tier lock -----
+    check("fable · 'your Fable 5 limit. Try again in 3 hours.' leaves the "
+          "org-wide lock no_reset — releasing it 3 h into a week un-halts "
+          "every fable node ~56 times over (FABLE-2)", lambda: (
+        None if supervisor._fable_lock_ts(
+            "You've reached your Fable 5 limit. Try again in 3 hours.",
+            None, "", now=now) is None
+        else (_ for _ in ()).throw(AssertionError("released early"))))
+    check("fable · …and the readout's weekly lane DOES time it (the whole "
+          "point: no_reset waits for a human)", lambda: (
+        None if supervisor._fable_lock_ts(
+            "You've reached your Fable 5 limit.", now + 5 * 86400,
+            "usage:weekly_scoped", now=now) == now + 5 * 86400
+        else (_ for _ in ()).throw(AssertionError("still no_reset"))))
+    check("fable · an AGENT-authored 'your Fable 5 limit. Try again in 100 "
+          "hours.' cannot halt the org for four days", lambda: (
+        None if supervisor._fable_lock_ts(
+            "your Fable 5 limit. Try again in 100 hours.", None, "",
+            trusted=False, now=now) is None
+        else (_ for _ in ()).throw(AssertionError("agent set the lock"))))
+    check("fable · a SESSION-lane readout answer is refused there too",
+          lambda: (
+        None if supervisor._fable_lock_ts(
+            "You've reached your Fable 5 limit.", now + 3600,
+            "usage:session", now=now) is None
+        else (_ for _ in ()).throw(AssertionError("session lane timed a lock"))))
+
+    # ---- R2·F9 an inherited timestamp is banded like every other -----------
+    check("inherit · a re-freeze keeps a plausible old horizon", lambda: (
+        None if supervisor._sane_inherited(now + 3600) == now + 3600
+        else (_ for _ in ()).throw(AssertionError("dropped a good one"))))
+    check("inherit · …and drops one in the past or past the longest lane",
+          lambda: (
+        None if supervisor._sane_inherited(now - 5) is None
+        and supervisor._sane_inherited(now + 90 * 86400) is None
+        and supervisor._sane_inherited(None) is None
+        else (_ for _ in ()).throw(AssertionError("kept an absurd one"))))
+
+    # ---- whose quota was it? (redteam 2026-08-18) -------------------------
+    _readout(("session", "session", 99, "critical", 4 * 3600, True, None))
+    check("lane · a turn that billed the ORG'S KEY is not timed off the "
+          "host subscription's lanes — a per-minute API rate limit was "
+          "parking nodes for four hours", lambda: (
+        None if supervisor._limit_reset_ts(
+            "API Error: 429 rate_limit_error — Number of request tokens has "
+            "exceeded your per-minute rate limit", subscription=False)
+        == (None, "")
+        else (_ for _ in ()).throw(AssertionError("read someone else's lane"))))
+    check("lane · …but the prose in that same error still answers, because "
+          "it came from the wall that was actually hit", lambda: (
+        None if supervisor._limit_reset_ts(
+            "rate limit exceeded, try again in 2 minutes",
+            subscription=False)[1] == "text"
+        else (_ for _ in ()).throw(AssertionError("dropped the prose"))))
+
+    check("lane · a permanent-key org bills the key on every turn", lambda: (
+        None if supervisor.bills_the_key(_FakeOrg(api_key="sk"), False)
+        else (_ for _ in ()).throw(AssertionError("read as subscription"))))
+    check("lane · a fallback org bills the subscription until its window is "
+          "open", lambda: (
+        None if not supervisor.bills_the_key(
+            _FakeOrg(api_key="sk", api_fallback=True), False)
+        and supervisor.bills_the_key(
+            _FakeOrg(api_key="sk", api_fallback=True), True)
+        else (_ for _ in ()).throw(AssertionError("lane misread"))))
+    check("lane · a keyless org is always the subscription", lambda: (
+        None if not supervisor.bills_the_key(_FakeOrg(), True)
+        else (_ for _ in ()).throw(AssertionError("invented a key"))))
+
+    # a SANDBOXED org's key need never appear in org.d: a kiosk-level key or
+    # the ORGTREE_SANDBOX_API_KEY escape hatch reaches the container the same
+    # way, and reading the org field alone called those turns "subscription"
+    # (redteam 2026-08-18)
+    _kiosk_keyed = _FakeOrg(slug="zz", kiosk={"sandbox": True,
+                                              "api_key": "sk-kiosk"})
+    _proxied = _FakeOrg(slug="zz", kiosk={"sandbox": True})
+    check("lane · a sandboxed org with a KIOSK-level key bills that key",
+          lambda: (
+        None if supervisor.bills_the_key(_kiosk_keyed, False)
+        else (_ for _ in ()).throw(AssertionError("missed the kiosk key"))))
+    check("lane · a proxied sandbox is the subscription", lambda: (
+        None if not supervisor.bills_the_key(_proxied, False)
+        else (_ for _ in ()).throw(AssertionError("read proxied as a key"))))
+    _envkey = os.environ.get("ORGTREE_SANDBOX_API_KEY")
+    os.environ["ORGTREE_SANDBOX_API_KEY"] = "sk-escape"
+    try:
+        check("lane · …and the ORGTREE_SANDBOX_API_KEY escape hatch counts",
+              lambda: (
+            None if supervisor.bills_the_key(_proxied, False)
+            else (_ for _ in ()).throw(AssertionError("missed the env key"))))
+    finally:
+        if _envkey is None:
+            os.environ.pop("ORGTREE_SANDBOX_API_KEY", None)
+        else:
+            os.environ["ORGTREE_SANDBOX_API_KEY"] = _envkey
+    check("lane · a sandboxed FALLBACK org counts a window open at spawn OR "
+          "at freeze — the bridge flips per request, the capture is per turn",
+          lambda: (
+        None if supervisor.bills_the_key(
+            _FakeOrg(slug="zz", kiosk={"sandbox": True}, api_key="sk",
+                     api_fallback=True), True)
+        and not supervisor.bills_the_key(
+            _FakeOrg(slug="zz", kiosk={"sandbox": True}, api_key="sk",
+                     api_fallback=True), False)
+        else (_ for _ in ()).throw(AssertionError("sandboxed fallback lane"))))
+
+    # ---- a readout ages into worthlessness --------------------------------
+    _readout(("session", "session", 99, "critical", 3 * 3600, True, None))
+    limits._cache["at"] = time.time() - limits.MAX_EVIDENCE_AGE - 1
+    check("stale · a readout past MAX_EVIDENCE_AGE stops being evidence — a "
+          "broken upstream serves the last good payload forever, and a "
+          "freeze must not price a key window on a memory", lambda: (
+        None if limits.reset_for("usage limit reached") == (None, "")
+        else (_ for _ in ()).throw(AssertionError("spent on a stale readout"))))
+
+    # ---- the critical one: a short lane may not borrow a long lane's reset -
+    _readout(("session", "session", 99, "critical", -600, True, None),
+             ("weekly_all", "weekly", 65, "normal", 6 * 86400, False, None))
+    check("cap · a SESSION limit whose lane has expired in a stale readout "
+          "must not be answered with the weekly lane six days out (that is "
+          "six days of key billing)", lambda: (
+        None if limits.reset_for("You've hit your session limit") == (None, "")
+        else (_ for _ in ()).throw(AssertionError(
+            limits.reset_for("You've hit your session limit")))))
+    _readout(("session", "session", 99, "critical", -600, True, None),
+             ("weekly_all", "weekly", 65, "normal", 3 * 3600, False, None))
+    check("cap · …but another lane INSIDE the named lane's reach is a fine "
+          "answer", lambda: (
+        None if limits.reset_for("You've hit your session limit")[1]
+        == "usage:weekly_all"
+        else (_ for _ in ()).throw(AssertionError("over-tight cap"))))
+
+    # ---- classify does not read a model ID as a tier limit ----------------
+    for _blob, _want in (
+            ("Claude AI usage limit reached (model claude-opus-4-1)",
+             (None, None)),
+            ("usage limit reached; switch models with /model (sonnet, haiku)",
+             (None, None)),
+            ("You've reached your Fable 5 limit. Run /usage-credits",
+             ("weekly_scoped", "fable"))):
+        check("classify · %r" % _blob[:44], (
+            lambda b=_blob, w=_want: (
+                None if limits.classify(b) == w
+                else (_ for _ in ()).throw(AssertionError(limits.classify(b))))))
+
+    # ---- the warm loop's cadence ------------------------------------------
+    # the synthetic board is board-specific: drop it so the checks below
+    # (and anything appended later) do not silently inherit it
+    limits.invalidate()
+    check("warm · an idle account is read every 5 min", lambda: (
+        None if supervisor._warm_interval(12) == 300
+        else (_ for _ in ()).throw(AssertionError("idle cadence"))))
+    check("warm · 80% tightens to 2 min", lambda: (
+        None if supervisor._warm_interval(80) == 120
+        else (_ for _ in ()).throw(AssertionError("warning cadence"))))
+    check("warm · 99% tightens to 45 s — a freeze is minutes away and the "
+          "stamp it reads must not be older than that", lambda: (
+        None if supervisor._warm_interval(99) == 45
+        else (_ for _ in ()).throw(AssertionError("critical cadence"))))
+    check("warm · a 'critical' severity counts as 95% whatever percent says",
+          lambda: (
+        None if (_readout(("session", "session", 3, "critical", 3600, True,
+                           None)) or limits.pressure() >= 95)
+        else (_ for _ in ()).throw(AssertionError(limits.pressure()))))
+
+
 def main() -> None:
     print("═══ usage-limit freeze — the shape the CLI actually reports ═══")
     sec_detect()
     sec_wake()
+    sec_reset_timing()
     if not shutil.which("node"):
         note("node is not on PATH — §2/§3 skipped (they need the CLI stand-in)")
     else:

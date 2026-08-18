@@ -428,8 +428,13 @@ class FakeDocker:
             out = fmt.replace("{{.State.Running}}",
                               "true" if c["running"] else "false")
             out = out.replace("{{.Config.Image}}", c["image"])
-            out = re.sub(r'\{\{index \.Config\.Labels "orgtree\.layout"\}\}',
-                         c["labels"].get("orgtree.layout", "<no value>"), out)
+            # ANY label, not just orgtree.layout — the container's identity
+            # grew an `orgtree.auth` label 2026-08-18 and a hardcoded
+            # substitution silently answered "" for it, which reads as a
+            # changed identity and recreates on every call
+            out = re.sub(r'\{\{index \.Config\.Labels "([^"]+)"\}\}',
+                         lambda m: c["labels"].get(m.group(1), "<no value>"),
+                         out)
             return self.cp(a, 0, out + "\n")
         if a[:1] == ["run"] and "--rm" in a:
             return self.cp(a, 0, self.migrate_output)       # migration helper
@@ -654,6 +659,36 @@ if section("§2  the container contract"):
         FD.calls.clear()
         assert sandbox.ensure_container(store.load_org(SLUG_A)) == NAME_A
         assert not FD.find("run") and not FD.find("rm"), FD.calls
+
+    @t("an AUTH change recreates the container (the credential is baked in "
+       "at `docker run`, and supervisor.bills_the_key trusts the config)")
+    def _():
+        # redteam 2026-08-18: nothing recreated a container when its auth
+        # changed, so one created under ORGTREE_SANDBOX_API_KEY kept billing
+        # that key after the var was unset — while `bills_the_key`, reading
+        # today's config, called those turns "subscription" and timed the
+        # container's own API limits against the host's lanes.
+        FD.calls.clear()
+        org = store.load_org(SLUG_A)
+        assert sandbox.ensure_container(org) == NAME_A
+        assert not FD.find("rm"), "a no-op call recreated the container"
+        os.environ["ORGTREE_SANDBOX_API_KEY"] = "sk-ant-escape-hatch"
+        try:
+            FD.calls.clear()
+            assert sandbox.ensure_container(store.load_org(SLUG_A)) == NAME_A
+            assert FD.find("rm"), (
+                "the auth changed and the container was reused: it is still "
+                "running on the previous credential")
+            lbl = [x for x in FD.last_run() if x.startswith("orgtree.auth=")]
+            assert lbl and lbl[0].startswith("orgtree.auth=key:"), lbl
+            assert "sk-ant-escape-hatch" not in " ".join(
+                x for x in FD.last_run()
+                if x.startswith("orgtree.auth=")), "the label leaks the key"
+        finally:
+            os.environ.pop("ORGTREE_SANDBOX_API_KEY", None)
+        FD.calls.clear()
+        assert sandbox.ensure_container(store.load_org(SLUG_A)) == NAME_A
+        assert FD.find("rm"), "unsetting the key must recreate it too"
 
     @t("a STOPPED container is started, not recreated (state survives)")
     def _():

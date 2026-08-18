@@ -102,6 +102,59 @@ ledger, supervisor, the gateways, or the canvas.
 
 ## Supervisor & turns
 
+- **Nothing under `store.DOC_LOCK` may touch the network.** The lock is
+  global to the process, so an HTTPS round trip taken while holding it stalls
+  every org on the backend, not just the one that took it. The usage readout
+  (`limits.py`) routinely answers in over a second, and the freeze path —
+  which writes its record under that lock — sits exactly where you would
+  reach for it. The shape that works, and the one the freeze path uses: read
+  `limits.cached()` (never fetches) to stamp inside the lock, then hand the
+  fetching to a thread that does its round trip BEFORE it takes the lock, and
+  have that thread prove it still owns what it is about to overwrite. Two
+  structural guards in `test_limit_freeze.py` §6 pin both halves, because the
+  runtime ones cannot see a lock they are not holding.
+- **A timestamp scraped out of an error string is money.** `api_fallback`
+  bills the org's own API key for the length of the window a usage freeze
+  opens, and that window is priced off the freeze's reset time — so a wrong
+  reset is a wrong bill, silently, for as long as it says. `\|(\d{9,11})`
+  matches any long number that follows a pipe; a bare "resets 1:40pm" carries
+  no date and rolls to tomorrow when the hour has passed; a cached readout on
+  a broken upstream is served forever. Every one of those produced a
+  real over-long window in review (23 hours against a 5-hour wall; 6 days
+  against the same). The rule that came out of it: band every candidate by
+  the lane it claims to describe — including an explicit epoch, whenever the
+  same text also names a lane, because then the two are evidence about each
+  other — bound the window itself independently (`_fallback_window_until`),
+  and prefer a SHORT wrong answer, which costs one re-freeze where a long one
+  costs the bill. The single exemption is an epoch with NO lane word beside
+  it: there the CLI is stating a machine fact and nothing contradicts it.
+- **Text an AGENT could have written may not price anything.** A clean
+  result's `result` field IS the agent's own final answer, and the
+  limit-detection gate promotes a short one that names a limit into the same
+  `err_blob` the CLI's real errors arrive in. Everything downstream then
+  treats it as evidence: it named its own lane (7 days), then — once that was
+  capped — its own window (6 hours, ORG-WIDE, since `spawn_env` hands the key
+  to every node while one is open), and it still fired the org-wide Fable
+  escalation, which under the `dissolve` policy ARCHIVES every fable node in
+  the org. Each was found a round after the last. Carry provenance
+  explicitly (`agent_authored`, set at the one promotion site — never inferred
+  from `err_blob is synth_limit_txt`, which lumps in the CLI's own
+  `<synthetic>` limit record and throws away the reset it published), and gate
+  every consequence on it, not just the arithmetic. ⚠ And check the RATE, not
+  only the incident: capping such a window at 15 minutes still lost, because
+  the window itself makes the node resumable (ignoring the `auto_resume`
+  toggle — that is D-130's "api_fallback is its own consent", not D-122,
+  which says the opposite for a record carrying both kinds), the resume
+  replays the same prompt, and the same
+  sentence re-opens it — 95% duty, forever. Unvouched evidence now opens no
+  window at all, and a run of it stops the node's self-waking.
+- **The host's usage lanes describe the HOST's subscription only.** An org
+  billing its own key hits the API's walls, not the subscription's; timing
+  such a freeze off `/api/oauth/usage` parked nodes for four hours on a
+  per-minute rate limit. `supervisor.bills_the_key(org, on_fallback_key)` is
+  the gate, and the lane is captured AT SPAWN — a fallback window expiring
+  mid-turn does not move the turn that is already running.
+
 - **An agent-triggered update MUST be detached — that path is the only one it
   has.** The update stops and restarts the backend, which tears down the very
   turn that asked for it, so any update script spawned as a child of an

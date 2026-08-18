@@ -490,15 +490,39 @@ def sec_selectors() -> None:
                    encoding="utf-8").read()
         # mirror updated 2026-08-17 (api_fallback): a fallback org skips its
         # own key here so the bridge proxy can flip auth per request — the
-        # precedence order itself is unchanged
-        i = src.index("key = ((\"\" if org.d.get(\"api_fallback\") "
-                      "else str(org.d.get(\"api_key\")")
-        window = src[i:i + 320]
-        assert window.index("org.d.get(\"api_key\")") \
-            < window.index("k.get(\"api_key\")") \
-            < window.index("ORGTREE_SANDBOX_API_KEY"), window
-        assert "proxied" in window or "proxied" in src[i:i + 600], \
-            "the proxied fallback is gone"
+        # precedence order itself is unchanged. 2026-08-18: the expression
+        # moved OUT of `ensure_container` into `container_auth`, because
+        # `supervisor.bills_the_key` needs the same answer (a limit error off
+        # a kiosk-level key must not be timed against the host subscription's
+        # lanes) and a hand-mirrored second copy would drift. Anchored on the
+        # function, with comments stripped FIRST so commentary above the
+        # expression cannot slide it out of the window.
+        code = "\n".join(ln for ln in src.splitlines()
+                         if not ln.lstrip().startswith("#"))
+        i = code.index("def container_auth(")
+        j = code.index(chr(10) + "def ", i + 1)
+        # the function BODY: its docstring names the same three sources in
+        # prose (that is the point of the docstring) and would satisfy any
+        # ordering test on its own
+        body = code[i:j].split('"""')[-1]
+        assert body.index("org.d.get(\"api_key\")") \
+            < body.index("k.get(\"api_key\")") \
+            < body.index("ORGTREE_SANDBOX_API_KEY"), body
+        assert "proxied" in body, "the proxied fallback is gone"
+        # ONE resolver: `supervisor.bills_the_key` reads the same function to
+        # decide whether a limit error came off the org's own key, and a
+        # second copy here would let the two disagree
+        # Exactly TWO readers of the escape hatch may exist: this resolver,
+        # and `uses_subscription_auth`, which asks a different question (is
+        # this sandbox on copied host credentials?) and deliberately ignores
+        # the org key — a security check, left alone. A third is how the
+        # sandbox and the billing lane come to disagree about who paid.
+        assert code.count('os.environ.get("ORGTREE_SANDBOX_API_KEY")') == 2, (
+            "the key precedence gained another copy — one resolver "
+            "(container_auth) plus the subscription-auth security check")
+        assert "container_auth(" in code[code.index("def ensure_container("):], (
+            "ensure_container no longer resolves its auth through the shared "
+            "helper")
     check("the sandbox key precedence is org → kiosk → env → proxied",
           _sandbox_precedence)
 

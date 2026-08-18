@@ -891,6 +891,169 @@ the docket's "transcript is in the scratch dir" premise was wrong and the
 copy is the fix. The compact dialog warns when the node is idle past the
 cache TTL, which is the moment the choice actually matters.
 
+### D-133 · a freeze's reset time is looked up, banded, and bounds the bill
+Decision (session seat, 2026-08-18, user ruling — "all forms of usage freeze
+should have a timestamp associated … that way api key fallback usage never
+accidentally stays permanent and rings up a massive unintended bill"): the
+reset timestamp on a usage freeze is no longer whatever a regex found in the
+CLI's error prose. It is resolved, banded, and corrected.
+
+RESOLUTION. Prose first (it usually carries an epoch verbatim); when it says
+nothing believable, the account's own usage readout answers — the same source
+the D-132 modal renders, now owned by `limits.py` so the modal route and the
+freeze path share ONE cache and ONE parser. The lane is read out of the
+error's wording (`limits.classify`, with `session` winning outright over a
+model name — FABLE-1 in another costume). When the wording names no lane the
+SOONEST reset on the board answers, `is_active` or not: the user's ruling is
+"default to the shortest one, so that it can be checked sooner", and the
+asymmetry backs it — guessing short costs one re-freeze, guessing long costs
+money. Only if the readout cannot answer either does the old blind 5-minute
+probe floor apply. Every freeze records where its number came from
+(`frozen.reset_src`: `text` / `usage:<lane>` / `probe` / `inherited`) — and,
+when the only witness was the agent itself, that too (`frozen.untrusted`),
+because on such a freeze `reset_src` says where the NUMBER came from and not
+that the number priced anything.
+
+BANDS, because a number in the right place is not a timestamp. An explicit
+epoch is trusted to the longest real lane (the regex matches ANY 9–11-digit
+number after a pipe; an 11-digit one reads as a date in the fifth millennium,
+and `api_fallback` would bill the org's key until then). A bare clock time
+carries no date, so it cannot mean more than a day out. And nothing may exceed
+its own lane's length — live-caught on the day: "You've hit your session limit
+— resets 1:40pm" arrived with 1:40pm already past locally, rolled to tomorrow,
+and priced a 23-hour key-billing window for a wall that lifts in five. The
+window itself is bounded at both ends independently of all that:
+`_fallback_window_until` = floor 15 min (a probe freeze must still get a turn
+out), ceiling 7 d + 1 h (the weekly lane). If the wall is still up when a
+window closes the next limit error opens a fresh one — a round trip, not a
+fortune.
+
+NON-BLOCKING, because the readout is a network round trip that routinely takes
+over a second and the freeze is written under `DOC_LOCK` (user report, same
+day). The freeze stamps what the CACHE knows — `limits.cached()` never fetches
+— and `_spawn_reset_refresh` re-asks off-lock, rewriting the record only if
+the answer moved by more than a minute, and only while it still owns what it
+stamped (freeze `until_ts` and `api_fallback_until` compared to the exact
+values it wrote; a resumed node, a later freeze, or a fallback the user
+switched off mid-flight all leave the record alone). The correction moves the
+window in BOTH directions: shorter is money saved, longer is a wake that will
+not re-freeze on arrival.
+
+PROACTIVE, so the cache is worth reading: one account-wide warm-up loop
+(`start_usage_warm_loop`) paced by how close the account is to a wall — 5 min
+under 80% utilization, 2 min from 80%, 45 s over 95% (`critical` severity
+counts as 95 whatever `percent` says). One HTTPS GET per tick, single-flighted
+(`_fetch_lock`), silent when the host has no subscription credentials at all.
+
+WHOSE QUOTA, added after adversarial review: the readout describes the HOST
+SUBSCRIPTION, so it may only time a freeze the subscription caused.
+`bills_the_key(org, on_fallback_key)` — a permanent-key org, or a fallback org
+inside an open window — routes those freezes to prose-or-probe instead. Read
+off the subscription's lanes, a per-minute API rate limit was parking nodes
+for four hours.
+
+AND THE BOUNDS TWO REVIEW ROUNDS ADDED, each one a way the bill could have run:
+a readout past `MAX_EVIDENCE_AGE` (15 min) stops being evidence — a broken
+upstream serves its last good payload forever, and a freeze must not price a
+window on a memory; when the named lane has nothing believable the fall-through
+to another lane is capped at the NAMED lane's length, because a stale readout
+whose session entry had expired would otherwise answer a session limit with the
+weekly lane, six days out; `classify` requires a `your <model> … limit` shape,
+since raw error text echoes model ids ("model claude-opus-4-1") and reading one
+as the model's weekly pool widened a five-hour wall into a seven-day window;
+and the correction pass owns the freeze and the window SEPARATELY, so a node
+resumed in the second it takes still gets its window re-priced.
+
+Round two closed four more, all of the same shape — a number believed further
+than its evidence reaches. The SHORTEST-lane cap applies to the unnamed lane
+too, which is the branch ruling ③ is actually about (the canonical wording
+names no lane, and a board that has lost its session entry would have answered
+from the weekly one). The epoch exemption is about PROVENANCE, not form: a
+clean result's text IS the agent's own answer, so a node could open a week-long
+key window by typing `Weekly usage limit reached|<epoch>` — untrusted text is
+banded like any guess. `bills_the_key` asks `sandbox.container_auth`, since a
+kiosk-level key or `ORGTREE_SANDBOX_API_KEY` never appears in `org.d`. And an
+unrecognized upstream lane takes the SHORTEST length rather than the longest.
+Two smaller ones: the clean-result detector uses the RAW parse (banding it
+stopped `Resets 9am.` freezing anything at all — a detector is not a clock),
+and `frozen.on_fallback` records the lane the turn actually ran on rather than
+re-reading "is a window open now", which had a sibling's window putting a
+subscription-lane freeze to sleep for hours beside a paid, unused key lane.
+
+Round three found the same shape once more: untrusted text does not get to
+NAME ITS OWN LANE. Removing the epoch exemption was not enough, because the
+band it fell back to came from `classify` on that very blob — one sentence
+containing the word "weekly" bought itself the seven-day band, from the prose
+parser and from the readout alike. `trust_lane=False` treats an unvouched blob
+as unnamed, including the fable lock's asserted `weekly_scoped`.
+
+Round four closed the class properly, because three had only shortened it.
+① The provenance signal was WRONG: `err_blob is not synth_limit_txt` lumped
+the CLI's own `<synthetic>` limit record — the live-observed shape, which a
+model cannot forge — in with the agent's final answer, so the most common real
+limit threw away the epoch the CLI had just published and took the 5-minute
+probe floor instead. Provenance is now carried (`agent_authored`, set at the
+one promotion site), not inferred. ② An unvouched blob still PRICED a window:
+capped at the session lane, one 40-character sentence still moved the whole
+org onto the user's metered key for ~5 h against a wall that did not exist
+(`spawn_env` hands the key to every node while a window is open). Untrusted
+text may now set `until_ts` — the node still wakes on it — but its window is
+floored at 15 minutes. ③ And it still fired the org-wide FABLE escalation,
+whose trigger is three words in the blob and whose `dissolve` policy ARCHIVES
+every fable node in the org: round three had guarded the lock's timestamp and
+left its trigger open, which was the destructive half. The rule this settles:
+gate every CONSEQUENCE on provenance, not just the arithmetic.
+
+Round five showed the floor was still the wrong instrument. It bounded ONE
+incident and not the RATE: the window it opened made the node immediately
+resumable — and that wake ignores the `auto_resume` toggle (D-130's
+"api_fallback is its own consent"; D-122 governs the connection kind and says
+the opposite for a record carrying both) — so
+the resume replayed the same prompt to the same agent, the same sentence
+re-opened the window, and the whole org sat on the user's metered key at 95%
+duty, indefinitely. So an unvouched limit now opens NO window at all (a real
+wall is always reported BY the CLI, so declining costs a genuine limit
+nothing), and a run of them is counted like the connection kind's
+`net_fail_run`: on the `UNTRUSTED_LIMIT_RUNS`-th consecutive self-diagnosed
+limit the node stops waking itself and waits for a person — and the
+record says so: `until_ts` is dropped (there is no window for it to
+bound) and `reset_src` becomes `capped` rather than describing a
+number that no longer exists. A completed turn
+clears the run. Round nine, running its own ~100-mutation campaign, found the last one of
+the class: `_looks_like_usage_limit` matches a per-minute API **rate** limit
+as readily as a subscription usage **lane** — deliberately, since any wall
+should freeze the agent — but the readout only describes lanes, so a 429
+("exceeded your per-minute rate limit") was answered with the session lane's
+reset: a four-hour park, and on a fallback org four hours of key billing,
+against a wall that lifts in a minute. `limits.is_rate_limit` now keeps the
+readout out of it; the error's own prose still answers, and otherwise the
+probe floor does. The same round retired a guard that had been certifying the
+drift it was named for — it tested `"time.time() + 300" in <source>`, which is
+a prefix of `+ 3000`; the probe floor is `PROBE_FLOOR` now and the check is a
+literal.
+
+Round six added the last consequence anyone had missed: the LABEL. `frozen.until` is projected by `ledger.tree()` and rendered as system chrome in the org header and on the node badge — kiosk visitors included — so taking it from the blob let an agent put ~60 characters of its own prose, a URL or an instruction, into the operator's chrome by ending a turn with the right sentence. An untrusted freeze now derives its label from the timestamp. The lane decision is captured WHOLE at spawn
+(`billed_key`) rather than as a window boolean later recombined with org
+fields — which is what the docs already claimed. One more band
+came with it — an explicit epoch is exempt from the lane cap only when the
+same text names no lane, since "your session limit …|<epoch 8 days out>" is
+two pieces of evidence contradicting each other. Alongside: the container's AUTH became part
+of its identity (`orgtree.auth` label, a digest for keys — `docker run` bakes
+the credential in, so a container created under one auth kept billing that
+way while `bills_the_key` read today's config and called it "subscription");
+the `elif` freeze branch records the lane like its sibling; `fetch` really
+never raises now (`"limits": 3` was a TypeError out of a function documented
+not to have one); and a key-billed freeze skips a retry loop whose answer
+cannot change. Test-side, across the rounds: the regression test for the epoch fix
+was itself vacuous — it called the parser without the `kind` the real path
+always supplies; the trust checks pinned only the seven-day case and were
+blind to the five-hour one that mattered; and `reset_src` was asserted only
+against a hand-built freeze record, so nothing noticed a REAL freeze
+misclassifying its own provenance. All three now go through the seam the
+freeze site uses, or through a real turn. Separately, `tools/run_tests.py
+--only` silently ran NOTHING and exited 0 for a comma-separated or repeated
+filter, which is how a CI line passes having tested nothing.
+
 ### D-132 · header usage modal: the host's Claude Code /usage bars, admin-only
 Decision (session seat, 2026-08-18, user feature): a ◔ button in the orgbar
 (and beside the GitHub link on the welcome panel) opens a modal with the

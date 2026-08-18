@@ -334,6 +334,38 @@ def on_disk(slug: str) -> bool:
     return val
 
 
+def auth_label(org: Org, k: Any = None) -> str:
+    """The container's auth as an identity token: `proxied`, `subscription`,
+    or `key:<8 hex>` — a digest, never the key itself (labels are readable by
+    anyone who can run `docker inspect`). Compared on every `ensure_container`
+    so a settings change, a key rotation or an unset `ORGTREE_SANDBOX_API_KEY`
+    recreates the container instead of leaving it billing the old way."""
+    import hashlib
+    auth = container_auth(org, k)
+    low = auth.lower()
+    if "prox" in low or low == "subscription":
+        return low
+    return "key:" + hashlib.sha256(auth.encode()).hexdigest()[:8]
+
+
+def container_auth(org: Org, k: Any = None) -> str:
+    """What a sandboxed org's container authenticates WITH: a literal API key,
+    `"subscription"` (host credentials copied in), or `"proxied"` (the bridge
+    attaches the host token per request).
+
+    Factored out of `ensure_container` (redteam 2026-08-18) because a second
+    caller needs the same answer and a hand-mirrored copy would drift:
+    `supervisor.bills_the_key` has to know whether a limit error came off the
+    org's own key or the host subscription, and reading `org.d["api_key"]`
+    alone missed BOTH the kiosk-level key and `ORGTREE_SANDBOX_API_KEY` — a
+    per-minute API rate limit was then timed off the subscription's lanes."""
+    k = (org.d.get("kiosk") or {}) if k is None else k
+    return (("" if org.d.get("api_fallback") else str(org.d.get("api_key") or ""))
+            or str(k.get("api_key") or "")
+            or os.environ.get("ORGTREE_SANDBOX_API_KEY")
+            or "proxied").strip()
+
+
 def sandbox_home(slug: str) -> str:
     if on_disk(slug):
         from . import disk
@@ -463,16 +495,25 @@ def ensure_container(org: Org) -> str:
     want = f"{IMAGE}:{ver}-{IMG_REV}" if ver != "unknown" else IMAGE
     ins = _docker("container", "inspect", "-f",
                   "{{.State.Running}} {{.Config.Image}} "
-                  '{{index .Config.Labels "orgtree.layout"}}', name)
+                  '{{index .Config.Labels "orgtree.layout"}} '
+                  '{{index .Config.Labels "orgtree.auth"}}', name)
     if ins.returncode == 0:
         parts = ins.stdout.split()
         running = parts[0] if parts else ""
         cur_img = parts[1] if len(parts) > 1 else ""
         layout = parts[2] if len(parts) > 2 else ""
+        cur_auth = parts[3] if len(parts) > 3 else ""
         # №44: the CLI rides the version-tagged read-only /usr/local volume,
         # so an image move requires a recreate (which re-mounts that volume);
         # a pre-disk layout recreates too (its state already migrated).
-        if (cur_img and cur_img != want) or layout != LAYOUT:
+        # AUTH likewise (redteam 2026-08-18): `docker run -e
+        # ANTHROPIC_API_KEY=…` bakes the credential in, so a container created
+        # under one auth kept billing that way after the org's settings moved
+        # — and `supervisor.bills_the_key`, which reads the CONFIG, then timed
+        # the container's own API limits against the host subscription's
+        # lanes. Recreating on change is what makes the config truthful.
+        if (cur_img and cur_img != want) or layout != LAYOUT \
+                or cur_auth != auth_label(org, k):
             _docker("rm", "-f", name, timeout=60)
         else:
             if running != "true":
@@ -491,9 +532,7 @@ def ensure_container(org: Org) -> str:
     # env is fixed at `docker run`, so the per-request auth flip lives in the
     # bridge's /anthropic passthrough instead; skipping the org key here is
     # what routes it there
-    key = (("" if org.d.get("api_fallback") else str(org.d.get("api_key") or ""))
-           or k.get("api_key") or os.environ.get("ORGTREE_SANDBOX_API_KEY")
-           or "proxied").strip()
+    key = container_auth(org, k)
     use_proxy = "prox" in key.lower()
     use_sub = key.lower() == "subscription"
     if use_sub and k.get("enabled") and k.get("token"):
@@ -526,6 +565,7 @@ def ensure_container(org: Org) -> str:
     r = _docker(
         "run", "-d", "--name", name,
         "--label", f"orgtree.layout={LAYOUT}",
+        "--label", f"orgtree.auth={auth_label(org, k)}",
         "--memory", MEM, "--cpus", CPUS,
         # ONE capped disk (user verdict): rootfs read-only, every persistent
         # write — system dirs, home incl. transcripts, workspace, scratch —

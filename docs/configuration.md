@@ -65,7 +65,7 @@ Set before the backend starts. Not visible in the UI, not per-org. A change requ
 | `ORGTREE_SANDBOX_RUN` | `64m` | `/run` tmpfs (`sandbox.py:78`) |
 | `ORGTREE_SANDBOX_DISK_MB` | `20480` | virtual-disk size when the org does not specify (`sandbox.py:81`) |
 | `ORGTREE_BRIDGE_PORT` | `7362` | the BridgeGateway — the one door out of a container (`sandbox.py:57`) |
-| `ORGTREE_SANDBOX_API_KEY` | — | ⚠ escape hatch: a literal API key instead of the proxied subscription (`sandbox.py:306,453`) |
+| `ORGTREE_SANDBOX_API_KEY` | — | ⚠ escape hatch: a literal API key instead of the proxied subscription (`sandbox.uses_subscription_auth` / `sandbox.container_auth`) |
 | `ORGTREE_SANDBOX_MCP` | off | EXPERIMENTAL — allow MCP servers inside a sandbox (`supervisor.py:479`) |
 
 ### Retired / legacy
@@ -133,9 +133,9 @@ Editable at any time; takes effect immediately unless noted. Model at `api.py:75
 | `fable_limit_policy` | `halt` \| `opus` \| `dissolve` | what happens when the weekly Fable limit is hit |
 | `fable_filter_policy` | `halt` \| `opus` | what happens when a content filter flags a message |
 | `clear_fable_lock` | bool (action) | clears an active Fable lock |
-| `auto_resume` | bool | restart usage-limit-frozen agents 1 min after the reported reset (`supervisor.py:2527`) |
+| `auto_resume` | bool | restart usage-limit-frozen agents 1 min after the reported reset (`supervisor.auto_resume_ready`) |
 | `auto_resume_compact` | bool | cheap-compact a limit-frozen node right before the AUTO resume wakes it (the freeze outlived the cache TTL; manual ▶ never compacts) |
-| `api_fallback` | bool | the org's `api_key` becomes a usage-limit SPARE: routine turns bill the subscription; a limit freeze opens a key-billed window that closes at the limit's own reset. Needs `api_key`; mutually exclusive with `headless`; wakes limit-frozen agents immediately even with `auto_resume` off. Dollars burned inside a window accumulate on a separate lifetime counter (`api_cost_usd`) — hover the header cost chip for the subscription/api-key split (D-131) |
+| `api_fallback` | bool | the org's `api_key` becomes a usage-limit SPARE: routine turns bill the subscription; a limit freeze **the CLI reported** opens a key-billed window that closes at the limit's own reset — a "limit" only the agent's own final answer claims opens none, and a run of those stops the node auto-waking (D-133). Needs `api_key`; mutually exclusive with `headless`; wakes limit-frozen agents immediately even with `auto_resume` off. Dollars burned inside a window accumulate on a separate lifetime counter (`api_cost_usd`) — hover the header cost chip for the subscription/api-key split (D-131). The window is priced off the limit's reset time, which is resolved (error prose → the account's usage readout → a 5-min probe floor), banded to its own lane, and bounded to 15 min … 7 d + 1 h so a mis-parsed timestamp cannot bill the key indefinitely (D-133) |
 | `cascade_hire` | bool | a hire's cost bubbles up the chain (§4.6) |
 | `cascade_alloc` | bool | allocations and upgrades bubble up |
 

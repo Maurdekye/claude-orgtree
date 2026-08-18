@@ -297,12 +297,57 @@ def hermetic() -> None:
         assert v is not None, f"no ts from {blob!r}"
         assert lo <= v <= hi, f"{blob!r} → {v} not in [{lo}, {hi}]"
 
+    # the epoch the CLI prints is a FUTURE one; a stamp already behind us is
+    # not a horizon, and since the 2026-08-18 banding it is declined so the
+    # caller can ask the usage readout instead of waking into the same wall
+    _future = int(time.time()) + 3 * 3600
     check("reset-ts · epoch marker wins", lambda: _ts(
-        "Claude AI usage limit reached|1753898400", 1753898400, 1753898400))
+        f"Claude AI usage limit reached|{_future}", _future, _future))
+    check("reset-ts · a past epoch is declined", lambda: (
+        None if supervisor._parse_limit_reset_ts(
+            "Claude AI usage limit reached|1753898400") is None
+        else (_ for _ in ()).throw(AssertionError("believed a stale epoch"))))
+    check("reset-ts · an absurd epoch is declined (money: it would price "
+          "an api_fallback window in the fifth millennium)", lambda: (
+        None if supervisor._parse_limit_reset_ts(
+            "Claude AI usage limit reached|99999999999") is None
+        else (_ for _ in ()).throw(AssertionError("believed a junk epoch"))))
+    # a bare clock time carries no date, so "resets 1:40pm" with 1:40pm
+    # already past rolls to tomorrow — 23 hours out. Legal for a weekly lane,
+    # impossible for a 5-hour session lane, and believing it priced a 23-hour
+    # key-billing window (live-caught 2026-08-18). Pinned against a `now`
+    # placed 23 h before whatever the roll produced, so the real clock at test
+    # time cannot decide the outcome.
+    _clockts, _how = supervisor._parse_limit_reset_ts_raw("resets 1:40pm")
+    _now23 = _clockts - 23 * 3600
+    check("reset-ts · the clock form is reported as a guess", lambda: (
+        None if _how == "clock"
+        else (_ for _ in ()).throw(AssertionError(_how))))
+    check("reset-ts · 23 h out is refused for a 5-hour session lane", lambda: (
+        None if supervisor._parse_limit_reset_ts(
+            "resets 1:40pm", "session", now=_now23) is None
+        else (_ for _ in ()).throw(AssertionError("a 5-hour lane, 23 h out"))))
+    check("reset-ts · the same guess stands for a weekly lane", lambda: (
+        None if supervisor._parse_limit_reset_ts(
+            "resets 1:40pm", "weekly_all", now=_now23) == _clockts
+        else (_ for _ in ()).throw(AssertionError("weekly lane refused"))))
     check("reset-ts · 'try again in 2 hours' ≈ now+7200", lambda: _ts(
         "Try again in 2 hours", time.time() + 7100, time.time() + 7300))
-    check("reset-ts · clock time lands in the future", lambda: _ts(
-        "resets 1:40pm", time.time(), time.time() + 86400 + 60))
+    # a clock time is a GUESS (it carries no date), so with no lane named it
+    # is banded by the SHORTEST lane — user ruling 2026-08-18. Inside that
+    # reach it stands; past it the account's usage readout is asked instead.
+    _soon = (time.strftime("%I:%M%p", time.localtime(time.time() + 3600))
+             .lstrip("0").lower())
+    check("reset-ts · a clock time inside the session lane lands in the "
+          "future", lambda: _ts(
+        "resets " + _soon, time.time(), time.time() + 6 * 3600 + 60))
+    check("reset-ts · …and one 23 h out is refused when no lane is named "
+          "(the shortest lane is the default)", lambda: (
+        None if supervisor._parse_limit_reset_ts(
+            "resets 1:40pm", None,
+            now=supervisor._parse_limit_reset_ts_raw("resets 1:40pm")[0]
+            - 23 * 3600) is None
+        else (_ for _ in ()).throw(AssertionError("23 h on an unnamed lane"))))
     check("reset-ts · no time at all → None", lambda: (
         None if supervisor._parse_limit_reset_ts("usage limit reached") is None
         else (_ for _ in ()).throw(AssertionError("invented a time"))))
@@ -909,15 +954,17 @@ def hermetic() -> None:
     def _the_fable_escalation_needs_a_weekly_marker():
         src = open(os.path.join(_REPO, "backend", "orgtree", "supervisor.py"),
                    encoding="utf-8").read()
-        i = src.find("fable_limit_hit(")
+        # ⚠ STRIP FIRST, SLICE AFTER (2026-08-18). Slicing raw source and
+        # stripping comments afterwards makes the window's reach depend on how
+        # much COMMENTARY sits above the call: it was widened 500 → 1200 on
+        # 2026-08-07 for exactly that reason, and the same fixture tripped
+        # again the next time the escalation gained a comment block. Stripping
+        # first makes the guard measure code distance, which is what it means.
+        code = "\n".join(ln for ln in src.splitlines()
+                         if not ln.lstrip().startswith("#"))
+        i = code.find("fable_limit_hit(")
         fixture(i > 0, "the fable escalation moved — re-read this check")
-        # ⚠ widened from 500 to 1200 chars of lead-in 2026-08-07: the
-        # escalation grew an explanatory comment block, and comments are
-        # stripped below, so the tier test drifted out of a 500-char window
-        # and the FIXTURE tripped rather than the check. Measured, not
-        # guessed — the guard was reporting on the wrong span.
-        seg = "\n".join(ln for ln in src[max(0, i - 1200):i + 120].splitlines()
-                        if not ln.lstrip().startswith("#"))
+        seg = code[max(0, i - 1200):i + 120]
         fixture('"fable"' in seg, "the tier test is not where this check expects")
         assert re.search(r"_looks_like_fable_tier_limit", seg), (
             "the ONLY condition for declaring org-wide Fable exhaustion is "

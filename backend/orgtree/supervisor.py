@@ -35,7 +35,7 @@ import time
 from collections.abc import Callable, Iterable, Mapping
 from typing import Any, cast
 
-from . import net, sandbox as sbx, store
+from . import limits, net, sandbox as sbx, store
 from .ledger import EXTERN, SYSTEM, USER, LedgerError, Org, expand_mcp, now as now_iso
 from .schema import (Denial, FrozenInfo, InflightInfo, KioskCfg, MailEntry,
                      NodeDoc, NoticeEntry, TurnStat)
@@ -763,7 +763,17 @@ def _looks_like_fable_tier_limit(blob: str) -> bool:
     return "limit" in b and "fable" in b and "session" not in b
 
 
+# the blind retry horizon for a limit whose reset nothing could establish —
+# "one try per ~5 minutes, honestly labeled". A constant so a test can pin the
+# NUMBER: as an inline literal the only guard on it was a substring search,
+# and `+ 300` is a prefix of `+ 3000` (redteam 2026-08-18).
+PROBE_FLOOR = 300.0
+
 NET_RETRY_MAX = 4      # then fall to manual with an honest label
+# …and the same shape for a limit NOBODY BUT THE AGENT reported: after this
+# many consecutive self-diagnosed limits with no CLI evidence behind them, the
+# node stops auto-waking and waits for a person (redteam 2026-08-18).
+UNTRUSTED_LIMIT_RUNS = 3
 
 
 def _looks_like_connection_failure(blob: str) -> bool:
@@ -802,29 +812,430 @@ def _parse_limit_reset(blob: str) -> str | None:
     return m.group(1).strip() if m else None
 
 
-def _parse_limit_reset_ts(blob: str) -> float | None:
-    """Machine-readable reset time (epoch seconds), best-effort. The CLI's
-    limit errors usually carry one verbatim ('…limit reached|1753898400');
-    clock-time and try-again-in phrasings are the fallbacks."""
+def _parse_limit_reset_ts_raw(blob: str,
+                              now: float | None = None) -> tuple[float | None, str]:
+    """The prose parse itself → `(epoch, how)`, `how` naming the form it came
+    from so the caller can band it: `epoch` (the CLI's own machine value,
+    "…limit reached|1753898400"), `clock` (a bare am/pm with no date),
+    `relative` ("try again in N"). ⚠ Unbanded — call `_parse_limit_reset_ts`."""
     m = re.search(r"\|\s*(\d{9,11})\b", blob)
     if m:
-        return float(m.group(1))
+        return float(m.group(1)), "epoch"
     m = re.search(r"(?:reset\w*|try again)\s*(?:at\s+)?(\d{1,2})(?::(\d{2}))?"
                   r"\s*(am|pm)\b", blob, re.IGNORECASE)
     if m:
         import datetime as _dt
+        # ⚠ ONE clock for the roll and for the band above it: reading
+        # `datetime.now()` here while the caller banded against an injected
+        # `now` compared two different clocks, and a test straddling the named
+        # hour flipped the result by 24 h (redteam 2026-08-18).
+        ref = (_dt.datetime.now() if now is None
+               else _dt.datetime.fromtimestamp(now))
         h = int(m.group(1)) % 12 + (12 if m.group(3).lower() == "pm" else 0)
-        t = _dt.datetime.now().replace(hour=h, minute=int(m.group(2) or 0),
-                                       second=0, microsecond=0)
-        if t <= _dt.datetime.now():
+        t = ref.replace(hour=h, minute=int(m.group(2) or 0),
+                        second=0, microsecond=0)
+        if t <= ref:
             t += _dt.timedelta(days=1)
-        return t.timestamp()
+        return t.timestamp(), "clock"
     m = re.search(r"try again in\s+(\d+)\s*(hour|minute|min\b|h\b|m\b)",
                   blob, re.IGNORECASE)
     if m:
         unit = 3600 if m.group(2).lower().startswith("h") else 60
-        return time.time() + int(m.group(1)) * unit
+        base = time.time() if now is None else now
+        return base + int(m.group(1)) * unit, "relative"
+    return None, ""
+
+
+# How far out each prose form may plausibly point, before the lane band. An
+# `epoch` is the CLI's own machine value and answers for itself; the other two
+# are the CLI phrasing a guess, and a guess is bounded by the lane.
+_TEXT_HORIZON = {"epoch": limits.MAX_HORIZON, "clock": 24 * 3600.0,
+                 "relative": limits.MAX_HORIZON}
+
+
+def _parse_limit_reset_ts(blob: str, kind: str | None = None,
+                          now: float | None = None,
+                          trusted: bool = True) -> float | None:
+    """The prose reset time, BANDED — a number in the right place is not a
+    timestamp (user ruling 2026-08-18). Three bands, by the form the value
+    came in and the lane the error is about:
+
+    - an explicit epoch is the CLI's own machine value, trusted out to the
+      longest real lane. (The regex matches ANY long number after a pipe, and
+      an 11-digit one reads as a date in the fifth millennium — believe that
+      and `api_fallback` holds the key lane open for the rest of recorded
+      time, billing the org's key for every turn inside it.)
+    - a bare clock time carries no date: it cannot honestly mean more than a
+      day out, whatever the roll-to-tomorrow arithmetic produces.
+    - and NOTHING may exceed its own lane's length. Live-caught 2026-08-18:
+      "You've hit your session limit — resets 1:40pm", with 1:40pm already
+      past in local time, rolled to tomorrow and priced a 23-hour key-billing
+      window for a wall that lifts in five.
+
+    Declining is cheap — the caller falls through to the account's own usage
+    readout, which is minute-exact."""
+    now = time.time() if now is None else now
+    ts, how = _parse_limit_reset_ts_raw(blob, now)
+    if ts is None:
+        return None
+    # ⚠ An UNNAMED lane is the shortest lane, not the longest (user ruling
+    # 2026-08-18 — "if the type of limit is not known, default to the shortest
+    # one, so that it can be checked sooner"). `reset_for` honored that and
+    # this did not, so the live-caught 23-hour window survived intact for
+    # every wording that omits the word "session" (redteam 2026-08-18). The
+    # `epoch` form is exempt: there the CLI is stating a fact, not guessing.
+    lane = limits.lane_horizon(kind if kind else "session")
+    # ⚠ the epoch exemption rests on PROVENANCE, not on the form: it holds
+    # because the CLI is stating a fact. `trusted=False` marks a blob that
+    # came from the agent's own final answer (the clean-result limit gate) —
+    # there a 40-character message carrying "…limit reached|<epoch 8 days
+    # out>" was enough to open a week-long key-billing window on the org's own
+    # key (redteam 2026-08-18). Untrusted text is banded like any guess.
+    # The epoch exemption covers the case it was written for — the CLI
+    # stating a machine fact with no lane word beside it. When the SAME text
+    # names a lane, the two are evidence about each other: "your session limit
+    # …|<epoch 8 days out>" is self-contradicting, and taking the epoch there
+    # priced 7 days of key billing against a 5-hour wall (redteam 2026-08-18,
+    # and it is what `docs/ARCHITECTURE.md` already promised).
+    horizon = (limits.MAX_HORIZON if how == "epoch" and trusted and not kind
+               else min(_TEXT_HORIZON.get(how, limits.MAX_HORIZON), lane))
+    if not now - 60.0 < ts <= now + horizon:
+        return None
+    return ts
+
+
+def bills_the_key(org: Org, on_fallback_key: bool) -> bool:
+    """Did THIS turn's process bill the org's own API key rather than the host
+    subscription? It decides whether the host's usage lanes describe the wall
+    this turn hit at all — they describe the SUBSCRIPTION, and reading them
+    for a key-billed turn parked nodes for four hours on a per-minute API rate
+    limit.
+
+    Three shapes bill a key. A permanent-key org (`api_key` without
+    `api_fallback`); a fallback org inside an open window (captured at SPAWN,
+    like `_bank_api_cost` — a window opening or closing mid-turn does not move
+    the turn already running); and a SANDBOXED org whose container was handed
+    a key that never appears in `org.d` — a kiosk-level `api_key` or the
+    `ORGTREE_SANDBOX_API_KEY` escape hatch. That third one is why this asks
+    `sandbox.container_auth` rather than reading the org field twice (redteam
+    2026-08-18).
+
+    Errs toward "the key": a false "subscription" times the freeze off someone
+    else's quota, while a false "key" costs one 5-minute probe floor."""
+    if sbx.is_sandboxed(org):
+        auth = sbx.container_auth(org).lower()
+        # the same fuzzy test `ensure_container` applies — an exact-match copy
+        # read `ORGTREE_SANDBOX_API_KEY=proxy` as a key while the sandbox read
+        # it as proxied (redteam 2026-08-18)
+        if "prox" not in auth and auth != "subscription":
+            return True
+        # a sandboxed FALLBACK org stays proxied on purpose: the bridge flips
+        # auth per REQUEST, so any part of the turn may have billed the key.
+        # (The `api_fallback_active` re-read is belt-and-braces: the only
+        # caller today asks AT spawn, where the two agree.)
+        return bool(org.d.get("api_fallback")
+                    and (on_fallback_key or api_fallback_active(org)))
+    if not org.d.get("api_key"):
+        return False
+    return not org.d.get("api_fallback") or on_fallback_key
+
+
+def _result_names_a_limit(text: str) -> bool:
+    """Does a CLEAN result event's text name a usage limit? In stream-json a
+    clean result's `result` IS the agent's own final answer, so this must not
+    freeze an agent for a sentence: it takes BOTH a short standalone text AND
+    a machine-parseable reset marker, which the CLI's card always carries and
+    prose like "it resets nightly" never does (a genuine 57-char answer froze
+    its author before the second condition existed).
+
+    ⚠ The RAW parse, deliberately: this is a DETECTOR, not a clock. The banded
+    parser refuses a marker pointing further out than its lane — right for
+    pricing a key-billing window, wrong for "is there a marker at all", and
+    banding it here silently stopped `Resets 9am.` and `Try again in 20
+    hours.` from freezing anything at all (redteam 2026-08-18)."""
+    return (len(text.strip()) < 200 and _looks_like_usage_limit(text)
+            and _parse_limit_reset_ts_raw(text)[0] is not None)
+
+
+def _limit_reset_ts(blob: str, allow_fetch: bool = False,
+                    subscription: bool = True,
+                    trusted: bool = True) -> tuple[float | None, str]:
+    """When does the limit behind this error lift? → `(epoch, source)`.
+
+    User ruling 2026-08-18 — every usage freeze must end up with a timestamp,
+    because the `api_fallback` window is stamped from it and a window that
+    outlives its limit bills the org's key for turns the subscription would
+    have served for free. The CLI's prose is first (cheapest, and usually
+    carries an epoch); when it says nothing believable the account's own
+    usage readout is asked — the same source the header usage modal renders,
+    minute-exact and lane-aware (`limits.reset_for`). Only if that cannot
+    answer either does the caller fall through to its blind 5-minute probe.
+
+    ⚠ The readout is consulted from CACHE unless `allow_fetch` — the freeze
+    path calls this under the document lock, and the endpoint routinely takes
+    over a second. `_spawn_reset_refresh` does the fetching pass.
+
+    ⚠ `subscription=False` says the turn billed the ORG'S KEY, so the wall it
+    hit was the API's and the host subscription's lanes describe someone
+    else's quota entirely (redteam 2026-08-18: a per-minute API rate limit was
+    parking nodes for four hours on the subscription's session lane). Prose
+    still answers — it came from the same error — but the readout is not
+    consulted and the caller falls to its probe floor, which is the honest
+    answer for a limit nothing here can see."""
+    # ⚠ an UNTRUSTED blob does not get to name its own lane. The lane comes
+    # out of the wording, and the wording is the agent's — one sentence
+    # containing "weekly" selected the 7-day band for itself and opened a
+    # week-long key-billing window against a wall that never existed (redteam
+    # 2026-08-18, the same hole as the epoch exemption in a new costume).
+    kind, _model = limits.classify(blob) if trusted else (None, None)
+    ts = _parse_limit_reset_ts(blob, kind, trusted=trusted)
+    if ts:
+        return ts, "text"
+    if not subscription or limits.is_rate_limit(blob):
+        # ⚠ a per-minute RATE limit is not a usage LANE. Both match
+        # `_looks_like_usage_limit` (deliberately broad), but the readout
+        # describes 5-hour and weekly pools, so answering a 429 from it parked
+        # a node for four hours — and on a fallback org billed the key for
+        # four hours — against a wall that lifts in a minute (redteam
+        # 2026-08-18). The prose above still answers ("try again in 2
+        # minutes"); otherwise the caller's probe floor does, which is the
+        # honest horizon for a wall nothing here can see.
+        return None, ""
+    try:
+        return limits.reset_for(blob, allow_fetch=allow_fetch,
+                                trust_lane=trusted)
+    except Exception as e:                                    # noqa: BLE001
+        # a readout is a nicety; the freeze path must survive it failing
+        print(f"[orgtree] usage readout failed while timing a freeze: {e}")
+        return None, ""
+
+
+def _fable_lock_ts(blob: str, rts: float | None, rsrc: str,
+                   trusted: bool = True,
+                   now: float | None = None) -> float | None:
+    """When may the ORG-WIDE fable tier lock release itself? `None` marks it
+    `no_reset`, which waits for the user.
+
+    Only an answer LONGER THAN THE SESSION LANE counts, from either source —
+    "weekly-length" in spirit, though a genuine partial-week remainder of
+    seven hours is accepted rather than forced to `no_reset`, which would
+    wait for a human. FABLE-2: a lock
+    that self-releases early un-halts every fable node, announces a reset that
+    did not happen, re-hits the wall and re-halts — hours into a week-long
+    quota that is dozens of cycles a day. So a session-length time is refused
+    here even though it is a perfectly good answer for the NODE's own freeze
+    three lines away (redteam 2026-08-18: `"…your Fable 5 limit. Try again in
+    3 hours."` was reaching the lock).
+
+    ⚠ Deliberately re-parses rather than reading the freeze's `until_ts`: that
+    field may be the 5-minute probe floor, which as a tier-quota horizon would
+    be catastrophic."""
+    now = time.time() if now is None else now
+    floor = now + limits.lane_horizon("session")
+    # `weekly_scoped` is asserted by the CALLER's classification of a tier
+    # limit — an untrusted blob may not claim it (see `_limit_reset_ts`)
+    ts = _parse_limit_reset_ts(blob, "weekly_scoped" if trusted else None,
+                               now, trusted=trusted)
+    if ts is not None and ts > floor:
+        return ts
+    if rsrc.startswith("usage:weekly") and rts is not None and rts > floor:
+        return rts
     return None
+
+
+def _reset_label(ts: float) -> str:
+    """The human "when" beside a freeze. The CLI's usual wording carries ONLY
+    an epoch ("…usage limit reached|1753898400"), which `_parse_limit_reset`
+    cannot phrase — the record then kept a machine time and no human one, and
+    the desk showed a freeze with no reset. Worse: {error, no until, no
+    resume_texts, nothing True} is EXACTLY the shape ledger's pre-№41
+    migration re-tags as a kiosk SPEND freeze on the next load, after which ▶
+    resume skips the node for good (it defers to "whichever mechanism owns
+    this freeze", and no spend mechanism exists in a non-kiosk org).
+    Live-caught 2026-08-04 (test_turn_lifecycle "freeze · a limit on the first
+    call"). Deriving the label from the timestamp keeps the record out of that
+    shape."""
+    t = _dtm.datetime.fromtimestamp(ts)
+    lbl = t.strftime("%I:%M%p").lstrip("0").lower()
+    return lbl if t.date() == _dtm.date.today() else t.strftime("%a ") + lbl
+
+
+def _sane_inherited(ts: Any) -> float | None:
+    """A reset time carried over from a PREVIOUS freeze on the same node: keep
+    it only while it is still in the future and inside the longest real lane
+    (redteam 2026-08-18 — every other number in this path is banded, and this
+    one prices a window too)."""
+    try:
+        v = float(ts or 0.0)
+    except (TypeError, ValueError):
+        return None
+    now = time.time()
+    return v if now < v <= now + limits.MAX_HORIZON else None
+
+
+REREAD_TRIES = 3
+REREAD_BACKOFF = 2.0        # seconds, multiplied by the attempt number
+
+
+def _refresh_freeze_reset(slug: str, nid: str, blob: str,
+                          stamped_ts: float | None,
+                          stamped_win: float | None,
+                          subscription: bool = True,
+                          trusted: bool = True) -> bool:
+    """Correct a freeze's reset time with a FETCHED readout — the pass that
+    runs off the document lock (user report 2026-08-18: the usage endpoint
+    routinely takes over a second, and a freeze must not hold the lock, or
+    the agent, waiting for it). → True when it rewrote the record.
+
+    The freeze stamps what the warm cache already knew; this re-asks and
+    rewrites only if the answer moved by more than a minute. It corrects the
+    `api_fallback` window too, in BOTH directions: shorter is money saved,
+    longer is a wake that will not re-freeze the moment it lands.
+
+    Both writes are ownership-checked against the exact values that freeze
+    stamped. Anything else — the node resumed, a later freeze re-stamped it,
+    the user cleared the window or turned the fallback off — means the record
+    is no longer ours to move, and the pass does nothing."""
+    ts, src = None, ""
+    # a key-billed freeze never consults the readout, so every attempt would
+    # return the same prose answer — the retry loop would just sleep
+    # REREAD_BACKOFF*(1+2) seconds in a live thread (redteam 2026-08-18)
+    tries = REREAD_TRIES if subscription else 1
+    for attempt in range(tries):
+        if attempt:
+            # a readout that failed once usually failed for a reason that
+            # outlives one retry — but not always, and the alternative is a
+            # window priced on a guess (redteam 2026-08-18: the pass was
+            # one-shot and degraded silently to "stamp from cache")
+            time.sleep(REREAD_BACKOFF * attempt)
+        try:
+            ts, src = _limit_reset_ts(blob, allow_fetch=True,
+                                      subscription=subscription,
+                                      trusted=trusted)
+        except Exception as e:                                # noqa: BLE001
+            print(f"[orgtree] {slug}/{nid}: usage re-read failed: {e}")
+        if ts:
+            break
+    if not ts or (stamped_ts and abs(ts - stamped_ts) <= 60.0):
+        return False
+    wrote = False
+    with store.DOC_LOCK:
+        try:
+            o = store.load_org(slug)
+        except LedgerError:
+            return False
+        if nid not in o.nodes:
+            return False
+        fz = o.node(nid).get("frozen")
+        if fz and fz.get("limit") and fz.get("until_ts") == stamped_ts:
+            fz["until_ts"] = ts
+            fz["until"] = _reset_label(ts)
+            fz["reset_src"] = src
+            wrote = True
+        # ⚠ the window is owned SEPARATELY from the freeze. Resuming the node
+        # is the likeliest thing to happen in the second this pass takes, and
+        # gating the re-price on the freeze record left an over-long window
+        # open with nobody left to shrink it (redteam 2026-08-18).
+        if (stamped_win is not None and o.d.get("api_fallback")
+                and float(o.d.get("api_fallback_until") or 0) == stamped_win):
+            o.d["api_fallback_until"] = _fallback_window_until(
+                ts, trusted=trusted)
+            wrote = True
+        if not wrote:
+            return False
+        store.save_org(o)
+    print(f"[orgtree] {slug}/{nid}: freeze reset corrected to "
+          f"{_reset_label(ts)} ({src})")
+    return True
+
+
+def _spawn_reset_refresh(slug: str, nid: str, blob: str,
+                         stamped_ts: float | None,
+                         stamped_win: float | None,
+                         subscription: bool = True,
+                         trusted: bool = True) -> None:
+    """`_refresh_freeze_reset` on its own thread — the freeze path calls this
+    the moment it lets go of the document lock."""
+    threading.Thread(
+        target=_refresh_freeze_reset, daemon=True,
+        args=(slug, nid, blob, stamped_ts, stamped_win, subscription,
+              trusted),
+        name=f"usage-reset-{slug}-{nid}").start()
+
+
+def _warm_interval(top: float) -> float:
+    """Seconds until the next warm-up, paced by how close the account is to a
+    wall — that is exactly how stale the cache may afford to be. Under 80% a
+    freeze is not imminent; over 95% one is minutes away and the stamp it
+    reads must not be older than that."""
+    # ⚠ `>=`, not `>`: `pressure()` floors a `critical` lane at exactly 95.0,
+    # so a strict test put the one signal this band exists for into the
+    # 2-minute band instead (redteam round 10).
+    return 45.0 if top >= 95 else 120.0 if top >= 80 else 300.0
+
+
+_warm_started = False
+
+
+def start_usage_warm_loop() -> None:
+    """Keep the usage readout warm so a freeze can be stamped from cache
+    instantly (user ruling 2026-08-18 — "proactively query usage limits at
+    some point in advance of a freeze occurring").
+
+    Cadence is paced by how close the account is to a wall, because that is
+    exactly how stale the cache may afford to be:
+
+        under 80%  → every 5 min   (nothing is about to freeze)
+        80–95%     → every 2 min
+        over 95%   → every 45 s    (a freeze is minutes away; the stamp it
+                                    reads must not be a lane older than that)
+
+    One HTTPS GET per tick, account-wide — not per org, not per turn. It goes
+    quiet entirely when the host has no Claude credentials (an API-key-only
+    install has no subscription lanes to read)."""
+    global _warm_started
+    if _warm_started:
+        return
+    _warm_started = True
+
+    def loop() -> None:
+        while True:
+            try:
+                # nothing to warm the cache FOR on an install with no orgs —
+                # 288 requests a day at a semi-documented endpoint, each one
+                # possibly refreshing the host's OAuth token (redteam)
+                if limits.available() and store.list_orgs():
+                    limits.fetch(force=True)
+            except Exception as e:                            # noqa: BLE001
+                print(f"[orgtree] usage warm-up failed: {e}")
+            time.sleep(_warm_interval(limits.pressure()))
+    threading.Thread(target=loop, daemon=True, name="usage-warm").start()
+
+
+FALLBACK_MIN_WINDOW = 900.0                   # 15 min — below this is churn
+FALLBACK_MAX_WINDOW = 7 * 86400.0 + 3600.0    # the weekly lane, plus slack
+
+
+def _fallback_window_until(until_ts: Any, now: float | None = None,
+                           trusted: bool = True) -> float:
+    """How long `api_fallback` keeps the key lane open — bounded at BOTH ends
+    (user ruling 2026-08-18). The floor stops a 5-minute probe freeze from
+    opening a window too short to get a turn out of. The ceiling is the money
+    one: no reset time, however obtained, may bill the org's key past the
+    longest real limit lane — if the wall is still up when the window closes,
+    the next limit error opens a fresh one, which costs a round trip and
+    cannot cost a fortune."""
+    now = time.time() if now is None else now
+    if not trusted:
+        # ⚠ this is now unreachable from the freeze site, which declines to
+        # open a window at all on unvouched evidence — kept as the arithmetic
+        # floor for any future caller, and as the thing the tests pin.
+        return now + FALLBACK_MIN_WINDOW
+    try:
+        ts = float(until_ts or 0.0)
+    except (TypeError, ValueError):
+        ts = 0.0
+    return min(max(ts, now + FALLBACK_MIN_WINDOW), now + FALLBACK_MAX_WINDOW)
 
 
 def registered_mcp_servers() -> dict[str, Any]:
@@ -2050,6 +2461,15 @@ def _run_one_turn(slug: str, nid: str,
             # here, at spawn — capture it so the accounting below attributes
             # the whole turn to that lane even if the window expires mid-turn
             on_fallback_key = api_fallback_active(org)
+            # ⚠ and the WHOLE lane decision with it. `on_fallback_key` alone
+            # is ambiguous — False means both "not a fallback org" and
+            # "fallback org, window shut" — so combining it with org fields
+            # re-read at FREEZE time let a mid-turn settings change (a
+            # permanent-key org switched to api_fallback) turn a key-billed
+            # turn into a "subscription" one, and time its API limit off the
+            # host's lanes (redteam 2026-08-18). The invariant the docs state
+            # is "captured at spawn"; this is what makes that true.
+            billed_key = bills_the_key(org, on_fallback_key)
             env["ORGTREE_ORG"], env["ORGTREE_NODE"] = slug, nid
             env["ORGTREE_PORT"] = os.environ.get("ORGTREE_PORT", "7360")
             env["PYTHONPATH"] = BACKEND_DIR + os.pathsep + env.get("PYTHONPATH", "")
@@ -2070,6 +2490,10 @@ def _run_one_turn(slug: str, nid: str,
             # 2026-08-05, harvested from this machine's real transcripts).
             # Capture the limit text here; the result/err_blob paths adopt it.
             synth_limit_txt = ""
+            # …and WHERE it came from. Only the clean-result promotion sets
+            # this: everything else that fills `synth_limit_txt` is the CLI's
+            # own `<synthetic>` limit record, which an agent cannot forge.
+            agent_authored = False
             turn_occ = 0        # context-size HIGH-WATER over the turn's calls
                                 # (per-message point-in-time usage — see the
                                 # max() site; №24 was about the result event)
@@ -2395,13 +2819,23 @@ def _run_one_turn(slug: str, nid: str,
                             # always carries and prose like "it resets
                             # nightly" never does (redteam measured a genuine
                             # 57-char answer freezing its author without this)
-                            limited = bool(synth_limit_txt) or (
-                                len(_res_txt.strip()) < 200
-                                and _looks_like_usage_limit(_res_txt)
-                                and _parse_limit_reset_ts(_res_txt)
-                                is not None)
+                            limited = bool(synth_limit_txt) or \
+                                _result_names_a_limit(_res_txt)
                             if limited and not synth_limit_txt:
                                 synth_limit_txt = _res_txt.strip()[:400]
+                                # ⚠ THIS is the untrusted route, and the only
+                                # one: a clean result's `result` IS the
+                                # agent's own final answer. The synthetic
+                                # record above is engine-authored — a model
+                                # cannot emit `message.model == "<synthetic>"`
+                                # — and inferring provenance from
+                                # `err_blob is synth_limit_txt` lumped the two
+                                # together, throwing away the reset time the
+                                # CLI actually published in the shape this
+                                # suite calls "THE REAL SHAPE" (redteam
+                                # 2026-08-18). Carry the fact; do not derive
+                                # it from an identity test.
+                                agent_authored = True
                         nxt = None
                         with _state_lock:
                             st["responding"] = False
@@ -2531,6 +2965,15 @@ def _run_one_turn(slug: str, nid: str,
                     # ANY model's usage limit → the agent FREEZES (user ruling):
                     # the turn text (mail included — it was already drained) is
                     # kept so the org-wide ▶ resume replays it verbatim
+                    _stamped_ts: float | None = None
+                    _stamped_win: float | None = None
+                    _billed_key = False
+                    # a limit the CLI REPORTED — stderr, a result event flagged
+                    # is_error, or its own `<synthetic>` limit record — versus
+                    # one promoted out of the agent's own final answer by the
+                    # clean-result gate. See `_parse_limit_reset_ts(trusted=…)`
+                    _trusted_blob = not (agent_authored
+                                         and err_blob is synth_limit_txt)
                     with store.DOC_LOCK:
                         o2 = store.load_org(slug)
                         if nid in o2.nodes:
@@ -2541,33 +2984,50 @@ def _run_one_turn(slug: str, nid: str,
                             # shape-identical to a pre-№41 spend freeze, and
                             # was being retagged into one that ▶ resume skips
                             # forever. This flag is what tells them apart.
+                            _billed_key = billed_key
                             fz["limit"] = True
-                            fz["until"] = _parse_limit_reset(err_blob) or fz.get("until")
-                            fz["until_ts"] = (_parse_limit_reset_ts(err_blob)
-                                              or fz.get("until_ts"))
+                            # ⚠ the label is a CONSEQUENCE like the window and
+                            # the wake, and it is the only one a person reads:
+                            # `ledger.tree()` projects `until`, and the UI
+                            # renders it as system chrome in the org header
+                            # and on the node badge — KIOSK VISITORS INCLUDED.
+                            # Taking it from the blob let an agent put ~60
+                            # characters of its own prose (a URL, an
+                            # instruction) into the operator's chrome by
+                            # ending a turn with the right sentence (redteam
+                            # 2026-08-18). An untrusted freeze gets its label
+                            # derived from the timestamp instead.
+                            fz["until"] = (
+                                (_parse_limit_reset(err_blob) or fz.get("until"))
+                                if _trusted_blob else None)
+                            # user ruling 2026-08-18: the prose first, then
+                            # the account's own usage readout — a usage
+                            # freeze must not end up with no timestamp, and
+                            # `api_fallback` spends real money on this number
+                            _rts, _rsrc = _limit_reset_ts(
+                                err_blob, subscription=not _billed_key,
+                                trusted=_trusted_blob)
+                            # an INHERITED timestamp (a re-freeze on a node
+                            # whose old record survived) is the one number
+                            # here that no band has seen — keep it only while
+                            # it is still a plausible horizon
+                            fz["until_ts"] = _rts or _sane_inherited(
+                                fz.get("until_ts"))
+                            # never leave a PREVIOUS freeze's provenance
+                            # standing beside an inherited timestamp — the
+                            # field's whole job is saying what the window was
+                            # priced on (redteam 2026-08-18)
+                            fz["reset_src"] = _rsrc if _rts else "inherited"
                             _uts = fz.get("until_ts")
-                            if not fz.get("until") and _uts:
-                                # The CLI's usual wording carries ONLY the
-                                # epoch ("…usage limit reached|1753898400"),
-                                # which `_parse_limit_reset` cannot phrase — so
-                                # the record kept a machine time and no human
-                                # one, and the desk showed a freeze with no
-                                # reset. Worse: {error, no until, no
-                                # resume_texts, nothing True} is EXACTLY the
-                                # shape ledger's pre-№41 migration re-tags as a
-                                # kiosk SPEND freeze on the next load, after
-                                # which ▶ resume skips the node for good (it
-                                # defers to "whichever mechanism owns this
-                                # freeze", and no spend mechanism exists in a
-                                # non-kiosk org). Live-caught 2026-08-04
-                                # (test_turn_lifecycle "freeze · a limit on the
-                                # first call"). Deriving the label from the
-                                # timestamp we already parsed fixes the display
-                                # and keeps the record out of that shape.
-                                _t = _dtm.datetime.fromtimestamp(_uts)
-                                _lbl = _t.strftime("%I:%M%p").lstrip("0").lower()
-                                fz["until"] = (_lbl if _t.date() == _dtm.date.today()
-                                               else _t.strftime("%a ") + _lbl)
+                            # a readout time is minute-exact, timezone-safe
+                            # and lane-aware, so it OVERWRITES a prose label
+                            # ("resets 1:40pm" with no date beside it)
+                            if _uts and (_rsrc.startswith("usage")
+                                         or not fz.get("until")):
+                                # (why a label must exist at all, and what
+                                # re-tags the record if it does not:
+                                # _reset_label's docstring)
+                                fz["until"] = _reset_label(_uts)
                             if not fz.get("until_ts"):
                                 # no reset marker at all (rate-limit-class
                                 # text): a transient limit must not need a
@@ -2576,9 +3036,43 @@ def _run_one_turn(slug: str, nid: str,
                                 # (redteam gap 2026-08-05). A failed probe
                                 # re-freezes, so the worst case is one try
                                 # per ~5 minutes, honestly labeled.
-                                fz["until_ts"] = time.time() + 300
+                                fz["until_ts"] = time.time() + PROBE_FLOOR
                                 fz["until"] = ("unknown — probing again "
                                                "in ~5 min")
+                                fz["reset_src"] = "probe"
+                            _stamped_ts = fz.get("until_ts")
+                            # the untrusted RUN counter, mirroring the
+                            # connection kind's `net_fail_run` (a completed
+                            # turn clears it, so it counts CONSECUTIVE
+                            # self-diagnosed limits). A real limit clears
+                            # itself by time and never runs up; an agent
+                            # repeating "usage limit reached · try again in 1
+                            # minute" would otherwise re-freeze and re-wake
+                            # forever, burning a turn each cycle.
+                            if _trusted_blob:
+                                o2.node(nid).pop("untrusted_limit_run", None)
+                                fz.pop("untrusted", None)
+                            else:
+                                _ur = int(o2.node(nid).get(
+                                    "untrusted_limit_run") or 0) + 1
+                                o2.node(nid)["untrusted_limit_run"] = _ur
+                                fz["untrusted"] = True
+                                if _ur >= UNTRUSTED_LIMIT_RUNS:
+                                    # stop auto-waking it: nothing here is
+                                    # evidence of a wall, and the loop is the
+                                    # agent's own answer coming back round.
+                                    # (`>=`, so the cap lands on the Nth — the
+                                    # count every description of it states —
+                                    # rather than one later; redteam)
+                                    fz["until_ts"] = None
+                                    fz["until"] = (
+                                        "self-reported limit, %d turns running "
+                                        "— resume manually" % _ur)
+                                    # the number is GONE, so the field that
+                                    # records where a number came from must
+                                    # stop describing one
+                                    fz["reset_src"] = "capped"
+                                    _stamped_ts = None
                             fz["error"] = err_blob[:300]
                             # replay only what the CLI actually consumed: an
                             # unconsumed batch folds back as MAIL (C1) and
@@ -2587,14 +3081,26 @@ def _run_one_turn(slug: str, nid: str,
                             # position 0) so a lost one is lost, not degraded
                             if not is_cmd and not pend_toks:
                                 fz.setdefault("resume_texts", []).append(text[-8000:])
+                            # ⚠ trusted-only. This escalation halts — and
+                            # under the `dissolve` policy ARCHIVES — every
+                            # fable node in the org, and its trigger is three
+                            # words in the blob. An agent answering "I've
+                            # reached the Fable limit, try again in 3 hours"
+                            # dissolved a whole subtree in review (redteam
+                            # 2026-08-18): round 3 guarded the lock's
+                            # TIMESTAMP against untrusted text and left its
+                            # TRIGGER open, which is the destructive half.
+                            _fable_tier = (o2.node(nid)["model"] == "fable"
+                                           and _trusted_blob
+                                           and _looks_like_fable_tier_limit(
+                                               err_blob))
                             # FABLE-1 (user report 2026-08-06): tier alone is
                             # not evidence — escalate org-wide only on the
                             # WEEKLY wording; a session limit freezes this
                             # one agent like any tier and auto-resumes. The
                             # parsed reset rides onto the lock (FABLE-2) so
                             # even a real weekly halt releases by time.
-                            if o2.node(nid)["model"] == "fable" \
-                                    and _looks_like_fable_tier_limit(err_blob):
+                            if _fable_tier:
                                 # ⚠ re-parse rather than reading fz["until_ts"]
                                 # (2026-08-07). By here that field may be the
                                 # 300-SECOND PROBE FLOOR, which means "no
@@ -2606,9 +3112,19 @@ def _run_one_turn(slug: str, nid: str,
                                 # re-hit the wall and re-halt, ~288 times a
                                 # day. Passing None instead marks the lock
                                 # `no_reset` and it waits for the user.
+                                # …and the readout answers when the prose
+                                # cannot (user ruling 2026-08-18: EVERY usage
+                                # freeze carries a timestamp — the org-wide
+                                # lock most of all, since `no_reset` waits for
+                                # a human). Only a WEEKLY lane may time a
+                                # weekly tier lock: a session-lane reset here
+                                # would self-release the lock hours into a
+                                # week-long quota, which is FABLE-2's whole
+                                # warning.
                                 o2.fable_limit_hit(
                                     nid, err_blob,
-                                    until_ts=_parse_limit_reset_ts(err_blob))
+                                    until_ts=_fable_lock_ts(
+                                        err_blob, _rts, _rsrc, _trusted_blob))
                             # api_fallback (user feature 2026-08-17): the org
                             # holds a key for exactly this moment — open the
                             # window so the resume timer wakes the node on its
@@ -2616,23 +3132,56 @@ def _run_one_turn(slug: str, nid: str,
                             # the key until the subscription's own reset. A
                             # fable-TIER quota is excluded: that lane is owned
                             # by fable_limit_policy, not by billing.
-                            _fable_tier = (o2.node(nid)["model"] == "fable"
-                                           and _looks_like_fable_tier_limit(
-                                               err_blob))
                             if api_fallback_active(o2):
-                                # frozen ON the key lane: this record owns its
+                                # frozen ON the key lane: that record owns its
                                 # own reset — mark it so readiness never
-                                # insta-wakes it into the same wall
-                                fz["on_fallback"] = True
+                                # insta-wakes it into the same wall.
+                                # ⚠ the flag is the lane THIS turn ran on
+                                # (captured at spawn), not "a window happens
+                                # to be open now": a sibling that opened the
+                                # window a second ago left this turn's
+                                # subscription-lane freeze marked as the key
+                                # lane, and readiness then slept it for hours
+                                # beside a paid, open, unused key window
+                                # (redteam 2026-08-18).
+                                fz["on_fallback"] = on_fallback_key
                             elif (o2.d.get("api_fallback")
-                                  and o2.d.get("api_key") and not _fable_tier):
-                                o2.d["api_fallback_until"] = max(
-                                    float(fz.get("until_ts") or 0),
-                                    time.time() + 900)
+                                  and o2.d.get("api_key") and not _fable_tier
+                                  and _trusted_blob):
+                                # ⚠ TRUSTED evidence only. Flooring an
+                                # unvouched window at 15 minutes bounded ONE
+                                # incident and not the RATE: the window makes
+                                # the node immediately resumable (and, since
+                                # D-122, does so even with auto_resume off),
+                                # the resume replays the same prompt to the
+                                # same agent, and the same sentence re-opens
+                                # it — measured at 95% duty, indefinitely,
+                                # with the whole org on the user's metered key
+                                # (redteam 2026-08-18). A real wall is always
+                                # reported BY the CLI, so declining here costs
+                                # a genuine limit nothing.
+                                # the same lane record as the `if` branch: a
+                                # window that expired MID-TURN leaves a
+                                # key-lane freeze here, and an unset flag made
+                                # readiness wake it at once — bypassing the
+                                # auto_resume toggle — straight into the API
+                                # wall it just hit (redteam 2026-08-18)
+                                fz["on_fallback"] = on_fallback_key
+                                _stamped_win = _fallback_window_until(
+                                    fz.get("until_ts"), trusted=_trusted_blob)
+                                o2.d["api_fallback_until"] = _stamped_win
                                 o2.d["api_fallback_since"] = time.time()
                             store.save_org(o2)
+                    # the stamp above came out of the CACHED readout, because
+                    # this block holds the document lock and the usage
+                    # endpoint routinely takes over a second (user report
+                    # 2026-08-18). Re-ask off-lock and correct the record.
+                    if _stamped_ts is not None:
+                        _spawn_reset_refresh(slug, nid, err_blob,
+                                             _stamped_ts, _stamped_win,
+                                             not _billed_key, _trusted_blob)
                     notify(slug, nid, "frozen")
-                    if org.node(nid)["model"] == "fable" \
+                    if org.node(nid)["model"] == "fable" and _trusted_blob \
                             and _looks_like_fable_tier_limit(err_blob):
                         notify(slug, nid, "fable_limit")
                 elif _looks_like_connection_failure(err_blob):
@@ -2837,8 +3386,10 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
                 return
             n = o2.node(nid)
             # a completed turn ends any network-failure run — the retry
-            # counter is CONSECUTIVE by design (user report 2026-08-06)
+            # counter is CONSECUTIVE by design (user report 2026-08-06) — and
+            # likewise any run of self-reported limits
             n.pop("net_fail_run", None)
+            n.pop("untrusted_limit_run", None)
             if cost:
                 n["cost_usd"] = round(float(n.get("cost_usd") or 0.0) + cost, 6)
                 if on_key:
@@ -3965,10 +4516,14 @@ def _resumable(n: NodeDoc) -> FrozenInfo | None:
         return None
     if n["state"] != "live" or n.get("limit_locked"):
         return None
-    # `on_fallback` is a QUALIFIER on the limit kind (frozen while the key
-    # lane was live), not a kind of its own — exempt like the owned kinds
-    if any(k not in ("limit", "connection", "on_fallback") and v is True
-           for k, v in fz.items()):
+    # `on_fallback` (frozen while the key lane was live) and `untrusted` (the
+    # only witness was the agent's own answer) are QUALIFIERS on the limit
+    # kind, not kinds of their own — exempt like the owned kinds. ⚠ Adding a
+    # True flag here without exempting it makes ▶ skip the node FOREVER: this
+    # is the pre-№41 spend-freeze trap in a new form, and `untrusted` fell
+    # straight into it on the day it was added (2026-08-18).
+    if any(k not in ("limit", "connection", "on_fallback", "untrusted")
+           and v is True for k, v in fz.items()):
         return None
     return fz
 
@@ -4189,6 +4744,14 @@ def auto_resume_ready(org: Org, now: float | None = None) -> set[str]:
     for nid, n in org.nodes.items():
         fz = _resumable(n)
         if fz is None:
+            continue
+        if fz.get("untrusted") and fz.get("until_ts") is None:
+            # a run of self-diagnosed limits, capped: nothing here is evidence
+            # of a wall, and every automatic wake replays the same prompt to
+            # the same agent and gets the same sentence back. ▶ still resumes
+            # it — this suppresses the TIMER, not the person. (Placed before
+            # every branch below, including the fallback fast-wake: a window
+            # another node's REAL limit opened must not drag this one along.)
             continue
         if fb and fz.get("limit") and not fz.get("on_fallback"):
             # api_fallback (2026-08-17): the key lane is open RIGHT NOW —

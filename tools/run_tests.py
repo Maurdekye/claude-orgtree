@@ -374,7 +374,7 @@ def plan_for(suites, args):
     """(runnable, skipped) — skipped carries a reason, never an error."""
     run, skipped = [], []
     for s in suites:
-        if args.only and args.only not in s.id:
+        if args.only and not any(f in s.id for f in args.only):
             continue
         if s.skip:
             skipped.append((s, s.skip))
@@ -403,7 +403,13 @@ def main():
                "  --full          every suite at full depth, live rigs\n"
                "                  included. ~13 min measured.")
     ap.add_argument("--full", action="store_true", help="the full tier")
-    ap.add_argument("--only", default="", help="only suites whose id contains this")
+    # repeatable AND comma-separated (2026-08-18): both `--only a --only b`
+    # and `--only a,b` used to keep only the last token — and a filter that
+    # matched nothing printed "plan · 0 to run" and EXITED 0, so a CI line
+    # could pass having tested nothing at all
+    ap.add_argument("--only", action="append", default=[], metavar="SUBSTR",
+                    help="only suites whose id contains this (repeatable, "
+                         "comma-separated)")
     ap.add_argument("--jobs", type=int, default=0,
                     help="parallel workers (default: min(4, cpus))")
     ap.add_argument("--serial", action="store_true", help="one suite at a time")
@@ -412,6 +418,8 @@ def main():
     ap.add_argument("--logdir", default="")
     ap.add_argument("--list", action="store_true", help="print the plan only")
     args = ap.parse_args()
+    args.only = [t.strip() for chunk in args.only for t in chunk.split(",")
+                 if t.strip()]
 
     py = _interpreter()
     jobs = 1 if args.serial else (args.jobs or min(4, os.cpu_count() or 1))
@@ -441,6 +449,20 @@ def main():
         print(f"  skipped    {s.id:<24} {why}")
     if args.list:
         return 0
+    if not run:
+        # silence is not success — a filter that leaves nothing to run is
+        # an error, not a green run of zero suites
+        if skipped:
+            print(f"\nNOTHING TO RUN — every match was skipped "
+                  f"({', '.join(x.id for x, _ in skipped)}); "
+                  f"reasons above.")
+        elif args.only:
+            print(f"\nNOTHING TO RUN — --only {args.only!r} matched "
+                  f"no suite. Ids: "
+                  f"{', '.join(sorted(x.id for x in suites))}")
+        else:
+            print("\nNOTHING TO RUN — no suites were found.")
+        return 2
     print()
 
     results = []

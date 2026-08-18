@@ -39,7 +39,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, model_validator
 
 from . import ledger as ledger_mod
-from . import net, sandbox, store, subproxy, supervisor
+from . import limits, net, sandbox, store, subproxy, supervisor
 from .ledger import LedgerError, Org, USER, VIS_LEVELS, norm_dirs, norm_tools
 
 if TYPE_CHECKING:
@@ -528,6 +528,10 @@ async def _wire_notify() -> None:  # type: ignore[unused-function]  # registered
     # redundant but harmless (they coalesce into the same window).
     store.on_save = hub_changed
     supervisor.start_auto_resume_loop()
+    # user ruling 2026-08-18: keep the subscription's usage readout warm, so a
+    # usage freeze can stamp its reset time from cache instead of blocking the
+    # document lock on a >1 s fetch (limits.py owns the cadence)
+    supervisor.start_usage_warm_loop()
     # storage watchdog (user spec): catches single long tool calls —
     # clones/builds/downloads — that balloon past the limit MID-CALL
     supervisor.start_storage_watchdog()
@@ -1739,82 +1743,19 @@ def mcp_servers() -> dict[str, Any]:
 
 
 # the host subscription's rate-limit standing — the same bars Claude Code
-# shows under /usage. Cached briefly (the upstream is a per-account readout;
-# every open modal polling it uncached would be rude), stale-on-error so a
-# blip shows yesterday's bars rather than an error box. Admin-only by
-# construction: the public gateway 404s any /api path outside /api/orgs/<own>.
-_usage_cache: dict[str, Any] = {"at": 0.0, "data": None}
-_USAGE_TTL = 30.0
-
-
+# shows under /usage. Admin-only by construction: the public gateway 404s any
+# /api path outside /api/orgs/<own>.
 @app.get("/api/usage")
 async def claude_usage() -> dict[str, Any]:
+    """The bars the header usage modal renders. The fetch, the 30 s cache and
+    the normalization all live in `limits` — the freeze path reads the SAME
+    readout to time a limit (user ruling 2026-08-18), and two caches of one
+    account-wide standing would disagree about when a limit lifts.
+
+    Contract (frontend UsagePayload): `{available, error?, limits?[], plan?}`,
+    stale-on-error, unknown `kind`s rendered generically."""
     from fastapi.concurrency import run_in_threadpool
-    now = time.time()
-    if _usage_cache["data"] is not None and now - _usage_cache["at"] < _USAGE_TTL:
-        return _usage_cache["data"]
-    if not subproxy.available():
-        return {"available": False,
-                "error": "no Claude Code credentials on this host"}
-    try:
-        token = await run_in_threadpool(subproxy.get_access_token)
-    except RuntimeError as e:
-        return {"available": False, "error": str(e)}
-    try:
-        r = await _upstream().get(
-            "/api/oauth/usage",
-            headers={"Authorization": "Bearer " + token,
-                     "anthropic-beta": "oauth-2025-04-20"},
-            timeout=15.0)
-        r.raise_for_status()
-        raw: dict[str, Any] = r.json()
-    except Exception as e:                                    # noqa: BLE001
-        if _usage_cache["data"] is not None:
-            return _usage_cache["data"]
-        return {"available": False, "error": f"usage fetch failed: {e}"}
-    # `limits` is the modern shape (kind/group/percent/severity/resets_at,
-    # scoped entries carry the model display name — "Fable"); the flat
-    # five_hour/seven_day fields are its ancestors, kept as a fallback so an
-    # older upstream still yields the two unscoped bars.
-    limits: list[dict[str, Any]] = []
-    for lim_any in cast("list[Any]", raw.get("limits") or []):
-        if not isinstance(lim_any, dict):
-            continue
-        lim = cast("dict[str, Any]", lim_any)
-        model: Any = None
-        scope_any = lim.get("scope")
-        if isinstance(scope_any, dict):
-            model_any = cast("dict[str, Any]", scope_any).get("model")
-            if isinstance(model_any, dict):
-                model = cast("dict[str, Any]", model_any).get("display_name")
-        limits.append({"kind": lim.get("kind"), "group": lim.get("group"),
-                       "percent": lim.get("percent"),
-                       "severity": lim.get("severity"),
-                       "resets_at": lim.get("resets_at"),
-                       "is_active": bool(lim.get("is_active")),
-                       "model": model})
-    if not limits:
-        for key, kind in (("five_hour", "session"), ("seven_day", "weekly_all")):
-            w_any = raw.get(key)
-            if not isinstance(w_any, dict):
-                continue
-            w = cast("dict[str, Any]", w_any)
-            if w.get("utilization") is not None:
-                limits.append({"kind": kind, "group": kind,
-                               "percent": w["utilization"],
-                               "severity": "normal",
-                               "resets_at": w.get("resets_at"),
-                               "is_active": False, "model": None})
-    plan = ""
-    try:
-        doc: dict[str, Any] = json.load(open(subproxy.CREDS, encoding="utf-8"))
-        oauth = cast("dict[str, Any]", doc.get("claudeAiOauth") or {})
-        plan = str(oauth.get("subscriptionType") or "")
-    except (OSError, json.JSONDecodeError):
-        pass
-    data: dict[str, Any] = {"available": True, "limits": limits, "plan": plan}
-    _usage_cache.update(at=now, data=data)
-    return data
+    return await run_in_threadpool(limits.fetch)
 
 
 @app.get("/api/host")

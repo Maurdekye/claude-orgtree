@@ -114,12 +114,33 @@ class FrozenInfo(TypedDict, total=False):
     # live 2026-08-04 by the turn-lifecycle suite. Setting this flag takes the
     # retag's `not any(v is True …)` guard out of the picture by construction.
     limit: bool
+    # where `until_ts` came from (user ruling 2026-08-18): "text" (parsed out
+    # of the CLI's error prose), "usage:<lane>" (looked up in the account's
+    # own usage readout — see limits.reset_for), "probe" (nothing could
+    # answer, so it carries the blind 5-minute floor), "capped" (an untrusted
+    # run was cut off and `until_ts` deliberately REMOVED — there is no number
+    # left for a provenance to describe), or "inherited" (a re-freeze kept the
+    # previous record's still-plausible horizon; the provenance of THAT number
+    # belonged to the earlier freeze, so this one does not claim it).
+    # Diagnostic: a freeze that opened an api_fallback window records what the
+    # window was priced on. ⚠ On an `untrusted` freeze it records where the
+    # NUMBER came from and nothing more — no window was priced at all.
+    reset_src: str
     # the transient/connection kind (user report 2026-08-06): a network drop
     # freezes with a short exponential until_ts; ▶/auto-resume own it like
     # `limit` (resume_frozen's owned-kinds exemption names both)
     connection: bool
     spend: bool
     spend_error: str | None
+    # the limit was reported by NOBODY BUT THE AGENT (2026-08-18): the
+    # clean-result gate promotes a short final answer that names a limit into
+    # a freeze, and that text is the agent's own. Such a freeze still carries
+    # a timestamp and still wakes — but it may not open an api_fallback
+    # window (the org's key would bill for a wall that need not exist), and
+    # after UNTRUSTED_LIMIT_RUNS consecutive ones the node waits for a person.
+    # ⚠ read it beside `reset_src`: on an untrusted freeze that field says
+    # where the NUMBER came from, not that the number priced anything.
+    untrusted: bool
     # api_fallback (2026-08-17): this limit freeze was recorded while the
     # org's fallback window was already OPEN — i.e. the KEY lane hit a wall,
     # not the subscription. Readiness must not insta-wake it into the same
@@ -197,6 +218,11 @@ class NodeDoc(TypedDict):
     # consecutive network-classified turn failures (user report 2026-08-06);
     # reset by any completed turn, capped at NET_RETRY_MAX then manual
     net_fail_run: NotRequired[int]
+    # consecutive limit freezes whose only evidence was the agent's own final
+    # answer (see FrozenInfo.untrusted). Cleared by any completed turn, like
+    # net_fail_run — the count is CONSECUTIVE, and it is what stops a node
+    # that keeps answering "usage limit reached" from waking itself forever.
+    untrusted_limit_run: NotRequired[int]
     # cheap-compact marker (user feature 2026-08-17): the CURRENT session was
     # minted by cheap_compact — it started EMPTY (no CLI summary), so the
     # supervisor splices breadcrumbs.md into the identity prompt on every
