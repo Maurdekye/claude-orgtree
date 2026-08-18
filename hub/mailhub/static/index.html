@@ -58,6 +58,16 @@
   .org .slug { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .org .fp { color: var(--dim); font-family: var(--mono); font-size: 11px; }
   .org .q { margin-left: auto; color: var(--sky); font-size: 11px; }
+  /* per-row copy-id button: puts the full slug (the send target) on the
+     clipboard without triggering the row's filter click */
+  .org .copy { flex: none; margin-left: auto; background: none;
+               border: 1px solid transparent; border-radius: 4px;
+               color: var(--dim); cursor: pointer; padding: 0 4px;
+               font: 12px var(--mono); line-height: 16px; }
+  .org .copy:hover { color: var(--ink-strong); border-color: var(--line);
+                     background: var(--panel); }
+  .org .copy.did { color: var(--ok); }
+  .org .q + .copy { margin-left: 4px; }
   .org .last { color: var(--dim); font-size: 10.5px; }
   /* the mail area (user spec 2026-08-05): the orgtree inbox shape — a list
      pane of every mail (who → whom, when, state, snippet) and a reading
@@ -237,6 +247,8 @@ async function refresh () {
         + '<div class="last">' + (o.online ? 'online' : ago(o.last_seen))
         + (o.blurb ? ' · ' + esc(o.blurb) : '') + '</div></span>'
         + (o.queued ? '<span class="q">' + o.queued + ' queued</span>' : '')
+        + '<button class="copy" title="copy id: ' + esc(o.slug)
+        + '" onclick="copyId(event, \'' + esc(o.slug) + '\')">⧉</button>'
         + '</div>'
     }
     const section = (rows) => {
@@ -315,6 +327,27 @@ function pick (slug) {
 }
 function selmsg (id) { sel = (sel === id ? '' : id); renderMail() }
 function toggleOff () { showOff = !showOff; refresh() }
+// copy a row's full slug — the id hubtool send/read take as TARGET-SLUG.
+// clipboard API needs a secure context (localhost qualifies); the hidden-
+// textarea path covers plain-http LAN access to the hub UI.
+async function copyId (ev, slug) {
+  ev.stopPropagation()
+  const b = ev.currentTarget
+  try { await navigator.clipboard.writeText(slug) }
+  catch (e) {
+    const t = document.createElement('textarea')
+    t.value = slug
+    t.style.position = 'fixed'
+    t.style.opacity = '0'
+    document.body.appendChild(t)
+    t.select()
+    try { document.execCommand('copy') } finally { t.remove() }
+  }
+  b.textContent = '✓'
+  b.classList.add('did')
+  setTimeout(() => { b.textContent = '⧉'; b.classList.remove('did') }, 1200)
+}
+window.copyId = copyId
 window.pick = pick
 window.selmsg = selmsg
 window.toggleOff = toggleOff
