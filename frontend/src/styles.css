@@ -548,10 +548,14 @@ button.cc-name:hover {
 .cc-icon:hover { color: var(--ink-strong); background: none; }
 .desk-body .badge { font-size: 10px; padding: 1px 6px; }
 .desk-body .statuschip { font-size: 10px; padding: 0 5px; }
-.cc-actions { display: flex; gap: 2px; }
+/* flex:none + nowrap: under header overflow these buttons used to shrink and
+   wrap their label into a two-line red fragment at the row edge, which reads
+   as a stray error message ("dissolve · 30" — user report 2026-08-19) */
+.cc-actions { display: flex; gap: 2px; flex: none; }
 .cc-actions button {
   font-size: 10px; padding: 2px 7px; border-radius: 4px;
   background: none; border: 1px solid transparent; color: var(--dim);
+  white-space: nowrap;
 }
 .cc-actions button:hover { color: var(--ink); border-color: var(--line); background: var(--panel-2); }
 .cc-actions button.danger { color: var(--bad); }
