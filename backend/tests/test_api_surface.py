@@ -283,6 +283,48 @@ def _():
     assert TOKEN != KSECRET and TOKEN != TOKEN2 and SECRET != KSECRET
 
 
+@t("hire with above= splices atomically: slot, parent and ordinal in one op")
+def _():
+    # FR-25 rework (2026-08-19): the anchor rides the hire op and the server
+    # does hire + ordinal pin + move inside one lock/save — the old client
+    # chain (hire, then a separate move) could strand a hired-but-unspliced
+    # sibling on a mid-chain failure.
+    r = call(ADMIN, "POST", "/api/orgs", {"name": "Splice Org"})
+    s = r.json["slug"]
+    kids = {}
+    for nm in ("l", "anchor", "r"):
+        rr = call(ADMIN, "POST", f"/api/orgs/{s}/ops",
+                  {"op": "hire", "tier": "haiku", "name": nm, "grant": 0})
+        assert rr.status == 200, rr
+        kids[nm] = rr.json["node"]
+    rr = call(ADMIN, "POST", f"/api/orgs/{s}/ops",
+              {"op": "hire", "tier": "haiku", "name": "sup", "grant": 0,
+               "above": kids["anchor"]})
+    assert rr.status == 200, rr
+    sup = rr.json["node"]
+    assert rr.json.get("spliced") == kids["anchor"], rr.json
+    org = store.load_org(s)
+    assert org.nodes[kids["anchor"]]["parent"] == sup, "anchor not reparented"
+    assert org.nodes[sup]["parent"] is None
+    tops = org.children(None, live_only=False)
+    assert tops == [kids["l"], sup, kids["r"]], \
+        f"the hire did not take the anchor's ordinal slot: {tops}"
+    # refusal is ALL-OR-NOTHING: a bad anchor refuses the whole op — no node
+    # is created, nothing is saved
+    before = set(store.load_org(s).nodes)
+    rr = call(ADMIN, "POST", f"/api/orgs/{s}/ops",
+              {"op": "hire", "tier": "haiku", "name": "ghost", "grant": 0,
+               "above": "no-such-node"})
+    assert rr.status == 422, rr
+    assert set(store.load_org(s).nodes) == before, "a refused splice persisted"
+    # anchor under a DIFFERENT parent than the hire's → refused up front
+    rr = call(ADMIN, "POST", f"/api/orgs/{s}/ops",
+              {"op": "hire", "tier": "haiku", "name": "ghost2", "grant": 0,
+               "parent": sup, "above": kids["l"]})
+    assert rr.status == 422 and "does not report to" in rr.json["detail"], rr
+    assert set(store.load_org(s).nodes) == before, "a refused splice persisted"
+
+
 @t("no token at all → 404, with no hint that anything exists")
 def _():
     r = call(PUBLIC, "GET", "/api/orgs")

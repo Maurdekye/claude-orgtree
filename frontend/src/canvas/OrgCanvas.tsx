@@ -1203,10 +1203,11 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
     setTimeout(() => centerOn(
       DRAFT, Math.min(2.05, Math.max(1.7, viewRef.current.z))), 60)
   }
-  // FR-25: insert a PARENT — hire under the anchor's own superior (the exact
-  // parent resolution spawnBeside uses), then confirmDraft moves the anchor
-  // beneath the fresh hire. move() is budget-neutral, so the chain needs no
-  // credit headroom beyond the hire itself.
+  // FR-25: insert a SUPERIOR — hired under the anchor's own superior (the
+  // exact parent resolution spawnBeside uses); the hire op carries the anchor
+  // and the server splices atomically (hire + ordinal pin + move, one save).
+  // The draft meanwhile WRAPS the anchor in the preview tree (withDraftTree),
+  // so the form already sits in the final shape and confirm causes no reflow.
   const spawnAbove = (n: CanvasNode, tier: string) => {
     setDraft({ parent: !n.parent || n.parent === USER ? null : n.parent, tier,
                above: { anchor: n.id } })
@@ -1217,6 +1218,11 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
     scope: DraftScope | null) => {
     op({ op: 'hire', parent: draft!.parent, tier: draft!.tier, grant, name,
          charter: charter?.trim() || undefined,
+         // FR-25: the anchor rides the hire op — the SERVER splices the new
+         // node in as its superior atomically (one save, one broadcast), so
+         // the old client-chained hire→move two-step (and its half-done
+         // failure mode) is gone
+         above: draft!.above?.anchor,
          // pre-hire permissions (user spec): staged in the draft's modal,
          // applied atomically WITH the hire — effort included (review: the
          // old post-hire /scope call is 403'd through the kiosk gateway,
@@ -1245,20 +1251,9 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
             ? { before: beside.anchor } : { after: beside.anchor })
             .catch(() => {})   // the broadcast refetch shows the final order
         }
-        // FR-25: the SPLICE — the anchor moves under the node just hired.
-        // NOT best-effort like the reorder above: the move is the entire
-        // point of the top chip, so a failure is reported loudly with the
-        // manual completion named (a drag finishes what the chain started).
-        // Sequenced AFTER hire success by construction; move() itself is
-        // budget-neutral and cycle-checked server-side.
-        const above = draft?.above
-        if (typeof born === 'string' && born && above) {
-          op({ op: 'move', node: above.anchor, new_parent: born })
-            .catch((e: Error) => toast([
-              `hired ${born}, but the splice failed: ${e.message}`,
-              `${above.anchor} still reports to its old superior — drag it `
-              + `onto ${born} to finish the insert`]))
-        }
+        // (FR-25's splice needs nothing here anymore — it happened inside
+        // the hire op itself, atomically; the broadcast refetch already
+        // carries the final shape, which the draft was previewing in place)
         setDraft(null)
       }).catch((e: Error) => toast([`hire failed: ${e.message}`]))
   }
@@ -1324,7 +1319,11 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
             if (!posOf(n.parent!) || !posOf(n.id)) return null
             return <path key={n.id} d={segD(treeSeg(n.parent!, n.id))}
               className={'edge' + (n.state === 'archived' ? ' faded' : '')
-                + (n.state === 'draft' ? ' draftedge' : '')} />
+                // dashed on BOTH sides of a draft: its own parent edge, and —
+                // for an insert-superior draft, which wraps its anchor — the
+                // edge down to the anchor it would adopt
+                + (n.state === 'draft' || n.parent === DRAFT
+                  ? ' draftedge' : '')} />
           })}
           {peerLinks.map(([l, r]) => (
             posOf(l) && posOf(r) &&

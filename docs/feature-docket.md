@@ -1519,6 +1519,14 @@ completion). The open question below was confirmed against `test_ledger`'s audie
 checks: the old superior remains an ancestor after a splice, so ancestral grants survive, exactly
 as a plain drag-reparent. `derived.test` ⑮ pins the plumbing.
 
+**REWORKED 2026-08-19 (user: "clunky and unintuitive… a slow few consecutive steps") — see
+D-135.** The client-chained hire→move is gone: the hire op now carries `above: <anchor>` and the
+server splices atomically (hire + ordinal pin + move, one save, one broadcast), while the draft
+WRAPS the anchor in the preview tree — it takes the anchor's slot the moment the top chip is
+clicked, dashed lines above and below, with the real structure untouched until confirm. The
+loud-failure toast went with the failure mode it reported: a refusal anywhere now rolls the whole
+op back, so hired-but-unspliced can no longer exist. ⑮ re-pinned to the new shape.
+
 **Step 1 of this feature is already shipped, verbatim — it just doesn't stop where this request
 needs it to.** `spawnBeside` (`OrgCanvas.tsx:960-967`, **F-03**, already shipped per the docket
 history above) is *exactly* "hire a new subordinate of the agent's superior": it resolves the new

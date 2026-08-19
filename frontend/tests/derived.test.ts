@@ -367,21 +367,34 @@ test('⑭  the pinned last-user-turn chip attributes by envelope, not role',
   })
 
 // --------------------------------------------------------------------- ⑮
-test('⑮  the insert-parent splice is loud on failure, never best-effort',
+test('⑮  the insert-superior splice is atomic with the hire, and the draft '
+  + 'previews it in place',
   () => {
-    // FR-25 (user request 2026-08-10). The F-03 reorder next to this code IS
-    // best-effort (cosmetic, its own ruling) — the splice move is NOT: it is
-    // the entire point of the top chip, and a silently swallowed failure
-    // leaves the org shaped differently than the gesture promised, with no
-    // sign anything went wrong.
+    // FR-25 rework (user request 2026-08-19, superseding the 2026-08-10
+    // client-chained build). The old shape — hire, then a SEPARATE move op,
+    // each with its own broadcast and reflow — read as "a slow few
+    // consecutive steps". Now the anchor rides the hire op (`above`) and the
+    // SERVER splices in one save; a partial failure (hired but unspliced)
+    // is impossible by construction, so the loud-toast path ⑮ used to pin
+    // is gone WITH its failure mode, not silently dropped.
     const src = code('canvas/OrgCanvas.tsx')
-    const m = /op\(\{ op: 'move', node: above\.anchor, new_parent: born \}\)\s*\n\s*\.catch\(\(e: Error\) => toast\(/.exec(src)
-    assert.ok(m, 'the splice move lost its loud failure path — a failed '
-      + 'insert-parent now looks like a plain side hire and nobody is told')
+    assert.ok(/above: draft!\.above\?\.anchor/.test(src),
+      'the hire op no longer carries the anchor — the server cannot splice, '
+      + 'and insert-superior degrades to a plain side hire')
+    assert.ok(!/op\(\{ op: 'move', node: above\.anchor/.test(src),
+      'the client-chained splice move is back — that resurrects the two-step '
+      + 'reflow and the hired-but-unspliced failure mode the rework removed')
     assert.ok(/const spawnAbove = /.test(src)
       && /above: \{ anchor: n\.id \}/.test(src),
       'spawnAbove is gone or no longer records the anchor — confirmDraft '
-      + 'cannot know what to move under the fresh hire')
+      + 'cannot tell the server what to splice above')
+    // the preview half: the draft must WRAP the anchor (take its slot, anchor
+    // beneath), so the form already sits in the final shape and confirm does
+    // not move anything on screen
+    const sh = code('canvas/shared.ts')
+    assert.ok(/d\.children = \[kids\[i\]!\]/.test(sh),
+      'withDraftTree no longer wraps the insert-superior anchor — the draft '
+      + 'would render as a sibling and the confirmed hire would reflow')
   })
 
 // --------------------------------------------------------------------- (16)

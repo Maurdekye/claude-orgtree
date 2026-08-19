@@ -4302,6 +4302,11 @@ class Op(Body):
     charter: str | None = None    # hire — short standing role card
     add_dirs: list[Any] | None = None  # hire — [{path, mode}] or bare paths
     tools: dict[str, Any] | None = None  # hire — {bash, web, edit, subagents, mcp: []}
+    # FR-25 insert-superior: hire + splice as ONE op — the fresh node takes
+    # this anchor's slot among its siblings and the anchor is reparented
+    # beneath it, all inside the same lock and save (a refusal anywhere rolls
+    # the whole thing back). `parent` must be the anchor's own parent.
+    above: str | None = None
     org_visibility: str | None = None
     effort: str | None = None     # hire — thinking effort, applied WITH the hire
     delta: int | None = None      # reallocate
@@ -4367,6 +4372,11 @@ def _org_op_locked(slug: str, body: Op, allow_raise: bool = False) -> dict[str, 
         if body.op == "hire":
             if body.tier is None or body.name is None:
                 raise LedgerError("hire needs tier and name")
+            if body.above is not None \
+                    and org.node(body.above)["parent"] != body.parent:
+                raise LedgerError(
+                    f"insert-superior: {body.above} does not report to "
+                    f"{body.parent or 'the top level'}")
             result = org.hire(body.actor, body.parent, body.tier,
                               body.grant or 0, body.name, body.add_dirs,
                               tools=body.tools, org_visibility=body.org_visibility,
@@ -4376,6 +4386,19 @@ def _org_op_locked(slug: str, body: Op, allow_raise: bool = False) -> dict[str, 
                 # gear's effort used to ride a separate /scope call that the
                 # kiosk gateway 403s — a control that could never succeed
                 org.set_scope(body.actor, result["node"], effort=body.effort)
+            if body.above is not None:
+                # FR-25 rework (2026-08-19): the splice is atomic with the
+                # hire. Pin the fresh node at the anchor's slot FIRST — they
+                # are siblings for exactly this moment, so reorder can use the
+                # anchor itself — then reparent the anchor beneath it. One
+                # save ⇒ one broadcast: the tree lands in its final shape,
+                # and a refused move can no longer strand a hired-but-
+                # unspliced sibling (the old client-chained failure mode).
+                org.reorder(body.actor, result["node"], before=body.above)
+                mv = org.move(body.actor, body.above, result["node"])
+                result["warnings"] = [*result.get("warnings", []),
+                                      *mv.get("warnings", [])]
+                result["spliced"] = body.above
         # body.node is Optional on the wire (hire has none); the target ops
         # take str because Org.node(None) already raises LedgerError → 422,
         # hence the arg-type ignores below rather than a behavior-changing check

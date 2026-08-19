@@ -39,7 +39,12 @@ snowflake, lock, layers, fullscreen, hearing.
   costs 1 · 3 · 5 · 10. The BOTTOM chips hire a subordinate; the LEFT and
   RIGHT edge chips hire a **coworker** — same superior, landing on that side
   of the card (the draft previews the spot, and the ordering is pinned at
-  birth). Only ONE set shows at a time — the edge your cursor is closest
+  birth); the TOP chips **insert a superior**: the draft immediately takes
+  the card's own place — the card hangs beneath it on a dashed line, purely a
+  preview, nothing real moves — and confirming hires the new agent straight
+  into that spot (same horizontal position, the old card now reporting to it,
+  all in one atomic step; cancel and the card pops back). Only ONE set shows
+  at a time — the edge your cursor is closest
   to — and the chips stay screen-sized however far you zoom out, for as
   long as the card is on screen. Side chips don't appear on pile/crowd
   stacks, where the card's edges belong to the stack's layers. Chips are NEVER disabled by the node's own free

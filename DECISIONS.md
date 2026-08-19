@@ -2295,7 +2295,27 @@ where silent shape drift actually bites.
 
 ## UI & canvas
 
-### D-070 · minimal surface; docs/ui-guide.md is the whole manual
+### D-135 · insert-superior is one atomic op, and the draft previews the final shape in place
+Ruling (user, 2026-08-19): the FR-25 top-chip flow must not read as "a slow
+few consecutive steps". Two halves, both required:
+- **Preview**: the uninitialized draft immediately takes the anchor card's
+  own slot — the anchor hangs beneath it, dashed edges above AND below —
+  purely visually (`withDraftTree` wraps the anchor in the preview tree;
+  the real structure is untouched until confirm, and cancel restores the
+  canvas with no server traffic).
+- **Commit**: the hire op carries `above: <anchor>` and the SERVER splices
+  in one lock/save — hire, ordinal pin (the fresh node takes the anchor's
+  former sibling slot via `reorder before=anchor`, legal for exactly the
+  moment they are siblings), then `move(anchor, fresh)`. One save ⇒ one
+  broadcast ⇒ the tree lands in its final shape with no intermediate
+  reflow, and the new node keeps the anchor's horizontal position.
+Why atomic instead of the loud-failure toast the 2026-08-11 build had: the
+client-chained hire→move could strand a hired-but-unspliced sibling when
+the move was refused (depth cap, lineage bearers). Server-side, a refusal
+anywhere rolls back the WHOLE op — `_org_op_locked` saves only on success —
+so the failure mode is deleted rather than reported. `derived.test` ⑮ pins
+both halves; `test_api_surface` covers slot/parent/ordinal and the
+all-or-nothing refusals.
 Ruling (user, 2026-07-29, two standing rulings): the interface shows only
 the minimal information needed to operate it; ALL teaching text, tooltips
 and explainers live in docs/ui-guide.md — updated whenever UI semantics

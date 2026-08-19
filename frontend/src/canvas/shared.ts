@@ -159,11 +159,14 @@ export interface DraftState {
    *  the hire lands under the same superior, and after birth a reorder pins
    *  the chosen ordering (left = before, right = after). */
   beside?: { anchor: string; side: 'left' | 'right' }
-  /** FR-25 insert parent: hired as a SIBLING of `anchor` (same parent
-   *  resolution as `beside`), then on hire success the anchor is MOVED under
-   *  the new node — the top-edge chips' splice. `move()` is budget-neutral
-   *  (release and acquire cancel hop by hop), so the fresh hire never needs
-   *  spare grant to absorb the anchor. */
+  /** FR-25 insert superior (reworked 2026-08-19): the draft WRAPS `anchor`
+   *  in the preview tree — it takes the anchor's own slot with the anchor
+   *  hanging beneath it (dashed edges above AND below), so the preview IS the
+   *  post-splice shape and confirming causes no reflow. Nothing real changes
+   *  until confirm, when the hire op carries `above` and the SERVER splices
+   *  atomically (hire + ordinal pin + move in one save). `move()` is
+   *  budget-neutral, so the fresh hire never needs spare grant to absorb the
+   *  anchor. */
   above?: { anchor: string }
 }
 /** the staged pre-hire permissions (DraftScopeModal → confirmDraft); also
@@ -260,15 +263,23 @@ export function withDraftTree(tree: TreePayload, draft: DraftState | null): Canv
     seat: 0, grant: 0, free: 0,
   })
   // a side-hire draft (F-03) sits ADJACENT to its anchor sibling, so the form
-  // previews the ordering the hire will pin; an insert-parent draft (FR-25)
-  // sits just before its anchor for the same near-the-anchor preview; a
-  // plain draft appends at the end
+  // previews the ordering the hire will pin; an insert-superior draft (FR-25)
+  // WRAPS its anchor — the draft takes the anchor's slot and the anchor hangs
+  // beneath it, previewing the exact post-splice shape without touching the
+  // real structure; a plain draft appends at the end
   const place = (kids: CanvasNode[]): CanvasNode[] => {
+    const a = draft!.above
+    if (a) {
+      const i = kids.findIndex((k) => k.id === a.anchor)
+      if (i < 0) return [...kids, draftNode()]
+      const d = draftNode()
+      d.children = [kids[i]!]
+      return [...kids.slice(0, i), d, ...kids.slice(i + 1)]
+    }
     const b = draft!.beside
-    const anchor = b?.anchor ?? draft!.above?.anchor
-    const i = anchor ? kids.findIndex((k) => k.id === anchor) : -1
+    const i = b ? kids.findIndex((k) => k.id === b.anchor) : -1
     if (i < 0) return [...kids, draftNode()]
-    const at = b?.side === 'right' ? i + 1 : i
+    const at = b!.side === 'right' ? i + 1 : i     // nUIA: i ≥ 0 ⇒ b matched
     return [...kids.slice(0, at), draftNode(), ...kids.slice(at)]
   }
   const mk = (n: TreeNode): CanvasNode => ({

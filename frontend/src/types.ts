@@ -828,6 +828,9 @@ export interface OpRequest {
   tools?: Partial<ToolGrant> | null
   org_visibility?: string | null
   effort?: string | null
+  /** hire — FR-25 insert superior: the anchor node; the server splices the
+   *  fresh hire in as its superior atomically (same save as the hire) */
+  above?: string | null
   delta?: number | null
   new_parent?: string | null
   dir?: string | null

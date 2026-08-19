@@ -356,8 +356,8 @@ function SpawnChips({ onSpawn, free, seats, maxTier, side }: SpawnChipsProps) {
                 + 'or retire one to free credits'
               : side === 'top'
                 ? `insert ${/^[aeiou]/.test(t) ? 'an' : 'a'} ${t} SUPERIOR — `
-                  + `hired under this agent's current superior, then this `
-                  + `agent moves underneath it (seat ${seat})`
+                  + `it takes this agent's place and this agent moves `
+                  + `underneath it (seat ${seat})`
                 : side
                   ? `hire ${/^[aeiou]/.test(t) ? 'an' : 'a'} ${t} COWORKER — same `
                     + `superior, to the ${side} (seat ${seat})`
@@ -997,9 +997,10 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, m
             free={kioskRemaining ?? Infinity} seats={seats} maxTier={maxTier} />
         </>
       )}
-      {/* FR-25: top-edge chips SPLICE a new superior above this node — hire
-          under the anchor's current superior, then move the anchor beneath
-          the fresh hire. Same pile/bearer exclusions as the side chips. */}
+      {/* FR-25: top-edge chips SPLICE a new superior above this node — the
+          draft takes this card's slot immediately (anchor hangs beneath it,
+          dashed both ways), and the confirmed hire splices in server-side
+          atomically. Same pile/bearer exclusions as the side chips. */}
       {live && !node.isBearerOf && !node.bearer_state && !pile && onSpawnTop && (
         <SpawnChips side="top" onSpawn={(t) => onSpawnTop(t)}
           free={kioskRemaining ?? Infinity} seats={seats} maxTier={maxTier} />
