@@ -2589,6 +2589,12 @@ def _run_one_turn(slug: str, nid: str,
             # host's lanes (redteam 2026-08-18). The invariant the docs state
             # is "captured at spawn"; this is what makes that true.
             billed_key = bills_the_key(org, on_fallback_key)
+            # …and the same capture drives the UI's red border (user feature
+            # 2026-08-19): while this turn runs on the fallback key the card
+            # wears it, so "who is spending my API credit right now" is one
+            # glance, not a cost-card hover. Popped in the finally below —
+            # the next turn re-decides the lane at its own spawn.
+            st["on_fallback"] = on_fallback_key
             env["ORGTREE_ORG"], env["ORGTREE_NODE"] = slug, nid
             env["ORGTREE_PORT"] = os.environ.get("ORGTREE_PORT", "7360")
             env["PYTHONPATH"] = BACKEND_DIR + os.pathsep + env.get("PYTHONPATH", "")
@@ -3122,7 +3128,7 @@ def _run_one_turn(slug: str, nid: str,
             err_blob = " / ".join((err or "").strip().splitlines()[-3:]) \
                 if proc.returncode != 0 else (
                     str(res.get("result", "")) if res.get("is_error") else "")
-            if not err_blob and proc.returncode != 0:
+            if not err_blob and proc.returncode != 0 and not synth_limit_txt:
                 # ⚠ silence is not success. The CLI's own stream-json catch
                 # path writes its error to STDOUT (as `errors: []` on a result
                 # with no `result` key) and then merely sets an exit code —
@@ -3130,6 +3136,14 @@ def _run_one_turn(slug: str, nid: str,
                 # crashed CLI, with the queued message unanswered, was recorded
                 # as a completed turn (redteam 2026-08-19, measured). Name the
                 # exit; the errors array carries the why when it is there.
+                # ⚠ `and not synth_limit_txt`: a captured usage limit is
+                # SPECIFIC evidence that the block below adopts, while this
+                # generic text matches none of the freeze/filter detectors —
+                # so without that clause a crash landing on the same turn as a
+                # limit would swallow the limit and skip the freeze. Not
+                # reachable in the shipped CLI (the result variants that set an
+                # exit code carry no `result` string for the harvest to take),
+                # but the ordering is one `if` away from mattering.
                 _errs = [str(x) for x in (res.get("errors") or []) if x]
                 err_blob = (f"the CLI exited {proc.returncode}"
                             + (f": {' / '.join(_errs)[:300]}" if _errs else
@@ -3544,6 +3558,7 @@ def _run_one_turn(slug: str, nid: str,
             alive = [t for x in (st["queue"] + (st.get("steer") or []))
                      if isinstance(x, dict) for t in x.get("toks") or []]
         _fold_back_undelivered(slug, nid, keep_toks=alive)
+        st.pop("on_fallback", None)     # this turn's lane is spent
         with _state_lock:
             if st["queue"]:
                 follow = st["queue"].pop(0)
@@ -3915,10 +3930,24 @@ def _compact_split(slug: str, nid: str) -> None:
     for these up-to-600 s is "compacting", not a lying "working"."""
     st0 = state(slug, nid)
     st0["phase"] = "compacting"
+    # the fork bills a lane like any turn, and it is the expensive one — the
+    # card wears the fallback red for it too (user feature 2026-08-19). Decided
+    # here rather than inside the body so the flag brackets the whole phase.
+    # SAVED and restored, not popped: the automatic path runs inside a turn
+    # (_after_turn), whose own spawn-captured flag must survive the fork.
+    prev_fb = st0.get("on_fallback")
+    try:
+        st0["on_fallback"] = api_fallback_active(store.load_org(slug))
+    except LedgerError:                                     # org deleted mid-flight
+        st0["on_fallback"] = False
     try:
         _compact_split_body(slug, nid)
     finally:
         st0.pop("phase", None)
+        if prev_fb is None:
+            st0.pop("on_fallback", None)
+        else:
+            st0["on_fallback"] = prev_fb
 
 
 def _compact_split_body(slug: str, nid: str) -> None:

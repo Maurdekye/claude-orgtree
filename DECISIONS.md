@@ -965,7 +965,17 @@ without it both guards cover the same dollars and neither is pinned.
 
 Same measurement, second half: a non-zero exit with empty stderr produced an
 empty `err_blob` and read as success. **Silence is not success** — `err_blob`
-now names the exit code (and the `errors` array when the CLI wrote one).
+now names the exit code (and the `errors` array when the CLI wrote one). Two
+consequences to know. ① The CLI writes its startup failures — including
+`No conversation found with session ID` — to STDOUT with no `result` key and
+then exits 1, so that text reached nothing before and the №31 handler never
+fired on its designed input; it does now, which means **a node can newly
+transition to `unrecoverable` (and refuse mail) where it previously stayed
+live on a silently-failed turn.** Better, but it is a live behaviour change,
+not just a log line. ② The block is gated `and not synth_limit_txt` because a
+captured usage limit is specific evidence the next block adopts, while the
+generic exit text matches none of the freeze detectors — unreachable in the
+shipped CLI, one `if` away from mattering.
 
 And refusing a straggler must not throw away what it REPORTS. The first cut
 of this gate dropped a usage limit that rode only the out-of-band result —
