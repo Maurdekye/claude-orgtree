@@ -465,6 +465,38 @@ domTest('§9.7 the watcher follows the scroller back from another tab',
       'and the returning scroller is watched again')
   })
 
+domTest('§9.8 the ↑ chip fades only when its label is really cut',
+  async ({ SL, ND, s, mount }) => {
+    // The chip wraps to three lines and fades where the text is cut (user,
+    // 2026-08-19). The fade is a MEASUREMENT, not a length guess: the same
+    // label wraps to one line in a wide panel and to five in a narrow one,
+    // and a fade over text that ended on its own claims content that is not
+    // there. So it must arm and retire on the panel's width alone — which,
+    // on a memoized panel, only the ResizeObserver can report.
+    s.userMsg(`FROM ${USER} (user)
+
+please check the deploy, and the staging one too`)
+    s.assistantMsg('all green')
+    await refreshConvo(SL, ND)
+    const { el } = await mount(deskEl(node(ND), SL, { compact: true }))
+    await flush()
+    const msgs = el.querySelector('.msgs')!
+    const text = el.querySelector('.pinuser-t')!
+    assert.ok(!el.querySelector('.pinuser.clipped'),
+      'nothing measured as cut, so nothing is faded')
+    // five lines of label inside a three-line box
+    geometry(text, { top: 0, height: 90, client: 45 })
+    await inAct(() => { fireResize(msgs) })
+    assert.ok(el.querySelector('.pinuser.clipped'),
+      'the fade did not arm for a label that overflows its three lines')
+    // a wider panel re-wraps the same label to fit
+    geometry(text, { top: 0, height: 45, client: 45 })
+    await inAct(() => { fireResize(msgs) })
+    assert.ok(!el.querySelector('.pinuser.clipped'),
+      'the fade outlived the overflow — it now hides the end of a label that '
+      + 'is fully visible')
+  })
+
 // ===================================================================== §9
 // Opening or closing a switchboard tab re-widths its SIBLING panels through
 // flex alone: no prop changes, and DeskChat is memoized, so those panels never

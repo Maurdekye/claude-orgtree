@@ -297,10 +297,15 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
         // ORIGINAL delivery of that message sits earlier in the transcript,
         // so skipping the replay finds the row the reader actually means.
         if (isRestart(splitNotices(m.text).rest)) continue
+        // the chip wraps to three lines now (user, 2026-08-19), so it takes
+        // the whole message rather than its first line — joined with spaces
+        // (a chip is a pointer, not a rendering of the message's shape) and
+        // capped well past what three lines hold at any panel width, so the
+        // fade always means "there is more", never "the slice ran out".
         const label = stripEnvelope(splitNotices(m.text).rest)
           .split('\n').map((l) => l.trim())
-          .filter((l) => l && !/^\*\*[^*]+\*\*$/.test(l))[0] ?? ''
-        out.push({ seq: m.seq, label: label.slice(0, 80) })
+          .filter((l) => l && !/^\*\*[^*]+\*\*$/.test(l)).join(' ')
+        out.push({ seq: m.seq, label: label.slice(0, 600) })
       }
     }
     return out
@@ -308,6 +313,17 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
   const userSeqs = useMemo(() => new Set(userTurns.map((u) => u.seq)), [userTurns])
   const userRowEls = useRef(new Map<number, HTMLDivElement>())
   const [pinSeq, setPinSeq] = useState<number | null>(null)
+  // The chip's text is clamped to three lines and faded where it is cut.
+  // Whether it IS cut is a measurement, never a guess: the same label wraps
+  // to one line in a wide panel and to five in a narrow one, and a fade over
+  // text that ended on its own reads as lost content. Measured in calcPin,
+  // so it is re-checked on exactly the occasions the wrap can change — a
+  // render (new label), a scroll, and a resize (the ResizeObserver below).
+  // Safe from the resize observer's own feedback path by construction: the
+  // flag adds a MASK, which paints and never lays out, so a measurement here
+  // can never move the box the observer is watching.
+  const pinTextRef = useRef<HTMLSpanElement | null>(null)
+  const [pinClip, setPinClip] = useState(false)
   // rect-based, not offsetTop: the row's offsetParent is not reliably the
   // scroller. Only a row fully above the scrollport can be the target — a
   // reader who scrolled UP past every user turn has them all BELOW, and a
@@ -326,6 +342,9 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
       }
     }
     setPinSeq((s) => (s === v ? s : v))   // only re-render on a real flip
+    const t = pinTextRef.current
+    const cut = !!t && t.scrollHeight - t.clientHeight > 1
+    setPinClip((c) => (c === cut ? c : cut))
   }
   // ⚠ A RESIZE IS NOT A RENDER. The switchboard lays its panels out with flex
   // (`.eye-panel { flex: 1 }`), so opening or closing ONE tab re-widths every
@@ -749,7 +768,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
               only pins while its static position is above the scrollport,
               which is exactly the visibility rule calcPin enforces. */}
           {pinTarget && (
-            <button className="pinuser"
+            <button className={'pinuser' + (pinClip ? ' clipped' : '')}
               title="jump to your message"
               onClick={(e) => {
                 // ⚠ NOT scrollIntoView: it scrolls EVERY scrollable ancestor,
@@ -791,7 +810,9 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
                 }
                 requestAnimationFrame(settle)
               }}>
-              ↑ you: {pinTarget.label || 'your message'}
+              <span className="pinuser-t" ref={pinTextRef}>
+                ↑ you: {pinTarget.label || 'your message'}
+              </span>
             </button>)}
           {/* paging is automatic (the onScroll above pages in within a screen
               of the top) — this is a status line, not a control. It still

@@ -364,6 +364,27 @@ test('⑭  the pinned last-user-turn chip attributes by envelope, not role',
     assert.ok(/for \(let i = userTurns\.length - 1; i >= 0; i--\)/.test(src),
       'calcPin lost its newest→oldest scan — scrolling above the latest user '
       + 'turn must retarget the chip to the next one up, not hide it')
+    // full-width, three lines, faded where cut (user request 2026-08-19).
+    // jsdom lays nothing out, so the geometry half of that is only ever
+    // stated here; §9.8 in render.test.tsx covers the measurement that
+    // decides WHETHER to fade.
+    const css = readFileSync(path.join(SRC, 'styles.css'), 'utf8')
+    const chip = /\.pinuser \{[^}]*\}/.exec(css)?.[0] ?? ''
+    assert.ok(/align-self: stretch/.test(chip),
+      '.pinuser no longer spans the card — align-self: center shrink-wraps '
+      + 'it back to a centred pill')
+    assert.ok(!/nowrap/.test(chip) && !/text-overflow/.test(chip),
+      '.pinuser is back to a one-line ellipsis — the chip wraps now, and the '
+      + 'cut is a fade')
+    const inner = /\.pinuser-t \{[^}]*\}/.exec(css)?.[0] ?? ''
+    assert.ok(/max-height: calc\(3 \* 1\.45em\)/.test(inner)
+      && /line-height: 1\.45/.test(inner),
+      '.pinuser-t lost its three-line clamp (the clamp and the line-height '
+      + 'that sizes it must move together)')
+    assert.ok(/\.pinuser\.clipped \.pinuser-t \{[^}]*mask-image: linear-gradient/
+      .test(css),
+      'the fade is gone — a cut label now ends mid-word with no sign that '
+      + 'anything follows')
   })
 
 // --------------------------------------------------------------------- ⑮
