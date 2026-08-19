@@ -40,9 +40,12 @@ test of a fiction.
 
 from __future__ import annotations
 
+import dis
+import inspect
 import json
 import os
 import re
+import sys
 import uuid
 from typing import Any
 
@@ -179,13 +182,36 @@ def mail_block(mail: list[dict[str, Any]]) -> str:
     NOT imported. This is what the CLI echoes into its transcript, so the suite
     must be able to produce it from the outside; importing the private helper
     would make a formatter change invisible to the very test that exists to
-    catch a formatter/marker mismatch."""
+    catch a formatter/marker mismatch.
+
+    ⚠ AN INDEPENDENT COPY IS ONLY SOUND WHILE SOMETHING PINS IT. This one went
+    unpinned and the suite went blind exactly as predicted, just from the other
+    side: FR-05 (`reply_to`) and D-137 (`kind == "notice"`) changed the REAL
+    formatter, this copy kept writing the old envelope, and the marker mismatch
+    they created — a pending row that never handed over to its own transcript
+    bubble — was reproduced by nothing. The user found it instead (2026-08-19,
+    "messages briefly duplicated"). `assert_mail_block_matches_source()` now
+    compares the two functions over every shape the real one can produce, so
+    this file can be an outside copy AND be provably the same copy."""
     blocks = []
     for m in mail:
         tag = " ⚠ THE USER — user instructions outrank your chain" \
             if m["from"] == USER else ""
-        b = (f"FROM {m['from']} ({m.get('relationship', 'agent')}{tag}) · "
-             f"{m.get('kind', 'message')} · {m['at']}\n{m['body']}")
+        if m.get("kind") == "notice":
+            b = (f"NOTICE FROM {m['from']} ({m.get('relationship', 'agent')}"
+                 f"{tag}) · {m['at']} — informational, delivered passively; "
+                 f"no reply is expected")
+        else:
+            b = (f"FROM {m['from']} ({m.get('relationship', 'agent')}{tag}) · "
+                 f"{m.get('kind', 'message')} · {m['at']}")
+        rt = m.get("reply_to")
+        if rt and str(rt.get("gist") or "").strip():
+            who = str(rt.get("from") or "").strip()
+            owner = f"{who}'s message" if who else "your message"
+            at = str(rt.get("at") or "").strip()
+            b += (f"\n↩ IN REPLY TO {owner}"
+                  f"{f' of {at}' if at else ''}: “{rt.get('gist')}”")
+        b += f"\n{m['body']}"
         for a in m.get("attachments") or []:
             nb = int(a.get("bytes") or 0)
             size = f"{nb} B" if nb < 1024 else f"{nb / 1024:.0f} KB"
@@ -194,6 +220,104 @@ def mail_block(mail: list[dict[str, Any]]) -> str:
         blocks.append(b)
     return (f"[MAIL — {len(mail)} message(s)]\n" + "\n---\n".join(blocks)
             + "\n[END MAIL]")
+
+
+def mail_shapes() -> list[tuple[str, dict[str, Any]]]:
+    """Every structurally distinct mail entry `_mail_block` can be handed —
+    one per branch it takes, crossed with the fields that move the body.
+
+    This is the spanning set the two guards below run over. It is the answer
+    to "how would we have caught it": the defect was a formatter branch nobody
+    had ever rendered in a test, so the set of branches has to be enumerated
+    somewhere rather than sampled by whichever scenario happened to exist."""
+    at = "2026-08-04T05:00:00.000Z"
+    rt_at = "2026-08-04T04:00:00.000Z"
+    base = {"from": USER, "to": "agent", "at": at, "kind": "message",
+            "body": "the body"}
+    att = [{"name": "a.txt", "path": "uploads/a.txt", "bytes": 12}]
+    return [
+        ("plain user", dict(base)),
+        ("plain agent", {**base, "from": "agent-2"}),
+        ("relationship", {**base, "from": "agent-2", "relationship": "superior"}),
+        # FR-05: the shape that broke the marker — the reply snapshot pushes
+        # the body one line further from the timestamp
+        ("reply, named author",
+         {**base, "reply_to": {"id": "m1", "from": "agent-2", "at": rt_at,
+                               "gist": "shall I ship it?"}}),
+        ("reply, self-consistent (no from)",
+         {**base, "reply_to": {"id": "m1", "at": rt_at, "gist": "ship it?"}}),
+        ("reply, no timestamp",
+         {**base, "reply_to": {"id": "m1", "from": "agent-2", "gist": "ship?"}}),
+        # a blank gist is dropped by the formatter — the entry renders plain
+        ("reply, blank gist",
+         {**base, "reply_to": {"id": "m1", "from": "agent-2", "gist": "   "}}),
+        # D-137: the other shape that broke it — the header itself continues
+        # past the timestamp
+        ("notice", {**base, "from": "agent-2", "kind": "notice"}),
+        ("notice from the user", {**base, "kind": "notice"}),
+        ("notice + reply",
+         {**base, "from": "agent-2", "kind": "notice",
+          "reply_to": {"id": "m1", "from": "agent-3", "at": rt_at, "gist": "?"}}),
+        ("one attachment", {**base, "attachments": att}),
+        ("two attachments", {**base, "attachments": att * 2}),
+        # the size branch has two halves and every other shape only ever
+        # exercised the bytes-side one (redteam 2026-08-19)
+        ("attachment ≥ 1 KB",
+         {**base, "attachments": [{"name": "big.bin", "path": "uploads/big.bin",
+                                   "bytes": 4096}]}),
+        ("reply + attachment",
+         {**base, "attachments": att,
+          "reply_to": {"id": "m1", "from": "agent-2", "at": rt_at, "gist": "g"}}),
+        # ledger/mcptool allow question|request|decision|status besides
+        # message; api.py:node_ask posts kind="status". They take the same
+        # header branch today — the point is that the list says so out loud
+        ("kind=status", {**base, "from": "agent-2", "kind": "status"}),
+        ("leading newline body", {**base, "body": "\nthe body"}),
+        ("whitespace-only body", {**base, "body": "   \n  "}),
+        ("empty body", {**base, "body": ""}),
+        ("body longer than the marker", {**base, "body": "x" * 5000}),
+        ("body that looks like an envelope",
+         {**base, "body": "FROM @user (agent) · message · 2026-01-01T00:00:00Z"}),
+        ("unicode body", {**base, "body": "日本語 ✨ Ωπ ⚠ · — “x”"}),
+    ]
+
+
+#: A body at least this long forces `mail_in_transcript` down its TRUNCATING
+#: branch, where the needle stops being the whole block and becomes a prefix
+#: of it. Kept in step with `supervisor.MAIL_MARK_CHARS` by
+#: `assert_mail_shapes_span`'s caller, which passes the real value in.
+PAST_NEEDLE_BUDGET = 400
+
+
+def mail_shapes_crossed(mark_chars: int = PAST_NEEDLE_BUDGET
+                        ) -> list[tuple[str, dict[str, Any]]]:
+    """`mail_shapes()`, crossed with the axis the guards actually turn on:
+    whether the body is longer than the needle budget.
+
+    ⚠ Below the budget the needle IS the whole block, so any change to what
+    the formatter writes AFTER the body is invisible — the rendering and the
+    probe are byte-identical. Above it the needle is a prefix and the layout
+    starts to matter. The suite crossed long bodies with the plain, attachment
+    and reply branches and never with the D-137 notice branch, so a plausible
+    future tweak (one more line under a notice's body) broke the invariant for
+    every notice over 400 characters while all 268 checks stayed green
+    (redteam, 2026-08-19). Crossing the whole list closes that as a class
+    rather than adding one more hand-picked shape.
+
+    ⚠ Each shape also gets its OWN timestamp. They used to share one, and
+    because the header carries only from/relationship/kind/at, several shapes
+    rendered identical blocks — so 6 of 21 batched assertions were satisfied
+    by a SIBLING entry and could not fail whatever the formatter did. Same
+    vacuity, one layer along."""
+    out: list[tuple[str, dict[str, Any]]] = []
+    for i, (label, m) in enumerate(mail_shapes()):
+        stamped = {**m, "at": f"2026-08-04T05:00:{i % 60:02d}.{i:03d}Z"}
+        out.append((label, stamped))
+        body = str(stamped.get("body") or "")
+        out.append((f"{label} · body past the needle budget",
+                    {**stamped, "body": body + "z" * (mark_chars + 100),
+                     "at": f"2026-08-04T05:01:{i % 60:02d}.{i:03d}Z"}))
+    return out
 
 
 TURN_NUDGE = ("(orgtree) The mail above includes a message from the user, "
@@ -339,8 +463,34 @@ _SOURCE_CONTRACTS = [
      "the pendrow render filter is ported in Desk.renders"),
     ("frontend/src/canvas/desk.tsx", r"addPending\(slug, node\.id, t\)",
      "the composer creates a ghost before the POST"),
-    ("backend/orgtree/api.py", r'mark = \(f"· \{at\}\\n\{body\}" if at else body\)\[:400\]',
-     "the D-55 identity marker is what the transcript-echo tests exercise"),
+    # ⚠ This pair used to be one grep for api.py's hand-rebuilt
+    # `f"· {at}\n{body}"[:400]` marker. That guard was structural and it held
+    # perfectly while the defect walked straight past it: the marker never
+    # changed — the FORMATTER did. A one-sided grep on a two-sided contract
+    # proves only that one side stands still. The rule now lives beside the
+    # formatter and is checked by RUNNING both (assert_mail_marker_contract);
+    # these two lines pin only that the delegation is still in place, so the
+    # rule cannot quietly move back out of reach of that check.
+    ("backend/orgtree/api.py",
+     r"return supervisor\.mail_in_transcript\(m, _seen_user\)",
+     "node_chat's pendrow evidence test is supervisor.mail_in_transcript"),
+    ("backend/orgtree/supervisor.py",
+     r"needle = _mail_entry_block\(probe\)",
+     "the needle is built by RUNNING the formatter, never by rebuilding a "
+     "copy of its output — the mistake that produced this bug family twice"),
+    ("backend/orgtree/supervisor.py",
+     r"return any\(needle in t for t in seen\)",
+     "the evidence is ONE contiguous substring, so it cannot be assembled "
+     "from two different entries of a batched envelope"),
+    ("backend/orgtree/supervisor.py",
+     r"return any\(needle \+ MAIL_SEP in t or needle \+ MAIL_TAIL in t\s+for t in seen\)",
+     "a WHOLE block must end on a boundary the wrapper wrote, or a body that "
+     "is a prefix of another's retires on that other's bubble (a GAP)"),
+    ("backend/orgtree/supervisor.py",
+     r"MAIL_SEP\.join\(_mail_entry_block\(m\) for m in mail\)",
+     "_mail_block is the per-entry formatter plus a wrapper — which is what "
+     "makes assert_mail_shapes_span's tracing of _mail_entry_block spanning, "
+     "and what makes MAIL_SEP/MAIL_TAIL the real boundaries"),
     ("backend/orgtree/supervisor.py", r'b\.get\("via", "steer"\) == "turn"',
      "delivering_mail's carrier split is what the via axis exercises"),
 ]
@@ -361,4 +511,229 @@ def assert_client_model_matches_source(repo: str) -> list[str]:
                 f"client-model drift: {rel} no longer contains /{pat}/ — {why}. "
                 f"The port in msgvis.py must be updated with the source.")
         ok.append(f"{rel}: {pat}")
+    return ok
+
+
+# ---------------------------------------------------- the two-sided contracts
+#
+# Everything above is a grep. These RUN the real functions, because the way
+# this bug family came back was a grep that stayed green while the thing it
+# described moved (see the note in _SOURCE_CONTRACTS).
+
+def assert_mail_shapes_span(entry_block_real) -> list[str]:
+    """`mail_shapes()` must exercise EVERY executable line of the real
+    per-entry formatter.
+
+    ⚠ This is the guard on the guards, and it exists because the two below
+    iterate a HAND-MAINTAINED list. A formatter branch nobody wrote a shape
+    for is rendered by neither of them — so both would have passed through
+    FR-05 and D-137 exactly as the greps did, and the redteam demonstrated
+    that with a synthetic third header branch (2026-08-19). Line coverage is
+    the one statement of "spanning" that a future author cannot forget to
+    update: add a branch without a shape and this fails on the next run,
+    naming the line.
+
+    Tracing is per-line and the traced function is tiny, so this costs
+    microseconds. It deliberately traces ONLY `_mail_entry_block` — the
+    batch wrapper has no branches worth pinning and would drag the whole
+    call tree in."""
+    code = entry_block_real.__code__
+    seen_lines: set[int] = set()
+
+    def tracer(frame, event, _arg):
+        if frame.f_code is code:
+            if event == "line":
+                seen_lines.add(frame.f_lineno)
+            return tracer
+        return None
+
+    old = sys.gettrace()
+    sys.settrace(tracer)
+    try:
+        for _, m in mail_shapes():
+            entry_block_real(dict(m))
+    finally:
+        sys.settrace(old)
+
+    # every line the interpreter considers executable in that function
+    # ⚠ exclude the `def` line. From Python 3.11 the RESUME instruction at
+    # offset 0 is attributed to it, so findlinestarts reports a line for
+    # which no `line` trace event is ever emitted — this guard would then
+    # fail on EVERY run naming a line nobody can reach, and the obvious
+    # repair under time pressure is to delete the guard. Verified on 3.10,
+    # 3.12 and 3.14 (redteam, 2026-08-19); the repo venv is 3.10.
+    want = {ln for _, ln in dis.findlinestarts(code)
+            if ln is not None and ln != code.co_firstlineno}
+    missed = sorted(want - seen_lines)
+    if missed:
+        src, first = inspect.getsourcelines(entry_block_real)
+        show = "\n".join(f"    {ln}: {src[ln - first].rstrip()}"
+                         for ln in missed if 0 <= ln - first < len(src))
+        raise AssertionError(
+            f"mail_shapes() does not span {entry_block_real.__qualname__}: "
+            f"{len(missed)} line(s) never ran.\n{show}\n"
+            f"Add a shape that reaches them — an unexercised formatter branch "
+            f"is invisible to BOTH contracts below, which is how this bug "
+            f"family came back twice.")
+    return [f"{entry_block_real.__qualname__}: all {len(want)} lines reached"]
+
+
+def assert_mail_block_matches_source(mail_block_real,
+                                     mark_chars: int = PAST_NEEDLE_BUDGET
+                                     ) -> list[str]:
+    """`mail_block` above must render byte-for-byte what `_mail_block` renders,
+    for every shape in `mail_shapes()` — alone and batched together.
+
+    Without this the suite's transcripts are a fiction the moment the real
+    formatter grows a line, and every echo/handover check silently starts
+    testing an envelope the CLI never sees. That is not hypothetical: it is
+    exactly what happened between 2026-08-04 and 2026-08-19."""
+    ok = []
+    shapes = mail_shapes_crossed(mark_chars)
+    for label, m in shapes:
+        mine, theirs = mail_block([dict(m)]), mail_block_real([dict(m)])
+        if mine != theirs:
+            raise AssertionError(
+                f"formatter drift on the {label!r} shape: msgvis.mail_block no "
+                f"longer renders what supervisor._mail_block renders.\n"
+                f"  msgvis    : {mine!r}\n  supervisor: {theirs!r}\n"
+                f"Update msgvis.mail_block (and check whether the change also "
+                f"moved the body away from mail_in_transcript's needles).")
+        ok.append(label)
+    # batched: the join, the count line and the per-entry independence
+    batch = [dict(m) for _, m in shapes]
+    if mail_block(batch) != mail_block_real(batch):
+        raise AssertionError("formatter drift when the shapes are batched into "
+                             "one envelope (the separator or the count line)")
+    ok.append("all shapes in one batch")
+    return ok
+
+
+def assert_mail_marker_contract(mail_block_real, in_transcript,
+                                mark_chars: int = PAST_NEEDLE_BUDGET
+                                ) -> list[str]:
+    """The writer/reader contract, RUN rather than grepped: for every shape the
+    formatter can produce, the entry must be found in its own rendering — and
+    must NOT be found in a rendering of a different entry.
+
+    This is the check that was missing. The defect it now catches (user report
+    2026-08-19) was three real shapes — `reply_to` with and without a named
+    author, and `kind == "notice"` — whose bodies the formatter had moved away
+    from the timestamp the reader rebuilt beside. Each of them left the pending
+    row on screen next to its own durable transcript bubble."""
+    ok = []
+    shapes = mail_shapes_crossed(mark_chars)
+    for label, m in shapes:
+        m = dict(m)
+        if not in_transcript(m, [mail_block_real([dict(m)])]):
+            raise AssertionError(
+                f"marker contract broken on the {label!r} shape: the entry is "
+                f"NOT found in its own transcript bubble, so its pending row "
+                f"will never hand over — a DUPLICATE for as long as the "
+                f"journal batch lives.\n  block: "
+                f"{mail_block_real([dict(m)])!r}")
+        ok.append(f"{label}: found in its own bubble")
+    # ⚠ AND IN A BATCHED ONE. A transcript row is a whole DRAINED BATCH — the
+    # single-entry rendering above is the easy half, and testing only it is how
+    # the first repair of this defect shipped a cross-entry hole (redteam,
+    # 2026-08-19). Every shape must still be found when it is one entry among
+    # many, wrapped in the separators and the count line.
+    every = [dict(m) for _, m in shapes]
+    big = mail_block_real(every)
+    for label, m in shapes:
+        if not in_transcript(dict(m), [big]):
+            raise AssertionError(
+                f"marker contract broken on the {label!r} shape when BATCHED: "
+                f"found alone but not in an envelope carrying the other "
+                f"{len(shapes) - 1} entries — its pending row will not hand "
+                f"over on a multi-message drain, the common case for a busy "
+                f"agent.")
+        ok.append(f"{label}: found in a {len(shapes)}-entry batch")
+    # ⚠ THE PREFIX-BODY NEGATIVE, which is what makes the whole-block branch's
+    # boundary requirement mean anything. Without it, reverting
+    # `mail_in_transcript`'s `needle + MAIL_SEP / MAIL_TAIL` to a bare `in`
+    # left the entire suite green (redteam, 2026-08-19) — a rule with no
+    # behavioural test is a rule that is not tested, however loudly the source
+    # grep pins its text.
+    #
+    # Both entries agree on everything the header carries, INCLUDING the
+    # timestamp, and one body is a strict prefix of the other. The short one
+    # is on screen nowhere; retiring its pending row is a GAP.
+    sat = "2026-08-04T05:09:09.909Z"
+    short = {"from": USER, "to": "agent", "at": sat, "kind": "message",
+             "body": "plan"}
+    longer = {**short, "body": "plan and then some more words"}
+    if in_transcript(dict(short), [mail_block_real([dict(longer)])]):
+        raise AssertionError(
+            "marker contract broken: an entry whose body is a PREFIX of "
+            "another's was reported on screen by that other's bubble — the "
+            "whole-block needle is being matched without the boundary the "
+            "wrapper writes after a complete entry, so a message still in "
+            "flight would be hidden (GAP)")
+    ok.append("a prefix-body entry is NOT retired by the longer one's bubble")
+    # ...and the same pair the RIGHT way round, so the negative above cannot be
+    # passing merely because the rule stopped matching anything at all
+    if not in_transcript(dict(short), [mail_block_real([dict(short)])]):
+        raise AssertionError("the prefix-body entry is not found in its OWN "
+                             "bubble — the boundary rule is over-tight")
+    if not in_transcript(dict(longer), [mail_block_real([dict(longer)])]):
+        raise AssertionError("the longer entry is not found in its own bubble")
+    ok.append("...and both are still found in their own bubbles")
+    # ...and the cross-entry direction, which is the one that has to hold for
+    # the needle to mean anything. Two entries sharing a timestamp (mail is
+    # stamped at millisecond resolution — a batch write can collide) must not
+    # be able to lend each other evidence: an entry pairing ONE block's header
+    # with ANOTHER block's body is on screen nowhere, and retiring its pending
+    # row is a GAP, which this system ranks strictly worse than a duplicate.
+    at = "2026-08-04T05:00:00.000Z"
+    p = {"from": USER, "to": "agent", "at": at, "kind": "message",
+         "body": "here is the plan"}
+    q = {**p, "body": "ship it"}
+    delivered_p_only = mail_block_real([dict(p)])
+    if in_transcript({**p, "body": q["body"]}, [delivered_p_only]):
+        raise AssertionError(
+            "marker contract broken: an entry borrowing this bubble's "
+            "timestamp while carrying a body the bubble does not have was "
+            "reported as on screen — a message still in flight would be "
+            "hidden (GAP)")
+    ok.append("a same-timestamp entry cannot borrow evidence from another")
+    both = mail_block_real([dict(p), dict(q)])
+    if in_transcript({**p, "body": "plan"}, [both]):
+        raise AssertionError(
+            "marker contract broken: within ONE batched row, an entry matched "
+            "using one block's header and another block's body")
+    ok.append("no cross-block borrowing inside one batched row")
+    if not (in_transcript(dict(p), [both]) and in_transcript(dict(q), [both])):
+        raise AssertionError("both same-timestamp entries must still be found "
+                             "in the batch that really carries them")
+    ok.append("both same-timestamp entries ARE found when really present")
+    # ...and the other direction: identity, not resemblance. A DIFFERENT entry
+    # (same words, its own timestamp) must not be retired by this bubble, or a
+    # message still in flight would be hidden — the gap direction.
+    a = dict(shapes[0][1])
+    bubble = mail_block_real([dict(a)])
+    other = {**a, "at": "2026-08-04T05:00:01.000Z"}
+    if in_transcript(other, [bubble]):
+        raise AssertionError("marker contract broken: a re-send of the same "
+                             "words matched the EARLIER bubble (D-52's trap) — "
+                             "the new message would be hidden while in flight")
+    ok.append("a same-text re-send does NOT match the earlier bubble")
+    same_at_other_body = {**a, "body": "entirely different words"}
+    if in_transcript(same_at_other_body, [bubble]):
+        raise AssertionError("marker contract broken: an entry sharing only a "
+                             "timestamp matched — the body is not being read")
+    ok.append("a same-timestamp different-body entry does NOT match")
+    if in_transcript(dict(a), ["nothing to do with this mail"]):
+        raise AssertionError("marker contract broken: matched an unrelated row")
+    ok.append("an unrelated transcript row does NOT match")
+    # the legacy entry, which predates the timestamp field and so cannot be
+    # rendered by the formatter at all: body-only identity, and never on an
+    # empty needle
+    legacy = {"from": USER, "to": "agent", "body": "legacy body text"}
+    if not in_transcript(legacy, ["... legacy body text ..."]):
+        raise AssertionError("legacy (at-less) entry: body identity broken")
+    if in_transcript({**legacy, "body": "   "}, ["anything at all"]):
+        raise AssertionError("legacy (at-less) entry with a blank body matched "
+                             "a bubble — an empty needle matches everything")
+    ok.append("legacy at-less entries fall back to the body, never to nothing")
     return ok

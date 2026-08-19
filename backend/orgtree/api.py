@@ -4154,39 +4154,15 @@ def node_chat(slug: str, nid: str, last: int = 300) -> dict[str, Any]:
     def _in_transcript(m: Mapping[str, Any]) -> bool:
         """Is THIS mail entry already on screen as a transcript bubble?
 
-        Identity, not resemblance. The transcript text is the `_mail_block`
-        envelope wrapped around the body, and that envelope carries the
-        entry's own `at` immediately before it —
-
-            FROM @user (…) · message · 2026-08-04T04:27:08.545Z
-            <body>
-
-        — so the timestamp+body junction names one specific mail. Matching on
-        the body alone would repeat D-52's mistake one layer down: re-send
-        "continue" and the new entry would match the OLD bubble and be hidden
-        while still in flight. No clock is compared, only a string this
-        process itself wrote.
-
-        ⚠ The body is used RAW. `_mail_block` writes `f"…· {at}\\n{m['body']}"`
-        with no normalisation, so a stripped copy of a body that begins with
-        whitespace does not occur in the transcript at all — the test then said
-        "not on screen" forever and the pending bubble stayed up ALONGSIDE the
-        durable one for the whole of the turn's first response (measured
-        2026-08-04 on a real transcript sample: median 2.4 s, max 137 s). The
-        composer trims, but nothing else does: the API takes `body.text` as
-        sent, and agent mail routinely opens with a newline. Only the emptiness
-        guard strips — and only where it must. With an `at` the marker is
-        unique whatever the body is, so a whitespace-only message (nothing
-        forbids one; only the composer trims) is identified like any other. It
-        is only the legacy `at`-less entry that falls back to a bare body, and
-        THAT needle must not be empty or it would match every bubble."""
-        body = m.get("body") or ""
-        at = m.get("at")
-        if not at and not body.strip():
-            return False
-        # the head is enough to identify it and survives truncation either side
-        mark = (f"· {at}\n{body}" if at else body)[:400]
-        return any(mark in t for t in _seen_user)
+        ⚠ The rule itself lives in `supervisor.mail_in_transcript`, NEXT TO
+        `_mail_block` — the function whose output it reads. It used to live
+        here, as a hand-rebuilt copy of the envelope's `· {at}\\n{body}`
+        junction, and that is precisely how this defect came back: two later
+        features (FR-05 `reply_to`, D-137 `kind == "notice"`) changed the
+        formatter and the reader, three files away, kept looking for a shape
+        nothing wrote any more. A reader that must agree with a writer belongs
+        beside it. Read that docstring for the rule and its history."""
+        return supervisor.mail_in_transcript(m, _seen_user)
 
     # ⚠ The same evidence test applies to the MAILBOX rows, not only the
     # journal's. `_fold_back_undelivered` re-queues a batch whose delivery was

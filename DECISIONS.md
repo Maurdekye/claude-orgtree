@@ -2061,6 +2061,52 @@ TWO calls, never one").
 
 ## Mail & messaging
 
+### D-139 · a reader that must agree with a writer lives beside it, and is checked by running it
+Report (user, 2026-08-19): "the issue with messages appearing twice is back,
+with messages being briefly duplicated for less than a second during the
+transition from an unconfirmed to a confirmed message." The ninth entry in
+the D-34/43/50/51/52/55/57/59 family.
+Cause: `api.node_chat._in_transcript` — the evidence test that retires a
+pending row once the transcript carries the same mail — rebuilt BY HAND a
+copy of what `supervisor._mail_block` writes, `f"· {at}\n{body}"[:400]`,
+three files away from the formatter. That string is only correct while the
+body sits immediately after the timestamp, and two later features moved it:
+FR-05's `reply_to` interposes the `↩ IN REPLY TO …: “gist”` recital, and
+D-137's `kind: "notice"` continues the header past the timestamp. For those
+shapes the needle could not occur in the transcript at all, so the pending
+row never handed over and rendered beside its own durable bubble from the
+CLI's echo until `_confirm_delivered` dropped the journal batch. Measured:
+against the spanning shape list: 7 of 21 shapes never matched their own
+bubble — every reply variant and every notice variant.
+Ruling: the evidence test moves to `supervisor.mail_in_transcript`, beside
+the formatter, and BUILDS ITS NEEDLE BY RUNNING IT — `_mail_entry_block` on
+a probe of the entry. Not a copy of the output; the output. Two branches: a
+body over `MAIL_MARK_CHARS` (400) is cut, its attachment lines dropped with
+it, and the needle is then a contiguous PREFIX of the block the envelope
+carried, settled by a plain substring test; a body that fits is rendered
+WHOLE, and the needle must then be followed by `MAIL_SEP` or `MAIL_TAIL` —
+the two things the wrapper writes after a complete entry, taken from the
+constants `_mail_block` joins with. Without that boundary an entry whose
+body is a prefix of another's is retired by the longer one's bubble, which
+is a GAP; the branch is easy to drop and went untested for a review round.
+Why not the obvious repair: asking for the timestamp and the body head as
+two INDEPENDENT needles makes the layout between them irrelevant, and is
+weaker than the string it replaces — a transcript row is a whole drained
+BATCH, so two independent needles can be satisfied by two different mails in
+one row, retiring a pending row whose message is on screen nowhere. A GAP
+outranks a duplicate as a failure; the evidence stays contiguous.
+Bounds/tests: three guards that RUN the two functions instead of grepping
+them, because the grep that pinned the old marker stayed green throughout —
+the string it named never moved, the formatter did. `assert_mail_shapes_span`
+traces `_mail_entry_block` and fails when a branch is added that no shape
+reaches; `assert_mail_block_matches_source` pins the suite's deliberately
+independent formatter copy byte-for-byte; `assert_mail_marker_contract`
+requires every shape to be found in its own rendering, alone AND batched,
+and never in another entry's. `--legacy-marker` re-measures the pre-fix rule
+in place (63 failures). Also: `_sweep_live.covered()` no longer retires a
+live row of an unrecognised kind on no evidence (D-50's rule, applied to the
+one place that still broke it).
+
 ### D-137 · notices are mail minus the wake
 Ruling (user, 2026-08-19): agents get `orgtree_send_notice` — mail that
 never causes a turn. A notice rides the normal mailbox (a `MailEntry` with

@@ -1985,50 +1985,198 @@ def _envelope(slug: str, nid: str, text: str,
     return (("\n\n".join(prelude) + "\n\n" + text) if prelude else text), tok
 
 
+def _mail_entry_block(m: Mapping[str, Any]) -> str:
+    """ONE mail entry, rendered. Split out of `_mail_block` so that
+    `mail_in_transcript` can build its needle by RUNNING this function instead
+    of rebuilding a copy of its output — see that docstring for why a copy is
+    not an option here.
+
+    ⚠ Nothing in here may depend on the other entries in the batch, or the
+    needle stops being a substring of the real envelope. (It never has: the
+    batch only contributes the count line and the `---` separators.)"""
+    tag = " ⚠ THE USER — user instructions outrank your chain" \
+        if m["from"] == USER else ""
+    if m.get("kind") == "notice":
+        # orgtree_send_notice: an FYI that rode along without waking
+        # anyone — visibly not a message awaiting an answer
+        b = (f"NOTICE FROM {m['from']} ({m.get('relationship', 'agent')}"
+             f"{tag}) · {m['at']} — informational, delivered passively; "
+             f"no reply is expected")
+    else:
+        b = (f"FROM {m['from']} ({m.get('relationship', 'agent')}"
+             f"{tag}) · {m.get('kind', 'message')} · {m['at']}")
+    rt = m.get("reply_to")
+    if rt and str(rt.get("gist") or "").strip():
+        # FR-05: an inline mailbox reply carries a SNAPSHOT of what it
+        # answers (id/from/at/gist, captured at send — no lookup, no
+        # dependence on the original still existing), quoted here so a
+        # two-word reply like "do it" is unambiguous to the agent.
+        # `from` is present ONLY when the quoted author is not the
+        # recipient (post_mail drops the self-consistent case) — recite
+        # the name then, never "your message", or a forged snapshot
+        # reads a third party's words back in the recipient's voice.
+        # No timestamp → drop the clause (": " after a bare "of" was
+        # the redteam's dangling-colon catch).
+        _who = str(rt.get("from") or "").strip()
+        _owner = f"{_who}'s message" if _who else "your message"
+        _at = str(rt.get("at") or "").strip()
+        b += (f"\n↩ IN REPLY TO {_owner}"
+              f"{f' of {_at}' if _at else ''}: “{rt.get('gist')}”")
+    # ⚠ THE BODY IS THE LAST THING BEFORE THE ATTACHMENT LINES, and
+    # `mail_in_transcript` depends on that ordering: it renders a probe with a
+    # TRUNCATED body and no attachments, which is a prefix of this string only
+    # while nothing but attachments follows the body. Move the body and that
+    # needle stops being a substring — which the marker contract in
+    # `test_message_visibility.py` will say out loud, per shape.
+    b += f"\n{m['body']}"
+    for a in m.get("attachments") or []:
+        # the file already sits in the recipient's uploads/ (its cwd)
+        nb = int(a.get("bytes") or 0)
+        size = f"{nb} B" if nb < 1024 else f"{nb / 1024:.0f} KB"
+        b += (f"\n[ATTACHED FILE: {a.get('path')} ({size}) — in your "
+              f"working folder]")
+    return b
+
+
+#: What the wrapper writes between two entry blocks, and after the last one.
+#: Named because `mail_in_transcript` needs them as END-OF-ENTRY boundaries and
+#: must not re-derive them by hand — the mistake this whole area is about.
+MAIL_SEP = "\n---\n"
+MAIL_TAIL = "\n[END MAIL]"
+
+
 def _mail_block(mail: list[MailEntry]) -> str:
     """The one [MAIL] formatter — the envelope AND the turn-start feed use it
     (they diverged once: turn-start mail silently lacked the attachment
     lines, live-caught 2026-07-31)."""
-    blocks = []
-    for m in mail:
-        tag = " ⚠ THE USER — user instructions outrank your chain" \
-            if m["from"] == USER else ""
-        if m.get("kind") == "notice":
-            # orgtree_send_notice: an FYI that rode along without waking
-            # anyone — visibly not a message awaiting an answer
-            b = (f"NOTICE FROM {m['from']} ({m.get('relationship', 'agent')}"
-                 f"{tag}) · {m['at']} — informational, delivered passively; "
-                 f"no reply is expected")
-        else:
-            b = (f"FROM {m['from']} ({m.get('relationship', 'agent')}"
-                 f"{tag}) · {m.get('kind', 'message')} · {m['at']}")
-        rt = m.get("reply_to")
-        if rt and str(rt.get("gist") or "").strip():
-            # FR-05: an inline mailbox reply carries a SNAPSHOT of what it
-            # answers (id/from/at/gist, captured at send — no lookup, no
-            # dependence on the original still existing), quoted here so a
-            # two-word reply like "do it" is unambiguous to the agent.
-            # `from` is present ONLY when the quoted author is not the
-            # recipient (post_mail drops the self-consistent case) — recite
-            # the name then, never "your message", or a forged snapshot
-            # reads a third party's words back in the recipient's voice.
-            # No timestamp → drop the clause (": " after a bare "of" was
-            # the redteam's dangling-colon catch).
-            _who = str(rt.get("from") or "").strip()
-            _owner = f"{_who}'s message" if _who else "your message"
-            _at = str(rt.get("at") or "").strip()
-            b += (f"\n↩ IN REPLY TO {_owner}"
-                  f"{f' of {_at}' if _at else ''}: “{rt.get('gist')}”")
-        b += f"\n{m['body']}"
-        for a in m.get("attachments") or []:
-            # the file already sits in the recipient's uploads/ (its cwd)
-            nb = int(a.get("bytes") or 0)
-            size = f"{nb} B" if nb < 1024 else f"{nb / 1024:.0f} KB"
-            b += (f"\n[ATTACHED FILE: {a.get('path')} ({size}) — in your "
-                  f"working folder]")
-        blocks.append(b)
     return (f"[MAIL — {len(mail)} message(s)]\n"
-            + "\n---\n".join(blocks) + "\n[END MAIL]")
+            + MAIL_SEP.join(_mail_entry_block(m) for m in mail)
+            + MAIL_TAIL)
+
+
+#: How much of a mail body the needle carries. The block header identifies the
+#: entry on its own; the body head is what keeps a re-send of the same words
+#: from being retired by the earlier bubble (D-52). Bounded so the needle
+#: survives a body of any length.
+MAIL_MARK_CHARS = 400
+
+
+def mail_in_transcript(m: Mapping[str, Any], seen: Iterable[str]) -> bool:
+    """Is THIS mail entry already on screen as a transcript bubble?
+
+    `seen` is the text of every user-role row `read_chat` produced. The answer
+    retires the pending row for BOTH in-flight carriers (`delivering_mail`'s
+    `shown`), so it decides the hand-over this whole bug family lives in: the
+    pending bubble may only leave when the durable one is provably there.
+
+    THE NEEDLE IS BUILT BY RUNNING THE FORMATTER, never by rebuilding a copy
+    of what it writes. `_mail_entry_block` is rendered for this entry with a
+    truncated body and no attachments, which is exactly a PREFIX of the block
+    the real envelope carried — header, reply recital and all — so a bubble
+    containing it provably carried this mail.
+
+    ⚠ THAT IS THE WHOLE POINT, and it is the third fix this line has needed.
+    It began as a hand-rebuilt `f"· {at}\n{body}"[:400]` — a copy of the
+    formatter's output, living three files away in `api.node_chat`, correct
+    only while the formatter kept the body immediately after the timestamp.
+    Two later features moved it and nothing noticed:
+
+      · FR-05 `reply_to` — a user reply sent from the inbox modal interposes
+        `↩ IN REPLY TO …: “gist”` between the header and the body.
+      · D-137 `kind == "notice"` — the header instead runs
+        `· {at} — informational, delivered passively; no reply is expected`.
+
+    In both shapes the needle could not occur in the transcript at all, so the
+    entry was never "on screen" and the pending row stayed up BESIDE its own
+    durable bubble, from the CLI's echo until `_confirm_delivered` dropped the
+    journal batch — the sub-second duplicate the user reported (2026-08-19;
+    measured against the spanning shape list: 7 of 21 shapes never matched
+    their own bubble — every reply variant and every notice variant).
+
+    The obvious repair — ask for the timestamp and the body head SEPARATELY,
+    so the layout between them stops mattering — is weaker than it looks and
+    was rejected in review: a transcript row is a whole DRAINED BATCH, several
+    entries joined by `\n---\n`, so two independent needles can be satisfied
+    by two DIFFERENT mails in one row. That retires a pending row whose
+    message is on screen nowhere — a GAP, which this system ranks strictly
+    worse than a duplicate. Running the formatter keeps the evidence
+    contiguous, which is what confines it to one entry's block.
+
+    ⚠ Substring, not equality, and deliberately so: the needle must survive
+    the batch wrapper, the `---` separators, the `[ORG NOTICES]` prelude and
+    the turn nudge that surround it in the real record.
+
+    ⚠ The body is used RAW. `_mail_entry_block` writes `f"…\n{m['body']}"`
+    with no normalisation, so a stripped copy of a body that begins with
+    whitespace does not occur in the transcript at all — the test then said
+    "not on screen" forever and the pending bubble stayed up alongside the
+    durable one for the whole of the turn's first response (measured
+    2026-08-04 on a real transcript sample: median 2.4 s, max 137 s). The
+    composer trims, but nothing else does: the API takes `body.text` as sent,
+    and agent mail routinely opens with a newline.
+
+    `test_message_visibility.py` pins all of this by RUNNING both functions:
+    every shape `_mail_entry_block` can produce must be found in its own
+    rendering, alone AND batched with the others, and must not be found in
+    another entry's — plus a line-coverage assertion that fails the day the
+    formatter grows a branch no shape exercises."""
+    body = str(m.get("body") or "")
+    at = str(m.get("at") or "")
+    if not at:
+        # A legacy entry, from before mail carried a timestamp: the formatter
+        # cannot render it (`_mail_entry_block` reads `m['at']`), so the body
+        # is the only identity there is — and an empty needle would match
+        # every bubble, so a blank one is never "on screen".
+        return bool(body.strip()) and any(body[:MAIL_MARK_CHARS] in t
+                                          for t in seen)
+    # The probe. A body that fits the budget is rendered WHOLE — attachments
+    # and all — so the needle is the entry's complete block; a longer one is
+    # cut, and its attachment lines dropped with it, so the needle is a strict
+    # PREFIX of the block. Both cuts are at the end, which is what makes the
+    # prefix claim hold (`_mail_entry_block` writes nothing after the
+    # attachments, and says so).
+    whole = len(body) <= MAIL_MARK_CHARS
+    probe = dict(m) if whole else {k: v for k, v in m.items()
+                                   if k != "attachments"}
+    if not whole:
+        probe["body"] = body[:MAIL_MARK_CHARS]
+    try:
+        needle = _mail_entry_block(probe)
+    except Exception:                                        # noqa: BLE001
+        # An entry the formatter cannot render was never delivered either, so
+        # this is unreachable — but the failure direction still matters: say
+        # "not on screen" and the pending row STAYS, which is the duplicate
+        # this system prefers to a message that is nowhere.
+        return False
+    if not whole:
+        return any(needle in t for t in seen)
+    # ⚠ A WHOLE block must be matched AS a whole block, not as a prefix of a
+    # longer one. Two entries can differ only in their bodies — and if one
+    # body is a prefix of the other and everything else about them collides
+    # (same sender, kind and `at`; mail is stamped at millisecond resolution),
+    # a bare `in` reports the SHORTER one as on screen using the LONGER one's
+    # bubble. That retires a pending row for a message nobody can see: a GAP,
+    # the failure this system ranks worst. So the needle must be followed by
+    # one of the two things the wrapper writes after a complete entry — the
+    # separator before the next entry, or the tail. Both come from the
+    # constants `_mail_block` itself joins with, never from a copy of them.
+    # (Pre-existing: the hand-built marker had the same hole. Redteam,
+    # 2026-08-19.)
+    #
+    # ⚠ RESIDUALS, stated rather than hidden — both need the same precondition
+    # as the hole above, a TWIN agreeing on sender, kind and `at`, which the
+    # ledger does not currently produce (no call site posts twice to one node
+    # inside a single load/save; measured 0/40). Neither is closable without
+    # changing the envelope itself, because the envelope's own grammar is
+    # ambiguous: nothing distinguishes a separator the wrapper wrote from one
+    # an author typed.
+    #   · a body containing `\n---\n` — an ordinary markdown rule — satisfies
+    #     this boundary from inside the longer body.
+    #   · two bodies that agree for their first MAIL_MARK_CHARS characters
+    #     take the PREFIX branch above, where no boundary is available at all.
+    # Both were built by the redteam against the helper and neither could be
+    # reached end-to-end through the API.
+    return any(needle + MAIL_SEP in t or needle + MAIL_TAIL in t for t in seen)
 
 
 
@@ -6576,7 +6724,22 @@ def _sweep_live(slug: str, nid: str, msgs: list[dict[str, Any]]) -> list[dict[st
                 return False
             budget[head] -= 1
             return True
-        return True
+        # Nothing known reaches here: `thought` never calls this function (the
+        # caller routes it straight to the ordering rule below), so this is
+        # only ever a kind that has no twin-finding rule at all.
+        #
+        # ⚠ It used to be `return True` — RETIRE, with no evidence at all,
+        # on the first sweep. Every other retirement in this file names what
+        # it retired against (D-50), and this one named nothing: a live row
+        # of an unrecognised kind left the screen before any durable twin
+        # could exist. Nothing pushes such a kind today (`live_row` is called
+        # with `text`, `tool` and `thought` only, and `live` is in-memory so
+        # there are no legacy rows), so this is a latent hazard rather than a
+        # live bug — but it is the same rule the whole family is about, and
+        # the safe default is to KEEP: the chronology backstop below retires
+        # the row a poll later on evidence that IS real (a newer durable
+        # record proves the CLI wrote past it). Redteam, 2026-08-19.
+        return False
 
     # the chronology backstop's cutoff (docstring above): the newest durable
     # stamp, moved 2 s into the past. Stays '' — backstop off — when the

@@ -1,17 +1,25 @@
-# The message-visibility suite — and the six defects it found
+# The message-visibility suite — and the defects it found
 
 > *"I want to be absolutely certain this bug is completely squashed well and
 > good … reproduce the situations it occurs in dozens of times in various ways
 > … do whatever you have to do in order to completely destroy this bug."*
 
 This is the write-up for a dedicated adversarial test suite built for ONE bug
-family — the one that has now produced six docket entries (D-34, D-43, D-50,
-D-51, D-52, D-55), each of which looked like a different bug and was the same
-rule broken: **something on screen was retired before its replacement existed.**
+family — the one that has now produced nine docket entries (D-34, D-43, D-50,
+D-51, D-52, D-55, D-57, D-59, **D-139**), each of which looked like a different
+bug and was the same rule broken: **something on screen was retired before its
+replacement existed, or not retired once its replacement arrived.**
 
-⚠ **Not committed.** The branch belongs to another session; the files are left
-in the working tree. Whoever owns the branch should fold the entry below into
-`docs/interim-docket.md` as D-57 rather than take this file as the home for it.
+> ### ⚠ Read §6 first if you are here because it came back
+>
+> §§1–5 describe the state of this fight on **2026-08-04**. The family produced
+> another instance on **2026-08-19** (D-139) — *"messages being briefly
+> duplicated for less than a second during the transition from an unconfirmed
+> to a confirmed message"* — and the suite below, all 183 green checks of it,
+> did not see it coming. §6 is what happened, why the guards held while the
+> thing they guarded moved, and what the suite looks like now (**274 checks,
+> 273 lifecycle configurations**). Where §§1–5 and §6 disagree, §6 is
+> current.
 
 ---
 
@@ -299,3 +307,193 @@ a weak suite and the difference has to be visible.
   than assumed away. The principled fix, if it is ever wanted, is for
   `_fold_back_undelivered` to ask whether the transcript already carries the
   batch, the same evidence test `node_chat` applies.
+
+
+---
+
+## 6. It came back — D-139, 2026-08-19
+
+> *"the issue with messages appearing twice is back, with messages being
+> briefly duplicated for less than a second during the transition from an
+> unconfirmed to a confirmed message. make sure this class of bug is
+> completely eradicated from the system."*
+
+### 6.1 The defect
+
+`api.node_chat._in_transcript(m)` is the evidence test that retires a pending
+row — carrier ② — once the transcript carries the same mail. It read:
+
+```python
+mark = (f"· {at}\n{body}" if at else body)[:400]
+return any(mark in t for t in _seen_user)
+```
+
+That is a **hand-rebuilt copy of what `supervisor._mail_block` writes**, living
+three files away from it, and it is correct only for as long as the formatter
+puts the body immediately after the entry's timestamp. Two features shipped
+after 2026-08-04 moved it:
+
+| feature | what it inserts | consequence |
+|---|---|---|
+| **FR-05 `reply_to`** — a reply sent from the inbox modal (`App.tsx onReply`) | `↩ IN REPLY TO ⟨who⟩'s message of ⟨at⟩: “⟨gist⟩”` between header and body | the needle cannot occur in the transcript |
+| **D-137 `kind: "notice"`** | the header itself runs on: `· ⟨at⟩ — informational, delivered passively; no reply is expected` | same |
+
+For those shapes the entry was never "on screen", so the pending row stayed up
+**beside its own durable bubble**, from the CLI's echo until
+`_confirm_delivered` dropped the journal batch. That window is short — which
+is exactly the *"less than a second"* the report describes, and why it read as
+a flicker at the unconfirmed→confirmed transition rather than as the permanent
+duplicate D-57 ① produced.
+
+Measured before the fix, against the spanning shape list: **7 of 21 shapes
+never matched their own transcript bubble** — every `reply_to` variant and
+every `notice` variant. With the pre-fix rule restored in place
+(`--legacy-marker`), **63 checks fail**, of which 60 are FR-05 reply
+configurations failing as `DUPLICATE … after step 'transcript echo'`.
+
+### 6.2 Why 183 green checks did not see it
+
+Three separate guards were pointed at this seam and all three held while the
+thing they guarded moved:
+
+- **The drift grep** pinned `api.py`'s marker expression. The marker never
+  changed — the **formatter** did. A one-sided grep on a two-sided contract
+  proves only that one side stands still.
+- **`msgvis.mail_block`** is a deliberately *independent re-implementation* of
+  `_mail_block`, on the stated reasoning that importing the real one "would
+  make a formatter change invisible to the very test that exists to catch a
+  formatter/marker mismatch". Sound — but an independent copy is only sound
+  while something pins it, and nothing did. The real formatter grew two
+  branches; the copy kept writing the 2026-08-04 envelope; every echo and
+  hand-over check went on testing an envelope the CLI no longer produces.
+- **The corpus** varies the *text* of a message exhaustively (20 variants) and
+  the *shape of the mail entry* not at all. `reply_to` and `kind` were never
+  set by any scenario.
+
+☞ The generalisable lesson, and the reason §6.3 is shaped the way it is: **a
+structural guard proves a string still exists; only running both sides proves
+they still agree.**
+
+### 6.3 The fix
+
+**The rule moved next to the formatter and now builds its needle by running
+it.** `_mail_block` was split so that `_mail_entry_block(m)` renders exactly
+one entry, and `supervisor.mail_in_transcript(m, seen)` renders a *probe* of
+the entry through that same function. There is no copy to drift.
+
+There are **two branches**, and the second one is easy to forget — dropping it
+is a GAP, and it went untested for a whole review round:
+
+| body | probe | test |
+|---|---|---|
+| longer than `MAIL_MARK_CHARS` (400) | body cut to 400, attachment lines dropped — both cuts at the **end** of the block | the needle is a contiguous **prefix** of what the envelope carried, so one plain substring test settles it |
+| 400 or shorter — nearly all mail | the entry **verbatim**, attachments and all | the needle is the **whole block**, so a plain substring test is not enough: it must be found followed by `MAIL_SEP` or `MAIL_TAIL`, the two things the wrapper writes after a complete entry |
+
+⚠ **Why the whole-block branch needs the boundary.** Without it, an entry whose
+body is a *prefix* of another's — with everything else about them colliding,
+sender, kind and millisecond timestamp — is reported on screen using the
+longer one's bubble, and its pending row retires for a message nobody can see.
+`MAIL_SEP`/`MAIL_TAIL` are the constants `_mail_block` itself joins with, never
+a copy of them. Reverting this branch to a bare substring test left all 268
+checks green until a prefix-body negative was added to the marker contract
+(redteam, 2026-08-19); do not remove it without reading §6.7.
+
+⚠ **The obvious repair was tried first and is weaker than what it replaced.**
+Asking for the timestamp `· {at}` and the body head as two *independent*
+needles makes the layout between them irrelevant — but a transcript row is a
+whole drained **batch**, several entries joined by `\n---\n`, so two
+independent needles can be satisfied by two *different* mails in one row. That
+retires a pending row whose message is on screen nowhere: a **GAP**, which
+this system ranks strictly worse than a duplicate. Caught by the redteam
+before it shipped, and the reason the needle stays contiguous.
+
+### 6.4 The guards that would have caught it
+
+All three RUN the real functions. They live in `msgvis.py` and are checks 2–4
+of the suite, immediately after the source-contract grep.
+
+| guard | what it asserts | mutation it was verified against |
+|---|---|---|
+| `assert_mail_shapes_span` | `mail_shapes()` reaches **every executable line** of `_mail_entry_block` (`sys.settrace` + `dis.findlinestarts`) | a synthetic third header branch → *"does not span … 1 line(s) never ran"* |
+| `assert_mail_block_matches_source` | the suite's independent formatter copy renders **byte-for-byte** what `_mail_block` renders, per shape and batched | `· message ·` → `· msg ·` in the real formatter → caught |
+| `assert_mail_marker_contract` | every shape is found in its own rendering, **alone and batched**, and never in another entry's | the two-needle rule of §6.3 → *"within ONE batched row, an entry matched using one block's header and another block's body"* |
+
+⚠ **The shape list they iterate is itself crossed with the truncation axis**
+(`mail_shapes_crossed`), and that is not cosmetic. Below `MAIL_MARK_CHARS` the
+needle *is* the whole block, so the probe rendering and the real rendering are
+byte-identical and any change to what the formatter writes **after** the body
+is invisible. The suite crossed long bodies with the plain, attachment and
+reply branches and never with the notice branch — so one extra line under a
+notice's body broke the invariant for every notice over 400 characters while
+all 268 checks stayed green. Each of the 21 shapes therefore gets a
+past-the-budget twin, **and its own timestamp**: they used to share one, and
+because the header carries only `from`/`relationship`/`kind`/`at`, several
+shapes rendered blocks that were prefixes of one another, so their batched
+assertions were satisfied by a *sibling* entry and could not fail — 4 of 21
+under the rule in force at the time (re-measured 2026-08-20; 20 distinct
+renderings of 21 shapes). Both found by the redteam, 2026-08-19, in the checks
+written that same day to close the previous round's holes.
+
+`assert_mail_shapes_span` is the guard on the guards: the other two iterate a
+hand-maintained list, and a formatter branch nobody wrote a shape for is
+invisible to both — which is precisely how FR-05 and D-137 got through. Line
+coverage is the one statement of "spanning" a future author cannot forget to
+update.
+
+Alongside them: `mail_shapes()` (one entry per formatter branch, crossed with
+the fields that move the body), two carrier checks that name the two broken
+shapes directly (`a NOTICE hands over…`, `a REPLY hands over…`, each asserting
+the mechanism *ran* before asserting it stopped), and an 80-configuration
+`lifecycle × FR-05 reply snapshots` axis.
+
+**`--legacy-marker`** restores the pre-fix rule in place, the same
+apples-to-apples switch `--legacy-client` gives for the client half.
+
+### 6.5 Also fixed, same rule, one file over
+
+`supervisor._sweep_live.covered()` ended in a bare `return True`: a live row of
+an unrecognised `kind` was retired on its first sweep **naming no evidence at
+all**, against D-50's rule that every retirement names what it retired
+against. Nothing pushes such a kind today (`live_row` is only ever called with
+`text`, `tool` and `thought`, and `live` is in-memory so there are no legacy
+rows), so this was a latent hazard rather than a live bug — but it is the same
+rule, and the safe default is to keep the row and let the chronology backstop
+retire it a poll later on evidence that is real.
+
+### 6.6 Current numbers
+
+| run | result |
+|---|---|
+| hermetic | **274 checks pass, 0 fail**, 10 known-fragile, 273 lifecycle configurations |
+| hermetic, `--legacy-marker` | **63 fail** — the D-139 fix, re-measured against the pre-fix server rule |
+| hermetic, `--legacy-client` | **25 fail** — the D-57 ③④ fixes, re-measured against the pre-fix client rules |
+| `pyright` | 0 errors, 0 warnings, 0 informations |
+| `test_live_tail.py` | 873/873 — **unchanged by §6.5**, and that is the honest reading: the branch it hardens is unreachable, so nothing scores it either way (verified by reverting the flip and re-running) |
+
+### 6.7 What §5 should now also say it does not cover
+
+- **The formatter's *readers*, other than the evidence test.** `desk.tsx`'s
+  `stripEnvelope` does not know D-137's `NOTICE FROM …` header and renders it
+  as body text, and `userTurns`' `^FROM @user \(` regex would miss a
+  user-authored notice. Both are cosmetic — no effect on the invariant — but
+  they are the same drift, and nothing pins them.
+- **The envelope's grammar is ambiguous, and no reader can fix that.** Nothing
+  distinguishes an entry separator the wrapper wrote from a markdown rule an
+  author typed in a body, so the whole-block boundary test can be satisfied
+  from inside a longer body. Like the prefix case it needs a twin agreeing on sender, kind
+  and timestamp; both were built against the helper and neither could be
+  reached through the API. Closing them properly means giving the envelope an
+  unambiguous entry delimiter — which changes what agents read, and is a
+  bigger decision than this fix.
+- **`pop_steer`'s 100 KB cut.** `steered_log` stores the steer text at
+  `[:100000]`, so a ~100 KB envelope can be cut such that a complete entry
+  block survives with its trailing boundary removed; that entry's pending row
+  then does not retire until the journal is confirmed. Measured by the
+  redteam; it lands in the duplicate direction and the same input already lost
+  every entry past the cut under both the old rule and the new one.
+- **Timestamp collisions.** `ledger.now()` is millisecond-resolution and
+  back-to-back calls collide 99.8% of the time; no current call site posts
+  twice to one node inside a single load/save (measured 0/40), which is the
+  only reason two entries never share an `at`. Nothing states or enforces
+  that. The contiguous needle makes a collision harmless today; a future batch
+  send should not assume it stays that way.

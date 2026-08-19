@@ -90,6 +90,26 @@ if "--legacy-client" in sys.argv:
     print("⚠ --legacy-client: the ported client rules are the PRE-FIX ones "
           "(window 20, unbounded needle)\n")
 
+if "--legacy-marker" in sys.argv:
+    # Re-measure against the PRE-FIX server-side evidence test (the one in
+    # place until 2026-08-19): `node_chat` rebuilt the envelope's timestamp+
+    # body junction by hand as ONE adjacent string, so any formatter that put
+    # a line between them made the entry unfindable in its own transcript
+    # bubble. This is the apples-to-apples switch for the server half — under
+    # it, 60 of the 80 FR-05 reply configurations must fail as a DUPLICATE —
+    # the other 20 carry a blank gist, which `post_mail` drops, so they render
+    # plain and hand over correctly under either rule.
+    def _legacy_marker(m, seen):
+        body = m.get("body") or ""
+        at = m.get("at")
+        if not at and not body.strip():
+            return False
+        mark = (f"· {at}\n{body}" if at else body)[:400]
+        return any(mark in t for t in seen)
+    supervisor.mail_in_transcript = _legacy_marker
+    print("⚠ --legacy-marker: the pendrow evidence test is the PRE-FIX one "
+          "(one adjacent `· {at}\\n{body}` string)\n")
+
 PASS = 0
 FAIL: list[tuple[str, str]] = []
 FRAGILE: list[tuple[str, str, str]] = []
@@ -160,15 +180,19 @@ class World:
         return store.load_org(self.slug)
 
     # --- ① the send path: a user message IS mail (api.node_message)
-    def post(self, body: str, attachments=None) -> dict:
+    def post(self, body: str, attachments=None, reply_to=None) -> dict:
         org = self.org()
-        org.post_mail(USER, self.nid, body, attachments=attachments)
+        # `reply_to` is FR-05: what the inbox modal's onReply sends. It is a
+        # user-facing path (App.tsx) and it moves the body one line further
+        # from the envelope's timestamp — the 2026-08-19 regression.
+        org.post_mail(USER, self.nid, body, attachments=attachments,
+                      reply_to=reply_to)
         store.save_org(org)
         return (org.d["mail"][self.nid])[-1]
 
-    def post_from(self, sender: str, body: str) -> dict:
+    def post_from(self, sender: str, body: str, kind: str = "message") -> dict:
         org = self.org()
-        org.post_mail(sender, self.nid, body)
+        org.post_mail(sender, self.nid, body, kind=kind)
         store.save_org(org)
         return (org.d["mail"][self.nid])[-1]
 
@@ -215,7 +239,9 @@ def run_lifecycle(label: str, body: str, probe: str = "", *,
                   notices: bool = False, extra_mail: int = 0,
                   win: int = msgvis.CHAT_WINDOW,
                   confirm_before_echo: bool = False,
-                  repeat_first: bool = False) -> None:
+                  repeat_first: bool = False,
+                  reply_to: dict | None = None,
+                  extra_notice: int = 0) -> None:
     """The canonical send→turn→echo lifecycle, with the knobs that make it
     adversarial. Checks the invariant after every world step."""
     global CONFIGS
@@ -235,9 +261,28 @@ def run_lifecycle(label: str, body: str, probe: str = "", *,
         # ① the user hits send: ghost first, POST second (desk.tsx order)
         desk.send(body)
         watch.check("ghost created")
-        mail = [w.post(body, attachments=attachments)]
+        mail = [w.post(body, attachments=attachments, reply_to=reply_to)]
         for i in range(extra_mail):
             mail.append(w.post_from("agent", f"unrelated agent mail {i}"))
+        for i in range(extra_notice):
+            # D-137 orgtree_send_notice: co-drained into the SAME envelope,
+            # and its header runs past the timestamp instead of stopping at
+            # it, so the user's own message is scored beside a sibling entry
+            # of the shape that broke the marker.
+            #
+            # ⚠ WHAT THIS DOES AND DOES NOT COVER, because an earlier version
+            # of this axis claimed more than it delivered. The notice itself
+            # is NOT scored and cannot be: it is from an agent, and both the
+            # real desk (`m.from === USER`) and the port count only the
+            # user's pending rows — sabotaging `mail_in_transcript` to refuse
+            # every notice left all six checks green (redteam 2026-08-19).
+            # What IS scored is the USER's message sharing a transcript row
+            # with an entry of the shape that broke the marker, which is a
+            # real hand-off and not covered anywhere else in the lifecycle.
+            # The notice's own hand-over is asserted directly, in
+            # `_notice_hands_over` above.
+            mail.append(w.post_from("agent", f"unrelated agent notice {i}",
+                                    kind="notice"))
         desk.fetch(w.chat(win))
         watch.check("mail posted (mailbox)")
 
@@ -347,6 +392,23 @@ def main() -> None:
     print("source contracts (the ported client rules still match their originals):")
     check("convo.ts / desk.tsx / api.py / supervisor.py contracts intact",
           lambda: msgvis.assert_client_model_matches_source(_REPO))
+    # ⚠ These three RUN the real functions rather than grepping them. The greps
+    # above stayed green through the 2026-08-19 regression because the string
+    # they pinned never moved — the formatter did. See _SOURCE_CONTRACTS.
+    # The first one guards the other two: they iterate a hand-maintained shape
+    # list, and a formatter branch with no shape is invisible to both.
+    check("mail_shapes() reaches every line of supervisor._mail_entry_block",
+          lambda: msgvis.assert_mail_shapes_span(supervisor._mail_entry_block))
+    # ⚠ `MAIL_MARK_CHARS` is passed in, never assumed: the crossing below turns
+    # on whether a body is longer than it, and a suite that guessed the number
+    # would quietly stop exercising the truncating branch if it ever changed.
+    check("msgvis.mail_block renders exactly what supervisor._mail_block does",
+          lambda: msgvis.assert_mail_block_matches_source(
+              supervisor._mail_block, supervisor.MAIL_MARK_CHARS))
+    check("every mail shape is found in its own transcript bubble (marker contract)",
+          lambda: msgvis.assert_mail_marker_contract(
+              supervisor._mail_block, supervisor.mail_in_transcript,
+              supervisor.MAIL_MARK_CHARS))
 
     # ---------------------------------------------------------------- basics
     print("\nthe carriers, in isolation:")
@@ -393,6 +455,65 @@ def main() -> None:
         finally:
             w.destroy()
     check("…and hands over the instant the transcript carries it", _journal_hidden_once_echoed)
+
+    def _notice_hands_over():
+        """D-137 `kind == "notice"`, whose header runs PAST the timestamp —
+        one of the two shapes that broke the marker (user report 2026-08-19).
+
+        It is scored here rather than in a lifecycle because a notice is
+        never from `@user`, so no desk renders it as a pending row and the
+        render union cannot see it at all. What it CAN corrupt is the payload
+        and the mail badge: an entry that never hands over stays in
+        `pending_mail` and keeps `mail_pending` counting a message the agent
+        has already been given. Assert the mechanism ran (the notice was
+        surfaced BEFORE the echo) and only then that it stopped."""
+        w = World("nt")
+        try:
+            t = token()
+            w.post_from("agent", f"heads up {t}", kind="notice")
+            _, mail = w.drain("turn")
+            assert mail and mail[0].get("kind") == "notice", mail
+            c = w.chat()
+            assert c["mail_pending"] == 1, c["mail_pending"]
+            assert t in c["pending_mail"][0]["body"]
+            w.tx.turn_echo(mail)
+            c = w.chat()
+            assert c["pending_mail"] == [], c["pending_mail"]
+            assert c["mail_pending"] == 0, c["mail_pending"]
+            assert sum(1 for m in c["messages"]
+                       if m["role"] == "user" and t in m["text"]) == 1
+        finally:
+            w.destroy()
+    check("a NOTICE hands over to its own transcript bubble (D-137 shape)",
+          _notice_hands_over)
+
+    def _reply_hands_over():
+        """FR-05 `reply_to`, the other shape that broke it, at the carrier
+        level: the recital line sits between the header and the body, so a
+        marker rebuilt around their junction cannot occur in the transcript.
+        The lifecycle axis scores the same thing end to end; this one names
+        the carrier so a failure says WHICH hand-over broke."""
+        w = World("rp")
+        try:
+            t = token()
+            w.post(f"do it {t}", reply_to={"id": "m1", "from": "agent-2",
+                                           "at": "2026-08-04T04:00:00.000Z",
+                                           "gist": "shall I ship it?"})
+            _, mail = w.drain("turn")
+            assert mail[0].get("reply_to"), mail[0]
+            blk = supervisor._mail_block([dict(mail[0])])
+            assert "↩ IN REPLY TO" in blk, blk        # the mechanism RAN
+            c = w.chat()
+            assert c["mail_pending"] == 1
+            w.tx.turn_echo(mail)
+            c = w.chat()
+            assert c["pending_mail"] == [], c["pending_mail"]
+            assert sum(1 for m in c["messages"]
+                       if m["role"] == "user" and t in m["text"]) == 1
+        finally:
+            w.destroy()
+    check("a REPLY hands over to its own transcript bubble (FR-05 shape)",
+          _reply_hands_over)
 
     def _steer_carrier():
         w = World("st")
@@ -448,6 +569,42 @@ def main() -> None:
               lambda b=body, pr=probe, l=label: run_lifecycle(f"{l}/notices", b, pr, notices=True))
         check(f"lifecycle · {label} · 2 other mails in the same batch",
               lambda b=body, pr=probe, l=label: run_lifecycle(f"{l}/batch", b, pr, extra_mail=2))
+        # the user's message sharing one transcript row with a D-137 notice —
+        # see the note on `extra_notice` for exactly what this scores
+        check(f"lifecycle · {label} · a notice shares the drained batch",
+              lambda b=body, pr=probe, l=label: run_lifecycle(
+                  f"{l}/mixed", b, pr, extra_mail=1, extra_notice=1))
+
+    # ⚠ THE SHAPE THAT BROUGHT THE FAMILY BACK (user report 2026-08-19).
+    # FR-05's reply snapshot writes a line BETWEEN the envelope's timestamp
+    # and the body, so the marker `node_chat` used to rebuild — `· {at}\n
+    # {body}` — could not occur in the transcript at all. The pending row
+    # never handed over, and the message rendered twice from the CLI's echo
+    # until `_confirm_delivered` dropped the journal batch: the sub-second
+    # duplicate the user saw. Every text variant, because the gist sits
+    # between the two needles for all of them.
+    print("\nlifecycle × FR-05 reply snapshots (the 2026-08-19 regression):")
+    for label, body, probe in msgvis.text_variants(token()):
+        for rt_label, rt in (
+                ("named author", {"id": "m1", "from": "agent-2",
+                                  "at": "2026-08-04T04:00:00.000Z",
+                                  "gist": "shall I ship it?"}),
+                # `from` == the recipient is dropped by post_mail, so the
+                # recital reads "your message" — a different header line
+                ("self-consistent", {"id": "m1", "from": "agent",
+                                     "at": "2026-08-04T04:00:00.000Z",
+                                     "gist": "shall I ship it?"}),
+                # a 200-char gist is the cap: the widest the body is ever
+                # pushed from the timestamp
+                ("max-length gist", {"id": "m1", "from": "agent-2",
+                                     "at": "2026-08-04T04:00:00.000Z",
+                                     "gist": "g" * 400}),
+                # blank gists are ignored by post_mail — the entry renders
+                # plain, and must still hand over
+                ("blank gist", {"id": "m1", "from": "agent-2", "gist": "   "})):
+            check(f"lifecycle · {label} · reply snapshot ({rt_label})",
+                  lambda b=body, pr=probe, l=label, r=rt, rl=rt_label:
+                  run_lifecycle(f"{l}/reply-{rl}", b, pr, reply_to=r))
 
     print("\nlifecycle × transcript size (serverCopies' 20-message baseline):")
     for pairs in (0, 12, 60, 200, 700):
@@ -941,7 +1098,7 @@ def main() -> None:
           _transcript_disappears)
 
     # --------------------------------------------------- the marker itself
-    print("\nthe D-55 identity marker (`· {at}\\n{body}`[:400]):")
+    print("\nmail identity (each entry found in its OWN bubble, D-55):")
 
     def _marker_identity():
         """Two mails with identical BODIES and different times: echoing the
