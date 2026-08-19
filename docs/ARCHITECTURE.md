@@ -255,11 +255,21 @@ ledger, supervisor, the gateways, or the canvas.
   measured the flag-only fix still losing both messages' spend, and "queue
   non-empty at the boundary" is just *mail arriving mid-turn* — the reported
   scenario). ② ∴ **the accounting is built to survive guessing wrong**:
-  `turn_paid` tracks what the CLI reported, and `_charge_reported_spend` books
-  it on the failure path, so a straggler can at worst add a spurious failure
-  row and never erase a turn that was paid for. Money is a fact about the API,
-  not about how orgtree's bookkeeping ended — the same rule
-  `_charge_killed_turn` already encodes for timeouts. ③ Refusing a straggler as
+  `turn_paid` tracks what the CLI reported and is consulted on **all three**
+  ways a turn can end — folded into `res` before `_after_turn` on the success
+  path, booked by `_charge_reported_spend` on the failure path, and passed to
+  `_charge_killed_turn` as a measured floor under its estimate on the timeout
+  path. Money is a fact about the API, not about how orgtree's bookkeeping
+  ended. ⚠ The success path is not optional cover: the CLI's REAL out-of-band
+  straggler carries **no `result` key and `total_cost_usd: 0`** (its text
+  rides `errors: []`, and it only sets an exit code — nothing on stderr), so
+  `err_blob` comes out EMPTY and the turn goes down the success path, where
+  `_after_turn` booked that $0 over a message that had really billed. Round 3
+  of the loop measured it still live after two rounds, because every fixture
+  straggler until then carried a `result` string and so exercised the failure
+  path only. Same measurement, second half: a CLI that exits non-zero with
+  nothing on stderr used to read as a clean completed turn — **silence is not
+  success**, so `err_blob` now names the exit code. ③ Refusing a straggler as
   a boundary must not discard what it REPORTS: a usage limit riding one is
   harvested into `synth_limit_txt` (engine-authored, so `agent_authored` stays
   False and it is trusted), or the node sails past a live limit into the next

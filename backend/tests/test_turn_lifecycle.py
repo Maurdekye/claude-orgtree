@@ -1545,7 +1545,21 @@ if (cfg.mode === 'dupresult') {
         // false the straggler clobbered `res` harmlessly and hid the finding
         // that a successful paid turn books zero cost.
         setTimeout(() => {
-          result(cfg.sidechain
+          if (cfg.resultlessStraggler) {
+            // ⚠ written RAW, not through result(): that helper's base carries
+            // `result: 'ok'`, and Object.assign only overrides keys the extra
+            // names — so a "resultless" straggler built through it still had a
+            // result string, `err_blob` was non-empty, and the fixture quietly
+            // tested the failure path instead of the success path it was
+            // written for. (Caught by measuring the org doc when the check
+            // failed with the fix IN place: "turn failed: ok".)
+            process.stdout.write(JSON.stringify({
+              type: 'result', subtype: 'error_during_execution',
+              is_error: true, duration_ms: 0, num_turns: 0,
+              total_cost_usd: 0, usage: {}, modelUsage: {},
+              permission_denials: [],
+              errors: ['stream closed unexpectedly'] }) + '\n')
+          } else result(cfg.sidechain
             ? { parent_tool_use_id: 'toolu_straggler',
                 total_cost_usd: 9.99, duration_ms: 424242,
                 usage: { input_tokens: 900000 },
@@ -1558,7 +1572,15 @@ if (cfg.mode === 'dupresult') {
                   result: 'Claude AI usage limit reached|' + LIMIT_EPOCH }
               : { subtype: 'error_during_execution', is_error: true,
                   result: 'Error during execution' })
-          setTimeout(() => process.exit(0), cfg.exitMs || 1500)
+          // …and, for the real shape, the CLI's own `$3(1)`: a non-zero exit
+          // with NOTHING written to stderr. `stragglerExit` overrides it so
+          // one variant can exit ZERO — that is the only way to isolate the
+          // success-path `turn_paid` fold, since a non-zero exit is rescued
+          // by the exit-code fallback instead (both guards protect the same
+          // dollars, and a check that cannot tell them apart pins neither).
+          setTimeout(() => process.exit(
+            cfg.stragglerExit != null ? cfg.stragglerExit
+              : (cfg.resultlessStraggler ? 1 : 0)), cfg.exitMs || 1500)
         }, cfg.secondMs || 900)
       }
     }
@@ -2415,6 +2437,89 @@ def live_second_result() -> None:
             f"no turn was booked at all: {node4!r}"
     check("dupresult · a straggler at a FEEDING boundary cannot erase the "
           "turn's spend", _fed_boundary_spend_survives)
+
+    # ── the straggler shape the real CLI actually emits ──────────────────
+    # Every straggler above carries a `result` STRING, which makes `err_blob`
+    # non-empty and sends the turn down the FAILURE path — where the spend was
+    # already rescued. cli.js's stream-json catch block emits none: no
+    # `result` key (the text rides `errors: []`), `total_cost_usd: 0`, and it
+    # only sets an exit code, writing nothing to stderr. `err_blob` then came
+    # out EMPTY, the turn took the SUCCESS path, and `_after_turn` booked the
+    # straggler's $0 over a message that had really billed — recorded as a
+    # clean completed turn costing nothing, with a CLI that had died and a
+    # queued message unanswered. Round 3 of the loop found this still live
+    # after two rounds; the fixture shape is why it survived them.
+    set_cfg({**FAST, "startMs": 250},
+            wrap={"default": {"mode": "dupresult", "secondMs": 400,
+                              "slowSecondMs": 2500,
+                              "resultlessStraggler": True}})
+    slug6, (nid6,) = make_org("nullstrag")
+    tok9, tok10 = token(), token()
+    send(slug6, nid6, f"first of two {tok9}")
+    send(slug6, nid6, f"fed at the boundary {tok10}")
+    wait_idle(slug6, nid6, 60)
+    time.sleep(0.5)
+    node6 = (doc(slug6).get("nodes") or {}).get(nid6) or {}
+    ch6 = api("GET", f"/api/orgs/{slug6}/nodes/{nid6}/chat?last=8")
+
+    def _resultless_straggler_keeps_the_spend() -> None:
+        assert served_messages(str(node6.get("session_id") or "")) >= 2, \
+            "the feeding boundary was never exercised"
+        assert float(node6.get("cost_usd") or 0) > 0, \
+            f"a paid message booked $0 — the straggler's total_cost_usd:0 " \
+            f"was booked over it: cost_usd={node6.get('cost_usd')!r}, " \
+            f"turns={node6.get('turns')!r}"
+    check("dupresult · the CLI's real (resultless, $0) straggler cannot erase "
+          "the spend", _resultless_straggler_keeps_the_spend)
+
+    def _a_dead_cli_is_not_a_clean_turn() -> None:
+        # the other half, and the worse-presenting one: the CLI exited 1 with
+        # an unanswered message, and nothing said so
+        banner6 = str(ch6.get("last_error") or "") + " | " + " ".join(
+            str(m.get("text") or "") for m in (ch6.get("messages") or [])
+            if str(m.get("text") or "").startswith("⚠"))
+        assert banner6.strip(" |"), \
+            "the CLI exited non-zero with a message unanswered and the turn " \
+            "was recorded as a clean success — silence is not success"
+    check("dupresult · a CLI that exits non-zero in silence is still a failure",
+          _a_dead_cli_is_not_a_clean_turn)
+
+    # the same straggler, but the process exits ZERO — so the exit-code
+    # fallback cannot rescue it and the SUCCESS-path `turn_paid` fold is the
+    # only thing standing between a paid message and a $0 booking. Two guards
+    # covering the same dollars is defence in depth; a check that cannot tell
+    # them apart pins neither of them.
+    set_cfg({**FAST, "startMs": 250},
+            wrap={"default": {"mode": "dupresult", "secondMs": 400,
+                              "slowSecondMs": 2500,
+                              "resultlessStraggler": True,
+                              "stragglerExit": 0}})
+    slug7, (nid7,) = make_org("foldonly")
+    tok11, tok12 = token(), token()
+    send(slug7, nid7, f"first of two {tok11}")
+    send(slug7, nid7, f"fed at the boundary {tok12}")
+    wait_idle(slug7, nid7, 60)
+    time.sleep(0.5)
+    node7 = (doc(slug7).get("nodes") or {}).get(nid7) or {}
+
+    def _success_path_fold_keeps_the_spend() -> None:
+        assert served_messages(str(node7.get("session_id") or "")) >= 2, \
+            "the feeding boundary was never exercised"
+        ring = node7.get("turns") or []
+        assert ring, f"no turn was booked: {node7!r}"
+        # ⚠ the sharp assertion is the $0 ENTRY, not the total: if the message
+        # the dead CLI never answered is ever redelivered by a follow-up turn,
+        # that turn's dollars would satisfy a bare `cost_usd > 0` whether or
+        # not this turn's were rescued. A ring entry sitting at exactly $0 is
+        # the straggler's zero, and nothing else produces one.
+        assert not any(float(t.get("cost") or 0) == 0 for t in ring), \
+            f"a turn was booked at exactly $0 — `res` carried the straggler's " \
+            f"total_cost_usd:0 and turn_paid was never folded in: {ring!r}"
+        assert float(node7.get("cost_usd") or 0) > 0, \
+            f"the turn's reported spend never reached the node: " \
+            f"cost_usd={node7.get('cost_usd')!r}, turns={ring!r}"
+    check("dupresult · a $0 straggler on a turn that ENDS CLEAN still books "
+          "the reported spend", _success_path_fold_keeps_the_spend)
 
     # ── a usage limit that rides ONLY the refused straggler ──────────────
     # Refusing the straggler as a boundary must not throw away what it

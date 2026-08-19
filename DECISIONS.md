@@ -936,12 +936,36 @@ mid-turn, the scenario in the user's own report. Two paid messages, `$0`
 booked, empty ring, failure row. ∴ the second rule, and the more durable one:
 **stop trying to identify the boundary perfectly and make the accounting
 survive getting it wrong.** `turn_paid` carries what the CLI reported, kept
-apart from `res` so nothing later can erase it, and `_charge_reported_spend`
-books it on the failure path (`paid_booked` keeps it from double-charging
-with `_after_turn` or `_charge_killed_turn`). A straggler can now at worst add
-a spurious failure row. This also closes a pre-existing hole the loop only
-made acute: ANY multi-message turn that failed on its last message was
-already discarding the earlier messages' spend.
+apart from `res` so nothing later can erase it, and it is consulted on ALL
+THREE ways a turn can end: folded into `res` before `_after_turn` (success),
+booked by `_charge_reported_spend` (failure), and passed to
+`_charge_killed_turn` as a measured floor under its estimate (timeout).
+`paid_booked` keeps the three from double-charging. This also closes a
+pre-existing hole the loop only made acute: ANY multi-message turn that ended
+on its last message's failure was already discarding the earlier messages'
+spend.
+
+⚠ **Covering only the failure path is not enough, and round 3 measured why.**
+Every straggler shape the fixture carried until then had a `result` string,
+which makes `err_blob` non-empty and sends the turn down the failure path
+where the money was already rescued. The CLI's REAL out-of-band straggler has
+**no `result` key** (its text rides `errors: []`), **`total_cost_usd: 0`**,
+and sets only an exit code — nothing reaches stderr. So `err_blob` came out
+EMPTY, the turn took the SUCCESS path, and `_after_turn` booked that $0 over
+a message that had genuinely billed: a completed turn costing nothing, no
+banner, no durable row, with the CLI dead and the fed message unanswered —
+presenting BETTER than the bug it replaced while being worse. Two rounds of
+this loop passed over it because the fixture, not the code, decided which
+path ran. That is the loop's sharpest lesson here: **a regression test pins
+the shape it models, and a shape borrowed from convenience rather than from
+the real emitter pins nothing.** The fixture now copies cli.js's stream-json
+catch block field for field, and a second scenario forces the straggler to
+exit ZERO so the success-path fold is isolated from the exit-code guard —
+without it both guards cover the same dollars and neither is pinned.
+
+Same measurement, second half: a non-zero exit with empty stderr produced an
+empty `err_blob` and read as success. **Silence is not success** — `err_blob`
+now names the exit code (and the `errors` array when the CLI wrote one).
 
 And refusing a straggler must not throw away what it REPORTS. The first cut
 of this gate dropped a usage limit that rode only the out-of-band result —

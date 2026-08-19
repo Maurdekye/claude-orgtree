@@ -3115,12 +3115,25 @@ def _run_one_turn(slug: str, nid: str,
                 # this path does its own (estimated) booking — tell the
                 # failure handler so the spend is not charged twice
                 paid_booked = True
-                _charge_killed_turn(slug, nid, turn_out, on_fallback_key)
+                _charge_killed_turn(slug, nid, turn_out, on_fallback_key,
+                                    reported=turn_paid)
                 raise RuntimeError(timeout_why[0]
                                    or "turn timed out and was killed")
             err_blob = " / ".join((err or "").strip().splitlines()[-3:]) \
                 if proc.returncode != 0 else (
                     str(res.get("result", "")) if res.get("is_error") else "")
+            if not err_blob and proc.returncode != 0:
+                # ⚠ silence is not success. The CLI's own stream-json catch
+                # path writes its error to STDOUT (as `errors: []` on a result
+                # with no `result` key) and then merely sets an exit code —
+                # nothing reaches stderr, so this expression produced "" and a
+                # crashed CLI, with the queued message unanswered, was recorded
+                # as a completed turn (redteam 2026-08-19, measured). Name the
+                # exit; the errors array carries the why when it is there.
+                _errs = [str(x) for x in (res.get("errors") or []) if x]
+                err_blob = (f"the CLI exited {proc.returncode}"
+                            + (f": {' / '.join(_errs)[:300]}" if _errs else
+                               " without writing anything to stderr"))
             if not err_blob and synth_limit_txt:
                 # the synthetic-record limit: exit 0, is_error unset — adopt
                 # the captured text so the freeze machinery below fires, the
@@ -3458,6 +3471,20 @@ def _run_one_turn(slug: str, nid: str,
                                 "at": now_iso()})
                     del log[:-40]
                     store.save_org(o2)
+            # ⚠ the success path needs `turn_paid` just as much as the failure
+            # path does, and this is where the loop's third round found the
+            # money bug STILL live. `res` is whatever result arrived last, and
+            # the CLI's real out-of-band straggler carries **no `result` key
+            # and `total_cost_usd: 0`** (its text rides `errors: []`, and it
+            # sets only an exit code — nothing on stderr). So `err_blob` came
+            # out EMPTY, the turn took this path, and `_after_turn` booked the
+            # straggler's $0 over a message that had really been billed —
+            # presenting worse than the earlier bugs, as a clean completed turn
+            # costing nothing. `total_cost_usd` is process-cumulative and
+            # orgtree spawns one CLI per turn, so `turn_paid` IS this turn's
+            # reported spend: taking the larger is exact, never an over-count.
+            if turn_paid > float(res.get("total_cost_usd") or 0.0):
+                res = {**res, "total_cost_usd": turn_paid}
             paid_booked = True     # _after_turn books `res`'s cost itself
             _after_turn(slug, nid, org, res, st, turn_occ,
                         on_key=on_fallback_key)
@@ -3532,7 +3559,7 @@ def _run_one_turn(slug: str, nid: str,
 
 
 def _charge_killed_turn(slug: str, nid: str, out_toks: int,
-                        on_key: bool = False) -> None:
+                        on_key: bool = False, reported: float = 0.0) -> None:
     """A killed turn has no result event, so its spend was never reported —
     the API billed it anyway, and the expensive case (a long opus turn) is
     exactly the one that went unaccounted. Best-effort accounting (user ruling
@@ -3553,13 +3580,22 @@ def _charge_killed_turn(slug: str, nid: str, out_toks: int,
             den = sum(tk for _, tk in pairs)
             est = round(out_toks * sum(c for c, _ in pairs) / den, 6) \
                 if (out_toks and den) else 0.0
+            # `reported` is what the CLI ITSELF published on an earlier result
+            # this turn (a multi-message turn killed on its last message), so
+            # it beats the estimate whenever it is larger and is not a guess.
+            # Without it a node with no priced history — a new one, or one
+            # whose recent turns were all killed — estimated 0.0 and booked
+            # NOTHING for messages that really billed (redteam 2026-08-19).
+            measured = reported > est
+            if measured:
+                est = round(reported, 6)
             if est:
                 n["cost_usd"] = round(float(n.get("cost_usd") or 0.0) + est, 6)
                 if on_key:
                     _bank_api_cost(o2, est)
             entry: TurnStat = {"at": now_iso(), "cost": est, "ms": None,
                                "denials": 0, "killed": True, "toks": out_toks}
-            if est:
+            if est and not measured:
                 entry["estimated"] = True
             ring.append(entry)
             del ring[:-20]
