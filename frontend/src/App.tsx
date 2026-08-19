@@ -19,7 +19,7 @@ import {
 } from './icons'
 import { DirList } from './forms'
 import { FolderPickerHost } from './picker'
-import { deskDpi, orgPxc, setDeskDpi, usePolled, TIERS } from './canvas/shared'
+import { deskDpi, fallbackActive, orgPxc, setDeskDpi, usePolled, TIERS } from './canvas/shared'
 import { AskCard } from './canvas/asks'
 import { addPending, dropPending, ingestPulse, ingestStream, resetConvos } from './convo'
 import type {
@@ -1168,8 +1168,7 @@ function AutonomyTab({ tree, toast }: { tree: TreePayload; toast: ToastFn }) {
               : 'fallback off — the key bills every turn again')} />
         use the key only as a usage-limit fallback
       </label>}
-      {tree.api_fallback
-        && (tree.api_fallback_until ?? 0) * 1000 > Date.now()
+      {fallbackActive(tree)
         && <div className="dim hub-hint">fallback ACTIVE — billing the key
           until {new Date((tree.api_fallback_until ?? 0) * 1000)
             .toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })},

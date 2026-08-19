@@ -928,6 +928,12 @@ def org_tree(slug: str, request: Request) -> dict[str, Any]:
         node["waiting"] = bool(st.get("waiting"))
         node["responding"] = bool(st.get("responding"))
         node["phase"] = st.get("phase")     # e.g. "compacting" (№3)
+        # api_fallback (user feature 2026-08-19): this agent's IN-FLIGHT turn
+        # is billing the org's own API key, not the subscription. Captured at
+        # spawn by the supervisor, so it stays true for the whole turn even
+        # after the window shuts — the card wears red for exactly as long as
+        # the spend it describes.
+        node["on_fallback"] = bool(st.get("on_fallback"))
         node["queued"] = len(st["queue"])
         # concurrently running subagents (Task/Agent tool calls in flight) —
         # the desk header shows it beside the working clock, only when > 0

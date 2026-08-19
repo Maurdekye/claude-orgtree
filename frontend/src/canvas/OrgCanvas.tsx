@@ -13,7 +13,7 @@ import {
   FullscreenIcon, PublicIcon, RemoveIcon, ViewListIcon,
 } from '../icons'
 import {
-  ago, DOG_H, DOG_W, DRAFT, ease, EXTERN, flatten, INBOX, INBOX_H, layout, NODE_H, NODE_W, orgPxc, segD,
+  ago, DOG_H, DOG_W, DRAFT, ease, EXTERN, fallbackActive, flatten, INBOX, INBOX_H, layout, NODE_H, NODE_W, orgPxc, segD,
   segPoint, sizeOf, smooth, SPRING_C, SPRING_K, TIER_LETTER, TIERS, USER, USER_H,
   USER_W, withDraftTree, Z_DESK, Z_MAX, Z_MINI,
 } from './shared'
@@ -1289,7 +1289,12 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
 
   return (
     <div className={'viewport' + (tree.sandboxed ? ' sandboxed' : '')
-      + (tree.headless ? ' headless' : '')} ref={viewportRef}
+      + (tree.headless ? ' headless' : '')
+      // api_fallback (user feature 2026-08-19): the office border goes red
+      // while the org's own API key is the lane being billed. Whole-canvas,
+      // because the fact is org-wide — the per-agent red below says which
+      // turns are actually spending it.
+      + (fallbackActive(tree) ? ' onfallback' : '')} ref={viewportRef}
       onPointerDown={onPointerDown} onPointerMove={onPointerMove}
       onPointerUp={onPointerUp} onPointerCancel={onPointerUp}
       onScroll={(e) => {

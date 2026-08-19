@@ -568,7 +568,12 @@ def sec_selectors() -> None:
                    encoding="utf-8").read()
         assert src.count("on_fallback_key = api_fallback_active(org)") == 2, \
             "the spawn-time lane capture moved (turn + compaction fork)"
-        assert "_charge_killed_turn(slug, nid, turn_out, on_fallback_key)" \
+        # ⚠ matched WITHOUT a closing paren: the call gained a `reported=`
+        # argument (D-136) and wrapped across two lines, which silently failed
+        # this guard on the exact-call literal — a drift check that fires on a
+        # blameless reformat is one people learn to ignore. The lane flag being
+        # the third positional argument is the fact worth pinning.
+        assert "_charge_killed_turn(slug, nid, turn_out, on_fallback_key" \
             in src, "the killed-turn estimate lost its lane flag"
         assert "on_key=on_fallback_key" in src, \
             "_after_turn no longer receives the spawn-time lane"
@@ -576,6 +581,45 @@ def sec_selectors() -> None:
             "a cost-booking point dropped its _bank_api_cost call"
     check("the spawn-time lane reaches every cost-booking point (source)",
           _fallback_split_reaches_every_booking_point)
+
+    def _in_flight_lane_reaches_the_tree():
+        """USER FEATURE 2026-08-19 (the red border): the spawn-time lane is
+        also a LIVE fact the canvas paints — a card is red while its own turn
+        is billing the key. The supervisor holds it for the life of the turn
+        (`state()["on_fallback"]`) and annotate() ships it on every node, so
+        an agent NOT on the key can never inherit the colour."""
+        org = mkorg(persist=True)
+        slug = org.d["slug"]
+        st = supervisor.state(slug, "boss")
+
+        def tree_flag():
+            _c, t = api_call(api.app, "GET", f"/api/orgs/{slug}")
+            return t["roots"][0]["on_fallback"]
+
+        # the field is always present (a boolean, not an absence the client
+        # has to guess at) and false while no turn is on the key
+        assert tree_flag() is False, "an idle node claims the fallback lane"
+        st["on_fallback"] = True
+        assert tree_flag() is True,             "the in-flight lane never reaches the tree — the card cannot redden"
+        # …and the turn ending puts it out. The supervisor pops the key; a
+        # popped flag must read as False, not vanish from the payload.
+        st.pop("on_fallback", None)
+        assert tree_flag() is False,             "the red survived its turn — a finished turn still bills nothing"
+    check("an in-flight fallback-lane turn is visible on the node (the red card)",
+          _in_flight_lane_reaches_the_tree)
+
+    def _the_red_is_scoped_to_the_turn():
+        """Source guard on the two halves that make the colour honest: the flag
+        is written at SPAWN beside the lane capture it mirrors, and cleared in
+        the turn's `finally` — so a crashed turn cannot leave a card red."""
+        src = open(os.path.join(_HERE, "..", "orgtree", "supervisor.py"),
+                   encoding="utf-8").read()
+        assert 'st["on_fallback"] = on_fallback_key' in src,             "the card's lane flag is no longer set from the spawn-time capture"
+        i = src.index('st["on_fallback"] = on_fallback_key')
+        j = src.index('st.pop("on_fallback", None)', i)
+        assert "finally:" in src[i:j],             "the lane flag is not cleared in the turn's finally — a turn that "             "raised would leave the card red forever"
+    check("…and it is set at spawn and cleared in the turn's finally (source)",
+          _the_red_is_scoped_to_the_turn)
 
 
 # ══════════════════════════════════════════════════════════════════════ §6

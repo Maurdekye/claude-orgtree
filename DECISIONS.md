@@ -1313,6 +1313,23 @@ a permanent-key org (`api_key` without `api_fallback`) bills the key for
 EVERYTHING, so a split would be vacuous — the counter deliberately tracks
 only fallback-window burn.
 
+**The same spawn-time capture is also a live signal (2026-08-19, user
+feature).** Red on the canvas means "this is spending my own API credit,
+right now", at two scopes: the office border wears it while the window is
+open (an org-wide fact the tree already carried — `api_fallback` plus
+`api_fallback_until`, compared against the client's clock in the single
+reader `fallbackActive`), and an agent card wears it while ITS in-flight
+turn is the one billing. The per-turn half is `on_fallback` in the
+supervisor's in-memory node state: written from `on_fallback_key` at spawn,
+cleared in the turn's `finally`, shipped by `annotate()`. Deliberately the
+same value the accounting uses rather than a fresh `api_fallback_active`
+read at render time — a card must be red for exactly as long as the spend it
+describes, so a window that shuts mid-turn leaves the card red until that
+turn ends. `_compact_split` brackets the flag too (the fork is the expensive
+lane user), saving and restoring rather than popping, because the automatic
+path runs inside a turn whose own capture must survive it. Nothing persists:
+a backend restart cannot strand a red card.
+
 ### D-130 · api_fallback: the key is a spare lane, and expiry is the only revert
 Decision (session seat, 2026-08-17, from the user's feature request "switch
 temporarily to an API key when usage limits are hit; automatically revert"):

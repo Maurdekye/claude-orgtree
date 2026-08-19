@@ -84,6 +84,9 @@ export interface CanvasNode {
   waiting?: boolean
   responding?: boolean
   phase?: string | null
+  /** api_fallback: this node's in-flight turn is billing the org's own API
+   *  key (absent on the synthetic cards, which never run turns) */
+  on_fallback?: boolean
   queued?: number
   /** concurrently running subagents (Task/Agent calls in flight) — desk
    *  header shows it beside the working clock, only when > 0 */
@@ -293,6 +296,15 @@ export function withDraftTree(tree: TreePayload, draft: DraftState | null): Canv
       ? place(tree.roots.map(mk)) : tree.roots.map(mk),
   }
 }
+
+/** api_fallback (2026-08-17): is this org billing its own API key RIGHT NOW?
+ *  The server ships the option plus the window edge and leaves "active" to the
+ *  client's own clock (ledger.tree) — this is the single reader, so the
+ *  settings banner, the canvas border and anything later added cannot drift
+ *  apart on where the edge is. Re-evaluated on every tree poll, which is what
+ *  makes an expiring window drop the red without an event. */
+export const fallbackActive = (tree: TreePayload): boolean =>
+  !!tree.api_fallback && (tree.api_fallback_until ?? 0) * 1000 > Date.now()
 
 /** the org's px-per-credit scale — ONE formula for the canvas bars and the
  *  credit-ask card (user ruling 2026-08-05: the ask bar must look identical

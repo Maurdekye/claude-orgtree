@@ -228,6 +228,10 @@ export interface TreeNode {
   waiting: boolean
   responding: boolean
   phase: string | null
+  /** api_fallback: this node's IN-FLIGHT turn bills the org's own API key
+   *  (captured at spawn, so it holds for the whole turn even once the window
+   *  shuts). The card wears the fallback red while it is true. */
+  on_fallback?: boolean
   queued: number
   /** concurrently running subagents (Task/Agent calls in flight) — desk
    *  header shows it beside the working clock, only when > 0 */
