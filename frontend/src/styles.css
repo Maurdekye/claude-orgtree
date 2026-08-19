@@ -1047,6 +1047,19 @@ button.cc-name:hover {
   border-radius: 8px; padding: 0 5px;
 }
 .mailrow.askdone .askkind { color: var(--dim); border-color: var(--line); }
+/* passive notices (orgtree_send_notice) — visibly a different animal from
+   mail that expects action, but deliberately QUIET where asks are loud:
+   a dashed neutral edge and a muted chip, no accent, no tint. */
+.mailrow.notice {
+  border-left: 3px dashed color-mix(in srgb, var(--dim) 55%, var(--line));
+  padding-left: 7px;
+}
+.mailrow.notice .l2 { font-style: italic; }
+.noticekind {
+  flex: none; font-size: 9px; line-height: 1.6; color: var(--dim);
+  border: 1px dashed color-mix(in srgb, var(--dim) 45%, var(--line));
+  border-radius: 8px; padding: 0 5px;
+}
 .mailer-read { flex: 1; min-width: 0; overflow-y: auto; padding: 10px 14px; }
 .mailer-head {
   display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline;

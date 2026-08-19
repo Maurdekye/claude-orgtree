@@ -176,8 +176,10 @@ DRIVEN: list[tuple] = []
 INTERORG: list[tuple] = []
 
 
-def _spy_send_message(slug, nid, text, command=False):
+def _spy_send_message(slug, nid, text, command=False, wake=True):
     DRIVEN.append((slug, nid, text))
+    if not wake:
+        return {"accepted": True, "queued": 0, "parked": True}
     return {"accepted": True, "queued": 0}
 
 

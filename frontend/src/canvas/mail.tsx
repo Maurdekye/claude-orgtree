@@ -209,6 +209,9 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
                  (user spec 2026-08-06); resolved asks keep a quiet edge */
               + (m._ask ? (m._ask.status === 'open' || m._ask.status === 'pending'
                 ? ' ask' : ' ask askdone') : '')
+              /* passive notices (orgtree_send_notice) stand apart too — but
+                 quietly: a dashed neutral edge, never the ask accent */
+              + (!m._ask && m.kind === 'notice' ? ' notice' : '')
               + (jumpTo && keyOf(m) === jumpTo ? ' jflash' : '')}
             onClick={() => {
               if (cur && keyOf(m) === keyOf(cur)) {
@@ -225,6 +228,8 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
                 {outgoing ? '→ ' : ''}{party(m) === USER ? '@user' : party(m)}
               </span>
               {m._ask && <span className="askkind">{m.kind ?? 'ask'}</span>}
+              {!m._ask && m.kind === 'notice'
+                && <span className="noticekind">notice</span>}
               {rowMark?.(m)}
               <span className="mtime">{when(m.at)}</span>
               {m._wait && m.id && onRetract && (

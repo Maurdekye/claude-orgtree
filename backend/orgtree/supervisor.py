@@ -1616,7 +1616,11 @@ def identity_prompt(org: Org, nid: str) -> str:
         f'"select:mcp__orgtree__orgtree_message" (a loose keyword query like '
         f'"orgtree" also works — the bare name alone will NOT match). '
         f"The tools: orgtree_message (reach your reports at any depth, your "
-        f"superior, your peers), orgtree_hire (you must state a charter, folders, every "
+        f"superior, your peers), orgtree_send_notice (same reach, but PASSIVE: "
+        f"it lands in the recipient's mailbox and is read at their next turn "
+        f"without ever starting one — prefer it for FYIs and progress notes "
+        f"that don't warrant interrupting or waking anyone), "
+        f"orgtree_hire (you must state a charter, folders, every "
         f"tool switch and visibility — no defaults; and HIRING DOES NOT START "
         f"ANYONE — a new hire sits idle until you send it a message, so every "
         f"hire is TWO calls: hire, then orgtree_message telling it what to do "
@@ -1913,21 +1917,29 @@ def _confirm_delivered(slug: str, nid: str, toks: Iterable[str]) -> None:
 
 
 def _fold_back_undelivered(slug: str, nid: str,
-                           keep_toks: Iterable[str] = ()) -> None:
+                           keep_toks: Iterable[str] = (),
+                           only_toks: Iterable[str] | None = None) -> None:
     """A turn ended without delivering some drained batch(es): put the mail
     and notices back exactly where the drain took them from, so the next
     turn's envelope presents them again. keep_toks = batches whose text is
-    still riding an in-memory carrier (queue/steer) — they stay journaled."""
+    still riding an in-memory carrier (queue/steer) — they stay journaled.
+    only_toks (exclusive with keep_toks) inverts the selection: fold back
+    EXACTLY these batches and leave the rest alone — for a caller undoing
+    its own drain (send_message's no-wake steer race) without disturbing
+    batches other carriers still hold."""
     keep = set(keep_toks)
+    only = set(only_toks) if only_toks is not None else None
     try:
         with store.DOC_LOCK:
             org = store.load_org(slug)
             dlmap = org.d.get("delivering") or {}
             dl = dlmap.get(nid) or []
-            fold = [b for b in dl if b.get("tok") not in keep]
+            fold = [b for b in dl if b.get("tok") in only] if only is not None \
+                else [b for b in dl if b.get("tok") not in keep]
             if not fold:
                 return
-            left = [b for b in dl if b.get("tok") in keep]
+            left = [b for b in dl if b.get("tok") not in only] if only is not None \
+                else [b for b in dl if b.get("tok") in keep]
             if left:
                 dlmap[nid] = left
             else:
@@ -1981,8 +1993,15 @@ def _mail_block(mail: list[MailEntry]) -> str:
     for m in mail:
         tag = " ⚠ THE USER — user instructions outrank your chain" \
             if m["from"] == USER else ""
-        b = (f"FROM {m['from']} ({m.get('relationship', 'agent')}"
-             f"{tag}) · {m.get('kind', 'message')} · {m['at']}")
+        if m.get("kind") == "notice":
+            # orgtree_send_notice: an FYI that rode along without waking
+            # anyone — visibly not a message awaiting an answer
+            b = (f"NOTICE FROM {m['from']} ({m.get('relationship', 'agent')}"
+                 f"{tag}) · {m['at']} — informational, delivered passively; "
+                 f"no reply is expected")
+        else:
+            b = (f"FROM {m['from']} ({m.get('relationship', 'agent')}"
+                 f"{tag}) · {m.get('kind', 'message')} · {m['at']}")
         rt = m.get("reply_to")
         if rt and str(rt.get("gist") or "").strip():
             # FR-05: an inline mailbox reply carries a SNAPSHOT of what it
@@ -4045,7 +4064,7 @@ def remote_control_stop(slug: str, nid: str) -> dict[str, Any]:
 
 
 def send_message(slug: str, nid: str, text: str,
-                 command: bool = False) -> dict[str, Any]:
+                 command: bool = False, wake: bool = True) -> dict[str, Any]:
     """Drive a node with a nudge; returns immediately. EVERY substantive message
     — user and agent alike — is MAIL (user ruling: the direct-message channel
     was folded into the mail system): it already sits persisted in the node's
@@ -4062,7 +4081,12 @@ def send_message(slug: str, nid: str, text: str,
     restart comes back frozen into a backend that reconciles everything
     else; only ▶ or auto_resume moves it (peer report 2026-08-10, and the
     reason a power-cycle reads as "stuck forever"). Attached nodes (№17:
-    open in the user's terminal) only queue."""
+    open in the user's terminal) only queue.
+
+    wake=False (orgtree_send_notice): deliver only into a turn that is
+    already running — steer a responding node, queue on a busy one — but
+    NEVER start one. An idle node's mail stays boxed for its next turn's
+    envelope, and the call reports {"parked": True}."""
     st = state(slug, nid)
     # a FROZEN node runs nothing: mail stays safe in its mailbox (not drained)
     # until the org-wide ▶ resume. Both freeze kinds land here — the usage
@@ -4131,7 +4155,18 @@ def send_message(slug: str, nid: str, text: str,
         if st["busy"]:
             st["queue"].append(text)
             return {"accepted": True, "queued": len(st["queue"])}
-        st["busy"] = True
+        if wake:
+            st["busy"] = True
+    if not wake:
+        # a notice never starts a turn. If the steer attempt above already
+        # drained the mailbox (the responding flag flipped between check and
+        # append), the drained batch is journaled with no carrier — put it
+        # back now, or it waits for a turn-end/reconcile fold that may be a
+        # restart away.
+        toks = text.get("toks") if isinstance(text, dict) else None
+        if toks:
+            _fold_back_undelivered(slug, nid, only_toks=toks)
+        return {"accepted": True, "queued": 0, "parked": True}
     threading.Thread(target=_run_turn, args=(slug, nid, text), daemon=True).start()
     return {"accepted": True, "queued": 0}
 
@@ -6096,10 +6131,13 @@ def reconcile(slug: str) -> list[str]:
         # live node with a waiting mailbox simply gets driven again. The
         # doc + the delivery journal are the durable carriers; RAM is not.
         resumed = {k for k, _ in inflight}
+        # waking_mail, not mere non-emptiness: a mailbox holding only
+        # kind="notice" entries (orgtree_send_notice) is exactly the state
+        # "parked until the next turn", and a restart is not a turn
         revive = [nid for nid, n in org.nodes.items()
                   if n["state"] == "live" and nid not in marked
                   and nid not in resumed and not n.get("frozen")
-                  and (org.d.get("mail") or {}).get(nid)]
+                  and org.waking_mail(nid)]
     for nid, inf in inflight:
         print(f"[orgtree] {slug}/{nid}: resuming the turn interrupted by shutdown")
         send_message(slug, nid,
@@ -6569,6 +6607,7 @@ def read_chat(org: Org, nid: str, last: int | None = None) -> dict[str, Any]:
                         # name the exact mail in the exact box
                         if (entry.get("name") in
                                 ("mcp__orgtree__orgtree_message",
+                                 "mcp__orgtree__orgtree_send_notice",
                                  "mcp__orgtree__orgtree_status")
                                 and not block.get("is_error")):
                             try:

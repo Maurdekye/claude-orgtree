@@ -85,10 +85,17 @@ os.environ.pop("ORGTREE_EXPOSE_ADMIN", None)
 from orgtree import api, mcptool, sandbox, store, supervisor      # noqa: E402
 
 # nothing here may spawn a CLI, a container, or touch the host's chatq registry
-DRIVEN: list[tuple[str, str, str]] = []          # (slug, node, nudge)
+DRIVEN: list[tuple[str, str, str]] = []          # (slug, node, nudge) — wake=True only
+PARKED: list[tuple[str, str, str]] = []          # wake=False (send_notice) nudges
 
 
-def _fake_send(slug, nid, text, command=False):
+def _fake_send(slug, nid, text, command=False, wake=True):
+    # mirror the real no-wake contract closely enough for the notice
+    # assertions: every fixture node is idle, so wake=False PARKS — it never
+    # belongs in DRIVEN, whose whole meaning here is "a turn would have run"
+    if not wake:
+        PARKED.append((slug, nid, text))
+        return {"accepted": True, "queued": 0, "parked": True}
     DRIVEN.append((slug, nid, text))
     return {"accepted": True, "queued": 0}
 
@@ -377,8 +384,8 @@ def _():
     tools = BOSS.rpc("tools/list")["result"]["tools"]
     # +orgtree_present (FR-03); +orgtree_withdraw_ask; +orgtree_self_update;
     # +orgtree_cheap_compact (FR-24); +orgtree_request_scope (FR-13);
-    # +orgtree_watchdog (FR-18)
-    assert len(tools) == 25, [x["name"] for x in tools]
+    # +orgtree_watchdog (FR-18); +orgtree_send_notice (2026-08-19)
+    assert len(tools) == 26, [x["name"] for x in tools]
     for c in tools:
         assert c["name"].startswith("orgtree_"), c
         assert len(c["description"]) > 20, c
@@ -533,8 +540,9 @@ def _():
     # +orgtree_present (FR-03, 2026-08-05); +orgtree_withdraw_ask (the
     # manual-invalidation ruling, 2026-08-06); +orgtree_self_update (FR-14,
     # 2026-08-06); +orgtree_cheap_compact (FR-24, 2026-08-11);
-    # +orgtree_request_scope (FR-13) + orgtree_watchdog (FR-18, 2026-08-12)
-    assert len(CARDS) == 25, len(CARDS)
+    # +orgtree_request_scope (FR-13) + orgtree_watchdog (FR-18, 2026-08-12);
+    # +orgtree_send_notice (mail that never wakes, 2026-08-19)
+    assert len(CARDS) == 26, len(CARDS)
 
 
 @t("no tool name is duplicated and every card carries an inputSchema")
@@ -735,6 +743,41 @@ def _():
         == "boss"
     assert MID.ok("orgtree_message", {"to": "peer", "body": "sideways"}
                   )["delivered"] == "peer"
+
+
+@t("orgtree_send_notice lands in the mailbox WITHOUT waking the recipient")
+def _():
+    DRIVEN.clear()
+    PARKED.clear()
+    r = BOSS.ok("orgtree_send_notice", {"to": "mid", "body": "fyi: phase 2 done"})
+    assert r["delivered"] == "mid" and r.get("id"), r
+    assert DRIVEN == [], "a notice woke its recipient"
+    # the no-wake nudge DID go out (it steers a running recipient; every
+    # fixture node is idle, so here it parks)
+    assert PARKED and PARKED[-1][1] == "mid", PARKED
+    assert "next turn" in r.get("delivery", ""), r
+    m = next(m for m in mailbox(A, "mid") if m["body"] == "fyi: phase 2 done")
+    assert m["kind"] == "notice", m
+
+
+@t("the envelope renders a notice as NOTICE — visibly not actionable mail")
+def _():
+    blk = supervisor._mail_block(list(mailbox(A, "mid")))
+    assert "NOTICE FROM boss" in blk, blk
+    assert "no reply is expected" in blk, blk
+
+
+@t("a notice-only mailbox does not qualify as waking mail; a mixed one does")
+def _():
+    org = store.load_org(A)
+    box = [m for m in mailbox(A, "mid") if m["kind"] == "notice"]
+    org.d["mail"]["mid"] = list(box)
+    assert not org.waking_mail("mid"), org.d["mail"]["mid"]
+    org.d["mail"]["mid"] = box + [{"id": "x", "from": "boss",
+                                   "kind": "message", "body": "act",
+                                   "at": "2026-08-19T00:00:00Z"}]
+    assert org.waking_mail("mid")
+    # in-memory probe only — nothing saved; the real doc is untouched
 
 
 @t("a top-level agent may write to 'user' (it lands in the user inbox)")
@@ -1020,6 +1063,27 @@ def _():
 def _():
     txt = BOSS.refuse("orgtree_message", {"to": "@org:" + A, "body": "hi"})
     assert "this organization itself" in txt, txt
+
+
+@t("orgtree_send_notice: 'user' and outside addresses refuse, naming the route")
+def _():
+    txt = BOSS.refuse("orgtree_send_notice", {"to": "user", "body": "fyi"})
+    assert "orgtree_message" in txt, txt
+    txt = BOSS.refuse("orgtree_send_notice", {"to": "@org:" + B, "body": "fyi"})
+    assert "orgtree_message" in txt, txt
+
+
+@t("orgtree_send_notice: the §7.2 addressing rules still bind (no shortcut)")
+def _():
+    txt = WORKER.refuse("orgtree_send_notice", {"to": "peer", "body": "x"})
+    assert "may not address" in txt, txt
+
+
+@t("orgtree_message cannot mint kind='notice' — the marker has one mint")
+def _():
+    txt = BOSS.refuse("orgtree_message", {"to": "mid", "body": "x",
+                                          "kind": "notice"})
+    assert "orgtree_send_notice" in txt, txt
 
 
 @t("orgtree_request_credits: refused for anyone with a superior")

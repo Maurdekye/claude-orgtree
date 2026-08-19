@@ -1152,9 +1152,15 @@ class Org:
         deferred = target["state"] != "live"
         if deferred:
             # user ruling: archived agents still RECEIVE mail — it waits in
-            # their inbox and is acted on at rehire
-            warnings.append(f"{to} is {target['state']} — the mail is queued in "
-                            f"its inbox and will be acted on when it is rehired")
+            # their inbox and is acted on at rehire. A notice makes a weaker
+            # promise: rehire alone won't deliver it (notices never drive) —
+            # it rides whatever turn eventually runs.
+            warnings.append(
+                f"{to} is {target['state']} — the notice waits in its inbox "
+                f"and is read on its first turn after rehire"
+                if kind == "notice" else
+                f"{to} is {target['state']} — the mail is queued in "
+                f"its inbox and will be acted on when it is rehired")
         if sender != USER:
             s = self.node(sender)
             allowed = (
@@ -1655,6 +1661,15 @@ class Org:
 
     def take_mail(self, nid: str) -> list[MailEntry]:
         return (self.d.get("mail") or {}).pop(nid, [])
+
+    def waking_mail(self, nid: str) -> bool:
+        """Does this node's boxed mail justify WAKING it? kind="notice"
+        (orgtree_send_notice) is delivered passively — it rides the next
+        turn's envelope but never causes one, so every drive that exists only
+        because mail is waiting (rehire, reconcile's revive scan) asks this
+        instead of testing the box for mere non-emptiness."""
+        return any(m.get("kind") != "notice"
+                   for m in (self.d.get("mail") or {}).get(nid) or [])
 
     def user_deep_reach(self, nid: str, gist: str, kind: str = "message") -> None:
         """§7.4: the user reached a non-top-level node — notify every superior up
@@ -2324,7 +2339,7 @@ class Org:
                     "requested " + " and ".join(x for x in ignored if x)
                     + " was ignored")
             r.setdefault("cost", 0)
-            r.setdefault("drive", [nid] if (self.d.get("mail") or {}).get(nid) else [])
+            r.setdefault("drive", [nid] if self.waking_mail(nid) else [])
             return r
         warnings: list[str] = []
         drive: list[str] = []
@@ -2443,8 +2458,9 @@ class Org:
                             f"your prior context is intact.")
         self._log("rehire", actor, {"node": nid, "grant": grant}, warnings)
         # mail that arrived while archived waited in the inbox (user ruling) —
-        # tell the caller to drive the node so it finally acts on it
-        if (self.d.get("mail") or {}).get(nid):
+        # tell the caller to drive the node so it finally acts on it. Notices
+        # alone don't qualify: they wait for a turn, they never cause one.
+        if self.waking_mail(nid):
             drive.append(nid)
         res: dict[str, Any] = {"cost": need, "warnings": warnings, "drive": drive}
         if bridged:

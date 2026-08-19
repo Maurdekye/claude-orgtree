@@ -292,6 +292,9 @@ UserMailEntry = TypedDict("UserMailEntry", {
 MailEntry = TypedDict("MailEntry", {
     "id": str,
     "from": str,
+    # message|question|request|decision|status — or "notice"
+    # (orgtree_send_notice): minted ONLY by that tool, the single marker the
+    # whole feature keys on (envelope styling, no-wake drives: Org.waking_mail)
     "kind": str,
     "body": str,
     "at": str,

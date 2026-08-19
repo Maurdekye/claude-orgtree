@@ -3010,11 +3010,21 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
     drive: list[str] = []      # nodes whose turn should run after we release the lock
     org_send: tuple[str, str] | None = None   # (dst-slug, body) outbound to another org's inbox
     net_send = False                          # @net: — staged to the spool; kick after the lock
+    notice_to: str | None = None              # send_notice recipient — nudged wake=False after the lock
     with store.DOC_LOCK:
         try:
             org = store.load_org(body.org)
             org.node(body.node)
             if body.tool == "orgtree_message":
+                # the "notice" kind is minted ONLY by orgtree_send_notice —
+                # it is the marker every no-wake rule keys on (waking_mail),
+                # so a message wearing it would be a mail that DID wake its
+                # recipient yet stops being re-driven across restarts
+                if str(a.get("kind") or "") == "notice":
+                    raise LedgerError(
+                        "kind 'notice' is minted by orgtree_send_notice (a "
+                        "send that never wakes the recipient) — use that "
+                        "tool instead")
                 # F-06 D: outbound attachments — @net: recipients only in v1
                 # (ruled; @mcp: is a text-only transport, @org: local
                 # mail has its own path). Validated BEFORE post_mail so a
@@ -3120,6 +3130,25 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                     # the mail is driven when the node is rehired
                     if delivered != "user_inbox" and not result.get("deferred"):
                         drive.append(delivered)
+            elif body.tool == "orgtree_send_notice":
+                # a NOTICE is mail minus the wake (user spec 2026-08-19):
+                # same §7.2 addressing and mailbox, delivered by the next
+                # turn's envelope — but it never STARTS a turn (no drive
+                # here; rehire and reconcile skip notice-only boxes too).
+                # In-org recipients only: the user inbox and outside
+                # addresses are already passive, so the distinction is
+                # meaningless there — orgtree_message covers them.
+                nto = org._resolve_recipient(str(a.get("to", "")))
+                if nto == USER or nto.startswith("@"):
+                    raise LedgerError(
+                        "notices are for agents in this org — the user "
+                        "inbox and outside addresses never wake anyone "
+                        "anyway; send those an orgtree_message")
+                result = org.post_mail(body.node, nto, a.get("body", ""),
+                                       "notice")
+                mail_notify(body.org, body.node, nto)
+                if not result.get("deferred"):
+                    notice_to = nto
             elif body.tool == "orgtree_request_credits":
                 result = org.request_credits(body.node, a.get("new_limit"),
                                              a.get("reason"))
@@ -3384,6 +3413,22 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
             body.org, target,
             "(orgtree) You have new mail above — handle it as appropriate, and use "
             "orgtree_status when your own task state changes.")
+    if notice_to is not None:
+        # wake=False: steer a running recipient so the notice arrives
+        # mid-task like any mail would, but an idle one stays idle — the
+        # notice waits in the mailbox for whatever turn comes next
+        r = supervisor.send_message(
+            body.org, notice_to,
+            "(orgtree) A notice arrived in your mail above — informational, "
+            "no reply expected. Note it and continue your current task.",
+            wake=False)
+        if isinstance(result, dict):
+            result["delivery"] = (
+                "steered into the recipient's running turn"
+                if r.get("steering")
+                else "queued at the recipient's next pause (it is mid-turn)"
+                if r.get("queued")
+                else "parked in the recipient's mailbox until its next turn")
     if org_send is not None:
         err = supervisor.interorg_send(body.org, org_send[0], org_send[1])
         if err:

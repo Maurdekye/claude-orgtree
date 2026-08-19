@@ -88,6 +88,32 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "orgtree_send_notice",
+        "description": (
+            "Send a PASSIVE notice to another agent in this organization — "
+            "mail that never wakes anyone. It lands in the recipient's "
+            "mailbox and is read at the start of their next turn, whenever "
+            "that happens for its own reasons; if they are mid-turn right "
+            "now it is slipped in like any mail. Same addressing rules as "
+            "orgtree_message (reports at any depth, superior, peers, held "
+            "audiences) but in-org agents only — 'user' and outside "
+            "addresses (@org:/@mcp:/@net:) take orgtree_message, which is "
+            "already passive for them. Use it for FYIs, progress notes and "
+            "heads-ups that don't warrant interrupting or waking the "
+            "recipient; expect NO reply — an idle recipient may not read it "
+            "for a long time. Anything that needs action or an answer is a "
+            "normal orgtree_message."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "to": {"type": "string",
+                       "description": "recipient agent id (in this org)"},
+                "body": {"type": "string"},
+            },
+            "required": ["to", "body"],
+        },
+    },
+    {
         "name": "orgtree_rename",
         "description": (
             "Rename an agent BELOW you (full identity: its id, mailbox, "

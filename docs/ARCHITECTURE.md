@@ -65,6 +65,16 @@ ledger, supervisor, the gateways, or the canvas.
   delivery and usually empty; `mail_log` = the capped persistent archive
   powering inbox views; `notices` = org-change notes delivered only at turn
   boundaries, never waking anyone.
+- **"Notice" is an overloaded word**: the `notices` store above is
+  org-change notes (`Org._notify`, the `[ORG NOTICES]` block). An AGENT
+  notice (`orgtree_send_notice`, D-136) is a plain `mail` entry with
+  `kind: "notice"` — same box, same journal, same fold-back. The kind is the
+  ONLY marker, and it carries a contract: nothing may start a turn because
+  of it. The three suppression points are `send_message(wake=False)`,
+  rehire's drive, and reconcile's revive scan — all keyed on
+  `Org.waking_mail(nid)`, not box non-emptiness. A new "wake whoever has
+  mail" caller that tests the box directly (the natural wrong reading)
+  regresses the feature silently.
 - **`delivering` (org doc key) is NOT a live-delivery indicator** — it is
   the journal of drained-but-unconfirmed batches. Confirmation happens only
   when the text reaches the process; unconfirmed batches fold back in the

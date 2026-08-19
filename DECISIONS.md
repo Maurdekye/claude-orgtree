@@ -1893,6 +1893,27 @@ TWO calls, never one").
 
 ## Mail & messaging
 
+### D-136 · notices are mail minus the wake
+Ruling (user, 2026-08-19): agents get `orgtree_send_notice` — mail that
+never causes a turn. A notice rides the normal mailbox (a `MailEntry` with
+`kind: "notice"`, the single marker) and is delivered by the next turn's
+envelope whenever that turn happens for its own reasons; a recipient
+mid-turn gets it slipped in like any mail (steer/queue), but an idle one is
+left asleep — `send_message(wake=False)` parks instead of starting a turn,
+rehire's mailbox drive and reconcile's revive scan skip notice-only boxes
+(`Org.waking_mail`). In-org agent recipients only: the user inbox and
+outside addresses are already passive, so those routes stay
+`orgtree_message` — which refuses to mint `kind="notice"` itself, keeping
+the marker single-minted. Mailboxes render notices with their own quiet
+styling (dashed edge, muted chip), visibly apart from mail that expects
+action.
+Why: FYIs and progress notes were waking agents (a paid turn each) or being
+withheld entirely to avoid that cost; a passive lane removes the tax without
+inventing a second delivery system — every durability property (journal,
+fold-back, retraction, archive) is inherited because a notice IS mail.
+Bounds: delivery timing is best-effort by design — an idle recipient may
+not read a notice for a long time, and the tool card says so.
+
 ### D-043 · messages ARE mail — one delivery system
 Ruling (design 2026-07-30; ratified 2026-07-31): a user message posts as
 mail (`@user` → node) and drives the node; there is no separate
