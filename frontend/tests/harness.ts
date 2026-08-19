@@ -49,6 +49,70 @@ g.requestAnimationFrame = (cb: (t: number) => void) => setTimeout(() => cb(Date.
 g.cancelAnimationFrame = (id: number) => clearTimeout(id)
 g.IS_REACT_ACT_ENVIRONMENT = true
 
+// jsdom ships no ResizeObserver, and the sticky-bottom scroll depends on one
+// (a switchboard tab toggle re-widths its sibling panels with no React render
+// at all — see the ⚠ block in desk.tsx). jsdom does no layout, so a size
+// CHANGE is something a test states via `fireResize`; everything else about
+// this fake tracks the spec, because the gaps are where a green test starts
+// meaning nothing:
+//   • `observe()` delivers an INITIAL callback with the element's current
+//     size. Real ROs do; production therefore re-pins once on every scroller
+//     attach (first mount, and every return to the chat tab), and a fake that
+//     skipped it would leave that path modelled by nothing.
+//   • `disconnect()` deactivates rather than forgets, so `observe()` after a
+//     `disconnect()` works — as it does in a browser. A fake that made
+//     re-observation permanently dead would fail a perfectly valid refactor
+//     (reuse one observer instead of building a fresh one per attach) for a
+//     reason that exists only in the harness.
+// Delivery is synchronous here where a real RO batches into the render steps,
+// and `fireResize` is manual, so THIS RIG CANNOT MODEL A RESIZE LOOP AT ALL —
+// constraint 4 is asserted by reading CSS, never tested here. (An earlier
+// version of this comment claimed the loop was unreachable because the
+// callback "only writes scrollTop and component-local state". That is wrong:
+// `.msgs` is observed content-box and has a laid-out scrollbar gutter, so
+// toggling `.jumpbottom`/`.pinuser` — both in-flow children — can change
+// scrollHeight, hence the gutter, hence the observed width. The real reason a
+// loop is implausible is that `.msgs`'s box is flex-determined in all three of
+// its homes: `.eye-chat`, `.desk-inner`, `html.mobile .mobsheet-body`.)
+// The callback also takes no `entries` argument: code reading
+// `entries[0].contentRect` is unmodelled, and would throw here rather than
+// pass silently.
+type ROCallback = () => void
+interface ROEntry { cb: ROCallback; targets: Set<Element>; live: boolean }
+const observers: ROEntry[] = []
+class FakeResizeObserver {
+  private entry: ROEntry
+  constructor(cb: ROCallback) {
+    this.entry = { cb, targets: new Set(), live: true }
+    observers.push(this.entry)
+  }
+  observe(el: Element) {
+    this.entry.live = true
+    // re-register: `disconnect()` prunes, so the array cannot grow across a
+    // suite, and re-observing after a disconnect still works (as in a browser)
+    if (!observers.includes(this.entry)) observers.push(this.entry)
+    this.entry.targets.add(el)
+    // the spec's initial delivery: asynchronous, at the end of the frame
+    queueMicrotask(() => { if (this.entry.live && this.entry.targets.has(el)) this.entry.cb() })
+  }
+  unobserve(el: Element) { this.entry.targets.delete(el) }
+  disconnect() {
+    this.entry.targets.clear()
+    this.entry.live = false
+    const i = observers.indexOf(this.entry)
+    if (i >= 0) observers.splice(i, 1)
+  }
+}
+g.ResizeObserver = FakeResizeObserver
+/** how many live observers are watching `el` — 0 means nothing would notice
+ *  the element changing size, which is the failure this rig exists to catch */
+export const resizeWatchers = (el: Element) =>
+  observers.filter((o) => o.live && o.targets.has(el)).length
+/** deliver a resize to every observer watching `el` */
+export const fireResize = (el: Element) => {
+  for (const o of [...observers]) if (o.live && o.targets.has(el)) o.cb()
+}
+
 process.on('beforeExit', () => { try { dom.window.close() } catch { /* already gone */ } })
 
 export const REPS = Number(process.env.ORGTREE_TEST_REPS || '1') || 1

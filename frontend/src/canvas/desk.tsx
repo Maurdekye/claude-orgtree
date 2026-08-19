@@ -327,6 +327,63 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
     }
     setPinSeq((s) => (s === v ? s : v))   // only re-render on a real flip
   }
+  // ⚠ A RESIZE IS NOT A RENDER. The switchboard lays its panels out with flex
+  // (`.eye-panel { flex: 1 }`), so opening or closing ONE tab re-widths every
+  // OTHER panel with no prop change at all — and DeskChat is memoized (№21),
+  // so those panels neither re-render nor run the layout effect above. The
+  // narrower column re-wraps its markdown, scrollHeight moves, scrollTop does
+  // not, and a reader who was stuck at the bottom silently ends up above it
+  // with the new messages arriving off-screen (user bug 2026-08-19). The same
+  // hole swallows every other non-React size change: the window resizing (it
+  // moves `eyeW`, hence every panel's width), the tab strip wrapping to a
+  // second line and stealing height from the panel row, the composer's
+  // `grow()` writing `style.height` imperatively as a draft gets longer, the
+  // mobile keyboard resizing the sheet, a font finishing its load. (NOT the
+  // eye cell's .35s width transition — `.eye-inner` is sized from the
+  // VIEWPORT via `eyeW`, so its interior width is constant while the cell
+  // animates, and `.desk-over` clips rather than re-lays-out.) What keeps this
+  // off the spring engine's per-frame path is stronger than that argument
+  // though: a ResizeObserver reports the PRE-TRANSFORM box, so neither
+  // `.desk-inner`'s `scale()` nor any camera zoom can ever fire it. A ResizeObserver is the only hook that sees all of them; its
+  // callback runs after layout and before paint, so scrollHeight is already
+  // the post-reflow value, and setting scrollTop inside it cannot re-trigger
+  // it (scroll position is not size).
+  //
+  // It rides the scroller's REF CALLBACK rather than an effect with a dep
+  // list: an observer left watching a detached element never fires again and
+  // says nothing about it, which is the same silent class of failure as the
+  // bug itself. React hands this the element on attach and null on detach, so
+  // the observer cannot outlive or lag behind the node it watches.
+  // `calcPin` goes through a ref because the observer outlives the render that
+  // created it and the pin target depends on the latest render's userTurns.
+  const calcPinRef = useRef(calcPin)
+  calcPinRef.current = calcPin
+  const roRef = useRef<ResizeObserver | null>(null)
+  const attachScroller = useCallback((el: HTMLDivElement | null) => {
+    roRef.current?.disconnect()
+    roRef.current = null
+    scroller.current = el
+    // no ResizeObserver (a pre-2020 browser) degrades to the old behaviour:
+    // the layout effect above still covers every React-driven growth
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => {
+      // ⚠ The else branch is not symmetry for its own sake. A panel that gets
+      // WIDER re-wraps SHORTER, so the browser clamps a scrolled-up reader's
+      // scrollTop — and can deposit them at the bottom without them ever
+      // scrolling. `stickRef` would stay false, the ⇩ chip would sit there
+      // over an already-bottomed view, and the next agent message would not
+      // pin: the exact silent failure this whole observer exists to prevent,
+      // reached through its own path. Browsers do fire a scroll event on a
+      // clamp, which would heal it — but a fix that depends on that is an
+      // argument, and this is a guard. `nearBottom()` is the same 40px
+      // predicate onScroll uses, so this can only ever agree with it.
+      if (stickRef.current) pin()
+      else setStuck(nearBottom())
+      calcPinRef.current()
+    })
+    ro.observe(el)
+    roRef.current = ro
+  }, [])
   const pinTarget = pinSeq == null ? null
     : userTurns.find((u) => u.seq === pinSeq) ?? null
   const loadOlder = () => {
@@ -679,7 +736,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
       {chat?.last_error && view !== 'chat' && (
         <div className="desk-error"><WarnIcon fontSize="inherit" /> {chat.last_error}</div>)}
       {view === 'chat' && (
-        <div className="msgs" ref={scroller}
+        <div className="msgs" ref={attachScroller}
           onScroll={(e) => {
             setStuck(nearBottom())
             calcPin()

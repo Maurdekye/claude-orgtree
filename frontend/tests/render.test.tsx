@@ -10,14 +10,16 @@
 // Run:  cd frontend && node tests/run.mjs render
 
 import {
-  advance, FakeServer, flush, inAct, installFetch, mountView, realClock,
-  useFakeClock,
+  advance, FakeServer, fireResize, flush, inAct, installFetch, mountView,
+  realClock, resizeWatchers, useFakeClock,
 } from './harness'
 import test from 'node:test'
 import type { TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 import { refreshConvo, resetConvos } from '../src/convo'
 import { DeskChat } from '../src/canvas/desk'
+import { UserNode } from '../src/canvas/cards'
+import { USER } from '../src/canvas/shared'
 import { MailList } from '../src/canvas/mail'
 import type { CanvasNode } from '../src/canvas/shared'
 import type { MailRow } from '../src/canvas/shared'
@@ -121,7 +123,9 @@ domTest('§6.2 agent output cannot inject markup', async ({ SL, ND, s, mount }) 
   await refreshConvo(SL, ND)
   const { el } = await mount(deskEl(node(ND), SL))
   await flush()
-  assert.equal(el.querySelector('script'), null, 'no script element')
+  // `!` not the element: a failing assert.equal on a live jsdom node makes
+  // node inspect the whole document to build the diff (70s + OOM, not a message)
+  assert.ok(!el.querySelector('script'), 'no script element')
   const img = el.querySelector('img')
   assert.ok(!img || !img.getAttribute('onerror'), 'no inline handler survived')
   assert.equal((globalThis as Record<string, unknown>).__pwned, undefined)
@@ -156,7 +160,7 @@ domTest('§6.4 a rich-text node name is shown, never interpreted',
     await flush()
     void s
     assert.ok(txt(el).includes(ND), 'the name renders')
-    assert.equal(el.querySelector('color'), null, 'and no tag was created from it')
+    assert.ok(!el.querySelector('color'), 'and no tag was created from it')
   })
 
 domTest('§6.5 an empty transcript says so, once', async ({ SL, ND, mount }) => {
@@ -369,4 +373,279 @@ domTest('§8.1 a card and its switchboard panel render the same conversation',
     assert.equal(body(board.el), body(card.el), 'identical after a silent update')
     assert.ok(txt(card.el).includes('and one more thing'),
       'and both caught the new row from polling alone')
+  })
+
+// ===================================================================== §9
+// STICKY BOTTOM SURVIVES A RESIZE
+domTest('§9.5 a widening panel that clamps a reader to the bottom re-sticks them',
+  async ({ SL, ND, s, mount }) => {
+    // The other direction of the same bug, and the subtler one. A panel that
+    // gets WIDER re-wraps SHORTER, so the browser clamps a scrolled-up
+    // reader's scrollTop and can deposit them AT the bottom with no scroll
+    // gesture of their own. If the observer only ever pins the already-stuck,
+    // `stickRef` stays false: the ⇩ chip sits over an already-bottomed view
+    // and the next agent message does not pin — the same silent left-behind,
+    // reached through the fix's own path.
+    s.assistantMsg('all green')
+    await refreshConvo(SL, ND)
+    const { el } = await mount(deskEl(node(ND), SL, { compact: true }))
+    await flush()
+    const msgs = el.querySelector('.msgs')!
+    // parked 100px up: 1000 − 500 − 400 = 100 ≥ the 40px slack ⇒ unstuck
+    geometry(msgs, { top: 500, height: 1000, client: 400 })
+    await scroll(msgs)
+    assert.ok(el.querySelector('.jumpbottom'), 'the reader is off the bottom')
+    // a sibling tab closes: this panel widens, the transcript re-wraps to 800,
+    // and the browser clamps 500 → 400, which IS the bottom now
+    geometry(msgs, { top: 400, height: 800, client: 400 })
+    await inAct(() => { fireResize(msgs) })
+    assert.ok(!el.querySelector('.jumpbottom'),
+      'the clamp re-armed the sticky bottom without a scroll event')
+  })
+
+/** a stated scrollport rect — jsdom computes none */
+const rectAt = (top: number) => () => ({ top, bottom: top + 400, left: 0,
+  right: 0, width: 0, height: 400, x: 0, y: top, toJSON: () => ({}) })
+
+domTest('§9.6 a resize can ARM the ↑ chip, not only retire it',
+  async ({ SL, ND, s, mount }) => {
+    // §9.4 proves the observer RETIRES a chip; both directions matter, and
+    // only this one catches a stale closure. The observer is built once, in
+    // `attachScroller`, during render #1 — when the transcript has not loaded
+    // and `userTurns` is []. Capture `calcPin` directly instead of through
+    // `calcPinRef` and that empty-handed copy is the one that runs forever:
+    // it can only ever compute null, so the chip would be wrongly retired on
+    // every tab toggle and could never be armed by one.
+    s.assistantMsg('all green')
+    await refreshConvo(SL, ND)
+    const { el } = await mount(deskEl(node(ND), SL, { compact: true }))
+    await flush()
+    const msgs = el.querySelector('.msgs')!
+    // hold the chip down while a user turn arrives AFTER mount
+    msgs.getBoundingClientRect = rectAt(-100)
+    s.userMsg(`FROM ${USER} (user)
+
+please check the deploy`)
+    await inAct(async () => { await refreshConvo(SL, ND, { force: true }) })
+    await flush()
+    assert.ok(!el.querySelector('.pinuser'), 'no chip yet')
+    // now that row IS above the fold — and only a resize says so
+    msgs.getBoundingClientRect = rectAt(0)
+    geometry(msgs, { top: 0, height: 1000, client: 400 })
+    await inAct(() => { fireResize(msgs) })
+    assert.ok(el.querySelector('.pinuser'),
+      'the resize armed the chip for a user turn that arrived after mount')
+  })
+
+domTest('§9.7 the watcher follows the scroller back from another tab',
+  async ({ SL, ND, s, mount }) => {
+    // Why the observer rides the ref callback and not `useEffect(…, [])`:
+    // `.msgs` is conditional on `view === 'chat'`, so it genuinely REMOUNTS
+    // when the reader visits files/history and comes back. A one-shot effect
+    // leaves that returning scroller permanently unwatched — the original bug,
+    // back for that panel, for the rest of its mount, silently.
+    s.assistantMsg('all green')
+    await refreshConvo(SL, ND)
+    const { el } = await mount(deskEl(node(ND), SL, { compact: true }))
+    await flush()
+    // ⚠ FilesView renders `.msgs files` too — `.msgs` alone is only
+    // unambiguous while the chat tab is up
+    const first = el.querySelector('.msgs:not(.files)')!
+    assert.ok(resizeWatchers(first) > 0, 'watched at first')
+    const tab = (label: string) => [...el.querySelectorAll('.cc-tabs button')]
+      .find((b) => (b.textContent ?? '').trim() === label) as HTMLElement
+    await inAct(() => { tab('files').click() })
+    await flush()
+    assert.equal(resizeWatchers(first), 0, 'released when the chat tab left')
+    await inAct(() => { tab('chat').click() })
+    await flush()
+    const back = el.querySelector('.msgs:not(.files)')!
+    assert.ok(back !== first, 'the scroller really remounted')
+    assert.ok(resizeWatchers(back) > 0,
+      'and the returning scroller is watched again')
+  })
+
+// ===================================================================== §9
+// Opening or closing a switchboard tab re-widths its SIBLING panels through
+// flex alone: no prop changes, and DeskChat is memoized, so those panels never
+// re-render and the layout effect that re-pins them never runs. The re-wrap
+// moves scrollHeight while scrollTop stays put, so a reader stuck at the
+// bottom drifts up and new messages land off-screen (user bug 2026-08-19).
+// Only assistant rows here on purpose: with no user turns `calcPin` settles on
+// null and cannot re-render the view, so the pin under test can ONLY have come
+// from the resize path itself.
+
+domTest('§9.1 a panel re-widthed by a tab toggle stays pinned to the bottom',
+  async ({ SL, ND, s, mount }) => {
+    s.assistantMsg('all green')
+    await refreshConvo(SL, ND)
+    const { el } = await mount(deskEl(node(ND), SL, { compact: true }))
+    await flush()
+    const msgs = el.querySelector('.msgs')
+    assert.ok(msgs, 'the transcript scroller rendered')
+    // the mechanism must exist at all — a fix that only touches the render
+    // path leaves this at 0 and would never see a flex re-layout
+    assert.ok(resizeWatchers(msgs!) > 0,
+      'the scroller is watched for size changes')
+    // the reader sits at the bottom, and says so with a real scroll event
+    geometry(msgs!, { top: 600, height: 1000, client: 400 })
+    await scroll(msgs!)
+    // a sibling tab closes: this panel narrows, the markdown re-wraps taller.
+    // No React render accompanies it — that is the whole point.
+    geometry(msgs!, { top: 600, height: 1400, client: 400 })
+    await inAct(() => { fireResize(msgs!) })
+    // the INVARIANT, not the number: a browser clamps scrollTop to
+    // scrollHeight − clientHeight, jsdom's stated `scrollTop` stores the
+    // over-set verbatim, and pinning `=== scrollHeight` would make the
+    // browser-equivalent `pin()` (`scrollHeight - clientHeight`) fail here
+    assert.ok(msgs!.scrollTop >= 1400 - 400,
+      `the resize re-pinned the scroller to the new bottom (scrollTop=${msgs!.scrollTop})`)
+  })
+
+domTest('§9.2 a resize does not yank a reader who scrolled up',
+  async ({ SL, ND, s, mount }) => {
+    s.assistantMsg('all green')
+    await refreshConvo(SL, ND)
+    const { el } = await mount(deskEl(node(ND), SL, { compact: true }))
+    await flush()
+    const msgs = el.querySelector('.msgs')!
+    // parked well above the bottom, declared by a real scroll event
+    geometry(msgs, { top: 100, height: 1000, client: 400 })
+    await scroll(msgs)
+    geometry(msgs, { top: 100, height: 1400, client: 400 })
+    await inAct(() => { fireResize(msgs) })
+    assert.equal(msgs.scrollTop, 100,
+      'an unstuck reader keeps their place through a re-width')
+  })
+
+domTest('§9.3 the watcher is torn down with the panel',
+  async ({ SL, ND, s, mount }) => {
+    s.assistantMsg('all green')
+    await refreshConvo(SL, ND)
+    const v = await mount(deskEl(node(ND), SL, { compact: true }))
+    await flush()
+    const msgs = v.el.querySelector('.msgs')!
+    assert.ok(resizeWatchers(msgs) > 0, 'watched while mounted')
+    await v.unmount()
+    assert.equal(resizeWatchers(msgs), 0,
+      'and released on unmount — a leaked observer would pin a dead node')
+  })
+
+domTest('§9.4 a resize recomputes the ↑-jump target, not just the pin',
+  async ({ SL, ND, s, mount }) => {
+    // FR-20's chip points at the nearest HUMAN turn above the scrollport. A
+    // re-width re-wraps the transcript, so which turns are above the fold
+    // changes — and on a memoized panel the resize is the ONLY thing that can
+    // notice. Without `calcPinRef.current()` in the observer this passes
+    // nothing: the chip keeps pointing at a message that is already on screen
+    // until the reader happens to scroll.
+    s.userMsg(`FROM ${USER} (user)
+
+please check the deploy`)
+    s.assistantMsg('all green')
+    await refreshConvo(SL, ND)
+    const { el } = await mount(deskEl(node(ND), SL, { compact: true }))
+    await flush()
+    const msgs = el.querySelector('.msgs')!
+    // jsdom rects are all-zero, so the row reads as above the scrollport and
+    // the chip is up
+    assert.ok(el.querySelector('.pinuser'), 'the chip is up to begin with')
+    // now state a scrollport that starts ABOVE the row — the target is on
+    // screen, so calcPin must retire the chip
+    msgs.getBoundingClientRect = () => ({ top: -100, bottom: 300, left: 0,
+      right: 0, width: 0, height: 400, x: 0, y: -100, toJSON: () => ({}) })
+    geometry(msgs, { top: 600, height: 1000, client: 400 })
+    // NO scroll event — a resize alone must be enough
+    await inAct(() => { fireResize(msgs) })
+    // ⚠ `!` not the element itself: a failing assert.equal on a live jsdom
+    // node makes node inspect the whole document to build the diff — 70s and
+    // an OOM in place of the message
+    assert.ok(!el.querySelector('.pinuser'),
+      'the resize retired a chip whose target came back on screen')
+  })
+
+// ===================================================================== §10
+// THE SWITCHBOARD, END TO END
+// ===================================================================== §10
+// §9 fires resizes at a bare panel. This mounts the REAL thing — UserNode
+// focused, which renders EyeDesk — and closes a real tab, because the bug's
+// premise is a claim about the switchboard, not about DeskChat: the surviving
+// panel must be re-pinned *and* must not have re-rendered to get there.
+
+const userNodeEl = (map: Map<string, CanvasNode>, slug: string) => (
+  <UserNode pos={{ x: 0, y: 0 }} isDrop={false}
+    stats={{ circ: 0, seats: 0, free: 0 }} inboxCount={0} seats={{ haiku: 1 }}
+    kiosk={undefined} pub={false} kioskRemaining={null} pxc={1} zoom={1}
+    onSpawn={noop} onMailLink={noop} focused eyeW={2000}
+    posX={(id) => (id === 'a' ? 0 : 1)} map={map} op={op} slug={slug}
+    toast={noop} />
+)
+
+domTest('§10.1 closing a tab re-pins the panels it re-widths',
+  async ({ SL, s, mount }) => {
+    // two direct lines; both open (nothing is in `orgtree-eyeseen-*` yet, so
+    // neither counts as a NEW arrival and neither starts minimized)
+    localStorage.removeItem('orgtree-eyemin-' + SL)
+    localStorage.removeItem('orgtree-eyeseen-' + SL)
+    const A = node('a', { parent: USER }), B = node('b', { parent: USER })
+    const map = new Map([[A.id, A], [B.id, B]])
+    s.assistantMsg('all green')
+    await refreshConvo(SL, 'a')
+    await refreshConvo(SL, 'b')
+    const { el } = await mount(userNodeEl(map, SL))
+    await flush()
+    const panels = () => [...el.querySelectorAll('.eye-panel')]
+    assert.equal(panels().length, 2, 'both direct lines opened')
+    const keep = panels()[0]!.querySelector('.msgs')!
+    assert.ok(resizeWatchers(keep) > 0, 'the surviving panel is watched')
+    // A's reader is at the bottom and says so
+    geometry(keep, { top: 600, height: 1000, client: 400 })
+    await scroll(keep)
+    // close B's tab — the real control, not a simulated prop change
+    const tabs = [...el.querySelectorAll('.eye-tab-main')]
+    assert.equal(tabs.length, 2, 'a tab per direct line')
+    await inAct(() => { (tabs[1] as HTMLElement).click() })
+    assert.equal(panels().length, 1, 'B’s panel closed')
+    // …which is exactly the moment flex re-widths A, with no prop change.
+    // jsdom does no layout, so the browser's reflow is stated here.
+    geometry(keep, { top: 600, height: 1400, client: 400 })
+    await inAct(() => { fireResize(keep) })
+    assert.ok(keep.scrollTop >= 1400 - 400,
+      `A stayed pinned to the bottom through B closing (scrollTop=${keep.scrollTop})`)
+  })
+
+domTest('§10.2 closing a tab does not re-render the panels that survive',
+  async ({ SL, s, mount }) => {
+    // constraint №21: the spring engine re-renders the canvas every animation
+    // frame, so DeskChat is memoized on its DATA props. "Just drop the
+    // comparator so flex re-layout always re-renders" would also make §10.1
+    // pass — and turn a three-panel switchboard into a slideshow during every
+    // camera glide. This is the test that refuses that trade.
+    //
+    // The probe: mutate a field on the SAME node object, so the comparator's
+    // `p.node === n.node` still holds. An intact memo shows nothing; a
+    // defeated one paints the spinner.
+    localStorage.removeItem('orgtree-eyemin-' + SL)
+    localStorage.removeItem('orgtree-eyeseen-' + SL)
+    const A = node('a', { parent: USER }), B = node('b', { parent: USER })
+    const map = new Map([[A.id, A], [B.id, B]])
+    s.assistantMsg('all green')
+    await refreshConvo(SL, 'a')
+    await refreshConvo(SL, 'b')
+    const { el } = await mount(userNodeEl(map, SL))
+    await flush()
+    const spinners = () =>
+      el.querySelectorAll('.eye-panel .cc-head .cc-spin').length
+    assert.equal(spinners(), 0, 'no panel is busy to begin with')
+    A.busy = true                       // in place: same object identity
+    const tabs = [...el.querySelectorAll('.eye-tab-main')]
+    await inAct(() => { (tabs[1] as HTMLElement).click() })
+    assert.equal(el.querySelectorAll('.eye-panel').length, 1, 'B’s panel closed')
+    // …and that the surviving panel is A. Without this, inverting EyeDesk's
+    // open-set (`!minned.has` → `minned.has`) leaves B on screen — not busy,
+    // so the spinner probe alone stays green for the wrong reason.
+    assert.equal(el.querySelector('.eye-panel .cc-name')?.textContent, 'a',
+      'it is A that survived')
+    assert.equal(spinners(), 0,
+      'A did not re-render for B’s toggle — the memo (№21) still holds')
   })
