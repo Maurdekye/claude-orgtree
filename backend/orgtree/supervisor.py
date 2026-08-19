@@ -2402,6 +2402,14 @@ def _run_one_turn(slug: str, nid: str,
     # the session this turn actually launched on — NOT whatever the node
     # points at when the turn ends (a cheap-compact can land mid-turn)
     ran_sid: str | None = None
+    # dollars the CLI reported before the turn ended, however it ended, and
+    # whether anything has already booked them (see the result branch and the
+    # failure path's _charge_reported_spend)
+    turn_paid = 0.0
+    paid_booked = False
+    # which lane bills this turn, hoisted to function scope: the spawn-time
+    # capture lives inside the try and may not be bound when it unwinds
+    billed_on_key = False
     if isinstance(text, dict):
         is_cmd = bool(text.get("cmd"))
         toks, text = list(text.get("toks") or []), text["text"]
@@ -2571,6 +2579,7 @@ def _run_one_turn(slug: str, nid: str,
             # here, at spawn — capture it so the accounting below attributes
             # the whole turn to that lane even if the window expires mid-turn
             on_fallback_key = api_fallback_active(org)
+            billed_on_key = on_fallback_key   # visible to the failure path
             # ⚠ and the WHOLE lane decision with it. `on_fallback_key` alone
             # is ambiguous — False means both "not a fallback org" and
             # "fallback org, window shut" — so combining it with org fields
@@ -2591,6 +2600,10 @@ def _run_one_turn(slug: str, nid: str,
             sid = org.node(nid)["session_id"]
             ran_sid = sid          # the id _build_cmd just handed the CLI
             res = {}
+            # the pipe's own state, tracked rather than probed: `proc.stdin`
+            # stays truthy after close, and it is what tells a real turn
+            # boundary from a straggler result (see the result branch)
+            stdin_open = True
             pend_toks: list[str] = []   # journal batches written, not yet consumed (C1)
             # the CLI reports a session limit as a SYNTHETIC assistant record
             # (model "<synthetic>" / isApiErrorMessage) followed by a CLEAN
@@ -2653,14 +2666,24 @@ def _run_one_turn(slug: str, nid: str,
             dog_stop = threading.Event()
             last_ev = [time.monotonic()]
             budget_t0 = [time.monotonic()]
+            saw_result = [False]   # a real (top-level) boundary was reached
 
             def _dog() -> None:
                 while not dog_stop.wait(5.0):
                     now = time.monotonic()
                     if now - last_ev[0] > TURN_IDLE:
+                        # ⚠ say WHICH silence. A turn whose only result event
+                        # was a sidechain one keeps producing nothing while
+                        # orgtree — correctly — declines to close a live
+                        # agent's stdin; blaming a "wedged process" sends the
+                        # next debugger after the CLI (redteam 2026-08-19).
                         timeout_why[0] = (
                             f"turn killed: no CLI output for {TURN_IDLE}s "
-                            "(idle watchdog — the process was wedged)")
+                            + ("(idle watchdog — the process was wedged)"
+                               if saw_result[0] else
+                               "(idle watchdog — no top-level result event "
+                               "ever arrived; the turn never reached a "
+                               "boundary)"))
                         _expire()
                         return
                     if now - budget_t0[0] > TURN_TIMEOUT:
@@ -2898,8 +2921,63 @@ def _run_one_turn(slug: str, nid: str,
                         if done:
                             run_tasks.difference_update(done)
                             _pub_tasks()
-                    elif ev.get("type") == "result":
+                    elif ev.get("type") == "result" \
+                            and not ev.get("parent_tool_use_id") \
+                            and not stdin_open:
+                        # A top-level result on a CLOSED pipe is a straggler by
+                        # construction — the boundary is what closed it. Refuse
+                        # it as a boundary, but HARVEST what it reports: a
+                        # usage limit the CLI published here is engine-authored
+                        # evidence an agent cannot forge, and dropping it let a
+                        # node sail past a live limit into the next turn
+                        # (redteam 2026-08-19 measured: not frozen, booked as a
+                        # clean success). Same provenance class as the
+                        # `<synthetic>` record above — `agent_authored` stays
+                        # False, so the blob is trusted downstream.
+                        if ev.get("is_error") and not synth_limit_txt \
+                                and _looks_like_usage_limit(
+                                    str(ev.get("result") or "")):
+                            synth_limit_txt = str(ev.get("result")).strip()[:400]
+                    elif ev.get("type") == "result" \
+                            and not ev.get("parent_tool_use_id"):
+                        # TWO guards, because a `result` event is not
+                        # once-per-turn (user report 2026-08-19):
+                        #  · parent_tool_use_id — the same sidechain guard the
+                        #    `user` branch above carries. A subagent's result
+                        #    would otherwise adopt its cost/duration/denials as
+                        #    the turn's `res`.
+                        #  · stdin_open — the CLI also emits TOP-LEVEL results
+                        #    out of band (its stream-json writer's own
+                        #    `error_during_execution`, `error_max_turns`) AFTER
+                        #    the boundary result. Those are stragglers, not
+                        #    boundaries: the closed pipe is the discriminator,
+                        #    since the real boundary is what closed it. Letting
+                        #    one through re-based the budget clock, cleared
+                        #    `run_tasks`, wrote a queued message down the closed
+                        #    pipe (`ValueError: I/O operation on closed file.` —
+                        #    the reported banner) and, worst and silently,
+                        #    clobbered `res`: a straggler with `is_error` set
+                        #    made a SUCCESSFUL, paid turn raise "turn failed",
+                        #    so `_after_turn` never ran and its real
+                        #    `total_cost_usd` was never booked (redteam
+                        #    2026-08-19 measured 0 turns booked, costs []).
                         res = ev
+                        saw_result[0] = True
+                        # what this turn has PROVABLY been billed, kept apart
+                        # from `res` so a later straggler cannot erase it. At a
+                        # boundary that FEEDS the next queued message, stdin
+                        # stays open — so `stdin_open` cannot tell that
+                        # message's real result from a straggler, and no flag
+                        # can (they are the same event shape). The accounting
+                        # is therefore built to survive guessing wrong: money
+                        # already reported is booked whatever the turn's last
+                        # event turns out to be (redteam 2026-08-19 measured
+                        # two paid messages booking $0 and 0 turns).
+                        # `total_cost_usd` is session-cumulative, hence max():
+                        # summing would double-count, and under-counting is the
+                        # safe direction.
+                        turn_paid = max(turn_paid,
+                                        float(ev.get("total_cost_usd") or 0.0))
                         budget_t0[0] = time.monotonic()   # fresh ceiling per message
                         if run_tasks:      # message boundary: nothing tracked survives it
                             run_tasks.clear()
@@ -2994,7 +3072,17 @@ def _run_one_turn(slug: str, nid: str,
                                 # event, so pend_toks is free)
                                 pend_toks = list(ntoks)
                                 continue
-                            except OSError:
+                            except (OSError, ValueError):
+                                # ValueError is io's "I/O operation on closed
+                                # file." — this stdin was already closed by a
+                                # PRIOR result event (the CLI can emit an
+                                # out-of-band error_during_execution result
+                                # after the real one). Same recovery as a
+                                # broken pipe: requeue, let the follow-up turn
+                                # deliver. Uncaught, it rode to the turn's
+                                # catch-all as a cryptic banner and dropped the
+                                # carrier, folding the drained mail back to the
+                                # mailbox undelivered (user report 2026-08-19).
                                 with _state_lock:
                                     st["queue"].insert(0, {
                                         "toks": ntoks, "text": nxt,
@@ -3003,8 +3091,12 @@ def _run_one_turn(slug: str, nid: str,
                                     st["responding"] = False
                         try:
                             proc.stdin.close()   # pyright: ignore[reportOptionalMemberAccess]
-                        except OSError:
+                        except (OSError, ValueError):
                             pass
+                        # …either way the pipe is done: a failed close leaves
+                        # nothing writable behind it, so the flag must flip on
+                        # both paths or a straggler is treated as a boundary
+                        stdin_open = False
                 err = proc.stderr.read()   # pyright: ignore[reportOptionalMemberAccess]
                 proc.wait()
             finally:
@@ -3020,6 +3112,9 @@ def _run_one_turn(slug: str, nid: str,
                 if leftover:
                     _steer_fold_log(slug, nid, len(leftover), "turn exit")
             if timed_out.is_set():
+                # this path does its own (estimated) booking — tell the
+                # failure handler so the spend is not charged twice
+                paid_booked = True
                 _charge_killed_turn(slug, nid, turn_out, on_fallback_key)
                 raise RuntimeError(timeout_why[0]
                                    or "turn timed out and was killed")
@@ -3363,14 +3458,39 @@ def _run_one_turn(slug: str, nid: str,
                                 "at": now_iso()})
                     del log[:-40]
                     store.save_org(o2)
+            paid_booked = True     # _after_turn books `res`'s cost itself
             _after_turn(slug, nid, org, res, st, turn_occ,
                         on_key=on_fallback_key)
     except Exception as e:                                  # noqa: BLE001
-        st["last_error"] = str(e)
+        # money first: the CLI reported this spend before the turn came apart,
+        # and `_after_turn` — the only other booker — did not run. Skipped when
+        # the timeout path already charged the turn (`_charge_killed_turn`),
+        # which is the one other route that books a turn that raised.
+        if not paid_booked:
+            _charge_reported_spend(slug, nid, turn_paid, billed_on_key)
+        st["last_error"] = str(e) or type(e).__name__
         # the durable half — the banner above is in-memory and now clears at
         # the next turn's START (see turn_started below); this row is what
         # keeps the failure in the conversation, in chronological place
-        _log_turn_error(slug, nid, str(e))
+        _log_turn_error(slug, nid, str(e) or type(e).__name__)
+        # …and the traceback to the backend log, but ONLY for a raiser the turn
+        # machinery does not already explain. Every expected failure arrives as
+        # a RuntimeError this function itself raised with a written message
+        # (freeze, kill, CLI death, not-live) — printing a full traceback for
+        # each would put one in every retry loop. An unexpected type is the
+        # case worth a stack: the closed-file ValueError cost a day to place
+        # from its one-line message alone (2026-08-19). Stdout, like the other
+        # twelve [orgtree] diagnostics — update.ps1 splits the streams, and a
+        # lone line in backend.err.log is a line nobody correlates. Placed
+        # AFTER the durable row so nothing here can cost it.
+        if not isinstance(e, RuntimeError):
+            try:
+                import traceback                            # noqa: PLC0415
+                print(f"[orgtree] {slug}/{nid}: turn failed with an "
+                      f"unexpected {type(e).__name__}: "
+                      f"{traceback.format_exc()}")
+            except Exception:                               # noqa: BLE001
+                pass
     finally:
         # the turn is over one way or another — it is no longer in-flight
         pardon_pending = False
@@ -3446,6 +3566,41 @@ def _charge_killed_turn(slug: str, nid: str, out_toks: int,
             store.save_org(o2)
     except Exception:                                            # noqa: BLE001
         pass          # accounting must never turn a killed turn into a crash
+
+
+def _charge_reported_spend(slug: str, nid: str, paid: float,
+                           on_key: bool = False) -> None:
+    """Book dollars the CLI REPORTED on a turn that then failed to complete.
+
+    `_after_turn` books the cost and only runs on the success path, so a turn
+    that answered — and billed — and then raised booked nothing at all. That
+    was invisible until a straggler `result` event started causing exactly
+    that: two real, paid messages, `cost_usd` untouched, an empty `turns` ring
+    and a failure row on a turn that worked (redteam 2026-08-19, measured).
+    The sibling of `_charge_killed_turn`, and the same rule — a turn's spend
+    is a fact about the API, not about how orgtree's bookkeeping ended.
+
+    Unlike that one this is not an estimate: `paid` is the CLI's own
+    `total_cost_usd`. The ring entry is marked `killed` so the desk shows the
+    turn did not complete, without pretending the money was not spent."""
+    if paid <= 0:
+        return
+    try:
+        with store.DOC_LOCK:
+            o2 = store.load_org(slug)
+            if nid not in o2.nodes:
+                return
+            n = o2.node(nid)
+            n["cost_usd"] = round(float(n.get("cost_usd") or 0.0) + paid, 6)
+            if on_key:
+                _bank_api_cost(o2, paid)
+            ring = n.setdefault("turns", [])
+            ring.append({"at": now_iso(), "cost": round(paid, 6), "ms": None,
+                         "denials": 0, "killed": True})
+            del ring[:-20]
+            store.save_org(o2)
+    except Exception:                                            # noqa: BLE001
+        pass          # accounting must never turn a failed turn into a crash
 
 
 def _log_turn_error(slug: str, nid: str, text: str) -> None:
@@ -4190,7 +4345,7 @@ def interrupt_turn(slug: str, nid: str) -> dict[str, Any]:
             "request": {"subtype": "interrupt"}}) + "\n")
         proc.stdin.flush()
         return {"interrupted": True}
-    except OSError as e:
+    except (OSError, ValueError) as e:   # ValueError = stdin already closed
         with _state_lock:
             st.pop("interrupted", None)
         return {"interrupted": False, "reason": str(e)}
