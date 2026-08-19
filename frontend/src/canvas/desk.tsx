@@ -6,6 +6,7 @@
 // from Canvas.tsx in the phase-3 split.
 
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 import type {
   ChatMessage, ChatPayload, HistoryItem, ScratchPayload,
   ToolChip as ToolChipData, ToastFn,
@@ -21,7 +22,7 @@ import {
   HearingIcon, LayersIcon, LockIcon, MailIcon, PlayIcon, PsychologyIcon,
   SettingsIcon, SparkIcon, StopIcon, WarnIcon,
 } from '../icons'
-import { ago, EXTERN, md, TIER_LETTER, TIER_SEAT, USER, useEsc, usePolled } from './shared'
+import { ago, CopyIcon, EXTERN, md, TIER_LETTER, TIER_SEAT, USER, useEsc, usePolled } from './shared'
 import {
   addPending, CHAT_WINDOW, dropPending, loadOlder as storeLoadOlder, markBusy,
   MAX_WINDOW, refreshConvo, useConvo,
@@ -63,6 +64,21 @@ export function ContextWheel({ occ, cw, onCompact, compactAt }: ContextWheelProp
   // the zoomed-out card wheel stays a passive indicator
   if (!onCompact) return svg
   return <button className="ctxbtn" onClick={onCompact}>{svg}</button>
+}
+
+/* click-to-copy for the React-rendered pres (filepre/respre/diffpre) — same
+   .codewrap/.code-copy contract as the md() pipeline, so the one delegated
+   click listener in shared.ts serves both. The listener swaps the button's
+   innerHTML for the transient ✓; React never re-renders past the
+   dangerouslySetInnerHTML, so the two don't fight. */
+function CopyablePre({ children }: { children: ReactNode }) {
+  return (
+    <div className="codewrap">
+      {children}
+      <button type="button" className="code-copy" title="Copy code"
+        aria-label="Copy code" dangerouslySetInnerHTML={{ __html: CopyIcon }} />
+    </div>
+  )
 }
 
 const shortTool = (t: string | null | undefined) => (t || 'tool').replace(/^mcp__([^_]+)__/, '$1: ')
@@ -1050,7 +1066,7 @@ function FilesView({ slug, nid }: { slug: string; nid: string }) {
               download={e.name}><DownloadIcon fontSize="inherit" /></a>)}
         </div>
       ))}
-      {content != null && <pre className="filepre">{content}</pre>}
+      {content != null && <CopyablePre><pre className="filepre">{content}</pre></CopyablePre>}
     </div>
   )
 }
@@ -1265,17 +1281,17 @@ function ToolChip({ t, slug, nid, onMailLink }: ToolChipProps) {
             <MailIcon fontSize="inherit" /> open</button>)}
       </span>
       {open && t.diff && (
-        <pre className="filepre diffpre">
+        <CopyablePre><pre className="filepre diffpre">
           {t.diff.lines.map((l, i) => (
             <div key={i} className={l.startsWith('@@') ? 'dhunk'
               : l.startsWith('+') ? 'dplus'
               : l.startsWith('-') ? 'dminus' : ''}>{l}</div>))}
           {t.diff.truncated && <div className="dim">… truncated</div>}
-        </pre>)}
+        </pre></CopyablePre>)}
       {open && !t.diff && t.result && (
-        <pre className="filepre respre">
+        <CopyablePre><pre className="filepre respre">
           {t.result}{t.truncated ? '\n… truncated' : ''}
-        </pre>)}
+        </pre></CopyablePre>)}
       {open && (t.images ?? 0) > 0 && t.id && Array.from({ length: t.images! }).map((_, i) => (
         <img key={i} className="toolimg" alt="tool result"
           src={`${BASE}/api/orgs/${slug}/nodes/${nid}/toolimg/${t.id}?idx=${i}`} />))}
@@ -1416,7 +1432,7 @@ function SysLine({ m }: { m: ChatMessage }) {
       onClick={m.summary ? () => setOpen((o) => !o) : undefined}
       title={m.summary ? (open ? 'collapse' : 'read the compaction summary') : undefined}>
       {m.text}{m.summary && !open ? ' · summary ▶' : ''}
-      {open && m.summary && <pre className="filepre">{m.summary}</pre>}
+      {open && m.summary && <CopyablePre><pre className="filepre">{m.summary}</pre></CopyablePre>}
     </div>
   )
 }

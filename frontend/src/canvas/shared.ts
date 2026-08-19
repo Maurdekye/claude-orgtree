@@ -439,12 +439,64 @@ const escapeAngles = (src: string) => {
   }
   return lines.join('\n')
 }
+// click-to-copy on code blocks: every <pre> gets wrapped in a .codewrap with a
+// copy button as a SIBLING (not a child of the scrolling <pre> — an absolute
+// child would ride along on horizontal scroll, and its label would pollute
+// pre.textContent). Injected AFTER DOMPurify, so the markup is ours; a spoofed
+// button in agent output is harmless — the handler only ever reads code text.
+export const CopyIcon =
+  '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">'
+  + '<rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 3.5v-1a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h1"/></svg>'
+const CheckIcon =
+  '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">'
+  + '<path d="M3 8.5l3.5 3.5L13 4.5"/></svg>'
+const wrapCodeBlocks = (html: string) => {
+  if (!html.includes('<pre')) return html
+  const tpl = document.createElement('template')
+  tpl.innerHTML = html
+  tpl.content.querySelectorAll('pre').forEach(pre => {
+    const wrap = document.createElement('div')
+    wrap.className = 'codewrap'
+    pre.replaceWith(wrap)
+    wrap.appendChild(pre)
+    const btn = document.createElement('button')
+    btn.type = 'button'
+    btn.className = 'code-copy'
+    btn.title = 'Copy code'
+    btn.setAttribute('aria-label', 'Copy code')
+    btn.innerHTML = CopyIcon
+    wrap.appendChild(btn)
+  })
+  return tpl.innerHTML
+}
+// one delegated listener for every panel (content is innerHTML, so per-element
+// React handlers don't exist). Streaming re-renders replace the button node,
+// which simply drops the transient ✓ state — harmless.
+if (typeof document !== 'undefined') document.addEventListener('click', e => {
+  // no `instanceof HTMLButtonElement` here — that global doesn't exist in the
+  // node+jsdom test scope and the check threw on every unrelated click
+  const btn = (e.target as Element | null)?.closest?.('button.code-copy')
+  if (!btn) return
+  const pre = btn.closest('.codewrap')?.querySelector('pre')
+  // innerText, not textContent — the diff pre renders each line as a <div>,
+  // whose textContent concatenates with NO newlines
+  const text = (pre?.innerText ?? '').replace(/\n$/, '')
+  navigator.clipboard?.writeText(text).then(() => {
+    btn.innerHTML = CheckIcon
+    btn.classList.add('copied')
+    setTimeout(() => {
+      if (!btn.isConnected) return
+      btn.innerHTML = CopyIcon
+      btn.classList.remove('copied')
+    }, 1200)
+  }).catch(() => {})
+})
 export const md = (text: string | null | undefined): { __html: string } => {
   const key = text ?? ''
   let hit = _mdCache.get(key)
   if (hit === undefined) {
-    hit = { __html: DOMPurify.sanitize(
-      marked.parse(escapeAngles(key), { gfm: true, breaks: true, async: false })) }
+    hit = { __html: wrapCodeBlocks(DOMPurify.sanitize(
+      marked.parse(escapeAngles(key), { gfm: true, breaks: true, async: false }))) }
     if (_mdCache.size > 800) _mdCache.clear()   // bounded; refills on demand
     _mdCache.set(key, hit)
   }
