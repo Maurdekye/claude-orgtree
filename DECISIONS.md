@@ -1893,7 +1893,7 @@ TWO calls, never one").
 
 ## Mail & messaging
 
-### D-136 · notices are mail minus the wake
+### D-137 · notices are mail minus the wake
 Ruling (user, 2026-08-19): agents get `orgtree_send_notice` — mail that
 never causes a turn. A notice rides the normal mailbox (a `MailEntry` with
 `kind: "notice"`, the single marker) and is delivered by the next turn's

@@ -67,7 +67,7 @@ ledger, supervisor, the gateways, or the canvas.
   boundaries, never waking anyone.
 - **"Notice" is an overloaded word**: the `notices` store above is
   org-change notes (`Org._notify`, the `[ORG NOTICES]` block). An AGENT
-  notice (`orgtree_send_notice`, D-136) is a plain `mail` entry with
+  notice (`orgtree_send_notice`, D-137) is a plain `mail` entry with
   `kind: "notice"` — same box, same journal, same fold-back. The kind is the
   ONLY marker, and it carries a contract: nothing may start a turn because
   of it. The three suppression points are `send_message(wake=False)`,
