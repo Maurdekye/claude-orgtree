@@ -1278,6 +1278,33 @@ freeze site uses, or through a real turn. Separately, `tools/run_tests.py
 --only` silently ran NOTHING and exited 0 for a comma-separated or repeated
 filter, which is how a CI line passes having tested nothing.
 
+### D-138 · the usage button glows before the wall, off the cache alone
+Ruling (session seat, 2026-08-19, user feature): the ◔ usage button — both the
+orgbar one and the welcome panel's — wears a gold ring from 75% and a red,
+breathing one from 90%, reporting the PEAK lane of the host subscription's
+standing, with that lane, its percent and its reset in the tooltip. It reads a
+new cache-only route, `GET /api/usage/peek` (`limits.peek`), never
+`/api/usage`: the glow polls whether or not anyone opened the modal, and an
+always-on indicator must not be able to add a single request to a
+semi-documented upstream. A readout older than `MAX_EVIDENCE_AGE` reports
+unavailable and the ring goes out — the modal still shows those bars, because
+a bar is labelled and dated while a ring is a bare claim about NOW.
+Why: a usage limit announced itself by freezing an agent (D-133), while the
+standing that predicts it was already fetched, cached and kept warm on the
+server (`start_usage_warm_loop`) — visible only to someone who thought to open
+a modal. Thresholds are D-132's own, extracted into one shared function
+(`usageSeverity`): two readers of one standing that could disagree about what
+"near the wall" means would produce a bug visible only to the person who
+opened the modal to check the button against it. Steady at warn, breathing at
+crit — the two tiers have to be separable by an eye that cannot separate gold
+from red, so motion carries what hue cannot (`prefers-reduced-motion` trades
+the breathing for a brighter steady ring).
+Bounds: admin-only on D-132's two gates — a kiosk client never issues the poll
+(`BASE` swaps the fetcher for a frozen "unavailable"), and the public gateway
+404s the route regardless of what a client asks for.
+Load-bearing: the warm loop is the only writer of that cache. If it ever stops,
+the glow ages out and goes dark rather than lying — but it also stops warning.
+
 ### D-132 · header usage modal: the host's Claude Code /usage bars, admin-only
 Decision (session seat, 2026-08-18, user feature): a ◔ button in the orgbar
 (and beside the GitHub link on the welcome panel) opens a modal with the

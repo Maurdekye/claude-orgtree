@@ -264,6 +264,33 @@ def pressure() -> float:
     return top
 
 
+def peek() -> dict[str, Any]:
+    """The cached standing for the header GLOW — cache-only, never a fetch.
+
+    The glow polls whether or not anyone opened the modal, so it must not be
+    able to add a single upstream request; `/api/usage` (the modal) is the
+    only reader allowed to spend one. The warm loop
+    (`supervisor.start_usage_warm_loop`) is what keeps this worth reading.
+
+    A readout older than MAX_EVIDENCE_AGE reports unavailable for the same
+    reason the freeze path refuses to price on one: a glow is a claim about
+    NOW, and an amber ring standing on a two-hour-old number is worse than no
+    ring at all. `available: False` simply means "do not glow" — the modal
+    still shows the stale bars, where they are labelled and dated.
+
+    Shape (frontend UsagePeek): `{available, error?, limits?[], age?}` —
+    the same `limits` entries `fetch` normalizes, so one severity rule in the
+    UI serves both the bars and the button."""
+    data = cached()
+    age = cache_age()
+    if data is None or not data.get("available"):
+        return {"available": False}
+    if age > MAX_EVIDENCE_AGE:
+        return {"available": False, "error": "usage readout is stale"}
+    return {"available": True, "limits": data.get("limits") or [],
+            "age": round(age, 1)}
+
+
 def invalidate() -> None:
     """Drop the cache. Tests only: a caller that just learned the standing
     changed wants `fetch(max_age=REREAD_MAX_AGE)`, which re-reads without

@@ -1440,6 +1440,41 @@ def _sec_reset_timing_body() -> None:
     check("usage · the modal route shares the cache rather than forcing it "
           "(runtime)", _the_modal_route_shares_the_cache)
 
+    # ⑦b the GLOW route is cache-only. The header polls it whether or not the
+    # modal was ever opened, so a version of it that could fetch would turn an
+    # always-on indicator into a standing request against a semi-documented
+    # endpoint — the one thing ⑦ exists to prevent, arriving by a second door.
+    def _the_glow_route_never_fetches():
+        from orgtree import api as _apimod
+        real = limits.fetch
+        seen = []
+
+        def _spy(*a, **k):
+            seen.append((a, k))
+            return {"available": True, "limits": [], "plan": "x"}
+        saved = dict(limits._cache)
+        limits.fetch = _spy
+        try:
+            limits._cache.update(at=time.time(), data={
+                "available": True, "plan": "max",
+                "limits": [{"kind": "session", "group": "g", "percent": 91.0,
+                            "severity": "warning", "resets_at": None,
+                            "is_active": True, "model": None}]})
+            hot = _apimod.claude_usage_peek()
+            assert not seen, "the glow route fetched (%r)" % (seen,)
+            assert hot["available"] and hot["limits"], hot
+            # …and a readout too old to be a claim about NOW reports
+            # unavailable rather than glowing off a number from last hour
+            limits._cache.update(at=time.time() - limits.MAX_EVIDENCE_AGE - 1)
+            cold = _apimod.claude_usage_peek()
+            assert not cold["available"], cold
+            assert not seen, "aging the cache made it fetch (%r)" % (seen,)
+        finally:
+            limits.fetch = real
+            limits._cache.update(saved)
+    check("usage · the glow route reads the cache and NEVER fetches, and an "
+          "over-age readout stops being a glow", _the_glow_route_never_fetches)
+
     # ⑧ the identity conjunct in the provenance test: a turn that promoted an
     # agent sentence AND then exited non-zero is judged on the CLI's stderr.
     def _provenance_is_a_conjunction():

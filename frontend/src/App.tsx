@@ -3,7 +3,8 @@ import type { ReactNode } from 'react'
 import {
   audienceAction, BASE, clearInbox, createOrg, deleteOrg,
   fileUrl, getAudiences, getDefaults, getEvents, getHost, getInbox, getOrgMd,
-  getOrgNet, getSweepPreview, getTree, getUsage, killAll, listOrgs, markRead, openWs,
+  getOrgNet, getSweepPreview, getTree, getUsage, getUsagePeek, killAll, listOrgs,
+  markRead, openWs,
   probeHub, putOrgMd,
   resumeFrozen, runOp, saveDefaults, saveKiosk, saveSettings, sendMessage,
   sweepLegacy,
@@ -25,7 +26,7 @@ import { addPending, dropPending, ingestPulse, ingestStream, resetConvos } from 
 import type {
   AskInfo, AudiencesPayload, DefaultsPayload, InboxPayload, KioskSpecRequest,
   MailEntry, OpRequest, OrgEvent, OrgListEntry, SweepPreview, ToastFn,
-  ToastUndo, TreeFrozen, TreeNode, TreePayload, UsageLimit,
+  ToastUndo, TreeFrozen, TreeNode, TreePayload, UsageLimit, UsagePeek,
 } from './types'
 import type { MailRow } from './canvas/shared'
 
@@ -103,6 +104,15 @@ export default function App() {
   const [showDefaults, setShowDefaults] = useState(false)   // global new-org defaults
   const [showUsage, setShowUsage] = useState(false)         // host subscription usage bars
   const [killArmed, setKillArmed] = useState(false)  // the killswitch latch
+  // the usage button GLOWS once a lane nears its wall (user feature
+  // 2026-08-19), so a freeze stops being the first notice. It rides
+  // /api/usage/peek — the CACHE-ONLY readout — because this poll runs whether
+  // or not the modal was ever opened, and an always-on indicator must not be
+  // able to add an upstream request; the server's warm loop is what keeps
+  // that cache worth reading. usePolled also wakes on the livebus, so the
+  // interval is only the floor.
+  const usagePeek = usePolled(BASE ? noUsagePeek : getUsagePeek, [], 60000)
+  const usageAlert = useMemo(() => usagePeak(usagePeek), [usagePeek])
   // mobile compact orgbar (D-125 ruling 2026-08-14, 'one row, banner→chip'):
   // the detail chips + resume banner collapse behind a ⋯ toggle
   const [barMore, setBarMore] = useState(false)
@@ -287,7 +297,8 @@ export default function App() {
           target="_blank" rel="noreferrer" title="orgtree on GitHub">
           <GitHubIcon fontSize="inherit" /></a>
         {!BASE &&
-          <button className="h1-usage" title="Claude subscription usage"
+          <button className={'h1-usage' + (usageAlert ? ' u-' + usageAlert.sev : '')}
+            title={usageAlert?.title ?? 'Claude subscription usage'}
             onClick={() => setShowUsage(true)}>
             <DataUsageIcon fontSize="inherit" /></button>}</h1>
       {slug && <button className="home" onClick={goHome}><HomeIcon fontSize="inherit" /> all organizations</button>}
@@ -573,7 +584,8 @@ export default function App() {
                     visitor neither sees the button nor could call the
                     endpoint (the public gateway 404s it) */}
                 {!tree.public &&
-                  <button className="iconbtn" title="Claude subscription usage"
+                  <button className={'iconbtn' + (usageAlert ? ' u-' + usageAlert.sev : '')}
+                    title={usageAlert?.title ?? 'Claude subscription usage'}
                     onClick={() => setShowUsage(true)}>
                     <DataUsageIcon fontSize="inherit" /></button>}
                 {!tree.public &&
@@ -731,6 +743,52 @@ const usageResets = (iso: string | null): string => {
   return h > 0 ? `resets in ${h}h ${m}m` : `resets in ${m}m`
 }
 
+/** the ONE severity rule, shared by the modal's bars and the header button's
+ *  glow. Severity comes straight from upstream when it speaks; the percent
+ *  thresholds are the fallback so an older shape still colors. Shared because
+ *  two readers of one standing that disagreed about what "near the wall"
+ *  means would be a bug you could only see by opening the modal to check the
+ *  button against it. */
+export const usageSeverity = (l: UsageLimit): '' | 'warn' | 'crit' => {
+  const pct = Math.max(0, Math.min(100, l.percent ?? 0))
+  return l.severity === 'critical' || pct >= 90 ? 'crit'
+    : (l.severity && l.severity !== 'normal') || pct >= 75 ? 'warn' : ''
+}
+
+/** the worst lane in a peek, or null when nothing warrants a glow (user
+ *  feature 2026-08-19). The button wears the PEAK because a wall is a wall:
+ *  whichever lane arrives first is the one that freezes an agent, and the
+ *  breakdown is one click away. Ties break on percent so the tooltip names
+ *  the lane actually closest to it. */
+export const usagePeak = (u: UsagePeek | null):
+{ sev: 'warn' | 'crit'; title: string } | null => {
+  if (!u?.available) return null
+  let best: { sev: 'warn' | 'crit'; l: UsageLimit } | null = null
+  for (const l of u.limits ?? []) {
+    const sev = usageSeverity(l)
+    if (!sev) continue
+    if (!best || (sev === 'crit' && best.sev === 'warn')
+      || (sev === best.sev && (l.percent ?? 0) > (best.l.percent ?? 0))) {
+      best = { sev, l }
+    }
+  }
+  if (!best) return null
+  const r = usageResets(best.l.resets_at)
+  return {
+    sev: best.sev,
+    title: `${usageLabel(best.l)} at ${Math.round(best.l.percent ?? 0)}%`
+      + (r ? ` · ${r}` : '') + ' — Claude subscription usage',
+  }
+}
+
+/** a kiosk visitor has no usage button and no claim on the host account's
+ *  standing: the poll is not merely hidden, it is never issued. One frozen
+ *  object, not a fresh literal per tick — `usePolled` stores what it is
+ *  handed, and a new object every 60 s would re-render the whole app to say
+ *  the same nothing. */
+const NO_PEEK: UsagePeek = Object.freeze({ available: false })
+const noUsagePeek = (): Promise<UsagePeek> => Promise.resolve(NO_PEEK)
+
 function UsageModal({ close }: { close: () => void }) {
   useEsc(close)
   const u = usePolled(getUsage, [], 60000)
@@ -745,10 +803,7 @@ function UsageModal({ close }: { close: () => void }) {
               {u.plan && <div className="dim">Claude {u.plan} · this machine's subscription</div>}
               {(u.limits ?? []).map((l) => {
                 const pct = Math.max(0, Math.min(100, l.percent ?? 0))
-                // severity straight from upstream when it speaks; percent
-                // thresholds as the fallback so an old shape still colors
-                const sev = l.severity === 'critical' || pct >= 90 ? 'crit'
-                  : (l.severity && l.severity !== 'normal') || pct >= 75 ? 'warn' : ''
+                const sev = usageSeverity(l)   // the shared rule — see above
                 return (
                   <div className="usage-row" key={l.kind + (l.model ?? '')}>
                     <div className="u-head">

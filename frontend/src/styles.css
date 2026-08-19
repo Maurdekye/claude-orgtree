@@ -629,19 +629,33 @@ button.cc-name:hover {
 }
 .jumpbottom:hover { opacity: 1; border-color: var(--accent); }
 /* FR-20: the pinned last-user-turn chip — jumpbottom's mirror at the top
-   edge. Ellipsised to one line: it is a pointer, not a reading surface.
-   ⚠ flex: none is load-bearing: .msgs is a flex column, and overflow:hidden
+   edge. Full-width (user, 2026-08-19): it reads as the banner of the message
+   it points at, so it takes the card's whole width and the 6px radius of a
+   .msg.user box instead of a centred pill. Up to THREE wrapped lines, and
+   past that the text is cut with a FADE rather than an ellipsis (the Claude
+   Code look). Two details that keep the fade honest: the mask rides an inner
+   span, so the button's own border and background stay crisp instead of
+   dissolving with the text; and `.clipped` comes from a measurement in
+   calcPin, so a message that fits in three lines is never faded.
+   ⚠ flex: none is critical: .msgs is a flex column, and overflow:hidden
    zeroes a flex item's automatic minimum height — without it the shrink
    step crushes this button alone to its padding (~7px, an "empty" pill)
    whenever the transcript overflows, i.e. always. */
 .pinuser {
   flex: none;
-  position: sticky; top: 4px; align-self: center; z-index: 3;
-  max-width: 85%; overflow: hidden; text-overflow: ellipsis;
-  white-space: nowrap; font-size: 11px; padding: 3px 10px;
-  border-radius: 999px; background: var(--panel); color: var(--ink);
+  position: sticky; top: 4px; align-self: stretch; z-index: 3;
+  text-align: left; font-size: 11px; padding: 3px 9px;
+  border-radius: 6px; background: var(--panel); color: var(--ink);
   border: 1px solid var(--line); box-shadow: var(--shadow); cursor: pointer;
   opacity: .92;
+}
+.pinuser-t {
+  display: block; line-height: 1.45; max-height: calc(3 * 1.45em);
+  overflow: hidden; overflow-wrap: anywhere;
+}
+.pinuser.clipped .pinuser-t {
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 11px), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 11px), transparent);
 }
 .pinuser:hover { opacity: 1; border-color: var(--accent); }
 .msg {
@@ -1735,6 +1749,40 @@ input:focus, select:focus, textarea:focus, button:focus-visible {
 .iconbtn:hover { color: var(--bad); border-color: var(--bad); }
 .addrow { align-self: flex-start; color: var(--dim); background: none; border-style: dashed; }
 .addrow:hover { color: var(--ink); }
+
+/* the usage BUTTON's near-the-wall glow (user feature 2026-08-19): a freeze
+   should not be the first notice that a lane is filling. Thresholds are the
+   bars' own (`usageSeverity` in App.tsx) — gold from 75%, red from 90% — so
+   the button and the modal it opens can never disagree. Steady at warn,
+   breathing at crit: the tier has to survive an eye that cannot separate gold
+   from red, and motion is the channel left once hue is spent.
+   ⚠ this block sits AFTER `.iconbtn:hover` deliberately — that rule paints
+   every header icon button red on hover, which on a GOLD usage button would
+   read as "now critical". Equal specificity, so only source order decides. */
+.h1-usage.u-warn, .iconbtn.u-warn { color: var(--tier-fable); }
+.h1-usage.u-crit, .iconbtn.u-crit { color: var(--bad); }
+.h1-usage.u-warn:hover, .iconbtn.u-warn:hover {
+  color: var(--tier-fable); border-color: var(--tier-fable);
+}
+.h1-usage.u-crit:hover, .iconbtn.u-crit:hover {
+  color: var(--bad); border-color: var(--bad);
+}
+.h1-usage.u-warn, .h1-usage.u-crit { border-radius: 4px; }
+.h1-usage.u-warn, .iconbtn.u-warn { box-shadow: 0 0 9px rgba(232, 176, 75, .45); }
+.iconbtn.u-warn { border-color: color-mix(in srgb, var(--tier-fable) 70%, var(--line)); }
+.iconbtn.u-crit { border-color: color-mix(in srgb, var(--bad) 70%, var(--line)); }
+.h1-usage.u-crit, .iconbtn.u-crit {
+  animation: usagealarm 2.4s ease-in-out infinite;
+}
+@keyframes usagealarm {
+  0%, 100% { box-shadow: 0 0 7px rgba(241, 76, 76, .45); }
+  50% { box-shadow: 0 0 18px rgba(241, 76, 76, .85); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .h1-usage.u-crit, .iconbtn.u-crit {
+    animation: none; box-shadow: 0 0 14px rgba(241, 76, 76, .7);
+  }
+}
 
 /* -------------------------------------------------------------------- toasts */
 /* ------ the org-disk recovery browser + hard-full alert ------ */

@@ -1764,6 +1764,17 @@ async def claude_usage() -> dict[str, Any]:
     return await run_in_threadpool(limits.fetch)
 
 
+# the same standing, read from cache alone — what the header button's near-
+# the-wall glow polls. Deliberately a SEPARATE route rather than a flag on
+# /api/usage: the modal may spend an upstream request, the always-on glow may
+# not, and a caller that cannot ask for the expensive behaviour cannot
+# accidentally get it.
+@app.get("/api/usage/peek")
+def claude_usage_peek() -> dict[str, Any]:
+    """Cache-only usage standing for the header glow — see `limits.peek`."""
+    return limits.peek()
+
+
 @app.get("/api/host")
 def host_info() -> dict[str, Any]:
     """Host capabilities the UI adapts to (e.g. no Docker → the sandbox

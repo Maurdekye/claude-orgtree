@@ -778,6 +778,19 @@ export interface UsagePayload {
   plan?: string
 }
 
+/** GET /api/usage/peek — the same standing read from the server's cache
+ *  ALONE, so the header button's near-the-wall glow can poll continuously
+ *  without ever costing an upstream request. `available: false` means "do not
+ *  glow": no readout yet, no subscription on this host, or one too old to be
+ *  a claim about now (the modal still shows those bars, dated). */
+export interface UsagePeek {
+  available: boolean
+  error?: string
+  limits?: UsageLimit[]
+  /** seconds since the cached readout was fetched */
+  age?: number
+}
+
 // GET /api/defaults — _DEFAULTS_BASE merged with the stored overrides
 export interface DefaultsPayload {
   max_top_grant: number
