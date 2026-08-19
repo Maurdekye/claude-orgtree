@@ -891,6 +891,96 @@ the docket's "transcript is in the scratch dir" premise was wrong and the
 copy is the fix. The compact dialog warns when the node is idle past the
 cache TTL, which is the moment the choice actually matters.
 
+### D-136 · a result event is not a turn boundary; the closed pipe is
+Decision (session seat, 2026-08-19, user bug — “sometimes at agent turn end
+this error appears… I/O operation on closed file”, with the observation that
+the affected agent was holding unreceived mail from a subordinate).
+
+The turn loop treated EVERY `result` event as the turn boundary. It is not:
+the CLI emits top-level results out of band from its own stream-json writer
+(`error_during_execution`, `error_max_turns`) after the real one, and a
+subagent's result carries `parent_tool_use_id`. The loop closes the CLI's
+stdin at a boundary that finds the queue empty, so a straggler re-entered the
+branch and wrote a newly-queued message down the closed pipe.
+`TextIOWrapper.write` raises **`ValueError`, not `OSError`** — the branch
+caught only `OSError` — so it escaped to the turn's catch-all, surfaced as a
+bare "I/O operation on closed file." with no site, dropped the in-memory
+carrier, and folded the drained mail back to the mailbox undelivered. The
+at-least-once invariant held (the mail was in the mailbox, not lost) but it
+stopped MOVING, which is exactly what the user saw.
+
+**The banner was the small half, and catching the ValueError would have
+shipped the big half unfixed.** `res = ev` is the branch's first statement and
+runs unconditionally, so a straggler carrying the CLI's real `is_error: true`
+clobbered the boundary result: `err_blob` went non-empty, a SUCCESSFUL, PAID
+turn raised "turn failed", `_after_turn` never ran, and the turn's
+`total_cost_usd` was never booked — measured 0 turns booked, costs `[]`, plus
+a permanent `turn_error_log` row on a turn that worked and the straggler's
+text handed to the freeze detectors. Money, silently unaccounted; the kiosk
+spend limit under-counts by the same amount. Round 1 of the redteam loop
+found this in the round-1 fix, which is the loop earning its keep: the first
+fix made the symptom disappear while leaving the expensive half in place.
+
+So the first discriminator is not the event, it is **the pipe**: `stdin_open`,
+tracked (`proc.stdin` stays truthy after `close()`), flipped `False` on both
+the success and failure paths of the close, and required by the result
+branch. A result arriving on a closed pipe is a straggler by construction,
+because the boundary is what closed it.
+
+**But the pipe only discriminates at a boundary that CLOSED it, and round 2
+measured that gap as the same money bug still live.** A boundary that FEEDS
+the next queued message leaves stdin open, and there a straggler and that
+message's own result are the same event shape — no flag can tell them apart.
+That is not an edge case: "queue non-empty at the boundary" IS mail arriving
+mid-turn, the scenario in the user's own report. Two paid messages, `$0`
+booked, empty ring, failure row. ∴ the second rule, and the more durable one:
+**stop trying to identify the boundary perfectly and make the accounting
+survive getting it wrong.** `turn_paid` carries what the CLI reported, kept
+apart from `res` so nothing later can erase it, and `_charge_reported_spend`
+books it on the failure path (`paid_booked` keeps it from double-charging
+with `_after_turn` or `_charge_killed_turn`). A straggler can now at worst add
+a spurious failure row. This also closes a pre-existing hole the loop only
+made acute: ANY multi-message turn that failed on its last message was
+already discarding the earlier messages' spend.
+
+And refusing a straggler must not throw away what it REPORTS. The first cut
+of this gate dropped a usage limit that rode only the out-of-band result —
+node not frozen, turn booked as a clean success, next turn burning against a
+live limit (measured). The limit text is now harvested into `synth_limit_txt`
+on the refusal path; it is engine-authored, so `agent_authored` stays False
+and it is trusted downstream, exactly like the `<synthetic>` record.
+
+`not ev.get("parent_tool_use_id")`
+rides alongside — the same sidechain guard the `user` branch already had —
+so a subagent finishing MID-TURN, while stdin is still open, cannot become
+the boundary and book its cost/duration/denials as the turn's. Occupancy was
+already safe: `turn_occ` excludes sidechain events at the capture site and
+`_after_turn` refuses the result event's cumulative usage by design (the doc
+first claimed otherwise; measurement corrected it). `(OSError, ValueError)`
+at every pipe site stays as defence in depth.
+
+Two smaller things the loop turned up. The idle watchdog said "the process
+was wedged" for a turn that never reached a boundary at all — a lie that
+sends the next debugger after the CLI, now split by `saw_result`. And the
+turn catch-all printed only `str(e)`: a one-line message with no site is what
+made this bug cost a day, so an UNEXPECTED raiser (`not isinstance(e,
+RuntimeError)` — every expected failure is a RuntimeError this function
+raised with a written message) now logs a traceback, on stdout with the other
+`[orgtree]` diagnostics and after the durable row, so nothing there can cost
+it.
+
+**Both guards are pinned by mutation, not by assertion count.** The
+`dupresult` fixture's stragglers carry poisoned numbers ($9.99, 900k tokens,
+424242 ms, a denial); with numbers equal to the boundary's, "not a boundary"
+is unfalsifiable, and the first version of these checks passed with the
+sidechain guard fully reverted. Reverting `stdin_open` now fails "the
+successful turn is still booked and billed"; reverting `parent_tool_use_id`
+fails the mid-turn check with "$9.99 became the turn's cost". A LATE sidechain
+result is masked by `stdin_open`, which is why the mid-turn scenario exists —
+the only shape where the parent guard is load-bearing on its own. Each check
+also asserts the RACE WAS ENTERED (`send()` reports queued, not steered), so
+a slow box degrades to a loud failure rather than a vacuous pass.
+
 ### D-134 · “has it run” is a question about the SESSION, not the seat
 Decision (session seat, 2026-08-18, user bug — “cheap-compacting an agent
 and then closing orgtree without messaging it puts it in an unrecoverable

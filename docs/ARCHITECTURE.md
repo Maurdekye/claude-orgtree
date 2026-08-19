@@ -216,6 +216,52 @@ ledger, supervisor, the gateways, or the canvas.
   write" semantics** — the real rule lives at the call sites: turn path
   confirms on the first non-`system` stdout event; steer path confirms at
   the hook's fetch (a ratified trade — D-045 Bounds).
+- **A closed pipe raises `ValueError`, not `OSError` — and the turn loop can
+  reach a boundary TWICE.** `TextIOWrapper.write`/`close` on a closed stream
+  raise `ValueError: I/O operation on closed file.`, which no `except OSError`
+  catches. The turn loop closes the CLI's stdin at a result boundary that finds
+  the queue empty, but a result event is not once-per-turn: the CLI emits
+  out-of-band results from its own stream-json writer (`error_during_execution`)
+  and on `error_max_turns`, and a subagent's result carries
+  `parent_tool_use_id`. Any of those re-enters the boundary branch, and a
+  message queued in the interval is written down the closed pipe. Uncaught, it
+  rode to the turn's catch-all: the desk showed a bare "I/O operation on closed
+  file." with no site, the in-memory carrier was dropped, and the drained mail
+  folded back to the mailbox undelivered — an agent visibly holding unreceived
+  mail from a subordinate (user report 2026-08-19). ⚠ And the banner was the
+  SMALL half. `res = ev` runs first and unconditionally, so a straggler
+  carrying the CLI's real `is_error: true` clobbered the boundary result:
+  `err_blob` then went non-empty and a SUCCESSFUL, paid turn raised
+  "turn failed", `_after_turn` never ran, and its `total_cost_usd` was never
+  booked — measured 0 turns booked, costs `[]`, plus a permanent
+  turn_error_log row on a turn that worked, and the straggler's text fed to
+  the freeze detectors. Catching the ValueError alone leaves all of that
+  (redteam round 1, which is why the fix is a flag, not a wider `except`).
+  Rules from it. ① Track `stdin_open` and treat a result arriving on a CLOSED
+  pipe as a straggler, never a boundary — but ⚠ **the pipe only discriminates
+  at a boundary that closed it.** At a boundary that FEEDS the next queued
+  message stdin stays open, and there a straggler and that message's own
+  result are the same event shape; no flag can separate them (redteam round 2
+  measured the flag-only fix still losing both messages' spend, and "queue
+  non-empty at the boundary" is just *mail arriving mid-turn* — the reported
+  scenario). ② ∴ **the accounting is built to survive guessing wrong**:
+  `turn_paid` tracks what the CLI reported, and `_charge_reported_spend` books
+  it on the failure path, so a straggler can at worst add a spurious failure
+  row and never erase a turn that was paid for. Money is a fact about the API,
+  not about how orgtree's bookkeeping ended — the same rule
+  `_charge_killed_turn` already encodes for timeouts. ③ Refusing a straggler as
+  a boundary must not discard what it REPORTS: a usage limit riding one is
+  harvested into `synth_limit_txt` (engine-authored, so `agent_authored` stays
+  False and it is trusted), or the node sails past a live limit into the next
+  turn — measured. ④ Gate on `not ev.get("parent_tool_use_id")` as well, so a
+  subagent finishing mid-turn cannot adopt its cost/duration/denials as the
+  turn's (occupancy is already safe — `turn_occ` excludes sidechain events at
+  the capture site, and `_after_turn` refuses the result event's cumulative
+  usage by design). ⑤ Catch `(OSError, ValueError)` at every pipe site as
+  defence in depth. Pinned by `test_turn_lifecycle.py
+  --only dupresult`, whose stragglers carry poisoned numbers ($9.99, 900k
+  tokens, 424242 ms, a denial) — with numbers equal to the boundary's, "not a
+  boundary" is unfalsifiable and the checks passed with the guard reverted.
 - **Readers and `os.replace` must not overlap on Windows** — the `_IOLatch`
   in store.py is writer-preferring for a measured reason (8 looping readers
   starved the replace 1,659/1,659). Nothing that can re-enter load/save may

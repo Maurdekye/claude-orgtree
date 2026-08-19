@@ -1446,6 +1446,9 @@ try {
   const node = process.env.ORGTREE_NODE || ''
   cfg = Object.assign({}, (f.wrap || {}).default || {}, (f.wrap || {})[node] || {})
 } catch (e) { cfg = {} }
+// a FUTURE epoch — _parse_limit_reset_ts declines one already behind us, so a
+// hardcoded stamp would make the limit fixture rot into a no-op
+const LIMIT_EPOCH = Math.floor(Date.now() / 1000) + 3 * 3600
 
 // the compaction fork and the /context one-shot ask for --output-format json;
 // fakecli only speaks stream-json, so _compact_split could never succeed
@@ -1459,6 +1462,108 @@ if (arg('--output-format') === 'json') {
 if (cfg.mode === 'die') {           // dies on argv — never reads stdin (C1)
   process.stderr.write((cfg.errText || 'fatal: bad flag') + '\n')
   process.exit(cfg.code || 1)
+}
+// TWO result events for ONE user message. The CLI emits a top-level result
+// per message, but it also has out-of-band result paths (the stream-json
+// writer's own `error_during_execution`, error_max_turns) that can land after
+// the boundary result has already been sent — at which point orgtree has
+// CLOSED this process's stdin. If a message was queued in between, the second
+// boundary tries to feed it down that closed pipe: `ValueError: I/O operation
+// on closed file.` (user report 2026-08-19). Answers the first message
+// normally, then re-emits a result after `secondMs`.
+if (cfg.mode === 'dupresult') {
+  process.stdout.write(JSON.stringify({ type: 'system', subtype: 'init',
+    model: 'fake', cwd: process.cwd(), tools: [], mcp_servers: [] }) + '\n')
+  const os_ = require('os'), path = require('path')
+  const home = process.env.USERPROFILE || process.env.HOME || os_.homedir()
+  const dir = path.join(home, '.claude', 'projects',
+    process.cwd().replace(/[\\/:]+/g, '-').replace(/^-+/, ''))
+  fs.mkdirSync(dir, { recursive: true })
+  const sid = arg('--session-id') || arg('--resume') || 'no-session'
+  const tpath = path.join(dir, sid + '.jsonl')
+  const rec = (o) => fs.appendFileSync(tpath, JSON.stringify(
+    Object.assign({ timestamp: new Date().toISOString() }, o)) + '\n')
+  const result = (extra) => process.stdout.write(JSON.stringify(Object.assign({
+    type: 'result', subtype: 'success', is_error: false, result: 'ok',
+    usage: { input_tokens: 1200 }, total_cost_usd: 0.0001 }, extra || {})) + '\n')
+  let served = 0
+  let buf = ''
+  process.stdin.setEncoding('utf8')
+  process.stdin.on('data', (d) => {
+    buf += d
+    let i
+    while ((i = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1)
+      if (!line) continue
+      let ev; try { ev = JSON.parse(line) } catch (e) { continue }
+      if (ev.type !== 'user') continue
+      const c = ev.message && ev.message.content
+      const text = typeof c === 'string' ? c
+        : (c || []).map((b) => b.text || '').join('')
+      served += 1
+      rec({ type: 'user', message: { role: 'user', content: text } })
+      // the reply is NUMBERED so a test can poll for "the Nth boundary has
+      // been reached" instead of sleeping a fixed 0.6 s and hoping. Written
+      // immediately before result(), so its appearance means the boundary is
+      // microseconds away (redteam 2026-08-19: a fixed sleep is a false-RED
+      // flake source under the full suite's load)
+      const msg = { role: 'assistant', model: 'fake',
+                    content: [{ type: 'text', text: 'ack-' + served + '.' }],
+                    usage: { input_tokens: 1200 } }
+      process.stdout.write(JSON.stringify({ type: 'assistant', message: msg }) + '\n')
+      rec({ type: 'assistant', message: msg })
+      // A subagent finishing MID-TURN, while stdin is still open — the only
+      // shape that isolates the parent_tool_use_id guard. A LATE sidechain
+      // result is already refused by stdin_open, so testing only that one
+      // left guard 2 unpinned (it passed with the guard reverted).
+      if (cfg.sidechainMid && served === 1) {
+        result({ parent_tool_use_id: 'toolu_midturn',
+                 total_cost_usd: 9.99, duration_ms: 424242,
+                 usage: { input_tokens: 900000 },
+                 permission_denials: [{ tool_name: 'Bash',
+                                        tool_input: { command: 'rm -rf /' } }] })
+      }
+      // `slowSecondMs`: hold message №2's result back so the straggler
+      // scheduled after №1 lands while №2 is STILL being answered — the
+      // boundary that FEEDS, where stdin is never closed and `stdin_open`
+      // cannot discriminate (redteam round 2, measured: two paid messages
+      // booked $0). Both messages still get a real result eventually.
+      if (cfg.slowSecondMs && served === 2) {
+        const cum = 0.0002   // total_cost_usd is session-CUMULATIVE
+        setTimeout(() => result({ total_cost_usd: cum }), cfg.slowSecondMs)
+        continue
+      }
+      result()
+      if (served === 1) {
+        // The straggler, well after orgtree closed stdin. POISONED NUMBERS on
+        // the sidechain variant: identical numbers to the boundary result made
+        // the "not a boundary" checks unfalsifiable — they passed with the
+        // guard reverted, because part 1 caught the ValueError and the message
+        // still arrived (redteam 2026-08-19). These are numbers the turn must
+        // never book. And `is_error: true` on the out-of-band variant, which is
+        // the REAL shape of the CLI's error_during_execution — with is_error
+        // false the straggler clobbered `res` harmlessly and hid the finding
+        // that a successful paid turn books zero cost.
+        setTimeout(() => {
+          result(cfg.sidechain
+            ? { parent_tool_use_id: 'toolu_straggler',
+                total_cost_usd: 9.99, duration_ms: 424242,
+                usage: { input_tokens: 900000 },
+                permission_denials: [{ tool_name: 'Bash',
+                                       tool_input: { command: 'rm -rf /' } }] }
+            : cfg.limitStraggler
+              // the limit reported ONLY on the out-of-band result: refusing
+              // the event as a boundary must not discard what it REPORTS
+              ? { subtype: 'error_during_execution', is_error: true,
+                  result: 'Claude AI usage limit reached|' + LIMIT_EPOCH }
+              : { subtype: 'error_during_execution', is_error: true,
+                  result: 'Error during execution' })
+          setTimeout(() => process.exit(0), cfg.exitMs || 1500)
+        }, cfg.secondMs || 900)
+      }
+    }
+  })
+  return
 }
 if (cfg.mode === 'errresult' || cfg.mode === 'errecho') {
   // consumes the message, writes NOTHING to the transcript, answers with an
@@ -2079,6 +2184,269 @@ def live_error_result() -> None:
     check(f"errresult · echoed-then-failed keeps the mail [{held2}]", lambda: (
         None if any(c2.values())
         else (_ for _ in ()).throw(AssertionError(c2))))
+    wait_idle(slug2, nid2, 20)
+    drop_orgs()
+
+
+def live_second_result() -> None:
+    """USER REPORT 2026-08-19: "I/O operation on closed file" appears at an
+    agent's turn end, and the agent has undelivered mail from a subordinate.
+
+    The mechanism: orgtree closes the CLI's stdin at a result boundary that
+    finds the queue empty. A SECOND result event for the same turn (the CLI
+    has out-of-band result paths — the stream-json writer's own
+    error_during_execution, error_max_turns) then re-enters the boundary
+    branch; if anything was queued in the interval, it is fed down the closed
+    pipe. `TextIOWrapper.write` raises `ValueError: I/O operation on closed
+    file.`, NOT the OSError the branch caught — so it escaped to the turn's
+    catch-all, became that cryptic banner, and took the in-memory carrier with
+    it, folding the drained mail back into the mailbox undelivered. The mail
+    is not lost (§ the at-least-once invariant holds) but it stops moving:
+    exactly "an unreceived mail from one of its subordinates".
+
+    And the deeper half, which the first version of this check MISSED: the
+    straggler is a TOP-LEVEL result, so it also clobbered `res`. Carrying the
+    CLI's real `is_error: true`, that turned a SUCCESSFUL, paid turn into
+    `turn failed: …` — `_after_turn` never ran, so its `total_cost_usd` was
+    never booked, no `turns` ring entry, and a permanent turn_error_log row on
+    a turn that worked (redteam 2026-08-19 measured 0 turns booked, costs []).
+    Hence `stdin_open`: the closed pipe is what tells a boundary from a
+    straggler, because the boundary is what closed it.
+
+    ⚠ Every check here asserts the MECHANISM ran, not merely that nothing bad
+    happened — `send()` must report the message QUEUED (not steered), or the
+    race was never entered and the check is vacuous."""
+    print("\na second result event after stdin was closed (user 2026-08-19):")
+    start_backend()
+    set_cfg(FAST, wrap={"default": {"mode": "dupresult", "secondMs": 900}})
+    slug, (nid,) = make_org("dupresult")
+    tok = token()
+    send(slug, nid, f"first message {tok}")
+    # wait for the FIRST boundary to have closed stdin, then queue behind it —
+    # the turn is still busy because the process has not exited
+    time.sleep(0.6)
+    tok2 = token()
+    resp = send(slug, nid, f"queued behind the boundary {tok2}")
+    wait_idle(slug, nid, 40)
+    time.sleep(0.5)
+
+    ch = api("GET", f"/api/orgs/{slug}/nodes/{nid}/chat?last=8")
+    err = str(ch.get("last_error") or "")
+    rows = [str(m.get("text") or "") for m in (ch.get("messages") or [])]
+    banner = err + " | " + " ".join(r for r in rows if r.startswith("⚠"))
+    node = (doc(slug).get("nodes") or {}).get(nid) or {}
+
+    def _the_race_was_actually_entered() -> None:
+        # the positive control: on a slow box the second send can land BEFORE
+        # the boundary and take the steer lane, in which case nothing below
+        # measures the bug at all
+        assert not resp.get("steering"), \
+            f"the second message steered instead of queueing — the boundary " \
+            f"race was never entered, every check below is vacuous: {resp}"
+    check("dupresult · the queued-at-the-boundary race was entered",
+          _the_race_was_actually_entered)
+
+    def _no_closed_file_banner() -> None:
+        assert "closed file" not in banner, \
+            f"the closed-file ValueError reached the desk as a turn failure: {banner!r}"
+    check("dupresult · a second result event is not a turn failure",
+          _no_closed_file_banner)
+
+    def _the_turn_was_booked() -> None:
+        # THE MONEY CHECK. A straggler carrying is_error clobbered `res` and
+        # raised "turn failed", so a turn that really ran and really billed was
+        # never accounted: no cost, no ring entry (measured 0 turns, costs []).
+        turns = node.get("turns") or []
+        assert turns, \
+            f"a completed turn was never booked — a straggler result made it " \
+            f"raise instead: last_error={err!r}, banner={banner!r}"
+        assert float(node.get("cost_usd") or 0) > 0, \
+            f"the turn ran and billed but booked $0: {node.get('cost_usd')!r}, " \
+            f"turns={turns!r}"
+        assert "turn failed" not in banner, \
+            f"a successful turn was recorded as a failure: {banner!r}"
+    check("dupresult · the successful turn is still booked and billed",
+          _the_turn_was_booked)
+
+    def _second_message_still_delivered() -> None:
+        if wait_delivered(tok2, 5):
+            return
+        # requeued rather than delivered in-process is fine — but then a
+        # follow-up turn must actually carry it
+        set_cfg(FAST)
+        send(slug, nid, f"ping {token()}")
+        if not wait_delivered(tok2, 30):
+            raise AssertionError(
+                f"the queued message never reached the agent: "
+                f"{carriers(slug, nid, tok2)}")
+    check("dupresult · the message queued at the boundary still arrives",
+          _second_message_still_delivered)
+    wait_idle(slug, nid, 20)
+
+    # …and the sidechain shape of the same event: a result carrying
+    # parent_tool_use_id is a SUBAGENT's result, never the turn boundary.
+    # Adopting it as `res` books a subagent's cost/duration/denials as the
+    # turn's own. The straggler here carries POISONED numbers ($9.99, 900k
+    # tokens, 424242 ms, a denial) precisely so this can be asserted: with
+    # numbers equal to the boundary's, "not a boundary" is unfalsifiable.
+    set_cfg(FAST, wrap={"default": {"mode": "dupresult", "secondMs": 900,
+                                    "sidechain": True}})
+    slug2, (nid2,) = make_org("subresult")
+    tok3 = token()
+    send(slug2, nid2, f"sidechain result {tok3}")
+    time.sleep(0.6)
+    tok4 = token()
+    resp2 = send(slug2, nid2, f"queued behind a sidechain result {tok4}")
+    wait_idle(slug2, nid2, 40)
+    time.sleep(0.5)
+    ch2 = api("GET", f"/api/orgs/{slug2}/nodes/{nid2}/chat?last=8")
+    banner2 = str(ch2.get("last_error") or "") + " | " + " ".join(
+        str(m.get("text") or "") for m in (ch2.get("messages") or [])
+        if str(m.get("text") or "").startswith("⚠"))
+    node2 = (doc(slug2).get("nodes") or {}).get(nid2) or {}
+    check("dupresult · the sidechain race was entered too", lambda: (
+        None if not resp2.get("steering")
+        else (_ for _ in ()).throw(AssertionError(
+            f"steered, not queued — check is vacuous: {resp2}"))))
+    check("dupresult · a subagent's result is not a turn boundary", lambda: (
+        None if "closed file" not in banner2
+        else (_ for _ in ()).throw(AssertionError(banner2))))
+
+    def _no_subagent_numbers_booked() -> None:
+        cost = float(node2.get("cost_usd") or 0)
+        assert cost < 1.0, \
+            f"the subagent's $9.99 was booked as the turn's cost: {cost}"
+        assert int(node2.get("occupancy") or 0) < 500000, \
+            f"a subagent's 900k-token context became the node's occupancy: " \
+            f"{node2.get('occupancy')!r} — a compaction split follows"
+        assert not (node2.get("last_denials") or []), \
+            f"a subagent's permission denial was attributed to the turn: " \
+            f"{node2.get('last_denials')!r}"
+        ring = node2.get("turns") or []
+        assert ring, "the real turn was never booked at all"
+        assert not any((t.get("ms") or 0) > 400000 for t in ring), \
+            f"the subagent's 424242 ms was booked as a turn duration: {ring!r}"
+    check("dupresult · none of the subagent's numbers reach the node",
+          _no_subagent_numbers_booked)
+
+    # …and the guard that the two scenarios above CANNOT see: a subagent
+    # finishing MID-TURN, while stdin is still open. There `stdin_open` is
+    # True, so `parent_tool_use_id` is the only thing standing between a
+    # subagent's result and the turn boundary — reverting the guard closes a
+    # live agent's stdin mid-turn and books $9.99 / 900k tokens / 424242 ms as
+    # the turn's own. (Verified by reverting it: without this case all four
+    # sidechain checks stayed green.)
+    set_cfg(FAST, wrap={"default": {"mode": "dupresult", "sidechainMid": True,
+                                    "secondMs": 900}})
+    slug3, (nid3,) = make_org("midsub")
+    tok5 = token()
+    send(slug3, nid3, f"subagent finishes mid-turn {tok5}")
+    wait_idle(slug3, nid3, 40)
+    time.sleep(0.5)
+    node3 = (doc(slug3).get("nodes") or {}).get(nid3) or {}
+    ch3 = api("GET", f"/api/orgs/{slug3}/nodes/{nid3}/chat?last=8")
+    banner3 = str(ch3.get("last_error") or "") + " | " + " ".join(
+        str(m.get("text") or "") for m in (ch3.get("messages") or [])
+        if str(m.get("text") or "").startswith("⚠"))
+
+    def _midturn_subagent_result_is_not_the_boundary() -> None:
+        assert wait_delivered(tok5, 20), \
+            f"the message never reached the agent: {carriers(slug3, nid3, tok5)}"
+        ring = node3.get("turns") or []
+        assert ring, f"the turn was never booked: {banner3!r}"
+        assert float(node3.get("cost_usd") or 0) < 1.0, \
+            f"a mid-turn subagent's $9.99 became the turn's cost: " \
+            f"{node3.get('cost_usd')!r}"
+        assert int(node3.get("occupancy") or 0) < 500000, \
+            f"a mid-turn subagent's 900k context became the occupancy: " \
+            f"{node3.get('occupancy')!r}"
+        assert not (node3.get("last_denials") or []), \
+            f"a mid-turn subagent's denial was attributed to the turn: " \
+            f"{node3.get('last_denials')!r}"
+        assert not any((t.get("ms") or 0) > 400000 for t in ring), \
+            f"the subagent's 424242 ms was booked as the turn's: {ring!r}"
+    check("dupresult · a subagent finishing MID-TURN is not the boundary "
+          "(stdin still open — the parent_tool_use_id guard alone)",
+          _midturn_subagent_result_is_not_the_boundary)
+    wait_idle(slug3, nid3, 20)
+
+    # ── the boundary that FEEDS, where no flag can discriminate ──────────
+    # Round 2 of the loop measured the round-1 fix as only PARTIALLY right:
+    # `stdin_open` identifies a straggler only at the boundary that CLOSES
+    # stdin. At a boundary that feeds the next queued message the pipe stays
+    # open, so a straggler is indistinguishable from that message's own
+    # result — and it clobbered `res`, so TWO real paid messages booked $0
+    # and 0 turns. The fix is not a better guess: it is that reported spend
+    # is booked however the turn ends.
+    # ⚠ Both messages are sent BEFORE the first boundary, deliberately. Racing
+    # a poll against the boundary made this a false RED under the full suite's
+    # load (whichever lane the second send takes is a coin flip). Sent early it
+    # takes the steer lane, the boundary folds it into the queue and FEEDS it
+    # — the path under test — every time, on any machine.
+    set_cfg({**FAST, "startMs": 250},
+            wrap={"default": {"mode": "dupresult", "secondMs": 400,
+                              "slowSecondMs": 2500}})
+    slug4, (nid4,) = make_org("feedstrag")
+    tok6, tok7 = token(), token()
+    send(slug4, nid4, f"first of two {tok6}")
+    send(slug4, nid4, f"fed at the boundary {tok7}")
+    wait_idle(slug4, nid4, 60)
+    time.sleep(0.5)
+    node4 = (doc(slug4).get("nodes") or {}).get(nid4) or {}
+    sid4 = str(node4.get("session_id") or "")
+
+    def _fed_boundary_spend_survives() -> None:
+        # the positive control, and it is about the MECHANISM: two messages
+        # answered by ONE CLI process is exactly "the boundary fed the next
+        # one", which is the case `stdin_open` cannot discriminate
+        assert served_messages(sid4) >= 2, \
+            f"the second message was not fed into the same process — the " \
+            f"feeding boundary was never exercised: " \
+            f"{served_messages(sid4)} served in {sid4}"
+        assert wait_delivered(tok7, 20), \
+            f"the fed message never arrived: {carriers(slug4, nid4, tok7)}"
+        # THE MONEY. Whatever the straggler did to `res`, the dollars the CLI
+        # reported must be on the node.
+        assert float(node4.get("cost_usd") or 0) > 0, \
+            f"two paid messages booked $0 — a straggler erased the turn's " \
+            f"earnings: cost_usd={node4.get('cost_usd')!r}, " \
+            f"turns={node4.get('turns')!r}"
+        assert node4.get("turns"), \
+            f"no turn was booked at all: {node4!r}"
+    check("dupresult · a straggler at a FEEDING boundary cannot erase the "
+          "turn's spend", _fed_boundary_spend_survives)
+
+    # ── a usage limit that rides ONLY the refused straggler ──────────────
+    # Refusing the straggler as a boundary must not throw away what it
+    # REPORTS. Round 2 measured the first cut of this fix dropping a real
+    # usage limit: node not frozen, turn booked as a clean success, and the
+    # next turn burns against a live limit.
+    set_cfg(FAST, wrap={"default": {"mode": "dupresult", "secondMs": 700,
+                                    "limitStraggler": True}})
+    slug5, (nid5,) = make_org("stragglimit")
+    tok8 = token()
+    send(slug5, nid5, f"limit rides the straggler {tok8}")
+    wait_idle(slug5, nid5, 40)
+    time.sleep(0.6)
+    node5 = (doc(slug5).get("nodes") or {}).get(nid5) or {}
+
+    def _limit_on_a_straggler_still_freezes() -> None:
+        assert node5.get("frozen"), \
+            f"a usage limit reported on the out-of-band result was dropped — " \
+            f"the node is not frozen and will burn against a live limit " \
+            f"next turn: frozen={node5.get('frozen')!r}"
+    check("dupresult · a usage limit carried only by a straggler still freezes",
+          _limit_on_a_straggler_still_freezes)
+
+    def _sidechain_msg_delivered() -> None:
+        if wait_delivered(tok4, 5):
+            return
+        set_cfg(FAST)
+        send(slug2, nid2, f"ping {token()}")
+        if not wait_delivered(tok4, 30):
+            raise AssertionError(carriers(slug2, nid2, tok4))
+    check("dupresult · and its queued message arrives too",
+          _sidechain_msg_delivered)
     wait_idle(slug2, nid2, 20)
     drop_orgs()
 
@@ -3049,6 +3417,7 @@ def main() -> None:
             ("leash", live_leash),
             ("clicrash", live_cli_death),
             ("errresult", live_error_result),
+            ("dupresult", live_second_result),
             ("argvdie", live_die_on_argv),
             ("order", live_ordering),
             ("steerrace", live_steer_race),
