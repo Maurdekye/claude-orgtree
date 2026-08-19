@@ -430,9 +430,12 @@ past-the-budget twin, **and its own timestamp**: they used to share one, and
 because the header carries only `from`/`relationship`/`kind`/`at`, several
 shapes rendered blocks that were prefixes of one another, so their batched
 assertions were satisfied by a *sibling* entry and could not fail — 4 of 21
-under the rule in force at the time (re-measured 2026-08-20; 20 distinct
-renderings of 21 shapes). Both found by the redteam, 2026-08-19, in the checks
-written that same day to close the previous round's holes.
+under the rule in force at the time (re-measured 2026-08-20). Only one of
+those four is an exact duplicate rendering — 21 shapes produce 20 distinct
+blocks — the other three were *prefix containments*, which the bare `in` rule
+of the day accepted and the boundary rule since does not. Both found by the
+redteam, 2026-08-19, in the checks written that same day to close the previous
+round's holes.
 
 `assert_mail_shapes_span` is the guard on the guards: the other two iterate a
 hand-maintained list, and a formatter branch nobody wrote a shape for is
@@ -480,11 +483,29 @@ retire it a poll later on evidence that is real.
 - **The envelope's grammar is ambiguous, and no reader can fix that.** Nothing
   distinguishes an entry separator the wrapper wrote from a markdown rule an
   author typed in a body, so the whole-block boundary test can be satisfied
-  from inside a longer body. Like the prefix case it needs a twin agreeing on sender, kind
-  and timestamp; both were built against the helper and neither could be
-  reached through the API. Closing them properly means giving the envelope an
-  unambiguous entry delimiter — which changes what agents read, and is a
-  bigger decision than this fix.
+  from inside a longer body; and two bodies agreeing for their first 400
+  characters take the prefix branch, where no boundary exists at all. Both
+  were built against the helper; neither could be reached through the API.
+  Closing them properly means giving the envelope an unambiguous entry
+  delimiter — which changes what agents read, and is a bigger decision than
+  this fix.
+
+  ☞ **Why they are safe is ORDERING, not timestamp uniqueness.** This is a
+  correction, recorded because the weaker argument was written down first and
+  a future maintainer would otherwise inherit it. A body can carry another
+  entry's exact `at` by **quoting its block** — a user pastes a pending
+  mail's envelope into the next message — with no clock collision involved,
+  so "two entries never share a timestamp" was never the barrier. What is:
+  the needle embeds the victim's own timestamp, so any row carrying the
+  victim's block must postdate the victim's mail, and `take_mail` pops the
+  **whole** mailbox — the quoting mail and the mail it quotes drain into one
+  envelope and land in **one** transcript row. There is no instant at which
+  the quoter is echoed and the quoted is not, and fold-back opens none
+  either (it re-inserts into the same mailbox, which drains wholesale again).
+  Built end-to-end on 2026-08-20: two distinct timestamps, the attacker's
+  body containing the victim's entire block, one drain taking both → the
+  victim on screen, no gap. Raised by the cross-model sign-off; this argument
+  survives a future in which timestamps *do* collide.
 - **`pop_steer`'s 100 KB cut.** `steered_log` stores the steer text at
   `[:100000]`, so a ~100 KB envelope can be cut such that a complete entry
   block survives with its trailing boundary removed; that entry's pending row
@@ -492,8 +513,9 @@ retire it a poll later on evidence that is real.
   redteam; it lands in the duplicate direction and the same input already lost
   every entry past the cut under both the old rule and the new one.
 - **Timestamp collisions.** `ledger.now()` is millisecond-resolution and
-  back-to-back calls collide 99.8% of the time; no current call site posts
-  twice to one node inside a single load/save (measured 0/40), which is the
-  only reason two entries never share an `at`. Nothing states or enforces
-  that. The contiguous needle makes a collision harmless today; a future batch
-  send should not assume it stays that way.
+  back-to-back calls collide ~99.8% of the time; no current call site posts
+  twice to one node inside a single load/save (measured 0/40 by one review
+  round, 0/120 by another — same result, different sample), so two entries
+  never share an `at` today. Nothing states or enforces that. Per the
+  ordering note above this is no longer what the needle's safety rests on,
+  but a future batch send should still not assume it stays true.

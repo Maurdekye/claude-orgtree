@@ -2163,10 +2163,7 @@ def mail_in_transcript(m: Mapping[str, Any], seen: Iterable[str]) -> bool:
     # (Pre-existing: the hand-built marker had the same hole. Redteam,
     # 2026-08-19.)
     #
-    # ⚠ RESIDUALS, stated rather than hidden — both need the same precondition
-    # as the hole above, a TWIN agreeing on sender, kind and `at`, which the
-    # ledger does not currently produce (no call site posts twice to one node
-    # inside a single load/save; measured 0/40). Neither is closable without
+    # ⚠ RESIDUALS, stated rather than hidden. Neither is closable without
     # changing the envelope itself, because the envelope's own grammar is
     # ambiguous: nothing distinguishes a separator the wrapper wrote from one
     # an author typed.
@@ -2174,8 +2171,23 @@ def mail_in_transcript(m: Mapping[str, Any], seen: Iterable[str]) -> bool:
     #     this boundary from inside the longer body.
     #   · two bodies that agree for their first MAIL_MARK_CHARS characters
     #     take the PREFIX branch above, where no boundary is available at all.
-    # Both were built by the redteam against the helper and neither could be
+    # Both were built by the redteam against the helper; neither could be
     # reached end-to-end through the API.
+    #
+    # ☞ WHY THEY ARE SAFE — and it is NOT "timestamps do not collide", which
+    # is the weaker claim an earlier draft of this comment made. A body can
+    # carry another entry's exact `at` by QUOTING its block, with no clock
+    # collision involved at all (built end-to-end: a user pasting a pending
+    # mail's envelope into the next message). What actually closes it is
+    # ORDERING. The needle embeds the victim's own timestamp, so any row
+    # carrying the victim's block must postdate the victim's mail — and
+    # `take_mail` pops the WHOLE mailbox, so a quoting mail and the mail it
+    # quotes drain into one envelope and land in ONE transcript row. There is
+    # no instant at which the quoter is echoed and the quoted is not.
+    # Fold-back opens no window either: it re-inserts into the same mailbox,
+    # which drains wholesale again. (Cross-model sign-off, 2026-08-20.) This
+    # argument survives a future in which timestamps DO collide; the earlier
+    # one did not, which is why it is recorded here in its place.
     return any(needle + MAIL_SEP in t or needle + MAIL_TAIL in t for t in seen)
 
 
