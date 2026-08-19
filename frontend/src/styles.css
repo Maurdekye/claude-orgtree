@@ -868,7 +868,11 @@ button.cc-name:hover {
   color: var(--ink); font-size: 12px; cursor: pointer;
 }
 .doc-chip:hover { border-color: var(--accent); color: var(--ink-strong); }
-/* the desk header's titled document badge (the canvas chip's readable twin) */
+/* the desk's titled document badges (the canvas chip's readable twin) live
+   on their own wrapping strip under the header — inline in .cc-head they
+   starved the agent name and pushed the actions/tabs off the edge (user
+   report 2026-08-19) */
+.desk-docs { display: flex; flex-wrap: wrap; gap: 5px; padding: 3px 0; }
 .doc-badge {
   display: inline-flex; align-items: center; gap: 4px;
   background: var(--input); border: 1px solid var(--line);
@@ -878,7 +882,8 @@ button.cc-name:hover {
 }
 .doc-badge:hover { border-color: var(--accent); color: var(--ink-strong); }
 .doc-badge span {
-  max-width: 130px; overflow: hidden; text-overflow: ellipsis;
+  /* a full row to itself now — titles can afford to breathe */
+  max-width: 260px; overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap;
 }
 .doc-reader { width: min(760px, 92vw); max-height: 86vh; display: flex;

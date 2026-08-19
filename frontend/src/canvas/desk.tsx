@@ -552,17 +552,6 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
           .map((g) => heldChip(g))}
         {!compact && <RetiredFold ids={heldRet}
           render={(g) => heldChip(g, true)} />}
-        {/* FR-03: presented documents ride the desk header too (user report
-            2026-08-05 — they only lived on the unfocused card, so zooming in
-            HID them). Shown in compact/switchboard panels as well: D-100
-            restricts presenting to direct-user-audience agents, which is
-            exactly who the switchboard shows. */}
-        {onOpenDoc && node.documents?.slice(-4).map((d) => (
-          <button key={d.id} className="doc-badge" title={`read “${d.title}”`}
-            onClick={() => onOpenDoc(d.id)}>
-            <DocIcon fontSize="inherit" /><span>{d.title}</span>
-          </button>
-        ))}
         {!compact && (node.cost_usd ?? 0) > 0 && (
           <span className="badge dim"
             title={(node.turns ?? []).slice(-5).reverse().map((t) =>
@@ -606,6 +595,24 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
         && !(bare && node.parent === USER) && (
         <div className="desk-nav">
           <NavChip n={map.get(node.parent)!} dir="up" onJump={onJump} />
+        </div>
+      )}
+      {/* FR-03: presented documents on their OWN strip under the header.
+          They used to sit inline in .cc-head, where long titles starved the
+          name of width (it ellipsized to nothing) and shoved the action/tab
+          chrome off the edge (user report 2026-08-19). Zoomed-in visibility —
+          the original FR-03 point — only needs them ON the desk, not in the
+          identity row. Still shown in compact/switchboard panels: D-100
+          restricts presenting to direct-user-audience agents, which is
+          exactly who the switchboard shows. */}
+      {onOpenDoc && (node.documents?.length ?? 0) > 0 && (
+        <div className="desk-docs">
+          {node.documents!.slice(-4).map((d) => (
+            <button key={d.id} className="doc-badge" title={`read “${d.title}”`}
+              onClick={() => onOpenDoc(d.id)}>
+              <DocIcon fontSize="inherit" /><span>{d.title}</span>
+            </button>
+          ))}
         </div>
       )}
       {asking === 'dissolve' && (
