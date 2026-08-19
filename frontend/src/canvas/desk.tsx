@@ -542,17 +542,20 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
                 ...(r.warnings ?? [])]))
               .catch((e: Error) => toast([`error: ${e.message}`]))}>
             unstick</button>}
-        {!compact && (node.generation ?? 0) > 0 &&
+        {/* the switchboard panels mirror this header IDENTICALLY (user spec
+            2026-08-19) — nothing below is compact-gated anymore; a panel and
+            the agent's own desk show the same chips, actions, tabs and gear */}
+        {(node.generation ?? 0) > 0 &&
           <button className="badge stackbadge"
             onClick={onLineage}>gen {node.generation} <LayersIcon fontSize="inherit" /></button>}
-        {!compact && node.bearer_state &&
+        {node.bearer_state &&
           <span className={'badge ' + (node.bearer_state === 'preserving' ? 'dim' : '')}>
             {node.bearer_state}</span>}
-        {!compact && held.filter((g) => !heldRet.includes(g))
+        {held.filter((g) => !heldRet.includes(g))
           .map((g) => heldChip(g))}
-        {!compact && <RetiredFold ids={heldRet}
-          render={(g) => heldChip(g, true)} />}
-        {!compact && (node.cost_usd ?? 0) > 0 && (
+        <RetiredFold ids={heldRet}
+          render={(g) => heldChip(g, true)} />
+        {(node.cost_usd ?? 0) > 0 && (
           <span className="badge dim"
             title={(node.turns ?? []).slice(-5).reverse().map((t) =>
               `${t.at?.slice(5, 16).replace('T', ' ')} · $${(t.cost ?? 0).toFixed(2)}`
@@ -564,9 +567,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
             ${node.cost_usd!.toFixed(2)}</span>)}
         {(chat?.queued ?? 0) > 0 && <span className="badge">{chat!.queued} queued</span>}
         <span className="spacer" />
-        {/* compact (switchboard panel): chat only — the agent's own desk keeps
-            the full chrome (actions, tabs, gear) */}
-        {!compact && <span className="cc-actions">
+        <span className="cc-actions">
           {live && !liveKids &&
             <button className="danger" onClick={() => setAsking('retire')}>
               retire · {node.seat! + node.grant!}</button>}
@@ -574,16 +575,16 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
             <button className="danger" onClick={() => setAsking('dissolve')}>
               dissolve · {node.seat! + node.grant!}</button>}
           {!live && <button onClick={() => op({ op: 'rehire', node: node.id })}>rehire</button>}
-        </span>}
-        {!compact && <span className="cc-tabs">
+        </span>
+        <span className="cc-tabs">
           {(['chat', 'history', 'files', 'inbox'] as const).map((v) => (
             <button key={v} className={view === v ? 'on' : ''}
               onClick={() => setView(v)}>
               {v}{v === 'inbox' && (chat?.mail_pending ?? 0) > 0 ? ` ${chat!.mail_pending}` : ''}
             </button>
           ))}
-        </span>}
-        {!compact && <button className="cc-icon" onClick={onConfig}><SettingsIcon fontSize="inherit" /></button>}
+        </span>
+        <button className="cc-icon" onClick={onConfig}><SettingsIcon fontSize="inherit" /></button>
       </div>
       {/* F-01: superior chip at the TOP. For a top-level agent the superior is
           the user, so the chip targets the switchboard (map carries the eye

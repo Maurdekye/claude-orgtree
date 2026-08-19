@@ -182,7 +182,8 @@ domTest('§6.7 rapid tab switching keeps the conversation',
   async ({ SL, ND, s, mount }) => {
     s.assistantMsg('the answer is 42')
     await refreshConvo(SL, ND)
-    // the tab strip only exists on a full desk (not `bare`/`compact`)
+    // the tab strip renders on every desk (switchboard panels mirror the
+    // full header since 2026-08-19); a full desk is just the plainest host
     const { el } = await mount(deskEl(node(ND), SL, { bare: false }))
     await flush()
     const tab = (name: string) => rows(el, '.cc-tabs button')

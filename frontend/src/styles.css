@@ -1946,7 +1946,11 @@ svg.MuiSvgIcon-root {
   padding: 6px 9px 8px;
 }
 .eye-chat { flex: 1; min-width: 0; }
-.eye-chat .cc-head { flex-wrap: nowrap; overflow: hidden; }
+/* the panel header carries the desk header's FULL chrome now (mirrored
+   identically — user spec 2026-08-19); a 420px panel can't hold it on one
+   line, so it wraps instead of the old nowrap+hidden clip that would hide
+   the tabs and gear entirely */
+.eye-chat .cc-head { flex-wrap: wrap; }
 .eye-chat .cc-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* the context wheel as a compact-now button (zoomed desk only) */
 .ctxbtn { background: none; border: none; padding: 0; display: inline-flex; cursor: pointer; }

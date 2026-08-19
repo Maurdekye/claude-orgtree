@@ -59,13 +59,17 @@ interface UserNodeProps {
   maxTop?: number
   /** FR-03: open a presented document in the in-page reader */
   onOpenDoc?: (id: string) => void
+  /** per-node lineage/config for the switchboard panel headers (they mirror
+   *  the desk header identically — user spec 2026-08-19) */
+  onNodeLineage?: (id: string) => void
+  onNodeConfig?: (id: string) => void
 }
 
 export function UserNode({ pos, isDrop, stats, inboxCount, asksOpen = 0, seats,
   kiosk, pub, kioskRemaining, kioskSegs, pxc, zoom, onInbox, onGear, onSpawn,
   onMailLink,
   focused, eyeW, onFocus, posX, onJump, map, op, slug, toast,
-  compactAt, maxTop, onOpenDoc }: UserNodeProps) {
+  compactAt, maxTop, onOpenDoc, onNodeLineage, onNodeConfig }: UserNodeProps) {
   const downRef = useRef<Pt | null>(null)
   // const extraction: the kiosk-credits narrowing must survive the commit
   // closure below (a property check alone would not)
@@ -156,7 +160,8 @@ export function UserNode({ pos, isDrop, stats, inboxCount, asksOpen = 0, seats,
           inboxCount={inboxCount} asksOpen={asksOpen} onInbox={onInbox}
           onGear={onGear} pub={pub} eyeW={eyeW} posX={posX} onJump={onJump}
           compactAt={compactAt} maxTop={maxTop} pxc={pxc}
-          onMailLink={onMailLink} onOpenDoc={onOpenDoc} />
+          onMailLink={onMailLink} onOpenDoc={onOpenDoc}
+          onNodeLineage={onNodeLineage} onNodeConfig={onNodeConfig} />
       )}
     </div>
   )
@@ -188,11 +193,16 @@ interface EyeDeskProps {
   onMailLink: MailLinkFn
   /** FR-03: open a presented document in the in-page reader */
   onOpenDoc?: (id: string) => void
+  /** the panel headers mirror the desk header identically (user spec
+   *  2026-08-19) — the gen badge and the gear need the same per-node
+   *  targets the full desk gets */
+  onNodeLineage?: (id: string) => void
+  onNodeConfig?: (id: string) => void
 }
 
 function EyeDesk({ map, op, slug, toast, inboxCount, asksOpen = 0,
   onInbox, onGear, pub, eyeW, posX, onJump, compactAt, maxTop, pxc,
-  onMailLink, onOpenDoc }: EyeDeskProps) {
+  onMailLink, onOpenDoc, onNodeLineage, onNodeConfig }: EyeDeskProps) {
   const agents = [...map.values()].filter((n) =>
     n.id !== USER && n.id !== DRAFT && n.state === 'live' && !n.isBearerOf
     && (n.parent === USER || n.audiences_held?.includes(USER)))
@@ -312,7 +322,9 @@ function EyeDesk({ map, op, slug, toast, inboxCount, asksOpen = 0,
               <DeskChat node={a} map={map} op={op} slug={slug}
                 toast={toast} pub={pub} bare compact compactAt={compactAt}
                 onJump={onJump} maxTop={maxTop} pxc={pxc} onMailLink={onMailLink}
-                onOpenDoc={onOpenDoc} />
+                onOpenDoc={onOpenDoc}
+                onLineage={onNodeLineage ? () => onNodeLineage(a.id) : undefined}
+                onConfig={onNodeConfig ? () => onNodeConfig(a.id) : undefined} />
             </div>
           ))}
           {!open.length && agents.length > 0 &&

@@ -253,7 +253,10 @@ line to you (top-level agents, plus any agent holding a user audience — a
 coordinator that delegates user audiences to its hires fills this view
 automatically). Each panel is a full chat: live transcript with **token-level streaming**
 (the reply grows word-by-word under a pulsing caret), working indicator,
-composer, and the send-button-becomes-STOP idiom. The **tab bar**
+composer, and the send-button-becomes-STOP idiom. Each panel's **header
+mirrors the agent's own desk header identically** — the same badges (gen,
+bearer state, held audiences, cost), the retire/dissolve/rehire actions, the
+chat · history · files · inbox tabs, and the per-agent gear. The **tab bar**
 above the panels is always visible, ordered to mirror the tree's left→right
 spatial layout — click a tab to minimize or reopen its chat (the set is
 remembered per org), or its ⌖ button to jump straight to that agent's node,

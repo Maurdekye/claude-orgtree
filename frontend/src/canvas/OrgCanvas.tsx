@@ -1463,6 +1463,10 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
               }}
               onGear={() => setUserCfg(true)}
               onMailLink={openMail} onOpenDoc={setDocView}
+              /* switchboard panel headers mirror the desk header identically
+                 (user spec 2026-08-19): the gen badge and gear in each panel
+                 open the same canvas-level lineage/config surfaces */
+              onNodeLineage={setLineageId} onNodeConfig={setConfigId}
               onSpawn={(t) => spawn(USER, t)} />
           }
           if (n.id === DRAFT) {
