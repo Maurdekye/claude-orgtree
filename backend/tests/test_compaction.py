@@ -3333,6 +3333,52 @@ def lost_generations() -> None:
           "record would otherwise poison every future turn permanently",
           _survives_junk)
 
+    # …and the NUMBERS that are not numbers. `json.loads` accepts `Infinity`
+    # and `NaN` literally and mints `inf` for any out-of-range decimal, and
+    # `isinstance(x, float)` is True for all three — so the bare `int(p)` this
+    # replaced raised OverflowError/ValueError past a `try` that catches
+    # neither, on the turn path, above the write that would end it (peer report
+    # from compaction-fix, 2026-08-20). `true` is the quiet one: a bool IS an
+    # int, so it became a preTokens of 1 in the agent's own notice. And an
+    # integer too large for a float survives `int()` and raises downstream in
+    # `record_cli_compaction`'s `pre_tokens / 1000`.
+    org2c, (b3,) = horg()
+    _rig2c = os.path.join(HOME, ".claude", "projects", "rig")
+    os.makedirs(_rig2c, exist_ok=True)
+    with open(os.path.join(_rig2c, sid_of(org2c, b3) + ".jsonl"),
+              "w", encoding="utf-8") as f:
+        f.write(json.dumps(_msg("n0")) + "\n")
+        for lit in ("Infinity", "-Infinity", "NaN", "1e400", "true",
+                    str(10 ** 400), "-5"):
+            f.write('{"type":"system","subtype":"compact_boundary",'
+                    '"uuid":"nb","compactMetadata":{"preTokens":'
+                    + lit + '}}\n')
+        f.write('{"type":"system","subtype":"compact_boundary","uuid":"ok",'
+                '"compactMetadata":{"preTokens":4096}}\n')
+    store.save_org(org2c)
+
+    def _survives_nonfinite() -> None:
+        c, p, m = supervisor._count_cli_compactions(org2c, b3)
+        _true(c == 8, f"every boundary must still COUNT, got {c}")
+        _true([x[1] for x in m[:7]] == [None] * 7,
+              f"no impostor may pass as a token count: {[x[1] for x in m]}")
+        _true(m[7][1] == 4096, f"the real one must survive: {m[7]}")
+        _true(p == 4096, f"headline should be the last REAL figure, got {p}")
+    check("junk · inf / -inf / NaN / 1e400 / true / a float-overflowing int / "
+          "a negative do not raise and do not pass as token counts — the "
+          "boundary still counts, its figure is simply absent",
+          _survives_nonfinite)
+
+    def _junk_pre_survives_the_turn() -> None:
+        # the shape that made it permanent: the figure rides into
+        # record_cli_compaction, whose notice divides it
+        o = store.load_org(org2c.d["slug"])
+        row = o.record_cli_compaction(b3, supervisor._boundary_pre_tokens(
+            10 ** 400), None, 1)
+        _true(o.nodes[row]["bearer_state"] == "lost", "row not minted")
+    check("junk · …and the figure that reaches the ledger cannot overflow its "
+          "own notice text", _junk_pre_survives_the_turn)
+
     print("\nthe cut (supervisor._fork_bearer_session):")
 
     org3, (c,) = horg()

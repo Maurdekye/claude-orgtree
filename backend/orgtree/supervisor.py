@@ -3981,6 +3981,44 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
             _compact_split(slug, nid)
 
 
+# A real preTokens is a small non-negative integer. The ceiling is exact in a
+# float and ~9e15 times any true count, so nothing legitimate is near it.
+_PRE_TOKENS_MAX = 2 ** 53
+
+
+def _boundary_pre_tokens(v: object) -> int | None:
+    """The token figure off a compact_boundary record, or None.
+
+    `isinstance(v, float)` is TRUE for `inf` and `nan`, and `json.loads` mints
+    both — from the `Infinity`/`NaN` literals it accepts by default, and from
+    ANY out-of-range decimal such as `1e400`. `int(inf)` raises OverflowError
+    and `int(nan)` raises ValueError, neither of which `_count_cli_compactions`
+    catches, so one such line escaped the function ON THE TURN PATH, above the
+    write that records the new count — the permanent shape: the turn reported
+    failed although it succeeded, and the same poisoned line re-raising every
+    turn thereafter with the node's split unreachable. Exactly what the
+    non-dict guard above exists to prevent, in a field the same record supplies
+    (found by peer compaction-fix, 2026-08-20, reading its branch against this
+    one; the third instance of "a transcript-supplied number, bare int(), on
+    the turn path, above the repair").
+
+    A bare `bool` is rejected for a quieter reason: `True` IS an int in Python,
+    so a JSON `true` becomes a preTokens of 1 and rides into the agent's notice
+    and the marks list as though it were a measured count.
+
+    And the range test is not tidiness either — an integer too large for a
+    float passes `int()` intact and then raises OverflowError downstream, in
+    `record_cli_compaction`'s `pre_tokens / 1000` (measured). One comparison
+    covers inf, nan and the huge int together, which is why it is spelled as a
+    bound rather than as `math.isfinite`, whose own answer for `10**400` is to
+    raise."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    if not 0 <= v <= _PRE_TOKENS_MAX:      # False for inf, nan and huge ints
+        return None
+    return int(v)
+
+
 def _count_cli_compactions(
         org: Org,
         nid: str) -> tuple[int | None, int | None, list[tuple[int, int | None]]]:
@@ -4052,8 +4090,9 @@ def _count_cli_compactions(
                 if rec.get("type") == "system" \
                         and rec.get("subtype") == "compact_boundary":
                     meta = rec.get("compactMetadata")
-                    p = meta.get("preTokens") if isinstance(meta, dict) else None
-                    p = int(p) if isinstance(p, (int, float)) else None
+                    p = _boundary_pre_tokens(
+                        meta.get("preTokens") if isinstance(meta, dict)
+                        else None)
                     marks.append((i, p))
                     if p is not None:
                         pre = p
