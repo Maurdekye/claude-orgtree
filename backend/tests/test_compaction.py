@@ -3851,6 +3851,90 @@ def lost_generations() -> None:
     check("R2b · (control) the node really was gone — the bail was exercised",
           lambda: _true(n25 not in store.load_org(slug25).nodes))
 
+    # R5 (redteam round 3): between the cut and the save the files exist while
+    # NOTHING in the doc names them, so a RAISE in that window leaks them —
+    # and it compounds: save_org can fail on a full disk or a held handle, the
+    # caller swallows it into last_error, the watermark is never persisted, so
+    # the next turn cuts the same boundaries again onto the same full disk.
+    org27, (n27,) = horg()
+    sid27 = sid_of(org27, n27)
+    _plant_session(sid27, [_msg("s1"), _boundary("sb1"),
+                           _msg("s2"), _boundary("sb2"), _msg("s3")])
+    org27.node(n27)["cli_compactions"] = 0
+    store.save_org(org27)
+    slug27 = org27.d["slug"]
+    _rig27 = os.path.join(HOME, ".claude", "projects", "rig")
+    files27 = set(os.listdir(_rig27))
+    # ⚠ patch `record_cli_compaction`, NOT `store.save_org`. Patching save_org
+    # globally raises on an EARLIER save inside _after_turn, so the cut block
+    # is never reached and the check passes with nothing exercised — it did
+    # exactly that on the first attempt and survived a mutation of the guard
+    # it was meant to pin. record_cli_compaction is inside the window, after
+    # the cuts exist and before the save.
+    _real_rec = Org.record_cli_compaction
+    _rec_calls: list[int] = []
+
+    def _rec_boom(*_a: object, **_k: object) -> str:
+        _rec_calls.append(1)
+        raise OSError("disk full")
+
+    st27 = supervisor.state(slug27, n27)
+    raised27 = False
+    Org.record_cli_compaction = _rec_boom    # type: ignore[assignment]
+    try:
+        supervisor._after_turn(slug27, n27, org27, {}, st27, 1)
+    except Exception:                                        # noqa: BLE001
+        raised27 = True
+    finally:
+        Org.record_cli_compaction = _real_rec   # type: ignore[assignment]
+    check("R5 · (control) the cut window was actually entered — the raise "
+          "landed after the cuts existed, not before them",
+          lambda: _true(bool(_rec_calls) and raised27,
+                        f"rec_calls={len(_rec_calls)} raised={raised27}"))
+    check("R5 · a raise between the cut and the record still discards the "
+          "cuts — otherwise the leak compounds every turn",
+          lambda: _true(set(os.listdir(_rig27)) == files27,
+                        f"strays: {set(os.listdir(_rig27)) - files27}"))
+    check("R5 · …and the watermark is not advanced, so the boundaries are "
+          "still pending rather than silently swallowed",
+          lambda: _true(store.load_org(slug27).node(n27)
+                        .get("cli_compactions") == 0))
+
+    # the UNDER-count direction of the watermark bug (peer report from
+    # compaction-fix): a stale HIGH counter against a fresh session makes
+    # `cli_cnt > seen_raw` false FOREVER, so the new session's first real CLI
+    # compaction is never noticed at all. Worse than a phantom row: the
+    # correction never runs and control falls through to the threshold check,
+    # forking a 600 s billed child on a session the CLI has just emptied.
+    org28, (n28,) = horg()
+    _plant_transcript(sid_of(org28, n28))
+    org28.node(n28)["cli_compactions"] = 3          # stale high watermark
+    org28.cheap_compact(USER, n28)
+    store.save_org(org28)
+    slug28 = org28.d["slug"]
+    fresh28 = store.load_org(slug28).node(n28)["session_id"]
+    _plant_session(fresh28, [_msg("u1"), _boundary("ub"), _msg("u2")])
+    org28 = store.load_org(slug28)
+    st28 = supervisor.state(slug28, n28)
+    supervisor._after_turn(slug28, n28, org28, {}, st28, 1)   # baseline turn
+    org28 = store.load_org(slug28)
+    check("under-count · after a cheap_compact the fresh session baselines "
+          "to its OWN count rather than staying under a stale high one",
+          lambda: _true(org28.node(n28).get("cli_compactions") == 1,
+                        f'got {org28.node(n28).get("cli_compactions")!r}'))
+    _plant_session(fresh28, [_msg("u1"), _boundary("ub"), _msg("u2"),
+                             _boundary("ub2"), _msg("u3")])
+    org28 = store.load_org(slug28)
+    st28b = supervisor.state(slug28, n28)
+    supervisor._after_turn(slug28, n28, org28, {}, st28b, 1)
+    org28 = store.load_org(slug28)
+    check("under-count · …so its NEXT real CLI compaction is still noticed "
+          "and still preserved, instead of being swallowed forever",
+          lambda: _true(f"{n28}@1" in org28.nodes
+                        and org28.nodes[f"{n28}@1"]["bearer_state"]
+                        == "knowledge",
+                        f"nodes: {sorted(org28.nodes)}"))
+
     # R4: the boundary SCAN and the binary CUT must agree on where a line
     # ends. Text mode's universal-newlines splits a lone \r and binary does
     # not, so one stray CR above a boundary would shift every offset by one —

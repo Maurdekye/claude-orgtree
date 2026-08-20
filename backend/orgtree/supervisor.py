@@ -3925,41 +3925,53 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
         # nothing else can observe them until they are recorded below.
         cuts = [(off, pre, _fork_bearer_session(org, sid0, off))
                 for off, pre in cli_marks[seen0:cli_cnt]]
-        with store.DOC_LOCK:
-            o2 = store.load_org(slug)
-            if nid not in o2.nodes:
-                # the node was deleted mid-turn. Same reasoning as the session
-                # swap below, and more certainly true — these cuts name
-                # generations of a node that no longer exists, and `delete`
-                # explicitly leaves transcripts on disk, so nothing else would
-                # ever reap them (redteam round 2: the guard was applied to
-                # the sibling bail and not to this one)
+        # ⚠ From here to `save_org` the cuts exist on disk while NOTHING in the
+        # doc names them, so every exit that is not the successful one has to
+        # take them with it — the two bails below, and any RAISE. A `finally`
+        # keyed on "did we record" is the only shape that covers all three:
+        # guarding the bails by hand (which is what round 2 did) still leaked
+        # on the raise path, and that leak COMPOUNDS — save_org can fail on a
+        # full disk or a held file handle, the caller swallows the exception
+        # into last_error, `cli_compactions` is never persisted, so the next
+        # turn cuts the same boundaries again onto the same full disk
+        # (redteam round 3).
+        recorded = False
+        try:
+            with store.DOC_LOCK:
+                o2 = store.load_org(slug)
+                if nid not in o2.nodes:
+                    # the node was deleted mid-turn — these cuts name
+                    # generations of a node that no longer exists, and
+                    # `delete` explicitly leaves transcripts on disk, so
+                    # nothing else would ever reap them
+                    return
+                n2 = o2.node(nid)
+                # ⚠ Everything above ran unlocked, and `cheap_compact` has no
+                # in-flight guard — the user or a superior can replace this
+                # node's SESSION mid-turn (documented at the auto-cheap-compact
+                # site). These marks describe a file the node may no longer
+                # own, and recording them would be doubly wrong: a burst of
+                # LOST generations minted against a brand-new EMPTY session
+                # (each with an offset indexing a different file, each telling
+                # the agent it lost context it never had), and then a count
+                # stamped on that empty session high enough to swallow the
+                # next N GENUINE compactions in silence. The re-baseline to
+                # None makes it worse, not better — `have` would collapse to 0
+                # and mint every mark rather than the delta.
+                if n2.get("session_id") != sid0 \
+                        or n2.get("cli_compactions") != seen0:
+                    return
+                for off, pre, bearer_sid in cuts:
+                    o2.record_cli_compaction(
+                        nid, pre if pre is not None else cli_pre,
+                        bearer_sid, off)
+                n2["cli_compactions"] = cli_cnt
+                store.save_org(o2)
+                recorded = True
+        finally:
+            if not recorded:
                 for _o, _p, s in cuts:
                     _discard_cut(org, s)
-                return
-            n2 = o2.node(nid)
-            # ⚠ Everything above ran unlocked, and `cheap_compact` has no
-            # in-flight guard — the user or a superior can replace this
-            # node's SESSION mid-turn (documented at the auto-cheap-compact
-            # site). These marks describe a file the node may no longer own,
-            # and recording them would be doubly wrong: a burst of LOST
-            # generations minted against a brand-new EMPTY session (each with
-            # an offset indexing a different file, each telling the agent it
-            # lost context it never had), and then a count stamped on that
-            # empty session high enough to swallow the next N GENUINE
-            # compactions in silence. The re-baseline to None makes it worse,
-            # not better — `have` would collapse to 0 and mint every mark
-            # rather than the delta. Discard and let the next turn baseline.
-            if n2.get("session_id") != sid0 \
-                    or n2.get("cli_compactions") != seen0:
-                for _o, _p, s in cuts:
-                    _discard_cut(org, s)
-                return
-            for off, pre, bearer_sid in cuts:
-                o2.record_cli_compaction(
-                    nid, pre if pre is not None else cli_pre, bearer_sid, off)
-            n2["cli_compactions"] = cli_cnt
-            store.save_org(o2)
         notify(slug, nid, "compacted")
         return
     if occ and cw and occ / cw >= compact_at:
@@ -4380,21 +4392,30 @@ def recover_lost_generation(slug: str, pred_id: str) -> dict[str, Any]:
             f"could not cut a session for {pred_id} — its records may be "
             f"gone; it stays a LOST generation")
     # ---- back under the lock, re-checking what the decision rested on ----
-    with store.DOC_LOCK:
-        org2 = store.load_org(slug)
-        n2 = org2.nodes.get(pred_id)
-        if (not n2 or n2.get("bearer_state") != "lost"
-                or n2.get("session_id") != row_sid
-                or n2.get("cli_boundary_offset") != n.get("cli_boundary_offset")):
-            # someone recovered, dropped or re-minted this row while the cut
-            # ran. The cut describes a state that no longer holds; recording
-            # it would attach a bearer to the wrong moment.
+    # same `finally` discipline as the turn path: between the cut and the save
+    # the file exists while nothing names it, so every exit that is not the
+    # successful one must take it — including a save that raises
+    recorded = False
+    try:
+        with store.DOC_LOCK:
+            org2 = store.load_org(slug)
+            n2 = org2.nodes.get(pred_id)
+            if (not n2 or n2.get("bearer_state") != "lost"
+                    or n2.get("session_id") != row_sid
+                    or n2.get("cli_boundary_offset")
+                    != n.get("cli_boundary_offset")):
+                # someone recovered, dropped or re-minted this row while the
+                # cut ran. The cut describes a state that no longer holds;
+                # recording it would attach a bearer to the wrong moment.
+                raise LedgerError(
+                    f"{pred_id} changed while its session was being cut — "
+                    f"nothing was recorded; try again")
+            org2.recover_lost_generation(pred_id, sid)
+            store.save_org(org2)
+            recorded = True
+    finally:
+        if not recorded:
             _discard_cut(org, sid)
-            raise LedgerError(
-                f"{pred_id} changed while its session was being cut — "
-                f"nothing was recorded; try again")
-        org2.recover_lost_generation(pred_id, sid)
-        store.save_org(org2)
     notify(slug, pred_id, "lineage")
     return {"recovered": pred_id, "session_id": sid, "cut_at": off}
 
