@@ -2125,10 +2125,14 @@ def live_bg_subagents() -> None:
             "wait for a completion notification that died with the process, "
             "and orgtree only starts a turn when mail arrives")
         d = doc(slug2)
-        body = next(b for b in
-                    [str(m.get("body") or "")
-                     for m in (d.get("mail_log") or {}).get(nid2, [])]
-                    if "SUBAGENT DIED" in b)
+        # a default, not a bare next(): StopIteration escaping here is caught
+        # by check() as a FAIL, but it replaces the written diagnostic with a
+        # traceback and the next debugger loses the explanation
+        body = next((b for b in
+                     [str(m.get("body") or "")
+                      for m in (d.get("mail_log") or {}).get(nid2, [])]
+                     if "SUBAGENT DIED" in b), "")
+        assert body, "the notice reached the box but not the durable mail_log"
         assert "bg subagent 0" in body and "bg subagent 1" in body, (
             f"the notice must NAME every orphan, or the agent cannot tell "
             f"which of its children died: {body[:400]}")
@@ -2177,10 +2181,12 @@ def live_bg_subagents() -> None:
         salts per process (`bgtask<i>_<hex>`) and which therefore cannot come
         from any other org or any earlier run."""
         d0 = doc(slug2)
-        body0 = next(b for b in
-                     [str(m.get("body") or "")
-                      for m in (d0.get("mail_log") or {}).get(nid2, [])]
-                     if "SUBAGENT DIED" in b)
+        body0 = next((b for b in
+                      [str(m.get("body") or "")
+                       for m in (d0.get("mail_log") or {}).get(nid2, [])]
+                      if "SUBAGENT DIED" in b), "")
+        assert body0, ("no orphan notice in mail_log to key on — check 4 "
+                       "should have caught this first")
         tid = re.search(r"\(task (bgtask\d+_[0-9a-f]+)\)", body0)
         assert tid, f"the notice names no task id to key on: {body0[:400]}"
         assert wait_delivered(tid.group(1), 60), (
@@ -2226,7 +2232,16 @@ def live_bg_subagents() -> None:
     # A fix that just stopped reaping would pass both checks above and leave
     # every genuinely wedged CLI immortal. No background children here, so the
     # ORIGINAL clock must still fire, on time.
-    start_backend(turn_timeout=6, bg_idle=3600)
+    # ⚠ turn_ceiling is held clear for the same reason check 1 holds it clear,
+    # and the omission here was the same bug in its mirror image: with
+    # TURN_TIMEOUT pinned at 6 too, disarming `_dog` to `idle_cap = BG_IDLE`
+    # on EVERY turn still tripped the 6s CEILING, and this check passed while
+    # the thing it is named after was gone (redteam, 2026-08-21 — measured all
+    # three ways: disarmed+shipped passes, disarmed+ceiling fails,
+    # shipped+ceiling passes). In production that regression is not cosmetic:
+    # the bound on a wedged CLI holding a MAX_CONCURRENT seat goes from
+    # TURN_IDLE to TURN_TIMEOUT — ten minutes to four hours.
+    start_backend(turn_timeout=6, turn_ceiling=300, bg_idle=3600)
     set_cfg({**FAST, "hang": True})
     slug3, (nid3,) = make_org("bgwedge")
     send(slug3, nid3, "hang forever with no background children")
@@ -2235,10 +2250,10 @@ def live_bg_subagents() -> None:
         def _err() -> str:
             return str(api("GET", f"/api/orgs/{slug3}/nodes/{nid3}/chat?last=3")
                        .get("last_error") or "")
-        # either clock may win against a hung stand-in, exactly as live_timeout
-        # documents — both are the reap this check exists to prove
-        assert wait_for(lambda: any(w in _err()
-                                    for w in ("timed out", "turn killed")), 45), (
+        # name the CLOCK, not just the death. "idle watchdog" appears in every
+        # branch of the idle reason and in none of the ceiling's, so this is
+        # what makes the check specific to the rule it guards.
+        assert wait_for(lambda: "idle watchdog" in _err(), 45), (
             "a WEDGED CLI with no background children survived TURN_IDLE — "
             "the bg exemption is leaking onto turns that have earned no "
             f"reprieve. last_error={_err()!r}")

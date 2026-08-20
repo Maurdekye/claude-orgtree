@@ -3368,10 +3368,22 @@ def _run_one_turn(slug: str, nid: str,
                                in bg_live.items()]
                     bg_live.clear()
                 if orphans:
+                    # `_expire()` is the only kill in this function, so if the
+                    # stdout loop left by some other door the process can still
+                    # be alive here and `returncode` is None. Reporting
+                    # "exited (rc=None)" would assert a death that has not
+                    # happened; poll and say the true thing instead. Either way
+                    # the conclusion for the agent is the same — nothing is
+                    # reading that stdout any more, so no completion of theirs
+                    # can ever reach it.
+                    rc = proc.poll()
                     _bg_orphaned(slug, nid, orphans,
                                  timeout_why[0] if timed_out.is_set()
-                                 else f"the CLI process exited "
-                                      f"(rc={proc.returncode})",
+                                 else f"the CLI process exited (rc={rc})"
+                                 if rc is not None
+                                 else "the turn ended while the CLI was still "
+                                      "alive — nothing is reading its output "
+                                      "any more",
                                  sid=ran_sid)
             if timed_out.is_set():
                 # this path does its own (estimated) booking — tell the

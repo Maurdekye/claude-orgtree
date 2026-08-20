@@ -942,8 +942,12 @@ def org_tree(slug: str, request: Request) -> dict[str, Any]:
         # different: they outlive the turn's own reply, so a node can sit
         # `busy` for a long time with nothing else to show for it. Before the
         # 2026-08-20 fix that state was invisible AND fatal (the idle watchdog
-        # killed it); now it is merely invisible, which is what this answers —
-        # "why has this agent been working for twenty minutes" has a number.
+        # killed it); now it is merely invisible.
+        # ⚠ API-ONLY so far: unlike `tasks` above, nothing renders this yet —
+        # no field in the frontend's types, no chip on the desk. It is here so
+        # the state is observable at all (and it is what the tests read); the
+        # desk chip that would answer "why has this agent been working for
+        # twenty minutes" is still to be built.
         node["bg_tasks"] = int(st.get("bg_tasks") or 0)
         node["last_error"] = st["last_error"]
         # G4: what the agent is doing RIGHT NOW, derived from the live tail the
