@@ -184,6 +184,12 @@ class NodeDoc(TypedDict):
     pid: int | None
     ui_order: float
     scope: NodeScope
+    # external response handles (panel hires — e.g. the in-game Prompt Wizard,
+    # 2026-08-20): outward @mcp:<peer> addresses THIS node may post_mail
+    # directly, at any depth, without the org-inbox audience. Each send is
+    # scoped to exactly these addresses and attributed by=node in the
+    # org_inbox row; the grant rides the seat (survives retire/rehire).
+    external_handles: NotRequired[list[str]]
     # §8 lineage axis — second axis, never an org edge. FR-24's cheap-compact
     # replacement uses the same pair: `predecessor` on the replacement points
     # at the archived original (whose scratch the supervisor grants read-only
@@ -320,6 +326,10 @@ class OrgInboxEntry(TypedDict):
     body: str
     at: str
     by: NotRequired[str]     # internal attribution — outbound speaks as the org
+    # held-handle send (external_handles): the sender spoke to ITS OWN outside
+    # channel, not for the org — _extern_scan exposes `by` to the peer for
+    # exactly these rows and no others
+    attributed: NotRequired[bool]
     # ---- F-06 @net: delivery states (outbound rows only) ----
     state: NotRequired[str]         # queued → sent (hub custody = "received")
                                     # → delivered (peer org inbox) → read

@@ -1105,7 +1105,13 @@ class Org:
             # with the cross-gaps auto-bridge: a top-level agent COULD grant
             # itself the audience, so a top-level send without one is granted
             # and succeeds in the same call rather than being refused.
-            if not self._has_audience(sender, EXTERN):
+            # External-handle bypass (user feature 2026-08-20): a node that
+            # HOLDS this exact address (hire-time external_handles — e.g. the
+            # in-game Prompt Wizard's response panel) answers it from ANY
+            # depth. The bypass is per-address, and the row below carries
+            # by=sender — a handle send never speaks broadly for the org.
+            held_handle = to in (self.node(sender).get("external_handles") or [])
+            if not held_handle and not self._has_audience(sender, EXTERN):
                 if self.node(sender)["parent"] is None:
                     self.d["audiences"].append({
                         "grantee": sender, "grantor": EXTERN,
@@ -1135,8 +1141,11 @@ class Org:
                 raise LedgerError("that network address is this organization "
                                   "itself")
             # actual delivery rides the bridge (supervisor/api) — the ledger
-            # authorizes and records the correspondence
-            oid = self._org_inbox_log("out", to, body, by=sender)
+            # authorizes and records the correspondence. A held-handle send is
+            # `attributed`: the peer is the sender's own channel, so unlike
+            # org-voice mail its `by` IS exposed on the extern read surface.
+            oid = self._org_inbox_log("out", to, body, by=sender,
+                                      attributed=held_handle)
             self._log("mail", sender, {"to": to, "kind": kind,
                       "gist": body.strip().splitlines()[0][:80] if body.strip()
                       else ""}, [])
@@ -1389,12 +1398,14 @@ class Org:
         return first
 
     def _org_inbox_log(self, direction: Literal["in", "out"], peer: str, body: str,
-                       by: str | None = None) -> str:
+                       by: str | None = None, attributed: bool = False) -> str:
         log = self.d.setdefault("org_inbox", [])
         e: OrgInboxEntry = {"id": uuid.uuid4().hex[:8], "dir": direction, "peer": peer,
                             "body": body[:20000], "at": now()}
         if by:
             e["by"] = by      # internal attribution only — outbound speaks as the org
+        if attributed:
+            e["attributed"] = True  # held-handle send: the peer MAY see `by`
         log.append(e)
         del log[:-200]
         return e["id"]
@@ -1847,6 +1858,7 @@ class Org:
     def hire(self, actor: str, parent: str | None, tier: str, grant: int, name: str,
              add_dirs: list[Any] | None = None, tools: Mapping[str, Any] | None = None,
              org_visibility: str | None = None, charter: str | None = None,
+             external_handles: list[str] | None = None,
              raise_ceiling: bool = False) -> dict[str, Any]:
         """§4.2 + §4.6. `parent` None = top level (actor must be USER). If actor is a
         strict ancestor of parent, credits cascade down the path (forcible hire).
@@ -1901,6 +1913,24 @@ class Org:
                else self.d.get("default_visibility", "full"))
         if vis not in VIS_LEVELS:
             raise LedgerError(f"org_visibility must be one of {VIS_LEVELS}")
+
+        # external response handles (panel hires): validated up front — nothing
+        # below _chain_acquire may raise. Only the @mcp: form is grantable: it
+        # names one concrete extern peer, so the bypass it buys in post_mail is
+        # scoped to a single mailbox rather than "speak for the org anywhere".
+        handles: list[str] = []
+        for h in external_handles or []:
+            h = str(h).strip()
+            if not (h.startswith("@mcp:")
+                    and re.fullmatch(r"[A-Za-z0-9._-]{1,64}", h[5:])):
+                raise LedgerError(
+                    f"external_handles entries must be @mcp:<peer> addresses "
+                    f"(got {h!r}) — each scopes this hire's outbound mail to "
+                    f"that exact extern peer")
+            if h not in handles:
+                handles.append(h)
+        if len(handles) > 8:
+            raise LedgerError("at most 8 external_handles per hire")
 
         # №34 — cheap runaway insurance
         if parent is not None:
@@ -1982,6 +2012,8 @@ class Org:
                                 raise_ceiling=raise_ceiling, warnings=warnings))
         nid = self._new_node(tier, parent, int(grant), name, dirs, tset, vis,
                              str(charter).strip() if charter else None)
+        if handles:
+            self.nodes[nid]["external_handles"] = handles
         # D-030 hardening: the fresh node inherits the ORG-wide
         # permission_mode — clamp it against the kiosk ceiling like set_scope
         # does, or a "default"-ceiling kiosk hires above its own ceiling
@@ -2002,7 +2034,9 @@ class Org:
                      f'{who.capitalize()} hired "{nid}" ({tier}) alongside you, under '
                      f'{parent or "the top level"}.{why}')
         self._log("hire", actor, {"node": nid, "parent": parent, "tier": tier,
-                                  "grant": int(grant), "charter": gist}, warnings)
+                                  "grant": int(grant), "charter": gist,
+                                  **({"external_handles": handles} if handles else {})},
+                  warnings)
         res: dict[str, Any] = {"node": nid, "warnings": warnings}
         if bridged:
             # the one-action bridge (spec §1): re-send the SAME op with

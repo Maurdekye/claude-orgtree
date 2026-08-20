@@ -2319,6 +2319,72 @@ def s10_authorization():
         assert st == 200 and INTERORG == []
         assert api._extern_scan("@mcp:poller", "auth", None)[-1]["body"] == "pull me"
 
+    # ---- external response handles (user feature 2026-08-20): a hire may carry
+    # @mcp: addresses it answers DIRECTLY, from any depth — the in-game Prompt
+    # Wizard's panel channel. The bypass is per-address, the org-inbox row keeps
+    # by=sender, and the grant rides the seat across retire/rehire.
+
+    @t("a deep hire holding a handle answers it — no audience, no transport")
+    def _():
+        oo = load("auth")
+        oo.hire("mid", "mid", "haiku", 0, "panelist",
+                **spec(external_handles=["@mcp:panel.7"]))
+        store.save_org(oo)
+        reset_spies()
+        supervisor.interorg_send = _spy_interorg_send
+        try:
+            st, j = agent("orgtree_message", "panelist",
+                          {"to": "@mcp:panel.7", "body": "answer for the panel"})
+        finally:
+            supervisor.interorg_send = _real_interorg_send
+        assert st == 200 and INTERORG == [], (st, j)
+        row = [e for e in load("auth").d["org_inbox"]
+               if e["dir"] == "out" and e["peer"] == "@mcp:panel.7"][-1]
+        assert row["by"] == "panelist"
+
+    @t("the handle bypass is PER-ADDRESS — a different @mcp: peer still refuses")
+    def _():
+        st, j = agent("orgtree_message", "panelist",
+                      {"to": "@mcp:someone.else", "body": "x"})
+        assert st == 422 and "audience holders" in j["detail"], (st, j)
+
+    @t("_extern_scan surfaces the by attribution for panels to render")
+    def _():
+        rows = api._extern_scan("@mcp:panel.7", "auth", None)
+        assert rows and rows[-1]["body"] == "answer for the panel"
+        assert rows[-1].get("by") == "panelist", rows[-1]
+
+    @t("hire validates handles: only @mcp:<peer> forms are grantable")
+    def _():
+        expect_error(lambda: load("auth").hire(
+            "mid", "mid", "haiku", 0, "badpanel",
+            **spec(external_handles=["@org:nbr"])), "external_handles")
+
+    @t("the ops surface carries external_handles into the node doc")
+    def _():
+        st, j = call("POST", "/api/orgs/auth/ops",
+                     {"op": "hire", "parent": "ceo", "tier": "haiku",
+                      "name": "opspanel", "grant": 0,
+                      "external_handles": ["@mcp:panel.ops"]})
+        assert st == 200, (st, j)
+        assert load("auth").node(j["node"]).get("external_handles") == \
+            ["@mcp:panel.ops"], j
+
+    @t("the handle rides the seat — retire → rehire keeps it answering")
+    def _():
+        oo = load("auth")
+        oo.retire("mid", "panelist")
+        oo.rehire("mid", "panelist", grant=0)
+        store.save_org(oo)
+        st, j = agent("orgtree_message", "panelist",
+                      {"to": "@mcp:panel.7", "body": "still here"})
+        assert st == 200, (st, j)
+
+    @t("the identity prompt names the held handle so the agent knows the channel")
+    def _():
+        text = supervisor.identity_prompt(load("auth"), "panelist")
+        assert "EXTERNAL RESPONSE HANDLE" in text and "@mcp:panel.7" in text
+
     @t("an outbound to an outside party drives NO node in this org")
     def _():
         assert [d for d in DRIVEN if d[0] == "auth"] == []

@@ -1595,13 +1595,25 @@ def identity_prompt(org: Org, nid: str) -> str:
                       "cannot actually run until it resets or the user intervenes. "
                       "Hiring or rehiring fable-tier agents now would be futile (it is "
                       "permitted, but they would just fail); prefer another tier. ")
+    handles_line = ""
+    held_handles = n.get("external_handles") or []
+    if held_handles:
+        handles_line = (
+            "You hold EXTERNAL RESPONSE HANDLE(s): "
+            + ", ".join(held_handles)
+            + " — each is a live outside channel (an in-game panel or external "
+              "chat) following your work. orgtree_message to exactly that "
+              "address delivers there directly, from any depth — no org-inbox "
+              "audience needed, and the send is attributed to you by name. "
+              "Send your answers and progress updates there; any OTHER outside "
+              "address still needs the normal audience. ")
 
     return (
         f'You are "{nid}", an agent in the organization "{org.d["name"]}" (orgtree). '
         f"{purpose_line}{position}\n{charter_line}"
         f"Credits: seat {org.seat_cost(nid)}, grant {n['grant']}, free {org.free(nid):g} "
         f"— credits bound concurrent agent capacity, not tokens. "
-        f"{dir_line}{skills_line}{tool_line}{fable_line}{ask_line}"
+        f"{dir_line}{skills_line}{tool_line}{fable_line}{handles_line}{ask_line}"
         + ("" if n["parent"] is None else
            "Cross-session mail systems (the machine's mail hub, hubtool, or "
            "any successor) are OFF-LIMITS to you: never register an identity "

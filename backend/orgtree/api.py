@@ -2453,8 +2453,14 @@ def _extern_scan(addr: str, org_slug: str | None, after: str | None,
             for e in entries:
                 if e.get("peer") == addr and e.get("dir") == "out" \
                         and (not floor or e.get("at", "") > floor):
+                    # org-voice mail stays anonymous (§8 pins that `by` never
+                    # leaks) — but a held-handle send (external_handles) spoke
+                    # to its OWN channel and carries the sender's name for the
+                    # panel to render
+                    by = e.get("by") if e.get("attributed") else None
                     out.append({"org": o["slug"], "id": e["id"],
-                                "at": e["at"], "body": e["body"]})
+                                "at": e["at"], "body": e["body"],
+                                **({"by": by} if by else {})})
     out.sort(key=lambda x: x["at"])
     return out
 
@@ -4364,6 +4370,9 @@ class Op(Body):
     charter: str | None = None    # hire — short standing role card
     add_dirs: list[Any] | None = None  # hire — [{path, mode}] or bare paths
     tools: dict[str, Any] | None = None  # hire — {bash, web, edit, subagents, mcp: []}
+    # hire — @mcp:<peer> addresses the hire may answer directly from any depth
+    # (per-address post_mail bypass, by=sender attribution); Prompt Wizard panels
+    external_handles: list[str] | None = None
     # FR-25 insert-superior: hire + splice as ONE op — the fresh node takes
     # this anchor's slot among its siblings and the anchor is reparented
     # beneath it, all inside the same lock and save (a refusal anywhere rolls
@@ -4442,7 +4451,9 @@ def _org_op_locked(slug: str, body: Op, allow_raise: bool = False) -> dict[str, 
             result = org.hire(body.actor, body.parent, body.tier,
                               body.grant or 0, body.name, body.add_dirs,
                               tools=body.tools, org_visibility=body.org_visibility,
-                              charter=body.charter, raise_ceiling=rc)
+                              charter=body.charter,
+                              external_handles=body.external_handles,
+                              raise_ceiling=rc)
             if body.effort:
                 # applied WITH the hire, atomically (same save): the draft
                 # gear's effort used to ride a separate /scope call that the
