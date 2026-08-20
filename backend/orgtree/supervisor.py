@@ -257,6 +257,30 @@ def _claude_argv() -> list[str]:
 #   event, "fresh budget per message"). A backstop, not the thing that fires.
 TURN_TIMEOUT = int(os.environ.get("ORGTREE_TURN_TIMEOUT", "14400"))  # seconds
 TURN_IDLE = int(os.environ.get("ORGTREE_TURN_IDLE", "600"))          # seconds
+# …but stdout silence only means "wedged" when NOTHING IS RUNNING. A
+# backgrounded Task/Agent keeps working INSIDE this CLI process after the
+# turn's own result event — the tool_result returns at once, the turn ends,
+# orgtree closes stdin — and the parent's stream goes quiet while the subagent
+# works. The flat idle rule read that healthy CLI as a corpse and SIGKILLed
+# it at exactly TURN_IDLE, taking the subagent AND the completion notification
+# the CLI had already queued for it (user bug 2026-08-20: two agents lost
+# their redteam reviewers twice each and then waited forever on a
+# notification that had died with the process; measured at 600.258s and
+# 600.0s after the parent's last event — TURN_IDLE to a quarter second).
+# While the CLI reports live background work, silence is the EXPECTED state
+# and gets its own far longer ceiling. TURN_TIMEOUT still caps the whole turn,
+# so a genuinely wedged process is still reaped, just not a busy one.
+#
+# ⚠ THE COST, stated plainly: `_run_one_turn` holds its `_turn_slots` seat and
+# the node's `busy` flag until the process exits, so a node minding a live
+# background child now stays busy for as long as the child runs — up to this
+# ceiling instead of TURN_IDLE's ten minutes. Mail sent meanwhile QUEUES (it is
+# durable in the mailbox and delivers on the next turn, so nothing is lost) and
+# MAX_CONCURRENT seats are held longer. That is the honest reading of the
+# state — the agent really is working — and the alternative was killing the
+# work to free the seat. This number is what bounds it: raise it for
+# longer-running subagents, lower it if seat pressure ever bites.
+BG_IDLE = int(os.environ.get("ORGTREE_BG_IDLE", "3600"))             # seconds
 # the compaction fork's own bound — it had a hard 600 with no way to tune it,
 # and a big context can legitimately need longer
 COMPACT_TIMEOUT = int(os.environ.get("ORGTREE_COMPACT_TIMEOUT", "600"))
@@ -2748,9 +2772,26 @@ def _run_one_turn(slug: str, nid: str,
             # concurrently running subagents, for the desk header's task count:
             # a Task/Agent tool_use opens one, its tool_result coming home
             # closes it. Foreground tasks only — a backgrounded agent's
-            # tool_result returns immediately, so it leaves the count then
-            # (the stream carries no reliable end marker for it).
+            # tool_result returns immediately, so it leaves the count then.
             run_tasks: set[str] = set()
+            # …and the BACKGROUND ones, tracked SEPARATELY because they are a
+            # different animal: they outlive the turn's result event, and the
+            # idle watchdog must know they are there or it kills them (see
+            # BG_IDLE). The note this replaces said "the stream carries no
+            # reliable end marker for it" — that predates
+            # `background_tasks_changed`, which publishes the WHOLE LIVE SET
+            # on every change (measured against the pinned CLI 2026-08-20:
+            # `{"tasks": [{"task_id", "task_type", "description"}, …]}`, and
+            # `{"tasks": []}` the moment the last one lands). A snapshot, so
+            # this cannot drift the way a +1/-1 tally would — a missed event
+            # is corrected by the next one rather than leaking forever.
+            bg_live: dict[str, str] = {}    # task_id -> description
+            bg_out: dict[str, str] = {}     # task_id -> its .output file
+            bg_lock = threading.Lock()      # written here, read by _dog
+
+            def _bg_count() -> int:
+                with bg_lock:
+                    return len(bg_live)
 
             def _pub_tasks() -> None:
                 with _state_lock:
@@ -2792,15 +2833,21 @@ def _run_one_turn(slug: str, nid: str,
             def _dog() -> None:
                 while not dog_stop.wait(5.0):
                     now = time.monotonic()
-                    if now - last_ev[0] > TURN_IDLE:
+                    # live background work ⇒ silence is expected, not a wedge
+                    nbg = _bg_count()
+                    idle_cap = BG_IDLE if nbg else TURN_IDLE
+                    if now - last_ev[0] > idle_cap:
                         # ⚠ say WHICH silence. A turn whose only result event
                         # was a sidechain one keeps producing nothing while
                         # orgtree — correctly — declines to close a live
                         # agent's stdin; blaming a "wedged process" sends the
                         # next debugger after the CLI (redteam 2026-08-19).
                         timeout_why[0] = (
-                            f"turn killed: no CLI output for {TURN_IDLE}s "
-                            + ("(idle watchdog — the process was wedged)"
+                            f"turn killed: no CLI output for {idle_cap}s "
+                            + (f"(idle watchdog — {nbg} background subagent(s) "
+                               "were still running and are killed with it)"
+                               if nbg else
+                               "(idle watchdog — the process was wedged)"
                                if saw_result[0] else
                                "(idle watchdog — no top-level result event "
                                "ever arrived; the turn never reached a "
@@ -2922,6 +2969,54 @@ def _run_one_turn(slug: str, nid: str,
                             "tools": len(ev.get("tools") or []),
                             "mcp_servers": ev.get("mcp_servers") or [],
                         }
+                        continue
+                    if ev.get("type") == "system" and ev.get("subtype") in (
+                            "background_tasks_changed", "task_started",
+                            "task_notification"):
+                        # THE LIVE-CHILD LEDGER (user bug 2026-08-20). Only
+                        # `background_tasks_changed` may SET the set — it is
+                        # the CLI's own snapshot of what is running, so it is
+                        # authoritative and self-correcting. The other two only
+                        # ENRICH entries with the details the death notice
+                        # needs; they must never add or remove a task, or a
+                        # notification arriving for an already-reaped id would
+                        # resurrect it.
+                        _sub = ev.get("subtype")
+                        if _sub == "background_tasks_changed":
+                            snap = ev.get("tasks")
+                            if isinstance(snap, list):
+                                fresh: dict[str, str] = {}
+                                for t in snap:
+                                    if not isinstance(t, dict):
+                                        continue
+                                    tid = str(t.get("task_id") or "")
+                                    if tid:
+                                        fresh[tid] = str(
+                                            t.get("description")
+                                            or t.get("task_type") or "subagent")
+                                with bg_lock:
+                                    # keep the richer description already
+                                    # learned from task_started when the
+                                    # snapshot only carries a generic one
+                                    for tid, d in list(fresh.items()):
+                                        if d in ("subagent", "local_agent") \
+                                                and bg_live.get(tid):
+                                            fresh[tid] = bg_live[tid]
+                                    bg_live.clear()
+                                    bg_live.update(fresh)
+                        else:
+                            tid = str(ev.get("task_id") or "")
+                            if tid:
+                                with bg_lock:
+                                    if tid in bg_live:
+                                        d = str(ev.get("description") or "")
+                                        if d:
+                                            bg_live[tid] = d
+                                    outf = str(ev.get("output_file") or "")
+                                    if outf:
+                                        bg_out[tid] = outf
+                        with _state_lock:
+                            st["bg_tasks"] = _bg_count()
                         continue
                     if ev.get("type") == "assistant":
                         # ⚠ IS THIS THE AGENT, OR ONE OF ITS SUBAGENTS?
@@ -3059,6 +3154,21 @@ def _run_one_turn(slug: str, nid: str,
                                 and _looks_like_usage_limit(
                                     str(ev.get("result") or "")):
                             synth_limit_txt = str(ev.get("result")).strip()[:400]
+                        # …and HARVEST THE SPEND, for the same reason the limit
+                        # is harvested: refusing the event as a BOUNDARY is not
+                        # a reason to disbelieve what it reports it cost.
+                        # Background subagents made this a paying path rather
+                        # than an error one: when a child lands, the CLI
+                        # delivers the completion to its own model, which takes
+                        # a real, billed turn and ends it with a genuine
+                        # top-level result — on a pipe orgtree closed long ago.
+                        # Every dollar of that turn went unbooked. `max()` and
+                        # not `+=` because total_cost_usd is session-cumulative
+                        # (same rule as the boundary branch below); `res` is
+                        # deliberately NOT touched, which is the protection
+                        # this branch exists for.
+                        turn_paid = max(turn_paid,
+                                        float(ev.get("total_cost_usd") or 0.0))
                     elif ev.get("type") == "result" \
                             and not ev.get("parent_tool_use_id"):
                         # TWO guards, because a `result` event is not
@@ -3226,12 +3336,35 @@ def _run_one_turn(slug: str, nid: str,
                     st["proc"] = None
                     st["responding"] = False
                     st["tasks"] = 0     # a dead process runs nothing
+                    st["bg_tasks"] = 0  # …its background children included
                     leftover = st.get("steer") or []
                     st["steer"] = []
                     if leftover:
                         st["queue"][0:0] = leftover
                 if leftover:
                     _steer_fold_log(slug, nid, len(leftover), "turn exit")
+                # ⛔ FAIL LOUD (user ruling 2026-08-20). The process is gone.
+                # Anything still in the live set died with it and will never
+                # report: the CLI queues its own "killed" notification, but
+                # into the very process being destroyed, so it is never
+                # delivered. THIS is what left agents waiting forever on a
+                # subagent that had been dead for half an hour.
+                #
+                # One place deliberately, not one per teardown path: the
+                # stdout loop ends however the process ended — idle watchdog,
+                # TURN_TIMEOUT, manual ⏸, the backend's job-object leash, an
+                # outright crash — so every one of them lands here and none
+                # can be forgotten later.
+                with bg_lock:
+                    orphans = [(t, d, bg_out.get(t, "")) for t, d
+                               in bg_live.items()]
+                    bg_live.clear()
+                if orphans:
+                    _bg_orphaned(slug, nid, orphans,
+                                 timeout_why[0] if timed_out.is_set()
+                                 else f"the CLI process exited "
+                                      f"(rc={proc.returncode})",
+                                 sid=ran_sid)
             if timed_out.is_set():
                 # this path does its own (estimated) booking — tell the
                 # failure handler so the spend is not charged twice
@@ -3686,6 +3819,102 @@ def _run_one_turn(slug: str, nid: str,
             st["live"] = [r for r in (st.get("live") or []) if r.get("sticky")]
         notify(slug, nid, "turn_done")
     return follow
+
+
+def _bg_task_output(sid: str | None, task_id: str) -> str:
+    """Where the CLI parked a background subagent's output, if it is there.
+
+    Only a COMPLETED task announces its own `output_file` (on
+    `task_notification`) — and an orphan is precisely the one that never
+    completed, so for the case that matters the path has to be derived. The
+    layout, captured 2026-08-20 alongside the event shapes:
+
+        <temp>/claude/<project-slug>/<session-id>/tasks/<task-id>.output
+
+    One wildcard component (the project slug), so this is a cheap glob and not
+    a walk. Returns "" unless the file actually EXISTS: a notice that names a
+    path which is not there is worse than one that stays quiet, because the
+    agent spends a turn looking for it. Undocumented CLI layout — if it moves,
+    this degrades to silence rather than to a lie."""
+    if not sid or not task_id:
+        return ""
+    try:
+        import tempfile                                       # noqa: PLC0415
+        hits = glob.glob(os.path.join(tempfile.gettempdir(), "claude", "*",
+                                      sid, "tasks", task_id + ".output"))
+        return hits[0] if hits and os.path.isfile(hits[0]) else ""
+    except OSError:
+        return ""
+
+
+def _bg_orphaned(slug: str, nid: str,
+                 orphans: list[tuple[str, str, str]], why: str,
+                 sid: str | None = None) -> None:
+    """A CLI died holding live background subagents: tell their parent, so it
+    UNBLOCKS (user ruling 2026-08-20 — fail loud, never fail silent).
+
+    An agent that backgrounds a subagent ends its turn to wait for the
+    completion notification. When the process dies, that notification dies
+    with it — the parent is idle, nothing is running, and nothing will ever
+    arrive. orgtree only starts a turn when mail arrives, so the silence is
+    permanent. (Claude Code does re-report the orphan itself, but only at the
+    START of the next session, which here is the very thing that never comes.)
+
+    So orgtree sends the mail the dead process could not: durable in the
+    mailbox first — the notice must survive a backend restart, since a deploy
+    is one of the ways the process dies — then a nudge to drive the turn.
+    Never raises: this runs in a `finally` on a turn that may already be
+    failing, and a bookkeeping error here must not replace the real one."""
+    try:
+        lines = []
+        for tid, desc, outf in orphans[:20]:
+            outf = outf or _bg_task_output(sid, tid)
+            lines.append(f"- \"{desc}\" (task {tid})"
+                         + (f"\n  partial output: {outf}" if outf else ""))
+        body = (
+            f"[SUBAGENT DIED — {len(orphans)} background subagent(s) were "
+            f"killed before finishing]\n"
+            f"Reason: {why}\n\n" + "\n".join(lines)
+            + (f"\n… and {len(orphans) - 20} more" if len(orphans) > 20 else "")
+            + "\n\nNo completion record exists for these — do NOT keep waiting "
+              "on them, and do not assume their work landed. Their partial "
+              "output files (above) are on disk and may hold real progress; "
+              "read those before redoing the work. To retry, relaunch — and "
+              "prefer run_in_background:false, which fails loudly instead of "
+              "silently if it happens again.")
+        # kind is deliberately NOT "notice": that kind is the no-wake marker
+        # (Org.waking_mail), and a notice would land in the box to be read at
+        # a next turn that is precisely what never comes.
+        entry: MailEntry = {
+            "id": uuid_hex8(), "from": "orgtree",
+            "kind": "message", "body": body[:8000], "at": now_iso(),
+            "relationship": "the orgtree engine"}
+        with store.DOC_LOCK:
+            org = store.load_org(slug)
+            if nid not in org.nodes or org.node(nid)["state"] != "live":
+                return
+            box = org.d.setdefault("mail", {})
+            box.setdefault(nid, []).append(cast(MailEntry, dict(entry)))
+            # mirror into mail_log like every other sender, or the inbox panel
+            # loses it the moment the next turn drains the queue
+            log = org.d.setdefault("mail_log", {}).setdefault(nid, [])
+            log.append(cast(MailEntry, dict(entry)))
+            del log[:-100]
+            store.save_org(org)
+        print(f"[orgtree] {slug}/{nid}: {len(orphans)} background subagent(s) "
+              f"orphaned — {why}")
+        mail_spark(slug, "orgtree", nid)
+        # …and DRIVE it. The mailbox alone is not a wake: an idle node reads
+        # its box at the next turn, and "there is no next turn" is the bug.
+        send_message(slug, nid,
+                     "(orgtree) A background subagent you were waiting on died "
+                     "before finishing — the mail above has the details.")
+    except Exception:                                        # noqa: BLE001
+        try:
+            print(f"[orgtree] {slug}/{nid}: could not report "
+                  f"{len(orphans)} orphaned background subagent(s)")
+        except Exception:                                    # noqa: BLE001
+            pass
 
 
 def _charge_killed_turn(slug: str, nid: str, out_toks: int,

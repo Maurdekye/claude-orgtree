@@ -938,6 +938,13 @@ def org_tree(slug: str, request: Request) -> dict[str, Any]:
         # concurrently running subagents (Task/Agent tool calls in flight) —
         # the desk header shows it beside the working clock, only when > 0
         node["tasks"] = int(st.get("tasks") or 0)
+        # …and BACKGROUND subagents, counted apart because they mean something
+        # different: they outlive the turn's own reply, so a node can sit
+        # `busy` for a long time with nothing else to show for it. Before the
+        # 2026-08-20 fix that state was invisible AND fatal (the idle watchdog
+        # killed it); now it is merely invisible, which is what this answers —
+        # "why has this agent been working for twenty minutes" has a number.
+        node["bg_tasks"] = int(st.get("bg_tasks") or 0)
         node["last_error"] = st["last_error"]
         # G4: what the agent is doing RIGHT NOW, derived from the live tail the
         # supervisor already keeps. The client used to accumulate this itself

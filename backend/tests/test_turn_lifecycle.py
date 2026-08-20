@@ -1677,7 +1677,7 @@ LEGACY_DRAIN = (
 
 def start_backend(max_turns: int = 16, steer_hook: str = "0",
                   turn_timeout: int = 60, recursion: int = 0,
-                  legacy_drain: bool = False) -> None:
+                  legacy_drain: bool = False, bg_idle: int = 3600) -> None:
     global PROC
     stop_backend()
     port_free(PORT)
@@ -1694,6 +1694,11 @@ def start_backend(max_turns: int = 16, steer_hook: str = "0",
         # watchdog is the bound that fires; the ceiling rides along
         "ORGTREE_TURN_TIMEOUT": str(turn_timeout),
         "ORGTREE_TURN_IDLE": str(turn_timeout),
+        # …and the ceiling that replaces it while background children are
+        # live. Held far above turn_timeout by default so the two are
+        # DISTINGUISHABLE: a test that lets a background child outlive
+        # TURN_IDLE proves nothing if both clocks are the same number.
+        "ORGTREE_BG_IDLE": str(bg_idle),
         "PYTHONPATH": os.path.join(_REPO, "backend"),
         "PYTHONIOENCODING": "utf-8",
         # ⚠ never claim anything the user's real backend holds: the sandbox
@@ -1998,6 +2003,141 @@ def live_subagents() -> None:
     check("subagents · …and a subagent's context never compacts the AGENT",
           _no_spurious_compaction)
     set_cfg(FAST)
+
+
+def live_bg_subagents() -> None:
+    """USER BUG 2026-08-20: background subagents "die on their own" and the
+    agent that launched one waits forever for a completion that never comes.
+
+    Two agents lost their redteam reviewers, twice each. The cause was not the
+    CLI and not compaction — it was THIS supervisor's idle watchdog. A
+    backgrounded Task/Agent keeps running INSIDE the CLI process after the
+    turn's result event; orgtree closes stdin at that boundary and the
+    parent's stdout goes quiet while the child works. `_dog` read that silence
+    as a wedge and SIGKILLed a perfectly healthy CLI at exactly TURN_IDLE
+    (measured on the real transcripts at 600.258s and 600.0s after the
+    parent's last event — the constant, to a quarter second). The subagent
+    died with it, and so did the completion notification the CLI had already
+    queued for its own model: no record, no mail, no wake.
+
+    Three things have to hold, and the third is what makes the first two safe
+    to ship — a fix that simply stopped reaping would trade a killed subagent
+    for an immortal wedged process."""
+    print("\nbackground subagents (user bug 2026-08-20):")
+
+    # ── 1. the healthy case: a background child outliving TURN_IDLE lives ──
+    # turn_timeout=6 is the OLD executioner's clock; the child runs 12s, so on
+    # the unfixed supervisor it is dead at 6s with the turn recorded as
+    # "turn killed: no CLI output for 6s". bg_idle stays high, which is the
+    # whole point: silence with a live child is answered by a different clock.
+    start_backend(turn_timeout=6, bg_idle=3600)
+    set_cfg({**FAST, "bgTasks": 1, "bgMs": 12000})
+    slug, (nid,) = make_org("bgok")
+    tok = token()
+    send(slug, nid, f"launch a background agent {tok}")
+
+    check("bg · the turn's own reply still lands at the boundary",
+          lambda: (None if wait_delivered(tok, 30)
+                   else (_ for _ in ()).throw(
+                       AssertionError(carriers(slug, nid, tok)))))
+
+    def _survives() -> None:
+        # the child runs 12s against a 6s TURN_IDLE, so simply reaching the
+        # end of the turn is the measurement — on the unfixed supervisor the
+        # process is already dead by then.
+        # ⚠ last_error is RUNTIME state (supervisor's `st`), surfaced by the
+        # chat endpoint — it is not on the org doc. Read from the doc and this
+        # check passes vacuously against a node that was reaped exactly as the
+        # bug describes (measured while writing this: 3 checks green on a
+        # supervisor that was still killing children).
+        wait_idle(slug, nid, 60)
+        err = str(api("GET", f"/api/orgs/{slug}/nodes/{nid}/chat?last=3")
+                  .get("last_error") or "")
+        assert "no CLI output" not in err and "killed" not in err, (
+            f"the idle watchdog reaped a CLI that was running a background "
+            f"subagent — the exact user bug. last_error={err!r}")
+        # …and it must not have been reported as an orphan either: this child
+        # FINISHED, so a "SUBAGENT DIED" notice here would mean the tracker
+        # lost it rather than saw it land.
+        box = [str(m.get("body") or "")
+               for m in (doc(slug).get("mail") or {}).get(nid, [])]
+        assert not [b for b in box if "SUBAGENT DIED" in b], (
+            "a completed background subagent was reported as orphaned — the "
+            "live set is not being cleared by background_tasks_changed")
+    check("bg · a live background child is not reaped at TURN_IDLE",
+          _survives)
+
+    # ── 2. fail loud: when we DO kill one, its parent is told ──────────────
+    # bg_idle=6 makes the reaper fire on purpose. The child never finishes
+    # (bgOrphan), so this is the unavoidable case: something has to die. The
+    # requirement is only that it never dies SILENTLY.
+    start_backend(turn_timeout=90, bg_idle=6)
+    set_cfg({**FAST, "bgTasks": 2, "bgOrphan": True})
+    slug2, (nid2,) = make_org("bgorph")
+    send(slug2, nid2, "launch two background agents that never return")
+
+    def _mailed() -> None:
+        def _has_notice() -> bool:
+            d = doc(slug2)
+            boxes = [str(m.get("body") or "")
+                     for m in (d.get("mail") or {}).get(nid2, [])]
+            boxes += [str(m.get("body") or "")
+                      for m in (d.get("mail_log") or {}).get(nid2, [])]
+            return any("SUBAGENT DIED" in b for b in boxes)
+        assert wait_for(_has_notice, 60), (
+            "the CLI was killed holding 2 live background subagents and "
+            "NOTHING told the agent. This is the hang: it ended its turn to "
+            "wait for a completion notification that died with the process, "
+            "and orgtree only starts a turn when mail arrives")
+        d = doc(slug2)
+        body = next(b for b in
+                    [str(m.get("body") or "")
+                     for m in (d.get("mail_log") or {}).get(nid2, [])]
+                    if "SUBAGENT DIED" in b)
+        assert "bg subagent 0" in body and "bg subagent 1" in body, (
+            f"the notice must NAME every orphan, or the agent cannot tell "
+            f"which of its children died: {body[:400]}")
+    check("bg · killing a CLI with live children mails their parent", _mailed)
+
+    def _woken() -> None:
+        # mail in the box is not a wake. The bug is an agent sitting idle
+        # forever, so the notice must actually DRIVE a turn — which, with the
+        # stand-in, means the node goes busy again after the kill.
+        assert wait_for(
+            lambda: any(
+                "SUBAGENT DIED" in str(m.get("body") or "")
+                for m in (doc(slug2).get("mail_log") or {}).get(nid2, []))
+            and not (doc(slug2).get("mail") or {}).get(nid2), 60), (
+            "the orphan notice was never DELIVERED — it sat in the mailbox "
+            "and the agent was never driven, which is the same forever-idle "
+            "hang wearing a different hat")
+    check("bg · …and that notice actually wakes it", _woken)
+
+    # ── 3. the regression guard the other two need ────────────────────────
+    # A fix that just stopped reaping would pass both checks above and leave
+    # every genuinely wedged CLI immortal. No background children here, so the
+    # ORIGINAL clock must still fire, on time.
+    start_backend(turn_timeout=6, bg_idle=3600)
+    set_cfg({**FAST, "hang": True})
+    slug3, (nid3,) = make_org("bgwedge")
+    send(slug3, nid3, "hang forever with no background children")
+
+    def _still_reaped() -> None:
+        def _err() -> str:
+            return str(api("GET", f"/api/orgs/{slug3}/nodes/{nid3}/chat?last=3")
+                       .get("last_error") or "")
+        # either clock may win against a hung stand-in, exactly as live_timeout
+        # documents — both are the reap this check exists to prove
+        assert wait_for(lambda: any(w in _err()
+                                    for w in ("timed out", "turn killed")), 45), (
+            "a WEDGED CLI with no background children survived TURN_IDLE — "
+            "the bg exemption is leaking onto turns that have earned no "
+            f"reprieve. last_error={_err()!r}")
+    check("bg · a wedged CLI with NO children is still reaped at TURN_IDLE",
+          _still_reaped)
+
+    set_cfg(FAST)
+    start_backend()
 
 
 def live_kill_sweep() -> None:
@@ -3518,6 +3658,7 @@ def main() -> None:
         # BOTH the section that runs and the checks that report
         sections = [
             ("subag", live_subagents),
+            ("bg", live_bg_subagents),
             ("kill", live_kill_sweep),
             ("leash", live_leash),
             ("clicrash", live_cli_death),

@@ -60,6 +60,27 @@
  *   hang                never answer (the turn-timeout path)
  *   usageLimit          answer with the CLI's usage-limit error text
  *   exitAfter           close after N user events (default: on stdin EOF)
+ *   bgTasks             launch N BACKGROUND subagents before the result event
+ *   bgMs                how long they run after the turn's boundary
+ *   bgOrphan            never finish them (forces the reaper's hand)
+ *
+ * BACKGROUND SUBAGENTS (user bug 2026-08-20)
+ * ------------------------------------------
+ * The shapes below were captured from the pinned CLI on 2026-08-20, not
+ * guessed — `probe_raw.py` in the subagent-fix scratch has the raw dump. Two
+ * behaviours matter and both are reproduced exactly, because the bug lives in
+ * the gap between them:
+ *
+ *   · `background_tasks_changed` publishes the WHOLE LIVE SET on every change
+ *     ({"tasks":[…]} on launch, {"tasks":[]} when the last one lands), so it
+ *     is a snapshot rather than a delta and orgtree cannot drift against it.
+ *   · a backgrounded child OUTLIVES the turn: its tool_result returns at
+ *     once, the result event fires, orgtree closes stdin — and the real CLI
+ *     does NOT exit on that EOF while a child is still running. It keeps
+ *     working, delivers the completion to its own model, lets it take one
+ *     more turn, and only then exits 0. So stdin EOF must not exit here
+ *     either while `bgLive` is non-empty, or the very window the bug lives in
+ *     would not exist in the stand-in.
  */
 
 'use strict'
@@ -82,6 +103,7 @@ const CFG_DEFAULT = {
   replyText: 'ack.', crashAfter: 0, crashAtMs: 0, hang: false,
   usageLimit: false,
   exitAfter: 0,
+  bgTasks: 0, bgMs: 1500, bgOrphan: false,
 }
 function loadCfg() {
   const p = process.env.FAKECLI_CONFIG
@@ -142,6 +164,51 @@ function runSteerHook() {
   record({ type: 'attachment', isSidechain: false,
            attachment: { type: 'hook_additional_context',
                          hookEvent: 'PostToolUse', additionalContext: ctx } })
+}
+
+// --- background subagents ---------------------------------------------------
+const bgLive = new Map()          // task_id -> description (the live SET)
+let stdinEnded = false
+
+function bgSnapshot() {
+  say({ type: 'system', subtype: 'background_tasks_changed',
+        tasks: [...bgLive.entries()].map(([task_id, description]) => (
+          { task_id, task_type: 'local_agent', description })) })
+}
+
+function maybeExit() {
+  // the real CLI stays up for its children and only then exits 0
+  if (stdinEnded && bgLive.size === 0) process.exit(0)
+}
+
+function launchBg(i) {
+  const taskId = 'bgtask' + i + '_' + Math.random().toString(16).slice(2, 8)
+  const toolUseId = 'toolu_bg' + i
+  const desc = 'bg subagent ' + i
+  say({ type: 'assistant',
+        message: { role: 'assistant', model: 'fake', usage: { input_tokens: 10 },
+                   content: [{ type: 'tool_use', id: toolUseId, name: 'Agent',
+                               input: { description: desc,
+                                        subagent_type: 'general-purpose',
+                                        run_in_background: true } }] } })
+  bgLive.set(taskId, desc)
+  bgSnapshot()
+  say({ type: 'system', subtype: 'task_started', task_id: taskId,
+        tool_use_id: toolUseId, description: desc,
+        subagent_type: 'general-purpose', task_type: 'local_agent' })
+  if (cfg.bgOrphan) return        // never finishes: the reaper must handle it
+  setTimeout(() => {
+    if (!bgLive.has(taskId)) return
+    bgLive.delete(taskId)
+    bgSnapshot()                  // {"tasks":[]} once the last one lands
+    say({ type: 'system', subtype: 'task_updated', task_id: taskId,
+          patch: { status: 'completed' } })
+    say({ type: 'system', subtype: 'task_notification', task_id: taskId,
+          tool_use_id: toolUseId, status: 'completed',
+          output_file: path.join(projDir, taskId + '.output'),
+          summary: 'BG-DONE-' + i })
+    maybeExit()
+  }, Math.max(1, cfg.bgMs | 0) + i * 5)
 }
 
 // --- one turn ---------------------------------------------------------------
@@ -227,6 +294,10 @@ async function serve(text) {
   if (cfg.echoAfterFirstEvent) {
     record({ type: 'user', message: { role: 'user', content: text } })
   }
+  // BACKGROUND subagents — launched BEFORE the boundary, exactly as the real
+  // CLI does (the Agent tool_use, then the snapshot, then task_started), so
+  // orgtree sees a live child at the moment it decides to close stdin.
+  for (let i = 0; i < (cfg.bgTasks | 0); i += 1) launchBg(i)
   const reply = cfg.usageLimit
     ? "You've hit your usage limit. Your limit will reset at 3pm."
     : cfg.replyText
@@ -273,6 +344,11 @@ async function main() {
       chain = chain.then(() => serve(text))
     }
   })
-  process.stdin.on('end', () => { chain.then(() => process.exit(0)) })
+  // stdin EOF is orgtree's TURN BOUNDARY, not a shutdown order: a CLI holding
+  // a live background child keeps working through it (see the header note).
+  process.stdin.on('end', () => {
+    stdinEnded = true
+    chain.then(maybeExit)
+  })
 }
 main()
