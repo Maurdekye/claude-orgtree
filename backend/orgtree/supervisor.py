@@ -280,6 +280,14 @@ TURN_IDLE = int(os.environ.get("ORGTREE_TURN_IDLE", "600"))          # seconds
 # state — the agent really is working — and the alternative was killing the
 # work to free the seat. This number is what bounds it: raise it for
 # longer-running subagents, lower it if seat pressure ever bites.
+#
+# FOLLOW-UP CANDIDATE, deliberately NOT done here (ruling 2026-08-20): the
+# turn could RELEASE its `_turn_slots` seat once the boundary result has been
+# read and only background children remain, since nothing after that point
+# needs the concurrency budget. That is a restructure of the `with _turn_slots:`
+# block spanning the whole turn — real risk on a delicate concurrency path, for
+# a cost whose failure mode is LATENCY, not loss. Do it as its own targeted
+# change IF a held seat is ever measured to bite; not speculatively.
 BG_IDLE = int(os.environ.get("ORGTREE_BG_IDLE", "3600"))             # seconds
 # the compaction fork's own bound — it had a hard 600 with no way to tune it,
 # and a big context can legitimately need longer
