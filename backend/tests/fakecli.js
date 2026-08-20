@@ -62,7 +62,11 @@
  *   exitAfter           close after N user events (default: on stdin EOF)
  *   bgTasks             launch N BACKGROUND subagents before the result event
  *   bgMs                how long they run after the turn's boundary
- *   bgOrphan            never finish them (forces the reaper's hand)
+ *   bgOrphan            never finish them AND stay alive (forces the reaper's
+ *                       hand — this is the user's bug: a healthy CLI holding
+ *                       a working child, killed by the idle watchdog)
+ *   bgQuit              never finish them and let the process exit 0 with a
+ *                       child still live (the other teardown that orphans)
  *
  * BACKGROUND SUBAGENTS (user bug 2026-08-20)
  * ------------------------------------------
@@ -103,7 +107,7 @@ const CFG_DEFAULT = {
   replyText: 'ack.', crashAfter: 0, crashAtMs: 0, hang: false,
   usageLimit: false,
   exitAfter: 0,
-  bgTasks: 0, bgMs: 1500, bgOrphan: false,
+  bgTasks: 0, bgMs: 1500, bgOrphan: false, bgQuit: false,
 }
 function loadCfg() {
   const p = process.env.FAKECLI_CONFIG
@@ -169,6 +173,7 @@ function runSteerHook() {
 // --- background subagents ---------------------------------------------------
 const bgLive = new Map()          // task_id -> description (the live SET)
 let stdinEnded = false
+let bgHold = null                 // keeps the event loop alive under bgOrphan
 
 function bgSnapshot() {
   say({ type: 'system', subtype: 'background_tasks_changed',
@@ -196,7 +201,21 @@ function launchBg(i) {
   say({ type: 'system', subtype: 'task_started', task_id: taskId,
         tool_use_id: toolUseId, description: desc,
         subagent_type: 'general-purpose', task_type: 'local_agent' })
-  if (cfg.bgOrphan) return        // never finishes: the reaper must handle it
+  if (cfg.bgQuit) return          // launched, then let the loop drain: the
+                                  // process exits 0 with the child still live
+  if (cfg.bgOrphan) {
+    // Never finishes — the REAPER must handle it. Returning bare is not
+    // enough to model that: with no pending handle, node's event loop drains
+    // at stdin EOF and this stand-in exits 0 on its own in ~1s, so the
+    // watchdog never fires, `bg_idle` becomes dead config, and a check that
+    // believes it is testing the reaper is really testing process exit
+    // (redteam, 2026-08-21 — it was, and mutating _dog back to TURN_IDLE left
+    // it passing). The real CLI does the opposite: measured 2026-08-20, a
+    // background agent held its parent alive through 87s of stdout silence
+    // and only then exited 0. So hold the loop open and make it be killed.
+    if (!bgHold) bgHold = setInterval(() => {}, 1000)
+    return
+  }
   setTimeout(() => {
     if (!bgLive.has(taskId)) return
     bgLive.delete(taskId)

@@ -2095,9 +2095,17 @@ def live_bg_subagents() -> None:
           _survives)
 
     # ── 2. fail loud: when we DO kill one, its parent is told ──────────────
-    # bg_idle=6 makes the reaper fire on purpose. The child never finishes
-    # (bgOrphan), so this is the unavoidable case: something has to die. The
+    # bg_idle=6 makes the reaper fire on purpose: the children never finish
+    # AND the stand-in stays alive holding them (bgOrphan), which is exactly
+    # the user's bug — a healthy CLI, silent because its child is working,
+    # SIGKILLed by the idle watchdog. Something has to die here; the
     # requirement is only that it never dies SILENTLY.
+    # ⚠ `bgOrphan` used to return without leaving any pending handle, so the
+    # stand-in's event loop drained at stdin EOF and it exited 0 in ~1s. The
+    # reaper never ran, `bg_idle` was dead config, and these checks passed
+    # with `_dog` reverted to TURN_IDLE — they were testing process exit and
+    # saying "killed" (redteam, 2026-08-21). The exit path is real too, and
+    # is now covered deliberately, by `bgQuit`, below.
     start_backend(turn_timeout=90, bg_idle=6)
     set_cfg({**FAST, "bgTasks": 2, "bgOrphan": True})
     slug2, (nid2,) = make_org("bgorph")
@@ -2124,6 +2132,13 @@ def live_bg_subagents() -> None:
         assert "bg subagent 0" in body and "bg subagent 1" in body, (
             f"the notice must NAME every orphan, or the agent cannot tell "
             f"which of its children died: {body[:400]}")
+        # …and it must be THE REAPER that did it. Without this the whole
+        # section can pass against a stand-in that quietly exited on its own,
+        # leaving the watchdog branch — the user's actual bug — uncovered.
+        assert "watchdog" in body, (
+            f"the orphans were reported, but not by the idle watchdog: this "
+            f"check is supposed to exercise a KILL of a live-child CLI and "
+            f"instead saw a different teardown. Reason line: {body[:400]}")
     check("bg · killing a CLI with live children mails their parent", _mailed)
 
     def _woken() -> None:
@@ -2148,10 +2163,27 @@ def live_bg_subagents() -> None:
         marker, which is exactly what makes it discriminating: a wake with no
         mail behind it can no longer pass.
 
-        (Global grep is safe here: the only other org in this section is the
-        healthy one, and check 2 has already asserted it holds no such notice
-        in `mail_log` — which is never drained — so any hit is this org's.)"""
-        assert wait_delivered("SUBAGENT DIED", 60), (
+        ⚠ It must be THIS org's notice. `transcript_text()` greps every fake
+        CLI's transcript in the whole rig, and an earlier draft argued a bare
+        "SUBAGENT DIED" grep was safe because check 2 had already ruled the
+        healthy org out. That argument was wrong twice over (redteam,
+        2026-08-21): check 2's guard runs AFTER its own `wait_delivered`, so a
+        regression in the bg exemption makes check 2 raise before the guard
+        ever executes — and the healthy org really does emit notices then
+        (measured: 9 occurrences in its transcript with `_dog` reverted to
+        TURN_IDLE, amplified by each notice driving a follow-up turn and by
+        every later `start_backend` re-driving the boxed mail through
+        `reconcile`'s revive scan). So key on a task id, which the stand-in
+        salts per process (`bgtask<i>_<hex>`) and which therefore cannot come
+        from any other org or any earlier run."""
+        d0 = doc(slug2)
+        body0 = next(b for b in
+                     [str(m.get("body") or "")
+                      for m in (d0.get("mail_log") or {}).get(nid2, [])]
+                     if "SUBAGENT DIED" in b)
+        tid = re.search(r"\(task (bgtask\d+_[0-9a-f]+)\)", body0)
+        assert tid, f"the notice names no task id to key on: {body0[:400]}"
+        assert wait_delivered(tid.group(1), 60), (
             "the orphan notice never reached the agent as a delivered turn — "
             "it was never queued, never drove a turn, or was dropped in "
             "delivery. Any of the three is the same forever-idle hang wearing "
@@ -2162,6 +2194,33 @@ def live_bg_subagents() -> None:
                               "was never drained — it will be re-delivered on "
                               "every future turn")
     check("bg · …and that notice actually wakes it", _woken)
+
+    # ── 2b. the OTHER teardown that orphans: the CLI exits on its own ─────
+    # Not every orphan is a kill. A CLI can reach the end of its event loop
+    # with a child still live (and a deploy or a crash gets there faster), and
+    # that path runs through a different `why` in the same `finally`. It was
+    # the only orphan path this section actually exercised until 2026-08-21,
+    # by accident; keeping it, deliberately and cheaply, costs one org.
+    start_backend(turn_timeout=90, bg_idle=3600)
+    set_cfg({**FAST, "bgTasks": 1, "bgQuit": True})
+    slug2b, (nid2b,) = make_org("bgquit")
+    send(slug2b, nid2b, "launch a background agent then exit")
+
+    def _exit_mailed() -> None:
+        def _body() -> str:
+            return next((b for b in
+                         [str(m.get("body") or "") for m in
+                          (doc(slug2b).get("mail_log") or {}).get(nid2b, [])]
+                         if "SUBAGENT DIED" in b), "")
+        assert wait_for(lambda: bool(_body()), 60), (
+            "the CLI exited holding a live background subagent and nothing "
+            "told the agent — the same forever-idle hang, reached without a "
+            "kill. bg_idle is high here on purpose: no watchdog can save this")
+        assert "exited" in _body(), (
+            f"reported, but the reason misdescribes the teardown — this CLI "
+            f"was not reaped, it ran out of work: {_body()[:400]}")
+    check("bg · a CLI that EXITS holding a live child also mails its parent",
+          _exit_mailed)
 
     # ── 3. the regression guard the other two need ────────────────────────
     # A fix that just stopped reaping would pass both checks above and leave

@@ -3909,8 +3909,15 @@ def _bg_orphaned(slug: str, nid: str,
         # kind is deliberately NOT "notice": that kind is the no-wake marker
         # (Org.waking_mail), and a notice would land in the box to be read at
         # a next turn that is precisely what never comes.
+        # "@system" — the engine's own hand, same sender the ledger uses
+        # (ledger.SYSTEM) and the reserved shape every built-in actor takes
+        # (@user, @system, @extern). A bare "orgtree" would be the only
+        # unprefixed one, and `slugify` reserves nothing: a node hired or
+        # renamed to `orgtree` would collide, and node_inbox's Sent folder
+        # (which matches on `m["from"] == nid`) would show it every orphan
+        # notice in the org as its own sent mail.
         entry: MailEntry = {
-            "id": uuid_hex8(), "from": "orgtree",
+            "id": uuid_hex8(), "from": "@system",
             "kind": "message", "body": body[:8000], "at": now_iso(),
             "relationship": "the orgtree engine"}
         with store.DOC_LOCK:
@@ -3927,7 +3934,7 @@ def _bg_orphaned(slug: str, nid: str,
             store.save_org(org)
         print(f"[orgtree] {slug}/{nid}: {len(orphans)} background subagent(s) "
               f"orphaned — {why}")
-        mail_spark(slug, "orgtree", nid)
+        mail_spark(slug, "@system", nid)   # same hand the entry is signed with
         # …and DRIVE it. The mailbox alone is not a wake: an idle node reads
         # its box at the next turn, and "there is no next turn" is the bug.
         send_message(slug, nid,
