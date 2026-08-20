@@ -207,6 +207,17 @@ function launchBg(i) {
           tool_use_id: toolUseId, status: 'completed',
           output_file: path.join(projDir, taskId + '.output'),
           summary: 'BG-DONE-' + i })
+    // THE POSITIVE CONTROL. A check that only asserts "no orphan was
+    // reported" passes just as well against a child that was killed and
+    // whose evidence was then erased (the notice drives a turn, and a turn
+    // clears last_error and drains the mailbox — measured 2026-08-20). This
+    // marker is durable and can only exist if the child truly reached the
+    // end, so the suite can assert the child LANDED rather than assert the
+    // absence of a complaint.
+    record({ type: 'assistant',
+             message: { role: 'assistant', model: 'fake',
+                        content: [{ type: 'text', text: 'BG-LANDED-' + i }],
+                        usage: { input_tokens: 1 } } })
     maybeExit()
   }, Math.max(1, cfg.bgMs | 0) + i * 5)
 }

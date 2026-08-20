@@ -1677,7 +1677,8 @@ LEGACY_DRAIN = (
 
 def start_backend(max_turns: int = 16, steer_hook: str = "0",
                   turn_timeout: int = 60, recursion: int = 0,
-                  legacy_drain: bool = False, bg_idle: int = 3600) -> None:
+                  legacy_drain: bool = False, bg_idle: int = 3600,
+                  turn_ceiling: int | None = None) -> None:
     global PROC
     stop_backend()
     port_free(PORT)
@@ -1692,10 +1693,20 @@ def start_backend(max_turns: int = 16, steer_hook: str = "0",
         "ORGTREE_STEER_HOOK": steer_hook,
         # a hung fake CLI is IDLE — since the 2026-08-04 reshape the idle
         # watchdog is the bound that fires; the ceiling rides along
-        "ORGTREE_TURN_TIMEOUT": str(turn_timeout),
+        # ⚠ these are TWO clocks and they have always been set to one number.
+        # That is fine for a hung CLI (either may win, and live_timeout says
+        # so) and a TRAP for anything that means to outlive only one of them:
+        # `_dog` exempts a turn with live background children from TURN_IDLE
+        # but NOT from TURN_TIMEOUT, so a bg test pinning both at 6s has its
+        # child reaped by the ceiling at ~10s no matter what the idle rule
+        # does — and the follow-up turn the orphan notice drives then CLEARS
+        # `last_error` and drains the mailbox, erasing the evidence. Measured
+        # 2026-08-20: it passed a check that was asserting nothing.
+        "ORGTREE_TURN_TIMEOUT": str(turn_timeout if turn_ceiling is None
+                                    else turn_ceiling),
         "ORGTREE_TURN_IDLE": str(turn_timeout),
-        # …and the ceiling that replaces it while background children are
-        # live. Held far above turn_timeout by default so the two are
+        # …and the ceiling that replaces TURN_IDLE while background children
+        # are live. Held far above turn_timeout by default so the two are
         # DISTINGUISHABLE: a test that lets a background child outlive
         # TURN_IDLE proves nothing if both clocks are the same number.
         "ORGTREE_BG_IDLE": str(bg_idle),
@@ -2030,7 +2041,11 @@ def live_bg_subagents() -> None:
     # the unfixed supervisor it is dead at 6s with the turn recorded as
     # "turn killed: no CLI output for 6s". bg_idle stays high, which is the
     # whole point: silence with a live child is answered by a different clock.
-    start_backend(turn_timeout=6, bg_idle=3600)
+    # ⚠ turn_ceiling is held WELL clear of both. TURN_TIMEOUT is not exempted
+    # for background children — deliberately, it is the backstop that keeps a
+    # wedged CLI mortal — so leaving it at 6s would reap this child by the
+    # ceiling and measure nothing about the idle rule.
+    start_backend(turn_timeout=6, turn_ceiling=300, bg_idle=3600)
     set_cfg({**FAST, "bgTasks": 1, "bgMs": 12000})
     slug, (nid,) = make_org("bgok")
     tok = token()
@@ -2042,28 +2057,40 @@ def live_bg_subagents() -> None:
                        AssertionError(carriers(slug, nid, tok)))))
 
     def _survives() -> None:
-        # the child runs 12s against a 6s TURN_IDLE, so simply reaching the
-        # end of the turn is the measurement — on the unfixed supervisor the
-        # process is already dead by then.
-        # ⚠ last_error is RUNTIME state (supervisor's `st`), surfaced by the
-        # chat endpoint — it is not on the org doc. Read from the doc and this
-        # check passes vacuously against a node that was reaped exactly as the
-        # bug describes (measured while writing this: 3 checks green on a
-        # supervisor that was still killing children).
+        """POSITIVE evidence only. Two ways this check can lie, both measured
+        while writing it, both closed here:
+
+          · `last_error` is RUNTIME state on the supervisor's `st`, surfaced
+            by the chat endpoint — it is NOT on the org doc. Reading the doc
+            returns None forever and the check passes against a node that was
+            reaped exactly as the bug describes.
+          · worse, the assertions are all ABSENCES ("no error", "no orphan
+            notice"), and this fix's own fail-loud path ERASES them: the
+            notice drives a follow-up turn, a turn start clears `last_error`,
+            and delivery drains the pending mailbox. So the harder the reaper
+            hits, the cleaner the evidence looks.
+
+        `BG-LANDED-0` is the answer to both. The stand-in writes it to the
+        transcript only when the child reaches the END of its run, so it
+        cannot appear for a killed child and cannot be erased by anything the
+        supervisor does afterwards."""
+        assert wait_delivered("BG-LANDED-0", 60), (
+            "the background child never finished — it was reaped while still "
+            "working, which is the user's bug. (The turn's own reply landed "
+            "at the boundary; this is about what happened after it.)")
         wait_idle(slug, nid, 60)
-        err = str(api("GET", f"/api/orgs/{slug}/nodes/{nid}/chat?last=3")
-                  .get("last_error") or "")
-        assert "no CLI output" not in err and "killed" not in err, (
-            f"the idle watchdog reaped a CLI that was running a background "
-            f"subagent — the exact user bug. last_error={err!r}")
-        # …and it must not have been reported as an orphan either: this child
-        # FINISHED, so a "SUBAGENT DIED" notice here would mean the tracker
-        # lost it rather than saw it land.
+        # …and, now that the child is known to have landed, the absences mean
+        # something: nothing may have reported it dead. mail_LOG, not mail —
+        # the pending box is drained on delivery, the log is durable.
+        d = doc(slug)
         box = [str(m.get("body") or "")
-               for m in (doc(slug).get("mail") or {}).get(nid, [])]
+               for m in (d.get("mail_log") or {}).get(nid, [])]
+        box += [str(m.get("body") or "")
+                for m in (d.get("mail") or {}).get(nid, [])]
         assert not [b for b in box if "SUBAGENT DIED" in b], (
-            "a completed background subagent was reported as orphaned — the "
-            "live set is not being cleared by background_tasks_changed")
+            "a background subagent that demonstrably FINISHED was still "
+            "reported as orphaned — background_tasks_changed is not clearing "
+            "the live set, so every healthy child now mails a false alarm")
     check("bg · a live background child is not reaped at TURN_IDLE",
           _survives)
 
