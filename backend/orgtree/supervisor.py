@@ -4053,8 +4053,29 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
                 # next N GENUINE compactions in silence. The re-baseline to
                 # None makes it worse, not better — `have` would collapse to 0
                 # and mint every mark rather than the delta.
-                if n2.get("session_id") != sid0 \
-                        or n2.get("cli_compactions") != seen0:
+                #
+                # …and it SAYS SO on the way out (peer decision, lostgen-fix,
+                # 2026-08-20). The bail writes nothing — that is its whole
+                # contract, and the correctness of everything above it rests on
+                # this region having exactly ONE mutating exit, which is also
+                # why the occupancy correction below stays inside it rather
+                # than being hoisted out as a consolation write. But a silent
+                # `return` on a path that discards real work is an event no
+                # operator could ever learn happened, including us. The two
+                # reasons are worth telling apart: a CHANGED session is the
+                # ordinary `cheap_compact` race and reads as the system
+                # working, while a HELD session whose watermark moved under a
+                # locked read means something is wrong with the doc itself.
+                if n2.get("session_id") != sid0:
+                    print(f"[orgtree] {slug}/{nid}: cli-compaction cuts "
+                          f"discarded — session changed under the turn "
+                          f"(a mint mid-turn); {len(cuts)} cut(s) reaped")
+                    return
+                if n2.get("cli_compactions") != seen0:
+                    print(f"[orgtree] {slug}/{nid}: cli-compaction cuts "
+                          f"discarded — session held but watermark moved "
+                          f"({n2.get('cli_compactions')!r} != {seen0!r}); "
+                          f"{len(cuts)} cut(s) reaped")
                     return
                 for off, pre, bearer_sid in cuts:
                     o2.record_cli_compaction(

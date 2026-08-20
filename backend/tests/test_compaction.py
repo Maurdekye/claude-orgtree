@@ -71,6 +71,7 @@ own port (7409 by default), every org deleted at the end.
 
 from __future__ import annotations
 
+import contextlib
 import glob
 import io
 import json
@@ -1729,12 +1730,21 @@ def occupancy_reporting() -> None:
         return _real_so(org, nid, require_boundary)
 
     supervisor.session_occupancy = _racing_read
+    _say28 = io.StringIO()
     try:
-        supervisor._after_turn(s28.slug, s28.nid, stale, {},
-                               supervisor.state(s28.slug, s28.nid), 150_000)
+        with contextlib.redirect_stdout(_say28):
+            supervisor._after_turn(s28.slug, s28.nid, stale, {},
+                                   supervisor.state(s28.slug, s28.nid), 150_000)
     finally:
         supervisor.session_occupancy = _real_so
     n28 = store.load_org(s28.slug).node(s28.nid)
+    # the bail writes NOTHING to the doc, by contract — so the only way anyone
+    # ever learns it happened is that it says so, and the reason it names is
+    # the whole value: a changed session is the ordinary mint-mid-turn race
+    check("toctou · …and the discarded work is announced, naming the ordinary "
+          "cause rather than bailing in silence",
+          lambda: _true("session changed under the turn" in _say28.getvalue(),
+                        repr(_say28.getvalue())))
     check("toctou · a session replaced while the aftermath was being read "
           "keeps its OWN empty fill, not the dead session's",
           lambda: _eq(n28.get("occupancy"), None))
@@ -1938,8 +1948,10 @@ def occupancy_reporting() -> None:
         return _real_so2(o, nid, require_boundary)
 
     supervisor.session_occupancy = _tearing_read
+    _say34b = io.StringIO()
     try:
-        after34b = s34b.after_turn(150_000)
+        with contextlib.redirect_stdout(_say34b):
+            after34b = s34b.after_turn(150_000)
     finally:
         supervisor.session_occupancy = _real_so2
     check("torn · a watermark torn INSIDE the off-lock read cannot raise "
@@ -1951,6 +1963,14 @@ def occupancy_reporting() -> None:
           "for a cut the doc never learned about",
           lambda: _eq(sorted(k for k in store.load_org(s34b.slug).nodes
                              if k.startswith(s34b.nid + "@")), []))
+    # …and this is the reason an operator actually needs to see: the session is
+    # still ours, so nothing raced us — the DOC moved under a locked read,
+    # which is the shape that means something is wrong rather than busy
+    check("torn · …and it is announced as the doc-is-wrong case, not confused "
+          "with the ordinary mint-mid-turn race",
+          lambda: _true("session held but watermark moved" in _say34b.getvalue()
+                        and "session changed" not in _say34b.getvalue(),
+                        repr(_say34b.getvalue())))
 
     # ---- the baseline turn's watermark write is what makes its `return` cost
     # exactly ONE turn instead of every turn. Nothing pinned it.
