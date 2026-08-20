@@ -32,6 +32,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from collections.abc import Callable, Iterable, Mapping
 from typing import Any, cast
 
@@ -3892,7 +3893,7 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
     # precedent — visible, honestly unconsultable) and a generation bump.
     # And the occ-threshold split below is SKIPPED this turn: with 1a's peak
     # sampling, occ may still carry the pre-compaction high-water mark.
-    cli_cnt, cli_pre = _count_cli_compactions(org, nid)
+    cli_cnt, cli_pre, cli_marks = _count_cli_compactions(org, nid)
     seen_raw = n.get("cli_compactions")
     if seen_raw is None:
         # first observation of this node under the feature: BASELINE without
@@ -3910,8 +3911,18 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
                 return
             n2 = o2.node(nid)
             have = int(n2.get("cli_compactions") or 0)
-            for _ in range(max(0, cli_cnt - have)):
-                o2.record_cli_compaction(nid, cli_pre)
+            # one generation per UNRECORDED boundary, each cut from its own
+            # offset so it holds exactly the context of its own moment — and
+            # each carrying its OWN preTokens rather than the last boundary's
+            # (they only agreed when a single boundary was pending). The
+            # session id read here is the successor's, which record_cli_
+            # compaction deliberately leaves untouched, so every cut is taken
+            # from the one file that has them all.
+            sid2 = n2["session_id"]
+            for off, pre in cli_marks[have:cli_cnt]:
+                o2.record_cli_compaction(
+                    nid, pre if pre is not None else cli_pre,
+                    _fork_bearer_session(o2, sid2, off))
             n2["cli_compactions"] = cli_cnt
             store.save_org(o2)
         notify(slug, nid, "compacted")
@@ -3923,20 +3934,34 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
             _compact_split(slug, nid)
 
 
-def _count_cli_compactions(org: Org, nid: str) -> tuple[int, int | None]:
+def _count_cli_compactions(
+        org: Org, nid: str) -> tuple[int, int | None, list[tuple[int, int | None]]]:
     """How many times the CLI has compacted this node's session, read off the
     session JSONL the same way read_chat renders it: `system` records with
     subtype `compact_boundary` (compactMetadata.preTokens rides along — the
     LAST boundary's value is returned for the notice). Substring-gated before
-    any JSON parse, so the per-turn cost is one linear scan."""
+    any JSON parse, so the per-turn cost is one linear scan.
+
+    Returns `(count, last_pre_tokens, marks)`, where `marks` is one
+    `(line_offset, pre_tokens)` per boundary IN FILE ORDER. The offsets are
+    what makes the pre-compaction generation recoverable: the CLI's in-place
+    compaction is APPEND-ONLY (boundary record, then the summary, then the
+    post-compaction turns — all in the same file, the earlier records
+    untouched), so line_offset is the exact cut point at which the file still
+    holds precisely what the agent held the instant before it was compacted.
+    See `_fork_bearer_session`.
+
+    (`count == len(marks)`; both are returned because the count is the
+    bookkeeping value stored on the node and the marks are the surgery.)"""
     try:
         n = org.node(nid)
         tpath = transcript_path(n["session_id"], _transcript_root(org))
         if not tpath:
-            return 0, None
-        cnt, pre = 0, None
+            return 0, None, []
+        pre: int | None = None
+        marks: list[tuple[int, int | None]] = []
         with open(tpath, encoding="utf-8", errors="replace") as f:
-            for line in f:
+            for i, line in enumerate(f):
                 if '"compact_boundary"' not in line:
                     continue
                 try:
@@ -3945,13 +3970,251 @@ def _count_cli_compactions(org: Org, nid: str) -> tuple[int, int | None]:
                     continue
                 if rec.get("type") == "system" \
                         and rec.get("subtype") == "compact_boundary":
-                    cnt += 1
                     p = (rec.get("compactMetadata") or {}).get("preTokens")
-                    if isinstance(p, (int, float)):
-                        pre = int(p)
-        return cnt, pre
+                    p = int(p) if isinstance(p, (int, float)) else None
+                    marks.append((i, p))
+                    if p is not None:
+                        pre = p
+        return len(marks), pre, marks
     except (OSError, LedgerError):
-        return 0, None
+        return 0, None, []
+
+
+def _fork_bearer_session(org: Org, sid: str, upto: int) -> str | None:
+    """Mint a REAL, resumable session for the generation the CLI compacted —
+    the difference between a LOST generation and a consultable knowledge
+    bearer.
+
+    The bug this exists for (measured 2026-08-20, ingame-prompt@6): the CLI's
+    in-place compaction does not destroy anything. It APPENDS a
+    compact_boundary, then the summary, then the post-compaction turns, all to
+    the same file. But `record_cli_compaction` left `session_id` UNCHANGED, so
+    the archived predecessor and its live successor named ONE session — and
+    resuming it replays from the last boundary, i.e. the successor's own
+    post-compaction state. Nothing was lost but the resumable HANDLE, and the
+    generation was written off as unconsultable while its every record sat on
+    disk.
+
+    So: copy lines [0, upto) — everything above the boundary — verbatim to a
+    fresh session id beside the original, and hand that to the bearer. A plain
+    PREFIX is exactly right, and cheap:
+      · resume replays from the file's LAST boundary, so cutting at boundary k
+        leaves boundary k-1 last and the resumed context is precisely what the
+        agent held the instant before boundary k fired (the k>1 case falls out
+        for free — no special casing per generation);
+      · a prefix of a valid parentUuid chain is a valid parentUuid chain, so
+        no record rewriting is needed;
+      · the CLI keys a session on the FILENAME and tolerates the stale
+        `sessionId` inside the records — live-verified 2026-08-20 by resuming
+        a hand-cut prefix under a new uuid: it loaded clean and held exactly
+        the pre-cut context, and nothing else;
+      · the bearer gets its OWN file, so it can never collide with the
+        successor that is still appending to the original.
+    This is the same shape `--fork-session` performs internally, which is how
+    the §8 split path has always kept its bearers consultable.
+
+    Fails SOFT and silently: on any I/O trouble the caller records today's
+    LOST generation instead, which is the behaviour this replaces — a failed
+    rescue must never be worse than no rescue."""
+    if upto <= 0:
+        # a boundary on line 0 means there is no pre-compaction conversation
+        # above it to preserve; minting an empty session would hand the org a
+        # bearer with nothing to say
+        return None
+    try:
+        src = transcript_path(sid, _transcript_root(org))
+        if not src:
+            return None
+        with open(src, encoding="utf-8", errors="replace") as f:
+            head = [ln for _, ln in zip(range(upto), f)]
+        if len(head) < upto:
+            # the file shrank under us — it should only ever grow, so this is
+            # not a state to guess about
+            return None
+        new_sid = str(uuid.uuid4())
+        dst = os.path.join(os.path.dirname(src), f"{new_sid}.jsonl")
+        # write beside the original, then rename: a torn file under a session
+        # id the ledger already points at would be unresumable, and the node
+        # is archived by then with no turn to repair it
+        tmp = dst + ".part"
+        with open(tmp, "w", encoding="utf-8", newline="") as f:
+            for ln in head:
+                f.write(ln if ln.endswith("\n") else ln + "\n")
+        os.replace(tmp, dst)
+        return new_sid
+    except OSError:
+        return None
+
+
+def _record_uuids(path: str, upto: int | None = None) -> set[str] | None:
+    """Every record uuid in a session JSONL (optionally only the first `upto`
+    lines). None — never an empty set — when the file cannot be read, so a
+    caller proving a set-inclusion can tell "nothing there" from "could not
+    look"; the two must never collapse into the same answer."""
+    try:
+        out: set[str] = set()
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for i, line in enumerate(f):
+                if upto is not None and i >= upto:
+                    break
+                if '"uuid"' not in line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                u = rec.get("uuid")
+                if isinstance(u, str) and u:
+                    out.add(u)
+        return out
+    except OSError:
+        return None
+
+
+def _phantom_evidence(org: Org, pred_id: str) -> dict[str, Any]:
+    """PROVE — or refuse to claim — that a LOST lineage entry is a phantom of
+    `compact_split`'s missing counter reset, and may therefore be dropped.
+
+    The one admissible proof is total content duplication: every record above
+    the boundary that minted this entry is ALREADY in the sibling bearer's own
+    session file. That is the fork-copy signature (a `--fork-session` copy
+    re-stamps the session id but keeps every record uuid), and it is what
+    reclassified ingame-prompt@6: 425 of 425 pre-boundary uuids were already
+    held by ingame-prompt@5.
+
+    FAILS CLOSED (user order). Returns {"phantom": False, "why": …} for every
+    doubt — unreadable file, no sibling, a single uuid that the sibling does
+    not hold. A generation whose content is UNIQUE is a real loss and must
+    survive this check, because dropping it would destroy the only record of
+    it. `phantom: True` is only ever returned on a complete, positive match."""
+    def no(why: str) -> dict[str, Any]:
+        return {"phantom": False, "why": why}
+
+    n = org.nodes.get(pred_id)
+    if not n:
+        return no(f"{pred_id} does not exist")
+    if n.get("bearer_state") != "lost":
+        return no(f"{pred_id} is not a LOST generation "
+                  f"(bearer_state={n.get('bearer_state')!r})")
+    succ_id = n.get("successor")
+    succ = org.nodes.get(succ_id) if succ_id else None
+    if not succ:
+        return no(f"{pred_id} has no successor to compare against")
+    # the phantom's signature: record_cli_compaction left the id alone, so the
+    # row still names the SUCCESSOR's session. A lost row with its own session
+    # is a different animal (a recovered bearer, or reseed's dead session) and
+    # is not ours to delete.
+    if n.get("session_id") != succ.get("session_id"):
+        return no(f"{pred_id} holds its own session id, not its successor's — "
+                  f"not the phantom shape")
+    prev_id = n.get("predecessor")
+    prev = org.nodes.get(prev_id) if prev_id else None
+    if not prev:
+        return no(f"{pred_id} has no sibling bearer ({prev_id!r}) to hold its "
+                  f"content — cannot prove duplication")
+    if prev.get("bearer_state") != "knowledge":
+        return no(f"sibling {prev_id} is not a knowledge bearer "
+                  f"(bearer_state={prev.get('bearer_state')!r})")
+    root = _transcript_root(org)
+    src = transcript_path(cast(str, n.get("session_id")), root)
+    dup = transcript_path(cast(str, prev.get("session_id")), root)
+    if not src or not dup:
+        return no("a session file is missing — cannot prove duplication")
+    _cnt, _pre, marks = _count_cli_compactions(org, cast(str, succ_id))
+    if not marks:
+        return no("no compact boundary in the session — nothing to compare")
+    # the FIRST boundary is the §8 fork's own /compact; everything above it is
+    # the copied history. Later boundaries are real in-place compactions and
+    # are NOT phantom territory.
+    upto = marks[0][0]
+    mine = _record_uuids(src, upto)
+    theirs = _record_uuids(dup)
+    if mine is None or theirs is None:
+        return no("a session file could not be read — refusing to guess")
+    if not mine:
+        return no("no records above the boundary — nothing to prove")
+    missing = mine - theirs
+    if missing:
+        return no(f"{len(missing)} of {len(mine)} records above the boundary "
+                  f"are NOT in {prev_id} — this content is unique, so the "
+                  f"generation is a real loss, not a phantom")
+    return {"phantom": True, "records": len(mine), "duplicate_of": prev_id,
+            "successor": succ_id,
+            "why": f"all {len(mine)} records above the boundary are already "
+                   f"held by {prev_id} (fork-copy signature)"}
+
+
+def drop_phantom_generation(slug: str, pred_id: str) -> dict[str, Any]:
+    """The opt-in repair for a phantom LOST row (user ruling 2026-08-20).
+    Proves phantom-ness under the doc lock — re-proving it there rather than
+    trusting an earlier look, since the evidence is on disk and the disk can
+    change — then removes the row. Refuses, loudly, on anything unproven."""
+    with store.DOC_LOCK:
+        org = store.load_org(slug)
+        ev = _phantom_evidence(org, pred_id)
+        if not ev.get("phantom"):
+            raise LedgerError(f"refusing to drop {pred_id}: {ev.get('why')}")
+        out = org.drop_phantom_generation(pred_id)
+        store.save_org(org)
+    notify(slug, out.get("successor") or pred_id, "lineage")
+    return {**out, **{k: ev[k] for k in ("records", "why") if k in ev}}
+
+
+def recover_lost_generation(slug: str, pred_id: str) -> dict[str, Any]:
+    """The opt-in rescue for a GENUINE lost generation (user ruling
+    2026-08-20): cut the records that survive above its boundary into a
+    session of its own and promote the row to a consultable knowledge bearer.
+
+    Refuses phantoms. A phantom's content is already held by its sibling, so
+    recovering it would mint a SECOND bearer holding a copy of the first —
+    `drop_phantom_generation` is that row's repair, not this."""
+    with store.DOC_LOCK:
+        org = store.load_org(slug)
+        n = org.nodes.get(pred_id)
+        if not n:
+            raise LedgerError(f"no such node: {pred_id}")
+        # checked FIRST so re-running on an already-recovered bearer says the
+        # true thing ("not a lost generation") rather than tripping over the
+        # session-sharing test below — which a recovered bearer now fails for
+        # the good reason that it holds a session of its own
+        if n.get("bearer_state") != "lost":
+            raise LedgerError(
+                f"{pred_id} is not a lost generation "
+                f"(bearer_state={n.get('bearer_state')!r})")
+        ev = _phantom_evidence(org, pred_id)
+        if ev.get("phantom"):
+            raise LedgerError(
+                f"refusing to recover {pred_id}: it is a PHANTOM, not a lost "
+                f"generation — {ev.get('why')}. Its content is already held "
+                f"by {ev.get('duplicate_of')}; drop the row instead.")
+        succ_id = n.get("successor")
+        if not succ_id or succ_id not in org.nodes:
+            raise LedgerError(f"{pred_id} has no successor to recover from")
+        if n.get("session_id") != org.node(succ_id).get("session_id"):
+            raise LedgerError(
+                f"{pred_id} does not share its successor's session — there is "
+                f"no in-place boundary to cut it from")
+        _cnt, _pre, marks = _count_cli_compactions(org, cast(str, succ_id))
+        # this row is the generation the LAST boundary closed; earlier
+        # boundaries belong to earlier rows, which hold their own ids by now
+        gen_rows = sorted(
+            (k for k, v in org.nodes.items()
+             if v.get("bearer_state") == "lost"
+             and v.get("session_id") == n.get("session_id")),
+            key=lambda k: org.nodes[k].get("generation", 0))
+        if pred_id not in gen_rows or len(gen_rows) > len(marks):
+            raise LedgerError(f"cannot place {pred_id} against the session's "
+                              f"boundaries — refusing to guess")
+        off = marks[len(marks) - len(gen_rows) + gen_rows.index(pred_id)][0]
+        sid = _fork_bearer_session(org, cast(str, n.get("session_id")), off)
+        if not sid:
+            raise LedgerError(
+                f"could not cut a session for {pred_id} — its records may be "
+                f"gone; it stays a LOST generation")
+        org.recover_lost_generation(pred_id, sid)
+        store.save_org(org)
+    notify(slug, pred_id, "lineage")
+    return {"recovered": pred_id, "session_id": sid, "cut_at": off}
 
 
 def _fork_result(out: str) -> dict[str, Any]:

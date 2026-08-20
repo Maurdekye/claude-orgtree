@@ -3229,6 +3229,358 @@ def live_timing() -> None:
     drop_orgs()
 
 
+# ============ 3c. hermetic: the lost generation — preserve, phantom, recover
+
+def _plant_session(sid: str, recs: list[dict], home: str = HOME) -> str:
+    """A session JSONL with REAL records — uuids and compact_boundary markers —
+    rather than `_plant_transcript`'s single filler line. The lost-generation
+    work is all about WHERE the boundary sits and WHICH uuids are above it, so
+    these tests need a file with a real shape."""
+    d = os.path.join(home, ".claude", "projects", "rig")
+    os.makedirs(d, exist_ok=True)
+    p = os.path.join(d, sid + ".jsonl")
+    with open(p, "w", encoding="utf-8") as f:
+        for r in recs:
+            f.write(json.dumps(r) + "\n")
+    return p
+
+
+def _msg(uuid_: str, text: str = "x") -> dict:
+    return {"type": "user", "uuid": uuid_,
+            "message": {"role": "user", "content": text}}
+
+
+def _boundary(uuid_: str, pre: int | None = 1000) -> dict:
+    r: dict = {"type": "system", "subtype": "compact_boundary", "uuid": uuid_,
+               "content": "Conversation compacted"}
+    if pre is not None:
+        r["compactMetadata"] = {"trigger": "manual", "preTokens": pre}
+    return r
+
+
+def lost_generations() -> None:
+    """The CLI's in-place compaction, and the three ways orgtree got it wrong.
+
+    Measured 2026-08-20 on this machine before any of it was fixed:
+      · 13 session files carry boundaries whose pre-boundary records are unique
+        to their own file — one with FIFTEEN in a single file. Fifteen forks
+        would be fifteen files, so the in-place, append-only shape is real.
+      · ingame-prompt@6 — the generation reported LOST — was not one of them.
+        All 425 of its pre-boundary uuids were already in ingame-prompt@5's
+        file, i.e. a `--fork-session` copy. It was a PHANTOM of orgtree's own
+        §8 split, not a CLI compaction at all.
+    """
+    print("\nthe boundary scan (supervisor._count_cli_compactions):")
+
+    org, (a,) = horg()
+    sid = sid_of(org, a)
+    _plant_session(sid, [_msg("u1"), _msg("u2"), _boundary("b1", 111),
+                         _msg("u3"), _boundary("b2", 222), _msg("u4")])
+    store.save_org(org)
+    cnt, pre, marks = supervisor._count_cli_compactions(org, a)
+    check("scan · every boundary is counted",
+          lambda: _true(cnt == 2, f"got {cnt}"))
+    check("scan · the LAST boundary's preTokens is the headline figure",
+          lambda: _true(pre == 222, f"got {pre}"))
+    check("scan · each boundary reports its own line offset AND its own "
+          "preTokens — the offsets are what make the cut possible",
+          lambda: _true(marks == [(2, 111), (4, 222)], f"got {marks}"))
+    check("scan · count and marks cannot disagree",
+          lambda: _true(cnt == len(marks)))
+
+    # a boundary with no compactMetadata must still be a boundary: the cut
+    # point is the thing that matters, the token figure is decoration
+    org2, (b,) = horg()
+    _plant_session(sid_of(org2, b), [_msg("v1"), _boundary("vb", None)])
+    store.save_org(org2)
+    cnt2, pre2, marks2 = supervisor._count_cli_compactions(org2, b)
+    check("scan · a boundary WITHOUT preTokens still counts and still cuts",
+          lambda: _true(cnt2 == 1 and pre2 is None and marks2 == [(1, None)],
+                        f"{cnt2} {pre2} {marks2}"))
+
+    print("\nthe cut (supervisor._fork_bearer_session):")
+
+    org3, (c,) = horg()
+    sid3 = sid_of(org3, c)
+    _plant_session(sid3, [_msg("k1"), _msg("k2"), _boundary("kb"), _msg("k3")])
+    store.save_org(org3)
+    new = supervisor._fork_bearer_session(org3, sid3, 2)
+    check("cut · a fresh session id is minted, distinct from the original",
+          lambda: _true(bool(new) and new != sid3, f"got {new!r}"))
+
+    def _cut_content() -> None:
+        p = supervisor.transcript_path(new, None)      # type: ignore[arg-type]
+        _true(bool(p), "the cut session has no transcript on disk")
+        lines = open(p, encoding="utf-8").read().splitlines()  # type: ignore[arg-type]
+        _true(len(lines) == 2, f"expected 2 lines, got {len(lines)}")
+        got = [json.loads(x).get("uuid") for x in lines]
+        _true(got == ["k1", "k2"], f"got {got}")
+    check("cut · it holds EXACTLY the records above the boundary — the "
+          "boundary itself and everything after it are excluded", _cut_content)
+
+    def _original_untouched() -> None:
+        p = supervisor.transcript_path(sid3, None)
+        n = len(open(p, encoding="utf-8").read().splitlines())  # type: ignore[arg-type]
+        _true(n == 4, f"the successor's own session was modified: {n} lines")
+    check("cut · the ORIGINAL is left alone — the successor is still "
+          "appending to it and must not be touched", _original_untouched)
+
+    check("cut · a boundary at line 0 yields NO bearer rather than an empty "
+          "session with nothing to say",
+          lambda: _true(supervisor._fork_bearer_session(org3, sid3, 0) is None))
+    check("cut · an unknown session cuts nothing instead of raising",
+          lambda: _true(supervisor._fork_bearer_session(
+              org3, "no-such-session", 2) is None))
+
+    print("\nthe mint (Org.record_cli_compaction):")
+
+    org4, (d,) = horg()
+    _plant_transcript(sid_of(org4, d))
+    lost = org4.record_cli_compaction(d, 900)
+    check("mint · with NO cut session the generation is still LOST — the "
+          "fail-soft is the old behaviour exactly, never a bearer that "
+          "cannot answer",
+          lambda: _true(org4.nodes[lost]["bearer_state"] == "lost"))
+
+    org5, (e,) = horg()
+    sid5 = sid_of(org5, e)
+    _plant_transcript(sid5)
+    kept = org5.record_cli_compaction(e, 900, "cut-session-id")
+    check("mint · WITH a cut session it is a consultable knowledge bearer",
+          lambda: _true(org5.nodes[kept]["bearer_state"] == "knowledge",
+                        f'got {org5.nodes[kept]["bearer_state"]!r}'))
+    check("mint · the bearer holds the CUT session, not the successor's — "
+          "this is the one field that makes it consultable",
+          lambda: _true(org5.nodes[kept]["session_id"] == "cut-session-id"))
+    check("mint · …and the successor keeps its own session, still live",
+          lambda: _true(org5.node(e)["session_id"] == sid5))
+    check("mint · the successor's generation advanced either way",
+          lambda: _true(org5.node(e)["generation"] == 1
+                        and org5.node(e)["predecessor"] == kept))
+    check("mint · a preserved bearer is REHIRABLE (a lost one is refused, "
+          "and that refusal is the whole user-visible symptom)",
+          lambda: org5.rehire(USER, kept, 5))
+    check("mint · a LOST generation still refuses rehire",
+          lambda: _raises(lambda: org4.rehire(USER, lost, 5), "lost"))
+
+    print("\nthe phantom (the §8 split's own boundary, counted as a loss):")
+
+    # BUG A, reported by peer compaction-fix 2026-08-20 and confirmed on disk.
+    org6, (f6,) = horg()
+    _plant_transcript(sid_of(org6, f6))
+    org6.compact_split(f6, "fork-sid")
+    check("phantom · compact_split RE-BASELINES the counter, because the "
+          "fork it hands over already contains one boundary — its own "
+          "/compact — and a stale counter reads that as a CLI compaction",
+          lambda: _true(org6.node(f6).get("cli_compactions", "MISSING") is None,
+                        f'got {org6.node(f6).get("cli_compactions", "MISSING")!r}'))
+
+    # the end-to-end proof: a fork carrying one boundary must NOT mint anything
+    org7, (g,) = horg()
+    _plant_transcript(sid_of(org7, g))
+    org7.compact_split(g, "fork-sid-2")
+    _plant_session("fork-sid-2", [_msg("f1"), _boundary("fb"), _msg("f2")])
+    store.save_org(org7)
+    before = set(org7.nodes)
+    st7 = supervisor.state(org7.d["slug"], g)
+    supervisor._after_turn(org7.d["slug"], g, org7, {}, st7, 1)
+    org7 = store.load_org(org7.d["slug"])
+    check("phantom · a §8 split's successor mints NO lineage entry on its "
+          "next turn — one real generation, one archived node, not two",
+          lambda: _true(set(org7.nodes) == before,
+                        f"new nodes: {set(org7.nodes) - before}"))
+    check("phantom · …and the counter is baselined to the fork's true count, "
+          "so the NEXT real compaction is still seen",
+          lambda: _true(org7.node(g).get("cli_compactions") == 1,
+                        f'got {org7.node(g).get("cli_compactions")!r}'))
+
+    # BUG C: the same staleness, failing the other way round.
+    org8, (h,) = horg()
+    _plant_transcript(sid_of(org8, h))
+    org8.node(h)["cli_compactions"] = 3
+    org8.cheap_compact(USER, h)
+    check("phantom · cheap_compact re-baselines too — a stale HIGH count "
+          "against a fresh EMPTY session would swallow the next three real "
+          "compactions in silence",
+          lambda: _true(org8.node(h).get("cli_compactions", "MISSING") is None))
+
+    print("\nthe end-to-end rescue (a genuine in-place compaction):")
+
+    org9, (i9,) = horg()
+    sid9 = sid_of(org9, i9)
+    _plant_session(sid9, [_msg("p1"), _msg("p2"), _boundary("pb", 4242),
+                          _msg("p3")])
+    org9.node(i9)["cli_compactions"] = 0        # baselined before the boundary
+    store.save_org(org9)
+    st9 = supervisor.state(org9.d["slug"], i9)
+    supervisor._after_turn(org9.d["slug"], i9, org9, {}, st9, 1)
+    org9 = store.load_org(org9.d["slug"])
+    bearer9 = f"{i9}@0"
+
+    check("rescue · the generation the CLI compacted is recorded",
+          lambda: _true(bearer9 in org9.nodes, f"nodes: {sorted(org9.nodes)}"))
+    check("rescue · and it is CONSULTABLE, not lost — this is the bug",
+          lambda: _true(org9.nodes[bearer9]["bearer_state"] == "knowledge",
+                        f'got {org9.nodes[bearer9]["bearer_state"]!r}'))
+    check("rescue · the bearer no longer shares the live node's session id",
+          lambda: _true(org9.nodes[bearer9]["session_id"] != sid9
+                        and org9.node(i9)["session_id"] == sid9))
+
+    def _rescued_content() -> None:
+        p = supervisor.transcript_path(org9.nodes[bearer9]["session_id"], None)
+        _true(bool(p), "the rescued bearer has no session file")
+        got = [json.loads(x).get("uuid")
+               for x in open(p, encoding="utf-8").read().splitlines()]  # type: ignore[arg-type]
+        _true(got == ["p1", "p2"], f"got {got}")
+    check("rescue · it holds the pre-compaction records — the very ones the "
+          "org was told were gone", _rescued_content)
+
+    print("\nphantom evidence — and its refusals (fail closed):")
+
+    ev = supervisor._phantom_evidence(org9, bearer9)
+    check("evidence · a RESCUED bearer is not a phantom (it is not even lost)",
+          lambda: _true(ev["phantom"] is False, json.dumps(ev)))
+
+    # the real thing: a lost row whose content is wholly duplicated elsewhere
+    # the exact §8 shape: the predecessor keeps the OLD session, the successor
+    # gets the fork — and the fork is a COPY of that history (same uuids)
+    # carrying its own /compact boundary. That copy is what makes the row a
+    # phantom: its content was never anywhere else.
+    org10, (j,) = horg()
+    old10 = sid_of(org10, j)
+    _plant_session(old10, [_msg("q1"), _msg("q2")])
+    prev10 = org10.compact_split(j, "fork-sid-10")
+    _plant_session("fork-sid-10", [_msg("q1"), _msg("q2"),
+                                   _boundary("qb"), _msg("q3")])
+    ph = org10.record_cli_compaction(j, 500)          # the phantom row
+    store.save_org(org10)
+    ev10 = supervisor._phantom_evidence(org10, ph)
+    check("evidence · a lost row whose every pre-boundary record is already "
+          "held by its sibling IS a phantom",
+          lambda: _true(ev10["phantom"] is True, json.dumps(ev10)))
+    check("evidence · …and it says how many records it matched",
+          lambda: _true(ev10.get("records") == 2
+                        and ev10.get("duplicate_of") == prev10,
+                        json.dumps(ev10)))
+
+    # …and the case the fail-closed rule exists for
+    # same shape, one difference that changes everything: the sibling does NOT
+    # hold record r2. So this generation carries content that exists nowhere
+    # else, and must survive the drop.
+    org11, (k,) = horg()
+    old11 = sid_of(org11, k)
+    _plant_session(old11, [_msg("r1")])                 # PARTIAL
+    prev11 = org11.compact_split(k, "fork-sid-11")
+    _plant_session("fork-sid-11", [_msg("r1"), _msg("r2"),
+                                   _boundary("rb"), _msg("r3")])
+    ph11 = org11.record_cli_compaction(k, 500)
+    store.save_org(org11)
+    ev11 = supervisor._phantom_evidence(org11, ph11)
+    check("evidence · one unmatched record is enough to REFUSE — unique "
+          "content means a real loss, and dropping it would destroy the only "
+          "copy",
+          lambda: _true(ev11["phantom"] is False
+                        and "unique" in ev11.get("why", ""),
+                        json.dumps(ev11)))
+
+    org12, (m,) = horg()
+    _plant_transcript(sid_of(org12, m))
+    lost12 = org12.record_cli_compaction(m, 100)
+    org12.nodes[lost12]["session_id"] = "vanished-session"
+    store.save_org(org12)
+    check("evidence · an unreadable session refuses rather than guessing — "
+          "'could not look' must never read as 'nothing there'",
+          lambda: _true(supervisor._phantom_evidence(
+              org12, lost12)["phantom"] is False))
+
+    print("\ndropping a phantom, and refusing to drop anything else:")
+
+    slug10 = org10.d["slug"]
+    succ_gen = org10.node(j)["generation"]
+    out = supervisor.drop_phantom_generation(slug10, ph)
+    org10 = store.load_org(slug10)
+    check("drop · the phantom row is gone",
+          lambda: _true(ph not in org10.nodes, f"still there: {ph}"))
+    check("drop · the lineage chain is re-linked ACROSS the hole, so nothing "
+          "points at an id that no longer resolves",
+          lambda: _true(org10.node(j)["predecessor"] == prev10
+                        and org10.nodes[prev10]["successor"] == j,
+                        f'{org10.node(j)["predecessor"]} / '
+                        f'{org10.nodes[prev10]["successor"]}'))
+    check("drop · the sibling bearer — which holds the real content — "
+          "survives untouched and still consultable",
+          lambda: _true(org10.nodes[prev10]["bearer_state"] == "knowledge"))
+    check("drop · the generation NUMBER keeps its gap rather than renumbering "
+          "ids that mail and audiences still reference",
+          lambda: _true(org10.node(j)["generation"] == succ_gen))
+    check("drop · it reports what it removed and what holds the content",
+          lambda: _true(out["dropped"] == ph and out["duplicate_of"] == prev10,
+                        json.dumps(out)))
+
+    slug11 = org11.d["slug"]
+    check("drop · REFUSES a lost generation whose content is unique — the "
+          "fail-closed rule, and the whole reason the proof exists",
+          lambda: _raises(
+              lambda: supervisor.drop_phantom_generation(slug11, ph11),
+              "unique"))
+    check("drop · refuses a knowledge bearer outright",
+          lambda: _raises(
+              lambda: supervisor.drop_phantom_generation(slug11, prev11),
+              "not a LOST generation"))
+
+    print("\nrecovering a genuine loss, and refusing to recover a phantom:")
+
+    org13, (n13,) = horg()
+    sid13 = sid_of(org13, n13)
+    _plant_session(sid13, [_msg("s1"), _msg("s2"), _boundary("sb"), _msg("s3")])
+    lost13 = org13.record_cli_compaction(n13, 700)   # no cut → LOST, as before
+    store.save_org(org13)
+    slug13 = org13.d["slug"]
+    check("recover · a genuine lost generation is precondition-checked as "
+          "lost and sharing its successor's session",
+          lambda: _true(org13.nodes[lost13]["bearer_state"] == "lost"
+                        and org13.nodes[lost13]["session_id"] == sid13))
+    rec = supervisor.recover_lost_generation(slug13, lost13)
+    org13 = store.load_org(slug13)
+    check("recover · it becomes a consultable knowledge bearer",
+          lambda: _true(org13.nodes[lost13]["bearer_state"] == "knowledge",
+                        json.dumps(rec)))
+    check("recover · on its OWN session, cut at its own boundary",
+          lambda: _true(org13.nodes[lost13]["session_id"] != sid13
+                        and rec["cut_at"] == 2, json.dumps(rec)))
+
+    def _recovered_content() -> None:
+        p = supervisor.transcript_path(org13.nodes[lost13]["session_id"], None)
+        got = [json.loads(x).get("uuid")
+               for x in open(p, encoding="utf-8").read().splitlines()]  # type: ignore[arg-type]
+        _true(got == ["s1", "s2"], f"got {got}")
+    check("recover · holding exactly the records that survived above the "
+          "boundary", _recovered_content)
+    check("recover · refuses to run twice — it is no longer lost",
+          lambda: _raises(
+              lambda: supervisor.recover_lost_generation(slug13, lost13),
+              "not a lost generation"))
+    # a phantom of its own — org10's was already dropped, and org11's row is
+    # the UNIQUE-content case, which is precisely not a phantom
+    org14, (n14,) = horg()
+    _plant_session(sid_of(org14, n14), [_msg("t1"), _msg("t2")])
+    prev14 = org14.compact_split(n14, "fork-sid-14")
+    _plant_session("fork-sid-14", [_msg("t1"), _msg("t2"),
+                                   _boundary("tb"), _msg("t3")])
+    ph14 = org14.record_cli_compaction(n14, 500)
+    store.save_org(org14)
+    check("recover · refuses a phantom — recovering one would mint a SECOND "
+          "bearer holding a copy of the first",
+          lambda: _raises(
+              lambda: supervisor.recover_lost_generation(
+                  org14.d["slug"], ph14), "phantom"))
+    check("recover · …and the refusal names the sibling that already holds "
+          "the content, so the operator is pointed at the right repair",
+          lambda: _raises(
+              lambda: supervisor.recover_lost_generation(
+                  org14.d["slug"], ph14), prev14))
+
+
 # ================================================================== the runner
 
 def main() -> None:
@@ -3238,6 +3590,7 @@ def main() -> None:
     bearer_rules()
     thresholds()
     predicates()
+    lost_generations()
     notice_digest()
     cross_process()
     aging()

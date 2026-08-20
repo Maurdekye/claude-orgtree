@@ -2373,6 +2373,12 @@ class Org:
         n["session_id"] = str(uuid.uuid4())
         n["generation"] = gen + 1
         n["predecessor"] = pred_id
+        # the counter belongs to the OLD session file; this one is brand new
+        # and empty. Left stale it fails the other way round from the fork's
+        # phantom: a node carrying "2" would need THREE real compactions in
+        # the fresh session before `cli_cnt > seen_raw` ever fired again, so
+        # genuine lost generations would pass unrecorded and unpreserved.
+        n["cli_compactions"] = None
         # user bug 2026-08-18: this id has never been handed to the CLI, so no
         # transcript for it exists — and the node's `cost_usd` (the successor
         # keeps the real numbers) makes supervisor.reconcile read that absence
@@ -5396,6 +5402,20 @@ class Org:
         n["generation"] = gen + 1
         n["predecessor"] = pred_id
         n.pop("session_unrun", None)
+        # ⚠ The counter counts boundaries in ONE session file, so it is
+        # meaningless against a different one — and this line hands the node a
+        # different one. Re-baseline (peer report from compaction-fix,
+        # confirmed on disk 2026-08-20): the fork this successor inherits
+        # ALREADY contains one compact_boundary — the /compact that made it —
+        # so a counter left at its old value read 1 > 0 on the very next turn
+        # and minted a LOST generation for a compaction orgtree performed
+        # itself and had already preserved properly as `pred_id`. That phantom
+        # is `ingame-prompt@6`: bearer_state "lost", sharing the LIVE node's
+        # session id, standing beside the real bearer for the same event. It
+        # also swallowed that turn's threshold check, since the branch returns
+        # early. None (not 0) is the right value: `_after_turn` reads it as
+        # "first observation" and baselines to the true count WITHOUT minting.
+        n["cli_compactions"] = None
         # a NORMAL compaction's successor carries the CLI's own summary — the
         # cheap-compact breadcrumbs splice (if armed) retires with the session
         n.pop("cheap_compacted", None)
@@ -5423,21 +5443,41 @@ class Org:
         return pred_id
 
     def record_cli_compaction(self, nid: str,
-                              pre_tokens: int | None = None) -> str:
+                              pre_tokens: int | None = None,
+                              bearer_sid: str | None = None) -> str:
         """The CLI compacted the session ITSELF (redteam 1b, user report
-        2026-08-06): orgtree lost the race, and the pre-compaction context is
-        already gone — so this mints the RECORD, never a bearer. Same shape
-        as reseed's lost generation (bearer_state="lost": visible in the
-        lineage stack, honestly unconsultable — its content survives only in
-        the CLI's summary), generation bumped, session id UNCHANGED (the CLI
-        compacted in place; there is no fork)."""
+        2026-08-06). Generation bumped; the successor's session id is
+        UNCHANGED, because the CLI compacted in place and there is no fork.
+
+        `bearer_sid`, when given, is a session minted from the pre-compaction
+        records by `supervisor._fork_bearer_session` — and it upgrades this
+        from a record into a real KNOWLEDGE BEARER, consultable exactly like
+        the §8 split's.
+
+        Was (until 2026-08-20): always a LOST generation, on the belief that
+        "orgtree lost the race and the pre-compaction context is already
+        gone". That belief was wrong. The CLI's in-place compaction is
+        APPEND-ONLY — boundary, summary, then the later turns, all in one file
+        with the earlier records intact — so nothing was ever destroyed. What
+        was missing was a session id that RESOLVED to the pre-compaction self:
+        this method left the predecessor sharing the successor's id, and
+        resuming that replays the successor's own post-compaction state. The
+        generation was written off as unconsultable while every record of it
+        sat on disk (measured on ingame-prompt@6: 428 surviving lines).
+
+        Without `bearer_sid` the old shape stands — reseed's lost generation
+        (bearer_state="lost": visible in the lineage stack, honestly
+        unconsultable). That is the deliberate FAIL-SOFT: if the pre-
+        compaction session could not be cut, the org is told the truth it was
+        always told, never a bearer that cannot answer."""
         n = self.node(nid)
         gen = n.get("generation", 0)
         pred_id = f"{nid}@{gen}"
         pred = cast(NodeDoc, dict(n))  # dict() copy loses the TypedDict
         pred.update({
             "state": "archived", "archived_at": now(), "grant": 0,
-            "bearer_state": "lost", "successor": nid,
+            "bearer_state": "knowledge" if bearer_sid else "lost",
+            "successor": nid,
             "predecessor": n.get("predecessor"),
             "ui_order": n.get("ui_order", 0) + 0.001,
             "cost_usd": 0.0, "last_status": None, "frozen": None,
@@ -5453,35 +5493,167 @@ class Org:
         # never ran" and "its transcript is gone" (redteam 2026-08-18).
         # And the CLI compacting in place is itself proof it ran.
         pred.pop("session_unrun", None)
+        if bearer_sid:
+            # the ONE field that makes it consultable: its own session, cut
+            # from the records above the boundary. Without this the row points
+            # at the successor's live session and "rehire" would resume the
+            # successor's post-compaction state under the predecessor's name.
+            pred["session_id"] = bearer_sid
         self.nodes[pred_id] = pred
         n["generation"] = gen + 1
         n["predecessor"] = pred_id
-        self._notify([n["parent"]],
-                     f'"{nid}" was auto-compacted BY THE CLI (now generation '
-                     f'{gen + 1}'
-                     + (f'; ~{pre_tokens / 1000:.0f}k tokens summarized'
-                        if pre_tokens else '')
-                     + f'). The pre-compaction context was replaced by a '
-                       f'summary before orgtree could preserve it — '
-                       f'"{pred_id}" is recorded as a LOST generation '
-                       f'(visible, not consultable).')
-        # the same courtesy as compact_split, with the OPPOSITE content — and
-        # saying so is the point. Here there is no bearer to wake, so telling
-        # the agent it has one would send it to a refusal; telling it nothing
-        # leaves it to discover the same refusal on its own. It is told that
-        # this generation is lost, precisely so it does not go looking.
-        self._notify([nid],
-                     f'You were auto-compacted by the CLI: you are now '
-                     f'generation {gen + 1} and the context you had before it '
-                     f'survives only as your summary. Unlike an orgtree '
-                     f'compaction there is NO consultable bearer — "{pred_id}" '
-                     f'is a LOST generation and cannot be rehired, so anything '
-                     f'the summary dropped is gone. Ask whoever gave you the '
-                     f'work rather than hunting for a past self.')
+        size = (f'; ~{pre_tokens / 1000:.0f}k tokens summarized'
+                if pre_tokens else '')
+        if bearer_sid:
+            self._notify([n["parent"]],
+                         f'"{nid}" was auto-compacted BY THE CLI (now '
+                         f'generation {gen + 1}{size}). Its pre-compaction '
+                         f'self is preserved as "{pred_id}" — rehire it to '
+                         f'consult the full detail the summary flattened.')
+            self._notify([nid],
+                         f'You were auto-compacted by the CLI: you are now '
+                         f'generation {gen + 1}, and the context you had '
+                         f'before it is NOT in your summary in full. Your '
+                         f'pre-compaction self is archived as "{pred_id}" and '
+                         f'is CONSULTABLE — orgtree_rehire on that id brings '
+                         f'it back as your own subordinate, with everything '
+                         f'you no longer remember, and you may retire it '
+                         f'again when done. Reach for it when the answer you '
+                         f'need is detail the summary flattened rather than '
+                         f'something you can rederive.')
+        else:
+            self._notify([n["parent"]],
+                         f'"{nid}" was auto-compacted BY THE CLI (now '
+                         f'generation {gen + 1}{size}). Its pre-compaction '
+                         f'session could not be preserved — "{pred_id}" is '
+                         f'recorded as a LOST generation (visible, not '
+                         f'consultable).')
+            # the same courtesy as compact_split, with the OPPOSITE content —
+            # and saying so is the point. Here there is no bearer to wake, so
+            # telling the agent it has one would send it to a refusal; telling
+            # it nothing leaves it to discover the same refusal on its own. It
+            # is told that this generation is lost, precisely so it does not
+            # go looking.
+            self._notify([nid],
+                         f'You were auto-compacted by the CLI: you are now '
+                         f'generation {gen + 1} and the context you had before '
+                         f'it survives only as your summary. There is NO '
+                         f'consultable bearer in this case — "{pred_id}" is a '
+                         f'LOST generation and cannot be rehired, so anything '
+                         f'the summary dropped is gone. Ask whoever gave you '
+                         f'the work rather than hunting for a past self.')
         self._log("cli_compact", SYSTEM,
                   {"node": nid, "predecessor": pred_id,
+                   "preserved": bool(bearer_sid),
                    **({"pre_tokens": pre_tokens} if pre_tokens else {})}, [])
         return pred_id
+
+    def recover_lost_generation(self, pred_id: str, bearer_sid: str) -> str:
+        """Turn an ALREADY-recorded LOST generation back into a consultable
+        knowledge bearer, given a session cut from its surviving records.
+
+        Retroactive because the loss was bookkeeping, not data: every
+        generation written off by the pre-2026-08-20 `record_cli_compaction`
+        still has its records sitting above the boundary in the successor's
+        session file (the CLI's in-place compaction only ever appends). This
+        is the opt-in repair — never automatic, because it rewrites lineage
+        history and the operator should choose that moment (and because a
+        generation lost some OTHER way, e.g. reseed's genuinely-missing
+        transcript, must stay lost). `supervisor.recover_lost_generation`
+        finds the cut; this records it."""
+        n = self.node(pred_id)
+        if n.get("bearer_state") != "lost":
+            raise LedgerError(
+                f"{pred_id} is not a lost generation "
+                f"(bearer_state={n.get('bearer_state')!r})")
+        if not bearer_sid or not bearer_sid.strip():
+            raise LedgerError("a recovered bearer needs a real session id")
+        n["bearer_state"] = "knowledge"
+        n["session_id"] = bearer_sid
+        succ = n.get("successor")
+        self._notify([succ, n.get("parent")],
+                     f'"{pred_id}" is RECOVERED — the generation recorded as '
+                     f'lost was never actually gone, and it is now a '
+                     f'consultable knowledge bearer. Rehire it to reach the '
+                     f'context that compaction summarized away.')
+        self._log("recover_lost_generation", USER,
+                  {"node": pred_id, "successor": succ}, [])
+        return pred_id
+
+    def drop_phantom_generation(self, pred_id: str) -> dict[str, Any]:
+        """Remove a lineage entry that records a generation which never
+        existed — the PHANTOM of `compact_split`'s missing counter reset.
+
+        The phantom (see the ⚠ note in `compact_split`): a §8 split hands the
+        successor a fork that already contains one compact_boundary, and an
+        un-reset `cli_compactions` then read that as a CLI compaction on the
+        next turn. Orgtree minted a LOST generation for a compaction it had
+        performed itself and already preserved properly — so the phantom's
+        content is not merely recoverable, it is ALREADY HELD, in full, by the
+        sibling bearer the split created. Two archived nodes, one real
+        generation, one of them a copy.
+
+        This deletes rather than recovers because recovery would mint a SECOND
+        bearer duplicating the first. A "LOST" row that never lost anything is
+        exactly the thing that sends an agent hunting for a past self it
+        cannot reach.
+
+        FAILS CLOSED, by user order: the caller must have PROVEN duplication
+        (supervisor._phantom_evidence — every pre-boundary record present in
+        the sibling's file); the guards below refuse anything whose content
+        could be unique or whose removal could strand another node. Deleting
+        the wrong node is unrecoverable, so every doubt resolves to a refusal.
+
+        Generation NUMBERS are deliberately left with a gap where the phantom
+        stood. Renumbering would rewrite `name@gen` ids that mail, audiences
+        and the lineage stack all reference; a gap is merely odd to look at,
+        while a renumber can break references that still resolve today."""
+        n = self.node(pred_id)
+        if n.get("bearer_state") != "lost":
+            raise LedgerError(
+                f"{pred_id} is not a lost generation "
+                f"(bearer_state={n.get('bearer_state')!r}) — only a phantom "
+                f"LOST row may be dropped")
+        if n.get("state") != "archived":
+            raise LedgerError(f"{pred_id} is {n.get('state')!r}, not archived")
+        if self.children(pred_id, live_only=False):
+            raise LedgerError(f"{pred_id} has reports — refusing to drop it")
+        if any(v.get("parent") == pred_id for v in self.nodes.values()):
+            raise LedgerError(f"{pred_id} is someone's parent — refusing")
+        succ, prev = n.get("successor"), n.get("predecessor")
+        if not succ or succ not in self.nodes:
+            raise LedgerError(
+                f"{pred_id} has no live successor to re-link to — refusing")
+        # re-link the lineage chain ACROSS the hole, both directions, so no
+        # node is left pointing at an id that no longer resolves
+        self.node(succ)["predecessor"] = prev
+        if prev and prev in self.nodes:
+            self.nodes[prev]["successor"] = succ
+        for v in self.nodes.values():           # any other stale backlink
+            if v.get("predecessor") == pred_id and v is not self.nodes.get(succ):
+                v["predecessor"] = prev
+            if v.get("successor") == pred_id:
+                v["successor"] = succ
+        lost_cost = round(float(n.get("cost_usd") or 0.0), 6)
+        if lost_cost:       # dissolve's convention — burn is never unbooked
+            self.d["deleted_cost_usd"] = round(
+                float(self.d.get("deleted_cost_usd") or 0.0) + lost_cost, 6)
+        self.nodes.pop(pred_id, None)
+        for tbl in ("mail", "mail_log", "notices", "steered_log"):
+            (self.d.get(tbl) or {}).pop(pred_id, None)
+        self.d["audiences"] = [a for a in self.d.get("audiences", [])
+                               if pred_id not in (a.get("grantee"),
+                                                  a.get("grantor"))]
+        self._notify([self.node(succ).get("parent"), succ],
+                     f'The lineage entry "{pred_id}" has been removed: it was '
+                     f'a PHANTOM. It recorded a generation that never existed '
+                     f'— orgtree logged its own §8 compaction a second time, '
+                     f'as a loss. Every record it named is held, in full, by '
+                     f'"{prev}". Nothing was deleted but a false row.')
+        self._log("drop_phantom_generation", USER,
+                  {"node": pred_id, "successor": succ, "duplicate_of": prev},
+                  [])
+        return {"dropped": pred_id, "successor": succ, "duplicate_of": prev}
 
     def mark_unrecoverable(self, nid: str, reason: str) -> None:
         """№31: ledger said live, the session cannot actually resume."""
@@ -5562,6 +5734,7 @@ class Org:
         n["session_id"] = new_session_id
         n["generation"] = gen + 1
         n["predecessor"] = pred_id
+        n["cli_compactions"] = None      # new session, new count (see above)
         # same mint, same exemption as cheap_compact (user bug 2026-08-18):
         # re-seeding and then closing orgtree before messaging the node re-
         # condemned the very node the re-seed just rescued, since the fresh
