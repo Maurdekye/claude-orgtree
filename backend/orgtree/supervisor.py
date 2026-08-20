@@ -3968,9 +3968,22 @@ def _count_cli_compactions(
                     rec = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                # ⚠ a JSONL line is not necessarily an OBJECT, and a field is
+                # not necessarily the shape its name suggests (peer report
+                # from compaction-fix, 2026-08-20). `rec.get` on a parsed list
+                # or string, and `(x or {}).get` on a non-empty NON-mapping,
+                # both raise AttributeError — and this runs on the TURN path,
+                # above the line that records the new count. The raise would
+                # therefore be PERMANENT: the same poisoned line re-raises
+                # every turn, each one reported as failed, with the node's
+                # split unreachable. Skip what we cannot read; never raise
+                # over one malformed record.
+                if not isinstance(rec, dict):
+                    continue
                 if rec.get("type") == "system" \
                         and rec.get("subtype") == "compact_boundary":
-                    p = (rec.get("compactMetadata") or {}).get("preTokens")
+                    meta = rec.get("compactMetadata")
+                    p = meta.get("preTokens") if isinstance(meta, dict) else None
                     p = int(p) if isinstance(p, (int, float)) else None
                     marks.append((i, p))
                     if p is not None:
@@ -4050,19 +4063,29 @@ def _record_uuids(path: str, upto: int | None = None) -> set[str] | None:
     """Every record uuid in a session JSONL (optionally only the first `upto`
     lines). None — never an empty set — when the file cannot be read, so a
     caller proving a set-inclusion can tell "nothing there" from "could not
-    look"; the two must never collapse into the same answer."""
+    look"; the two must never collapse into the same answer.
+
+    A line that will not parse returns None too, and that strictness is the
+    point: this feeds a DELETION proof. Skipping an unreadable record would
+    quietly shrink the set that has to be matched, so a prefix of ten records
+    with nine unparsable would "prove" duplication on the strength of the one
+    that survived — and drop a generation whose unique content was exactly
+    what could not be read. Records that parse but carry no uuid are normal
+    (session metadata) and are simply not identities to compare."""
     try:
         out: set[str] = set()
         with open(path, encoding="utf-8", errors="replace") as f:
             for i, line in enumerate(f):
                 if upto is not None and i >= upto:
                     break
-                if '"uuid"' not in line:
+                if not line.strip():
                     continue
                 try:
                     rec = json.loads(line)
                 except json.JSONDecodeError:
-                    continue
+                    return None
+                if not isinstance(rec, dict):    # a bare list/string/number
+                    return None
                 u = rec.get("uuid")
                 if isinstance(u, str) and u:
                     out.add(u)

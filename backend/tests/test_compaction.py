@@ -3298,6 +3298,41 @@ def lost_generations() -> None:
           lambda: _true(cnt2 == 1 and pre2 is None and marks2 == [(1, None)],
                         f"{cnt2} {pre2} {marks2}"))
 
+    # ---- malformed records (peer report from compaction-fix, 2026-08-20) ----
+    # A JSONL line need not be an OBJECT, and a field need not be the shape its
+    # name suggests. `rec.get` on a parsed list, or `(x or {}).get` on a
+    # non-empty non-mapping, raises AttributeError — and this runs on the TURN
+    # path, ABOVE the line that records the new count, so the raise is
+    # PERMANENT: the same poisoned line re-raises every turn, each reported as
+    # failed, with the node's split unreachable.
+    org2b, (b2,) = horg()
+    _plant_session(sid_of(org2b, b2), [
+        _msg("w1"),
+        {"type": "system", "subtype": "compact_boundary", "uuid": "wb1",
+         "compactMetadata": "not-a-dict"},          # the reported crash
+        _msg("w2"),
+        {"type": "system", "subtype": "compact_boundary", "uuid": "wb2",
+         "compactMetadata": {"preTokens": "lots"}},  # preTokens not a number
+    ])
+    # …and a line that is valid JSON but not an object at all
+    with open(os.path.join(HOME, ".claude", "projects", "rig",
+                           sid_of(org2b, b2) + ".jsonl"),
+              "a", encoding="utf-8") as f:
+        f.write('["compact_boundary"]\n')
+        f.write('"compact_boundary"\n')
+    store.save_org(org2b)
+
+    def _survives_junk() -> None:
+        c, p, m = supervisor._count_cli_compactions(org2b, b2)
+        _true(c == 2, f"expected the 2 real boundaries, got {c}")
+        _true([x[0] for x in m] == [1, 3], f"offsets {m}")
+        _true(all(x[1] is None for x in m), f"pre-tokens should be None: {m}")
+        _true(p is None, f"headline should be None, got {p}")
+    check("junk · a non-dict compactMetadata, a non-numeric preTokens and a "
+          "bare-array line do not raise on the TURN path — one malformed "
+          "record would otherwise poison every future turn permanently",
+          _survives_junk)
+
     print("\nthe cut (supervisor._fork_bearer_session):")
 
     org3, (c,) = horg()
@@ -3492,6 +3527,37 @@ def lost_generations() -> None:
           "'could not look' must never read as 'nothing there'",
           lambda: _true(supervisor._phantom_evidence(
               org12, lost12)["phantom"] is False))
+
+    # a corrupt record inside the PREFIX must refuse, not shrink the set that
+    # has to be matched. Skipping it would "prove" duplication on whatever
+    # survived and delete a generation whose unique content was the very thing
+    # that could not be read.
+    org18, (n18,) = horg()
+    old18 = sid_of(org18, n18)
+    _plant_session(old18, [_msg("e1"), _msg("e2")])
+    prev18 = org18.compact_split(n18, "fork-sid-18")
+    _plant_session("fork-sid-18", [_msg("e1"), _msg("e2"),
+                                   _boundary("eb"), _msg("e3")])
+    ph18 = org18.record_cli_compaction(n18, 500)
+    store.save_org(org18)
+    check("evidence · …a clean copy IS a phantom (the control for the next "
+          "check)",
+          lambda: _true(supervisor._phantom_evidence(
+              org18, ph18)["phantom"] is True))
+    # now corrupt ONE line inside the compared prefix
+    _p18 = os.path.join(HOME, ".claude", "projects", "rig", "fork-sid-18.jsonl")
+    _lines18 = open(_p18, encoding="utf-8").read().splitlines()
+    _lines18[1] = "{not json at all"
+    with open(_p18, "w", encoding="utf-8") as f:
+        f.write("\n".join(_lines18) + "\n")
+    ev18 = supervisor._phantom_evidence(org18, ph18)
+    check("evidence · ONE unparsable record in the prefix refuses the whole "
+          "proof — a deletion may not rest on the records that happened to "
+          "survive parsing",
+          lambda: _true(ev18["phantom"] is False, json.dumps(ev18)))
+    check("evidence · …and the drop refuses with it",
+          lambda: _raises(lambda: supervisor.drop_phantom_generation(
+              org18.d["slug"], ph18)))
 
     print("\ndropping a phantom, and refusing to drop anything else:")
 
