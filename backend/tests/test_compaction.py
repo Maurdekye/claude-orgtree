@@ -3518,15 +3518,36 @@ def lost_generations() -> None:
                         and "unique" in ev11.get("why", ""),
                         json.dumps(ev11)))
 
+    # ⚠ this fixture must keep the row SHARING its successor's session id.
+    # Reassigning it (the first version of this check) tripped the earlier
+    # "holds its own session id" refusal, so control never reached the
+    # file-missing guard and the check passed for the wrong reason — deleting
+    # that guard outright would have raised TypeError with nothing noticing.
     org12, (m,) = horg()
-    _plant_transcript(sid_of(org12, m))
+    old12 = sid_of(org12, m)
+    _plant_session(old12, [_msg("m1"), _msg("m2")])
+    prev12 = org12.compact_split(m, "fork-sid-12")
+    _plant_session("fork-sid-12", [_msg("m1"), _msg("m2"),
+                                   _boundary("mb"), _msg("m3")])
     lost12 = org12.record_cli_compaction(m, 100)
-    org12.nodes[lost12]["session_id"] = "vanished-session"
     store.save_org(org12)
-    check("evidence · an unreadable session refuses rather than guessing — "
-          "'could not look' must never read as 'nothing there'",
+    check("evidence · (control) with both files present this row IS a "
+          "phantom — so the next check cannot pass vacuously",
           lambda: _true(supervisor._phantom_evidence(
-              org12, lost12)["phantom"] is False))
+              org12, lost12)["phantom"] is True))
+    _ = prev12
+    os.unlink(os.path.join(HOME, ".claude", "projects", "rig",
+                           old12 + ".jsonl"))       # the SIBLING's file
+    ev12 = supervisor._phantom_evidence(org12, lost12)
+    check("evidence · a missing sibling file refuses rather than guessing — "
+          "'could not look' must never read as 'nothing there'",
+          lambda: _true(ev12["phantom"] is False
+                        and "missing" in ev12.get("why", ""),
+                        json.dumps(ev12)))
+    check("evidence · …and the drop refuses with it, so a vanished sibling "
+          "can never authorise a deletion",
+          lambda: _raises(lambda: supervisor.drop_phantom_generation(
+              org12.d["slug"], lost12)))
 
     # a corrupt record inside the PREFIX must refuse, not shrink the set that
     # has to be matched. Skipping it would "prove" duplication on whatever
@@ -3724,6 +3745,138 @@ def lost_generations() -> None:
           lambda: _raises(
               lambda: supervisor.recover_lost_generation(slug17, legacy[1]),
               "refusing to guess"))
+
+    print("\nthe redteam's findings, pinned (2026-08-20):")
+
+    # R1 (CRITICAL): `successor` is the LIVE NODE id on every lineage row, not
+    # the next generation. Dropping a phantom that has a REAL generation after
+    # it used to rewrite the live node's predecessor past that newer row,
+    # orphaning it out of lineage_stack and _taken_with.
+    org20, (n20,) = horg()
+    old20 = sid_of(org20, n20)
+    _plant_session(old20, [_msg("x1"), _msg("x2")])
+    prev20 = org20.compact_split(n20, "fork-sid-20")
+    _plant_session("fork-sid-20", [_msg("x1"), _msg("x2"),
+                                   _boundary("xb1"), _msg("x3"),
+                                   _boundary("xb2"), _msg("x4")])
+    _plant_session("real-bearer-20", [_msg("x1"), _msg("x2"),
+                                      _boundary("xb1"), _msg("x3")])
+    ph20 = org20.record_cli_compaction(n20, 100, None, 2)          # phantom
+    real20 = org20.record_cli_compaction(n20, 100, "real-bearer-20", 4)
+    store.save_org(org20)
+    slug20 = org20.d["slug"]
+    check("R1 · the phantom is still provable with a newer generation "
+          "standing after it",
+          lambda: _true(supervisor._phantom_evidence(
+              org20, ph20)["phantom"] is True))
+    supervisor.drop_phantom_generation(slug20, ph20)
+    org20 = store.load_org(slug20)
+    check("R1 · dropping it does NOT orphan the real generation minted after "
+          "it — the live node still points at that generation, not past it",
+          lambda: _true(org20.node(n20)["predecessor"] == real20,
+                        f'live.predecessor = {org20.node(n20)["predecessor"]}'))
+    check("R1 · …the newer generation re-links onto the phantom's "
+          "predecessor",
+          lambda: _true(org20.nodes[real20]["predecessor"] == prev20,
+                        f'{real20}.predecessor = '
+                        f'{org20.nodes[real20]["predecessor"]}'))
+    check("R1 · …and BOTH survivors are still in the lineage stack, which is "
+          "what the agent is told to rehire and what dissolve/delete walk",
+          lambda: _true(set(org20.lineage_stack(n20)) == {real20, prev20},
+                        f"stack = {org20.lineage_stack(n20)}"))
+
+    # R2 (MAJOR): the marks are counted OUTSIDE the doc lock, and
+    # cheap_compact can replace the session mid-turn. Recording them then
+    # mints generations against a file the node no longer owns AND stamps a
+    # count that suppresses the next real compactions.
+    org21, (n21,) = horg()
+    sid21 = sid_of(org21, n21)
+    _plant_session(sid21, [_msg("y1"), _boundary("yb1"),
+                           _msg("y2"), _boundary("yb2"), _msg("y3")])
+    org21.node(n21)["cli_compactions"] = 0
+    store.save_org(org21)
+    slug21 = org21.d["slug"]
+    racer = store.load_org(slug21)          # the mid-turn cheap_compact
+    racer.cheap_compact(USER, n21)
+    store.save_org(racer)
+    new_sid21 = store.load_org(slug21).node(n21)["session_id"]
+    before21 = set(store.load_org(slug21).nodes)
+    _rig21 = os.path.join(HOME, ".claude", "projects", "rig")
+    files21 = set(os.listdir(_rig21))
+    st21 = supervisor.state(slug21, n21)
+    supervisor._after_turn(slug21, n21, org21, {}, st21, 1)   # stale org
+    after21 = store.load_org(slug21)
+    check("R2 · a session replaced mid-turn discards the counted boundaries "
+          "instead of minting generations against the new session",
+          lambda: _true(set(after21.nodes) == before21,
+                        f"minted: {set(after21.nodes) - before21}"))
+    check("R2 · …and does NOT stamp the old file's count onto the new "
+          "session, which would swallow its next real compactions",
+          lambda: _true(after21.node(n21).get("cli_compactions") is None,
+                        f'got {after21.node(n21).get("cli_compactions")!r}'))
+    # the cuts were taken BEFORE the lock and must be cleaned up on the bail —
+    # otherwise each raced turn leaves a stray transcript in the user's tree,
+    # attached to no node and carried by reconcile's index forever
+    check("R2 · …and deletes the cuts it had already taken, leaving no "
+          "orphan transcript in the user's projects tree",
+          lambda: _true(set(os.listdir(_rig21)) == files21,
+                        f"strays: {set(os.listdir(_rig21)) - files21}"))
+    check("R2 · (control) the racing cheap_compact really did move the "
+          "session — the bail was exercised, not skipped",
+          lambda: _true(new_sid21 != sid21
+                        and after21.node(n21)["session_id"] == new_sid21))
+
+    # R3 (MAJOR): "could not read the session" must not baseline as 0 — the
+    # next turn would read the fork's own boundary as new and re-mint the
+    # phantom, this time WITH a bearer, which nothing can then drop.
+    org22, (n22,) = horg()
+    org22.node(n22)["session_id"] = "no-such-session-22"
+    store.save_org(org22)
+    slug22 = org22.d["slug"]
+    st22 = supervisor.state(slug22, n22)
+    supervisor._after_turn(slug22, n22, org22, {}, st22, 1)
+    after22 = store.load_org(slug22)
+    check("R3 · an unreadable session leaves the counter UNSET rather than "
+          "baselining it to 0 — 'could not look' is not 'no boundaries'",
+          lambda: _true(after22.node(n22).get("cli_compactions") is None,
+                        f'got {after22.node(n22).get("cli_compactions")!r}'))
+    check("R3 · …and the scan reports it as None, not 0",
+          lambda: _true(supervisor._count_cli_compactions(org22, n22)[0]
+                        is None))
+
+    # R10: a row minted against a boundary at line 0 has NO records above it.
+    # `mine` is empty, and an empty set is trivially a subset — so without the
+    # guard the proof would say "phantom" about a row it never examined.
+    org23, (n23,) = horg()
+    sid23 = sid_of(org23, n23)
+    _plant_session(sid23, [_boundary("zb0"), _msg("z1")])
+    prev23 = org23.compact_split(n23, sid23)
+    org23.node(n23)["session_id"] = sid23
+    ph23 = org23.record_cli_compaction(n23, 100, None, 0)
+    store.save_org(org23)
+    check("R10 · a boundary at line 0 proves NOTHING — an empty prefix is "
+          "vacuously a subset, so it must refuse, not drop",
+          lambda: _true(supervisor._phantom_evidence(
+              org23, ph23)["phantom"] is False))
+    check("R10 · …and the drop refuses with it",
+          lambda: _raises(lambda: supervisor.drop_phantom_generation(
+              org23.d["slug"], ph23)))
+
+    # R11: a recorded offset that no longer matches the file must refuse
+    # rather than becoming the cut/compare point.
+    org24, (n24,) = horg()
+    sid24 = sid_of(org24, n24)
+    _plant_session(sid24, [_msg("v1"), _boundary("vb1"), _msg("v2")])
+    lost24 = org24.record_cli_compaction(n24, 100, None, 1)
+    org24.nodes[lost24]["cli_boundary_offset"] = 99      # drifted
+    store.save_org(org24)
+    check("R11 · a recorded boundary that is no longer in the session "
+          "refuses the recovery rather than cutting at a guessed point",
+          lambda: _raises(lambda: supervisor.recover_lost_generation(
+              org24.d["slug"], lost24), "no longer"))
+    check("R11 · …and refuses the phantom comparison too",
+          lambda: _true(supervisor._phantom_evidence(
+              org24, lost24)["phantom"] is False))
 
     check("recover · refuses a phantom — recovering one would mint a SECOND "
           "bearer holding a copy of the first",

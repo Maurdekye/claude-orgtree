@@ -3895,34 +3895,61 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
     # sampling, occ may still carry the pre-compaction high-water mark.
     cli_cnt, cli_pre, cli_marks = _count_cli_compactions(org, nid)
     seen_raw = n.get("cli_compactions")
-    if seen_raw is None:
+    sid0 = n["session_id"]
+    if cli_cnt is None:
+        # the session could not be READ this turn. Not "no boundaries": write
+        # a 0 here and the next turn re-mints the very phantom this branch
+        # kills. Leave the counter exactly as it was and look again next turn.
+        pass
+    elif seen_raw is None:
         # first observation of this node under the feature: BASELINE without
         # minting — retroactively minting a generation per historical
         # boundary would restructure long-lived orgs on the deploy turn
         with store.DOC_LOCK:
             o2 = store.load_org(slug)
-            if nid in o2.nodes:
+            # …against the session we actually counted (see the ⚠ below)
+            if nid in o2.nodes and o2.node(nid)["session_id"] == sid0:
                 o2.node(nid)["cli_compactions"] = cli_cnt
                 store.save_org(o2)
     elif cli_cnt > int(seen_raw):
+        seen0 = int(seen_raw)
+        # One generation per UNRECORDED boundary, each cut from its own offset
+        # so it holds exactly the context of its own moment — and each
+        # carrying its OWN preTokens rather than the last boundary's (they
+        # only agreed when a single boundary was pending).
+        #
+        # The cuts run OUTSIDE the doc lock. Each copies a prefix of a
+        # possibly-multi-MB transcript, and `spend_unrun_pardon` already
+        # states the rule this follows: whole-file I/O under DOC_LOCK stalls
+        # every other org's turn. They only ever write a fresh uuid path, so
+        # nothing else can observe them until they are recorded below.
+        cuts = [(off, pre, _fork_bearer_session(org, sid0, off))
+                for off, pre in cli_marks[seen0:cli_cnt]]
         with store.DOC_LOCK:
             o2 = store.load_org(slug)
             if nid not in o2.nodes:
                 return
             n2 = o2.node(nid)
-            have = int(n2.get("cli_compactions") or 0)
-            # one generation per UNRECORDED boundary, each cut from its own
-            # offset so it holds exactly the context of its own moment — and
-            # each carrying its OWN preTokens rather than the last boundary's
-            # (they only agreed when a single boundary was pending). The
-            # session id read here is the successor's, which record_cli_
-            # compaction deliberately leaves untouched, so every cut is taken
-            # from the one file that has them all.
-            sid2 = n2["session_id"]
-            for off, pre in cli_marks[have:cli_cnt]:
+            # ⚠ Everything above ran unlocked, and `cheap_compact` has no
+            # in-flight guard — the user or a superior can replace this
+            # node's SESSION mid-turn (documented at the auto-cheap-compact
+            # site). These marks describe a file the node may no longer own,
+            # and recording them would be doubly wrong: a burst of LOST
+            # generations minted against a brand-new EMPTY session (each with
+            # an offset indexing a different file, each telling the agent it
+            # lost context it never had), and then a count stamped on that
+            # empty session high enough to swallow the next N GENUINE
+            # compactions in silence. The re-baseline to None makes it worse,
+            # not better — `have` would collapse to 0 and mint every mark
+            # rather than the delta. Discard and let the next turn baseline.
+            if n2.get("session_id") != sid0 \
+                    or n2.get("cli_compactions") != seen0:
+                for _o, _p, s in cuts:
+                    _discard_cut(org, s)
+                return
+            for off, pre, bearer_sid in cuts:
                 o2.record_cli_compaction(
-                    nid, pre if pre is not None else cli_pre,
-                    _fork_bearer_session(o2, sid2, off), off)
+                    nid, pre if pre is not None else cli_pre, bearer_sid, off)
             n2["cli_compactions"] = cli_cnt
             store.save_org(o2)
         notify(slug, nid, "compacted")
@@ -3935,7 +3962,8 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
 
 
 def _count_cli_compactions(
-        org: Org, nid: str) -> tuple[int, int | None, list[tuple[int, int | None]]]:
+        org: Org,
+        nid: str) -> tuple[int | None, int | None, list[tuple[int, int | None]]]:
     """How many times the CLI has compacted this node's session, read off the
     session JSONL the same way read_chat renders it: `system` records with
     subtype `compact_boundary` (compactMetadata.preTokens rides along — the
@@ -3952,12 +3980,23 @@ def _count_cli_compactions(
     See `_fork_bearer_session`.
 
     (`count == len(marks)`; both are returned because the count is the
-    bookkeeping value stored on the node and the marks are the surgery.)"""
+    bookkeeping value stored on the node and the marks are the surgery.)
+
+    The count is None — never 0 — when the session could not be READ, and the
+    distinction is load-bearing (redteam 2026-08-20). `_after_turn` writes the
+    first observation straight to the node, so a transient failure (a glob
+    over a huge projects/ tree, an AV lock, a sandbox bind-mount hiccup)
+    baselining as 0 instead of the fork's true 1 would make the fork's own
+    /compact read as new on the very next turn — re-minting the phantom this
+    branch exists to kill, and now WITH a bearer, which `_phantom_evidence`
+    then refuses to drop because it only ever drops LOST rows. A caller that
+    cannot tell "no boundaries" from "could not look" writes the wrong number
+    down permanently."""
     try:
         n = org.node(nid)
         tpath = transcript_path(n["session_id"], _transcript_root(org))
         if not tpath:
-            return 0, None, []
+            return None, None, []
         pre: int | None = None
         marks: list[tuple[int, int | None]] = []
         with open(tpath, encoding="utf-8", errors="replace") as f:
@@ -3990,7 +4029,7 @@ def _count_cli_compactions(
                         pre = p
         return len(marks), pre, marks
     except (OSError, LedgerError):
-        return 0, None, []
+        return None, None, []
 
 
 def _fork_bearer_session(org: Org, sid: str, upto: int) -> str | None:
@@ -4034,11 +4073,16 @@ def _fork_bearer_session(org: Org, sid: str, upto: int) -> str | None:
         # above it to preserve; minting an empty session would hand the org a
         # bearer with nothing to say
         return None
+    tmp = None
     try:
         src = transcript_path(sid, _transcript_root(org))
         if not src:
             return None
-        with open(src, encoding="utf-8", errors="replace") as f:
+        # BINARY, so "verbatim" is true: a text round-trip through
+        # errors="replace" would substitute U+FFFD for any byte the decoder
+        # dislikes, silently altering the records the bearer is supposed to
+        # be a faithful copy of
+        with open(src, "rb") as f:
             head = [ln for _, ln in zip(range(upto), f)]
         if len(head) < upto:
             # the file shrank under us — it should only ever grow, so this is
@@ -4050,13 +4094,41 @@ def _fork_bearer_session(org: Org, sid: str, upto: int) -> str | None:
         # id the ledger already points at would be unresumable, and the node
         # is archived by then with no turn to repair it
         tmp = dst + ".part"
-        with open(tmp, "w", encoding="utf-8", newline="") as f:
+        with open(tmp, "wb") as f:
             for ln in head:
-                f.write(ln if ln.endswith("\n") else ln + "\n")
+                f.write(ln if ln.endswith(b"\n") else ln + b"\n")
         os.replace(tmp, dst)
+        tmp = None
+        # a sandboxed org's transcripts live in the container's home, and
+        # everything the backend mints through the UNC view lands root-owned
+        # while the CLI runs as `agent` (see sandbox.chown_agent). A bearer
+        # the agent can read but not append to fails the moment it is
+        # rehired — and the ledger would already be calling it consultable.
+        sbx.chown_home_path(org, dst)
         return new_sid
     except OSError:
         return None
+    finally:
+        if tmp:            # never leave a .part behind in the user's tree
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
+def _discard_cut(org: Org, sid: str | None) -> None:
+    """Delete a bearer session that was cut but never recorded — the session
+    moved under the turn, so this file names a generation that will not exist.
+    Left behind it is a stray transcript that `reconcile`'s index would carry
+    forever, attached to nothing."""
+    if not sid:
+        return
+    try:
+        p = transcript_path(sid, _transcript_root(org))
+        if p:
+            os.unlink(p)
+    except (OSError, LedgerError):
+        pass
 
 
 def _record_uuids(path: str, upto: int | None = None) -> set[str] | None:

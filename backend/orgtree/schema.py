@@ -220,7 +220,15 @@ class NodeDoc(TypedDict):
     # CLI-side compact boundaries seen in this node's session JSONL (1b,
     # 2026-08-06): absent = never observed (the first observation baselines
     # WITHOUT minting); each later increment mints a lost-generation record
-    cli_compactions: NotRequired[int]
+    # None means "re-baseline me": the session id was just reassigned, so the
+    # count belongs to a file this node no longer owns (compact_split's fork
+    # already carries its own /compact boundary; cheap_compact and reseed mint
+    # an empty session). _after_turn re-reads the true count WITHOUT minting.
+    cli_compactions: NotRequired[int | None]
+    # the line offset of the boundary a LOST row was minted against, so a
+    # later recovery reads its cut point instead of re-deriving it — deriving
+    # it is only sound while every boundary still has its row (2026-08-20)
+    cli_boundary_offset: NotRequired[int]
     # consecutive network-classified turn failures (user report 2026-08-06);
     # reset by any completed turn, capped at NET_RETRY_MAX then manual
     net_fail_run: NotRequired[int]

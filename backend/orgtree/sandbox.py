@@ -413,6 +413,37 @@ def chown_agent(org: Org, nid: str, *rel: str) -> None:
         pass
 
 
+def chown_home_path(org: Org, host_path: str) -> None:
+    """`chown_agent` for a path under the container HOME rather than the data
+    root — the transcript store (`/home/agent/.claude/projects/…`) is the case
+    that needed it (2026-08-20).
+
+    `chown_agent` only builds paths under `cpath_scratch`, and `_heal_ownership`
+    only sweeps `cpath_data()` = /home/agent/orgtree, so nothing covered
+    ~/.claude at all. A session file the backend mints there — the cut that
+    turns a CLI-compacted generation into a consultable bearer — lands
+    root-owned, and the agent that rehires it can read but not append, so the
+    bearer fails on the first write of its resumed turn.
+
+    Best-effort on the same terms as chown_agent: a host path outside this
+    org's sandbox home, or a container that is down, is a silent no-op."""
+    if not is_sandboxed(org):
+        return
+    slug = org.d["slug"]
+    try:
+        rel = os.path.relpath(host_path, sandbox_home(slug))
+    except ValueError:              # different drive — not ours to touch
+        return
+    if rel.startswith(".."):        # outside the container home
+        return
+    target = "/home/agent/" + rel.replace("\\", "/")
+    try:
+        _docker("exec", "-u", "root", container_name(slug),
+                "chown", "agent:agent", target, timeout=30)
+    except Exception:                                        # noqa: BLE001
+        pass
+
+
 def _heal_ownership(name: str) -> None:
     """Every path the backend minted while the container was DOWN is
     root-owned (see chown_agent) — hand the whole data tree back to the agent

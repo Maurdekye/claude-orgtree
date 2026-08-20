@@ -5639,13 +5639,25 @@ class Org:
         if not succ or succ not in self.nodes:
             raise LedgerError(
                 f"{pred_id} has no live successor to re-link to — refusing")
-        # re-link the lineage chain ACROSS the hole, both directions, so no
-        # node is left pointing at an id that no longer resolves
-        self.node(succ)["predecessor"] = prev
-        if prev and prev in self.nodes:
-            self.nodes[prev]["successor"] = succ
-        for v in self.nodes.values():           # any other stale backlink
-            if v.get("predecessor") == pred_id and v is not self.nodes.get(succ):
+        # Re-link the lineage chain ACROSS the hole. ⚠ `successor` is NOT the
+        # next generation — every mint writes the bare LIVE node id there, so
+        # every row in a lineage stack names the same successor. Rewriting
+        # `self.node(succ)["predecessor"]` unconditionally therefore only
+        # happened to be right when the phantom was the NEWEST generation;
+        # with a real generation minted after it (possible, because
+        # record_cli_compaction leaves the session id alone, so later rows
+        # keep sharing it) that line reached PAST the newer row and pointed
+        # the live node at the phantom's predecessor. The newer generation
+        # then fell out of `lineage_stack` and out of `_taken_with` — invisible
+        # to the agent that was told to rehire it, missed by `dissolve`, and
+        # left behind by `delete` as an archived node whose parent no longer
+        # exists, which is the KeyError in `ancestors()` that _taken_with was
+        # written to prevent. Found by redteam 2026-08-20 with a live probe.
+        #
+        # The only correct rule is the local one: whoever actually POINTS at
+        # this row now points past it. That is the loop, and the loop alone.
+        for v in self.nodes.values():
+            if v.get("predecessor") == pred_id:
                 v["predecessor"] = prev
             if v.get("successor") == pred_id:
                 v["successor"] = succ
@@ -5655,7 +5667,8 @@ class Org:
                 float(self.d.get("deleted_cost_usd") or 0.0) + lost_cost, 6)
         self.nodes.pop(pred_id, None)
         for tbl in ("mail", "mail_log", "notices", "steered_log"):
-            (self.d.get(tbl) or {}).pop(pred_id, None)
+            box = cast("dict[str, Any]", self.d.get(tbl) or {})
+            box.pop(pred_id, None)
         self.d["audiences"] = [a for a in self.d.get("audiences", [])
                                if pred_id not in (a.get("grantee"),
                                                   a.get("grantor"))]
