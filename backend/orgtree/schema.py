@@ -229,6 +229,15 @@ class NodeDoc(TypedDict):
     # later recovery reads its cut point instead of re-deriving it — deriving
     # it is only sound while every boundary still has its row (2026-08-20)
     cli_boundary_offset: NotRequired[int]
+    # WHY a row is bearer_state="lost", because the two reasons want opposite
+    # treatment and the row alone cannot be told apart. "cli_compaction": the
+    # CLI compacted in place and the pre-compaction records may still be above
+    # a boundary in a session somebody else holds — recoverable. "reseed": the
+    # session was declared unrecoverable and a fresh one minted, so the row has
+    # no boundary of its own at all, and any cut point inferred for it is
+    # another generation's (redteam 2026-08-20). Absent on rows minted before
+    # this, which is why the inference branch also refuses on shape.
+    lost_reason: NotRequired[str]
     # consecutive network-classified turn failures (user report 2026-08-06);
     # reset by any completed turn, capped at NET_RETRY_MAX then manual
     net_fail_run: NotRequired[int]

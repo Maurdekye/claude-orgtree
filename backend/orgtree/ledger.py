@@ -5494,6 +5494,13 @@ class Org:
         # never ran" and "its transcript is gone" (redteam 2026-08-18).
         # And the CLI compacting in place is itself proof it ran.
         pred.pop("session_unrun", None)
+        pred.pop("lost_reason", None)
+        if not bearer_sid:
+            # WHY it is lost, so a later repair can tell this row — whose
+            # records may still be above a boundary in a shared session —
+            # apart from `reseed`'s row, which has no boundary of its own and
+            # must never be cut at a neighbour's (redteam 2026-08-20)
+            pred["lost_reason"] = "cli_compaction"
         if bearer_sid:
             # the ONE field that makes it consultable: its own session, cut
             # from the records above the boundary. Without this the row points
@@ -5722,6 +5729,7 @@ class Org:
             n["archived_at"] = now()
             n["grant"] = 0
             n["bearer_state"] = "lost"
+            n["lost_reason"] = "reseed"
             n["frozen"] = None
             n["inflight"] = None
             self._notify([t for t in {succ, n["parent"]} if t and t != actor],
@@ -5740,7 +5748,13 @@ class Org:
         pred = cast(NodeDoc, dict(n))  # dict() copy loses the TypedDict
         pred.update({
             "state": "archived", "archived_at": now(), "grant": 0,
-            "bearer_state": "lost", "successor": nid,
+            # ⚠ `lost_reason` is what keeps this row out of the recovery
+            # verb's boundary arithmetic. It is NOT a compaction row: it has
+            # no boundary of its own, so any cut point inferred for it by
+            # position belongs to one of its neighbours, and "recovering" it
+            # would hand it another generation's records under its own name
+            # (redteam 2026-08-20, reproduced).
+            "bearer_state": "lost", "lost_reason": "reseed", "successor": nid,
             "predecessor": n.get("predecessor"),
             "ui_order": n.get("ui_order", 0) + 0.001,
             "cost_usd": 0.0, "last_status": None, "frozen": None,

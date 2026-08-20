@@ -4066,6 +4066,207 @@ def lost_generations() -> None:
               lambda: supervisor.recover_lost_generation(slug27, lost27),
               "alone"))
 
+    # the CONTROL for the check above, on the VERB rather than on the helper:
+    # the identical fixture, left sharing, must actually recover. Asserting
+    # `_session_sharers(...)` is truthy tests the helper the guard calls, not
+    # the guard — a distinction the first version of this control missed
+    # (redteam 2026-08-20).
+    org28, (n28,) = horg()
+    sid28 = sid_of(org28, n28)
+    _plant_session(sid28, [_msg("f1"), _msg("f2"), _boundary("fb"), _msg("f3")])
+    lost28 = org28.record_cli_compaction(n28, 100, None, 2)
+    store.save_org(org28)
+    check("alone · (control) the SAME fixture, left sharing, recovers — so "
+          "the refusal above is the guard and not the shape",
+          lambda: _true(supervisor.recover_lost_generation(
+              org28.d["slug"], lost28)["cut_at"] == 2))
+
+    # ---- reseed's dead session is NOT a compaction row -----------------------
+    # Reproduced by redteam 2026-08-20. `reseed` archives an unrecoverable
+    # session as bearer_state="lost" while keeping its id, and that row has no
+    # boundary of its own ANYWHERE — its generation was abandoned whole. The
+    # old successor-anchored precondition excluded it by ACCIDENT (reseed
+    # always moved the live node to a fresh id, so the row never matched);
+    # asking the question of the row lost that accident, and positional
+    # inference then handed the reseed row a neighbour's boundary and
+    # advertised the result as a consultable bearer holding another
+    # generation's context.
+    org32, (n32,) = horg()
+    sid32 = sid_of(org32, n32)
+    _plant_session(sid32, [_msg("a1"), _msg("a2"), _boundary("ab1"),
+                           _msg("a3"), _msg("a4"), _boundary("ab2"),
+                           _msg("a5")])
+    row32a = org32.record_cli_compaction(n32, 100, None, 2)
+    row32b = org32.record_cli_compaction(n32, 100, None, 5)
+    org32.mark_unrecoverable(n32, "probe")
+    org32.reseed(USER, n32, "fresh-sid-32")
+    seed32 = f"{n32}@{org32.node(n32)['generation'] - 1}"
+    store.save_org(org32)
+    slug32 = org32.d["slug"]
+    check("reseed · the row reseed archives says WHY it is lost, which is the "
+          "only thing that tells it from a compaction row",
+          lambda: _true(org32.nodes[seed32].get("lost_reason") == "reseed"
+                        and org32.nodes[seed32]["session_id"] == sid32,
+                        json.dumps(org32.nodes[seed32].get("lost_reason"))))
+    check("reseed · …and a CLI-compaction row says so too",
+          lambda: _true(org32.nodes[row32a].get("lost_reason")
+                        == "cli_compaction"))
+    check("reseed · recover REFUSES it — it has no boundary of its own, and "
+          "cutting it at a neighbour's would give it another generation's "
+          "records under its own name",
+          lambda: _raises(
+              lambda: supervisor.recover_lost_generation(slug32, seed32),
+              "reseed's dead session"))
+    check("reseed · the phantom proof refuses it too, so it can never be "
+          "deleted as a duplicate either",
+          lambda: _true(supervisor._phantom_evidence(
+              org32, seed32)["phantom"] is False))
+    # and the genuine rows beside it are NOT collateral: the reseed row must
+    # not strand them (the knock-on the redteam measured — recovering one row
+    # consumed the last sharer and refused the rest forever)
+    r32a = supervisor.recover_lost_generation(slug32, row32a)
+    r32b = supervisor.recover_lost_generation(slug32, row32b)
+    check("reseed · the genuine compaction rows beside it still recover, each "
+          "at its OWN boundary — the dead row is skipped, not blocking",
+          lambda: _true(r32a["cut_at"] == 2 and r32b["cut_at"] == 5,
+                        json.dumps([r32a, r32b])))
+
+    def _reseed_neighbours() -> None:
+        o = store.load_org(slug32)
+        for row, exp in ((row32a, ["a1", "a2"]),
+                         (row32b, ["a1", "a2", "ab1", "a3", "a4"])):
+            p = supervisor.transcript_path(o.nodes[row]["session_id"], None)
+            got = [json.loads(x).get("uuid")
+                   for x in open(p, encoding="utf-8").read().splitlines()]  # type: ignore[arg-type]
+            _true(got == exp, f"{row}: got {got}, wanted {exp}")
+    check("reseed · …holding exactly their own generations", _reseed_neighbours)
+
+    # a reseed row minted BEFORE `lost_reason` existed cannot be recognised by
+    # name, so the guessing branch demands the fact that distinguishes an
+    # abandoned session from a compacted one: somebody who could still USE the
+    # session holds it. Reseed leaves its dead id to lost rows alone.
+    org33, (n33,) = horg()
+    sid33 = sid_of(org33, n33)
+    _plant_session(sid33, [_msg("b1"), _boundary("bb1"), _msg("b2"),
+                           _boundary("bb2"), _msg("b3")])
+    legacy33 = org33.record_cli_compaction(n33, 100)         # no offset
+    org33.nodes[legacy33].pop("cli_boundary_offset", None)
+    org33.mark_unrecoverable(n33, "probe")
+    org33.reseed(USER, n33, "fresh-sid-33")
+    seed33 = f"{n33}@{org33.node(n33)['generation'] - 1}"
+    org33.nodes[seed33].pop("lost_reason", None)             # a PRE-EXISTING row
+    org33.nodes[seed33].pop("cli_boundary_offset", None)
+    store.save_org(org33)
+    slug33 = org33.d["slug"]
+    check("reseed · (the arrangement) two boundaries, two unmarked lost rows "
+          "— the counts MATCH, so nothing but the guard stands between the "
+          "dead row and a neighbour's boundary",
+          lambda: _true(len(supervisor._count_cli_compactions(
+              org33, seed33)[2]) == 2
+              and org33.nodes[seed33].get("lost_reason") is None))
+    check("reseed · an unrecognisable dead row is still refused: only other "
+          "lost rows hold that session, and nothing that could use it does",
+          lambda: _raises(
+              lambda: supervisor.recover_lost_generation(slug33, seed33),
+              "nothing that could still use"))
+    # …and that extra demand is paid ONLY by rows that cannot say what they
+    # are. A row that names itself a compaction row keeps the legacy
+    # positional recovery the branch was written for, even when the only
+    # other holder of its session is a dead one.
+    check("reseed · …while the row that DOES say it is a compaction row still "
+          "recovers positionally beside it — the doubt is charged to the "
+          "unidentifiable row, not to the whole branch",
+          lambda: _true(supervisor.recover_lost_generation(
+              slug33, legacy33)["cut_at"] == 1))
+
+    # the marker's other job: keeping the dead row OUT of the arithmetic, so
+    # it cannot push a genuine row's index onto a neighbour's boundary — and
+    # so its mere presence does not refuse the genuine row for a crowd of two
+    org36, (n36,) = horg()
+    sid36 = sid_of(org36, n36)
+    _plant_session(sid36, [_msg("j1"), _boundary("jb"), _msg("j2")])
+    legacy36 = org36.record_cli_compaction(n36, 100)          # no offset
+    org36.nodes[legacy36].pop("cli_boundary_offset", None)
+    org36.mark_unrecoverable(n36, "probe")
+    org36.reseed(USER, n36, "fresh-sid-36")                   # marked reseed
+    store.save_org(org36)
+    check("reseed · the dead row is not counted against the session's "
+          "boundaries — one boundary, one COMPACTION row, and the genuine "
+          "row recovers at it",
+          lambda: _true(supervisor.recover_lost_generation(
+              org36.d["slug"], legacy36)["cut_at"] == 1))
+
+    # …and the proof refuses it too. No arrangement was found that reaches the
+    # content comparison with a reseed row (reseed always moves the live node
+    # off the session, so the row is normally alone), so this is stated by
+    # forcing the state onto a row the proof otherwise accepts — the guard is
+    # defence in depth, and an untested guard is the one that quietly rots.
+    org37, (n37,) = horg()
+    old37 = sid_of(org37, n37)
+    _plant_session(old37, [_msg("k1"), _msg("k2")])
+    org37.compact_split(n37, "fork-sid-37")
+    _plant_session("fork-sid-37", [_msg("k1"), _msg("k2"),
+                                   _boundary("kb"), _msg("k3")])
+    ph37 = org37.record_cli_compaction(n37, 100, None, 2)
+    store.save_org(org37)
+    check("reseed · (control) the row IS a phantom while it says it is a "
+          "compaction row",
+          lambda: _true(supervisor._phantom_evidence(
+              org37, ph37)["phantom"] is True))
+    org37.nodes[ph37]["lost_reason"] = "reseed"
+    store.save_org(org37)
+    ev37 = supervisor._phantom_evidence(org37, ph37)
+    check("reseed · …and the same row, saying it is an abandoned session, is "
+          "refused — a dead session's records are not a duplicated prefix",
+          lambda: _true(ev37["phantom"] is False
+                        and "reseed's dead session" in ev37.get("why", ""),
+                        json.dumps(ev37)))
+
+    # ---- recover's missing lineage test (redteam 2026-08-20) ---------------
+    # `_phantom_evidence` refuses an outside holder — but it says so by
+    # returning phantom=False, and recover reads that as permission. Without
+    # its own test it would cut a bearer out of a STRANGER's live transcript.
+    org34, (n34, stranger34) = horg(2)
+    sid34 = sid_of(org34, n34)
+    _plant_session(sid34, [_msg("s1"), _msg("s2"), _boundary("sb"), _msg("s3")])
+    lost34 = org34.record_cli_compaction(n34, 100, None, 2)
+    org34.compact_split(n34, "fork-sid-34")           # the lineage moves off
+    _plant_session("fork-sid-34", [_msg("ssum"), _msg("s4")])
+    org34.node(stranger34)["session_id"] = sid34      # …and a stranger holds it
+    store.save_org(org34)
+    check("outsider · recover refuses a session held from outside the "
+          "lineage — a bearer must never be cut out of another agent's live "
+          "transcript",
+          lambda: _raises(
+              lambda: supervisor.recover_lost_generation(
+                  org34.d["slug"], lost34), "outside its lineage"))
+
+    # ---- the proof may not compare a file with itself ----------------------
+    # No live path was found for this (every mint that hands a bearer the live
+    # session moves the live node off it), but `theirs ⊇ mine` is true by
+    # construction when both name one file, so the proof would pass on ANY
+    # offset and authorise a deletion on no evidence. Deletion is
+    # unrecoverable; it is checked rather than argued.
+    org35, (n35,) = horg()
+    old35 = sid_of(org35, n35)
+    _plant_session(old35, [_msg("i1"), _msg("i2")])
+    prev35 = org35.compact_split(n35, "fork-sid-35")
+    _plant_session("fork-sid-35", [_msg("i1"), _msg("i2"),
+                                   _boundary("ib"), _msg("i3")])
+    ph35 = org35.record_cli_compaction(n35, 100, None, 2)
+    store.save_org(org35)
+    check("self-proof · (control) it IS a phantom against the real sibling",
+          lambda: _true(supervisor._phantom_evidence(
+              org35, ph35)["phantom"] is True))
+    org35.nodes[prev35]["session_id"] = org35.nodes[ph35]["session_id"]
+    store.save_org(org35)
+    ev35 = supervisor._phantom_evidence(org35, ph35)
+    check("self-proof · a sibling naming the SAME file proves nothing, and is "
+          "refused rather than believed",
+          lambda: _true(ev35["phantom"] is False
+                        and "same session file" in ev35.get("why", ""),
+                        json.dumps(ev35)))
+
     # R2 (MAJOR): the marks are counted OUTSIDE the doc lock, and
     # cheap_compact can replace the session mid-turn. Recording them then
     # mints generations against a file the node no longer owns AND stamps a

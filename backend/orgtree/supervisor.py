@@ -4251,6 +4251,9 @@ def _phantom_evidence(org: Org, pred_id: str) -> dict[str, Any]:
     if n.get("bearer_state") != "lost":
         return no(f"{pred_id} is not a LOST generation "
                   f"(bearer_state={n.get('bearer_state')!r})")
+    if n.get("lost_reason") == "reseed":
+        return no(f"{pred_id} is reseed's dead session, not a compaction — "
+                  f"it has no boundary of its own to compare a prefix at")
     succ_id = n.get("successor")
     succ = org.nodes.get(succ_id) if succ_id else None
     if not succ:
@@ -4283,6 +4286,15 @@ def _phantom_evidence(org: Org, pred_id: str) -> dict[str, Any]:
     if prev.get("bearer_state") != "knowledge":
         return no(f"sibling {prev_id} is not a knowledge bearer "
                   f"(bearer_state={prev.get('bearer_state')!r})")
+    # defence in depth (redteam 2026-08-20, no live path found): if the
+    # sibling names the SAME file, `theirs ⊇ mine` holds by construction and
+    # the proof passes on any offset — a row deleted on no evidence at all.
+    # Every mint that hands a bearer the live session moves the live node off
+    # it, so this should be unreachable; a deletion is unrecoverable, so it is
+    # checked rather than argued.
+    if prev.get("session_id") == n.get("session_id"):
+        return no(f"sibling {prev_id} names the same session file — a proof "
+                  f"of duplication against itself proves nothing")
     root = _transcript_root(org)
     src = transcript_path(cast(str, n.get("session_id")), root)
     dup = transcript_path(cast(str, prev.get("session_id")), root)
@@ -4388,6 +4400,19 @@ def recover_lost_generation(slug: str, pred_id: str) -> dict[str, Any]:
                 f"refusing to recover {pred_id}: it is a PHANTOM, not a lost "
                 f"generation — {ev.get('why')}. Its content is already held "
                 f"by {ev.get('duplicate_of')}; drop the row instead.")
+        # reseed's row is not a compaction row: its session was declared
+        # unrecoverable and abandoned whole, so it has no boundary of its own
+        # anywhere. Cutting it at the nearest one hands it a NEIGHBOUR's
+        # records under its own name and advertises the result as consultable
+        # — a bearer whose memory is somebody else's (redteam 2026-08-20,
+        # reproduced). The old successor-anchored test excluded these rows by
+        # accident, because reseed always moved the live node to a fresh id;
+        # asking the question of the row lost that accident, so it is stated.
+        if n.get("lost_reason") == "reseed":
+            raise LedgerError(
+                f"{pred_id} is reseed's dead session, not a CLI compaction — "
+                f"it has no boundary of its own, and cutting it at another "
+                f"generation's would give it another generation's records")
         succ_id = n.get("successor")
         if not succ_id or succ_id not in org.nodes:
             raise LedgerError(f"{pred_id} has no successor to recover from")
@@ -4395,11 +4420,23 @@ def recover_lost_generation(slug: str, pred_id: str) -> dict[str, Any]:
         # from it on every later compaction (`_session_sharers`). What must be
         # true is that the row's records still live in somebody else's file:
         # a row that owns its session alone has already been cut out of one.
-        if not _session_sharers(org, pred_id):
+        sharers = _session_sharers(org, pred_id)
+        if not sharers:
             raise LedgerError(
                 f"{pred_id} owns its session id alone — its records are "
                 f"already in a session of their own, so there is no in-place "
                 f"boundary to cut it from")
+        # …and the same lineage test the drop makes (redteam 2026-08-20: this
+        # one was MISSING here, and `_phantom_evidence` returning phantom=False
+        # for "outside its lineage" reads as permission). Without it a lost row
+        # could be cut out of a STRANGER's live transcript, at a boundary that
+        # is not its own, and the result advertised as its own past self.
+        outside = [k for k in sharers
+                   if k != succ_id and org.nodes[k].get("successor") != succ_id]
+        if outside:
+            raise LedgerError(
+                f"{pred_id}'s session is also held by {outside!r}, which is "
+                f"outside its lineage — refusing to cut a bearer out of it")
         _cnt, _pre, marks = _count_cli_compactions(org, pred_id)
         if not marks:
             raise LedgerError(f"no compact boundary in {pred_id}'s session — "
@@ -4424,9 +4461,15 @@ def recover_lost_generation(slug: str, pred_id: str) -> dict[str, Any]:
             # point at the wrong boundary — cutting a bearer from the wrong
             # moment, which looks exactly like success. So the ambiguous case
             # refuses rather than guessing.
+            #
+            # The set is BOUNDARY-DERIVED rows only. A reseed row in it would
+            # shift every index past it onto a neighbour's boundary while the
+            # count still matched, which is the failure that looks like
+            # success.
             gen_rows = sorted(
                 (k for k, v in org.nodes.items()
                  if v.get("bearer_state") == "lost"
+                 and v.get("lost_reason") != "reseed"
                  and v.get("session_id") == n.get("session_id")),
                 key=lambda k: org.nodes[k].get("generation", 0))
             if pred_id not in gen_rows or len(gen_rows) != len(marks):
@@ -4434,6 +4477,23 @@ def recover_lost_generation(slug: str, pred_id: str) -> dict[str, Any]:
                     f"cannot place {pred_id} against the session's "
                     f"{len(marks)} boundaries ({len(gen_rows)} lost rows "
                     f"share the session) — refusing to guess a cut point")
+            # …and a row minted before `lost_reason` existed cannot be sorted
+            # that way — THIS row might itself be an unrecognised reseed row.
+            # So when it cannot say what it is, the guessing branch demands
+            # the fact that tells a compacted session from an abandoned one:
+            # somebody who could still USE it holds it — the live successor,
+            # or a knowledge bearer. Reseed leaves its dead id to lost rows
+            # alone. A row that DOES say it is a compaction row skips this
+            # (and rows recording their own offset never reach here at all),
+            # so neither the legacy positional case nor the drifted one pays
+            # for the ambiguity.
+            if not n.get("lost_reason") and not any(
+                    org.nodes[k].get("bearer_state") in (None, "knowledge")
+                    for k in sharers):
+                raise LedgerError(
+                    f"nothing that could still use {pred_id}'s session holds "
+                    f"it — only other lost rows do. Without a recorded "
+                    f"boundary offset that is not enough to place a cut point")
             off = marks[gen_rows.index(pred_id)][0]
         row_sid = cast(str, n.get("session_id"))
     # ---- outside the lock: the expensive part ----
