@@ -3873,6 +3873,199 @@ def lost_generations() -> None:
           lambda: _true(set(org20.lineage_stack(n20)) == {real20, prev20},
                         f"stack = {org20.lineage_stack(n20)}"))
 
+    # ---- DRIFT (found 2026-08-20 by running the proof against the LIVE doc) --
+    # Both repair verbs anchored on the SUCCESSOR: "does this row's session id
+    # equal the live node's?", and counted boundaries in the live node's file.
+    # `successor` is the bare live id, and the live node's session MOVES every
+    # time it compacts — a §8 split hands it the fork and leaves the old id to
+    # the bearer it just minted. The row does not move. So both anchors drift
+    # off a row that is standing still, and the repair written for it stops
+    # applying: ingame-prompt@6, a phantom proven at 425/425, was refused with
+    # "holds its own session id" once @7 inherited its session. It failed
+    # CLOSED, so nothing was destroyed — the repair simply would not run, and
+    # for `recover` that is the loss direction: a GENUINE lost generation
+    # becomes unrecoverable the moment its live node compacts again.
+    # The durable question is asked of the ROW: does anyone else still hold
+    # this session file?
+    org22, (n22,) = horg()
+    old22 = sid_of(org22, n22)
+    _plant_session(old22, [_msg("z1"), _msg("z2")])
+    prev22 = org22.compact_split(n22, "fork-sid-22")
+    _plant_session("fork-sid-22", [_msg("z1"), _msg("z2"),
+                                   _boundary("zb"), _msg("z3")])
+    ph22 = org22.record_cli_compaction(n22, 100, None, 2)       # the phantom
+    # …and now the drift: the live node compacts AGAIN. `mid22` inherits the
+    # phantom's session; the live node moves to a file the phantom never saw.
+    mid22 = org22.compact_split(n22, "fork-sid-22b")
+    # the live node's new file is a summary and what came after it — the shape
+    # b067d11f actually had on this machine, and it carries NO boundary of the
+    # phantom's. Counting boundaries in the SUCCESSOR therefore finds none at
+    # all, which is exactly how the drift refused a proven phantom.
+    _plant_session("fork-sid-22b", [_msg("zsum"), _msg("z4")])
+    store.save_org(org22)
+    slug22 = org22.d["slug"]
+    check("drift · (the shape) the phantom no longer matches the live node's "
+          "session — it matches the BEARER that inherited it",
+          lambda: _true(org22.nodes[ph22]["session_id"]
+                        == org22.nodes[mid22]["session_id"]
+                        != org22.node(n22)["session_id"],
+                        f'{org22.nodes[ph22]["session_id"]} / '
+                        f'{org22.node(n22)["session_id"]}'))
+    ev22 = supervisor._phantom_evidence(org22, ph22)
+    check("drift · a phantom is STILL provable after its live node has "
+          "compacted past it — the proof follows the row, not the successor",
+          lambda: _true(ev22["phantom"] is True, json.dumps(ev22)))
+    check("drift · …and still names the sibling that actually holds the "
+          "content, matched record for record",
+          lambda: _true(ev22.get("duplicate_of") == prev22
+                        and ev22.get("records") == 2, json.dumps(ev22)))
+    supervisor.drop_phantom_generation(slug22, ph22)
+    org22 = store.load_org(slug22)
+    check("drift · the drifted phantom drops, and the bearer that inherited "
+          "its session re-links onto the phantom's predecessor",
+          lambda: _true(ph22 not in org22.nodes
+                        and org22.nodes[mid22]["predecessor"] == prev22,
+                        f'{mid22}.predecessor = '
+                        f'{org22.nodes[mid22]["predecessor"]}'))
+    check("drift · …and that bearer is otherwise untouched — it is the one "
+          "holding the records, and the drop must not disturb it",
+          lambda: _true(org22.nodes[mid22]["bearer_state"] == "knowledge"
+                        and org22.nodes[mid22]["session_id"] == "fork-sid-22"))
+
+    # the fail-closed direction must survive the same drift: unique content is
+    # a real loss whether or not the live node has moved on since
+    org23, (n23,) = horg()
+    old23 = sid_of(org23, n23)
+    _plant_session(old23, [_msg("p1")])                          # PARTIAL
+    prev23 = org23.compact_split(n23, "fork-sid-23")
+    _plant_session("fork-sid-23", [_msg("p1"), _msg("p2"),
+                                   _boundary("pb"), _msg("p3")])
+    lost23 = org23.record_cli_compaction(n23, 100, None, 2)
+    org23.compact_split(n23, "fork-sid-23b")                     # the drift
+    _plant_session("fork-sid-23b", [_msg("psum"), _msg("p4")])
+    store.save_org(org23)
+    _ = prev23
+    ev23 = supervisor._phantom_evidence(org23, lost23)
+    check("drift · unique content still REFUSES after the drift — the looser "
+          "anchor must not loosen the proof",
+          lambda: _true(ev23["phantom"] is False
+                        and "unique" in ev23.get("why", ""), json.dumps(ev23)))
+    check("drift · …and the drop refuses with it",
+          lambda: _raises(lambda: supervisor.drop_phantom_generation(
+              org23.d["slug"], lost23), "unique"))
+
+    # the guard the successor-test was standing in for, stated on the row: a
+    # lost row that owns its session ALONE has already been cut out of a
+    # shared file (a recovered bearer, reseed's dead session) and is nobody's
+    # to drop. Mutation-tested: the control above it must pass first, or
+    # deleting this guard would go unnoticed.
+    org24, (n24,) = horg()
+    old24 = sid_of(org24, n24)
+    _plant_session(old24, [_msg("c1"), _msg("c2")])
+    org24.compact_split(n24, "fork-sid-24")
+    _plant_session("fork-sid-24", [_msg("c1"), _msg("c2"),
+                                   _boundary("cb"), _msg("c3")])
+    ph24 = org24.record_cli_compaction(n24, 100, None, 2)
+    store.save_org(org24)
+    check("alone · (control) while somebody else holds the session it IS a "
+          "phantom — so the next check cannot pass vacuously",
+          lambda: _true(supervisor._phantom_evidence(
+              org24, ph24)["phantom"] is True))
+    _plant_session("orphan-sid-24", [_msg("c1"), _msg("c2"),
+                                     _boundary("cb"), _msg("c3")])
+    org24.nodes[ph24]["session_id"] = "orphan-sid-24"      # nobody else's
+    store.save_org(org24)
+    ev24 = supervisor._phantom_evidence(org24, ph24)
+    check("alone · a lost row that owns its session file alone is refused — "
+          "its records are already somewhere of their own",
+          lambda: _true(ev24["phantom"] is False
+                        and "alone" in ev24.get("why", ""), json.dumps(ev24)))
+    check("alone · …and the drop refuses with it",
+          lambda: _raises(lambda: supervisor.drop_phantom_generation(
+              org24.d["slug"], ph24), "alone"))
+
+    # a sharer from OUTSIDE the row's lineage is an arrangement this proof was
+    # never written for, and an unrecognised arrangement authorises no deletion
+    org25, (n25, stranger25) = horg(2)
+    old25 = sid_of(org25, n25)
+    _plant_session(old25, [_msg("d1"), _msg("d2")])
+    org25.compact_split(n25, "fork-sid-25")
+    _plant_session("fork-sid-25", [_msg("d1"), _msg("d2"),
+                                   _boundary("db"), _msg("d3")])
+    ph25 = org25.record_cli_compaction(n25, 100, None, 2)
+    store.save_org(org25)
+    check("outsider · (control) it IS a phantom before the stranger appears",
+          lambda: _true(supervisor._phantom_evidence(
+              org25, ph25)["phantom"] is True))
+    org25.node(stranger25)["session_id"] = "fork-sid-25"
+    store.save_org(org25)
+    ev25 = supervisor._phantom_evidence(org25, ph25)
+    check("outsider · a node outside the lineage holding the same session "
+          "refuses the proof rather than reasoning about it",
+          lambda: _true(ev25["phantom"] is False
+                        and "outside its lineage" in ev25.get("why", ""),
+                        json.dumps(ev25)))
+    check("outsider · …and the drop refuses with it",
+          lambda: _raises(lambda: supervisor.drop_phantom_generation(
+              org25.d["slug"], ph25), "outside"))
+
+    # RECOVER under the same drift — the loss direction. Before this, a real
+    # in-place loss stopped being recoverable as soon as its live node
+    # compacted again: the records were still sitting in the file (a knowledge
+    # bearer now owns it), and the verb refused to look.
+    org26, (n26,) = horg()
+    sid26 = sid_of(org26, n26)
+    _plant_session(sid26, [_msg("t1"), _msg("t2"), _boundary("tb"), _msg("t3")])
+    lost26 = org26.record_cli_compaction(n26, 100, None, 2)      # genuine loss
+    mid26 = org26.compact_split(n26, "fork-sid-26")              # the drift
+    _plant_session("fork-sid-26", [_msg("tsum"), _msg("t4")])
+    store.save_org(org26)
+    slug26 = org26.d["slug"]
+    rec26 = supervisor.recover_lost_generation(slug26, lost26)
+    org26 = store.load_org(slug26)
+    check("drift · a genuine loss is STILL recoverable after its live node "
+          "has compacted past it — cut at its own boundary, in its own file",
+          lambda: _true(org26.nodes[lost26]["bearer_state"] == "knowledge"
+                        and rec26["cut_at"] == 2, json.dumps(rec26)))
+
+    def _drift_recovered() -> None:
+        p = supervisor.transcript_path(org26.nodes[lost26]["session_id"], None)
+        _true(bool(p), "the recovered bearer has no transcript")
+        got = [json.loads(x).get("uuid")
+               for x in open(p, encoding="utf-8").read().splitlines()]  # type: ignore[arg-type]
+        _true(got == ["t1", "t2"], f"got {got}")
+    check("drift · …holding exactly the records above ITS boundary, not the "
+          "live node's", _drift_recovered)
+    check("drift · …and the bearer that inherited the original session keeps "
+          "it — recovery COPIES a prefix, it does not take the file",
+          lambda: _true(org26.nodes[mid26]["session_id"] == sid26
+                        and supervisor.transcript_path(sid26, None)
+                        is not None))
+
+    # …and recover's half of the same guard, stated on the row. A lost row
+    # holding a session NOBODY else holds (reseed's dead session) has no
+    # in-place boundary to be cut from: cutting anyway would copy a prefix out
+    # of the row's own exclusive file and cut it at a boundary that is not
+    # provably its own. Refuses.
+    org27, (n27,) = horg()
+    sid27 = sid_of(org27, n27)
+    _plant_session(sid27, [_msg("f1"), _msg("f2"), _boundary("fb"), _msg("f3")])
+    lost27 = org27.record_cli_compaction(n27, 100, None, 2)
+    store.save_org(org27)
+    slug27 = org27.d["slug"]
+    check("alone · (control) while it shares the live session it recovers — "
+          "so the next check cannot pass vacuously",
+          lambda: _true(bool(supervisor._session_sharers(org27, lost27))))
+    _plant_session("orphan-sid-27", [_msg("f1"), _msg("f2"),
+                                     _boundary("fb"), _msg("f3")])
+    org27.nodes[lost27]["session_id"] = "orphan-sid-27"
+    store.save_org(org27)
+    check("alone · recover refuses a lost row that owns its session alone — "
+          "there is no shared file to cut it out of",
+          lambda: _raises(
+              lambda: supervisor.recover_lost_generation(slug27, lost27),
+              "alone"))
+
     # R2 (MAJOR): the marks are counted OUTSIDE the doc lock, and
     # cheap_compact can replace the session mid-turn. Recording them then
     # mints generations against a file the node no longer owns AND stamps a

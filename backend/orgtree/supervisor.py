@@ -4199,6 +4199,33 @@ def _record_uuids(path: str, upto: int | None = None) -> set[str] | None:
         return None
 
 
+def _session_sharers(org: Org, nid: str) -> list[str]:
+    """The OTHER nodes that name this node's session file.
+
+    ⚠ Both repair verbs used to ask a different question — "does this row's
+    session id equal its SUCCESSOR's?" — and that question rots. `successor`
+    is the bare LIVE node, and the live node's session id moves every time it
+    compacts: a §8 split hands it the fork's id and leaves the old id to the
+    knowledge bearer it just minted. The lost row does not move. So a row that
+    was minted sharing the live session stops matching the moment the live
+    node compacts AGAIN, and the repair that was written for it silently stops
+    applying (measured 2026-08-20 against the live doc: ingame-prompt@6, a
+    proven phantom, was refused with "holds its own session id" — because @7
+    had since inherited 7bfddfd8 and the live node had moved to b067d11f).
+
+    The durable form of the same question is asked of the ROW: is this row's
+    session file held by somebody else too, or does the row own it alone? That
+    is what both callers actually need to know — a row that owns its file
+    alone is a recovered bearer or reseed's dead session, and is nobody's to
+    cut or drop. Session ids are uuid4, so a sharer is same-lineage by
+    construction; the caller checks that anyway rather than assuming it."""
+    sid = org.nodes.get(nid, {}).get("session_id")
+    if not sid:
+        return []
+    return [k for k, v in org.nodes.items()
+            if k != nid and v.get("session_id") == sid]
+
+
 def _phantom_evidence(org: Org, pred_id: str) -> dict[str, Any]:
     """PROVE — or refuse to claim — that a LOST lineage entry is a phantom of
     `compact_split`'s missing counter reset, and may therefore be dropped.
@@ -4229,12 +4256,25 @@ def _phantom_evidence(org: Org, pred_id: str) -> dict[str, Any]:
     if not succ:
         return no(f"{pred_id} has no successor to compare against")
     # the phantom's signature: record_cli_compaction left the id alone, so the
-    # row still names the SUCCESSOR's session. A lost row with its own session
-    # is a different animal (a recovered bearer, or reseed's dead session) and
-    # is not ours to delete.
-    if n.get("session_id") != succ.get("session_id"):
-        return no(f"{pred_id} holds its own session id, not its successor's — "
-                  f"not the phantom shape")
+    # row names a session that SOMEBODY ELSE still holds — the live node it
+    # was minted beside, or (once that node has compacted again) the knowledge
+    # bearer that inherited the id from it. A lost row that owns its session
+    # ALONE is a different animal (a recovered bearer, or reseed's dead
+    # session) and is not ours to delete. See `_session_sharers` for why this
+    # is not asked of the successor.
+    sharers = _session_sharers(org, pred_id)
+    if not sharers:
+        return no(f"{pred_id} owns its session id alone — not the phantom "
+                  f"shape (nobody else holds those records)")
+    # and they must be this row's own lineage: every generation of one node
+    # names the same bare live id in `successor`, so that is the family test.
+    # A sharer from anywhere else means an arrangement this proof was not
+    # written for, and an unrecognised arrangement authorises no deletion.
+    outside = [k for k in sharers
+               if k != succ_id and org.nodes[k].get("successor") != succ_id]
+    if outside:
+        return no(f"{pred_id}'s session is also held by {outside!r}, which is "
+                  f"outside its lineage — refusing to reason about it")
     prev_id = n.get("predecessor")
     prev = org.nodes.get(prev_id) if prev_id else None
     if not prev:
@@ -4248,7 +4288,10 @@ def _phantom_evidence(org: Org, pred_id: str) -> dict[str, Any]:
     dup = transcript_path(cast(str, prev.get("session_id")), root)
     if not src or not dup:
         return no("a session file is missing — cannot prove duplication")
-    _cnt, _pre, marks = _count_cli_compactions(org, cast(str, succ_id))
+    # counted in the ROW's session, not the successor's — the successor may
+    # since have compacted into a different file, whose boundaries are not
+    # this row's (0 of them, in the live case that caught this)
+    _cnt, _pre, marks = _count_cli_compactions(org, pred_id)
     if not marks:
         return no("no compact boundary in the session — nothing to compare")
     # WHICH boundary is this row's? Getting that wrong is how a real
@@ -4348,11 +4391,16 @@ def recover_lost_generation(slug: str, pred_id: str) -> dict[str, Any]:
         succ_id = n.get("successor")
         if not succ_id or succ_id not in org.nodes:
             raise LedgerError(f"{pred_id} has no successor to recover from")
-        if n.get("session_id") != org.node(succ_id).get("session_id"):
+        # asked of the ROW, not of the successor, whose session id drifts away
+        # from it on every later compaction (`_session_sharers`). What must be
+        # true is that the row's records still live in somebody else's file:
+        # a row that owns its session alone has already been cut out of one.
+        if not _session_sharers(org, pred_id):
             raise LedgerError(
-                f"{pred_id} does not share its successor's session — there is "
-                f"no in-place boundary to cut it from")
-        _cnt, _pre, marks = _count_cli_compactions(org, cast(str, succ_id))
+                f"{pred_id} owns its session id alone — its records are "
+                f"already in a session of their own, so there is no in-place "
+                f"boundary to cut it from")
+        _cnt, _pre, marks = _count_cli_compactions(org, pred_id)
         if not marks:
             raise LedgerError(f"no compact boundary in {pred_id}'s session — "
                               f"there is nothing to cut it from")
