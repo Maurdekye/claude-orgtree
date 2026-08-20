@@ -3647,6 +3647,94 @@ def lost_generations() -> None:
           lambda: _raises(
               lambda: supervisor.recover_lost_generation(slug13, lost13),
               "not a lost generation"))
+    # R5b (redteam round 4 test-gap): round 3 put the `finally` on BOTH cut
+    # windows, but only `_after_turn`'s was pinned. These cover the recovery
+    # verb's two failure exits. The catastrophic direction is asserted first:
+    # a SUCCESSFUL recovery must NOT discard — the doc now names that session,
+    # and deleting it would leave the ledger promising a consultable bearer
+    # whose transcript is gone.
+    org29, (n29,) = horg()
+    sid29 = sid_of(org29, n29)
+    _plant_session(sid29, [_msg("g1"), _msg("g2"), _boundary("gb"), _msg("g3")])
+    lost29 = org29.record_cli_compaction(n29, 100, None, 2)
+    store.save_org(org29)
+    slug29 = org29.d["slug"]
+    rec29 = supervisor.recover_lost_generation(slug29, lost29)
+    check("R5b · (catastrophic direction) a SUCCESSFUL recovery keeps its "
+          "cut — the doc names that session, so discarding it would promise "
+          "a bearer whose transcript is deleted",
+          lambda: _true(supervisor.transcript_path(
+              store.load_org(slug29).nodes[lost29]["session_id"], None)
+              is not None, json.dumps(rec29)))
+
+    # the MISMATCH exit: the row changes under the cut
+    org30, (n30,) = horg()
+    sid30 = sid_of(org30, n30)
+    _plant_session(sid30, [_msg("h1"), _msg("h2"), _boundary("hb"), _msg("h3")])
+    lost30 = org30.record_cli_compaction(n30, 100, None, 2)
+    store.save_org(org30)
+    slug30 = org30.d["slug"]
+    _rig30 = os.path.join(HOME, ".claude", "projects", "rig")
+    files30 = set(os.listdir(_rig30))
+    _real_fork = supervisor._fork_bearer_session
+    _forked30: list[str] = []
+
+    def _fork_then_move(o: object, s: str, u: int) -> object:
+        # cut for real, then change the row underneath — exactly the race the
+        # re-verify exists for
+        out = _real_fork(o, s, u)                    # type: ignore[arg-type]
+        if isinstance(out, str):
+            _forked30.append(out)
+        d = store.load_org(slug30)
+        d.nodes[lost30]["bearer_state"] = "knowledge"     # someone got there
+        store.save_org(d)
+        return out
+
+    supervisor._fork_bearer_session = _fork_then_move   # type: ignore[assignment]
+    try:
+        _raises(lambda: supervisor.recover_lost_generation(slug30, lost30),
+                "changed while")
+    finally:
+        supervisor._fork_bearer_session = _real_fork   # type: ignore[assignment]
+    check("R5b · (control) the cut really was taken before the row moved",
+          lambda: _true(len(_forked30) == 1, f"forked {_forked30}"))
+    check("R5b · a row that changes under the cut refuses AND discards the "
+          "cut it had already taken",
+          lambda: _true(set(os.listdir(_rig30)) == files30,
+                        f"strays: {set(os.listdir(_rig30)) - files30}"))
+
+    # the RAISE exit: the ledger write itself fails after the cut exists
+    org31, (n31,) = horg()
+    sid31 = sid_of(org31, n31)
+    _plant_session(sid31, [_msg("i1"), _msg("i2"), _boundary("ib"), _msg("i3")])
+    lost31 = org31.record_cli_compaction(n31, 100, None, 2)
+    store.save_org(org31)
+    slug31 = org31.d["slug"]
+    files31 = set(os.listdir(_rig30))
+    _real_recov = Org.recover_lost_generation
+    _hit31: list[int] = []
+
+    def _recov_boom(*_a: object, **_k: object) -> str:
+        _hit31.append(1)
+        raise OSError("disk full")
+
+    Org.recover_lost_generation = _recov_boom     # type: ignore[assignment]
+    try:
+        _raises_any = False
+        try:
+            supervisor.recover_lost_generation(slug31, lost31)
+        except Exception:                                    # noqa: BLE001
+            _raises_any = True
+    finally:
+        Org.recover_lost_generation = _real_recov  # type: ignore[assignment]
+    check("R5b · (control) the raise landed inside the cut window",
+          lambda: _true(bool(_hit31) and _raises_any,
+                        f"hit={len(_hit31)} raised={_raises_any}"))
+    check("R5b · a raise between the cut and the record discards the cut in "
+          "the recovery verb too, not just on the turn path",
+          lambda: _true(set(os.listdir(_rig30)) == files31,
+                        f"strays: {set(os.listdir(_rig30)) - files31}"))
+
     # a phantom of its own — org10's was already dropped, and org11's row is
     # the UNIQUE-content case, which is precisely not a phantom
     org14, (n14,) = horg()

@@ -4356,11 +4356,14 @@ def recover_lost_generation(slug: str, pred_id: str) -> dict[str, Any]:
         if not marks:
             raise LedgerError(f"no compact boundary in {pred_id}'s session — "
                               f"there is nothing to cut it from")
-        recorded = n.get("cli_boundary_offset")
-        if isinstance(recorded, int):
+        # (named for what it is: this function later uses a `recorded` FLAG
+        # for whether the save landed, and one name for an offset and a
+        # boolean in one body is a trap for the next editor — redteam round 4)
+        recorded_off = n.get("cli_boundary_offset")
+        if isinstance(recorded_off, int):
             # the cut point this row was minted with — exact, and immune to
             # the ordering problem below
-            off = recorded
+            off = recorded_off
             if not any(off == m[0] for m in marks):
                 raise LedgerError(
                     f"{pred_id} records a boundary at line {off} that is no "
