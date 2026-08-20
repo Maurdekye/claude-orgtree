@@ -1021,6 +1021,1034 @@ def thresholds() -> None:
                         " ".join(cmd_new[-6:])))
 
 
+# ============ 2b. hermetic: what a COMPACTED agent reports about its context
+
+class Sess:
+    """One org, one node, one hand-written transcript — the record shapes the
+    CLI really writes around a compaction, in the order it writes them.
+
+    Every number here is a real measurement off the machine's own transcripts
+    (2026-08-20, ingame-prompt's session 7bfddfd8): the fill climbed to 212,859
+    tokens, a `compact_boundary` landed carrying preTokens 214,033, a 16,154-char
+    summary followed it, and the next assistant record — one whole turn later —
+    measured 58,078. Between the boundary and that record the agent was asked
+    how full it was, and answered 212,859."""
+
+    _n = 0
+
+    def __init__(self) -> None:
+        Sess._n += 1
+        org, (a,) = horg()
+        store.save_org(org)
+        self.slug, self.nid = org.d["slug"], a
+        self.sid = org.node(a)["session_id"]
+        d = os.path.join(HOME, ".claude", "projects", "occ")
+        os.makedirs(d, exist_ok=True)
+        self.path = os.path.join(d, self.sid + ".jsonl")
+        self.seq = 0
+
+    def _rec(self, rec: dict) -> None:
+        self.seq += 1
+        rec.setdefault("timestamp", f"2026-08-20T10:{self.seq // 60:02d}:"
+                                    f"{self.seq % 60:02d}.000Z")
+        with open(self.path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec) + "\n")
+
+    def turn(self, occ: int, **over) -> None:
+        """An assistant record whose usage says the prompt it answered was
+        `occ` tokens — split across the three fields that make up a context
+        fill, because reading only `input_tokens` under-reports a cached
+        prompt by an order of magnitude."""
+        rec = {"type": "assistant",
+               "message": {"role": "assistant", "model": "claude-x",
+                           "content": [{"type": "text", "text": "ok"}],
+                           "usage": {"input_tokens": occ - 1000,
+                                     "cache_read_input_tokens": 900,
+                                     "cache_creation_input_tokens": 100}}}
+        rec.update(over)
+        self._rec(rec)
+
+    def boundary(self, pre: int, post: int | None = None, **meta) -> None:
+        """`post` is compactMetadata.postTokens — what SURVIVED the compaction.
+        Present in 19 of the 24 real boundary records on this machine and
+        absent in the older shape, so both are fixtures here."""
+        m = {"trigger": "manual", "preTokens": pre, **meta}
+        if post is not None:
+            m["postTokens"] = post
+        self._rec({"type": "system", "subtype": "compact_boundary",
+                   "content": "Conversation compacted", "isMeta": False,
+                   "compactMetadata": m})
+
+    def summary(self, chars: int) -> None:
+        self._rec({"type": "user", "isCompactSummary": True,
+                   "message": {"role": "user", "content": "S" * chars}})
+
+    def user(self, text: str = "hello") -> None:
+        self._rec({"type": "user", "message": {"role": "user", "content": text}})
+
+    def read(self) -> dict:
+        return supervisor.read_chat(store.load_org(self.slug), self.nid)
+
+    def doc_reading(self) -> tuple:
+        """The same question asked of the DOC's writer instead of the desk's."""
+        return supervisor.session_occupancy(store.load_org(self.slug), self.nid)
+
+    def after_turn(self, occ: int) -> dict:
+        """One `_after_turn` with `occ` as the turn's PEAK sample, then the
+        node as the doc now holds it."""
+        org = store.load_org(self.slug)
+        supervisor._after_turn(self.slug, self.nid, org, {},
+                               supervisor.state(self.slug, self.nid), occ)
+        return store.load_org(self.slug).node(self.nid)
+
+
+def _A(occ: int) -> dict:
+    """One assistant record whose usage adds up to `occ` — the raw shape, for
+    fixtures written straight into a file rather than through `Sess`."""
+    return {"type": "assistant", "timestamp": "2026-08-20T10:00:00.000Z",
+            "message": {"role": "assistant", "model": "claude-x",
+                        "content": [{"type": "text", "text": "ok"}],
+                        "usage": {"input_tokens": occ - 1000,
+                                  "cache_read_input_tokens": 900,
+                                  "cache_creation_input_tokens": 100}}}
+
+
+def _B(pre: int, post: int | None = None) -> dict:
+    m = {"trigger": "manual", "preTokens": pre}
+    if post is not None:
+        m["postTokens"] = post
+    return {"type": "system", "subtype": "compact_boundary",
+            "timestamp": "2026-08-20T10:00:01.000Z", "isMeta": False,
+            "content": "Conversation compacted", "compactMetadata": m}
+
+
+def _S(chars: int) -> dict:
+    return {"type": "user", "isCompactSummary": True,
+            "timestamp": "2026-08-20T10:00:02.000Z",
+            "message": {"role": "user", "content": "S" * chars}}
+
+
+#: a stand-in for `claude -p --resume … --fork-session`, so the §8 split's own
+#: doc writes can be exercised without the live half's real CLI and its three
+#: minutes. It writes the transcript the fork would have left — the records the
+#: caller names, which is the whole point: a fork that writes NO boundary is a
+#: real shape, and the reason `occupancy_of` has `require_boundary`.
+_FORK_STUB = os.path.join(TMP, "forkstub.py")
+_FORK_SPEC = os.path.join(TMP, "forkstub.spec.json")
+with open(_FORK_STUB, "w", encoding="utf-8") as _f:
+    _f.write(
+        "import json, os, sys\n"
+        "sys.stdin.read()\n"                      # the "/compact" the caller pipes
+        "here = os.path.dirname(os.path.abspath(__file__))\n"
+        "spec = json.load(open(os.path.join(here, 'forkstub.spec.json'),\n"
+        "                     encoding='utf-8'))\n"
+        "os.makedirs(spec['dir'], exist_ok=True)\n"
+        "with open(os.path.join(spec['dir'], spec['sid'] + '.jsonl'),\n"
+        "          'w', encoding='utf-8') as t:\n"
+        "    for r in spec['lines']:\n"
+        "        t.write(json.dumps(r) + '\\n')\n"
+        "print(json.dumps({'type': 'result', 'session_id': spec['sid'],\n"
+        "                  'total_cost_usd': 0.25}))\n")
+_fork_n = [0]
+
+
+def _split_via_stub(s: "Sess", lines: list[dict]) -> dict:
+    """Run the real `_compact_split_body` against the stub fork, and return the
+    successor node as the doc now holds it."""
+    _fork_n[0] += 1
+    # ⚠ NOT "forked-sid-N": the mint checks assert that no transcript exists
+    # for that id, and `transcript_path` globs every project dir on the rig
+    sid = f"stubfork-sid-{_fork_n[0]}"
+    with open(_FORK_SPEC, "w", encoding="utf-8") as f:
+        json.dump({"sid": sid, "lines": lines,
+                   "dir": os.path.dirname(s.path)}, f)
+    os.makedirs(supervisor.scratch_dir(s.slug, s.nid), exist_ok=True)
+    real = supervisor._claude_argv
+    supervisor._claude_argv = lambda: [sys.executable, _FORK_STUB]
+    try:
+        supervisor._compact_split_body(s.slug, s.nid)
+    finally:
+        supervisor._claude_argv = real
+    return store.load_org(s.slug).node(s.nid)
+
+
+def occupancy_reporting() -> None:
+    """USER BUG 2026-08-20: "after an agent is compacted its context still
+    reads FULL until its next turn runs".
+
+    Occupancy is read off the transcript, and every record in a transcript
+    describes the prompt as it stood when that call was made. A compaction
+    replaces the prompt without writing a record — so the newest record went on
+    describing a prompt that no longer existed, and the agent reported the fill
+    it had before, on the desk and through orgtree_read_transcript, until its
+    next turn happened to append a record of the new one. Measured: 213k the
+    moment the /compact finished, 59k after one trivial turn, no work in
+    between.
+
+    The rule this section pins: a boundary INVALIDATES what stands above it,
+    the summary that replaced the history stands in until something measures
+    the new session, and the stand-in says that it is one."""
+    print("\nthe fill a COMPACTED agent reports, before it next runs:")
+
+    # ---- the ordinary case still reads the way it always did (№24)
+    s = Sess()
+    s.user("prime")
+    s.turn(47_764)                       # the session's floor: prompt + tools
+    s.turn(212_859)                      # …and where it got to
+    c = s.read()
+    check("occupancy · an uncompacted session reads at its NEWEST record",
+          lambda: _eq(c["occupancy"], 212_859))
+    check("occupancy · …and says so: nothing about it is estimated",
+          lambda: _eq(c["occupancy_estimated"], False))
+
+    # ---- THE BUG: the boundary, and nothing after it yet
+    s.boundary(214_033)
+    s.summary(16_154)
+    c = s.read()
+    check("compacted · the pre-compaction fill does NOT survive its own "
+          "boundary (the reported drop is immediate)",
+          lambda: _true(c["occupancy"] != 212_859,
+                        f"still reporting {c['occupancy']} after a compaction — "
+                        f"this is the user's bug: the agent reads FULL until "
+                        f"its next turn"))
+    check("compacted · …and the figure that stands in is a real, much smaller "
+          "one, not an empty wheel",
+          lambda: _true(c["occupancy"] and c["occupancy"] < 212_859 // 2,
+                        f"{c['occupancy']!r}: a compacted agent is ~30% full, "
+                        f"and both 213k and 0 are wrong answers"))
+    check("compacted · …declared an ESTIMATE, because nothing has measured "
+          "the new session yet",
+          lambda: _eq(c["occupancy_estimated"], True))
+    check("compacted · …computed as the session's floor plus the summary it "
+          "now carries",
+          lambda: _eq(c["occupancy"], 47_764 + 16_154 // 4))
+    # the estimate is only worth shipping if it is close. 51,802 against the
+    # 58,078 the next turn went on to measure: 11% low, where the reading it
+    # replaces was 3.7x high.
+    err = abs((47_764 + 16_154 // 4) - 58_078) / 58_078
+    measured("post-compaction estimate error (ingame-prompt's real numbers)",
+             f"{err:.0%} low, replacing a reading that was "
+             f"{212_859 / 58_078:.1f}x high")
+    check("compacted · …and lands within 15% of what the next turn then "
+          "measures (real fixture, 2026-08-20)",
+          lambda: _true(err < 0.15, f"{err:.0%}"))
+    check("compacted · the doc's writer and the desk's reader give the SAME "
+          "answer (one rule, two surfaces)",
+          lambda: _eq(s.doc_reading(), (c["occupancy"], True)))
+
+    # ---- …and the moment a turn measures it, the estimate is gone
+    s.turn(58_078)
+    c2 = s.read()
+    check("measured · the first record after the boundary supersedes the "
+          "estimate exactly",
+          lambda: _eq(c2["occupancy"], 58_078))
+    check("measured · …and the estimate flag drops with it",
+          lambda: _eq(c2["occupancy_estimated"], False))
+    check("measured · the boundary still RENDERS as its own row (the reader "
+          "the user sees was not disturbed)",
+          lambda: _true(any("context compacted" in (m.get("text") or "")
+                            for m in c2["messages"]),
+                        json.dumps([m.get("text") for m in c2["messages"]])[:300]))
+    check("measured · …with the summary still attached to it, not spilled as "
+          "a 16 KB user bubble",
+          lambda: _true(any(m.get("summary") for m in c2["messages"])))
+
+    # ---- unknown is a legitimate answer; a made-up number is not
+    s2 = Sess()
+    s2.boundary(90_000)
+    s2.summary(8_000)
+    c = s2.read()
+    check("floorless · a session that OPENS at a boundary has no floor to "
+          "estimate from, and reports unknown rather than inventing one",
+          lambda: _eq(c["occupancy"], None))
+    check("floorless · …and unknown is not dressed up as an estimate",
+          lambda: _eq(c["occupancy_estimated"], False))
+
+    s3 = Sess()
+    s3.summary(20_000)                   # a resumed session opens with one
+    s3.turn(41_000)
+    c = s3.read()
+    check("resumed · a summary with no boundary above it invents nothing — "
+          "the session's own first record answers",
+          lambda: _eq((c["occupancy"], c["occupancy_estimated"]), (41_000, False)))
+
+    # ---- a second compaction estimates from the floor, not from the peak
+    s4 = Sess()
+    s4.turn(30_000)
+    s4.turn(180_000)
+    s4.boundary(180_000)
+    s4.summary(4_000)
+    s4.turn(36_000)
+    s4.turn(175_000)
+    s4.boundary(175_000)
+    s4.summary(4_000)
+    c = s4.read()
+    check("twice · a second compaction invalidates the second peak too",
+          lambda: _true(c["occupancy"] and c["occupancy"] < 175_000 // 2,
+                        f"{c['occupancy']!r}"))
+    check("twice · …estimating from the session's FLOOR, never its high-water "
+          "mark",
+          lambda: _eq(c["occupancy"], 30_000 + 4_000 // 4))
+
+    # ---- the filters №8/№24 already applied must survive the rework
+    s5 = Sess()
+    s5.turn(25_000)
+    s5.turn(900_000, isSidechain=True)          # a subagent's own window
+    s5.turn(800_000, message={"role": "assistant", "model": "<synthetic>",
+                              "content": [{"type": "text", "text": "x"}],
+                              "usage": {"input_tokens": 800_000}})
+    s5.turn(700_000, isApiErrorMessage=True)
+    c = s5.read()
+    check("filters · a SUBAGENT's context is still not this agent's fill",
+          lambda: _eq(c["occupancy"], 25_000))
+    check("filters · …nor is a synthetic or api-error record's usage",
+          lambda: _eq(s5.doc_reading(), (25_000, False)))
+
+    # ---- the doc side: a turn MEASURES, and supersedes any estimate
+    s6 = Sess()
+    s6.turn(20_000)
+    s6.boundary(200_000)
+    s6.summary(8_000)
+    org = store.load_org(s6.slug)
+    n = org.node(s6.nid)
+    n["occupancy"], n["occupancy_est"] = 22_000, True
+    store.save_org(org)
+    after = s6.after_turn(61_000)
+    check("doc · a turn that measures the context clears the estimate flag",
+          lambda: _eq((after.get("occupancy"), after.get("occupancy_est")),
+                      (61_000, None)))
+
+    # ---- postTokens: the boundary's own account of what survived, which is a
+    # far better half of the estimate than the summary's character count.
+    # Measured over the 13 usable compacted sessions on this machine:
+    # floor+postTokens median 3% / worst 5%, against len(summary)//4's
+    # median 11% / worst 16%. Used where present, fallen back where not.
+    s9 = Sess()
+    s9.turn(47_764)
+    s9.turn(212_859)
+    s9.boundary(214_033, post=8_889)
+    c = s9.read()
+    check("postTokens · the boundary's own postTokens carries the estimate "
+          "when the CLI writes it",
+          lambda: _eq((c["occupancy"], c["occupancy_estimated"]),
+                      (47_764 + 8_889, True)))
+    # …and it does not wait for the summary record: the boundary is written
+    # AFTER the compaction completes (it carries the duration), so by the time
+    # this record exists the answer it holds is final.
+    check("postTokens · …without waiting for the summary record to arrive",
+          lambda: _true(c["occupancy"] != 47_764,
+                        "the floor alone is not an estimate"))
+    s9.summary(16_154)
+    c = s9.read()
+    check("postTokens · …and the summary that follows does not override the "
+          "better number with the character-count guess",
+          lambda: _eq(c["occupancy"], 47_764 + 8_889))
+    # the fixture that proves it is worth preferring: on ingame-prompt's real
+    # numbers postTokens lands 2% low where the character count is 11% low
+    truth, post_est = 58_078, 47_764 + 8_889
+    measured("estimator error on the real fixture",
+             f"postTokens {abs(post_est - truth) / truth:.0%} · "
+             f"summary//4 {abs((47_764 + 16_154 // 4) - truth) / truth:.0%}")
+    check("postTokens · …which is the closer of the two on the real fixture",
+          lambda: _true(abs(post_est - truth)
+                        < abs((47_764 + 16_154 // 4) - truth)))
+
+    # ---- a boundary and NOTHING after it: the state a killed compaction
+    # leaves, and the one shape where an unwary reader would keep reporting
+    # the pre-compaction fill because nothing arrived to overwrite it
+    s10 = Sess()
+    s10.turn(47_764)
+    s10.turn(212_859)
+    s10.boundary(214_033)                # no postTokens, no summary yet
+    c = s10.read()
+    check("bare · a boundary with nothing after it reports UNKNOWN — never "
+          "the figure it invalidated",
+          lambda: _eq((c["occupancy"], c["occupancy_estimated"]), (None, False)))
+
+    # ---- an unreadable summary body measures nothing, and nothing is what it
+    # may claim: `floor + 1 token` would be an invented number wearing the
+    # estimate's badge
+    s11 = Sess()
+    s11.turn(47_764)
+    s11.boundary(214_033)
+    s11._rec({"type": "user", "isCompactSummary": True,
+              "message": {"role": "user",
+                          "content": [{"type": "image", "source": {}}]}})
+    c = s11.read()
+    check("unreadable · a summary body nothing can flatten leaves the fill "
+          "unknown, not floor-plus-one",
+          lambda: _eq((c["occupancy"], c["occupancy_estimated"]), (None, False)))
+
+    # ---- an estimate is bounded by the window it has to fit inside
+    s12 = Sess()
+    s12.turn(20_000)
+    s12.boundary(200_000)
+    s12.summary(4_000_000)               # a 4 MB summary: 1M tokens of estimate
+    c = s12.read()
+    cw = supervisor.TIER_CONTEXT["haiku"]
+    check("capped · an estimate never exceeds the context window it describes",
+          lambda: _true(c["occupancy"] and c["occupancy"] <= cw,
+                        f"{c['occupancy']!r} against a {cw} window"))
+
+    # ---- the tracker's own filters, pinned where a mutation would show
+    s13 = Sess()
+    s13.turn(30_000)
+    s13.summary(20_000)                  # a stray summary with no boundary
+    c = s13.read()
+    check("stray · a summary with no boundary waiting does not restate the "
+          "fill as an estimate",
+          lambda: _eq((c["occupancy"], c["occupancy_estimated"]),
+                      (30_000, False)))
+    s13._rec({"type": "assistant",
+              "message": {"role": "assistant", "model": "claude-x",
+                          "content": [{"type": "text", "text": "x"}],
+                          "usage": {"input_tokens": -5_000}}})
+    check("negative · a negative usage total is not a fill (and does not "
+          "become the floor)",
+          lambda: _eq(s13.read()["occupancy"], 30_000))
+
+    # ---- a record the CLI could never write, arriving on the TURN path.
+    # An AttributeError here would be reported to the user as a failed turn
+    # that in fact succeeded — and, because the watermark is written after the
+    # read, would repeat on every turn the node ever takes again.
+    s14 = Sess()
+    s14.turn(20_000)
+    s14._rec({"type": "assistant", "message": "usage"})          # message: str
+    s14._rec({"type": "assistant", "message": {"role": "assistant",
+                                               "model": "claude-x",
+                                               "usage": "usage"}})   # usage: str
+    s14._rec({"type": "assistant", "message": [{"usage": 1}]})   # message: list
+    s14._rec({"type": "system", "subtype": "compact_boundary",
+              "isMeta": False, "compactMetadata": "usage"})      # meta: str
+    s14.boundary(150_000, post=3_000)    # …and a real one after it
+    check("poisoned · a malformed record cannot raise out of the reader",
+          lambda: _eq(s14.read()["occupancy"], 20_000 + 3_000))
+    org = store.load_org(s14.slug)
+    org.node(s14.nid)["cli_compactions"] = 0
+    store.save_org(org)
+    check("poisoned · …nor out of the TURN path, which would report a "
+          "successful turn as failed — forever",
+          lambda: _eq(s14.after_turn(150_000).get("occupancy"), 23_000))
+    check("poisoned · …and the turn's own watermark still advances, so the "
+          "node cannot be stuck re-reading it every turn",
+          lambda: _true(int(store.load_org(s14.slug).node(s14.nid)
+                            .get("cli_compactions") or 0) >= 2))
+
+    # ---- the doc side, the CLI's own in-place compaction (the other half of
+    # the same bug): `occ` reaches _after_turn as the turn's PEAK, so without
+    # the correction the doc keeps the fill the turn had BEFORE the CLI
+    # compacted it away — and this branch returns before anything else could
+    # fix it.
+    s7 = Sess()
+    s7.turn(20_000)
+    s7.turn(150_000)
+    s7.boundary(150_000)
+    s7.summary(4_000)
+    s7.turn(24_000)                      # the CLI compacted and kept going
+    org = store.load_org(s7.slug)
+    org.node(s7.nid)["cli_compactions"] = 0        # already baselined
+    store.save_org(org)
+    after = s7.after_turn(150_000)                 # the high-water sample
+    check("cli · an in-place CLI compaction leaves the DOC at the fill the "
+          "session actually carries, not the peak it reached",
+          lambda: _eq(after.get("occupancy"), 24_000))
+    check("cli · …a measured one, so nothing is flagged as estimated",
+          lambda: _eq(after.get("occupancy_est"), None))
+
+    s8 = Sess()
+    s8.turn(20_000)
+    s8.turn(150_000)
+    s8.boundary(150_000)
+    s8.summary(4_000)                    # …and this time the turn ENDED there
+    org = store.load_org(s8.slug)
+    org.node(s8.nid)["cli_compactions"] = 0
+    store.save_org(org)
+    after = s8.after_turn(150_000)
+    check("cli · a compaction that ENDS the turn still drops the doc's fill "
+          "at once, marked as the estimate it is",
+          lambda: _eq((after.get("occupancy"), after.get("occupancy_est")),
+                      (20_000 + 4_000 // 4, True)))
+
+    # …and where the transcript cannot answer at all, the peak must still go.
+    # UNKNOWN BEATS STALE: leaving the high-water mark in place is precisely
+    # the bug this branch exists to correct.
+    s15 = Sess()
+    s15.turn(20_000)
+    s15.turn(150_000)
+    s15.boundary(150_000)                # killed before the summary landed
+    org = store.load_org(s15.slug)
+    org.node(s15.nid)["cli_compactions"] = 0
+    store.save_org(org)
+    after = s15.after_turn(150_000)
+    check("cli · an unreadable aftermath clears the doc's fill rather than "
+          "leaving the pre-compaction peak standing",
+          lambda: _eq((after.get("occupancy"), after.get("occupancy_est")),
+                      (None, None)))
+
+    # ---- the destructive trigger must never fire on an estimate. cheap_compact
+    # THROWS AWAY the summary a 600 s billed fork just produced; before the
+    # successor's fill was reported at all, this branch could not see it.
+    s16 = Sess()
+    s16.turn(20_000)
+    org = store.load_org(s16.slug)
+    n16 = org.node(s16.nid)
+    n16["occupancy"], n16["context_window"] = 60_000, 200_000
+    n16["turns"] = [{"at": "2020-01-01T00:00:00Z", "cost": 0.0}]
+    org.d["auto_cheap_compact"] = {"enabled": True, "occ": 0.25, "idle_s": 1}
+    store.save_org(org)
+    cfg = supervisor._auto_cheap_cfg(store.load_org(s16.slug), s16.nid)
+    check("auto-cheap · the fixture really is over the trigger's threshold "
+          "(the check below is not vacuous)",
+          lambda: _true(cfg is not None and 60_000 / 200_000 >= cfg["occ"],
+                        json.dumps(cfg)))
+    check("auto-cheap · …and an ESTIMATED fill is not a number that trigger "
+          "may act on",
+          lambda: _true(supervisor._auto_cheap_ready(
+              store.load_org(s16.slug).node(s16.nid), cfg) is True
+              and supervisor._auto_cheap_ready(
+                  {**store.load_org(s16.slug).node(s16.nid),
+                   "occupancy_est": True}, cfg) is False))
+
+    # ---- the refusal that guards a billed fork rests on the FACT, not on how
+    # a number was arrived at
+    s17 = Sess()
+    s17.turn(20_000)
+    org = store.load_org(s17.slug)
+    n17 = org.node(s17.nid)
+    n17["occupancy"], n17["compacted_unrun"] = 58_000, True
+    n17.pop("occupancy_est", None)       # a fork whose transcript MEASURED it
+    store.save_org(org)
+    check("guard · a measured post-compaction fill still refuses a second "
+          "fork — the marker is the fact, not the estimate flag",
+          lambda: _true(store.load_org(s17.slug).node(s17.nid)
+                        .get("compacted_unrun")))
+    after = s17.after_turn(21_000)
+    check("guard · …and one completed turn clears it, however that turn went",
+          lambda: _eq((after.get("compacted_unrun"), after.get("occupancy")),
+                      (None, 21_000)))
+
+    # ================================================ redteam round 2
+    # Everything below was written against a defect a second adversarial pass
+    # found in the code above, or against a MUTANT of it that the checks above
+    # let through. Where a mutation is listed as "equivalent" it is because the
+    # two spellings cannot be told apart by any input — said out loud rather
+    # than pinned by a check that would only look like coverage.
+
+    # ---- the §8 split's own doc writes, WITHOUT the three-minute live half.
+    # `n["occupancy"] = occ_new` could be reverted to the `None` this commit
+    # replaced — i.e. the whole manual-compaction half of the fix undone — and
+    # nothing hermetic noticed (redteam mutants M5/M6).
+    s18, sid18 = Sess(), None
+    s18.turn(47_764)
+    s18.turn(212_859)
+    n18 = _split_via_stub(s18, [_A(47_764), _A(212_859),
+                                _B(214_033, 3_000), _S(16_154)])
+    check("split · a manual compaction writes the successor's POST-compaction "
+          "fill onto the doc, at once, with no turn in between",
+          lambda: _eq(n18.get("occupancy"), 47_764 + 3_000))
+    check("split · …flagged as the estimate it is",
+          lambda: _eq(n18.get("occupancy_est"), True))
+    check("split · …and marked compacted-and-unrun, which is what the refusal "
+          "on a second billed fork rests on",
+          lambda: _eq(n18.get("compacted_unrun"), True))
+
+    # …and the case that made a MEASURED number out of a pre-compaction one:
+    # a fork that exits 0 having copied the history and written NO boundary
+    # (the /compact refused under the compaction floor, or it died after the
+    # copy). Every record in that file predates the compaction that never
+    # happened, so its newest one is the fill the user's bug reported — and it
+    # would land on the doc unflagged, where the wake sweep reads it as licence
+    # to cheap-compact the summary away.
+    s19 = Sess()
+    s19.turn(47_764)
+    s19.turn(212_859)
+    n19 = _split_via_stub(s19, [_A(47_764), _A(212_859)])      # no boundary
+    check("split · a fork that wrote no boundary reports UNKNOWN — never the "
+          "pre-compaction fill it copied, and never as measured",
+          lambda: _eq((n19.get("occupancy"), n19.get("occupancy_est")),
+                      (None, None)))
+    check("split · …and is still marked compacted-and-unrun, so the guard on "
+          "a second fork does not rest on the number being readable",
+          lambda: _eq(n19.get("compacted_unrun"), True))
+    check("split · …so the destructive wake sweep refuses it, on a node whose "
+          "fill it cannot see",
+          lambda: _eq(supervisor._auto_cheap_ready(
+              {**n19, "occupancy": 212_859, "context_window": 200_000,
+               "turns": [{"at": "2020-01-01T00:00:00Z"}]},
+              {"occ": 0.25, "idle_s": 1}), False))
+
+    # ---- the tracker's arithmetic, one mutation at a time
+    s20 = Sess()
+    s20.turn(20_000)
+    s20.turn(0, message={"role": "assistant", "model": "claude-x",
+                         "content": [], "usage": {"input_tokens": 0,
+                                                  "cache_read_input_tokens": 0,
+                                                  "cache_creation_input_tokens": 0}})
+    s20.boundary(150_000)
+    s20.summary(4_000)
+    check("tracker · a zero-token record is not a floor (an empty usage block "
+          "would otherwise make every estimate unknowable)",
+          lambda: _eq(s20.read()["occupancy"], 20_000 + 4_000 // 4))
+
+    s21 = Sess()
+    s21.turn(20_000)
+    s21.boundary(150_000, post=-5)       # a negative "survived"
+    s21.summary(4_000)
+    check("tracker · a NEGATIVE postTokens is not an amount that survived — "
+          "the summary's own size answers instead",
+          lambda: _eq(s21.read()["occupancy"], 20_000 + 4_000 // 4))
+
+    s22 = Sess()
+    s22.turn(20_000)
+    s22.boundary(150_000, post=0)        # …and zero, with nothing to fall back to
+    check("tracker · a postTokens of 0 with no summary yet is unknown, not "
+          "'the floor exactly'",
+          lambda: _eq(s22.read()["occupancy"], None))
+
+    s23 = Sess()
+    s23.turn(20_000)
+    s23.boundary(150_000, post=True)     # JSON `true` where a count belongs
+    s23.summary(4_000)
+    check("tracker · a boolean postTokens is not 1 token — bools are ints in "
+          "Python and `int(True)` would sell floor+1 as an estimate",
+          lambda: _eq(s23.read()["occupancy"], 20_000 + 4_000 // 4))
+
+    s24 = Sess()
+    s24.turn(20_000)
+    s24.turn(999_999, isMeta=True)       # the engine talking, not the agent
+    s24.turn(999_998, isSidechain=True)  # …and a subagent's window, not this one
+    # ⚠ BOTH surfaces. `read_chat` drops these records before `_occ_record` ever
+    # sees them, so asking only the desk tests the renderer's filter and not
+    # the tracker's — which is how the tracker's survived round 2 (mutant M3).
+    # The doc's reader has no such pre-pass: it is `_occ_record` or nothing.
+    check("tracker · an isMeta or isSidechain record is not the agent's own "
+          "context, on the desk and on the doc alike",
+          lambda: _eq((s24.read()["occupancy"], s24.doc_reading()),
+                      (20_000, (20_000, False))))
+
+    check("tracker · a non-integer cap cannot become the reported occupancy "
+          "(`min(v, True)` is `True`; `min(v, 3.7)` is `3.7`)",
+          lambda: _eq([supervisor._OccTracker(c).cap
+                       for c in (True, 3.7, 0, -1, None, float("nan"), "200k")],
+                      [None, 3, None, None, None, None, None]))
+
+    # ---- non-finite numerics: `isinstance(x, float)` is true for nan and inf,
+    # `json.loads` mints both, and `int()` of either raises — out of read_chat
+    # (a 500 for the desk, the failure this commit closed for non-dict records)
+    # and out of the split before it banks a real billed fork's cost.
+    s25 = Sess()
+    s25.turn(20_000)
+    s25._rec({"type": "assistant",
+              "message": {"role": "assistant", "model": "claude-x",
+                          "content": [], "usage": {"input_tokens": float("inf"),
+                                                   "cache_read_input_tokens": 0,
+                                                   "cache_creation_input_tokens": 0}}})
+    s25.boundary(150_000, post=float("nan"))
+    s25.summary(4_000)
+    check("poisoned · a non-finite usage or postTokens cannot raise out of "
+          "the reader either — and the summary still answers",
+          lambda: _eq(s25.read()["occupancy"], 20_000 + 4_000 // 4))
+    check("poisoned · …and the doc's writer agrees with the desk about it",
+          lambda: _eq(s25.doc_reading(), (20_000 + 4_000 // 4, True)))
+
+    # ---- the never-raises wrapper. Every poison fixture above is absorbed by
+    # `_occ_record`, so nothing exercised `session_occupancy`'s own blanket
+    # `except` — it could be narrowed to ZeroDivisionError and the suite stayed
+    # green (redteam mutant M7), on the guard the turn path's promise rests on.
+    check("poisoned · session_occupancy answers for a node that does not "
+          "exist rather than raising into the turn that asked",
+          lambda: _eq(supervisor.session_occupancy(
+              store.load_org(s25.slug), "no-such-node"), (None, False)))
+
+    # ---- `_count_cli_compactions` on a line that parses to a bare string
+    s26 = Sess()
+    s26.turn(20_000)
+    with open(s26.path, "a", encoding="utf-8") as f:
+        f.write(json.dumps("compact_boundary") + "\n")
+    s26.boundary(150_000, post=3_000)
+    check("poisoned · a transcript line that is a bare JSON string cannot "
+          "raise out of the boundary count (it runs on the turn path)",
+          lambda: _eq(supervisor._count_cli_compactions(
+              store.load_org(s26.slug), s26.nid)[0], 1))
+
+    # ---- the estimate flag must be CLEARED when a later reading measures it,
+    # not merely set when one does not (redteam mutant M13)
+    s27 = Sess()
+    s27.turn(20_000)
+    s27.turn(150_000)
+    s27.boundary(150_000)
+    s27.summary(4_000)
+    s27.turn(24_000)                     # …and the CLI kept going
+    org = store.load_org(s27.slug)
+    n27 = org.node(s27.nid)
+    n27["cli_compactions"], n27["occupancy_est"] = 0, True
+    store.save_org(org)
+    # ⚠ the turn measures NOTHING (occ falsy). With a measured turn the write
+    # at the top of `_after_turn` pops the flag before this branch is reached,
+    # and the branch's own `else` is dead code that no check can see — which is
+    # exactly how it survived round 2's version of this check (mutant M13,
+    # caught once the mutation harness was pointed at the mutated tree).
+    check("cli · a measured aftermath CLEARS an estimate flag an earlier "
+          "compaction left behind, even on a turn that measured nothing "
+          "itself",
+          lambda: _eq(s27.after_turn(0).get("occupancy_est"), None))
+
+    # ---- the window a node's turns actually get: the pinned tier wins, or a
+    # 1M-context model is capped at the 200k the CLI reports (mutant M9)
+    check("window · the pinned tier beats the doc's observed window",
+          lambda: _eq(supervisor.context_window(
+              {"model": "sonnet", "context_window": 200_000}), 1_000_000))
+    check("window · …and the doc's value answers for a model with no pin",
+          lambda: _eq(supervisor.context_window(
+              {"model": "some-unpinned-model", "context_window": 200_000}),
+              200_000))
+
+    # ---- TOCTOU: the transcript read happens off-lock (234 ms on a 71 MB
+    # file) and `cheap_compact` can mint a new session inside that window.
+    # Writing the old session's fill and boundary count onto the new one
+    # reinstates a fill the node does not have and suppresses its next real
+    # compaction. `spend_unrun_pardon` guards the same window the same way.
+    s28 = Sess()
+    s28.turn(20_000)
+    s28.turn(150_000)
+    s28.boundary(150_000)
+    s28.summary(4_000)
+    stale = store.load_org(s28.slug)     # the pre-turn doc the turn path holds
+    stale.node(s28.nid)["cli_compactions"] = 0
+    store.save_org(stale)
+    stale = store.load_org(s28.slug)
+    # the mint lands INSIDE the off-lock read, which is the only window that
+    # matters: before it, the turn's own writes are the new session's problem;
+    # after it, the guard has already compared
+    _real_so = supervisor.session_occupancy
+
+    def _racing_read(org, nid, require_boundary=False):
+        fresh = store.load_org(s28.slug)
+        fresh.cheap_compact(USER, s28.nid)
+        store.save_org(fresh)
+        return _real_so(org, nid, require_boundary)
+
+    supervisor.session_occupancy = _racing_read
+    try:
+        supervisor._after_turn(s28.slug, s28.nid, stale, {},
+                               supervisor.state(s28.slug, s28.nid), 150_000)
+    finally:
+        supervisor.session_occupancy = _real_so
+    n28 = store.load_org(s28.slug).node(s28.nid)
+    check("toctou · a session replaced while the aftermath was being read "
+          "keeps its OWN empty fill, not the dead session's",
+          lambda: _eq(n28.get("occupancy"), None))
+    check("toctou · …and does not inherit the dead session's boundary count, "
+          "which would suppress its next real compaction",
+          # None, not 0: `cheap_compact` resets the counter to "never
+          # baselined" for the fresh session, so the next turn re-baselines
+          # against the file that session actually has
+          lambda: _eq(n28.get("cli_compactions"), None))
+
+    # ---- the baseline turn (a node's FIRST under this feature) must skip the
+    # threshold check exactly as its sibling branch does. `occ` is the turn's
+    # pre-compaction PEAK by design, so without the skip a node whose first
+    # turn is also the turn the CLI compacted in place forks a 600 s billed
+    # child on it — minting a bearer that holds post-compaction state, the
+    # "worse than nothing" outcome 1b exists to prevent.
+    forks: list[str] = []
+    _real_split = supervisor._compact_split
+    supervisor._compact_split = lambda slug, nid: forks.append(nid)
+    try:
+        s29 = Sess()
+        s29.turn(20_000)
+        s29.turn(190_000)
+        s29.boundary(190_000)            # the CLI compacted mid-turn…
+        s29.summary(4_000)
+        org = store.load_org(s29.slug)
+        n29 = org.node(s29.nid)
+        n29.pop("cli_compactions", None)     # …on a node never baselined
+        n29["context_window"] = 200_000
+        store.save_org(org)
+        s29.after_turn(190_000)          # the PEAK, over any threshold
+        check("baseline · a node's first turn under the feature does not fork "
+              "a billed compaction off a peak the CLI has already compacted "
+              "away",
+              lambda: _eq(forks, []))
+        s30 = Sess()                     # control: no boundary, so it SHOULD
+        s30.turn(190_000)
+        org = store.load_org(s30.slug)
+        n30 = org.node(s30.nid)
+        n30.pop("cli_compactions", None)
+        n30["context_window"] = 200_000
+        store.save_org(org)
+        s30.after_turn(190_000)
+        check("baseline · …and the check is not vacuous: the same turn on a "
+              "node the CLI has NOT compacted still forks",
+              lambda: _eq(forks, [s30.nid]))
+    finally:
+        supervisor._compact_split = _real_split
+
+    # ---- a re-seeded session is EMPTY, and carries none of the markers that
+    # describe a summary-only one (cheap_compact was given this and its
+    # sibling three functions away was missed)
+    org31, (n31,) = horg(grant=20)
+    _plant_transcript(sid_of(org31, n31))
+    nd = org31.node(n31)
+    nd["occupancy"], nd["occupancy_est"] = 58_000, True
+    nd["compacted_unrun"] = True
+    org31.mark_unrecoverable(n31, "test")
+    org31.reseed(USER, n31, "reseeded-sid-occ")
+    check("reseed · a fresh empty session reports an empty context and none "
+          "of a compaction's markers",
+          lambda: _eq([org31.node(n31).get(k) for k in
+                       ("occupancy", "occupancy_est", "compacted_unrun")],
+                      [None, None, None]))
+
+    # ---- the wake sweep's own defensive parse. `cast` is a no-op at runtime,
+    # so a torn `turns` raised AttributeError/IndexError out of a decision
+    # taken under DOC_LOCK on the turn path — killing the turn the optimization
+    # was trying to cheapen.
+    base = {"occupancy": 60_000, "context_window": 200_000,
+            "turns": [{"at": "2020-01-01T00:00:00Z"}]}
+    cfg2 = {"occ": 0.25, "idle_s": 1}
+    check("auto-cheap · the fixture fires (the refusals below are not "
+          "vacuous)",
+          lambda: _eq(supervisor._auto_cheap_ready(base, cfg2), True))
+    check("auto-cheap · a torn `turns` refuses rather than raising",
+          lambda: _eq([supervisor._auto_cheap_ready({**base, "turns": t}, cfg2)
+                       for t in ("notalist", ["str"], [None], [{}], 7)],
+                      [False] * 5))
+    check("auto-cheap · …and a compacted-but-unrun node refuses however its "
+          "fill was arrived at",
+          lambda: _eq(supervisor._auto_cheap_ready(
+              {**base, "compacted_unrun": True}, cfg2), False))
+
+    # ================================================ redteam round 3
+    # A third pass, against the second pass's fixes. Two of these are its own
+    # regressions; the rest are the coverage a CORRECTED mutation harness found
+    # once it was pointed at the mutated tree rather than at main (the first
+    # harness copied the backend to a directory where the suite's own
+    # `_REPO/backend` did not resolve, so every run imported the unmutated
+    # checkout off PYTHONPATH and reported KILLED for everything, including a
+    # no-op. See scratch/mutate.py, which now runs a control pair.)
+
+    # ---- `math.isfinite` RAISES OverflowError on an int too large for a
+    # float, which is a number json.loads mints and int() handles perfectly
+    # well. Guarding against nan/inf with it therefore broke a case that
+    # worked before the guard existed — in read_chat, where nothing catches
+    # it, and in the split, before the fork's real cost is banked.
+    check("poisoned · a 400-digit integer is a number the guard must answer "
+          "for, not raise on",
+          lambda: _eq([supervisor._finite(v) for v in
+                       (10 ** 400, float("inf"), float("nan"), 1, 1.5,
+                        "200000", None)],
+                      [False, False, False, True, True, False, False]))
+    s32 = Sess()
+    s32.turn(20_000)
+    s32.boundary(150_000, post=10 ** 400)
+    s32.summary(4_000)
+    check("poisoned · …and a transcript carrying one still reads, on both "
+          "surfaces",
+          lambda: _eq((s32.read()["occupancy"], s32.doc_reading()),
+                      (20_000 + 4_000 // 4, (20_000 + 4_000 // 4, True))))
+    check("poisoned · …including as a context window off the doc",
+          lambda: _eq(supervisor._OccTracker(10 ** 400).cap, None))
+
+    # ---- a line that parses but is not a record. Two of the three readers
+    # skipped it; the one the DESK and orgtree_read_transcript run reached
+    # straight for `.get` — and a comment in this change claimed otherwise.
+    s33 = Sess()
+    s33.turn(20_000)
+    for junk in ("compact_boundary", None, 42, [1, 2]):
+        with open(s33.path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(junk) + "\n")
+    s33.boundary(150_000, post=3_000)
+    check("poisoned · every reader of a transcript skips a line that is not a "
+          "record — the renderer included",
+          lambda: _eq((s33.read()["occupancy"],
+                       supervisor._count_cli_compactions(
+                           store.load_org(s33.slug), s33.nid)[0],
+                       s33.doc_reading()[0]),
+                      (20_000 + 3_000, 1, 20_000 + 3_000)))
+
+    # ---- `cli_compactions` is a doc value, and the doc is hand-editable.
+    # This was the last unguarded coercion on the turn path, and it failed in
+    # the permanent shape: a successful turn reported as failed, forever,
+    # because the watermark that would repair it is written afterwards.
+    # ⚠ NOT `True` — it parses (`int(True) == 1`), lands in the OTHER arm, and
+    # `_eq(True, 1)` then passes by bool/int equality, so that iteration
+    # asserted nothing the others did not. `-1` earns its place instead: it
+    # parses too, and it is the shape that reached the correction branch with
+    # zero boundaries in the file (fable sign-off, 2026-08-20).
+    for _torn in ("abc", float("inf"), {"x": 1}, [1], -1):
+        s34 = Sess()
+        s34.turn(20_000)
+        s34.turn(150_000)
+        s34.boundary(150_000)
+        s34.summary(4_000)
+        org = store.load_org(s34.slug)
+        org.node(s34.nid)["cli_compactions"] = _torn      # torn doc
+        store.save_org(org)
+        after = s34.after_turn(150_000)
+        check(f"torn · an unparseable compaction watermark ({_torn!r}) cannot "
+              f"raise out of the turn path",
+              lambda a=after: _eq(a.get("cli_compactions"), 1))
+        # ⚠ THE NAME IS THE CLAIM, so assert the claim: "never baselined" is
+        # the arm that repairs the watermark WITHOUT minting. `== 1` alone is
+        # equally true of `seen = 0`, which routes into the other arm and mints
+        # a lost generation per historical boundary — the retroactive minting
+        # the baseline arm exists to prevent. Round 3 wrote the weaker check
+        # and the mutation harness scored it covered, because the mutant
+        # happened to crash on the unguarded coercion four lines away rather
+        # than fail an assertion (redteam round 4).
+        check(f"torn · …reads as 'never baselined' ({_torn!r}): the watermark "
+              f"is repaired and NO generation is minted for history it never "
+              f"saw",
+              lambda s=s34, a=after: _eq(
+                  (a.get("generation", 0),
+                   sorted(k for k in store.load_org(s.slug).nodes
+                          if k.startswith(s.nid + "@")),
+                   store.load_org(s.slug).node(s.nid).get("cli_compactions")),
+                  (0, [], 1)))
+
+    # ---- …and the same value read a SECOND time, from a FRESH load inside the
+    # lock. `seen` above came off the caller's org, bound before a turn that
+    # can run for ten minutes, so the doc can be torn (or hand-edited) inside
+    # exactly the window the session re-check beside it exists for.
+    #
+    # ⚠ WHAT THIS PINS CHANGED WHEN THE TWO BRANCHES MERGED. It was written
+    # against a second `int()` coercion, which could raise; the merged code has
+    # no coercion there at all — the watermark is COMPARED (`!= seen0`), and a
+    # mismatch bails without recording. So the claim is now about that bail:
+    # nothing raises, nothing is half-written, no cut is left on disk naming a
+    # generation the doc never learns about. The occupancy correction is inside
+    # the bail, so the doc keeps this turn's own measured peak for one turn —
+    # acceptable because the next turn overwrites it with its own measurement,
+    # and reachable only from a torn doc.
+    s34b = Sess()
+    s34b.turn(20_000)
+    s34b.turn(150_000)
+    s34b.boundary(150_000)
+    s34b.summary(4_000)
+    org = store.load_org(s34b.slug)
+    org.node(s34b.nid)["cli_compactions"] = 0
+    store.save_org(org)
+    _real_so2 = supervisor.session_occupancy
+
+    def _tearing_read(o, nid, require_boundary=False):
+        f = store.load_org(s34b.slug)
+        f.node(s34b.nid)["cli_compactions"] = "abc"   # torn mid-read
+        store.save_org(f)
+        return _real_so2(o, nid, require_boundary)
+
+    supervisor.session_occupancy = _tearing_read
+    try:
+        after34b = s34b.after_turn(150_000)
+    finally:
+        supervisor.session_occupancy = _real_so2
+    check("torn · a watermark torn INSIDE the off-lock read cannot raise "
+          "either: the turn bails rather than recording against a doc that "
+          "moved under it",
+          lambda: _eq((after34b.get("cli_compactions"),
+                       after34b.get("generation", 0)), ("abc", 0)))
+    check("torn · …and the bail leaves nothing half-done — no bearer minted "
+          "for a cut the doc never learned about",
+          lambda: _eq(sorted(k for k in store.load_org(s34b.slug).nodes
+                             if k.startswith(s34b.nid + "@")), []))
+
+    # ---- the baseline turn's watermark write is what makes its `return` cost
+    # exactly ONE turn instead of every turn. Nothing pinned it.
+    forks2: list[str] = []
+    _real_split2 = supervisor._compact_split
+    supervisor._compact_split = lambda slug, nid: forks2.append(nid)
+    try:
+        s35 = Sess()
+        s35.turn(20_000)
+        s35.boundary(150_000)            # one HISTORICAL boundary…
+        s35.summary(4_000)
+        s35.turn(190_000)                # …and the node is near the wall now
+        org = store.load_org(s35.slug)
+        n35 = org.node(s35.nid)
+        n35.pop("cli_compactions", None)
+        n35["context_window"] = 200_000
+        store.save_org(org)
+        s35.after_turn(190_000)
+        check("baseline · the baseline turn PERSISTS its watermark",
+              lambda: _eq(store.load_org(s35.slug).node(s35.nid)
+                          .get("cli_compactions"), 1))
+        s35.after_turn(190_000)
+        check("baseline · …so the skip costs exactly one turn: the next turn "
+              "compacts normally, instead of the node never compacting again",
+              lambda: _eq(forks2, [s35.nid]))
+    finally:
+        supervisor._compact_split = _real_split2
+
+    # ---- a SIDECHAIN boundary is a subagent's compaction, not this agent's.
+    # The counter did not filter it and the occupancy reader did, so the two
+    # disagreed about one file: a generation was minted for a compaction that
+    # never happened to this node, and the node's own measured fill was wiped
+    # to unknown on the strength of it.
+    s36 = Sess()
+    s36.turn(20_000)
+    s36.turn(150_000)
+    s36._rec({"type": "system", "subtype": "compact_boundary",
+              "isSidechain": True, "compactMetadata":
+              {"trigger": "manual", "preTokens": 150_000}})
+    s36._rec({"type": "system", "subtype": "compact_boundary",
+              "isMeta": True, "compactMetadata":
+              {"trigger": "manual", "preTokens": 150_000}})
+    check("sidechain · neither a subagent's boundary nor the engine's own is "
+          "this agent's compaction",
+          lambda: _eq(supervisor._count_cli_compactions(
+              store.load_org(s36.slug), s36.nid)[0], 0))
+    check("sidechain · …so the two readers of one file cannot disagree about "
+          "whether it holds a compaction",
+          lambda: _eq((s36.doc_reading(), s36.read()["occupancy"]),
+                      ((150_000, False), 150_000)))
+
+    # ---- cheap_compact's own markers, the sibling of the reseed check above
+    org37, (n37,) = horg(grant=20)
+    _plant_transcript(sid_of(org37, n37))
+    nd37 = org37.node(n37)
+    nd37["occupancy"], nd37["occupancy_est"] = 58_000, True
+    nd37["compacted_unrun"] = True
+    org37.cheap_compact(USER, n37)
+    check("cheap · a cheap-compacted session reports an empty context and "
+          "none of a compaction's markers either",
+          lambda: _eq([org37.node(n37).get(k) for k in
+                       ("occupancy", "occupancy_est", "compacted_unrun")],
+                      [None, None, None]))
+
+    # ---- the split's own session-replacement window: 600 s with no lock,
+    # and `compact_split` archives whichever session the node holds when it
+    # lands. A mint inside that window would retire the fresh EMPTY session as
+    # a knowledge bearer — a bearer over nothing — and strip its never-run
+    # pardon, while the fork's summary went to a session nothing points at.
+    s38 = Sess()
+    s38.turn(20_000)
+    s38.turn(150_000)
+    gen0 = store.load_org(s38.slug).node(s38.nid).get("generation", 0)
+    _real_occ = supervisor.occupancy_of
+
+    def _minting_read(*a, **kw):
+        o = store.load_org(s38.slug)
+        o.cheap_compact(USER, s38.nid)   # the user, mid-fork
+        store.save_org(o)
+        return _real_occ(*a, **kw)
+
+    supervisor.occupancy_of = _minting_read
+    try:
+        n38 = _split_via_stub(s38, [_A(20_000), _B(150_000, 3_000), _S(4_000)])
+    finally:
+        supervisor.occupancy_of = _real_occ
+    check("split · a session replaced while the fork ran is not archived as a "
+          "knowledge bearer — the split is abandoned, not applied to it",
+          lambda: _eq(n38.get("generation"), gen0 + 1))   # the MINT's bump only
+    check("split · …and the successor keeps the never-run pardon the mint "
+          "gave it",
+          lambda: _eq(n38.get("session_unrun"), True))
+    check("split · …while the fork's real cost is still banked, not lost with "
+          "the abandoned split",
+          lambda: _true(float(n38.get("cost_usd") or 0) >= 0.25,
+                        f"cost_usd={n38.get('cost_usd')!r}"))
+
+
 #: twenty notice KINDS — distinguished by a word, because a NUMBER is
 #: deliberately not a kind (`_notice_shape` blanks digits, so "notice 1" and
 #: "notice 2" are one kind and would test nothing here)
@@ -2270,6 +3298,47 @@ try {
   cfg = Object.assign({}, (f.fork || {}).default || {}, (f.fork || {})[node] || {})
 } catch (e) { cfg = {} }
 
+// A REAL fork leaves a transcript behind, and what it contains is the whole
+// question when the desk asks a compacted-but-idle agent how full it is: the
+// copied pre-compaction history, the boundary, the summary that replaced it —
+// and NO record of the new prompt, because nothing has sent one yet. Off by
+// default (every other check here predates it and does not want the file);
+// `forkTranscript: true` plants it, with the fill numbers as dials.
+function forkTranscript(newSid) {
+  if (!cfg.forkTranscript) return
+  const path = require('path'), os = require('os')
+  const home = process.env.USERPROFILE || process.env.HOME || os.homedir()
+  const dir = path.join(home, '.claude', 'projects',
+    process.cwd().replace(/[\\/:]+/g, '-').replace(/^-+/, ''))
+  const floor = cfg.floorOcc || 900, pre = cfg.preOcc || 90000
+  const usage = (n) => ({ input_tokens: n, cache_read_input_tokens: 0,
+                          cache_creation_input_tokens: 0 })
+  const say = (i, text, n) => ({
+    type: 'assistant', timestamp: new Date(Date.now() + i).toISOString(),
+    message: { role: 'assistant', model: 'fake',
+               content: [{ type: 'text', text: text }], usage: usage(n) } })
+  const lines = [
+    say(0, 'the first turn of the session', floor),
+    say(1, 'the turn that filled it up', pre),
+    { type: 'system', subtype: 'compact_boundary', isMeta: false,
+      timestamp: new Date(Date.now() + 2).toISOString(),
+      content: 'Conversation compacted',
+      compactMetadata: { trigger: 'manual', preTokens: pre,
+                         postTokens: cfg.postOcc || 3000 } },
+    { type: 'user', isCompactSummary: true,
+      timestamp: new Date(Date.now() + 3).toISOString(),
+      message: { role: 'user',
+                 content: 'S'.repeat(cfg.summaryChars || 4000) } },
+  ]
+  try {
+    fs.mkdirSync(dir, { recursive: true })
+    const fd = fs.openSync(path.join(dir, newSid + '.jsonl'), 'a')
+    for (const l of lines) fs.writeSync(fd, JSON.stringify(l) + '\n')
+    fs.fsyncSync(fd)
+    fs.closeSync(fd)
+  } catch (e) { /* the split must survive an unwritable transcript store */ }
+}
+
 // THE COMPACTION FORK. orgtree runs `--output-format json --resume <sid>
 // --fork-session` and feeds it the literal text "/compact"; it accepts the
 // result only if rc==0 AND a session_id comes back AND that id DIFFERS from
@@ -2304,16 +3373,19 @@ if (arg('--output-format') === 'json') {
     // notice, a node warning, a debug banner. json.loads(whole) throws on it.
     process.stdout.write((cfg.bannerText ||
       'npm notice New major version of npm available!') + '\n')
+    const sid = 'forked-after-a-banner-' + require('crypto').randomUUID()
+    forkTranscript(sid)
     process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success',
-      session_id: 'forked-after-a-banner-' + require('crypto').randomUUID(),
-      result: 'compacted.', total_cost_usd: 0.25 }) + '\n')
+      session_id: sid, result: 'compacted.', total_cost_usd: 0.25 }) + '\n')
     process.exit(0)
   }
   const wait = cfg.forkMs || 0
   setTimeout(() => {
+    const sid = (cfg.sidPrefix || 'forked-') + require('crypto').randomUUID()
+    forkTranscript(sid)
     process.stdout.write(JSON.stringify({
       type: 'result', subtype: 'success',
-      session_id: (cfg.sidPrefix || 'forked-') + require('crypto').randomUUID(),
+      session_id: sid,
       result: 'compacted.',
       total_cost_usd: cfg.forkCost === undefined ? 0.25 : cfg.forkCost }) + '\n')
     process.exit(0)
@@ -2605,7 +3677,12 @@ def _prime(slug: str, nid: str, secs: float = 40) -> None:
 def live_manual_split() -> None:
     print("\nlive · the manual split, end to end:")
     start_backend()
-    set_cfg(FAST, fork={"default": {"mode": "ok", "forkCost": 0.25}})
+    # the fork plants the transcript a real one leaves behind (history, then a
+    # boundary, then the summary, and nothing measuring the new prompt) — the
+    # state the occupancy bug of 2026-08-20 lived in
+    set_cfg(FAST, fork={"default": {"mode": "ok", "forkCost": 0.25,
+                                    "forkTranscript": True, "floorOcc": 900,
+                                    "preOcc": 90_000, "summaryChars": 4_000}})
     slug, (nid,) = make_org("manual")
     _prime(slug, nid)
     before = node(slug, nid)
@@ -2628,11 +3705,45 @@ def live_manual_split() -> None:
           lambda: _eq(nodes[bearers[0]]["session_id"], old_sid))
     check("manual · the successor's session id really changed",
           lambda: _true(after["session_id"] != old_sid))
-    check("manual · the successor's occupancy is RESET, not carried over",
-          lambda: _true(not after.get("occupancy"),
-                        f"occupancy {after.get('occupancy')!r} survived the "
-                        f"split — a stale near-full reading keeps the wheel "
-                        f"hot and lets the repeat precheck through"))
+    # ⚠ This used to assert the successor's occupancy was FALSY. That cleared
+    # the stale near-full reading on the card but replaced it with nothing —
+    # and the desk reads the TRANSCRIPT (`chat.occupancy ?? node.occupancy`),
+    # where the pre-compaction number lived on until the next turn. The
+    # contract is now the drop itself: a real, much smaller figure, at once,
+    # marked as an estimate until something measures it (user bug 2026-08-20).
+    # EXACT, not "small": the rig's own pre-split occupancy is fakecli's 1200,
+    # so a check that only asked for "under a quarter of 90k" would pass on
+    # code that never touched the field at all (redteam 2026-08-20). The
+    # planted fork transcript says floor 900 and postTokens 3000, so the one
+    # right answer is 3900 — computed from the transcript, by the production
+    # reader, inside the split.
+    check("manual · the successor's occupancy is the POST-compaction fill "
+          "the fork's own transcript reports, exactly",
+          lambda: _eq(after.get("occupancy"), 900 + 3_000))
+    check("manual · …which is not the pre-compaction figure, and not the "
+          "figure it had before the split either",
+          lambda: _true(after.get("occupancy") not in (90_000,
+                                                       before.get("occupancy")),
+                        f"{after.get('occupancy')!r} vs pre-split "
+                        f"{before.get('occupancy')!r}"))
+    check("manual · …and it is DECLARED an estimate, not passed off as "
+          "measured",
+          lambda: _eq(after.get("occupancy_est"), True))
+    tree_node = next((x for x in api("GET", f"/api/orgs/{slug}")["roots"]
+                      if x["id"] == nid), {})
+    check("manual · …and the flag reaches the card through the tree payload",
+          lambda: _eq((tree_node.get("occupancy"), tree_node.get("occupancy_est")),
+                      (after.get("occupancy"), True)))
+    chat = api("GET", f"/api/orgs/{slug}/nodes/{nid}/chat?last=5")
+    check("manual · the DESK reads the same drop as the card — the transcript "
+          "no longer answers with the pre-compaction number",
+          lambda: _eq((chat.get("occupancy"), chat.get("occupancy_estimated")),
+                      (after.get("occupancy"), True)))
+    code, body = api_err("POST", f"/api/orgs/{slug}/nodes/{nid}/compact")
+    check("manual · …and a just-compacted node still refuses to be compacted "
+          "again (the guard the falsy occupancy used to make silently)",
+          lambda: _true(code == 422 and "nothing to compact" in body.lower(),
+                        f"{code} {body[:200]}"))
     check("manual · the fork's dollar cost is billed to the successor",
           lambda: _true(float(after.get("cost_usd") or 0) >= cost0 + 0.2,
                         f"{cost0} → {after.get('cost_usd')}: the fork is a real "
@@ -2651,6 +3762,17 @@ def live_manual_split() -> None:
           lambda: _true(wait_for(lambda: carriers(slug, nid, tok)["transcript"], 40),
                         json.dumps(carriers(slug, nid, tok))))
     wait_idle(slug, nid, 30)
+    check("manual · one turn later the fill is MEASURED, and the estimate "
+          "flag is gone",
+          lambda: _true(wait_for(lambda: node(slug, nid).get("occupancy")
+                                 and not node(slug, nid).get("occupancy_est"), 20),
+                        json.dumps({k: node(slug, nid).get(k)
+                                    for k in ("occupancy", "occupancy_est")})))
+    check("manual · …and the compaction that ran is no longer the reason to "
+          "refuse another one",
+          lambda: _true(not node(slug, nid).get("compacted_unrun"),
+                        "the summary-only marker outlived the turn that ended "
+                        "the summary-only state"))
 
     # a second split, on the successor
     _prime(slug, nid)
@@ -4571,6 +5693,7 @@ def main() -> None:
     lineage_algebra()
     bearer_rules()
     thresholds()
+    occupancy_reporting()
     predicates()
     lost_generations()
     notice_digest()

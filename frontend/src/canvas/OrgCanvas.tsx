@@ -1742,7 +1742,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
                     <span className="tray-name"
                       title={(n.charter || '').split('\n')[0] || n.id}>{n.id}</span>
                     <ContextWheel occ={n.occupancy} cw={n.context_window}
-                      compactAt={tree.compact_at} />
+                      est={n.occupancy_est} compactAt={tree.compact_at} />
                     {n.busy ? (n.waiting
                       ? <span className="statusdot waiting"
                           title="queued — waiting for a free turn slot (№12)" />

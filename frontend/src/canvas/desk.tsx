@@ -40,9 +40,12 @@ interface ContextWheelProps {
   cw?: number | null
   onCompact?: () => void
   compactAt?: number
+  /** the fill is a post-compaction ESTIMATE — no turn has measured the new
+   *  session yet (backend: occupancy_est / occupancy_estimated) */
+  est?: boolean
 }
 
-export function ContextWheel({ occ, cw, onCompact, compactAt }: ContextWheelProps) {
+export function ContextWheel({ occ, cw, onCompact, compactAt, est }: ContextWheelProps) {
   if (!occ || !cw) return null
   const frac = Math.min(1, occ / cw)
   // №19: the red ring means "about to split" — the ORG'S configured
@@ -51,8 +54,12 @@ export function ContextWheel({ occ, cw, onCompact, compactAt }: ContextWheelProp
   const hot = frac >= (compactAt || 0.8)
   const R = 5.5, C = 2 * Math.PI * R
   const svg = (
-    <svg className="ctxwheel" viewBox="0 0 16 16" width="15" height="15">
-      <title>{`context: ${Math.round(occ / 1000)}k / ${Math.round(cw / 1000)}k (${Math.round(frac * 100)}%)`
+    <svg className={'ctxwheel' + (est ? ' est' : '')} viewBox="0 0 16 16" width="15" height="15">
+      {/* an estimated fill says so in the tooltip (a leading ≈) and draws its
+          arc at half opacity (.ctxwheel.est .fill): the number is real enough
+          to act on and was never measured */}
+      <title>{`context: ${est ? '≈' : ''}${Math.round(occ / 1000)}k / ${Math.round(cw / 1000)}k (${Math.round(frac * 100)}%)`
+        + (est ? ' — estimated after compaction, until its next turn' : '')
         + ` — auto-compacts at ${Math.round((compactAt || 0.8) * 100)}%`
         + (onCompact ? ' — click to compact now' : '')}</title>
       <circle cx="8" cy="8" r={R} className="track" />
@@ -564,8 +571,12 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
             title={(node.charter || '').split('\n')[0] || node.id}>{node.id}</span>
         )}
         <ContextWheel occ={chat?.occupancy ?? node.occupancy} cw={node.context_window}
+          est={chat?.occupancy != null ? chat.occupancy_estimated : node.occupancy_est}
           compactAt={compactAt}
-          onCompact={live && !node.bearer_state
+          // …but NOT while the session holds only its own summary: the
+          // endpoint refuses that (422), and before the wheel drew a
+          // post-compaction arc there was no button here to press at all
+          onCompact={live && !node.bearer_state && !node.compacted_unrun
             ? () => setAskCompact(true) : undefined} />
         {node.last_status &&
           <span className={'statuschip ' + node.last_status.status}

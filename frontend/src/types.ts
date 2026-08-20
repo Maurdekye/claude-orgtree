@@ -207,6 +207,14 @@ export interface TreeNode {
   ui_order: number
   cost_usd: number
   occupancy: number | null
+  /** the fill above is a post-compaction ESTIMATE (system prompt + summary):
+   *  a compaction reports the drop immediately, but nothing measures the new
+   *  session until the agent's next turn, which clears this */
+  occupancy_est?: boolean
+  /** a §8 split landed and this agent has not run since — its session holds
+   *  only the summary, so the compact button is not offered (the endpoint
+   *  refuses it) */
+  compacted_unrun?: boolean
   context_window: number | null
   charter: string | null
   team_charter?: string | null
@@ -668,6 +676,9 @@ export interface ChatPayload {
   responding: boolean
   last_error: string | null
   occupancy: number | null
+  /** the transcript's own reading is an estimate: this session was compacted
+   *  and no turn has measured what the summary left behind yet */
+  occupancy_estimated?: boolean
   messages: ChatMessage[]
   /** the server-owned live tail: rows this turn produced that the transcript
    *  has not caught up on yet, already swept against it server-side

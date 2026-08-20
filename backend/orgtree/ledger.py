@@ -2388,6 +2388,11 @@ class Org:
         # "unrun, not lost"; the first completed turn drops it.
         n["session_unrun"] = True
         n["occupancy"] = None            # the context wheel resets with it
+        # …and so do the two markers a §8 compaction may have left: this
+        # successor's session is EMPTY, which is a fact rather than an
+        # estimate, and it is not the summary-only session those describe
+        n.pop("occupancy_est", None)
+        n.pop("compacted_unrun", None)
         # marks the successor session as summary-less: the supervisor splices
         # breadcrumbs.md into its system prompt until a normal compaction
         # (which carries its own summary) clears the marker
@@ -5783,6 +5788,16 @@ class Org:
         # id has no transcript either.
         n["session_unrun"] = True
         n["state"] = "live"
+        # An EMPTY session reports an empty context, and the two compaction
+        # markers describe a session that no longer exists (redteam
+        # 2026-08-20 — cheap_compact was given this three functions up and its
+        # sibling here was missed). Left standing they were durable: the card
+        # wheel showed the dead session's fill over a session with nothing in
+        # it, and `compacted_unrun` made POST …/compact answer "just compacted
+        # — nothing to compact" on a node that has never run at all.
+        n["occupancy"] = None
+        n.pop("occupancy_est", None)
+        n.pop("compacted_unrun", None)
         # a reseeded session starts as empty as a cheap-compacted one (and
         # its predecessor is LOST) — the breadcrumbs splice applies equally
         n["cheap_compacted"] = True
@@ -5840,6 +5855,12 @@ class Org:
                 "ui_order": n.get("ui_order", 0),
                 "cost_usd": round(float(n.get("cost_usd") or 0.0), 4),
                 "occupancy": n.get("occupancy"),
+                # a compaction fills this in before anything has measured the
+                # new session — the card says so rather than implying precision
+                "occupancy_est": bool(n.get("occupancy_est")),
+                # …and this one is why the compact button is not offered: the
+                # session holds only its summary until the next turn
+                "compacted_unrun": bool(n.get("compacted_unrun")),
                 "context_window": n.get("context_window"),
                 "charter": n.get("charter"),
                 "team_charter": n.get("team_charter"),

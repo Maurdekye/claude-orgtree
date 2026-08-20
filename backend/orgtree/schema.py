@@ -205,8 +205,19 @@ class NodeDoc(TypedDict):
     # (NB: `effort` lives in NodeScope, not here — sc["effort"].)
     team_charter: NotRequired[str | None]
     cost_usd: NotRequired[float]
-    # None = explicitly unknown (compact_split resets the successor's reading)
+    # None = explicitly unknown (no session record has ever measured it)
     occupancy: NotRequired[int | None]
+    # …and this says the figure above was ESTIMATED, not measured: a compaction
+    # rewrites occupancy at once (user bug 2026-08-20 — it used to keep
+    # reporting the pre-compaction fill until the next turn), but the true
+    # post-compaction size is not knowable until a turn assembles the prompt.
+    # Dropped by the first turn that measures one.
+    occupancy_est: NotRequired[bool]
+    # a §8 split landed and the successor has not run since, so its session
+    # holds only the summary — the compact button and its endpoints refuse on
+    # THIS rather than on the estimate flag above, because the refusal guards a
+    # billed CLI fork and must not depend on how a number was arrived at
+    compacted_unrun: NotRequired[bool]
     context_window: NotRequired[int]
     last_status: NotRequired[dict[str, Any] | None]
     prev_status: NotRequired[dict[str, Any] | None]

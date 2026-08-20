@@ -55,6 +55,11 @@ export interface CanvasNode {
   effort_effective?: string
   cost_usd?: number
   occupancy?: number | null
+  /** …and it was estimated, not measured (post-compaction, pre-next-turn) */
+  occupancy_est?: boolean
+  /** the session holds only its own summary until the next turn — no compact
+   *  button, because the endpoint refuses it */
+  compacted_unrun?: boolean
   context_window?: number | null
   charter?: string | null
   team_charter?: string | null

@@ -404,6 +404,10 @@ button.badge.retired-fold:hover { border-color: var(--accent); }
   stroke: var(--bad);
   filter: drop-shadow(0 0 2px rgba(241, 76, 76, .6));
 }
+/* a POST-COMPACTION estimate: the arc is real (the context did shrink, now)
+   but no turn has measured the new session yet, so it is drawn softly rather
+   than at full confidence. The tooltip carries the ≈. */
+.ctxwheel.est .fill { opacity: .5; }
 .actgear {
   flex: none; color: var(--accent); font-size: 11px; line-height: 1;
   display: inline-block; animation: actspin 1.4s linear infinite;

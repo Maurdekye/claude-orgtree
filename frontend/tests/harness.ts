@@ -128,6 +128,10 @@ export class FakeServer {
   queued = 0
   last_error: string | null = null
   occupancy: number | null = 1000
+  /** …and whether anything MEASURED that number: a compacted agent reports
+   *  its post-compaction fill immediately, and until its next turn that fill
+   *  is estimated from the summary (backend `occupancy_estimated`) */
+  occupancy_estimated: boolean | undefined = undefined
   messages: ChatMessage[] = []
   live: LiveRowPayload[] = []
   pending_mail: PendingMail[] = []
@@ -222,6 +226,7 @@ export class FakeServer {
       responding: this.responding,
       last_error: this.last_error,
       occupancy: this.occupancy,
+      occupancy_estimated: this.occupancy_estimated,
       messages: this.messages.slice(-n).map((m) => ({ ...m })),
       live: this.live.map((r) => ({ ...r })),
       mail_pending: this.pending_mail.length,

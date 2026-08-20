@@ -1902,6 +1902,15 @@ def node_message(slug: str, nid: str, body: Message) -> dict[str, Any]:
                                          "before compacting")
             if not n.get("occupancy"):
                 raise HTTPException(422, "no conversation yet — nothing to compact")
+            if n.get("compacted_unrun"):
+                # A just-compacted node used to be blocked here by its
+                # occupancy being None; it now carries the post-compaction fill
+                # instead (user bug 2026-08-20), so the refusal has to be said
+                # out loud. Re-forking a session whose whole content is a
+                # summary costs a full CLI child and mints a bearer holding
+                # nothing the successor lacks.
+                raise HTTPException(422, "just compacted — nothing to compact "
+                                         "until it takes a turn")
             if supervisor.state(slug, nid)["busy"]:
                 raise HTTPException(409, "busy — wait for the current turn to finish")
 
@@ -2018,6 +2027,13 @@ def node_compact(slug: str, nid: str) -> dict[str, Any]:
                                  "controlled session)")
     if not n.get("occupancy"):
         raise HTTPException(422, "no conversation yet — nothing to compact")
+    if n.get("compacted_unrun"):
+        # the wheel is a button, and a just-compacted node now draws a real
+        # arc again — the "already compacted" refusal that its None occupancy
+        # used to make silently has to be spoken (2026-08-20). The UI hides the
+        # button in this state; this is the surface that must not be fooled.
+        raise HTTPException(422, "just compacted — nothing to compact "
+                                 "until it takes a turn")
     if n.get("frozen"):
         raise HTTPException(409, "frozen by a usage limit — resume it first")
     if supervisor.state(slug, nid)["busy"]:
@@ -3047,6 +3063,10 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                 msgs = chat["messages"][-last:]
                 return {"node": target, "busy": chat["busy"],
                         "occupancy": chat["occupancy"],
+                        # an agent reading its report's fill deserves to know
+                        # when the number is a post-compaction estimate rather
+                        # than something a turn measured
+                        "occupancy_estimated": bool(chat.get("occupancy_estimated")),
                         "messages": [{"role": m["role"],
                                       "text": (m.get("text") or "")[:1200],
                                       "tools": m.get("tools", [])} for m in msgs]}

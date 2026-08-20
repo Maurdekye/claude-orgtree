@@ -917,7 +917,7 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, m
           onPointerDown={(e) => e.stopPropagation()}
           onClick={(e) => { e.stopPropagation(); onConfig() }}><SettingsIcon fontSize="inherit" /></button>
         <ContextWheel occ={node.occupancy} cw={node.context_window}
-          compactAt={compactAt} />
+          est={node.occupancy_est} compactAt={compactAt} />
         {lod === 'mini' && node.last_status &&
           <span className={'statusdot ' + node.last_status.status}
             title={`${node.last_status.status} — ${node.last_status.summary ?? ''}`} />}
