@@ -1278,6 +1278,39 @@ freeze site uses, or through a real turn. Separately, `tools/run_tests.py
 --only` silently ran NOTHING and exited 0 for a comma-separated or repeated
 filter, which is how a CI line passes having tested nothing.
 
+### D-141 · the warm loop also wakes at the reset itself
+Ruling (session seat, 2026-08-20, user instruction — "schedule a usage limit
+cache update to occur at exactly the next reset time"): D-133's warm loop no
+longer paces on pressure alone. Every lane publishes a minute-exact
+`resets_at`, so the one moment the cached board is guaranteed to be wrong is
+knowable hours ahead — the loop cuts its sleep short to land `RESET_LAG` = 5 s
+past the SOONEST future reset on the board (`limits.next_reset`), whichever
+lane owns it, and takes the pressure cadence otherwise. The boundary is a
+ceiling, never a floor: a weekly reset six days out does not stretch a 45 s
+critical tick, and a boundary already at the door is floored at
+`WARM_MIN_SLEEP` = 10 s so a skewed clock cannot spin the loop against a
+semi-documented endpoint. Cost is one extra GET per lane rollover — a handful
+a day against ~288 from the cadence.
+Why: between a lane rolling over and the next idle tick, the server's readout
+said the wall was still standing for up to five minutes. Everything downstream
+of that cache repeats the claim: the D-132 bars, the D-138 glow (which reads
+the cache only and may not fetch), and — the one that costs money — a D-133
+freeze landing in the gap, which stamps its reset from `cached()` under the
+document lock and never gets to ask. The reset is the cheapest possible
+schedule for a read that is otherwise pure guesswork.
+Bounds: the wake is a CLOCK, not a price. `next_reset` takes any lane at face
+value where `reset_for` bands a candidate by the lane the error names — a
+wrong lane there bills the org's key for six days, while a wrong lane here
+costs one early HTTPS GET. It still refuses the absurd (a reset already past,
+one beyond `MAX_HORIZON`), so a stale board aims at nothing and the cadence
+carries.
+Load-bearing: the upstream rolls its window over on ITS clock. Waking at the
+boundary onto a board that still shows no future reset is the two-clocks case,
+not an error — `_warm_next` re-asks every 10 s, `RESET_RECHECKS` = 4 times,
+before letting go, because past that "no future reset" is indistinguishable
+from an account with no lanes at all. That branch is unreachable from a live
+loop, which is why the step is a pure function and tested as one.
+
 ### D-138 · the usage button glows before the wall, off the cache alone
 Ruling (session seat, 2026-08-19, user feature): the ◔ usage button — both the
 orgbar one and the welcome panel's — wears a gold ring from 75% and a red,

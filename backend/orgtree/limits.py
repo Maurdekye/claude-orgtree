@@ -264,6 +264,34 @@ def pressure() -> float:
     return top
 
 
+def next_reset(now: float | None = None) -> float | None:
+    """The soonest FUTURE reset on the cached board, or None — cache-only.
+
+    This is a clock, not a price. Where `reset_for` bands a candidate by the
+    lane it is supposed to belong to (a wrong lane there bills the org's key
+    for six days), the only thing riding on this one is when a background
+    read happens, so it takes every lane at face value and only refuses the
+    absurd — a reset already past, or one beyond `MAX_HORIZON`.
+
+    Serves `supervisor.start_usage_warm_loop`, which cuts its sleep short to
+    land just after this boundary: the moment a lane rolls over is the moment
+    the cached readout stops being true, and it is knowable in advance.
+    """
+    now = time.time() if now is None else now
+    data = cached()
+    if not data or not data.get("available"):
+        return None
+    soonest: float | None = None
+    for x_any in cast("list[Any]", data.get("limits") or []):
+        if not isinstance(x_any, dict):
+            continue
+        ts = _iso_to_epoch(cast("dict[str, Any]", x_any).get("resets_at"))
+        if ts is None or not now < ts <= now + MAX_HORIZON:
+            continue
+        soonest = ts if soonest is None else min(soonest, ts)
+    return soonest
+
+
 def peek() -> dict[str, Any]:
     """The cached standing for the header GLOW — cache-only, never a fetch.
 

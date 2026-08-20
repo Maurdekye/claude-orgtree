@@ -2395,6 +2395,113 @@ def _sec_reset_timing_body() -> None:
                            None)) or limits.pressure() >= 95)
         else (_ for _ in ()).throw(AssertionError(limits.pressure()))))
 
+    # ---- W4 · the tick scheduled at the reset boundary itself -------------
+    # A lane publishes its reset minutes-to-days ahead, so the one moment the
+    # cached board is guaranteed wrong is knowable in advance. The cadence
+    # alone would meet it up to five idle minutes late.
+    limits.invalidate()
+    check("reset-wake · with nothing cached there is no boundary to aim at",
+          lambda: (
+        None if limits.next_reset() is None
+        else (_ for _ in ()).throw(AssertionError(limits.next_reset()))))
+
+    _readout(("session", "session", 40, "normal", 90, True, None),
+             ("weekly_all", "weekly", 60, "normal", 5 * 86400, False, None))
+    check("reset-wake · the SOONEST future lane owns the boundary — the wake "
+          "is a clock, not a bill, so any lane may own it", lambda: (
+        None if abs((limits.next_reset() or 0) - (time.time() + 90)) < 5
+        else (_ for _ in ()).throw(AssertionError(limits.next_reset()))))
+    check("reset-wake · a 90 s boundary cuts the 5-min idle cadence to land "
+          "just past it, not on it — the upstream rolls the window over on "
+          "ITS clock", lambda: (
+        None if (lambda n: abs(supervisor._warm_sleep(12, n + 90, n)
+                               - (90 + supervisor.RESET_LAG)) < 0.01)(
+                                   time.time())
+        else (_ for _ in ()).throw(AssertionError(
+            supervisor._warm_sleep(12, time.time() + 90, time.time())))))
+    check("reset-wake · a boundary already at the door is floored at "
+          "WARM_MIN_SLEEP — a skewed clock must not spin the loop against a "
+          "semi-documented endpoint", lambda: (
+        None if (lambda n: supervisor._warm_sleep(99, n + 0.2, n)
+                 == supervisor.WARM_MIN_SLEEP)(time.time())
+        else (_ for _ in ()).throw(AssertionError(
+            supervisor._warm_sleep(99, time.time() + 0.2, time.time())))))
+    check("reset-wake · a boundary FURTHER out than the cadence never "
+          "lengthens it — the pressure bands stay the ceiling", lambda: (
+        None if (lambda n: (supervisor._warm_sleep(99, n + 5 * 86400, n) == 45
+                            and supervisor._warm_sleep(12, n + 5 * 86400, n)
+                            == 300))(time.time())
+        else (_ for _ in ()).throw(AssertionError("cadence ceiling"))))
+    check("reset-wake · no boundary on the board leaves the cadence exactly "
+          "as it was", lambda: (
+        None if supervisor._warm_sleep(80, None, time.time()) == 120
+        else (_ for _ in ()).throw(AssertionError("no-boundary cadence"))))
+
+    _readout(("session", "session", 40, "normal", -60, True, None))
+    check("reset-wake · a reset that has already passed is not a boundary — "
+          "a stale board must not aim the loop at a time in the past",
+          lambda: (
+        None if limits.next_reset() is None
+        else (_ for _ in ()).throw(AssertionError(limits.next_reset()))))
+    _readout(("session", "session", 40, "normal", 30 * 86400, True, None))
+    check("reset-wake · a reset past MAX_HORIZON is a number in a timestamp's "
+          "seat, not a boundary", lambda: (
+        None if limits.next_reset() is None
+        else (_ for _ in ()).throw(AssertionError(limits.next_reset()))))
+    limits.invalidate()
+
+    # …and the wiring, because every check above passes on a loop that never
+    # asks for a boundary (mutation: delete the call, suite stays green)
+    def _the_loop_aims_at_the_boundary():
+        j = _code.find("def start_usage_warm_loop(")
+        fixture(j > 0, "the warm loop moved — re-read this check")
+        seg = _code[j:_code.find(chr(10) + "def ", j + 1)]
+        assert "limits.next_reset(" in seg and "_warm_next(" in seg, (
+            "the loop must read the next reset and take its sleep from the "
+            "step function — without this it is back to the pressure cadence "
+            "alone, and every check above still passes")
+    check("reset-wake · the loop actually aims at the next reset "
+          "(structural)", _the_loop_aims_at_the_boundary)
+
+    # …and the rollover-lag branch, which only ever happens when the host
+    # clock and the upstream's disagree — unreachable from a live loop
+    _n = time.time()
+    check("reset-wake · an ordinary tick carries the boundary it aims at and "
+          "no misses", lambda: (
+        None if supervisor._warm_next(None, 0, _n + 90, 12, _n)
+        == (90 + supervisor.RESET_LAG, _n + 90, 0)
+        else (_ for _ in ()).throw(AssertionError(
+            supervisor._warm_next(None, 0, _n + 90, 12, _n)))))
+    check("reset-wake · a boundary beyond the sleep is NOT recorded as aimed "
+          "at — otherwise the next tick reads a cadence wake as a missed "
+          "rollover and re-asks for nothing", lambda: (
+        None if supervisor._warm_next(None, 0, _n + 5 * 86400, 12, _n)
+        == (300.0, None, 0)
+        else (_ for _ in ()).throw(AssertionError(
+            supervisor._warm_next(None, 0, _n + 5 * 86400, 12, _n)))))
+    check("reset-wake · waking AT the boundary onto a board with no new "
+          "window re-asks in WARM_MIN_SLEEP, the aim standing — the upstream "
+          "rolls over on its own clock", lambda: (
+        None if supervisor._warm_next(_n - 1, 0, None, 12, _n)
+        == (supervisor.WARM_MIN_SLEEP, _n - 1, 1)
+        else (_ for _ in ()).throw(AssertionError(
+            supervisor._warm_next(_n - 1, 0, None, 12, _n)))))
+    check("reset-wake · the re-asking is BOUNDED — an account with no lanes "
+          "at all looks identical from here, and must not be polled every "
+          "10 s forever", lambda: (
+        None if supervisor._warm_next(
+            _n - 1, supervisor.RESET_RECHECKS, None, 12, _n) == (300.0, None,
+                                                                 0)
+        else (_ for _ in ()).throw(AssertionError(
+            supervisor._warm_next(_n - 1, supervisor.RESET_RECHECKS, None, 12,
+                                  _n)))))
+    check("reset-wake · a rollover that DOES land clears the miss count and "
+          "aims at the new window", lambda: (
+        None if supervisor._warm_next(_n - 1, 2, _n + 18000, 12, _n)
+        == (300.0, None, 0)
+        else (_ for _ in ()).throw(AssertionError(
+            supervisor._warm_next(_n - 1, 2, _n + 18000, 12, _n)))))
+
 
 def main() -> None:
     print("═══ usage-limit freeze — the shape the CLI actually reports ═══")

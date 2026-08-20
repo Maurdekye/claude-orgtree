@@ -1201,6 +1201,58 @@ def _warm_interval(top: float) -> float:
     return 45.0 if top >= 95 else 120.0 if top >= 80 else 300.0
 
 
+# A lane's reset is a minute-exact boundary published in advance, so the one
+# moment the cached readout is guaranteed WRONG is knowable ahead of time.
+# Read just AFTER it: the upstream rolls the window over on its own clock, and
+# a host a few seconds fast would otherwise re-read the pre-reset board.
+RESET_LAG = 5.0
+# …and never wake faster than this, whatever the board claims. A skewed clock
+# or a boundary a hair in the future must not turn the warm loop into a spin
+# against a semi-documented endpoint.
+WARM_MIN_SLEEP = 10.0
+# How many quick re-asks a boundary gets when the upstream has not published
+# the new window yet (see the loop). Bounded, because "no future reset on the
+# board" is also what an account with no lanes at all looks like.
+RESET_RECHECKS = 4
+
+
+def _warm_sleep(top: float, reset: float | None, now: float) -> float:
+    """How long the warm loop sleeps: the pressure cadence
+    (`_warm_interval`), cut short to land just after `reset` when a lane rolls
+    over sooner than that."""
+    delay = _warm_interval(top)
+    if reset is not None:
+        delay = min(delay, max(WARM_MIN_SLEEP, reset + RESET_LAG - now))
+    return delay
+
+
+def _warm_next(aim: float | None, misses: int, nxt: float | None,
+               top: float, now: float) -> tuple[float, float | None, int]:
+    """One step of the warm loop's clock. In: the boundary the last sleep was
+    cut for (`aim`, None when it was an ordinary cadence tick), how many times
+    in a row the upstream has answered a boundary without publishing the new
+    window (`misses`), what the board says now (`nxt`) and the account's
+    pressure. Out: `(sleep, aim', misses')`.
+
+    Pure, because the branch that matters is the one that only happens when
+    two clocks disagree — and that is not reproducible from inside a thread
+    that sleeps for five minutes.
+    """
+    misses = misses + 1 if (aim is not None and now >= aim
+                            and nxt is None) else 0
+    if 0 < misses <= RESET_RECHECKS:
+        # ⚠ the boundary passed and the board still shows no future reset:
+        # the upstream has not rolled the window over on its clock yet.
+        # Falling back to the idle cadence here would leave the readout a
+        # whole lane out of date for five minutes — the exact gap this wake
+        # exists to close. Re-ask, `aim` standing, a bounded number of times:
+        # past that, "no future reset" is indistinguishable from an account
+        # that simply has no lanes.
+        return WARM_MIN_SLEEP, aim, misses
+    delay = _warm_sleep(top, nxt, now)
+    return delay, (nxt if nxt is not None and nxt <= now + delay else None), 0
+
+
 _warm_started = False
 
 
@@ -1217,6 +1269,15 @@ def start_usage_warm_loop() -> None:
         over 95%   → every 45 s    (a freeze is minutes away; the stamp it
                                     reads must not be a lane older than that)
 
+    …and on top of the cadence, one tick is scheduled at the next lane RESET
+    (user ruling 2026-08-20): every lane publishes a minute-exact `resets_at`,
+    so the single moment the cached board is guaranteed stale is known hours
+    ahead. The loop cuts its sleep short to land `RESET_LAG` seconds past that
+    boundary, whichever lane owns it — the bars and the D-138 glow flip to the
+    fresh window as it opens, instead of up to five minutes later, and a
+    freeze landing in that gap stamps from a board that already knows the wall
+    is gone.
+
     One HTTPS GET per tick, account-wide — not per org, not per turn. It goes
     quiet entirely when the host has no Claude credentials (an API-key-only
     install has no subscription lanes to read)."""
@@ -1226,6 +1287,8 @@ def start_usage_warm_loop() -> None:
     _warm_started = True
 
     def loop() -> None:
+        aim: float | None = None      # the boundary this sleep was cut for
+        misses = 0                    # …that the upstream has not rolled yet
         while True:
             try:
                 # nothing to warm the cache FOR on an install with no orgs —
@@ -1235,7 +1298,10 @@ def start_usage_warm_loop() -> None:
                     limits.fetch(force=True)
             except Exception as e:                            # noqa: BLE001
                 print(f"[orgtree] usage warm-up failed: {e}")
-            time.sleep(_warm_interval(limits.pressure()))
+            now = time.time()
+            delay, aim, misses = _warm_next(
+                aim, misses, limits.next_reset(now), limits.pressure(), now)
+            time.sleep(delay)
     threading.Thread(target=loop, daemon=True, name="usage-warm").start()
 
 
