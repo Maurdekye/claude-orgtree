@@ -3922,7 +3922,7 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
             for off, pre in cli_marks[have:cli_cnt]:
                 o2.record_cli_compaction(
                     nid, pre if pre is not None else cli_pre,
-                    _fork_bearer_session(o2, sid2, off))
+                    _fork_bearer_session(o2, sid2, off), off)
             n2["cli_compactions"] = cli_cnt
             store.save_org(o2)
         notify(slug, nid, "compacted")
@@ -4123,10 +4123,32 @@ def _phantom_evidence(org: Org, pred_id: str) -> dict[str, Any]:
     _cnt, _pre, marks = _count_cli_compactions(org, cast(str, succ_id))
     if not marks:
         return no("no compact boundary in the session — nothing to compare")
-    # the FIRST boundary is the §8 fork's own /compact; everything above it is
-    # the copied history. Later boundaries are real in-place compactions and
-    # are NOT phantom territory.
-    upto = marks[0][0]
+    # WHICH boundary is this row's? Getting that wrong is how a real
+    # generation gets deleted: comparing a later row against the FIRST
+    # boundary tests a prefix the sibling legitimately holds, declares a
+    # phantom, and drops a row whose own records are unique. (Caught by the
+    # out-of-order recovery test, 2026-08-20 — it classified a genuine second
+    # generation as a phantom because the first generation's bearer held the
+    # first boundary's prefix.)
+    recorded = n.get("cli_boundary_offset")
+    if isinstance(recorded, int):
+        if not any(recorded == m[0] for m in marks):
+            return no(f"the recorded boundary at line {recorded} is no longer "
+                      f"in the session — refusing to compare")
+        upto = recorded
+    else:
+        # a row minted before offsets were recorded. Only ONE arrangement is
+        # unambiguous: a single boundary with a single lost row against it.
+        # Anything else and the row's own cut point is a guess, so this
+        # refuses — a wrong guess here authorises a deletion.
+        lost_rows = [k for k, v in org.nodes.items()
+                     if v.get("bearer_state") == "lost"
+                     and v.get("session_id") == n.get("session_id")]
+        if len(marks) != 1 or len(lost_rows) != 1:
+            return no(f"cannot tell which of the session's {len(marks)} "
+                      f"boundaries {pred_id} belongs to ({len(lost_rows)} "
+                      f"lost rows share it) — refusing to guess")
+        upto = marks[0][0]
     mine = _record_uuids(src, upto)
     theirs = _record_uuids(dup)
     if mine is None or theirs is None:
@@ -4195,17 +4217,37 @@ def recover_lost_generation(slug: str, pred_id: str) -> dict[str, Any]:
                 f"{pred_id} does not share its successor's session — there is "
                 f"no in-place boundary to cut it from")
         _cnt, _pre, marks = _count_cli_compactions(org, cast(str, succ_id))
-        # this row is the generation the LAST boundary closed; earlier
-        # boundaries belong to earlier rows, which hold their own ids by now
-        gen_rows = sorted(
-            (k for k, v in org.nodes.items()
-             if v.get("bearer_state") == "lost"
-             and v.get("session_id") == n.get("session_id")),
-            key=lambda k: org.nodes[k].get("generation", 0))
-        if pred_id not in gen_rows or len(gen_rows) > len(marks):
-            raise LedgerError(f"cannot place {pred_id} against the session's "
-                              f"boundaries — refusing to guess")
-        off = marks[len(marks) - len(gen_rows) + gen_rows.index(pred_id)][0]
+        if not marks:
+            raise LedgerError(f"no compact boundary in {pred_id}'s session — "
+                              f"there is nothing to cut it from")
+        recorded = n.get("cli_boundary_offset")
+        if isinstance(recorded, int):
+            # the cut point this row was minted with — exact, and immune to
+            # the ordering problem below
+            off = recorded
+            if not any(off == m[0] for m in marks):
+                raise LedgerError(
+                    f"{pred_id} records a boundary at line {off} that is no "
+                    f"longer there — refusing to cut at a guessed point")
+        else:
+            # a row minted before the offset was recorded. Positional
+            # inference is only sound while EVERY boundary still has its lost
+            # row: recovering one removes it from this set (it takes a session
+            # of its own), and the arithmetic over the survivors would then
+            # point at the wrong boundary — cutting a bearer from the wrong
+            # moment, which looks exactly like success. So the ambiguous case
+            # refuses rather than guessing.
+            gen_rows = sorted(
+                (k for k, v in org.nodes.items()
+                 if v.get("bearer_state") == "lost"
+                 and v.get("session_id") == n.get("session_id")),
+                key=lambda k: org.nodes[k].get("generation", 0))
+            if pred_id not in gen_rows or len(gen_rows) != len(marks):
+                raise LedgerError(
+                    f"cannot place {pred_id} against the session's "
+                    f"{len(marks)} boundaries ({len(gen_rows)} lost rows "
+                    f"share the session) — refusing to guess a cut point")
+            off = marks[gen_rows.index(pred_id)][0]
         sid = _fork_bearer_session(org, cast(str, n.get("session_id")), off)
         if not sid:
             raise LedgerError(

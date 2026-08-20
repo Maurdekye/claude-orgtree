@@ -3569,6 +3569,96 @@ def lost_generations() -> None:
                                    _boundary("tb"), _msg("t3")])
     ph14 = org14.record_cli_compaction(n14, 500)
     store.save_org(org14)
+    # ---- the cut point is RECORDED, not re-derived (self-review 2026-08-20)
+    # Positional inference over "the lost rows sharing this session" is only
+    # sound while every boundary still has its row. Recover the MIDDLE of
+    # three and the survivors renumber under any index arithmetic — the next
+    # recovery then cuts at the wrong boundary and hands back a bearer from
+    # the wrong moment, which is indistinguishable from success.
+    org15, (n15,) = horg()
+    sid15 = sid_of(org15, n15)
+    _plant_session(sid15, [_msg("a1"), _boundary("ab1"),          # off 1
+                           _msg("a2"), _boundary("ab2"),          # off 3
+                           _msg("a3"), _boundary("ab3"),          # off 5
+                           _msg("a4")])
+    org15.node(n15)["cli_compactions"] = 0
+    store.save_org(org15)
+    st15 = supervisor.state(org15.d["slug"], n15)
+    supervisor._after_turn(org15.d["slug"], n15, org15, {}, st15, 1)
+    org15 = store.load_org(org15.d["slug"])
+    slug15 = org15.d["slug"]
+    check("offsets · three boundaries in one turn mint three generations, "
+          "each cut at its OWN boundary",
+          lambda: _true([org15.nodes[f"{n15}@{g}"]["session_id"] !=
+                         org15.node(n15)["session_id"] for g in (0, 1, 2)]
+                        == [True, True, True],
+                        f"{sorted(org15.nodes)}"))
+
+    def _each_cut_is_its_own_moment() -> None:
+        want = {0: ["a1"], 1: ["a1", "ab1", "a2"],
+                2: ["a1", "ab1", "a2", "ab2", "a3"]}
+        for g, exp in want.items():
+            p = supervisor.transcript_path(
+                org15.nodes[f"{n15}@{g}"]["session_id"], None)
+            got = [json.loads(x).get("uuid")
+                   for x in open(p, encoding="utf-8").read().splitlines()]  # type: ignore[arg-type]
+            _true(got == exp, f"@{g}: got {got}, wanted {exp}")
+    check("offsets · …and each holds exactly its own generation's records, "
+          "not the last boundary's", _each_cut_is_its_own_moment)
+
+    # now the ordering trap, on rows that were minted LOST (no cut available)
+    org16, (n16,) = horg()
+    sid16 = sid_of(org16, n16)
+    _plant_session(sid16, [_msg("c1"), _boundary("cb1"),
+                           _msg("c2"), _boundary("cb2"),
+                           _msg("c3"), _boundary("cb3"), _msg("c4")])
+    store.save_org(org16)
+    _cn, _cp, marks16 = supervisor._count_cli_compactions(org16, n16)
+    rows16 = [org16.record_cli_compaction(n16, 100, None, off)
+              for off, _p in marks16]
+    store.save_org(org16)
+    slug16 = org16.d["slug"]
+    # recover the MIDDLE one first — the case positional inference gets wrong
+    supervisor.recover_lost_generation(slug16, rows16[1])
+    r16 = supervisor.recover_lost_generation(slug16, rows16[0])
+    check("offsets · recovering out of order still cuts each row at the "
+          "boundary it was MINTED with, not at whichever one is left",
+          lambda: _true(r16["cut_at"] == marks16[0][0],
+                        f'cut at {r16["cut_at"]}, wanted {marks16[0][0]}'))
+
+    def _oldest_row_content() -> None:
+        org16b = store.load_org(slug16)
+        p = supervisor.transcript_path(
+            org16b.nodes[rows16[0]]["session_id"], None)
+        got = [json.loads(x).get("uuid")
+               for x in open(p, encoding="utf-8").read().splitlines()]  # type: ignore[arg-type]
+        _true(got == ["c1"], f"got {got}")
+    check("offsets · …and the oldest row holds only what preceded ITS "
+          "boundary", _oldest_row_content)
+
+    # a legacy row (minted before offsets were recorded) must refuse rather
+    # than guess, once the set it would index into is no longer complete
+    org17, (n17,) = horg()
+    sid17 = sid_of(org17, n17)
+    _plant_session(sid17, [_msg("d1"), _boundary("db1"),
+                           _msg("d2"), _boundary("db2"), _msg("d3")])
+    store.save_org(org17)
+    _dn, _dp, marks17 = supervisor._count_cli_compactions(org17, n17)
+    legacy = [org17.record_cli_compaction(n17, 100) for _ in marks17]
+    for k in legacy:                     # simulate pre-fix rows
+        org17.nodes[k].pop("cli_boundary_offset", None)
+    store.save_org(org17)
+    slug17 = org17.d["slug"]
+    check("offsets · a legacy row with a COMPLETE set of siblings still "
+          "recovers positionally",
+          lambda: _true(supervisor.recover_lost_generation(
+              slug17, legacy[0])["cut_at"] == marks17[0][0]))
+    check("offsets · …but once the set is incomplete it REFUSES to guess "
+          "rather than cutting at the wrong moment",
+          lambda: _raises(
+              lambda: supervisor.recover_lost_generation(slug17, legacy[1]),
+              "refusing to guess"))
+
     check("recover · refuses a phantom — recovering one would mint a SECOND "
           "bearer holding a copy of the first",
           lambda: _raises(

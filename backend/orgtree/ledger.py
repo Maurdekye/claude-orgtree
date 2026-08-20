@@ -5444,7 +5444,8 @@ class Org:
 
     def record_cli_compaction(self, nid: str,
                               pre_tokens: int | None = None,
-                              bearer_sid: str | None = None) -> str:
+                              bearer_sid: str | None = None,
+                              boundary_offset: int | None = None) -> str:
         """The CLI compacted the session ITSELF (redteam 1b, user report
         2026-08-06). Generation bumped; the successor's session id is
         UNCHANGED, because the CLI compacted in place and there is no fork.
@@ -5499,6 +5500,16 @@ class Org:
             # at the successor's live session and "rehire" would resume the
             # successor's post-compaction state under the predecessor's name.
             pred["session_id"] = bearer_sid
+        elif boundary_offset is not None:
+            # a LOST row records WHERE its boundary was, so a later recovery
+            # reads the cut point instead of re-deriving it. Deriving it is
+            # where the ambiguity lives: rows and boundaries only line up
+            # positionally while every row is still lost, and the moment one
+            # of several is recovered (it takes a session of its own and
+            # leaves the set) any index arithmetic over the survivors silently
+            # points at the wrong boundary — cutting a bearer from the wrong
+            # moment, which looks like success and is not.
+            pred["cli_boundary_offset"] = int(boundary_offset)
         self.nodes[pred_id] = pred
         n["generation"] = gen + 1
         n["predecessor"] = pred_id
@@ -5570,6 +5581,10 @@ class Org:
             raise LedgerError("a recovered bearer needs a real session id")
         n["bearer_state"] = "knowledge"
         n["session_id"] = bearer_sid
+        # the cut point was a property of being lost inside someone else's
+        # file; this row now owns its own session and the offset would only
+        # ever mislead a later reader
+        n.pop("cli_boundary_offset", None)
         succ = n.get("successor")
         self._notify([succ, n.get("parent")],
                      f'"{pred_id}" is RECOVERED — the generation recorded as '
