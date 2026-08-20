@@ -62,10 +62,20 @@ if ($EnsureUp) {
 # separate sessions. Held for the whole run; released when the process exits
 # however it exits.
 $mutex = New-Object System.Threading.Mutex($false, 'Global\orgtree-update')
-if (-not $mutex.WaitOne(0)) {
+$mutexHeld = $mutex.WaitOne(0)
+if (-not $mutexHeld) {
     Write-Host "another orgtree update is already running -- this one exits rather than racing it on git, npm and the port." -ForegroundColor Yellow
     exit 0
 }
+# The release must be EXPLICIT (leak postmortem 2026-08-20): "released when the
+# process exits" is only true when the script IS the process (-File, update.cmd,
+# the scheduled tasks). Run as `.\update.ps1` in an interactive shell, every
+# `exit` above and below ends the SCRIPT while the shell keeps the acquired
+# mutex alive indefinitely -- and every later deploy, including the 5-minute
+# -EnsureUp relaunch net, refuses "already running" against a deploy that is
+# not running. try/finally because `exit` and EAP='Stop' errors both unwind
+# through finally; the body keeps its original indentation on purpose.
+try {
 
 $before = (git rev-parse --short HEAD).Trim()
 if (-not $EnsureUp) {
@@ -316,4 +326,9 @@ if ($ok) {
 } else {
     Write-Host "`nbackend did not come up -- check $errLog" -ForegroundColor Red
     exit 1
+}
+
+} finally {
+    if ($mutexHeld) { [void]$mutex.ReleaseMutex() }
+    $mutex.Dispose()
 }
