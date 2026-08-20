@@ -3928,6 +3928,14 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
         with store.DOC_LOCK:
             o2 = store.load_org(slug)
             if nid not in o2.nodes:
+                # the node was deleted mid-turn. Same reasoning as the session
+                # swap below, and more certainly true — these cuts name
+                # generations of a node that no longer exists, and `delete`
+                # explicitly leaves transcripts on disk, so nothing else would
+                # ever reap them (redteam round 2: the guard was applied to
+                # the sibling bail and not to this one)
+                for _o, _p, s in cuts:
+                    _discard_cut(org, s)
                 return
             n2 = o2.node(nid)
             # ⚠ Everything above ran unlocked, and `cheap_compact` has no
@@ -3999,7 +4007,17 @@ def _count_cli_compactions(
             return None, None, []
         pre: int | None = None
         marks: list[tuple[int, int | None]] = []
-        with open(tpath, encoding="utf-8", errors="replace") as f:
+        # ⚠ newline="\n", not the default and not "": the CUT reads the same
+        # file in BINARY (so its copy is verbatim), and binary iteration
+        # splits on \n alone. Universal-newlines mode — which BOTH the default
+        # and "" select — additionally splits a lone \r, so a single stray CR
+        # anywhere above a boundary would shift every offset this function
+        # reports one line past what the cutter would honour. The cut would
+        # then include the boundary record itself, and the "preserved"
+        # generation would hold POST-compaction state: precisely the bug this
+        # branch exists to kill, minted silently and labelled consultable.
+        # Only "\n" makes the two agree (redteam round 2).
+        with open(tpath, encoding="utf-8", errors="replace", newline="\n") as f:
             for i, line in enumerate(f):
                 if '"compact_boundary"' not in line:
                     continue
@@ -4146,7 +4164,10 @@ def _record_uuids(path: str, upto: int | None = None) -> set[str] | None:
     (session metadata) and are simply not identities to compare."""
     try:
         out: set[str] = set()
-        with open(path, encoding="utf-8", errors="replace") as f:
+        # newline="\n" for the same reason as the boundary scan: this indexes
+        # against offsets the binary cutter honours, so it must agree with it
+        # about where a line ends
+        with open(path, encoding="utf-8", errors="replace", newline="\n") as f:
             for i, line in enumerate(f):
                 if upto is not None and i >= upto:
                     break
@@ -4284,7 +4305,15 @@ def recover_lost_generation(slug: str, pred_id: str) -> dict[str, Any]:
 
     Refuses phantoms. A phantom's content is already held by its sibling, so
     recovering it would mint a SECOND bearer holding a copy of the first —
-    `drop_phantom_generation` is that row's repair, not this."""
+    `drop_phantom_generation` is that row's repair, not this.
+
+    Three phases, because the middle one must not hold the doc lock: DECIDE
+    under the lock, CUT outside it, RECORD under it again having re-checked
+    that nothing moved. The cut copies a multi-MB prefix and, on a sandboxed
+    org, shells out to `docker exec` with a 30 s ceiling — a stopped container
+    or a wedged daemon would otherwise block every other org's turn for the
+    whole window (redteam round 2; `spend_unrun_pardon` states the same rule
+    for its glob)."""
     with store.DOC_LOCK:
         org = store.load_org(slug)
         n = org.nodes.get(pred_id)
@@ -4343,13 +4372,29 @@ def recover_lost_generation(slug: str, pred_id: str) -> dict[str, Any]:
                     f"{len(marks)} boundaries ({len(gen_rows)} lost rows "
                     f"share the session) — refusing to guess a cut point")
             off = marks[gen_rows.index(pred_id)][0]
-        sid = _fork_bearer_session(org, cast(str, n.get("session_id")), off)
-        if not sid:
+        row_sid = cast(str, n.get("session_id"))
+    # ---- outside the lock: the expensive part ----
+    sid = _fork_bearer_session(org, row_sid, off)
+    if not sid:
+        raise LedgerError(
+            f"could not cut a session for {pred_id} — its records may be "
+            f"gone; it stays a LOST generation")
+    # ---- back under the lock, re-checking what the decision rested on ----
+    with store.DOC_LOCK:
+        org2 = store.load_org(slug)
+        n2 = org2.nodes.get(pred_id)
+        if (not n2 or n2.get("bearer_state") != "lost"
+                or n2.get("session_id") != row_sid
+                or n2.get("cli_boundary_offset") != n.get("cli_boundary_offset")):
+            # someone recovered, dropped or re-minted this row while the cut
+            # ran. The cut describes a state that no longer holds; recording
+            # it would attach a bearer to the wrong moment.
+            _discard_cut(org, sid)
             raise LedgerError(
-                f"could not cut a session for {pred_id} — its records may be "
-                f"gone; it stays a LOST generation")
-        org.recover_lost_generation(pred_id, sid)
-        store.save_org(org)
+                f"{pred_id} changed while its session was being cut — "
+                f"nothing was recorded; try again")
+        org2.recover_lost_generation(pred_id, sid)
+        store.save_org(org2)
     notify(slug, pred_id, "lineage")
     return {"recovered": pred_id, "session_id": sid, "cut_at": off}
 

@@ -3826,6 +3826,67 @@ def lost_generations() -> None:
           lambda: _true(new_sid21 != sid21
                         and after21.node(n21)["session_id"] == new_sid21))
 
+    # R2b: the SIBLING bail. A node deleted mid-turn must discard its cuts
+    # too — more certainly than the session-swap case, because `delete`
+    # explicitly leaves transcripts on disk, so nothing else ever reaps them.
+    org25, (n25,) = horg()
+    sid25 = sid_of(org25, n25)
+    _plant_session(sid25, [_msg("w1"), _boundary("wb1"),
+                           _msg("w2"), _boundary("wb2"), _msg("w3")])
+    org25.node(n25)["cli_compactions"] = 0
+    store.save_org(org25)
+    slug25 = org25.d["slug"]
+    gone25 = store.load_org(slug25)          # the node vanishes mid-turn
+    gone25.retire(USER, n25)
+    gone25.delete(USER, n25)
+    store.save_org(gone25)
+    _rig25 = os.path.join(HOME, ".claude", "projects", "rig")
+    files25 = set(os.listdir(_rig25))
+    st25 = supervisor.state(slug25, n25)
+    supervisor._after_turn(slug25, n25, org25, {}, st25, 1)   # stale org
+    check("R2b · a node DELETED mid-turn discards its cuts as well — the "
+          "guard was on the sibling bail only",
+          lambda: _true(set(os.listdir(_rig25)) == files25,
+                        f"strays: {set(os.listdir(_rig25)) - files25}"))
+    check("R2b · (control) the node really was gone — the bail was exercised",
+          lambda: _true(n25 not in store.load_org(slug25).nodes))
+
+    # R4: the boundary SCAN and the binary CUT must agree on where a line
+    # ends. Text mode's universal-newlines splits a lone \r and binary does
+    # not, so one stray CR above a boundary would shift every offset by one —
+    # the cut would then INCLUDE the boundary record, and the "preserved"
+    # generation would hold POST-compaction state while being labelled
+    # consultable. Exactly the bug this branch exists to kill.
+    org26, (n26,) = horg()
+    sid26 = sid_of(org26, n26)
+    _p26 = os.path.join(HOME, ".claude", "projects", "rig", sid26 + ".jsonl")
+    # the CR sits where JSON allows WHITESPACE, so the line is still valid
+    # JSON as a whole — but text-mode iteration splits it in two and binary
+    # iteration does not. Written as raw bytes because json.dumps would
+    # escape a CR inside a string to a literal backslash-r and plant nothing.
+    with open(_p26, "wb") as f:
+        f.write(json.dumps(_msg("cr1")).encode() + b"\n")
+        f.write(b'{"type":"user","uuid":"cr2",\r'
+                b'"message":{"role":"user","content":"b"}}\n')
+        f.write(json.dumps(_boundary("crb")).encode() + b"\n")
+        f.write(json.dumps(_msg("cr3")).encode() + b"\n")
+    store.save_org(org26)
+    _c26, _pp26, marks26 = supervisor._count_cli_compactions(org26, n26)
+    cut26 = supervisor._fork_bearer_session(org26, sid26, marks26[0][0])
+
+    def _cr_agreement() -> None:
+        _true(bool(cut26), "the cut did not happen at all")
+        p = supervisor.transcript_path(cut26, None)  # type: ignore[arg-type]
+        raw = open(p, "rb").read()  # type: ignore[arg-type]
+        _true(b'"compact_boundary"' not in raw,
+              "the cut swallowed the boundary record — the scan and the "
+              "cutter disagree about where a line ends")
+        got = [json.loads(x).get("uuid")
+               for x in raw.decode("utf-8").split("\n") if x.strip()]
+        _true(got == ["cr1", "cr2"], f"got {got}")
+    check("R4 · a lone CR above the boundary does not shift the cut — the "
+          "scan and the binary cutter agree on line boundaries", _cr_agreement)
+
     # R3 (MAJOR): "could not read the session" must not baseline as 0 — the
     # next turn would read the fork's own boundary as new and re-mint the
     # phantom, this time WITH a bearer, which nothing can then drop.

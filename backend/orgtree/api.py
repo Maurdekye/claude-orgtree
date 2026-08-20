@@ -2035,6 +2035,54 @@ def node_compact(slug: str, nid: str) -> dict[str, Any]:
     return {"started": True}
 
 
+@app.post("/api/orgs/{slug}/lineage/{nid}/recover")
+def lineage_recover(slug: str, nid: str) -> dict[str, Any]:
+    """Rescue a LOST generation into a consultable knowledge bearer (user
+    ruling 2026-08-20: an explicit opt-in verb, never automatic).
+
+    A generation the CLI compacted in place was written off as unconsultable
+    while every one of its records was still sitting above the boundary in the
+    successor's session file. This cuts them into a session of its own. The
+    prospective half of that fix rides the turn path; this is the half that
+    reaches rows already written — without a route it was unreachable from any
+    surface, so the whole population it exists for stayed broken (redteam
+    round 2). Refuses phantoms, naming the sibling that holds the content."""
+    try:
+        store.load_org(slug)
+    except LedgerError as e:
+        raise HTTPException(404, str(e))
+    try:
+        result = supervisor.recover_lost_generation(slug, nid)
+    except LedgerError as e:
+        raise HTTPException(422, str(e))
+    hub_changed(slug)
+    return result
+
+
+@app.post("/api/orgs/{slug}/lineage/{nid}/drop-phantom")
+def lineage_drop_phantom(slug: str, nid: str) -> dict[str, Any]:
+    """Remove a PHANTOM lineage row — a generation that never existed, minted
+    when orgtree logged its own §8 compaction a second time as a loss.
+
+    Deletes rather than recovers because the phantom's content is not merely
+    recoverable but already held, in full, by the sibling bearer the split
+    created; recovering it would mint a second bearer holding a copy of the
+    first. FAILS CLOSED (user ruling): the row is dropped only on a complete
+    positive match — every record above its boundary provably present in the
+    sibling's file — and refuses on unique content, a missing sibling, an
+    unreadable file, or any row whose own boundary cannot be identified."""
+    try:
+        store.load_org(slug)
+    except LedgerError as e:
+        raise HTTPException(404, str(e))
+    try:
+        result = supervisor.drop_phantom_generation(slug, nid)
+    except LedgerError as e:
+        raise HTTPException(422, str(e))
+    hub_changed(slug)
+    return result
+
+
 @app.post("/api/orgs/{slug}/dissolve-all")
 async def org_dissolve_all(slug: str) -> dict[str, Any]:
     """Dissolve EVERY agent in the org at once (context kept — rehire revives)."""
