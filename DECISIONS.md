@@ -2222,6 +2222,43 @@ selection silently lands on a different message.
 
 ## Lineage & compaction
 
+### D-140 · a notice is a diff, so a memoryless successor gets it digested
+Ruling (user, 2026-08-20, from a live bug report): `cheap_compact` and
+`reseed` replace a seat's SESSION, but the notice box is keyed by the SEAT —
+so the successor's first turn opened with the predecessor's entire
+undelivered backlog, under a header reading "since your last turn" when there
+had been no last turn. Measured on resonite/coordinator: **22 notices, 7,082
+chars, spanning three days**, of which 11 were the same "the user gave a
+direct instruction to X" line and 9 of those concerned a report retired
+before the block was ever delivered. Both ops now DIGEST the backlog
+(`Org._fold_notices`): notices of the same KIND collapse to their newest,
+which carries `[+N earlier … — also concerning "a", "b"]` so a count never
+hides a name; distinct kinds survive verbatim; a header states what was
+folded and where the rest lives. Kind is structural, not catalogued —
+`_notice_shape` blanks quoted spans and digits, so a notice family added
+later folds on the day it is written and nothing has to be kept in sync.
+Backlogs under 3, and backlogs where every notice is its own kind, are left
+untouched: a digest that shortens nothing is not applied. Past 15 kinds the
+oldest are dropped from the block, declared in the header. `compact_split`
+does NOT digest — its successor carries the CLI's own summary, so the diff
+still lands on a baseline.
+Why: a notice is a DIFF, and a session with no memory has no baseline to
+apply one to. The facts worth keeping are already in front of the successor —
+`_render_chart` puts the CURRENT org chart in the system prompt every turn —
+so "your report X was retired" is a restatement and "re-check any plan of
+yours that depends on it" is unactionable when there is no plan. Paying ~2k
+tokens of stale diff at the top of the context you compacted to make cheap is
+backwards — D-108's whole economic argument, undone at the door.
+Bounds: nothing is destroyed — `notice_log` is untouched and
+`/nodes/{nid}/history` renders every entry per node, which is what the header
+points at. The digest is delivery-shaping only; it does not touch MAIL, whose
+survival across a session swap is the deliberate property that lets
+correspondents keep their address (D-108). It does not address the uncapped
+growth of `notices[nid]` in general (measured 7,260 entries from 120
+sequential hires) — that remains open, and this bounds only the compaction
+and re-seed doors. Real-case reduction: 22 notices / 5,582 chars → 10 lines /
+2,836 chars.
+
 ### D-052 · lineage is a second axis, never the org axis
 Ruling (user, PLAN §8/§8.5, 2026-07-28; accounting fixes by audit
 2026-07-31): a predecessor generation must NOT appear as a child of its

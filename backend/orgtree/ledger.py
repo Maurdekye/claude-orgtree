@@ -31,7 +31,7 @@ from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime, timedelta, timezone
 from typing import Any, Final, Literal, cast
 
-from .schema import (AudienceGrant, DirGrant, MailEntry, NodeDoc,
+from .schema import (AudienceGrant, DirGrant, MailEntry, NodeDoc, NoticeEntry,
                      OrgDoc, OrgInboxEntry, ToolGrant, UserMailEntry)
 
 # §3.1 — derived from published API pricing (output:input is 5:1 for every model, so the
@@ -165,6 +165,31 @@ def now() -> str:
     # AFTER new "…:00.123Z" ones — harmless across the format transition.)
     d = datetime.now(timezone.utc)
     return d.strftime("%Y-%m-%dT%H:%M:%S.") + f"{d.microsecond // 1000:03d}Z"
+
+
+# One quoted span (a node id, a user gist, a model name) or a number is what
+# makes two notices of the SAME KIND read as different lines. Blanking both
+# leaves the KIND — no catalogue of the ~40 notice texts to keep in sync, and
+# a family added later folds on the day it is written. Single quotes are left
+# alone deliberately: "the USER's authority" is prose, not a quoted span, and
+# pairing it off would swallow half a sentence.
+_NOTICE_QUOTED = re.compile(r'["“”][^"“”]*["“”]')
+
+
+def _notice_shape(text: str) -> str:
+    """A kind-key for one notice: same shape ⇒ same kind of org change."""
+    s = _NOTICE_QUOTED.sub("⟨⟩", text)
+    s = re.sub(r"\d+", "#", s)
+    return " ".join(s.split()).lower()[:200]
+
+
+def _notice_subject(text: str) -> str:
+    """The first quoted span of a notice — in practice the node it is ABOUT
+    ("Your report X was retired", "the user gave a direct instruction to X").
+    Blanking it is what lets two notices share a kind, so a fold that did not
+    recite it would answer "how many" while losing "which"."""
+    m = _NOTICE_QUOTED.search(text)
+    return m.group(0)[1:-1].strip() if m else ""
 
 
 def slugify(name: str) -> str:
@@ -1728,6 +1753,85 @@ class Org:
             log.append({"node": nid, "at": now(), "text": text})
         del log[:-800]
 
+    # a digest keeps one exemplar per KIND; past this many kinds the oldest
+    # go (declared, never silent — the History tab still holds every one)
+    NOTICE_DIGEST_KINDS = 15
+
+    def _fold_notices(self, nid: str) -> int:
+        """User bug 2026-08-20: replacing a seat's SESSION does not empty its
+        notice box, which is keyed by seat. So a cheap-compacted or re-seeded
+        agent's very first turn opened with the whole undelivered backlog of
+        its predecessor — measured on resonite/coordinator: 22 notices, 7,082
+        chars, spanning three days, 11 of them the same "the user gave a
+        direct instruction to X" line, 9 of those about a report that had
+        been retired before the block was ever delivered.
+
+        A notice is a DIFF. A session with no memory has no baseline to apply
+        one to — and the facts worth having are already true in front of it:
+        `_render_chart` puts the CURRENT org chart in the system prompt every
+        turn, so "your report X was retired" is a restatement, while "re-check
+        any plan of yours that depends on it" is unactionable when there is no
+        plan. Paying ~2k tokens of stale diff at the top of the context you
+        compacted to make cheap is exactly backwards.
+
+        So the backlog is DIGESTED, not dropped (user ruling 2026-08-20):
+        notices of the same kind collapse to their newest, with the count of
+        what folded into it. Nothing is destroyed — `notice_log` keeps every
+        entry and /nodes/{nid}/history renders them per node.
+
+        Returns the number of notices folded away (0 = box left verbatim).
+        Deliberately NOT called by `compact_split`: a normal compaction's
+        successor carries the CLI's own summary, so its "since your last
+        turn" is true and the diff still lands on a baseline."""
+        box: list[NoticeEntry] = (self.d.get("notices") or {}).get(nid) or []
+        if len(box) < 3:
+            return 0            # nothing a digest could make smaller
+        groups: dict[str, list[NoticeEntry]] = {}
+        for e in box:
+            groups.setdefault(_notice_shape(e.get("text") or ""), []).append(e)
+        # newest-last within a kind (append order is chronological), and the
+        # kinds themselves ordered by their newest member
+        kinds = sorted(groups.values(), key=lambda g: g[-1]["at"])
+        cut = max(0, len(kinds) - self.NOTICE_DIGEST_KINDS)
+        kinds = kinds[cut:]
+        folded: list[NoticeEntry] = []
+        for g in kinds:
+            newest = g[-1]
+            text = newest["text"]
+            if len(g) > 1:
+                # …and WHICH ones, not just how many: the quoted subject is
+                # exactly what the shape key blanked, so reciting it here is
+                # what keeps "4 reports were retired" from hiding three names
+                subj: list[str] = []
+                seen = {_notice_subject(newest["text"])}
+                for e in reversed(g[:-1]):
+                    sj = _notice_subject(e.get("text") or "")
+                    if sj and sj not in seen:
+                        seen.add(sj)
+                        subj.append(sj)
+                more = len(subj) - 8
+                which = (" — also concerning "
+                         + ", ".join(f'"{x}"' for x in subj[:8])
+                         + (f" and {more} other(s)" if more > 0 else "")
+                         ) if subj else ""
+                text += (f" [+{len(g) - 1} earlier notice(s) of this same "
+                         f"kind, folded — this is the newest of them{which}]")
+            folded.append({"at": newest["at"], "text": text})
+        if len(folded) == len(box):
+            return 0            # every notice its own kind — fold nothing
+        head = (f"The {len(box)} notices your predecessor never read were "
+                f"DIGESTED into the {len(folded)} below: same-kind repeats "
+                f"collapsed to their newest"
+                + (f", and the {cut} oldest kind(s) dropped from this block"
+                   if cut else "")
+                + ". A notice is a diff, and this session has no memory to "
+                  "apply one to — the org chart in your prompt is already "
+                  "current, and every notice ever queued for you is listed "
+                  "in full in your History tab.")
+        self.d.setdefault("notices", {})[nid] = [
+            cast("NoticeEntry", {"at": now(), "text": head}), *folded]
+        return len(box) - len(folded)
+
     def _peers_of(self, parent: str | None, excl: str) -> list[str]:
         return [k for k in self.children(parent) if k != excl]
 
@@ -2250,6 +2354,9 @@ class Org:
         n["cheap_compacted"] = True
         self._moot_asks(nid, "the asking session was cheap-compacted — the "
                              "successor starts fresh and never posed it")
+        # …and the same reasoning one door down: the predecessor's unread
+        # notice backlog is a diff the successor has no baseline for
+        folded = self._fold_notices(nid)
         kids = self.children(nid)
         team = (f" Your team ({', '.join(kids)}) is UNCHANGED and reports "
                 f"to you — they remember you; you do not remember them, so "
@@ -2275,7 +2382,8 @@ class Org:
                      f'same seat and team, fresh session — its prior self is '
                      f'consultable as "{pred_id}".')
         self._log("cheap_compact", actor,
-                  {"node": nid, "bearer": pred_id, "old_session": old_sid},
+                  {"node": nid, "bearer": pred_id, "old_session": old_sid,
+                   "notices_folded": folded},
                   [])
         return {"node": nid, "bearer": pred_id, "old_session": old_sid,
                 "warnings": []}
@@ -5430,6 +5538,9 @@ class Org:
         # its predecessor is LOST) — the breadcrumbs splice applies equally
         n["cheap_compacted"] = True
         who = "the user" if actor == USER else f'"{actor}"'
+        # a re-seeded session is as memoryless as a cheap-compacted one —
+        # same digest, same reason (see _fold_notices)
+        folded = self._fold_notices(nid)
         self._notify([p for p in [n["parent"]] if p and p != actor],
                      f'Your report "{nid}" was RE-SEEDED by {who}: its dead session '
                      f'is archived as "{pred_id}" (a lost generation) and it starts '
@@ -5439,7 +5550,8 @@ class Org:
                      f"was lost. Your role, charter, credits and reports are intact, "
                      f"but your memory starts fresh — check your scratch CLAUDE.md "
                      f"and ask your chain to re-orient you.")
-        self._log("reseed", actor, {"node": nid, "predecessor": pred_id}, [])
+        self._log("reseed", actor, {"node": nid, "predecessor": pred_id,
+                                    "notices_folded": folded}, [])
         return {"predecessor": pred_id,
                 "warnings": [f'{nid} re-seeded — the dead session is archived as '
                              f'"{pred_id}" (lost generation, not consultable)']}
