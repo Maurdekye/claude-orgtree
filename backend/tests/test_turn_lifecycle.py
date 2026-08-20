@@ -2127,17 +2127,40 @@ def live_bg_subagents() -> None:
     check("bg · killing a CLI with live children mails their parent", _mailed)
 
     def _woken() -> None:
-        # mail in the box is not a wake. The bug is an agent sitting idle
-        # forever, so the notice must actually DRIVE a turn — which, with the
-        # stand-in, means the node goes busy again after the kill.
-        assert wait_for(
-            lambda: any(
-                "SUBAGENT DIED" in str(m.get("body") or "")
-                for m in (doc(slug2).get("mail_log") or {}).get(nid2, []))
-            and not (doc(slug2).get("mail") or {}).get(nid2), 60), (
-            "the orphan notice was never DELIVERED — it sat in the mailbox "
-            "and the agent was never driven, which is the same forever-idle "
-            "hang wearing a different hat")
+        """Mail in the box is not a wake. The bug is an agent sitting idle
+        forever, so the notice must actually DRIVE a turn and ARRIVE.
+
+        ⚠ This check used to read `"SUBAGENT DIED" in mail_log and not mail`,
+        and that was a hole a redteam mutant walked straight through: delete
+        the PENDING-BOX write from `_bg_orphaned`, keep `mail_log` and the
+        nudge, and it still passed — because "the box is empty" is satisfied
+        just as well by "nothing was ever put in it" as by "it was queued and
+        then delivered". The deleted half is the load-bearing one: the revive
+        scan on a backend restart asks `Org.waking_mail(nid)`, which reads the
+        PENDING box and never `mail_log`, so that mutant silently gave up
+        surviving a deploy — one of the very ways the process dies.
+
+        The transcript is the answer. `_message` renders each mail's body
+        verbatim into the next turn's prompt, so the marker reaching a fake
+        CLI's transcript proves the whole chain end to end: queued in the
+        pending box → the node was driven → delivery drained the box into a
+        real turn. Note the nudge `_bg_orphaned` sends does NOT contain this
+        marker, which is exactly what makes it discriminating: a wake with no
+        mail behind it can no longer pass.
+
+        (Global grep is safe here: the only other org in this section is the
+        healthy one, and check 2 has already asserted it holds no such notice
+        in `mail_log` — which is never drained — so any hit is this org's.)"""
+        assert wait_delivered("SUBAGENT DIED", 60), (
+            "the orphan notice never reached the agent as a delivered turn — "
+            "it was never queued, never drove a turn, or was dropped in "
+            "delivery. Any of the three is the same forever-idle hang wearing "
+            "a different hat")
+        # now that arrival is established, an empty box means DRAINED
+        assert wait_for(lambda: not (doc(slug2).get("mail") or {}).get(nid2),
+                        30), ("the notice was delivered but its mailbox entry "
+                              "was never drained — it will be re-delivered on "
+                              "every future turn")
     check("bg · …and that notice actually wakes it", _woken)
 
     # ── 3. the regression guard the other two need ────────────────────────

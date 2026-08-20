@@ -3840,17 +3840,26 @@ def _bg_task_output(sid: str | None, task_id: str) -> str:
         <temp>/claude/<project-slug>/<session-id>/tasks/<task-id>.output
 
     One wildcard component (the project slug), so this is a cheap glob and not
-    a walk. Returns "" unless the file actually EXISTS: a notice that names a
-    path which is not there is worse than one that stays quiet, because the
-    agent spends a turn looking for it. Undocumented CLI layout — if it moves,
-    this degrades to silence rather than to a lie."""
+    a walk. Returns "" unless the file actually exists AND HAS BYTES: a notice
+    that names a path which is not there — or which is there and empty — is
+    worse than one that stays quiet, because the agent spends a turn looking
+    at nothing. The emptiness case is the common one, not a corner: surveyed
+    across this machine's TEMP on 2026-08-21, subagent-shaped task ids had 7
+    non-empty `.output` files out of 150 (4.7%), because the CLI only spills a
+    sidechain transcript there once it grows (all 7 were 379KB-9MB). Short
+    orphans leave a 0-byte placeholder. The long ones are worth citing and do
+    survive a kill — recovering an orphaned reviewer's findings out of a 484KB
+    `.output` is how the redteam round behind this very guard was salvaged.
+    Undocumented CLI layout — if it moves, this degrades to silence, not to a
+    lie."""
     if not sid or not task_id:
         return ""
     try:
         import tempfile                                       # noqa: PLC0415
         hits = glob.glob(os.path.join(tempfile.gettempdir(), "claude", "*",
                                       sid, "tasks", task_id + ".output"))
-        return hits[0] if hits and os.path.isfile(hits[0]) else ""
+        return (hits[0] if hits and os.path.isfile(hits[0])
+                and os.path.getsize(hits[0]) > 0 else "")
     except OSError:
         return ""
 
@@ -3874,9 +3883,10 @@ def _bg_orphaned(slug: str, nid: str,
     Never raises: this runs in a `finally` on a turn that may already be
     failing, and a bookkeeping error here must not replace the real one."""
     try:
-        lines = []
+        lines, salvage = [], False
         for tid, desc, outf in orphans[:20]:
             outf = outf or _bg_task_output(sid, tid)
+            salvage = salvage or bool(outf)
             lines.append(f"- \"{desc}\" (task {tid})"
                          + (f"\n  partial output: {outf}" if outf else ""))
         body = (
@@ -3885,11 +3895,17 @@ def _bg_orphaned(slug: str, nid: str,
             f"Reason: {why}\n\n" + "\n".join(lines)
             + (f"\n… and {len(orphans) - 20} more" if len(orphans) > 20 else "")
             + "\n\nNo completion record exists for these — do NOT keep waiting "
-              "on them, and do not assume their work landed. Their partial "
-              "output files (above) are on disk and may hold real progress; "
-              "read those before redoing the work. To retry, relaunch — and "
-              "prefer run_in_background:false, which fails loudly instead of "
-              "silently if it happens again.")
+              "on them, and do not assume their work landed."
+            # only promise salvage when a path was actually cited: _bg_task_output
+            # withholds empty and missing files, and for a short-lived orphan
+            # that is the usual outcome. Pointing an agent at "the files above"
+            # when there are none above costs it a turn to find that out.
+            + (" The partial output files named above are real and may hold "
+               "most of the work — READ THEM before redoing anything."
+               if salvage else
+               " Nothing usable was left on disk for these.")
+            + " To retry, relaunch — and prefer run_in_background:false, which "
+              "fails loudly instead of silently if it happens again.")
         # kind is deliberately NOT "notice": that kind is the no-wake marker
         # (Org.waking_mail), and a notice would land in the box to be read at
         # a next turn that is precisely what never comes.
