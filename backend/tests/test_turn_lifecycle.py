@@ -150,6 +150,19 @@ from orgtree import api as _apimod                            # noqa: E402
 from orgtree.ledger import USER, Org                             # noqa: E402
 
 
+# ☠ THE DEPLOY INTERLOCK — armed before any check runs. This suite can reach
+# `launch_self_restart`, which spawns a REAL update.ps1 and restarts the
+# backend for every org on this machine. `_org_target_refuses_while_busy`
+# calls the launch WITHOUT stubbing the spawn, on the argument that the
+# mid-turn refusal fires first — an argument mutation disproved on 2026-08-21.
+# See tests/_no_deploy.py for the full account; it is shared with
+# test_mcptool.py so the two cannot drift.
+import _no_deploy                                                # noqa: E402
+
+_no_deploy.install()
+_DEPLOY_ATTEMPTS = _no_deploy.ATTEMPTS
+
+
 # =========================================================== hermetic helpers
 
 def hspec(**over):
@@ -1357,8 +1370,17 @@ def hermetic() -> None:
         assert "-OnlyIfBehind" not in args, \
             f"the launch passes -OnlyIfBehind again — it cannot deploy a " \
             f"local commit and will fail silently (D-142): {args}"
-        assert (env or {}).get("ORGTREE_ONLY_IF_BEHIND") is None, \
+        assert (env or {}).get("ORGTREE_ONLY_IF_BEHIND") != "1", \
             f"the launch sets ORGTREE_ONLY_IF_BEHIND again (D-142): {env}"
+        if os.name != "nt":
+            # ⚠ NOT merely "unset". update.sh reads the var from its INHERITED
+            # environment, so passing no env at all would let an ambient value
+            # on the box re-gate the deploy and quietly restore the bug —
+            # while an `is None` assertion sailed past, because None is
+            # exactly what "no env passed" looks like from here.
+            assert env is not None and env.get("ORGTREE_ONLY_IF_BEHIND") == "", \
+                f"the posix leg must CLEAR ORGTREE_ONLY_IF_BEHIND, not leave " \
+                f"it to the ambient environment (D-142): {env}"
         # …and it is still the update script being spawned, not something that
         # merely lacks the flag because it stopped deploying altogether
         assert any("update.ps1" in a or "update.sh" in a for a in args), args
@@ -1375,10 +1397,26 @@ def hermetic() -> None:
         body = body[:body.index("\ndef ")]
         code = "\n".join(ln for ln in body.splitlines()
                          if not ln.lstrip().startswith("#"))
-        for flag in ("-OnlyIfBehind", "ORGTREE_ONLY_IF_BEHIND"):
-            assert flag not in code, \
-                f"launch_self_restart passes {flag} on some platform leg — " \
-                f"that install cannot deploy a local commit (D-142)"
+        assert "-OnlyIfBehind" not in code, \
+            "launch_self_restart passes -OnlyIfBehind on some platform leg — " \
+            "that install cannot deploy a local commit (D-142)"
+        # The env var is a THREE-state thing, not two, which is why this is a
+        # pattern and not a substring test:
+        #   "1"      → gated. The bug.
+        #   absent   → ALSO effectively gated on Linux: update.sh reads the var
+        #              from its inherited environment, so an ambient value on
+        #              the box (a systemd unit, a profile export) re-gates the
+        #              deploy with nothing in this repo to show for it.
+        #   ""       → the only correct state: explicitly cleared for the child.
+        assert not re.search(r'ORGTREE_ONLY_IF_BEHIND["\']\s*:\s*["\']1["\']',
+                             code), \
+            "launch_self_restart sets ORGTREE_ONLY_IF_BEHIND=1 on some " \
+            "platform leg — that install cannot deploy a local commit (D-142)"
+        assert re.search(r'ORGTREE_ONLY_IF_BEHIND["\']\s*:\s*["\']["\']', code), \
+            "the posix leg no longer CLEARS ORGTREE_ONLY_IF_BEHIND for the " \
+            "child. Passing no env is not the same as clearing it: update.sh " \
+            "would inherit an ambient value and silently re-gate the deploy " \
+            "on Linux, which is where it is hardest to notice (D-142)"
     check("☠ selfrestart · the launch does NOT gate on 'behind' — it deploys "
           "the current commit (D-142)", _launch_never_asks_for_only_if_behind)
 
@@ -1440,6 +1478,63 @@ def hermetic() -> None:
     check("selfrestart · the scripts keep the flag for operators, and "
           "redeploy an unmoved HEAD without it",
           _the_scripts_still_offer_that_flag)
+
+    def _no_check_can_ever_start_a_real_deploy():
+        """☠ THE LOADED GUN, disarmed and then PROVEN disarmed.
+
+        Reproduces the 2026-08-21 near miss exactly: mutate the mid-turn
+        refusal away — which is what a bad revert or a future edit does — and
+        drive the launch at a live spawn. Before the interlock this reached a
+        real `update.ps1`; nothing deployed only because the working tree
+        happened to be dirty and update.ps1 refused on its own account.
+
+        'The refusal fires first' is not a guarantee, it is the assumption
+        that mutation disproved. So this asserts the guarantee that does not
+        depend on the code under test being correct: the deploy is
+        INTERCEPTED, on both legs, and the suite cannot start one."""
+        assert _no_deploy.installed(), \
+            "the deploy interlock is not installed — some check swapped " \
+            "_detached_spawn out and never restored it, so a real deploy " \
+            "is reachable again"
+        real_busy = supervisor.others_working
+        # ⚠ the refusal, deliberately disabled — the whole point is that the
+        # interlock holds WITHOUT it
+        supervisor.others_working = lambda exclude=None: []   # type: ignore[assignment]
+        try:
+            # (a) the org leg — the one that restarts every org here
+            before = len(_DEPLOY_ATTEMPTS)
+            supervisor._self_restart_at[0] = 0.0
+            supervisor.launch_self_restart(su_slug, su_nid, "org")
+            assert len(_DEPLOY_ATTEMPTS) == before + 1, \
+                "the org leg did not reach the interlock at all — either " \
+                "it stopped deploying, or something else swallowed the " \
+                "spawn and this check is no longer proving anything"
+            assert any("update.ps1" in a or "update.sh" in a
+                       for a in _DEPLOY_ATTEMPTS[-1]), _DEPLOY_ATTEMPTS[-1]
+
+            # (b) the MAILHUB leg — never covered by the mid-turn refusal at
+            # all (it is exempt by design, D-104), so the interlock is the
+            # only thing between this suite and a real `docker compose up
+            # --build` against the machine's hub container.
+            before = len(_DEPLOY_ATTEMPTS)
+            supervisor._self_restart_at[0] = 0.0
+            supervisor.launch_self_restart(su_slug, su_nid, "mailhub")
+            hub = os.path.join(os.path.dirname(os.path.dirname(
+                os.path.dirname(os.path.abspath(supervisor.__file__)))),
+                "hub", "compose.yaml")
+            if os.path.isfile(hub):
+                assert len(_DEPLOY_ATTEMPTS) == before + 1, \
+                    "the mailhub leg did not reach the interlock"
+                assert any("docker" in a.lower()
+                           for a in _DEPLOY_ATTEMPTS[-1]), _DEPLOY_ATTEMPTS[-1]
+            else:                       # no hub in this clone — a real skip
+                assert len(_DEPLOY_ATTEMPTS) == before, _DEPLOY_ATTEMPTS
+        finally:
+            supervisor.others_working = real_busy             # type: ignore[assignment]
+            supervisor._self_restart_at[0] = 0.0
+    check("☠ selfrestart · NO check can start a real deploy, even with the "
+          "mid-turn refusal mutated away (org AND mailhub legs)",
+          _no_check_can_ever_start_a_real_deploy)
 
     def _detached_spawn_keeps_the_childs_output():
         """☠ THE PEER'S ACTUAL BUG (neoja 2026-08-09), root-caused here rather

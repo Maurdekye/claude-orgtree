@@ -100,6 +100,21 @@ def _fake_send(slug, nid, text, command=False, wake=True):
     return {"accepted": True, "queued": 0}
 
 
+# ☠ THE DEPLOY INTERLOCK — armed before any check runs. The argument-fuzz
+# checks below call EVERY card in the catalogue, and BOSS is top-level, so
+# orgtree_self_restart's authorization gate PASSES and the launch spawns a
+# real update.ps1 — a rebuild and a restart of the backend serving every org
+# on this machine. Worse, `update.ps1` inherits this suite's throwaway
+# ORGTREE_DATA, finds no .port file in it, falls back to the DEFAULT port
+# 7360 and kills the PRODUCTION backend. The `self-update-*.log` files in old
+# `orgtree-mcptest-*` temp dirs are the receipts: this has been happening for
+# months, surviving only because update.ps1 refused on its own account (dirty
+# tree, no upstream, or -OnlyIfBehind exiting before the rebuild). D-142
+# removed that last accident. See tests/_no_deploy.py.
+import _no_deploy                                                # noqa: E402
+
+_no_deploy.install()
+
 supervisor.send_message = _fake_send
 supervisor.chatq_register_org = lambda slug: None
 supervisor.chatq_deregister_org = lambda slug: None
@@ -733,7 +748,10 @@ def _():
     # the only occasion. It was, it silently broke deploying a local commit,
     # and the prompt is where an agent forms its picture before ever reading a
     # tool card. A revert of the prompt half of D-142 fails here.
-    assert "committed" in recital.lower(), \
+    # a distinctive phrase, not a bare word: "committed" alone is satisfied by
+    # incidental prose anywhere in the assembled prompt (charter, CLAUDE.md),
+    # which would let a reworded revert pass
+    assert "not yet running" in recital, \
         "the recital no longer tells agents that code COMMITTED here and not " \
         "yet running is an occasion to deploy (D-142)"
     for dead in ("Behind is the only trigger", "behind is the only trigger"):
@@ -2392,6 +2410,37 @@ def _():
         rep = store.load_org(slug).audit()
         assert not rep["problems"], f"{slug}: {rep['problems']}"
         assert rep["no_overdraft"], f"{slug} overdrew its credits: {rep}"
+
+
+@t("☠ this run started NO real deploy — and it did try (the interlock held)")
+def _():
+    """Runs last, so it sees every spawn the whole suite attempted.
+
+    Two things are pinned, and the second is the uncomfortable one:
+
+    (1) The interlock is STILL armed at the end of the run. A check that swaps
+        `supervisor._detached_spawn` out and forgets to restore it re-arms the
+        gun for everything after it.
+    (2) This suite really does reach `launch_self_restart` — the fuzz checks
+        call every card as a top-level node, so the authorization gate passes
+        and the launch runs for real. That is not hypothetical: months of
+        `orgtree-mcptest-*/self-update-*.log` files on this machine record it
+        spawning powershell on every single run, and it was survivable only
+        because `update.ps1` refused for its own unrelated reasons.
+
+    If (2) ever stops being true the assert below fails, and that is
+    deliberate: it means the shape of this hazard changed and the interlock's
+    justification needs re-reading, not that the assert should be deleted."""
+    assert _no_deploy.installed(), \
+        "the deploy interlock was swapped out and never restored — a real " \
+        "deploy is reachable from this suite again"
+    assert _no_deploy.ATTEMPTS, \
+        "no check reached the deploy spawn at all. Either the fuzz checks " \
+        "stopped covering orgtree_self_restart, or the launch stopped " \
+        "spawning — re-read tests/_no_deploy.py before touching this"
+    for argv in _no_deploy.ATTEMPTS:
+        assert any("update.ps1" in a or "update.sh" in a or "docker" in a.lower()
+                   for a in argv), argv
 
 
 for _m in (BOSS, MID, WORKER):                 # close the long-lived children

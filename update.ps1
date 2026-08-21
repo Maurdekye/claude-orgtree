@@ -36,7 +36,7 @@ param(
     # -AllowDirty (redteam hazard flag 2026-08-11): override the dirty-tree
     # refusal and deploy the working tree exactly as it stands, uncommitted
     # edits included. For the operator who KNOWS the dirt is theirs and wants
-    # it shipped; never passed by the self-update path.
+    # it shipped; never passed by the self-restart path.
     [switch]$AllowDirty
 )
 

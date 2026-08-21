@@ -6568,8 +6568,15 @@ def launch_self_restart(slug: str, nid: str, target: str) -> dict[str, Any]:
                 ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
                  "-File", os.path.join(repo, "update.ps1")], repo, logpath)
         else:
+            # ⚠ the var is cleared EXPLICITLY, not merely left unset. update.sh
+            # reads ${ORGTREE_ONLY_IF_BEHIND:-} from its inherited environment,
+            # so simply passing no env would let an ambient value — a leftover
+            # systemd unit, a profile export on the box — silently re-gate the
+            # deploy and reinstate the exact bug D-142 removed, on Linux only,
+            # where it is hardest to notice.
             _detached_spawn(
-                ["bash", os.path.join(repo, "update.sh")], repo, logpath)
+                ["bash", os.path.join(repo, "update.sh")], repo, logpath,
+                env={**os.environ, "ORGTREE_ONLY_IF_BEHIND": ""})
         launched.append("org backend (git pull + rebuild + restart — "
                         "EVERY org on this machine restarts)")
     if target in ("mailhub", "both"):
