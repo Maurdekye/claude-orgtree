@@ -61,7 +61,7 @@ if ($EnsureUp) {
 # on npm's node_modules, and on stopping/starting the same port. Task
 # Scheduler's -MultipleInstances IgnoreNew only stops a task racing ITSELF —
 # it says nothing about the logon deploy overlapping the 5-minute watchdog,
-# an agent's orgtree_self_update, or an operator running this by hand.
+# an agent's orgtree_self_restart, or an operator running this by hand.
 # A named system mutex, because the racers are separate processes and may be
 # separate sessions. Held for the whole run; released when the process exits
 # however it exits.
