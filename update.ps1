@@ -255,9 +255,20 @@ if ($LASTEXITCODE -ne 0) { Write-Host "pip install failed" -ForegroundColor Red;
 # -- 3b - CLI version (No.44) ----------------------------------------------
 # Sandbox images are tagged with the host CLI's version and rebuild on demand
 # when it changes -- nothing to do here beyond reporting it.
+# Resolve the SAME cli the backend will run (ORGTREE_CLAUDE -> pin under the
+# data root -> PATH), not whatever `claude` happens to be on PATH: probing PATH
+# printed 2.1.31 on a machine whose runtime was the 2.1.220 pin, so the log
+# contradicted /api/host and read like the broken fallback was live.
 try {
-    $cliVer = (& claude --version 2>$null | Select-Object -First 1)
-    if ($cliVer) { Write-Host "Claude CLI: $cliVer (sandbox images rebuild automatically when this changes)" }
+    $cliRoot = $env:ORGTREE_DATA
+    if (-not $cliRoot) { $cliRoot = Join-Path $env:USERPROFILE 'orgtree' }
+    $cliPin  = Join-Path $cliRoot 'cli\node_modules\@anthropic-ai\claude-code\bin\claude.exe'
+    $cliExe  = $env:ORGTREE_CLAUDE
+    if (-not $cliExe) { if (Test-Path $cliPin) { $cliExe = $cliPin } else { $cliExe = 'claude' } }
+    $cliWhich = if ($cliExe -eq 'claude') { 'PATH fallback -- the pin is MISSING' }
+                elseif ($env:ORGTREE_CLAUDE) { 'ORGTREE_CLAUDE override' } else { 'pin' }
+    $cliVer = (& $cliExe --version 2>$null | Select-Object -First 1)
+    if ($cliVer) { Write-Host "Claude CLI: $cliVer [$cliWhich] $cliExe (sandbox images rebuild automatically when this changes)" }
 } catch {}
 }   # end -not $EnsureUp (sections 2-3b)
 
