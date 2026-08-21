@@ -1330,7 +1330,7 @@ def _org_settings_locked(slug: str, body: Settings) -> dict[str, Any]:
         org.d["auto_cheap_compact"] = {
             "enabled": bool(acc.get("enabled")),
             "occ": min(0.95, max(0.05, float(acc.get("occ", 0.5)))),
-            "idle_s": max(0, int(acc.get("idle_s", 300)))}
+            "idle_s": max(0, int(acc.get("idle_s", 3600)))}
     # ---- §9.5/§9.6: per-org API key + headless (couplings are HARD rules) --
     if body.api_key is not None and body.api_key.strip():
         org.d["api_key"] = body.api_key.strip()

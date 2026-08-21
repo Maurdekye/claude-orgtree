@@ -1510,6 +1510,113 @@ def occupancy_reporting() -> None:
                   {**store.load_org(s16.slug).node(s16.nid),
                    "occupancy_est": True}, cfg) is False))
 
+    # ---- FR-24b: idle_s DEFAULTS TO 3600, and the RATIONALE travels with the
+    # number (user ruling 2026-08-21). The old 300 meant "the prompt-cache
+    # TTL" back when that was read as five minutes. For us it is an HOUR: an
+    # agent turn is a headless `claude -p` run whose querySource is `sdk`,
+    # which the pinned CLI classifies as a MAIN conversation, and Claude Code
+    # asks for a 1h TTL on a subscription. (The five-minute cap is the
+    # in-session Task-subagent one — querySource `agent:*` — which an orgtree
+    # agent is not.) A revert to 300 must FAIL ONE OF THESE BY NAME rather
+    # than quietly halving the window everywhere.
+    #
+    # ⚠ Every path below is derived from `supervisor.__file__`, so these read
+    # the package that actually imported. A suite run against a different
+    # checkout than it thinks reads THAT checkout's numbers and says so.
+    import ast as _ast
+    _pkg = os.path.dirname(supervisor.__file__)
+    _repo = os.path.dirname(os.path.dirname(_pkg))
+    _fe = os.path.join(_repo, "frontend", "src")
+
+    def _idle_get_defaults(path: str) -> list:
+        """Every `<x>.get("idle_s", N)` literal in a module, via the AST.
+
+        Deliberately NOT a text search: the rationale comments beside these
+        lines now contain the string "3600" themselves, so a grep would go on
+        passing after the code reverted to 300. The AST sees only code."""
+        with open(path, encoding="utf-8") as fh:
+            tree = _ast.parse(fh.read())
+        out = []
+        for nd in _ast.walk(tree):
+            if (isinstance(nd, _ast.Call)
+                    and isinstance(nd.func, _ast.Attribute)
+                    and nd.func.attr == "get" and len(nd.args) == 2
+                    and isinstance(nd.args[0], _ast.Constant)
+                    and nd.args[0].value == "idle_s"
+                    and isinstance(nd.args[1], _ast.Constant)):
+                out.append(nd.args[1].value)
+        return out
+
+    def _code(path: str) -> str:
+        """Source with `//` line comments stripped — same reason as above."""
+        with open(path, encoding="utf-8") as fh:
+            return "\n".join(re.sub(r"//.*", "", ln)
+                             for ln in fh.read().splitlines())
+
+    s18 = Sess()
+    s18.turn(20_000)
+    org = store.load_org(s18.slug)
+    org.d["auto_cheap_compact"] = {"enabled": True}     # no idle_s ⇒ default
+    store.save_org(org)
+    cfg18 = supervisor._auto_cheap_cfg(store.load_org(s18.slug), s18.nid)
+    check("idle-ttl · an UNSET idle_s resolves to 3600 s, not 300",
+          lambda: _eq(cfg18 and cfg18["idle_s"], 3600.0))
+
+    org = store.load_org(s18.slug)
+    org.d["auto_cheap_compact"] = {"enabled": True, "idle_s": "sixty minutes"}
+    store.save_org(org)
+    cfg18b = supervisor._auto_cheap_cfg(store.load_org(s18.slug), s18.nid)
+    check("idle-ttl · the MALFORMED-config fallback says 3600 too (the two "
+          "returns in one function are the classic pair to revert by half)",
+          lambda: _eq(cfg18b and cfg18b["idle_s"], 3600.0))
+
+    _idle_lits = (_idle_get_defaults(os.path.join(_pkg, "supervisor.py"))
+                  + _idle_get_defaults(os.path.join(_pkg, "api.py"))
+                  + _idle_get_defaults(os.path.join(_pkg, "ledger.py")))
+    check("idle-ttl · all three backend `.get(\"idle_s\", N)` defaults are "
+          "3600 — and there are still three of them (a deleted site cannot "
+          "pass this by leaving an empty list)",
+          lambda: _eq(sorted(_idle_lits), [3600, 3600, 3600]))
+
+    check("idle-ttl · the DOCSTRING carries the new number, so the next "
+          "reader does not inherit a rationale for 300",
+          lambda: _true("idle_s 3600" in (supervisor._auto_cheap_cfg.__doc__
+                                          or "")
+                        and not re.search(r"idle_s 300\b",
+                                          supervisor._auto_cheap_cfg.__doc__
+                                          or "")))
+
+    _app = _code(os.path.join(_fe, "App.tsx"))
+    _mod = _code(os.path.join(_fe, "canvas", "modals.tsx"))
+    check("idle-ttl · both frontend panels DISPLAY the 3600 default "
+          "(`?? 300` would render 5 min beside a backend that means 60)",
+          lambda: _true("idle_s ?? 3600" in _app and "idle_s ?? 3600" in _mod
+                        and not re.search(r"idle_s \?\? 300\b", _app + _mod)))
+    # the sneaky half: `(+accIdle || 5) * 60` is what an EMPTIED box saves.
+    # Move only the `?? 300` sites and clearing the field silently writes 5
+    # min against a field that displays 60 — a disagreement no single-site
+    # check would see.
+    check("idle-ttl · …and all THREE blank-field fallbacks save 60 min, so "
+          "an emptied box agrees with the displayed default",
+          lambda: _eq((len(re.findall(r"\+accIdle \|\| 60\b", _app + _mod)),
+                       len(re.findall(r"\+accIdle \|\| 5\b", _app + _mod))),
+                      (3, 0)))
+
+    _desk = [ln for ln in _code(os.path.join(_fe, "canvas", "desk.tsx"))
+             .splitlines() if "const cold" in ln]
+    check("idle-ttl · the manual-compact COLD badge uses the same 1h window "
+          "(at 5 min it warned 'past the cache window' on a cache warm for "
+          "another 55)",
+          lambda: _true(len(_desk) == 1 and "60 * 60e3" in _desk[0],
+                        " | ".join(_desk)))
+
+    with open(os.path.join(_repo, "DECISIONS.md"), encoding="utf-8") as fh:
+        _dec = fh.read()
+    check("idle-ttl · DECISIONS.md quotes the shipped default, not the old "
+          "one",
+          lambda: _true("0.5 / 3600 s" in _dec
+                        and "0.5 / 300 s" not in _dec))
+
     # ---- the refusal that guards a billed fork rests on the FACT, not on how
     # a number was arrived at
     s17 = Sess()

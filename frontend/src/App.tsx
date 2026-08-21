@@ -1734,7 +1734,7 @@ function SettingsPanel({ tree, toast, close }: {
     Math.round(((acc?.occ ?? 0.5) as number) * 100))
   const setAccOcc = set('accOcc', accOcc)
   const accIdle = val<number | string>('accIdle',
-    Math.round(((acc?.idle_s ?? 300) as number) / 60))
+    Math.round(((acc?.idle_s ?? 3600) as number) / 60))
   const setAccIdle = set('accIdle', accIdle)
   // pre-resume cheap compact (2026-08-17): rides the AUTO limit resume only
   const arCompact = val('arCompact', !!tree.auto_resume_compact)
@@ -2032,7 +2032,10 @@ function SettingsPanel({ tree, toast, close }: {
                   auto_resume_compact: arCompact,
                   auto_cheap_compact: { enabled: accOn,
                     occ: (+accOcc || 50) / 100,
-                    idle_s: Math.round((+accIdle || 5) * 60) } }),
+                    // 60 min, matching _auto_cheap_cfg's idle_s 3600 default:
+                    // this is what an EMPTIED box saves, so it has to agree
+                    // with the number the box shows when unset
+                    idle_s: Math.round((+accIdle || 60) * 60) } }),
               orgMd != null ? putOrgMd(tree.slug, orgMd).then(() => ({}))
                 : Promise.resolve({}),
             ]

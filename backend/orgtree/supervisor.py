@@ -2575,8 +2575,24 @@ def _auto_cheap_cfg(org: Org, nid: str) -> dict[str, float] | None:
     `auto_cheap_compact` {enabled, occ, idle_s} is overridden key-by-key by
     the node scope's entry of the same name; DISABLED unless some level says
     enabled (D-108's opt-in stays the rule). Defaults: occ 0.5 (half the
-    context window), idle_s 300 (the prompt-cache TTL — beyond it the resume
-    is cold and the swap pays for itself)."""
+    context window), idle_s 3600 (the prompt-cache TTL — beyond it the resume
+    is cold and the swap pays for itself).
+
+    ⚠ 3600, not the 300 this shipped with (user ruling 2026-08-21). The number
+    has always meant "the cache TTL"; what changed is that 300 tracked a
+    5-minute TTL we do not actually get. Claude Code asks for a 1-HOUR TTL on
+    a subscription, and orgtree's agents qualify: a turn is a headless
+    `claude -p` run whose querySource is `sdk`, which the CLI classifies as a
+    MAIN conversation. (The 5-minute cap that the docs describe applies to
+    in-session Task subagents — querySource `agent:*` — which is not what an
+    orgtree agent is.) Verified against the PINNED cli 2.1.220 that the
+    backend actually launches, not the older one on PATH.
+
+    Two things silently put a turn back on a 5-minute TTL, and both make this
+    default too large: usage-credit OVERAGE, and an org billing its own
+    `api_key` (§9.5) — key auth never gets the automatic hour. Neither is
+    detected here; erring long is the cheap direction (a skipped compaction
+    costs one cold reload, a needless one destroys a live session)."""
     base = cast("dict[str, Any]", org.d.get("auto_cheap_compact") or {})
     ov = cast("dict[str, Any]",
               org.node(nid)["scope"].get("auto_cheap_compact") or {})
@@ -2585,9 +2601,9 @@ def _auto_cheap_cfg(org: Org, nid: str) -> dict[str, float] | None:
         return None
     try:
         return {"occ": float(cfg.get("occ", 0.5)),
-                "idle_s": float(cfg.get("idle_s", 300))}
+                "idle_s": float(cfg.get("idle_s", 3600))}
     except (TypeError, ValueError):
-        return {"occ": 0.5, "idle_s": 300.0}
+        return {"occ": 0.5, "idle_s": 3600.0}
 
 
 def _auto_cheap_ready(n: NodeDoc | dict[str, Any],

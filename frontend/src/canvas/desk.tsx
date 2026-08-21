@@ -725,11 +725,19 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
           close={() => setAsking(null)} />
       )}
       {askCompact && (() => {
-        // FR-24: is the prompt cache likely cold? Idle past the 5-minute TTL
-        // means the compact fork re-reads the ENTIRE transcript at near-full
-        // input price — exactly the case cheap compact exists for.
+        // FR-24: is the prompt cache likely cold? Idle past the TTL means the
+        // compact fork re-reads the ENTIRE transcript at near-full input
+        // price — exactly the case cheap compact exists for.
+        // 2026-08-21: one HOUR, not five minutes. Agent turns run headless
+        // (querySource `sdk` = a main conversation), and Claude Code asks for
+        // a 1h cache TTL on a subscription; the 5-minute figure this used to
+        // carry is the in-session-subagent cap, which we are not. Same number
+        // and same reason as `_auto_cheap_cfg`'s idle_s 3600 default — at 5
+        // minutes this warned "past the cache window" on a cache that was
+        // still warm for another 55, pushing the reader toward a compaction
+        // they did not need.
         const lastAt = node.turns?.[node.turns.length - 1]?.at
-        const cold = !!lastAt && Date.now() - Date.parse(lastAt) > 5 * 60e3
+        const cold = !!lastAt && Date.now() - Date.parse(lastAt) > 60 * 60e3
         return <ConfirmModal title={`compact ${node.id} now?`}
           body={'Same as the automatic split: the session forks and compacts — '
             + 'the successor carries on under this name; the pre-compaction '

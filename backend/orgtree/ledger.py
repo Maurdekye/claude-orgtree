@@ -3632,7 +3632,11 @@ class Org:
                     keep["occ"] = min(0.95, max(0.05,
                                                 float(acc.get("occ", 0.5))))
                 if "idle_s" in acc:
-                    keep["idle_s"] = max(0, int(acc.get("idle_s", 300)))
+                    # (the fallback is unreachable — the `in` guard above means
+                    # the key is present — but it is kept in step with
+                    # `_auto_cheap_cfg`'s 3600 so a reader never meets two
+                    # different numbers for the same default)
+                    keep["idle_s"] = max(0, int(acc.get("idle_s", 3600)))
                 sc["auto_cheap_compact"] = keep
             else:
                 sc.pop("auto_cheap_compact", None)

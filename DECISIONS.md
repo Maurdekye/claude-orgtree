@@ -1742,7 +1742,15 @@ cheap_compact first, in the same lock, so the resume never pays the cold
 reload; the compact notice drains into the same first envelope as the waking
 mail. Config `auto_cheap_compact {enabled, occ, idle_s}` at org level,
 overridden key-by-key per node; **disabled by default** (D-108's opt-in
-stays the rule), defaults 0.5 / 300 s. A refusal falls through to a normal
+stays the rule), defaults 0.5 / 3600 s. The idle default tracks the
+PROMPT-CACHE TTL, and it is an hour rather than the five minutes it shipped
+with (2026-08-21): an agent turn is a headless `claude -p` run whose
+querySource is `sdk`, which the CLI treats as a MAIN conversation, and Claude
+Code requests a 1h TTL on a subscription — the 5-minute cap belongs to
+in-session Task subagents (`agent:*`), which orgtree agents are not. Usage
+overage and per-org `api_key` billing both drop back to 5 minutes and are NOT
+detected; erring long is deliberate, since a skipped compaction costs one cold
+reload while a needless one destroys a live session. A refusal falls through to a normal
 turn — the swap is an optimization, never a gate. Especially suited to
 headless orgs (infrequent wakes, cold resumes; the auto path needs no user
 present, and cheap_compact carries no headless refusal).

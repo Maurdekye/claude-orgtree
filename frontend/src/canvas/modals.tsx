@@ -624,7 +624,7 @@ export function NodeConfig({ node, map, tree, slug, op, toast, close }: NodeConf
     Math.round((srvAcc?.occ ?? 0.5) * 100))
   const setAccOcc = set('accOcc', accOcc)
   const accIdle = val<number | string>('accIdle',
-    Math.round((srvAcc?.idle_s ?? 300) / 60))
+    Math.round((srvAcc?.idle_s ?? 3600) / 60))
   const setAccIdle = set('accIdle', accIdle)
   // D-106: who this pending grant would raise, recomputed as the form changes
   const cascade = useMemo(
@@ -960,7 +960,9 @@ export function NodeConfig({ node, map, tree, slug, op, toast, close }: NodeConf
                   auto_cheap_compact: accMode === '' ? {}
                     : { enabled: accMode === 'on',
                         occ: (+accOcc || 50) / 100,
-                        idle_s: Math.round((+accIdle || 5) * 60) },
+                        // 60 min = _auto_cheap_cfg's idle_s 3600 default; an
+                        // emptied box must save what the unset box displays
+                        idle_s: Math.round((+accIdle || 60) * 60) },
                   model_version: versions.includes(modelVersion)
                     ? modelVersion : '' }))
               .then((r) => {
@@ -976,7 +978,7 @@ export function NodeConfig({ node, map, tree, slug, op, toast, close }: NodeConf
                         auto_cheap_compact: accMode === '' ? {}
                           : { enabled: accMode === 'on',
                               occ: (+accOcc || 50) / 100,
-                              idle_s: Math.round((+accIdle || 5) * 60) },
+                              idle_s: Math.round((+accIdle || 60) * 60) },
                         model_version: versions.includes(modelVersion)
                           ? modelVersion : '',
                         raise_ceiling: true })
