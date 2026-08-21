@@ -2857,6 +2857,40 @@ both would call the old name at an install that no longer answered, and the
 error would land on an agent that did nothing wrong. Removable once no stored
 charter names it.
 
+FOLLOW-UPS THIS RULING DELIBERATELY DID NOT FIX (adversarial round, 2026-08-21;
+coordinator ruled report-only — each is its own change with its own testing,
+and none should be bundled into a rename):
+
+· **D-142/a — the kill window.** The mid-turn refusal is consulted at T=0, but
+  `update.ps1` does not kill the backend until after pull + npm install + build
+  — tens of seconds to minutes later. Nothing marks a deploy as pending, so an
+  agent woken by mail inside that window starts a turn that the restart then
+  cuts: exactly the harm the refusal exists to prevent. Pre-existing, but D-142
+  widens it — the dominant path used to exit before the rebuild, so the window
+  was mostly theoretical; now every call runs to the kill. Scoping is recorded
+  with the follow-up: `_run_turn` is a genuine single choke point (three thread
+  starts plus the turn-end drain), so the FLAG is small; the CLEARING is not.
+  `update.ps1` has six exit paths that never reach the restart, two of which
+  (dirty tree, `git pull` failure) fire routinely — so a timeout-cleared flag
+  would wedge every org on the machine on the COMMON path. Clearing it by
+  watching the spawned child's pid is the promising design, but it changes
+  `_detached_spawn`'s contract and lands in turn admission, which is being
+  rewritten concurrently.
+· **D-142/b — the mailhub leg's bare `git pull`.** `launch_self_restart`'s
+  hub leg runs `git pull` (NOT `--ff-only`) with cwd `<repo>/hub` — a plain
+  subdirectory of the backend's OWN repo, not a submodule. So it mutates the
+  running backend's source tree with no dirty-tree guard, and without taking
+  the `Global\orgtree-update` mutex `update.ps1` uses, so it can race a
+  concurrent deploy on the git index. A merge commit or a conflicted MERGING
+  state left behind breaks every later deploy's `--ff-only` pull. It restarts
+  nothing that serves turns, so it cannot cut a turn directly. Note the tool
+  card advertises "git pull --ff-only", which is false on this leg.
+· **D-142/c — the audit event is written before the outcome.** `_log` fires
+  inside the gate, with empty detail, so a call the launch then REFUSES (busy
+  machine) or rate-limits is indistinguishable in the ledger from one that
+  actually deployed — and the event records neither the target nor which tool
+  name was used.
+
 ---
 
 ## Retired
