@@ -4218,6 +4218,30 @@ def _turn_abandoned(slug: str, nid: str, door: str, err: str) -> bool:
                 del slog[:-100]
             else:
                 sup = ""
+                # ⚠ NOBODY UPSTREAM — so tell the USER, in the inbox they
+                # actually read. MEASURED 2026-08-21: without this a
+                # top-level failure put ZERO entries in `user_inbox`. The only
+                # traces were mail in the failing agent's own box and a
+                # turn_error_log row — both of which require already knowing
+                # to go and look at that node, which is the thing nobody does
+                # until they wonder why it has been quiet.
+                #
+                # This is the piece's own case at its worst. Every
+                # announcement terminates upward at a node with no superior,
+                # and a top-level coordinator IS that node — so the one agent
+                # the user actually watches was the only one that could not
+                # report its own death. `parent is None` and "the parent is
+                # archived" both land here and both mean the same thing:
+                # there is no agent left to tell.
+                org.d.setdefault("user_inbox", []).append({
+                    "id": uuid_hex8(), "from": SYSTEM, "kind": "notice",
+                    "at": now_iso(),
+                    "body": (f"{name} ({nid}) stopped: its turn failed in a "
+                             f"way orgtree does not retry, and it has no "
+                             f"superior to tell.\nHow it died: {door}\n"
+                             f"Error: {err[:300] or 'no output'}\n"
+                             f"It is idle now and nothing will re-drive it. "
+                             f"It may be holding unfinished work.")[:2000]})
             store.save_org(org)
         mail_spark(slug, "@system", nid)
         if sup:

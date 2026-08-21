@@ -3079,6 +3079,20 @@ def sec_abandoned() -> None:
         assert _sys_mail(slug, solo), (
             "…and it was left no durable mail either, so the failure is "
             "invisible to the user whose desk it sits on")
+        # ⚠ THE TOP OF THE TREE. Every announcement terminates upward at a
+        # node with no superior, and a top-level coordinator IS that node —
+        # so without this the one agent the user actually watches is the only
+        # one that cannot report its own death. Measured before it was fixed:
+        # `user_inbox` held ZERO entries.
+        inbox = store.load_org(slug).d.get("user_inbox", [])
+        hits = [m for m in inbox if solo in (m.get("body") or "")]
+        assert hits, (
+            "a top-level node died terminally and the USER'S INBOX got "
+            f"nothing ({len(inbox)} entries) — the chain goes silent exactly "
+            f"where there is nobody left to notice, which is the failure this "
+            f"whole piece exists to delete")
+        assert "How it died" in hits[0]["body"], (
+            f"the user is told it stopped but not HOW: {hits[0]['body'][:160]!r}")
     check("bound · a node with NO superior is not driven either — the mail "
           "waits on its desk instead", _top_level_is_not_driven_either)
 
