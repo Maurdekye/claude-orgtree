@@ -2623,6 +2623,16 @@ def sec_died_in_flight() -> None:
         assert "retried" in low and "not undone" in low, (
             "the replay does not tell the agent it IS a retry, so nothing "
             f"prompts it to check state before redoing: {body[:300]!r}")
+        # ⚠ the trap the victim hit personally: it ANNOUNCED an edit in prose
+        # and died before the tool call ran, so the file was untouched while
+        # its own transcript said otherwise. An agent reading back its last
+        # message concludes the exact opposite of the truth — and it is the
+        # most natural thing in the world for it to do on resume.
+        assert "last message" in low and "disk" in low, (
+            "the replay does not warn that announced work may never have "
+            "run. A turn that died mid-response can leave prose describing "
+            "an edit with no edit behind it, so the transcript is evidence "
+            f"of INTENT, not of effect: {body[:400]!r}")
     check("marker · the replayed text names the retry and warns that "
           "already-committed effects were NOT undone", _marker_warns_before_redoing)
 

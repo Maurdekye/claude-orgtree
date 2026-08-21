@@ -3853,8 +3853,19 @@ def _run_one_turn(slug: str, nid: str,
                                         f"disk, `git status`, mail you may "
                                         f"have already sent, processes you "
                                         f"may have already started) before "
-                                        f"redoing any of it. The message that "
-                                        f"turn was handling follows.\n\n"
+                                        f"redoing any of it.\n\n"
+                                        f"⚠ DO NOT TRUST YOUR OWN LAST "
+                                        f"MESSAGE as a record of what "
+                                        f"happened. The turn died mid-"
+                                        f"response, so anything you had "
+                                        f"ANNOUNCED may have been said "
+                                        f"without the tool call behind it "
+                                        f"ever running — prose describing an "
+                                        f"edit proves only that you meant to "
+                                        f"make it. Trust the DISK, not the "
+                                        f"transcript.\n\n"
+                                        f"The message that turn was handling "
+                                        f"follows.\n\n"
                                         + text[-8000:])
                             store.save_org(o2)
                     if 0 < run <= NET_RETRY_MAX:
