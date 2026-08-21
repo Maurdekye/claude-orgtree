@@ -2096,19 +2096,28 @@ svg.MuiSvgIcon-root {
 .zoomhud .hud-eye .iris { fill: none; stroke: var(--accent); stroke-width: 2; }
 .zoomhud .hud-eye .pupil { fill: var(--accent); }
 .tray-wrap {
-  position: absolute; left: 48px; bottom: 10px; z-index: 7;
-  display: flex; flex-direction: column; align-items: flex-start; gap: 6px;
+  /* top+bottom (not bottom-only) gives the wrap a DEFINITE height — the
+     canvas viewport's own height minus this margin — so .tray's
+     max-height: 100% below is bound by the real canvas, not a guessed vh
+     fraction; justify-content keeps the toggle button pinned to the same
+     bottom-left spot it always occupied, tray growing upward from it */
+  position: absolute; left: 48px; top: 10px; bottom: 10px; z-index: 7;
+  display: flex; flex-direction: column; justify-content: flex-end;
+  align-items: flex-start; gap: 6px;
 }
 .tray-toggle {
   display: inline-flex; align-items: center; gap: 6px;
   background: var(--panel); border: 1px solid var(--line);
   color: var(--dim); font-size: 12px; padding: 4px 10px; border-radius: 6px;
+  flex: none;
 }
 .tray-toggle:hover { color: var(--ink); background: var(--panel-2); }
 .tray {
   background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
   box-shadow: var(--shadow); padding: 4px; min-width: 200px; max-width: 280px;
-  max-height: 46vh; overflow-y: auto;
+  /* overflow:auto gives this flex item an automatic minimum size of 0, so it
+     shrinks to leave room for .tray-toggle instead of overflowing the wrap */
+  max-height: 100%; overflow-y: auto;
   display: flex; flex-direction: column; gap: 2px;
 }
 .tray-row {

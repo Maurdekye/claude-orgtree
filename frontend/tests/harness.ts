@@ -44,6 +44,7 @@ g.Event = dom.window.Event
 g.UIEvent = dom.window.UIEvent
 g.MouseEvent = dom.window.MouseEvent
 g.KeyboardEvent = dom.window.KeyboardEvent
+g.WheelEvent = dom.window.WheelEvent
 g.getComputedStyle = dom.window.getComputedStyle.bind(dom.window)
 g.requestAnimationFrame = (cb: (t: number) => void) => setTimeout(() => cb(Date.now()), 16)
 g.cancelAnimationFrame = (id: number) => clearTimeout(id)
