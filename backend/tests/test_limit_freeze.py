@@ -2767,6 +2767,215 @@ def sec_died_in_flight() -> None:
           "turns fail after it", _announced_exactly_once)
 
 
+# ══════════════════════════════════════════════════════════════════════════ §8
+
+def sec_deploy_window() -> None:
+    """§8 — D-142/a, THE DEPLOY KILL WINDOW.
+
+    Same bug class as §7, arriving from outside: the mid-turn refusal that
+    guards a deploy is consulted at T=0, but the kill lands minutes later
+    after pull + npm + build. An agent woken by mail inside that gap is
+    started and then cut mid-turn.
+
+    The fix HOLDS the turn at `_run_turn`'s door rather than refusing it, so
+    no mail is ever dequeued — see the comment there. These checks measure
+    that the hold happens, that it is bounded, that it releases, and that the
+    mail which arrived during the window is still delivered exactly once."""
+    print("\n§8 the deploy kill window — held, bounded, released")
+
+    class _Child:
+        """A deploy child under our control."""
+        def __init__(self) -> None:
+            self._done = threading.Event()
+            self.returncode = None
+
+        def wait(self, timeout=None):                        # noqa: ARG002
+            self._done.wait()
+            return 0
+
+        def finish(self) -> None:
+            self.returncode = 0
+            self._done.set()
+
+    def _held_then_released() -> None:
+        """THE CENTRAL CHECK: a turn starting inside the window does not run
+        until the deploy child exits."""
+        child = _Child()
+        supervisor._arm_deploy_window(child)
+        try:
+            assert not supervisor._deploy_done.is_set(), \
+                "arming a live deploy child did not close the window"
+            started: list[float] = []
+
+            def _turn() -> None:
+                supervisor._hold_for_deploy("zz", "probe")
+                started.append(time.monotonic())
+            t = threading.Thread(target=_turn, daemon=True)
+            t.start()
+            t.join(0.6)
+            assert not started, (
+                "the turn started WHILE a deploy child was alive — this is "
+                "the kill window: pull+npm+build still has minutes to run, "
+                "and the restart will cut this turn mid-flight")
+            child.finish()
+            t.join(5.0)
+            assert started, (
+                "the deploy child exited but the held turn never started — "
+                "the window never reopened, so every org on this machine is "
+                "wedged until the backend restarts")
+        finally:
+            child.finish()
+            supervisor._deploy_done.set()
+    check("hold · a turn beginning inside the deploy window waits for the "
+          "child, then runs", _held_then_released)
+
+    def _nothing_spawned_never_holds() -> None:
+        """THE CONTROL. A refusal (or a spawn that raised) means no deploy is
+        coming, so arming would hold the machine for a kill that never
+        arrives.
+
+        ⚠ ASSERTED ON `clear()` HAVING BEEN CALLED, not on the flag's value
+        afterwards. The obvious version — set the flag, arm with None, assert
+        it is still set — PASSED against a mutant that armed unconditionally,
+        and my own mutation run caught it. With arming forced on, the watcher
+        thread calls `None.wait()`, throws, and its `finally` re-opens the
+        window microseconds later; the assertion then read a recovered error
+        as correct behaviour. A timing race that resolves the right way is an
+        abstention, and an abstention reads exactly like a pass. Counting the
+        clear is deterministic: it cannot be undone by a later set."""
+        class _Spy(threading.Event):
+            def __init__(self) -> None:
+                super().__init__()
+                self.clears = 0
+
+            def clear(self) -> None:
+                self.clears += 1
+                super().clear()
+
+        spy = _Spy()
+        spy.set()
+        real = supervisor._deploy_done
+        supervisor._deploy_done = spy                # type: ignore[assignment]
+        try:
+            supervisor._arm_deploy_window(None)
+            assert spy.clears == 0, (
+                "nothing was spawned, yet the window was CLOSED — every org "
+                "on this machine would wait for a deploy that does not "
+                "exist. (A watcher that immediately errors and reopens it "
+                "does not make this safe; it makes it racy.)")
+        finally:
+            supervisor._deploy_done = real           # type: ignore[assignment]
+    check("control · a spawn that did not happen opens no window",
+          _nothing_spawned_never_holds)
+
+    def _gate_is_actually_wired() -> None:
+        """`hold ·` exercises the helper DIRECTLY, so it would stay green even
+        if the gate were never called from `_run_turn`. The end-to-end `mail ·`
+        check does cover the wiring — but it needs `node`, and on a box
+        without it nothing would. Read the real function body (comments
+        stripped, so a mention in prose cannot satisfy it)."""
+        import inspect                                        # noqa: PLC0415
+        body = "\n".join(
+            ln for ln in inspect.getsource(supervisor._run_turn).splitlines()
+            if not ln.strip().startswith("#"))
+        assert "_hold_for_deploy(" in body, (
+            "_run_turn does not call _hold_for_deploy, so no turn is gated "
+            "and the deploy kill window is wide open — whatever the unit "
+            "checks above say about the helper in isolation")
+    check("wiring · the gate is actually called from _run_turn, not merely "
+          "defined next to it", _gate_is_actually_wired)
+
+    def _bounded() -> None:
+        """A deploy that never exits must not silence the machine forever."""
+        assert supervisor.DEPLOY_HOLD_MAX <= 900, (
+            f"the hold ceiling is {supervisor.DEPLOY_HOLD_MAX}s — long enough "
+            f"that a wedged deploy looks exactly like a dead orgtree")
+        child = _Child()
+        supervisor._arm_deploy_window(child)
+        real = supervisor.DEPLOY_HOLD_MAX
+        try:
+            supervisor.DEPLOY_HOLD_MAX = 0.3     # a deploy that never exits
+            t0 = time.monotonic()
+            supervisor._hold_for_deploy("zz", "probe")
+            held = time.monotonic() - t0
+            assert held < 3.0, (
+                f"the hold did not give up at its ceiling ({held:.1f}s) — an "
+                f"unbounded hold on a wedged deploy is a worse outage than "
+                f"the mid-turn kill it prevents")
+        finally:
+            supervisor.DEPLOY_HOLD_MAX = real
+            child.finish()
+            supervisor._deploy_done.set()
+    check("bounded · a deploy that never exits releases at the ceiling "
+          "instead of wedging the machine forever", _bounded)
+
+    def _refusal_is_watchable() -> None:
+        """THE TRAP, CLOSED. `_detached_spawn` now returns a handle so the
+        window can watch it. If the test interlock's REFUSAL leg kept
+        returning None — and refusal is the only path the deploy checks ever
+        take — then `_arm_deploy_window` would take its "nothing spawned"
+        early return and the watcher would never once run under test. Green
+        suite, unexercised production path. So assert the refusal hands back
+        something waitable, positively."""
+        import _no_deploy                                     # noqa: PLC0415
+        got = _no_deploy._interlock(
+            ["powershell", "-File", "update.ps1"], ".", os.devnull)
+        assert got is not None, (
+            "the interlock's refusal returns None, so every deploy check in "
+            "every suite skips the watcher entirely — the window code would "
+            "ship having never been executed by a single test")
+        assert hasattr(got, "wait") and got.wait() == 0, (
+            f"the refusal handed back something the deploy watcher cannot "
+            f"wait on: {got!r}")
+        assert _no_deploy.ATTEMPTS, (
+            "the refusal was not RECORDED — mcptool's 'no real deploy, and "
+            "it did try' check goes vacuous without this half")
+        _no_deploy.ATTEMPTS.clear()
+    check("trap · a REFUSED deploy still returns a watchable handle, so the "
+          "window is exercised by tests rather than skipped",
+          _refusal_is_watchable)
+
+    if not shutil.which("node"):
+        note("node is not on PATH — §8's mail-delivery half skipped")
+        return
+
+    def _mail_survives_the_window() -> None:
+        """COORDINATOR'S CONDITION (c): a check that FAILS IF MAIL IS DROPPED,
+        not one that passes when it isn't. The message is sent while the
+        window is shut, so it is admitted and held; when the child exits the
+        turn must run and the CLI must actually be handed that text — EXACTLY
+        once. Asserted on a POSITIVE marker (what the CLI was served), never
+        on an absence."""
+        slug, nid = probe_org()
+        set_mode("plain")
+        child = _Child()
+        supervisor._arm_deploy_window(child)
+        try:
+            supervisor.send_message(slug, nid, "MAILMARKER-D142")
+            time.sleep(0.5)
+            assert not [s for s in served() if "MAILMARKER-D142" in s], (
+                "the message reached the CLI while a deploy child was alive "
+                "— that turn is inside the kill window")
+            child.finish()
+            for _ in range(150):
+                if [s for s in served() if "MAILMARKER-D142" in s]:
+                    break
+                time.sleep(0.1)
+        finally:
+            child.finish()
+            supervisor._deploy_done.set()
+        hits = [s for s in served() if "MAILMARKER-D142" in s]
+        assert hits, (
+            "the message sent during the deploy window NEVER reached the CLI "
+            "after the window closed. It was accepted and then lost — the "
+            "exact failure every reviewer predicted for this change")
+        assert len(hits) == 1, (
+            f"the held message was delivered {len(hits)} times — holding a "
+            f"turn must not duplicate the mail it was holding: {hits}")
+    check("mail · a message accepted during the window is delivered EXACTLY "
+          "ONCE after it, never dropped", _mail_survives_the_window)
+
+
 _once: list = [None]
 
 
@@ -2782,6 +2991,7 @@ def main() -> None:
         sec_reader()
         sec_attack_the_fix()
     sec_died_in_flight()      # its predicate half needs no rig
+    sec_deploy_window()       # D-142/a — most of it needs no rig either
 
     print(f"\n{'═' * 70}\n{PASS} checks passed, {len(FAIL)} failed, "
           f"{len(GAPS)} gaps")

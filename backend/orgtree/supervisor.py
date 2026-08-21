@@ -2526,6 +2526,82 @@ def _auto_cheap_ready(n: NodeDoc | dict[str, Any],
         return False
 
 
+# ── D-142/a · THE DEPLOY KILL WINDOW ──────────────────────────────────────
+# The mid-turn refusal that guards a deploy is consulted at T=0, but the kill
+# lands MINUTES later, after pull + npm + build. An agent woken by mail inside
+# that gap is started and then cut mid-turn — the very "turn dies, nobody is
+# told" shape this branch exists to close, arriving from the outside.
+#
+# ⚠ WHY A HELD TURN AND NOT A REQUEUED ONE. The obvious design refuses the
+# turn and puts its message back, which invents a new outcome —
+# requeued-not-run — and every reviewer's first prediction was that it would
+# lose mail. It does not have to exist. Mail is drained from the doc only AT
+# DELIVERY, inside `_run_one_turn`; at `_run_turn`'s door nothing has been
+# dequeued yet, and `busy` is already True so later messages queue normally
+# and are drained when the turn really starts. So the turn is HELD at the
+# threshold, not turned away: no mail moves, and a mail-loss bug is not
+# possible rather than merely tested for.
+#
+# ⚠ AND WHY THE CLEAR IS UNCONDITIONAL, with no exit-code branch. Measured in
+# update.ps1 on 2026-08-21: `Stop-Process` — the point of no return — is at
+# line 278, and EVERY failure exit (54, 72, 121, 138, 155, 207, 213, 235,
+# 241, 247, 253) is before it. Only 328/334 follow. So the tautology holds:
+# this flag lives in the backend's own memory, and if the kill had landed we
+# would not be here to clear anything. Being alive to watch the child die IS
+# the proof that no restart happened to us. Line 278 also wraps the kill in
+# `catch {}` — a FAILED kill is silently swallowed (which is why the stale-pid
+# check at 326 exists), so surviving our own deploy is a real path, and one
+# that must readmit turns or every org on the machine wedges for good.
+# Never gate on the exit code: `exit 0` is emitted by at least three
+# NO-RESTART paths (54 EnsureUp no-op, 72 mutex contention, 155 OnlyIfBehind).
+_deploy_done = threading.Event()
+_deploy_done.set()             # nothing in flight at import
+DEPLOY_HOLD_MAX = 420.0        # ceiling: a wedged deploy must not wedge us
+
+
+def _arm_deploy_window(child: Any) -> None:
+    """A deploy child is running: hold turns until it exits."""
+    if child is None:
+        # nothing was spawned (a refusal, or a spawn that raised) — there is
+        # no deploy, so there is no window. Arming here would hold every
+        # org on the machine for a kill that is never coming.
+        return
+    _deploy_done.clear()
+
+    def _watch() -> None:
+        try:
+            child.wait()
+        except Exception:                                    # noqa: BLE001
+            pass                    # a handle we cannot wait on is not a reason to hold
+        finally:
+            # ⚠ in a `finally`, unconditionally. Every early return here
+            # leaves the machine unable to run a turn until it restarts.
+            _deploy_done.set()
+    threading.Thread(target=_watch, daemon=True).start()
+
+
+def _hold_for_deploy(slug: str, nid: str) -> None:
+    """Park at the threshold while a deploy child is alive. Nothing is
+    dequeued and nothing is refused — the turn simply starts late, or never,
+    because the restart killed us first (which is the good outcome: the work
+    was never begun, so there is nothing half-done to explain)."""
+    if _deploy_done.is_set():
+        return
+    t0 = time.monotonic()
+    print(f"[orgtree] {slug}/{nid}: holding this turn — a deploy is running "
+          f"and would cut it mid-flight")
+    if not _deploy_done.wait(DEPLOY_HOLD_MAX):
+        # BOUNDED. A deploy that never exits must not silence the machine
+        # forever; past the ceiling we proceed and take the old risk, which
+        # is strictly no worse than the behaviour before this guard existed.
+        print(f"[orgtree] {slug}/{nid}: deploy still running after "
+              f"{DEPLOY_HOLD_MAX:.0f}s — starting the turn anyway")
+        _deploy_done.set()
+        return
+    print(f"[orgtree] {slug}/{nid}: deploy finished without restarting us "
+          f"(held {time.monotonic() - t0:.1f}s) — starting the turn")
+
+
 def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
     """Run a turn, then keep running whatever the queue has, until it is empty.
 
@@ -2540,6 +2616,9 @@ def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
     (test_turn_lifecycle "deepqueue"): a 260-deep queue against a 200-frame
     limit died at depth 189 with 71 messages still queued; the stock limit
     puts the cliff at ~900. Iterating costs nothing and has no cliff."""
+    # the single choke point: all three thread starts target this function,
+    # so one gate here covers every way a turn can begin (D-142/a)
+    _hold_for_deploy(slug, nid)
     nxt: str | dict[str, Any] | None = text
     while nxt is not None:
         nxt = _run_one_turn(slug, nid, nxt)
@@ -6656,9 +6735,16 @@ _self_restart_log = [""]       # the last launch's log path
 
 
 def _detached_spawn(args: list[str], cwd: str, logpath: str,
-                    env: dict[str, str] | None = None) -> None:
+                    env: dict[str, str] | None = None) -> "subprocess.Popen[Any] | None":
     """Launch a process that SURVIVES this backend dying — which is the
     point: update.ps1 stops and restarts the very process spawning it.
+
+    ⚠ RETURNS THE HANDLE (D-142/a). It used to return None unconditionally,
+    which made a successful spawn and a refused one INDISTINGUISHABLE to the
+    caller — the pid existed only as text in the log. The deploy window needs
+    to know when the child exits, so the handle comes back. A `Popen` and not
+    a bare pid deliberately: the watcher wants `.wait()`, and rebuilding a
+    waitable from a pid races pid reuse, while the handle cannot.
 
     ⚠ The spawn itself is RECORDED in the log, argv and pid, before anything
     the child might say. A peer hit a self-update whose log held the launch
@@ -6703,6 +6789,7 @@ def _detached_spawn(args: list[str], cwd: str, logpath: str,
             lf.write(f"!! SPAWN FAILED: {args} in {cwd}: {e}\n".encode())
             raise
         lf.write(f"-- spawned pid {p.pid}: {args} (cwd {cwd})\n".encode())
+        return p
     finally:
         lf.close()      # the child holds its own handle
 
@@ -6818,10 +6905,16 @@ def launch_self_restart(slug: str, nid: str, target: str) -> dict[str, Any]:
         # gate that also silently swallows the legitimate case. The flag stays
         # DECLARED in both scripts for operators/scheduled jobs; nothing in
         # this repo passes it any more.
+        # ⚠ D-142/a: the window is armed for the ORG leg ONLY, and on the
+        # child that can actually kill us. A mailhub-only deploy rebuilds a
+        # container and never touches this backend, so holding turns for it
+        # would stop every org on the machine for a restart that was never
+        # coming. On target="both" TWO children are spawned and only this one
+        # is the danger — the hub leg literally sleeps 45s and then rebuilds.
         if os.name == "nt":
-            _detached_spawn(
+            _arm_deploy_window(_detached_spawn(
                 ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-                 "-File", os.path.join(repo, "update.ps1")], repo, logpath)
+                 "-File", os.path.join(repo, "update.ps1")], repo, logpath))
         else:
             # ⚠ the var is cleared EXPLICITLY, not merely left unset. update.sh
             # reads ${ORGTREE_ONLY_IF_BEHIND:-} from its inherited environment,
@@ -6829,9 +6922,9 @@ def launch_self_restart(slug: str, nid: str, target: str) -> dict[str, Any]:
             # systemd unit, a profile export on the box — silently re-gate the
             # deploy and reinstate the exact bug D-142 removed, on Linux only,
             # where it is hardest to notice.
-            _detached_spawn(
+            _arm_deploy_window(_detached_spawn(
                 ["bash", os.path.join(repo, "update.sh")], repo, logpath,
-                env={**os.environ, "ORGTREE_ONLY_IF_BEHIND": ""})
+                env={**os.environ, "ORGTREE_ONLY_IF_BEHIND": ""}))
         launched.append("org backend (git pull + rebuild + restart — "
                         "EVERY org on this machine restarts)")
     if target in ("mailhub", "both"):

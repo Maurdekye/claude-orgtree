@@ -66,10 +66,37 @@ ATTEMPTS: list[list[str]] = []
 _REAL_DETACHED_SPAWN = supervisor._detached_spawn
 
 
+class _RefusedChild:
+    """What a refused deploy hands back (D-142/a).
+
+    ⚠ NOT `None`, and this is a correctness fix rather than a convenience.
+    `_detached_spawn` now returns a handle so the deploy window can watch the
+    child and release held turns when it exits. If refusal kept returning
+    `None`, then in the suites — where refusal is the ONLY path the deploy
+    checks ever take — `_arm_deploy_window` would take its "nothing was
+    spawned" early return and THE WATCHER WOULD NEVER RUN UNDER TEST. Green
+    suite, unexercised production path: the precise shape this directory
+    keeps getting caught by.
+
+    An already-exited handle is not a fiction to satisfy a test, either. It
+    faithfully models the COMMON production case: `update.ps1` has ten
+    failure exits before its `Stop-Process`, so "the deploy child exits
+    without restarting us" is the ordinary outcome, not the rare one.
+    """
+    returncode = 0
+    pid = None
+
+    def wait(self, timeout=None):        # noqa: ARG002 — mirrors Popen
+        return 0
+
+    def poll(self):
+        return 0
+
+
 def _interlock(args, cwd, logpath, env=None):
     if any(x in " ".join(args).lower() for x in _DEPLOY_ARGV):
         ATTEMPTS.append(list(args))
-        return None                      # ☠ refused: nothing is spawned
+        return _RefusedChild()           # ☠ refused: nothing is spawned
     return _REAL_DETACHED_SPAWN(args, cwd, logpath, env)
 
 
