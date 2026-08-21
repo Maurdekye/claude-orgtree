@@ -856,6 +856,50 @@ def _looks_like_connection_failure(blob: str) -> bool:
         "getaddrinfo", "dns lookup failed"))
 
 
+def _died_in_flight(*, exit_only: bool, started: bool, boundary: bool) -> bool:
+    """The same transient class as above, in the case the classifier above
+    CANNOT SEE (user incident 2026-08-21).
+
+    Read that docstring again: it names this exact hazard — "a dropped
+    connection fell into the terminal turn-failed bucket where nothing ever
+    re-drives the node" — and it fixed the half where the wire error is
+    REPORTED. This is the half where the CLI dies too hard to report it. The
+    connection closed mid-response, the CLI's stream-json catch path wrote
+    nothing to stderr and left `errors: []` empty, so orgtree synthesized
+    "the CLI exited 1 without writing anything to stderr" (see the `err_blob`
+    fallback) — which matches no errno spelling on earth. It fell through to
+    the terminal `raise`, no freeze record was written, and a live agent sat
+    idle with uncommitted work until a human happened to notice, two hours
+    later. Nothing in the system was ever going to re-drive it.
+
+    With no text to classify, classify the SHAPE of the turn. All three must
+    hold, and the conjunction IS the safety argument:
+
+    `exit_only`  — the CLI exited nonzero and NOTHING anywhere said why:
+        nothing on stderr, `errors: []` empty. A nonzero exit carrying a real
+        error is evidence, and evidence is never overridden here — those keep
+        today's terminal behaviour, untouched.
+    `started`    — a top-level assistant event arrived, so the CLI launched,
+        reached the API, and got an answer out of it. This is the clause that
+        excludes the failures which must NEVER retry: a bad argv, a missing
+        CLI, an unreadable config, a charter too big to send. They die before
+        the model ever speaks, so they stay terminal exactly as they do now.
+    `not boundary` — no top-level result event ever arrived, so it died IN
+        FLIGHT and not after finishing. A turn that reached its boundary and
+        then exited nonzero is a straggler, not a casualty.
+
+    Deliberately NOT a catch-all, for №28's reason and the one the classifier
+    above already states: "retry any failure" turns a crash loop into an
+    infinite one. The residual case this DOES admit is a CLI that genuinely
+    crashes mid-response every time — and that is bounded by the very same
+    NET_RETRY_MAX, off the very same `net_fail_run` counter, deliberately
+    shared so a node flapping between the two classes gets four attempts in
+    total rather than four each. When it exhausts, it says so out loud
+    (`_retry_exhausted`) instead of going quiet, which is the actual harm the
+    incident did."""
+    return exit_only and started and not boundary
+
+
 def _looks_like_filtered(blob: str) -> bool:
     """A model-side content filter flagged the message (user spec — Fable
     carries extra safety filters). Phrases seen from the API/CLI on filter
@@ -2846,6 +2890,12 @@ def _run_one_turn(slug: str, nid: str,
             last_ev = [time.monotonic()]
             budget_t0 = [time.monotonic()]
             saw_result = [False]   # a real (top-level) boundary was reached
+            # …and did the CLI ever get an answer OUT of the API? The other
+            # half of _died_in_flight's shape test: a turn that produced
+            # top-level model output and then died is a casualty, while one
+            # that produced none never worked at all. Set in the assistant
+            # branch below, off the same `not sub` sidechain guard.
+            saw_agent_out = [False]
 
             def _dog() -> None:
                 while not dog_stop.wait(5.0):
@@ -3069,6 +3119,11 @@ def _run_one_turn(slug: str, nid: str,
                         sub = ev.get("parent_tool_use_id")
                         if not sub:
                             dbuf = ""   # the full message supersedes the draft
+                            # PROOF OF LIFE, for _died_in_flight. Top-level
+                            # only — and that is not a limitation: the model
+                            # has to emit the Task tool call before a subagent
+                            # can exist, so its own output always comes first.
+                            saw_agent_out[0] = True
                         _msg = ev.get("message", {})
                         if _msg.get("model") == "<synthetic>" \
                                 or ev.get("isApiErrorMessage") \
@@ -3402,6 +3457,13 @@ def _run_one_turn(slug: str, nid: str,
                                     reported=turn_paid)
                 raise RuntimeError(timeout_why[0]
                                    or "turn timed out and was killed")
+            # ⚠ a FLAG, not a re-parse of the sentence below. _died_in_flight
+            # needs to know "nothing anywhere said why", and this is the one
+            # place that knows it firsthand. Deriving it downstream by
+            # matching the synthesized wording would rebuild the exact
+            # fragility that caused the incident — a classifier reading
+            # English that another line happened to write.
+            exit_only = False
             err_blob = " / ".join((err or "").strip().splitlines()[-3:]) \
                 if proc.returncode != 0 else (
                     str(res.get("result", "")) if res.get("is_error") else "")
@@ -3422,6 +3484,7 @@ def _run_one_turn(slug: str, nid: str,
                 # exit code carry no `result` string for the harvest to take),
                 # but the ordering is one `if` away from mattering.
                 _errs = [str(x) for x in (res.get("errors") or []) if x]
+                exit_only = not _errs      # an exit code and NOTHING else
                 err_blob = (f"the CLI exited {proc.returncode}"
                             + (f": {' / '.join(_errs)[:300]}" if _errs else
                                " without writing anything to stderr"))
@@ -3694,7 +3757,17 @@ def _run_one_turn(slug: str, nid: str,
                     if org.node(nid)["model"] == "fable" and _trusted_blob \
                             and _looks_like_fable_tier_limit(err_blob):
                         notify(slug, nid, "fable_limit")
-                elif _looks_like_connection_failure(err_blob):
+                elif _looks_like_connection_failure(err_blob) or _died_in_flight(
+                        exit_only=exit_only, started=saw_agent_out[0],
+                        boundary=saw_result[0]):
+                    # ⚠ TWO classifiers, ONE branch, and that is the whole
+                    # shape of the 2026-08-21 fix: the retry machinery below
+                    # was already correct — the shape-classified death simply
+                    # never REACHED it. Routing here rather than building a
+                    # second retry path inherits the ceiling, the backoff, the
+                    # counter and (most importantly) the no-double-delivery
+                    # guarantees, none of which a bespoke path would get right
+                    # on the first try.
                     # the transient class (user report 2026-08-06): REUSE the
                     # freeze machinery rather than a second retry path — the
                     # freeze already solves what a bespoke retry would get
@@ -3706,6 +3779,14 @@ def _run_one_turn(slug: str, nid: str,
                     # D-122 (user ruling 2026-08-14) the timer wakes PURE
                     # connection freezes regardless of the auto_resume
                     # toggle, which governs only limit-kind freezes now.
+                    # ⚠ say WHICH classifier spoke. The text one read the wire
+                    # error and may name it; the shape one CANNOT — all it saw
+                    # was a CLI that died mid-answer having written no reason
+                    # at all. Printing "network interruption" there would send
+                    # the next debugger after a router that is probably fine.
+                    kind_txt = ("network interruption"
+                                if _looks_like_connection_failure(err_blob)
+                                else "the CLI died mid-response")
                     run = 0
                     with store.DOC_LOCK:
                         o2 = store.load_org(slug)
@@ -3729,12 +3810,52 @@ def _run_one_turn(slug: str, nid: str,
                                 # and lets the DESK say who acts on it from
                                 # the org's live setting (peer report
                                 # 2026-08-10, user report behind it).
-                                fz["until"] = (f"network interruption — "
+                                fz["until"] = (f"{kind_txt} — "
                                                f"attempt {run}/{NET_RETRY_MAX}")
                                 fz["error"] = err_blob[:300]
                                 if not is_cmd and not pend_toks:
-                                    fz.setdefault("resume_texts",
-                                                  []).append(text[-8000:])
+                                    # ⚠ TELL IT it is a retry — do not just
+                                    # replay the message. The replay lands in
+                                    # the SAME session, so the agent resumes
+                                    # with its own partial work in view, and
+                                    # that is what makes a repeat mostly
+                                    # harmless. But a BARE replay is
+                                    # indistinguishable from the message
+                                    # simply arriving, so nothing prompts it
+                                    # to check what the dead turn already did
+                                    # — and the effects a dying turn commits
+                                    # are exactly the non-idempotent ones.
+                                    # The agent this incident happened to
+                                    # supplied the cases first-hand: mail
+                                    # already sent (its superior would be
+                                    # reported to twice) and a background
+                                    # suite already spawned on FIXED ports
+                                    # (the second one cannot even bind). It
+                                    # also found the one accidental
+                                    # protection — Edit matches an exact
+                                    # `old_string`, so a replayed edit ERRORS
+                                    # instead of double-applying — which does
+                                    # NOT extend to Write, `git commit`, or
+                                    # any shell side effect. Naming the retry
+                                    # is what turns a silent redo into a
+                                    # deliberate check; it costs one
+                                    # paragraph and it is the only handle the
+                                    # agent gets, since from the inside it
+                                    # cannot otherwise tell a failed turn
+                                    # from nobody having messaged it.
+                                    fz.setdefault("resume_texts", []).append(
+                                        f"(orgtree) Your previous turn died "
+                                        f"part-way through ({kind_txt}) and "
+                                        f"is being retried — attempt {run} of "
+                                        f"{NET_RETRY_MAX}. Whatever that turn "
+                                        f"had ALREADY done was not undone: "
+                                        f"check your real state (files on "
+                                        f"disk, `git status`, mail you may "
+                                        f"have already sent, processes you "
+                                        f"may have already started) before "
+                                        f"redoing any of it. The message that "
+                                        f"turn was handling follows.\n\n"
+                                        + text[-8000:])
                             store.save_org(o2)
                     if 0 < run <= NET_RETRY_MAX:
                         notify(slug, nid, "frozen")
@@ -3746,11 +3867,26 @@ def _run_one_turn(slug: str, nid: str,
                         # UNFROZEN. ▶ is the dead half: resume_frozen finds no
                         # record to clear. Any new turn, mail included, drives
                         # it normally. Measured in test_limit_freeze §4.
+                        if run == NET_RETRY_MAX + 1:
+                            # ⚠ `== MAX + 1` and not the enclosing `> MAX`, and
+                            # the equality is load-bearing: `_retry_exhausted`
+                            # DRIVES this node, and a driven turn that dies the
+                            # same way arrives back here with run = MAX + 2.
+                            # On `>` it would announce and drive again, and
+                            # again — the fail-loud path rebuilt as exactly the
+                            # unbounded retry this change exists to prevent.
+                            # `run` moves one at a time and only a COMPLETED
+                            # turn clears it (`_after_turn`), so the equality
+                            # fires once per exhaustion episode and needs no
+                            # extra flag to keep in sync. Beyond it the node is
+                            # silent again — but silent AFTER having been told,
+                            # which is the whole difference from the incident.
+                            _retry_exhausted(slug, nid, run, err_blob, kind_txt)
                         raise RuntimeError(
-                            f"turn failed after {run} network-classified "
-                            f"attempts — the connection trouble is not "
-                            f"passing; the agent is no longer frozen, so send "
-                            f"it anything to try again: {err_blob[:300]}")
+                            f"turn failed after {run} attempts ({kind_txt}) "
+                            f"— it is not passing; the agent is no longer "
+                            f"frozen, so send it anything to try again: "
+                            f"{err_blob[:300]}")
                 raise RuntimeError(f"turn failed: {err_blob[:400] or 'no output'}")
             st["last_error"] = None
             st["turns_run"] += 1
@@ -3848,6 +3984,114 @@ def _run_one_turn(slug: str, nid: str,
             st["live"] = [r for r in (st.get("live") or []) if r.get("sticky")]
         notify(slug, nid, "turn_done")
     return follow
+
+
+def _retry_exhausted(slug: str, nid: str, run: int, err: str,
+                     kind: str) -> None:
+    """The transient retries are spent and the node is about to be abandoned:
+    say so OUT LOUD, to the agent and to its superior (user incident
+    2026-08-21, coordinator ruling the same day).
+
+    Silence is the actual harm the incident did. The retry ceiling below was
+    already honest in its own way — it wrote `_log_turn_error`, a durable row
+    on the node's own record — but that row is read by opening the agent's
+    chat, and the agent is idle and will never open anything, while its
+    superior is told NOTHING AT ALL. So the failure was durable and
+    invisible at the same time: indistinguishable, from one level up, from an
+    agent quietly working. That is precisely how a live agent came to sit for
+    two hours with uncommitted work while the only re-driver in the system
+    was a human happening to look at a screenshot.
+
+    Same shape as `_bg_orphaned`, deliberately — durable mail first (it must
+    survive a backend restart, which is one of the ways this happens), then a
+    nudge that actually DRIVES the turn, because a mailbox is not a wake.
+
+    TWO recipients, for two different jobs:
+      · the AGENT — it is the only party that can recover its own uncommitted
+        work, and it is the one holding it. This is the recovery.
+      · its SUPERIOR — so the chain learns without a human noticing. Driven
+        EXACTLY ONCE, on final exhaustion only, never per attempt (the
+        caller's `run == NET_RETRY_MAX + 1` guard): a retry that succeeds on
+        attempt 2 must cost the superior nothing, and four attempts must not
+        cost it four turns.
+
+    A top-level node has no superior to tell; the user is its audience and
+    the agent's own drive is what surfaces it. Never raises — this runs on a
+    turn that is already failing, and a bookkeeping error here must not
+    replace the real one."""
+    try:
+        body = (
+            f"[TURN FAILED REPEATEDLY — {run} attempts, giving up]\n"
+            f"Classified as: {kind}\n"
+            f"Last error: {err[:300] or 'no output'}\n\n"
+            "orgtree retried this turn automatically and has now stopped. "
+            "You are no longer frozen, so this message is itself a live "
+            "turn — you are running right now.\n\n"
+            "⚠ WORK MAY BE UNFINISHED AND UNSAVED. A turn died part-way "
+            "through, possibly more than once. Anything it had already done "
+            "— files edited, mail sent, commands run — DID happen and was "
+            "not undone; anything it was about to do did not. Before "
+            "redoing work, CHECK THE ACTUAL STATE: your working folder, "
+            "`git status` if you are in a repo, and your own last messages. "
+            "Then finish what was interrupted, or report that you cannot.")
+        entry: MailEntry = {
+            "id": uuid_hex8(), "from": "@system",
+            "kind": "message", "body": body[:8000], "at": now_iso(),
+            "relationship": "the orgtree engine"}
+        sup = ""
+        with store.DOC_LOCK:
+            org = store.load_org(slug)
+            if nid not in org.nodes or org.node(nid)["state"] != "live":
+                return
+            name = str(org.node(nid).get("name") or nid)
+            sup = str(org.node(nid).get("parent") or "")
+            box = org.d.setdefault("mail", {})
+            box.setdefault(nid, []).append(cast(MailEntry, dict(entry)))
+            log = org.d.setdefault("mail_log", {}).setdefault(nid, [])
+            log.append(cast(MailEntry, dict(entry)))
+            del log[:-100]
+            if sup and sup in org.nodes and org.nodes[sup]["state"] == "live":
+                sup_entry: MailEntry = {
+                    **entry, "id": uuid_hex8(),
+                    "body": (
+                        f"[REPORT STALLED — {name} ({nid})]\n"
+                        f"Its turn failed {run} times in a row and orgtree "
+                        f"has stopped retrying.\n"
+                        f"Classified as: {kind}\n"
+                        f"Last error: {err[:300] or 'no output'}\n\n"
+                        "It has been told and driven, so it may recover on "
+                        "its own — but it may also be holding unfinished or "
+                        "uncommitted work from the turn that died. Nothing "
+                        "will retry it again automatically. Check on it."
+                    )[:8000]}
+                box.setdefault(sup, []).append(cast(MailEntry, dict(sup_entry)))
+                slog = org.d.setdefault("mail_log", {}).setdefault(sup, [])
+                slog.append(cast(MailEntry, dict(sup_entry)))
+                del slog[:-100]
+            else:
+                sup = ""
+            store.save_org(org)
+        # ⚠ name who was ACTUALLY told. This said "agent and superior told"
+        # unconditionally, which for a top-level node (no parent) and for one
+        # whose superior is archived is simply false — and a diagnostic that
+        # overstates its own reach is worse than none, since the next person
+        # reading it is by definition investigating a silence.
+        print(f"[orgtree] {slug}/{nid}: giving up after {run} failed turns "
+              f"({kind}) — told the agent"
+              + (f" and its superior ({sup})" if sup else
+                 "; it has no superior to tell"))
+        mail_spark(slug, "@system", nid)
+        send_message(slug, nid,
+                     "(orgtree) Your turn failed repeatedly and orgtree has "
+                     "stopped retrying — the mail above has the details, "
+                     "including work that may be unfinished.")
+        if sup:
+            mail_spark(slug, "@system", sup)
+            send_message(slug, sup,
+                         f"(orgtree) Your report {name} stalled on repeated "
+                         f"turn failures — the mail above has the details.")
+    except Exception:                                            # noqa: BLE001
+        pass
 
 
 def _bg_task_output(sid: str | None, task_id: str) -> str:

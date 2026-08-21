@@ -233,6 +233,34 @@ function serve(text) {
           usage: {}, total_cost_usd: 0 })
     return
   }
+  // ── §7's three shapes. All exit NONZERO; they differ only in what the
+  // CLI managed to say first, which is the whole of _died_in_flight's test.
+  // ⚠ fs.writeSync(1) and not say(): process.stdout to a PIPE is async in
+  // node, and process.exit() truncates whatever is still queued. Written
+  // with say() the assistant event raced the exit and arrived only
+  // sometimes — which would have made `started` flap and the section
+  // intermittently green for the wrong reason.
+  if (cfg.mode === 'died-in-flight' || cfg.mode === 'died-with-stderr') {
+    const msg = { role: 'assistant', model: 'fake',
+                  content: [{ type: 'text', text: 'on it — first I will' }],
+                  usage: { input_tokens: 1000 } }
+    fs.writeSync(1, JSON.stringify({ type: 'assistant', message: msg }) + '\n')
+    record({ type: 'assistant', message: msg })
+    // died-in-flight: THE INCIDENT (2026-08-21). The model was answering,
+    // the wire dropped, and the CLI went down with an exit code and nothing
+    // else — no result event, no stderr, no errors[].
+    // died-with-stderr: the same death WITH evidence. Must stay terminal.
+    if (cfg.mode === 'died-with-stderr') {
+      fs.writeSync(2, 'Error: ENOSPC: no space left on device\n')
+    }
+    process.exit(1)
+  }
+  if (cfg.mode === 'dead-on-arrival') {
+    // a bad argv, an unreadable config, a charter too large to send: the CLI
+    // dies before the model ever speaks. Byte-identical failure from the
+    // outside — an exit code and silence — and it must NOT be retried.
+    process.exit(1)
+  }
   // plain: the agent's own answer, and the result event that carries it —
   // in stream-json the result's `result` IS the assistant's final text
   const reply = cfg.replyText || 'ack.'
@@ -2503,6 +2531,235 @@ def _sec_reset_timing_body() -> None:
             supervisor._warm_next(_n - 1, 2, _n + 18000, 12, _n)))))
 
 
+# ══════════════════════════════════════════════════════════════════════════ §7
+
+def sec_died_in_flight() -> None:
+    """§7 — THE TURN THAT DIED AND WAS NEVER RE-DRIVEN (user incident
+    2026-08-21).
+
+    The machinery §4 exercises was already right. What reached it was not:
+    `_looks_like_connection_failure` can only match text the CLI WROTE, and
+    the connection that drops mid-response takes the CLI down too hard to
+    write anything. stderr empty, `errors: []` empty, so orgtree synthesized
+    "the CLI exited 1 without writing anything to stderr" — matching no errno
+    spelling — and the turn fell through to the terminal bucket. No freeze
+    record, so nothing to resume; no notification, so nobody knew. A live
+    agent sat idle with five uncommitted files for two hours until a human
+    happened to look.
+
+    So this section measures the two halves that must BOTH hold: the incident
+    shape is now retried, and the shapes that merely LOOK like it from the
+    outside — same exit code, same silence — still are not."""
+    print("\n§7 the turn that died mid-response — retried, or abandoned?")
+
+    # ── the predicate alone, no rig: the truth table is the safety argument ──
+    f = supervisor._died_in_flight
+    check("classify · the INCIDENT shape (exit code only, model had spoken, "
+          "no boundary reached) is transient",
+          lambda: (None if f(exit_only=True, started=True, boundary=False)
+                   else (_ for _ in ()).throw(AssertionError(
+                       "the 2026-08-21 shape is not classified transient — "
+                       "this is the bug, unfixed"))))
+    check("classify · a nonzero exit WITH a real error is NOT transient — "
+          "evidence is never overridden",
+          lambda: (None if not f(exit_only=False, started=True, boundary=False)
+                   else (_ for _ in ()).throw(AssertionError(
+                       "a reported error was reclassified as transient"))))
+    check("classify · a CLI that died before the model ever spoke is NOT "
+          "transient (bad argv, missing CLI, unreadable config)",
+          lambda: (None if not f(exit_only=True, started=False, boundary=False)
+                   else (_ for _ in ()).throw(AssertionError(
+                       "a launch failure would be retried — this is the "
+                       "crash-loop hazard the classifier exists to avoid"))))
+    check("classify · a turn that REACHED its boundary and then exited "
+          "nonzero is a straggler, not a casualty",
+          lambda: (None if not f(exit_only=True, started=True, boundary=True)
+                   else (_ for _ in ()).throw(AssertionError(
+                       "a completed turn would be retried"))))
+
+    if not shutil.which("node"):
+        note("node is not on PATH — §7's end-to-end half skipped")
+        return
+
+    # ── and now through the REAL turn loop, which is what actually broke ────
+    slug, nid = probe_org()
+
+    def _incident_is_retried() -> None:
+        """THE CHECK THIS WHOLE BRANCH EXISTS FOR. Revert the fix and this is
+        the one that goes red: the node ends UNFROZEN with no `net_fail_run`,
+        exactly as restart-tool's did, and nothing in the backend would ever
+        drive it again."""
+        set_mode("died-in-flight")
+        run_turn(slug, nid, "please do the thing")
+        n = node(slug, nid)
+        assert n.get("frozen"), (
+            "the turn that died mid-response left NO freeze record — the node "
+            "is abandoned exactly as in the incident. Nothing re-drives it: "
+            "▶ finds no record and no timer owns it. "
+            f"(net_fail_run={n.get('net_fail_run')!r})")
+        assert n["frozen"].get("connection"), (
+            "frozen, but not as the connection kind — so the auto-resume "
+            "timer's D-122 toggle-independent wake does not own it: "
+            f"{n['frozen']}")
+        assert (n.get("net_fail_run") or 0) == 1, (
+            "the shared attempt counter did not move, so the ceiling is not "
+            f"counting this class: {n.get('net_fail_run')!r}")
+    check("retry · a CLI that dies mid-response with an exit code and NOTHING "
+          "else is frozen for retry, not abandoned (THE INCIDENT)",
+          _incident_is_retried)
+
+    def _marker_warns_before_redoing() -> None:
+        """The replay lands in the SAME session, so the agent resumes with its
+        partial work in view — but a BARE replay is indistinguishable from the
+        message merely arriving, and the effects a dying turn commits are the
+        non-idempotent ones (mail already sent, a suite already spawned on
+        fixed ports). The victim supplied both cases first-hand."""
+        rt = (node(slug, nid).get("frozen") or {}).get("resume_texts") or []
+        assert rt, "nothing was kept to replay — the driving message is lost"
+        body = rt[-1]
+        assert "please do the thing" in body, (
+            f"the original message is not in the replay: {body[:200]!r}")
+        low = body.lower()
+        assert "retried" in low and "not undone" in low, (
+            "the replay does not tell the agent it IS a retry, so nothing "
+            f"prompts it to check state before redoing: {body[:300]!r}")
+    check("marker · the replayed text names the retry and warns that "
+          "already-committed effects were NOT undone", _marker_warns_before_redoing)
+
+    def _honest_label() -> None:
+        lbl = ((node(slug, nid).get("frozen") or {}).get("until") or "").lower()
+        assert "network" not in lbl, (
+            "the freeze blames the NETWORK, but the shape classifier saw only "
+            "a CLI that died having written no reason at all — this sends the "
+            f"next debugger after a router that is probably fine: {lbl!r}")
+        assert "attempt" in lbl, f"the label states no attempt: {lbl!r}"
+    check("label · a shape-classified death does not claim to be a network "
+          "interruption — it says what was actually observed", _honest_label)
+
+    # ── the two look-alikes. Same exit code, same silence, must NOT retry ───
+    def _never_started_stays_terminal() -> None:
+        """THE CONTROL, and it is not decoration: it is what separates this
+        fix from `retry any failure`, which would turn a bad argv into an
+        infinite loop burning turn slots and real money."""
+        s2, n2 = probe_org()
+        set_mode("dead-on-arrival")
+        run_turn(s2, n2, "hello")
+        n = node(s2, n2)
+        assert not n.get("frozen"), (
+            "a CLI that died before the model ever spoke was scheduled for "
+            f"retry — this is the crash-loop hazard: {n['frozen']}")
+        assert not n.get("net_fail_run"), (
+            f"…and it is counting attempts against it: {n.get('net_fail_run')!r}")
+    check("control · a CLI that dies before the model ever speaks stays "
+          "TERMINAL — the fix is not a catch-all", _never_started_stays_terminal)
+
+    def _reported_error_stays_terminal() -> None:
+        s3, n3 = probe_org()
+        set_mode("died-with-stderr")
+        run_turn(s3, n3, "hello")
+        n = node(s3, n3)
+        assert not n.get("frozen"), (
+            "a nonzero exit carrying a REAL error on stderr was reclassified "
+            f"as transient — evidence must never be overridden: {n['frozen']}")
+    check("control · a nonzero exit WITH a real error on stderr stays "
+          "TERMINAL", _reported_error_stays_terminal)
+
+    # ── bounded, and loud when it gives up ─────────────────────────────────
+    def _bounded_then_loud() -> None:
+        """The ceiling is the same one the connection class uses, off the same
+        counter — deliberately shared, so a node flapping between the two gets
+        four attempts in total rather than four each. And at exhaustion the
+        silence has to end: the agent is told (it holds the uncommitted work)
+        and so is its superior (nobody was told, and that was the harm)."""
+        org = store.create_org("zz inflight loud")
+        boss = org.hire(USER, None, "haiku", 20, "boss", add_dirs=[],
+                        tools={"bash": False, "web": False, "edit": False,
+                               "subagents": False, "mcp": []},
+                        org_visibility="team", charter="boss")["node"]
+        kid = org.hire(boss, boss, "haiku", 5, "kid", add_dirs=[],
+                       tools={"bash": False, "web": False, "edit": False,
+                              "subagents": False, "mcp": []},
+                       org_visibility="team", charter="kid")["node"]
+        store.save_org(org)
+        s4 = org.d["slug"]
+        set_mode("died-in-flight")
+
+        for i in range(supervisor.NET_RETRY_MAX):
+            run_turn(s4, kid, "keeps dying")
+            n = node(s4, kid)
+            fixture(bool(n.get("frozen")),
+                    f"attempt {i + 1} did not freeze "
+                    f"(run={n.get('net_fail_run')!r})")
+            fixture(not (store.load_org(s4).d.get("mail_log", {}).get(boss)),
+                    f"the superior was told at attempt {i + 1} — the announce "
+                    f"must fire ONCE at exhaustion, never per attempt")
+            # un-park by clearing the record, never via resume_frozen: that
+            # spawns a replay which fails on the same dead CLI and races the
+            # counter past the cap (the trap §4 documents)
+            o = store.load_org(s4)
+            o.nodes[kid].pop("frozen", None)
+            store.save_org(o)
+
+        run_turn(s4, kid, "and again")           # the attempt past the cap
+        n = node(s4, kid)
+        assert (n.get("net_fail_run") or 0) > supervisor.NET_RETRY_MAX, \
+            f"never reached the terminal attempt: {n.get('net_fail_run')!r}"
+        assert not n.get("frozen"), (
+            "still frozen past the cap — the retry is not bounded and would "
+            f"go round forever: {n['frozen']}")
+
+        # ⚠ mail_log, NOT the `mail` queue. The queue is the undelivered half:
+        # the announce DRIVES both recipients, and a driven turn drains its
+        # mailbox on the way in — so reading `mail` races delivery and can
+        # report "nobody was told" precisely BECAUSE they were. mail_log is
+        # the durable record every sender mirrors into and nothing drains.
+        box = store.load_org(s4).d.get("mail_log", {})
+        kid_mail = [m for m in box.get(kid, []) if m.get("from") == "@system"]
+        boss_mail = [m for m in box.get(boss, []) if m.get("from") == "@system"]
+        assert kid_mail, (
+            "orgtree gave up and told the AGENT nothing — it is the only "
+            "party holding the uncommitted work, and from the inside a failed "
+            "turn is indistinguishable from nobody having messaged it")
+        assert boss_mail, (
+            "orgtree gave up and told the SUPERIOR nothing. This is the "
+            "incident's actual harm: from one level up, an abandoned agent "
+            "and a working one look identical, so recovery waits on a human "
+            "happening to notice")
+        assert kid_mail[-1]["kind"] == "message", (
+            "the notice is a no-wake kind, so it lands in a box that is read "
+            f"at a next turn which by construction never comes: {kid_mail[-1]['kind']!r}")
+        assert "not undone" in kid_mail[-1]["body"].lower(), (
+            "the give-up mail does not warn that committed effects survive, "
+            f"so the agent may blindly redo them: {kid_mail[-1]['body'][:200]!r}")
+        _once[0] = (s4, kid, boss, len(boss_mail))
+    check("bounded+loud · the retries stop at the cap, and BOTH the agent and "
+          "its superior are told durably when they do", _bounded_then_loud)
+
+    def _announced_exactly_once() -> None:
+        """The announce DRIVES the node, and a driven turn that dies the same
+        way lands back on the same branch. Guarded by `== MAX + 1` rather than
+        the enclosing `> MAX`: on `>` the fail-loud path would announce, drive,
+        die, announce… — the unbounded retry loop this change exists to
+        prevent, rebuilt inside the fix for it."""
+        assert _once[0], "the exhaustion fixture did not run"
+        s4, kid, boss, before = _once[0]
+        assert before == 1, f"the superior was told {before} times, not once"
+        for _ in range(3):
+            run_turn(s4, kid, "still dying")
+        after = len([m for m in
+                     store.load_org(s4).d.get("mail_log", {}).get(boss, [])
+                     if m.get("from") == "@system"])
+        assert after == 1, (
+            f"the superior was told {after} times across further failures — "
+            f"the give-up announce is re-firing, so it is driving the node on "
+            f"every failure past the cap instead of once")
+    check("bounded+loud · …and it announces EXACTLY ONCE, however many more "
+          "turns fail after it", _announced_exactly_once)
+
+
+_once: list = [None]
+
+
 def main() -> None:
     print("═══ usage-limit freeze — the shape the CLI actually reports ═══")
     sec_detect()
@@ -2514,6 +2771,7 @@ def main() -> None:
         sec_shapes()
         sec_reader()
         sec_attack_the_fix()
+    sec_died_in_flight()      # its predicate half needs no rig
 
     print(f"\n{'═' * 70}\n{PASS} checks passed, {len(FAIL)} failed, "
           f"{len(GAPS)} gaps")
