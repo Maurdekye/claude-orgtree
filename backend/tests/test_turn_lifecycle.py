@@ -1281,7 +1281,7 @@ def hermetic() -> None:
     # That precondition cannot live in prose: the deciding agent cannot see
     # another ORG's nodes at all, and the blast radius IS machine-wide (the
     # org leg restarts the shared backend and cuts every in-flight turn). So
-    # it is a refusal in `launch_self_update`, and these pin the refusal
+    # it is a refusal in `launch_self_restart`, and these pin the refusal
     # rather than the instruction.
     su_slug, (su_nid,) = horg()
     other_slug, (other_nid,) = horg()
@@ -1295,7 +1295,7 @@ def hermetic() -> None:
             assert f"{su_slug}/{su_nid}" not in got, got
         finally:
             supervisor.state(other_slug, other_nid)["busy"] = False
-    check("selfupdate · a busy agent in ANOTHER org is visible machine-wide",
+    check("selfrestart · a busy agent in ANOTHER org is visible machine-wide",
           _sees_a_busy_peer_in_another_org)
 
     def _a_queued_agent_counts_as_working():
@@ -1305,7 +1305,7 @@ def hermetic() -> None:
             assert f"{other_slug}/{other_nid}" in supervisor.others_working()
         finally:
             supervisor.state(other_slug, other_nid)["queue"] = []
-    check("selfupdate · …and so is one with a QUEUE but no live turn",
+    check("selfrestart · …and so is one with a QUEUE but no live turn",
           _a_queued_agent_counts_as_working)
 
     def _org_target_refuses_while_busy():
@@ -1318,7 +1318,7 @@ def hermetic() -> None:
             assert other_nid in r["status"], r["status"]
         finally:
             supervisor.state(other_slug, other_nid)["busy"] = False
-    check("☠ selfupdate · target 'org' REFUSES while another agent is "
+    check("☠ selfrestart · target 'org' REFUSES while another agent is "
           "mid-turn, and names them", _org_target_refuses_while_busy)
 
     def _spawn_flags() -> int:
@@ -1568,7 +1568,7 @@ def hermetic() -> None:
         raise AssertionError(
             f"a spawned child's output never reached the log — a self-update "
             f"would report nothing at all. Log: {body!r}")
-    check("☠ selfupdate · a detached child's output actually reaches the log",
+    check("☠ selfrestart · a detached child's output actually reaches the log",
           _detached_spawn_keeps_the_childs_output)
 
     def _refusal_launches_nothing_and_burns_no_rate_limit():
@@ -1581,7 +1581,7 @@ def hermetic() -> None:
             supervisor.state(other_slug, other_nid)["busy"] = False
         assert supervisor._self_restart_at[0] == 0.0, \
             "the refused call started the rate-limit clock"
-    check("selfupdate · a refusal spends nothing — the rate limit is untouched",
+    check("selfrestart · a refusal spends nothing — the rate limit is untouched",
           _refusal_launches_nothing_and_burns_no_rate_limit)
 
 
