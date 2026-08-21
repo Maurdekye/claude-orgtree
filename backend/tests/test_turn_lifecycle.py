@@ -1362,6 +1362,23 @@ def hermetic() -> None:
         # …and it is still the update script being spawned, not something that
         # merely lacks the flag because it stopped deploying altogether
         assert any("update.ps1" in a or "update.sh" in a for a in args), args
+        # ⚠ THE OTHER PLATFORM'S LEG, read from the source. The runtime check
+        # above only ever exercises ONE branch — whichever os.name this box
+        # is — so on Windows the posix leg (and vice versa) is invisible to
+        # it. Measured by mutation 2026-08-21: re-adding
+        # ORGTREE_ONLY_IF_BEHIND to the bash leg passed every runtime
+        # assertion on this machine. Scan the whole function body instead, so
+        # neither leg can be regressed silently on the platform that does not
+        # run it here.
+        src = open(supervisor.__file__, encoding="utf-8").read()
+        body = src[src.index("def launch_self_restart("):]
+        body = body[:body.index("\ndef ")]
+        code = "\n".join(ln for ln in body.splitlines()
+                         if not ln.lstrip().startswith("#"))
+        for flag in ("-OnlyIfBehind", "ORGTREE_ONLY_IF_BEHIND"):
+            assert flag not in code, \
+                f"launch_self_restart passes {flag} on some platform leg — " \
+                f"that install cannot deploy a local commit (D-142)"
     check("☠ selfrestart · the launch does NOT gate on 'behind' — it deploys "
           "the current commit (D-142)", _launch_never_asks_for_only_if_behind)
 

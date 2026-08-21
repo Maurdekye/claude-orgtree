@@ -562,19 +562,31 @@ def _():
     error lands on an agent that did nothing wrong. Equally: no NEW session may
     learn the dead name, so it must stay out of the cards."""
     for old, new in ALIASES.items():
-        assert old in _DISPATCH, \
-            f"{old} is no longer dispatchable — every live session and " \
-            f"stored charter naming it breaks mid-flight (D-142)"
         assert new in _DISPATCH and new in CARDS, \
             f"{new} is not the carded replacement for {old}"
         assert old not in CARDS, \
             f"{old} is advertised in tools/list — new sessions are being " \
             f"taught the deprecated name"
-    # the alias must reach the SAME implementation, not a stale copy
-    assert "orgtree_self_restart" in API_SRC and "self_restart_gate" in API_SRC
-    assert "self_update_gate" not in API_SRC, \
-        "the alias still routes to the old gate — two implementations to keep " \
-        "in step is how one of them rots"
+        # ⚠ BEHAVIOURAL, not source-scanning. The first version of this check
+        # asserted `old in _DISPATCH`, and _DISPATCH is regexed out of the
+        # dispatch SOURCE — so the quoted tool name sitting in the explanatory
+        # COMMENT above the branch satisfied it even with the branch deleted.
+        # Caught by mutation 2026-08-21. Drive the real pipe instead.
+        #
+        # WORKER is a non-top-level node, so self_restart_gate refuses it in
+        # the ledger BEFORE supervisor.launch_self_restart is ever reached:
+        # this proves the alias routes all the way to the gate WITHOUT ever
+        # spawning a deploy. Never call this as a node the gate would allow —
+        # that would restart every org on the machine running the suite.
+        txt = WORKER.refuse(old)
+        assert "EVERY org on this machine" in txt, \
+            f"{old} no longer reaches the self-restart gate — every live " \
+            f"session and stored charter naming it breaks mid-flight " \
+            f"(D-142). Got: {txt[:200]}"
+        # …and it must land on the SAME gate the new name uses
+        assert txt == WORKER.refuse(new), \
+            f"{old} and {new} refuse differently — the alias has drifted " \
+            f"onto a second implementation"
 
 
 @t("no tool name is duplicated and every card carries an inputSchema")
