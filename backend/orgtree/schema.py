@@ -252,6 +252,12 @@ class NodeDoc(TypedDict):
     # consecutive network-classified turn failures (user report 2026-08-06);
     # reset by any completed turn, capped at NET_RETRY_MAX then manual
     net_fail_run: NotRequired[int]
+    # consecutive TERMINAL turn failures — the ones nothing retries: a turn
+    # killed by the watchdog or the budget, a CLI that died before the model
+    # spoke, an exit carrying a real error. Cleared by any completed turn,
+    # like net_fail_run. ⚠ ONE counter across BOTH doors deliberately: a node
+    # flapping between causes must announce ONCE, not once per kind.
+    hard_fail_run: NotRequired[int]
     # consecutive limit freezes whose only evidence was the agent's own final
     # answer (see FrozenInfo.untrusted). Cleared by any completed turn, like
     # net_fail_run — the count is CONSECUTIVE, and it is what stops a node

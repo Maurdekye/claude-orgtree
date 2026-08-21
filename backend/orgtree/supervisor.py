@@ -3534,8 +3534,14 @@ def _run_one_turn(slug: str, nid: str,
                 paid_booked = True
                 _charge_killed_turn(slug, nid, turn_out, on_fallback_key,
                                     reported=turn_paid)
-                raise RuntimeError(timeout_why[0]
-                                   or "turn timed out and was killed")
+                # DOOR 1 of 2: killed from outside the model — the idle
+                # watchdog, the turn budget, the job-object leash. Nothing
+                # retries a kill, and the node is left live and unfrozen, so
+                # without this it goes quiet exactly like the incident did.
+                _why = timeout_why[0] or "turn timed out and was killed"
+                if _bump_hard_fail(slug, nid) == 1:
+                    _turn_abandoned(slug, nid, _why, "")
+                raise RuntimeError(_why)
             # ⚠ a FLAG, not a re-parse of the sentence below. _died_in_flight
             # needs to know "nothing anywhere said why", and this is the one
             # place that knows it firsthand. Deriving it downstream by
@@ -3543,6 +3549,17 @@ def _run_one_turn(slug: str, nid: str,
             # fragility that caused the incident — a classifier reading
             # English that another line happened to write.
             exit_only = False
+            # ⚠ DID A RECOVERY PATH CLAIM THIS FAILURE? The terminal raise
+            # below is the COMMON exit for every error, not just unhandled
+            # ones — a usage-limit freeze, a filter halt and a connection
+            # retry all fall through to it after doing their own work. So
+            # "reached that raise" does NOT mean "abandoned", and treating it
+            # that way announced abandonment for nodes that were frozen and
+            # about to be resumed. Caught by §7's own checks, which is what
+            # they are for. An explicit flag, set by each branch that takes
+            # ownership — never inferred from the error text, for the same
+            # reason `exit_only` is a flag.
+            handled = False
             err_blob = " / ".join((err or "").strip().splitlines()[-3:]) \
                 if proc.returncode != 0 else (
                     str(res.get("result", "")) if res.get("is_error") else "")
@@ -3833,6 +3850,7 @@ def _run_one_turn(slug: str, nid: str,
                                              _stamped_ts, _stamped_win,
                                              not _billed_key, _trusted_blob)
                     notify(slug, nid, "frozen")
+                    handled = True      # frozen — ▶ / auto-resume owns it now
                     if org.node(nid)["model"] == "fable" and _trusted_blob \
                             and _looks_like_fable_tier_limit(err_blob):
                         notify(slug, nid, "fable_limit")
@@ -3949,6 +3967,14 @@ def _run_one_turn(slug: str, nid: str,
                             store.save_org(o2)
                     if 0 < run <= NET_RETRY_MAX:
                         notify(slug, nid, "frozen")
+                        # a RETRY is scheduled, so the node is NOT abandoned.
+                        # Announcing here would mail a superior about every
+                        # transient blip the backoff already handles — the
+                        # firehose, arriving from the one direction I had not
+                        # considered. (The exhausted case raises below with
+                        # its own announcement and never reaches the terminal
+                        # raise, so it is not double-counted.)
+                        handled = True
                     elif run > NET_RETRY_MAX:
                         # ⚠ NOT "▶ or new mail" (peer report 2026-08-10, whose
                         # halves were the other way round). This branch writes
@@ -3977,6 +4003,28 @@ def _run_one_turn(slug: str, nid: str,
                             f"— it is not passing; the agent is no longer "
                             f"frozen, so send it anything to try again: "
                             f"{err_blob[:300]}")
+                # DOOR 2 of 2: the terminal bucket. Everything retryable was
+                # claimed by a branch above — a usage limit froze, a filter
+                # halted, a connection drop or a died-in-flight went to the
+                # bounded retry. What is left is the class orgtree
+                # deliberately does NOT retry, and until now the class it
+                # also did not mention: the node ends live, unfrozen, with a
+                # turn_error_log row nobody opens.
+                #
+                # `started` tells the superior WHICH kind, because the two
+                # want different people looking: a CLI that never got the
+                # model to speak is the machine's fault (a bad argv, a
+                # missing or downgraded CLI — measured live on this box as
+                # `unknown option '--effort'` when the pinned CLI is absent
+                # and resolution silently falls back to an older one on
+                # PATH), while a CLI that spoke and then failed is usually
+                # the work's.
+                _door = ("the CLI failed before the model ever spoke — its "
+                         "environment or arguments are wrong"
+                         if exit_only and not saw_agent_out[0] else
+                         "the turn ran and then failed with an error")
+                if not handled and _bump_hard_fail(slug, nid) == 1:
+                    _turn_abandoned(slug, nid, _door, err_blob)
                 raise RuntimeError(f"turn failed: {err_blob[:400] or 'no output'}")
             st["last_error"] = None
             st["turns_run"] += 1
@@ -4074,6 +4122,169 @@ def _run_one_turn(slug: str, nid: str,
             st["live"] = [r for r in (st.get("live") or []) if r.get("sticky")]
         notify(slug, nid, "turn_done")
     return follow
+
+
+# How long one superior is spared a second abandonment DRIVE. The mail still
+# lands every time; only the wake is throttled (see `_turn_abandoned`). Sized
+# to cover a machine-wide cause breaking a whole team at once, which is the
+# only way this fires more than once, and short enough that a genuinely
+# separate failure minutes later still wakes somebody.
+ABANDON_DRIVE_WINDOW = 120.0
+_abandon_drove: dict[str, float] = {}
+
+
+def _turn_abandoned(slug: str, nid: str, door: str, err: str) -> bool:
+    """A turn failed TERMINALLY — nothing will retry it and nothing will
+    re-drive the node. Say so, once, to somebody who can act.
+
+    This is the general case of the 2026-08-21 incident. `_retry_exhausted`
+    below covers the class orgtree DOES retry; this covers the classes it
+    deliberately does not: a turn killed by the idle watchdog or the turn
+    budget, a CLI that died before the model ever spoke (a bad argv, a
+    missing or downgraded CLI), an exit carrying a real error. Retrying any
+    of those would be wrong — but the node is left `live`, unfrozen, with a
+    `turn_error_log` row and NOTHING ELSE. From one level up that is
+    indistinguishable from an agent quietly working, which is the whole harm.
+
+    ⚠ THE FAILING AGENT IS NEVER DRIVEN, and that is the bound. `_retry_
+    exhausted` could drive its node because a transient failure plausibly
+    passes on the next attempt; here the opposite is true by construction.
+    If the CLI cannot start, driving the agent spawns another CLI that
+    cannot start — the agent never reads the mail, and the announcement
+    becomes its own retry loop. So the agent gets DURABLE MAIL (read
+    whenever it next runs, for whatever reason) and its SUPERIOR gets the
+    DRIVE: a different node, a different session, a CLI that works. The
+    self-trigger loop is not guarded against here — it is structurally
+    impossible, which is the better of the two.
+
+    Bounded by `hard_fail_run`, shared across every door: the caller
+    announces only on the transition to 1, and only a COMPLETED turn clears
+    it. N consecutive terminal failures produce ONE announcement, however
+    many different ways they failed.
+
+    `door` names HOW it died, because a superior reading this needs to know
+    whether to look at the code, the machine, or the agent. Returns True if
+    anyone was actually told — the caller logs the honest thing either way."""
+    try:
+        body = (
+            f"[TURN FAILED TERMINALLY — nothing will retry it]\n"
+            f"How it died: {door}\n"
+            f"Error: {err[:300] or 'no output'}\n\n"
+            "orgtree classified this as NOT retryable and stopped. You were "
+            "not driven for it — if the failure is in your CLI or your "
+            "environment, another turn would die the same way — so this mail "
+            "is waiting for you rather than waking you.\n\n"
+            "⚠ WORK MAY BE UNFINISHED. Anything the dead turn had already "
+            "done was NOT undone; anything it was about to do did not "
+            "happen. Do not trust your own last message as a record of what "
+            "ran — a turn can announce an edit in prose and die before the "
+            "tool call. Check the disk.")
+        entry: MailEntry = {
+            "id": uuid_hex8(), "from": "@system",
+            "kind": "message", "body": body[:8000], "at": now_iso(),
+            "relationship": "the orgtree engine"}
+        sup = ""
+        with store.DOC_LOCK:
+            org = store.load_org(slug)
+            if nid not in org.nodes or org.node(nid)["state"] != "live":
+                return False
+            name = str(org.node(nid).get("name") or nid)
+            sup = str(org.node(nid).get("parent") or "")
+            box = org.d.setdefault("mail", {})
+            box.setdefault(nid, []).append(cast(MailEntry, dict(entry)))
+            log = org.d.setdefault("mail_log", {}).setdefault(nid, [])
+            log.append(cast(MailEntry, dict(entry)))
+            del log[:-100]
+            if sup and sup in org.nodes and org.nodes[sup]["state"] == "live":
+                sup_entry: MailEntry = {
+                    **entry, "id": uuid_hex8(),
+                    "body": (
+                        f"[REPORT STALLED — {name} ({nid}) is not running]\n"
+                        f"Its turn failed in a way orgtree does not retry, "
+                        f"and nothing will re-drive it.\n"
+                        f"How it died: {door}\n"
+                        f"Error: {err[:300] or 'no output'}\n\n"
+                        f"It has NOT been driven — if the fault is its CLI or "
+                        f"its environment, waking it would just kill another "
+                        f"turn. It is idle now and will stay idle until "
+                        f"something changes. It may also be holding "
+                        f"unfinished work from the turn that died.\n\n"
+                        f"You are the one who can act: fix the cause, or "
+                        f"message it once you have."
+                    )[:8000]}
+                box.setdefault(sup, []).append(cast(MailEntry, dict(sup_entry)))
+                slog = org.d.setdefault("mail_log", {}).setdefault(sup, [])
+                slog.append(cast(MailEntry, dict(sup_entry)))
+                del slog[:-100]
+            else:
+                sup = ""
+            store.save_org(org)
+        mail_spark(slug, "@system", nid)
+        if sup:
+            mail_spark(slug, "@system", sup)
+            # ⚠ THE FIREHOSE BOUND, and it is built on a MEASURED asymmetry
+            # rather than the one I assumed. Measured 2026-08-21, both ways:
+            #   · three send_message DRIVES at an idle healthy node produced
+            #     THREE separate envelopes, one notice each. Drives do NOT
+            #     coalesce — each queued message gets its own turn.
+            #   · three mails DEPOSITED in the box and then ONE drive produced
+            #     ONE envelope carrying all three. Deposited mail DOES
+            #     coalesce, because `_envelope` drains the whole mailbox.
+            # A machine-wide cause (a full disk, a missing CLI pin) breaks
+            # every agent at once, so driving per failure would cost one
+            # superior TURN PER REPORT — the firehose. The mail is already in
+            # the box above, unconditionally, so throttling only the DRIVE
+            # loses nothing: the notices ride along with the turn the first
+            # one started, or are read at the superior's next turn for any
+            # other reason. Loud once, complete always.
+            key = f"{slug}/{sup}"
+            now = time.time()
+            recent = _abandon_drove.get(key, 0.0)
+            if now - recent < ABANDON_DRIVE_WINDOW:
+                print(f"[orgtree] {slug}/{nid}: abandoned ({door}) — mailed "
+                      f"its superior ({sup}); not driving, one was driven "
+                      f"{now - recent:.0f}s ago and this rides with it")
+                return True
+            _abandon_drove[key] = now
+            send_message(slug, sup,
+                         f"(orgtree) Your report {name} stopped on a turn "
+                         f"failure nothing will retry — the mail above has "
+                         f"the details.")
+            print(f"[orgtree] {slug}/{nid}: abandoned ({door}) — told its "
+                  f"superior ({sup})")
+            return True
+        # No superior: the user is this node's audience and orgtree cannot
+        # drive a person. The durable mail stands — and here, uniquely, the
+        # agent IS driven, because it is the only actor that exists. The same
+        # once-per-run guard bounds it, so a persistent failure costs exactly
+        # one extra turn rather than a loop.
+        send_message(slug, nid,
+                     "(orgtree) Your last turn failed in a way orgtree does "
+                     "not retry — the mail above has the details.")
+        print(f"[orgtree] {slug}/{nid}: abandoned ({door}) — no superior to "
+              f"tell, drove the agent itself")
+        return True
+    except Exception:                                            # noqa: BLE001
+        return False
+
+
+def _bump_hard_fail(slug: str, nid: str) -> int:
+    """Advance the shared terminal-failure run and return it. One counter for
+    every door (see `_turn_abandoned`), so a node that is killed by the
+    watchdog once and then fails to launch does not get two announcements for
+    one broken episode."""
+    try:
+        with store.DOC_LOCK:
+            o2 = store.load_org(slug)
+            if nid not in o2.nodes:
+                return 0
+            n = o2.node(nid)
+            run = int(n.get("hard_fail_run") or 0) + 1
+            n["hard_fail_run"] = run
+            store.save_org(o2)
+            return run
+    except Exception:                                            # noqa: BLE001
+        return 0
 
 
 def _retry_exhausted(slug: str, nid: str, run: int, err: str,
@@ -4447,6 +4658,11 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
             # likewise any run of self-reported limits
             n.pop("net_fail_run", None)
             n.pop("untrusted_limit_run", None)
+            # …and any run of TERMINAL failures. This is what re-arms the
+            # abandonment announcement: one turn that actually works means the
+            # next terminal failure is a NEW episode and gets said out loud
+            # again, rather than being swallowed as "already told them".
+            n.pop("hard_fail_run", None)
             # a completed turn is exactly what "compacted and not run since"
             # was waiting for — whatever this turn measured or failed to
             # measure, the successor's session is no longer only a summary

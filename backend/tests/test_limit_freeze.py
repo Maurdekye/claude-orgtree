@@ -255,6 +255,12 @@ function serve(text) {
     }
     process.exit(1)
   }
+  if (cfg.mode === 'hang') {
+    // §9 door 1: the CLI goes silent mid-turn and never reaches a boundary.
+    // Nothing more is written, so the idle watchdog is the only thing that
+    // can end this turn — which is exactly the door being measured.
+    return
+  }
   if (cfg.mode === 'dead-on-arrival') {
     // a bad argv, an unreadable config, a charter too large to send: the CLI
     // dies before the model ever speaks. Byte-identical failure from the
@@ -2976,6 +2982,235 @@ def sec_deploy_window() -> None:
           "ONCE after it, never dropped", _mail_survives_the_window)
 
 
+# ══════════════════════════════════════════════════════════════════════════ §9
+
+def _team(n: int, name: str) -> tuple[str, str, list[str]]:
+    org = store.create_org(f"zz {name}")
+    tl = {"bash": False, "web": False, "edit": False, "subagents": False,
+          "mcp": []}
+    boss = org.hire(USER, None, "haiku", 60, "boss", add_dirs=[], tools=tl,
+                    org_visibility="team", charter="b")["node"]
+    kids = [org.hire(boss, boss, "haiku", 5, f"kid{i}", add_dirs=[], tools=tl,
+                     org_visibility="team", charter="k")["node"]
+            for i in range(n)]
+    store.save_org(org)
+    return org.d["slug"], boss, kids
+
+
+def _sys_mail(slug: str, nid: str, needle: str = "") -> list[dict]:
+    log = store.load_org(slug).d.get("mail_log", {}).get(nid, [])
+    return [m for m in log if m.get("from") == "@system"
+            and (not needle or needle in m.get("body", ""))]
+
+
+def sec_abandoned() -> None:
+    """§9 — THE TERMINAL BUCKET, MADE LOUD.
+
+    §7 covered the class orgtree RETRIES. This covers the classes it
+    deliberately does not — a turn killed by the watchdog or the budget, a
+    CLI that died before the model spoke, an exit carrying a real error.
+    Retrying those would be wrong, but until now they left the node live,
+    unfrozen, holding a `turn_error_log` row nobody opens: from one level up,
+    indistinguishable from an agent quietly working.
+
+    The bound is the interesting half, so it is measured first and hardest:
+    the failing agent is NEVER driven (so the announcement cannot become its
+    own retry loop), one announcement per failure RUN across every door, and
+    a superior is woken at most once per window however many reports die."""
+    print("\n§9 the turn nothing retries — abandoned, or announced?")
+
+    if not shutil.which("node"):
+        note("node is not on PATH — §9 skipped (it needs the CLI stand-in)")
+        return
+
+    # ── THE BOUND, first ───────────────────────────────────────────────────
+    def _failing_agent_is_never_driven() -> None:
+        """THE STRUCTURAL BOUND. If the CLI cannot start, driving the agent
+        spawns another CLI that cannot start — the announcement becomes its
+        own retry loop, which is the M5 trap from the previous branch. Here
+        it is not guarded against, it is impossible: the failing node is
+        never sent a drive at all. Measured POSITIVELY — count the turns the
+        CLI was actually handed, not the absence of a symptom."""
+        slug, _boss, (kid,) = _team(1, "abandon-nodrive")
+        set_mode("dead-on-arrival")
+        run_turn(slug, kid, "go")
+        time.sleep(1.2)
+        # ⚠ count THIS NODE's turns, not the rig's. `served()` is machine-wide
+        # and the superior IS driven (intentionally), so counting envelopes
+        # measured the wrong node and failed for the right behaviour. Every
+        # failed turn writes exactly one turn_error_log row on the node that
+        # ran it, which is a per-node positive marker.
+        rows = store.load_org(slug).d.get("turn_error_log", {}).get(kid, [])
+        assert len(rows) == 1, (
+            f"the failing agent ran {len(rows)} turns for ONE failure — the "
+            f"announcement is driving the node that just died, so a "
+            f"persistent failure becomes a loop")
+    check("bound · the FAILING agent is never driven — one failure costs "
+          "exactly one CLI turn, so the announcement cannot loop",
+          _failing_agent_is_never_driven)
+
+    def _once_per_run() -> None:
+        slug, boss, (kid,) = _team(1, "abandon-once")
+        set_mode("dead-on-arrival")
+        for i in range(4):
+            run_turn(slug, kid, f"try {i}")
+        time.sleep(0.6)
+        told = _sys_mail(slug, boss, "REPORT STALLED")
+        assert len(told) == 1, (
+            f"four consecutive terminal failures produced {len(told)} "
+            f"announcements — an agent stuck in a broken state would mail "
+            f"its superior on every message it ever receives")
+        assert (node(slug, kid).get("hard_fail_run") or 0) == 4, (
+            "the run counter did not advance with the failures: "
+            f"{node(slug, kid).get('hard_fail_run')!r}")
+    check("bound · N consecutive terminal failures announce exactly ONCE",
+          _once_per_run)
+
+    def _rearmed_by_a_completed_turn() -> None:
+        """The counter must CLEAR, or an agent that recovers and later breaks
+        again is silently swallowed as 'already told them'."""
+        slug, boss, (kid,) = _team(1, "abandon-rearm")
+        set_mode("dead-on-arrival")
+        run_turn(slug, kid, "fail")
+        time.sleep(0.4)
+        set_mode("plain")
+        run_turn(slug, kid, "works now")
+        assert not node(slug, kid).get("hard_fail_run"), (
+            "a completed turn did not clear the run counter: "
+            f"{node(slug, kid).get('hard_fail_run')!r}")
+        set_mode("dead-on-arrival")
+        run_turn(slug, kid, "fail again")
+        time.sleep(0.6)
+        told = _sys_mail(slug, boss, "REPORT STALLED")
+        assert len(told) == 2, (
+            f"a NEW failure episode after a working turn was not announced "
+            f"({len(told)} total) — the agent broke twice and the second "
+            f"time went unreported")
+    check("bound · …and a completed turn re-arms it, so a second episode is "
+          "announced again", _rearmed_by_a_completed_turn)
+
+    def _firehose_is_bounded() -> None:
+        """A machine-wide cause breaks every agent at once. MEASURED: repeated
+        send_message DRIVES do NOT coalesce (three drives at an idle node gave
+        three separate envelopes), while DEPOSITED mail does (three deposits +
+        one drive gave one envelope carrying all three). So the mail is
+        written every time and only the WAKE is throttled."""
+        slug, boss, kids = _team(4, "abandon-fire")
+        set_mode("dead-on-arrival")
+        supervisor._abandon_drove.clear()
+        # ⚠ count the WAKES DIRECTLY by instrumenting the drive seam. Deriving
+        # them from `served()` arithmetic counted the superior's own failing
+        # turns too and reported a firehose that was not there — the measure
+        # has to name the thing it claims to measure.
+        woke: list[str] = []
+        real_send = supervisor.send_message
+
+        def _spy(s: str, n: str, *a, **k):
+            # ⚠ only wakes ABOUT A REPORT count. In this rig the fake CLI's
+            # mode is machine-wide, so the superior's own turn fails too and
+            # (being top-level) drives ITSELF — a real behaviour, but not a
+            # firehose wake, and counting it reported one that wasn't there.
+            if n == boss and a and "Your report" in str(a[0]):
+                woke.append(n)
+            return real_send(s, n, *a, **k)
+        supervisor.send_message = _spy                # type: ignore[assignment]
+        try:
+            for k in kids:
+                run_turn(slug, k, "die")
+            time.sleep(1.5)
+        finally:
+            supervisor.send_message = real_send       # type: ignore[assignment]
+        told = _sys_mail(slug, boss, "REPORT STALLED")
+        assert len(told) == len(kids), (
+            f"only {len(told)} of {len(kids)} dead reports were mailed to the "
+            f"superior — throttling the DRIVE must never cost a NOTICE")
+        assert len(woke) == 1, (
+            f"the superior was woken {len(woke)} times for one machine-wide "
+            f"cause — that is the firehose: a broken team costing its "
+            f"superior a turn per report")
+    check("bound · a machine-wide failure mails the superior about EVERY "
+          "report but wakes it once", _firehose_is_bounded)
+
+    # ── the doors ──────────────────────────────────────────────────────────
+    def _door_launch() -> None:
+        slug, boss, (kid,) = _team(1, "abandon-door2")
+        set_mode("dead-on-arrival")
+        run_turn(slug, kid, "go")
+        time.sleep(0.5)
+        told = _sys_mail(slug, boss, "REPORT STALLED")
+        assert told, "a launch failure told the superior nothing"
+        body = told[0]["body"].lower()
+        assert "before the model ever spoke" in body, (
+            "the announcement does not name WHICH door — a superior cannot "
+            "tell whether to look at the machine or at the work: "
+            f"{told[0]['body'][:200]!r}")
+        assert "not been driven" in body, (
+            "the superior is not told the agent was left asleep, so it may "
+            "assume the agent is already retrying")
+    check("door · a CLI that died before the model spoke is named as an "
+          "environment fault, not a turn that went wrong", _door_launch)
+
+    def _door_killed() -> None:
+        """Door 1: the idle watchdog. Slow by nature — the dog wakes on a 5 s
+        cadence — so this is the one check here that costs real seconds."""
+        slug, boss, (kid,) = _team(1, "abandon-door1")
+        set_mode("hang")
+        real = supervisor.TURN_IDLE
+        try:
+            supervisor.TURN_IDLE = 1.0
+            run_turn(slug, kid, "go quiet")
+        finally:
+            supervisor.TURN_IDLE = real
+        time.sleep(0.8)
+        told = _sys_mail(slug, boss, "REPORT STALLED")
+        assert told, (
+            "a turn KILLED by the idle watchdog told the superior nothing — "
+            "the node is live, unfrozen and idle, and nothing retries a kill")
+        assert "watchdog" in told[0]["body"].lower(), (
+            f"the kill is not named as the door: {told[0]['body'][:200]!r}")
+    check("door · a turn killed by the idle watchdog is announced, and named "
+          "as a kill", _door_killed)
+
+    def _shared_counter_across_doors() -> None:
+        """⚠ ONE counter for BOTH doors. A node that is killed by the watchdog
+        and then fails to launch is ONE broken episode, not two, and must not
+        buy a second announcement by changing how it dies."""
+        slug, boss, (kid,) = _team(1, "abandon-shared")
+        set_mode("hang")
+        real = supervisor.TURN_IDLE
+        try:
+            supervisor.TURN_IDLE = 1.0
+            run_turn(slug, kid, "hang")
+        finally:
+            supervisor.TURN_IDLE = real
+        time.sleep(0.5)
+        set_mode("dead-on-arrival")          # a DIFFERENT door, same episode
+        run_turn(slug, kid, "now fail to launch")
+        time.sleep(0.5)
+        told = _sys_mail(slug, boss, "REPORT STALLED")
+        assert len(told) == 1, (
+            f"a node that flapped between two doors announced {len(told)} "
+            f"times — the counter is per-door, so a node failing in varied "
+            f"ways mails its superior over and over")
+    check("bound · the run counter is SHARED across doors — flapping between "
+          "kill and launch-failure still announces once",
+          _shared_counter_across_doors)
+
+    def _success_announces_nothing() -> None:
+        """THE CONTROL. Must SURVIVE every tightening above."""
+        slug, boss, (kid,) = _team(1, "abandon-control")
+        set_mode("plain")
+        run_turn(slug, kid, "a perfectly fine turn")
+        time.sleep(0.4)
+        assert not _sys_mail(slug, boss), (
+            "a SUCCESSFUL turn announced an abandonment to the superior — "
+            "every working agent on the machine would be reported as broken")
+        assert not _sys_mail(slug, kid), (
+            "a successful turn left the agent an abandonment notice")
+    check("control · a turn that SUCCEEDS announces nothing to anyone",
+          _success_announces_nothing)
+
+
 _once: list = [None]
 
 
@@ -2992,6 +3227,7 @@ def main() -> None:
         sec_attack_the_fix()
     sec_died_in_flight()      # its predicate half needs no rig
     sec_deploy_window()       # D-142/a — most of it needs no rig either
+    sec_abandoned()           # the terminal bucket, made loud
 
     print(f"\n{'═' * 70}\n{PASS} checks passed, {len(FAIL)} failed, "
           f"{len(GAPS)} gaps")
