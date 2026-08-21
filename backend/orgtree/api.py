@@ -3300,13 +3300,17 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                         tgt = full
                     result = org.watchdog_create(
                         body.node, a.get("name"), kind, tgt,
-                        a.get("pattern"), a.get("interval_s") or 60)
+                        a.get("pattern"), a.get("interval_s") or 60,
+                        a.get("notice"))
                 elif act == "list":
+                    # `notice` is listed because a flag you cannot SEE is a
+                    # flag you cannot verify — an owner reading its own dogs
+                    # must be able to tell which of them will wake it
                     result = {"watchdogs": [
                         {k: w.get(k) for k in
                          ("id", "owner", "name", "kind", "target",
                           "pattern", "interval_s", "state", "fired",
-                          "last_fired")}
+                          "last_fired", "notice")}
                         for w in org.d.get("watchdogs") or []
                         if w["owner"] == body.node
                         or org.is_ancestor(body.node, str(w["owner"]))]}

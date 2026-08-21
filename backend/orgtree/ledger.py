@@ -4225,7 +4225,8 @@ class Org:
 
     def watchdog_create(self, owner: str, name: Any, kind: Any, target: Any,
                         pattern: Any = None,
-                        interval_s: Any = 60) -> dict[str, Any]:
+                        interval_s: Any = 60,
+                        notice: Any = False) -> dict[str, Any]:
         """FR-18 (user request 2026-08-07, rulings 2026-08-12): a PET — a
         persistent watcher that mails its owner when its target produces a
         matching event. Free by ruling (never enters TIERS), bounded
@@ -4242,7 +4243,17 @@ class Org:
         Capability rule (ruling): a dog runs with its OWNER's hands —
         command/stream require the owner to hold bash and run inside the
         owner's sandbox when sandboxed; file paths are containment-checked
-        at the API boundary against the owner's readable roots."""
+        at the API boundary against the owner's readable roots.
+
+        `notice=True` (user ruling 2026-08-21) makes the fire PASSIVE: the
+        mail lands in the owner's box exactly as before, but no turn is
+        STARTED for it — the same bargain orgtree_send_notice strikes, and
+        it reuses that mechanism (`send_message(..., wake=False)`), so a
+        RUNNING owner is still steered mid-task and only an IDLE one is left
+        alone. Default stays waking: every dog armed before this existed,
+        and every dog armed without the flag, drives a turn as it always
+        has. The flag is for "tell me the build finished" — worth knowing,
+        not worth a turn."""
         self._require_live(owner)
         name = re.sub(r"[^a-z0-9-]+", "-",
                       str(name or "").strip().lower()).strip("-")[:24]
@@ -4287,18 +4298,25 @@ class Org:
             raise LedgerError(f"the org already keeps "
                               f"{self.WATCHDOG_PER_ORG} watchdogs")
         wid = "wd" + uuid.uuid4().hex[:8]
+        quiet = bool(notice)
         dogs.append({"id": wid, "owner": owner, "name": name, "kind": kind,
                      "target": tgt, **({"pattern": pat} if pat else {}),
                      "interval_s": iv, "state": "armed", "at": now(),
+                     **({"notice": True} if quiet else {}),
                      "fired": 0, "events": []})
         self._log("watchdog_create", owner,
-                  {"id": wid, "name": name, "kind": kind}, [])
-        return {"id": wid, "name": name,
+                  {"id": wid, "name": name, "kind": kind,
+                   **({"notice": True} if quiet else {})}, [])
+        return {"id": wid, "name": name, "notice": quiet,
                 "status": f"armed — {kind} watchdog"
                           + (f" every {iv}s" if kind != "stream"
                              else " (realtime stream)")
                           + ". A matching event arrives as mail from "
-                            f"\"{name}\" and wakes you; it costs no credits."}
+                            f"\"{name}\""
+                          + (" and waits in your mailbox WITHOUT starting a "
+                             "turn — you read it whenever you next run"
+                             if quiet else " and wakes you")
+                          + "; it costs no credits."}
 
     def watchdog_action(self, actor: str, wid: str,
                         action: str) -> dict[str, Any]:

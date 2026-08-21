@@ -3828,6 +3828,72 @@ def live_watchdogs() -> None:
     )(next(w for w in doc(slug)["watchdogs"] if w["name"] == "log-dog")))
     wait_idle(slug, nid, 30)
 
+    # ── NOTICE MODE (user ruling 2026-08-21) ────────────────────────────
+    # ⚠ THE TRAP THIS IS BUILT AROUND. "no turn was driven" is an ASSERTION
+    # OF ABSENCE, and a notice dog that silently DROPPED its mail satisfies
+    # it perfectly — delete the mailing and the naive check still passes.
+    # So absence is only half the check. The other half is POSITIVE and it
+    # is the half that has teeth: the mail must be SITTING IN THE BOX
+    # unread, and it must actually ARRIVE on the next turn the owner takes
+    # for its own reasons. Park-not-drop is the property; "quiet" alone is
+    # equally satisfied by losing the event.
+    qlog = os.path.join(DATA, "quiet.log").replace("\\", "/")
+    with open(qlog, "w", encoding="utf-8") as f:
+        f.write("calm\n")
+    api("POST", "/api/agent", {"org": slug, "node": nid,
+                               "tool": "orgtree_watchdog",
+                               "args": {"action": "create",
+                                        "name": "quiet-dog",
+                                        "kind": "file",
+                                        "target": qlog,
+                                        "pattern": "HUSH",
+                                        "notice": True,
+                                        "interval_s": 15}})
+    check("dogs · notice: `list` reports which dogs wake and which do not",
+          lambda: (
+        lambda ws: None if (ws.get("quiet-dog") is True
+                            and not ws.get("log-dog"))
+        else (_ for _ in ()).throw(AssertionError(ws))
+    )({w["name"]: w.get("notice") for w in api(
+        "POST", "/api/agent",
+        {"org": slug, "node": nid, "tool": "orgtree_watchdog",
+         "args": {"action": "list"}})["watchdogs"]}))
+    wait_idle(slug, nid, 30)
+    time.sleep(8)          # baseline high-water, as above
+    qtok = "HUSH the build finished quietly"
+    with open(qlog, "a", encoding="utf-8") as f:
+        f.write(qtok + "\n")
+    check("dogs · notice: the event fires (the counter moves)", lambda: (
+        None if wait_for(lambda: any(
+            w["name"] == "quiet-dog" and w.get("fired", 0) >= 1
+            for w in doc(slug)["watchdogs"]), 60)
+        else (_ for _ in ()).throw(AssertionError(doc(slug)["watchdogs"]))))
+    # ⚠ THIS SLEEP IS LOAD-BEARING, NOT SLACK. Without it the two checks
+    # below race a would-be turn and pass merely because the drive had not
+    # landed YET — which is precisely how the mutation (restore wake=True)
+    # would survive. Give the turn that must not happen ample time to happen.
+    time.sleep(12)
+    check("dogs · notice: the mail is PARKED in the owner's box, undrained "
+          "(positive marker — 'quiet' alone is also satisfied by dropping it)",
+          lambda: (
+        lambda box: None if any(qtok in (m.get("body") or "") for m in box)
+        else (_ for _ in ()).throw(AssertionError(
+            f"the notice never reached the mailbox: {box}"))
+    )(doc(slug)["mail"].get(nid) or []))
+    check("dogs · notice: …and NO turn was started for it", lambda: (
+        None if qtok not in transcript_text()
+        else (_ for _ in ()).throw(AssertionError(
+            "a notice dog drove a turn — the wake was not suppressed"))))
+    # park-not-drop: the owner runs for an unrelated reason, and the event
+    # it was never woken for is right there waiting in the envelope
+    send(slug, nid, "unrelated ping — say ok")
+    check("dogs · notice: the parked event rides the owner's NEXT turn",
+          lambda: (None if wait_delivered(qtok, 60)
+                   else (_ for _ in ()).throw(AssertionError(
+                       "the notice was dropped, not parked: it never "
+                       "arrived even once a turn ran"))))
+    wait_idle(slug, nid, 30)
+
     # PORT dog: fires on the DOWN edge, not on being down from birth
     import socket as _socket
     srv = _socket.socket()

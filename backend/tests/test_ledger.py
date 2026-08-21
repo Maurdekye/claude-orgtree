@@ -1640,6 +1640,37 @@ def main():
             else (_ for _ in ()).throw(AssertionError(orgW.d["watchdogs"]))
         )(orgW.watchdog_fire(wid, "ERROR boom", "[WATCHDOG] ERROR boom"))
     )(orgW.d["watchdogs"][0]["id"]))
+    # ── notice mode (user ruling 2026-08-21) ────────────────────────────
+    # The flag has to survive the whole round trip: SET at create, PERSISTED
+    # on the dog, and reported back. A flag that persists but is never read
+    # is the abstention shape this suite keeps getting caught by, so the
+    # `wake` half is pinned separately in test_turn_lifecycle (live).
+    # Both legs assert a POSITIVE value — `notice is False` for the default,
+    # not "the key is missing" — because a missing key also reads as False
+    # when the feature is deleted outright.
+    # ⚠ both legs REMOVE the dog they created: a later check fills `boss` to
+    # WATCHDOG_PER_AGENT exactly, so a dog left behind here fails that one
+    # instead of this one — the confusing kind of red.
+    def _notice_round_trip(name: str, want: bool) -> dict:
+        r = orgW.watchdog_create("boss", name, "file", f"E:/{name}.log",
+                                 pattern="DONE",
+                                 **({"notice": True} if want else {}))
+        w = next(x for x in orgW.d["watchdogs"] if x["id"] == r["id"])
+        r = {**r, "_persisted": bool(w.get("notice"))}
+        orgW.watchdog_action("boss", r["id"], "remove")
+        return r
+    check("notice: the flag persists on the dog and is reported at create",
+          lambda: (
+        lambda r: None if (r["notice"] is True and r["_persisted"] is True
+                           and "WITHOUT starting a turn" in r["status"])
+        else (_ for _ in ()).throw(AssertionError(r))
+    )(_notice_round_trip("quiet-dog", True)))
+    check("notice: DEFAULT is unchanged — a dog armed without the flag still "
+          "wakes its owner", lambda: (
+        lambda r: None if (r["notice"] is False and r["_persisted"] is False
+                           and "wakes you" in r["status"])
+        else (_ for _ in ()).throw(AssertionError(r))
+    )(_notice_round_trip("loud-dog", False)))
     check("authority: a non-ancestor peer cannot manage; an ancestor can; "
           "paused dogs do not fire", lambda: (
         lambda wid: (

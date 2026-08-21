@@ -7723,19 +7723,37 @@ def _wd_fire(slug: str, wid: str, name: str, lines: list[str],
             + "\n".join(x[:500] for x in lines[:20])
             + (f"\n… {len(lines) - 20} more" if len(lines) > 20 else ""))
     owner = None
+    notice = False
     try:
         with store.DOC_LOCK:
             org = store.load_org(slug)
             owner = org.watchdog_fire(wid, lines[0] if lines else "event",
                                       body)
+            # read the flag under the SAME lock that recorded the fire — a
+            # dog removed/re-armed between the two would otherwise decide
+            # this fire's wake from a different dog's setting
+            try:
+                notice = bool(org._watchdog(wid).get("notice"))
+            except LedgerError:
+                notice = False
             store.save_org(org)
     except LedgerError:
         return
     if owner:
+        # the spark is the mailbox animation, not a wake — a notice dog still
+        # lights the panel, exactly as orgtree_send_notice does
         mail_spark(slug, "dog:" + wid, owner)
+        # wake=False is the notice bargain: a RUNNING owner is still steered
+        # (the event reaches it mid-task like any mail), an IDLE one is left
+        # idle and reads it on whatever turn comes next. The mail is already
+        # in the box either way — this only decides whether a turn STARTS.
         send_message(slug, owner,
-                     "(orgtree) Your watchdog fired — the mail above carries "
-                     "the event(s); handle them as appropriate.")
+                     ("(orgtree) Your watchdog fired — informational, no turn "
+                      "was started for it; note the mail above and continue."
+                      if notice else
+                      "(orgtree) Your watchdog fired — the mail above carries "
+                      "the event(s); handle them as appropriate."),
+                     wake=not notice)
 
 
 def _wd_check_poll(slug: str, w: dict[str, Any],

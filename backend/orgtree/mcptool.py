@@ -404,6 +404,10 @@ TOOLS: list[dict[str, Any]] = [
             "line fires the moment it occurs — realtime, but output during "
             "orgtree downtime is lost). A command/stream dog runs WITH YOUR "
             "HANDS (needs your bash; runs in your sandbox if you have one). "
+            "A dog WAKES you by default; pass notice:true at create to have "
+            "it fire passively instead — the event still lands in your "
+            "mailbox, but no turn is started for it and you read it whenever "
+            "you next run. "
             "Costs no credits; capped at 8 per agent. Actions: create, list, "
             "pause, resume, remove — superiors may manage their subtree's. "
             "Prefer a watchdog over burning turns polling for a condition "
@@ -430,6 +434,15 @@ TOOLS: list[dict[str, Any]] = [
                                "description": "poll cadence (floor 15s); "
                                               "for stream: the minimum gap "
                                               "between fires (floor 5s)"},
+                "notice": {"type": "boolean",
+                           "description": "create: fire PASSIVELY — the "
+                                          "event still lands in your mailbox "
+                                          "but no turn is started for it, so "
+                                          "you read it whenever you next run "
+                                          "(default false = it wakes you). "
+                                          "Use it for 'tell me the build "
+                                          "finished' — worth knowing, not "
+                                          "worth a turn"},
                 "id": {"type": "string",
                        "description": "pause/resume/remove: the watchdog id"},
             },
