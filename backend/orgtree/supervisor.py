@@ -4402,6 +4402,25 @@ def _retry_exhausted(slug: str, nid: str, run: int, err: str,
                 del slog[:-100]
             else:
                 sup = ""
+                # ⚠ SAME TOP-OF-TREE HOLE as `_turn_abandoned`, closed the
+                # same way. Milder here and deliberately still milder: this
+                # class is TRANSIENT, so the CLI works, and the agent below
+                # IS driven and can report upward itself. That is why this is
+                # belt-and-braces rather than the load-bearing notice it is
+                # over there — and why nothing about the drive changes.
+                # It is closed anyway because leaving ONE of two announce
+                # paths with a known hole is worse than either state: the
+                # next reader finds the fixed one and assumes this matches.
+                org.d.setdefault("user_inbox", []).append({
+                    "id": uuid_hex8(), "from": SYSTEM, "kind": "notice",
+                    "at": now_iso(),
+                    "body": (f"{name} ({nid}) is stuck: {run} turns in a row "
+                             f"failed and orgtree has stopped retrying. It "
+                             f"has no superior to tell.\nClassified as: "
+                             f"{kind}\nLast error: {err[:300] or 'no output'}\n"
+                             f"It has been told and driven, so it may recover "
+                             f"on its own — but nothing will retry it again "
+                             f"automatically.")[:2000]})
             store.save_org(org)
         # ⚠ name who was ACTUALLY told. This said "agent and superior told"
         # unconditionally, which for a top-level node (no parent) and for one

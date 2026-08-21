@@ -2751,6 +2751,44 @@ def sec_died_in_flight() -> None:
     check("bounded+loud · the retries stop at the cap, and BOTH the agent and "
           "its superior are told durably when they do", _bounded_then_loud)
 
+    def _exhaustion_at_the_top_reaches_the_user() -> None:
+        """The SAME top-of-tree hole `_turn_abandoned` had, on the retry path.
+
+        ⚠ ITS OWN CHECK ON PURPOSE, not covered incidentally by §9's. The two
+        announce paths must be able to break — and be caught — independently;
+        a shared check would let one regress behind the other's green.
+
+        Milder than §9's case, and it stays milder: this class is transient,
+        so the CLI works and the driven agent can report upward itself. The
+        drive is deliberately unchanged. But a top-level node exhausting its
+        retries still had nobody above it, so the user heard nothing."""
+        org = store.create_org("zz exhaust-top")
+        tl = {"bash": False, "web": False, "edit": False, "subagents": False,
+              "mcp": []}
+        solo = org.hire(USER, None, "haiku", 40, "solo", add_dirs=[],
+                        tools=tl, org_visibility="team", charter="s")["node"]
+        store.save_org(org)
+        slug = org.d["slug"]
+        set_mode("died-in-flight")
+        for _ in range(supervisor.NET_RETRY_MAX):
+            run_turn(slug, solo, "keeps dying")
+            o = store.load_org(slug)
+            o.nodes[solo].pop("frozen", None)     # un-park without a replay
+            store.save_org(o)
+        run_turn(slug, solo, "and again")         # the attempt past the cap
+        time.sleep(0.6)
+        inbox = store.load_org(slug).d.get("user_inbox", [])
+        hits = [m for m in inbox if solo in (m.get("body") or "")]
+        assert hits, (
+            "a TOP-LEVEL node exhausted its retries and the user's inbox got "
+            f"nothing ({len(inbox)} entries) — the retry path has the same "
+            f"top-of-tree hole the terminal path had")
+        assert "stopped retrying" in hits[0]["body"], (
+            f"the user is not told orgtree gave up: {hits[0]['body'][:160]!r}")
+    check("bounded+loud · a TOP-LEVEL node exhausting its retries reaches the "
+          "USER's inbox — nobody above it to tell",
+          _exhaustion_at_the_top_reaches_the_user)
+
     def _announced_exactly_once() -> None:
         """The announce DRIVES the node, and a driven turn that dies the same
         way lands back on the same branch. Guarded by `== MAX + 1` rather than
