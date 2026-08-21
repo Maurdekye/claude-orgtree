@@ -798,6 +798,12 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
       // component-level stopPropagation can't guard it)
       if ((e.target as Element | null)?.closest?.('.overlay')) return
       if ((e.target as Element | null)?.closest?.('.desk-over')) return
+      // the agents tray is a real scroll container (.tray, overflow-y:auto) —
+      // same carve-out as .overlay/.desk-over, or this native listener (fires
+      // ahead of React, so a component-level stopPropagation can't reach it)
+      // preventDefaults every wheel over it and the canvas zooms instead of
+      // the list scrolling
+      if ((e.target as Element | null)?.closest?.('.tray')) return
       e.preventDefault()
       cancelAnimationFrame(animRef.current!)
       animBusyRef.current = false
