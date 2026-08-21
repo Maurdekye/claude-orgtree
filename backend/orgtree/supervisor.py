@@ -178,6 +178,22 @@ CLAUDE = (os.environ.get("ORGTREE_CLAUDE")
 # argv at an embedded newline, and the identity prompt is multiline (org
 # charts). Invoking node + cli.js directly passes newlines through
 # CreateProcess intact. The .CMD shim is a last resort.
+#
+# ⚠️ DO NOT "REPAIR" THIS DERIVATION — it is layout-dependent ON PURPOSE, and
+# it already resolves correctly for BOTH layouts we ship against (measured
+# 2026-08-21). It looks broken for the pin and is not:
+#   · the PIN is `<data>/cli/node_modules/@anthropic-ai/claude-code/bin/
+#     claude.exe`, so this derives `…/bin/node_modules/…/cli.js`, which does
+#     NOT exist — and must not, because that package has NO cli.js ANYWHERE.
+#     Modern claude-code ships a NATIVE BINARY plus a wrapper. `_claude_argv`
+#     therefore falls through to the .exe, which is the CORRECT entry point:
+#     it passes argv through CreateProcess intact exactly as node would.
+#     Pointing this at the package root would find nothing and change nothing.
+#   · an npm GLOBAL install is `…/npm/claude.CMD` with `…/npm/node_modules/
+#     @anthropic-ai/claude-code/cli.js` beside it — that DOES exist, so the
+#     node path wins and the .CMD is never reached.
+# So `cmd /c` is reachable only from a .CMD with no sibling cli.js. The
+# multiline-truncation hazard is real but is NOT on either measured path.
 CLAUDE_CLI_JS = os.environ.get("ORGTREE_CLAUDE_CLI", os.path.join(
     os.path.dirname(CLAUDE), "node_modules", "@anthropic-ai", "claude-code", "cli.js"))
 
@@ -247,6 +263,103 @@ def _claude_argv() -> list[str]:
     if os.name == "nt" and CLAUDE.lower().endswith((".cmd", ".bat")):
         return ["cmd", "/c", CLAUDE]
     return [CLAUDE]
+
+
+# ── CLI CAPABILITY (user ruling 2026-08-21) ────────────────────────────────
+# What we depend on is the CLI's VERSION. `CLAUDE == _PIN` asked about its
+# PATH, which is a proxy that is wrong in BOTH directions: it fails OPEN on a
+# stale pin (the pinned path exists, holding an old CLI) and fails CLOSED on a
+# legitimate ORGTREE_CLAUDE override pointing at a NEWER one. Replacing the
+# proxy with the real predicate is the fix; a message wrapped around the proxy
+# would be decoration.
+#
+# ONE FLOOR, from the one thing actually measured (2026-08-21, this machine):
+# 2.1.31 fires no TOOL hooks headless AND has no `--effort` (`--help` → 0
+# hits); 2.1.220 has both. These are two capabilities but ONE notion —
+# "new enough" — so one floor serves both gates rather than two thresholds
+# invented to look precise.
+# ⚠ RESIDUAL, stated rather than hidden: the true introduction version of
+# `--effort` is somewhere in (2.1.31, 2.1.220] and was NOT bisected. A CLI
+# inside that window passes this gate and could still reject the argv — which
+# is exactly why the diagnosis below reports the RESOLVED PATH AND VERSION
+# instead of asserting a cause it cannot know.
+_CLI_MIN = (2, 1, 32)
+
+
+def _ver_tuple(v: str) -> tuple[int, ...]:
+    return tuple(int(x) for x in (re.findall(r"\d+", v or "")
+                                  + ["0", "0", "0"])[:3])
+
+
+def cli_capable() -> bool:
+    """Is the RESOLVED CLI new enough for what orgtree passes every turn?
+
+    ⚠ FAILS OPEN when the version cannot be determined. Two reasons, both
+    deliberate: an unreadable version is IGNORANCE, not evidence of an old
+    CLI, and turning steering off (or degrading a turn) on ignorance would
+    invent a second silent failure of exactly the kind this change exists to
+    remove. `cli_version()` is package.json-first and cached, so this adds NO
+    new subprocess on either measured path — healthy and degraded both
+    resolve in ~1 ms (measured); the subprocess fallback it already had is
+    timeout-bounded and 10-minute cached, and nothing calls it at import.
+    """
+    v = cli_version()
+    return v == "unknown" or _ver_tuple(v) >= _CLI_MIN
+
+
+def cli_resolution() -> dict[str, Any]:
+    """WHICH CLI did we resolve, and is it the pin? Nothing anywhere reported
+    this before (/api/host carried the version alone — a number you had to
+    already know was wrong), so a vanished pin was invisible at every surface
+    the user can see."""
+    return {"path": CLAUDE, "version": cli_version(),
+            "is_pin": CLAUDE == _PIN, "pin_present": os.path.exists(_PIN),
+            "pin_path": _PIN, "capable": cli_capable(),
+            "argv": _claude_argv()[:-1] or ["<exe>"]}
+
+
+def _name_the_cause(err_blob: str) -> str:
+    """Append the CLI diagnosis to an EXISTING failure blob, or return it
+    untouched. Extracted so the rule is testable rather than inline in a
+    600-line turn handler — every constraint below is a way to get this
+    wrong silently.
+
+    · APPEND, NEVER REPLACE. `_looks_like_usage_limit`,
+      `_looks_like_connection_failure` and `_looks_like_filtered` are
+      substring searches over this text. Replace it and `ECONNRESET` /
+      `socket hang up` disappear, so a network drop silently stops freezing.
+    · NEVER CREATE a blob. An empty `err_blob` means "no failure" (a manual
+      ⏸ clears it); returning text here would book a pause as a failure.
+    · The CALLER must invoke this AFTER `exit_only` is computed — that block
+      runs only `if not err_blob`, so filling the blob earlier leaves
+      `exit_only` False and `_died_in_flight()` stops retrying genuine
+      mid-flight drops (turn-resilience, 2026-08-21).
+    """
+    if not err_blob:
+        return err_blob
+    diag = cli_diagnosis()
+    return f"{err_blob}  ⚠ {diag}" if diag else err_blob
+
+
+def cli_diagnosis() -> str | None:
+    """The one-line CAUSE, or None when the CLI is fine.
+
+    This is the deliverable: the failure was never unannounced — a turn that
+    dies on argv already folds its mail back and already records `last_error`
+    (both pinned by named checks). But `error: unknown option --effort` reads
+    like an orgtree bug, so the SIGNAL existed and the DIAGNOSIS did not.
+    """
+    if cli_capable():
+        return None
+    where = ("the pinned CLI is missing" if not os.path.exists(_PIN)
+             else "the pinned CLI is present but was not used"
+             if CLAUDE != _PIN else "the pinned CLI is out of date")
+    return (f"{where} — running {CLAUDE} (version {cli_version()}), which is "
+            f"older than the {'.'.join(map(str, _CLI_MIN))} orgtree needs. "
+            f"Turns pass --effort and rely on headless tool hooks, and this "
+            f"CLI supports neither. Reinstall the pin: "
+            f"npm install --prefix {os.path.join(_DATA, 'cli')} "
+            f"@anthropic-ai/claude-code")
 # Two-part turn bound (user ruling 2026-08-04, reshaped from a single 1800 s
 # wall clock — which killed a productive 40-tool-call turn exactly like a
 # wedged one):
@@ -2209,11 +2322,16 @@ def _build_cmd(org: Org, nid: str) -> list[str]:
     # the orgtree tools reach the host only via the secret-gated bridge
     sandboxed = sbx.is_sandboxed(org)
     # isolation by default: the user's global hooks must not leak into agents.
-    # The PostToolUse steering hook (mid-task mail delivery, 3f42476) needs
-    # the pinned CLI — CLI <= 2.1.31 runs no TOOL hooks headless (live-tested)
-    # — so steer_capable gates on the pin; ORGTREE_STEER_HOOK=0/1 overrides.
-    # Without steering, messages deliver at the next RESPONSE boundary.
-    steer_capable = (CLAUDE == _PIN
+    # The PostToolUse steering hook (mid-task mail delivery, 3f42476) needs a
+    # CLI that fires TOOL hooks headless — <= 2.1.31 does not (live-tested).
+    # ORGTREE_STEER_HOOK=0/1 still overrides. Without steering, messages
+    # deliver at the next RESPONSE boundary.
+    # ⚠ This asked `CLAUDE == _PIN` until 2026-08-21 — the PATH, not the
+    # capability. That proxy was wrong in both directions: it failed OPEN on a
+    # stale pin and CLOSED on a legitimate ORGTREE_CLAUDE pointing at a NEWER
+    # CLI. It also made a vanished pin cost mid-turn steering SILENTLY, a
+    # degradation nobody would ever connect back to a missing file.
+    steer_capable = (cli_capable()
                      or os.environ.get("ORGTREE_STEER_HOOK") == "1")
 
     def _steer_settings(steer_cmd: str) -> dict:
@@ -3594,6 +3712,31 @@ def _run_one_turn(slug: str, nid: str,
             with _state_lock:
                 if st.pop("interrupted", None):
                     err_blob = ""     # a manual ⏸ pause is not a failure
+            # ── NAME THE CAUSE (user ruling 2026-08-21) ────────────────────
+            # A turn dying because the resolved CLI is too old already folds
+            # its mail back and already records `last_error` — both pinned by
+            # named `argvdie ·` checks. The SIGNAL was never missing; the
+            # DIAGNOSIS was. `error: unknown option --effort` reads like an
+            # orgtree bug rather than "your pinned CLI is gone".
+            #
+            # ⚠ THREE PLACEMENT RULES, none of them cosmetic:
+            # 1. AFTER the exit_only block above. That block only runs `if
+            #    not err_blob`, so making the blob non-empty ANY earlier
+            #    leaves `exit_only` False forever and _died_in_flight() stops
+            #    retrying every genuine mid-flight drop — the deployed retry
+            #    silently disarmed (turn-resilience, 2026-08-21).
+            # 2. AFTER the interrupt check. A manual ⏸ clears err_blob, and a
+            #    diagnosis added before this would make a PAUSE a failure.
+            # 3. APPEND, NEVER REPLACE. `_looks_like_usage_limit`,
+            #    `_looks_like_connection_failure` and `_looks_like_filtered`
+            #    are substring searches over this blob; drop the CLI's own
+            #    words and `ECONNRESET`/`socket hang up` vanish with them, so
+            #    a network drop stops freezing. The original text stays
+            #    verbatim and the cause rides alongside it.
+            # It decorates an EXISTING failure only — it never creates one,
+            # and on a healthy machine cli_diagnosis() is None, so this is
+            # byte-for-byte a no-op.
+            err_blob = _name_the_cause(err_blob)
             if err_blob:
                 if "No conversation found" in err_blob or "no conversation" in err_blob.lower():
                     with store.DOC_LOCK:

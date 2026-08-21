@@ -1276,6 +1276,126 @@ def hermetic() -> None:
         else (_ for _ in ()).throw(AssertionError(r))
     )(supervisor._envelope(slug, "nope", "plain")))
 
+    # ---- CLI CAPABILITY vs the old pin-IDENTITY proxy (ruling 2026-08-21).
+    # The case for replacing `CLAUDE == _PIN` is that a path is a PROXY that
+    # is wrong in BOTH directions, so both directions get a check — a gate
+    # that merely agreed with the old one in the healthy case would be a
+    # rename, not a fix.
+    # ⚠ the pin must really EXIST on disk for `pin_there=True` to mean
+    # anything: this rig's ORGTREE_DATA is a fresh temp dir, so the module's
+    # own _PIN points at a file that is absent here. Faking only the PATH made
+    # a "stale pin" case diagnose itself as "missing" — the check caught it.
+    _fake_pin = os.path.join(TMP, "fake-pin-claude.exe")
+    with open(_fake_pin, "w", encoding="utf-8") as _f:
+        _f.write("")
+
+    def _cap(ver: str, is_pin: bool = True, pin_there: bool = True):
+        """Drive the gate off a chosen version, with the real predicates."""
+        real_v, real_c, real_p = (supervisor.cli_version, supervisor.CLAUDE,
+                                  supervisor._PIN)
+        supervisor.cli_version = lambda: ver           # type: ignore[assignment]
+        supervisor._PIN = _fake_pin if pin_there else os.path.join(
+            HOME, "no-such-pin", "claude.exe")         # type: ignore[assignment]
+        supervisor.CLAUDE = (supervisor._PIN if is_pin  # type: ignore[assignment]
+                             else os.path.join(HOME, "elsewhere", "claude"))
+        try:
+            # BOTH gates, evaluated under the same simulated machine: the new
+            # capability predicate and the OLD identity proxy it replaces.
+            return (supervisor.cli_capable(), supervisor.cli_diagnosis(),
+                    supervisor.CLAUDE == supervisor._PIN)
+        finally:
+            supervisor.cli_version, supervisor.CLAUDE, supervisor._PIN = (
+                real_v, real_c, real_p)
+
+    check("clipin · HEALTHY: the capability gate and the old identity gate "
+          "AGREE, and nothing is diagnosed", lambda: (
+        lambda cap, diag, ident: None if (cap is True and ident is True
+                                          and cap == ident and diag is None)
+        else (_ for _ in ()).throw(AssertionError((cap, diag, ident)))
+    )(*_cap("2.1.220", is_pin=True)))
+    check("clipin · the proxy failed OPEN: a STALE pin passes the IDENTITY "
+          "gate and the capability gate refuses it (they DISAGREE)", lambda: (
+        lambda cap, diag, ident: None if (ident is True and cap is False
+                                          and diag and "2.1.31" in diag
+                                          and "out of date" in diag)
+        else (_ for _ in ()).throw(AssertionError((cap, diag, ident)))
+    )(*_cap("2.1.31", is_pin=True)))
+    check("clipin · the proxy failed CLOSED: a NEWER non-pin CLI fails the "
+          "IDENTITY gate and the capability gate accepts it", lambda: (
+        lambda cap, diag, ident: None if (ident is False and cap is True
+                                          and diag is None)
+        else (_ for _ in ()).throw(AssertionError((cap, diag, ident)))
+    )(*_cap("2.1.220", is_pin=False)))
+    check("clipin · an UNREADABLE version fails OPEN — ignorance is not "
+          "evidence of an old CLI", lambda: (
+        lambda cap, diag, ident: None if (cap is True and diag is None)
+        else (_ for _ in ()).throw(AssertionError((cap, diag, ident)))
+    )(*_cap("unknown", is_pin=True)))
+    check("clipin · the floor is exact: 2.1.31 refused, 2.1.32 accepted",
+          lambda: (
+        lambda lo, hi: None if (lo[0] is False and hi[0] is True)
+        else (_ for _ in ()).throw(AssertionError((lo, hi)))
+    )(_cap("2.1.31"), _cap("2.1.32")))
+    check("clipin · a missing pin names ITSELF as the cause, with the "
+          "reinstall command", lambda: (
+        lambda cap, diag, ident: None if (cap is False and diag
+                                          and "missing" in diag
+                                          and "npm install --prefix" in diag)
+        else (_ for _ in ()).throw(AssertionError((cap, diag, ident)))
+    )(*_cap("2.1.31", is_pin=False, pin_there=False)))
+
+    # ⚠ THE CALL SITE, not just the predicate. Everything above tests
+    # `cli_capable()` in isolation — and a gate that is computed but never
+    # READ is the exact abstention shape this suite keeps being caught by
+    # (same failure as a flag that persists and is never honoured). So this
+    # drives the REAL `_build_cmd` and reads the steering decision out of the
+    # argv it produces: revert :2216 to `CLAUDE == _PIN` and this goes red,
+    # because in this rig the CLI is never the pin.
+    def _steers(ver: str) -> bool:
+        sslug, (snid,) = horg()
+        real = supervisor.cli_version
+        supervisor.cli_version = lambda: ver           # type: ignore[assignment]
+        try:
+            blob = " ".join(supervisor._build_cmd(
+                store.load_org(sslug), snid))
+        finally:
+            supervisor.cli_version = real             # type: ignore[assignment]
+        return "steer.py" in blob and "disableAllHooks" not in blob
+    check("clipin · the gate is actually READ: a capable CLI arms the "
+          "PostToolUse steer hook and an old one disables hooks", lambda: (
+        lambda on, off: None if (on is True and off is False)
+        else (_ for _ in ()).throw(AssertionError((on, off)))
+    )(_steers("2.1.220"), _steers("2.1.31")))
+
+    # the decoration rule — every one of these is a silent-disarm if broken
+    def _blob(ver: str) -> str:
+        real = supervisor.cli_version
+        supervisor.cli_version = lambda: ver           # type: ignore[assignment]
+        try:
+            return supervisor._name_the_cause("socket hang up / ECONNRESET")
+        finally:
+            supervisor.cli_version = real             # type: ignore[assignment]
+    check("clipin · the diagnosis APPENDS — the CLI's own words survive, so "
+          "the connection/limit detectors still match", lambda: (
+        lambda b: None if ("socket hang up" in b and "ECONNRESET" in b
+                           and "2.1.31" in b
+                           and supervisor._looks_like_connection_failure(b))
+        else (_ for _ in ()).throw(AssertionError(b))
+    )(_blob("2.1.31")))
+    check("clipin · a HEALTHY cli leaves the blob byte-identical", lambda: (
+        lambda b: None if b == "socket hang up / ECONNRESET"
+        else (_ for _ in ()).throw(AssertionError(b))
+    )(_blob("2.1.220")))
+    check("clipin · it never CREATES a failure — an empty blob (a manual ⏸) "
+          "stays empty even on a broken CLI", lambda: (
+        lambda real: (
+            setattr(supervisor, "cli_version", lambda: "2.1.31"),
+            (lambda b: None if b == "" else
+             (_ for _ in ()).throw(AssertionError(repr(b))))(
+                 supervisor._name_the_cause("")),
+            setattr(supervisor, "cli_version", real))[-2]
+    )(supervisor.cli_version))
+
     # ---- USER RULING 2026-08-07 (D-104): an agent that learns this install
     # is behind updates it ITSELF — but only when nobody else is mid-turn.
     # That precondition cannot live in prose: the deciding agent cannot see

@@ -1793,6 +1793,12 @@ def host_info() -> dict[str, Any]:
     return {"docker": sandbox.docker_available(),
             "sandbox_mcp": supervisor.sandbox_mcp_enabled(),
             "cli_version": supervisor.cli_version(),
+            # WHICH cli, not just its version: a bare version number is only
+            # actionable to someone who already knows what it should be, so a
+            # vanished pin was invisible on every surface the user can see.
+            # `cli_diagnosis` is None on a healthy machine.
+            "cli": supervisor.cli_resolution(),
+            "cli_problem": supervisor.cli_diagnosis(),
             # None = uvicorn has no WebSocket implementation, so pushed updates
             # never reach the browser and the UI is running on its polling
             # heartbeats alone. Reported here so the deployment can SAY it
@@ -4762,6 +4768,27 @@ def main() -> None:
               f"  reverse proxy. To share an org with someone instead, make it\n"
               f"  a kiosk: that serves one org over a secret URL with limits.\n"
               f"{bar}\n", flush=True)
+
+    # ⚠ The CLI this backend resolved, announced ONCE at startup — and LOUDLY
+    # when it is too old. Nothing printed this before, so a vanished pin
+    # produced a backend that came up clean and then failed every turn with
+    # `unknown option --effort`, which reads like an orgtree bug.
+    # It ANNOUNCES; it does NOT refuse to boot (user ruling 2026-08-21).
+    # Refusing would remove the only surface through which this message could
+    # be read or the pin reinstalled — and since the deploy tool restarts this
+    # process, a boot-time refusal would turn any deploy into a bricked
+    # machine with no UI left to diagnose it.
+    _cli_problem = supervisor.cli_diagnosis()
+    if _cli_problem:
+        cbar = "!" * 74
+        print(f"\n{cbar}\n  CLAUDE CLI PROBLEM — turns on this machine will "
+              f"fail\n\n  {_cli_problem}\n\n  The backend is starting anyway "
+              f"so you can read this and fix it.\n{cbar}\n", flush=True)
+    else:
+        _r = supervisor.cli_resolution()
+        print(f"cli: {_r['version']} at {_r['path']}"
+              f"{' (pinned)' if _r['is_pin'] else ' (NOT the pin)'}",
+              flush=True)
 
     # three listeners, three trust levels: the admin app is LOOPBACK-ONLY
     # unless the operator typed the flag above (user vision: root access never
