@@ -4253,16 +4253,23 @@ def _turn_abandoned(slug: str, nid: str, door: str, err: str) -> bool:
             print(f"[orgtree] {slug}/{nid}: abandoned ({door}) — told its "
                   f"superior ({sup})")
             return True
-        # No superior: the user is this node's audience and orgtree cannot
-        # drive a person. The durable mail stands — and here, uniquely, the
-        # agent IS driven, because it is the only actor that exists. The same
-        # once-per-run guard bounds it, so a persistent failure costs exactly
-        # one extra turn rather than a loop.
-        send_message(slug, nid,
-                     "(orgtree) Your last turn failed in a way orgtree does "
-                     "not retry — the mail above has the details.")
+        # No superior: the user is this node's audience, and orgtree cannot
+        # drive a person. The durable mail above stands and the user sees it
+        # on the node's own desk, alongside the turn_error_log row — so the
+        # failure is visible where it matters without waking anything.
+        #
+        # ⚠ AND THE AGENT IS STILL NOT DRIVEN. An earlier version made this
+        # the one exception — "it is the only actor that exists" — and
+        # test_turn_lifecycle's `clicrash · exactly one copy on screen` went
+        # red: a turn killed mid-flight folds its unconfirmed batch back into
+        # the mailbox, the extra turn drained it, and the message was echoed
+        # into the transcript a SECOND time. Two bubbles, permanently, for a
+        # message the user sent once. So the exception cost a visible
+        # duplicate to wake an agent whose CLI may not start anyway — and
+        # without it "the failing agent is never driven" is simply TRUE,
+        # with no carve-out to reason about.
         print(f"[orgtree] {slug}/{nid}: abandoned ({door}) — no superior to "
-              f"tell, drove the agent itself")
+              f"tell; left durable mail on its desk, drove nothing")
         return True
     except Exception:                                            # noqa: BLE001
         return False

@@ -3049,6 +3049,39 @@ def sec_abandoned() -> None:
           "exactly one CLI turn, so the announcement cannot loop",
           _failing_agent_is_never_driven)
 
+    def _top_level_is_not_driven_either() -> None:
+        """THE CARVE-OUT THAT WASN'T. A node with no superior has nobody to
+        wake, and an earlier version made it the one exception — drive the
+        agent, since it is the only actor that exists.
+
+        `test_turn_lifecycle`'s `clicrash · exactly one copy on screen` went
+        red: a turn killed mid-flight folds its unconfirmed batch back into
+        the mailbox, that extra turn DRAINED it, and the message was echoed
+        into the transcript a second time. Two bubbles, permanently, for a
+        message the user sent once. The exception bought a doomed turn and
+        paid for it with a visible duplicate, so it is gone — and the rule is
+        now true with no carve-out. Measured per-node, not on `served()`."""
+        org = store.create_org("zz abandon-toplevel")
+        tl = {"bash": False, "web": False, "edit": False, "subagents": False,
+              "mcp": []}
+        solo = org.hire(USER, None, "haiku", 20, "solo", add_dirs=[], tools=tl,
+                        org_visibility="team", charter="s")["node"]
+        store.save_org(org)
+        slug = org.d["slug"]
+        set_mode("dead-on-arrival")
+        run_turn(slug, solo, "go")
+        time.sleep(1.2)
+        rows = store.load_org(slug).d.get("turn_error_log", {}).get(solo, [])
+        assert len(rows) == 1, (
+            f"a top-level node ran {len(rows)} turns for ONE failure — it is "
+            f"being driven by its own abandonment, which re-delivers the "
+            f"folded-back mail and duplicates it on the user's screen")
+        assert _sys_mail(slug, solo), (
+            "…and it was left no durable mail either, so the failure is "
+            "invisible to the user whose desk it sits on")
+    check("bound · a node with NO superior is not driven either — the mail "
+          "waits on its desk instead", _top_level_is_not_driven_either)
+
     def _once_per_run() -> None:
         slug, boss, (kid,) = _team(1, "abandon-once")
         set_mode("dead-on-arrival")
