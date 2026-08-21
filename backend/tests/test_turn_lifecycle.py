@@ -1395,6 +1395,43 @@ def hermetic() -> None:
                  supervisor._name_the_cause("")),
             setattr(supervisor, "cli_version", real))[-2]
     )(supervisor.cli_version))
+    # ---- notice mode: the half the LIVE checks structurally cannot see.
+    # Found by mutation 2026-08-21 (M2) and this check exists because that
+    # mutation SURVIVED: deleting the send_message call outright, for notice
+    # dogs, changed nothing observable live — an IDLE owner is unaffected
+    # either way, because its mail is already in the box. But that call is
+    # the whole notice bargain. `wake=False` still STEERS an owner that is
+    # MID-TURN, so the event reaches it now instead of after it finishes;
+    # drop the call and every running owner is silently skipped.
+    # Both legs assert a POSITIVE call with a POSITIVE wake value — a
+    # suppressed notify fails here as loudly as an unsuppressed wake does.
+    def _notice_suppresses_the_wake_but_not_the_delivery():
+        wslug, (wnid,) = horg()
+        with store.DOC_LOCK:
+            worg = store.load_org(wslug)
+            loud = worg.watchdog_create(wnid, "loud", "file",
+                                        "l.log", pattern="E")["id"]
+            quiet = worg.watchdog_create(wnid, "quiet", "file", "q.log",
+                                         pattern="E", notice=True)["id"]
+            store.save_org(worg)
+        seen: list[tuple[str, bool]] = []
+        real = supervisor.send_message
+
+        def _spy(s: str, n: str, t: str, command: bool = False,
+                 wake: bool = True) -> dict:
+            seen.append((n, wake))
+            return {}
+        supervisor.send_message = _spy            # type: ignore[assignment]
+        try:
+            supervisor._wd_fire(wslug, loud, "loud", ["E one"])
+            supervisor._wd_fire(wslug, quiet, "quiet", ["E two"])
+        finally:
+            supervisor.send_message = real        # type: ignore[assignment]
+        # exactly two notifies, same owner, and ONLY the wake differs
+        assert seen == [(wnid, True), (wnid, False)], seen
+    check("dogs · notice: the notify still happens, with the WAKE suppressed "
+          "(deleting it would skip every mid-turn owner)",
+          _notice_suppresses_the_wake_but_not_the_delivery)
 
     # ---- USER RULING 2026-08-07 (D-104): an agent that learns this install
     # is behind updates it ITSELF — but only when nobody else is mid-turn.
