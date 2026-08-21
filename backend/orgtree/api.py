@@ -3322,11 +3322,23 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                                       questions=a.get("questions"))
             elif body.tool == "orgtree_withdraw_ask":
                 result = org.withdraw_ask(body.node)
-            elif body.tool == "orgtree_self_update":
+            elif body.tool in ("orgtree_self_restart", "orgtree_self_update"):
                 # gate + org-log first (raises on refusal, and the log rides
-                # this request's save); the launch itself is detached
-                org.self_update_gate(body.node)
-                result = supervisor.launch_self_update(
+                # this request's save); the launch itself is detached.
+                #
+                # "orgtree_self_update" is the DEPRECATED ALIAS (rename
+                # 2026-08-21) and is deliberately NOT in mcptool.TOOLS, so no
+                # new session is ever taught it. It stays dispatchable because
+                # the old name outlives the rename in two places we do not
+                # control: a LIVE agent session fetched tools/list at startup
+                # and holds the old catalogue until it ends, and stored
+                # charters/team-charters contain the literal string. Both
+                # would emit orgtree_self_update at an install that no longer
+                # answers it, and the failure lands mid-flight on an agent
+                # that did nothing wrong. Costs one branch; delete it once no
+                # stored charter names it.
+                org.self_restart_gate(body.node)
+                result = supervisor.launch_self_restart(
                     body.org, body.node, str(a.get("target") or "org"))
             elif body.tool == "orgtree_present":
                 # FR-03: a reading card beside the node — non-blocking

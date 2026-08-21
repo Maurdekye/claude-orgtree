@@ -1298,7 +1298,7 @@ def hermetic() -> None:
     def _org_target_refuses_while_busy():
         supervisor.state(other_slug, other_nid)["busy"] = True
         try:
-            r = supervisor.launch_self_update(su_slug, su_nid, "org")
+            r = supervisor.launch_self_restart(su_slug, su_nid, "org")
             assert r.get("refused") and not r["launched"], r
             assert f"{other_slug}/{other_nid}" in r["busy"], r
             # the refusal must NAME who, or the agent cannot judge the wait
@@ -1318,49 +1318,87 @@ def hermetic() -> None:
         assert m, "creationflags are no longer set the way this check reads them"
         return int(m.group(1), 16) | int(m.group(2), 16)
 
-    def _self_update_asks_for_only_if_behind():
-        """Peer report 2026-08-09 (neoja): a self-update restarted every org on
-        their machine and advanced HEAD by nothing. An operator deploy MUST
-        keep redeploying an unmoved HEAD (that is how a locally-made commit
-        ships) — so the difference has to travel with the CALL, not live in
-        the script. Pinned as argv/env, because a silent revert here is
-        exactly the disruption the peer reported."""
+    def _spawn_args_for(target: str = "org"):
+        """Run launch_self_restart with the spawn stubbed, and hand back what it
+        would have spawned. others_working is stubbed too: by now this suite has
+        left other nodes busy, so the D-104 refusal would fire before the spawn
+        — that gate has its own checks above."""
         seen: list[tuple[list[str], dict[str, str] | None]] = []
         real = supervisor._detached_spawn
         real_busy = supervisor.others_working
         supervisor._detached_spawn = (                       # type: ignore[assignment]
             lambda args, cwd, logpath, env=None: seen.append((args, env)))
-        # by now this suite has left other nodes busy, so the D-104 refusal
-        # would fire before the spawn — that gate has its own checks above
         supervisor.others_working = lambda exclude=None: []   # type: ignore[assignment]
         try:
-            supervisor._self_update_at[0] = 0.0
-            supervisor.launch_self_update(su_slug, su_nid, "org")
+            supervisor._self_restart_at[0] = 0.0
+            supervisor.launch_self_restart(su_slug, su_nid, target)
         finally:
             supervisor._detached_spawn = real                # type: ignore[assignment]
             supervisor.others_working = real_busy             # type: ignore[assignment]
-            supervisor._self_update_at[0] = 0.0
+            supervisor._self_restart_at[0] = 0.0
         assert seen, "nothing was spawned at all"
-        args, env = seen[0]
-        if os.name == "nt":
-            assert "-OnlyIfBehind" in args, args
-        else:
-            assert (env or {}).get("ORGTREE_ONLY_IF_BEHIND") == "1", env
-    check("selfupdate · the launch asks the script NOT to restart when the "
-          "pull advances nothing", _self_update_asks_for_only_if_behind)
+        return seen[0]
 
-    def _the_scripts_honour_that_flag():
-        """…and the flag has to MEAN something on the other side. Both scripts
-        are read as text: the branch that exits before the rebuild must exist
-        and must be reached from the same name the launch passes."""
+    def _launch_never_asks_for_only_if_behind():
+        """☠ D-142 (user ruling 2026-08-21), and the whole point of the rename.
+
+        This assertion is the INVERSE of what it was until today. The launch
+        used to pass -OnlyIfBehind, and update.ps1 exits BEFORE the rebuild
+        when the pull advanced nothing — so a commit merged LOCALLY (main
+        ahead of origin, never behind) made the tool log 'already up to date
+        -- NOT restarting', exit 0, and leave the old build serving while
+        reporting success. Measured 2026-08-21: three fixes sat on disk and
+        nobody was told. Pushing first does not rescue it either — then HEAD
+        merely EQUALS origin, still not behind.
+
+        So: the launch must pass NEITHER the switch nor the env var, on either
+        platform. A revert of D-142 fails right here."""
+        args, env = _spawn_args_for("org")
+        assert "-OnlyIfBehind" not in args, \
+            f"the launch passes -OnlyIfBehind again — it cannot deploy a " \
+            f"local commit and will fail silently (D-142): {args}"
+        assert (env or {}).get("ORGTREE_ONLY_IF_BEHIND") is None, \
+            f"the launch sets ORGTREE_ONLY_IF_BEHIND again (D-142): {env}"
+        # …and it is still the update script being spawned, not something that
+        # merely lacks the flag because it stopped deploying altogether
+        assert any("update.ps1" in a or "update.sh" in a for a in args), args
+    check("☠ selfrestart · the launch does NOT gate on 'behind' — it deploys "
+          "the current commit (D-142)", _launch_never_asks_for_only_if_behind)
+
+    def _launch_is_still_detached_and_survives_the_restart():
+        """GUARD THAT MUST NOT GO (charter, re-confirmed 2026-08-21): the
+        deploy restarts the backend and tears down the turn that launched it.
+        A synchronous run dies mid-build and leaves a half-updated install
+        (measured on a peer install 2026-08-09). Dropping the 'behind' gate
+        must not tempt anyone into simplifying this into a blocking call."""
+        src = open(supervisor.__file__, encoding="utf-8").read()
+        body = src[src.index("def launch_self_restart("):]
+        body = body[:body.index("\ndef ")]
+        assert "_detached_spawn(" in body, \
+            "launch_self_restart no longer spawns detached — a deploy run in " \
+            "the caller's own turn dies mid-build (charter guard)"
+        for bad in ("subprocess.run(", "subprocess.call(", "check_output(",
+                    ".communicate(", ".wait("):
+            assert bad not in body, \
+                f"launch_self_restart blocks on the deploy ({bad}) — the " \
+                f"restart kills this very process mid-build"
+    check("☠ selfrestart · the deploy is still spawned DETACHED",
+          _launch_is_still_detached_and_survives_the_restart)
+
+    def _the_scripts_still_offer_that_flag():
+        """The flag itself is NOT deleted (D-142): nothing in this repo passes
+        it, but it stays declared for operators and scheduled 'only if there is
+        something new' jobs, and PowerShell hard-errors on an undeclared
+        switch. So both scripts must still declare it AND still exit on it —
+        a flag that is accepted and silently ignored is worse than none."""
         repo = os.path.normpath(os.path.join(
             os.path.dirname(os.path.abspath(supervisor.__file__)), "..", ".."))
         ps1 = open(os.path.join(repo, "update.ps1"), encoding="utf-8").read()
         sh = open(os.path.join(repo, "update.sh"), encoding="utf-8").read()
         assert "$OnlyIfBehind" in ps1 and "[switch]$OnlyIfBehind" in ps1, \
-            "update.ps1 does not declare/read the switch the launch passes"
+            "update.ps1 no longer declares the switch operators may pass"
         assert "ORGTREE_ONLY_IF_BEHIND" in sh, \
-            "update.sh does not read the env var the launch sets"
+            "update.sh no longer reads the env var operators may set"
         # the BRANCH, not the first mention — the param block names it too
         for name, src, needle in (
                 ("update.ps1", ps1, "if ($OnlyIfBehind) {"),
@@ -1370,12 +1408,21 @@ def hermetic() -> None:
             assert "exit 0" in src[i:i + 400], \
                 f"{name} branches on the flag but does not EXIT — it would " \
                 f"fall through to the rebuild and restart anyway"
+        # ⚠ and the DEFAULT path — the one the tool now takes — must redeploy
+        # an unmoved HEAD rather than exiting. This is the script half of
+        # D-142: if this line goes, the tool is silently gated again even
+        # though it passes no flag.
+        for name, src in (("update.ps1", ps1), ("update.sh", sh)):
+            assert "redeploying anyway" in src, \
+                f"{name} lost the unflagged 'already up to date -- " \
+                f"redeploying anyway' path — a local commit cannot deploy"
         # and a dirty tree is reported rather than silently changing the answer
         assert "porcelain" in ps1 and "porcelain" in sh, \
             "neither script reports a dirty working tree; the peer's log " \
             "could not say why the pull did nothing"
-    check("selfupdate · …and both scripts read that flag and exit on it",
-          _the_scripts_honour_that_flag)
+    check("selfrestart · the scripts keep the flag for operators, and "
+          "redeploy an unmoved HEAD without it",
+          _the_scripts_still_offer_that_flag)
 
     def _detached_spawn_keeps_the_childs_output():
         """☠ THE PEER'S ACTUAL BUG (neoja 2026-08-09), root-caused here rather
@@ -1417,10 +1464,10 @@ def hermetic() -> None:
         # an idle machine unable to update for five minutes over a no-op
         supervisor.state(other_slug, other_nid)["busy"] = True
         try:
-            supervisor.launch_self_update(su_slug, su_nid, "org")
+            supervisor.launch_self_restart(su_slug, su_nid, "org")
         finally:
             supervisor.state(other_slug, other_nid)["busy"] = False
-        assert supervisor._self_update_at[0] == 0.0, \
+        assert supervisor._self_restart_at[0] == 0.0, \
             "the refused call started the rate-limit clock"
     check("selfupdate · a refusal spends nothing — the rate limit is untouched",
           _refusal_launches_nothing_and_burns_no_rate_limit)

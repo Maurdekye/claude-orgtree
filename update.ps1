@@ -25,9 +25,13 @@ param(
     # registers both triggers.
     [switch]$EnsureUp,
     # -OnlyIfBehind (peer report 2026-08-09): exit BEFORE the rebuild+restart
-    # when the pull advanced nothing. Passed by orgtree_self_update, never by
-    # an operator deploy -- see the branch that reads it for why the two
-    # callers must differ.
+    # when the pull advanced nothing.
+    # ⚠ NO CALLER IN THIS REPO PASSES THIS ANY MORE (D-142, 2026-08-21).
+    # orgtree_self_restart used to, and that made the tool unable to deploy a
+    # commit made on this machine -- silently. See the branch that reads it.
+    # Kept declared for operators and scheduled "only if there is something
+    # new" jobs: it is four lines, and PowerShell hard-errors on an undeclared
+    # switch, so removing it would break such a caller loudly for no gain.
     [switch]$OnlyIfBehind,
     # -AllowDirty (redteam hazard flag 2026-08-11): override the dirty-tree
     # refusal and deploy the working tree exactly as it stands, uncommitted
@@ -137,13 +141,15 @@ if ($LASTEXITCODE -ne 0) {
 $after = (git rev-parse --short HEAD).Trim()
 if (-not $EnsureUp) {
 if ($after -eq $before) {
-    # ⚠ -OnlyIfBehind is the SELF-UPDATE's flag, not the operator's. A manual
-    # `update.ps1` deploys the commit you just made locally, where HEAD never
-    # moves during the pull -- gating that on "HEAD advanced" would break
-    # every deploy this repo actually does. But an AGENT self-updating is
-    # asking for NEW code, and restarting every org on the machine to deliver
-    # none of it is pure disruption (neoja, 2026-08-09). Same script, two
-    # honest jobs.
+    # ⚠ -OnlyIfBehind is an OPT-IN for callers who genuinely only want new
+    # remote code. It is NOT the self-restart's flag any more (D-142,
+    # 2026-08-21). It used to be, and the half of the comment below that was
+    # always true is exactly what broke it: a deploy of the commit you just
+    # made locally NEVER moves HEAD during the pull, so "HEAD advanced" is not
+    # a test for "is there anything to ship". The agent tool asks for the
+    # repo's current state now and passes nothing; an operator deploy always
+    # did. The flag survives for a scheduled job that wants the old meaning
+    # and is willing to accept that a local commit will not deploy under it.
     if ($OnlyIfBehind) {
         Write-Host "already up to date ($after) -- NOT restarting: a self-update with nothing to deploy would cut every org's turn for no gain"
         exit 0

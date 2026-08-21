@@ -532,17 +532,49 @@ _AGENT_CALL = API_SRC[API_SRC.index('@app.post("/api/agent")'):
 _DISPATCH = sorted(set(__import__("re").findall(r'"(orgtree_\w+)"', _AGENT_CALL)))
 
 
+# DEPRECATED ALIASES (D-142, 2026-08-21): names the dispatch still answers on
+# purpose and that no card advertises, so tools/list teaches no new session a
+# dead name. Each one is a deliberate, dated exemption from the drift rule
+# below — never a place to park a name you forgot to card.
+ALIASES = {"orgtree_self_update": "orgtree_self_restart"}
+
+
 @t("the catalogue and the /api/agent dispatch name exactly the same 23 verbs")
 def _():
-    assert sorted(CARDS) == _DISPATCH, \
+    assert sorted(CARDS) == sorted(set(_DISPATCH) - set(ALIASES)), \
         f"drift: cards {sorted(set(CARDS) - set(_DISPATCH))}, " \
-        f"dispatch-only {sorted(set(_DISPATCH) - set(CARDS))}"
+        f"dispatch-only {sorted(set(_DISPATCH) - set(CARDS) - set(ALIASES))}"
     # +orgtree_present (FR-03, 2026-08-05); +orgtree_withdraw_ask (the
     # manual-invalidation ruling, 2026-08-06); +orgtree_self_update (FR-14,
-    # 2026-08-06); +orgtree_cheap_compact (FR-24, 2026-08-11);
+    # 2026-08-06) — renamed orgtree_self_restart 2026-08-21 (D-142);
+    # +orgtree_cheap_compact (FR-24, 2026-08-11);
     # +orgtree_request_scope (FR-13) + orgtree_watchdog (FR-18, 2026-08-12);
     # +orgtree_send_notice (mail that never wakes, 2026-08-19)
     assert len(CARDS) == 26, len(CARDS)
+
+
+@t("☠ the deprecated self_update alias is dispatchable but NOT advertised")
+def _():
+    """D-142: the rename cannot strand agents already in flight. A live session
+    fetched tools/list at startup and holds the OLD catalogue until it ends,
+    and stored charters carry the literal string 'orgtree_self_update' — both
+    keep calling the old name at a backend that must still answer, or the
+    error lands on an agent that did nothing wrong. Equally: no NEW session may
+    learn the dead name, so it must stay out of the cards."""
+    for old, new in ALIASES.items():
+        assert old in _DISPATCH, \
+            f"{old} is no longer dispatchable — every live session and " \
+            f"stored charter naming it breaks mid-flight (D-142)"
+        assert new in _DISPATCH and new in CARDS, \
+            f"{new} is not the carded replacement for {old}"
+        assert old not in CARDS, \
+            f"{old} is advertised in tools/list — new sessions are being " \
+            f"taught the deprecated name"
+    # the alias must reach the SAME implementation, not a stale copy
+    assert "orgtree_self_restart" in API_SRC and "self_restart_gate" in API_SRC
+    assert "self_update_gate" not in API_SRC, \
+        "the alias still routes to the old gate — two implementations to keep " \
+        "in step is how one of them rots"
 
 
 @t("no tool name is duplicated and every card carries an inputSchema")
@@ -632,13 +664,20 @@ def _():
     contracted = {"orgtree_rehire", "orgtree_dissolve", "orgtree_reallocate"}
     absent = sorted(n for n in CARDS
                     if n not in recital and n.split("orgtree_")[1] not in recital)
-    # orgtree_self_update LEFT the absent set 2026-08-07 (D-104): the user
-    # ruled that an agent learning this install is behind should update it
+    # orgtree_self_update LEFT the absent set 2026-08-07 (D-104); it is
+    # orgtree_self_restart since 2026-08-21 (D-142). The user ruled that an
+    # agent which knows there is something to deploy should deploy it
     # unprompted, and an instruction to act unprompted has to be in the
     # standing prompt — a tool card is only read once the agent has already
     # decided to reach for the tool. It rides the top-level/audience branch,
     # which is why `boss` sees it and the two below do not (asserted just
     # below, so the gating is pinned and not merely intended).
+    # ⚠ THIS PIN MATCHES BARE VERBS AS SUBSTRINGS ("move", "rename"), so
+    # ordinary prose in the prompt can silently satisfy it. Measured
+    # 2026-08-21: rewording the deploy paragraph to say "the pull moved HEAD"
+    # took orgtree_move out of the absent set and failed here. If this list
+    # shrinks, check for an accidental substring before believing the recital
+    # actually gained a verb.
     # orgtree_send_file ALSO left the absent set 2026-08-08 (user ruling): a
     # request for a file is a moment the agent must recognise, and the tool
     # card only speaks once it has already reached for that tool. Same shape
@@ -668,13 +707,27 @@ def _():
         p = supervisor.identity_prompt(org, who)
         assert "orgtree_send_file" in p, f"{who} is never told how to send a file"
         assert "a path is not a delivery" in p, who
-    assert "orgtree_self_update" in recital, \
-        "the D-104 update instruction left the top-level recital"
+    assert "orgtree_self_restart" in recital, \
+        "the D-104 deploy instruction left the top-level recital"
+    assert "orgtree_self_update" not in recital, \
+        "the recital still names the DEPRECATED tool — the alias exists for " \
+        "charters written before the rename, not for prompts generated after"
     for lower in ("mid", "worker"):
-        assert "orgtree_self_update" not in supervisor.identity_prompt(
+        assert "orgtree_self_restart" not in supervisor.identity_prompt(
             org, lower), \
-            f"{lower} is told to self-update, but the gate refuses it — a " \
+            f"{lower} is told to self-restart, but the gate refuses it — a " \
             f"prompt that promises what the ledger denies (D-004's sibling)"
+    # ☠ D-142: the standing prompt must not tell agents that being BEHIND is
+    # the only occasion. It was, it silently broke deploying a local commit,
+    # and the prompt is where an agent forms its picture before ever reading a
+    # tool card. A revert of the prompt half of D-142 fails here.
+    assert "committed" in recital.lower(), \
+        "the recital no longer tells agents that code COMMITTED here and not " \
+        "yet running is an occasion to deploy (D-142)"
+    for dead in ("Behind is the only trigger", "behind is the only trigger"):
+        assert dead not in recital, \
+            f"the recital still says {dead!r} — with the gate dropped that " \
+            f"guidance is wrong and strands local commits (D-142)"
     # C0 (2026-08-05): the org-inbox paragraph now names the TOOL itself —
     # "orgtree_audience action=grant target=extern" — for top-level agents
     # and holders (the recital under test is a top-level's)

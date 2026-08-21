@@ -1866,27 +1866,36 @@ def identity_prompt(org: Org, nid: str) -> str:
            "per turn; skip only turns where nothing durable happened. "
            if sc.get("tools", {}).get("edit", True)
            or sc.get("tools", {}).get("bash", True) else "")
-        + ("KEEPING THIS MACHINE UP TO DATE (user ruling 2026-08-07): if you "
-           "are notified that a NEWER orgtree version exists — the user says "
-           "so, a peer on the mail hub reports one, or you otherwise learn of "
-           "it — check whether this install is actually behind (`git -C "
-           "<the repo> fetch && git -C <the repo> status -sb`, or `git log "
-           "HEAD..@{u} --oneline`; the repo is the parent of the backend "
-           "folder). If it IS behind and NO other agent on this machine is "
-           "mid-turn, run orgtree_self_update yourself — do not wait to be "
-           "asked, and do not ask permission for the update itself. ☞ Use the "
-           "TOOL, never the update script from your own terminal: the update "
-           "restarts the backend and tears down your own turn, so a script "
-           "YOU started dies mid-build and leaves the install half-updated "
-           "(measured on a peer install). The tool spawns it detached, which "
-           "is the only shape that survives you. If the "
-           "machine is busy the tool REFUSES and names who is working: that "
-           "is not an error, it is the precondition doing its job — wait and "
-           "call again rather than working around it. Updating restarts every "
-           "org here and may cut your own turn mid-flight; that is expected, "
-           "and your next turn existing is the liveness check. Behind is the "
-           "only trigger — never run it speculatively, on a hunch, or to "
-           "'make sure'. " if n["parent"] is None or org._has_audience(nid, USER)
+        + ("KEEPING THIS MACHINE UP TO DATE (user ruling 2026-08-07, widened "
+           "2026-08-21): orgtree_self_restart rebuilds and restarts this "
+           "install from the repo's CURRENT commit. Two occasions call for "
+           "it, and you may act on either UNPROMPTED — do not wait to be "
+           "asked, and do not ask permission for the deploy itself. (1) You "
+           "learn a NEWER version exists — the user says so, a peer on the "
+           "mail hub reports one, or you otherwise hear of it — and this "
+           "install is actually behind (`git -C <the repo> fetch && git -C "
+           "<the repo> status -sb`, or `git log HEAD..@{u} --oneline`; the "
+           "repo is the parent of the backend folder). (2) Code has been "
+           "COMMITTED to this repo that is not yet running — a fix you or "
+           "someone here merged, pushed or not. Case (2) is the common one "
+           "and it used to be impossible: the tool passed an 'only if the "
+           "pull advanced HEAD' flag, so a locally-merged fix made it exit "
+           "before the rebuild and report success while the old build kept "
+           "serving. That flag is gone; a pull that advances nothing now "
+           "rebuilds and restarts anyway. ☞ Use the TOOL, never the update "
+           "script from your own terminal: the deploy restarts the backend "
+           "and tears down your own turn, so a script YOU started dies "
+           "mid-build and leaves the install half-updated (measured on a peer "
+           "install). The tool spawns it detached, which is the only shape "
+           "that survives you. If the machine is busy the tool REFUSES and "
+           "names who is working: that is not an error, it is the "
+           "precondition doing its job — wait and call again rather than "
+           "working around it. A restart cuts every org here and may cut your "
+           "own turn mid-flight; that is expected, and your next turn "
+           "existing is the liveness check. Have a REASON — something to "
+           "deploy, or a backend to bounce. Never restart speculatively, on a "
+           "hunch, or to 'make sure': there is no free restart. "
+           if n["parent"] is None or org._has_audience(nid, USER)
            else "")
         + f"AUTHENTIC-CHANNEL NOTE: "
         f"the orgtree harness may deliver real mail mid-task — from the user or "
@@ -6387,8 +6396,8 @@ def start_auto_resume_loop() -> None:
     threading.Thread(target=loop, daemon=True).start()
 
 
-_self_update_at = [0.0]        # machine-wide one-at-a-time guard
-_self_update_log = [""]        # the last launch's log path
+_self_restart_at = [0.0]       # machine-wide one-at-a-time guard
+_self_restart_log = [""]       # the last launch's log path
 
 
 def _detached_spawn(args: list[str], cwd: str, logpath: str,
@@ -6465,10 +6474,16 @@ def others_working(exclude: tuple[str, str] | None = None) -> list[str]:
     return sorted(out)
 
 
-def launch_self_update(slug: str, nid: str, target: str) -> dict[str, Any]:
-    """FR-14 (user request 2026-08-06): an org updates ITSELF — the shared
+def launch_self_restart(slug: str, nid: str, target: str) -> dict[str, Any]:
+    """FR-14 (user request 2026-08-06): an org redeploys ITSELF — the shared
     backend install and/or the machine's mail hub — without an outside
-    operator chat. The gate (ledger.self_update_gate) has already run.
+    operator chat. The gate (ledger.self_restart_gate) has already run.
+
+    Named `self_update` until 2026-08-21. The rename came with the fix that
+    matters: it deploys the repo's CURRENT commit, whatever that is, rather
+    than only a commit fetched from origin. "Update" described a tool that
+    could only ever pull someone else's work; "restart" describes what it
+    actually does to this machine, and is honest about the cost.
 
     Design constraints carried in from the cross-org (neoja) field reports,
     2026-08-06, learned on a live production box:
@@ -6487,7 +6502,7 @@ def launch_self_update(slug: str, nid: str, target: str) -> dict[str, Any]:
         the liveness check; a quiet peer is NOT evidence of breakage.
     """
     if target not in ("org", "mailhub", "both"):
-        raise ValueError(f"unknown self-update target {target!r}")
+        raise ValueError(f"unknown self-restart target {target!r}")
     # D-104: "only when nobody else is working" is a REFUSAL, not advice. The
     # org leg restarts the shared backend and cuts every in-flight turn on the
     # machine, and the deciding agent cannot see other orgs' nodes to check
@@ -6510,39 +6525,51 @@ def launch_self_update(slug: str, nid: str, target: str) -> dict[str, Any]:
     os.makedirs(data, exist_ok=True)
     now_t = time.time()
     with _state_lock:
-        since = now_t - _self_update_at[0]
+        since = now_t - _self_restart_at[0]
         if since < 300:
-            return {"status": f"a self-update was already launched "
+            return {"status": f"a self-restart was already launched "
                               f"{int(since)}s ago — one at a time, "
                               f"machine-wide; read its log first",
-                    "log": _self_update_log[0]}
-        _self_update_at[0] = now_t
+                    "log": _self_restart_log[0]}
+        _self_restart_at[0] = now_t
     logpath = os.path.join(
-        data, "self-update-" + now_iso().replace(":", "-") + ".log")
-    _self_update_log[0] = logpath
+        data, "self-restart-" + now_iso().replace(":", "-") + ".log")
+    _self_restart_log[0] = logpath
     with open(logpath, "ab") as lf:
-        lf.write(f"== self-update launched by {slug}/{nid} "
+        lf.write(f"== self-restart launched by {slug}/{nid} "
                  f"target={target} at {now_iso()} ==\n".encode())
     launched: list[str] = []
     warnings: list[str] = []
     if target in ("org", "both"):
         # Linux is a first-class install target (user ruling 2026-08-06):
         # update.sh mirrors update.ps1 step for step
-        # -OnlyIfBehind: an agent self-updating wants NEW code; if the pull
-        # advances nothing there is nothing to deploy, and restarting every
-        # org on the machine to deliver nothing is pure disruption (peer
-        # report 2026-08-09, neoja — their run restarted every org and left
-        # HEAD where it was). An OPERATOR deploy passes neither flag and keeps
-        # redeploying, because that is how a locally-made commit ships.
+        #
+        # ☠ NO -OnlyIfBehind / ORGTREE_ONLY_IF_BEHIND (user ruling 2026-08-21).
+        # This launch used to pass it, and that made the tool STRUCTURALLY
+        # UNABLE to deploy a local commit, silently. Measured here the same
+        # morning: three fixes were merged locally to main and the tool was
+        # called; the pull was a no-op because main was AHEAD of origin, so
+        # the script printed "already up to date -- NOT restarting" and exited
+        # 0 BEFORE the rebuild. The merge sat on disk while the running
+        # backend served the old build, and the tool reported success. Pushing
+        # first does not help — then HEAD merely EQUALS origin, still not
+        # "behind" — so there was no way to use this tool to ship anything you
+        # had just written. It took an operator-style run WITHOUT the flag.
+        #
+        # The flag's original worry (2026-08-09) was real but was aimed at the
+        # wrong target: a restart with nothing to deploy cuts every org for no
+        # gain. What stops that is the CALLER deciding it has a reason to
+        # deploy — now said plainly in the tool card and the prompt — not a
+        # gate that also silently swallows the legitimate case. The flag stays
+        # DECLARED in both scripts for operators/scheduled jobs; nothing in
+        # this repo passes it any more.
         if os.name == "nt":
             _detached_spawn(
                 ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-                 "-File", os.path.join(repo, "update.ps1"),
-                 "-OnlyIfBehind"], repo, logpath)
+                 "-File", os.path.join(repo, "update.ps1")], repo, logpath)
         else:
             _detached_spawn(
-                ["bash", os.path.join(repo, "update.sh")], repo, logpath,
-                env={**os.environ, "ORGTREE_ONLY_IF_BEHIND": "1"})
+                ["bash", os.path.join(repo, "update.sh")], repo, logpath)
         launched.append("org backend (git pull + rebuild + restart — "
                         "EVERY org on this machine restarts)")
     if target in ("mailhub", "both"):
@@ -6568,7 +6595,7 @@ def launch_self_update(slug: str, nid: str, target: str) -> dict[str, Any]:
                             "data volume, ports and .env are never touched)")
     return {"launched": launched, "log": logpath,
             **({"warnings": warnings} if warnings else {}),
-            "status": ("update running detached — if the backend restarts, "
+            "status": ("deploy running detached — if the backend restarts, "
                        "your turn may be cut and the org resumes on the new "
                        "build. Your own next turn existing IS the liveness "
                        "check; a quiet remote peer is NOT evidence of "

@@ -186,10 +186,14 @@ fi
 git pull --ff-only || die "git pull FAILED -- resolve manually. Nothing was rebuilt and nothing was restarted."
 AFTER=$(git rev-parse --short HEAD)
 if [ "$AFTER" = "$BEFORE" ]; then
-  # ORGTREE_ONLY_IF_BEHIND is the SELF-UPDATE's flag, never an operator's: a
-  # manual deploy ships the commit just made locally, where HEAD does not move
-  # during the pull. An AGENT self-updating is asking for NEW code, and
-  # restarting every org to deliver none is pure disruption (neoja).
+  # ORGTREE_ONLY_IF_BEHIND is an OPT-IN for callers who genuinely only want new
+  # REMOTE code. It is NOT the self-restart's flag any more (D-142,
+  # 2026-08-21) and nothing in this repo sets it. It used to be set by the
+  # agent tool, and that made the tool unable to deploy a commit made on this
+  # machine, silently: a deploy of a locally-made commit never moves HEAD
+  # during the pull, so "HEAD advanced" is not a test for "is there anything
+  # to ship". Kept for a scheduled job that wants the old meaning and accepts
+  # that a local commit will not deploy under it. Mirrors update.ps1.
   if [ "${ORGTREE_ONLY_IF_BEHIND:-}" = "1" ]; then
     echo "already up to date ($AFTER) -- NOT restarting: a self-update with nothing to deploy would cut every org's turn for no gain"
     exit 0

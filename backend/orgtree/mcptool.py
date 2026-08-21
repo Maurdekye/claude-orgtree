@@ -226,11 +226,17 @@ TOOLS: list[dict[str, Any]] = [
         "inputSchema": {"type": "object", "properties": {}, "required": []},
     },
     {
-        "name": "orgtree_self_update",
+        "name": "orgtree_self_restart",
         "description": (
-            "Update THIS MACHINE's orgtree install and/or its mail hub to "
-            "the latest published code (git pull + rebuild + restart) "
-            "without waiting for an outside operator chat. target: 'org' "
+            "Deploy THIS MACHINE's orgtree install and/or its mail hub from "
+            "the repo's CURRENT state (git pull --ff-only + rebuild + "
+            "restart) without waiting for an outside operator chat. What "
+            "ships is whatever is COMMITTED in the repo right now — "
+            "including commits made locally and never pushed. There is no "
+            "'is this install behind?' precondition: the pull advancing "
+            "nothing is normal and the rebuild+restart happens anyway, "
+            "which is what makes a local merge actually reach the running "
+            "backend. target: 'org' "
             "(the backend — ⚠ RESTARTS EVERY ORG on this machine; your own "
             "turn may be cut mid-flight and the org resumes on the new "
             "build), 'mailhub' (rebuilds the hub container in place — its "
@@ -251,9 +257,12 @@ TOOLS: list[dict[str, Any]] = [
             "survives your own teardown. ⚠ target 'org'/'both' REFUSES while any "
             "agent on this machine is mid-turn, and names them — the restart "
             "would cut them off. That refusal is the precondition working: "
-            "wait for the machine to go idle and call again. Run this when "
-            "you have learned this install is BEHIND a newer version, not "
-            "speculatively."),
+            "wait for the machine to go idle and call again. ⚠ A restart "
+            "cuts every org on this machine, so call it when you have a "
+            "REASON — code committed that needs to be running, or a backend "
+            "that must be bounced. Not speculatively, not on a hunch, not "
+            "'to make sure': there is no such thing as a free restart, and "
+            "one with nothing to deploy is pure disruption."),
         "inputSchema": {
             "type": "object",
             "properties": {

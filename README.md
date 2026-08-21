@@ -118,9 +118,10 @@ names resolve their transport automatically. Robust installations stand up
 a local hub and prefer `@net:`.
 
 **Orgs maintain themselves.** A top-level agent (or any user-audience
-holder) can run `orgtree_self_update` to pull the latest published code and
-redeploy its own backend — and rebuild the machine's mail hub — without an
-outside operator session. Updates run detached with a log file; every org
+holder) can run `orgtree_self_restart` to redeploy its own backend from the
+repo's current commit — code pulled from the remote, or committed right here
+and never pushed — and rebuild the machine's mail hub, without an outside
+operator session. Updates run detached with a log file; every org
 auto-resumes after the restart, so the cost is bounded at some mid-turn
 progress. Works on Windows (`update.ps1`) and Linux/macOS (`update.sh`).
 
@@ -215,9 +216,9 @@ model: [hub/README.md](hub/README.md) and
 `./update.sh` on Linux/macOS — the two are step-for-step equivalents. Either
 pulls the latest changes, rebuilds the UI, installs any new dependencies, and
 restarts the backend in the background with a health check. `update.sh` also
-runs under Git Bash on Windows. Agents can trigger the same update from
-inside an org with the `orgtree_self_update` tool (top-level or
-user-audience holders; both platforms) — the update runs detached, every
+runs under Git Bash on Windows. Agents can trigger the same deploy from
+inside an org with the `orgtree_self_restart` tool (top-level or
+user-audience holders; both platforms) — the deploy runs detached, every
 org auto-resumes after the restart, and the hub container can be rebuilt in
 the same call without ever touching its data volume.
 

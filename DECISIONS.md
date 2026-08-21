@@ -1847,6 +1847,10 @@ it rebuilds a container in place and no turn runs through it.
 Load-bearing: a refusal must spend nothing — it leaves the 5-minute
 machine-wide rate limit untouched, or one refused call would strand an
 idle machine for five minutes over a no-op. Pinned.
+Amended by D-142 (2026-08-21): the tool is `orgtree_self_restart` and
+"behind" is no longer the only trigger — code committed here and not yet
+running is the second, and was the case this ruling's flag silently broke.
+The idle REFUSAL above is untouched and stays load-bearing.
 
 ### D-105 · an agent may edit its own TEAM charter, never its own charter
 Ruling (user, 2026-08-07): an agent self-retools exactly one field —
@@ -2814,6 +2818,44 @@ D-123)*
 *(The seven items ruled 2026-08-01 live in their domain entries: D-021
 Bounds, D-014 Load-bearing, D-063, D-023, D-071, D-069; the mobile wave's
 hold/release state is project-state, tracked outside the register.)*
+
+### D-142 · self-restart deploys the CURRENT commit; "behind" stops being the gate
+Ruling (user, 2026-08-21): `orgtree_self_update` becomes
+`orgtree_self_restart`, and the launch stops passing `-OnlyIfBehind` /
+`ORGTREE_ONLY_IF_BEHIND`. The tool now rebuilds and restarts from whatever is
+committed in the repo, whether the pull moved HEAD or not.
+Why: measured the same morning. Three fixes were merged locally to main and
+the tool was called. `update.ps1 -OnlyIfBehind` exits BEFORE the rebuild when
+the pull advances nothing — and main was AHEAD of origin, never behind — so it
+logged "already up to date -- NOT restarting", exited 0, and the running
+backend kept serving the old build with the merge sitting on disk. Nobody was
+told anything was wrong; it took an operator-style run without the flag to
+deploy. Pushing first does not rescue it either: then HEAD merely EQUALS
+origin, still not "behind". So the tool was structurally unable to ship a
+commit made on this machine, and failed SILENTLY — the two properties that
+make a deploy mechanism worse than none.
+D-104's worry was real and stays answered, just not by a flag: a restart with
+nothing to deploy cuts every org here for no gain. What prevents it is the
+CALLER having a reason, stated plainly in the tool card and the standing
+prompt ("have a REASON — something to deploy, or a backend to bounce; there
+is no free restart"), rather than a gate that also swallowed the legitimate
+case without saying so.
+Bounds — two guards are explicitly NOT touched, both load-bearing for reasons
+unrelated to the flag. The mid-turn REFUSAL (D-104) stands whole: `target`
+org/both still refuses while any agent on this machine is mid-turn and still
+names them. The DETACHED spawn stands: the deploy tears down the caller's own
+turn, so a synchronous run dies mid-build and leaves a half-updated install
+(measured on a peer install 2026-08-09, re-confirmed 2026-08-21).
+`-OnlyIfBehind` REMAINS DECLARED in `update.ps1` and `update.sh` — nothing in
+this repo passes it now, but it is a legitimate operator/scheduled-job
+affordance and PowerShell hard-errors on an undeclared switch, so deleting it
+would break out-of-repo callers loudly for no gain.
+The old name stays DISPATCHABLE as a hidden deprecated alias, absent from
+`mcptool.TOOLS` so no new session learns it. A live session holds the tool
+catalogue it fetched at startup, and stored charters carry the literal string;
+both would call the old name at an install that no longer answered, and the
+error would land on an agent that did nothing wrong. Removable once no stored
+charter names it.
 
 ---
 
