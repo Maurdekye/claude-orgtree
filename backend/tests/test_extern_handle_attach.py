@@ -49,6 +49,25 @@ with open(os.path.join(os.environ["ORGTREE_DATA"], "defaults.json"), "w",
           encoding="utf-8") as _f:
     _f.write('{"net_hub_address": "http://127.0.0.1:9"}')
 
+import orgtree.ledger as _ledger  # noqa: E402
+
+# ⚠ PROVENANCE GUARD — runs BEFORE the from-import below, so a wrong checkout
+# reports itself in those words instead of as a puzzling ImportError.
+# On this machine PYTHONPATH points at the MAIN checkout
+# (E:\...\claude-orgtree\backend), so a worktree suite that did not win the
+# path race would import main's ledger and report confident numbers about code
+# it never touched. The insert above beats it only because it lands at position
+# 0 — an ordering assumption, so it is asserted rather than trusted. A POSITIVE
+# check (this file, next to me), not an assertion of absence.
+# Verified by pre-seeding sys.modules from main: fires as designed.
+_want = os.path.realpath(os.path.join(os.path.dirname(__file__), "..", "orgtree",
+                                      "ledger.py"))
+_got = os.path.realpath(_ledger.__file__)
+assert _got == _want, (
+    f"\n  imported ledger.py from {_got}\n  but this suite lives beside {_want}\n"
+    f"  → you are testing a DIFFERENT checkout (PYTHONPATH="
+    f"{os.environ.get('PYTHONPATH')!r})")
+
 from orgtree.ledger import (  # noqa: E402
     LedgerError, MAX_EXTERN_HANDLES, Org, USER, norm_extern_handles)
 
