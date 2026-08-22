@@ -611,6 +611,316 @@ check("tool card: names cmd.exe + findstr + smoke, and no longer claims the "
 
 
 # ---------------------------------------------------------------------------
+print("\n§6b · shell='bash' — the opt-out, and the refusal that guards it")
+# Item 3. The field exists so an agent can have the POSIX idiom the OLD tool
+# card wrongly implied it already had. The load-bearing part is not that bash
+# works — it is that asking for bash and NOT getting it is impossible.
+
+
+def _bash_resolution_is_deterministic_and_never_wsl():
+    exe = supervisor.wd_bash_exe()
+    if exe is None:
+        raise AssertionError(
+            "no bash resolved on this machine — every check in this section "
+            "would be vacuous, so this is a failure, not a skip. (If Git for "
+            "Windows is genuinely absent, the REFUSAL checks below are the "
+            "ones that matter and this one is stale.)")
+    assert os.path.isfile(exe), f"resolved a bash that is not there: {exe!r}"
+    if WIN:
+        # ☠ System32\bash.exe is the WSL launcher. It is on the service PATH
+        # and it is named bash, and using it would run the dog's command in a
+        # different filesystem entirely — a failure that SUCCEEDS, which is
+        # worse than one that errors. (It really is present on this machine:
+        # checked before writing this.)
+        sys32 = os.path.realpath(
+            os.path.join(os.environ.get("SystemRoot", r"C:\Windows"),
+                         "System32"))
+        assert os.path.dirname(os.path.realpath(exe)) != sys32, \
+            f"resolved the WSL launcher as 'bash': {exe!r}"
+        # …and the exclusion is tested DIRECTLY, because the search order
+        # already finds a real Git first — so the end-to-end assertion above
+        # would pass just as happily with the exclusion deleted. A guard that
+        # nothing can distinguish from its own absence is not a guard.
+        assert supervisor.wd_is_wsl_bash(os.path.join(sys32, "bash.exe")), \
+            "the WSL launcher is not recognised as one"
+        assert not supervisor.wd_is_wsl_bash(
+            r"C:\Program Files\Git\bin\bash.exe"), \
+            "a real Git bash was mistaken for the WSL launcher"
+    # DETERMINISM — the resolver must not depend on the caller's PATH, or the
+    # backend service and this suite would silently use different bashes.
+    # Measured: an early version consulted shutil.which FIRST and did exactly
+    # that. Resolve again under a service-like PATH and demand the same answer.
+    real_path = os.environ.get("PATH", "")
+    try:
+        os.environ["PATH"] = (os.path.join(
+            os.environ.get("SystemRoot", r"C:\Windows"), "system32")
+            if WIN else "/usr/bin:/bin")
+        supervisor._wd_bash_cache.update(at=0.0, path=None)   # force re-probe
+        again = supervisor.wd_bash_exe()
+    finally:
+        os.environ["PATH"] = real_path
+        supervisor._wd_bash_cache.update(at=0.0, path=None)
+    assert again == exe, (
+        "bash resolution DEPENDS ON THE CALLER'S PATH — the backend service "
+        f"would use a different bash than this suite. {exe!r} vs {again!r}")
+
+
+check("bash: resolution is deterministic across PATHs and never the WSL "
+      "launcher", _bash_resolution_is_deterministic_and_never_wsl)
+
+
+def _bash_dogs_really_get_bash_and_native_dogs_really_do_not():
+    o = _Org()
+    os.makedirs(supervisor.scratch_dir(o.d["slug"], "k"), exist_ok=True)
+    real_path = os.environ.get("PATH", "")
+    try:
+        # the service's PATH for both, so the ONLY difference is the shell
+        os.environ["PATH"] = (os.path.join(
+            os.environ.get("SystemRoot", r"C:\Windows"), "system32")
+            if WIN else "/nonexistent")
+        b = dog(target="echo hello | grep hello", pattern="hello",
+                shell="bash")
+        lines, raw, code = supervisor._wd_run_command(o, b)
+        assert lines == ["hello"], (
+            "a shell='bash' dog did NOT get bash — the whole point of the "
+            f"field. raw={raw!r} code={code!r}")
+        # CONTROL — the identical dog WITHOUT the field must still be native,
+        # i.e. must still fail on Windows. This is what "existing dogs are
+        # untouched" means, asserted rather than assumed.
+        n = dog(target="echo hello | grep hello", pattern="hello")
+        assert "shell" not in n
+        lines2, raw2, _c2 = supervisor._wd_run_command(o, n)
+        if WIN:
+            assert lines2 == [] and supervisor.wd_output_broken(raw2), (
+                "adding the shell field changed the behaviour of dogs that "
+                f"do not use it — every pre-existing dog just moved: {raw2!r}")
+    finally:
+        os.environ["PATH"] = real_path
+    assert supervisor.wd_shell(o, "bash") == "bash"
+    assert supervisor.wd_shell(o, None) == ("cmd" if WIN else "sh")
+    assert "grep" in supervisor.wd_shell_note("bash")
+
+
+check("bash: a shell='bash' dog gets bash under the service PATH, and a dog "
+      "without the field is unchanged (control pair)",
+      _bash_dogs_really_get_bash_and_native_dogs_really_do_not)
+
+
+def _no_bash_means_refuse_not_fall_back():
+    """THE decision this feature turns on. A fallback to cmd would rebuild
+    the original defect one level up and make it worse — the agent asked for
+    bash and was told yes, so it has no reason to doubt its target."""
+    o = _Org()
+    os.makedirs(supervisor.scratch_dir(o.d["slug"], "k"), exist_ok=True)
+    real = supervisor.wd_bash_exe
+    try:
+        supervisor.wd_bash_exe = lambda: None                # no bash anywhere
+        # ① the tick-time half: _wd_popen must RAISE, not silently use cmd
+        raised = None
+        try:
+            supervisor._wd_popen(o, "k", "echo x", "bash")
+        except OSError as e:
+            raised = str(e)
+        assert raised and "cmd.exe" in raised, (
+            "with no bash available, a shell='bash' dog was spawned ANYWAY — "
+            "in cmd.exe, silently, which is the exact failure this field "
+            f"exists to prevent. raised={raised!r}")
+        # ② and the dog reports it rather than dying quietly
+        lines, raw, _c = supervisor._wd_run_command(
+            o, dog(target="echo hello | grep hello", pattern="hello",
+                   shell="bash"))
+        assert lines and "failed to start" in lines[0], \
+            f"the failure did not become an event: {lines!r}"
+        assert "cmd.exe" in raw, f"the owner is not told why: {raw!r}"
+        # ③ the authority re-check pauses such a dog (the 'checked once,
+        #    never again' lesson, applied to the shell opt-in)
+        org = store.create_org("zz wd bash lost")
+        try:
+            org.hire(USER, None, "haiku", 5, "k", add_dirs=[],
+                     tools={"bash": True, "web": False, "edit": False,
+                            "subagents": False, "mcp": []},
+                     org_visibility="team", charter="fixture")
+            why = supervisor._wd_owner_lost(
+                org, {"owner": "k", "kind": "command", "shell": "bash",
+                      "target": "x", "state": "armed"})
+            assert why and "no bash exists" in why, \
+                f"a bash dog with no bash was left armed: {why!r}"
+            # CONTROL — a NATIVE dog must be unaffected by bash going missing
+            assert supervisor._wd_owner_lost(
+                org, {"owner": "k", "kind": "command", "target": "x",
+                      "state": "armed"}) is None, \
+                "a native dog was paused because bash vanished"
+        finally:
+            try:
+                store.delete_org(org.d["slug"])
+            except Exception:                                # noqa: BLE001
+                pass
+    finally:
+        supervisor.wd_bash_exe = real
+    # CONTROL — with bash back, the same spawn succeeds
+    p = supervisor._wd_popen(o, "k", "echo back", "bash")
+    assert "back" in (p.communicate(timeout=60)[0] or "")
+
+
+check("bash: with no bash present the spawn REFUSES (never falls back to "
+      "cmd), the dog reports it, and the tick pauses it (control pair)",
+      _no_bash_means_refuse_not_fall_back)
+
+
+def _the_create_boundary_refuses_and_validates():
+    o = store.create_org("zz wd shell create")
+    try:
+        o.hire(USER, None, "haiku", 5, "k", add_dirs=[],
+               tools={"bash": True, "web": False, "edit": False,
+                      "subagents": False, "mcp": []},
+               org_visibility="team", charter="fixture")
+        # a bogus shell is refused outright
+        try:
+            o.watchdog_create("k", "x", "command", "echo x", "x", 60, False,
+                              "powershell")
+            raise AssertionError("an unknown shell was accepted")
+        except Exception as e:                               # noqa: BLE001
+            assert "shell must be one of" in str(e), str(e)
+        # a shell on a kind that has no shell is refused — an accepted no-op
+        # flag is an invisible mode, which is this defect's whole family
+        try:
+            o.watchdog_create("k", "y", "file", "E:/a.log", "E", 60, False,
+                              "bash")
+            raise AssertionError("shell='bash' was accepted on a file dog")
+        except Exception as e:                               # noqa: BLE001
+            assert "only command/stream" in str(e), str(e)
+        # ✔ stored only when NOT native — that absent key is what makes every
+        #   pre-existing dog native by construction rather than by migration
+        r = o.watchdog_create("k", "b", "command", "echo x", "x", 60, False,
+                              "bash")
+        assert o._watchdog(r["id"])["shell"] == "bash"
+        assert r["shell"] == "bash"
+        assert supervisor.wd_list_row(o._watchdog(r["id"]))["shell"] == "bash"
+        r2 = o.watchdog_create("k", "n", "command", "echo x", "x")
+        assert "shell" not in o._watchdog(r2["id"]), (
+            "a native dog stored a shell key — pre-existing dogs and new "
+            "native ones must be byte-identical in the doc")
+        assert "shell" not in supervisor.wd_list_row(o._watchdog(r2["id"]))
+    finally:
+        try:
+            store.delete_org(o.d["slug"])
+        except Exception:                                    # noqa: BLE001
+            pass
+
+
+check("bash: create validates the enum, refuses it on shell-less kinds, and "
+      "stores nothing for native (control pair)",
+      _the_create_boundary_refuses_and_validates)
+
+
+def _the_smoke_run_uses_the_shell_that_was_asked_for():
+    o = _Org()
+    os.makedirs(supervisor.scratch_dir(o.d["slug"], "k"), exist_ok=True)
+    real_path = os.environ.get("PATH", "")
+    try:
+        os.environ["PATH"] = (os.path.join(
+            os.environ.get("SystemRoot", r"C:\Windows"), "system32")
+            if WIN else "/nonexistent")
+        good = supervisor.wd_smoke(o, "k", "command",
+                                   "echo hello | grep hello", "hello",
+                                   timeout=25, shell_pref="bash")
+        assert good["shell"] == "bash", f"smoke reported {good['shell']!r}"
+        assert not good.get("broken"), f"bash smoke called broken: {good!r}"
+        assert good.get("matched") is True
+        # CONTROL — the same target, same PATH, native shell: broken on
+        # Windows. If the smoke run did not honour the field, these two would
+        # agree, and the create-time diagnosis would be about the wrong shell.
+        if WIN:
+            bad = supervisor.wd_smoke(o, "k", "command",
+                                      "echo hello | grep hello", "hello",
+                                      timeout=25)
+            assert bad.get("broken") is True, (
+                "the smoke run gave a NATIVE dog bash's result — the "
+                f"create-time diagnosis would be a fiction: {bad!r}")
+    finally:
+        os.environ["PATH"] = real_path
+
+
+check("bash: the create-time smoke run honours `shell`, so its verdict is "
+      "about the shell the dog will really use (control pair)",
+      _the_smoke_run_uses_the_shell_that_was_asked_for)
+
+
+class _Req:
+    """`agent_call` reads exactly one thing off the request — the bridge slug
+    a sandboxed container is pinned to. Everything else is the body."""
+    class state:                                             # noqa: N801
+        bridge_slug = None
+
+
+def _the_api_boundary_itself_refuses():
+    """Drives the SHIPPED handler, not a re-implementation.
+
+    The refusal that this whole feature turns on lives in `api.agent_call`,
+    and until now this suite only tested the layers under it. A guard that is
+    never exercised through its own front door is a guard you are guessing
+    about."""
+    from fastapi import HTTPException                        # noqa: PLC0415
+    from orgtree import api                                  # noqa: PLC0415
+    o = store.create_org("zz wd api refusal")
+    try:
+        o.hire(USER, None, "haiku", 5, "k", add_dirs=[],
+               tools={"bash": True, "web": False, "edit": False,
+                      "subagents": False, "mcp": []},
+               org_visibility="team", charter="fixture")
+        store.save_org(o)
+        slug = o.d["slug"]
+
+        def call(args):
+            return api.agent_call(
+                api.AgentCall(org=slug, node="k", tool="orgtree_watchdog",
+                              args=args), _Req())
+
+        real = supervisor.wd_bash_exe
+        try:
+            supervisor.wd_bash_exe = lambda: None
+            try:
+                call({"action": "create", "name": "nb", "kind": "command",
+                      "target": "echo hi | grep hi", "pattern": "hi",
+                      "shell": "bash"})
+                raise AssertionError(
+                    "THE API ACCEPTED shell='bash' WITH NO BASH ON THE "
+                    "MACHINE — it would have armed a dog in cmd.exe that the "
+                    "agent believes is running bash. This is the one thing "
+                    "the feature must not do.")
+            except HTTPException as e:
+                assert "REFUSING" in str(e.detail), str(e.detail)
+                assert "System32" in str(e.detail), \
+                    "the refusal does not explain the WSL exclusion"
+        finally:
+            supervisor.wd_bash_exe = real
+        # CONTROL — with bash present the very same create SUCCEEDS, and its
+        # smoke run comes back from bash. Without this half, a handler that
+        # refused everything would pass the check above.
+        r = call({"action": "create", "name": "yb", "kind": "command",
+                  "target": "echo hi | grep hi", "pattern": "hi",
+                  "shell": "bash"})
+        assert r.get("shell") == "bash", f"create returned {r!r}"
+        assert r["smoke"]["shell"] == "bash", f"smoke: {r['smoke']!r}"
+        assert not r["smoke"].get("broken"), f"smoke: {r['smoke']!r}"
+        assert r["smoke"].get("matched") is True
+        # …and `list` shows the shell, so the mode is not invisible
+        rows = call({"action": "list"})["watchdogs"]
+        row = next(x for x in rows if x["name"] == "yb")
+        assert row["shell"] == "bash" and row["health"] == "ok", row
+    finally:
+        try:
+            store.delete_org(o.d["slug"])
+        except Exception:                                    # noqa: BLE001
+            pass
+
+
+check("bash: the real /api/agent handler refuses shell='bash' with no bash, "
+      "and accepts + smoke-runs it with bash (control pair)",
+      _the_api_boundary_itself_refuses)
+
+
+# ---------------------------------------------------------------------------
 print("\n§7 · END TO END — the engine, one tick, both directions")
 # Everything above tests a piece. This runs the REAL `_wd_tick`: due-check
 # selection, the command pool, the done-callback, the doc write, `_wd_fire`,
@@ -650,6 +960,12 @@ def _one_real_tick_fires_the_good_dog_and_diagnoses_the_bad_one():
                                  "WDLIVE-READY", 15)
         bad = o.watchdog_create("k", "bad", "command", bad_t,
                                 "WDLIVE-READY", 15)
+        # ③ THE ITEM-3 OPT-OUT — the identical bash target as ②, differing
+        #    ONLY by shell="bash". Same tick, same PATH, same command: if
+        #    this fires while ② is reported broken, the field does exactly
+        #    what it claims and nothing else.
+        bashd = o.watchdog_create("k", "bashy", "command", bad_t,
+                                  "WDLIVE-READY", 15, False, "bash")
         store.save_org(o)
         # the engine's pool WITHOUT its scanner thread: a background loop
         # would keep walking every org in this root for the rest of the run
@@ -666,11 +982,12 @@ def _one_real_tick_fires_the_good_dog_and_diagnoses_the_bad_one():
         while time.time() < deadline:
             o2 = store.load_org(slug)
             if all(int(o2._watchdog(x["id"]).get("checks_run") or 0) >= 1
-                   for x in (good, bad)):
+                   for x in (good, bad, bashd)):
                 break
             time.sleep(0.5)
         o2 = store.load_org(slug)
         g, b = o2._watchdog(good["id"]), o2._watchdog(bad["id"])
+        sh = o2._watchdog(bashd["id"])
 
         # ①  SEEN TO FIRE
         assert int(g.get("checks_run") or 0) >= 1, \
@@ -700,10 +1017,22 @@ def _one_real_tick_fires_the_good_dog_and_diagnoses_the_bad_one():
             assert "BROKEN" in row["health"], (
                 "`list` would still show this dog as an ordinary armed dog "
                 f"waiting patiently: {row['health']!r}")
-        # ③  and the two are DISTINGUISHABLE — the entire defect in one line
+        # ③  the item-3 dog: SAME command as the broken one, shell="bash"
+        assert int(sh.get("checks_run") or 0) >= 1,             f"the bash dog never ran a check: {sh!r}"
+        assert int(sh.get("fired") or 0) >= 1, (
+            "a shell='bash' dog running the SAME target that the native dog "
+            f"could not run did not fire — item 3 does not work: {sh!r}")
+        assert "WDLIVE-READY" in str(sh.get("last_output") or "")
+        assert supervisor.wd_list_row(sh)["shell"] == "bash"
+        assert supervisor.wd_list_row(sh)["health"] == "ok"
+
+        # ④  and they are DISTINGUISHABLE — the entire defect in one line
         assert row["health"] != supervisor.wd_list_row(g)["health"], (
             "a working dog and a permanently-broken one still report the "
             "same health — nothing has actually been fixed")
+        assert row["health"] != supervisor.wd_list_row(sh)["health"], (
+            "the same command under bash and under cmd reports the same "
+            "health — `shell` is not actually changing anything")
     finally:
         os.environ["PATH"] = real_path
         try:

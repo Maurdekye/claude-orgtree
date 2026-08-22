@@ -433,6 +433,11 @@ TOOLS: list[dict[str, Any]] = [
             "orgtree downtime is lost). A command/stream dog runs with YOUR "
             "AUTHORITY (needs your bash; runs in your sandbox if you have "
             "one) — but ⚠ NOT IN YOUR SHELL. " + _WD_SHELL_WARNING +
+            "If you would rather write the POSIX idiom, pass "
+            "shell:\"bash\" and the target runs in `bash -lc` instead — it "
+            "REFUSES at create if no bash exists here rather than quietly "
+            "using cmd.exe, so a create that succeeds means the shell you "
+            "asked for is the shell you got. "
             "Every create SMOKE-RUNS your target once and returns its real "
             "output and exit code in `smoke`: READ IT — that is the five "
             "seconds that tells you whether this dog can ever fire. And "
@@ -480,6 +485,17 @@ TOOLS: list[dict[str, Any]] = [
                                           "Use it for 'tell me the build "
                                           "finished' — worth knowing, not "
                                           "worth a turn"},
+                "shell": {"type": "string", "enum": ["native", "bash"],
+                          "description": "create, command/stream only: which "
+                                         "shell interprets `target`. Default "
+                                         "\"native\" = this platform's own "
+                                         "(cmd.exe on Windows). \"bash\" runs "
+                                         "`bash -lc`, so grep/sed/awk/"
+                                         "$(...)/$VAR work — and the create "
+                                         "REFUSES if no bash is installed "
+                                         "here rather than silently falling "
+                                         "back to cmd, where your target "
+                                         "would match nothing forever"},
                 "id": {"type": "string",
                        "description": "pause/resume/remove: the watchdog id"},
             },

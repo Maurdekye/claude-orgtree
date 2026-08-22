@@ -3119,9 +3119,10 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
     org_send: tuple[str, str] | None = None   # (dst-slug, body) outbound to another org's inbox
     net_send = False                          # @net: — staged to the spool; kick after the lock
     notice_to: str | None = None              # send_notice recipient — nudged wake=False after the lock
-    # (owner, kind, target, pattern) of a watchdog just armed — its target is
-    # run ONCE, outside the lock, and the result rides back on the create
-    smoke_req: tuple[str, str, str, Any] | None = None
+    # (owner, kind, target, pattern, shell) of a watchdog just armed — its
+    # target is run ONCE, outside the lock, and the result rides back on the
+    # create
+    smoke_req: tuple[str, str, str, Any, Any] | None = None
     with store.DOC_LOCK:
         try:
             org = store.load_org(body.org)
@@ -3301,15 +3302,45 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                                 f"folder you hold are watchable "
                                 f"(orgtree_request_scope can ask for more)")
                         tgt = full
+                    shell = str(a.get("shell") or "native").strip().lower()
+                    if shell == "bash" and kind in ("command", "stream"):
+                        # ☠ REFUSE, NEVER FALL BACK (2026-08-22). Handing a
+                        # bash-idiom target to cmd.exe because bash was
+                        # missing is the defect this field exists to fix,
+                        # rebuilt one level up and made worse: the agent
+                        # asked for bash and was told yes, so it has no
+                        # reason to doubt its target, and the dog matches
+                        # nothing forever. A refusal costs one message.
+                        if sandbox.is_sandboxed(org):
+                            raise LedgerError(
+                                "shell='bash' is for host orgs — your dogs "
+                                "already run in a POSIX shell (`sh -lc`) "
+                                "inside your container, so the full idiom "
+                                "works without it. Omit `shell`.")
+                        if supervisor.wd_bash_exe() is None:
+                            raise LedgerError(
+                                "shell='bash' was asked for but no bash can "
+                                "be found on this machine (looked on PATH, "
+                                "in the Git for Windows install locations, "
+                                "and in the registry; a WSL "
+                                "System32\\bash.exe is deliberately NOT "
+                                "used — it would run your command in a "
+                                "different filesystem entirely). REFUSING "
+                                "rather than quietly running your target in "
+                                "cmd.exe, where a bash idiom matches nothing "
+                                "and the dog looks healthy forever. Install "
+                                "Git for Windows, or write a cmd target "
+                                "(findstr, dir /b, %VAR%) and omit `shell`.")
                     result = org.watchdog_create(
                         body.node, a.get("name"), kind, tgt,
                         a.get("pattern"), a.get("interval_s") or 60,
-                        a.get("notice"))
+                        a.get("notice"), a.get("shell"))
                     # ☞ the smoke run happens AFTER the lock (see below): it
                     # spawns a real process and waits seconds for it, and
                     # DOC_LOCK is the whole machine's doc lock. Staged, not
                     # run here.
-                    smoke_req = (body.node, kind, tgt, a.get("pattern"))
+                    smoke_req = (body.node, kind, tgt, a.get("pattern"),
+                                 a.get("shell"))
                 elif act == "list":
                     # `notice` is listed because a flag you cannot SEE is a
                     # flag you cannot verify — an owner reading its own dogs
@@ -3558,7 +3589,12 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
         # It runs outside DOC_LOCK on purpose: it waits seconds on a real
         # child, and that lock is every org's doc.
         try:
-            smoke = supervisor.wd_smoke(org, *smoke_req)
+            # named, not *unpacked: `wd_smoke`'s 6th positional is `timeout`,
+            # and passing the shell into it would silently give every smoke
+            # run a nonsense deadline
+            s_owner, s_kind, s_tgt, s_pat, s_shell = smoke_req
+            smoke = supervisor.wd_smoke(org, s_owner, s_kind, s_tgt, s_pat,
+                                        shell_pref=s_shell)
             result["smoke"] = smoke
             if smoke.get("broken"):
                 result["status"] = (

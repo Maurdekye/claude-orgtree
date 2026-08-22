@@ -7618,16 +7618,142 @@ def _wd_proc_alive(target: str) -> bool:
         return False
 
 
-def _wd_popen(org: Org, owner: str, cmd: str) -> subprocess.Popen[str]:
+_WD_BASH_TTL = 300.0
+_wd_bash_cache: dict[str, Any] = {"at": 0.0, "path": None}
+
+
+def wd_is_wsl_bash(path: str) -> bool:
+    """True for `C:\\Windows\\System32\\bash.exe` — the **WSL launcher**.
+
+    It is on the service PATH, it is named bash, and handing a dog's command
+    to it would run that command inside a Linux VM: `E:\\...` unnameable, the
+    scratch cwd meaningless, the output about a different filesystem. That is
+    worse than cmd.exe refusing `grep`, because it SUCCEEDS at something —
+    and a wrong answer that looks like an answer is the failure mode this
+    whole subsystem was just repaired for.
+
+    Its own function so it can be tested directly. Left inline it was
+    unreachable in practice: a real Git install is found first, so the
+    exclusion would have been dead code that no check could distinguish from
+    working code."""
+    root = os.environ.get("SystemRoot", r"C:\Windows")
+    return os.path.dirname(os.path.realpath(path)).lower() == \
+        os.path.realpath(os.path.join(root, "System32")).lower()
+
+
+def _wd_resolve_bash() -> str | None:
+    """Find a REAL bash for a `shell="bash"` dog, or None.
+
+    ⚠ On Windows, `shutil.which("bash")` is a trap, not a shortcut:
+    `C:\\Windows\\System32\\bash.exe` is the **WSL launcher**. It is on the
+    service PATH, it is named bash, and it would run the dog's command inside
+    a Linux VM with an entirely different filesystem — `E:\\...` unnameable,
+    the scratch cwd meaningless, output about the wrong machine. That is a
+    far worse failure than cmd.exe refusing `grep`, because it SUCCEEDS at
+    something. It is excluded by name below, before anything else.
+
+    ⚠ And `shutil.which` is consulted LAST, not first. Measured while writing
+    this: called from an agent's terminal it returned
+    `…\\Git\\usr\\bin\\bash.exe`, because that terminal has Git on its PATH —
+    while the BACKEND SERVICE, which is what actually spawns dogs, has not
+    and would land on `…\\Git\\bin\\bash.exe` instead. Two processes
+    resolving two different bashes from the same code is the ambient-
+    environment trap this subsystem already lost a day to. Fixed locations
+    and the registry are the same answer for everyone, so they go first, and
+    PATH is only the fallback for an install nothing else can name."""
+    cands: list[str] = []
+    if os.name == "nt":
+        # `bin\bash.exe` (the wrapper that sets up the MSYS environment), not
+        # `usr\bin\bash.exe` (the raw binary) — the former is Git for
+        # Windows' supported entry point
+        for base in (os.environ.get("ProgramFiles", r"C:\Program Files"),
+                     os.environ.get("ProgramFiles(x86)",
+                                    r"C:\Program Files (x86)"),
+                     os.path.join(os.environ.get("LOCALAPPDATA", ""),
+                                  "Programs")):
+            if base:
+                cands.append(os.path.join(base, "Git", "bin", "bash.exe"))
+        # Git for Windows records where it went; the paths above are only the
+        # DEFAULTS, and an install elsewhere is ordinary
+        try:
+            import winreg                                   # noqa: PLC0415
+            for hive, key in ((winreg.HKEY_LOCAL_MACHINE,
+                               r"SOFTWARE\GitForWindows"),
+                              (winreg.HKEY_LOCAL_MACHINE,
+                               r"SOFTWARE\WOW6432Node\GitForWindows"),
+                              (winreg.HKEY_CURRENT_USER,
+                               r"SOFTWARE\GitForWindows")):
+                try:
+                    with winreg.OpenKey(hive, key) as k:
+                        root = str(winreg.QueryValueEx(k, "InstallPath")[0])
+                    cands.append(os.path.join(root, "bin", "bash.exe"))
+                except OSError:
+                    continue
+        except ImportError:
+            pass
+        found = shutil.which("bash")
+        if found and not wd_is_wsl_bash(found):
+            cands.append(found)          # last resort: a non-WSL bash on PATH
+    else:
+        cands += ["/bin/bash", "/usr/bin/bash", "/usr/local/bin/bash"]
+        found = shutil.which("bash")
+        if found:
+            cands.append(found)
+    for c in cands:
+        if c and os.path.isfile(c):
+            return os.path.realpath(c)
+    return None
+
+
+def wd_bash_exe() -> str | None:
+    """The resolved bash, cached — None when this machine has none.
+
+    Cached because it walks the filesystem and the registry, and it is asked
+    once per dog per tick. The cache re-resolves when the remembered path
+    stops existing (an uninstall) and re-tries a NEGATIVE answer every
+    `_WD_BASH_TTL` (an install), so neither answer is permanent."""
+    cached = _wd_bash_cache["path"]
+    if cached and os.path.isfile(str(cached)):
+        return str(cached)
+    if not cached and _wd_bash_cache["at"] \
+            and time.time() - float(_wd_bash_cache["at"]) < _WD_BASH_TTL:
+        return None
+    path = _wd_resolve_bash()
+    _wd_bash_cache.update(at=time.time(), path=path)
+    return path
+
+
+def _wd_popen(org: Org, owner: str, cmd: str,
+              shell_pref: Any = None) -> subprocess.Popen[str]:
     """Spawn a dog's command WITH THE OWNER'S HANDS (capability ruling):
     inside the owner's sandbox container when sandboxed, else a host shell in
-    the owner's scratch. clean_env like every agent process."""
+    the owner's scratch. clean_env like every agent process.
+
+    `shell_pref` is the dog's `shell` field (2026-08-22). Absent/"native" is
+    the historical behaviour EXACTLY — `shell=True`, i.e. cmd.exe on Windows
+    — so every dog armed before this existed is untouched by construction
+    rather than by remembering to. "bash" runs `bash -lc` instead.
+
+    ⚠ When "bash" was asked for and none can be found, this RAISES rather
+    than falling back to cmd.exe. A silent fallback would rebuild the very
+    defect this file spent a day on, one level up: the agent asks for bash,
+    is given cmd, writes bash, and the dog never fires — and this time the
+    tool card would have TOLD it bash was fine. `watchdog_create` refuses the
+    dog up front for the same reason; this is the tick-time half of it."""
     slug = org.d["slug"]
     if sbx.is_sandboxed(org):
         argv: list[str] | str = sbx.exec_argv(
             sbx.container_name(slug),
             sbx.cpath_scratch(slug, owner)) + ["sh", "-lc", cmd]
         shell = False
+    elif str(shell_pref or "") == "bash":
+        exe = wd_bash_exe()
+        if exe is None:
+            raise OSError(
+                "this watchdog was created with shell='bash' and no bash can "
+                "be found on this machine any more — refusing to run it in "
+                "cmd.exe instead, which would silently match nothing")
+        argv, shell = [exe, "-lc", cmd], False
     else:
         argv, shell = cmd, True
     return subprocess.Popen(
@@ -7653,9 +7779,9 @@ _WD_QUIET_AGE_S = 2 * 3600               # …over this long
 _WD_NEVER_RAN_AGE_S = 300                # armed this long with ZERO checks
 
 
-def wd_shell(org: Org) -> str:
+def wd_shell(org: Org, shell_pref: Any = None) -> str:
     """Which shell a command/stream dog's target is ACTUALLY handed to —
-    "sh" or "cmd". ONE source of truth, so the tool description, the
+    "sh", "cmd" or "bash". ONE source of truth, so the tool description, the
     create-time smoke run and the health note cannot drift from `_wd_popen`.
 
     This is the fact that killed three dogs on this machine silently
@@ -7665,15 +7791,26 @@ def wd_shell(org: Org) -> str:
     the SERVICE's shell, which is not the bash the agent types into. Agents
     wrote grep/sed/`$(...)`/`/tmp` because the tool told them to, cmd.exe
     matched nothing, and the dogs sat `armed, fired: 0` for up to nine days
-    looking exactly like "the condition never happened"."""
+    looking exactly like "the condition never happened".
+
+    `shell_pref` is the dog's opt-in `shell` field; absent means native."""
     if sbx.is_sandboxed(org):
         return "sh"                       # sh -lc, inside the owner's container
+    if str(shell_pref or "") == "bash":
+        return "bash"
     return "cmd" if os.name == "nt" else "sh"
 
 
 def wd_shell_note(shell: str, sandboxed: bool = False) -> str:
     """The idiom warning that goes with `wd_shell` — said in full, because the
     whole defect was an agent confidently writing for the wrong one."""
+    if shell == "bash":
+        return ("target runs in `bash -lc` (" + (wd_bash_exe() or "?")
+                + ") — the full POSIX idiom works: grep, sed, awk, $(...), "
+                  "$VAR, pipes. It is NOT your interactive shell, though: it "
+                  "starts from the backend service's environment, and on "
+                  "Windows paths are MSYS-style (/e/Libraries/... or "
+                  "'E:/Libraries/...' with forward slashes), not E:\\...")
     if shell == "cmd":
         return ("target runs in cmd.exe with the BACKEND SERVICE's PATH — not "
                 "bash, and Git's usr\\bin is NOT on it. grep, sed, awk, tr, "
@@ -7786,8 +7923,8 @@ def wd_health(w: dict[str, Any]) -> str | None:
 #: by hand.
 WD_LIST_FIELDS: tuple[str, ...] = (
     "id", "owner", "name", "kind", "target", "pattern", "interval_s",
-    "state", "fired", "last_fired", "notice", "last_check", "checks_run",
-    "last_output", "last_exit", "paused_why", "exit")
+    "state", "fired", "last_fired", "notice", "shell", "last_check",
+    "checks_run", "last_output", "last_exit", "paused_why", "exit")
 
 
 def wd_list_row(w: dict[str, Any]) -> dict[str, Any]:
@@ -7806,7 +7943,8 @@ def wd_list_row(w: dict[str, Any]) -> dict[str, Any]:
 
 
 def wd_smoke(org: Org, owner: str, kind: str, target: str,
-             pattern: Any = None, timeout: float = 8.0) -> dict[str, Any]:
+             pattern: Any = None, timeout: float = 8.0,
+             shell_pref: Any = None) -> dict[str, Any]:
     """Run the dog's target ONCE, right now, at create time, and report what
     came back (2026-08-22, coordinator scope item 4).
 
@@ -7818,7 +7956,7 @@ def wd_smoke(org: Org, owner: str, kind: str, target: str,
     path.
 
     Never raises: a create must not fail because its smoke run did."""
-    sh = wd_shell(org)
+    sh = wd_shell(org, shell_pref)
     res: dict[str, Any] = {"shell": sh,
                            "note": wd_shell_note(sh, sbx.is_sandboxed(org))}
     pat = None
@@ -7849,7 +7987,7 @@ def wd_smoke(org: Org, owner: str, kind: str, target: str,
     # command / stream — the real thing, through the real spawn
     lines: list[str] = []
     try:
-        proc = _wd_popen(org, owner, target)
+        proc = _wd_popen(org, owner, target, shell_pref)
     except OSError as e:
         res["ran"] = f"FAILED TO START: {e}"
         res["exit_code"] = None
@@ -7951,6 +8089,16 @@ def _wd_owner_lost(org: Org, w: dict[str, Any]) -> str | None:
     kind = str(w["kind"])
     if kind in ("command", "stream") and not n["scope"]["tools"].get("bash"):
         return "its owner no longer holds bash — the hands it runs with"
+    if kind in ("command", "stream") and str(w.get("shell") or "") == "bash" \
+            and not sbx.is_sandboxed(org) and wd_bash_exe() is None:
+        # the same "checked once, never again" lesson as the two above, for
+        # the shell opt-in: `watchdog_create` refuses a bash dog when there is
+        # no bash, and uninstalling Git afterwards must not leave the dog
+        # quietly running in cmd.exe — which is the failure it opted OUT of
+        return ("it was created with shell='bash' and no bash exists on this "
+                "machine any more — running it in cmd.exe instead would "
+                "silently match nothing (re-create it with shell='native' "
+                "and a cmd target, or reinstall Git)")
     if kind == "file":
         if sbx.is_sandboxed(org):
             # the org moved into a container after the dog was armed; the
@@ -8167,7 +8315,7 @@ def _wd_run_command(org: Org,
     tgt = str(w["target"])
     pat = re.compile(str(w["pattern"])) if w.get("pattern") else None
     try:
-        proc = _wd_popen(org, str(w["owner"]), tgt)
+        proc = _wd_popen(org, str(w["owner"]), tgt, w.get("shell"))
         out, _ = proc.communicate(timeout=60)
     except subprocess.TimeoutExpired:
         try:
@@ -8344,7 +8492,8 @@ def _wd_ensure_stream(slug: str, org: Org, w: dict[str, Any],
         return
     # not running — spawn + reader
     try:
-        proc = _wd_popen(org, str(w["owner"]), str(w["target"]))
+        proc = _wd_popen(org, str(w["owner"]), str(w["target"]),
+                         w.get("shell"))
     except OSError:
         return
     ent = {"proc": proc, "buf": [], "last_fire": 0.0,

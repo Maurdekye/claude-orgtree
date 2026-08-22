@@ -10,7 +10,10 @@ checks and matched nothing reported exactly what a healthy one reports. So
 every claim the suite makes was checked by breaking the code and watching a
 **named** check go red.
 
-## Result: 20/20 mutations behaved as required
+## Result: 30/30 mutations behaved as required
+
+(20/20 for items 1/2/4 at commit `17b86ff`; re-run at 30/30 after item 3 —
+the `shell: "bash"` opt-out — landed on top.)
 
 Including the two that make the other eighteen mean something:
 
@@ -43,6 +46,45 @@ would not be running the code under test at all.
 | E1 | the fire path is suppressed (`if lines:` → `if False:`) | §7 E2E |
 | E2 | `_wd_tick` stops routing command dogs to the pool | §7 E2E |
 | E3 | the turn-spawn interlock stops recording wakes | §7 E2E |
+
+### Item 3 — `shell: "bash"`
+
+| # | Mutation | Killed |
+|---|---|---|
+| B1 | `_wd_popen` **falls back to cmd** when bash is missing | §6b refusal |
+| B2 | `_wd_popen` ignores the `shell` field entirely | §6b, §7 |
+| B3 | the API boundary stops refusing bash-with-no-bash | §6b handler |
+| B4 | bash resolution consults PATH **first** again | §6b determinism |
+| B5 | the WSL `System32\bash.exe` is no longer excluded | §6b determinism |
+| B6 | native dogs start storing `shell:"native"` | §6b create |
+| B7 | the tick stops pausing a bash dog whose bash vanished | §6b refusal |
+| B8 | the create-time smoke run ignores the shell asked for | §6b smoke |
+| B9 | `list` hides the shell (an invisible mode) | §6b create |
+| B10 | the ledger stops validating the shell enum | §6b create |
+
+**B1 is the one that matters.** The entire design turns on *refuse, never
+fall back* — a fallback would mean the agent asked for bash, was told yes,
+and got cmd, so it has no reason to doubt its target. That is the original
+defect rebuilt one level up and made worse. B1 makes that fallback happen and
+the suite goes red.
+
+**B4 is a regression that actually occurred during development, kept as a
+mutant.** The first resolver called `shutil.which("bash")` first. Called from
+an agent's terminal that returned `…\Git\usr\bin\bash.exe`; the backend
+service, which has no Git on its PATH, would have landed on
+`…\Git\bin\bash.exe`. Two processes resolving different bashes from the same
+code — the ambient-environment trap again, in the fix for the
+ambient-environment trap. Fixed locations and the registry now come first and
+PATH is only the fallback.
+
+**B5 needed the code changed to be testable, which is itself the finding.**
+The WSL exclusion was inline in `_wd_resolve_bash`, and because a real Git
+install is found earlier in the search order, deleting the exclusion changed
+nothing observable — it was indistinguishable from working code. It is now
+`wd_is_wsl_bash()`, tested directly in both directions. A guard nothing can
+tell apart from its own absence is not a guard.
+(`C:\Windows\System32\bash.exe` really is present on this machine; the trap
+is live, not hypothetical.)
 
 M5 is the one that proves the **control pairs** are load-bearing: a sniffer
 that calls everything broken is exactly as useless as one that calls nothing

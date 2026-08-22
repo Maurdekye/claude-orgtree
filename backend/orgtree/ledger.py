@@ -4227,10 +4227,13 @@ class Org:
             raise LedgerError(f"no watchdog {wid!r}")
         return d
 
+    WATCHDOG_SHELLS: Final = ("native", "bash")
+
     def watchdog_create(self, owner: str, name: Any, kind: Any, target: Any,
                         pattern: Any = None,
                         interval_s: Any = 60,
-                        notice: Any = False) -> dict[str, Any]:
+                        notice: Any = False,
+                        shell: Any = None) -> dict[str, Any]:
         """FR-18 (user request 2026-08-07, rulings 2026-08-12): a PET — a
         persistent watcher that mails its owner when its target produces a
         matching event. Free by ruling (never enters TIERS), bounded
@@ -4257,7 +4260,19 @@ class Org:
         alone. Default stays waking: every dog armed before this existed,
         and every dog armed without the flag, drives a turn as it always
         has. The flag is for "tell me the build finished" — worth knowing,
-        not worth a turn."""
+        not worth a turn.
+
+        `shell` (2026-08-22) opts a command/stream dog out of the platform's
+        native shell. ABSENT — and every dog armed before this existed is
+        absent — means native, i.e. `shell=True`: cmd.exe on a Windows host,
+        exactly as before. "bash" runs `bash -lc` instead, for agents who
+        want the POSIX idiom the old tool card wrongly implied they had.
+
+        ⚠ The API boundary REFUSES "bash" when no bash can be found, rather
+        than falling back (see api.py). Falling back would rebuild the defect
+        this field exists to fix, one level up: the agent asks for bash, is
+        given cmd, writes bash, and the dog matches nothing forever — this
+        time with the tool having agreed that bash was fine."""
         self._require_live(owner)
         name = re.sub(r"[^a-z0-9-]+", "-",
                       str(name or "").strip().lower()).strip("-")[:24]
@@ -4279,6 +4294,13 @@ class Org:
             m = re.fullmatch(r"(pid|port):(\d+)", tgt)
             if not m:
                 raise LedgerError("process targets are `pid:N` or `port:N`")
+        sh = str(shell or "native").strip().lower()
+        if sh not in self.WATCHDOG_SHELLS:
+            raise LedgerError(f"shell must be one of {self.WATCHDOG_SHELLS}")
+        if sh != "native" and kind not in ("command", "stream"):
+            raise LedgerError("only command/stream watchdogs run a shell at "
+                              "all — file and process dogs have no target to "
+                              "interpret")
         pat = str(pattern).strip() if pattern else None
         if pat:
             try:
@@ -4307,11 +4329,16 @@ class Org:
                      "target": tgt, **({"pattern": pat} if pat else {}),
                      "interval_s": iv, "state": "armed", "at": now(),
                      **({"notice": True} if quiet else {}),
+                     # stored ONLY when it is not the default — an absent key
+                     # is what makes every pre-existing dog native by
+                     # construction rather than by a migration
+                     **({"shell": sh} if sh != "native" else {}),
                      "fired": 0, "events": []})
         self._log("watchdog_create", owner,
                   {"id": wid, "name": name, "kind": kind,
-                   **({"notice": True} if quiet else {})}, [])
-        return {"id": wid, "name": name, "notice": quiet,
+                   **({"notice": True} if quiet else {}),
+                   **({"shell": sh} if sh != "native" else {})}, [])
+        return {"id": wid, "name": name, "notice": quiet, "shell": sh,
                 "status": f"armed — {kind} watchdog"
                           + (f" every {iv}s" if kind != "stream"
                              else " (realtime stream)")
