@@ -54,6 +54,8 @@ copy it into a suite — import it, so the two callers cannot drift apart.
 """
 from __future__ import annotations
 
+import os
+
 from orgtree import supervisor
 
 # argv fragments that mean "this would deploy something"
@@ -111,3 +113,91 @@ def installed() -> bool:
     `_detached_spawn` out and fails to restore it re-arms the gun, so the
     suites assert this rather than assuming it."""
     return supervisor._detached_spawn is _interlock
+
+
+# ---------------------------------------------------------------------------
+# ☠ THE PRODUCTION DATA-ROOT INTERLOCK (added 2026-08-22, watchdog work)
+# ---------------------------------------------------------------------------
+# The deploy interlock above guards the one spawn that restarts the machine.
+# It does NOT guard the other half of "no test may touch production": the
+# real data root, `~/orgtree`, where every live org's doc, every real agent's
+# scratch, and every ARMED WATCHDOG lives.
+#
+# Watchdog work is unusually exposed to this. `supervisor._wd_tick()` walks
+# `store.list_orgs()` and RUNS every armed dog it finds; `_wd_fire` writes
+# mail into a real agent's inbox and can WAKE it. A suite that exercised the
+# engine against the live root would arm and fire production dogs, drive real
+# turns, and bill them — and it would look exactly like a passing test.
+#
+# The existing convention is `os.environ["ORGTREE_DATA"] = mkdtemp()` before
+# importing orgtree. A convention is what this directory keeps getting caught
+# by, so this makes it a check with teeth: it reads `store.DATA_ROOT` — the
+# value the code ACTUALLY resolved, not the env var someone believes they set
+# — and refuses to let the suite continue if it is the live root.
+_LIVE_ROOT = os.path.realpath(os.path.expanduser("~/orgtree"))
+
+
+def assert_isolated_data_root() -> None:
+    """Refuse to run against the machine's live data root. Call once, right
+    after importing orgtree, in any suite that can reach the ledger or the
+    watchdog engine.
+
+    Reads the RESOLVED `store.DATA_ROOT` rather than `os.environ` on purpose:
+    `store` reads the env var at import time, so a suite that sets
+    ORGTREE_DATA *after* its first orgtree import has an env var that says
+    "isolated" and a module that is pointed at production. That gap is
+    precisely the abstention shape — the check would pass while the thing it
+    checks is false."""
+    from orgtree import store                                # noqa: PLC0415
+    root = os.path.realpath(store.DATA_ROOT)
+    if root == _LIVE_ROOT or root.startswith(_LIVE_ROOT + os.sep):
+        raise SystemExit(
+            f"☠ REFUSING TO RUN: store.DATA_ROOT resolved to {root!r}, which "
+            f"is the machine's LIVE data root ({_LIVE_ROOT!r}). This suite "
+            f"reaches the ledger and the watchdog engine — running it here "
+            f"would arm and fire production watchdogs, write into real "
+            f"agents' mailboxes and wake real (billed) turns. Set "
+            f"ORGTREE_DATA to a temp dir BEFORE the first orgtree import.")
+
+
+def data_root_isolated() -> bool:
+    """The predicate behind `assert_isolated_data_root`, for the check that
+    mutation-verifies the interlock itself."""
+    try:
+        assert_isolated_data_root()
+    except SystemExit:
+        return False
+    return True
+
+
+# ---------------------------------------------------------------------------
+# ☠ THE TURN-SPAWN INTERLOCK (added 2026-08-22, watchdog work)
+# ---------------------------------------------------------------------------
+# `supervisor.send_message(..., wake=True)` DRIVES A NODE: it starts a real
+# `claude -p` process and bills a real turn. The watchdog engine calls it on
+# every fire (`_wd_fire`), so any check that exercises the engine end to end
+# — which is the only honest way to prove a dog FIRES — reaches it.
+#
+# Opt-in, not automatic: suites that mean to drive real turns
+# (test_turn_lifecycle) must keep doing so. Arm it in suites that do not.
+#: every wake this interlock intercepted: (slug, nid, text, wake)
+WAKES: list[tuple[str, str, str, bool]] = []
+_REAL_SEND_MESSAGE = supervisor.send_message
+
+
+def _no_wake(slug, nid, text, command=False, wake=True):    # noqa: ANN001,FBT002
+    WAKES.append((slug, nid, text, bool(wake)))
+    return {"intercepted": True}
+
+
+def install_no_turn_spawn() -> None:
+    """Arm it. Recording rather than raising, for the same reason the deploy
+    interlock records: the point is to make the fire path RUNNABLE under test,
+    and a check can then assert on `WAKES` — a positive marker that the wake
+    really was reached — instead of asserting the absence of a process it
+    cannot see."""
+    supervisor.send_message = _no_wake                    # type: ignore[assignment]
+
+
+def turn_spawn_blocked() -> bool:
+    return supervisor.send_message is _no_wake

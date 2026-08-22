@@ -3119,6 +3119,9 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
     org_send: tuple[str, str] | None = None   # (dst-slug, body) outbound to another org's inbox
     net_send = False                          # @net: — staged to the spool; kick after the lock
     notice_to: str | None = None              # send_notice recipient — nudged wake=False after the lock
+    # (owner, kind, target, pattern) of a watchdog just armed — its target is
+    # run ONCE, outside the lock, and the result rides back on the create
+    smoke_req: tuple[str, str, str, Any] | None = None
     with store.DOC_LOCK:
         try:
             org = store.load_org(body.org)
@@ -3302,15 +3305,29 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                         body.node, a.get("name"), kind, tgt,
                         a.get("pattern"), a.get("interval_s") or 60,
                         a.get("notice"))
+                    # ☞ the smoke run happens AFTER the lock (see below): it
+                    # spawns a real process and waits seconds for it, and
+                    # DOC_LOCK is the whole machine's doc lock. Staged, not
+                    # run here.
+                    smoke_req = (body.node, kind, tgt, a.get("pattern"))
                 elif act == "list":
                     # `notice` is listed because a flag you cannot SEE is a
                     # flag you cannot verify — an owner reading its own dogs
-                    # must be able to tell which of them will wake it
+                    # must be able to tell which of them will wake it.
+                    #
+                    # `last_check` / `checks_run` / `last_output` / `health`
+                    # are listed for the harder version of the same rule
+                    # (2026-08-22): this projection used to report
+                    # `state: armed, fired: 0` for BOTH a dog armed thirty
+                    # seconds ago and one that had run 700 checks over nine
+                    # days and matched nothing, and the only way to tell them
+                    # apart was reading orgs/<slug>.json by hand. Three dogs
+                    # on this machine died that way, silently, for up to nine
+                    # days. An abstention that reads exactly like a pass is
+                    # this codebase's standing failure shape; hiding the
+                    # evidence in the doc is what made it one here.
                     result = {"watchdogs": [
-                        {k: w.get(k) for k in
-                         ("id", "owner", "name", "kind", "target",
-                          "pattern", "interval_s", "state", "fired",
-                          "last_fired", "notice")}
+                        supervisor.wd_list_row(w)
                         for w in org.d.get("watchdogs") or []
                         if w["owner"] == body.node
                         or org.is_ancestor(body.node, str(w["owner"]))]}
@@ -3527,6 +3544,32 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
         except LedgerError as e:
             raise HTTPException(422, str(e))
         store.save_org(org)
+    if smoke_req is not None:
+        # FAIL LOUDLY AT CREATE TIME (2026-08-22). Arming a dog used to tell
+        # the agent nothing about whether its target actually works, so a
+        # command that never even STARTED — cmd.exe answering "'grep' is not
+        # recognized", every 60s, for nine days — was indistinguishable from
+        # a condition that had not happened yet. Three dogs on this machine
+        # died that way. Running the target once, here, through the SAME
+        # `_wd_popen` the engine uses, would have made every one of them
+        # obvious in five seconds; that is the cheapest diagnostic in the
+        # subsystem, so we spend the five seconds.
+        #
+        # It runs outside DOC_LOCK on purpose: it waits seconds on a real
+        # child, and that lock is every org's doc.
+        try:
+            smoke = supervisor.wd_smoke(org, *smoke_req)
+            result["smoke"] = smoke
+            if smoke.get("broken"):
+                result["status"] = (
+                    "⚠ ARMED BUT ITS TARGET DOES NOT WORK — see `smoke`. "
+                    "This dog will sit `armed, fired: 0` forever, which "
+                    "looks exactly like the condition never happening. Fix "
+                    "the target and re-create it. " + str(result.get("status") or ""))
+        except Exception as e:                                   # noqa: BLE001
+            # a create must not fail because its smoke run did — but say so,
+            # rather than return a silent absence of evidence
+            result["smoke"] = {"error": f"smoke run failed: {e}"}
     if body.tool in ("orgtree_retire", "orgtree_dissolve", "orgtree_rename",
                      "orgtree_cheap_compact"):
         # FR-01 (redteam): agents removing/re-keying seats must not orphan a

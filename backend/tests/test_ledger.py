@@ -1819,8 +1819,12 @@ def main():
             _store.save_org(o)
 
             def poll():
-                lines, hw = supervisor._wd_check_poll(slug, w, o)
+                # the third element is the abstention evidence added
+                # 2026-08-22 (what the check SAW, matched or not) — asserted
+                # on its own in test_watchdog_visibility.py
+                lines, hw, seen = supervisor._wd_check_poll(slug, w, o)
                 w["high_water"] = hw
+                w["last_output"] = seen
                 return lines
 
             # ② the high-water counts BYTES CONSUMED. It used to be

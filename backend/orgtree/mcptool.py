@@ -27,6 +27,34 @@ PORT: str = os.environ.get("ORGTREE_PORT", "7360")
 BASE: str = os.environ.get("ORGTREE_BASE") or f"http://127.0.0.1:{PORT}"
 BRIDGE_SECRET: str = os.environ.get("ORGTREE_BRIDGE_SECRET", "")
 
+# ⚠ THE SHELL A WATCHDOG'S TARGET ACTUALLY GETS (2026-08-22).
+#
+# `supervisor._wd_popen` spawns command/stream dogs with `shell=True` and the
+# BACKEND SERVICE's environment. On Windows that is cmd.exe with the service
+# PATH — no Git usr\bin, so no grep/sed/awk/tr, no `$(...)`, no `$VAR`, no
+# /tmp, and `find` is Windows FIND.EXE. This card previously said a dog "runs
+# WITH YOUR HANDS (needs your bash)", agents reasonably read that as "write
+# bash", and their dogs then matched nothing forever while reporting
+# `state: armed, fired: 0` — which is also exactly what a healthy dog waiting
+# on a condition reports. Three dogs on this machine were dead that way for
+# up to nine days before anyone could tell.
+#
+# `os.name` here is the right proxy: this server runs beside the shell its
+# dogs get — on the host for a host org, inside the container for a sandboxed
+# one. Both idioms are spelled out anyway, so a wrong guess still leaves the
+# reader informed rather than confidently mistaken.
+_WD_SHELL_WARNING: str = (
+    ("On Windows (THIS MACHINE) the target is handed to cmd.exe with the "
+     "backend service's PATH: grep, sed, awk, tr, $(...), $VAR and /tmp/... "
+     "DO NOT WORK, and `find` is FIND.EXE, not GNU find. Write cmd: findstr, "
+     "dir /b, %VAR%, %TEMP%. (On a POSIX host or inside a sandbox it is "
+     "`sh`, without your interactive rc files or PATH additions.) "
+     if os.name == "nt" else
+     "The target is handed to `sh` with the backend service's environment — "
+     "your interactive shell's aliases, rc files and PATH additions are NOT "
+     "there, so use absolute paths for anything unusual. (On a Windows host "
+     "it is cmd.exe instead, where grep/sed/awk/$(...)/$VAR/tmp all fail.) "))
+
 # JSON-schema fragments/tool cards for the MCP wire — freeform JSON by nature
 TOOLS_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -402,8 +430,16 @@ TOOLS: list[dict[str, Any]] = [
             "(pid:N or port:N liveness — fires on the DOWN edge), stream (a "
             "persistent LISTENING command, e.g. a tail; each matching output "
             "line fires the moment it occurs — realtime, but output during "
-            "orgtree downtime is lost). A command/stream dog runs WITH YOUR "
-            "HANDS (needs your bash; runs in your sandbox if you have one). "
+            "orgtree downtime is lost). A command/stream dog runs with YOUR "
+            "AUTHORITY (needs your bash; runs in your sandbox if you have "
+            "one) — but ⚠ NOT IN YOUR SHELL. " + _WD_SHELL_WARNING +
+            "Every create SMOKE-RUNS your target once and returns its real "
+            "output and exit code in `smoke`: READ IT — that is the five "
+            "seconds that tells you whether this dog can ever fire. And "
+            "`list` reports `checks_run`, `last_check`, `last_output` and a "
+            "`health` line, because `armed, fired: 0` alone cannot "
+            "distinguish 'armed a minute ago' from 'ran 700 times over nine "
+            "days and matched nothing'. "
             "A dog WAKES you by default; pass notice:true at create to have "
             "it fire passively instead — the event still lands in your "
             "mailbox, but no turn is started for it and you read it whenever "
@@ -425,7 +461,8 @@ TOOLS: list[dict[str, Any]] = [
                          "enum": ["file", "command", "process", "stream"]},
                 "target": {"type": "string",
                            "description": "the path, command line, or "
-                                          "pid:N / port:N"},
+                                          "pid:N / port:N. ⚠ command/stream: "
+                                          + _WD_SHELL_WARNING},
                 "pattern": {"type": "string",
                             "description": "regex an event line must match "
                                            "(required for command; optional "

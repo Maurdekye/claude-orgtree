@@ -7643,6 +7643,276 @@ def _wd_popen(org: Org, owner: str, cmd: str) -> subprocess.Popen[str]:
                        if os.name == "nt" else 0))
 
 
+# How much of a check's raw output rides on the dog. Enough to READ the shell's
+# own error ("'grep' is not recognized as an internal or external command")
+# without turning the org doc into a log file.
+_WD_OUT_KEEP = 400
+# A dog is only "quietly wrong" once it has had real chances to be right.
+_WD_QUIET_CHECKS = 20                    # checks with no match…
+_WD_QUIET_AGE_S = 2 * 3600               # …over this long
+_WD_NEVER_RAN_AGE_S = 300                # armed this long with ZERO checks
+
+
+def wd_shell(org: Org) -> str:
+    """Which shell a command/stream dog's target is ACTUALLY handed to —
+    "sh" or "cmd". ONE source of truth, so the tool description, the
+    create-time smoke run and the health note cannot drift from `_wd_popen`.
+
+    This is the fact that killed three dogs on this machine silently
+    (measured 2026-08-22): `_wd_popen` passes `shell=True`, which on Windows
+    is cmd.exe, while `orgtree_watchdog` told agents a dog "runs WITH YOUR
+    HANDS (needs your bash)". It does run with the owner's AUTHORITY — but in
+    the SERVICE's shell, which is not the bash the agent types into. Agents
+    wrote grep/sed/`$(...)`/`/tmp` because the tool told them to, cmd.exe
+    matched nothing, and the dogs sat `armed, fired: 0` for up to nine days
+    looking exactly like "the condition never happened"."""
+    if sbx.is_sandboxed(org):
+        return "sh"                       # sh -lc, inside the owner's container
+    return "cmd" if os.name == "nt" else "sh"
+
+
+def wd_shell_note(shell: str, sandboxed: bool = False) -> str:
+    """The idiom warning that goes with `wd_shell` — said in full, because the
+    whole defect was an agent confidently writing for the wrong one."""
+    if shell == "cmd":
+        return ("target runs in cmd.exe with the BACKEND SERVICE's PATH — not "
+                "bash, and Git's usr\\bin is NOT on it. grep, sed, awk, tr, "
+                "$(...), $VAR and /tmp/... all fail here, and `find` resolves "
+                "to Windows FIND.EXE, not GNU find. Use findstr, dir /b, "
+                "%VAR%, and %TEMP%.")
+    return ("target runs in a POSIX shell" + (" INSIDE your sandbox container"
+                                              if sandboxed else "")
+            + " with the backend service's environment — your interactive "
+              "shell's aliases, rc files and PATH additions are not there.")
+
+
+_WD_SHELL_ERRORS = (
+    "is not recognized as an internal or external command",
+    "is not recognized as the name of a cmdlet",
+    "command not found",
+    "no such file or directory",
+)
+
+
+def wd_output_broken(out: str) -> str | None:
+    """A POSITIVE marker that the target never ran: the shell said so, in its
+    own words. Returns the signature found, or None.
+
+    Deliberately a positive test rather than "the output was empty" — empty
+    is ambiguous (a healthy `findstr` that matched nothing prints nothing
+    too), "is not recognized" is not. Team charter §3: prefer positive
+    markers over asserted absences."""
+    low = (out or "").lower()
+    return next((s for s in _WD_SHELL_ERRORS if s in low), None)
+
+
+def _wd_age_s(stamp: Any) -> float | None:
+    """Seconds since an ISO stamp written by `ledger.now`, or None if it is
+    missing/unparseable (old dogs predate some of these fields)."""
+    if not stamp:
+        return None
+    try:
+        d = _dtm.datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if d.tzinfo is None:
+        d = d.replace(tzinfo=_dtm.timezone.utc)
+    return max(0.0, (_dtm.datetime.now(_dtm.timezone.utc)
+                     - d).total_seconds())
+
+
+def _wd_hours(sec: float) -> str:
+    if sec < 3600:
+        return f"{int(sec // 60)}m"
+    if sec < 86400:
+        return f"{sec / 3600:.1f}h"
+    return f"{sec / 86400:.1f}d"
+
+
+def wd_health(w: dict[str, Any]) -> str | None:
+    """THE ABSTENTION DETECTOR (2026-08-22). Returns a plain-words warning
+    about a dog that is quietly not working, or None when there is nothing to
+    say.
+
+    `orgtree_watchdog list` used to return `state: armed, fired: 0` for BOTH
+    "armed thirty seconds ago" and "has run 700 checks over nine days and
+    matched nothing" — the only way to tell them apart was reading
+    `last_check` straight out of `orgs/<slug>.json`. That is this codebase's
+    standing failure shape (an abstention reads exactly like a pass) landed
+    inside the very tool we keep so nobody has to poll. This turns the second
+    case into a sentence the owner cannot miss."""
+    if w.get("state") != "armed":
+        return None                       # its own state already says so
+    kind = str(w.get("kind") or "")
+    runs = int(w.get("checks_run") or 0)
+    fired = int(w.get("fired") or 0)
+    age = _wd_age_s(w.get("at"))
+    out = str(w.get("last_output") or "")
+    sig = wd_output_broken(out)
+    if sig:
+        # the loudest case, and the one this whole fix exists for: the dog is
+        # faithfully running a command that never even STARTS
+        return (f"⚠ BROKEN — the target does not run: its output says "
+                f"\"{sig}\". This dog can never fire. Its last output was: "
+                f"{out[:200]!r}")
+    if kind == "stream":
+        if runs == 0 and age is not None and age >= _WD_QUIET_AGE_S:
+            return (f"⚠ armed {_wd_hours(age)} ago and has read ZERO output "
+                    f"lines — verify the command actually streams (and that "
+                    f"it is still alive; a stream that EXITS moves to state "
+                    f"'exited').")
+        return None
+    if runs == 0:
+        if age is not None and age >= _WD_NEVER_RAN_AGE_S:
+            return (f"⚠ armed {_wd_hours(age)} ago but has NEVER RUN A CHECK "
+                    f"— the engine has not picked it up; report this.")
+        return None
+    if fired == 0 and runs >= _WD_QUIET_CHECKS \
+            and age is not None and age >= _WD_QUIET_AGE_S:
+        return (f"⚠ {runs} checks over {_wd_hours(age)} and NEVER matched. "
+                f"Either the condition genuinely has not happened, or the "
+                f"target/pattern is wrong — `last_output` is what this dog "
+                f"actually sees: "
+                + (f"{out[:200]!r}" if out
+                   else "NOTHING AT ALL (the target produces no output)."))
+    return None
+
+
+#: what `orgtree_watchdog list` shows about a dog. The evidence fields —
+#: last_check / checks_run / last_output / last_exit — are here because
+#: without them the projection reported `state: armed, fired: 0` for BOTH a
+#: dog armed thirty seconds ago and one that had run 700 checks over nine days
+#: and matched nothing, and telling them apart meant reading orgs/<slug>.json
+#: by hand.
+WD_LIST_FIELDS: tuple[str, ...] = (
+    "id", "owner", "name", "kind", "target", "pattern", "interval_s",
+    "state", "fired", "last_fired", "notice", "last_check", "checks_run",
+    "last_output", "last_exit", "paused_why", "exit")
+
+
+def wd_list_row(w: dict[str, Any]) -> dict[str, Any]:
+    """ONE projection, so the API and its tests cannot answer differently.
+
+    It lived inline in the api.py handler, which meant a check could only
+    verify it by re-implementing it — and a re-implementation stays green
+    however the shipped one drifts. That is the abstention shape again, one
+    level up: a test of a copy proves nothing about the original."""
+    return {**{k: w.get(k) for k in WD_LIST_FIELDS if w.get(k) is not None},
+            # always present, even when there is nothing wrong: a field that
+            # appears only on unhealthy dogs cannot be trusted to be absent
+            # for a healthy one
+            "health": wd_health(w) or "ok",
+            "checks_run": int(w.get("checks_run") or 0)}
+
+
+def wd_smoke(org: Org, owner: str, kind: str, target: str,
+             pattern: Any = None, timeout: float = 8.0) -> dict[str, Any]:
+    """Run the dog's target ONCE, right now, at create time, and report what
+    came back (2026-08-22, coordinator scope item 4).
+
+    The whole defect was invisible for nine days because arming a dog told the
+    agent nothing about whether its target works. Five seconds of real output
+    at create time would have made it self-evident, so we spend them. It goes
+    through `_wd_popen` — the SAME spawn the engine uses — deliberately: a
+    smoke test down a different path proves something about the different
+    path.
+
+    Never raises: a create must not fail because its smoke run did."""
+    sh = wd_shell(org)
+    res: dict[str, Any] = {"shell": sh,
+                           "note": wd_shell_note(sh, sbx.is_sandboxed(org))}
+    pat = None
+    if pattern:
+        try:
+            pat = re.compile(str(pattern))
+        except re.error:
+            pat = None
+    if kind == "file":
+        try:
+            size = os.path.getsize(target)
+            res["ran"] = f"{target} exists, {size} bytes"
+            res["note"] = ("only content APPENDED after now can fire this "
+                           "dog — what is already in the file will not.")
+        except OSError:
+            res["ran"] = f"{target} does not exist yet"
+            res["note"] = ("that is fine — the dog starts watching when it "
+                           "appears; but a typo in the path looks identical.")
+        return res
+    if kind == "process":
+        up = _wd_proc_alive(target)
+        res["ran"] = f"{target} is {'UP' if up else 'DOWN'} right now"
+        res["note"] = ("this dog fires on the DOWN EDGE only"
+                       + ("." if up else
+                          " — and the target is ALREADY DOWN, so it will not "
+                          "fire until it comes UP and goes down again."))
+        return res
+    # command / stream — the real thing, through the real spawn
+    lines: list[str] = []
+    try:
+        proc = _wd_popen(org, owner, target)
+    except OSError as e:
+        res["ran"] = f"FAILED TO START: {e}"
+        res["exit_code"] = None
+        res["broken"] = True
+        return res
+
+    def read() -> None:
+        try:
+            for ln in proc.stdout or []:
+                lines.append(ln.rstrip("\r\n"))
+                if len(lines) > 200:
+                    break
+        except (OSError, ValueError):
+            pass
+
+    t = threading.Thread(target=read, daemon=True, name="wd-smoke")
+    t.start()
+    try:
+        code: int | None = proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        code = None
+    t.join(0.5)
+    if code is None:
+        try:
+            proc.kill()
+            proc.wait(timeout=2)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    out = "\n".join(lines).strip()
+    res["exit_code"] = code
+    res["output"] = out[:_WD_OUT_KEEP] or "(no output)"
+    sig = wd_output_broken(out)
+    if sig:
+        res["broken"] = True
+        res["ran"] = (f"⚠ THE TARGET DID NOT RUN — the shell answered "
+                      f"\"{sig}\". Fix the command: this dog would sit armed "
+                      f"and never fire, which looks exactly like the "
+                      f"condition never happening.")
+        return res
+    if kind == "stream":
+        res["ran"] = ("still running after "
+                      f"{timeout:g}s — good, a stream is supposed to keep "
+                      "listening" if code is None else
+                      f"⚠ EXITED IMMEDIATELY with code {code} — a stream dog "
+                      f"whose command exits cannot listen for anything")
+        res["broken"] = code is not None
+    else:
+        res["ran"] = (f"exited with code {code}" if code is not None
+                      else f"⚠ still running after {timeout:g}s — a command "
+                           f"dog's target must EXIT; the engine kills it at "
+                           f"60s and fires that as the event")
+    if pat is not None:
+        hit = [ln for ln in lines if pat.search(ln)]
+        res["matched"] = bool(hit)
+        res["matched_note"] = (
+            f"the pattern matched {len(hit)} line(s) — this dog would fire "
+            f"NOW" if hit else
+            "the pattern matched nothing in this output — expected if the "
+            "condition has not happened yet, but check the output above is "
+            "the shape you think it is.")
+    return res
+
+
 def _wd_owner_lost(org: Org, w: dict[str, Any]) -> str | None:
     """Why this armed dog must stop, or None to let it run — the authority
     re-check the tick loop was missing (redteam, 2026-08-12).
@@ -7772,10 +8042,39 @@ def _wd_fire(slug: str, wid: str, name: str, lines: list[str],
                      wake=not notice)
 
 
+def _wd_mark_check(w: dict[str, Any], now_t: float, raw: str = "",
+                   code: Any = None) -> None:
+    """Stamp a dog with the fact that a check RAN, and with what it saw.
+
+    One helper for every kind so the three call sites cannot drift into
+    "command dogs record their evidence and file dogs don't" — which is how a
+    diagnostic ends up available for exactly the case you are not debugging.
+    `checks_run` is the counter that makes `fired: 0` legible: without it, a
+    dog that has never been checked and a dog that has been checked seven
+    hundred times report the same thing."""
+    w["last_check"] = now_iso()
+    w["_last_check_ts"] = now_t
+    w["checks_run"] = int(w.get("checks_run") or 0) + 1
+    # "" is a real observation (a healthy findstr that matched nothing), so it
+    # is stored, not skipped — the health note distinguishes "no output" from
+    # "never ran" by checks_run, not by this field being falsy
+    w["last_output"] = (raw or "")[:_WD_OUT_KEEP]
+    if code is not None:
+        w["last_exit"] = code
+    else:
+        w.pop("last_exit", None)
+
+
 def _wd_check_poll(slug: str, w: dict[str, Any],
-                   org: Org) -> tuple[list[str], dict[str, Any]]:
+                   org: Org) -> tuple[list[str], dict[str, Any], str]:
     """One due check OUTSIDE any lock. Returns (matching lines, high_water
-    updates to store)."""
+    updates to store, a one-line RECORD OF WHAT THE CHECK SAW).
+
+    That third element is the evidence `last_output` carries (2026-08-22). A
+    file dog on a path with a typo and a file dog on a quiet log were both
+    `armed, fired: 0`; now the first says "no such file" and the second says
+    how big the file is and that it did not grow. Positive markers, not an
+    absence to be inferred."""
     kind, tgt = str(w["kind"]), str(w["target"])
     pat = re.compile(str(w["pattern"])) if w.get("pattern") else None
     hw = dict(cast("dict[str, Any]", w.get("high_water") or {}))
@@ -7783,9 +8082,12 @@ def _wd_check_poll(slug: str, w: dict[str, Any],
     if kind == "file":
         try:
             size = os.path.getsize(tgt)
-        except OSError:
-            return [], hw                       # absent file: nothing yet
+        except OSError as e:
+            # NOT silence: an unreadable target is the single most likely
+            # reason a file dog never fires, and it used to look like patience
+            return [], hw, f"(cannot read {tgt}: {e.strerror or e})"
         off = int(hw.get("off") or 0)
+        grew = 0
         if size < off:
             off = 0                             # rotated/truncated: restart
         if size > off:
@@ -7805,8 +8107,8 @@ def _wd_check_poll(slug: str, w: dict[str, Any],
                 with open(tgt, "rb") as fb:
                     fb.seek(off)
                     raw = fb.read(1_000_000)    # bounded per check
-            except OSError:
-                return [], hw
+            except OSError as e:
+                return [], hw, f"(cannot open {tgt}: {e.strerror or e})"
             # …and a line is only an event once it is WHOLE. A writer that
             # flushes mid-line used to have its line split across two checks,
             # and a pattern spanning the split matched neither half —
@@ -7823,29 +8125,45 @@ def _wd_check_poll(slug: str, w: dict[str, Any],
                 elif len(raw) < 1_000_000:
                     keep = b""
             hw["off"] = off + len(keep)
+            grew = len(keep)
             chunk = keep.decode("utf-8", errors="replace")
             for ln in chunk.splitlines():
                 if not ln.strip():
                     continue
                 if pat is None or pat.search(ln):
                     lines.append(ln)
-        return lines, hw
+        return lines, hw, (f"({tgt} is {size} bytes; +{grew} new byte(s) this "
+                           f"check, {len(lines)} matched)")
     if kind == "process":
         up = _wd_proc_alive(tgt)
         was_up = hw.get("up")
         hw["up"] = up
+        seen = f"({tgt} is {'UP' if up else 'DOWN'})"
         if was_up is True and not up:           # the DOWN edge, only
-            return [f"{tgt} went DOWN"], hw
-        return [], hw
+            return [f"{tgt} went DOWN"], hw, seen
+        # a target that has been DOWN since the dog was armed will never show
+        # the edge — say so, rather than let `fired: 0` imply "still healthy"
+        return [], hw, (seen + (" — and has never been seen UP, so the DOWN "
+                                "edge this dog waits for cannot occur"
+                                if not up and was_up is None else ""))
     # command dogs never reach here — they run on _wd_cmd_pool via
     # _wd_run_command, off the scheduler thread
-    return lines, hw
+    return lines, hw, ""
 
 
-def _wd_run_command(org: Org, w: dict[str, Any]) -> list[str]:
+def _wd_run_command(org: Org,
+                    w: dict[str, Any]) -> tuple[list[str], str, Any]:
     """One command-dog check, on a POOL WORKER — its runtime (up to the 60s
-    communicate ceiling) must never sit on the scheduler thread. Returns the
-    matching lines; the caller's done-callback applies them."""
+    communicate ceiling) must never sit on the scheduler thread. Returns
+    (matching lines, RAW output head, exit code); the caller's done-callback
+    applies them.
+
+    ⚠ The raw output is returned, not just the matches (2026-08-22). It used
+    to be dropped on the floor, and that is precisely why a dog running a
+    command that never even STARTED — cmd.exe answering "'grep' is not
+    recognized" every 60s for nine days — was indistinguishable from a dog
+    patiently waiting for a condition. What the dog SEES is the evidence; a
+    subsystem whose job is to notice things must not throw it away."""
     tgt = str(w["target"])
     pat = re.compile(str(w["pattern"])) if w.get("pattern") else None
     try:
@@ -7861,14 +8179,16 @@ def _wd_run_command(org: Org, w: dict[str, Any]) -> list[str]:
             proc.communicate(timeout=5)
         except (OSError, subprocess.TimeoutExpired):
             pass
-        return [f"(watchdog command timed out after 60s: {tgt[:100]})"]
+        msg = f"(watchdog command timed out after 60s: {tgt[:100]})"
+        return [msg], msg, None
     except OSError as e:
-        return [f"(watchdog command failed to start: {e})"]
+        msg = f"(watchdog command failed to start: {e})"
+        return [msg], msg, None
     lines: list[str] = []
     for ln in (out or "").splitlines():
         if pat is not None and pat.search(ln):
             lines.append(ln)
-    return lines
+    return lines, (out or "").strip()[:_WD_OUT_KEEP], proc.returncode
 
 
 def _wd_cmd_submit(slug: str, w: dict[str, Any], org: Org,
@@ -7887,7 +8207,8 @@ def _wd_cmd_submit(slug: str, w: dict[str, Any], org: Org,
         with _wd_lock:
             _wd_cmd_inflight.discard(key)
         try:
-            lines = cast("list[str]", fut.result())
+            lines, raw, code = cast("tuple[list[str], str, Any]",
+                                    fut.result())
         except Exception:                                        # noqa: BLE001
             return
         with store.DOC_LOCK:
@@ -7896,8 +8217,7 @@ def _wd_cmd_submit(slug: str, w: dict[str, Any], org: Org,
                 w2 = o2._watchdog(wid)
             except LedgerError:
                 return                          # removed mid-check
-            w2["last_check"] = now_iso()
-            w2["_last_check_ts"] = now_t
+            _wd_mark_check(w2, now_t, raw, code)
             store.save_org(o2)
         if lines:
             _wd_fire(slug, wid, str(w["name"]), lines)
@@ -7951,7 +8271,7 @@ def _wd_tick() -> None:
                 # keeps a slow command from stacking behind itself
                 _wd_cmd_submit(slug, w, org, now_t)
                 continue
-            lines, hw = _wd_check_poll(slug, w, org)
+            lines, hw, seen = _wd_check_poll(slug, w, org)
             with store.DOC_LOCK:
                 o2 = store.load_org(slug)
                 try:
@@ -7959,8 +8279,7 @@ def _wd_tick() -> None:
                 except LedgerError:
                     continue                    # removed mid-check
                 w2["high_water"] = hw
-                w2["last_check"] = now_iso()
-                w2["_last_check_ts"] = now_t
+                _wd_mark_check(w2, now_t, seen)
                 store.save_org(o2)
             if lines:
                 _wd_fire(slug, wid, str(w["name"]), lines)
@@ -8000,6 +8319,7 @@ def _wd_ensure_stream(slug: str, org: Org, w: dict[str, Any],
             if due:
                 ent["buf"].clear()
                 ent["last_fire"] = time.time()
+        _wd_stream_stats(slug, key[1], ent)
         if batch:
             _wd_fire(slug, key[1], str(w["name"]), batch)
         return
@@ -8027,7 +8347,12 @@ def _wd_ensure_stream(slug: str, org: Org, w: dict[str, Any],
         proc = _wd_popen(org, str(w["owner"]), str(w["target"]))
     except OSError:
         return
-    ent = {"proc": proc, "buf": [], "last_fire": 0.0}
+    ent = {"proc": proc, "buf": [], "last_fire": 0.0,
+           # abstention evidence for streams (2026-08-22): a stream dog that
+           # is listening hard to a command producing NOTHING and one whose
+           # output simply never matches are different diagnoses, and both
+           # used to read as `armed, fired: 0`
+           "seen": 0, "last_line": "", "pushed": -1, "pushed_at": 0.0}
     with _wd_lock:
         _wd_streams[key] = ent
     pat = re.compile(str(w["pattern"])) if w.get("pattern") else None
@@ -8038,6 +8363,9 @@ def _wd_ensure_stream(slug: str, org: Org, w: dict[str, Any],
                 ln = ln.rstrip("\r\n")
                 if not ln.strip():
                     continue
+                with _wd_lock:
+                    ent["seen"] = int(ent["seen"]) + 1
+                    ent["last_line"] = ln[:_WD_OUT_KEEP]
                 if pat is None or pat.search(ln):
                     with _wd_lock:
                         if len(ent["buf"]) < 200:
@@ -8046,6 +8374,33 @@ def _wd_ensure_stream(slug: str, org: Org, w: dict[str, Any],
             pass
     threading.Thread(target=read, daemon=True,
                      name=f"wd-stream-{key[1]}").start()
+
+
+def _wd_stream_stats(slug: str, wid: str, ent: dict[str, Any]) -> None:
+    """Push a live stream's "what have you actually heard" counters onto the
+    doc, so `list` can answer it without the engine's in-memory table.
+
+    Rate-limited to once a minute and skipped when nothing changed: the tick
+    is every 5s and this would otherwise be a doc write per stream dog per
+    tick, forever, to say the same thing."""
+    with _wd_lock:
+        seen, line = int(ent["seen"]), str(ent["last_line"])
+        if seen == ent["pushed"] or time.time() - float(ent["pushed_at"]) < 60:
+            return
+        ent["pushed"], ent["pushed_at"] = seen, time.time()
+    with store.DOC_LOCK:
+        try:
+            o2 = store.load_org(slug)
+            w2 = o2._watchdog(wid)
+        except LedgerError:
+            return
+        w2["last_check"] = now_iso()
+        w2["_last_check_ts"] = time.time()
+        # for a stream, "checks" are OUTPUT LINES READ — the same question
+        # (has this dog had anything to work with?) asked of a listener
+        w2["checks_run"] = seen
+        w2["last_output"] = line
+        store.save_org(o2)
 
 
 def _wd_reap_stream(key: tuple[str, str]) -> None:
