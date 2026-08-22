@@ -192,6 +192,35 @@ def _notice_subject(text: str) -> str:
     return m.group(0)[1:-1].strip() if m else ""
 
 
+MAX_EXTERN_HANDLES: Final = 8
+
+
+def norm_extern_handles(raw: Iterable[Any] | None, *, where: str) -> list[str]:
+    """Validate + dedupe @mcp:<peer> response handles, preserving order.
+
+    Shared by hire() and set_scope() so the two grant paths cannot drift: a
+    handle is a per-address post_mail bypass, and a rule enforced at hire but
+    not at attach would be a hole in exactly the same privilege. Only the
+    @mcp: form is grantable — it names ONE concrete extern peer, so the bypass
+    stays scoped to a single mailbox rather than "speak for the org anywhere".
+    `where` names the calling op in refusals ("hire" / "retool")."""
+    handles: list[str] = []
+    for h in raw or []:
+        h = str(h).strip()
+        if not (h.startswith("@mcp:")
+                and re.fullmatch(r"[A-Za-z0-9._-]{1,64}", h[5:])):
+            raise LedgerError(
+                f"external_handles entries must be @mcp:<peer> addresses "
+                f"(got {h!r}) — each scopes this {where}'s outbound mail to "
+                f"that exact extern peer")
+        if h not in handles:
+            handles.append(h)
+    if len(handles) > MAX_EXTERN_HANDLES:
+        raise LedgerError(
+            f"at most {MAX_EXTERN_HANDLES} external_handles per {where}")
+    return handles
+
+
 def slugify(name: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")
     if not slug:
@@ -1915,22 +1944,9 @@ class Org:
             raise LedgerError(f"org_visibility must be one of {VIS_LEVELS}")
 
         # external response handles (panel hires): validated up front — nothing
-        # below _chain_acquire may raise. Only the @mcp: form is grantable: it
-        # names one concrete extern peer, so the bypass it buys in post_mail is
-        # scoped to a single mailbox rather than "speak for the org anywhere".
-        handles: list[str] = []
-        for h in external_handles or []:
-            h = str(h).strip()
-            if not (h.startswith("@mcp:")
-                    and re.fullmatch(r"[A-Za-z0-9._-]{1,64}", h[5:])):
-                raise LedgerError(
-                    f"external_handles entries must be @mcp:<peer> addresses "
-                    f"(got {h!r}) — each scopes this hire's outbound mail to "
-                    f"that exact extern peer")
-            if h not in handles:
-                handles.append(h)
-        if len(handles) > 8:
-            raise LedgerError("at most 8 external_handles per hire")
+        # below _chain_acquire may raise. Rules live in norm_extern_handles,
+        # shared with set_scope's post-hire attach.
+        handles = norm_extern_handles(external_handles, where="hire")
 
         # №34 — cheap runaway insurance
         if parent is not None:
@@ -3351,6 +3367,7 @@ class Org:
                   charter: str | None = None, team_charter: str | None = None,
                   effort: str | None = None, model_version: str | None = None,
                   auto_cheap_compact: Mapping[str, Any] | None = None,
+                  external_handles: list[Any] | None = None,
                   raise_ceiling: bool = False) -> dict[str, Any]:
         """Per-node configuration (the ⚙): dir grants with modes, the full tool set
         (built-ins + MCP servers), org-structure visibility. Superior-only.
@@ -3381,7 +3398,12 @@ class Org:
                 ("org_visibility", org_visibility),
                 ("permission_mode", permission_mode), ("effort", effort),
                 ("model_version", model_version),
-                ("auto_cheap_compact", auto_cheap_compact)) if v is not None]
+                ("auto_cheap_compact", auto_cheap_compact),
+                # a handle is an outbound-mail PRIVILEGE (the post_mail
+                # per-address bypass), so self-granting one would let a node
+                # hand itself a channel out of the org — the exact thing the
+                # audience system exists to gate. Superior-only, always.
+                ("external_handles", external_handles)) if v is not None]
             if offered:
                 raise LedgerError(
                     f"a self-retool may carry team_charter and nothing else; "
@@ -3465,6 +3487,14 @@ class Org:
                     f"{n['model']} has no model version {model_version!r}"
                     + (f" — know {sorted(_ok)}" if _ok
                        else " (this tier has a single model)"))
+        # post-hire response handles. Validated HERE with everything else, so
+        # a retool carrying a legal charter and a malformed handle writes
+        # neither (the atomicity contract above). Not a ceiling capability —
+        # a handle clamps against nothing, it is granted or it is not — so it
+        # sets no `changed_caps` and triggers no subtree sweep.
+        want_handles: list[str] | None = None
+        if external_handles is not None:
+            want_handles = norm_extern_handles(external_handles, where="retool")
 
         if want_dirs is not None:
             _t, kept, _v, _p, b = self._apply_ceiling(
@@ -3640,6 +3670,15 @@ class Org:
                 sc["auto_cheap_compact"] = keep
             else:
                 sc.pop("auto_cheap_compact", None)
+        if want_handles is not None:
+            # REPLACE, like the other list-valued scope fields — [] clears.
+            # The grant lives on the NODE (not `sc`) to match hire(), which is
+            # also what makes it ride the seat across retire/rehire, and what
+            # `post_mail`'s bypass and the supervisor's handles_line both read.
+            if want_handles:
+                n["external_handles"] = want_handles
+            else:
+                n.pop("external_handles", None)
         # §15 cascade: charter = this node's role card · team_charter = standing
         # instructions binding this node's whole subtree (manager-owned)
         if charter is not None:
@@ -5943,6 +5982,13 @@ class Org:
                            if n.get("frozen") else None),
                 "audiences_held": [a["grantor"] for a in self.d["audiences"]
                                    if a["grantee"] == nid],
+                # outward @mcp: channels this node may answer directly. Read
+                # so a client that OWNS a handle (the in-game panel) can find
+                # the one already bound to an agent instead of minting a
+                # second. ⚠ _scrub_public drops this: the peer id is the only
+                # credential /api/extern/{peer}/messages asks for, so handing
+                # it to a kiosk visitor would hand them the conversation.
+                "external_handles": n.get("external_handles") or [],
                 # F-04/F-05: the ask card this node's desk shows — open, or
                 # freshly nulled (the nulled card carries its reason)
                 "ask": self.node_ask(nid),

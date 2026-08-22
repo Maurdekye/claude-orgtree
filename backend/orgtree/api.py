@@ -1064,6 +1064,10 @@ def _scrub_public(tree: dict[str, Any]) -> None:
 
     def walk(n: dict[str, Any]) -> None:
         n.pop("session_id", None)
+        # an @mcp: peer id is a bearer credential, not a label: anyone holding
+        # it can GET /api/extern/{peer}/messages and read that channel. Kiosk
+        # visitors get the org, never its outside channels.
+        n.pop("external_handles", None)
         sc: dict[str, Any] = n.get("scope") or {}
         if sc.get("add_dirs"):
             sc["add_dirs"] = [{**d, "path": base(d.get("path", ""))}
@@ -1653,6 +1657,10 @@ class Scope(Body):
     model_version: str | None = None        # a VERSION inside the tier ("" clears)
     # FR-24b: {enabled?, occ?, idle_s?} per-node override; {} clears to inherit
     auto_cheap_compact: dict[str, Any] | None = None
+    # post-hire @mcp:<peer> response handles (2026-08-22). REPLACES the node's
+    # set; [] clears. Read the current set off the org tree first if you mean
+    # to ADD one. Superior-only — a handle is an outbound-mail bypass.
+    external_handles: list[str] | None = None
     raise_ceiling: bool = False             # the one-action bridge (spec §1)
 
 
@@ -1681,6 +1689,7 @@ def node_scope(slug: str, nid: str, body: Scope,
                                    effort=body.effort,
                                    model_version=body.model_version,
                                    auto_cheap_compact=body.auto_cheap_compact,
+                                   external_handles=body.external_handles,
                                    raise_ceiling=rc)
         except LedgerError as e:
             raise HTTPException(422, str(e))
