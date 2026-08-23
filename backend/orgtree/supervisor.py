@@ -3922,13 +3922,31 @@ def _run_one_turn(slug: str, nid: str,
                                            and _trusted_blob
                                            and _looks_like_fable_tier_limit(
                                                err_blob))
+                            # fable_api_fallback (user feature 2026-08-23,
+                            # opt-in, default off): D-130 still holds by
+                            # default — a fable-TIER quota is normally
+                            # fable_limit_policy's lane, not billing's. This
+                            # toggle lets the org say "no, spend the spare key
+                            # on it too" — but only when the spare actually
+                            # exists (api_fallback + api_key both held), so a
+                            # toggle left on with no key configured degrades
+                            # to exactly today's behavior rather than doing
+                            # nothing silently.
+                            _fable_fallback_eligible = (
+                                _fable_tier and bool(o2.d.get("fable_api_fallback"))
+                                and bool(o2.d.get("api_fallback"))
+                                and bool(o2.d.get("api_key")))
                             # FABLE-1 (user report 2026-08-06): tier alone is
                             # not evidence — escalate org-wide only on the
                             # WEEKLY wording; a session limit freezes this
                             # one agent like any tier and auto-resumes. The
                             # parsed reset rides onto the lock (FABLE-2) so
                             # even a real weekly halt releases by time.
-                            if _fable_tier:
+                            # An ELIGIBLE hit (above) skips the escalation
+                            # entirely: no org-wide lock, no per-node
+                            # limit_locked — the elif below opens the billing
+                            # window instead, same as any other tier's limit.
+                            if _fable_tier and not _fable_fallback_eligible:
                                 # ⚠ re-parse rather than reading fz["until_ts"]
                                 # (2026-08-07). By here that field may be the
                                 # 300-SECOND PROBE FLOOR, which means "no
@@ -3958,8 +3976,12 @@ def _run_one_turn(slug: str, nid: str,
                             # window so the resume timer wakes the node on its
                             # next tick and spawn_env / the bridge proxy bill
                             # the key until the subscription's own reset. A
-                            # fable-TIER quota is excluded: that lane is owned
-                            # by fable_limit_policy, not by billing.
+                            # fable-TIER quota is excluded BY DEFAULT: that
+                            # lane is owned by fable_limit_policy, not by
+                            # billing — UNLESS fable_api_fallback opted this
+                            # org in and _fable_fallback_eligible said the
+                            # spare key actually exists, in which case this is
+                            # the branch that keeps the fable agent running.
                             if api_fallback_active(o2):
                                 # frozen ON the key lane: that record owns its
                                 # own reset — mark it so readiness never
@@ -3974,7 +3996,9 @@ def _run_one_turn(slug: str, nid: str,
                                 # (redteam 2026-08-18).
                                 fz["on_fallback"] = on_fallback_key
                             elif (o2.d.get("api_fallback")
-                                  and o2.d.get("api_key") and not _fable_tier
+                                  and o2.d.get("api_key")
+                                  and (not _fable_tier
+                                       or _fable_fallback_eligible)
                                   and _trusted_blob):
                                 # ⚠ TRUSTED evidence only. Flooring an
                                 # unvouched window at 15 minutes bounded ONE

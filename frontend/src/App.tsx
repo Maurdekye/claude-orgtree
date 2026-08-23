@@ -1228,6 +1228,20 @@ function AutonomyTab({ tree, toast }: { tree: TreePayload; toast: ToastFn }) {
           until {new Date((tree.api_fallback_until ?? 0) * 1000)
             .toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })},
           then back to the subscription</div>}
+      {/* fable_api_fallback (2026-08-23): off by default — a fable-tier
+          weekly hit normally goes to fable_limit_policy (halt/opus/dissolve)
+          instead, untouched by the toggle above. This rides the SAME window;
+          it opens no lane of its own, so it only makes sense once the
+          fallback itself is on. */}
+      {tree.api_fallback && <label className="checkline"
+        title="by default a weekly Fable-tier limit is excluded from the fallback above and goes to the fable weekly-limit policy (general tab) instead; this extends the same key-billing window to cover it too">
+        <input type="checkbox" checked={!!tree.fable_api_fallback}
+          onChange={(e) => save({ fable_api_fallback: e.target.checked },
+            e.target.checked
+              ? 'fable-tier fallback ON — a weekly Fable limit now bills the key too'
+              : 'fable-tier fallback off — a weekly Fable limit goes back to the fable policy')} />
+        also cover the weekly Fable-tier limit with the same fallback
+      </label>}
       <label className="checkline"
         title="no user is present: questions, credit requests and user audiences auto-deny; mail to you is stored with a no-reply note; requires an API key and non-halt fable policies">
         <input type="checkbox" checked={!!tree.headless}
@@ -1865,6 +1879,7 @@ function SettingsPanel({ tree, toast, close }: {
             kk ? 'kiosk' : '', tree.sandboxed ? 'sandboxed' : '',
             fablePolicy !== 'halt' ? `fable-limit:${fablePolicy}` : '',
             filterPolicy !== 'halt' ? `fable-filter:${filterPolicy}` : '',
+            tree.fable_api_fallback ? 'fable→key fallback' : '',
             !cascadeHire || !cascadeAlloc ? 'cascade off' : '',
           ].filter(Boolean).join(' · ') || 'policies & ceiling'}</span>
         </button>
@@ -1878,6 +1893,10 @@ function SettingsPanel({ tree, toast, close }: {
               <option value="opus">switch to opus</option>
               <option value="dissolve">dissolve subtree</option>
             </select>
+            {tree.fable_api_fallback && <div className="dim hub-hint">a
+              TRUSTED weekly Fable-tier hit currently bypasses this policy —
+              see "also cover the weekly Fable-tier limit" in the autonomy
+              tab</div>}
             <div className="field-label">fable content-filter policy (a flagged message
               halts the turn, or converts the agent to opus and retries)</div>
             <select value={filterPolicy} onChange={(e) => setFilterPolicy(e.target.value)}>

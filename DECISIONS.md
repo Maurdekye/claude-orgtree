@@ -2899,6 +2899,58 @@ and none should be bundled into a rename):
   actually deployed — and the event records neither the target nor which tool
   name was used.
 
+### D-143 · fable_api_fallback: an opt-in override of D-130's boundary
+
+Decision (session seat, 2026-08-23, user feature request: "the api key
+fallback works under normal rate limit hits, but it doesn't bypass the fable
+limit — add a toggleable option to also proceed on fable with api key
+fallback when past the weekly fable limit, even if not at overall weekly
+usage limit"): D-130 excluded a fable-TIER quota from `api_fallback`
+unconditionally — that lane belonged to `fable_limit_policy` alone, full
+stop. New org bool `fable_api_fallback` (default **off**) makes the
+exclusion conditional instead of absolute: with it on, AND `api_fallback` +
+`api_key` both already held, a TRUSTED weekly Fable-tier hit
+(`_fable_tier`, unchanged predicate) skips `fable_limit_hit` entirely — no
+org-wide `fable_lock`, no per-node `limit_locked` — and instead falls
+into the same `elif` a normal tier's limit does: it opens the identical
+`api_fallback_until` window, on the identical lane, reverting at the
+identical expiry-only revert D-130 already specified. Nothing about *how*
+the window prices, records `on_fallback`, splits `api_cost_usd`, or expires
+changes — the new predicate only decides whether a fable-tier hit is
+ALLOWED to reach that branch at all (`_fable_fallback_eligible`).
+
+Deliberately independent of every OTHER lane's state (the user's "even if
+not at overall weekly usage limit" clause): eligibility reads only
+`_fable_tier` plus the three org-level settings above, never the account's
+`weekly_all`/`weekly_scoped` usage bands — a fable-only hit qualifies on its
+own, exactly as a plain session limit already opens the window today without
+needing any other lane to also be exhausted.
+
+Bounds, all server-enforced (`api.py`):
+- `fable_api_fallback=True` is refused (422) unless `api_fallback` is
+  already on — it rides that window, it does not open one of its own.
+- Turning `api_fallback` off (or `clear_api_key`, which implies it) clears
+  `fable_api_fallback` with it — an orphaned fable-only toggle would look
+  live in the UI while doing nothing.
+- Transitively refused whenever `headless` is (or would be): `headless`
+  already refuses while `api_fallback` is on and vice versa (the key is
+  either a full-time lane or a spare, never both), so a headless org can
+  never reach a state where `fable_api_fallback` does anything — no new
+  coupling needed there.
+- Add-only migration: existing orgs get `fable_api_fallback=False` via
+  `setdefault` at load, same as any other D-084-style new field; a doc
+  found with the flag on but no `api_fallback` behind it (settings edited
+  out of order, or a hand-edited doc) self-heals to off on next load.
+
+Was. considered making this a fourth `fable_limit_policy` value instead of
+a separate bool (`halt | opus | dissolve | fallback`). Rejected: the policy
+enum decides what happens when there is NO way to keep the agent running;
+this feature is the opposite case — the agent keeps running exactly as
+before, on a different lane, so cramming it into the same enum would make
+`fallback` behave unlike its three siblings (none of which is conditional on
+a second, unrelated setting existing). A boolean gated by `api_fallback`
+mirrors how `api_fallback` itself is not folded into `headless`.
+
 ---
 
 ## Retired

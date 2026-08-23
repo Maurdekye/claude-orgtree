@@ -606,7 +606,10 @@ itself; the panel's single **save** commits everything.
   whole subtree retired, credits freed). In every case your inbox is notified
   and agents are told fable hires are futile until the reset — a suggestion,
   not a hard block. Hiring or rehiring a fable yourself (or the clear button
-  in settings) is the decree that lifts the lock.
+  in settings) is the decree that lifts the lock. **This policy is skipped
+  entirely** while the autonomy tab's "also cover the weekly Fable-tier
+  limit" toggle is on (needs the API-key fallback below it already on) — a
+  trusted hit bills the spare key instead of halting/converting/dissolving.
 - **default thinking effort**: the org-wide effort every agent without its
   own setting inherits, live — see "Thinking effort" below.
 - **credit cost bubbling**: two toggles, both ON by default — *hires bubble
@@ -668,7 +671,11 @@ remote org is one more recipient — `@net:<slug>` — and the surfaces are:
   autonomy — on both the create form and the ⚙ settings. The mailserver tab
   holds the org's network address, the reveal-once secret (losing it loses
   the address), the local-hub checkbox, and per-hub rows; the autonomy tab
-  holds the per-org API key and **headless** mode. Both save immediately.
+  holds the per-org API key, the usage-limit **fallback** toggle (the key
+  becomes a spare, billed only while a reported limit freezes the
+  subscription lane), an optional "also cover the weekly Fable-tier limit"
+  toggle riding that same fallback window, and **headless** mode. All save
+  immediately.
 - **Headless** paints every eye **grey and empty** — outline only, no
   iris/pupil (nobody is looking) — adds a header chip, and auto-denies
   user-bound asks; mail to the user is stored with a "no reply is coming"

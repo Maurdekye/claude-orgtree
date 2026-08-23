@@ -1693,24 +1693,114 @@ def _sec_reset_timing_body() -> None:
 
     # ---- R9 · a second, independent ~100-mutation campaign ----------------
 
-    # S28 · the money boundary D-130 writes down and nothing tested: a FABLE
-    # TIER quota is fable_limit_policy's lane, not a billing lane. Dropping
-    # `not _fable_tier` from the window `elif` opens up to 7 days of org-wide
-    # metered billing on it.
-    def _a_fable_tier_quota_opens_no_window():
+    # S28 · the money boundary D-130/D-143 writes down and nothing tested: a
+    # FABLE TIER quota is fable_limit_policy's lane, not a billing lane BY
+    # DEFAULT. Dropping `_fable_fallback_eligible` from the window `elif`
+    # either silently kills the D-143 opt-in, or — if `_fable_tier` goes with
+    # it — reopens up to 7 days of org-wide metered billing unconditionally.
+    def _a_fable_tier_quota_opens_no_window_unless_opted_in():
         j = _code.find("fz[\"limit\"] = True")
         fixture(j > 0, "the freeze site moved — re-read this check")
         seg = _code[j:_code.find("store.save_org(o2)", j)]
         i = seg.find('o2.d["api_fallback_until"] = _stamped_win')
         fixture(i > 0, "the window write moved — re-read this check")
         cond = seg[seg.rfind("elif", 0, i):i]
-        assert "_fable_tier" in cond and "_trusted_blob" in cond, (
-            "the window must not open on a fable TIER quota (D-130: that lane "
-            "belongs to fable_limit_policy, not to billing) nor on untrusted "
-            "evidence — condition was: %s" % " ".join(cond.split()))
-    check("money · a fable-tier quota and untrusted text both open NO "
-          "key-billing window (structural — the tier path needs a real fable "
-          "node and a policy)", _a_fable_tier_quota_opens_no_window)
+        assert ("_fable_tier" in cond and "_trusted_blob" in cond
+                and "_fable_fallback_eligible" in cond), (
+            "the window must not open on a plain fable TIER quota (D-130: "
+            "that lane belongs to fable_limit_policy by default) nor on "
+            "untrusted evidence, and _fable_fallback_eligible must be the "
+            "ONE door D-143 cuts through the first rule — condition was: %s"
+            % " ".join(cond.split()))
+    check("money · a fable-tier quota opens NO key-billing window unless the "
+          "org opted in via fable_api_fallback (structural — the tier path "
+          "needs a real fable node and a policy)",
+          _a_fable_tier_quota_opens_no_window_unless_opted_in)
+
+    # D-143 behavioral: the toggle changes what a REAL trusted fable-tier hit
+    # does, not just what the source's condition happens to mention.
+    _FABLE_REAL = ("You've reached your Fable 5 limit. Run /usage-credits "
+                   "to continue or switch models with /model.")
+
+    if shutil.which("node"):
+        def _default_off_still_halts_no_window():
+            _fs, _fn = probe_org()
+            _fo = store.load_org(_fs)
+            _fo.nodes[_fn]["model"] = "fable"
+            store.save_org(_fo)
+            set_mode("iserror", limit_text=_FABLE_REAL)
+            run_turn(_fs, _fn)
+            _after = store.load_org(_fs)
+            fixture(_after.d.get("fable_lock") is not None,
+                    "setup did not even reach the org-wide lock — re-check "
+                    "the trusted iserror path before trusting this check")
+            assert _after.nodes[_fn].get("limit_locked") is True, (
+                "fable_api_fallback unset (default) must still halt the "
+                "node exactly as it did before D-143")
+            assert not _after.d.get("api_fallback_until"), (
+                "default must not open a key-billing window on a fable-tier "
+                "quota: %r" % _after.d.get("api_fallback_until"))
+        check("D-143 · toggle OFF (default) — a trusted weekly Fable hit "
+              "still halts via fable_limit_policy; no billing window opens",
+              _default_off_still_halts_no_window)
+
+        def _opted_in_bills_the_key_instead_of_halting():
+            _fs, _fn = probe_org()
+            _fo = store.load_org(_fs)
+            _fo.nodes[_fn]["model"] = "fable"
+            _fo.d["api_key"] = "sk-test-fable-fallback"
+            _fo.d["api_fallback"] = True
+            _fo.d["fable_api_fallback"] = True
+            store.save_org(_fo)
+            set_mode("iserror", limit_text=_FABLE_REAL)
+            run_turn(_fs, _fn)
+            _after = store.load_org(_fs)
+            assert not _after.d.get("fable_lock"), (
+                "opted-in + eligible must skip the org-wide escalation "
+                "entirely: %r" % _after.d.get("fable_lock"))
+            assert not _after.nodes[_fn].get("limit_locked"), (
+                "opted-in + eligible must not halt the node — readiness "
+                "would refuse every future turn on this node otherwise")
+            _win = _after.d.get("api_fallback_until")
+            assert _win and _win > time.time(), (
+                "opted-in + eligible must open a real, still-open "
+                "key-billing window: %r" % _win)
+            # NOT on_fallback here: no window existed when THIS turn spawned
+            # (it is the very hit that opens one for the NEXT turn), so it
+            # ran on the subscription like any first hit — on_fallback
+            # records the lane a turn actually spawned on, never "a window
+            # happens to be open now" (same rule the plain elif branch
+            # already follows; D-143 does not get its own exception).
+            assert not (_after.nodes[_fn].get("frozen") or {}).get(
+                "on_fallback"), (
+                "this turn ran on the subscription and opened the window "
+                "for the next one — it must not retroactively claim the "
+                "key lane for itself")
+        check("D-143 · toggle ON + api_fallback + api_key — the same "
+              "trusted hit bills the key instead of halting",
+              _opted_in_bills_the_key_instead_of_halting)
+
+        def _toggle_on_alone_degrades_to_default_no_silent_noop():
+            _fs, _fn = probe_org()
+            _fo = store.load_org(_fs)
+            _fo.nodes[_fn]["model"] = "fable"
+            _fo.d["fable_api_fallback"] = True   # set with nothing behind it
+            store.save_org(_fo)                  # self-heals on THIS load —
+            fixture(not store.load_org(_fs).d.get("fable_api_fallback"),
+                    "the load-time self-heal (ledger.__init__) no longer "
+                    "clears an orphaned fable_api_fallback with no "
+                    "api_fallback behind it — re-check that guard directly")
+            set_mode("iserror", limit_text=_FABLE_REAL)
+            run_turn(_fs, _fn)
+            _after = store.load_org(_fs)
+            assert _after.nodes[_fn].get("limit_locked") is True, (
+                "a toggle left on with no api_fallback/api_key configured "
+                "must degrade to today's halt behavior, never a silent "
+                "no-op that leaves the node running with nothing billing it")
+            assert not _after.d.get("api_fallback_until")
+        check("D-143 · toggle ON with no api_fallback/api_key configured "
+              "behaves exactly like toggle OFF (no silent no-op)",
+              _toggle_on_alone_degrades_to_default_no_silent_noop)
 
     # F7 · the correction pass has the FINAL say on both the stamp and the
     # window, so it must be told the same lane the freeze was.

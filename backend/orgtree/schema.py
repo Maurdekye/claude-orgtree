@@ -503,6 +503,13 @@ class OrgDoc(TypedDict):
     api_fallback: NotRequired[bool]
     api_fallback_until: NotRequired[float]  # epoch; window open while now < it
     api_fallback_since: NotRequired[float]  # when the current window opened
+    # fable-tier weekly quota as a billing event too (user feature 2026-08-23):
+    # off by default (D-130 still holds — that lane is fable_limit_policy's).
+    # ON, and with api_fallback + api_key both already held, a TRUSTED
+    # fable-tier hit opens the same api_fallback window a normal usage limit
+    # does instead of invoking fable_limit_policy — no org-wide fable_lock,
+    # no per-node limit_locked. Requires api_fallback; cleared with it.
+    fable_api_fallback: NotRequired[bool]
     cred_warned_at: NotRequired[str]        # §9.2 watcher: last credential-
                                             # expiry warning (≤1/day survives
                                             # restarts — redteam finding)

@@ -265,6 +265,14 @@ class Org:
             self.d["fable_limit_policy"] = "halt"   # 'retire' dropped by user ruling
         if self.d.get("fable_filter_policy") not in ("halt", "opus"):
             self.d["fable_filter_policy"] = "halt"  # content-filter flags (user spec)
+        # add-only migration (D-084 style): existing orgs reach the new toggle
+        # off, same as a brand-new one — never silently on for an old org
+        self.d.setdefault("fable_api_fallback", False)
+        if not self.d.get("api_fallback") and self.d.get("fable_api_fallback"):
+            # the general lane went away (settings, or an old doc from before
+            # the coupling was enforced) — an orphaned fable-only toggle would
+            # look live but do nothing, which is worse than silently off
+            self.d["fable_api_fallback"] = False
         # org-wide agent defaults for hires that don't state them (user hires):
         # every capability enabled — all switches + all MCP servers + full org
         # visibility + the org's folders (user ruling)
@@ -522,6 +530,8 @@ class Org:
             "compact_at": 0.80,                   # compaction ratio (≤ 0.95 hard cap)
             "fable_limit_policy": "halt",         # halt | opus | dissolve (user ruling)
             "fable_filter_policy": "halt",        # halt | opus — filter flags (user spec)
+            "fable_api_fallback": False,          # user feature 2026-08-23 (needs
+                                                  # api_fallback + api_key too)
             "nodes": {},
             "audiences": [],          # §7.3 — [{grantee, grantor, granted_at, reason}]
             # (a "chain_notices" key was seeded here and READ BY NOTHING. §7.4
@@ -6080,6 +6090,7 @@ class Org:
             "watchdogs": self.d.get("watchdogs") or [],
             "fable_limit_policy": self.d.get("fable_limit_policy", "halt"),
             "fable_filter_policy": self.d.get("fable_filter_policy", "halt"),
+            "fable_api_fallback": bool(self.d.get("fable_api_fallback")),
             "cascade_hire": bool(self.d.get("cascade_hire", True)),
             "cascade_alloc": bool(self.d.get("cascade_alloc", True)),
             "sandboxed": bool((self.d.get("kiosk") or {}).get("sandbox")

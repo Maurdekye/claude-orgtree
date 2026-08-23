@@ -545,6 +545,9 @@ export interface TreePayload {
   api_fallback?: boolean
   /** epoch seconds; the fallback window is open while now < this */
   api_fallback_until?: number | null
+  /** 2026-08-23: a TRUSTED weekly Fable-tier hit opens this same window too
+   *  (requires api_fallback + a key), instead of only fable_limit_policy */
+  fable_api_fallback?: boolean
 }
 
 // ----------------------------------------------------------------- org list
@@ -911,6 +914,9 @@ export interface SettingsRequest {
   clear_api_key?: boolean
   /** the key as a usage-limit SPARE — server enforces the couplings */
   api_fallback?: boolean | null
+  /** also spend that spare on a trusted weekly Fable-tier hit (requires
+   *  api_fallback already on) — server enforces the coupling */
+  fable_api_fallback?: boolean | null
 }
 
 // F-06: GET /api/orgs/{slug}/net — loopback-admin reveal (the ONE place the
