@@ -2951,6 +2951,85 @@ before, on a different lane, so cramming it into the same enum would make
 a second, unrelated setting existing). A boolean gated by `api_fallback`
 mirrors how `api_fallback` itself is not folded into `headless`.
 
+### D-144 · the account registry ships INERT — and Phase 1 green is not failover
+
+Decision (creds-probe, 2026-08-24, multi-account Phase 1): this install may
+know about more than one Claude subscription. `accounts.py` records WHO —
+identity, waterfall order, and a manual per-org pin — and deliberately
+records nothing about HOW. It selects no account for any turn and switches no
+lane. Selection is Phase 2.
+
+Accounts are keyed on `account.uuid`, resolved from `GET
+/api/oauth/profile`. That key was chosen because it is the only candidate
+proven to discriminate in both directions: **identical** across a token
+refresh of one account, and **different** between the two accounts. Token
+bytes cannot key anything — they rotate on every refresh, and a rotation
+revokes its predecessor immediately (measured: the previous access token
+returns 401 `has been revoked` with no grace window). A registry keyed on a
+token would silently split one account into two entries on the next refresh.
+
+The registry stores **identity, never credentials**. `_reject_secrets` runs
+before every write and RAISES rather than redacting, on both value shape and
+key name, because a registry that silently strips a token teaches its callers
+that handing one over is acceptable. Tokens stay in the CLI's own credentials
+store, which this module never writes. Passive adoption enforces its own
+adjective rather than merely intending it: the store's mtime and size are
+sampled around the read and any change raises `LiveStoreWritten`.
+
+> ⚠ **PHASE 1 SHIPPING GREEN DOES NOT MEAN FAILOVER WORKS.** Read this before
+> concluding from a passing suite, or from a panel showing two healthy
+> accounts, that the waterfall is real. It is not, and the code looking right
+> is exactly why this note exists.
+
+Precisely which half is missing, because the distinction is easy to get wrong
+in both directions:
+
+- **The limit path already works.** A usage limit IS positively classified
+  (`_looks_like_usage_limit`) and already drives an automatic billing-lane
+  switch — that is D-130's `api_fallback`, whose window stamp sits inside the
+  `_looks_like_usage_limit(err_blob)` branch. A waterfall triggered by "the
+  primary hit its limits" would ride a path that demonstrably fires today.
+- **The auth path does not exist.** A mid-turn auth rejection — token
+  expired, invalid, or revoked — matches NONE of the three classifiers.
+  `_looks_like_connection_failure` is a narrow positive list of network
+  errnos and an auth blob matches no entry in it. So the turn lands in the
+  terminal turn-failed bucket, where, in that function's own words, "nothing
+  ever re-drives the node". The agent hard-fails; no retry, no failover, no
+  resume.
+
+This matters more under the approved design than it would today, and that is
+the point: per-turn token binding at agent wake means a bound access token
+ages out on its own 8-hour clock, and the CLI **cannot** refresh it, because
+`CLAUDE_CODE_OAUTH_TOKEN` carries an access token only, with no refresh token
+behind it. Per-turn binding therefore *introduces* precisely the failure mode
+that has no recovery path. Phase 2 owes a positively-classified auth-failure
+class plus a re-drive, or the failover is cosmetic.
+
+Provenance, kept explicit because the two are not the same kind of fact: the
+classifier behaviour, the revocation semantics and the token lifetime were
+**measured** against the real predicates and the live endpoints. The claim
+that the CLI cannot self-refresh under the env var is **reasoned from the
+token's shape, not observed** — no run has been seen attempting it.
+
+Bounds:
+- `readout()` reports `selection_active: false`. That field is the
+  machine-readable form of this entry, so a panel cannot imply a working
+  waterfall merely by rendering the registry.
+- Pinning an unknown account raises rather than no-oping: a pin that silently
+  fails to apply is indistinguishable from one that applied, which is the
+  exact class of bug this feature is meant to make visible.
+- `set_order` cannot delete an account by omission — a stale panel POST must
+  not be able to drop an entitlement out of the registry.
+- Nothing here writes `~/.claude/.credentials.json`, refreshes any grant, or
+  uses the two accounts concurrently. Serial use through the official CLI is
+  the approved shape; in-app OAuth stays rejected on ToS grounds.
+
+Was. considered storing the account's e-mail address in the registry so the
+panel could label the two entitlements. Reduced to a masked hint
+(`s*****e@example.com`) plus the uuid and a user-settable label: the panel's
+requirement is only to tell two accounts apart, the registry is read by more
+code than the credentials store is, and the uuid already carries identity.
+
 ---
 
 ## Retired
