@@ -165,16 +165,23 @@ MUTANTS = [
      "    if False:",
      "a TIMEOUT counts as failure to serve and switches"),
 
+    # ⚠ RE-ANCHORED 2026-08-25. Both of these used to hang off
+    # `if uuid != cur and tokens.has(uuid):`, one line that carried BOTH
+    # conditions. Splitting `alternate_account` into
+    # `alternate_account_choice` moved the token filter into a comprehension
+    # and the identity test into the loop, and the pattern stopped existing —
+    # the harness reported them vacuous rather than passing, which is the only
+    # reason this was noticed at all. Each now anchors on its OWN condition.
     ("an untokened account is offered as the failover target",
      SUP,
-     "        if uuid != cur and tokens.has(uuid):",
-     "        if uuid != cur:",
+     "    tokened = [str(u) for u in order if tokens.has(u)]",
+     "    tokened = [str(u) for u in order]",
      "an account with no token is never the alternate"),
 
     ("the alternate can be the account that just failed",
      SUP,
-     "        if uuid != cur and tokens.has(uuid):",
-     "        if tokens.has(uuid):",
+     "    for uuid in tokened:\n        if uuid != serving:",
+     "    for uuid in tokened:\n        if True:",
      "the alternate is the OTHER account, not the current one"),
 
     ("an ordinary crash starts switching accounts",
