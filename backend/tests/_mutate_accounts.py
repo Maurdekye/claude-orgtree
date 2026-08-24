@@ -69,8 +69,7 @@ MUTANTS = [
 
     ("the guard only knows the sk-ant prefix (opaque runs slip through)",
      ACC,
-     "    re.compile(r\"\\b(?=[A-Za-z0-9+/_-]*[A-Z])(?=[A-Za-z0-9+/_-]*[0-9])\"\n"
-     "               r\"[A-Za-z0-9+/_-]{40,}={0,2}\\b\"),            # long opaque run",
+     "    re.compile(r\"\\b[A-Za-z0-9+/_-]{40,}={0,2}\\b\"),          # long opaque run",
      "    re.compile(r\"^(?!x)x$\"),                                  # long opaque run",
      "refuses a long opaque run with no sk-ant prefix"),
 
@@ -132,8 +131,8 @@ MUTANTS = [
 
     ("set_order stops filtering unknown uuids",
      ACC,
-     "        new = [u for u in order if u in doc[\"accounts\"]]",
-     "        new = list(order)",
+     "        new = list(dict.fromkeys(u for u in order if u in doc[\"accounts\"]))",
+     "        new = list(dict.fromkeys(order))",
      "set_order ignores unknown uuids"),
 
     ("registry_path() freezes the data root at import time",
@@ -149,6 +148,20 @@ MUTANTS = [
      "        \"selection_active\": True,",
      "readout declares selection_active FALSE (D-144)"),
 
+    # the regression this round fixed: the character-class condition that made
+    # every all-lowercase secret invisible to the generic net
+    ("the secret pattern goes back to requiring upper AND digit",
+     ACC,
+     "    re.compile(r\"\\b[A-Za-z0-9+/_-]{40,}={0,2}\\b\"),          # long opaque run",
+     "    re.compile(r\"\\b(?=[A-Za-z0-9+/_-]*[A-Z])(?=[A-Za-z0-9+/_-]*[0-9])[A-Za-z0-9+/_-]{40,}={0,2}\\b\"),",
+     "a long all-lowercase run in a label is refused"),
+
+    ("a vanished credentials store stops counting as a change",
+     ACC,
+     "        if after is None or (after.st_mtime_ns, after.st_size) != (",
+     "        if after is not None and (after.st_mtime_ns, after.st_size) != (",
+     "the store DISAPPEARING mid-adoption raises LiveStoreWritten"),
+
     # ---- the HTTP surface ----
     ("the kiosk freeze on /api/accounts is removed",
      API,
@@ -160,7 +173,7 @@ MUTANTS = [
      API,
      "    except KeyError as e:\n        raise HTTPException(422, str(e).strip(\"'\")) from None",
      "    except KeyError:\n        pass",
-     "PUT pin to an unknown account → 422 and no pin written"),
+     "PUT pin to an unknown account → 422 and the old pin survives"),
 
     ("an empty label is accepted",
      API,
@@ -248,10 +261,17 @@ def run_suite():
 
 
 def main():
+    # ⚠ covers backend/tests TOO (review 2026-08-24). It used to check only
+    # backend/orgtree, so a dirty suite ran and was never restored — and with
+    # two agents in one worktree, `restore()`'s `git checkout --` would have
+    # silently destroyed the other's uncommitted work. The dirty-check is the
+    # only thing standing between a mutation round and someone else's edits.
     dirty = subprocess.run(["git", "-C", str(ROOT), "status", "--porcelain",
-                            "backend/orgtree"], capture_output=True, text=True).stdout
+                            "backend/orgtree", "backend/tests"],
+                           capture_output=True, text=True).stdout
     if dirty.strip():
-        sys.exit("refusing to run: backend/orgtree is dirty — commit first\n" + dirty)
+        sys.exit("refusing to run: backend/orgtree or backend/tests is dirty "
+                 "— commit first (a mutation round would revert it)\n" + dirty)
 
     ok, baseline = run_suite()
     if not ok:

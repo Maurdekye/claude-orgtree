@@ -138,6 +138,17 @@ def s0_isolation() -> None:
     check("the real credentials path is NOT the one under test", lambda: (
         None if os.path.abspath(_REAL_CREDS) != os.path.abspath(_FAKE_CREDS)
         else (_ for _ in ()).throw(AssertionError("CREDS redirect did not take"))))
+    # ⚠ PYTHONPATH really does carry the MAIN tree's backend on this machine
+    # (review 2026-08-24, proven by execution). The suite's sys.path.insert(0)
+    # currently wins — but "currently wins by import order" is not a property,
+    # it is a coincidence, and importing main's accounts.py while claiming to
+    # test this branch is precisely the abstention that has shipped here
+    # before. Assert on the RESOLVED module file.
+    check("the accounts module under test is THIS worktree's", lambda: (
+        None if os.path.abspath(accounts.__file__).startswith(
+            os.path.abspath(os.path.join(_HERE, "..")))
+        else (_ for _ in ()).throw(AssertionError(
+            f"imported {accounts.__file__} — not this tree's backend"))))
     check("registry lives under the throwaway data root", lambda: (
         None if accounts.registry_path().startswith(store.DATA_ROOT)
         else (_ for _ in ()).throw(AssertionError(
@@ -615,6 +626,49 @@ def s8_defects() -> None:
         eq(accounts.load()["accounts"][a]["label"], "Renamed",
            "relabel did not apply after the lock was released: ")
     check("relabel serialises on the module lock", relabel_takes_the_lock)
+
+    # ---- 1e/i: an all-lowercase secret reached disk through `label` ----
+    def lowercase_secret_in_a_label_is_refused():
+        reset()
+        a = "11111111-2222-3333-4444-555555555555"
+        accounts.upsert(accounts.identity_from_profile(profile()))
+        # hex/base32-shaped: no uppercase, no separator. The old pattern
+        # required BOTH an uppercase and a digit, so this was invisible.
+        leak = "a" * 20 + "bcdef0123456789abcdef0123456789abcdef01"
+        assert len(leak) >= 40 and leak.islower()
+        raises(accounts.SecretInRegistry,
+               lambda: accounts.relabel(a, leak),
+               why="a 40+ char all-lowercase run reached the registry")
+        raw = open(accounts.registry_path(), encoding="utf-8").read()
+        assert leak[:20] not in raw, "the run reached disk anyway"
+    check("a long all-lowercase run in a label is refused",
+          lowercase_secret_in_a_label_is_refused)
+
+    def ordinary_labels_still_work():
+        # the other direction: the widened pattern must not refuse real labels
+        a = "11111111-2222-3333-4444-555555555555"
+        for good in ("Primary (work)", "personal account", "acct-2",
+                     "a fairly long descriptive label with spaces in it"):
+            accounts.relabel(a, good)
+        eq(accounts.load()["accounts"][a]["label"],
+           "a fairly long descriptive label with spaces in it")
+    check("CONTROL: ordinary labels are still accepted",
+          ordinary_labels_still_work)
+
+    # ---- 1e/ii: the store DELETED mid-adoption 500'd instead of 409'ing ----
+    def deleted_store_midadoption_is_LiveStoreWritten():
+        with open(_FAKE_CREDS, "w", encoding="utf-8") as f:
+            json.dump({"claudeAiOauth": {"accessToken": FAKE_TOKEN}}, f)
+
+        def logout(_tok):
+            os.remove(_FAKE_CREDS)             # a logout, mid-adoption
+            return profile()
+        raises(accounts.LiveStoreWritten,
+               lambda: accounts.adopt_live(resolver=logout),
+               why="deleting the store mid-adoption raised the wrong "
+                   "exception, so the endpoint 500s instead of 409ing")
+    check("the store DISAPPEARING mid-adoption raises LiveStoreWritten",
+          deleted_store_midadoption_is_LiveStoreWritten)
 
 
 def s7_http() -> None:

@@ -67,8 +67,13 @@ def registry_path() -> str:
 _SECRET_PATTERNS = (
     re.compile(r"sk-ant-[A-Za-z0-9_-]+"),
     re.compile(r"\beyJ[A-Za-z0-9_-]{10,}"),                 # JWT-ish
-    re.compile(r"\b(?=[A-Za-z0-9+/_-]*[A-Z])(?=[A-Za-z0-9+/_-]*[0-9])"
-               r"[A-Za-z0-9+/_-]{40,}={0,2}\b"),            # long opaque run
+    # ⚠ any long unbroken token-ish run, WITHOUT a character-class condition.
+    # This used to require ≥1 uppercase AND ≥1 digit, which made every
+    # all-lowercase secret invisible to it — hex and base32 are exactly that
+    # shape, and `label` is a free-form user string that reaches save()
+    # (review 2026-08-24: a 72-char lowercase run reached disk). No legitimate
+    # label is 40 characters with no separator, so refusing is the safe side.
+    re.compile(r"\b[A-Za-z0-9+/_-]{40,}={0,2}\b"),          # long opaque run
 )
 # keys whose NAME alone means a caller is handing us the wrong thing
 _SECRET_KEYS = {"accesstoken", "access_token", "refreshtoken", "refresh_token",
@@ -288,8 +293,18 @@ def adopt_live(resolver: Callable[[str], dict[str, Any]] | None = None,
     except Exception:                          # noqa: BLE001 — offline/expired/rate-limited
         return None
     finally:
-        after = os.stat(creds)
-        if (after.st_mtime_ns, after.st_size) != (before.st_mtime_ns, before.st_size):
+        # ⚠ the store DISAPPEARING is a change, not an absence (review
+        # 2026-08-24). `os.stat` used to raise FileNotFoundError straight out
+        # of this `finally`, which `api.py` maps to nothing — so a logout
+        # during adoption, the single most visible thing that can happen to
+        # this file, produced a 500 rather than the 409 the docstring
+        # promises. Any failure to re-stat is treated as "it changed".
+        try:
+            after: os.stat_result | None = os.stat(creds)
+        except OSError:
+            after = None
+        if after is None or (after.st_mtime_ns, after.st_size) != (
+                before.st_mtime_ns, before.st_size):
             raise LiveStoreWritten(
                 f"{creds} changed during passive adoption — adoption must "
                 f"never write the credentials store")
