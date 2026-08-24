@@ -107,6 +107,20 @@ MUTANTS = [
      '                    pass\n' + _RAISE,
      "RULE 3 · no _looks_like_* predicate is called on the widened text"),
 
+    ("LEAK: the widened record goes to _retry_exhausted (it MAILS AND WAKES)",
+     SUP,
+     "                            _retry_exhausted(slug, nid, run, err_blob, kind_txt)",
+     "                            _retry_exhausted(slug, nid, run,\n"
+     "                                             _for_the_record(err_blob, res),\n"
+     "                                             kind_txt)",
+     "RULE 2b · the widened text is never passed to _retry_exhausted"),
+
+    ("the RETRY door quietly reverts to the placeholder (the other door)",
+     SUP,
+     "                            f\"{_for_the_record(err_blob, res)[:300]}\")",
+     "                            f\"{err_blob[:300]}\")",
+     "BOTH operator-facing doors carry the reason, not just one"),
+
     ("LEAK: the record is assembled EARLY, before the classifiers run",
      SUP,
      "            err_blob = _name_the_cause(err_blob)",

@@ -4250,12 +4250,25 @@ def _run_one_turn(slug: str, nid: str,
                             # extra flag to keep in sync. Beyond it the node is
                             # silent again — but silent AFTER having been told,
                             # which is the whole difference from the incident.
+                            # ⚠ the NARROW blob, deliberately. This function
+                            # MAILS its `err` to the agent AND to its
+                            # superior, and DRIVES the superior — it wakes a
+                            # session. Auth-failure text arriving as mail is
+                            # what has repeatedly destroyed fable-tier
+                            # sessions here; the trigger is the SUBJECT, not
+                            # any secret. The operator's copy is the raise
+                            # below, which reaches a screen and nobody's
+                            # inbox. See rule 2 on `_for_the_record`.
                             _retry_exhausted(slug, nid, run, err_blob, kind_txt)
+                        # the DURABLE RECORD for this door: `last_error` + the
+                        # turn_error_log row. Same reasoning as the terminal
+                        # raise below — after every predicate, never assigned
+                        # back onto `err_blob`.
                         raise RuntimeError(
                             f"turn failed after {run} attempts ({kind_txt}) "
                             f"— it is not passing; the agent is no longer "
                             f"frozen, so send it anything to try again: "
-                            f"{err_blob[:300]}")
+                            f"{_for_the_record(err_blob, res)[:300]}")
                 # DOOR 2 of 2: the terminal bucket. Everything retryable was
                 # claimed by a branch above — a usage limit froze, a filter
                 # halted, a connection drop or a died-in-flight went to the

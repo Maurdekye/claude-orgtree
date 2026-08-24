@@ -276,6 +276,36 @@ def s2_separation() -> None:
     check("RULE 3 · no _looks_like_* predicate is called on the widened text",
           _rule3)
 
+    # RULE 2b — the OTHER mail site. `_retry_exhausted` mails the agent AND
+    # its superior and DRIVES the superior, so it wakes a session. It is a
+    # strictly worse place to put auth text than `_turn_abandoned`.
+    def _rule2b():
+        bad = [c for c in _calls_named(_SUP_AST, "_retry_exhausted")
+               if any(_mentions_call(a, "_for_the_record") for a in c.args)]
+        if bad:
+            raise AssertionError(
+                "BEHAVIOUR CHANGED — MAIL THAT WAKES: _retry_exhausted is "
+                f"being passed the widened text at line(s) "
+                f"{[c.lineno for c in bad]}. It mails the agent AND its "
+                "superior and DRIVES the superior. The operator's copy is "
+                "the raise beside it, which reaches a screen and no inbox.")
+    check("RULE 2b · the widened text is never passed to _retry_exhausted",
+          _rule2b)
+
+    # Both operator-facing doors must actually carry the reason. Without this,
+    # the retry door could quietly revert to the placeholder and every rule
+    # above would still pass — they are all statements of ABSENCE.
+    def _both_doors():
+        if len(calls) < 2:
+            raise AssertionError(
+                f"only {len(calls)} recording site(s) carry the CLI's reason. "
+                "There are TWO operator-facing doors — the terminal raise and "
+                "the retry-exhausted raise — and a door left on the "
+                "placeholder is a user still unable to tell an expired "
+                "credential from a crash, through a route nobody checked.")
+    check("BOTH operator-facing doors carry the reason, not just one",
+          _both_doors)
+
     # The order argument, mechanically: the raise that carries the widened
     # text must come AFTER the last predicate call, or "assembled after every
     # classifier" is just a claim.
