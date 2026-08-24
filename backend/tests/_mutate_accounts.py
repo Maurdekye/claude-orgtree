@@ -101,14 +101,16 @@ MUTANTS = [
 
     ("passive adoption stops noticing a write to the credentials store",
      ACC,
-     "        if (after.st_mtime_ns, after.st_size) != (before.st_mtime_ns, before.st_size):",
+     "        if after is None or (after.st_mtime_ns, after.st_size) != (\n"
+     "                before.st_mtime_ns, before.st_size):",
      "        if False:",
      "RAISES if the credentials store changes mid-adoption"),
 
     ("adoption compares only SIZE, so an in-place rewrite slips through",
      ACC,
-     "        if (after.st_mtime_ns, after.st_size) != (before.st_mtime_ns, before.st_size):",
-     "        if after.st_size != before.st_size:",
+     "        if after is None or (after.st_mtime_ns, after.st_size) != (\n"
+     "                before.st_mtime_ns, before.st_size):",
+     "        if after is None or after.st_size != before.st_size:",
      "RAISES on a same-SIZE in-place rewrite (mtime, not just size)"),
 
     ("a resolver failure is re-raised instead of yielding None",
@@ -176,15 +178,15 @@ MUTANTS = [
      "PUT pin to an unknown account → 422 and the old pin survives"),
 
     ("an empty label is accepted",
-     API,
-     "    if not label:\n        raise HTTPException(422, \"a label cannot be empty\")",
+     ACC,
+     "    if not label:\n        raise ValueError(\"a label cannot be empty\")",
      "    if not label:\n        pass",
      "PATCH empty label → 422"),
 
     ("relabelling an unknown account 500s instead of 404ing",
-     API,
-     "    if uuid not in doc[\"accounts\"]:\n        raise HTTPException(404, f\"no such account {uuid!r}\")",
-     "    if False:\n        raise HTTPException(404, f\"no such account {uuid!r}\")",
+     ACC,
+     "        if uuid not in doc[\"accounts\"]:\n            raise KeyError(uuid)",
+     "        if False:\n            raise KeyError(uuid)",
      "PATCH unknown account → 404"),
 
     # ---- review 2026-08-24 findings: each fix gets a mutant ----
