@@ -3015,33 +3015,68 @@ shape against a genuine 401:
 | top-level events | `system`×5, **`assistant`**, **`result`** |
 | `result.is_error` | true |
 | `result.result` | "Failed to authenticate. API Error: 401 OAuth access token is invalid." |
-| stderr | **non-empty** |
+| stderr | **varies — see below** |
 
-⇒ `exit_only` is **False** (stderr carried the reason) and `boundary` is
-**True** (a top-level `result` event arrived), so `_died_in_flight` returns
-False for two independent reasons, and all three text classifiers return False
-on that `result` text. **The turn is unclassified and terminal: no retry, no
-failover, no resume.** A control confirms the predicate still returns True for
+⇒ **`boundary` is True, and that alone is what makes the turn terminal.** A
+top-level `result` event always arrives, so `not boundary` is False and
+`_died_in_flight` cannot fire whatever else is true. All three text
+classifiers also return False on that `result` text — true, and *irrelevant*
+to the outcome. A control confirms `_died_in_flight` still returns True for
 the shape it IS meant to catch, so this is a discrimination and not a
 predicate that says False to everything.
 
-Worth recording because it contradicts the obvious reasoning: **`started` is
-True even for a failure at the very start of a turn** — the CLI emits an
-`assistant` event regardless. The intuition that "the model never spoke, so
-`started` is False" is wrong, and only measuring showed it. Had it been true,
-`_died_in_flight` would have been one condition away from firing, and the
-outcome would have been four retries on escalating backoff against a dead
-token, auto-resume regardless of the org's toggle, and a UI reading "the CLI
-died mid-response" — a wrong diagnosis nobody could act on. That is the bug
-this measurement ruled out; it was not ruled out by reasoning.
+⚠ **Do not rest this on `exit_only`.** Two independent measurements disagreed
+about stderr: one observed it non-empty (so `exit_only` False), one observed
+it empty on a different CLI build (so `exit_only` True). The verdict is
+unchanged either way *because `boundary` decides it*, but any future reasoning
+that leans on stderr being populated is leaning on something that has already
+been seen both ways.
+
+Two things measurement showed that reasoning had wrong, both worth keeping:
+
+- **`started` is True even at the very start of a turn**, and not for the
+  reason the name suggests. The CLI emits a `model:"<synthetic>"` assistant
+  message for its own error, and the supervisor sets its proof-of-life flag
+  *before* testing for that synthetic marker. So `started` fires on the CLI's
+  fabricated error message, not on the model having spoken —
+  `_died_in_flight`'s docstring says that clause "excludes the failures which
+  must NEVER retry… they die before the model ever speaks", and for auth
+  failures it does not do what it says. `boundary` is carrying this branch
+  alone.
+- **The CLI retries a 401 ten times internally** before giving up. An expired
+  token therefore burns ~10 API round-trips per turn before the turn even
+  ends.
+
+> ⚠ **AND THE TRAP FOR PHASE 2: a `_looks_like_auth_failure(err_blob)` would
+> silently never fire.** `err_blob` is built from the stderr branch when the
+> exit code is nonzero; with stderr empty it falls to a fallback that reads
+> `res["errors"]` — `None` here — and yields the generic *"the CLI exited 1
+> without writing anything to stderr"*. The CLI's own perfectly good
+> `Failed to authenticate. API Error: 401 …` is **discarded**. Worse, the
+> supervisor already reads that exact string and throws it away, because the
+> only question it asks of it is `_looks_like_usage_limit`. So adding an auth
+> classifier is not the fix — **the harvest must adopt `res["result"]` /
+> `api_error_status` first, or the new classifier is a change that goes green
+> and does nothing**, which is this subtree's signature failure. Two smaller
+> consequences: the user-facing `last_error` and the `turn_error_log` row both
+> read "exited 1 without writing anything to stderr" for an expired token, so
+> it is undiagnosable from orgtree's own surfaces.
+
+**Not measured:** a 401 arriving *after* genuine model output. Both
+observations are turn-start-shaped; a synthetic mid-stream failure was
+attempted and the CLI rejected it as a malformed stream rather than an auth
+error. `boundary` was True in every failure shape produced (clean,
+malformed-stream, genuine 401), so there is no reason to expect the
+post-output case differs — but it has not been shown.
 
 This matters more under the approved design than it would today: per-turn
 token binding at agent wake means a bound access token ages out on its own
 8-hour clock, and the CLI **cannot** refresh it, because
 `CLAUDE_CODE_OAUTH_TOKEN` carries an access token only, with no refresh token
 behind it. Per-turn binding therefore *introduces* precisely the failure mode
-that has no recovery path. Phase 2 owes a positively-classified auth-failure
-class plus a re-drive, or the failover is cosmetic.
+that has no recovery path. Phase 2 owes **the harvest fix first**, then a
+positively-classified auth-failure class plus a re-drive — in that order, or
+the classifier is inert and the failover is cosmetic.
 
 #### Provenance, and a discipline note that outlives this entry
 
