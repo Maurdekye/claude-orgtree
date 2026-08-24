@@ -2659,3 +2659,15 @@ html.mobile .hire-sheet input { font-size: 16px; min-height: 44px; }
 
 /* ---- markdown tables must scroll inside their own box (spec 9.4-14) ---- */
 html.mobile .md table { display: block; overflow-x: auto; max-width: 100%; }
+
+/* ---- accounts panel (redesign 2026-08-24: serving fact + fallback keys) */
+.acct-serving { font-size: 13px; }
+.acct-head { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+.acct-row { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+.acct-main { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.acct-label { cursor: pointer; font-weight: 600; }
+.acct-key { cursor: grab; }
+.acct-key:active { cursor: grabbing; }
+.acct-over { border-color: var(--accent, #61afef); }
+.acct-grip { color: var(--dim); cursor: grab; user-select: none; }
+.acct-nokey { opacity: .8; }
