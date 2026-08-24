@@ -37,7 +37,7 @@ import uuid
 from collections.abc import Callable, Iterable, Mapping
 from typing import Any, cast
 
-from . import limits, net, sandbox as sbx, store
+from . import limits, net, sandbox as sbx, store, tokens
 from .ledger import EXTERN, SYSTEM, USER, LedgerError, Org, expand_mcp, now as now_iso
 from .schema import (Denial, FrozenInfo, InflightInfo, KioskCfg, MailEntry,
                      NodeDoc, NoticeEntry, TurnStat)
@@ -935,7 +935,52 @@ def spawn_env(org: Org) -> dict[str, str]:
         # is open; expiry alone reverts the org to the subscription
         if not org.d.get("api_fallback") or api_fallback_active(org):
             env["ANTHROPIC_API_KEY"] = key
+    # ── Phase 2 · the account token (MECHANISM ONLY, selects nothing) ──────
+    # ⚠ THIS MUST STAY AFTER `clean_env()` AND IT IS NOT A STYLE POINT.
+    # `clean_env()` strips EVERY `CLAUDE_CODE_*` variable, so injecting before
+    # it is a SILENT NO-OP that looks exactly like a working feature until
+    # somebody checks which identity actually served the turn (measured
+    # 2026-08-24: the pinned CLI 2.1.220 does read this variable — with no
+    # credentials file reachable, setting it was the only thing that produced
+    # an authenticated request at all).
+    #
+    # ⚠ AND THE STRIP MUST NEVER BE RELAXED TO ACCOMMODATE THIS. It is why an
+    # ambient token in the BACKEND's environment cannot silently capture every
+    # org — the same failure a host-level API key once caused. The org's own
+    # token is re-injected here; an inherited one reaches no agent.
+    #
+    # Sandboxed orgs excluded, mirroring the key above: their credential
+    # reaches the process through the container's own environment, and setting
+    # it on the host-side `docker exec` would leak it into an argv/env the
+    # container does not own.
+    acct = str(org.d.get("account_token_uuid") or "")
+    if acct and not sbx.is_sandboxed(org):
+        tok = tokens.get(acct)
+        if tok:
+            env["CLAUDE_CODE_OAUTH_TOKEN"] = tok
     return env
+
+
+def identity_in_env(env: dict[str, str], org: Org) -> str:
+    """WHICH account a spawn carrying `env` will authenticate as.
+
+    ⚠ IT READS THE RESOLVED ENV DICT, NOT THE INTENT. This is the
+    `store.DATA_ROOT`-not-`os.environ` rule applied to identity, and it is the
+    whole reason the function takes `env` at all. Asking the org "which account
+    did you mean" answers a different question from "which credential is the
+    process actually holding", and it is precisely the difference between a
+    diagnosis and a guess when a turn runs as the wrong account.
+
+    Returns an account uuid, or one of the sentinels below. Never a secret.
+    """
+    if env.get("CLAUDE_CODE_OAUTH_TOKEN"):
+        # the uuid is a label, not a credential; the DISCRIMINATOR above is
+        # the resolved env, so a stale/blank uuid degrades to a named unknown
+        # rather than silently reading as "ambient"
+        return str(org.d.get("account_token_uuid") or "") or "token:unattributed"
+    if env.get("ANTHROPIC_API_KEY"):
+        return "api-key"
+    return "ambient"
 
 
 def api_fallback_active(org: Org, now: float | None = None) -> bool:
@@ -3132,6 +3177,14 @@ def _run_one_turn(slug: str, nid: str,
             # glance, not a cost-card hover. Popped in the finally below —
             # the next turn re-decides the lane at its own spawn.
             st["on_fallback"] = on_fallback_key
+            # ⚠ RECORDED FROM THE RESOLVED ENV, NOT FROM INTENT. `env` is the
+            # dict this Popen is about to receive, so this says which
+            # credential the process will actually hold — not which one the
+            # org meant to use. Without it no wrong-account switch is
+            # diagnosable after the fact, and "which account served this
+            # turn?" has no answer at all. Read `identity_in_env`'s docstring
+            # before changing the argument to `org`.
+            st["ran_as"] = identity_in_env(env, org)
             env["ORGTREE_ORG"], env["ORGTREE_NODE"] = slug, nid
             env["ORGTREE_PORT"] = os.environ.get("ORGTREE_PORT", "7360")
             env["PYTHONPATH"] = BACKEND_DIR + os.pathsep + env.get("PYTHONPATH", "")
