@@ -961,6 +961,88 @@ def spawn_env(org: Org) -> dict[str, str]:
     return env
 
 
+def alternate_account(org: Org) -> str:
+    """The account this org could fail over TO, or "".
+
+    "Has capacity" is not observable — orgtree cannot ask an account how much
+    it has left. What IS observable is "not the one that just failed", so the
+    alternate is the first account in registry order that (a) is not currently
+    serving and (b) actually HAS A STORED TOKEN. Requiring the token is the
+    point: an account we cannot authenticate as is not an alternative, and
+    offering it would strand the turn on a credential that does not exist.
+
+    ⚠ The AMBIENT account (the signed-in one) has no stored token by design,
+    so it is never returned here. Failing over TO ambient would mean deleting
+    the selection rather than choosing an account, and that is a different
+    operation with a different failure mode — see `failover_choice`.
+    """
+    from . import accounts
+    cur = str(org.d.get("account_token_uuid") or "")
+    try:
+        order = accounts.load().get("order") or []
+    except Exception:                                        # noqa: BLE001
+        return ""
+    for uuid in order:
+        if uuid != cur and tokens.has(uuid):
+            return str(uuid)
+    return ""
+
+
+def failover_choice(org: Org, *, res: dict[str, Any], err_blob: str,
+                    already_switched: bool, timed_out: bool = False,
+                ) -> tuple[str, str]:
+    """Should this failed turn change account? Returns `(action, why)` where
+    action is "none", "switch" or "stop".
+
+    PURE. It reads no clock, writes nothing, and drives nothing — so it can be
+    proven before it is wired to anything that spawns a process.
+
+    THE THREE RULES, all of them the user's decisions rather than mine:
+
+    · **A 401 STOPS. It does NOT fail over** (user, 2026-08-24). A rejected
+      credential is a BROKEN THING THAT NEEDS FIXING, not a reason to spend
+      the other account. Silently switching would let a token stay dead for
+      weeks while everything looked fine — discovered only when the SECOND
+      account also failed. They took the interruption over the silence.
+
+    · **ONE switch per turn** (user, 2026-08-24). Not a loop with a ceiling:
+      if the alternate also fails, the turn stops. `already_switched` is the
+      whole bound and it is passed IN rather than counted here, because a
+      function that counted its own invocations would be the retry loop.
+
+    · **A HANG COUNTS AS A FAILURE TO SERVE.** Measured 2026-08-24: a dead
+      credential on the token path produces `api_retry` system events and may
+      never emit a result event at all. So the caller's TIMEOUT — not a
+      failure count — is what notices, and `timed_out` carries it here. A
+      design that waited for a failure signal would wait a very long time
+      while the machine looked like it was working, slowly.
+    """
+    if already_switched:
+        return "none", "one switch per turn; this turn has had its switch"
+    # ⚠ 401 IS CHECKED FIRST AND DELIBERATELY OUTRANKS THE LIMIT TEST. The
+    # blob of a turn that died on a bad credential can still contain
+    # limit-sounding words (an agent quoting an earlier failure, say), and
+    # treating that as a limit would do the exact silent migration the user
+    # ruled against. The NUMBER is evidence; the prose is not.
+    if _looks_like_auth_failure(res):
+        return "stop", ("the credential was rejected (401) — this token is "
+                        "broken and needs replacing, so the turn stops "
+                        "rather than spending another account")
+    if timed_out:
+        alt = alternate_account(org)
+        return (("switch", "the account did not serve the turn and the cause "
+                           "is unknown (timed out with no result)")
+                if alt else
+                ("none", "timed out, but no alternate account has a token"))
+    if _looks_like_usage_limit(err_blob):
+        alt = alternate_account(org)
+        return (("switch", "the account is out of capacity")
+                if alt else
+                ("none", "out of capacity, but no alternate account "
+                         "has a token"))
+    return "none", "not a condition another account would fix"
+
+
 def identity_in_env(env: dict[str, str], org: Org) -> str:
     """WHICH account a spawn carrying `env` will authenticate as.
 

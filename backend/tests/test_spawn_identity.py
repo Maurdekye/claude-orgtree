@@ -309,11 +309,142 @@ def s3_identity() -> None:
           _unattributed_is_named)
 
 
+
+# ── §4 the failover decision — pure, and the user's rules ─────────────────
+def s4_failover() -> None:
+    if not section("§4 failover — 401 stops, limits switch, one per turn"):
+        return
+    from orgtree import accounts
+    tokens.put(UUID_A, FAKE_TOKEN)
+    tokens.put(UUID_B, FAKE_TOKEN_2)
+    accounts.save({"version": accounts.VERSION,
+                   "accounts": {UUID_A: {"label": "A"}, UUID_B: {"label": "B"}},
+                   "order": [UUID_A, UUID_B], "pins": {}})
+
+    LIMIT = "Claude usage limit reached · try again in 3 hours"
+    AUTH = {"is_error": True, "api_error_status": 401,
+            "result": "Not logged in · Please run /login"}
+    CLEAN: dict = {}
+
+    def choice(**kw):
+        kw.setdefault("res", CLEAN)
+        kw.setdefault("err_blob", "")
+        kw.setdefault("already_switched", False)
+        return sup.failover_choice(_org(account_token_uuid=UUID_A), **kw)
+
+    check("a usage limit switches to the alternate", lambda: (
+        eq(choice(err_blob=LIMIT)[0], "switch")))
+    check("the alternate is the OTHER account, not the current one", lambda: (
+        eq(sup.alternate_account(_org(account_token_uuid=UUID_A)), UUID_B)))
+
+    # ⚠ THE USER'S RULING, and the one most likely to be "simplified" later.
+    def _401_stops():
+        act, why = choice(res=AUTH, err_blob="the CLI exited 1")
+        if act == "switch":
+            raise AssertionError(
+                "A 401 IS FAILING OVER. The user ruled that a rejected "
+                "credential STOPS and tells them: silently switching lets a "
+                "broken token sit dead for weeks, discovered only when the "
+                "SECOND account fails too.")
+        eq(act, "stop")
+    check("a 401 STOPS — it never fails over", _401_stops)
+
+    def _401_outranks_limit_prose():
+        """A 401 whose PROSE also sounds like a limit must still stop. The
+        number is evidence; the text is not."""
+        res = {**AUTH, "result": "usage limit reached · try again in 3 hours"}
+        act, _ = choice(res=res, err_blob=LIMIT)
+        if act != "stop":
+            raise AssertionError(
+                "limit-sounding TEXT on a 401 turn caused a switch — the "
+                "prose outranked the status code, which is the silent "
+                "migration the ruling exists to prevent")
+    check("a 401 outranks limit-sounding prose", _401_outranks_limit_prose)
+
+    def _one_switch():
+        act, _ = choice(err_blob=LIMIT, already_switched=True)
+        if act != "none":
+            raise AssertionError(
+                "a turn that already switched is switching AGAIN — that is a "
+                "retry loop across accounts, not one switch per turn")
+    check("ONE switch per turn — a switched turn does not switch again",
+          _one_switch)
+
+    def _timeout_switches():
+        """A dead token can HANG rather than fail (measured), so the timeout
+        is the bound that notices."""
+        act, why = choice(timed_out=True)
+        eq(act, "switch")
+        if "unknown" not in why:
+            raise AssertionError(
+                "a timeout switch must SAY the cause was unknown, not "
+                "invent one — it is the case where we know least")
+    check("a TIMEOUT counts as failure to serve and switches", _timeout_switches)
+
+    def _timeout_still_bounded():
+        eq(choice(timed_out=True, already_switched=True)[0], "none")
+    check("a timeout does NOT escape the one-switch bound",
+          _timeout_still_bounded)
+
+    check("an ordinary failure switches nothing", lambda: (
+        eq(choice(err_blob="TypeError: NoneType is not iterable")[0], "none")))
+
+    def _no_alternate():
+        """With no OTHER tokened account there is nothing to switch to, and
+        saying 'switch' would strand the turn."""
+        o = _org(account_token_uuid=UUID_A)
+        tokens.forget(UUID_B)
+        try:
+            act, why = sup.failover_choice(o, res=CLEAN, err_blob=LIMIT,
+                                           already_switched=False)
+            eq(act, "none")
+            if "no alternate" not in why:
+                raise AssertionError("the reason must name the real cause")
+        finally:
+            tokens.put(UUID_B, FAKE_TOKEN_2)
+    check("no tokened alternate → no switch, and it says why", _no_alternate)
+
+    def _untokened_is_not_an_alternate():
+        """An account we cannot authenticate as is not an alternative."""
+        accounts.save({"version": accounts.VERSION,
+                       "accounts": {UUID_A: {"label": "A"},
+                                    "ghost": {"label": "G"}},
+                       "order": [UUID_A, "ghost"], "pins": {}})
+        try:
+            got = sup.alternate_account(_org(account_token_uuid=UUID_A))
+            if got == "ghost":
+                raise AssertionError(
+                    "an account with NO stored token was offered as the "
+                    "failover target — the turn would be stranded on a "
+                    "credential that does not exist")
+            eq(got, "")
+        finally:
+            accounts.save({"version": accounts.VERSION,
+                           "accounts": {UUID_A: {"label": "A"},
+                                        UUID_B: {"label": "B"}},
+                           "order": [UUID_A, UUID_B], "pins": {}})
+    check("an account with no token is never the alternate",
+          _untokened_is_not_an_alternate)
+
+    def _pure():
+        """PURE: deciding must not mutate the org or the store."""
+        o = _org(account_token_uuid=UUID_A)
+        before = dict(o.d)
+        sup.failover_choice(o, res=AUTH, err_blob=LIMIT, already_switched=False)
+        sup.failover_choice(o, res=CLEAN, err_blob=LIMIT, already_switched=False)
+        if dict(o.d) != before:
+            raise AssertionError(
+                "failover_choice MUTATED the org — deciding and acting must "
+                "stay separable or the decision cannot be tested at all")
+    check("the decision is pure — it changes nothing", _pure)
+
+
 def main() -> None:
     t0 = time.perf_counter()
     print(f"data root: {store.DATA_ROOT}")
     print(f"token store: {tokens.tokens_path()}")
-    for fn in (s0_isolation, s1_store, s2_spawn, s3_identity):
+    for fn in (s0_isolation, s1_store, s2_spawn, s3_identity,
+               s4_failover):
         fn()
     dt = time.perf_counter() - t0
     print()
