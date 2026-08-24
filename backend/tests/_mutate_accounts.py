@@ -314,6 +314,18 @@ def main():
             misses.append(f"{name}: PATTERN NOT FOUND (mutant never applied)")
             print(f"  ?? {name}\n     pattern not found — mutant is vacuous")
             continue
+        # ⚠ AN AMBIGUOUS ANCHOR IS A COIN FLIP, NOT A MUTANT. `replace(f, r, 1)`
+        # takes the FIRST match, which may be in a different function entirely
+        # — the mutant then either reports a kill of unrelated checks, or
+        # SURVIVES while appearing to have been applied. Seen three times on
+        # feat/multi-account-phase2; the first two were caught by luck and the
+        # third by this check's absence being noticed. It is not overhead.
+        if src.count(find) > 1:
+            misses.append(f"{name}: AMBIGUOUS PATTERN — matches "
+                          f"{src.count(find)} places; would mutate the FIRST")
+            print(f"  ?? {name}\n     ambiguous anchor ({src.count(find)} "
+                  f"matches) — refusing to guess")
+            continue
         path.write_text(src.replace(find, repl, 1), encoding="utf-8")
         try:
             ok, passed = run_suite()
