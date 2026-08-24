@@ -226,10 +226,29 @@ def s2_separation() -> None:
     # the fix was simply reverted, so prove the wiring exists before proving
     # it is narrow.
     calls = _calls_named(_SUP_AST, "_for_the_record")
-    check("POSITIVE CONTROL: _for_the_record is actually wired in", lambda: (
-        None if calls else (_ for _ in ()).throw(AssertionError(
-            "_for_the_record is never called — the fix is not wired, and "
-            "every absence check in this section is passing vacuously"))))
+
+    # ⚠ This was TWO checks — "is it wired at all" and "are both doors
+    # wired". The first could never fail on its own once the second door
+    # existed (>=2 calls implies >=1), so it was an UNKILLABLE check: nothing
+    # in the mutation round could ever make it the cause of a failure, which
+    # means it was never tested. Merged into one that demands both doors and
+    # explains both failure modes.
+    def _positive_control():
+        if len(calls) >= 2:
+            return
+        if not calls:
+            raise AssertionError(
+                "_for_the_record is never called — the fix is not wired at "
+                "all, and EVERY absence check in this section is passing "
+                "vacuously rather than passing meaningfully.")
+        raise AssertionError(
+            f"only {len(calls)} recording site carries the CLI's reason. "
+            "There are TWO operator-facing doors — the terminal raise and "
+            "the retry-exhausted raise — and a door left on the placeholder "
+            "is a user still unable to tell an expired credential from a "
+            "crash, through a route nobody checked.")
+    check("POSITIVE CONTROL: both operator-facing doors are wired",
+          _positive_control)
 
     # RULE 1 — never assigned back onto err_blob, which is classifier input.
     def _rule1():
@@ -292,19 +311,6 @@ def s2_separation() -> None:
     check("RULE 2b · the widened text is never passed to _retry_exhausted",
           _rule2b)
 
-    # Both operator-facing doors must actually carry the reason. Without this,
-    # the retry door could quietly revert to the placeholder and every rule
-    # above would still pass — they are all statements of ABSENCE.
-    def _both_doors():
-        if len(calls) < 2:
-            raise AssertionError(
-                f"only {len(calls)} recording site(s) carry the CLI's reason. "
-                "There are TWO operator-facing doors — the terminal raise and "
-                "the retry-exhausted raise — and a door left on the "
-                "placeholder is a user still unable to tell an expired "
-                "credential from a crash, through a route nobody checked.")
-    check("BOTH operator-facing doors carry the reason, not just one",
-          _both_doors)
 
     # The order argument, mechanically: the raise that carries the widened
     # text must come AFTER the last predicate call, or "assembled after every

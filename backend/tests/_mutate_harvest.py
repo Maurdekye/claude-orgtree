@@ -119,7 +119,7 @@ MUTANTS = [
      SUP,
      "                            f\"{_for_the_record(err_blob, res)[:300]}\")",
      "                            f\"{err_blob[:300]}\")",
-     "BOTH operator-facing doors carry the reason, not just one"),
+     "POSITIVE CONTROL: both operator-facing doors are wired"),
 
     ("LEAK: the record is assembled EARLY, before the classifiers run",
      SUP,
@@ -128,12 +128,12 @@ MUTANTS = [
      "            _for_the_record(err_blob, res)",
      "ORDER · the widened text is assembled after the last predicate"),
 
-    ("the fix is unwired entirely — the raise goes back to the bare blob",
+    ("the TERMINAL door reverts to the placeholder",
      SUP,
      _RAISE,
      '                raise RuntimeError(\n'
      '                    f"turn failed: {err_blob[:400] or \'no output\'}")',
-     "POSITIVE CONTROL: _for_the_record is actually wired in"),
+     "POSITIVE CONTROL: both operator-facing doors are wired"),
 
     # ⚠ this mutant SURVIVED the first round, and both halves were wrong: the
     # mutant used a bare attribute REFERENCE (`store.save_org`), which is not
