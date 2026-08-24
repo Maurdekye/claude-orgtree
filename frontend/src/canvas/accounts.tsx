@@ -82,15 +82,15 @@ export function AccountsPanel({ slug, toast, close }: {
   return (
     <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
       <div className="settings" onClick={(e) => e.stopPropagation()}>
-        <h3>Accounts <span className="dim">· subscriptions this install may bill</span></h3>
+        <h3>Accounts</h3>
 
-        {/* D-144, stated where it cannot be missed */}
+        {/* D-144, stated where it cannot be missed. Trimmed to the bare
+            warning (user: drop the explanatory blurbs, 2026-08-24) — but the
+            warning itself STAYS while selection_active is false: without it a
+            panel of healthy accounts reads as a working waterfall. */}
         {data && !data.selection_active && (
           <div className="ask-warn">
-            Registry only — <b>no failover is running</b>. These accounts are
-            recorded and can be ordered and pinned, but nothing selects one for
-            a turn yet, so a limit on the primary will not move work to the
-            secondary. Ordering and pins take effect when selection ships.
+            Registry only — <b>no failover is running yet</b>.
           </div>
         )}
 
@@ -98,10 +98,7 @@ export function AccountsPanel({ slug, toast, close }: {
         {!data && !err && <div className="dim">reading the registry…</div>}
 
         {data && data.accounts.length === 0 && (
-          <div className="dim">
-            No accounts known yet. “Adopt current login” records whoever is
-            signed in on this host — it reads the login, it never changes it.
-          </div>
+          <div className="dim">No accounts known yet.</div>
         )}
 
         {data && data.accounts.map((a, i) => (
@@ -159,13 +156,6 @@ export function AccountsPanel({ slug, toast, close }: {
             </div>
           </div>
         ))}
-
-        <div className="dim">
-          Adoption only ever <b>reads</b> the Claude login on this host to see
-          which account it belongs to. It never writes the credentials file,
-          never signs anyone out, and stores no tokens — the registry keeps
-          identity only.
-        </div>
 
         <div className="row">
           <button className="primary" disabled={busy} onClick={adopt}>
