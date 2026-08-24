@@ -144,7 +144,7 @@ MUTANTS = [
     # an ambiguous anchor has done this; the harness now refuses them outright.
     ("the limit test is moved AHEAD of the 401 test (prose outranks status)",
      SUP,
-     "    # the NUMBER is evidence; the prose is not.\n"
+     "    # ruled against. The NUMBER is evidence; the prose is not.\n"
      "    if _looks_like_auth_failure(res):",
      "    if _looks_like_usage_limit(err_blob) and alternate_account(org):\n"
      "        return \"switch\", \"the account is out of capacity\"\n"
