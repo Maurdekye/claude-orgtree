@@ -792,6 +792,42 @@ export interface UsagePayload {
   plan?: string
 }
 
+/** one entitlement this install knows about (GET /api/accounts — D-144).
+ *  IDENTITY ONLY: no token material exists in this payload because none
+ *  exists in the registry. `email_masked` is a hint for telling two accounts
+ *  apart, never the full address; `label` is whatever the user renamed it to. */
+export interface AccountEntry {
+  uuid: string
+  label: string
+  email_masked: string | null
+  org_uuid: string | null
+  subscription_type: string | null
+  rate_limit_tier: string | null
+  account_created_at: string | null
+  source: string
+  first_seen: string | null
+  last_seen: string | null
+}
+
+/** GET /api/accounts. `accounts` is in WATERFALL ORDER, primary first.
+ *
+ *  ⚠ `selection_active` is the machine-readable form of D-144 and is FALSE in
+ *  Phase 1: the registry records which accounts exist and which org is pinned
+ *  to which, but nothing selects an account for a turn and no failover runs.
+ *  Any surface rendering this MUST say so — a panel showing two healthy
+ *  accounts and a pin reads exactly like a working waterfall, and on today's
+ *  supervisor a mid-turn auth rejection is terminal rather than a failover. */
+export interface AccountsPayload {
+  version: number
+  accounts: AccountEntry[]
+  primary: string | null
+  pins: Record<string, string>
+  selection_active: boolean
+  /** POST /api/accounts/adopt only: the account taken, or null when there was
+   *  nothing to adopt (nobody logged in, or the lookup was unreachable). */
+  adopted?: string | null
+}
+
 /** GET /api/usage/peek — the same standing read from the server's cache
  *  ALONE, so the header button's near-the-wall glow can poll continuously
  *  without ever costing an upstream request. `available: false` means "do not

@@ -10,6 +10,7 @@ import type {
   McpServersPayload, OpRequest, OpResult, OrgListEntry, OrgMdPayload,
   OrgNetReveal, ReorderRequest, ScopeRequest, ScratchPayload, SendMessageResult,
   SettingsRequest, SettingsResult, SweepPreview, SweepResult, TreePayload,
+  AccountsPayload,
   UploadResult, UsagePayload, UsagePeek,
 } from './types'
 
@@ -258,6 +259,35 @@ export const getHost = (): Promise<HostPayload> => req('/api/host')
 export const getUsage = (): Promise<UsagePayload> => req('/api/usage')
 // cache-only — the glow polls this; only the modal above may cost a fetch
 export const getUsagePeek = (): Promise<UsagePeek> => req('/api/usage/peek')
+// ---- the account registry (D-144). Identity only, never tokens. ----
+export const getAccounts = (): Promise<AccountsPayload> => req('/api/accounts')
+// PASSIVE: notices whoever is logged in and records who they are. Never writes
+// the credentials store — the server raises 409 if it changed mid-read.
+export const adoptAccount = (): Promise<AccountsPayload> =>
+  req('/api/accounts/adopt', { method: 'POST' })
+export const setAccountOrder = (order: string[]): Promise<AccountsPayload> =>
+  req('/api/accounts/order', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ order }),
+  })
+export const setAccountPin = (
+  slug: string, uuid: string | null,
+): Promise<AccountsPayload> =>
+  req(`/api/accounts/pins/${encodeURIComponent(slug)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ uuid }),
+  })
+export const relabelAccount = (
+  uuid: string, label: string,
+): Promise<AccountsPayload> =>
+  req(`/api/accounts/${encodeURIComponent(uuid)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ label }),
+  })
+
 export const getDefaults = (): Promise<DefaultsPayload> =>
   req('/api/defaults')
 export const saveDefaults = (body: SettingsRequest): Promise<DefaultsPayload> =>

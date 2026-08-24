@@ -439,6 +439,25 @@ def s6_readout() -> None:
     # D-144: the panel must not be able to imply selection exists
     check("readout declares selection_active FALSE (D-144)",
           lambda: eq(r["selection_active"], False))
+    # the panel's `ago()` parses STRINGS; an epoch number renders as "NaN ago"
+    # and nothing in TypeScript would catch it at runtime. Assert the wire
+    # shape, and that it actually parses as a date rather than merely being
+    # a string — "0" is a string too.
+    def readout_timestamps_are_iso():
+        import datetime as dt
+        for field in ("first_seen", "last_seen"):
+            v = r["accounts"][0][field]
+            assert isinstance(v, str), f"{field} is {type(v).__name__}, not ISO str"
+            parsed = dt.datetime.fromisoformat(v.replace("Z", "+00:00"))
+            assert parsed.year >= 2020, f"{field} parsed to {parsed!r}"
+    check("readout emits ISO-8601 timestamps, not epoch numbers",
+          readout_timestamps_are_iso)
+    # …while the on-disk record keeps epoch, which is what the stability
+    # checks in §2 compare
+    check("the stored record still keeps epoch numbers", lambda: (
+        None if isinstance(accounts.load()["accounts"][
+            list(accounts.load()["accounts"])[0]]["first_seen"], (int, float))
+        else (_ for _ in ()).throw(AssertionError("record lost its epoch"))))
     check("readout carries no token material", lambda: (
         None if "sk-ant" not in json.dumps(r) else (_ for _ in ()).throw(
             AssertionError("token text in readout"))))

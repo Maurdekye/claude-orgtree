@@ -30,6 +30,7 @@ here should be read as making failover work.
 """
 from __future__ import annotations
 
+import datetime as _dt
 import json
 import os
 import re
@@ -310,6 +311,22 @@ def get_pin(org_slug: str) -> str | None:
     return load()["pins"].get(org_slug)
 
 
+def _iso(epoch: Any) -> str | None:
+    """Epoch seconds → ISO-8601 Z. The record keeps epoch (cheap to compare);
+    the WIRE speaks ISO, because every other timestamp this API emits does and
+    the frontend's `ago()` parses strings, not numbers."""
+    if not isinstance(epoch, (int, float)):
+        return None
+    return (_dt.datetime.fromtimestamp(epoch, _dt.timezone.utc)
+            .isoformat().replace("+00:00", "Z"))
+
+
+def _wire(rec: dict[str, Any], uuid: str) -> dict[str, Any]:
+    return {**rec, "uuid": uuid,
+            "first_seen": _iso(rec.get("first_seen")),
+            "last_seen": _iso(rec.get("last_seen"))}
+
+
 def readout() -> dict[str, Any]:
     """What the panel renders. `effective` is the account a turn WOULD use if
     selection existed — it does not yet (Phase 2), so the panel labels it as
@@ -317,7 +334,7 @@ def readout() -> dict[str, Any]:
     doc = load()
     return {
         "version": VERSION,
-        "accounts": [dict(doc["accounts"][u], uuid=u)
+        "accounts": [_wire(doc["accounts"][u], u)
                      for u in doc["order"] if u in doc["accounts"]],
         "primary": doc["order"][0] if doc["order"] else None,
         "pins": dict(doc["pins"]),

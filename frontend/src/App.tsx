@@ -22,6 +22,7 @@ import { DirList } from './forms'
 import { FolderPickerHost } from './picker'
 import { deskDpi, fallbackActive, orgPxc, setDeskDpi, usePolled, TIERS } from './canvas/shared'
 import { AskCard } from './canvas/asks'
+import { AccountsPanel } from './canvas/accounts'
 import { addPending, dropPending, ingestPulse, ingestStream, resetConvos } from './convo'
 import type {
   AskInfo, AudiencesPayload, DefaultsPayload, InboxPayload, KioskSpecRequest,
@@ -102,6 +103,7 @@ export default function App() {
   const [drawer, setDrawer] = useState(false)
   const [doomedOrg, setDoomedOrg] = useState<OrgListEntry | null>(null)   // org row pending deletion
   const [showDefaults, setShowDefaults] = useState(false)   // global new-org defaults
+  const [showAccounts, setShowAccounts] = useState(false)   // D-144 account registry
   const [showUsage, setShowUsage] = useState(false)         // host subscription usage bars
   const [killArmed, setKillArmed] = useState(false)  // the killswitch latch
   // the usage button GLOWS once a lane nears its wall (user feature
@@ -300,7 +302,13 @@ export default function App() {
           <button className={'h1-usage' + (usageAlert ? ' u-' + usageAlert.sev : '')}
             title={usageAlert?.title ?? 'Claude subscription usage'}
             onClick={() => setShowUsage(true)}>
-            <DataUsageIcon fontSize="inherit" /></button>}</h1>
+            <DataUsageIcon fontSize="inherit" /></button>}
+        {/* D-144: the account registry. Beside the usage bars deliberately —
+            they answer the same question ("which entitlement is paying, and
+            how close is it to a wall?") and are read together. */}
+        {!BASE &&
+          <button className="h1-usage" title="Claude accounts (registry)"
+            onClick={() => setShowAccounts(true)}>◑</button>}</h1>
       {slug && <button className="home" onClick={goHome}><HomeIcon fontSize="inherit" /> all organizations</button>}
       <nav>
         {orgs.map((o) => (
@@ -640,6 +648,10 @@ export default function App() {
       )}
       {showUsage && (
         <UsageModal close={() => setShowUsage(false)} />
+      )}
+      {showAccounts && (
+        <AccountsPanel slug={slug ?? undefined} toast={toast}
+          close={() => setShowAccounts(false)} />
       )}
       {doomedOrg && (
         <ConfirmModal title={`permanently delete ${doomedOrg.name}?`}
