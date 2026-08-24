@@ -173,7 +173,15 @@ export function AccountsPanel({ slug, toast, close }: {
                   make primary
                 </button>
               )}
-              {toks && (toks.tokens[a.uuid]
+              {/* ⚠ `toks?.tokens?.[...]`, NOT `toks.tokens[...]`. The first
+                  version dereferenced `.tokens` on any truthy response and
+                  threw when the shape differed — which takes down the WHOLE
+                  panel, D-144 banner included, rather than degrading to "no
+                  token button". acctpanel.test.tsx caught it: its fetch stub
+                  answers every request with the accounts payload, so `toks`
+                  arrived without a `.tokens` key. A payload-shape drift or an
+                  older backend would do the same thing in production. */}
+              {toks?.tokens && (toks.tokens[a.uuid]
                 ? <button disabled={busy} title="the CLI cannot show it again — this is a re-mint, not an undo"
                     onClick={() => {
                       setBusy(true)
