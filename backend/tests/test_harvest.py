@@ -428,11 +428,160 @@ def s4_retry_untouched() -> None:
           _no_new_writes)
 
 
+# ── §5 step 2 — the narrow positive auth predicate ─────────────────────────
+def s5_auth_predicate() -> None:
+    if not section("§5 classification — a narrow, positive auth predicate"):
+        return
+    auth = sup._looks_like_auth_failure
+    check("the measured 401 shape classifies as an auth failure", lambda: (
+        eq(auth(MEASURED_401), True)))
+    check("a 401 given as a STRING still classifies", lambda: (
+        eq(auth({"api_error_status": "401"}), True)))
+    check("a clean result event does NOT classify as auth", lambda: (
+        eq(auth({"type": "result", "is_error": False}), False)))
+    check("500 does not classify as auth", lambda: (
+        eq(auth({"api_error_status": 500}), False)))
+    # 403 means "understood you, refused anyway" — an org policy answer, not a
+    # dead credential. Blaming the account for it would be a wrong diagnosis.
+    check("403 is deliberately NOT an auth failure", lambda: (
+        eq(auth({"api_error_status": 403}), False)))
+    check("True is not a status (bools are ints in Python)", lambda: (
+        eq(auth({"api_error_status": True}), False)))
+    check("junk in the status field does not crash or classify", lambda: (
+        eq((auth({"api_error_status": "nonsense"}),
+            auth({"api_error_status": None}), auth({})), (False,) * 3)))
+
+    # ⚠ THE ANTI-WIDENING CONTROL (coordinator's constraint). The whole point
+    # of keying on a NUMBER is that an agent's own prose cannot change what
+    # its failure classifies as. This is the check that would catch a future
+    # refactor quietly routing text into the predicate.
+    def _text_cannot_trigger_auth():
+        liar = {"is_error": True,
+                "result": "401 unauthorized invalid api key authentication "
+                          "failed — please log in again"}
+        if auth(liar):
+            raise AssertionError(
+                "CLASSIFICATION WIDENED: a payload with NO api_error_status "
+                "classified as an auth failure purely on its TEXT. The "
+                "predicate is now substring-searchable, which means an "
+                "agent that merely QUOTES an error can change what its own "
+                "turn classifies as — org-wide.")
+    check("ANTI-WIDENING · auth-sounding TEXT alone never classifies",
+          _text_cannot_trigger_auth)
+
+    def _limit_text_does_not_newly_freeze():
+        # a 401 whose prose also sounds like a usage limit: the shape that
+        # would newly FREEZE a turn that is terminal today, if the harvested
+        # text ever reached the broad predicates.
+        both = {"is_error": True, "api_error_status": 401,
+                "result": "Claude usage limit reached · try again in 3 hours"}
+        blob = PLACEHOLDER
+        if sup._looks_like_usage_limit(blob):
+            raise AssertionError("premise broken: the narrow blob already "
+                                 "matches, section cannot discriminate")
+        record = sup._for_the_record(blob, both)
+        if "usage limit reached" not in record:
+            raise AssertionError("premise broken: the record does not carry "
+                                 "the limit-sounding text at all")
+        # the classifier input is `err_blob`, and it is untouched. If this
+        # ever fails, a refactor has routed the record into classification.
+        if sup._looks_like_usage_limit(blob):
+            raise AssertionError(
+                "CLASSIFICATION CHANGED — FREEZE: a turn that is terminal "
+                "today would now be classified as a usage limit and FROZEN, "
+                "because limit-sounding text from the CLI reached "
+                "_looks_like_usage_limit.")
+    check("ANTI-WIDENING · limit-sounding text does not newly freeze",
+          _limit_text_does_not_newly_freeze)
+
+    def _fable_escalation_unreachable():
+        # the worst available outcome: the fable escalation halts — and under
+        # the dissolve policy ARCHIVES — every fable node in the org, and it
+        # triggers on three words in the blob.
+        nasty = {"is_error": True, "api_error_status": 401,
+                 "result": "Fable 5 limit reached — authentication failed"}
+        blob = PLACEHOLDER
+        if sup._looks_like_fable_tier_limit(blob):
+            raise AssertionError("premise broken: the narrow blob already "
+                                 "trips the fable escalation")
+        record = sup._for_the_record(blob, nasty)
+        if not sup._looks_like_fable_tier_limit(record):
+            raise AssertionError(
+                "premise broken: this payload does not trip the escalation "
+                "even when widened, so the check proves nothing — pick a "
+                "payload that WOULD, or it passes either way")
+        # …and the escalation's actual input is the narrow blob, so it stays
+        # unreachable. The AST rules in §2 are what keep it that way.
+        if sup._looks_like_fable_tier_limit(blob):
+            raise AssertionError(
+                "CLASSIFICATION CHANGED — FABLE ESCALATION: an auth failure "
+                "can now trip the org-wide fable escalation, which HALTS and "
+                "(under the dissolve policy) ARCHIVES every fable node in the "
+                "org. This is the worst available outcome of widening.")
+    check("ANTI-WIDENING · the org-wide fable escalation stays unreachable",
+          _fable_escalation_unreachable)
+
+    def _auth_never_takes_a_blob():
+        # the signature IS the design: if someone "harmonises" it to take a
+        # blob, the number-keyed guarantee evaporates silently.
+        bad = []
+        for c in _calls_named(_SUP_AST, "_looks_like_auth_failure"):
+            for a in c.args:
+                if isinstance(a, ast.Name) and a.id in ("err_blob", "blob",
+                                                        "text", "detail"):
+                    bad.append((a.id, c.lineno))
+                if _mentions_call(a, "_for_the_record") or \
+                   _mentions_call(a, "_result_detail"):
+                    bad.append(("<harvested text>", c.lineno))
+        if bad:
+            raise AssertionError(
+                f"CLASSIFICATION WIDENED: _looks_like_auth_failure is being "
+                f"called on TEXT at {bad}. It must be given the result event "
+                f"so it can read a NUMBER — a number cannot accidentally "
+                f"contain 'usage limit reached'.")
+    check("the auth predicate is never called on harvested text",
+          _auth_never_takes_a_blob)
+
+    def _no_behaviour_wired():
+        # step 2 is classification only. Acting on it — freeze, retry,
+        # resume, account switch — is step 3 and needs its own ruling.
+        for n in ast.walk(_SUP_AST):
+            if not isinstance(n, ast.Call):
+                continue
+            f = n.func
+            nm = f.id if isinstance(f, ast.Name) else getattr(f, "attr", "")
+            if nm in ("_turn_abandoned", "_retry_exhausted", "notify",
+                      "fable_filter_hit", "mark_unrecoverable"):
+                for a in ast.walk(n):
+                    if isinstance(a, ast.Call) and \
+                            isinstance(a.func, ast.Name) and \
+                            a.func.id == "_looks_like_auth_failure":
+                        raise AssertionError(
+                            f"BEHAVIOUR WIRED — the auth predicate is "
+                            f"driving {nm} at line {n.lineno}. Step 2 is "
+                            f"classification ONLY; acting on it changes "
+                            f"turn semantics and is step 3.")
+    check("no freeze/retry/mail path is wired to the auth predicate yet",
+          _no_behaviour_wired)
+
+    check("an auth failure is NAMED on the operator's record", lambda: (
+        None if "AUTHENTICATION FAILURE" in sup._for_the_record(
+            PLACEHOLDER, MEASURED_401)
+        else (_ for _ in ()).throw(AssertionError(
+            "the operator still cannot tell a rejected credential from a "
+            "crash — which is the whole point of classifying it"))))
+    check("a NON-auth failure is not mislabelled", lambda: (
+        None if "AUTHENTICATION FAILURE" not in sup._for_the_record(
+            PLACEHOLDER, {"is_error": True, "result": "disk full"})
+        else (_ for _ in ()).throw(AssertionError(
+            "every failure is being called an auth failure"))))
+
+
 def main() -> None:
     t0 = time.perf_counter()
     print(f"supervisor under test: {_SUP_SRC_PATH}")
     for fn in (s0_isolation, s1_harvest, s2_separation, s3_trap_payload,
-               s4_retry_untouched):
+               s4_retry_untouched, s5_auth_predicate):
         fn()
     dt = time.perf_counter() - t0
     print()

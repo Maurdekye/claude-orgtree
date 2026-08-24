@@ -135,6 +135,71 @@ MUTANTS = [
      '                    f"turn failed: {err_blob[:400] or \'no output\'}")',
      "POSITIVE CONTROL: both operator-facing doors are wired"),
 
+    # ── step 2: the narrow positive auth predicate ─────────────────────────
+    ("WIDENING: the auth predicate starts substring-searching TEXT",
+     SUP,
+     "    status = res.get(\"api_error_status\")\n"
+     "    if isinstance(status, bool):",
+     "    if \"invalid api key\" in str(res.get(\"result\") or \"\").lower():\n"
+     "        return True\n"
+     "    status = res.get(\"api_error_status\")\n"
+     "    if isinstance(status, bool):",
+     "ANTI-WIDENING · auth-sounding TEXT alone never classifies"),
+
+    ("the auth predicate widens to 403 (an org policy answer)",
+     SUP,
+     "        return status == 401",
+     "        return status in (401, 403)",
+     "403 is deliberately NOT an auth failure"),
+
+    ("the auth predicate stops firing at all",
+     SUP,
+     "    status = res.get(\"api_error_status\")\n"
+     "    if isinstance(status, bool):",
+     "    return False\n"
+     "    status = res.get(\"api_error_status\")\n"
+     "    if isinstance(status, bool):",
+     "the measured 401 shape classifies as an auth failure"),
+
+    ("a bool True in the status field is treated as a status",
+     SUP,
+     "    if isinstance(status, bool):        # bools are ints in Python; not a status\n        return False",
+     "    if False:\n        return False",
+     "True is not a status (bools are ints in Python)"),
+
+    ("the operator's record stops NAMING the auth failure",
+     SUP,
+     "    if _looks_like_auth_failure(res):",
+     "    if False and _looks_like_auth_failure(res):",
+     "an auth failure is NAMED on the operator's record"),
+
+    ("every failure is mislabelled as an auth failure",
+     SUP,
+     "    if _looks_like_auth_failure(res):",
+     "    if True or _looks_like_auth_failure(res):",
+     "a NON-auth failure is not mislabelled"),
+
+    ("the duplicate guard moves BACK below the label (double-records)",
+     SUP,
+     "    if detail and detail in err_blob:\n        return err_blob\n"
+     "    # step 2, CLASSIFICATION ONLY",
+     "    # step 2, CLASSIFICATION ONLY",
+     "a reason already present is not duplicated"),
+
+    ("WIDENING: the auth predicate is called on the harvested TEXT",
+     SUP,
+     "    if _looks_like_auth_failure(res):",
+     "    if _looks_like_auth_failure(res) or _looks_like_auth_failure(\n"
+     "            {\"api_error_status\": detail}):",
+     "the auth predicate is never called on harvested text"),
+
+    ("BEHAVIOUR: the auth predicate is wired to drive _turn_abandoned",
+     SUP,
+     "                    _turn_abandoned(slug, nid, _door, err_blob)",
+     "                    _turn_abandoned(slug, nid, _door, err_blob) \\\n"
+     "                        if not _looks_like_auth_failure(res) else None",
+     "no freeze/retry/mail path is wired to the auth predicate yet"),
+
     # ⚠ this mutant SURVIVED the first round, and both halves were wrong: the
     # mutant used a bare attribute REFERENCE (`store.save_org`), which is not
     # a side effect at all, and the check it targeted could only see bare-name

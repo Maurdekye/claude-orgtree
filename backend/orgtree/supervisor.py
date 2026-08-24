@@ -396,7 +396,23 @@ def _for_the_record(err_blob: str, res: dict[str, Any]) -> str:
     if not err_blob:
         return err_blob
     detail = _result_detail(res)
-    if not detail or detail in err_blob:
+    # ⚠ the duplicate guard runs on the REASON, and BEFORE the label below.
+    # Appending the label first makes `detail` differ from what is already in
+    # the blob, so this guard stops matching and the whole reason is recorded
+    # a SECOND time (caught by "a reason already present is not duplicated" —
+    # the check earned its place the first time the label was added).
+    if detail and detail in err_blob:
+        return err_blob
+    # step 2, CLASSIFICATION ONLY: name the cause on the operator's record.
+    # `_looks_like_auth_failure` reads the numeric status off `res`, never
+    # this text — see its docstring for why the signature is the design. This
+    # label changes NOTHING about freeze, retry, resume or account selection;
+    # acting on it is step 3.
+    if _looks_like_auth_failure(res):
+        label = ("AUTHENTICATION FAILURE — this credential was rejected; "
+                 "the turn did not fail for lack of trying")
+        detail = f"{detail}  ⚠ {label}" if detail else label
+    if not detail:
         return err_blob
     return f"{err_blob}  ⟵ the CLI's own reason: {detail}"
 
@@ -956,6 +972,50 @@ def _looks_like_usage_limit(blob: str) -> bool:
     return ("limit" in b and any(w in b for w in
                                  ("usage", "weekly", "reached", "exceeded",
                                   "quota", "hit your", "resets", "session")))
+
+
+def _looks_like_auth_failure(res: dict[str, Any]) -> bool:
+    """Was this turn rejected because the CREDENTIAL was refused?
+
+    ⚠ NOTE THE SIGNATURE, IT IS THE WHOLE DESIGN. Every other `_looks_like_*`
+    takes a free-text blob and substring-searches it. This one takes the
+    RESULT EVENT and reads a NUMBER. That is deliberate and it is not
+    stylistic: a number cannot accidentally contain "usage limit reached".
+    The broad predicates are substring searches, so routing the CLI's own
+    error prose into them would let an agent's *quoted* text change what its
+    failure classifies as — org-wide. Keying on `api_error_status` makes that
+    class of mistake unrepresentable rather than merely avoided.
+
+    ⚠ DO NOT "harmonise" this to take a blob. If you need the auth answer
+    where only a blob is in scope, pass `res` through instead — the harvest
+    already carries it to every site that matters.
+
+    MEASURED 2026-08-24 (loopback 401, shipped CLI, fabricated key): a
+    rejected credential produced `api_error_status: 401` alongside
+    `is_error: True` and `terminal_reason: 'api_error'`.
+
+    ⚠ `subtype` was **`'success'`** on that same failed turn. It is the
+    obvious-looking field to reach for and it is a trap; `is_error` and
+    `api_error_status` are the honest ones.
+
+    401 ONLY, positively. 403 is deliberately excluded: it means "understood
+    you, refused anyway" — an org permission or policy answer — and treating
+    it as a dead credential would blame the account for a decision made about
+    it. Narrow and positive, like `_looks_like_filtered`, never a catch-all.
+
+    CLASSIFICATION ONLY. Nothing in this file may act on this predicate to
+    freeze, retry, resume or switch anything — that is step 3 and it changes
+    turn semantics for every agent. Today it names the cause on the operator's
+    record and does nothing else.
+    """
+    status = res.get("api_error_status")
+    if isinstance(status, bool):        # bools are ints in Python; not a status
+        return False
+    if isinstance(status, int):
+        return status == 401
+    if isinstance(status, str) and status.strip().isdigit():
+        return int(status.strip()) == 401
+    return False
 
 
 def _looks_like_fable_tier_limit(blob: str) -> bool:
