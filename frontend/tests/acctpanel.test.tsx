@@ -98,3 +98,23 @@ uiTest('§2 CONTROL: when selection IS active, that warning is absent',
       + 'above is keying on decorative always-on text, or the panel now '
       + 'tells the opposite lie')
   })
+
+// §3 — the panel must SURVIVE a response whose shape it did not expect.
+//
+// Added 2026-08-24 after a real crash: the token lookup dereferenced
+// `.tokens` on any truthy response, so a payload without that key threw
+// during render and took the WHOLE panel down — including the §1 banner
+// above, which is the one sentence in this file that must never silently
+// vanish. A blank panel passes no string check because there is no string.
+//
+// This is the shape a frontend talking to an older backend actually sees, and
+// the serveAccounts stub reproduces it for free: it answers EVERY request with
+// the accounts payload, tokens endpoint included.
+uiTest('§3 an unexpected token-endpoint shape does not blank the panel',
+  async ({ mount }) => {
+    const text = await panelText(mount, payload(false))
+    assert.match(text, /no failover is running/i,
+      'the panel rendered nothing at all — a response without the key the '
+      + 'token lookup expected threw during render, so the D-144 banner is '
+      + 'gone for a reason no string check could otherwise report')
+  })
