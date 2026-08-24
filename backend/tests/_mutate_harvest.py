@@ -59,10 +59,14 @@ MUTANTS = [
      "    txt = \"\"",
      "the measured 401 payload yields its real reason"),
 
+    # ⚠ anchored with the following line: `status = res.get(...)` also appears
+    # in `_looks_like_auth_failure`, which reads the same field for a
+    # different purpose. The bare line became ambiguous the moment step 2
+    # landed.
     ("the harvest stops reading api_error_status",
      SUP,
-     "    status = res.get(\"api_error_status\")",
-     "    status = None",
+     "    status = res.get(\"api_error_status\")\n    bits = []",
+     "    status = None\n    bits = []",
      "the measured 401 payload yields its real reason"),
 
     ("the record REPLACES the original blob instead of appending",
