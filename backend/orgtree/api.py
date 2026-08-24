@@ -39,7 +39,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, model_validator
 
 from . import ledger as ledger_mod
-from . import accounts, limits, net, sandbox, store, subproxy, supervisor
+from . import accounts, limits, net, sandbox, store, subproxy, supervisor, tokens
 from .ledger import LedgerError, Org, USER, VIS_LEVELS, norm_dirs, norm_tools
 
 if TYPE_CHECKING:
@@ -1920,6 +1920,53 @@ def accounts_relabel(uuid: str, body: AccountLabel) -> dict[str, Any]:
     except ValueError as e:
         raise HTTPException(422, str(e)) from None
     return accounts.readout()
+
+
+class AccountToken(BaseModel):
+    token: str
+
+
+@app.get("/api/accounts/tokens")
+def accounts_tokens() -> dict[str, Any]:
+    """WHICH accounts have a stored token. Never the token, never its length.
+
+    ⚠ THIS NEEDS ITS OWN LEAK CHECK AND CANNOT BORROW `/api/accounts`'s. That
+    one asserts no token text appears in the REGISTRY payload, and it passes
+    happily however this endpoint behaves — an absence check that guards the
+    wrong object. See test_token_api.py."""
+    return {"tokens": tokens.redacted()}
+
+
+@app.put("/api/accounts/{uuid}/token")
+def accounts_put_token(uuid: str, body: AccountToken) -> dict[str, Any]:
+    """Store a long-lived token for one account.
+
+    ⚠ STORE FIRST, VALIDATE AFTER — and that ordering is the user's ruling,
+    not a preference. The CLI shows a minted token EXACTLY ONCE ("you won't be
+    able to see it again"), so a validation failure that rejected the paste
+    would destroy the only copy and cost a re-mint plus another
+    account-switch hazard window. The write happens before anything can form
+    an opinion about the value.
+
+    ⚠ The token is never echoed back, never logged, and never returned in any
+    response — success is reported as presence, not content."""
+    if uuid not in (accounts.load().get("accounts") or {}):
+        raise HTTPException(404, f"no such account {uuid!r}")
+    try:
+        tokens.put(uuid, body.token)          # ← durable before anything else
+    except ValueError as e:
+        # the only two rejections, and both are checked BEFORE the write
+        # because neither is recoverable: an empty token is not a credential
+        # and an empty uuid has nowhere to go
+        raise HTTPException(422, str(e)) from None
+    return {"tokens": tokens.redacted(), "stored": uuid}
+
+
+@app.delete("/api/accounts/{uuid}/token")
+def accounts_forget_token(uuid: str) -> dict[str, Any]:
+    """Forget a stored token. ⚠ Irreversible from orgtree's side — the CLI
+    cannot show it again, so this is a re-mint, not an undo."""
+    return {"tokens": tokens.redacted(), "forgotten": tokens.forget(uuid)}
 
 
 @app.get("/api/host")
