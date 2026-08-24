@@ -341,6 +341,66 @@ def _name_the_cause(err_blob: str) -> str:
     return f"{err_blob}  ⚠ {diag}" if diag else err_blob
 
 
+def _result_detail(res: dict[str, Any]) -> str:
+    """The CLI's OWN account of why a turn failed, harvested from its result
+    event. RECORDING ONLY — see `_for_the_record` for where it may be used.
+
+    ⚠ WHY THIS EXISTS. `err_blob` is built from **stderr alone** whenever the
+    CLI exits nonzero, so on an auth failure the real reason was thrown away
+    and the operator was shown "the CLI exited 1 without writing anything to
+    stderr" — an expired credential and a crash were indistinguishable from
+    orgtree's own surfaces (OPEN-01).
+
+    MEASURED 2026-08-24 (loopback 401 against the shipped CLI, fabricated key,
+    no real credential): on **exit code 1** the result event carried
+    `is_error: True`, `result: 'Invalid API key · …'`, `api_error_status: 401`,
+    `terminal_reason: 'api_error'`, `errors: None`. The comment that used to
+    sit at the `exit_only` fallback claimed the opposite — that exit-code
+    result variants carry no `result` string — and it was WRONG; it is
+    corrected there now.
+
+    ⚠ `subtype` is `'success'` on that failed turn. Do NOT key failure off
+    `subtype`; `is_error` / `terminal_reason` are the honest fields.
+    """
+    txt = str(res.get("result") or "").strip()
+    status = res.get("api_error_status")
+    bits = []
+    if status is not None:
+        bits.append(f"API status {status}")
+    if txt:
+        bits.append(txt)
+    return " · ".join(bits)
+
+
+def _for_the_record(err_blob: str, res: dict[str, Any]) -> str:
+    """`err_blob` with the CLI's own reason appended, for the DURABLE RECORD
+    ONLY — `last_error` and the `turn_error_log` row.
+
+    ⚠ THREE RULES, all of them load-bearing:
+
+    1. **NEVER assign this back onto `err_blob`.** `err_blob` is the input to
+       every `_looks_like_*` predicate; widening it is a change with org-wide
+       blast radius (what every agent's failures classify as) and is
+       deliberately NOT this change. Call this AT the recording site, so the
+       widened text never exists as a variable a later edit could feed to a
+       classifier by accident.
+    2. **NEVER feed this to `_turn_abandoned`.** That function puts the text
+       into MAIL to the failing agent and drives its SUPERIOR. Auth-failure
+       text delivered as mail is the specific thing that has repeatedly
+       destroyed fable-tier sessions on this machine — the trigger is the
+       SUBJECT, not any secret. The abandonment mail keeps the narrow blob.
+    3. **NEVER CREATE a record.** An empty `err_blob` means "no failure" (a
+       manual ⏸ clears it); returning text for one would book a pause as a
+       failure — the same trap `_name_the_cause` documents.
+    """
+    if not err_blob:
+        return err_blob
+    detail = _result_detail(res)
+    if not detail or detail in err_blob:
+        return err_blob
+    return f"{err_blob}  ⟵ the CLI's own reason: {detail}"
+
+
 def cli_diagnosis() -> str | None:
     """The one-line CAUSE, or None when the CLI is fine.
 
@@ -3709,10 +3769,20 @@ def _run_one_turn(slug: str, nid: str,
                 # SPECIFIC evidence that the block below adopts, while this
                 # generic text matches none of the freeze/filter detectors —
                 # so without that clause a crash landing on the same turn as a
-                # limit would swallow the limit and skip the freeze. Not
-                # reachable in the shipped CLI (the result variants that set an
-                # exit code carry no `result` string for the harvest to take),
-                # but the ordering is one `if` away from mattering.
+                # limit would swallow the limit and skip the freeze.
+                # ⚠ CORRECTED 2026-08-24 — this comment used to claim the
+                # block was "not reachable in the shipped CLI (the result
+                # variants that set an exit code carry no `result` string for
+                # the harvest to take)". THAT IS FALSE, and it is exactly the
+                # claim that nearly stopped the OPEN-01 fix as pointless.
+                # MEASURED (loopback 401, shipped CLI, fabricated key): on
+                # exit 1 the result event carried `is_error: True`,
+                # `result: 'Invalid API key · …'` and `api_error_status: 401`.
+                # `errors` was None, so the branch below IS reached and
+                # `exit_only` IS True — the placeholder is what the operator
+                # actually saw. The real reason now rides the DURABLE RECORD
+                # only, via `_for_the_record` at the raise; it deliberately
+                # does NOT enter `err_blob`, which is classifier input.
                 _errs = [str(x) for x in (res.get("errors") or []) if x]
                 exit_only = not _errs      # an exit code and NOTHING else
                 err_blob = (f"the CLI exited {proc.returncode}"
@@ -4207,8 +4277,18 @@ def _run_one_turn(slug: str, nid: str,
                          if exit_only and not saw_agent_out[0] else
                          "the turn ran and then failed with an error")
                 if not handled and _bump_hard_fail(slug, nid) == 1:
+                    # ⚠ the NARROW blob, deliberately: this text becomes MAIL
+                    # to the agent and drives its superior. See rule 2 on
+                    # `_for_the_record` — auth text in mail is what kills
+                    # fable-tier sessions on this machine.
                     _turn_abandoned(slug, nid, _door, err_blob)
-                raise RuntimeError(f"turn failed: {err_blob[:400] or 'no output'}")
+                # the DURABLE RECORD gets the CLI's own reason: this raise
+                # becomes `last_error` and the `turn_error_log` row, and it is
+                # AFTER every `_looks_like_*` call site, so the widened text
+                # cannot reach a predicate (OPEN-01 step 1, recording only)
+                raise RuntimeError(
+                    f"turn failed: "
+                    f"{_for_the_record(err_blob, res)[:400] or 'no output'}")
             st["last_error"] = None
             st["turns_run"] += 1
             if org.node(nid).get("bearer_state") == "preserving":
