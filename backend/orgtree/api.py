@@ -1910,14 +1910,15 @@ def accounts_pin(slug: str, body: AccountPin) -> dict[str, Any]:
 def accounts_relabel(uuid: str, body: AccountLabel) -> dict[str, Any]:
     """Rename an account for the panel. Survives re-adoption — the scheduled
     adopt must never clobber a name the user chose."""
-    doc = accounts.load()
-    if uuid not in doc["accounts"]:
-        raise HTTPException(404, f"no such account {uuid!r}")
-    label = body.label.strip()
-    if not label:
-        raise HTTPException(422, "a label cannot be empty")
-    doc["accounts"][uuid]["label"] = label
-    accounts.save(doc)
+    # the mutation itself lives in accounts.relabel, which takes the module
+    # lock — this endpoint used to do its own load→mutate→save and was the one
+    # mutator running outside it (review 2026-08-24)
+    try:
+        accounts.relabel(uuid, body.label)
+    except KeyError:
+        raise HTTPException(404, f"no such account {uuid!r}") from None
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from None
     return accounts.readout()
 
 

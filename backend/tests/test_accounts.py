@@ -31,6 +31,7 @@ unusual force:
 """
 from __future__ import annotations
 
+import builtins
 import json
 import os
 import sys
@@ -141,8 +142,62 @@ def s0_isolation() -> None:
         None if accounts.registry_path().startswith(store.DATA_ROOT)
         else (_ for _ in ()).throw(AssertionError(
             f"{accounts.registry_path()} escaped {store.DATA_ROOT}"))))
-    check("real credentials file is never opened by this suite", lambda: (
-        None if not os.path.exists(_FAKE_CREDS) or True else None))
+    # ⚠ THIS CHECK WAS A TAUTOLOGY (review 2026-08-24). It read
+    #     `None if not os.path.exists(_FAKE_CREDS) or True else None`
+    # and `X or True` is True for every X, so it returned None unconditionally
+    # and COULD NOT FAIL — sitting in the one section whose whole job is
+    # proving the suite cannot reach the user's real credentials store. It was
+    # load-bearing for a safety property and asserted nothing.
+    #
+    # The replacement actually watches: `adopt_live` is driven with the real
+    # path restored, and must open the file `subproxy.CREDS` names. Then the
+    # DELIBERATE POSITIVE below proves this check can still die.
+    def adoption_reads_the_configured_path_only():
+        opened: list[str] = []
+        real_open = builtins.open
+
+        def watching_open(f, *a, **k):
+            try:
+                opened.append(os.path.abspath(os.fspath(f)))
+            except TypeError:
+                pass
+            return real_open(f, *a, **k)
+        with open(_FAKE_CREDS, "w", encoding="utf-8") as fh:
+            json.dump({"claudeAiOauth": {"accessToken": FAKE_TOKEN}}, fh)
+        builtins.open = watching_open
+        try:
+            accounts.adopt_live(resolver=lambda t: profile())
+        finally:
+            builtins.open = real_open
+        real = os.path.abspath(_REAL_CREDS)
+        assert real not in opened, f"the suite opened the REAL store: {real}"
+        assert os.path.abspath(_FAKE_CREDS) in opened, \
+            "adoption never opened the configured credentials path — this " \
+            "check would pass for a no-op implementation"
+    check("adoption opens the configured store and never the real one",
+          adoption_reads_the_configured_path_only)
+
+    # the deliberate positive: point subproxy.CREDS AT the path the check
+    # forbids and confirm the check above FAILS. Without this, a rewritten
+    # check that silently stopped watching would look exactly like a pass.
+    def the_guard_can_still_fail():
+        saved = subproxy.CREDS
+        decoy = os.path.join(_TMP, "decoy-real-credentials.json")
+        with open(decoy, "w", encoding="utf-8") as fh:
+            json.dump({"claudeAiOauth": {"accessToken": FAKE_TOKEN}}, fh)
+        global _REAL_CREDS
+        saved_real = _REAL_CREDS
+        subproxy.CREDS = decoy
+        _REAL_CREDS = decoy                     # now "the real store" IS the target
+        try:
+            raises(AssertionError, adoption_reads_the_configured_path_only,
+                   why="the isolation check cannot detect reading the "
+                       "forbidden path — it is not watching")
+        finally:
+            subproxy.CREDS = saved
+            _REAL_CREDS = saved_real
+    check("CONTROL: that guard FAILS when the forbidden path is read",
+          the_guard_can_still_fail)
 
 
 def s1_secret_invariant() -> None:
@@ -463,6 +518,105 @@ def s6_readout() -> None:
             AssertionError("token text in readout"))))
 
 
+def s8_defects() -> None:
+    """Three defects found by review 2026-08-24 — each check fails on the
+    pre-fix code, which is what makes it a regression test rather than a
+    description."""
+    if not section("§8 review findings — data loss, dedupe, and the lock"):
+        return
+
+    # ---- 1g/iii: load()-blank-then-save destroyed the registry ----
+    def corrupt_registry_is_not_silently_replaced():
+        reset()
+        accounts.upsert(accounts.identity_from_profile(profile()),
+                        label="Precious")
+        accounts.set_pin("acme", "11111111-2222-3333-4444-555555555555")
+        before = open(accounts.registry_path(), encoding="utf-8").read()
+        with open(accounts.registry_path(), "w", encoding="utf-8") as f:
+            f.write("{ this is not json")
+        # a WRITE cycle must refuse rather than blank it
+        raises(accounts.RegistryUnreadable,
+               lambda: accounts.upsert(accounts.identity_from_profile(profile())),
+               why="a corrupt registry was silently replaced with a blank one")
+        # and the unreadable file must still be on disk, recoverable by hand
+        assert open(accounts.registry_path(), encoding="utf-8").read() \
+            == "{ this is not json", "the unreadable registry was overwritten"
+        assert "Precious" in before   # (what would have been lost)
+    check("a corrupt registry is NOT blanked by the next write",
+          corrupt_registry_is_not_silently_replaced)
+
+    def version_mismatch_refuses_too():
+        reset()
+        accounts.upsert(accounts.identity_from_profile(profile()))
+        doc = json.load(open(accounts.registry_path(), encoding="utf-8"))
+        doc["version"] = accounts.VERSION + 1          # a future install wrote this
+        with open(accounts.registry_path(), "w", encoding="utf-8") as f:
+            json.dump(doc, f)
+        raises(accounts.RegistryUnreadable,
+               lambda: accounts.set_pin("acme", "x"),
+               why="a VERSION bump would blank every install's registry")
+    check("a future VERSION refuses the write instead of blanking it",
+          version_mismatch_refuses_too)
+
+    def readers_still_tolerate_corruption():
+        # the other half: the PANEL must not go down over it
+        eq(accounts.load()["accounts"], {}, "non-strict read should be blank: ")
+        eq(accounts.readout()["accounts"], [])
+    check("readers still degrade to blank (the panel stays up)",
+          readers_still_tolerate_corruption)
+
+    # ---- 1g/i: set_order did not dedupe ----
+    def order_stays_a_permutation():
+        reset()
+        a = "11111111-2222-3333-4444-555555555555"
+        b = "aaaaaaaa-2222-3333-4444-555555555555"
+        accounts.upsert(accounts.identity_from_profile(profile()))
+        accounts.upsert(accounts.identity_from_profile(
+            profile(uuid=b, email="other@example.com")))
+        got = accounts.set_order([a, a, b])            # double-submitted panel
+        eq(got, [a, b], "order kept a duplicate: ")
+        uuids = [x["uuid"] for x in accounts.readout()["accounts"]]
+        eq(len(uuids), len(set(uuids)), "readout rendered an account twice: ")
+    check("set_order dedupes — the order stays a permutation",
+          order_stays_a_permutation)
+
+    # ---- 1g/ii: relabel ran outside the module lock ----
+    def relabel_takes_the_lock():
+        import threading
+        reset()
+        a = "11111111-2222-3333-4444-555555555555"
+        accounts.upsert(accounts.identity_from_profile(profile()))
+        # hold the lock from another thread; a relabel that ignores it would
+        # sail through, one that takes it must wait
+        holder_in = threading.Event()
+        release = threading.Event()
+        done: list[bool] = []
+
+        def holder():
+            with accounts._lock:
+                holder_in.set()
+                release.wait(2.0)
+        t = threading.Thread(target=holder, daemon=True)
+        t.start()
+        holder_in.wait(2.0)
+
+        def relabeller():
+            accounts.relabel(a, "Renamed")
+            done.append(True)
+        r = threading.Thread(target=relabeller, daemon=True)
+        r.start()
+        r.join(0.25)
+        blocked = not done
+        release.set()
+        t.join(2.0)
+        r.join(2.0)
+        assert blocked, ("relabel completed while the registry lock was held "
+                         "— it is not taking the lock")
+        eq(accounts.load()["accounts"][a]["label"], "Renamed",
+           "relabel did not apply after the lock was released: ")
+    check("relabel serialises on the module lock", relabel_takes_the_lock)
+
+
 def s7_http() -> None:
     if not section("§7 the HTTP surface — admin only, and refusals are loud"):
         return
@@ -533,11 +687,19 @@ def s7_http() -> None:
           adopt_with_no_creds_is_200_not_500)
 
     def pin_unknown_is_422():
+        # ⚠ precondition (review 2026-08-24): this used to assert the pin was
+        # None afterwards WITHOUT setting one first — it was None going in, so
+        # the check could not tell a clean refusal from a refusal that wiped
+        # the pins dict. Establish a real pin, then refuse over it.
+        call(admin, "PUT", "/api/accounts/pins/acme", {"uuid": a})
+        eq(accounts.get_pin("acme"), a, "precondition: ")
         r = call(admin, "PUT", "/api/accounts/pins/acme",
                  {"uuid": "not-an-account"})
         eq(r.status, 422, "an unapplied pin must be loud: ")
-        eq(accounts.get_pin("acme"), None, "a refused pin left a pin behind: ")
-    check("PUT pin to an unknown account → 422 and no pin written",
+        eq(accounts.get_pin("acme"), a,
+           "a refused pin damaged the pin that was already there: ")
+        call(admin, "PUT", "/api/accounts/pins/acme", {"uuid": None})
+    check("PUT pin to an unknown account → 422 and the old pin survives",
           pin_unknown_is_422)
 
     check("PUT pin then clear round-trips over HTTP", lambda: (
@@ -575,10 +737,18 @@ def s7_http() -> None:
         denied = api._public_denied("GET", "/api/accounts", "acme")
         assert denied is not None, "kiosk visitor was NOT denied /api/accounts"
         eq(denied[0], 403, "expected an explicit 403: ")
+        # ⚠ these three must assert 403 SPECIFICALLY (review 2026-08-24).
+        # `is not None` passed via the matrix's trailing catch-all 404 even
+        # with the freeze deleted — for `/api/accounts/adopt`, `parts[2]` is
+        # "accounts", never "orgs", so it 404s whether or not the rule exists.
+        # 403 is reachable only through `frozen_config`, so only 403
+        # constrains the line this check is named for.
         for path in ("/api/accounts/adopt", "/api/accounts/order",
                      "/api/accounts/pins/acme"):
-            assert api._public_denied("POST", path, "acme") is not None, \
-                f"kiosk visitor was not denied {path}"
+            d = api._public_denied("POST", path, "acme")
+            assert d is not None, f"kiosk visitor was not denied {path}"
+            eq(d[0], 403, f"{path} was denied by the catch-all 404 rather "
+                          f"than by the freeze — ")
     check("kiosk visitors are denied every /api/accounts route",
           kiosk_cannot_reach_the_registry)
 
@@ -599,7 +769,7 @@ def main() -> None:
     print(f"credentials under test: {subproxy.CREDS}")
     for fn in (s0_isolation, s1_secret_invariant, s2_registry,
                s3_passive_adoption, s4_pin, s5_resolution, s6_readout,
-               s7_http):
+               s7_http, s8_defects):
         fn()
     dt = time.perf_counter() - t0
     if NOTES:

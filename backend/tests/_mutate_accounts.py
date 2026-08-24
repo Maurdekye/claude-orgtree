@@ -174,6 +174,49 @@ MUTANTS = [
      "    if False:\n        raise HTTPException(404, f\"no such account {uuid!r}\")",
      "PATCH unknown account → 404"),
 
+    # ---- review 2026-08-24 findings: each fix gets a mutant ----
+    ("§0: adoption stops opening the configured store (isolation blind)",
+     ACC,
+     "    try:\n        with open(creds, encoding=\"utf-8\") as f:\n            doc = json.load(f)",
+     "    try:\n        doc = {\"claudeAiOauth\": {\"accessToken\": \"x\"}}\n        _ = creds",
+     "adoption opens the configured store and never the real one"),
+
+    ("strict load stops refusing a corrupt registry (data loss returns)",
+     ACC,
+     "    except (OSError, json.JSONDecodeError) as e:\n        if strict:",
+     "    except (OSError, json.JSONDecodeError) as e:\n        if False:",
+     "a corrupt registry is NOT blanked by the next write"),
+
+    ("strict load stops refusing a future VERSION",
+     ACC,
+     "    if not isinstance(doc, dict) or doc.get(\"version\") != VERSION:\n        if strict:",
+     "    if not isinstance(doc, dict) or doc.get(\"version\") != VERSION:\n        if False:",
+     "a future VERSION refuses the write instead of blanking it"),
+
+    ("strict load raises for READERS too (the panel goes down)",
+     ACC,
+     "def load(*, strict: bool = False) -> dict[str, Any]:",
+     "def load(*, strict: bool = True) -> dict[str, Any]:",
+     "readers still degrade to blank (the panel stays up)"),
+
+    ("set_order stops deduping",
+     ACC,
+     "        new = list(dict.fromkeys(u for u in order if u in doc[\"accounts\"]))",
+     "        new = [u for u in order if u in doc[\"accounts\"]]",
+     "set_order dedupes — the order stays a permutation"),
+
+    ("relabel drops the module lock",
+     ACC,
+     "    with _lock:\n        doc = load(strict=True)\n        if uuid not in doc[\"accounts\"]:\n            raise KeyError(uuid)",
+     "    if True:\n        doc = load(strict=True)\n        if uuid not in doc[\"accounts\"]:\n            raise KeyError(uuid)",
+     "relabel serialises on the module lock"),
+
+    ("§7: the kiosk sub-paths fall back to the catch-all 404",
+     API,
+     "        or rest.startswith(\"/api/accounts\")",
+     "        or rest == \"/api/accounts\"",
+     "kiosk visitors are denied every /api/accounts route"),
+
     ("a missing credentials file becomes a 500",
      API,
      "        rec = await run_in_threadpool(accounts.adopt_live)",

@@ -104,16 +104,43 @@ def _blank() -> dict[str, Any]:
     return {"version": VERSION, "accounts": {}, "order": [], "pins": {}}
 
 
-def load() -> dict[str, Any]:
-    """The registry, or a blank one. A corrupt file reads as blank rather than
-    raising: this is a convenience index over state that lives elsewhere, and
-    taking the panel down over it would be a worse failure than re-adopting."""
+class RegistryUnreadable(RuntimeError):
+    """The registry file exists but could not be understood."""
+
+
+def load(*, strict: bool = False) -> dict[str, Any]:
+    """The registry, or a blank one.
+
+    A corrupt file reads as blank for READERS: taking the panel down over it
+    is a worse failure than showing nothing. But `strict=True` — which every
+    read-modify-WRITE cycle uses — raises instead.
+
+    ⚠ Why the split (review 2026-08-24): blank-on-corrupt is safe to *read*
+    and catastrophic to *write back*. `load()` → mutate → `save()` over an
+    unreadable file silently replaced every hand-set label, the whole
+    waterfall order and every pin with an empty registry, with no backup — and
+    a `VERSION` bump would have done it to every install at once, because a
+    version mismatch took the same branch. The docstring used to call the cost
+    "re-adopting"; re-adoption cannot restore a label, an order or a pin. The
+    unreadable file is now left ON DISK, untouched, so it can be recovered by
+    hand.
+    """
     try:
         with open(registry_path(), encoding="utf-8") as f:
             doc = json.load(f)
-    except (OSError, json.JSONDecodeError):
+    except FileNotFoundError:
+        return _blank()                        # genuinely absent: not corrupt
+    except (OSError, json.JSONDecodeError) as e:
+        if strict:
+            raise RegistryUnreadable(
+                f"{registry_path()} exists but could not be read ({e}) — "
+                f"refusing to overwrite it with a blank registry") from None
         return _blank()
     if not isinstance(doc, dict) or doc.get("version") != VERSION:
+        if strict:
+            raise RegistryUnreadable(
+                f"{registry_path()} is version {doc.get('version') if isinstance(doc, dict) else '?'!r}, "
+                f"not {VERSION} — refusing to overwrite it; migrate it first")
         return _blank()
     for key, default in (("accounts", {}), ("order", []), ("pins", {})):
         if not isinstance(doc.get(key), type(default)):
@@ -193,7 +220,7 @@ def upsert(identity: dict[str, Any], *, source: str = "adopted",
     Re-adopting the same account must never clobber its label or its place in
     the waterfall order — adoption runs on a schedule, the user edits once."""
     with _lock:
-        doc = load()
+        doc = load(strict=True)
         uuid = identity["uuid"]
         prev = doc["accounts"].get(uuid) or {}
         now = time.time()
@@ -275,9 +302,15 @@ def set_order(order: list[str]) -> list[str]:
     ones missing from the request are appended — a stale panel must not be
     able to delete an account from the registry by omitting it."""
     with _lock:
-        doc = load()
+        doc = load(strict=True)
         known = list(doc["accounts"].keys())
-        new = [u for u in order if u in doc["accounts"]]
+        # dedupe as well as filter (review 2026-08-24): the endpoint takes a
+        # bare list[str] with no uniqueness constraint, so a stale or
+        # double-submitted panel POST could send ["A","A","B"] — which the
+        # filter alone preserves, and `readout()` then renders A twice. The
+        # order must stay a PERMUTATION of the known set, not merely a subset
+        # of it. `dict.fromkeys` keeps first-seen position.
+        new = list(dict.fromkeys(u for u in order if u in doc["accounts"]))
         new += [u for u in known if u not in new]
         doc["order"] = new
         save(doc)
@@ -295,7 +328,7 @@ def set_pin(org_slug: str, uuid: str | None) -> str | None:
     indistinguishable from a pin that does, which is the whole failure mode
     this feature is supposed to make visible."""
     with _lock:
-        doc = load()
+        doc = load(strict=True)
         if uuid is None:
             doc["pins"].pop(org_slug, None)
         elif uuid not in doc["accounts"]:
@@ -305,6 +338,28 @@ def set_pin(org_slug: str, uuid: str | None) -> str | None:
             doc["pins"][org_slug] = uuid
         save(doc)
         return doc["pins"].get(org_slug)
+
+
+def relabel(uuid: str, label: str) -> str:
+    """Rename an account for the panel.
+
+    ⚠ Lives here rather than in the endpoint, and takes `_lock`, because the
+    endpoint's own load→mutate→save was the ONE mutator running outside it
+    (review 2026-08-24). Sync FastAPI endpoints run in a threadpool and
+    `adopt_live` is dispatched with `run_in_threadpool`, so a scheduled
+    adoption concurrent with a rename could be lost when the rename saved its
+    stale document — the newly adopted account simply vanishing.
+    """
+    label = label.strip()
+    if not label:
+        raise ValueError("a label cannot be empty")
+    with _lock:
+        doc = load(strict=True)
+        if uuid not in doc["accounts"]:
+            raise KeyError(uuid)
+        doc["accounts"][uuid]["label"] = label
+        save(doc)
+        return label
 
 
 def get_pin(org_slug: str) -> str | None:

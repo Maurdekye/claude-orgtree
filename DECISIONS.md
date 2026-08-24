@@ -2965,7 +2965,7 @@ proven to discriminate in both directions: **identical** across a token
 refresh of one account, and **different** between the two accounts. Token
 bytes cannot key anything — they rotate on every refresh, and a rotation
 revokes its predecessor immediately (measured: the previous access token
-returns 401 `has been revoked` with no grace window). A registry keyed on a
+returns 401 "has been revoked" with no grace window). A registry keyed on a
 token would silently split one account into two entries on the next refresh.
 
 The registry stores **identity, never credentials**. `_reject_secrets` runs
@@ -2981,35 +2981,88 @@ sampled around the read and any change raises `LiveStoreWritten`.
 > accounts, that the waterfall is real. It is not, and the code looking right
 > is exactly why this note exists.
 
-Precisely which half is missing, because the distinction is easy to get wrong
-in both directions:
+#### What exists today, stated so the excluded case cannot be skimmed past
 
-- **The limit path already works.** A usage limit IS positively classified
-  (`_looks_like_usage_limit`) and already drives an automatic billing-lane
-  switch — that is D-130's `api_fallback`, whose window stamp sits inside the
-  `_looks_like_usage_limit(err_blob)` branch. A waterfall triggered by "the
-  primary hit its limits" would ride a path that demonstrably fires today.
-- **The auth path does not exist.** A mid-turn auth rejection — token
-  expired, invalid, or revoked — matches NONE of the three classifiers.
-  `_looks_like_connection_failure` is a narrow positive list of network
-  errnos and an auth blob matches no entry in it. So the turn lands in the
-  terminal turn-failed bucket, where, in that function's own words, "nothing
-  ever re-drives the node". The agent hard-fails; no retry, no failover, no
-  resume.
+**A usage limit is classified unconditionally. The lane switch it drives is
+NOT.** `_looks_like_usage_limit` fires on its own, but the `api_fallback`
+window stamp (`supervisor.py`, nested inside that branch) sits behind a
+further `elif` requiring ALL of: the org's `api_fallback` option ON, an
+`api_key` stored, fable-tier eligibility, and `_trusted_blob` (a CLI-reported
+limit — a self-diagnosed one gets no window at all).
 
-This matters more under the approved design than it would today, and that is
-the point: per-turn token binding at agent wake means a bound access token
-ages out on its own 8-hour clock, and the CLI **cannot** refresh it, because
+> **THIS FEATURE EXISTS FOR A USER WITH TWO SUBSCRIPTIONS AND NO API KEY, WHICH
+> IS EXACTLY THE CONFIGURATION IN WHICH THAT LANE SWITCH NEVER FIRES.** On such
+> an org a usage limit freezes the node and waits for the reset; nothing
+> switches anything. A reader skimming the condition list will assume they are
+> the lucky case — nobody ever assumes they are the excluded population, so it
+> is stated here rather than left to inference. D-130's fallback is a precedent
+> for the SHAPE of a lane switch, not a rail this feature can ride.
+
+**An auth failure is classified by nothing, and is terminal. This is MEASURED,
+not reasoned.** A mid-turn auth rejection matches none of the FOUR classifiers
+on that branch. Three are textual (`_looks_like_usage_limit`,
+`_looks_like_connection_failure`, `_looks_like_filtered`); the fourth,
+`_died_in_flight`, classifies by the SHAPE of the turn — `exit_only and
+started and not boundary` — and is precisely how a blob matching no text
+classifier can still be rescued into the retry branch.
+
+Measured 2026-08-24, running the official CLI in this repo's own stream-json
+shape against a genuine 401:
+
+| observed | value |
+|---|---|
+| exit code | 1 |
+| top-level events | `system`×5, **`assistant`**, **`result`** |
+| `result.is_error` | true |
+| `result.result` | "Failed to authenticate. API Error: 401 OAuth access token is invalid." |
+| stderr | **non-empty** |
+
+⇒ `exit_only` is **False** (stderr carried the reason) and `boundary` is
+**True** (a top-level `result` event arrived), so `_died_in_flight` returns
+False for two independent reasons, and all three text classifiers return False
+on that `result` text. **The turn is unclassified and terminal: no retry, no
+failover, no resume.** A control confirms the predicate still returns True for
+the shape it IS meant to catch, so this is a discrimination and not a
+predicate that says False to everything.
+
+Worth recording because it contradicts the obvious reasoning: **`started` is
+True even for a failure at the very start of a turn** — the CLI emits an
+`assistant` event regardless. The intuition that "the model never spoke, so
+`started` is False" is wrong, and only measuring showed it. Had it been true,
+`_died_in_flight` would have been one condition away from firing, and the
+outcome would have been four retries on escalating backoff against a dead
+token, auto-resume regardless of the org's toggle, and a UI reading "the CLI
+died mid-response" — a wrong diagnosis nobody could act on. That is the bug
+this measurement ruled out; it was not ruled out by reasoning.
+
+This matters more under the approved design than it would today: per-turn
+token binding at agent wake means a bound access token ages out on its own
+8-hour clock, and the CLI **cannot** refresh it, because
 `CLAUDE_CODE_OAUTH_TOKEN` carries an access token only, with no refresh token
 behind it. Per-turn binding therefore *introduces* precisely the failure mode
 that has no recovery path. Phase 2 owes a positively-classified auth-failure
 class plus a re-drive, or the failover is cosmetic.
 
-Provenance, kept explicit because the two are not the same kind of fact: the
-classifier behaviour, the revocation semantics and the token lifetime were
-**measured** against the real predicates and the live endpoints. The claim
-that the CLI cannot self-refresh under the env var is **reasoned from the
-token's shape, not observed** — no run has been seen attempting it.
+#### Provenance, and a discipline note that outlives this entry
+
+**Measured:** the classifier behaviour above, the turn shape, the revocation
+semantics, the 8-hour `expires_in`. **Reasoned, not observed:** that the CLI
+cannot self-refresh under the env var — inferred from the token's shape; no
+run has been seen attempting it.
+
+Two ways the first draft of this entry was wrong, both worth generalising:
+
+1. It quoted *"nothing ever re-drives the node"* as though it described
+   today's behaviour. That phrase is a **docstring**, in the past tense,
+   describing the 2026-08-06 bug the function containing it was written to
+   FIX. Matching a name inside a comment rather than in live code is this
+   subtree's signature failure, and it had become load-bearing in a normative
+   entry. Cite live code, or measure.
+2. It stated the mid-turn outcome in **absolute** terms while its own
+   provenance paragraph was carefully separating measured from reasoned. The
+   discipline was present and simply was not applied to the one sentence that
+   mattered most. A hedge belongs where the consequence is largest, not only
+   where it is cheap.
 
 Bounds:
 - `readout()` reports `selection_active: false`. That field is the
@@ -3018,8 +3071,18 @@ Bounds:
 - Pinning an unknown account raises rather than no-oping: a pin that silently
   fails to apply is indistinguishable from one that applied, which is the
   exact class of bug this feature is meant to make visible.
-- `set_order` cannot delete an account by omission — a stale panel POST must
-  not be able to drop an entitlement out of the registry.
+- `set_order` cannot delete an account by omission, and dedupes — the order
+  stays a PERMUTATION of the known set, so a double-submitted panel POST
+  cannot make the readout render one account twice.
+- A read-modify-WRITE cycle uses `load(strict=True)` and REFUSES on an
+  unreadable or future-versioned registry, leaving the file on disk to be
+  recovered by hand. Blank-on-corrupt is safe to READ and catastrophic to
+  WRITE BACK: the first draft would have replaced every hand-set label, the
+  whole waterfall order and every pin with an empty registry, and a `VERSION`
+  bump would have done it to every install at once.
+- `relabel` takes the module lock. It was the one mutator that did not, and
+  sync FastAPI endpoints run in a threadpool alongside `run_in_threadpool`
+  adoption — so a scheduled adoption concurrent with a rename could vanish.
 - Nothing here writes `~/.claude/.credentials.json`, refreshes any grant, or
   uses the two accounts concurrently. Serial use through the official CLI is
   the approved shape; in-app OAuth stays rejected on ToS grounds.
