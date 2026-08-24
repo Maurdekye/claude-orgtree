@@ -961,31 +961,69 @@ def spawn_env(org: Org) -> dict[str, str]:
     return env
 
 
-def alternate_account(org: Org) -> str:
-    """The account this org could fail over TO, or "".
+# The phrase every "there is nowhere to switch to" reason is built from, so
+# the caller can recognise a REFUSAL without sniffing for a literal. A refusal
+# is not the same event as "this failure had nothing to do with accounts", and
+# conflating them is what let a no-op switch look like a working one.
+NO_ALTERNATE = "no alternate account is available"
+
+
+def alternate_account_choice(org: Org) -> tuple[str, str]:
+    """`(uuid, why_not)` — the account this org could fail over TO, or "" and
+    the REASON there is none.
 
     "Has capacity" is not observable — orgtree cannot ask an account how much
     it has left. What IS observable is "not the one that just failed", so the
-    alternate is the first account in registry order that (a) is not currently
-    serving and (b) actually HAS A STORED TOKEN. Requiring the token is the
-    point: an account we cannot authenticate as is not an alternative, and
-    offering it would strand the turn on a credential that does not exist.
+    alternate is the first account in registry order that (a) is not the
+    identity already serving this org and (b) actually HAS A STORED TOKEN.
+    Requiring the token is the point: an account we cannot authenticate as is
+    not an alternative, and offering it would strand the turn on a credential
+    that does not exist.
 
-    ⚠ The AMBIENT account (the signed-in one) has no stored token by design,
-    so it is never returned here. Failing over TO ambient would mean deleting
-    the selection rather than choosing an account, and that is a different
-    operation with a different failure mode — see `failover_choice`.
+    ⚠ (a) SAYS "ALREADY SERVING", NOT "SELECTED", AND THE DIFFERENCE IS THE
+    2026-08-24 21:20Z INCIDENT. This function used to compare against
+    `account_token_uuid` alone, so an org running on the AMBIENT login had
+    `cur == ""` and *every* account counted as non-current — including the
+    ambient one itself, which passive adoption had put in the registry with a
+    token pasted against it. The failover chose it, the switch row printed,
+    the turn was re-driven, and it hit the SAME session limit 4.2 seconds
+    later; capacity came back an hour and fifty minutes afterwards when the
+    limit expired on its own. The switch was real and bought nothing.
+
+    An empty `accounts.live_account_uuid()` (nobody logged in, or the config
+    is unreadable) degrades to the old comparison rather than refusing
+    everything: with no ambient identity there is nothing to switch away from,
+    and a token is then a genuine improvement over no credential at all.
+
+    ⚠ The reason string is not decoration — `failover_choice` passes it
+    through to the durable record and `NO_ALTERNATE` is what the turn loop
+    keys the refusal row on. Keep the constant in it.
     """
     from . import accounts
     cur = str(org.d.get("account_token_uuid") or "")
+    # what the next spawn would ACTUALLY authenticate as, which is the ambient
+    # account whenever the org has selected nothing
+    serving = cur or accounts.live_account_uuid()
     try:
         order = accounts.load().get("order") or []
     except Exception:                                        # noqa: BLE001
-        return ""
-    for uuid in order:
-        if uuid != cur and tokens.has(uuid):
-            return str(uuid)
-    return ""
+        return "", NO_ALTERNATE + " (the account registry is unreadable)"
+    tokened = [str(u) for u in order if tokens.has(u)]
+    for uuid in tokened:
+        if uuid != serving:
+            return uuid, ""
+    if tokened and serving and set(tokened) == {serving}:
+        # the no-op case, said out loud: there IS a token, it just belongs to
+        # the account that has already told us it has no capacity
+        return "", (NO_ALTERNATE + " — the only account with a stored token "
+                    "is the one already serving this org")
+    return "", NO_ALTERNATE + " (no other account has a stored token)"
+
+
+def alternate_account(org: Org) -> str:
+    """The account this org could fail over TO, or "". See
+    `alternate_account_choice`, which also says WHY when there is none."""
+    return alternate_account_choice(org)[0]
 
 
 def failover_choice(org: Org, *, res: dict[str, Any], err_blob: str,
@@ -1029,17 +1067,16 @@ def failover_choice(org: Org, *, res: dict[str, Any], err_blob: str,
                         "broken and needs replacing, so the turn stops "
                         "rather than spending another account")
     if timed_out:
-        alt = alternate_account(org)
+        alt, why_not = alternate_account_choice(org)
         return (("switch", "the account did not serve the turn and the cause "
                            "is unknown (timed out with no result)")
                 if alt else
-                ("none", "timed out, but no alternate account has a token"))
+                ("none", "timed out, but " + why_not))
     if _looks_like_usage_limit(err_blob):
-        alt = alternate_account(org)
+        alt, why_not = alternate_account_choice(org)
         return (("switch", "the account is out of capacity")
                 if alt else
-                ("none", "out of capacity, but no alternate account "
-                         "has a token"))
+                ("none", "out of capacity, but " + why_not))
     return "none", "not a condition another account would fix"
 
 
@@ -1099,6 +1136,63 @@ def apply_failover(slug: str, nid: str, alt: str, why: str) -> bool:
     # …and the quiet half: a nudge that says only "go again".
     send_message(slug, nid, switch_drive_text(why))
     return True
+
+
+def log_failover_refusal(slug: str, nid: str, why: str) -> bool:
+    """NOT switching, said out loud. The mirror of `apply_failover`.
+
+    ⚠ A REFUSAL THAT LEAVES NO TRACE IS THE SAME ABSTENTION SHAPE AS A CHECK
+    THAT PASSES BY NOT RUNNING. Before this, "we considered switching and had
+    nowhere to go" and "this failure had nothing to do with accounts" left
+    IDENTICAL records — nothing — so the only visible difference between a
+    working failover and a broken one was whether a switch row happened to
+    print. The row below is what makes the refusal a fact you can go and read
+    afterwards.
+
+    Durable record and console ONLY. Deliberately NO mail and NO re-drive:
+    · nothing was fixed, so driving the node would burn a turn to hit the
+      same wall — the freeze path below this caller is the correct outcome;
+    · the drive mechanism deposits mail, the recipient may be fable-tier, and
+      capacity/credential SUBJECT MATTER in a mailbox is what kills those
+      sessions. `apply_failover` needs `ACCOUNT_SWITCH_DRIVE` to stay safe;
+      this function simply never sends anything.
+
+    Returns True if a row was written."""
+    if not why:
+        return False
+    _log_turn_error(slug, nid, f"no account switch: {why}")
+    print(f"[orgtree] {slug}/{nid}: no account switch — {why}")
+    return True
+
+
+def _stamp_ran_as(entry: "TurnStat", slug: str, nid: str) -> None:
+    """Attach this turn's account to a ring entry, in place.
+
+    ⚠ EVERY ring writer must call it, not just the happy one. The ring has
+    three authors — completed, killed, and reported-then-failed — and the
+    turns worth attributing after the fact are exactly the ones that did NOT
+    complete. Stamping only `_after_turn` would produce a record that is
+    complete precisely when nobody needs it.
+
+    Absent rather than "unknown" when the node has not run in this process:
+    a missing key cannot be mistaken for a measurement."""
+    ran = turn_identity(slug, nid)
+    if ran:
+        entry["ran_as"] = ran
+
+
+def turn_identity(slug: str, nid: str) -> str:
+    """The account this node's current (or most recent) turn SPAWNED under.
+
+    Reads the same `st["ran_as"]` the node payload exposes — captured from the
+    resolved env at spawn, never from intent. Empty when the node has not run
+    in this backend process. Stamped onto every durable per-turn row so that
+    "which account served this turn?" survives the process; see the callers.
+    """
+    try:
+        return str(state(slug, nid).get("ran_as") or "")
+    except Exception:                                        # noqa: BLE001
+        return ""
 
 
 def identity_in_env(env: dict[str, str], org: Org) -> str:
@@ -4137,6 +4231,16 @@ def _run_one_turn(slug: str, nid: str,
                     _fo_act, _fo_why = failover_choice(
                         org, res=res, err_blob=err_blob,
                         already_switched=bool(st.get("switched_account")))
+                    # ⚠ THE REFUSAL IS AS LOUD AS THE SWITCH, ON PURPOSE. A
+                    # limit that considered failing over and found only the
+                    # account already serving this org used to leave no trace
+                    # at all — indistinguishable from a limit on an org with
+                    # no accounts configured. Keyed on `NO_ALTERNATE` (the
+                    # constant the reasons are BUILT from, not a literal) so
+                    # "nowhere to go" cannot be confused with "not an account
+                    # problem". No mail, no re-drive: see log_failover_refusal.
+                    if _fo_act == "none" and NO_ALTERNATE in _fo_why:
+                        log_failover_refusal(slug, nid, _fo_why)
                     if _fo_act == "switch":
                         _alt = alternate_account(org)
                         if apply_failover(slug, nid, _alt, _fo_why):
@@ -5179,6 +5283,7 @@ def _charge_killed_turn(slug: str, nid: str, out_toks: int,
                                "denials": 0, "killed": True, "toks": out_toks}
             if est and not measured:
                 entry["estimated"] = True
+            _stamp_ran_as(entry, slug, nid)
             ring.append(entry)
             del ring[:-20]
             store.save_org(o2)
@@ -5213,8 +5318,10 @@ def _charge_reported_spend(slug: str, nid: str, paid: float,
             if on_key:
                 _bank_api_cost(o2, paid)
             ring = n.setdefault("turns", [])
-            ring.append({"at": now_iso(), "cost": round(paid, 6), "ms": None,
-                         "denials": 0, "killed": True})
+            paid_entry: TurnStat = {"at": now_iso(), "cost": round(paid, 6),
+                                    "ms": None, "denials": 0, "killed": True}
+            _stamp_ran_as(paid_entry, slug, nid)
+            ring.append(paid_entry)
             del ring[:-20]
             store.save_org(o2)
     except Exception:                                            # noqa: BLE001
@@ -5239,7 +5346,22 @@ def _log_turn_error(slug: str, nid: str, text: str) -> None:
             log = cast("dict[str, list[dict[str, Any]]]",
                        o2.d.setdefault("turn_error_log", {}))
             rows = log.setdefault(nid, [])
-            rows.append({"at": now_iso(), "text": text[:400]})
+            row: dict[str, Any] = {"at": now_iso(), "text": text[:400]}
+            # ⚠ WHICH ACCOUNT THIS TURN ACTUALLY RAN AS, made durable. The
+            # live `ran_as` on the node payload is in-memory and per-node, so
+            # it is overwritten by the next spawn and gone on restart: after
+            # the 2026-08-24 21:20Z failover the one turn worth attributing —
+            # the RE-DRIVEN one, which failed on the same limit 4.2s later —
+            # was already unrecoverable by the time anyone looked. A failed
+            # turn writes no ring entry, so this row is the only durable trace
+            # it leaves, and the attribution belongs on it. An account uuid or
+            # a sentinel ("ambient"/"api-key"); never a credential, and the
+            # renderer builds its own dict from `text`/`at` so the extra key
+            # reaches no screen.
+            ran = turn_identity(slug, nid)
+            if ran:
+                row["ran_as"] = ran
+            rows.append(row)
             del rows[:-30]
             store.save_org(o2)
     except Exception:                                            # noqa: BLE001
@@ -5317,6 +5439,7 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
                                "denials": len(denials)}
             if out_toks:
                 entry["toks"] = out_toks
+            _stamp_ran_as(entry, slug, nid)
             ring.append(entry)
             del ring[:-20]
             store.save_org(o2)

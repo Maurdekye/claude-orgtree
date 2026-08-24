@@ -28,6 +28,7 @@ WHY THE CHECKS ARE SHAPED THE WAY THEY ARE
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -42,7 +43,37 @@ _TMP = tempfile.mkdtemp(prefix="orgtree-spawnid-")
 os.environ["ORGTREE_DATA"] = os.path.join(_TMP, "data")
 os.makedirs(os.environ["ORGTREE_DATA"], exist_ok=True)
 
-from orgtree import store, supervisor as sup, tokens      # noqa: E402
+from orgtree import (accounts as _accounts, ledger, store,  # noqa: E402
+                     supervisor as sup, tokens)
+
+_PROBE_N = [0]
+
+
+def _probe_n() -> int:
+    """A fresh slug per probe org — reusing one makes create_org raise, and a
+    check that dies in its own setup reports as a failure of the thing it was
+    meant to measure."""
+    _PROBE_N[0] += 1
+    return _PROBE_N[0]
+
+# ⚠ AMBIENT ENVIRONMENT, PINNED BEFORE ANY CHECK RUNS. `live_account_uuid()`
+# answers from the CLI's real config by default, so a suite that left it alone
+# would be deciding "is this account the ambient one?" against whoever happens
+# to be logged into the machine running it — green on the developer's box, and
+# something else in a service. Every check that cares SETS it; this default
+# means the ones that don't still cannot read a real login.
+_accounts.LIVE_CONFIG = os.path.join(_TMP, "fake-claude-config.json")
+
+
+def set_live_account(uuid: str | None) -> None:
+    """Point `live_account_uuid()` at a fixture. `None` removes the file —
+    the 'nobody is logged in / config unreadable' case."""
+    if uuid is None:
+        if os.path.exists(_accounts.LIVE_CONFIG):
+            os.remove(_accounts.LIVE_CONFIG)
+        return
+    with open(_accounts.LIVE_CONFIG, "w", encoding="utf-8") as f:
+        json.dump({"oauthAccount": {"accountUuid": uuid}}, f)
 
 
 # obviously-fake, and shaped nothing like a real credential on purpose
@@ -131,6 +162,25 @@ def s0_isolation() -> None:
         finally:
             store.DATA_ROOT = was
     check("CONTROL: tokens_path FOLLOWS a moved data root", _follows)
+
+    def _ambient_config_is_a_fixture():
+        """⚠ `live_account_uuid()` decides "is this the ambient account?" and
+        by default it reads the CLI's REAL config. A suite that left it there
+        would answer from whoever is logged into the machine — green on the
+        developer's box for reasons that have nothing to do with the code.
+        Assert on the RESOLVED path the module uses, not on an env var."""
+        if not os.path.abspath(_accounts.LIVE_CONFIG).startswith(
+                os.path.abspath(_TMP)):
+            raise AssertionError(
+                f"live config resolves to {_accounts.LIVE_CONFIG} — outside "
+                "the throwaway root, so §7 would be measuring the real login")
+        set_live_account("acct-probe-only")
+        eq(_accounts.live_account_uuid(), "acct-probe-only")
+        set_live_account(None)
+        eq(_accounts.live_account_uuid(), "",
+           "a missing config must read as unknown, not as a stale answer: ")
+    check("the AMBIENT identity is a fixture, and it follows the fixture",
+          _ambient_config_is_a_fixture)
 
 
 # ── §1 the store ───────────────────────────────────────────────────────────
@@ -635,12 +685,388 @@ def s6_wiring() -> None:
           _switch_passes_no_reason_to_mail)
 
 
+# ── §7 the ambient account is not an alternate; the refusal is loud ────────
+def s7_no_op_switch() -> None:
+    """The 2026-08-24 21:20Z incident, pinned.
+
+    The failover fired for real, printed a confident `account switched` row,
+    re-drove the turn — and the re-driven turn hit the IDENTICAL session limit
+    4.2 seconds later, because the account it switched to was the account the
+    machine was already signed in as. `alternate_account` had compared against
+    `account_token_uuid`, which is "" for an org running on ambient, so every
+    account counted as "not the current one" — including the ambient one that
+    passive adoption had itself put in the registry.
+
+    ⚠ EVERY CHECK HERE COMES IN TWO LEGS. A one-legged version of this fix
+    passes by refusing EVERYTHING, which disables failover entirely while
+    looking careful — the same abstention shape as a check that never runs.
+    """
+    if not section("§7 no-op switch — ambient is not an alternate"):
+        return
+    import ast
+    from orgtree import accounts
+
+    def _registry(*uuids):
+        accounts.save({"version": accounts.VERSION,
+                       "accounts": {u: {"label": u} for u in uuids},
+                       "order": list(uuids), "pins": {}})
+
+    LIMIT = "Claude usage limit reached · try again in 3 hours"
+
+    def _ambient_is_not_an_alternate():
+        """THE BUG. Org on ambient, one tokened account, and it IS ambient."""
+        _registry(UUID_A)
+        tokens.put(UUID_A, FAKE_TOKEN)
+        set_live_account(UUID_A)
+        got = sup.alternate_account(_org())          # no account_token_uuid
+        if got == UUID_A:
+            raise AssertionError(
+                "THE ORG WOULD FAIL OVER TO THE ACCOUNT IT IS ALREADY "
+                "RUNNING AS. `cur == \"\"` means 'serving the AMBIENT "
+                "account', not 'serving nothing' — so the ambient account is "
+                "not an alternative to itself. This is the live 21:20Z "
+                "failure: same subscription, same limit, a re-drive burned "
+                "and a row claiming capacity was restored.")
+        eq(got, "")
+    check("the AMBIENT account is never the alternate", _ambient_is_not_an_alternate)
+
+    def _but_a_real_alternate_still_wins():
+        """LEG TWO. Excluding ambient must not exclude everything — a fix that
+        always returns "" passes the check above and breaks failover."""
+        _registry(UUID_A, UUID_B)
+        tokens.put(UUID_A, FAKE_TOKEN)
+        tokens.put(UUID_B, FAKE_TOKEN_2)
+        set_live_account(UUID_A)
+        got = sup.alternate_account(_org())          # still on ambient
+        if got != UUID_B:
+            raise AssertionError(
+                "a GENUINELY different tokened account was not offered "
+                f"(got {got!r}) — the ambient exclusion has swallowed the "
+                "whole feature, which is failover disabled wearing the "
+                "costume of a fix")
+    check("CONTROL: a genuinely different account IS still the alternate",
+          _but_a_real_alternate_still_wins)
+
+    def _ambient_is_fine_when_it_is_not_what_we_use():
+        """The exclusion is 'not the identity ALREADY SERVING', not 'never
+        ambient'. An org pinned to A whose machine is signed in as B may
+        absolutely fail over to B — that is a real change of account."""
+        _registry(UUID_A, UUID_B)
+        set_live_account(UUID_B)
+        got = sup.alternate_account(_org(account_token_uuid=UUID_A))
+        if got != UUID_B:
+            raise AssertionError(
+                "the ambient account was refused as a target even though the "
+                f"org is serving a DIFFERENT one (got {got!r}) — the rule is "
+                "about the identity in use, not about ambient as a category")
+    check("ambient IS a valid target when the org serves something else",
+          _ambient_is_fine_when_it_is_not_what_we_use)
+
+    def _unknown_ambient_degrades_rather_than_refusing():
+        """DOCUMENTED GAP, pinned so it cannot be 'tidied' into a refusal.
+        With no readable config there is no ambient identity to compare
+        against — and if nobody is logged in, a token beats no credential."""
+        _registry(UUID_A)
+        set_live_account(None)
+        eq(sup.alternate_account(_org()), UUID_A)
+    check("an unreadable live config degrades to the old comparison",
+          _unknown_ambient_degrades_rather_than_refusing)
+
+    def _refusal_says_the_real_cause():
+        _registry(UUID_A)
+        tokens.forget(UUID_B)
+        set_live_account(UUID_A)
+        act, why = sup.failover_choice(_org(), res={}, err_blob=LIMIT,
+                                       already_switched=False)
+        if act == "switch":
+            raise AssertionError(
+                "a limit on an org whose ONLY tokened account is the one "
+                "already serving it still decides to SWITCH — the no-op the "
+                "whole section exists to stop")
+        eq(act, "none")
+        if sup.NO_ALTERNATE not in why:
+            raise AssertionError(
+                "the refusal does not carry NO_ALTERNATE, so the turn loop "
+                f"cannot tell it from 'not an account problem': {why!r}")
+        if "already serving" not in why:
+            raise AssertionError(
+                "the refusal does not distinguish 'the only token belongs to "
+                "the account already serving us' from 'nobody has a token' — "
+                f"those need different fixes by the user: {why!r}")
+        tokens.put(UUID_B, FAKE_TOKEN_2)
+    check("a no-op switch is REFUSED and names the real cause",
+          _refusal_says_the_real_cause)
+
+    def _refusal_leg_two_a_real_limit_still_switches():
+        """LEG TWO, at the decision level. Coordinator's explicit
+        requirement: always-refuse would pass the check above."""
+        _registry(UUID_A, UUID_B)
+        tokens.put(UUID_A, FAKE_TOKEN)
+        tokens.put(UUID_B, FAKE_TOKEN_2)
+        set_live_account(UUID_A)
+        act, _why = sup.failover_choice(_org(), res={}, err_blob=LIMIT,
+                                        already_switched=False)
+        if act != "switch":
+            raise AssertionError(
+                f"a limit with a real alternate available decided {act!r} — "
+                "the refusal path is now swallowing genuine failovers")
+    check("CONTROL: a limit with a real alternate still SWITCHES",
+          _refusal_leg_two_a_real_limit_still_switches)
+
+    # ── the refusal must leave a durable trace ────────────────────────────
+    def _refusal_is_durable():
+        """A refusal that writes nothing is indistinguishable from never
+        having considered switching — the abstention this team keeps
+        shipping."""
+        org = store.create_org(f"zz noopswitch {_probe_n()}")
+        r = org.hire(ledger.USER, None, "haiku", 20, "probe", add_dirs=[],
+                     tools={"bash": False, "web": False, "edit": False,
+                            "subagents": False, "mcp": []},
+                     org_visibility="team", charter="refusal probe")
+        store.save_org(org)
+        slug, nid = org.d["slug"], r["node"]
+        wrote = sup.log_failover_refusal(slug, nid, sup.NO_ALTERNATE + " — x")
+        rows = (store.load_org(slug).d.get("turn_error_log") or {}).get(nid, [])
+        if not wrote or not rows:
+            raise AssertionError(
+                "the refusal left NO durable row — after the fact there is "
+                "then no way to tell 'we had nowhere to go' from 'this "
+                "failure had nothing to do with accounts'")
+        if "no account switch" not in (rows[-1].get("text") or ""):
+            raise AssertionError(
+                f"the durable row does not say a switch was declined: {rows[-1]!r}")
+        return slug, nid
+    check("the refusal writes a DURABLE row", _refusal_is_durable)
+
+    def _refusal_sends_no_mail():
+        """The refusal must not re-drive. The drive mechanism deposits mail,
+        the recipient may be fable-tier, and capacity subject matter in a
+        mailbox is what kills those sessions — `apply_failover` needs a
+        fixed subject-free constant to stay safe, and this path simply must
+        never send. (It also has nothing to say: nothing was fixed.)"""
+        tree = ast.parse(open(sup.__file__, encoding="utf-8").read())
+        fn = next((n for n in ast.walk(tree)
+                   if isinstance(n, ast.FunctionDef)
+                   and n.name == "log_failover_refusal"), None)
+        if fn is None:
+            raise AssertionError("log_failover_refusal is gone")
+        BAD = {"send_message", "notify", "apply_failover", "send_notice"}
+        hit = [c.func.id for c in ast.walk(fn)
+               if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
+               and c.func.id in BAD]
+        if hit:
+            raise AssertionError(
+                f"the refusal path calls {hit} — it must write the record and "
+                "STOP. A re-drive here burns a turn on the same wall, and "
+                "the drive mechanism puts capacity subject matter in a "
+                "mailbox that may belong to a fable seat.")
+    check("the refusal drives nothing and mails nobody", _refusal_sends_no_mail)
+
+    def _control_the_ast_denylist_can_fire():
+        """POSITIVE CONTROL: the scan above would also pass on a function that
+        does not exist, or on a denylist that matches nothing. Prove it fires
+        on a function that DOES call one of them."""
+        tree = ast.parse(open(sup.__file__, encoding="utf-8").read())
+        fn = next((n for n in ast.walk(tree)
+                   if isinstance(n, ast.FunctionDef)
+                   and n.name == "apply_failover"), None)
+        BAD = {"send_message", "notify", "apply_failover", "send_notice"}
+        hit = [c.func.id for c in ast.walk(fn) if fn is not None
+               and isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
+               and c.func.id in BAD]
+        if not hit:
+            raise AssertionError(
+                "the denylist finds nothing even in apply_failover, which "
+                "plainly calls send_message and notify — so the check above "
+                "proves nothing about the refusal path")
+    check("CONTROL: the drive denylist fires on a path that DOES drive",
+          _control_the_ast_denylist_can_fire)
+
+    def _refusal_is_wired_and_can_run():
+        """A call that exists is not a call that runs (b0dc223's lesson), and
+        it must sit inside the usage-limit branch or the refusal row would
+        appear on failures that were never about accounts."""
+        src = open(sup.__file__, encoding="utf-8").read()
+        tree = ast.parse(src)
+        parent = {}
+        for n in ast.walk(tree):
+            for c in ast.iter_child_nodes(n):
+                parent[c] = n
+        calls = [n for n in ast.walk(tree)
+                 if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                 and n.func.id == "log_failover_refusal"]
+        if not calls:
+            raise AssertionError(
+                "log_failover_refusal is NEVER CALLED — the loud refusal is "
+                "a function nobody runs, and every check above it passes "
+                "while the machine stays as silent as it was")
+        live_guarded = []
+        for call in calls:
+            cur, dead, guarded = call, False, False
+            while cur in parent:
+                up = parent[cur]
+                if isinstance(up, ast.If):
+                    names = {x.id for x in ast.walk(up.test)
+                             if isinstance(x, ast.Name)}
+                    if "_looks_like_usage_limit" in names:
+                        guarded = True
+                    if any(isinstance(x, ast.Constant) and x.value is False
+                           for x in ast.walk(up.test)):
+                        dead = True
+                if isinstance(up, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    break
+                cur = up
+            if not dead and guarded:
+                live_guarded.append(call.lineno)
+        if not live_guarded:
+            raise AssertionError(
+                "every log_failover_refusal call is dead-coded or sits "
+                "outside the usage-limit branch — so either the refusal can "
+                "never run, or it can fire on failures that have nothing to "
+                "do with accounts")
+    check("the refusal is WIRED into the limit path and can actually run",
+          _refusal_is_wired_and_can_run)
+
+
+# ── §8 ran_as, made durable ────────────────────────────────────────────────
+def s8_durable_ran_as() -> None:
+    """`ran_as` was in-memory and per-node: overwritten by the next spawn,
+    gone on restart. After the 21:20Z failover the ONE turn worth attributing
+    — the re-driven one — was already unrecoverable when anyone looked, and a
+    turn that fails on a limit writes no ring entry at all, so the error row
+    is the only durable trace it leaves."""
+    if not section("§8 ran_as survives the process"):
+        return
+    import ast
+
+    def _org_with_node():
+        org = store.create_org(f"zz ranas durable {_probe_n()}")
+        r = org.hire(ledger.USER, None, "haiku", 20, "probe", add_dirs=[],
+                     tools={"bash": False, "web": False, "edit": False,
+                            "subagents": False, "mcp": []},
+                     org_visibility="team", charter="ran_as probe")
+        store.save_org(org)
+        return org.d["slug"], r["node"]
+
+    def _error_row_carries_it():
+        slug, nid = _org_with_node()
+        sup.state(slug, nid)["ran_as"] = UUID_B
+        sup._log_turn_error(slug, nid, "turn failed: pretend limit")
+        rows = (store.load_org(slug).d.get("turn_error_log") or {}).get(nid, [])
+        if not rows or rows[-1].get("ran_as") != UUID_B:
+            raise AssertionError(
+                "the durable failure row does not record WHICH ACCOUNT ran "
+                f"the turn ({rows[-1] if rows else None!r}) — which is "
+                "exactly the question the 21:20Z post-mortem could not "
+                "answer, because a failed turn writes no ring entry either")
+    check("a durable failure row records the account that served the turn",
+          _error_row_carries_it)
+
+    def _absent_not_guessed():
+        """A node that has not run in THIS process must leave the key absent.
+        A default of 'ambient' would be a fabricated measurement, and
+        'ambient' is precisely the answer a post-mortem must not be handed
+        by accident."""
+        slug, nid = _org_with_node()
+        sup.state(slug, nid).pop("ran_as", None)
+        sup._log_turn_error(slug, nid, "turn failed: no spawn in this process")
+        rows = (store.load_org(slug).d.get("turn_error_log") or {}).get(nid, [])
+        if "ran_as" in (rows[-1] or {}):
+            raise AssertionError(
+                f"an unrun node was attributed to {rows[-1]['ran_as']!r} — "
+                "absent must stay absent; an invented 'ambient' here reads "
+                "exactly like the failure mode we are hunting")
+    check("a node that never spawned records NO account, not a guess",
+          _absent_not_guessed)
+
+    def _stamp_follows_state_not_intent():
+        """BOTH LEGS: the stamp must track the resolved spawn identity, so it
+        has to change when that changes. A constant passes a single-leg
+        check."""
+        slug, nid = _org_with_node()
+        seen = []
+        for want in (UUID_A, "ambient"):
+            sup.state(slug, nid)["ran_as"] = want
+            e: dict = {"at": "x", "cost": 0.0, "denials": 0}
+            sup._stamp_ran_as(e, slug, nid)          # type: ignore[arg-type]
+            seen.append(e.get("ran_as"))
+        if seen != [UUID_A, "ambient"]:
+            raise AssertionError(
+                f"the ring stamp does not follow the spawn identity: {seen!r} "
+                "— a stamp that always says the same thing is a constant "
+                "wearing a measurement's clothes")
+    check("the ring stamp FOLLOWS the resolved identity (both legs)",
+          _stamp_follows_state_not_intent)
+
+    def _never_a_credential():
+        slug, nid = _org_with_node()
+        sup.state(slug, nid)["ran_as"] = UUID_A
+        e: dict = {"at": "x", "cost": 0.0, "denials": 0}
+        sup._stamp_ran_as(e, slug, nid)              # type: ignore[arg-type]
+        blob = repr(e)
+        if FAKE_TOKEN in blob or FAKE_TOKEN_2 in blob:
+            raise AssertionError("a token value reached the durable ring")
+    check("the durable attribution is never credential material",
+          _never_a_credential)
+
+    def _every_ring_author_stamps():
+        """The ring has three authors — completed, killed, and
+        reported-then-failed — and the turns worth attributing are exactly
+        the ones that did NOT complete. Stamping only the happy path yields a
+        record that is complete precisely when nobody needs it."""
+        tree = ast.parse(open(sup.__file__, encoding="utf-8").read())
+        missing = []
+        for fn in [n for n in ast.walk(tree)
+                   if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]:
+            writes_ring = any(
+                isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute)
+                and c.func.attr == "setdefault" and len(c.args) == 2
+                and isinstance(c.args[0], ast.Constant)
+                and c.args[0].value == "turns"
+                for c in ast.walk(fn))
+            if not writes_ring:
+                continue
+            stamps = any(isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
+                         and c.func.id == "_stamp_ran_as" for c in ast.walk(fn))
+            if not stamps:
+                missing.append(fn.name)
+        # `_charge_killed_turn` READS the ring to estimate; it also appends.
+        if missing:
+            raise AssertionError(
+                f"these ring authors never stamp the account: {missing} — "
+                "the entries they write are the failed turns, which are the "
+                "only ones a post-mortem cares about")
+    check("EVERY turns-ring author stamps the account, not just the happy one",
+          _every_ring_author_stamps)
+
+    def _control_the_ring_scan_finds_authors():
+        """POSITIVE CONTROL: the scan above passes trivially if it finds no
+        ring authors at all — e.g. if the ring is renamed."""
+        tree = ast.parse(open(sup.__file__, encoding="utf-8").read())
+        authors = [n.name for n in ast.walk(tree)
+                   if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+                   and any(isinstance(c, ast.Call)
+                           and isinstance(c.func, ast.Attribute)
+                           and c.func.attr == "setdefault" and len(c.args) == 2
+                           and isinstance(c.args[0], ast.Constant)
+                           and c.args[0].value == "turns"
+                           for c in ast.walk(n))]
+        if len(authors) < 3:
+            raise AssertionError(
+                f"found only {authors} turns-ring authors — the check above "
+                "is passing because it is scanning for something that is no "
+                "longer there, not because every author stamps")
+    check("CONTROL: the ring scan actually finds all three authors",
+          _control_the_ring_scan_finds_authors)
+
+
 def main() -> None:
     t0 = time.perf_counter()
     print(f"data root: {store.DATA_ROOT}")
     print(f"token store: {tokens.tokens_path()}")
     for fn in (s0_isolation, s1_store, s2_spawn, s3_identity,
-               s4_failover, s5_drive_text, s6_wiring):
+               s4_failover, s5_drive_text, s6_wiring,
+               s7_no_op_switch, s8_durable_ran_as):
         fn()
     dt = time.perf_counter() - t0
     print()

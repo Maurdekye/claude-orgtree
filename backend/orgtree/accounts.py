@@ -249,6 +249,46 @@ class LiveStoreWritten(RuntimeError):
     """The credentials store changed while we were reading it."""
 
 
+# The CLI's own config, beside `subproxy.CREDS` but a DIFFERENT file: this one
+# holds identity METADATA (`oauthAccount`) and no credential at all. Module
+# level so a test can point it at a fixture without going near a real login.
+LIVE_CONFIG = os.path.expanduser("~/.claude.json")
+
+
+def live_account_uuid() -> str:
+    """WHO this machine is signed in as, offline — or "" if that is unknown.
+
+    ⚠ THIS EXISTS BECAUSE "NOT CURRENTLY SELECTED" IS NOT "A DIFFERENT
+    ACCOUNT". An org with no selection runs on the AMBIENT login, and the
+    ambient account can perfectly well also sit in the registry with a pasted
+    token against it — passive adoption puts it there, by design, because
+    `adopt_live` harvests exactly whoever is logged in. Failing over from
+    ambient to that account is a switch to ITSELF: same subscription, same
+    limit, and a confident row saying capacity was restored. That happened
+    live on 2026-08-24 21:20Z — the re-driven turn hit the identical session
+    limit 4.2s later, and the org recovered only when the limit expired.
+
+    Read from the CLI's CONFIG (`oauthAccount.accountUuid`), never from the
+    credentials store: this must stay a metadata read, cheap enough to call on
+    a failure path and incapable of touching a token. Returns "" when nobody
+    is logged in, when the file is missing or unparseable, or when the field
+    is absent — see `supervisor.alternate_account_choice` for what "" means
+    there (it degrades to the old behaviour, which is why the ambient account
+    must ALSO be excluded by any caller that can afford to be stricter).
+    """
+    try:
+        with open(LIVE_CONFIG, encoding="utf-8") as f:
+            doc = json.load(f)
+    except (OSError, json.JSONDecodeError, ValueError):
+        return ""
+    if not isinstance(doc, dict):
+        return ""
+    acct = doc.get("oauthAccount")
+    if not isinstance(acct, dict):
+        return ""
+    return str(acct.get("accountUuid") or "")
+
+
 def _resolve_via_profile(access_token: str) -> dict[str, Any]:
     """The only network call in this module. Isolated so tests inject instead
     of reaching the internet, and so the one place that handles a live token

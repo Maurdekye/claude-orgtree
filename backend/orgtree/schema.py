@@ -93,6 +93,14 @@ class TurnStat(TypedDict):
     toks: NotRequired[int]
     killed: NotRequired[bool]
     estimated: NotRequired[bool]
+    # WHICH ACCOUNT SERVED THIS TURN (2026-08-25) — an account uuid, or a
+    # sentinel ("ambient" / "api-key" / "token:unattributed"). Captured at
+    # spawn from the resolved env, never from intent, and never a credential.
+    # The live `ran_as` on the node payload is in-memory and per-node, so it
+    # is overwritten by the next spawn and lost on restart; this is the copy
+    # a post-mortem can still read. Absent when the node has not run in this
+    # backend process — absent, not "unknown", so it cannot read as a measure.
+    ran_as: NotRequired[str]
 
 
 class FrozenInfo(TypedDict, total=False):
@@ -430,7 +438,7 @@ class OrgDoc(TypedDict):
     notice_log: NotRequired[list[NoticeLogEntry]]
     delivering: NotRequired[dict[str, list[dict[str, Any]]]]  # supervisor in-flight mail batches
     steered_log: NotRequired[dict[str, list[dict[str, Any]]]]  # per-NODE steer history, org-keyed
-    turn_error_log: NotRequired[dict[str, list[dict[str, Any]]]]  # per-NODE turn failures {at, text} — the durable half of last_error
+    turn_error_log: NotRequired[dict[str, list[dict[str, Any]]]]  # per-NODE turn failures {at, text, ran_as?} — the durable half of last_error
     asks: NotRequired[list[dict[str, Any]]]  # F-04 questions-to-the-user {id, node, kind, question, options?, multi?, questions?, at, status, reason?, answer?, resolved_at?}
     # FR-13: pending permission-scope requests {id, node, items: [{kind:
     # dir|tool|mcp|permission_mode, ...}], reason, at, rev, status} — one
