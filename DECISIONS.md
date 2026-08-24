@@ -2820,8 +2820,44 @@ the ruling recorded.
 
 ## Open — awaiting a ruling
 
-*(empty as of 2026-08-14 — the compact-desk sheet question resolved into
-D-123)*
+### OPEN-01 · a failed turn's recorded error can be unrelated to the failure
+Found 2026-08-24 (creds-probe, measured) while working on multi-account, but
+**this is not a multi-account bug** — it affects every agent on every org, and
+is filed here so it is findable by someone who never reads D-144.
+
+`err_blob` — the string that becomes the node's user-facing `last_error`, the
+`turn_error_log` row, AND the input to every `_looks_like_*` classifier — is
+built from **stderr alone** whenever the CLI exits nonzero. The CLI's own
+`result` event, which carries the real reason, is only consulted when the exit
+code is ZERO. Two measured consequences:
+
+1. **An expired or rejected OAuth token is undiagnosable from orgtree's own
+   surfaces.** The CLI writes `Failed to authenticate. API Error: 401 …` into
+   its `result` event and **nothing to stderr**, so `err_blob` falls to the
+   fallback and both the UI and the log read *"the CLI exited 1 without
+   writing anything to stderr"*. The supervisor already receives the real
+   string and discards it, because the only question it asks of it is
+   `_looks_like_usage_limit`.
+2. **Incidental stderr noise is recorded AS the error.** Measured: a CLI
+   invoked without stdin emits a *"no stdin data received in 3s"* warning;
+   `err_blob` takes stderr verbatim, so that warning became the recorded
+   cause of an authentication failure. Any warning on stderr will do this.
+
+The fix splits into two changes with very different blast radii, and the
+ruling wanted is on the second:
+- **(a) Recording only** — carry `res["result"]` / `api_error_status` into
+  `last_error` and the log when stderr is empty, WITHOUT feeding it to the
+  classifiers. Contained; changes no freeze or retry behaviour.
+- **(b) Classification input** — let that text reach the `_looks_like_*`
+  predicates. This changes what every agent's errors classify as, on every
+  org, and could newly match `_looks_like_usage_limit` on turns that are
+  terminal today. The comment at the fallback already names the adjacent
+  hazard ("a crash landing on the same turn as a limit would swallow the
+  limit and skip the freeze").
+
+⚠ Any Phase-2 `_looks_like_auth_failure(err_blob)` added **before (b)** is a
+change that goes green and does nothing: the auth text never reaches the
+predicate. See D-144.
 
 *(The seven items ruled 2026-08-01 live in their domain entries: D-021
 Bounds, D-014 Load-bearing, D-063, D-023, D-071, D-069; the mobile wave's
@@ -3015,7 +3051,8 @@ shape against a genuine 401:
 | top-level events | `system`×5, **`assistant`**, **`result`** |
 | `result.is_error` | true |
 | `result.result` | "Failed to authenticate. API Error: 401 OAuth access token is invalid." |
-| stderr | **varies — see below** |
+| stderr (stdin closed, as orgtree spawns) | **0 bytes** |
+| `res["errors"]` | `None` |
 
 ⇒ **`boundary` is True, and that alone is what makes the turn terminal.** A
 top-level `result` event always arrives, so `not boundary` is False and
@@ -3025,12 +3062,23 @@ to the outcome. A control confirms `_died_in_flight` still returns True for
 the shape it IS meant to catch, so this is a discrimination and not a
 predicate that says False to everything.
 
-⚠ **Do not rest this on `exit_only`.** Two independent measurements disagreed
-about stderr: one observed it non-empty (so `exit_only` False), one observed
-it empty on a different CLI build (so `exit_only` True). The verdict is
-unchanged either way *because `boundary` decides it*, but any future reasoning
-that leans on stderr being populated is leaning on something that has already
-been seen both ways.
+⚠ **`boundary` is the ONLY thing preventing a retry loop — the other two
+conditions both hold.** In orgtree's real spawn shape stderr is **0 bytes** and
+`errors` is `None`, so `exit_only` is **True**; `started` is **True** (below).
+`_died_in_flight` is therefore ONE condition away from firing. If a future CLI
+ever failed to emit a top-level `result` event on an auth error, orgtree would
+begin retry-looping against dead tokens with no code change on our side.
+
+A measurement discrepancy worth recording, because the resolution is the
+interesting part: an early rig observed stderr NON-empty and concluded
+`exit_only` was False. That was an artifact of the rig, not a CLI difference —
+it invoked the CLI without stdin, and the CLI emitted an unrelated *"no stdin
+data received in 3s"* warning. `err_blob` takes stderr verbatim when the exit
+code is nonzero, so on that rig the recorded error for an expired token was a
+**stdin warning with nothing to do with the failure**. Re-run with stdin
+closed, as orgtree spawns it, stderr is empty and the generic fallback takes
+over. Two rigs agreeing on the OUTCOME while disagreeing on a SIGNAL is what
+exposed which condition actually carries this branch.
 
 Two things measurement showed that reasoning had wrong, both worth keeping:
 
