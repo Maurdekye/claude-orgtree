@@ -591,6 +591,49 @@ def s8_defects() -> None:
     check("set_order dedupes — the order stays a permutation",
           order_stays_a_permutation)
 
+    # ---- reviewer 2026-08-24, gap 1: set_order's strict load had no guard.
+    # Reverting `strict=True` at THIS call site survived all 62 checks: the
+    # future-version file loads as blank, `known` is empty, and save() then
+    # replaces every label, the whole order and every pin with an empty
+    # registry — from the panel's single most-used endpoint.
+    def set_order_refuses_a_future_version():
+        reset()
+        a = "11111111-2222-3333-4444-555555555555"
+        accounts.upsert(accounts.identity_from_profile(profile()),
+                        label="Precious")
+        accounts.set_pin("acme", a)
+        doc = json.load(open(accounts.registry_path(), encoding="utf-8"))
+        doc["version"] = accounts.VERSION + 1          # a future install wrote this
+        with open(accounts.registry_path(), "w", encoding="utf-8") as f:
+            json.dump(doc, f)
+        before = open(accounts.registry_path(), encoding="utf-8").read()
+        raises(accounts.RegistryUnreadable,
+               lambda: accounts.set_order([a]),
+               why="one PUT /api/accounts/order blanked a future-version registry")
+        after = open(accounts.registry_path(), encoding="utf-8").read()
+        eq(after, before, "set_order rewrote a registry it refused to load: ")
+        assert "Precious" in after, "the hand-set label is gone"
+    check("set_order refuses a future VERSION (one PUT cannot blank the store)",
+          set_order_refuses_a_future_version)
+
+    # ---- reviewer 2026-08-24, gap 2: dedupe direction was unpinned. With a
+    # NON-adjacent duplicate, first-wins and last-wins disagree about who is
+    # primary — a user-visible difference in a feature about who gets used
+    # first. The permutation check above cannot see it: its input [a, a, b]
+    # dedupes to [a, b] under either direction.
+    def dedupe_keeps_the_first_occurrence():
+        reset()
+        a = "11111111-2222-3333-4444-555555555555"
+        b = "aaaaaaaa-2222-3333-4444-555555555555"
+        accounts.upsert(accounts.identity_from_profile(profile()))
+        accounts.upsert(accounts.identity_from_profile(
+            profile(uuid=b, email="other@example.com")))
+        got = accounts.set_order([a, b, a])            # non-adjacent duplicate
+        eq(got, [a, b], "dedupe is not first-wins: ")
+        eq(accounts.primary(), a, "a trailing duplicate demoted the primary: ")
+    check("dedupe keeps the FIRST occurrence — a duplicate cannot demote the primary",
+          dedupe_keeps_the_first_occurrence)
+
     # ---- 1g/ii: relabel ran outside the module lock ----
     def relabel_takes_the_lock():
         import threading

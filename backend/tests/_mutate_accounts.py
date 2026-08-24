@@ -227,6 +227,26 @@ MUTANTS = [
      "        new = [u for u in order if u in doc[\"accounts\"]]",
      "set_order dedupes — the order stays a permutation"),
 
+    # ---- reviewer 2026-08-24, the two gaps that survived all 62 ----
+    # ⚠ NOT the bare `doc = load(strict=True)` line — that string appears at
+    # FOUR call sites and replace(…, 1) would mutate upsert's, which dies to a
+    # different check. The `known` line pins this to set_order.
+    ("set_order loads non-strict (one PUT can blank the store)",
+     ACC,
+     "        doc = load(strict=True)\n        known = list(doc[\"accounts\"].keys())",
+     "        doc = load()\n        known = list(doc[\"accounts\"].keys())",
+     "set_order refuses a future VERSION (one PUT cannot blank the store)"),
+
+    # last-wins dedupe: passes the permutation check (its duplicate is
+    # ADJACENT, so both directions agree) — only a non-adjacent duplicate
+    # tells them apart.
+    ("set_order dedupe becomes last-wins",
+     ACC,
+     "        new = list(dict.fromkeys(u for u in order if u in doc[\"accounts\"]))",
+     "        _f = [u for u in order if u in doc[\"accounts\"]]\n"
+     "        new = list(reversed(list(dict.fromkeys(reversed(_f)))))",
+     "dedupe keeps the FIRST occurrence — a duplicate cannot demote the primary"),
+
     ("relabel drops the module lock",
      ACC,
      "    with _lock:\n        doc = load(strict=True)\n        if uuid not in doc[\"accounts\"]:\n            raise KeyError(uuid)",
