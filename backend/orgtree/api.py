@@ -39,7 +39,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, model_validator
 
 from . import ledger as ledger_mod
-from . import limits, net, sandbox, store, subproxy, supervisor
+from . import accounts, limits, net, sandbox, store, subproxy, supervisor
 from .ledger import LedgerError, Org, USER, VIS_LEVELS, norm_dirs, norm_tools
 
 if TYPE_CHECKING:
@@ -240,6 +240,14 @@ def _public_denied(method: str, rest: str, slug: str) -> tuple[int, str] | None:
         or (method == "PUT" and rest.endswith("/orgmd"))     # org.md edits
         or rest == "/api/agent"                              # node MCP gateway
         or rest == "/api/mcp-servers"
+        # the account registry (D-144): which SUBSCRIPTIONS this install may
+        # bill is machine-global admin config, and a visitor pinning an org to
+        # an account would be choosing whose entitlement pays for it. The
+        # trailing `parts[2] == "orgs"` test below would 404 these anyway —
+        # frozen EXPLICITLY because an incidental 404 is not an access rule,
+        # and the next person to touch that test would not know they were
+        # holding this up.
+        or rest.startswith("/api/accounts")
     )
     if frozen_config:
         return 403, "kiosk: configuration is managed from the admin side"
@@ -1823,6 +1831,94 @@ async def claude_usage() -> dict[str, Any]:
 def claude_usage_peek() -> dict[str, Any]:
     """Cache-only usage standing for the header glow — see `limits.peek`."""
     return limits.peek()
+
+
+# ------------------------------------------------- the account registry (D-144)
+# Machine-global config, NOT org-scoped: which subscriptions this install may
+# bill. Admin-only — `_public_denied` freezes the whole `/api/accounts` prefix
+# explicitly rather than relying on its trailing 404, because "it happens to
+# fall through" is not an access rule anyone can safely edit around later.
+#
+# ⚠ These routes READ the registry and never touch `~/.claude/.credentials.json`
+# beyond the point-in-time read `accounts.adopt_live` performs under its own
+# mtime/size guard. Nothing here selects an account for a turn: `selection_active`
+# is False and stays False until Phase 2 (D-144).
+class AccountOrder(BaseModel):
+    order: list[str]
+
+
+class AccountPin(BaseModel):
+    uuid: str | None = None
+
+
+class AccountLabel(BaseModel):
+    label: str
+
+
+@app.get("/api/accounts")
+def accounts_list() -> dict[str, Any]:
+    """The registry as the panel renders it. Identity only — no token material
+    exists in this payload because none exists in the registry (D-144)."""
+    return accounts.readout()
+
+
+@app.post("/api/accounts/adopt")
+async def accounts_adopt() -> dict[str, Any]:
+    """PASSIVE adoption: notice whoever is logged in and record who they are.
+
+    Returns the readout either way. `adopted` names the account if one was
+    taken and is null when there was nothing to adopt — no credentials file,
+    no token in it, or the identity lookup failed (offline, expired, or the
+    endpoint rate-limiting, which it does under burst). None of those are
+    errors: the user simply has not logged in yet, or is not reachable, and a
+    500 here would make a normal state look broken.
+
+    A 409 is different and deliberate — it means the credentials store CHANGED
+    while we were reading it, which must never pass silently."""
+    from fastapi.concurrency import run_in_threadpool
+    try:
+        rec = await run_in_threadpool(accounts.adopt_live)
+    except accounts.LiveStoreWritten as e:
+        raise HTTPException(409, str(e)) from None
+    return {**accounts.readout(),
+            "adopted": rec["uuid"] if rec else None}
+
+
+@app.put("/api/accounts/order")
+def accounts_order(body: AccountOrder) -> dict[str, Any]:
+    """The waterfall order, primary first. An account omitted by a stale panel
+    is appended rather than deleted — a POST from a page that loaded before
+    the last adoption must not be able to drop an entitlement."""
+    accounts.set_order(list(body.order))
+    return accounts.readout()
+
+
+@app.put("/api/accounts/pins/{slug}")
+def accounts_pin(slug: str, body: AccountPin) -> dict[str, Any]:
+    """Nail one org to one account, or send `{"uuid": null}` to clear it.
+    Pinning an account the registry does not know is a 422, never a silent
+    no-op: a pin that fails to apply looks exactly like one that applied."""
+    try:
+        accounts.set_pin(slug, body.uuid)
+    except KeyError as e:
+        raise HTTPException(422, str(e).strip("'")) from None
+    hub_changed(slug)
+    return accounts.readout()
+
+
+@app.patch("/api/accounts/{uuid}")
+def accounts_relabel(uuid: str, body: AccountLabel) -> dict[str, Any]:
+    """Rename an account for the panel. Survives re-adoption — the scheduled
+    adopt must never clobber a name the user chose."""
+    doc = accounts.load()
+    if uuid not in doc["accounts"]:
+        raise HTTPException(404, f"no such account {uuid!r}")
+    label = body.label.strip()
+    if not label:
+        raise HTTPException(422, "a label cannot be empty")
+    doc["accounts"][uuid]["label"] = label
+    accounts.save(doc)
+    return accounts.readout()
 
 
 @app.get("/api/host")

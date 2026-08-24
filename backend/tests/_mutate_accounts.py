@@ -31,6 +31,7 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 ROOT = Path(__file__).resolve().parents[2]
 ACC = ROOT / "backend" / "orgtree" / "accounts.py"
+API = ROOT / "backend" / "orgtree" / "api.py"
 SUITE = ROOT / "backend" / "tests" / "test_accounts.py"
 
 # (name, file, find, replace, must-kill-this-check-or-None-for-survive)
@@ -147,12 +148,45 @@ MUTANTS = [
      "        \"selection_active\": False,",
      "        \"selection_active\": True,",
      "readout declares selection_active FALSE (D-144)"),
+
+    # ---- the HTTP surface ----
+    ("the kiosk freeze on /api/accounts is removed",
+     API,
+     "        or rest.startswith(\"/api/accounts\")",
+     "        or False",
+     "kiosk visitors are denied every /api/accounts route"),
+
+    ("pinning an unknown account becomes a silent 200 over HTTP",
+     API,
+     "    except KeyError as e:\n        raise HTTPException(422, str(e).strip(\"'\")) from None",
+     "    except KeyError:\n        pass",
+     "PUT pin to an unknown account → 422 and no pin written"),
+
+    ("an empty label is accepted",
+     API,
+     "    if not label:\n        raise HTTPException(422, \"a label cannot be empty\")",
+     "    if not label:\n        pass",
+     "PATCH empty label → 422"),
+
+    ("relabelling an unknown account 500s instead of 404ing",
+     API,
+     "    if uuid not in doc[\"accounts\"]:\n        raise HTTPException(404, f\"no such account {uuid!r}\")",
+     "    if False:\n        raise HTTPException(404, f\"no such account {uuid!r}\")",
+     "PATCH unknown account → 404"),
+
+    ("a missing credentials file becomes a 500",
+     API,
+     "        rec = await run_in_threadpool(accounts.adopt_live)",
+     "        rec = await run_in_threadpool(accounts.adopt_live)\n"
+     "        if rec is None:\n            raise HTTPException(500, 'no creds')",
+     "POST adopt with no credentials → 200, adopted=null"),
 ]
 
 
 def restore():
     subprocess.run(["git", "-C", str(ROOT), "checkout", "--",
-                    "backend/orgtree/accounts.py"], check=True, capture_output=True)
+                    "backend/orgtree/accounts.py", "backend/orgtree/api.py"],
+                   check=True, capture_output=True)
 
 
 def run_suite():

@@ -444,12 +444,143 @@ def s6_readout() -> None:
             AssertionError("token text in readout"))))
 
 
+def s7_http() -> None:
+    if not section("§7 the HTTP surface — admin only, and refusals are loud"):
+        return
+    reset()
+    import asyncio
+
+    from orgtree import api
+
+    class R:
+        def __init__(self, status, body):
+            self.status, self.raw = status, body
+
+        @property
+        def json(self):
+            try:
+                return json.loads(self.raw.decode() or "null")
+            except ValueError:
+                return None
+
+    def call(app, method, path, body=None):
+        """Hand-built ASGI scope — the same technique test_api_surface.py uses,
+        so nothing normalises the path between here and the gateway."""
+        payload = b"" if body is None else json.dumps(body).encode()
+        hdrs = [(b"host", b"127.0.0.1:7402")]
+        if payload:
+            hdrs += [(b"content-type", b"application/json"),
+                     (b"content-length", str(len(payload)).encode())]
+        st, chunks = [0], []
+
+        async def receive():
+            return {"type": "http.request", "body": payload, "more_body": False}
+
+        async def send(msg):
+            if msg["type"] == "http.response.start":
+                st[0] = msg["status"]
+            elif msg["type"] == "http.response.body":
+                chunks.append(msg.get("body", b""))
+        scope = {"type": "http", "asgi": {"version": "3.0", "spec_version": "2.3"},
+                 "http_version": "1.1", "method": method, "scheme": "http",
+                 "path": path, "raw_path": path.encode(), "query_string": b"",
+                 "root_path": "", "headers": hdrs,
+                 "client": ("127.0.0.1", 5555), "server": ("127.0.0.1", 7402)}
+        asyncio.run(app(scope, receive, send))
+        return R(st[0], b"".join(chunks))
+
+    admin = api.app
+    a = "11111111-2222-3333-4444-555555555555"
+    accounts.upsert(accounts.identity_from_profile(profile()))
+
+    check("GET /api/accounts returns the registry", lambda: eq(
+        call(admin, "GET", "/api/accounts").json["accounts"][0]["uuid"], a))
+    check("GET /api/accounts declares selection_active false (D-144)",
+          lambda: eq(call(admin, "GET", "/api/accounts").json["selection_active"],
+                     False))
+    check("GET /api/accounts leaks no token text", lambda: (
+        None if "sk-ant" not in call(admin, "GET", "/api/accounts").raw.decode()
+        else (_ for _ in ()).throw(AssertionError("token text on the wire"))))
+
+    def adopt_with_no_creds_is_200_not_500():
+        try:
+            os.remove(_FAKE_CREDS)
+        except OSError:
+            pass
+        r = call(admin, "POST", "/api/accounts/adopt")
+        eq(r.status, 200, "no credentials file must not be an error: ")
+        eq(r.json["adopted"], None)
+    check("POST adopt with no credentials → 200, adopted=null",
+          adopt_with_no_creds_is_200_not_500)
+
+    def pin_unknown_is_422():
+        r = call(admin, "PUT", "/api/accounts/pins/acme",
+                 {"uuid": "not-an-account"})
+        eq(r.status, 422, "an unapplied pin must be loud: ")
+        eq(accounts.get_pin("acme"), None, "a refused pin left a pin behind: ")
+    check("PUT pin to an unknown account → 422 and no pin written",
+          pin_unknown_is_422)
+
+    check("PUT pin then clear round-trips over HTTP", lambda: (
+        eq(call(admin, "PUT", "/api/accounts/pins/acme", {"uuid": a}).status, 200),
+        eq(accounts.get_pin("acme"), a),
+        eq(call(admin, "PUT", "/api/accounts/pins/acme", {"uuid": None}).status, 200),
+        eq(accounts.get_pin("acme"), None))[-1])
+
+    check("PATCH relabels", lambda: (
+        eq(call(admin, "PATCH", f"/api/accounts/{a}", {"label": "Work"}).status, 200),
+        eq(accounts.load()["accounts"][a]["label"], "Work"))[-1])
+    check("PATCH empty label → 422", lambda: eq(
+        call(admin, "PATCH", f"/api/accounts/{a}", {"label": "  "}).status, 422))
+    check("PATCH unknown account → 404", lambda: eq(
+        call(admin, "PATCH", "/api/accounts/ghost", {"label": "x"}).status, 404))
+
+    def order_over_http():
+        b = "aaaaaaaa-2222-3333-4444-555555555555"
+        accounts.upsert(accounts.identity_from_profile(
+            profile(uuid=b, email="other@example.com")))
+        r = call(admin, "PUT", "/api/accounts/order", {"order": [b]})
+        eq(r.status, 200)
+        eq(r.json["primary"], b, "requested primary did not take: ")
+        assert any(x["uuid"] == a for x in r.json["accounts"]), \
+            "an omitted account was dropped over HTTP"
+    check("PUT order promotes without deleting the omitted account",
+          order_over_http)
+
+    # ---- the access boundary, with a CONTROL so the denial is not vacuous ----
+    # A kiosk visitor reaching /api/accounts could choose whose subscription
+    # pays for an org. Asserting only "visitor gets a non-200" would also pass
+    # if the gateway were broken for EVERY path, so the control proves this
+    # same visitor can still reach a route that is meant to be open.
+    def kiosk_cannot_reach_the_registry():
+        denied = api._public_denied("GET", "/api/accounts", "acme")
+        assert denied is not None, "kiosk visitor was NOT denied /api/accounts"
+        eq(denied[0], 403, "expected an explicit 403: ")
+        for path in ("/api/accounts/adopt", "/api/accounts/order",
+                     "/api/accounts/pins/acme"):
+            assert api._public_denied("POST", path, "acme") is not None, \
+                f"kiosk visitor was not denied {path}"
+    check("kiosk visitors are denied every /api/accounts route",
+          kiosk_cannot_reach_the_registry)
+
+    def the_denial_control():
+        # same matrix, a route that must stay OPEN to that visitor — if this
+        # also came back denied, the check above would prove nothing
+        eq(api._public_denied("GET", "/api/orgs", "acme"), None,
+           "control: /api/orgs GET should be open to a kiosk visitor: ")
+        eq(api._public_denied("GET", "/api/orgs/acme/tree", "acme"), None,
+           "control: the visitor's own org tree should be open: ")
+    check("CONTROL: the same matrix still allows an open route",
+          the_denial_control)
+
+
 def main() -> None:
     t0 = time.perf_counter()
     print(f"data root: {store.DATA_ROOT}")
     print(f"credentials under test: {subproxy.CREDS}")
     for fn in (s0_isolation, s1_secret_invariant, s2_registry,
-               s3_passive_adoption, s4_pin, s5_resolution, s6_readout):
+               s3_passive_adoption, s4_pin, s5_resolution, s6_readout,
+               s7_http):
         fn()
     dt = time.perf_counter() - t0
     if NOTES:
