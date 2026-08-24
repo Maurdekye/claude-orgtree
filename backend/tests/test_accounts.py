@@ -239,6 +239,22 @@ def s2_registry() -> None:
     check("re-adoption preserves hand-set label AND order",
           relabel_survives_readoption)
 
+    # ⚠ The check above re-adopts the account that is ALREADY LAST, so a
+    # remove-then-append bug is invisible to it — [b,a] goes to [b,a] either
+    # way. Mutation round 2026-08-24 caught exactly that. Re-adopt the PRIMARY
+    # instead: that is also the case that matters in production, where passive
+    # adoption runs on a schedule and must never demote the user's primary.
+    def readoption_cannot_demote_the_primary():
+        accounts.set_order([b, a])
+        eq(accounts.primary(), b, "precondition: ")
+        accounts.upsert(accounts.identity_from_profile(
+            profile(uuid=b, email="other@example.com")))     # re-adopt PRIMARY
+        eq(accounts.primary(), b,
+           "re-adopting the primary demoted it out of first place: ")
+        eq(accounts.load()["order"], [b, a], "order churned: ")
+    check("re-adopting the PRIMARY does not demote it",
+          readoption_cannot_demote_the_primary)
+
     def first_seen_is_stable():
         doc = accounts.load()
         first = doc["accounts"][a]["first_seen"]
@@ -296,6 +312,31 @@ def s3_passive_adoption() -> None:
                why="the store was written during adoption and nothing noticed")
     check("RAISES if the credentials store changes mid-adoption",
           guard_fires_when_store_is_written)
+
+    # ⚠ The hostile resolver above APPENDS, so it changes the file's SIZE — a
+    # guard comparing size alone would still catch it and the check could not
+    # tell the two implementations apart. Mutation round 2026-08-24 confirmed
+    # the size-only mutant survived. A re-login rewrites the record IN PLACE,
+    # and a rotated token is the same length as the one it replaced, so
+    # same-size is the REALISTIC shape of this event, not the exotic one.
+    def guard_fires_on_a_same_SIZE_rewrite():
+        write_creds()
+        original = open(_FAKE_CREDS, encoding="utf-8").read()
+
+        def rewriter(_tok):
+            time.sleep(0.02)
+            with open(_FAKE_CREDS, "w", encoding="utf-8") as f:
+                f.write(original)                        # identical bytes, new mtime
+            return profile()
+        size_before = os.path.getsize(_FAKE_CREDS)
+        raises(accounts.LiveStoreWritten,
+               lambda: accounts.adopt_live(resolver=rewriter),
+               why="an in-place, same-size rewrite went unnoticed")
+        eq(os.path.getsize(_FAKE_CREDS), size_before,
+           "precondition: the rewrite must not change size, or this check "
+           "cannot distinguish an mtime guard from a size guard: ")
+    check("RAISES on a same-SIZE in-place rewrite (mtime, not just size)",
+          guard_fires_on_a_same_SIZE_rewrite)
 
     check("no credentials file → None, not an exception", lambda: (
         os.remove(_FAKE_CREDS),
