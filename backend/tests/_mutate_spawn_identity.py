@@ -187,6 +187,31 @@ MUTANTS = [
      "    if already_switched:",
      "    org.d[\"_decided\"] = True\n    if already_switched:",
      "the decision is pure — it changes nothing"),
+
+    # ── the drive nudge · SUBJECT MATTER IN A MAILBOX KILLS SESSIONS ───────
+    # Both of these are "helpful improvements" someone will genuinely propose.
+    ("THE HELPFUL IMPROVEMENT: the nudge explains why the switch happened",
+     SUP,
+     "    return ACCOUNT_SWITCH_DRIVE",
+     "    return f\"{ACCOUNT_SWITCH_DRIVE} ({why})\" if why "
+     "else ACCOUNT_SWITCH_DRIVE",
+     "the nudge is INVARIANT across every switch reason"),
+
+    ("the nudge names the subject directly",
+     SUP,
+     'ACCOUNT_SWITCH_DRIVE = ("Your previous turn did not complete. It has been "\n'
+     '                        "retried — please continue where you left off.")',
+     'ACCOUNT_SWITCH_DRIVE = ("Your previous turn did not complete — the "\n'
+     '                        "account was out of capacity, so it has been "\n'
+     '                        "retried on another account.")',
+     "the nudge contains none of the subject vocabulary"),
+
+    ("the nudge becomes empty (subject-free turned into contentless)",
+     SUP,
+     'ACCOUNT_SWITCH_DRIVE = ("Your previous turn did not complete. It has been "\n'
+     '                        "retried — please continue where you left off.")',
+     'ACCOUNT_SWITCH_DRIVE = ""',
+     "the nudge still tells the agent to continue"),
 ]
 
 
