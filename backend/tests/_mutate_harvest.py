@@ -79,8 +79,8 @@ MUTANTS = [
 
     ("the duplicate-reason guard is dropped",
      SUP,
-     "    if not detail or detail in err_blob:",
-     "    if not detail:",
+     "    if detail and detail in err_blob:\n        return err_blob",
+     "    if False:\n        return err_blob",
      "a reason already present is not duplicated"),
 
     # ── separation violations ──────────────────────────────────────────────
@@ -138,12 +138,10 @@ MUTANTS = [
     # ── step 2: the narrow positive auth predicate ─────────────────────────
     ("WIDENING: the auth predicate starts substring-searching TEXT",
      SUP,
-     "    status = res.get(\"api_error_status\")\n"
-     "    if isinstance(status, bool):",
+     "    status = res.get(\"api_error_status\")",
      "    if \"invalid api key\" in str(res.get(\"result\") or \"\").lower():\n"
      "        return True\n"
-     "    status = res.get(\"api_error_status\")\n"
-     "    if isinstance(status, bool):",
+     "    status = res.get(\"api_error_status\")",
      "ANTI-WIDENING · auth-sounding TEXT alone never classifies"),
 
     ("the auth predicate widens to 403 (an org policy answer)",
@@ -154,17 +152,20 @@ MUTANTS = [
 
     ("the auth predicate stops firing at all",
      SUP,
-     "    status = res.get(\"api_error_status\")\n"
-     "    if isinstance(status, bool):",
+     "    status = res.get(\"api_error_status\")",
      "    return False\n"
-     "    status = res.get(\"api_error_status\")\n"
-     "    if isinstance(status, bool):",
+     "    status = res.get(\"api_error_status\")",
      "the measured 401 shape classifies as an auth failure"),
 
-    ("a bool True in the status field is treated as a status",
+    # ⚠ retargeted. This used to mutate an `isinstance(status, bool)` guard —
+    # but that guard could never change an answer (`True == 401` is already
+    # False), so the mutant was a no-op and its check was UNKILLABLE. The
+    # guard has been deleted from the code; truthiness is the mutation that
+    # actually makes a bool classify.
+    ("the status is read as truthiness rather than compared to 401",
      SUP,
-     "    if isinstance(status, bool):        # bools are ints in Python; not a status\n        return False",
-     "    if False:\n        return False",
+     "    if isinstance(status, int):\n        return status == 401",
+     "    if isinstance(status, int):\n        return bool(status)",
      "True is not a status (bools are ints in Python)"),
 
     ("the operator's record stops NAMING the auth failure",
@@ -207,9 +208,13 @@ MUTANTS = [
     # Now a genuine call, against a check that sees attribute calls.
     ("_for_the_record grows a side effect (writes the org doc)",
      SUP,
-     "    detail = _result_detail(res)\n    if not detail or detail in err_blob:",
-     "    detail = _result_detail(res)\n    store.save_org(res)\n"
-     "    if not detail or detail in err_blob:",
+     # ⚠ anchored on the ASSIGNMENT alone, not on the line that follows it.
+     # This mutant went VACUOUS ("pattern not found") the moment step 2
+     # restructured the guard beneath it — the exact failure the accounts
+     # handover warned about, where eight mutants silently stopped applying
+     # after the code under test was rewritten.
+     "    detail = _result_detail(res)\n",
+     "    detail = _result_detail(res)\n    store.save_org(res)\n",
      "_for_the_record is pure — no doc writes, no mail, no notify"),
 ]
 

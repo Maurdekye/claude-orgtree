@@ -1009,8 +1009,12 @@ def _looks_like_auth_failure(res: dict[str, Any]) -> bool:
     record and does nothing else.
     """
     status = res.get("api_error_status")
-    if isinstance(status, bool):        # bools are ints in Python; not a status
-        return False
+    # ⚠ no `isinstance(status, bool)` guard here, deliberately. One was
+    # written — bools ARE ints in Python, so it looked necessary — but
+    # `True == 401` is already False, so the guard could never change an
+    # answer. Its check was therefore UNKILLABLE: no mutant could make it the
+    # cause of a failure, so it read like a passing check while testing
+    # nothing. Removed; the equality below carries the property on its own.
     if isinstance(status, int):
         return status == 401
     if isinstance(status, str) and status.strip().isdigit():

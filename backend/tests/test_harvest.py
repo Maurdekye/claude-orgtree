@@ -524,12 +524,18 @@ def s5_auth_predicate() -> None:
     def _auth_never_takes_a_blob():
         # the signature IS the design: if someone "harmonises" it to take a
         # blob, the number-keyed guarantee evaporates silently.
+        # ⚠ walk the WHOLE argument subtree, not just top-level args. This
+        # inspected `c.args` directly and a mutant passing
+        # `{"api_error_status": detail}` — the text one level down inside a
+        # dict — SURVIVED. Text does not have to arrive as a bare argument to
+        # be text.
         bad = []
         for c in _calls_named(_SUP_AST, "_looks_like_auth_failure"):
-            for a in c.args:
-                if isinstance(a, ast.Name) and a.id in ("err_blob", "blob",
-                                                        "text", "detail"):
-                    bad.append((a.id, c.lineno))
+            for a in c.args + [k.value for k in c.keywords]:
+                for n in ast.walk(a):
+                    if isinstance(n, ast.Name) and n.id in (
+                            "err_blob", "blob", "text", "detail", "record"):
+                        bad.append((n.id, c.lineno))
                 if _mentions_call(a, "_for_the_record") or \
                    _mentions_call(a, "_result_detail"):
                     bad.append(("<harvested text>", c.lineno))
@@ -545,22 +551,54 @@ def s5_auth_predicate() -> None:
     def _no_behaviour_wired():
         # step 2 is classification only. Acting on it — freeze, retry,
         # resume, account switch — is step 3 and needs its own ruling.
+        #
+        # ⚠ This used to look only INSIDE the behaviour call. A mutant wrote
+        # `_turn_abandoned(...) if not _looks_like_auth_failure(res) else
+        # None` — the predicate sitting OUTSIDE the call, in the condition
+        # that gates it — and SURVIVED. Gating a call is exactly how you wire
+        # behaviour to a predicate, so the one shape that matters most was
+        # the one shape this could not see. Now the ancestor chain's
+        # CONDITIONS are searched too.
+        parent = {}
+        for n in ast.walk(_SUP_AST):
+            for c in ast.iter_child_nodes(n):
+                parent[c] = n
+
+        def _auth_in(node) -> bool:
+            return any(isinstance(x, ast.Call)
+                       and isinstance(x.func, ast.Name)
+                       and x.func.id == "_looks_like_auth_failure"
+                       for x in ast.walk(node))
+
+        BEHAVIOUR = ("_turn_abandoned", "_retry_exhausted", "notify",
+                     "fable_filter_hit", "mark_unrecoverable",
+                     "_bump_hard_fail", "resume_frozen")
         for n in ast.walk(_SUP_AST):
             if not isinstance(n, ast.Call):
                 continue
             f = n.func
             nm = f.id if isinstance(f, ast.Name) else getattr(f, "attr", "")
-            if nm in ("_turn_abandoned", "_retry_exhausted", "notify",
-                      "fable_filter_hit", "mark_unrecoverable"):
-                for a in ast.walk(n):
-                    if isinstance(a, ast.Call) and \
-                            isinstance(a.func, ast.Name) and \
-                            a.func.id == "_looks_like_auth_failure":
-                        raise AssertionError(
-                            f"BEHAVIOUR WIRED — the auth predicate is "
-                            f"driving {nm} at line {n.lineno}. Step 2 is "
-                            f"classification ONLY; acting on it changes "
-                            f"turn semantics and is step 3.")
+            if nm not in BEHAVIOUR:
+                continue
+            why = ""
+            if _auth_in(n):
+                why = "the predicate is inside the call"
+            cur = n
+            while cur in parent and not why:
+                up = parent[cur]
+                if isinstance(up, ast.IfExp) and _auth_in(up.test):
+                    why = "a conditional expression gates the call on it"
+                elif isinstance(up, ast.If) and _auth_in(up.test):
+                    why = "an `if` gates the call on it"
+                elif isinstance(up, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    break
+                cur = up
+            if why:
+                raise AssertionError(
+                    f"BEHAVIOUR WIRED — the auth predicate is driving {nm} "
+                    f"at line {n.lineno}: {why}. Step 2 is classification "
+                    f"ONLY; acting on it changes freeze/retry/resume "
+                    f"semantics for every agent and is step 3.")
     check("no freeze/retry/mail path is wired to the auth predicate yet",
           _no_behaviour_wired)
 
