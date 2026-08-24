@@ -34,6 +34,7 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 ROOT = Path(__file__).resolve().parents[2]
 SUP = ROOT / "backend" / "orgtree" / "supervisor.py"
 TOK = ROOT / "backend" / "orgtree" / "tokens.py"
+ACC = ROOT / "backend" / "orgtree" / "accounts.py"
 SUITE = ROOT / "backend" / "tests" / "test_spawn_identity.py"
 
 MUTANTS = [
@@ -239,6 +240,98 @@ MUTANTS = [
      "    send_message(slug, nid, switch_drive_text(why))",
      "    send_message(slug, nid, f\"switched: {why}\")",
      "the drive still sends only switch_drive_text()"),
+
+    # ── §7 the no-op switch — the 2026-08-24 21:20Z incident ───────────────
+    # ⚠ THE FIRST TWO ARE A MATCHED PAIR AND MUST BOTH STAY. One reverts the
+    # fix; the other is the fix OVERSHOT into "refuse everything", which is
+    # failover disabled wearing a fix's costume — and it passes BOTH refusal
+    # checks. Only the CONTROL legs catch it. Deleting either mutant leaves a
+    # suite that cannot tell the two apart.
+    ("THE 21:20Z BUG: the alternate is compared to the SELECTION, not to "
+     "the identity actually serving",
+     SUP,
+     "    serving = cur or accounts.live_account_uuid()",
+     "    serving = cur",
+     "the AMBIENT account is never the alternate"),
+
+    ("THE OVERSHOOT: no account is ever an alternate (failover disabled, "
+     "and both refusal checks still pass)",
+     SUP,
+     "    tokened = [str(u) for u in order if tokens.has(u)]\n"
+     "    for uuid in tokened:\n"
+     "        if uuid != serving:",
+     "    tokened = [str(u) for u in order if tokens.has(u)]\n"
+     "    for uuid in tokened:\n"
+     "        if False and uuid != serving:",
+     "CONTROL: a genuinely different account IS still the alternate"),
+
+    ("ambient is excluded as a CATEGORY rather than as the identity in use",
+     SUP,
+     "        if uuid != serving:\n            return uuid, \"\"",
+     "        if uuid != serving and uuid != accounts.live_account_uuid():\n"
+     "            return uuid, \"\"",
+     "ambient IS a valid target when the org serves something else"),
+
+    ("the refusal goes SILENT again — nowhere-to-go leaves no trace",
+     SUP,
+     "                    if _fo_act == \"none\" and NO_ALTERNATE in _fo_why:",
+     "                    if False and _fo_act == \"none\" and NO_ALTERNATE in _fo_why:",
+     "the refusal is WIRED into the limit path and can actually run"),
+
+    ("the refusal stops distinguishing 'the only token is ours' from "
+     "'nobody has a token' (different fixes, one message)",
+     SUP,
+     "        return \"\", (NO_ALTERNATE + \" — the only account with a stored token \"\n"
+     "                    \"is the one already serving this org\")",
+     "        return \"\", NO_ALTERNATE + \" (no other account has a stored token)\"",
+     "a no-op switch is REFUSED and names the real cause"),
+
+    ("the refusal grows a re-drive — a turn burned on the same wall, and "
+     "capacity subject matter posted to a possibly-fable mailbox",
+     SUP,
+     "    print(f\"[orgtree] {slug}/{nid}: no account switch — {why}\")",
+     "    print(f\"[orgtree] {slug}/{nid}: no account switch — {why}\")\n"
+     "    send_message(slug, nid, switch_drive_text(why))",
+     "the refusal drives nothing and mails nobody"),
+
+    ("the live identity is read from the REAL config, ignoring the module "
+     "constant — so every check about ambient answers from whoever is "
+     "logged into the machine running the suite",
+     ACC,
+     "        with open(LIVE_CONFIG, encoding=\"utf-8\") as f:",
+     "        with open(os.path.expanduser(\"~/.claude.json\"), "
+     "encoding=\"utf-8\") as f:",
+     "the AMBIENT identity is a fixture, and it follows the fixture"),
+
+    # ── §8 ran_as, made durable ────────────────────────────────────────────
+    ("only the HAPPY ring author stamps the account — the record is "
+     "complete precisely when nobody needs it",
+     SUP,
+     "            _stamp_ran_as(paid_entry, slug, nid)\n",
+     "",
+     "EVERY turns-ring author stamps the account, not just the happy one"),
+
+    ("the durable failure row stops recording the account — which is the "
+     "row the 21:20:14 re-drive would have left",
+     SUP,
+     "            ran = turn_identity(slug, nid)",
+     "            ran = \"\"",
+     "a durable failure row records the account that served the turn"),
+
+    ("an unrun node is ATTRIBUTED to ambient rather than left absent — a "
+     "fabricated measurement, and the exact answer we must not be handed",
+     SUP,
+     "        return str(state(slug, nid).get(\"ran_as\") or \"\")",
+     "        return str(state(slug, nid).get(\"ran_as\") or \"ambient\")",
+     "a node that never spawned records NO account, not a guess"),
+
+    ("the ring stamp becomes a CONSTANT — a measurement's clothes on a "
+     "value that never varies",
+     SUP,
+     "    ran = turn_identity(slug, nid)\n    if ran:\n"
+     "        entry[\"ran_as\"] = ran",
+     "    entry[\"ran_as\"] = \"ambient\"",
+     "the ring stamp FOLLOWS the resolved identity (both legs)"),
 ]
 
 
