@@ -137,8 +137,14 @@ MUTANTS = [
      "        return \"switch\", (\"the credential was rejected (401)",
      "a 401 STOPS — it never fails over"),
 
+    # ⚠ anchored on the COMMENT, because `    if _looks_like_auth_failure(res):`
+    # occurs TWICE in supervisor.py — here and in `_for_the_record` — and the
+    # other one comes FIRST. Anchored on the bare line, this mutant edited the
+    # harvest helper instead and SURVIVED, reporting nothing wrong. Third time
+    # an ambiguous anchor has done this; the harness now refuses them outright.
     ("the limit test is moved AHEAD of the 401 test (prose outranks status)",
      SUP,
+     "    # the NUMBER is evidence; the prose is not.\n"
      "    if _looks_like_auth_failure(res):",
      "    if _looks_like_usage_limit(err_blob) and alternate_account(org):\n"
      "        return \"switch\", \"the account is out of capacity\"\n"
@@ -217,6 +223,19 @@ def main():
         if find not in src:
             misses.append(f"{name}: PATTERN NOT FOUND (mutant never applied)")
             print(f"  ?? {name}\n     pattern not found — mutant is vacuous")
+            continue
+        # ⚠ AMBIGUOUS ANCHORS HAVE SILENTLY MUTATED THE WRONG FUNCTION THREE
+        # TIMES on this branch. `str.replace(find, repl, 1)` takes the FIRST
+        # occurrence, which may be in a different function entirely — the
+        # mutant then either reports a kill of unrelated checks, or SURVIVES
+        # while appearing to have been applied. A pattern matching more than
+        # once is not a mutant, it is a coin flip.
+        if src.count(find) > 1:
+            misses.append(f"{name}: AMBIGUOUS PATTERN — matches "
+                          f"{src.count(find)} places; would mutate the FIRST, "
+                          f"which may be a different function")
+            print(f"  ?? {name}\n     ambiguous anchor ({src.count(find)} "
+                  f"matches) — refusing to guess")
             continue
         path.write_text(src.replace(find, repl, 1), encoding="utf-8")
         try:

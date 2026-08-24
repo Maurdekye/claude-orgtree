@@ -263,6 +263,17 @@ def main():
             misses.append(f"{name}: PATTERN NOT FOUND (mutant never applied)")
             print(f"  ?? {name}\n     pattern not found — mutant is vacuous")
             continue
+        # ⚠ THIS FILE IS WHERE THE PROBLEM WAS FIRST SEEN: two auth mutants
+        # anchored on a line that also appears in `_result_detail`, and
+        # appears there FIRST, so they mutated the harvest helper and reported
+        # kills of unrelated checks the whole time. An anchor matching more
+        # than once is a coin flip, not a mutant.
+        if src.count(find) > 1:
+            misses.append(f"{name}: AMBIGUOUS PATTERN — matches "
+                          f"{src.count(find)} places; would mutate the FIRST")
+            print(f"  ?? {name}\n     ambiguous anchor ({src.count(find)} "
+                  f"matches) — refusing to guess")
+            continue
         path.write_text(src.replace(find, repl, 1), encoding="utf-8")
         try:
             ok, passed = run_suite()
