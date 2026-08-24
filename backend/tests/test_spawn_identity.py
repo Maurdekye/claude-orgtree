@@ -519,12 +519,45 @@ def s6_wiring() -> None:
                 and n.func.id == name]
 
     def _wired():
-        if not calls("apply_failover"):
+        cs = calls("apply_failover")
+        if not cs:
             raise AssertionError(
                 "apply_failover is never called - the failover is NOT wired, "
                 "and every containment check below is passing vacuously "
                 "because nothing happens at all")
-    check("POSITIVE CONTROL: apply_failover is actually wired in", _wired)
+        # ⚠ "A CALL EXISTS" IS NOT "A CALL RUNS". This check first asserted
+        # only that a call node existed, and a mutant writing
+        # `if False and apply_failover(...)` SURVIVED it - the feature was
+        # dead-coded and the positive control still passed, which is the exact
+        # abstention shape this suite exists to hunt. Reject any call whose
+        # ancestry is gated on a literal False.
+        parent = {}
+        for n in ast.walk(tree):
+            for c in ast.iter_child_nodes(n):
+                parent[c] = n
+        live = []
+        for call in cs:
+            cur, dead = call, False
+            while cur in parent:
+                up = parent[cur]
+                test = getattr(up, "test", None) if isinstance(up, ast.If) else None
+                for node in ([test] if test is not None else []) + (
+                        [up] if isinstance(up, ast.BoolOp) else []):
+                    if any(isinstance(x, ast.Constant) and x.value is False
+                           for x in ast.walk(node)):
+                        dead = True
+                if isinstance(up, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    break
+                cur = up
+            if not dead:
+                live.append(call.lineno)
+        if not live:
+            raise AssertionError(
+                "every apply_failover call is DEAD-CODED behind a literal "
+                "False - the call exists but can never run, so the failover "
+                "is wired in appearance only and a limit still just freezes")
+    check("POSITIVE CONTROL: apply_failover is wired AND can actually run",
+          _wired)
 
     def _only_limit_path():
         """The containment claim, mechanically. Every apply_failover call must

@@ -218,7 +218,7 @@ MUTANTS = [
      SUP,
      "                        if apply_failover(slug, nid, _alt, _fo_why):",
      "                        if False and apply_failover(slug, nid, _alt, _fo_why):",
-     "POSITIVE CONTROL: apply_failover is actually wired in"),
+     "POSITIVE CONTROL: apply_failover is wired AND can actually run"),
 
     ("CONTAINMENT BROKEN: the switch escapes the usage-limit branch",
      SUP,
