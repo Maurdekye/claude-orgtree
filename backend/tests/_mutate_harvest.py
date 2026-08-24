@@ -136,12 +136,20 @@ MUTANTS = [
      "POSITIVE CONTROL: both operator-facing doors are wired"),
 
     # ── step 2: the narrow positive auth predicate ─────────────────────────
+    # ⚠ BOTH auth mutants below must anchor on the COMMENT line as well as the
+    # assignment. `status = res.get("api_error_status")` appears in
+    # `_result_detail` TOO, and it appears there FIRST — so a bare anchor plus
+    # `replace(..., 1)` mutated the wrong function entirely and killed a
+    # scatter of harvest checks. The harness reporting "killed the WRONG
+    # check" is the only reason that was caught rather than believed.
     ("WIDENING: the auth predicate starts substring-searching TEXT",
      SUP,
-     "    status = res.get(\"api_error_status\")",
+     "    status = res.get(\"api_error_status\")\n"
+     "    # ⚠ no `isinstance(status, bool)` guard here, deliberately.",
      "    if \"invalid api key\" in str(res.get(\"result\") or \"\").lower():\n"
      "        return True\n"
-     "    status = res.get(\"api_error_status\")",
+     "    status = res.get(\"api_error_status\")\n"
+     "    # ⚠ no `isinstance(status, bool)` guard here, deliberately.",
      "ANTI-WIDENING · auth-sounding TEXT alone never classifies"),
 
     ("the auth predicate widens to 403 (an org policy answer)",
@@ -152,9 +160,11 @@ MUTANTS = [
 
     ("the auth predicate stops firing at all",
      SUP,
-     "    status = res.get(\"api_error_status\")",
+     "    status = res.get(\"api_error_status\")\n"
+     "    # ⚠ no `isinstance(status, bool)` guard here, deliberately.",
      "    return False\n"
-     "    status = res.get(\"api_error_status\")",
+     "    status = res.get(\"api_error_status\")\n"
+     "    # ⚠ no `isinstance(status, bool)` guard here, deliberately.",
      "the measured 401 shape classifies as an auth failure"),
 
     # ⚠ retargeted. This used to mutate an `isinstance(status, bool)` guard —
