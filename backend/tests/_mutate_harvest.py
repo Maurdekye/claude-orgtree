@@ -180,13 +180,13 @@ MUTANTS = [
 
     ("the operator's record stops NAMING the auth failure",
      SUP,
-     "    if _looks_like_auth_failure(res):",
+     "    # acting on it is step 3.\n    if _looks_like_auth_failure(res):",
      "    if False and _looks_like_auth_failure(res):",
      "an auth failure is NAMED on the operator's record"),
 
     ("every failure is mislabelled as an auth failure",
      SUP,
-     "    if _looks_like_auth_failure(res):",
+     "    # acting on it is step 3.\n    if _looks_like_auth_failure(res):",
      "    if True or _looks_like_auth_failure(res):",
      "a NON-auth failure is not mislabelled"),
 
@@ -199,7 +199,7 @@ MUTANTS = [
 
     ("WIDENING: the auth predicate is called on the harvested TEXT",
      SUP,
-     "    if _looks_like_auth_failure(res):",
+     "    # acting on it is step 3.\n    if _looks_like_auth_failure(res):",
      "    if _looks_like_auth_failure(res) or _looks_like_auth_failure(\n"
      "            {\"api_error_status\": detail}):",
      "the auth predicate is never called on harvested text"),
