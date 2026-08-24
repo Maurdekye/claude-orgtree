@@ -92,6 +92,8 @@ export interface CanvasNode {
   /** api_fallback: this node's in-flight turn is billing the org's own API
    *  key (absent on the synthetic cards, which never run turns) */
   on_fallback?: boolean
+  /** which account actually served the last turn (resolved at spawn) */
+  ran_as?: string | null
   queued?: number
   /** concurrently running subagents (Task/Agent calls in flight) — desk
    *  header shows it beside the working clock, only when > 0 */

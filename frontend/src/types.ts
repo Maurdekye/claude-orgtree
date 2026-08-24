@@ -240,6 +240,13 @@ export interface TreeNode {
    *  (captured at spawn, so it holds for the whole turn even once the window
    *  shuts). The card wears the fallback red while it is true. */
   on_fallback?: boolean
+  /** WHICH account actually served this node's last turn, captured at spawn
+   *  from the RESOLVED environment rather than from what the org intended.
+   *  An account uuid, or "ambient" / "api-key" / "token:unattributed".
+   *  ⚠ Never a credential. This is the only field describing what HAPPENED —
+   *  the panel's "serving" line describes intent, so a turn served by the
+   *  ambient account while the panel says "fallback" is invisible without it. */
+  ran_as?: string | null
   queued: number
   /** concurrently running subagents (Task/Agent calls in flight) — desk
    *  header shows it beside the working clock, only when > 0 */

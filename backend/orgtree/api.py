@@ -942,6 +942,14 @@ def org_tree(slug: str, request: Request) -> dict[str, Any]:
         # after the window shuts — the card wears red for exactly as long as
         # the spend it describes.
         node["on_fallback"] = bool(st.get("on_fallback"))
+        # ⚠ WHICH ACCOUNT ACTUALLY SERVED THIS TURN — captured at spawn from
+        # the RESOLVED environment, not from what the org intended. This is
+        # the only field that describes what HAPPENED: the switch row and the
+        # panel's "serving" line both describe intent and state, so without
+        # this a turn served by the ambient account while the panel says
+        # "fallback" looks identical to a correct one. An account uuid, or
+        # "ambient" / "api-key" / "token:unattributed". Never a credential.
+        node["ran_as"] = st.get("ran_as") or None
         node["queued"] = len(st["queue"])
         # concurrently running subagents (Task/Agent tool calls in flight) —
         # the desk header shows it beside the working clock, only when > 0

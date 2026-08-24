@@ -653,6 +653,18 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
               || 'per-turn detail appears after the next turn'}>
             ${node.cost_usd!.toFixed(2)}</span>)}
         {(chat?.queued ?? 0) > 0 && <span className="badge">{chat!.queued} queued</span>}
+        {/* ⚠ WHICH ACCOUNT ACTUALLY SERVED THE LAST TURN, resolved at spawn.
+            Shown only when it is NOT the ambient login, so the ordinary case
+            stays quiet — but the moment a turn runs under a stored token this
+            says so. Every other surface (the accounts panel's "serving" line,
+            the switch row) describes INTENT or STATE; this is the only one
+            that reports what happened, which is what makes a turn served by
+            the wrong account visible instead of indistinguishable. */}
+        {node.ran_as && node.ran_as !== 'ambient' && (
+          <span className="badge" title={
+            'the last turn authenticated as this account, resolved from the '
+            + 'spawn environment rather than from configured intent'}>
+            ran as {node.ran_as}</span>)}
         <span className="spacer" />
         <span className="cc-actions">
           {live && !liveKids &&

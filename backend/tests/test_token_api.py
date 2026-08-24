@@ -279,6 +279,62 @@ def main() -> None:
     check("the serving endpoint never returns token material",
           _serving_never_leaks)
 
+    section("S6 ran_as on the node payload - resolved, never intent")
+    import orgtree.supervisor as _sup
+
+    def _ran_as_is_exposed():
+        """It was recorded at spawn and read by NOTHING for a while - built and
+        never surfaced. This is the check that it reaches a caller at all."""
+        src = open(_sup.__file__, encoding="utf-8").read()
+        if 'st["ran_as"]' not in src:
+            raise AssertionError("the supervisor no longer records ran_as")
+        api_src = open(api.__file__, encoding="utf-8").read()
+        if '"ran_as"' not in api_src:
+            raise AssertionError(
+                "ran_as is recorded but NOT exposed on the node payload - it "
+                "describes what actually happened and nothing outside can see "
+                "it, so a turn served by the wrong account is invisible")
+    check("ran_as reaches the node payload at all", _ran_as_is_exposed)
+
+    def _ran_as_follows_resolved_env_not_intent():
+        """The same assertion identity_in_env carries, one layer out: an org
+        pointed at an account whose token is ABSENT must surface 'ambient',
+        never that account - otherwise the field confidently reports an
+        identity that never served anything."""
+        class _O:
+            def __init__(self, **d):
+                self.d = d
+                self.nodes = {}
+        ghost = _O(account_token_uuid="no-token-for-this-one")
+        got = _sup.identity_in_env(_sup.spawn_env(ghost), ghost)
+        if got == "no-token-for-this-one":
+            raise AssertionError(
+                "ran_as would report the INTENDED account for a turn that ran "
+                "under the ambient login - the one wrong answer that makes a "
+                "silently-wrong result look identical to a correct one")
+        eq(got, "ambient")
+        # ...and the positive leg, so this is not passing because it always
+        # says "ambient"
+        tokens.put(UUID_A, FAKE_TOKEN)
+        real = _O(account_token_uuid=UUID_A)
+        eq(_sup.identity_in_env(_sup.spawn_env(real), real), UUID_A,
+           "a genuinely stored token must surface as itself: ")
+    check("ran_as follows the RESOLVED env, not the org's intent",
+          _ran_as_follows_resolved_env_not_intent)
+
+    def _ran_as_is_never_a_credential():
+        tokens.put(UUID_A, FAKE_TOKEN)
+        class _O:
+            def __init__(self, **d):
+                self.d = d
+                self.nodes = {}
+        o = _O(account_token_uuid=UUID_A)
+        got = _sup.identity_in_env(_sup.spawn_env(o), o)
+        if FAKE_TOKEN in got or FAKE_TOKEN[:12] in got:
+            raise AssertionError("ran_as carries token material")
+    check("ran_as never carries credential material",
+          _ran_as_is_never_a_credential)
+
     section("§4 forgetting")
     check("DELETE forgets it", lambda: (
         eq(call("DELETE", f"/api/accounts/{UUID_A}/token").json["forgotten"],
