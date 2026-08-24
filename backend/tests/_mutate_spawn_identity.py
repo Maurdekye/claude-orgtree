@@ -212,6 +212,33 @@ MUTANTS = [
      '                        "retried — please continue where you left off.")',
      'ACCOUNT_SWITCH_DRIVE = ""',
      "the nudge still tells the agent to continue"),
+
+    # ── the wiring · containment is the basis for calling this change safe ─
+    ("the fix is unwired — a limit only freezes again",
+     SUP,
+     "                        if apply_failover(slug, nid, _alt, _fo_why):",
+     "                        if False and apply_failover(slug, nid, _alt, _fo_why):",
+     "POSITIVE CONTROL: apply_failover is actually wired in"),
+
+    ("CONTAINMENT BROKEN: the switch escapes the usage-limit branch",
+     SUP,
+     "                if _looks_like_usage_limit(err_blob) and not handled:\n"
+     "                    _fo_act, _fo_why = failover_choice(",
+     "                if not handled:\n"
+     "                    _fo_act, _fo_why = failover_choice(",
+     "apply_failover is reachable ONLY from the usage-limit branch"),
+
+    ("the one-switch bound is cleared on every failure, not on success",
+     SUP,
+     '                            st["switched_account"] = True',
+     '                            st["switched_account"] = False',
+     "the one-switch bound is cleared in exactly ONE place"),
+
+    ("the switch drive sends the REASON into the mailbox",
+     SUP,
+     "    send_message(slug, nid, switch_drive_text(why))",
+     "    send_message(slug, nid, f\"switched: {why}\")",
+     "the drive still sends only switch_drive_text()"),
 ]
 
 
