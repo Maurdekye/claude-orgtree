@@ -4115,8 +4115,44 @@ def _run_one_turn(slug: str, nid: str,
                     raise RuntimeError(
                         "a Fable content filter flagged the message — turn "
                         "halted (org policy): " + err_blob[:250])
+                # ── Phase 2 · FAIL OVER BEFORE FREEZING ────────────────────
+                # ⚠ PLACED INSIDE THE LIMIT BRANCH DELIBERATELY, and that is
+                # the containment: a failure that is not a usage limit never
+                # reaches this code at all, so nothing else in the turn path
+                # changes behaviour. Pinned by a named check rather than left
+                # to inspection.
+                #
+                # ⚠ A 401 CANNOT ACQUIRE A RE-DRIVE BY SITTING NEAR ONE. Even
+                # here, `failover_choice` tests the status code FIRST and
+                # answers "stop" — a rejected credential is a broken thing to
+                # be fixed, not a reason to spend the other account (user
+                # ruling). So a 401 whose prose happens to mention a limit
+                # falls straight through to the freeze path below, unchanged.
+                #
+                # Freezing is what we do when there is nowhere else to go. If
+                # a tokened alternate exists, going there BEATS waiting for a
+                # reset that may be hours away — "a turn completed on the
+                # account with capacity" is the goal, not "a switch happened".
+                if _looks_like_usage_limit(err_blob) and not handled:
+                    _fo_act, _fo_why = failover_choice(
+                        org, res=res, err_blob=err_blob,
+                        already_switched=bool(st.get("switched_account")))
+                    if _fo_act == "switch":
+                        _alt = alternate_account(org)
+                        if apply_failover(slug, nid, _alt, _fo_why):
+                            # ONE switch per turn (user ruling). Set BEFORE
+                            # anything can re-enter, and cleared only by a
+                            # COMPLETED turn — the same shape hard_fail_run
+                            # uses, so a switched turn that fails again is
+                            # terminal instead of ping-ponging accounts.
+                            st["switched_account"] = True
+                            handled = True     # the switch owns this failure
+                            raise RuntimeError(
+                                "account switched after a usage limit; the "
+                                "turn has been re-driven on the other "
+                                "account: " + _fo_why)
                 # user ruling: fable weekly-limit exhaustion → org-wide fable freeze
-                if _looks_like_usage_limit(err_blob):
+                if _looks_like_usage_limit(err_blob) and not handled:
                     # ANY model's usage limit → the agent FREEZES (user ruling):
                     # the turn text (mail included — it was already drained) is
                     # kept so the org-wide ▶ resume replays it verbatim
@@ -4561,6 +4597,13 @@ def _run_one_turn(slug: str, nid: str,
                     f"{_for_the_record(err_blob, res)[:400] or 'no output'}")
             st["last_error"] = None
             st["turns_run"] += 1
+            # ⚠ ONLY A COMPLETED TURN CLEARS THE SWITCH BOUND — the same
+            # shape `hard_fail_run` uses. Clearing it anywhere else (on the
+            # switch itself, or per failure) would let a node ping-pong
+            # between accounts forever, which is the retry-loop-against-a-
+            # dead-credential shape this project has twice believed it had
+            # ruled out.
+            st["switched_account"] = False
             if org.node(nid).get("bearer_state") == "preserving":
                 with store.DOC_LOCK:
                     o2 = store.load_org(slug)

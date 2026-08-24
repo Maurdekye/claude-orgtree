@@ -504,12 +504,110 @@ def s5_drive_text() -> None:
     check("the nudge still tells the agent to continue", _not_empty)
 
 
+
+# -- section 6: the WIRING, read off the AST ------------------------------
+def s6_wiring() -> None:
+    if not section("S6 the wiring - only the limit path changed"):
+        return
+    import ast
+    src = open(sup.__file__, encoding="utf-8").read()
+    tree = ast.parse(src)
+
+    def calls(name):
+        return [n for n in ast.walk(tree)
+                if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                and n.func.id == name]
+
+    def _wired():
+        if not calls("apply_failover"):
+            raise AssertionError(
+                "apply_failover is never called - the failover is NOT wired, "
+                "and every containment check below is passing vacuously "
+                "because nothing happens at all")
+    check("POSITIVE CONTROL: apply_failover is actually wired in", _wired)
+
+    def _only_limit_path():
+        """The containment claim, mechanically. Every apply_failover call must
+        sit inside an `if` whose test mentions the usage-limit predicate - so
+        a failure that is not a limit cannot reach it."""
+        parent = {}
+        for n in ast.walk(tree):
+            for c in ast.iter_child_nodes(n):
+                parent[c] = n
+        for call in calls("apply_failover"):
+            cur, guarded = call, False
+            while cur in parent:
+                up = parent[cur]
+                if isinstance(up, ast.If):
+                    names = {x.id for x in ast.walk(up.test)
+                             if isinstance(x, ast.Name)}
+                    if "_looks_like_usage_limit" in names:
+                        guarded = True
+                        break
+                if isinstance(up, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    break
+                cur = up
+            if not guarded:
+                raise AssertionError(
+                    "BEHAVIOUR SPREAD BEYOND THE LIMIT PATH: apply_failover at "
+                    f"line {call.lineno} is not inside a usage-limit branch, "
+                    "so failures that are NOT limits can now switch accounts. "
+                    "The containment was the whole basis for calling this "
+                    "change safe.")
+    check("apply_failover is reachable ONLY from the usage-limit branch",
+          _only_limit_path)
+
+    def _bound_cleared_only_on_success():
+        """The one-switch bound must be cleared by a COMPLETED turn only."""
+        clears = [n for n in ast.walk(tree)
+                  if isinstance(n, ast.Assign)
+                  and any(isinstance(t, ast.Subscript)
+                          and isinstance(t.slice, ast.Constant)
+                          and t.slice.value == "switched_account"
+                          for t in n.targets)
+                  and isinstance(n.value, ast.Constant)
+                  and n.value.value is False]
+        if len(clears) != 1:
+            raise AssertionError(
+                f"the switch bound is cleared in {len(clears)} places; it must "
+                "be cleared ONLY by a completed turn. Clearing it per-failure "
+                "lets a node ping-pong between accounts forever - the "
+                "retry-against-a-dead-credential shape twice believed ruled out")
+    check("the one-switch bound is cleared in exactly ONE place",
+          _bound_cleared_only_on_success)
+
+    def _switch_passes_no_reason_to_mail():
+        """apply_failover must be the ONLY thing driving after a switch, and
+        the drive text must still come from the constant."""
+        body = None
+        for n in ast.walk(tree):
+            if isinstance(n, ast.FunctionDef) and n.name == "apply_failover":
+                body = n
+        if body is None:
+            raise AssertionError("apply_failover is gone")
+        for call in [c for c in ast.walk(body)
+                     if isinstance(c, ast.Call)
+                     and isinstance(c.func, ast.Name)
+                     and c.func.id == "send_message"]:
+            arg = call.args[2] if len(call.args) > 2 else None
+            ok = (isinstance(arg, ast.Call)
+                  and isinstance(arg.func, ast.Name)
+                  and arg.func.id == "switch_drive_text")
+            if not ok:
+                raise AssertionError(
+                    "the switch drive no longer sends switch_drive_text() - "
+                    "something else is being put in an agent's MAILBOX, and "
+                    "that is how the subject reaches a fable seat")
+    check("the drive still sends only switch_drive_text()",
+          _switch_passes_no_reason_to_mail)
+
+
 def main() -> None:
     t0 = time.perf_counter()
     print(f"data root: {store.DATA_ROOT}")
     print(f"token store: {tokens.tokens_path()}")
     for fn in (s0_isolation, s1_store, s2_spawn, s3_identity,
-               s4_failover, s5_drive_text):
+               s4_failover, s5_drive_text, s6_wiring):
         fn()
     dt = time.perf_counter() - t0
     print()
