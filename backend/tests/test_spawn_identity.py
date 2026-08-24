@@ -439,12 +439,77 @@ def s4_failover() -> None:
     check("the decision is pure — it changes nothing", _pure)
 
 
+
+# -- section 5: the drive nudge must stay subject-free ---------------------
+def s5_drive_text() -> None:
+    if not section("S5 the drive nudge - subject-free, invariant, still loud"):
+        return
+
+    # The only re-drive mechanism also deposits MAIL, and the recipient may be
+    # a fable-tier agent. Credential/capacity SUBJECT MATTER in mail is what
+    # has repeatedly destroyed sessions here - the trigger is the subject, not
+    # any secret value. These two checks are the whole defence.
+    REASONS = [
+        "the account is out of capacity",
+        "the account did not serve the turn and the cause is unknown "
+        "(timed out with no result)",
+        "the credential was rejected (401)",
+        "",
+        "Claude usage limit reached - try again in 3 hours",
+    ]
+
+    def _invariant():
+        texts = {sup.switch_drive_text(r) for r in REASONS}
+        if len(texts) != 1:
+            raise AssertionError(
+                "THE DRIVE NUDGE VARIES BY REASON. It must be the same bytes "
+                "whatever caused the switch - a per-reason variant is how the "
+                "subject gets into a mailbox, one helpful improvement at a "
+                f"time. Got {len(texts)} distinct strings: {sorted(texts)!r}")
+    check("the nudge is INVARIANT across every switch reason", _invariant)
+
+    def _vocabulary():
+        # the subject words, and their obvious neighbours
+        DENY = ("account", "credential", "token", "auth", "limit", "quota",
+                "billing", "subscription", "capacity", "401", "login",
+                "sign in", "signed in", "api key", "rejected", "expired")
+        text = sup.switch_drive_text("the account is out of capacity").lower()
+        hits = [w for w in DENY if w in text]
+        if hits:
+            raise AssertionError(
+                f"THE DRIVE NUDGE NAMES THE SUBJECT: {hits}. This string goes "
+                "into an agent mailbox and the agent may be fable-tier. Say "
+                "'go again' and put the reason in the durable record.")
+    check("the nudge contains none of the subject vocabulary", _vocabulary)
+
+    def _control_the_denylist_can_fire():
+        """POSITIVE CONTROL: a denylist that matched nothing would pass on an
+        empty string too. Prove it fires on text that DOES name the subject."""
+        DENY = ("account", "credential", "token")
+        bad = "switching account because the token was rejected".lower()
+        if not [w for w in DENY if w in bad]:
+            raise AssertionError(
+                "the denylist does not fire even on text that plainly names "
+                "the subject, so the check above proves nothing")
+    check("CONTROL: the denylist fires on subject-naming text",
+          _control_the_denylist_can_fire)
+
+    def _not_empty():
+        """...and it must still SAY something: an empty nudge would drive a
+        turn with no instruction at all."""
+        if len(sup.ACCOUNT_SWITCH_DRIVE.strip()) < 20:
+            raise AssertionError(
+                "the nudge is empty or near-empty - subject-free must not "
+                "mean contentless; the agent still needs telling to go again")
+    check("the nudge still tells the agent to continue", _not_empty)
+
+
 def main() -> None:
     t0 = time.perf_counter()
     print(f"data root: {store.DATA_ROOT}")
     print(f"token store: {tokens.tokens_path()}")
     for fn in (s0_isolation, s1_store, s2_spawn, s3_identity,
-               s4_failover):
+               s4_failover, s5_drive_text):
         fn()
     dt = time.perf_counter() - t0
     print()

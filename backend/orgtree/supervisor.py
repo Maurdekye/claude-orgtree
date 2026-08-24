@@ -1043,6 +1043,64 @@ def failover_choice(org: Org, *, res: dict[str, Any], err_blob: str,
     return "none", "not a condition another account would fix"
 
 
+# ⚠ THE DRIVE NUDGE FOR AN ACCOUNT SWITCH — ONE FIXED STRING, ALWAYS.
+#
+# The only mechanism that re-drives a node also DEPOSITS MAIL, so a switched
+# turn necessarily puts a message in an agent's mailbox — and that agent may be
+# fable-tier. Credential/capacity subject matter arriving as mail is what has
+# repeatedly destroyed fable sessions on this machine; the trigger is the
+# SUBJECT, not any secret value.
+#
+# So the mailbox carries "go again" and NOTHING ELSE. No interpolation of the
+# reason, the account, the status code, or anything derived from them, and no
+# per-branch variant — a helpful "for reasons of capacity" added later is
+# exactly the failure this constant exists to prevent. Two checks defend it:
+# one asserts the bytes are INVARIANT across every switch reason, the other
+# runs a denylist of subject words over it.
+#
+# ⚠ SUBJECT-FREE IN THE MAILBOX MUST NOT BECOME QUIET IN THE LOG. The real
+# reason still goes to the durable record and the UI, unchanged — see
+# `apply_failover`. Trading a loud failure for a silent one is not a fix.
+ACCOUNT_SWITCH_DRIVE = ("Your previous turn did not complete. It has been "
+                        "retried — please continue where you left off.")
+
+
+def switch_drive_text(why: str = "") -> str:
+    """The nudge text for a switch. Takes `why` and DELIBERATELY IGNORES IT.
+
+    The argument exists so that a caller reaching for "…but surely we can say
+    why here" finds a parameter that visibly discards it, rather than quietly
+    formatting the reason into the string. If you are tempted to use `why`,
+    the answer is `apply_failover`'s durable record, not this."""
+    return ACCOUNT_SWITCH_DRIVE
+
+
+def apply_failover(slug: str, nid: str, alt: str, why: str) -> bool:
+    """Point this org at `alt`, record WHY durably, then drive the node.
+
+    The split is the whole point:
+      · the DURABLE RECORD and the UI get the real reason, in full;
+      · the MAILBOX gets `ACCOUNT_SWITCH_DRIVE` and nothing else.
+
+    Returns True if the switch was applied."""
+    if not alt:
+        return False
+    with store.DOC_LOCK:
+        o2 = store.load_org(slug)
+        if nid not in o2.nodes:
+            return False
+        o2.d["account_token_uuid"] = alt
+        store.save_org(o2)
+    # the loud half — a screen, not an inbox. `_log_turn_error` is the durable
+    # per-node row read_chat interleaves into the conversation.
+    _log_turn_error(slug, nid, f"account switched: {why}")
+    print(f"[orgtree] {slug}/{nid}: account switched — {why}")
+    notify(slug, nid, "account_switched")
+    # …and the quiet half: a nudge that says only "go again".
+    send_message(slug, nid, switch_drive_text(why))
+    return True
+
+
 def identity_in_env(env: dict[str, str], org: Org) -> str:
     """WHICH account a spawn carrying `env` will authenticate as.
 
