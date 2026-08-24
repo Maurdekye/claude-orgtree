@@ -10,7 +10,7 @@ import type {
   McpServersPayload, OpRequest, OpResult, OrgListEntry, OrgMdPayload,
   OrgNetReveal, ReorderRequest, ScopeRequest, ScratchPayload, SendMessageResult,
   SettingsRequest, SettingsResult, SweepPreview, SweepResult, TreePayload,
-  AccountsPayload,
+  AccountsPayload, ServingPayload, TokensPayload,
   UploadResult, UsagePayload, UsagePeek,
 } from './types'
 
@@ -287,6 +287,30 @@ export const relabelAccount = (
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ label }),
   })
+
+// ---- long-lived account tokens ----------------------------------------
+// ⚠ Stored SEPARATELY from the registry above, which still refuses
+// credential-shaped values. The value never comes back from the server: these
+// calls report PRESENCE ("stored"), never content and never length.
+export const getAccountTokens = (): Promise<TokensPayload> =>
+  req('/api/accounts/tokens')
+// ⚠ STORE FIRST. The CLI shows a minted token exactly once, so the server
+// writes it before anything can reject it — do not add client-side format
+// validation that could swallow the only copy the user will ever have.
+export const putAccountToken = (
+  uuid: string, token: string,
+): Promise<TokensPayload> =>
+  req(`/api/accounts/${encodeURIComponent(uuid)}/token`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token }),
+  })
+export const forgetAccountToken = (uuid: string): Promise<TokensPayload> =>
+  req(`/api/accounts/${encodeURIComponent(uuid)}/token`, { method: 'DELETE' })
+// WHICH account actually serves this org's turns, resolved from the real spawn
+// environment rather than from stated intent.
+export const getServingAccount = (slug: string): Promise<ServingPayload> =>
+  req(`/api/accounts/serving/${encodeURIComponent(slug)}`)
 
 export const getDefaults = (): Promise<DefaultsPayload> =>
   req('/api/defaults')

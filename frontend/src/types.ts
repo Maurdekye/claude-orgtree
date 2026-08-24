@@ -828,6 +828,25 @@ export interface AccountsPayload {
   adopted?: string | null
 }
 
+/** GET/PUT/DELETE /api/accounts/.../token — PRESENCE ONLY.
+ *  Values map to the literal string "stored"; the token itself never crosses
+ *  the wire in either direction after it is pasted, and its LENGTH is not
+ *  reported either (a real disclosure that buys a reader nothing). */
+export interface TokensPayload {
+  tokens: Record<string, string>
+  stored?: string
+  forgotten?: boolean
+}
+
+/** GET /api/accounts/serving/{slug} — WHICH account this org's next turn would
+ *  actually authenticate as, resolved from the real spawn environment.
+ *  `serving` is an account uuid, or "ambient" (the signed-in login), or
+ *  "api-key", or "token:unattributed". NEVER a credential. */
+export interface ServingPayload {
+  serving: string
+  label: string
+}
+
 /** GET /api/usage/peek — the same standing read from the server's cache
  *  ALONE, so the header button's near-the-wall glow can poll continuously
  *  without ever costing an upstream request. `available: false` means "do not

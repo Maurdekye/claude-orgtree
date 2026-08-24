@@ -224,6 +224,61 @@ def main() -> None:
            "control: /api/orgs GET should stay open to a kiosk visitor: ")
     check("CONTROL: the same matrix still allows an open route", _kiosk_control)
 
+    section("S5 the serving indicator - resolved, never intent")
+    call("POST", "/api/orgs", {"slug": "acme", "name": "Acme"})
+
+    def _serving_ambient_by_default():
+        r = call("GET", "/api/accounts/serving/acme")
+        eq(r.status, 200)
+        eq(r.json["serving"], "ambient",
+           "an org with no account selected serves as the signed-in login: ")
+    check("with nothing selected, the org serves as the ambient login",
+          _serving_ambient_by_default)
+
+    def _serving_follows_the_resolved_env():
+        """⚠ THE POINT OF THE ENDPOINT. Selecting an account whose token is
+        ABSENT must NOT report that account — the panel would then display a
+        confident wrong answer, which is the exact confusion this surface
+        exists to prevent."""
+        o = store.load_org("acme")
+        o.d["account_token_uuid"] = "ghost-account"
+        store.save_org(o)
+        r = call("GET", "/api/accounts/serving/acme")
+        if r.json["serving"] == "ghost-account":
+            raise AssertionError(
+                "the panel reports INTENT: it names an account whose token "
+                "does not exist, so it would display a confident wrong "
+                "answer about who is serving turns")
+        eq(r.json["serving"], "ambient")
+    check("a selected account with no token does NOT show as serving",
+          _serving_follows_the_resolved_env)
+
+    def _serving_reports_the_real_one():
+        tokens.put(UUID_A, FAKE_TOKEN)
+        o = store.load_org("acme")
+        o.d["account_token_uuid"] = UUID_A
+        store.save_org(o)
+        r = call("GET", "/api/accounts/serving/acme")
+        eq(r.json["serving"], UUID_A,
+           "a real stored token must show as the serving account: ")
+        if FAKE_TOKEN in r.raw.decode():
+            raise AssertionError("the serving payload leaked the token")
+    check("a stored token DOES show as the serving account",
+          _serving_reports_the_real_one)
+
+    def _serving_unknown_org_is_404():
+        eq(call("GET", "/api/accounts/serving/no-such-org").status, 404)
+    check("an unknown org is a 404, not a confident wrong answer",
+          _serving_unknown_org_is_404)
+
+    def _serving_never_leaks():
+        tokens.put(UUID_A, FAKE_TOKEN)
+        r = call("GET", "/api/accounts/serving/no-such-org")
+        if FAKE_TOKEN in r.raw.decode():
+            raise AssertionError("the serving endpoint leaked a token value")
+    check("the serving endpoint never returns token material",
+          _serving_never_leaks)
+
     section("§4 forgetting")
     check("DELETE forgets it", lambda: (
         eq(call("DELETE", f"/api/accounts/{UUID_A}/token").json["forgotten"],

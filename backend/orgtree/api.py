@@ -1962,6 +1962,32 @@ def accounts_put_token(uuid: str, body: AccountToken) -> dict[str, Any]:
     return {"tokens": tokens.redacted(), "stored": uuid}
 
 
+@app.get("/api/accounts/serving/{slug}")
+def accounts_serving(slug: str) -> dict[str, Any]:
+    """WHICH account this org's next turn would actually authenticate as.
+
+    ⚠ RESOLVED THE SAME WAY ATTRIBUTION IS — it builds the real spawn env and
+    asks `identity_in_env`, rather than reading the org's stated intent. If the
+    panel answered from intent it could confidently display an account whose
+    token is missing, which is exactly the wrong-account confusion this whole
+    surface exists to prevent.
+
+    ⚠ The env built here holds the token; only the IDENTITY leaves this
+    function. Never return `env`."""
+    try:
+        org = store.load_org(slug)
+    except Exception:                                        # noqa: BLE001
+        raise HTTPException(404, f"no such org {slug!r}") from None
+    ident = supervisor.identity_in_env(supervisor.spawn_env(org), org)
+    label = ident
+    if ident == "ambient":
+        label = "the signed-in account"
+    elif ident not in ("api-key", "token:unattributed"):
+        rec = (accounts.load().get("accounts") or {}).get(ident) or {}
+        label = str(rec.get("label") or ident)
+    return {"serving": ident, "label": label}
+
+
 @app.delete("/api/accounts/{uuid}/token")
 def accounts_forget_token(uuid: str) -> dict[str, Any]:
     """Forget a stored token. ⚠ Irreversible from orgtree's side — the CLI

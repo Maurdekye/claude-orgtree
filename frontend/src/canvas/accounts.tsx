@@ -17,9 +17,13 @@
 // merge overlap with either.
 
 import { useEffect, useState } from 'react'
-import type { AccountsPayload, ToastFn } from '../types'
+import type {
+  AccountsPayload, ServingPayload, TokensPayload, ToastFn,
+} from '../types'
 import {
-  adoptAccount, getAccounts, relabelAccount, setAccountOrder, setAccountPin,
+  adoptAccount, forgetAccountToken, getAccounts, getAccountTokens,
+  getServingAccount, putAccountToken, relabelAccount, setAccountOrder,
+  setAccountPin,
 } from '../api'
 import { ago, useEsc } from './shared'
 
@@ -35,10 +39,21 @@ export function AccountsPanel({ slug, toast, close }: {
   const [busy, setBusy] = useState(false)
   const [editing, setEditing] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
+  const [toks, setToks] = useState<TokensPayload | null>(null)
+  const [serving, setServing] = useState<ServingPayload | null>(null)
+  const [pasting, setPasting] = useState<string | null>(null)
+  const [paste, setPaste] = useState('')
 
   const load = () => getAccounts().then(setData)
     .catch((e: Error) => setErr(e.message))
-  useEffect(() => { void load() }, [])
+  const loadToks = () => getAccountTokens().then(setToks).catch(() => {})
+  // ⚠ re-read after EVERY mutation. The serving account is the one fact on
+  // this panel a user will act on, and a stale one is worse than none.
+  const loadServing = () => {
+    if (!slug) return
+    getServingAccount(slug).then(setServing).catch(() => {})
+  }
+  useEffect(() => { void load(); void loadToks(); void loadServing() }, [])
 
   const run = (p: Promise<AccountsPayload>, ok: string) => {
     setBusy(true)
@@ -97,6 +112,20 @@ export function AccountsPanel({ slug, toast, close }: {
         {err && <div className="ask-warn">could not read the registry: {err}</div>}
         {!data && !err && <div className="dim">reading the registry…</div>}
 
+        {/* ⚠ ALWAYS RENDERED, not only when something is wrong. A state you
+            can see only when it breaks is one nobody checks — and this is the
+            only way the user can confirm which account is actually serving
+            turns without reading logs. The server RESOLVES it from the real
+            spawn environment, so it cannot disagree with reality. */}
+        {slug && (
+          <div className="acct-serving" style={{ marginBottom: 8 }}>
+            <b>serving {slug}:</b>{' '}
+            {serving
+              ? <span title={`resolved: ${serving.serving}`}>{serving.label}</span>
+              : <span className="dim">…</span>}
+          </div>
+        )}
+
         {data && data.accounts.length === 0 && (
           <div className="dim">No accounts known yet.</div>
         )}
@@ -144,6 +173,19 @@ export function AccountsPanel({ slug, toast, close }: {
                   make primary
                 </button>
               )}
+              {toks && (toks.tokens[a.uuid]
+                ? <button disabled={busy} title="the CLI cannot show it again — this is a re-mint, not an undo"
+                    onClick={() => {
+                      setBusy(true)
+                      forgetAccountToken(a.uuid)
+                        .then((t) => { setToks(t); toast(['token forgotten']) })
+                        .catch((e: Error) => toast([e.message]))
+                        .finally(() => { setBusy(false); loadServing() })
+                    }}>forget token</button>
+                : <button disabled={busy}
+                    onClick={() => { setPasting(a.uuid); setPaste('') }}>
+                    add token
+                  </button>)}
               {slug && (pinned === a.uuid
                 ? <button disabled={busy}
                     onClick={() => run(setAccountPin(slug, null), 'pin cleared')}>
@@ -154,6 +196,36 @@ export function AccountsPanel({ slug, toast, close }: {
                     pin {slug} here
                   </button>)}
             </div>
+            {pasting === a.uuid && (
+              <div className="row">
+                {/* ⚠ NO CLIENT-SIDE FORMAT VALIDATION HERE, DELIBERATELY. The
+                    CLI shows a minted token exactly once ("you won't be able
+                    to see it again"), so anything that could reject the paste
+                    before it is durable would destroy the only copy and cost
+                    the user a re-mint plus another account-switch window. The
+                    server stores first and validates after; the UI must not
+                    reintroduce the gate. */}
+                <input
+                  className="grow" autoFocus type="password"
+                  placeholder="paste the token — it is stored before anything checks it"
+                  value={paste}
+                  onChange={(e) => setPaste(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Escape') setPasting(null) }} />
+                <button
+                  className="primary" disabled={busy || !paste}
+                  onClick={() => {
+                    setBusy(true)
+                    putAccountToken(a.uuid, paste)
+                      .then((t) => {
+                        setToks(t); setPasting(null); setPaste('')
+                        toast(['token stored'])
+                      })
+                      .catch((e: Error) => toast([e.message]))
+                      .finally(() => { setBusy(false); loadServing() })
+                  }}>store</button>
+                <button onClick={() => setPasting(null)}>cancel</button>
+              </div>
+            )}
           </div>
         ))}
 
