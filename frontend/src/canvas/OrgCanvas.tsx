@@ -6,7 +6,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import type { NodeStatus, ToastFn, TreeNode, TreePayload } from '../types'
+import type { AudienceGrant, NodeStatus, ToastFn, TreeNode, TreePayload } from '../types'
 import { audienceAction, orgInboxRead, reorderNode } from '../api'
 import {
   AddIcon, AutorenewIcon, ChevronLeftIcon, ChevronRightIcon, FrozenIcon,
@@ -1188,8 +1188,26 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
     return links
   }, [map, target])
 
-  const audLines = (tree.audiences ?? [])
-    .filter((a) => map.has(a.grantor) && map.has(a.grantee))
+  // at most ONE audience line per DRAWN pair (user bug 2026-08-24): buried
+  // pile members sit at exactly their front card's position, so every holder
+  // in a retired pile contributed a fully coincident stroke and the stacked
+  // alpha made the pile glow. Collapse by the VISUAL pair — endpoints mapped
+  // through the pile — keeping the front card's own grant when it is itself a
+  // holder, so the surviving raw key is the one whose card is on screen; a
+  // pair whose two ends collapse to the same card would be a line to itself
+  // and draws nothing.
+  const audLines = useMemo(() => {
+    const keep = new Map<string, AudienceGrant>()
+    for (const a of tree.audiences ?? []) {
+      if (!map.has(a.grantor) || !map.has(a.grantee)) continue
+      const vg = hidden.get(a.grantor) ?? a.grantor
+      const ve = hidden.get(a.grantee) ?? a.grantee
+      if (vg === ve) continue
+      const vk = vg + '→' + ve
+      if (!keep.has(vk) || (a.grantor === vg && a.grantee === ve)) keep.set(vk, a)
+    }
+    return [...keep.values()]
+  }, [tree.audiences, map, hidden])
 
   const spawn = (parentId: string, tier: string) => {
     setDraft({ parent: parentId === USER ? null : parentId, tier })
@@ -1344,9 +1362,15 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
             const nowT = performance.now()
             const anim = audAnimRef.current
             const out: ReactNode[] = []
+            const vpair = (g: string, e: string) =>
+              (hidden.get(g) ?? g) + '→' + (hidden.get(e) ?? e)
+            const drawn = new Set<string>()   // raw keys rendered this frame
+            const drawnV = new Set<string>()  // visual pairs occupied by them
             for (const a of audLines) {
               if (!posOf(a.grantor) || !posOf(a.grantee)) continue
               const k = a.grantor + '→' + a.grantee
+              drawn.add(k)
+              drawnV.add(vpair(a.grantor, a.grantee))
               const st = anim.get(k)
               let dash: number | null = null
               if (st?.phase === 'in') {
@@ -1361,9 +1385,20 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
                 className={'edge aud-line' + (a.grantor === USER ? ' from-user' : '')} />)
             }
             for (const [k, st] of anim) {
-              if (st.phase !== 'out') continue
+              if (st.phase !== 'out') {
+                // an 'in' whose line was collapsed into a pile's single
+                // stroke (or filtered out) never renders, so the loop above
+                // never reaches its delete — and one live entry keeps the
+                // rAF loop repainting the whole canvas forever
+                if (!drawn.has(k)) anim.delete(k)
+                continue
+              }
               const t = (nowT - st.t0) / AUD_DUR
-              if (t >= 1 || !posOf(st.grantor) || !posOf(st.grantee)) {
+              if (t >= 1 || !posOf(st.grantor) || !posOf(st.grantee)
+                // a revoked grant whose visual pair a surviving pile-mate
+                // still draws: retracting a stroke over the persistent line
+                // is exactly the double-draw this collapse exists to prevent
+                || drawnV.has(vpair(st.grantor, st.grantee))) {
                 anim.delete(k)
                 continue
               }
