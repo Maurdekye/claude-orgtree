@@ -115,6 +115,26 @@ def _mentions_call(node, name: str) -> bool:
     return bool(_calls_named(node, name))
 
 
+def _calls_anyhow(node, name: str) -> list[int]:
+    """Lines where `name` is CALLED, whether bare (`save_org(...)`) or through
+    an attribute (`store.save_org(...)`).
+
+    ⚠ `_calls_named` matches only the bare form. The purity check below used
+    it and therefore could not see `store.save_org(...)` — the exact shape the
+    real code uses. A mutant adding that call SURVIVED the first mutation
+    round, which is the only reason this gap was found rather than shipped.
+    """
+    out = []
+    for n in ast.walk(node):
+        if not isinstance(n, ast.Call):
+            continue
+        f = n.func
+        if (isinstance(f, ast.Name) and f.id == name) or \
+           (isinstance(f, ast.Attribute) and f.attr == name):
+            out.append(n.lineno)
+    return out
+
+
 def _assignments_to(tree, target: str):
     """Every assignment statement whose target is the bare name `target`."""
     out = []
@@ -360,11 +380,14 @@ def s4_retry_untouched() -> None:
         if fn is None:
             raise AssertionError("_for_the_record is gone")
         for bad in ("save_org", "load_org", "notify", "_log_turn_error",
-                    "_turn_abandoned"):
-            if _mentions_call(fn, bad):
+                    "_turn_abandoned", "mark_unrecoverable"):
+            hits = _calls_anyhow(fn, bad)
+            if hits:
                 raise AssertionError(
                     f"BEHAVIOUR CHANGED — SIDE EFFECT: _for_the_record calls "
-                    f"{bad}; step 1 is display and logging only")
+                    f"{bad} at line(s) {hits}; step 1 is display and logging "
+                    f"only, and a write here would give the recording path a "
+                    f"blast radius it is specifically not allowed to have")
     check("_for_the_record is pure — no doc writes, no mail, no notify",
           _no_new_writes)
 

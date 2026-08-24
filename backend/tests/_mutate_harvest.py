@@ -121,10 +121,15 @@ MUTANTS = [
      '                    f"turn failed: {err_blob[:400] or \'no output\'}")',
      "POSITIVE CONTROL: _for_the_record is actually wired in"),
 
+    # ⚠ this mutant SURVIVED the first round, and both halves were wrong: the
+    # mutant used a bare attribute REFERENCE (`store.save_org`), which is not
+    # a side effect at all, and the check it targeted could only see bare-name
+    # calls, so it would have missed the real `store.save_org(...)` shape too.
+    # Now a genuine call, against a check that sees attribute calls.
     ("_for_the_record grows a side effect (writes the org doc)",
      SUP,
      "    detail = _result_detail(res)\n    if not detail or detail in err_blob:",
-     "    detail = _result_detail(res)\n    store.save_org\n"
+     "    detail = _result_detail(res)\n    store.save_org(res)\n"
      "    if not detail or detail in err_blob:",
      "_for_the_record is pure — no doc writes, no mail, no notify"),
 ]
