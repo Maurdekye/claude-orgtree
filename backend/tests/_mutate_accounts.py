@@ -183,10 +183,17 @@ MUTANTS = [
      "    if not label:\n        pass",
      "PATCH empty label → 422"),
 
-    ("relabelling an unknown account 500s instead of 404ing",
+    # ⚠ NOT simply `if False:` on the guard — that mutant SURVIVED, and it was
+    # right to: `doc["accounts"][uuid]` raises KeyError on its own, so removing
+    # the explicit check changes no behaviour. The explicit guard is
+    # defence-in-depth and no test can distinguish it. The real failure mode is
+    # relabel INVENTING an account that was never adopted, which this mutant
+    # does and the 404 check does catch.
+    ("relabel silently CREATES an account it was never given",
      ACC,
-     "        if uuid not in doc[\"accounts\"]:\n            raise KeyError(uuid)",
-     "        if False:\n            raise KeyError(uuid)",
+     "        if uuid not in doc[\"accounts\"]:\n            raise KeyError(uuid)\n"
+     "        doc[\"accounts\"][uuid][\"label\"] = label",
+     "        doc[\"accounts\"].setdefault(uuid, {})[\"label\"] = label",
      "PATCH unknown account → 404"),
 
     # ---- review 2026-08-24 findings: each fix gets a mutant ----
