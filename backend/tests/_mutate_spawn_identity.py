@@ -125,6 +125,62 @@ MUTANTS = [
      "        del doc[\"tokens\"][str(uuid)]",
      "        pass",
      "forget removes it"),
+
+    # ── the failover rules · these are the USER'S decisions ────────────────
+    # Each of these is a plausible "simplification" someone could make while
+    # believing they were tidying up. Every one must be loud.
+    ("USER RULING BROKEN: a 401 fails over instead of stopping",
+     SUP,
+     "    if _looks_like_auth_failure(res):\n"
+     "        return \"stop\", (\"the credential was rejected (401)",
+     "    if _looks_like_auth_failure(res) and alternate_account(org):\n"
+     "        return \"switch\", (\"the credential was rejected (401)",
+     "a 401 STOPS — it never fails over"),
+
+    ("the limit test is moved AHEAD of the 401 test (prose outranks status)",
+     SUP,
+     "    if _looks_like_auth_failure(res):",
+     "    if _looks_like_usage_limit(err_blob) and alternate_account(org):\n"
+     "        return \"switch\", \"the account is out of capacity\"\n"
+     "    if _looks_like_auth_failure(res):",
+     "a 401 outranks limit-sounding prose"),
+
+    ("USER RULING BROKEN: the one-switch-per-turn bound is dropped",
+     SUP,
+     "    if already_switched:\n"
+     "        return \"none\", \"one switch per turn; this turn has had its switch\"",
+     "    if False:\n        return \"none\", \"\"",
+     "ONE switch per turn — a switched turn does not switch again"),
+
+    ("a hang stops counting as a failure to serve",
+     SUP,
+     "    if timed_out:",
+     "    if False:",
+     "a TIMEOUT counts as failure to serve and switches"),
+
+    ("an untokened account is offered as the failover target",
+     SUP,
+     "        if uuid != cur and tokens.has(uuid):",
+     "        if uuid != cur:",
+     "an account with no token is never the alternate"),
+
+    ("the alternate can be the account that just failed",
+     SUP,
+     "        if uuid != cur and tokens.has(uuid):",
+     "        if tokens.has(uuid):",
+     "the alternate is the OTHER account, not the current one"),
+
+    ("an ordinary crash starts switching accounts",
+     SUP,
+     "    return \"none\", \"not a condition another account would fix\"",
+     "    return (\"switch\" if alternate_account(org) else \"none\"), \"x\"",
+     "an ordinary failure switches nothing"),
+
+    ("deciding MUTATES the org (deciding and acting stop being separable)",
+     SUP,
+     "    if already_switched:",
+     "    org.d[\"_decided\"] = True\n    if already_switched:",
+     "the decision is pure — it changes nothing"),
 ]
 
 
