@@ -128,13 +128,17 @@ class Transport:
                             "resets_at": "2026-08-25T18:00:00Z"}]}
 
     @staticmethod
-    def http(code: int, retry_after: str | None = None) -> urllib.error.HTTPError:
+    def http(code: int, retry_after: str | None = None,
+             body: bytes = b"{}", **headers: str) -> urllib.error.HTTPError:
         hdrs = email.message.Message()
         if retry_after is not None:
             hdrs["Retry-After"] = retry_after
+        for k, v in headers.items():
+            hdrs[k.replace("_", "-")] = v
         return urllib.error.HTTPError(
             limits.USAGE_URL, code, "Too Many Requests" if code == 429
-            else "Server Error", hdrs, io.BytesIO(b"{}"))
+            else "Forbidden" if code == 403 else "Server Error",
+            hdrs, io.BytesIO(body))
 
 
 class Rig:
@@ -416,9 +420,85 @@ def s4_controls() -> None:
            r.transport.calls, 3)
 
 
+# ======================================================== §5 the 403 escalation
+RATE_BODY = (b'{"error":{"type":"rate_limit_error",'
+             b'"message":"Rate limited. Please try again later."}}')
+WAF_BODY = b"<html><body>error code: 1010</body></html>"
+AUTH_BODY = (b'{"error":{"type":"authentication_error",'
+             b'"message":"invalid bearer token"}}')
+PERM_BODY = (b'{"error":{"type":"permission_error",'
+             b'"message":"not allowed"}}')
+
+
+def s5_forbidden() -> None:
+    """User report 2026-08-25: "im getting a 403 forbidden now ... as opposed
+    to a 429". The edge escalates — a client that keeps asking through a 429
+    starts getting 403 instead — so a THROTTLING 403 must open a window too.
+    But a 403 that means "this key is no good" must NOT: that is the one the
+    user fixes by pasting a new key, and a cooldown would swallow the fix."""
+    print("\n§5  a 403 that is a throttle gates; a 403 that is a "
+          "credential does not")
+
+    # -- the throttling kinds: gate --------------------------------------
+    for label, err in (
+        ("with Retry-After", Transport.http(403, "900")),
+        ("rate_limit_error body", Transport.http(403, None, RATE_BODY)),
+        ("Cloudflare 1010 block page", Transport.http(403, None, WAF_BODY)),
+        ("cf-mitigated header", Transport.http(403, None, b"",
+                                               cf_mitigated="challenge")),
+    ):
+        with Rig(err) as r:
+            got = limits.fetch_for_token("tok", cache_key="k1")
+            for _ in range(4):
+                limits.fetch_for_token("tok", cache_key="k1")
+            eq(f"5.1 403 {label} opens a window (1 call, not 5)",
+               r.transport.calls, 1)
+            check(f"5.1 403 {label} reports the wait",
+                  "rate limited" in str(got.get("error")), repr(got.get("error")))
+
+    # 5.2 the Retry-After on a throttling 403 is honoured, not defaulted
+    with Rig(Transport.http(403, "900")) as r:
+        limits.fetch_for_token("tok", cache_key="k1")
+        r.clock.advance(899)
+        limits.fetch_for_token("tok", cache_key="k1")
+        eq("5.2 still gated at 899s", r.transport.calls, 1)
+        r.clock.advance(2)
+        limits.fetch_for_token("tok", cache_key="k1")
+        eq("5.2 open again at 901s", r.transport.calls, 2)
+
+    # -- ⚠ THE CONTROLS THAT KEEP §5 HONEST: credential 403s must NOT gate --
+    for label, err in (
+        ("authentication_error", Transport.http(403, None, AUTH_BODY)),
+        ("permission_error", Transport.http(403, None, PERM_BODY)),
+        ("bare 403, empty body", Transport.http(403, None, b"")),
+        ("401", Transport.http(401, None, AUTH_BODY)),
+    ):
+        with Rig(err) as r:
+            got = limits.fetch_for_token("tok", cache_key="k1")
+            for _ in range(2):
+                limits.fetch_for_token("tok", cache_key="k1")
+            eq(f"5.3 {label} stays retryable (3 calls, no window)",
+               r.transport.calls, 3)
+            check(f"5.3 {label} says what to DO about it",
+                  "setup-token" in str(got.get("error")), repr(got.get("error")))
+
+    # 5.4 …and the host path discriminates identically
+    with Rig(Transport.http(403, None, RATE_BODY)) as r:
+        limits.fetch()
+        for _ in range(3):
+            limits.fetch(force=True)
+        eq("5.4 host: a throttling 403 gates even force=True",
+           r.transport.calls, 1)
+    with Rig(Transport.http(403, None, AUTH_BODY)) as r:
+        for _ in range(3):
+            limits.fetch(force=True)
+        eq("5.4 host: a credential 403 stays retryable", r.transport.calls, 3)
+
+
 def main() -> int:
     print(__doc__.strip().splitlines()[0])
-    for fn in (s1_key_rows, s2_host, s3_independence, s4_controls):
+    for fn in (s1_key_rows, s2_host, s3_independence, s4_controls,
+               s5_forbidden):
         try:
             fn()
         except Exception:                              # noqa: BLE001

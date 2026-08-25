@@ -3009,9 +3009,23 @@ fixed with it; `force=True` and `max_age=0` do NOT punch through, because the
 freeze-correction pass is precisely the caller that would turn one rate limit
 into a storm of them.
 
-Bounds: **only 429 opens a window.** A 500, a 401 or a transport blip stays
-retryable on the very next call — a credential the user is about to re-paste
-must not sit behind a cooldown, or the fix would look like it had not taken.
+Bounds: **a window is opened by a THROTTLE, identified by evidence — not by a
+status code alone.** A 429 always is one. A **403 is one only on evidence**: a
+`Retry-After`, a `cf-mitigated` header (present only while the edge is
+actively mitigating — its value names the flavour and is not worth matching),
+or a body naming rate limiting or a Cloudflare block page. ⚠ The edge
+ESCALATES — a client that keeps asking through a 429 starts getting 403
+instead (user report 2026-08-25, "im getting a 403 forbidden now on the usage
+check for secondary keys as opposed to a 429": same key, same machine, while
+the host readout kept answering 200) — so hammering through the escalated form
+is the exact harm the 429 window exists to prevent.
+
+Every OTHER 403, plus 401, 500 and transport blips, stays retryable on the very
+next call and now says what to do about it ("this key was refused (403) — …
+re-mint it with `claude setup-token`"). A credential the user is about to
+re-paste must not sit behind a cooldown, or the fix would look like it had not
+taken. Anything unreadable counts as NOT a throttle: failing open costs one
+extra request, failing closed hides a broken credential for an hour.
 A `Retry-After` that is absent, malformed, zero or negative falls back to
 `DEFAULT_RETRY_AFTER` rather than to zero (a zero would be a hammer loop
 authorised by a header), and any value is clamped to `MAX_RETRY_AFTER`

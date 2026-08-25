@@ -141,6 +141,18 @@ def _retry_after_seconds(err: urllib.error.HTTPError, now: float) -> float:
     return min(secs, MAX_RETRY_AFTER)
 
 
+def _plain_error(e: Exception) -> str:
+    """The message for a failure that did NOT open a window. A bare
+    `HTTP Error 403: Forbidden` tells the user nothing they can act on — and a
+    403 that reached here is, by `_throttle_window`'s discrimination, the
+    credential kind rather than the throttle kind, which IS actionable."""
+    if isinstance(e, urllib.error.HTTPError) and e.code in (401, 403):
+        return (f"this key was refused ({e.code}) — if it was revoked or has "
+                "expired, re-mint it with `claude setup-token` and paste it "
+                "again")
+    return f"usage fetch failed: {e}"
+
+
 def _cooldown_error(until: float, now: float) -> dict[str, Any]:
     """What the panel shows instead of a raw `HTTPError` repr. Names the wait,
     because "rate limited" with no horizon reads as broken and invites the
@@ -151,10 +163,69 @@ def _cooldown_error(until: float, now: float) -> dict[str, Any]:
             "error": f"rate limited by the API — retry in {when}"}
 
 
-def _note_rate_limit(cache_key: str, err: urllib.error.HTTPError,
-                     now: float) -> float:
-    """Record the window this 429 opened; returns the epoch it closes."""
-    until = now + _retry_after_seconds(err, now)
+#: markers that make a 403 a THROTTLE rather than a rejected credential. The
+#: edge in front of this API escalates: a client that keeps asking through a
+#: 429 starts getting 403s instead (user report 2026-08-25, "im getting a 403
+#: forbidden now on the usage check for secondary keys as opposed to a 429" —
+#: same key, same machine, while the host readout kept answering 200).
+_THROTTLE_BODY = re.compile(
+    r"rate[_ -]?limit"          # Anthropic's own {"type":"rate_limit_error"}
+    r"|too many requests"
+    r"|error code: *101[0-9]"   # Cloudflare WAF block page (1010 & neighbours)
+    r"|cf-error|cloudflare",
+    re.I)
+
+
+def _throttle_window(err: urllib.error.HTTPError, now: float) -> float | None:
+    """Seconds to stand down for, or None if this response is not a throttle.
+
+    ⚠ THE DISCRIMINATION IS THE POINT, in BOTH directions.
+      · A 429 is always a throttle.
+      · A 403 is one ONLY on evidence — a `Retry-After`, or a body/headers that
+        name rate limiting or a WAF block. The edge really does answer 403 for
+        a client it is already throttling, and hammering through the escalated
+        form is the exact harm the 429 window exists to prevent.
+      · Any OTHER 403 — `permission_error`, `authentication_error`, a revoked
+        or mistyped key — must stay instantly retryable. That is a thing the
+        user fixes by pasting a new key, and a cooldown would swallow the fix
+        and make it look like it had not taken.
+    Anything we cannot read, we treat as NOT a throttle: failing open costs one
+    extra request, failing closed hides a broken credential behind an hour."""
+    if err.code == 429:
+        return _retry_after_seconds(err, now)
+    if err.code != 403:
+        return None
+    try:
+        if str(err.headers.get("Retry-After") or "").strip():
+            return _retry_after_seconds(err, now)
+    except (AttributeError, TypeError):
+        pass
+    try:
+        # `cf-mitigated` is present ONLY when the edge is actively mitigating
+        # this request. Its VALUE ("challenge", …) names the flavour and is not
+        # worth matching on — presence is the signal. (Caught by the suite: a
+        # first draft grepped the value against the body markers below and
+        # concluded a mitigated request was a bad credential.)
+        if err.headers.get("cf-mitigated") is not None:
+            return _retry_after_seconds(err, now)
+    except (AttributeError, TypeError):
+        pass
+    try:
+        # bounded: a WAF block page can be large, and the markers are near the
+        # top. `.read()` on an HTTPError is safe — nothing else consumes it.
+        blob = err.read(2048).decode("utf-8", "replace")
+    except (AttributeError, TypeError, ValueError, OSError,
+            http.client.HTTPException):
+        return None
+    if _THROTTLE_BODY.search(blob):
+        return _retry_after_seconds(err, now)   # no header ⇒ the default pause
+    return None
+
+
+def _note_rate_limit(cache_key: str, secs: float, now: float) -> float:
+    """Record the window a throttling response opened; returns its closing
+    epoch."""
+    until = now + secs
     with _lock:
         _cooldown[cache_key] = until
     return until
@@ -310,16 +381,18 @@ def fetch(force: bool = False, max_age: float | None = None) -> dict[str, Any]:
                 # 500-ing the modal instead of serving the stale bars
                 # (redteam 2026-08-18)
                 http.client.HTTPException) as e:
-            rl, until = False, 0.0
-            if isinstance(e, urllib.error.HTTPError) and e.code == 429:
-                rl, until = True, _note_rate_limit(HOST_COOLDOWN_KEY, e,
-                                                   time.time())
+            rl, until, _n = False, 0.0, time.time()
+            if isinstance(e, urllib.error.HTTPError):
+                secs = _throttle_window(e, _n)
+                if secs is not None:
+                    rl, until = True, _note_rate_limit(HOST_COOLDOWN_KEY,
+                                                       secs, _n)
             stale = cached()
             if stale is not None:
                 return stale
             if rl:
-                return _cooldown_error(until, time.time())
-            return {"available": False, "error": f"usage fetch failed: {e}"}
+                return _cooldown_error(until, _n)
+            return {"available": False, "error": _plain_error(e)}
         raw: dict[str, Any] = (cast("dict[str, Any]", raw_any)
                                if isinstance(raw_any, dict) else {})
         data: dict[str, Any] = {"available": True, "limits": _normalize(raw),
@@ -373,15 +446,17 @@ def fetch_for_token(token: str, cache_key: str) -> dict[str, Any]:
         # call, deliberately — a blip, an expired token the user is about to
         # re-paste, or a 401 they can fix must not be hidden behind a cooldown
         rl, until = False, 0.0
-        if isinstance(e, urllib.error.HTTPError) and e.code == 429:
-            rl, until = True, _note_rate_limit(cache_key, e, now)
+        if isinstance(e, urllib.error.HTTPError):
+            secs = _throttle_window(e, now)
+            if secs is not None:
+                rl, until = True, _note_rate_limit(cache_key, secs, now)
         with _lock:
             stale = _key_cache.get(cache_key, {}).get("data")
         if stale is not None:
             return cast("dict[str, Any]", stale)
         if rl:
             return _cooldown_error(until, now)
-        return {"available": False, "error": f"usage fetch failed: {e}"}
+        return {"available": False, "error": _plain_error(e)}
     raw: dict[str, Any] = (cast("dict[str, Any]", raw_any)
                            if isinstance(raw_any, dict) else {})
     data: dict[str, Any] = {"available": True, "limits": _normalize(raw)}
