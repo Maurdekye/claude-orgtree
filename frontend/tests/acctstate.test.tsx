@@ -141,11 +141,21 @@ panelTest('§1.3 a spent tier gives BOTH how long and when', async () => {
   assert.ok(line.includes(when), `${JSON.stringify(line)} lacks ${when}`)
 })
 
-panelTest('§1.4 the shared bucket is explained, from the server\'s own list',
+panelTest('§1.4 the table stands alone — no explanatory prose under it',
   async () => {
     const el = await openUsage(1)
-    const note = txt(el.querySelector('.acct-tier-note') as HTMLElement)
-    assert.match(note, /haiku, sonnet, opus share one usage pool/)
+    const modal = el.querySelector('.usage-modal') as HTMLElement
+    // user ruling 2026-08-25: BOTH blurbs go — the one explaining why this row
+    // reads differently from the primary's, and the shared-pool footnote
+    assert.equal(el.querySelectorAll('.acct-tier-note').length, 0)
+    assert.equal(el.querySelectorAll('.acct-unsupported').length, 0)
+    assert.doesNotMatch(txt(modal), /share one usage pool/)
+    assert.doesNotMatch(txt(modal), /setup-token/)
+    // ⚠ the control: those absences must not be explained by an empty modal.
+    // The payload driving this test CARRIES that prose in `error`, and the
+    // four standing rows are still here — so the absence is a decision.
+    assert.ok(KEY_USAGE.error?.includes('setup-token'))
+    assert.equal(el.querySelectorAll('.acct-tier-row').length, 4)
   })
 
 panelTest('§1.5 …and NOT one usage bar (the percentages are the thing removed)',

@@ -2808,11 +2808,13 @@ html.mobile .md table { display: block; overflow-x: auto; max-width: 100%; }
   font-size: 12.5px; }
 .acct-tier-name { flex: none; width: 54px; }
 .acct-tier-ok { color: var(--dim); }
+/* (no `.acct-tier-note` rule: the shared-pool footnote and the "why this row
+   is different" note were both removed 2026-08-25 by the user — the table
+   stands alone.) */
 /* the spent tiers are the news, so they read at full ink while the ones with
    capacity sit dim — the opposite of the instinct, and the right way round:
    "everything is fine" is not what the panel was opened to find out */
 .acct-tier-wait { color: var(--ink); }
-.acct-tier-note { font-size: 11.5px; line-height: 1.5; padding-top: 2px; }
 .acct-ranas { font-family: var(--mono); font-size: 10.5px; max-width: 300px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .acct-panel .acct-btn { flex: none; width: 27px; height: 27px; padding: 0;

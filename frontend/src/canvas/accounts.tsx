@@ -82,60 +82,44 @@ const sevOf = (l: UsageLimit): '' | 'warn' | 'crit' => {
  *  and the two differ constantly — a fallback has capacity for opus the whole
  *  time opus is happily running on the primary above it. */
 export function TierStandings({ tiers }: { tiers: TierStanding[] }) {
-  const pool = tiers.find((t) => (t.pool ?? []).length > 1)?.pool ?? null
   return (
-    <>
-      <div className="acct-tiers">
-        {tiers.map((t) => (
-          <div className="acct-tier-row" key={t.tier}>
-            <span className={'tier t-' + t.tier
-              + (t.available ? '' : ' acct-chip-dim')}>
-              {TIER_LETTER[t.tier] ?? t.tier.slice(0, 1).toUpperCase()}</span>
-            <span className="acct-tier-name">{t.tier}</span>
-            {t.available
-              ? <span className="acct-tier-ok">has capacity</span>
-              : <span className="acct-tier-wait">
-                {usageResets(t.refresh_at).replace('resets', 'refreshes')
-                  || 'refreshes soon'}
-                {atClock(t.refresh_at)
-                  && <span className="dim"> · at {atClock(t.refresh_at)}</span>}
-              </span>}
-          </div>
-        ))}
-      </div>
-      {/* the pool membership comes from the SERVER (`pool`), not a second copy
-          of the tier list living here — otherwise the day fable joins the
-          bucket, the router and this footnote quietly disagree. Without it, a
-          model marked spent that the user never saw hit a limit looks like a
-          bug rather than the shared bucket it is. */}
-      {pool && (
-        <div className="dim acct-tier-note">
-          {pool.join(', ')} share one usage pool — a limit on any one of them
-          is a limit on all three.
+    <div className="acct-tiers">
+      {tiers.map((t) => (
+        <div className="acct-tier-row" key={t.tier}>
+          <span className={'tier t-' + t.tier
+            + (t.available ? '' : ' acct-chip-dim')}>
+            {TIER_LETTER[t.tier] ?? t.tier.slice(0, 1).toUpperCase()}</span>
+          <span className="acct-tier-name">{t.tier}</span>
+          {t.available
+            ? <span className="acct-tier-ok">has capacity</span>
+            : <span className="acct-tier-wait">
+              {usageResets(t.refresh_at).replace('resets', 'refreshes')
+                || 'refreshes soon'}
+              {atClock(t.refresh_at)
+                && <span className="dim"> · at {atClock(t.refresh_at)}</span>}
+            </span>}
         </div>
-      )}
-    </>
+      ))}
+    </div>
   )
 }
 
 /** one account's bars — the same markup family as the header usage modal */
 export function UsageBars({ u }: { u: AccountUsage }) {
-  // ⚠ "CAN'T" AND "DIDN'T" MUST NOT LOOK ALIKE. A setup-token key can never
-  // report usage (D-147), and rendering that as the same dim line an outage
-  // produces invites the user to keep clicking a button that will never do
-  // anything. `unsupported` is a settled fact, so it reads as a note; an
-  // error is a condition that might clear, so it keeps the warning styling.
-  // The standing table comes FIRST — it is the answer; the note below only
-  // explains the missing percentages.
-  if (u.tiers?.length) {
-    return (
-      <>
-        <TierStandings tiers={u.tiers} />
-        {u.unsupported && <div className="acct-unsupported">{u.error
-          ?? 'usage limits are not available for this kind of key'}</div>}
-      </>
-    )
-  }
+  // A row that has a standing table shows THE TABLE AND NOTHING ELSE (user
+  // ruling 2026-08-25): no note explaining why this row reads differently
+  // from the primary's, and no footnote about the shared pool. The table
+  // answers the question the button was clicked to ask; prose underneath it
+  // was answering a question about our own implementation.
+  if (u.tiers?.length) return <TierStandings tiers={u.tiers} />
+  // ⚠ …but keep this branch. "CAN'T" AND "DIDN'T" MUST NOT LOOK ALIKE: a
+  // setup-token key can never report usage (D-147), and rendering that as the
+  // same dim line an outage produces invites the user to keep clicking a
+  // button that will never do anything. `unsupported` is a settled fact, so
+  // it reads as a note; an error is a condition that might clear, so it keeps
+  // the warning styling. Unreachable for a key row today — `account_usage`
+  // always sends `tiers` — this catches an account that is unsupported with
+  // no standing to show, which would otherwise render as a blank modal.
   if (u.unsupported) {
     return <div className="acct-unsupported">{u.error
       ?? 'usage limits are not available for this kind of key'}</div>

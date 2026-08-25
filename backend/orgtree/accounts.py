@@ -617,9 +617,13 @@ def tier_standing(doc: dict[str, Any], account: str,
     never "is serving".
 
     `pool` lists the tiers whose capacity is the same capacity, this one
-    included, and is `None` for a tier that stands alone — so the view can
-    explain a mark the user never saw a limit for without a second copy of
-    `POOLED` living in the frontend."""
+    included, and is `None` for a tier that stands alone. ⚠ NOTHING RENDERS IT
+    TODAY — it fed a "these three share one bucket" footnote that the user
+    removed the same day (the table stands alone). It stays in the payload
+    because it is the only thing that explains why three tiers carry one
+    identical timestamp: without it, a reader of this response would have to
+    re-derive the grouping, and re-deriving it wrongly is exactly the bug
+    `POOLED` exists to prevent. Do not re-add the footnote."""
     now = time.time() if now is None else now
     ref = (doc["usage_refreshes"].get(account) or {})
     out: list[dict[str, Any]] = []
