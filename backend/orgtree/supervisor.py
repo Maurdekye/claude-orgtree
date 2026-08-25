@@ -1138,6 +1138,82 @@ def apply_failover(slug: str, nid: str, alt: str, why: str) -> bool:
     return True
 
 
+class UnknownAccount(ValueError):
+    """A selection named an account this install cannot authenticate as."""
+
+
+def set_account_selection(slug: str, uuid: str, actor: str = USER) -> str:
+    """Choose which registered account serves this org. `""` means AMBIENT —
+    the account the machine itself is signed in as. Returns the selection as
+    it now stands, so the caller reports a resolved fact rather than its own
+    request.
+
+    ⚠ THIS EXISTS BECAUSE FAILOVER WAS THE ONLY WRITER, AND IT COULD ONLY
+    MOVE ONE WAY. `apply_failover` assigns another *tokened* account and never
+    clears, so a transient capacity event became a permanent configuration
+    change nobody chose and nothing could undo: on 2026-08-24 the 21:20Z
+    no-op switch pinned this org to an account, and when the user later
+    signed in as a genuinely different one the org kept serving the old
+    token — correctly, visibly, and with no way back. The only lever that
+    existed was deleting the stored token, which is irreversible (the CLI
+    cannot show it again) and destroys the failover to fix a selection.
+
+    ⚠ CLEARING IS A REAL STATE, NOT A SPECIAL VALUE. The key is REMOVED, so a
+    cleared org is byte-identical to one that has never been selected — one
+    representation of "on ambient", not two. `spawn_env` and
+    `identity_in_env` already read absent and "" the same way; storing a
+    sentinel would add a second spelling for one state, which is the
+    `is None` ambiguity this codebase has been bitten by before.
+
+    ⚠ IDEMPOTENT, AND SILENT WHEN NOTHING CHANGES. Selecting what is already
+    selected — including clearing an org that is already on ambient — returns
+    successfully and DOES NOT WRITE. A state machine that throws at its own
+    resting state is the same class of bug as one that only moves forwards.
+
+    A named account must be in the registry AND hold a stored token: a
+    selection we cannot authenticate as would strand every turn on a
+    credential that does not exist, which is the same rule
+    `alternate_account_choice` applies to a failover target. Raises
+    `UnknownAccount` rather than silently ignoring it — a selection that
+    fails to apply looks exactly like one that applied.
+    """
+    from . import accounts
+    uuid = str(uuid or "").strip()
+    if uuid:
+        reg = accounts.load().get("accounts") or {}
+        if uuid not in reg:
+            raise UnknownAccount(
+                f"no account {uuid!r} in the registry — nothing would know "
+                f"which identity that is")
+        if not tokens.has(uuid):
+            raise UnknownAccount(
+                f"account {uuid!r} has no stored token, so turns selected "
+                f"onto it could not authenticate at all")
+    with store.DOC_LOCK:
+        o2 = store.load_org(slug)
+        cur = str(o2.d.get("account_token_uuid") or "")
+        if cur == uuid:
+            return uuid                       # no change ⇒ no write, no event
+        if uuid:
+            o2.d["account_token_uuid"] = uuid
+        else:
+            o2.d.pop("account_token_uuid", None)
+        # the durable half. `apply_failover` writes a per-NODE row because it
+        # explains one turn's failure; a selection change is org-level and
+        # belongs in the org's own audit log, where "who changed which
+        # identity serves me, and when" is answerable after the fact. The
+        # uuid is a label, never a credential.
+        o2.d.setdefault("events", []).append(
+            {"op": "account_selection", "actor": actor, "at": now_iso(),
+             "detail": {"from": cur or None, "to": uuid or None,
+                        "ambient": not uuid},
+             "warnings": []})
+        store.save_org(o2)
+    print(f"[orgtree] {slug}: account selection "
+          f"{cur or 'ambient'} → {uuid or 'ambient'}")
+    return uuid
+
+
 def log_failover_refusal(slug: str, nid: str, why: str) -> bool:
     """NOT switching, said out loud. The mirror of `apply_failover`.
 

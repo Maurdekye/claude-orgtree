@@ -1859,6 +1859,14 @@ class AccountPin(BaseModel):
     uuid: str | None = None
 
 
+class AccountSelection(BaseModel):
+    """`null` clears the selection and returns the org to the ambient login.
+    Deliberately its own model rather than a reuse of `AccountPin`: a pin and
+    a selection are different facts, and the supervisor reads only this one."""
+
+    uuid: str | None = None
+
+
 class AccountLabel(BaseModel):
     label: str
 
@@ -1983,9 +1991,16 @@ def accounts_serving(slug: str) -> dict[str, Any]:
     ⚠ The env built here holds the token; only the IDENTITY leaves this
     function. Never return `env`."""
     try:
-        org = store.load_org(slug)
+        return _serving_payload(slug)
     except Exception:                                        # noqa: BLE001
         raise HTTPException(404, f"no such org {slug!r}") from None
+
+
+def _serving_payload(slug: str) -> dict[str, Any]:
+    """The one resolved answer both the GET and the PUT return, so a caller
+    that changes the selection and a caller that merely asks cannot end up
+    reading two differently-shaped truths."""
+    org = store.load_org(slug)
     ident = supervisor.identity_in_env(supervisor.spawn_env(org), org)
     label = ident
     if ident == "ambient":
@@ -1993,7 +2008,41 @@ def accounts_serving(slug: str) -> dict[str, Any]:
     elif ident not in ("api-key", "token:unattributed"):
         rec = (accounts.load().get("accounts") or {}).get(ident) or {}
         label = str(rec.get("label") or ident)
-    return {"serving": ident, "label": label}
+    return {"serving": ident, "label": label,
+            # the stored INTENT, beside the resolved fact — they can disagree
+            # (a selection whose token was since deleted resolves to ambient),
+            # and a panel that sees only one of them cannot say so
+            "selection": str(org.d.get("account_token_uuid") or "") or None}
+
+
+@app.put("/api/accounts/selection/{slug}")
+def accounts_select(slug: str, body: AccountSelection) -> dict[str, Any]:
+    """Choose which registered account serves this org. Send
+    `{"uuid": null}` to clear it and return the org to the AMBIENT login.
+
+    ⚠ UNTIL THIS EXISTED, FAILOVER WAS THE ONLY WRITER AND IT ONLY MOVED ONE
+    WAY — it assigns another tokened account and never clears. A transient
+    capacity event therefore became a permanent configuration change nobody
+    chose: the 2026-08-24 21:20Z switch pinned an org to an account, and when
+    the user later signed in as a different one the org went on serving the
+    old token with no way back short of deleting it (irreversible, and it
+    destroys the failover to fix a selection).
+
+    Idempotent: selecting what is already selected, clearing an org already
+    on ambient, both succeed without writing.
+
+    Returns the RESOLVED serving identity, not an echo of the request — the
+    two can differ, and the resolved one is the answer the panel needs."""
+    try:
+        store.load_org(slug)
+    except Exception:                                        # noqa: BLE001
+        raise HTTPException(404, f"no such org {slug!r}") from None
+    try:
+        supervisor.set_account_selection(slug, body.uuid or "")
+    except supervisor.UnknownAccount as e:
+        raise HTTPException(422, str(e)) from None
+    hub_changed(slug)
+    return _serving_payload(slug)
 
 
 @app.delete("/api/accounts/{uuid}/token")

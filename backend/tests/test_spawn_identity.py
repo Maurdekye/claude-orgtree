@@ -1060,13 +1060,256 @@ def s8_durable_ran_as() -> None:
           _control_the_ring_scan_finds_authors)
 
 
+# ── §9 the way back — a selection that can be set AND cleared ──────────────
+def s9_selection_writers() -> None:
+    """Until `set_account_selection` existed, `apply_failover` was the ONLY
+    writer of the org's selection, and it could only ever move to another
+    tokened account. A transient capacity event therefore became a permanent
+    configuration change nobody chose: the 21:20Z no-op switch pinned this
+    org to an account, the user later signed in as a genuinely different one,
+    and the org went on serving the old token — correctly, visibly, and with
+    no way back.
+
+    ⚠ EVERY CHECK HERE IS A ROUND TRIP, NOT A SINGLE MOVE. A one-way state
+    machine is exactly what we are fixing, and a check that only ever sets
+    would pass on a writer that cannot clear — which is the bug wearing the
+    fix's clothes. `set → clear → set` with the SERVED IDENTITY read back
+    each time is the shape; asserting on `org.d` would prove only that we can
+    write our own intent down.
+    """
+    if not section("§9 selection — set, clear, and set again"):
+        return
+    from orgtree import accounts
+
+    accounts.save({"version": accounts.VERSION,
+                   "accounts": {UUID_A: {"label": "A"}, UUID_B: {"label": "B"}},
+                   "order": [UUID_A, UUID_B], "pins": {}})
+    tokens.put(UUID_A, FAKE_TOKEN)
+    tokens.put(UUID_B, FAKE_TOKEN_2)
+
+    def _fresh_org():
+        org = store.create_org(f"zz selection {_probe_n()}")
+        r = org.hire(ledger.USER, None, "haiku", 20, "probe", add_dirs=[],
+                     tools={"bash": False, "web": False, "edit": False,
+                            "subagents": False, "mcp": []},
+                     org_visibility="team", charter="selection probe")
+        store.save_org(org)
+        return org.d["slug"], r["node"]
+
+    def _served(slug):
+        """⚠ THE RESOLVED IDENTITY, the same way attribution and the panel
+        resolve it — build the real spawn env and ask. Reading
+        `org.d["account_token_uuid"]` would assert that we can write down our
+        own intention, which no bug in this area has ever been about."""
+        o = store.load_org(slug)
+        return sup.identity_in_env(sup.spawn_env(o), o)
+
+    def _round_trip():
+        slug, _ = _fresh_org()
+        set_live_account("acct-ambient-not-in-registry")
+        seen = [_served(slug)]                      # fresh org: ambient
+        sup.set_account_selection(slug, UUID_A)
+        seen.append(_served(slug))
+        sup.set_account_selection(slug, "")         # ← the way back
+        seen.append(_served(slug))
+        sup.set_account_selection(slug, UUID_B)
+        seen.append(_served(slug))
+        if seen != ["ambient", UUID_A, "ambient", UUID_B]:
+            raise AssertionError(
+                f"the served identity did not follow set → clear → set: "
+                f"{seen!r}. If position 3 is not 'ambient' the org cannot be "
+                "returned to the signed-in account, which is the one-way "
+                "ratchet this whole section exists to break.")
+    check("set → clear → set: the SERVED identity follows every move",
+          _round_trip)
+
+    def _cleared_means_ambient_not_nothing():
+        """⚠ THE LEG THAT CANNOT BE SKIPPED. 'Cleared' must mean 'serves the
+        signed-in account', not 'serves no identity at all'. A writer that
+        cleared the selection AND left the spawn with no credential would
+        pass a check that only asserted the selection was gone, and would
+        strand every turn."""
+        slug, _ = _fresh_org()
+        sup.set_account_selection(slug, UUID_A)
+        sup.set_account_selection(slug, "")
+        o = store.load_org(slug)
+        env = sup.spawn_env(o)
+        if env.get(VAR):
+            raise AssertionError(
+                "a CLEARED org still carries an account token in its spawn "
+                "env — the selection was forgotten but the credential was "
+                "not, so 'back to ambient' is a lie the env contradicts")
+        eq(sup.identity_in_env(env, o), "ambient",
+           "a cleared org must serve the signed-in account: ")
+    check("a CLEARED org falls back to ambient, not to no identity at all",
+          _cleared_means_ambient_not_nothing)
+
+    def _clear_is_idempotent_and_silent():
+        """Clearing an org already on ambient succeeds and DOES NOT WRITE. A
+        state machine that throws at its own resting state is the same class
+        of bug as one that only moves forwards. Asserted on the bytes on
+        disk, because 'did not write' is not observable from the return."""
+        slug, _ = _fresh_org()
+        path = store.org_path(slug)
+        before = open(path, "rb").read()
+        got = sup.set_account_selection(slug, "")     # already ambient
+        after = open(path, "rb").read()
+        eq(got, "", "clearing an ambient org must report the ambient state: ")
+        if after != before:
+            raise AssertionError(
+                "clearing an org that was ALREADY on ambient rewrote the org "
+                "document — a no-op that writes will also log an event, so "
+                "the audit trail fills with changes that never happened")
+    check("clearing an already-ambient org succeeds and writes NOTHING",
+          _clear_is_idempotent_and_silent)
+
+    def _reselect_is_idempotent_and_silent():
+        """Same rule in the other direction — the resting state is wherever
+        the org currently is, not only ambient."""
+        slug, _ = _fresh_org()
+        sup.set_account_selection(slug, UUID_A)
+        path = store.org_path(slug)
+        before = open(path, "rb").read()
+        got = sup.set_account_selection(slug, UUID_A)
+        if open(path, "rb").read() != before or got != UUID_A:
+            raise AssertionError(
+                "re-selecting the account already selected rewrote the org "
+                "document — idempotence has to hold at every resting state, "
+                "not just at ambient")
+    check("re-selecting the CURRENT account writes NOTHING either",
+          _reselect_is_idempotent_and_silent)
+
+    def _cleared_is_one_spelling_not_two():
+        """⚠ Clearing REMOVES the key. A cleared org must be indistinguishable
+        from one that was never selected — two spellings of 'on ambient' is
+        the `is None` ambiguity that has bitten this codebase before, and it
+        is what makes a later `if "account_token_uuid" in doc` read wrong."""
+        virgin, _ = _fresh_org()
+        used, _ = _fresh_org()
+        sup.set_account_selection(used, UUID_A)
+        sup.set_account_selection(used, "")
+        a = "account_token_uuid" in store.load_org(virgin).d
+        b = "account_token_uuid" in store.load_org(used).d
+        if (a, b) != (False, False):
+            raise AssertionError(
+                f"a cleared org is not shaped like a never-selected one "
+                f"(virgin has key: {a}, cleared has key: {b}) — 'on ambient' "
+                "now has two spellings")
+    check("a cleared org is byte-shaped like one never selected",
+          _cleared_is_one_spelling_not_two)
+
+    def _unknown_account_is_refused_loudly():
+        """A selection that fails to apply looks exactly like one that
+        applied — the pin endpoint's own rule, and the reason this raises."""
+        slug, _ = _fresh_org()
+        sup.set_account_selection(slug, UUID_A)
+        for bad, why in (("acct-nonexistent", "not in the registry"),
+                         ("ghost-untokened", "no stored token")):
+            if bad == "ghost-untokened":
+                accounts.save({"version": accounts.VERSION,
+                               "accounts": {UUID_A: {"label": "A"},
+                                            UUID_B: {"label": "B"},
+                                            bad: {"label": "G"}},
+                               "order": [UUID_A, UUID_B, bad], "pins": {}})
+            try:
+                sup.set_account_selection(slug, bad)
+            except sup.UnknownAccount:
+                pass
+            else:
+                raise AssertionError(
+                    f"selecting {bad!r} ({why}) was ACCEPTED — every turn "
+                    "would then spawn on a credential that does not exist, "
+                    "and the panel would confidently show the account it "
+                    "cannot authenticate as")
+        eq(_served(slug), UUID_A,
+           "a REFUSED selection must leave the previous one intact: ")
+    check("an unknown or untokened account is refused, and changes nothing",
+          _unknown_account_is_refused_loudly)
+
+    def _the_change_is_durably_recorded():
+        """Who changed which identity serves this org, and when. The failover
+        writes a per-NODE row because it explains one turn; a selection is
+        org-level and has to be answerable after the fact from the org's own
+        audit log."""
+        slug, _ = _fresh_org()
+        sup.set_account_selection(slug, UUID_A)
+        sup.set_account_selection(slug, "")
+        evs = [e for e in store.load_org(slug).d.get("events", [])
+               if e.get("op") == "account_selection"]
+        if len(evs) != 2:
+            raise AssertionError(
+                f"expected two recorded selection changes, got {len(evs)} — "
+                "an identity change that leaves no trace is exactly how the "
+                "21:20Z selection became a mystery six hours later")
+        eq([(e["detail"]["from"], e["detail"]["to"]) for e in evs],
+           [(None, UUID_A), (UUID_A, None)])
+        blob = repr(evs)
+        if FAKE_TOKEN in blob or FAKE_TOKEN_2 in blob:
+            raise AssertionError("a token value reached the org audit log")
+    check("every selection change is durably recorded, credential-free",
+          _the_change_is_durably_recorded)
+
+    def _endpoint_contract():
+        """The panel drives this, so the CALL is the deliverable. Exercised
+        through the real ASGI app — a check that called the supervisor
+        directly would prove nothing about the route the panel will use."""
+        from fastapi.testclient import TestClient
+        from orgtree import api
+        slug, _ = _fresh_org()
+        c = TestClient(api.app)
+        r = c.put(f"/api/accounts/selection/{slug}", json={"uuid": UUID_A})
+        eq(r.status_code, 200)
+        eq(r.json()["serving"], UUID_A)
+        eq(r.json()["selection"], UUID_A)
+        r = c.put(f"/api/accounts/selection/{slug}", json={"uuid": None})
+        eq(r.status_code, 200)
+        eq((r.json()["serving"], r.json()["selection"]), ("ambient", None),
+           "clearing through the endpoint must report ambient: ")
+        eq(c.put(f"/api/accounts/selection/{slug}",
+                 json={"uuid": "acct-nonexistent"}).status_code, 422)
+        eq(c.put("/api/accounts/selection/zz-no-such-org",
+                 json={"uuid": None}).status_code, 404)
+        # …and the GET agrees with the PUT, or the panel reads two truths
+        eq(c.get(f"/api/accounts/serving/{slug}").json(),
+           {"serving": "ambient", "label": "the signed-in account",
+            "selection": None})
+    check("the ENDPOINT round-trips, and GET agrees with PUT",
+          _endpoint_contract)
+
+    def _response_is_resolved_not_echoed():
+        """⚠ The response must report what WOULD SERVE, not what was asked
+        for. They can disagree — a selection whose token is later deleted
+        resolves to ambient — and an echo would confidently show an account
+        that authenticates nothing. This is the same rule `ran_as` follows."""
+        from fastapi.testclient import TestClient
+        from orgtree import api
+        slug, _ = _fresh_org()
+        c = TestClient(api.app)
+        c.put(f"/api/accounts/selection/{slug}", json={"uuid": UUID_B})
+        tokens.forget(UUID_B)                    # the token vanishes underneath
+        try:
+            body = c.get(f"/api/accounts/serving/{slug}").json()
+            if body["serving"] == UUID_B:
+                raise AssertionError(
+                    "the response echoed the SELECTION for an account whose "
+                    "token is gone — the panel would show an identity no "
+                    "spawn can authenticate as")
+            eq(body["serving"], "ambient")
+            eq(body["selection"], UUID_B,
+               "intent and resolved fact must both be visible: ")
+        finally:
+            tokens.put(UUID_B, FAKE_TOKEN_2)
+    check("the response is the RESOLVED identity, not an echo of the request",
+          _response_is_resolved_not_echoed)
+
+
 def main() -> None:
     t0 = time.perf_counter()
     print(f"data root: {store.DATA_ROOT}")
     print(f"token store: {tokens.tokens_path()}")
     for fn in (s0_isolation, s1_store, s2_spawn, s3_identity,
                s4_failover, s5_drive_text, s6_wiring,
-               s7_no_op_switch, s8_durable_ran_as):
+               s7_no_op_switch, s8_durable_ran_as, s9_selection_writers):
         fn()
     dt = time.perf_counter() - t0
     print()

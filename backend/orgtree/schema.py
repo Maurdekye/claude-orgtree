@@ -439,6 +439,12 @@ class OrgDoc(TypedDict):
     delivering: NotRequired[dict[str, list[dict[str, Any]]]]  # supervisor in-flight mail batches
     steered_log: NotRequired[dict[str, list[dict[str, Any]]]]  # per-NODE steer history, org-keyed
     turn_error_log: NotRequired[dict[str, list[dict[str, Any]]]]  # per-NODE turn failures {at, text, ran_as?} — the durable half of last_error
+    # WHICH registered account serves this org. ABSENT means the ambient
+    # login — one spelling for that state, not two, which is why
+    # `set_account_selection` removes the key rather than storing "".
+    # An account uuid, never a credential; the token itself lives in the
+    # separate token store and is injected by `spawn_env`.
+    account_token_uuid: NotRequired[str]
     asks: NotRequired[list[dict[str, Any]]]  # F-04 questions-to-the-user {id, node, kind, question, options?, multi?, questions?, at, status, reason?, answer?, resolved_at?}
     # FR-13: pending permission-scope requests {id, node, items: [{kind:
     # dir|tool|mcp|permission_mode, ...}], reason, at, rev, status} — one
