@@ -96,8 +96,9 @@ export function AccountsPanel({ toast, close }: {
   const [err, setErr] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [draft, setDraft] = useState('')
-  // which row's usage section is open, and each row's last-fetched bars
-  const [usageOpen, setUsageOpen] = useState<string | null>(null)
+  // which row's usage MODAL is open (user ruling 2026-08-25: a modal, never
+  // an inline expansion), and each row's last-fetched bars
+  const [usageFor, setUsageFor] = useState<string | null>(null)
   const [usage, setUsage] = useState<Record<string, AccountUsage | 'loading'>>({})
   // ⚠ a REF, not state: dragstart and drop can land in one React batch, and a
   // drop reading the dragged id from its render closure would see the
@@ -130,9 +131,8 @@ export function AccountsPanel({ toast, close }: {
       .finally(() => setBusy(false))
   }
 
-  const toggleUsage = (id: string) => {
-    if (usageOpen === id) { setUsageOpen(null); return }
-    setUsageOpen(id)
+  const openUsage = (id: string) => {
+    setUsageFor(id)
     setUsage((u) => ({ ...u, [id]: u[id] && u[id] !== 'loading' ? u[id] : 'loading' }))
     getAccountUsage(id)
       .then((r) => setUsage((u) => ({ ...u, [id]: r })))
@@ -172,19 +172,20 @@ export function AccountsPanel({ toast, close }: {
   )
 
   const usageBtn = (id: string) => (
-    <button className={'acct-usage-btn' + (usageOpen === id ? ' on' : '')}
-      title="usage limits"
-      onClick={() => toggleUsage(id)}>
+    <button className="acct-btn acct-usage-btn" title="usage limits"
+      onClick={() => openUsage(id)}>
       <DataUsageIcon fontSize="inherit" /></button>
   )
 
-  const usagePane = (id: string) => usageOpen === id && (
-    <div className="acct-usage">
-      {usage[id] === 'loading' || !usage[id]
-        ? <div className="dim">reading usage…</div>
-        : <UsageBars u={usage[id] as AccountUsage} />}
-    </div>
-  )
+  // the row's human name, for the modal header — the payload's own label
+  // once it arrives, else derived from position
+  const rowLabel = (id: string): string => {
+    const u = usage[id]
+    if (u && u !== 'loading' && u.label) return u.label
+    if (id === 'primary') return data?.primary.email ?? 'primary'
+    const i = data?.keys.findIndex((k) => k.id === id) ?? -1
+    return i >= 0 ? `fallback ${i + 1}` : id
+  }
 
   return (
     <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
@@ -206,17 +207,22 @@ export function AccountsPanel({ toast, close }: {
             <div className="acct-line">
               {chips('primary')}
               <div className="acct-row acct-primary">
+                {/* ⚠ GHOSTS ARE THE ALIGNMENT MECHANISM (user ruling
+                    2026-08-25): every row lays out the same four columns —
+                    grip · field · usage · delete — and a row missing an
+                    element renders an invisible same-width placeholder, so
+                    fields and buttons line up exactly across rows. */}
                 <div className="acct-main">
+                  <span className="acct-grip acct-ghost">⠿</span>
                   <span className="acct-email"
                     title="whoever Claude Code is signed in as on this machine — log in or out with the CLI to change it; it cannot be switched here">
                     {data.primary.signed_in
                       ? (data.primary.email ?? 'signed in')
                       : <span className="dim">not signed in — log in with the Claude CLI</span>}
                   </span>
-                  <span style={{ flex: 1 }} />
                   {usageBtn('primary')}
+                  <span className="acct-btn acct-ghost" />
                 </div>
-                {usagePane('primary')}
               </div>
             </div>
 
@@ -251,13 +257,12 @@ export function AccountsPanel({ toast, close }: {
                     <input className="grow acct-keyfield" disabled
                       value="" placeholder="key registered" />
                     {usageBtn(k.id)}
-                    <button className="acct-del"
+                    <button className="acct-btn acct-del"
                       title="delete this account row and forget its key — the CLI cannot show a key again, so re-adding means re-minting"
                       disabled={busy}
                       onClick={() => run(deleteAccountKey(k.id), 'key removed')}>
                       <DeleteIcon fontSize="inherit" /></button>
                   </div>
-                  {usagePane(k.id)}
                 </div>
               </div>
             ))}
@@ -267,12 +272,14 @@ export function AccountsPanel({ toast, close }: {
               <span className="acct-gutter" />
               <div className="acct-row acct-new">
                 <div className="acct-main">
+                  <span className="acct-grip acct-ghost">⠿</span>
                   <input className="grow" type="password" autoComplete="off"
                     placeholder="paste a new key (claude setup-token)"
                     value={draft}
                     onChange={(e) => setDraft(e.target.value)}
                     onKeyDown={(e) => { if (e.key === 'Enter') register() }} />
-                  <button className="acct-add" title="register this key as a fallback account"
+                  {/* spans the usage+delete columns of the rows above */}
+                  <button className="acct-btn acct-add" title="register this key as a fallback account"
                     disabled={busy || !draft.trim()}
                     onClick={register}>
                     <CheckIcon fontSize="inherit" /></button>
@@ -286,6 +293,24 @@ export function AccountsPanel({ toast, close }: {
           <span style={{ flex: 1 }} />
           <button onClick={close}>close</button>
         </div>
+
+        {/* one row's usage limits — a MODAL over the panel (user ruling
+            2026-08-25), same bar family as the header usage modal */}
+        {usageFor && (
+          <div className="overlay"
+            onClick={(e) => { e.stopPropagation(); setUsageFor(null) }}>
+            <div className="settings usage-modal" onClick={(e) => e.stopPropagation()}>
+              <h3><DataUsageIcon fontSize="inherit" /> usage — {rowLabel(usageFor)}</h3>
+              {usage[usageFor] === 'loading' || !usage[usageFor]
+                ? <div className="dim">reading usage…</div>
+                : <UsageBars u={usage[usageFor] as AccountUsage} />}
+              <div className="row">
+                <button className="primary" type="button"
+                  onClick={() => setUsageFor(null)}>done</button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )

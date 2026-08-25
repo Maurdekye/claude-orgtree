@@ -2664,31 +2664,47 @@ html.mobile .md table { display: block; overflow-x: auto; max-width: 100%; }
    draggable fallback keys, per-model routing chips in the left gutter) ---- */
 .acct-blurb { font-size: 12px; line-height: 1.45; }
 .acct-blurb code { font-size: 11px; }
-.acct-line { display: flex; align-items: flex-start; gap: 8px; min-width: 0; }
-/* four chips at 17px + gaps; fixed so every row's body left-aligns */
-.acct-gutter { flex: none; display: flex; gap: 3px; justify-content: flex-end;
-  width: 84px; padding-top: 12px; }
-.acct-gutter .tier { width: 17px; height: 17px; font-size: 10px; flex: none; }
+/* rows are always single-line (per-row usage opens a MODAL, never an inline
+   expansion — user ruling), so centering the line centers the CHIPS on the
+   row box structurally; no magic padding to drift */
+.acct-line { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.acct-gutter { flex: none; display: flex; align-items: center; gap: 3px;
+  justify-content: flex-end; width: 72px; }
+.acct-gutter .tier { width: 15px; height: 15px; font-size: 9px; flex: none; }
 .acct-chip-dim { opacity: .35; }
+/* ⚠ COLUMN DISCIPLINE (user ruling 2026-08-25): every row is the same four
+   fixed columns — grip 16 · field flex · usage 27 · delete 27, gap 8 — and a
+   row missing an element renders a hidden `.acct-ghost` of the same width,
+   so the text boxes and buttons align exactly across rows. The ✓ button
+   spans the usage+delete columns (27+8+27). Change a width here and every
+   ghost changes with it; add a per-row special case and the columns drift. */
 .acct-row { flex: 1; min-width: 0; border: 1px solid var(--line);
-  border-radius: 8px; padding: 8px 10px; }
+  border-radius: 8px; padding: 4px 8px; }
 .acct-main { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .acct-label { font-weight: 600; }
-.acct-email { font-weight: 600; min-width: 0; overflow: hidden;
-  text-overflow: ellipsis; white-space: nowrap; }
+/* compact fields: app-base input metrics, not the roomy .settings ones —
+   the user wants short rows */
+.acct-panel .acct-main input { font-size: 12.5px; padding: 5px 9px;
+  border-radius: 4px; }
+/* mirrors the compact input metrics (5px 9px padding + 1px border) so the
+   email TEXT starts exactly where the key inputs' text does */
+.acct-email { flex: 1; font-weight: 600; font-size: 13px; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  padding: 6px 10px; }
 .acct-key { cursor: grab; }
 .acct-key:active { cursor: grabbing; }
 .acct-over { border-color: var(--accent, #61afef); }
-.acct-grip { color: var(--dim); cursor: grab; user-select: none; }
+.acct-grip { flex: none; width: 16px; text-align: center; color: var(--dim);
+  cursor: grab; user-select: none; }
+.acct-ghost { visibility: hidden; pointer-events: none; }
 /* a key that IS the signed-in account: whole row greyed, excluded from
    routing (tooltip on the row explains) */
 .acct-dup { opacity: .45; }
 .acct-keyfield[disabled] { opacity: .6; cursor: default; }
-.acct-usage-btn, .acct-del, .acct-add { display: inline-flex;
-  align-items: center; justify-content: center; padding: 4px 7px; }
-.acct-usage-btn.on { border-color: var(--accent, #61afef); }
-.acct-usage { margin-top: 8px; border-top: 1px solid var(--line);
-  padding-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.acct-panel .acct-btn { flex: none; width: 27px; height: 27px; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 4px; font-size: 15px; }
+.acct-panel .acct-add { width: 62px; }
 /* ---- the header usage modal's per-account sections ---- */
 .usage-acct { display: flex; flex-direction: column; gap: 6px;
   border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
