@@ -311,6 +311,19 @@ export const forgetAccountToken = (uuid: string): Promise<TokensPayload> =>
 // environment rather than from stated intent.
 export const getServingAccount = (slug: string): Promise<ServingPayload> =>
   req(`/api/accounts/serving/${encodeURIComponent(slug)}`)
+// State the INTENT: serve this org from a registered account (uuid), or from
+// whatever the machine is signed in as (null). Idempotent; 422 names the
+// reason when the uuid is unknown or holds no stored key. The response is the
+// SAME shape as the read and its `serving` is the new resolved fact — use it
+// directly, don't race a re-fetch against it.
+export const putAccountSelection = (
+  slug: string, uuid: string | null,
+): Promise<ServingPayload> =>
+  req(`/api/accounts/selection/${encodeURIComponent(slug)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ uuid }),
+  })
 
 export const getDefaults = (): Promise<DefaultsPayload> =>
   req('/api/defaults')

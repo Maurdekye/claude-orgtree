@@ -155,6 +155,8 @@ function acct(uuid: string, label: string): unknown {
 function world(over: {
   tokens?: Record<string, string>; pins?: Record<string, string>
   selection_active?: boolean
+  serving?: { serving: string; label: string; selection: string | null }
+  selectFail?: { status: number; detail: string }
 } = {}) {
   return {
     accounts: {
@@ -163,7 +165,8 @@ function world(over: {
       selection_active: over.selection_active ?? true,
     } as AccountsPayload,
     tokens: { tokens: over.tokens ?? { [U.b]: 'stored', [U.c]: 'stored' } },
-    serving: { serving: U.a, label: 'Main' },
+    serving: over.serving ?? { serving: U.a, label: 'Main', selection: null },
+    selectFail: over.selectFail,
   }
 }
 
@@ -185,6 +188,22 @@ function serveWorld(w: ReturnType<typeof world>, calls: Call[]): void {
         json: () => Promise.resolve(b),
       })
       if (u.includes('/api/accounts/tokens')) return reply(w.tokens)
+      // PUT /api/accounts/selection/{slug} — answers with the CONTRACT shape:
+      // the resolved serving fact plus the stored selection, same as the read
+      if (u.includes('/api/accounts/selection/')) {
+        if (w.selectFail) {
+          return Promise.resolve({
+            ok: false, status: w.selectFail.status,
+            statusText: 'Unprocessable Entity',
+            headers: new Headers({ 'X-Orgtree-Instance': 'inst-0' }),
+            json: () => Promise.resolve({ detail: w.selectFail!.detail }),
+          })
+        }
+        const uu = (body as { uuid: string | null }).uuid
+        return reply(uu
+          ? { serving: uu, label: uu === U.b ? 'Spare' : 'Third', selection: uu }
+          : { serving: 'ambient', label: 'the signed-in login', selection: null })
+      }
       if (u.includes('/api/accounts/serving/')) return reply(w.serving)
       if (u.includes('/token')) return reply(w.tokens)
       if (u.includes('/api/accounts/order')) return reply(w.accounts)
@@ -195,10 +214,11 @@ function serveWorld(w: ReturnType<typeof world>, calls: Call[]): void {
 async function mountWorld(
   mount: (el: React.ReactElement) => Promise<{ el: HTMLElement }>,
   w: ReturnType<typeof world>, calls: Call[] = [],
+  toastFn: (lines: string[]) => void = noop,
 ): Promise<HTMLElement> {
   serveWorld(w, calls)
   const { AccountsPanel } = await import('../src/canvas/accounts')
-  const { el } = await mount(<AccountsPanel slug="acme" toast={noop} close={noop} />)
+  const { el } = await mount(<AccountsPanel slug="acme" toast={toastFn} close={noop} />)
   await flush()
   return el
 }
@@ -272,4 +292,108 @@ uiTest('§8 the serving account is stated by label, resolved not inferred',
     assert.ok(servingLine, 'no serving line rendered')
     assert.match(servingLine!.textContent ?? '', /Main/,
       'the serving line does not name the account the server resolved')
+  })
+
+// ═══════════════════════════════════ the 2026-08-25 selection control (D-144's
+// successor): PUT /api/accounts/selection/{slug} with {uuid} selects, {uuid:
+// null} clears back to the signed-in login. The contract's load-bearing
+// distinction: the response's `serving` is the RESOLVED FACT (what the next
+// turn authenticates as), `selection` the STORED INTENT beside it, and they
+// legitimately disagree (a selection whose key was later removed resolves to
+// ambient). §9–§12 pin the wire and that distinction, not the look.
+
+uiTest('§9 "serve from this account" PUTs the selection; the RESPONSE drives the line',
+  async ({ mount }) => {
+    const calls: Call[] = []
+    const el = await mountWorld(mount, world(), calls)
+    const btn = [...el.querySelectorAll('.acct-key button')]
+      .find((b) => /serve from this/i.test(b.textContent ?? ''))
+    assert.ok(btn, 'no "serve from this account" control on a key row — the '
+      + 'lever the dead pin UI only looked like it was is still missing')
+    const servingReads = () => calls.filter((c) =>
+      c.method === 'GET' && c.url.includes('/api/accounts/serving/')).length
+    const readsBefore = servingReads()
+    await inAct(() => { (btn as HTMLButtonElement).click() })
+    await flush()
+    const put = calls.find((c) =>
+      c.method === 'PUT' && c.url.includes('/api/accounts/selection/acme'))
+    assert.ok(put, 'no PUT /api/accounts/selection/acme was made — the click '
+      + 'decided nothing on the wire')
+    assert.deepEqual(put!.body, { uuid: U.b },
+      'the PUT must carry the clicked row\'s uuid — a wrong body here '
+      + 'silently serves the org from a different account')
+    assert.match(el.querySelector('.acct-serving')?.textContent ?? '', /Spare/,
+      'the serving line does not show what the PUT response resolved')
+    assert.equal(servingReads(), readsBefore,
+      'a serving re-fetch happened after the PUT — the contract says the '
+      + 'response IS the new truth; a racing re-read can only disagree')
+  })
+
+uiTest('§10 the clear control exists only while a selection is stored, and PUTs null',
+  async ({ mount }) => {
+    // leg 1: nothing stored → no clear control (a "return to my login" button
+    // with nothing to clear presents the default as if it were a choice)
+    const el0 = await mountWorld(mount, world())
+    assert.match(el0.textContent ?? '', /register current login/i,
+      'panel rendered no content — the absence check below would abstain')
+    assert.ok(![...el0.querySelectorAll('button')]
+      .some((b) => /signed in as/i.test(b.textContent ?? '')),
+      'the clear control rendered with no stored selection')
+    // leg 2: selection stored → control present; clicking clears with uuid:null
+    const calls: Call[] = []
+    const el = await mountWorld(mount,
+      world({ serving: { serving: U.b, label: 'Spare', selection: U.b } }), calls)
+    const btn = [...el.querySelectorAll('button')]
+      .find((b) => /signed in as/i.test(b.textContent ?? ''))
+    assert.ok(btn, 'no way back — a stored selection offers no control to '
+      + 'return the org to the signed-in login (the exact one-way ratchet '
+      + 'this endpoint exists to end)')
+    await inAct(() => { (btn as HTMLButtonElement).click() })
+    await flush()
+    const put = calls.find((c) =>
+      c.method === 'PUT' && c.url.includes('/api/accounts/selection/acme'))
+    assert.ok(put, 'no PUT was made — the clear decided nothing on the wire')
+    assert.deepEqual(put!.body, { uuid: null },
+      'clearing must send {uuid: null} explicitly — not omit the key, not DELETE')
+    assert.match(el.querySelector('.acct-serving')?.textContent ?? '',
+      /signed-in login/,
+      'the serving line does not show what the cleared response resolved')
+  })
+
+uiTest('§11 a 422 from the selection write surfaces its detail, not a swallow',
+  async ({ mount }) => {
+    const toasts: string[][] = []
+    const el = await mountWorld(mount,
+      world({ selectFail: { status: 422, detail: 'account holds no stored key' } }),
+      [], (lines) => { toasts.push(lines) })
+    const btn = [...el.querySelectorAll('.acct-key button')]
+      .find((b) => /serve from this/i.test(b.textContent ?? ''))
+    assert.ok(btn, 'no select control to fail')
+    await inAct(() => { (btn as HTMLButtonElement).click() })
+    await flush()
+    assert.ok(toasts.flat().some((t) => /holds no stored key/.test(t)),
+      'the 422 detail never reached the user — a refused selection that says '
+      + 'nothing reads exactly like a selection that worked')
+    assert.match(el.textContent ?? '', /register current login/i,
+      'the failed write blanked the panel')
+  })
+
+uiTest('§12 a selection that cannot serve is shown as setting, not stated as fact',
+  async ({ mount }) => {
+    // stored intent = B, but B's key was removed later: resolution fell back
+    // to the login. Stating B as serving would be the banner bug again.
+    const el = await mountWorld(mount, world({
+      serving: { serving: 'ambient', label: 'the signed-in login', selection: U.b },
+      tokens: {},
+    }))
+    assert.match(el.textContent ?? '', /not in effect/i,
+      'nothing tells the user their stored selection is not what is serving — '
+      + 'the panel states an intention as though it were a state')
+    // control: when selection and resolution agree, no such note
+    const el2 = await mountWorld(mount,
+      world({ serving: { serving: U.b, label: 'Spare', selection: U.b } }))
+    assert.match(el2.textContent ?? '', /register current login/i,
+      'panel rendered no content — the absence check below would abstain')
+    assert.doesNotMatch(el2.textContent ?? '', /not in effect/i,
+      'the disagreement note renders even when the selection IS serving')
   })

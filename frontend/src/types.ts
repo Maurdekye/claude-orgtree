@@ -826,10 +826,13 @@ export interface AccountEntry {
  *  "primary" for this field; say "first in order" or let the serving line
  *  speak.
  *
- *  ⚠ `selection_active` is a D-144 artifact the backend still hardcodes to
- *  FALSE. It predates failover shipping and no longer tracks reality
- *  (failover fired for real 2026-08-24). Gate nothing user-visible on it —
- *  the resolved serving line is the honest statement. */
+ *  ⚠ `selection_active` is DERIVED (since 2026-08-25): whether any registered
+ *  account holds a stored key — i.e. whether failover has material to work
+ *  with. It is machine-wide, not a per-org fact, and it is not proof that
+ *  anything switched. Its predecessor was hardcoded False while failover was
+ *  live and a banner gated on it stated the opposite of the truth on the
+ *  user's screen; gate nothing user-visible on this flag — the resolved
+ *  serving line is the honest statement. */
 export interface AccountsPayload {
   version: number
   accounts: AccountEntry[]
@@ -851,13 +854,25 @@ export interface TokensPayload {
   forgotten?: boolean
 }
 
-/** GET /api/accounts/serving/{slug} — WHICH account this org's next turn would
- *  actually authenticate as, resolved from the real spawn environment.
- *  `serving` is an account uuid, or "ambient" (the signed-in login), or
- *  "api-key", or "token:unattributed". NEVER a credential. */
+/** GET /api/accounts/serving/{slug} and PUT /api/accounts/selection/{slug} —
+ *  ONE shape for the read and the write, so they cannot report two
+ *  differently-shaped truths.
+ *
+ *  `serving` is the RESOLVED FACT: what this org's next turn would actually
+ *  authenticate as, resolved from the real spawn environment — an account
+ *  uuid, or "ambient" (the signed-in login), or "api-key", or
+ *  "token:unattributed". NEVER a credential.
+ *
+ *  `selection` is the STORED INTENT sitting beside it: an account uuid, or
+ *  null for none. They legitimately DISAGREE — a selection whose key was
+ *  later removed resolves to ambient — so render `serving` as the state and
+ *  `selection` as the setting, never as one thing (a panel that states an
+ *  intention as though it were a state is the 2026-08-25 banner bug again).
+ *  Optional because an older backend omits it; absent reads as null. */
 export interface ServingPayload {
   serving: string
   label: string
+  selection?: string | null
 }
 
 /** GET /api/usage/peek — the same standing read from the server's cache

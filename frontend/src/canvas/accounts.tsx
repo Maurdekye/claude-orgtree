@@ -10,10 +10,11 @@
 //
 // ⚠ THERE IS DELIBERATELY NO STATUS BANNER. The old "Registry only — no
 // failover is running yet" line was gated on `selection_active`, a D-144-era
-// field the backend hardcodes to FALSE — it predates failover shipping and
-// stopped tracking reality the night failover first fired (2026-08-24), at
-// which point the banner stated the exact opposite of the truth. Nothing
-// user-visible may key on that field. The serving line below is resolved
+// field then hardcoded to FALSE — it stopped tracking reality the night
+// failover first fired (2026-08-24), at which point the banner stated the
+// exact opposite of the truth. The field is DERIVED since 2026-08-25 (any
+// registered account holds a key) but is machine-wide, not a per-org fact:
+// nothing user-visible may key on it. The serving line below is resolved
 // from the real spawn environment and IS the status statement. Absence is
 // pinned by acctpanel.test.tsx §1/§2.
 //
@@ -29,7 +30,8 @@ import type {
 } from '../types'
 import {
   adoptAccount, forgetAccountToken, getAccounts, getAccountTokens,
-  getServingAccount, putAccountToken, relabelAccount, setAccountOrder,
+  getServingAccount, putAccountSelection, putAccountToken, relabelAccount,
+  setAccountOrder,
 } from '../api'
 import { ago, useEsc } from './shared'
 
@@ -108,6 +110,21 @@ export function AccountsPanel({ slug, toast, close }: {
   const activeUuid =
     serving && data?.accounts.some((a) => a.uuid === serving.serving)
       ? serving.serving : null
+  // the STORED INTENT beside the resolved fact; an older backend omits it
+  const selection = serving?.selection ?? null
+
+  // ⚠ the PUT's response IS the new resolved truth (same shape as the read) —
+  // set it directly rather than racing a re-fetch that could answer stale
+  const select = (uuid: string | null) => {
+    if (!slug) return
+    setBusy(true)
+    putAccountSelection(slug, uuid)
+      .then((s) => { setServing(s); toast([`serving ${s.label}`]) })
+      // a refused selection that says nothing reads exactly like one that
+      // worked — the 422 detail names the reason and must reach the user
+      .catch((e: Error) => toast([`error: ${e.message}`]))
+      .finally(() => setBusy(false))
+  }
 
   const keys: AccountEntry[] =
     data?.accounts.filter((a) => a.uuid !== activeUuid && hasKey(a.uuid)) ?? []
@@ -204,6 +221,28 @@ export function AccountsPanel({ slug, toast, close }: {
           </div>
         )}
 
+        {/* the way BACK — rendered only while an intent is stored, because a
+            "return to my login" control with nothing to clear presents the
+            default as if it were a choice. When the stored intent is not what
+            resolution answered (its key was removed later), SAY so: stating
+            the intention as the state is the removed banner's bug again. */}
+        {slug && selection !== null && (
+          <div className="row">
+            {serving && serving.serving !== selection && (
+              <span className="dim">
+                stored selection is not in effect — that account can no longer
+                serve (no stored key)
+              </span>
+            )}
+            <button
+              disabled={busy}
+              title="clears the stored selection — turns then authenticate as whatever this machine is signed in to"
+              onClick={() => select(null)}>
+              serve from the account I'm signed in as
+            </button>
+          </div>
+        )}
+
         {data && data.accounts.length === 0 && (
           <div className="dim">No accounts known yet.</div>
         )}
@@ -230,6 +269,10 @@ export function AccountsPanel({ slug, toast, close }: {
                   {label(a)}
                   {identity(a)}
                   <span style={{ flex: 1 }} />
+                  <button
+                    disabled={busy}
+                    title="serve this org from this account — stored as a selection; the serving line above stays the resolved fact"
+                    onClick={() => select(a.uuid)}>serve from this account</button>
                   <button
                     disabled={busy}
                     title="forgets the stored key — the CLI cannot show it again, so re-adding means re-minting"
