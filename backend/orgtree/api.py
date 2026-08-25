@@ -2006,8 +2006,12 @@ def _serving_payload(slug: str) -> dict[str, Any]:
     if ident == "ambient":
         label = "the signed-in account"
     elif ident not in ("api-key", "token:unattributed"):
-        rec = (accounts.load().get("accounts") or {}).get(ident) or {}
-        label = str(rec.get("label") or ident)
+        # annotated because the registry is loosely typed on the way out;
+        # without it pyright reports four partially-unknown errors here (they
+        # predate this function and rode along when the body moved into it)
+        reg = cast("dict[str, dict[str, Any]]",
+                   accounts.load().get("accounts") or {})
+        label = str((reg.get(ident) or {}).get("label") or ident)
     return {"serving": ident, "label": label,
             # the stored INTENT, beside the resolved fact — they can disagree
             # (a selection whose token was since deleted resolves to ambient),
