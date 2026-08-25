@@ -49,7 +49,7 @@ _TMP = tempfile.mkdtemp(prefix="orgtree-accounts-")
 os.environ["ORGTREE_DATA"] = os.path.join(_TMP, "data")
 os.makedirs(os.environ["ORGTREE_DATA"], exist_ok=True)
 
-from orgtree import accounts, store, subproxy          # noqa: E402
+from orgtree import accounts, store, subproxy, tokens  # noqa: E402
 
 # ⚠ redirect the credentials path BEFORE any adoption test runs. subproxy.CREDS
 # points at the real ~/.claude/.credentials.json.
@@ -502,9 +502,33 @@ def s6_readout() -> None:
     check("readout names a primary", lambda: (
         None if r["primary"] else (_ for _ in ()).throw(
             AssertionError("no primary in readout"))))
-    # D-144: the panel must not be able to imply selection exists
-    check("readout declares selection_active FALSE (D-144)",
-          lambda: eq(r["selection_active"], False))
+    # ⚠ RE-DECIDED 2026-08-25, and the old check is why it had to be.
+    # This used to read `eq(r["selection_active"], False)` against a value
+    # HARDCODED False (D-144: "Phase 1 ships the registry, not the switch").
+    # Selection and failover shipped; the field became a lie on the wire; and
+    # this check went on passing — first because the constant had not moved,
+    # then, when the field became derived, because the fixture happens to have
+    # no tokens. A check that pins a constant survives by inertia and ends up
+    # DEFENDING the wrong answer, which is exactly what happened here.
+    #
+    # It now asserts the DERIVATION, in both directions, because a one-legged
+    # version passes on a field that is still a constant — which is the state
+    # we are climbing out of.
+    def selection_active_follows_the_tokens():
+        uuid = r["accounts"][0]["uuid"]
+        eq(accounts.readout()["selection_active"], False,
+           "no account holds a token, so nothing here can serve a turn: ")
+        tokens.put(uuid, FAKE_TOKEN)
+        try:
+            eq(accounts.readout()["selection_active"], True,
+               "an account with a stored token CAN serve, and the payload "
+               "must say so rather than repeating D-144 forever: ")
+        finally:
+            tokens.forget(uuid)
+        eq(accounts.readout()["selection_active"], False,
+           "and it must fall back when the last token goes: ")
+    check("selection_active FOLLOWS the tokens (both legs), not a constant",
+          selection_active_follows_the_tokens)
     # the panel's `ago()` parses STRINGS; an epoch number renders as "NaN ago"
     # and nothing in TypeScript would catch it at runtime. Assert the wire
     # shape, and that it actually parses as a date rather than merely being
@@ -765,9 +789,19 @@ def s7_http() -> None:
 
     check("GET /api/accounts returns the registry", lambda: eq(
         call(admin, "GET", "/api/accounts").json["accounts"][0]["uuid"], a))
-    check("GET /api/accounts declares selection_active false (D-144)",
-          lambda: eq(call(admin, "GET", "/api/accounts").json["selection_active"],
-                     False))
+    def wire_selection_active_follows_the_tokens():
+        """Same re-decision as the readout check, asserted on the WIRE. The
+        derivation could be correct in `readout()` and still not reach the
+        payload the panel actually parses."""
+        eq(call(admin, "GET", "/api/accounts").json["selection_active"], False)
+        tokens.put(a, FAKE_TOKEN)
+        try:
+            eq(call(admin, "GET", "/api/accounts").json["selection_active"],
+               True, "the WIRE must carry the derived value, not a constant: ")
+        finally:
+            tokens.forget(a)
+    check("GET /api/accounts carries selection_active DERIVED (both legs)",
+          wire_selection_active_follows_the_tokens)
     check("GET /api/accounts leaks no token text", lambda: (
         None if "sk-ant" not in call(admin, "GET", "/api/accounts").raw.decode()
         else (_ for _ in ()).throw(AssertionError("token text on the wire"))))

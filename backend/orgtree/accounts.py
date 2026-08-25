@@ -39,7 +39,7 @@ import threading
 import time
 from typing import Any, Callable
 
-from . import store, subproxy
+from . import store, subproxy, tokens
 
 REGISTRY_NAME = "accounts.json"
 VERSION = 1
@@ -448,7 +448,26 @@ def readout() -> dict[str, Any]:
                      for u in doc["order"] if u in doc["accounts"]],
         "primary": doc["order"][0] if doc["order"] else None,
         "pins": dict(doc["pins"]),
-        # Phase 1 ships the registry, not the switch. Stated in the payload so
-        # a panel cannot imply failover works by rendering this. See D-144.
-        "selection_active": False,
+        # ⚠ WAS HARDCODED `False` FROM D-144 ("Phase 1 ships the registry, not
+        # the switch"), and by 2026-08-25 that had become a LIE ON THE WIRE:
+        # selection and failover both exist and are wired. A field pinned to a
+        # constant is not a fact, it is a claim frozen at the moment someone
+        # stopped thinking about it — and the checks holding it there defended
+        # the wrong answer rather than catching the drift.
+        #
+        # It is now DERIVED, and deliberately answers the question this
+        # payload can actually answer: **can this install select an account
+        # for a turn at all?** That is true exactly when some account holds a
+        # stored token — an account with no token cannot serve, cannot be a
+        # failover target (`alternate_account_choice`), and cannot be
+        # selected (`set_account_selection` refuses it). On a fresh install
+        # this is False, and a panel gating on it is telling the truth.
+        #
+        # ⚠ It is NOT "does org X have a deliberate selection". That fact is
+        # per-org and this readout has no org; it already has an authoritative
+        # home in `GET /api/accounts/serving/{slug}` → `selection`. A second,
+        # org-blind spelling of it here would be two homes for one fact with
+        # nothing keeping them in step — the failure `supervisor.state`'s
+        # docstring records from the last time this codebase tried it.
+        "selection_active": any(tokens.has(u) for u in doc["order"]),
     }

@@ -144,11 +144,24 @@ MUTANTS = [
      "def registry_path() -> str:\n    return _FROZEN",
      "registry_path() tracks a runtime change of store.DATA_ROOT"),
 
-    ("the readout claims selection is live (D-144 violation)",
+    ("selection_active frozen TRUE — a fresh install with no token would "
+     "claim it can serve",
      ACC,
-     "        \"selection_active\": False,",
+     "        \"selection_active\": any(tokens.has(u) for u in doc[\"order\"]),",
      "        \"selection_active\": True,",
-     "readout declares selection_active FALSE (D-144)"),
+     "selection_active FOLLOWS the tokens (both legs), not a constant"),
+
+    # ⚠ AND THE OTHER CONSTANT. The mutant above used to BE the shipped code:
+    # `selection_active` was hardcoded False from D-144, the check pinned it
+    # there, and both went on passing long after selection shipped — the field
+    # was a lie on the wire defended by a green check. Freezing it either way
+    # is the same defect, so both directions are mutated; a fix that merely
+    # flipped the constant would survive one of these and not the other.
+    ("selection_active frozen FALSE again — the D-144 lie restored",
+     ACC,
+     "        \"selection_active\": any(tokens.has(u) for u in doc[\"order\"]),",
+     "        \"selection_active\": False,",
+     "selection_active FOLLOWS the tokens (both legs), not a constant"),
 
     # the regression this round fixed: the character-class condition that made
     # every all-lowercase secret invisible to the generic net
