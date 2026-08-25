@@ -2987,6 +2987,57 @@ before, on a different lane, so cramming it into the same enum would make
 a second, unrelated setting existing). A boolean gated by `api_fallback`
 mirrors how `api_fallback` itself is not folded into `headless`.
 
+### D-146 · a 429 from the usage endpoint gates the REQUEST, not just the message
+
+Ruling (user report 2026-08-25, "when i try to query the usage limits for the
+secondary key, i get constant 429 errors"): `limits` honours `Retry-After` and
+will not re-ask an account's usage endpoint until the window it was given
+closes. The window is per cache key — the host and each key row hold their own
+— and it gates the outbound request, so a caller inside a window gets stale
+bars if any exist and otherwise a readout naming the wait
+("rate limited by the API — retry in 17m"), never a fresh packet.
+
+Why: the module cached only SUCCESS. A failure cached nothing, so every click
+re-asked at full rate while the upstream was explicitly saying wait — the
+user's "constant" was a guarantee of the design, not bad luck. Measured that
+day against the failing key, two back-to-back calls with no retries: `HTTP 429,
+Retry-After: 1032, server: cloudflare, {"type":"rate_limit_error"}`, the SAME
+1032 both times (a fixed deadline, not a per-request penalty), while the host
+readout answered 200 — so the endpoint, the network and the token were all
+fine and the only defect was ours. `fetch()` had the identical hole and is
+fixed with it; `force=True` and `max_age=0` do NOT punch through, because the
+freeze-correction pass is precisely the caller that would turn one rate limit
+into a storm of them.
+
+Bounds: **only 429 opens a window.** A 500, a 401 or a transport blip stays
+retryable on the very next call — a credential the user is about to re-paste
+must not sit behind a cooldown, or the fix would look like it had not taken.
+A `Retry-After` that is absent, malformed, zero or negative falls back to
+`DEFAULT_RETRY_AFTER` rather than to zero (a zero would be a hammer loop
+authorised by a header), and any value is clamped to `MAX_RETRY_AFTER`
+(6 h) so a hostile or absurd one cannot lock a lane out indefinitely.
+
+⚠ **The penalty escalates, and that is why the clamp is set far above any
+observed value rather than near one.** Measured the same day: the account
+answered `Retry-After: 1032` at 11:30 and `Retry-After: 3600` twelve minutes
+later, after a handful of further asks — asking inside a window lengthens it.
+A clamp at 1 h would therefore have silently truncated a real 3600 into an
+early re-ask and earned a longer window; the clamp guards against absurdity,
+it is not a statement about how long we are willing to wait. Waiting too long
+costs a stale panel. Waiting too little costs the window.
+
+Windows live in memory, so a restart clears them — accepted: a deploy costs at
+most one extra probe, and persisting them would outlive the condition they
+describe.
+
+Load-bearing: the readouts stay split (`_cache` host, `_key_cache` per row) so
+a fallback key's bars can never time a freeze off someone else's quota, and
+the cooldowns are keyed the same way for the same reason. `invalidate()` now
+clears the key readouts and the windows too — module state it does not reset
+is state that leaks between tests, and a leaked window makes a fetch return a
+cached refusal without touching the transport, which is indistinguishable from
+a pass.
+
 ### D-145 · account routing is machine-local, per model tier, and automatic
 
 Ruling (user, 2026-08-25, three mails — superseding the whole D-144-era
@@ -3056,6 +3107,21 @@ registry reads as version 2 in memory — rows for uuids with stored tokens
 survive (a stored token is the one thing the user cannot re-create without a
 re-mint), everything else drops; the first write persists v2 and readers
 never write.
+
+**Capacity is marked ONLY when a turn is actually refused — never inferred
+from an observed readout** (user, 2026-08-25, ruling on a reported bug):
+"we'll just depend on whether or not claude lets us run turns or not to
+determine if capacity is available. capacity should only be marked
+unavailable the moment a turn is refused, not assumed once 100% limit is
+observed." ⚠ THIS IS THE DESIGN, NOT A GAP — it was reported as a bug and
+ruled otherwise, so it will look like one again. The observation that
+prompted it: `weekly_all` read 100%/critical on the primary while the H/S/O
+chips still sat on that row, because only `fable` had a mark (only a fable
+turn had actually died). Correct behaviour. `usage_refreshes` therefore stays
+a record of REFUSALS, `record_limit` stays its only writer, and `resolve()`
+must not consult `limits` — a readout at 100% is not a refusal, the two can
+disagree, and the turn is the authority. Do not "fix" the chips by marking
+from the bars.
 
 Was. D-144's registry/pin/selection stack (now under Retired): identity
 adopted from the live login, hand-set labels and waterfall order, per-org

@@ -30,6 +30,7 @@ keeps its own conservative floor.
 from __future__ import annotations
 
 import datetime as _dt
+import email.utils as _eut
 import http.client
 import json
 import re
@@ -75,6 +76,101 @@ _cache: dict[str, Any] = {"at": 0.0, "data": None}
 # reads the HOST subscription's standing, and a fallback key's bars leaking
 # into that would time freezes off someone else's quota.
 _key_cache: dict[str, dict[str, Any]] = {}
+
+# ---------------------------------------------------------- rate-limit cooldowns
+# ⚠ A 429 IS AN INSTRUCTION, NOT MERELY AN ERROR — and until 2026-08-25 this
+# module threw the instruction away. Only SUCCESS was ever cached; a failure
+# cached nothing, so the very next caller re-asked at full rate while the
+# upstream was explicitly saying "wait". The user's report was "constant 429
+# errors" on a key row, and constant is exactly what the code guaranteed.
+#
+# MEASURED, that day, against the key that was failing (two back-to-back calls,
+# no retries): `HTTP 429, Retry-After: 1032, server: cloudflare`, body
+# `{"type":"rate_limit_error"}` — and the SAME 1032 both times, i.e. a fixed
+# window with a real deadline rather than a per-request penalty. Meanwhile the
+# host readout answered 200, so the limit was scoped to that one account and
+# nothing about the endpoint, the network or the token was broken.
+#
+# So: honour it. The cooldown GATES THE REQUEST, not just the message — a fix
+# that only prettied up the error string would still have hammered.
+DEFAULT_RETRY_AFTER = 60.0    # a 429 with no usable Retry-After still earns a pause
+# ⚠ THE PENALTY ESCALATES, MEASURED. The same account answered `Retry-After:
+# 1032` at 11:30 and `Retry-After: 3600` twelve minutes later, after a handful
+# of further asks — asking inside the window lengthens it. So the clamp is a
+# guard against an absurd or hostile value, NOT a policy about how long we are
+# willing to wait: set it near 1032 or 3600 and a real escalation gets clamped,
+# we ask early, and we earn a longer one. Six hours is far above anything
+# observed and still bounded. Waiting too long costs a stale panel; waiting too
+# little costs the window itself.
+MAX_RETRY_AFTER = 6 * 3600.0
+#: cache_key -> epoch before which we must not ask again. Keyed exactly like the
+#: readouts it guards, so the host's window and a key row's are independent.
+_cooldown: dict[str, float] = {}
+#: the host's cooldown slot. A NUL byte cannot collide with a key row id (those
+#: are hex hashes), so the two namespaces share this dict safely.
+HOST_COOLDOWN_KEY = "\x00host"
+
+
+def _retry_after_seconds(err: urllib.error.HTTPError, now: float) -> float:
+    """How long the response told us to wait. RFC 9110 allows Retry-After to be
+    either delta-seconds or an HTTP-date and both occur in the wild, so parse
+    both; anything absent, malformed or non-positive falls back to
+    `DEFAULT_RETRY_AFTER` rather than to zero. Zero would be a hammer loop
+    authorised by a header — the one outcome this whole mechanism exists to
+    prevent."""
+    raw = ""
+    try:
+        raw = str(err.headers.get("Retry-After") or "").strip()
+    except (AttributeError, TypeError):     # a response without usable headers
+        raw = ""
+    secs: float | None = None
+    if raw:
+        try:
+            secs = float(int(raw))
+        except ValueError:
+            try:
+                when = _eut.parsedate_to_datetime(raw)
+            except (TypeError, ValueError, IndexError):
+                when = None
+            if when is not None:
+                if when.tzinfo is None:     # an HTTP-date is GMT by definition
+                    when = when.replace(tzinfo=_dt.timezone.utc)
+                secs = when.timestamp() - now
+    if secs is None or secs <= 0:
+        secs = DEFAULT_RETRY_AFTER
+    return min(secs, MAX_RETRY_AFTER)
+
+
+def _cooldown_error(until: float, now: float) -> dict[str, Any]:
+    """What the panel shows instead of a raw `HTTPError` repr. Names the wait,
+    because "rate limited" with no horizon reads as broken and invites the
+    clicking that caused this."""
+    left = max(0.0, until - now)
+    when = (f"{round(left / 60)}m" if left >= 90 else f"{int(left)}s")
+    return {"available": False,
+            "error": f"rate limited by the API — retry in {when}"}
+
+
+def _note_rate_limit(cache_key: str, err: urllib.error.HTTPError,
+                     now: float) -> float:
+    """Record the window this 429 opened; returns the epoch it closes."""
+    until = now + _retry_after_seconds(err, now)
+    with _lock:
+        _cooldown[cache_key] = until
+    return until
+
+
+def _cooling(cache_key: str, now: float) -> float | None:
+    """The epoch this key may next be asked, or None if it may be asked now.
+    Expired windows are dropped so the dict cannot grow without bound."""
+    with _lock:
+        until = _cooldown.get(cache_key)
+        if until is None:
+            return None
+        if until <= now:
+            del _cooldown[cache_key]
+            return None
+        return until
 
 
 # --------------------------------------------------------------- the readout
@@ -182,6 +278,14 @@ def fetch(force: bool = False, max_age: float | None = None) -> dict[str, Any]:
     if not subproxy.available():
         return {"available": False,
                 "error": "no Claude Code credentials on this host"}
+    # the host has the same hole the key rows had: nothing cached a failure, so
+    # a 429 here re-asked on every freeze and every modal open. `force=True`
+    # does NOT punch through — the freeze-correction pass is precisely the
+    # caller that would turn one rate limit into a storm of them.
+    cool = _cooling(HOST_COOLDOWN_KEY, time.time())
+    if cool is not None:
+        stale = cached()
+        return stale if stale is not None else _cooldown_error(cool, time.time())
     with _fetch_lock:
         # the winner of the herd has just filled the cache — take its answer
         # rather than asking the same question again
@@ -206,9 +310,15 @@ def fetch(force: bool = False, max_age: float | None = None) -> dict[str, Any]:
                 # 500-ing the modal instead of serving the stale bars
                 # (redteam 2026-08-18)
                 http.client.HTTPException) as e:
+            rl, until = False, 0.0
+            if isinstance(e, urllib.error.HTTPError) and e.code == 429:
+                rl, until = True, _note_rate_limit(HOST_COOLDOWN_KEY, e,
+                                                   time.time())
             stale = cached()
             if stale is not None:
                 return stale
+            if rl:
+                return _cooldown_error(until, time.time())
             return {"available": False, "error": f"usage fetch failed: {e}"}
         raw: dict[str, Any] = (cast("dict[str, Any]", raw_any)
                                if isinstance(raw_any, dict) else {})
@@ -241,6 +351,15 @@ def fetch_for_token(token: str, cache_key: str) -> dict[str, Any]:
         if ent and ent.get("data") is not None \
                 and now - float(ent.get("at") or 0) < CACHE_TTL:
             return cast("dict[str, Any]", ent["data"])
+    # ⚠ BEFORE the request, not after: an open 429 window means we must not ask
+    # at all. Stale bars still beat an error box, but either way no packet goes.
+    cool = _cooling(cache_key, now)
+    if cool is not None:
+        with _lock:
+            stale = _key_cache.get(cache_key, {}).get("data")
+        if stale is not None:
+            return cast("dict[str, Any]", stale)
+        return _cooldown_error(cool, now)
     try:
         req = urllib.request.Request(USAGE_URL, headers={
             "Authorization": "Bearer " + token,
@@ -250,10 +369,18 @@ def fetch_for_token(token: str, cache_key: str) -> dict[str, Any]:
             raw_any: Any = json.load(resp)
     except (urllib.error.URLError, OSError, ValueError,
             http.client.HTTPException) as e:
+        # a 429 opens a window; every OTHER failure stays retryable on the next
+        # call, deliberately — a blip, an expired token the user is about to
+        # re-paste, or a 401 they can fix must not be hidden behind a cooldown
+        rl, until = False, 0.0
+        if isinstance(e, urllib.error.HTTPError) and e.code == 429:
+            rl, until = True, _note_rate_limit(cache_key, e, now)
         with _lock:
             stale = _key_cache.get(cache_key, {}).get("data")
         if stale is not None:
             return cast("dict[str, Any]", stale)
+        if rl:
+            return _cooldown_error(until, now)
         return {"available": False, "error": f"usage fetch failed: {e}"}
     raw: dict[str, Any] = (cast("dict[str, Any]", raw_any)
                            if isinstance(raw_any, dict) else {})
@@ -370,9 +497,16 @@ def peek() -> dict[str, Any]:
 def invalidate() -> None:
     """Drop the cache. Tests only: a caller that just learned the standing
     changed wants `fetch(max_age=REREAD_MAX_AGE)`, which re-reads without
-    throwing away an answer the next caller may still need."""
+    throwing away an answer the next caller may still need.
+
+    Clears the key readouts and the rate-limit windows too. Module state that
+    `invalidate()` does NOT reset is state that leaks between tests, and a
+    cooldown left standing makes the next test's fetch return a cached refusal
+    without touching the transport — which looks exactly like a pass."""
     with _lock:
         _cache.update(at=0.0, data=None)
+        _key_cache.clear()
+        _cooldown.clear()
 
 
 # ------------------------------------------------------------ classification
