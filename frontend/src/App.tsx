@@ -819,8 +819,6 @@ function UsageModal({ close }: { close: () => void }) {
                 <span className="acct-label">{a.label}</span>
                 {a.account === 'primary' &&
                   <span className="dim"> · this machine's login</span>}
-                {a.duplicate &&
-                  <span className="dim"> · same account as the login</span>}
               </div>
               <UsageBars u={a} />
             </div>

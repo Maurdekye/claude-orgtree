@@ -2778,9 +2778,9 @@ html.mobile .md table { display: block; overflow-x: auto; max-width: 100%; }
 .acct-grip { flex: none; width: 16px; text-align: center; color: var(--dim);
   cursor: grab; user-select: none; }
 .acct-ghost { visibility: hidden; pointer-events: none; }
-/* a key that IS the signed-in account: whole row greyed, excluded from
-   routing (tooltip on the row explains) */
-.acct-dup { opacity: .45; }
+/* (`.acct-dup` — the greyed "same account as the login" row — was removed
+   2026-08-25 with the feature; a setup-token key can never resolve its
+   account, so the check could only ever fire for v1-migrated rows.) */
 /* the row's uuid: mono, because a uuid read in a proportional face is a uuid
    you will misread. Width is still the flex column's business — an input
    scrolls its own value rather than widening, so a long identity cannot push
@@ -2799,6 +2799,20 @@ html.mobile .md table { display: block; overflow-x: auto; max-width: 100%; }
    note, not a warning: there is nothing here for the user to retry or fix. */
 .acct-unsupported { font-size: 12.5px; line-height: 1.5; color: var(--dim);
   border-left: 2px solid var(--line); padding: 2px 0 2px 10px; }
+/* ---- a key row's model-capacity table (user ruling 2026-08-25) ---- */
+.acct-tiers { display: flex; flex-direction: column; gap: 2px; }
+/* the tier NAME column is fixed-width so the four standings line up in a
+   column instead of stepping in and out with "haiku" vs "sonnet" — same
+   ghost-column discipline the panel rows themselves use */
+.acct-tier-row { display: flex; align-items: center; gap: 8px;
+  font-size: 12.5px; }
+.acct-tier-name { flex: none; width: 54px; }
+.acct-tier-ok { color: var(--dim); }
+/* the spent tiers are the news, so they read at full ink while the ones with
+   capacity sit dim — the opposite of the instinct, and the right way round:
+   "everything is fine" is not what the panel was opened to find out */
+.acct-tier-wait { color: var(--ink); }
+.acct-tier-note { font-size: 11.5px; line-height: 1.5; padding-top: 2px; }
 .acct-ranas { font-family: var(--mono); font-size: 10.5px; max-width: 300px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .acct-panel .acct-btn { flex: none; width: 27px; height: 27px; padding: 0;

@@ -815,12 +815,12 @@ export interface UsagePayload {
 export interface AccountsPayload {
   version: number
   primary: { signed_in: boolean; email: string | null }
-  /** priority order after primary. `duplicate` marks a key that resolved to
-   *  the SAME account as the current login: the row is greyed and excluded
-   *  from routing — failing over to it would re-spend the identical limit. */
+  /** priority order after primary. (No `duplicate` flag: greying a key that
+   *  resolved to the login's own account was retired 2026-08-25 by the user —
+   *  a setup-token key can never resolve its account, so the check could only
+   *  ever fire for v1-migrated rows. See accounts.py's module docstring.) */
   keys: {
     id: string
-    duplicate: boolean
     /** 1-based position among the key rows — the "fallback N" the usage
      *  modal and the desk's serving label both cite. Server-counted, so the
      *  three surfaces cannot disagree after a delete. */
@@ -848,11 +848,28 @@ export interface AccountsPayload {
  *  same normalized bars as UsagePayload plus which row it describes.
  *  `plan` rides only the primary entry (it is read from the host credentials
  *  store, which describes no other account). */
+/** one model tier's standing ON ONE ACCOUNT — `available` is "this account
+ *  still has capacity for this tier", NOT "this tier runs here" (the panel's
+ *  gutter chips answer that, and the two legitimately differ). `pool` names
+ *  the tiers that share this one's capacity, itself included, and is null for
+ *  a tier that stands alone — haiku/sonnet/opus are one subscription bucket,
+ *  so a limit on any of them marks all three. */
+export interface TierStanding {
+  tier: string
+  available: boolean
+  refresh_at: string | null
+  pool: string[] | null
+}
+
 export interface AccountUsage {
   account: string
   label: string
-  duplicate?: boolean
   available: boolean
+  /** a KEY row's answer in place of percentages, which it can never have
+   *  (user ruling 2026-08-25): the internal routing state we hold for this
+   *  account — which models it still has capacity for, and when the spent
+   *  ones come back. Absent on the primary, which reports real usage. */
+  tiers?: TierStanding[]
   /** ⚠ this account CANNOT report usage, ever — not an outage. A
    *  `claude setup-token` key is inference-only and the usage endpoint needs
    *  a scope it never carries (D-147), so the server answers from local state

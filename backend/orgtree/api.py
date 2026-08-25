@@ -1884,10 +1884,11 @@ async def accounts_add_key(body: AccountKey) -> dict[str, Any]:
     STORE FIRST, RESOLVE AFTER -- the user's standing ruling: the CLI shows a
     minted token exactly once ("you won't be able to see it again"), so the
     write to the token store happens before anything can form an opinion
-    about the value. The identity lookup that powers duplicate-of-primary
-    greying runs afterwards, against a copy that is already durable;
-    threadpooled because it is a network call. The token is never echoed
-    back, never logged, and never appears in any response."""
+    about the value. The identity lookup — which supplies the uuid the panel
+    renders beside the row, and nothing else since D-148 retired the
+    duplicate-of-primary check — runs afterwards, against a copy that is
+    already durable; threadpooled because it is a network call. The token is
+    never echoed back, never logged, and never appears in any response."""
     from fastapi.concurrency import run_in_threadpool
     try:
         rec = await run_in_threadpool(accounts.register_key, body.token)

@@ -17,13 +17,16 @@
 // what a turn would actually do. A dimmed chip means no row has capacity;
 // it sits where capacity returns first, tooltip saying when.
 //
-// A key row that resolved to the SAME account as the login is greyed whole
-// and excluded from routing (`duplicate` — server-computed): failing over
-// to it would re-spend the identical limit (measured live 2026-08-24
-// 21:20Z, the no-op self-switch incident).
+// ⚠ THERE IS NO LONGER A GREYED "same account as the login" ROW (user ruling
+// 2026-08-25, retiring an earlier ruling the same day). A `claude setup-token`
+// key cannot read its own profile, so the account behind it never resolves and
+// the check could only fire for rows carried over from the old registry — a
+// guard that fires for one row in a hundred just makes the panel inexplicable.
 
 import { useEffect, useRef, useState } from 'react'
-import type { AccountsPayload, AccountUsage, ToastFn, UsageLimit } from '../types'
+import type {
+  AccountsPayload, AccountUsage, TierStanding, ToastFn, UsageLimit,
+} from '../types'
 import {
   addAccountKey, deleteAccountKey, getAccounts, getAccountUsage,
   setAccountKeyOrder,
@@ -50,10 +53,69 @@ const usageResets = (iso: string | null): string => {
   if (h >= 48) return `resets in ${Math.floor(h / 24)}d ${h % 24}h`
   return h > 0 ? `resets in ${h}h ${m}m` : `resets in ${m}m`
 }
+/** the wall-clock time a refresh lands, for the "until when" half of the key
+ *  rows' standing view. The relative form above answers "how long"; on its own
+ *  it is useless for planning past an hour or two, which is exactly the range
+ *  a weekly limit sits in. Dated only when it is not today. */
+const atClock = (iso: string | null): string => {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (!Number.isFinite(d.getTime())) return ''
+  const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+  return d.toDateString() === new Date().toDateString() ? time
+    : `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${time}`
+}
 const sevOf = (l: UsageLimit): '' | 'warn' | 'crit' => {
   const pct = Math.max(0, Math.min(100, l.percent ?? 0))
   return l.severity === 'critical' || pct >= 90 ? 'crit'
     : (l.severity && l.severity !== 'normal') || pct >= 75 ? 'warn' : ''
+}
+
+/** a key row's answer in place of percentages (user ruling 2026-08-25): the
+ *  routing state this machine holds FOR THAT ACCOUNT — which models can still
+ *  run on it, which are spent, and when the spent ones come back. It is the
+ *  same `usage_refreshes` dict the router reads, so this view cannot describe
+ *  a state a spawn would disagree with.
+ *
+ *  ⚠ WORD IT AS CAPACITY, NEVER AS ROUTING. "has capacity" is a fact about
+ *  this account alone; where a tier actually RUNS is the gutter chips' job,
+ *  and the two differ constantly — a fallback has capacity for opus the whole
+ *  time opus is happily running on the primary above it. */
+export function TierStandings({ tiers }: { tiers: TierStanding[] }) {
+  const pool = tiers.find((t) => (t.pool ?? []).length > 1)?.pool ?? null
+  return (
+    <>
+      <div className="acct-tiers">
+        {tiers.map((t) => (
+          <div className="acct-tier-row" key={t.tier}>
+            <span className={'tier t-' + t.tier
+              + (t.available ? '' : ' acct-chip-dim')}>
+              {TIER_LETTER[t.tier] ?? t.tier.slice(0, 1).toUpperCase()}</span>
+            <span className="acct-tier-name">{t.tier}</span>
+            {t.available
+              ? <span className="acct-tier-ok">has capacity</span>
+              : <span className="acct-tier-wait">
+                {usageResets(t.refresh_at).replace('resets', 'refreshes')
+                  || 'refreshes soon'}
+                {atClock(t.refresh_at)
+                  && <span className="dim"> · at {atClock(t.refresh_at)}</span>}
+              </span>}
+          </div>
+        ))}
+      </div>
+      {/* the pool membership comes from the SERVER (`pool`), not a second copy
+          of the tier list living here — otherwise the day fable joins the
+          bucket, the router and this footnote quietly disagree. Without it, a
+          model marked spent that the user never saw hit a limit looks like a
+          bug rather than the shared bucket it is. */}
+      {pool && (
+        <div className="dim acct-tier-note">
+          {pool.join(', ')} share one usage pool — a limit on any one of them
+          is a limit on all three.
+        </div>
+      )}
+    </>
+  )
 }
 
 /** one account's bars — the same markup family as the header usage modal */
@@ -63,6 +125,17 @@ export function UsageBars({ u }: { u: AccountUsage }) {
   // produces invites the user to keep clicking a button that will never do
   // anything. `unsupported` is a settled fact, so it reads as a note; an
   // error is a condition that might clear, so it keeps the warning styling.
+  // The standing table comes FIRST — it is the answer; the note below only
+  // explains the missing percentages.
+  if (u.tiers?.length) {
+    return (
+      <>
+        <TierStandings tiers={u.tiers} />
+        {u.unsupported && <div className="acct-unsupported">{u.error
+          ?? 'usage limits are not available for this kind of key'}</div>}
+      </>
+    )
+  }
   if (u.unsupported) {
     return <div className="acct-unsupported">{u.error
       ?? 'usage limits are not available for this kind of key'}</div>
@@ -180,17 +253,24 @@ export function AccountsPanel({ toast, close }: {
     </span>
   )
 
-  // the key rows keep the button — the column discipline wants it there, and
-  // silently omitting it would leave "why do fallbacks have no usage?"
-  // unanswered — but it says up front that there is nothing to fetch (D-147)
   const usageBtn = (id: string, title = 'usage limits') => (
     <button className="acct-btn acct-usage-btn" title={title}
       onClick={() => openUsage(id)}>
       <DataUsageIcon fontSize="inherit" /></button>
   )
+  // a key row's button no longer apologises for having nothing — it now opens
+  // this machine's own record for that account (user ruling 2026-08-25)
   const KEY_USAGE_TITLE =
-    'usage limits are not available for `claude setup-token` keys — they are '
-    + 'inference-only, so this account cannot be asked. Click for detail.'
+    'which models still have capacity on this account, and when the spent '
+    + 'ones refresh'
+
+  // the heading follows the CONTENT: a key row shows this machine's capacity
+  // record, not usage, and heading that "usage — fallback 1" is what would
+  // send a reader hunting for percentages that are never coming
+  const isCapacityView = (id: string): boolean => {
+    const u = usage[id]
+    return !!(u && u !== 'loading' && u.tiers?.length)
+  }
 
   // the row's human name, for the modal header — the payload's own label
   // once it arrives, else derived from position
@@ -247,14 +327,7 @@ export function AccountsPanel({ toast, close }: {
                 {chips(k.id)}
                 <div
                   className={'acct-row acct-key'
-                    + (overId === k.id ? ' acct-over' : '')
-                    + (k.duplicate ? ' acct-dup' : '')}
-                  title={k.duplicate
-                    ? 'this key belongs to the account you are signed in as — '
-                      + 'models will not line up on it (the primary row above '
-                      + 'already is that account, and switching to it would '
-                      + 're-spend the same limits)'
-                    : undefined}
+                    + (overId === k.id ? ' acct-over' : '')}
                   draggable
                   onDragStart={(e) => {
                     dragRef.current = k.id
@@ -329,7 +402,9 @@ export function AccountsPanel({ toast, close }: {
           <div className="overlay"
             onClick={(e) => { e.stopPropagation(); setUsageFor(null) }}>
             <div className="settings usage-modal" onClick={(e) => e.stopPropagation()}>
-              <h3><DataUsageIcon fontSize="inherit" /> usage — {rowLabel(usageFor)}</h3>
+              <h3><DataUsageIcon fontSize="inherit" />{' '}
+                {isCapacityView(usageFor) ? 'model capacity' : 'usage'}
+                {' — '}{rowLabel(usageFor)}</h3>
               {usage[usageFor] === 'loading' || !usage[usageFor]
                 ? <div className="dim">reading usage…</div>
                 : <UsageBars u={usage[usageFor] as AccountUsage} />}

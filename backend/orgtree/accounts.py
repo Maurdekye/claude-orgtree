@@ -28,12 +28,21 @@ token store (`tokens.py`, its own file); `accounts.json` holds opaque row ids
 on every write and raises rather than redacting.
 
 A key row carries the `account_uuid` its token resolved to (one profile call
-at registration, best-effort, lazily retried) for exactly one purpose: a key
-that belongs to the SAME account the machine is signed in as is a duplicate
-lane, not an alternative — failing over to it re-spends the identical limit
-(measured live 2026-08-24 21:20Z: the re-driven turn hit the same session
-limit 4.2 s later). Such rows are excluded from routing and greyed in the
-panel (user ruling 2026-08-25).
+at registration, best-effort, lazily retried). It is IDENTITY for the panel to
+display and nothing more.
+
+⚠ DUPLICATE-OF-PRIMARY DETECTION IS GONE (user ruling 2026-08-25, second
+ruling of the day, and it RETIRES the first). A key that resolved to the same
+account as the login used to be excluded from routing and greyed in the panel,
+because failing over to it re-spends the identical limit (measured live
+2026-08-24 21:20Z: the re-driven turn hit the same session limit 4.2 s later).
+The observation stands; the DETECTION does not. D-147 established that a
+`claude setup-token` key is inference-only, and the profile endpoint wants the
+same `user:profile` scope the usage endpoint does — so `account_uuid` never
+resolves for a key registered from now on, and the check could only ever fire
+for rows carried over from a v1 registry. A guard that fires for one row in a
+hundred is worse than none: it makes the panel's behaviour unexplainable. Do
+not reintroduce it without a way to learn a key's account that actually works.
 """
 from __future__ import annotations
 
@@ -61,6 +70,18 @@ PRIMARY = "primary"
 #: an unknown tier simply never acquires a mark and so always resolves to the
 #: first account in priority order, which is the right degradation.
 TIERS = ("haiku", "sonnet", "opus", "fable")
+
+#: haiku, sonnet and opus all bill against ONE subscription usage pool, so
+#: running out on any of them is running out on all three (user ruling
+#: 2026-08-25). `fable` is deliberately NOT in it — the user named exactly
+#: these three, and fable's own lane is billed separately.
+POOLED = ("haiku", "sonnet", "opus")
+
+
+def _pool_of(tier: str) -> tuple[str, ...]:
+    """The tiers that share `tier`'s usage pool, `tier` itself included. An
+    unpooled or unknown tier is a pool of one, so callers never special-case."""
+    return POOLED if tier in POOLED else (str(tier or ""),)
 
 PROFILE_URL = "https://api.anthropic.com/api/oauth/profile"
 OAUTH_BETA = "oauth-2025-04-20"
@@ -134,8 +155,9 @@ def _migrate_v1(doc: dict[str, Any]) -> dict[str, Any]:
     able to see it again" — deleting those would force a re-mint). Old rows
     were keyed on account uuid and the token store keyed on the same, so the
     old uuid simply BECOMES the row id, and — usefully — it is also the row's
-    resolved `account_uuid`, so duplicate-of-primary detection works for
-    migrated rows with no network call.
+    resolved `account_uuid`, so a migrated row shows its identity in the panel
+    with no network call. (It is ONLY migrated rows that ever do: see the
+    module docstring on why a freshly registered key never resolves.)
 
     Deterministic from (v1 doc, token store), so readers can migrate in
     memory on every load; the first WRITE persists version 2. Reads never
@@ -331,7 +353,8 @@ def register_key(token: str) -> dict[str, Any]:
     ("you won't be able to see it again"), so the write to the token store
     happens before anything can form an opinion about the value; the identity
     lookup runs afterwards, against a token that is already durable, and its
-    failure costs nothing but a greyed-out-duplicate check that will retry.
+    failure costs nothing but the uuid shown beside the row (which is in
+    practice always — a setup-token key cannot read its own profile).
 
     Idempotent on the VALUE: re-pasting a key that is already stored lands on
     its existing row (same id — the id IS a hash of the token) and keeps its
@@ -415,7 +438,18 @@ def record_limit(account: str, tier: str, refresh_at: float) -> bool:
     tier is used up until `refresh_at`. Unknown accounts and unknown tiers
     are refused as no-ops returning False — a stale attribution (a row
     deleted mid-turn, an `api-key` lane, `key:unattributed`) must not be able
-    to resurrect or invent a row."""
+    to resurrect or invent a row.
+
+    ⚠ THE MARK LANDS ON THE WHOLE POOL, not just the tier that hit the wall
+    (user ruling 2026-08-25): haiku, sonnet and opus share one subscription
+    bucket, so a sonnet limit on this account IS an opus limit on it. Before
+    this, an opus turn would fail over correctly and the very next haiku turn
+    would walk straight back into the same exhausted account, because its own
+    tier carried no mark — one wasted spawn per sibling tier, every time.
+
+    The mirror NEVER SHORTENS an existing mark: if a sibling is already parked
+    later than `refresh_at`, that later time is the one still known to be
+    true, and lowering it would hand back capacity nobody watched return."""
     account, tier = str(account or ""), str(tier or "").lower()
     if tier not in TIERS:
         return False
@@ -429,7 +463,13 @@ def record_limit(account: str, tier: str, refresh_at: float) -> bool:
         ts = float(refresh_at)
         if ts <= now:
             return False                       # already refreshed: not a mark
-        doc["usage_refreshes"].setdefault(account, {})[tier] = ts
+        marks = doc["usage_refreshes"].setdefault(account, {})
+        for t in _pool_of(tier):
+            # `_prune_expired` ran just above, so anything still in `marks` is
+            # a live float — a survivor later than `ts` outranks the mirror.
+            prev = marks.get(t)
+            marks[t] = (max(ts, float(prev))
+                        if isinstance(prev, (int, float)) else ts)
         save(doc)
         return True
 
@@ -437,14 +477,14 @@ def record_limit(account: str, tier: str, refresh_at: float) -> bool:
 def _routing_order(doc: dict[str, Any], live_uuid: str) -> list[str]:
     """Priority order: the signed-in account first (skipped entirely when
     nobody is signed in — an ambient spawn with no login authenticates as
-    nothing), then key rows in list order, MINUS any key that resolved to the
-    same account as the live login (a duplicate lane, not an alternative)."""
+    nothing), then EVERY key row in list order.
+
+    ⚠ No duplicate-of-primary exclusion any more (user ruling 2026-08-25 —
+    see the module docstring). `live_uuid` is still taken because "is anyone
+    signed in at all" decides whether `primary` is a lane; it no longer
+    filters keys."""
     order: list[str] = [PRIMARY] if live_uuid else []
-    for k in doc["keys"]:
-        au = str(k.get("account_uuid") or "")
-        if live_uuid and au and au == live_uuid:
-            continue
-        order.append(str(k["id"]))
+    order += [str(k["id"]) for k in doc["keys"]]
     return order
 
 
@@ -537,8 +577,6 @@ def readout() -> dict[str, Any]:
     doc = load()
     live = live_identity()
     now = time.time()
-    dup = {k["id"] for k in doc["keys"]
-           if live["uuid"] and str(k.get("account_uuid") or "") == live["uuid"]}
     assignments = {}
     for tier in TIERS:
         r = _resolve_in(doc, live["uuid"], tier, now)
@@ -550,17 +588,53 @@ def readout() -> dict[str, Any]:
         "primary": {"signed_in": bool(live["uuid"]),
                     "email": live["email"] or None},
         # `account_uuid` is IDENTITY, never credential (user ruling
-        # 2026-08-25: render each registered key's uuid in the list). It is
-        # already what the duplicate check compares, and `/api/accounts` is
-        # frozen whole for kiosk visitors, so this adds no public surface.
-        # `ordinal` rides along so the panel's "fallback N" and the desk's
-        # serving label come from ONE count rather than two.
-        "keys": [{"id": k["id"], "duplicate": k["id"] in dup,
-                  "ordinal": i + 1,
+        # 2026-08-25: render each registered key's uuid in the list), and
+        # `/api/accounts` is frozen whole for kiosk visitors, so this adds no
+        # public surface. `ordinal` rides along so the panel's "fallback N"
+        # and the desk's serving label come from ONE count rather than two.
+        # (No `duplicate` flag: that feature is retired — module docstring.)
+        "keys": [{"id": k["id"], "ordinal": i + 1,
                   "account_uuid": str(k.get("account_uuid") or "") or None}
                  for i, k in enumerate(doc["keys"])],
         "assignments": assignments,
     }
+
+
+def tier_standing(doc: dict[str, Any], account: str,
+                  now: float | None = None) -> list[dict[str, Any]]:
+    """THIS ACCOUNT's own capacity, tier by tier — what the key rows' usage
+    view shows in place of usage percentages (user ruling 2026-08-25: "show
+    the information from the internal multi-account state per that key: which
+    models have capacity on it, and which ones are waiting to refresh, and
+    until when"). It is a straight read of `usage_refreshes[account]`, the
+    same dict `_resolve_in` routes off, so the view cannot describe a state
+    the router does not hold.
+
+    ⚠ `available` here means "THIS ACCOUNT has capacity for this tier", NOT
+    "this tier runs here" — the panel's gutter chips answer that second
+    question and the two legitimately differ: a fallback can have capacity for
+    opus while opus still runs on the primary above it. Say "has capacity",
+    never "is serving".
+
+    `pool` lists the tiers whose capacity is the same capacity, this one
+    included, and is `None` for a tier that stands alone — so the view can
+    explain a mark the user never saw a limit for without a second copy of
+    `POOLED` living in the frontend."""
+    now = time.time() if now is None else now
+    ref = (doc["usage_refreshes"].get(account) or {})
+    out: list[dict[str, Any]] = []
+    for tier in TIERS:
+        try:
+            ts = float(ref.get(tier))          # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            ts = 0.0
+        marked = ts > now                      # expired reads as capacity
+        siblings = _pool_of(tier)
+        out.append({"tier": tier,
+                    "available": not marked,
+                    "refresh_at": _iso(ts) if marked else None,
+                    "pool": list(siblings) if len(siblings) > 1 else None})
+    return out
 
 
 # ------------------------------------------------------------ per-account usage
@@ -578,25 +652,29 @@ def account_usage(account: str) -> dict[str, Any]:
     fetch, plus a lazy `resolve_key_identity` retry justified by "the user is
     already spending a network round-trip on this click". That justification
     died with the round-trip, and the retry was itself a forbidden request:
-    the profile endpoint wants the same scope the usage endpoint does."""
+    the profile endpoint wants the same scope the usage endpoint does.
+
+    ⚠ AND A KEY ROW ANSWERS WITH SOMETHING USEFUL INSTEAD (user ruling
+    2026-08-25): `tiers`, this account's own routing standing. Percentages are
+    unobtainable, but which models this account still has capacity for — and
+    when the exhausted ones come back — is state we already hold, and it is
+    what the button was being clicked to find out."""
     account = str(account or "")
     live = live_identity()
     if account == PRIMARY:
         data = limits.fetch()
-        return {"account": PRIMARY, "duplicate": False,
+        return {"account": PRIMARY,
                 "label": live["email"] or "signed-in account",
                 **{k: v for k, v in data.items() if k != "account"}}
     doc = load()
     row = next((k for k in doc["keys"] if k["id"] == account), None)
     if row is None:
-        return {"account": account, "label": account, "duplicate": False,
+        return {"account": account, "label": account,
                 "available": False, "error": "no such key"}
     tok = tokens.get(account)
     if not tok:
-        return {"account": account, "label": account, "duplicate": False,
+        return {"account": account, "label": account,
                 "available": False, "error": "no stored key for this row"}
-    dup = bool(live["uuid"]
-               and str(row.get("account_uuid") or "") == live["uuid"])
     ordinal = fallback_ordinal(doc, account)      # the one count, shared
     label = f"fallback {ordinal}" if ordinal else "fallback"
     # ⚠ WE DO NOT ASK. A `claude setup-token` key is INFERENCE-ONLY and the
@@ -607,8 +685,9 @@ def account_usage(account: str) -> dict[str, Any]:
     # rate-limit window by being politely asked the same forbidden question
     # on every panel open. Backoff would have been the wrong shape: the fix
     # for a request that must never be made is not to make it.
-    return {"account": account, "label": label, "duplicate": dup,
+    return {"account": account, "label": label,
             "available": False, "unsupported": True,
+            "tiers": tier_standing(doc, account),
             "error": "usage limits can't be read for a `claude setup-token` "
                      "key — these are inference-only, and the usage endpoint "
                      "needs a permission they are never granted. Nothing is "

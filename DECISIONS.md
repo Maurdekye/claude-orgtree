@@ -2987,6 +2987,76 @@ before, on a different lane, so cramming it into the same enum would make
 a second, unrelated setting existing). A boolean gated by `api_fallback`
 mirrors how `api_fallback` itself is not folded into `headless`.
 
+### D-148 · one usage pool for haiku/sonnet/opus; a key row shows its own state
+
+Ruling (user, 2026-08-25, three parts in one message):
+
+1. **haiku, sonnet and opus bill against ONE bucket.** "if any one of them hits
+   a usage limit, then mirror that usage refresh time to the other two on that
+   account." `record_limit` — still the only writer of routing state — now
+   writes the mark to every tier in `POOLED = (haiku, sonnet, opus)`. `fable`
+   is deliberately outside it: the user named exactly three, and fable's lane
+   is billed separately (D-084's `fable_api_fallback` exists because of that).
+2. **A key row's usage button shows the internal routing state for that
+   account**, not usage percentages: which models have capacity, which are
+   waiting, and until when. D-147 established the percentages are unobtainable
+   for a setup-token key; this is what to put there instead.
+3. **Duplicate-of-primary greying is dropped** — "since thats infeasible".
+
+On (1), what was actually broken: an opus turn hit the wall, marked opus, and
+failed over correctly — and the next *haiku* turn walked straight back into the
+same exhausted account, because haiku carried no mark of its own. One wasted
+spawn per sibling tier, every time, each one re-earning the same 403/429. The
+test therefore ends on `resolve("haiku")` rather than on the dict: the dict is
+the mechanism, the wasted spawn was the defect.
+
+⚠ **The mirror is a FLOOR, never a ceiling.** A sibling already parked LATER
+keeps its later time; lowering it would hand back capacity nobody watched
+return. This is not hypothetical on deploy day: every `accounts.json` already
+on disk was written by the old single-tier writer, so lopsided pool state is
+exactly the state this ships into. (It cannot arise afterwards — once the
+mirror exists, no pair of `record_limit` calls can leave a pool uneven, which
+is why the test seeds that fixture by hand.)
+
+On (2), `tier_standing()` is a straight read of the same `usage_refreshes`
+dict `_resolve_in` routes off, so the view cannot describe a state a spawn
+would disagree with. ⚠ **`available` means "this account has capacity for this
+tier", NOT "this tier runs here."** The two differ constantly — a fallback has
+capacity for opus the whole time opus is happily running on the primary above
+it — and the panel's gutter chips, not this table, answer the routing
+question. Wording it as routing would tell the user their untouched fallback
+was out of opus whenever the primary happened to be serving it. The payload
+also carries each tier's `pool`, so the modal's "these three share one bucket"
+footnote comes from the server rather than from a second copy of `POOLED`
+living in the frontend.
+
+On (3), this RETIRES the same-day ruling in D-145 that greyed such rows and
+excluded them from routing. The underlying observation stands (measured
+2026-08-24 21:20Z: the re-driven turn hit the identical session limit 4.2 s
+later) — what died is the DETECTION. Per D-147 the profile endpoint wants the
+same `user:profile` scope the usage endpoint does, so `account_uuid` never
+resolves for a key registered from now on, and the check could only ever fire
+for rows carried over from a v1 registry, which are keyed by uuid for
+unrelated reasons. A guard that fires for one row in a hundred is worse than
+no guard: it makes the panel's behaviour unexplainable. This settles the "not
+yet chased" consequence D-147 left open. Do not reintroduce it without a way
+to learn a key's account that actually works — and note that if such a way
+ever exists, it is also the way to make per-key usage percentages work, so
+that discovery reopens both entries at once.
+
+Bounds:
+- `record_limit`'s existing refusals are untouched and re-asserted: unknown
+  account, unknown tier, and an already-past refresh time each mark nothing.
+  An unknown tier is a pool of one, so a bad `_tier` string cannot park the
+  whole bucket.
+- The primary row is unchanged — it reports real usage, and a standing table
+  there would be a second answer to a question already answered.
+- Building the table makes no network call (D-147's rule survives the new
+  feature; asserted under a tripwire that is itself proven able to fire).
+- `account_uuid` is still stored and still rendered beside the row: it is
+  identity for the user to read, and only the ROUTING and GREYING behaviour
+  keyed off it is gone.
+
 ### D-147 · a `claude setup-token` key can NEVER read usage limits — do not ask
 
 Ruling (2026-08-25, from evidence rather than preference): `account_usage`
@@ -3031,10 +3101,10 @@ scope is fixed when a token is issued — so "re-mint it" is not a remedy; only
 a full `claude auth login` grants `user:profile`, which is the in-app-OAuth
 path D-144 rejected on ToS grounds. The same scope wall applies to
 `/api/oauth/profile`, so `resolve_key_identity`'s lazy retry was removed from
-the usage path too; ⚠ **a consequence not yet chased: duplicate-of-primary
-detection may therefore never resolve for a NEWLY registered key** (the one
-row on this machine has a uuid only because a v1 migration keyed it that way,
-not because a profile call succeeded).
+the usage path too; ⚠ **a consequence: duplicate-of-primary detection can
+never resolve for a NEWLY registered key** (the one row on this machine has a
+uuid only because a v1 migration keyed it that way, not because a profile call
+succeeded). Chased and settled the same day — the feature was dropped: D-148.
 
 Load-bearing: `unsupported` is a distinct field from `available: false`
 precisely so the UI can tell "impossible" from "unknown" — rendering them
@@ -3151,11 +3221,14 @@ The accounts, and the panel that IS their UI:
   nothing has capacity the resolver names the soonest-refreshing account:
   the chip sits there dimmed with the refresh time, and a spawn probes it —
   a failed probe re-marks it, self-bounding.
-- **A key that IS the primary account** (matched by `account.uuid`, resolved
+- ~~**A key that IS the primary account** (matched by `account.uuid`, resolved
   from the key once at registration, lazily retried) is greyed whole,
   tooltip'd, and EXCLUDED from routing: switching to it re-spends the
   identical limit — the 2026-08-24 21:20Z no-op self-switch, now structural
-  rather than incidental.
+  rather than incidental.~~ **RETIRED the same day by D-148**: a setup-token
+  key cannot read its own profile (D-147), so `account.uuid` never resolves
+  and the check could only fire for v1-migrated rows. Every key row is a
+  routing lane now.
 - **The header usage button lists EVERY registered account** — primary
   first, then each fallback — one section of bars per account
   (`GET /api/accounts/usage`, per-key readouts fetched with the key's own
