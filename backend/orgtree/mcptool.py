@@ -104,7 +104,8 @@ TOOLS: list[dict[str, Any]] = [
                     "description": "files to send WITH the mail — paths "
                                    "relative to your working folder, ≤25 MB "
                                    "each. Recipients: 'user' (they get "
-                                   "download cards on the mail — say what "
+                                   "download cards on the mail — an IMAGE "
+                                   "renders viewable in place — say what "
                                    "you attached in the body) and '@net:' "
                                    "peers (files land in the receiving "
                                    "agents' uploads/). Local agent "
@@ -312,7 +313,10 @@ TOOLS: list[dict[str, Any]] = [
             "a user-audience grant only — anyone else is refused (not "
             "routed; send the document to your superior instead). "
             "Non-blocking: nothing voids it and no reply is implied — keep "
-            "working. Body is markdown, ≤64 KB. Present again with "
+            "working. Body is markdown, ≤64 KB; relative image paths "
+            "(![](outbox/chart.png)) resolve against your working folder "
+            "and render inline, so a report can carry its figures. Present "
+            "again with "
             "`replaces` set to the returned id to update the same card in "
             "place instead of stacking a second one (newest 10 per agent "
             "are kept)."),
@@ -757,12 +761,19 @@ TOOLS: list[dict[str, Any]] = [
             "log, an export, an image, a build artifact. It is the only way "
             "they can actually receive the bytes: pasting the contents into a "
             "message, or naming the path it sits at, is not a delivery. "
+            "An IMAGE file (png/jpg/gif/webp/svg/…) renders in the chat AS "
+            "THE PICTURE, viewable in place (click = full size, download "
+            "still on the card) — so this is also how you PRESENT an image: "
+            "a screenshot, a render, a diagram. "
             "Sendable paths: files in your "
             "working folder (relative paths resolve there), the workspace, or "
             "any folder you hold. Announce the file in your reply or report — "
             "the card sits at the point in the chat where you sent it. "
             "(For a document meant to be READ in-page rather than downloaded, "
-            "orgtree_present is the other surface.)"),
+            "orgtree_present is the other surface — and your replies, mail "
+            "to the user and presented documents can also EMBED images "
+            "inline: a relative markdown image like ![](outbox/plot.png) "
+            "resolves against your working folder.)"),
         "inputSchema": {"type": "object",
                         "properties": {
                             "path": {"type": "string",

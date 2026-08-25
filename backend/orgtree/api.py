@@ -3960,6 +3960,13 @@ def _agent_send_file(org: Org, nid: str, a: dict[str, Any]) -> dict[str, Any]:
     note = " ".join(str(a.get("note") or "").split())[:300]
     if note:
         sent["note"] = note
+    # image files render inline in the chat card (user spec 2026-08-25) — the
+    # hint says which of the two things the user is actually looking at
+    if re.search(r"\.(png|jpe?g|gif|webp|avif|bmp|svg|ico)$", final, re.I):
+        return {"sent": sent,
+                "hint": "delivered — the image renders viewable in your "
+                        "chat (the user can click it full-size or download "
+                        "it); announce it in your reply or report"}
     return {"sent": sent,
             "hint": "delivered — the user sees a download card in your chat; "
                     "announce the file in your reply or report"}

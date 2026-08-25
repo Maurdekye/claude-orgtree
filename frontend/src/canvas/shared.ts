@@ -7,6 +7,9 @@
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 import { useEffect, useRef, useState } from 'react'
+// side effect: the document-level "click a markdown image → full-size viewer"
+// listener — loaded here because every .md surface renders through this module
+import './lightbox'
 import { onLiveBump } from '../livebus'
 import type { DependencyList } from 'react'
 import type {
@@ -469,8 +472,8 @@ export const CopyIcon =
 const CheckIcon =
   '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">'
   + '<path d="M3 8.5l3.5 3.5L13 4.5"/></svg>'
-const wrapCodeBlocks = (html: string) => {
-  if (!html.includes('<pre')) return html
+const wrapCodeBlocks = (html: string, imgBase?: string) => {
+  if (!html.includes('<pre') && !html.includes('<img')) return html
   const tpl = document.createElement('template')
   tpl.innerHTML = html
   tpl.content.querySelectorAll('pre').forEach(pre => {
@@ -485,6 +488,24 @@ const wrapCodeBlocks = (html: string) => {
     btn.setAttribute('aria-label', 'Copy code')
     btn.innerHTML = CopyIcon
     wrap.appendChild(btn)
+  })
+  // images (user spec 2026-08-25): a RELATIVE src — `![](outbox/plot.png)` in
+  // an agent's reply, a mail body, a presented doc — names a file in the
+  // author's working folder, which the /file endpoint already serves. Resolve
+  // it against the caller's per-node base; absolute/data/anchor srcs pass
+  // untouched. Runs on SANITIZED html, and builds only same-origin /file URLs
+  // from the path, so no new scheme can enter here. decode-then-encode:
+  // marked percent-encodes what it parses, the query param needs exactly one
+  // layer. (No base → leave the src alone; it 404s visibly rather than
+  // silently pointing at the SPA route.)
+  tpl.content.querySelectorAll('img').forEach(img => {
+    const src = img.getAttribute('src') ?? ''
+    if (imgBase && src && !/^([a-z][a-z0-9+.-]*:|\/|#)/i.test(src)) {
+      let rel = src
+      try { rel = decodeURIComponent(src) } catch { /* malformed % — keep raw */ }
+      img.setAttribute('src', imgBase + encodeURIComponent(rel))
+    }
+    img.setAttribute('loading', 'lazy')
   })
   return tpl.innerHTML
 }
@@ -510,12 +531,18 @@ if (typeof document !== 'undefined') document.addEventListener('click', e => {
     }, 1200)
   }).catch(() => {})
 })
-export const md = (text: string | null | undefined): { __html: string } => {
-  const key = text ?? ''
+/** `imgBase` (optional): the node-scoped /file URL prefix relative image
+ *  srcs resolve against — pass `fileBase(slug, nid)` where the author's
+ *  files are known; the cache keys on it (NUL joins the halves — it never
+ *  occurs in a URL prefix, so two pairs cannot alias), and the same text
+ *  rendered for two nodes never crosses. */
+export const md = (text: string | null | undefined,
+                   imgBase?: string): { __html: string } => {
+  const key = (imgBase ?? '') + '\u0000' + (text ?? '')
   let hit = _mdCache.get(key)
   if (hit === undefined) {
     hit = { __html: wrapCodeBlocks(DOMPurify.sanitize(
-      marked.parse(escapeAngles(key), { gfm: true, breaks: true, async: false }))) }
+      marked.parse(escapeAngles(text ?? ''), { gfm: true, breaks: true, async: false })), imgBase) }
     if (_mdCache.size > 800) _mdCache.clear()   // bounded; refills on demand
     _mdCache.set(key, hit)
   }

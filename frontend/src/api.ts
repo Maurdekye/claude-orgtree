@@ -351,8 +351,10 @@ export const uploadFile = (slug: string, nid: string, file: File): Promise<Uploa
   }, SLOW_TIMEOUT_MS)
 // direct <a href> download target (browser handles the transfer) — BASE-aware
 // so kiosk visitors download through their token prefix
+export const fileBase = (slug: string, nid: string): string =>
+  u(`/api/orgs/${slug}/nodes/${nid}/file?path=`)
 export const fileUrl = (slug: string, nid: string, path: string): string =>
-  u(`/api/orgs/${slug}/nodes/${nid}/file?path=${encodeURIComponent(path)}`)
+  fileBase(slug, nid) + encodeURIComponent(path)
 export const sendMessage = (
   slug: string, nid: string, text: string, attachments?: string[],
   replyTo?: { id?: string; from: string; at?: string; gist: string },

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import {
   audienceAction, BASE, clearInbox, createOrg, deleteOrg,
-  fileUrl, getAudiences, getDefaults, getEvents, getHost, getInbox, getOrgMd,
+  fileBase, fileUrl, getAudiences, getDefaults, getEvents, getHost, getInbox, getOrgMd,
   getOrgNet, getSweepPreview, getTree, getUsageAll, getUsagePeek, killAll, listOrgs,
   markRead, openWs,
   probeHub, putOrgMd,
@@ -1425,6 +1425,7 @@ function InboxPanel({ slug, tree, toast, refresh, close, jumpTo }: {
                   // downloadable and the user's were not. Keyed on the
                   // SENDER — the file sits in that agent's own outbox/.
                   fileHref={(p, m) => fileUrl(slug, m.from, p)}
+                  mdBase={(m) => fileBase(slug, m.from)}
                   waitLabel="unread" jumpTo={jumpTo}
                   onRead={(m: MailEntry) => markRead(slug, [m.id])
                     .then(() => { setReadBump((n) => n + 1); refresh?.() })
@@ -1452,7 +1453,14 @@ function InboxPanel({ slug, tree, toast, refresh, close, jumpTo }: {
                       })
                   }}
                   sender={(id: string) => <SenderChip id={id} nodes={nodes} />} />
+              // the user's OWN sends: attachments live in the RECIPIENT's
+              // uploads/ (the upload landed there at stage time) — key on
+              // m.to; a row without one ('' = unreachable) keeps plain chips
               : <MailList delivered={box.sent ?? []} outgoing
+                  fileHref={(p, m) => typeof m.to === 'string' && m.to
+                    ? fileUrl(slug, m.to, p) : ''}
+                  mdBase={(m) => typeof m.to === 'string' && m.to
+                    ? fileBase(slug, m.to) : ''}
                   sender={(id: string) => <SenderChip id={id} nodes={nodes} />} />}
         </div>
         <div className="row">

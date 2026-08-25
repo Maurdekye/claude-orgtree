@@ -7,7 +7,7 @@
 
 import { useEffect, useState } from 'react'
 import type { ToastFn } from '../types'
-import { dismissDocument, getDocument } from '../api'
+import { dismissDocument, fileBase, getDocument } from '../api'
 import { md } from './shared'
 import { CloseIcon, DocIcon } from '../icons'
 
@@ -81,8 +81,10 @@ export function DocReader({ slug, docId, toast, close }: {
           </button>
         </div>
         {err && <div className="ask-warn">could not load the document: {err}</div>}
+        {/* relative image srcs resolve against the PRESENTING node's files —
+            `![](outbox/chart.png)` embeds a figure the agent saved */}
         {doc && <div className="doc-reader-body md"
-          dangerouslySetInnerHTML={md(doc.body)} />}
+          dangerouslySetInnerHTML={md(doc.body, fileBase(slug, doc.node))} />}
       </div>
     </div>
   )

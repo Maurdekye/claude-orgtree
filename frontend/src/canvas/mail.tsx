@@ -9,9 +9,10 @@ import { useEffect, useRef, useState } from 'react'
 import type { KeyboardEvent, ReactNode } from 'react'
 import type { InboxPayload, OrgEvent, OrgInboxEntry, ToastFn, TreePayload } from '../types'
 import {
-  audienceAction, fileUrl, getNodeInbox, orgInboxRead, orgInboxSend,
+  audienceAction, fileBase, fileUrl, getNodeInbox, orgInboxRead, orgInboxSend,
   orgInboxUpload,
 } from '../api'
+import { AttachThumb, isImg } from './img'
 import {
   AttachIcon, CloseIcon, DownloadIcon, EditIcon, FileIcon, HearingIcon,
   MailIcon, PublicIcon,
@@ -38,8 +39,14 @@ export interface MailListProps {
   jumpTo?: string | null
   /** FR-21: the mail rides along so a call site whose files live under the
    *  SENDER's scratch (the user inbox — each row a different agent's outbox)
-   *  can key the URL on `m.from`; fixed-node call sites ignore it */
+   *  can key the URL on `m.from`; fixed-node call sites ignore it. Returning
+   *  '' declares THIS row's files unreachable (e.g. a Sent row whose
+   *  recipient is unknown) — its attachments fall back to plain chips. */
   fileHref?: (path: string, m: MailRow) => string
+  /** the /file URL prefix relative `![](…)` image srcs in THIS row's body
+   *  resolve against (md's imgBase) — same per-row keying as fileHref;
+   *  '' = don't resolve */
+  mdBase?: (m: MailRow) => string
   /** custom reading-pane body — return non-null to REPLACE the md body AND
    *  the reply UI (asks: the response form IS the body, user ruling
    *  2026-08-04). Null falls through to the normal rendering. */
@@ -52,7 +59,7 @@ export interface MailListProps {
 const MAIL_WINDOW = 40
 
 export function MailList({ pending = [], delivered = [], waitLabel, sender, outgoing,
-  onRead, onReply, onRetract, jumpTo, fileHref, renderBody, rowMark }: MailListProps) {
+  onRead, onReply, onRetract, jumpTo, fileHref, mdBase, renderBody, rowMark }: MailListProps) {
   // ONE order, by send time, always — never grouped, never re-grouped.
   //
   // Unread used to sort as its own block on top, which meant the list
@@ -258,18 +265,27 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
             </div>
             {custom
               ? <div className="mailer-body">{custom}</div>
-              : <div className="mailer-body md" dangerouslySetInnerHTML={md(cur.body)} />}
+              : <div className="mailer-body md"
+                  dangerouslySetInnerHTML={md(cur.body, mdBase?.(cur) || undefined)} />}
             {(cur.attachments ?? []).length > 0 && (
               <div className="attach-row">
                 {/* extern-shaped attachments may lack `path` — a download
-                    link would point at "undefined"; show a plain chip */}
-                {cur.attachments!.map((a) => (fileHref && a.path
-                  ? <a key={a.path} className="attach-chip" title="download"
-                      href={fileHref(a.path, cur)} download={a.name}>
-                      <DownloadIcon fontSize="inherit" /> {a.name}
-                      <span className="dim"> {a.bytes != null ? `${Math.round(a.bytes / 1024)} KB` : ''}</span></a>
-                  : <span key={a.path ?? a.name} className="attach-chip">
-                      <FileIcon fontSize="inherit" /> {a.name}</span>))}
+                    link would point at "undefined"; show a plain chip.
+                    Images render viewable in place (user spec 2026-08-25). */}
+                {cur.attachments!.map((a) => {
+                  const href = (a.path && fileHref?.(a.path, cur)) || ''
+                  const name = a.name ?? a.path ?? 'file'
+                  return href && isImg(name)
+                    ? <AttachThumb key={a.path} href={href} name={name}
+                        meta={a.bytes != null ? `${Math.round(a.bytes / 1024)} KB` : undefined} />
+                    : href
+                      ? <a key={a.path} className="attach-chip" title="download"
+                          href={href} download={a.name}>
+                          <DownloadIcon fontSize="inherit" /> {a.name}
+                          <span className="dim"> {a.bytes != null ? `${Math.round(a.bytes / 1024)} KB` : ''}</span></a>
+                      : <span key={a.path ?? a.name} className="attach-chip">
+                          <FileIcon fontSize="inherit" /> {a.name}</span>
+                })}
               </div>
             )}
             {replyable && (
@@ -362,6 +378,7 @@ export function InboxView({ slug, nid, onRetract, jumpTo }: InboxViewProps) {
             ? <MailList pending={pending} delivered={box.delivered}
                 waitLabel="awaiting next turn" jumpTo={jumpTo}
                 fileHref={(p) => fileUrl(slug, nid, p)}
+                mdBase={() => fileBase(slug, nid)}
                 onRetract={onRetract
                   ? (m) => {
                       const id = m.id ?? ''
@@ -373,7 +390,12 @@ export function InboxView({ slug, nid, onRetract, jumpTo }: InboxViewProps) {
                         .catch(() => setDropped((d) => d.filter((x) => x !== id)))
                     }
                   : undefined} />
-            : <MailList delivered={box.sent ?? []} outgoing />}
+            // sent-to-user attachments were COPIED into this node's own
+            // outbox/ on send (api.py routes them through _agent_send_file),
+            // so the same scratch-keyed href serves the Sent folder too
+            : <MailList delivered={box.sent ?? []} outgoing
+                fileHref={(p) => fileUrl(slug, nid, p)}
+                mdBase={() => fileBase(slug, nid)} />}
       </div>
     </div>
   )

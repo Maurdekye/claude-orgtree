@@ -2405,6 +2405,69 @@ svg.MuiSvgIcon-root {
 }
 a.attach-chip:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); color: var(--accent); }
 
+/* inline images (user spec 2026-08-25): image attachments and send_file
+   images render viewable in place — a bounded thumbnail with a caption,
+   click = the lightbox viewer. Non-images keep the chips above. */
+.attach-thumbwrap {
+  display: inline-flex; flex-direction: column; gap: 2px;
+  max-width: 240px; min-width: 0;
+}
+.attach-thumb {
+  max-width: 240px; max-height: 160px; border-radius: 7px;
+  border: 1px solid var(--line); background: var(--panel);
+  cursor: zoom-in; object-fit: contain; display: block;
+}
+.attach-thumb:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.attach-thumbcap {
+  display: flex; align-items: center; gap: 4px; font-size: 11px;
+  color: var(--ink); min-width: 0;
+}
+.attach-thumbcap .atc-name {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  min-width: 0;
+}
+.attach-thumbwrap .fc-note { color: var(--dim); font-size: 11px; }
+/* the send_file card, image form: the picture IS the card body */
+.filecard.imgcard {
+  flex-direction: column; align-items: stretch; gap: 4px; cursor: default;
+}
+.imgcard-img {
+  max-width: min(100%, 420px); max-height: 280px; border-radius: 6px;
+  cursor: zoom-in; object-fit: contain; display: block; align-self: flex-start;
+}
+.imgcard .fc-body { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.imgcard .fc-note { display: block; width: 100%; }
+/* markdown-embedded images (`![](outbox/x.png)` resolved per node): bounded
+   in the bubble, clickable to view */
+.md img {
+  max-width: min(100%, 480px); max-height: 320px; border-radius: 6px;
+  cursor: zoom-in;
+}
+/* the lightbox: one overlay, always above panels/modals/picker (60) and the
+   top banner (90), below toasts (100) */
+.lb-overlay {
+  position: fixed; inset: 0; z-index: 95;
+  background: rgba(0, 0, 0, .84); cursor: zoom-out;
+  display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: 10px; padding: 24px;
+}
+.lb-img {
+  max-width: 94vw; max-height: 86vh; object-fit: contain; cursor: default;
+  border-radius: 4px; box-shadow: 0 8px 40px rgba(0, 0, 0, .6);
+}
+.lb-bar {
+  display: flex; align-items: center; gap: 14px; cursor: default;
+  color: #ddd; font-size: 12.5px; max-width: 94vw;
+}
+.lb-bar .lb-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lb-bar .lb-dl { color: #9ecbff; }
+.lb-x {
+  position: absolute; top: 14px; right: 18px;
+  background: none; border: none; color: #ddd; font-size: 20px;
+  cursor: pointer; padding: 4px 8px; font-family: inherit;
+}
+.lb-x:hover { color: #fff; }
+
 /* FR-14: the explicit-skip row on a batch tab — dimmer than an option row,
    so "leave unanswered" never reads as just another choice */
 .ask-row.skiprow { opacity: .7; font-style: italic; }

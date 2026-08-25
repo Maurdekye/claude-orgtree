@@ -12,10 +12,12 @@ import type {
   ToolChip as ToolChipData, ToastFn,
 } from '../types'
 import {
-  audienceAction, BASE, compactNode, fileUrl, getChat, getHistory,
+  audienceAction, BASE, compactNode, fileBase, fileUrl, getChat, getHistory,
   getScratch, interruptNode, retractMail, saveScope, sendMessage,
   unstickNode, uploadFile,
 } from '../api'
+import { AttachThumb, fmtBytes, isImg, parseAttachedFiles } from './img'
+import { openLightbox } from './lightbox'
 import {
   ArrowDownIcon, ArrowUpIcon, AutorenewIcon, CloseIcon, DocIcon, DotIcon,
   DownloadIcon, EditIcon, EyeIcon, FileIcon, FolderIcon, FrozenIcon,
@@ -89,10 +91,7 @@ function CopyablePre({ children }: { children: ReactNode }) {
 }
 
 const shortTool = (t: string | null | undefined) => (t || 'tool').replace(/^mcp__([^_]+)__/, '$1: ')
-
-const fmtBytes = (n: number | null | undefined) => (n == null ? '0 B'
-  : n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB`
-  : n >= 1024 ? `${Math.round(n / 1024)} KB` : `${n} B`)
+// fmtBytes moved to img.tsx (the attachment renderers need it too)
 
 export function Activity({ act, dotOnly }: { act?: ActivityInfo; dotOnly?: boolean }) {
   const phase = act?.phase ?? 'thinking'
@@ -896,9 +895,9 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
                   // otherwise flash raw [ORG NOTICES] chrome for the second
                   // before the transcript refresh renders them as a card
                   ? <div key={f.n ?? 'f' + i} className="msg user live md"
-                      dangerouslySetInnerHTML={md(stripEnvelope(splitNotices(f.text).rest))} />
+                      dangerouslySetInnerHTML={md(stripEnvelope(splitNotices(f.text).rest), fileBase(slug, node.id))} />
                   : <div key={f.n ?? 'f' + i} className="msg assistant live">
-                      <div className="md" dangerouslySetInnerHTML={md(f.text)} />
+                      <div className="md" dangerouslySetInnerHTML={md(f.text, fileBase(slug, node.id))} />
                       {/* the live copy is capped at 2000 chars server-side —
                           declare the cut; the transcript row that replaces
                           this one carries the whole text */}
@@ -916,7 +915,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
                 {thinkSecs > 0 ? ` for ${thinkSecs}s` : ''}
               </div>)}
           {draft && <div className="msg assistant live md draft"
-            dangerouslySetInnerHTML={md(draft)} />}
+            dangerouslySetInnerHTML={md(draft, fileBase(slug, node.id))} />}
           {/* D-29: the turn has begun but the CLI has not produced anything
               yet — process launch, hooks, `init`, roughly six seconds during
               which the panel showed nothing but a spinner in the chrome. This
@@ -931,10 +930,14 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
               retractable until delivery (№17) */}
           {(chat?.pending_mail ?? []).filter((m) => m.from === USER).map((m) => (
             <div key={m.id ?? m.at} className="msg user pending pendrow">
-              <span className="md" dangerouslySetInnerHTML={md(m.body)} />
-              {(m.attachments ?? []).map((a) => (
-                <span key={a.path} className="attach-chip dim">
-                  <FileIcon fontSize="inherit" /> {a.name}</span>))}
+              <span className="md" dangerouslySetInnerHTML={md(m.body, fileBase(slug, node.id))} />
+              {/* a queued image renders viewable (dimmed like the bubble) —
+                  the upload already landed, only the MAIL is undelivered */}
+              {(m.attachments ?? []).map((a) => (a.path && isImg(a.name ?? a.path)
+                ? <AttachThumb key={a.path} dim href={fileUrl(slug, node.id, a.path)}
+                    name={a.name ?? a.path} meta={a.bytes != null ? fmtBytes(a.bytes) : undefined} />
+                : <span key={a.path ?? a.name} className="attach-chip dim">
+                    <FileIcon fontSize="inherit" /> {a.name}</span>))}
               {/* journal-riding mail (drained for a mid-task delivery) shows
                   as queued but is past the point of retraction */}
               {m.delivering
@@ -950,7 +953,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
           ))}
           {pending.map((p) => (
             <div key={'q' + p.id} className="msg user pending md"
-              dangerouslySetInnerHTML={md(p.text)} />
+              dangerouslySetInnerHTML={md(p.text, fileBase(slug, node.id))} />
           ))}
           {/* the turn's own failure is the LAST thing that happened, so it
               reads at the end of the stream. It used to render above the whole
@@ -1032,14 +1035,19 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
       {/* staged attachments ride the NEXT message as mail attachments */}
       {attached.length > 0 && (
         <div className="attach-row">
-          {attached.map((a, i) => (
-            <span key={a.path + i} className="attach-chip">
-              <FileIcon fontSize="inherit" /> {a.name}
-              <span className="dim"> {fmtBytes(a.bytes)}</span>
-              <button className="chip-x" title="remove from this message"
-                onClick={() => setAttached((x) => x.filter((_, j) => j !== i))}>
-                <CloseIcon fontSize="inherit" /></button>
-            </span>
+          {/* the bytes are already up in uploads/ (attach() uploads first),
+              so a staged image can show itself rather than a filename */}
+          {attached.map((a, i) => (isImg(a.name)
+            ? <AttachThumb key={a.path + i} href={fileUrl(slug, node.id, a.path)}
+                name={a.name} meta={fmtBytes(a.bytes)}
+                onRemove={() => setAttached((x) => x.filter((_, j) => j !== i))} />
+            : <span key={a.path + i} className="attach-chip">
+                <FileIcon fontSize="inherit" /> {a.name}
+                <span className="dim"> {fmtBytes(a.bytes)}</span>
+                <button className="chip-x" title="remove from this message"
+                  onClick={() => setAttached((x) => x.filter((_, j) => j !== i))}>
+                  <CloseIcon fontSize="inherit" /></button>
+              </span>
           ))}
         </div>
       )}
@@ -1347,16 +1355,37 @@ function ToolChip({ t, slug, nid, onMailLink }: ToolChipProps) {
   const [open, setOpen] = useState(false)
   const expandable = Boolean(t.result || t.diff || t.images)
   // orgtree_send_file → a DOWNLOAD CARD in place of the chip (user spec
-  // 2026-07-31: files flow back — the card sits where the agent sent it)
+  // 2026-07-31: files flow back — the card sits where the agent sent it).
+  // An IMAGE file renders as the picture itself (user spec 2026-08-25:
+  // agents present images as a response): bounded inline, click = full-size
+  // viewer, the download link rides the caption.
   if (t.file) {
+    const file = t.file
+    const href = fileUrl(slug, nid, file.path!)
+    if (isImg(file.name)) {
+      return (
+        <div className="filecard imgcard">
+          <img className="imgcard-img" src={href} alt={file.name}
+            loading="lazy" title={`${file.name} — click to view`}
+            onClick={() => openLightbox(href, { name: file.name, download: href })} />
+          <span className="fc-body">
+            <span className="fc-name">{file.name}</span>
+            <span className="dim"> · {fmtBytes(file.bytes)}</span>
+            <a className="fdl" href={href} download={file.name}
+              title="download"><DownloadIcon fontSize="inherit" /></a>
+            {file.note && <span className="fc-note">{file.note}</span>}
+          </span>
+        </div>
+      )
+    }
     return (
-      <a className="filecard" href={fileUrl(slug, nid, t.file.path!)}
-        download={t.file.name} title="download">
+      <a className="filecard" href={href}
+        download={file.name} title="download">
         <DownloadIcon fontSize="inherit" className="fc-ico" />
         <span className="fc-body">
-          <span className="fc-name">{t.file.name}</span>
-          <span className="dim"> · {fmtBytes(t.file.bytes)}</span>
-          {t.file.note && <span className="fc-note">{t.file.note}</span>}
+          <span className="fc-name">{file.name}</span>
+          <span className="dim"> · {fmtBytes(file.bytes)}</span>
+          {file.note && <span className="fc-note">{file.note}</span>}
         </span>
       </a>
     )
@@ -1426,7 +1455,16 @@ const Msg = memo(function Msg({ m, slug, nid, onMailLink }: {
       </div>
     )
   }
-  const text = m.role === 'user' ? stripEnvelope(rest) : m.text
+  // delivered attachments ride the envelope as [ATTACHED FILE: …] lines —
+  // machine chrome, like the rest of the envelope: parsed OUT of the bubble
+  // and rendered as real attachments below it, images viewable in place
+  // (user spec 2026-08-25)
+  const { rest: text, files } = m.role === 'user'
+    ? parseAttachedFiles(stripEnvelope(rest))
+    : { rest: m.text, files: [] }
+  // relative image srcs in the text (`![](outbox/plot.png)`) resolve against
+  // this node's own files — the way an agent embeds a picture in its reply
+  const fb = fileBase(slug, nid)
   return (
     <div className={'msg ' + m.role + (m.oracle ? ' oracle' : '')}>
       {notices.length > 0 && <NoticeLine notices={notices} />}
@@ -1439,7 +1477,21 @@ const Msg = memo(function Msg({ m, slug, nid, onMailLink }: {
         ? <div key={i} className="tools"><DotIcon fontSize="inherit" className="tooldot" /> {t}</div>
         : <ToolChip key={t.id ?? i} t={t} slug={slug} nid={nid}
             onMailLink={onMailLink} />))}
-      {text && <div className="msgtext md" dangerouslySetInnerHTML={md(text)} />}
+      {text && <div className="msgtext md" dangerouslySetInnerHTML={md(text, fb)} />}
+      {files.length > 0 && (
+        <div className="attach-row">
+          {files.map((f) => {
+            const name = f.path.split('/').pop() || f.path
+            const href = fileUrl(slug, nid, f.path)
+            return isImg(name)
+              ? <AttachThumb key={f.path} href={href} name={name} meta={f.size} />
+              : <a key={f.path} className="attach-chip" href={href}
+                  download={name} title="download">
+                  <DownloadIcon fontSize="inherit" /> {name}
+                  <span className="dim"> {f.size}</span></a>
+          })}
+        </div>
+      )}
       {/* the display copy was capped server-side (steered-log per-row cap) —
           without this line the tail is just silently missing and the message
           reads as complete (user report 2026-08-17) */}
