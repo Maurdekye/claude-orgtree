@@ -35,6 +35,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SUP = ROOT / "backend" / "orgtree" / "supervisor.py"
 TOK = ROOT / "backend" / "orgtree" / "tokens.py"
 ACC = ROOT / "backend" / "orgtree" / "accounts.py"
+API = ROOT / "backend" / "orgtree" / "api.py"
 SUITE = ROOT / "backend" / "tests" / "test_spawn_identity.py"
 
 MUTANTS = [
@@ -339,6 +340,77 @@ MUTANTS = [
      "        entry[\"ran_as\"] = ran",
      "    entry[\"ran_as\"] = \"ambient\"",
      "the ring stamp FOLLOWS the resolved identity (both legs)"),
+
+    # ── §9 the way back · a one-way state machine is the bug ───────────────
+    # ⚠ THE FIRST IS THE HEADLINE. It leaves the writer able to SET and not to
+    # CLEAR — i.e. the ratchet intact behind a function that looks like the
+    # fix. Any check that only ever selects passes it.
+    ("THE RATCHET SURVIVES: the writer can set but never clear",
+     SUP,
+     "        if uuid:\n            o2.d[\"account_token_uuid\"] = uuid\n"
+     "        else:\n            o2.d.pop(\"account_token_uuid\", None)",
+     "        if uuid:\n            o2.d[\"account_token_uuid\"] = uuid",
+     "set → clear → set: the SERVED identity follows every move"),
+
+    ("clearing forgets the SELECTION but leaves the credential in the spawn "
+     "env — 'back to ambient' as a claim the env contradicts",
+     SUP,
+     "    acct = str(org.d.get(\"account_token_uuid\") or \"\")\n"
+     "    if acct and not sbx.is_sandboxed(org):",
+     "    acct = str(org.d.get(\"account_token_uuid\") or \"\") or (\n"
+     "        (lambda o: o[0] if o and tokens.has(o[0]) else \"\")(\n"
+     "            __import__(\"orgtree.accounts\", fromlist=[\"x\"])\n"
+     "            .load().get(\"order\") or []))\n"
+     "    if acct and not sbx.is_sandboxed(org):",
+     "a CLEARED org falls back to ambient, not to no identity at all"),
+
+    ("idempotence lost: setting what is already set rewrites the doc and "
+     "logs a change that never happened",
+     SUP,
+     "        if cur == uuid:\n            return uuid                       "
+     "# no change ⇒ no write, no event",
+     "        if False:\n            return uuid",
+     "clearing an already-ambient org succeeds and writes NOTHING"),
+
+    ("clearing stores a SENTINEL instead of removing the key — two spellings "
+     "of 'on ambient'",
+     SUP,
+     "            o2.d.pop(\"account_token_uuid\", None)",
+     "            o2.d[\"account_token_uuid\"] = \"\"",
+     "a cleared org is byte-shaped like one never selected"),
+
+    ("an account with no stored token is accepted as a selection — every "
+     "turn would spawn on a credential that does not exist",
+     SUP,
+     "        if not tokens.has(uuid):",
+     "        if False:",
+     "an unknown or untokened account is refused, and changes nothing"),
+
+    ("a selection change leaves no durable trace — exactly how the 21:20Z "
+     "selection became a mystery six hours later",
+     SUP,
+     "        o2.d.setdefault(\"events\", []).append(\n"
+     "            {\"op\": \"account_selection\", \"actor\": actor, "
+     "\"at\": now_iso(),",
+     "        _unused = (\n"
+     "            {\"op\": \"account_selection\", \"actor\": actor, "
+     "\"at\": now_iso(),",
+     "every selection change is durably recorded, credential-free"),
+
+    ("the serving payload ECHOES the stored intent instead of resolving it",
+     API,
+     "    ident = supervisor.identity_in_env(supervisor.spawn_env(org), org)\n"
+     "    label = ident",
+     "    ident = str(org.d.get(\"account_token_uuid\") or \"\") or \"ambient\"\n"
+     "    label = ident",
+     "the response is the RESOLVED identity, not an echo of the request"),
+
+    ("the endpoint swallows a bad selection and answers 200",
+     API,
+     "    except supervisor.UnknownAccount as e:\n"
+     "        raise HTTPException(422, str(e)) from None",
+     "    except supervisor.UnknownAccount:\n        pass",
+     "the ENDPOINT round-trips, and GET agrees with PUT"),
 ]
 
 
