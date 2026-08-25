@@ -3,7 +3,7 @@ import type { ReactNode } from 'react'
 import {
   audienceAction, BASE, clearInbox, createOrg, deleteOrg,
   fileUrl, getAudiences, getDefaults, getEvents, getHost, getInbox, getOrgMd,
-  getOrgNet, getSweepPreview, getTree, getUsage, getUsagePeek, killAll, listOrgs,
+  getOrgNet, getSweepPreview, getTree, getUsageAll, getUsagePeek, killAll, listOrgs,
   markRead, openWs,
   probeHub, putOrgMd,
   resumeFrozen, runOp, saveDefaults, saveKiosk, saveSettings, sendMessage,
@@ -22,7 +22,7 @@ import { DirList } from './forms'
 import { FolderPickerHost } from './picker'
 import { deskDpi, fallbackActive, orgPxc, setDeskDpi, usePolled, TIERS } from './canvas/shared'
 import { AskCard } from './canvas/asks'
-import { AccountsPanel } from './canvas/accounts'
+import { AccountsPanel, UsageBars } from './canvas/accounts'
 import { addPending, dropPending, ingestPulse, ingestStream, resetConvos } from './convo'
 import type {
   AskInfo, AudiencesPayload, DefaultsPayload, InboxPayload, KioskSpecRequest,
@@ -300,14 +300,15 @@ export default function App() {
           <GitHubIcon fontSize="inherit" /></a>
         {!BASE &&
           <button className={'h1-usage' + (usageAlert ? ' u-' + usageAlert.sev : '')}
-            title={usageAlert?.title ?? 'Claude subscription usage'}
+            title={usageAlert?.title ?? 'Claude usage — every registered account'}
             onClick={() => setShowUsage(true)}>
             <DataUsageIcon fontSize="inherit" /></button>}
-        {/* D-144: the account registry. Beside the usage bars deliberately —
-            they answer the same question ("which entitlement is paying, and
-            how close is it to a wall?") and are read together. */}
+        {/* the accounts panel (machine-local routing, 2026-08-25). Beside
+            the usage bars deliberately — they answer the same question
+            ("which account is paying, and how close is it to a wall?") and
+            are read together. */}
         {!BASE &&
-          <button className="h1-usage" title="Claude accounts (registry)"
+          <button className="h1-usage" title="Claude accounts"
             onClick={() => setShowAccounts(true)}>◑</button>}</h1>
       {slug && <button className="home" onClick={goHome}><HomeIcon fontSize="inherit" /> all organizations</button>}
       <nav>
@@ -650,8 +651,7 @@ export default function App() {
         <UsageModal close={() => setShowUsage(false)} />
       )}
       {showAccounts && (
-        <AccountsPanel slug={slug ?? undefined} toast={toast}
-          close={() => setShowAccounts(false)} />
+        <AccountsPanel toast={toast} close={() => setShowAccounts(false)} />
       )}
       {doomedOrg && (
         <ConfirmModal title={`permanently delete ${doomedOrg.name}?`}
@@ -803,37 +803,30 @@ const noUsagePeek = (): Promise<UsagePeek> => Promise.resolve(NO_PEEK)
 
 function UsageModal({ close }: { close: () => void }) {
   useEsc(close)
-  const u = usePolled(getUsage, [], 60000)
+  // ⚠ EVERY registered account, primary first then fallbacks in priority
+  // order (user ruling 2026-08-25) — one section of bars per account. The
+  // bar markup itself lives in UsageBars (canvas/accounts.tsx) so this modal
+  // and the panel's per-row buttons cannot drift apart.
+  const all = usePolled(getUsageAll, [], 60000)
   return (
     <div className="overlay" onClick={(e) => { e.stopPropagation(); close() }}>
       <div className="settings usage-modal" onClick={(e) => e.stopPropagation()}>
         <h3><DataUsageIcon fontSize="inherit" /> usage</h3>
-        {!u ? <div className="dim">loading…</div>
-          : !u.available ? <div className="error">{u.error ?? 'usage unavailable'}</div>
-          : (
-            <>
-              {u.plan && <div className="dim">Claude {u.plan} · this machine's subscription</div>}
-              {(u.limits ?? []).map((l) => {
-                const pct = Math.max(0, Math.min(100, l.percent ?? 0))
-                const sev = usageSeverity(l)   // the shared rule — see above
-                return (
-                  <div className="usage-row" key={l.kind + (l.model ?? '')}>
-                    <div className="u-head">
-                      <span className="u-label">{usageLabel(l)}</span>
-                      <span className="u-reset">{usageResets(l.resets_at)}</span>
-                      <span className={'u-pct' + (sev ? ' ' + sev : '')}>{Math.round(l.percent ?? 0)}%</span>
-                    </div>
-                    <div className="usage-track">
-                      <div className={'usage-fill' + (sev ? ' ' + sev : '')}
-                        style={{ width: pct + '%' }} />
-                    </div>
-                  </div>
-                )
-              })}
-              {!(u.limits ?? []).length &&
-                <div className="dim">no limits reported</div>}
-            </>
-          )}
+        {!all ? <div className="dim">loading…</div>
+          : (all.accounts ?? []).map((a) => (
+            <div className="usage-acct" key={a.account}>
+              <div className="usage-acct-head">
+                <span className="acct-label">{a.label}</span>
+                {a.account === 'primary' &&
+                  <span className="dim"> · this machine's login</span>}
+                {a.duplicate &&
+                  <span className="dim"> · same account as the login</span>}
+              </div>
+              <UsageBars u={a} />
+            </div>
+          ))}
+        {all && !(all.accounts ?? []).length &&
+          <div className="dim">no accounts registered</div>}
         <div className="row">
           <button className="primary" type="button" onClick={close}>done</button>
         </div>

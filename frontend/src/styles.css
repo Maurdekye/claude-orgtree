@@ -2660,14 +2660,36 @@ html.mobile .hire-sheet input { font-size: 16px; min-height: 44px; }
 /* ---- markdown tables must scroll inside their own box (spec 9.4-14) ---- */
 html.mobile .md table { display: block; overflow-x: auto; max-width: 100%; }
 
-/* ---- accounts panel (redesign 2026-08-24: serving fact + fallback keys) */
-.acct-serving { font-size: 13px; }
-.acct-head { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
-.acct-row { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+/* ---- accounts panel (machine-local routing, 2026-08-25: primary login +
+   draggable fallback keys, per-model routing chips in the left gutter) ---- */
+.acct-blurb { font-size: 12px; line-height: 1.45; }
+.acct-blurb code { font-size: 11px; }
+.acct-line { display: flex; align-items: flex-start; gap: 8px; min-width: 0; }
+/* four chips at 17px + gaps; fixed so every row's body left-aligns */
+.acct-gutter { flex: none; display: flex; gap: 3px; justify-content: flex-end;
+  width: 84px; padding-top: 12px; }
+.acct-gutter .tier { width: 17px; height: 17px; font-size: 10px; flex: none; }
+.acct-chip-dim { opacity: .35; }
+.acct-row { flex: 1; min-width: 0; border: 1px solid var(--line);
+  border-radius: 8px; padding: 8px 10px; }
 .acct-main { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.acct-label { cursor: pointer; font-weight: 600; }
+.acct-label { font-weight: 600; }
+.acct-email { font-weight: 600; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
 .acct-key { cursor: grab; }
 .acct-key:active { cursor: grabbing; }
 .acct-over { border-color: var(--accent, #61afef); }
 .acct-grip { color: var(--dim); cursor: grab; user-select: none; }
-.acct-nokey { opacity: .8; }
+/* a key that IS the signed-in account: whole row greyed, excluded from
+   routing (tooltip on the row explains) */
+.acct-dup { opacity: .45; }
+.acct-keyfield[disabled] { opacity: .6; cursor: default; }
+.acct-usage-btn, .acct-del, .acct-add { display: inline-flex;
+  align-items: center; justify-content: center; padding: 4px 7px; }
+.acct-usage-btn.on { border-color: var(--accent, #61afef); }
+.acct-usage { margin-top: 8px; border-top: 1px solid var(--line);
+  padding-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+/* ---- the header usage modal's per-account sections ---- */
+.usage-acct { display: flex; flex-direction: column; gap: 6px;
+  border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+.usage-acct-head { font-size: 13px; }

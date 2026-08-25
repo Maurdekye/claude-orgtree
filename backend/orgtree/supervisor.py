@@ -37,7 +37,7 @@ import uuid
 from collections.abc import Callable, Iterable, Mapping
 from typing import Any, cast
 
-from . import limits, net, sandbox as sbx, store, tokens
+from . import accounts, limits, net, sandbox as sbx, store, tokens
 from .ledger import EXTERN, SYSTEM, USER, LedgerError, Org, expand_mcp, now as now_iso
 from .schema import (Denial, FrozenInfo, InflightInfo, KioskCfg, MailEntry,
                      NodeDoc, NoticeEntry, TurnStat)
@@ -904,180 +904,67 @@ def clean_env() -> dict[str, str]:
     return env
 
 
-def spawn_env(org: Org) -> dict[str, str]:
-    """`clean_env` plus THIS org's own API key — the complete environment for
-    any `claude` process this org owns.
+def spawn_env(org: Org, tier: str | None = None) -> dict[str, str]:
+    """`clean_env` plus the ONE credential this spawn should bill — the
+    complete environment for any `claude` process this org owns.
 
-    ⚠ The two halves belong together and were not (user report 2026-08-10:
-    "I ran a compaction on a headless agent with an API key and it said it hit
-    the WEEKLY usage limit, as though it were still on a subscription"). The
-    strip above is unconditional, and only the TURN spawn put the key back —
-    so every OTHER `claude` this org starts ran with no key at all and fell
-    through to the user's subscription. That is the observed message: a weekly
-    limit is a subscription's ceiling; a metered key has none.
+    ⚠ The strip and the re-injection belong together and were not (user
+    report 2026-08-10: "I ran a compaction on a headless agent with an API
+    key and it said it hit the WEEKLY usage limit, as though it were still on
+    a subscription"). The strip above is unconditional, and only the TURN
+    spawn put the key back — so every OTHER `claude` this org starts ran with
+    no key at all and fell through to the user's subscription. Three spawns
+    exist (turn, compaction fork, oracle/consult fork) and every one routes
+    through here.
 
-    Three spawns exist and two were wrong: the compaction fork and the
-    oracle/consult fork. Both are the expensive ones — a fork replays a whole
-    session — so the misbilling landed hardest exactly where the org had paid
-    to avoid it. Worse, a compaction that dies on a limit leaves the node
-    uncompacted, so the org cannot get out from under a full context by
-    spending its own money.
+    THE ACCOUNT LANE (user redesign 2026-08-25, machine-local): when the API
+    key lane is not open, `tier` — the model tier this process will bill —
+    picks the account. `accounts.resolve(tier)` walks primary-then-keys in
+    panel order and answers with the highest-priority account whose capacity
+    for that tier is not marked used-up. PRIMARY is the machine's own login:
+    nothing is injected and the CLI reads its own credentials store; a key
+    row injects `CLAUDE_CODE_OAUTH_TOKEN`. When no account has capacity the
+    resolver names the one that refreshes soonest and the spawn probes it —
+    a failed probe re-marks that account and costs one turn per refresh
+    horizon, which is the honest price of asking. `tier=None` (watchdog
+    shell checks) stays ambient: a process that bills no model needs no lane.
 
-    Sandboxed orgs are excluded here on purpose: their key reaches the process
-    through the container's own environment (sandbox.py), and setting it on the
-    host-side `docker exec` would leak it into an argv/env the container does
-    not own."""
+    ⚠ THE KEY LANE IS EXCLUSIVE. One spawn, one credential: an env carrying
+    both ANTHROPIC_API_KEY and an account token leaves "which lane billed
+    this turn" to CLI internals nobody here controls, and every attribution
+    and freeze decision downstream keys off the single injected credential
+    (`identity_in_env` reads the resolved dict, never intent).
+
+    ⚠ TOKEN INJECTION MUST STAY AFTER `clean_env()` AND IT IS NOT A STYLE
+    POINT: `clean_env()` strips EVERY `CLAUDE_CODE_*` variable, so injecting
+    before it is a SILENT NO-OP that looks exactly like a working feature
+    (measured 2026-08-24: the pinned CLI 2.1.220 does read this variable).
+    AND THE STRIP MUST NEVER BE RELAXED TO ACCOMMODATE THIS — it is why an
+    ambient token in the BACKEND's environment cannot silently capture every
+    org, the same failure a host-level API key once caused.
+
+    Sandboxed orgs are excluded from BOTH lanes on purpose: their credential
+    reaches the process through the container's own environment (sandbox.py),
+    and setting it on the host-side `docker exec` would leak it into an
+    argv/env the container does not own."""
     env = clean_env()
+    if sbx.is_sandboxed(org):
+        return env
     key = str(org.d.get("api_key") or "")
-    if key and not sbx.is_sandboxed(org):
+    if key:
         # api_fallback (user feature 2026-08-17): with the option ON the key
         # is a SPARE, not the lane — injected only while a usage-limit window
         # is open; expiry alone reverts the org to the subscription
         if not org.d.get("api_fallback") or api_fallback_active(org):
             env["ANTHROPIC_API_KEY"] = key
-    # ── Phase 2 · the account token (MECHANISM ONLY, selects nothing) ──────
-    # ⚠ THIS MUST STAY AFTER `clean_env()` AND IT IS NOT A STYLE POINT.
-    # `clean_env()` strips EVERY `CLAUDE_CODE_*` variable, so injecting before
-    # it is a SILENT NO-OP that looks exactly like a working feature until
-    # somebody checks which identity actually served the turn (measured
-    # 2026-08-24: the pinned CLI 2.1.220 does read this variable — with no
-    # credentials file reachable, setting it was the only thing that produced
-    # an authenticated request at all).
-    #
-    # ⚠ AND THE STRIP MUST NEVER BE RELAXED TO ACCOMMODATE THIS. It is why an
-    # ambient token in the BACKEND's environment cannot silently capture every
-    # org — the same failure a host-level API key once caused. The org's own
-    # token is re-injected here; an inherited one reaches no agent.
-    #
-    # Sandboxed orgs excluded, mirroring the key above: their credential
-    # reaches the process through the container's own environment, and setting
-    # it on the host-side `docker exec` would leak it into an argv/env the
-    # container does not own.
-    acct = str(org.d.get("account_token_uuid") or "")
-    if acct and not sbx.is_sandboxed(org):
-        tok = tokens.get(acct)
-        if tok:
-            env["CLAUDE_CODE_OAUTH_TOKEN"] = tok
+            return env
+    if tier:
+        acct = str(accounts.resolve(tier).get("account") or "")
+        if acct and acct != accounts.PRIMARY:
+            tok = tokens.get(acct)
+            if tok:
+                env["CLAUDE_CODE_OAUTH_TOKEN"] = tok
     return env
-
-
-# The phrase every "there is nowhere to switch to" reason is built from, so
-# the caller can recognise a REFUSAL without sniffing for a literal. A refusal
-# is not the same event as "this failure had nothing to do with accounts", and
-# conflating them is what let a no-op switch look like a working one.
-NO_ALTERNATE = "no alternate account is available"
-
-
-def alternate_account_choice(org: Org) -> tuple[str, str]:
-    """`(uuid, why_not)` — the account this org could fail over TO, or "" and
-    the REASON there is none.
-
-    "Has capacity" is not observable — orgtree cannot ask an account how much
-    it has left. What IS observable is "not the one that just failed", so the
-    alternate is the first account in registry order that (a) is not the
-    identity already serving this org and (b) actually HAS A STORED TOKEN.
-    Requiring the token is the point: an account we cannot authenticate as is
-    not an alternative, and offering it would strand the turn on a credential
-    that does not exist.
-
-    ⚠ (a) SAYS "ALREADY SERVING", NOT "SELECTED", AND THE DIFFERENCE IS THE
-    2026-08-24 21:20Z INCIDENT. This function used to compare against
-    `account_token_uuid` alone, so an org running on the AMBIENT login had
-    `cur == ""` and *every* account counted as non-current — including the
-    ambient one itself, which passive adoption had put in the registry with a
-    token pasted against it. The failover chose it, the switch row printed,
-    the turn was re-driven, and it hit the SAME session limit 4.2 seconds
-    later; capacity came back an hour and fifty minutes afterwards when the
-    limit expired on its own. The switch was real and bought nothing.
-
-    An empty `accounts.live_account_uuid()` (nobody logged in, or the config
-    is unreadable) degrades to the old comparison rather than refusing
-    everything: with no ambient identity there is nothing to switch away from,
-    and a token is then a genuine improvement over no credential at all.
-
-    ⚠ The reason string is not decoration — `failover_choice` passes it
-    through to the durable record and `NO_ALTERNATE` is what the turn loop
-    keys the refusal row on. Keep the constant in it.
-    """
-    from . import accounts
-    cur = str(org.d.get("account_token_uuid") or "")
-    # what the next spawn would ACTUALLY authenticate as, which is the ambient
-    # account whenever the org has selected nothing
-    serving = cur or accounts.live_account_uuid()
-    try:
-        order = accounts.load().get("order") or []
-    except Exception:                                        # noqa: BLE001
-        return "", NO_ALTERNATE + " (the account registry is unreadable)"
-    tokened = [str(u) for u in order if tokens.has(u)]
-    for uuid in tokened:
-        if uuid != serving:
-            return uuid, ""
-    if tokened and serving and set(tokened) == {serving}:
-        # the no-op case, said out loud: there IS a token, it just belongs to
-        # the account that has already told us it has no capacity
-        return "", (NO_ALTERNATE + " — the only account with a stored token "
-                    "is the one already serving this org")
-    return "", NO_ALTERNATE + " (no other account has a stored token)"
-
-
-def alternate_account(org: Org) -> str:
-    """The account this org could fail over TO, or "". See
-    `alternate_account_choice`, which also says WHY when there is none."""
-    return alternate_account_choice(org)[0]
-
-
-def failover_choice(org: Org, *, res: dict[str, Any], err_blob: str,
-                    already_switched: bool, timed_out: bool = False,
-                ) -> tuple[str, str]:
-    """Should this failed turn change account? Returns `(action, why)` where
-    action is "none", "switch" or "stop".
-
-    PURE. It reads no clock, writes nothing, and drives nothing — so it can be
-    proven before it is wired to anything that spawns a process.
-
-    THE THREE RULES, all of them the user's decisions rather than mine:
-
-    · **A 401 STOPS. It does NOT fail over** (user, 2026-08-24). A rejected
-      credential is a BROKEN THING THAT NEEDS FIXING, not a reason to spend
-      the other account. Silently switching would let a token stay dead for
-      weeks while everything looked fine — discovered only when the SECOND
-      account also failed. They took the interruption over the silence.
-
-    · **ONE switch per turn** (user, 2026-08-24). Not a loop with a ceiling:
-      if the alternate also fails, the turn stops. `already_switched` is the
-      whole bound and it is passed IN rather than counted here, because a
-      function that counted its own invocations would be the retry loop.
-
-    · **A HANG COUNTS AS A FAILURE TO SERVE.** Measured 2026-08-24: a dead
-      credential on the token path produces `api_retry` system events and may
-      never emit a result event at all. So the caller's TIMEOUT — not a
-      failure count — is what notices, and `timed_out` carries it here. A
-      design that waited for a failure signal would wait a very long time
-      while the machine looked like it was working, slowly.
-    """
-    if already_switched:
-        return "none", "one switch per turn; this turn has had its switch"
-    # ⚠ 401 IS CHECKED FIRST AND DELIBERATELY OUTRANKS THE LIMIT TEST. The
-    # blob of a turn that died on a bad credential can still contain
-    # limit-sounding words (an agent quoting an earlier failure, say), and
-    # treating that as a limit would do the exact silent migration the user
-    # ruled against. The NUMBER is evidence; the prose is not.
-    if _looks_like_auth_failure(res):
-        return "stop", ("the credential was rejected (401) — this token is "
-                        "broken and needs replacing, so the turn stops "
-                        "rather than spending another account")
-    if timed_out:
-        alt, why_not = alternate_account_choice(org)
-        return (("switch", "the account did not serve the turn and the cause "
-                           "is unknown (timed out with no result)")
-                if alt else
-                ("none", "timed out, but " + why_not))
-    if _looks_like_usage_limit(err_blob):
-        alt, why_not = alternate_account_choice(org)
-        return (("switch", "the account is out of capacity")
-                if alt else
-                ("none", "out of capacity, but " + why_not))
-    return "none", "not a condition another account would fix"
 
 
 # ⚠ THE DRIVE NUDGE FOR AN ACCOUNT SWITCH — ONE FIXED STRING, ALWAYS.
@@ -1097,7 +984,7 @@ def failover_choice(org: Org, *, res: dict[str, Any], err_blob: str,
 #
 # ⚠ SUBJECT-FREE IN THE MAILBOX MUST NOT BECOME QUIET IN THE LOG. The real
 # reason still goes to the durable record and the UI, unchanged — see
-# `apply_failover`. Trading a loud failure for a silent one is not a fix.
+# `redrive_after_limit`. Trading a loud failure for a silent one is not a fix.
 ACCOUNT_SWITCH_DRIVE = ("Your previous turn did not complete. It has been "
                         "retried — please continue where you left off.")
 
@@ -1108,26 +995,27 @@ def switch_drive_text(why: str = "") -> str:
     The argument exists so that a caller reaching for "…but surely we can say
     why here" finds a parameter that visibly discards it, rather than quietly
     formatting the reason into the string. If you are tempted to use `why`,
-    the answer is `apply_failover`'s durable record, not this."""
+    the answer is `redrive_after_limit`'s durable record, not this."""
     return ACCOUNT_SWITCH_DRIVE
 
 
-def apply_failover(slug: str, nid: str, alt: str, why: str) -> bool:
-    """Point this org at `alt`, record WHY durably, then drive the node.
+def redrive_after_limit(slug: str, nid: str, why: str) -> bool:
+    """Record WHY durably, then drive the node again.
+
+    The machine-local successor of the per-org failover switch: there is no
+    org field to point anywhere any more — `accounts.record_limit` has
+    already marked the exhausted lane, so the next spawn RESOLVES to the next
+    account by itself. All that is left to do is say so and go again.
 
     The split is the whole point:
       · the DURABLE RECORD and the UI get the real reason, in full;
       · the MAILBOX gets `ACCOUNT_SWITCH_DRIVE` and nothing else.
 
-    Returns True if the switch was applied."""
-    if not alt:
-        return False
+    Returns True if the node still exists and was driven."""
     with store.DOC_LOCK:
         o2 = store.load_org(slug)
         if nid not in o2.nodes:
             return False
-        o2.d["account_token_uuid"] = alt
-        store.save_org(o2)
     # the loud half — a screen, not an inbox. `_log_turn_error` is the durable
     # per-node row read_chat interleaves into the conversation.
     _log_turn_error(slug, nid, f"account switched: {why}")
@@ -1138,84 +1026,8 @@ def apply_failover(slug: str, nid: str, alt: str, why: str) -> bool:
     return True
 
 
-class UnknownAccount(ValueError):
-    """A selection named an account this install cannot authenticate as."""
-
-
-def set_account_selection(slug: str, uuid: str, actor: str = USER) -> str:
-    """Choose which registered account serves this org. `""` means AMBIENT —
-    the account the machine itself is signed in as. Returns the selection as
-    it now stands, so the caller reports a resolved fact rather than its own
-    request.
-
-    ⚠ THIS EXISTS BECAUSE FAILOVER WAS THE ONLY WRITER, AND IT COULD ONLY
-    MOVE ONE WAY. `apply_failover` assigns another *tokened* account and never
-    clears, so a transient capacity event became a permanent configuration
-    change nobody chose and nothing could undo: on 2026-08-24 the 21:20Z
-    no-op switch pinned this org to an account, and when the user later
-    signed in as a genuinely different one the org kept serving the old
-    token — correctly, visibly, and with no way back. The only lever that
-    existed was deleting the stored token, which is irreversible (the CLI
-    cannot show it again) and destroys the failover to fix a selection.
-
-    ⚠ CLEARING IS A REAL STATE, NOT A SPECIAL VALUE. The key is REMOVED, so a
-    cleared org is byte-identical to one that has never been selected — one
-    representation of "on ambient", not two. `spawn_env` and
-    `identity_in_env` already read absent and "" the same way; storing a
-    sentinel would add a second spelling for one state, which is the
-    `is None` ambiguity this codebase has been bitten by before.
-
-    ⚠ IDEMPOTENT, AND SILENT WHEN NOTHING CHANGES. Selecting what is already
-    selected — including clearing an org that is already on ambient — returns
-    successfully and DOES NOT WRITE. A state machine that throws at its own
-    resting state is the same class of bug as one that only moves forwards.
-
-    A named account must be in the registry AND hold a stored token: a
-    selection we cannot authenticate as would strand every turn on a
-    credential that does not exist, which is the same rule
-    `alternate_account_choice` applies to a failover target. Raises
-    `UnknownAccount` rather than silently ignoring it — a selection that
-    fails to apply looks exactly like one that applied.
-    """
-    from . import accounts
-    uuid = str(uuid or "").strip()
-    if uuid:
-        reg = accounts.load().get("accounts") or {}
-        if uuid not in reg:
-            raise UnknownAccount(
-                f"no account {uuid!r} in the registry — nothing would know "
-                f"which identity that is")
-        if not tokens.has(uuid):
-            raise UnknownAccount(
-                f"account {uuid!r} has no stored token, so turns selected "
-                f"onto it could not authenticate at all")
-    with store.DOC_LOCK:
-        o2 = store.load_org(slug)
-        cur = str(o2.d.get("account_token_uuid") or "")
-        if cur == uuid:
-            return uuid                       # no change ⇒ no write, no event
-        if uuid:
-            o2.d["account_token_uuid"] = uuid
-        else:
-            o2.d.pop("account_token_uuid", None)
-        # the durable half. `apply_failover` writes a per-NODE row because it
-        # explains one turn's failure; a selection change is org-level and
-        # belongs in the org's own audit log, where "who changed which
-        # identity serves me, and when" is answerable after the fact. The
-        # uuid is a label, never a credential.
-        o2.d.setdefault("events", []).append(
-            {"op": "account_selection", "actor": actor, "at": now_iso(),
-             "detail": {"from": cur or None, "to": uuid or None,
-                        "ambient": not uuid},
-             "warnings": []})
-        store.save_org(o2)
-    print(f"[orgtree] {slug}: account selection "
-          f"{cur or 'ambient'} → {uuid or 'ambient'}")
-    return uuid
-
-
 def log_failover_refusal(slug: str, nid: str, why: str) -> bool:
-    """NOT switching, said out loud. The mirror of `apply_failover`.
+    """NOT switching, said out loud. The mirror of `redrive_after_limit`.
 
     ⚠ A REFUSAL THAT LEAVES NO TRACE IS THE SAME ABSTENTION SHAPE AS A CHECK
     THAT PASSES BY NOT RUNNING. Before this, "we considered switching and had
@@ -1230,8 +1042,8 @@ def log_failover_refusal(slug: str, nid: str, why: str) -> bool:
       same wall — the freeze path below this caller is the correct outcome;
     · the drive mechanism deposits mail, the recipient may be fable-tier, and
       capacity/credential SUBJECT MATTER in a mailbox is what kills those
-      sessions. `apply_failover` needs `ACCOUNT_SWITCH_DRIVE` to stay safe;
-      this function simply never sends anything.
+      sessions. `redrive_after_limit` needs `ACCOUNT_SWITCH_DRIVE` to stay
+      safe; this function simply never sends anything.
 
     Returns True if a row was written."""
     if not why:
@@ -1271,26 +1083,28 @@ def turn_identity(slug: str, nid: str) -> str:
         return ""
 
 
-def identity_in_env(env: dict[str, str], org: Org) -> str:
+def identity_in_env(env: dict[str, str]) -> str:
     """WHICH account a spawn carrying `env` will authenticate as.
 
     ⚠ IT READS THE RESOLVED ENV DICT, NOT THE INTENT. This is the
-    `store.DATA_ROOT`-not-`os.environ` rule applied to identity, and it is the
-    whole reason the function takes `env` at all. Asking the org "which account
-    did you mean" answers a different question from "which credential is the
-    process actually holding", and it is precisely the difference between a
-    diagnosis and a guess when a turn runs as the wrong account.
+    `store.DATA_ROOT`-not-`os.environ` rule applied to identity, and it is
+    the whole reason the function takes `env` at all: re-running the
+    resolver would answer "which account WOULD a spawn get now", which can
+    have moved since this env was built — and it is precisely the difference
+    between a diagnosis and a guess when a turn runs as the wrong account.
 
-    Returns an account uuid, or one of the sentinels below. Never a secret.
+    Returns `accounts.PRIMARY`, a key row id, or one of the sentinels below
+    ("api-key", "key:unattributed"). Never a secret: the injected token is
+    matched back to its row id inside `accounts.key_for_token` and only the
+    id leaves. An injected token no stored row explains degrades to the
+    named unknown rather than silently reading as the primary login.
     """
-    if env.get("CLAUDE_CODE_OAUTH_TOKEN"):
-        # the uuid is a label, not a credential; the DISCRIMINATOR above is
-        # the resolved env, so a stale/blank uuid degrades to a named unknown
-        # rather than silently reading as "ambient"
-        return str(org.d.get("account_token_uuid") or "") or "token:unattributed"
+    tok = env.get("CLAUDE_CODE_OAUTH_TOKEN")
+    if tok:
+        return accounts.key_for_token(tok) or "key:unattributed"
     if env.get("ANTHROPIC_API_KEY"):
         return "api-key"
-    return "ambient"
+    return accounts.PRIMARY
 
 
 def api_fallback_active(org: Org, now: float | None = None) -> bool:
@@ -3465,8 +3279,11 @@ def _run_one_turn(slug: str, nid: str,
             # metered spend against the org's own key: no refresh-token
             # ceiling, no competition with the user's plan. (The key injection
             # moved into spawn_env 2026-08-10 so the FORK spawns get it too;
-            # they had been running keyless. See spawn_env.)
-            env = spawn_env(org)
+            # they had been running keyless. See spawn_env.) The TIER is what
+            # routes the account lane: this node's model tier picks the
+            # highest-priority account with capacity for it (user redesign
+            # 2026-08-25, machine-local per-model routing).
+            env = spawn_env(org, tier=str(org.node(nid).get("model") or ""))
             # api_fallback cost split: which lane bills THIS turn is decided
             # here, at spawn — capture it so the accounting below attributes
             # the whole turn to that lane even if the window expires mid-turn
@@ -3490,11 +3307,12 @@ def _run_one_turn(slug: str, nid: str,
             # ⚠ RECORDED FROM THE RESOLVED ENV, NOT FROM INTENT. `env` is the
             # dict this Popen is about to receive, so this says which
             # credential the process will actually hold — not which one the
-            # org meant to use. Without it no wrong-account switch is
-            # diagnosable after the fact, and "which account served this
-            # turn?" has no answer at all. Read `identity_in_env`'s docstring
-            # before changing the argument to `org`.
-            st["ran_as"] = identity_in_env(env, org)
+            # resolver would pick if asked again. The usage-limit path below
+            # marks capacity against exactly this value, so a mis-attributed
+            # spawn would mark the wrong account's lane. Read
+            # `identity_in_env`'s docstring before "simplifying" this to a
+            # resolver call.
+            st["ran_as"] = identity_in_env(env)
             env["ORGTREE_ORG"], env["ORGTREE_NODE"] = slug, nid
             env["ORGTREE_PORT"] = os.environ.get("ORGTREE_PORT", "7360")
             env["PYTHONPATH"] = BACKEND_DIR + os.pathsep + env.get("PYTHONPATH", "")
@@ -4285,52 +4103,88 @@ def _run_one_turn(slug: str, nid: str,
                     raise RuntimeError(
                         "a Fable content filter flagged the message — turn "
                         "halted (org policy): " + err_blob[:250])
-                # ── Phase 2 · FAIL OVER BEFORE FREEZING ────────────────────
+                # ── MACHINE-LOCAL ROUTING: MARK THE LANE, GO WHERE CAPACITY IS
+                # (user redesign 2026-08-25.) A usage limit is a fact about
+                # ONE (account, tier) lane: record it in the machine's
+                # routing state — usage_refreshes[account][tier] — then ask
+                # the resolver where this tier routes NOW. A different
+                # account with capacity ⇒ re-drive; the next spawn resolves
+                # the lane by itself, there is no org field to point.
                 # ⚠ PLACED INSIDE THE LIMIT BRANCH DELIBERATELY, and that is
                 # the containment: a failure that is not a usage limit never
                 # reaches this code at all, so nothing else in the turn path
-                # changes behaviour. Pinned by a named check rather than left
-                # to inspection.
+                # changes behaviour.
                 #
-                # ⚠ A 401 CANNOT ACQUIRE A RE-DRIVE BY SITTING NEAR ONE. Even
-                # here, `failover_choice` tests the status code FIRST and
-                # answers "stop" — a rejected credential is a broken thing to
-                # be fixed, not a reason to spend the other account (user
-                # ruling). So a 401 whose prose happens to mention a limit
-                # falls straight through to the freeze path below, unchanged.
-                #
-                # Freezing is what we do when there is nowhere else to go. If
-                # a tokened alternate exists, going there BEATS waiting for a
-                # reset that may be hours away — "a turn completed on the
-                # account with capacity" is the goal, not "a switch happened".
+                # ⚠ A 401 CANNOT ACQUIRE A RE-DRIVE BY SITTING NEAR ONE. The
+                # status code is tested FIRST: a rejected credential is a
+                # broken thing to be fixed, not a capacity fact (user
+                # ruling) — it marks NO lane and falls straight through to
+                # the freeze path below, unchanged.
                 if _looks_like_usage_limit(err_blob) and not handled:
-                    _fo_act, _fo_why = failover_choice(
-                        org, res=res, err_blob=err_blob,
-                        already_switched=bool(st.get("switched_account")))
-                    # ⚠ THE REFUSAL IS AS LOUD AS THE SWITCH, ON PURPOSE. A
-                    # limit that considered failing over and found only the
-                    # account already serving this org used to leave no trace
-                    # at all — indistinguishable from a limit on an org with
-                    # no accounts configured. Keyed on `NO_ALTERNATE` (the
-                    # constant the reasons are BUILT from, not a literal) so
-                    # "nowhere to go" cannot be confused with "not an account
-                    # problem". No mail, no re-drive: see log_failover_refusal.
-                    if _fo_act == "none" and NO_ALTERNATE in _fo_why:
-                        log_failover_refusal(slug, nid, _fo_why)
-                    if _fo_act == "switch":
-                        _alt = alternate_account(org)
-                        if apply_failover(slug, nid, _alt, _fo_why):
-                            # ONE switch per turn (user ruling). Set BEFORE
-                            # anything can re-enter, and cleared only by a
-                            # COMPLETED turn — the same shape hard_fail_run
-                            # uses, so a switched turn that fails again is
-                            # terminal instead of ping-ponging accounts.
-                            st["switched_account"] = True
-                            handled = True     # the switch owns this failure
+                    # what actually served this turn — stamped at spawn from
+                    # the resolved env; an unstamped turn ran ambient, which
+                    # is the primary lane
+                    _served = str(st.get("ran_as") or "") or accounts.PRIMARY
+                    _tier = (str(org.node(nid).get("model") or "")
+                             if nid in org.nodes else "")
+                    _trusted = not (agent_authored
+                                    and err_blob is synth_limit_txt)
+                    if _looks_like_auth_failure(res):
+                        log_failover_refusal(slug, nid, (
+                            "the credential was rejected (401) — broken and "
+                            "in need of replacing, not out of capacity; no "
+                            "lane was marked"))
+                    elif _served in ("api-key", "key:unattributed") or not _tier:
+                        # the API-key lane has no subscription capacity to
+                        # mark, and a token no row explains has no lane —
+                        # the freeze path below owns both, unchanged
+                        pass
+                    else:
+                        # when does THIS lane refresh? The prose first; the
+                        # host usage readout only when it was the HOST
+                        # subscription that failed — a key row's wall is a
+                        # different account's quota, and timing it off the
+                        # host's lanes is the wrong-account parking bug
+                        # (redteam 2026-08-18) in a new costume. Nothing
+                        # parseable ⇒ the 5-minute probe floor, honestly
+                        # short so capacity is re-asked soon.
+                        _rts, _ = _limit_reset_ts(
+                            err_blob,
+                            subscription=(_served == accounts.PRIMARY
+                                          and not billed_key),
+                            trusted=_trusted)
+                        accounts.record_limit(
+                            _served, _tier, _rts or time.time() + PROBE_FLOOR)
+                        _nxt = accounts.resolve(_tier)
+                        _switches = int(st.get("account_switches") or 0)
+                        if (_nxt.get("available")
+                                and _nxt.get("account") != _served
+                                and _switches < 4):
+                            # bounded by the marks themselves: every re-drive
+                            # lands on an account with NO mark for this tier,
+                            # and each failure writes one — ping-pong cannot
+                            # happen because a marked lane stops resolving.
+                            # The counter is a backstop for a mark expiring
+                            # mid-turn, not the mechanism; cleared only by a
+                            # COMPLETED turn, same shape as hard_fail_run.
+                            st["account_switches"] = _switches + 1
+                            redrive_after_limit(slug, nid, (
+                                f"{_tier} capacity exhausted on the serving "
+                                f"account — re-driven on the next account "
+                                f"in line"))
+                            handled = True   # the switch owns this failure
                             raise RuntimeError(
-                                "account switched after a usage limit; the "
-                                "turn has been re-driven on the other "
-                                "account: " + _fo_why)
+                                "a usage limit was recorded and the turn "
+                                "has been re-driven on the next account in "
+                                "line")
+                        # ⚠ THE REFUSAL IS AS LOUD AS THE SWITCH, ON
+                        # PURPOSE: "considered moving and had nowhere to go"
+                        # and "not an account problem" must never leave
+                        # identical records (nothing). No mail, no re-drive
+                        # — the freeze path below is the correct outcome.
+                        log_failover_refusal(slug, nid, (
+                            f"usage limit recorded for {_tier}; no other "
+                            f"account has capacity for it"))
                 # user ruling: fable weekly-limit exhaustion → org-wide fable freeze
                 if _looks_like_usage_limit(err_blob) and not handled:
                     # ANY model's usage limit → the agent FREEZES (user ruling):
@@ -4374,9 +4228,18 @@ def _run_one_turn(slug: str, nid: str,
                             # user ruling 2026-08-18: the prose first, then
                             # the account's own usage readout — a usage
                             # freeze must not end up with no timestamp, and
-                            # `api_fallback` spends real money on this number
+                            # `api_fallback` spends real money on this number.
+                            # The readout is the HOST subscription's, so it
+                            # may only answer when the host login is what
+                            # served this turn — a key row's wall is another
+                            # account's quota (machine-local routing,
+                            # 2026-08-25)
                             _rts, _rsrc = _limit_reset_ts(
-                                err_blob, subscription=not _billed_key,
+                                err_blob,
+                                subscription=(not _billed_key
+                                              and (str(st.get("ran_as") or "")
+                                                   or accounts.PRIMARY)
+                                              == accounts.PRIMARY),
                                 trusted=_trusted_blob)
                             # an INHERITED timestamp (a re-freeze on a node
                             # whose old record survived) is the one number
@@ -4783,7 +4646,7 @@ def _run_one_turn(slug: str, nid: str,
             # between accounts forever, which is the retry-loop-against-a-
             # dead-credential shape this project has twice believed it had
             # ruled out.
-            st["switched_account"] = False
+            st["account_switches"] = 0
             if org.node(nid).get("bearer_state") == "preserving":
                 with store.DOC_LOCK:
                     o2 = store.load_org(slug)
@@ -6474,9 +6337,11 @@ def _compact_split_body(slug: str, nid: str) -> None:
                    "--settings", json.dumps({"disableAllHooks": True}),
                    "--strict-mcp-config"]
     # the fork bills whichever lane is open at ITS spawn, same rule as a turn
+    # — the node's TIER routes the account exactly as its turns do
     on_fallback_key = api_fallback_active(org)
     try:
-        proc = subprocess.Popen(argv, cwd=scratch_dir(slug, nid), env=spawn_env(org),
+        proc = subprocess.Popen(argv, cwd=scratch_dir(slug, nid),
+                                env=spawn_env(org, tier=str(n.get("model") or "")),
                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, text=True, encoding="utf-8",
                                 errors="replace")
@@ -7316,7 +7181,9 @@ def immediate_command(slug: str, nid: str, text: str) -> bool:
                            "--settings", json.dumps({"disableAllHooks": True}),
                            "--strict-mcp-config"]
             proc = subprocess.Popen(argv, cwd=scratch_dir(slug, nid),
-                                    env=spawn_env(org), stdin=subprocess.PIPE,
+                                    env=spawn_env(org, tier=str(
+                                        n.get("model") or "")),
+                                    stdin=subprocess.PIPE,
                                     stdout=subprocess.PIPE,
                                     stderr=subprocess.PIPE, text=True,
                                     encoding="utf-8", errors="replace")

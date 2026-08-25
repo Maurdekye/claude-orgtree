@@ -69,6 +69,12 @@ _lock = threading.Lock()
 # answer.
 _fetch_lock = threading.Lock()
 _cache: dict[str, Any] = {"at": 0.0, "data": None}
+# per-KEY readouts (the machine-local account rows — accounts.py), each its
+# own {at, data} under the same TTL. Kept apart from `_cache` deliberately:
+# everything below that reasons about freezes, pressure and the warm loop
+# reads the HOST subscription's standing, and a fallback key's bars leaking
+# into that would time freezes off someone else's quota.
+_key_cache: dict[str, dict[str, Any]] = {}
 
 
 # --------------------------------------------------------------- the readout
@@ -213,6 +219,48 @@ def fetch(force: bool = False, max_age: float | None = None) -> dict[str, Any]:
             # 14-second response is already 14 seconds stale (redteam)
             _cache.update(at=time.time(), data=data)
         return data
+
+
+def fetch_for_token(token: str, cache_key: str) -> dict[str, Any]:
+    """The same normalized readout for an ARBITRARY account token — the
+    machine-local key rows (accounts.py). `{available, limits[]}` or
+    `{available: False, error}`; cached per `cache_key` for `CACHE_TTL`,
+    stale-on-error, never raises.
+
+    Same contract as `fetch`, three deliberate differences: no `plan` (that
+    field is read from the HOST credentials store, which describes a
+    different account than this token); no single-flight herd lock (these are
+    clicked one row at a time, not stormed by N freezing nodes); and nothing
+    here feeds `cached()`/`peek()`/`pressure()` — freeze timing and the
+    header glow describe the host subscription only."""
+    if not str(token or ""):
+        return {"available": False, "error": "no key stored for this row"}
+    now = time.time()
+    with _lock:
+        ent = _key_cache.get(cache_key)
+        if ent and ent.get("data") is not None \
+                and now - float(ent.get("at") or 0) < CACHE_TTL:
+            return cast("dict[str, Any]", ent["data"])
+    try:
+        req = urllib.request.Request(USAGE_URL, headers={
+            "Authorization": "Bearer " + token,
+            "anthropic-beta": "oauth-2025-04-20",
+            "accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=FETCH_TIMEOUT) as resp:
+            raw_any: Any = json.load(resp)
+    except (urllib.error.URLError, OSError, ValueError,
+            http.client.HTTPException) as e:
+        with _lock:
+            stale = _key_cache.get(cache_key, {}).get("data")
+        if stale is not None:
+            return cast("dict[str, Any]", stale)
+        return {"available": False, "error": f"usage fetch failed: {e}"}
+    raw: dict[str, Any] = (cast("dict[str, Any]", raw_any)
+                           if isinstance(raw_any, dict) else {})
+    data: dict[str, Any] = {"available": True, "limits": _normalize(raw)}
+    with _lock:
+        _key_cache[cache_key] = {"at": time.time(), "data": data}
+    return data
 
 
 def available() -> bool:

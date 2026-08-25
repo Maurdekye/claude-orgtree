@@ -263,6 +263,11 @@ class Org:
             n.pop("queued_msgs", None)
         if self.d.get("fable_limit_policy") in (None, "retire"):
             self.d["fable_limit_policy"] = "halt"   # 'retire' dropped by user ruling
+        # machine-local account routing (user redesign 2026-08-25): the
+        # per-org account selection is gone — routing is per model tier,
+        # machine-global (accounts.py). Old docs shed the stale key here so
+        # nothing can appear selected while nothing reads it.
+        self.d.pop("account_token_uuid", None)
         if self.d.get("fable_filter_policy") not in ("halt", "opus"):
             self.d["fable_filter_policy"] = "halt"  # content-filter flags (user spec)
         # add-only migration (D-084 style): existing orgs reach the new toggle

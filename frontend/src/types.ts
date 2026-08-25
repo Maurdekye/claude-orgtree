@@ -241,11 +241,11 @@ export interface TreeNode {
    *  shuts). The card wears the fallback red while it is true. */
   on_fallback?: boolean
   /** WHICH account actually served this node's last turn, captured at spawn
-   *  from the RESOLVED environment rather than from what the org intended.
-   *  An account uuid, or "ambient" / "api-key" / "token:unattributed".
-   *  ⚠ Never a credential. This is the only field describing what HAPPENED —
-   *  the panel's "serving" line describes intent, so a turn served by the
-   *  ambient account while the panel says "fallback" is invisible without it. */
+   *  from the RESOLVED environment. "primary", a key row id, "api-key", or
+   *  "key:unattributed". ⚠ Never a credential. Backend telemetry only since
+   *  the 2026-08-25 machine-local routing redesign — the accounts panel's
+   *  per-tier assignments are the user-facing surface, so nothing renders
+   *  this field; it stays typed because the wire still carries it. */
   ran_as?: string | null
   queued: number
   /** concurrently running subagents (Task/Agent calls in flight) — desk
@@ -799,80 +799,54 @@ export interface UsagePayload {
   plan?: string
 }
 
-/** one entitlement this install knows about (GET /api/accounts — D-144).
- *  IDENTITY ONLY: no token material exists in this payload because none
- *  exists in the registry. `email_masked` is a hint for telling two accounts
- *  apart, never the full address; `label` is whatever the user renamed it to. */
-export interface AccountEntry {
-  uuid: string
-  label: string
-  email_masked: string | null
-  org_uuid: string | null
-  subscription_type: string | null
-  rate_limit_tier: string | null
-  account_created_at: string | null
-  source: string
-  first_seen: string | null
-  last_seen: string | null
-}
-
-/** GET /api/accounts. `accounts` is in the order failover walks — the first
- *  entry is tried first.
- *
- *  ⚠ `primary` is POSITIONAL: the uuid at position 0 of the registry order,
- *  nothing more. It does NOT mean "the user's primary account" — with a
- *  one-row registry it resolves to whatever that row happens to be (observed
- *  2026-08-25: it named the user's secondary). Never render the word
- *  "primary" for this field; say "first in order" or let the serving line
- *  speak.
- *
- *  ⚠ `selection_active` is DERIVED (since 2026-08-25): whether any registered
- *  account holds a stored key — i.e. whether failover has material to work
- *  with. It is machine-wide, not a per-org fact, and it is not proof that
- *  anything switched. Its predecessor was hardcoded False while failover was
- *  live and a banner gated on it stated the opposite of the truth on the
- *  user's screen; gate nothing user-visible on this flag — the resolved
- *  serving line is the honest statement. */
+/** GET /api/accounts — machine-local account routing (user redesign
+ *  2026-08-25). One panel truth: the PRIMARY row is whoever Claude Code is
+ *  signed in as on this machine (not switchable from the UI — the CLI login
+ *  is the only mover), `keys` are the registered fallback rows in priority
+ *  order, and `assignments` says which row each model tier's prompts
+ *  currently go to. NO token material in any payload: a pasted key crosses
+ *  the wire once, inward, and every response speaks in opaque row ids. */
 export interface AccountsPayload {
   version: number
-  accounts: AccountEntry[]
-  primary: string | null
-  pins: Record<string, string>
-  selection_active: boolean
-  /** POST /api/accounts/adopt only: the account taken, or null when there was
-   *  nothing to adopt (nobody logged in, or the lookup was unreachable). */
-  adopted?: string | null
+  primary: { signed_in: boolean; email: string | null }
+  /** priority order after primary. `duplicate` marks a key that resolved to
+   *  the SAME account as the current login: the row is greyed and excluded
+   *  from routing — failing over to it would re-spend the identical limit. */
+  keys: { id: string; duplicate: boolean }[]
+  /** tier → where its prompts go. `account` is "primary", a key id, or null
+   *  (no usable account at all). `available: false` means nothing has
+   *  capacity: the chip sits dimmed on the row that refreshes soonest,
+   *  `refresh_at` (ISO) saying when. */
+  assignments: Record<string, {
+    account: string | null
+    available: boolean
+    refresh_at: string | null
+  }>
+  /** POST /api/accounts/keys only: the row the pasted key landed on. */
+  registered?: string
+  /** DELETE /api/accounts/keys/{id} only. */
+  removed?: boolean
 }
 
-/** GET/PUT/DELETE /api/accounts/.../token — PRESENCE ONLY.
- *  Values map to the literal string "stored"; the token itself never crosses
- *  the wire in either direction after it is pasted, and its LENGTH is not
- *  reported either (a real disclosure that buys a reader nothing). */
-export interface TokensPayload {
-  tokens: Record<string, string>
-  stored?: string
-  forgotten?: boolean
-}
-
-/** GET /api/accounts/serving/{slug} and PUT /api/accounts/selection/{slug} —
- *  ONE shape for the read and the write, so they cannot report two
- *  differently-shaped truths.
- *
- *  `serving` is the RESOLVED FACT: what this org's next turn would actually
- *  authenticate as, resolved from the real spawn environment — an account
- *  uuid, or "ambient" (the signed-in login), or "api-key", or
- *  "token:unattributed". NEVER a credential.
- *
- *  `selection` is the STORED INTENT sitting beside it: an account uuid, or
- *  null for none. They legitimately DISAGREE — a selection whose key was
- *  later removed resolves to ambient — so render `serving` as the state and
- *  `selection` as the setting, never as one thing (a panel that states an
- *  intention as though it were a state is the 2026-08-25 banner bug again).
- *  Optional because an older backend omits it; absent reads as null. */
-export interface ServingPayload {
-  serving: string
+/** GET /api/accounts/usage[/{account}] — one account's usage standing, the
+ *  same normalized bars as UsagePayload plus which row it describes.
+ *  `plan` rides only the primary entry (it is read from the host credentials
+ *  store, which describes no other account). */
+export interface AccountUsage {
+  account: string
   label: string
-  selection?: string | null
+  duplicate?: boolean
+  available: boolean
+  error?: string
+  limits?: UsageLimit[]
+  plan?: string
+}
+
+/** GET /api/accounts/usage — every account, primary first then keys in
+ *  priority order (user ruling 2026-08-25: the overall usage button shows
+ *  them all). */
+export interface UsageAllPayload {
+  accounts: AccountUsage[]
 }
 
 /** GET /api/usage/peek — the same standing read from the server's cache

@@ -10,7 +10,7 @@ import type {
   McpServersPayload, OpRequest, OpResult, OrgListEntry, OrgMdPayload,
   OrgNetReveal, ReorderRequest, ScopeRequest, ScratchPayload, SendMessageResult,
   SettingsRequest, SettingsResult, SweepPreview, SweepResult, TreePayload,
-  AccountsPayload, ServingPayload, TokensPayload,
+  AccountsPayload, AccountUsage, UsageAllPayload,
   UploadResult, UsagePayload, UsagePeek,
 } from './types'
 
@@ -259,71 +259,35 @@ export const getHost = (): Promise<HostPayload> => req('/api/host')
 export const getUsage = (): Promise<UsagePayload> => req('/api/usage')
 // cache-only — the glow polls this; only the modal above may cost a fetch
 export const getUsagePeek = (): Promise<UsagePeek> => req('/api/usage/peek')
-// ---- the account registry (D-144). Identity only, never tokens. ----
+// ---- machine-local account routing (user redesign 2026-08-25) ----------
+// The primary row is the machine's own login; `keys` are pasted
+// `claude setup-token` fallbacks. NO token material in any response — a key
+// crosses the wire once, inward, and everything after speaks in row ids.
 export const getAccounts = (): Promise<AccountsPayload> => req('/api/accounts')
-// PASSIVE: notices whoever is logged in and records who they are. Never writes
-// the credentials store — the server raises 409 if it changed mid-read.
-export const adoptAccount = (): Promise<AccountsPayload> =>
-  req('/api/accounts/adopt', { method: 'POST' })
-export const setAccountOrder = (order: string[]): Promise<AccountsPayload> =>
-  req('/api/accounts/order', {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ order }),
-  })
-export const setAccountPin = (
-  slug: string, uuid: string | null,
-): Promise<AccountsPayload> =>
-  req(`/api/accounts/pins/${encodeURIComponent(slug)}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ uuid }),
-  })
-export const relabelAccount = (
-  uuid: string, label: string,
-): Promise<AccountsPayload> =>
-  req(`/api/accounts/${encodeURIComponent(uuid)}`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ label }),
-  })
-
-// ---- long-lived account tokens ----------------------------------------
-// ⚠ Stored SEPARATELY from the registry above, which still refuses
-// credential-shaped values. The value never comes back from the server: these
-// calls report PRESENCE ("stored"), never content and never length.
-export const getAccountTokens = (): Promise<TokensPayload> =>
-  req('/api/accounts/tokens')
 // ⚠ STORE FIRST. The CLI shows a minted token exactly once, so the server
 // writes it before anything can reject it — do not add client-side format
 // validation that could swallow the only copy the user will ever have.
-export const putAccountToken = (
-  uuid: string, token: string,
-): Promise<TokensPayload> =>
-  req(`/api/accounts/${encodeURIComponent(uuid)}/token`, {
-    method: 'PUT',
+export const addAccountKey = (token: string): Promise<AccountsPayload> =>
+  req('/api/accounts/keys', {
+    method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ token }),
   })
-export const forgetAccountToken = (uuid: string): Promise<TokensPayload> =>
-  req(`/api/accounts/${encodeURIComponent(uuid)}/token`, { method: 'DELETE' })
-// WHICH account actually serves this org's turns, resolved from the real spawn
-// environment rather than from stated intent.
-export const getServingAccount = (slug: string): Promise<ServingPayload> =>
-  req(`/api/accounts/serving/${encodeURIComponent(slug)}`)
-// State the INTENT: serve this org from a registered account (uuid), or from
-// whatever the machine is signed in as (null). Idempotent; 422 names the
-// reason when the uuid is unknown or holds no stored key. The response is the
-// SAME shape as the read and its `serving` is the new resolved fact — use it
-// directly, don't race a re-fetch against it.
-export const putAccountSelection = (
-  slug: string, uuid: string | null,
-): Promise<ServingPayload> =>
-  req(`/api/accounts/selection/${encodeURIComponent(slug)}`, {
+// ⚠ Irreversible: the CLI cannot show a token again — re-adding = re-minting.
+export const deleteAccountKey = (id: string): Promise<AccountsPayload> =>
+  req(`/api/accounts/keys/${encodeURIComponent(id)}`, { method: 'DELETE' })
+export const setAccountKeyOrder = (keys: string[]): Promise<AccountsPayload> =>
+  req('/api/accounts/order', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ uuid }),
+    body: JSON.stringify({ keys }),
   })
+// one account's usage bars — "primary" or a key row id
+export const getAccountUsage = (account: string): Promise<AccountUsage> =>
+  req(`/api/accounts/usage/${encodeURIComponent(account)}`)
+// every account's usage bars, primary first (the header modal's list)
+export const getUsageAll = (): Promise<UsageAllPayload> =>
+  req('/api/accounts/usage')
 
 export const getDefaults = (): Promise<DefaultsPayload> =>
   req('/api/defaults')

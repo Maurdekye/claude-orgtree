@@ -2987,7 +2987,90 @@ before, on a different lane, so cramming it into the same enum would make
 a second, unrelated setting existing). A boolean gated by `api_fallback`
 mirrors how `api_fallback` itself is not folded into `headless`.
 
+### D-145 · account routing is machine-local, per model tier, and automatic
+
+Ruling (user, 2026-08-25, three mails — superseding the whole D-144-era
+stack: the identity registry, passive adoption, labels, per-org pins, the
+per-org selection (`account_token_uuid`), the serve-from control, the desk
+"ran as" badge, and the one-switch-per-turn failover): the TOTAL internal
+state deciding which account serves a prompt is
+`usage_refreshes[account][tier] = refresh-at | absent` — an entry exists iff
+that account's capacity for that model tier is used up, and holds the epoch
+when it refreshes. Machine-global, in `accounts.json` (version 2), beside an
+ordered list of registered key rows. **All other account state not related
+to this machine is dropped** (the user's words), and `Org.__init__` pops the
+stale `account_token_uuid` from old docs so nothing can look selected while
+nothing reads it.
+
+The accounts, and the panel that IS their UI:
+- **PRIMARY** is whoever Claude Code is signed in as on this machine, read
+  live from the CLI's own config (`~/.claude.json` → `oauthAccount`), shown
+  by EMAIL, first row, not draggable, **not switchable from any UI** — the
+  CLI login is the only mover. No token is injected for it; the CLI reads
+  its own credentials store.
+- **Secondary rows** are pasted `claude setup-token` keys: drag grip (the
+  row order IS the routing priority), a greyed-out input whose value is
+  OMITTED (the server never returns key material, not even masked), a
+  usage-limits button, a delete button. A final row — live input plus ✓ —
+  registers a new key. Row ids are a hash of the token; tokens stay in the
+  separate token store (`tokens.py`, unchanged), and the registry keeps its
+  `_reject_secrets` guard.
+- **Routing**: a tier runs on the highest-priority account (primary, then
+  keys in order) whose `usage_refreshes` entry for it is absent or expired.
+  `accounts.resolve(tier)` is the ONE rule, shared by the spawn seam
+  (`spawn_env(org, tier)` injects exactly its answer) and by the panel's
+  H/S/O/F gutter chips (`assignments`), so the two cannot disagree. When
+  nothing has capacity the resolver names the soonest-refreshing account:
+  the chip sits there dimmed with the refresh time, and a spawn probes it —
+  a failed probe re-marks it, self-bounding.
+- **A key that IS the primary account** (matched by `account.uuid`, resolved
+  from the key once at registration, lazily retried) is greyed whole,
+  tooltip'd, and EXCLUDED from routing: switching to it re-spends the
+  identical limit — the 2026-08-24 21:20Z no-op self-switch, now structural
+  rather than incidental.
+- **The header usage button lists EVERY registered account** — primary
+  first, then each fallback — one section of bars per account
+  (`GET /api/accounts/usage`, per-key readouts fetched with the key's own
+  token and cached apart from the host cache, which keeps pricing freezes
+  and the header glow host-only).
+
+On a usage-limit turn failure: the account that SERVED (st `ran_as`, stamped
+at spawn from the resolved env — kept precisely so the mark lands on the
+right lane) gets `record_limit(served, tier, reset)`, reset from the error's
+own prose, else the host usage readout **only when the host login served**,
+else the 5-minute probe floor. Then re-resolve: a different account with
+capacity ⇒ re-drive (durable "account switched" row + the subject-free
+`ACCOUNT_SWITCH_DRIVE` mail, unchanged bytes — the fable-mail hazard rules
+carry forward); nowhere ⇒ the loud refusal row and the ordinary freeze,
+which is also when `fable_limit_policy` escalation now means "fable is
+exhausted EVERYWHERE". D-144's measured 401 rule carries forward intact: a
+rejected credential marks NO lane, stops rather than spends the next
+account, and is loudly recorded.
+
+Bounds: sandboxed orgs stay on the container's own credential (both lanes
+excluded at the spawn seam); the org API-key lane is EXCLUSIVE and outranks
+account routing (one spawn, one credential); watchdog shell spawns pass no
+tier and stay ambient; kiosk visitors keep seeing none of this
+(`_public_denied` freezes `/api/accounts` whole). Migration: a version-1
+registry reads as version 2 in memory — rows for uuids with stored tokens
+survive (a stored token is the one thing the user cannot re-create without a
+re-mint), everything else drops; the first write persists v2 and readers
+never write.
+
+Was. D-144's registry/pin/selection stack (now under Retired): identity
+adopted from the live login, hand-set labels and waterfall order, per-org
+pins nothing read, a per-org stored selection with a serve-from control, and
+failover as a one-switch-per-turn org-field write.
+
+---
+
+## Retired
+
 ### D-144 · the account registry ships INERT — and Phase 1 green is not failover
+
+Retired 2026-08-25, superseded by D-145 (machine-local per-model routing).
+The measured 401/turn-shape material below remains true of the CLI and is
+cited by D-145; the registry/pin/selection design it defends is gone.
 
 Decision (creds-probe, 2026-08-24, multi-account Phase 1): this install may
 know about more than one Claude subscription. `accounts.py` records WHO —
@@ -3175,9 +3258,3 @@ panel could label the two entitlements. Reduced to a masked hint
 (`s*****e@example.com`) plus the uuid and a user-settable label: the panel's
 requirement is only to tell two accounts apart, the registry is read by more
 code than the credentials store is, and the uuid already carries identity.
-
----
-
-## Retired
-
-*(nothing yet — retired entries keep their `Was.` and move here whole)*

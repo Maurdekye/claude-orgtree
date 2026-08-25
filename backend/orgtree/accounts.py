@@ -1,55 +1,73 @@
-"""The account registry — WHO this install may bill, never HOW to bill them.
+"""Machine-local account routing — WHERE each model's prompts go on this machine.
 
-Phase 1 of the multi-account feature (two Claude Max subscriptions used
-SERIALLY, primary-first). This module owns four things and deliberately
-nothing else:
+The user's 2026-08-25 redesign, replacing the D-144 registry/pin/selection
+stack wholesale. Two facts and nothing else:
 
-  · the registry     — identities known to this install, in waterfall order
-  · passive adoption — notice whoever is already logged in, and change nothing
-  · the pin          — an org may be nailed to one account by hand
-  · the readout      — what the panel renders
+  · the key list       — the SECONDARY accounts this machine may bill, as
+                         pasted `claude setup-token` keys, in priority order
+  · usage_refreshes    — `[account][tier] = refresh-at | absent`, the TOTAL
+                         routing state: an entry exists iff that account's
+                         capacity for that tier is used up, and holds the
+                         epoch when it refreshes
 
-⚠ THE INVARIANT THIS FILE EXISTS TO HOLD: **the registry stores IDENTITY, never
-CREDENTIALS.** No access token, no refresh token, no Authorization header ever
-reaches `accounts.json`. Tokens live exactly where they already live — the
-CLI's own credentials store — and this file records only which *account* a
-credential resolved to. `_reject_secrets` enforces it on every write and
-raises rather than redacting, because a registry that silently strips a token
-teaches its callers that passing one is fine.
+The PRIMARY account is not stored here at all: it is whoever Claude Code is
+signed in as on this machine, read live from the CLI's own config. It is not
+switchable from any UI — logging in/out with the CLI is the only mover.
 
-Identity is keyed on `account.uuid`, which is the discriminator the probe
-battery proved: it is IDENTICAL across a token refresh of one account and
-DIFFERENT between accounts. Token bytes cannot key anything — they rotate, and
-a rotation revokes its predecessor immediately.
+Routing is per MODEL TIER and machine-global: a tier runs on the highest-
+priority account (primary first, then keys in list order) whose capacity for
+it is not used up. There is no per-org selection, no pin, no adopted-identity
+registry — everything that was not this machine's own routing state is gone
+(user ruling 2026-08-25: "all other state not related to this machine is to
+be dropped from the internal system").
 
-What this module does NOT do, on purpose: it never writes the credentials
-store, never refreshes a grant, never selects an account for a turn, and never
-switches a lane. Selection and failover are Phase 2. See D-144 — on today's
-supervisor a mid-turn auth rejection is unclassified and terminal, so nothing
-here should be read as making failover work.
+⚠ THE INVARIANT CARRIED OVER FROM THE OLD REGISTRY: **this file's document
+stores IDENTITY AND STATE, never CREDENTIALS.** Key material lives in the
+token store (`tokens.py`, its own file); `accounts.json` holds opaque row ids
+(a short hash), account uuids, and timestamps. `_reject_secrets` still runs
+on every write and raises rather than redacting.
+
+A key row carries the `account_uuid` its token resolved to (one profile call
+at registration, best-effort, lazily retried) for exactly one purpose: a key
+that belongs to the SAME account the machine is signed in as is a duplicate
+lane, not an alternative — failing over to it re-spends the identical limit
+(measured live 2026-08-24 21:20Z: the re-driven turn hit the same session
+limit 4.2 s later). Such rows are excluded from routing and greyed in the
+panel (user ruling 2026-08-25).
 """
 from __future__ import annotations
 
 import datetime as _dt
+import hashlib
 import json
 import os
 import re
 import tempfile
 import threading
 import time
-from typing import Any, Callable
+from typing import Any
 
-from . import store, subproxy, tokens
+from . import limits, store, tokens
 
 REGISTRY_NAME = "accounts.json"
-VERSION = 1
+VERSION = 2
 _lock = threading.RLock()
+
+#: the sentinel id of the signed-in account. Not a stored row — `readout` and
+#: `resolve` synthesize it from the live CLI config on every call.
+PRIMARY = "primary"
+
+#: the four model tiers, in display order. Routing state is keyed on these;
+#: an unknown tier simply never acquires a mark and so always resolves to the
+#: first account in priority order, which is the right degradation.
+TIERS = ("haiku", "sonnet", "opus", "fable")
 
 PROFILE_URL = "https://api.anthropic.com/api/oauth/profile"
 OAUTH_BETA = "oauth-2025-04-20"
 # console/api hosts sit behind a WAF that 403s a default urllib UA (Cloudflare
 # 1010). Identifying as the CLI is what this client id legitimately is.
 USER_AGENT = "claude-cli (external, cli)"
+
 
 # Resolved per call, never captured at import: `store.DATA_ROOT` is what the
 # rest of the backend actually uses, and a module-level constant would freeze
@@ -67,12 +85,6 @@ def registry_path() -> str:
 _SECRET_PATTERNS = (
     re.compile(r"sk-ant-[A-Za-z0-9_-]+"),
     re.compile(r"\beyJ[A-Za-z0-9_-]{10,}"),                 # JWT-ish
-    # ⚠ any long unbroken token-ish run, WITHOUT a character-class condition.
-    # This used to require ≥1 uppercase AND ≥1 digit, which made every
-    # all-lowercase secret invisible to it — hex and base32 are exactly that
-    # shape, and `label` is a free-form user string that reaches save()
-    # (review 2026-08-24: a 72-char lowercase run reached disk). No legitimate
-    # label is 40 characters with no separator, so refusing is the safe side.
     re.compile(r"\b[A-Za-z0-9+/_-]{40,}={0,2}\b"),          # long opaque run
 )
 # keys whose NAME alone means a caller is handing us the wrong thing
@@ -106,29 +118,48 @@ def _reject_secrets(node: Any, path: str = "") -> None:
 
 # ------------------------------------------------------------------ the record
 def _blank() -> dict[str, Any]:
-    return {"version": VERSION, "accounts": {}, "order": [], "pins": {}}
+    return {"version": VERSION, "keys": [], "usage_refreshes": {}}
 
 
 class RegistryUnreadable(RuntimeError):
     """The registry file exists but could not be understood."""
 
 
+def _migrate_v1(doc: dict[str, Any]) -> dict[str, Any]:
+    """The D-144 registry → this shape, WITHOUT touching disk.
+
+    The old document's adopted identities, labels and pins are dropped on the
+    floor by design. What survives is the one thing the user cannot re-create
+    by hand: rows for keys already pasted into the token store ("you won't be
+    able to see it again" — deleting those would force a re-mint). Old rows
+    were keyed on account uuid and the token store keyed on the same, so the
+    old uuid simply BECOMES the row id, and — usefully — it is also the row's
+    resolved `account_uuid`, so duplicate-of-primary detection works for
+    migrated rows with no network call.
+
+    Deterministic from (v1 doc, token store), so readers can migrate in
+    memory on every load; the first WRITE persists version 2. Reads never
+    write.
+    """
+    stored = set(tokens.load()["tokens"])
+    order = [str(u) for u in (doc.get("order") or []) if isinstance(u, str)]
+    ids = [u for u in order if u in stored]
+    ids += sorted(u for u in stored if u not in ids)
+    return {"version": VERSION,
+            "keys": [{"id": u, "account_uuid": u} for u in ids],
+            "usage_refreshes": {}}
+
+
 def load(*, strict: bool = False) -> dict[str, Any]:
     """The registry, or a blank one.
 
     A corrupt file reads as blank for READERS: taking the panel down over it
-    is a worse failure than showing nothing. But `strict=True` — which every
-    read-modify-WRITE cycle uses — raises instead.
-
-    ⚠ Why the split (review 2026-08-24): blank-on-corrupt is safe to *read*
-    and catastrophic to *write back*. `load()` → mutate → `save()` over an
-    unreadable file silently replaced every hand-set label, the whole
-    waterfall order and every pin with an empty registry, with no backup — and
-    a `VERSION` bump would have done it to every install at once, because a
-    version mismatch took the same branch. The docstring used to call the cost
-    "re-adopting"; re-adoption cannot restore a label, an order or a pin. The
-    unreadable file is now left ON DISK, untouched, so it can be recovered by
-    hand.
+    is a worse failure than showing nothing. `strict=True` — which every
+    read-modify-WRITE cycle uses — raises instead, so a mutation can never
+    silently replace an unreadable file with an empty registry (the data-loss
+    shape the 2026-08-24 review fixed; the unreadable file stays on disk for
+    hand recovery). A version-1 document is not corrupt: it migrates in
+    memory on every load, for readers and writers alike.
     """
     try:
         with open(registry_path(), encoding="utf-8") as f:
@@ -141,22 +172,33 @@ def load(*, strict: bool = False) -> dict[str, Any]:
                 f"{registry_path()} exists but could not be read ({e}) — "
                 f"refusing to overwrite it with a blank registry") from None
         return _blank()
-    if not isinstance(doc, dict) or doc.get("version") != VERSION:
+    if not isinstance(doc, dict):
         if strict:
             raise RegistryUnreadable(
-                f"{registry_path()} is version {doc.get('version') if isinstance(doc, dict) else '?'!r}, "
-                f"not {VERSION} — refusing to overwrite it; migrate it first")
+                f"{registry_path()} is not an object — refusing to overwrite "
+                f"it; recover or remove it first")
         return _blank()
-    for key, default in (("accounts", {}), ("order", []), ("pins", {})):
-        if not isinstance(doc.get(key), type(default)):
-            doc[key] = default
+    if doc.get("version") == 1:
+        return _migrate_v1(doc)
+    if doc.get("version") != VERSION:
+        if strict:
+            raise RegistryUnreadable(
+                f"{registry_path()} is version {doc.get('version')!r}, not "
+                f"{VERSION} — refusing to overwrite it; migrate it first")
+        return _blank()
+    if not isinstance(doc.get("keys"), list):
+        doc["keys"] = []
+    doc["keys"] = [k for k in doc["keys"]
+                   if isinstance(k, dict) and k.get("id")]
+    if not isinstance(doc.get("usage_refreshes"), dict):
+        doc["usage_refreshes"] = {}
     return doc
 
 
 def save(doc: dict[str, Any]) -> None:
     """Atomic tmp+replace, mirroring store.save_org — including the fsync,
-    because a half-written registry reads as 'no accounts known' and would
-    silently re-adopt."""
+    because a half-written registry reads as 'no keys registered' and the
+    rows are not re-creatable from anywhere else."""
     _reject_secrets(doc)                       # before anything touches disk
     doc["version"] = VERSION
     blob = json.dumps(doc, indent=2).encode("utf-8")
@@ -185,108 +227,49 @@ def save(doc: dict[str, Any]) -> None:
                 pass
 
 
-# ------------------------------------------------------------------- identity
-def mask_email(addr: str | None) -> str | None:
-    """`someone@example.com` → `s*****e@example.com`. The panel needs to tell
-    two accounts apart; it does not need the full address to do it, and the
-    registry is read by more code than the credentials store is."""
-    if not addr or "@" not in addr:
-        return None
-    local, _, domain = addr.partition("@")
-    if len(local) <= 2:
-        return f"{local[:1]}*@{domain}"
-    return f"{local[0]}{'*' * (len(local) - 2)}{local[-1]}@{domain}"
-
-
-def identity_from_profile(profile: dict[str, Any]) -> dict[str, Any]:
-    """`GET /api/oauth/profile` → the identity fields the registry keeps.
-    Everything credential-shaped in that response is dropped here, at the
-    boundary, rather than being carried inward and filtered later."""
-    acct = profile.get("account") or {}
-    org = profile.get("organization") or {}
-    uuid = acct.get("uuid")
-    if not uuid:
-        raise ValueError("profile carries no account.uuid — cannot key an "
-                         "account on anything else (token bytes rotate)")
-    return {
-        "uuid": uuid,
-        "org_uuid": org.get("uuid"),
-        "email_masked": mask_email(acct.get("email")),
-        "subscription_type": ("max" if acct.get("has_claude_max") else
-                              "pro" if acct.get("has_claude_pro") else None),
-        "rate_limit_tier": org.get("rate_limit_tier"),
-        "account_created_at": acct.get("created_at"),
-    }
-
-
-def upsert(identity: dict[str, Any], *, source: str = "adopted",
-           label: str | None = None) -> dict[str, Any]:
-    """Record an identity, preserving anything the user has since set by hand.
-    Re-adopting the same account must never clobber its label or its place in
-    the waterfall order — adoption runs on a schedule, the user edits once."""
-    with _lock:
-        doc = load(strict=True)
-        uuid = identity["uuid"]
-        prev = doc["accounts"].get(uuid) or {}
-        now = time.time()
-        rec = {**prev, **identity,
-               "source": prev.get("source", source),
-               "first_seen": prev.get("first_seen", now),
-               "last_seen": now}
-        if label is not None:
-            rec["label"] = label
-        elif "label" not in rec:
-            rec["label"] = rec.get("email_masked") or uuid[:8]
-        doc["accounts"][uuid] = rec
-        if uuid not in doc["order"]:
-            doc["order"].append(uuid)          # newly seen goes last, never first
-        save(doc)
-        return rec
-
-
-# ---------------------------------------------------------- passive adoption
-class LiveStoreWritten(RuntimeError):
-    """The credentials store changed while we were reading it."""
-
-
-# The CLI's own config, beside `subproxy.CREDS` but a DIFFERENT file: this one
-# holds identity METADATA (`oauthAccount`) and no credential at all. Module
-# level so a test can point it at a fixture without going near a real login.
+# ------------------------------------------------------- the primary identity
+# The CLI's own config, holding identity METADATA (`oauthAccount`) and no
+# credential at all. Module level so a test can point it at a fixture without
+# going near a real login.
 LIVE_CONFIG = os.path.expanduser("~/.claude.json")
 
 
-def live_account_uuid() -> str:
-    """WHO this machine is signed in as, offline — or "" if that is unknown.
+def live_identity() -> dict[str, str]:
+    """WHO this machine is signed in as — `{"uuid", "email"}`, both "" when
+    nobody is (missing/unreadable config, or no `oauthAccount`).
 
-    ⚠ THIS EXISTS BECAUSE "NOT CURRENTLY SELECTED" IS NOT "A DIFFERENT
-    ACCOUNT". An org with no selection runs on the AMBIENT login, and the
-    ambient account can perfectly well also sit in the registry with a pasted
-    token against it — passive adoption puts it there, by design, because
-    `adopt_live` harvests exactly whoever is logged in. Failing over from
-    ambient to that account is a switch to ITSELF: same subscription, same
-    limit, and a confident row saying capacity was restored. That happened
-    live on 2026-08-24 21:20Z — the re-driven turn hit the identical session
-    limit 4.2s later, and the org recovered only when the limit expired.
-
-    Read from the CLI's CONFIG (`oauthAccount.accountUuid`), never from the
-    credentials store: this must stay a metadata read, cheap enough to call on
-    a failure path and incapable of touching a token. Returns "" when nobody
-    is logged in, when the file is missing or unparseable, or when the field
-    is absent — see `supervisor.alternate_account_choice` for what "" means
-    there (it degrades to the old behaviour, which is why the ambient account
-    must ALSO be excluded by any caller that can afford to be stricter).
+    Read from the CLI's CONFIG, never from the credentials store: this must
+    stay a metadata read, cheap enough for every readout and every spawn, and
+    incapable of touching a token. The uuid is the discriminator (identical
+    across a token refresh, different between accounts — the old probe
+    battery's one durable finding); the email is display only.
     """
     try:
         with open(LIVE_CONFIG, encoding="utf-8") as f:
             doc = json.load(f)
     except (OSError, json.JSONDecodeError, ValueError):
-        return ""
+        return {"uuid": "", "email": ""}
     if not isinstance(doc, dict):
-        return ""
+        return {"uuid": "", "email": ""}
     acct = doc.get("oauthAccount")
     if not isinstance(acct, dict):
+        return {"uuid": "", "email": ""}
+    return {"uuid": str(acct.get("accountUuid") or ""),
+            "email": str(acct.get("emailAddress") or "")}
+
+
+# ------------------------------------------------------------------- key rows
+def key_for_token(token: str) -> str:
+    """The row id a raw token belongs to, or "". The reverse lookup exists so
+    attribution (`supervisor.identity_in_env`) can read the RESOLVED spawn
+    env — the dict the process actually holds — rather than trusting intent.
+    Takes the secret, returns a label; keeps nothing."""
+    if not token:
         return ""
-    return str(acct.get("accountUuid") or "")
+    for kid, tok in tokens.load()["tokens"].items():
+        if tok == token:
+            return str(kid)
+    return ""
 
 
 def _resolve_via_profile(access_token: str) -> dict[str, Any]:
@@ -303,171 +286,279 @@ def _resolve_via_profile(access_token: str) -> dict[str, Any]:
         return json.loads(r.read().decode("utf-8"))
 
 
-def adopt_live(resolver: Callable[[str], dict[str, Any]] | None = None,
-               ) -> dict[str, Any] | None:
-    """PASSIVE adoption: notice whoever is logged in, record who they are, and
-    leave the credentials store exactly as found.
-
-    'Passive' is the whole contract, so it is enforced rather than intended:
-    the store's mtime and size are sampled before and after, and a change
-    raises `LiveStoreWritten`. That guard is why this function may be called
-    from a request handler without the user wondering whether their login
-    survived it. It never refreshes a grant — an expired token here yields
-    None and the caller re-adopts after the user logs in again.
-    """
-    creds = subproxy.CREDS
-    try:
-        before = os.stat(creds)
-    except OSError:
-        return None                            # nobody logged in — not an error
-    try:
-        with open(creds, encoding="utf-8") as f:
-            doc = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return None
-    token = ((doc.get("claudeAiOauth") or {}).get("accessToken"))
-    if not token:
-        return None
-    try:
-        profile = (resolver or _resolve_via_profile)(token)
-    except Exception:                          # noqa: BLE001 — offline/expired/rate-limited
-        return None
-    finally:
-        # ⚠ the store DISAPPEARING is a change, not an absence (review
-        # 2026-08-24). `os.stat` used to raise FileNotFoundError straight out
-        # of this `finally`, which `api.py` maps to nothing — so a logout
-        # during adoption, the single most visible thing that can happen to
-        # this file, produced a 500 rather than the 409 the docstring
-        # promises. Any failure to re-stat is treated as "it changed".
-        try:
-            after: os.stat_result | None = os.stat(creds)
-        except OSError:
-            after = None
-        if after is None or (after.st_mtime_ns, after.st_size) != (
-                before.st_mtime_ns, before.st_size):
-            raise LiveStoreWritten(
-                f"{creds} changed during passive adoption — adoption must "
-                f"never write the credentials store")
-    return upsert(identity_from_profile(profile), source="adopted")
+def _uuid_from_profile(profile: Any) -> str:
+    if not isinstance(profile, dict):
+        return ""
+    acct = profile.get("account")
+    if not isinstance(acct, dict):
+        return ""
+    return str(acct.get("uuid") or "")
 
 
-# -------------------------------------------------------------- order and pin
-def set_order(order: list[str]) -> list[str]:
-    """The waterfall order, primary first. Unknown uuids are dropped and known
-    ones missing from the request are appended — a stale panel must not be
-    able to delete an account from the registry by omitting it."""
+def _set_key_uuid(kid: str, uuid: str) -> None:
     with _lock:
         doc = load(strict=True)
-        known = list(doc["accounts"].keys())
-        # dedupe as well as filter (review 2026-08-24): the endpoint takes a
-        # bare list[str] with no uniqueness constraint, so a stale or
-        # double-submitted panel POST could send ["A","A","B"] — which the
-        # filter alone preserves, and `readout()` then renders A twice. The
-        # order must stay a PERMUTATION of the known set, not merely a subset
-        # of it. `dict.fromkeys` keeps first-seen position.
-        new = list(dict.fromkeys(u for u in order if u in doc["accounts"]))
-        new += [u for u in known if u not in new]
-        doc["order"] = new
+        for k in doc["keys"]:
+            if k["id"] == kid:
+                k["account_uuid"] = uuid
+                save(doc)
+                return
+
+
+def resolve_key_identity(kid: str) -> str:
+    """Best-effort: which account does this key belong to? Fetches the
+    profile with the key's own token and records the uuid on the row.
+    Returns the uuid, or "" (offline, expired, unknown row — none are
+    errors; the row simply stays unattributed and routes as a distinct
+    account until a later call succeeds)."""
+    tok = tokens.get(kid)
+    if not tok:
+        return ""
+    try:
+        uuid = _uuid_from_profile(_resolve_via_profile(tok))
+    except Exception:                          # noqa: BLE001 — offline/expired/429
+        return ""
+    if uuid:
+        _set_key_uuid(kid, uuid)
+    return uuid
+
+
+def register_key(token: str) -> dict[str, Any]:
+    """Register a pasted `claude setup-token` key as a secondary account row.
+
+    ⚠ STORE FIRST, RESOLVE AFTER — the ordering is the user's standing
+    ruling, not a preference. The CLI shows a minted token EXACTLY ONCE
+    ("you won't be able to see it again"), so the write to the token store
+    happens before anything can form an opinion about the value; the identity
+    lookup runs afterwards, against a token that is already durable, and its
+    failure costs nothing but a greyed-out-duplicate check that will retry.
+
+    Idempotent on the VALUE: re-pasting a key that is already stored lands on
+    its existing row (same id — the id IS a hash of the token) and keeps its
+    place in the order. Returns `{"id", "created", "account_uuid"}`.
+    """
+    token = str(token or "").strip()
+    if not token:
+        raise ValueError("refusing to register an empty key")
+    kid = key_for_token(token) or (
+        "k" + hashlib.sha256(token.encode("utf-8")).hexdigest()[:12])
+    tokens.put(kid, token)                     # ← durable before anything else
+    created = False
+    with _lock:
+        doc = load(strict=True)
+        if not any(k["id"] == kid for k in doc["keys"]):
+            doc["keys"].append({"id": kid, "account_uuid": None})
+            created = True
+            save(doc)
+    # the identity lookup, OUTSIDE the lock (it is a network call) and after
+    # durability. `resolve_key_identity` re-reads the token it just stored.
+    uuid = resolve_key_identity(kid)
+    return {"id": kid, "created": created, "account_uuid": uuid or None}
+
+
+def remove_key(kid: str) -> bool:
+    """Delete a secondary account row AND its stored key. ⚠ Irreversible from
+    orgtree's side — the CLI cannot show a token again, so re-adding means
+    re-minting. Routing state for the row goes with it: a mark against a key
+    that no longer exists is not this machine's state."""
+    kid = str(kid or "")
+    with _lock:
+        doc = load(strict=True)
+        keep = [k for k in doc["keys"] if k["id"] != kid]
+        existed = len(keep) != len(doc["keys"])
+        if existed:
+            doc["keys"] = keep
+            doc["usage_refreshes"].pop(kid, None)
+            save(doc)
+    forgot = tokens.forget(kid)
+    return existed or forgot
+
+
+def set_key_order(ids: list[str]) -> list[str]:
+    """The secondary priority order. Unknown ids are dropped and known ones
+    missing from the request are appended — a stale panel must not be able to
+    delete a row by omitting it, and the order must stay a PERMUTATION of the
+    known set (`dict.fromkeys` dedupes a double-submitted POST)."""
+    with _lock:
+        doc = load(strict=True)
+        by_id = {k["id"]: k for k in doc["keys"]}
+        new = list(dict.fromkeys(str(i) for i in ids if str(i) in by_id))
+        new += [i for i in by_id if i not in new]
+        doc["keys"] = [by_id[i] for i in new]
         save(doc)
         return new
 
 
-def primary() -> str | None:
-    doc = load()
-    return doc["order"][0] if doc["order"] else None
+# ------------------------------------------------------------- routing state
+def _prune_expired(doc: dict[str, Any], now: float) -> None:
+    """An expired mark IS capacity — readers already treat it so; writers
+    physically drop it so the file states only what is currently true. Also
+    sweeps marks for rows that no longer exist (`primary` always exists)."""
+    known = {PRIMARY} | {k["id"] for k in doc["keys"]}
+    ref = doc["usage_refreshes"]
+    for acct in list(ref):
+        if acct not in known or not isinstance(ref[acct], dict):
+            del ref[acct]
+            continue
+        for tier in list(ref[acct]):
+            try:
+                if float(ref[acct][tier]) <= now:
+                    del ref[acct][tier]
+            except (TypeError, ValueError):
+                del ref[acct][tier]
+        if not ref[acct]:
+            del ref[acct]
 
 
-def set_pin(org_slug: str, uuid: str | None) -> str | None:
-    """Nail one org to one account, or pass None to clear it. Pinning an
-    unknown account is refused loudly: a pin that silently does not apply is
-    indistinguishable from a pin that does, which is the whole failure mode
-    this feature is supposed to make visible."""
+def record_limit(account: str, tier: str, refresh_at: float) -> bool:
+    """The ONLY writer of routing state: this account's capacity for this
+    tier is used up until `refresh_at`. Unknown accounts and unknown tiers
+    are refused as no-ops returning False — a stale attribution (a row
+    deleted mid-turn, an `api-key` lane, `key:unattributed`) must not be able
+    to resurrect or invent a row."""
+    account, tier = str(account or ""), str(tier or "").lower()
+    if tier not in TIERS:
+        return False
     with _lock:
         doc = load(strict=True)
-        if uuid is None:
-            doc["pins"].pop(org_slug, None)
-        elif uuid not in doc["accounts"]:
-            raise KeyError(f"cannot pin {org_slug!r} to unknown account "
-                           f"{uuid!r} — adopt it first")
-        else:
-            doc["pins"][org_slug] = uuid
+        if account != PRIMARY and not any(
+                k["id"] == account for k in doc["keys"]):
+            return False
+        now = time.time()
+        _prune_expired(doc, now)
+        ts = float(refresh_at)
+        if ts <= now:
+            return False                       # already refreshed: not a mark
+        doc["usage_refreshes"].setdefault(account, {})[tier] = ts
         save(doc)
-        return doc["pins"].get(org_slug)
+        return True
 
 
-def relabel(uuid: str, label: str) -> str:
-    """Rename an account for the panel.
-
-    ⚠ Lives here rather than in the endpoint, and takes `_lock`, because the
-    endpoint's own load→mutate→save was the ONE mutator running outside it
-    (review 2026-08-24). Sync FastAPI endpoints run in a threadpool and
-    `adopt_live` is dispatched with `run_in_threadpool`, so a scheduled
-    adoption concurrent with a rename could be lost when the rename saved its
-    stale document — the newly adopted account simply vanishing.
-    """
-    label = label.strip()
-    if not label:
-        raise ValueError("a label cannot be empty")
-    with _lock:
-        doc = load(strict=True)
-        if uuid not in doc["accounts"]:
-            raise KeyError(uuid)
-        doc["accounts"][uuid]["label"] = label
-        save(doc)
-        return label
+def _routing_order(doc: dict[str, Any], live_uuid: str) -> list[str]:
+    """Priority order: the signed-in account first (skipped entirely when
+    nobody is signed in — an ambient spawn with no login authenticates as
+    nothing), then key rows in list order, MINUS any key that resolved to the
+    same account as the live login (a duplicate lane, not an alternative)."""
+    order: list[str] = [PRIMARY] if live_uuid else []
+    for k in doc["keys"]:
+        au = str(k.get("account_uuid") or "")
+        if live_uuid and au and au == live_uuid:
+            continue
+        order.append(str(k["id"]))
+    return order
 
 
-def get_pin(org_slug: str) -> str | None:
-    return load()["pins"].get(org_slug)
+def _resolve_in(doc: dict[str, Any], live_uuid: str, tier: str,
+                now: float) -> dict[str, Any]:
+    tier = str(tier or "").lower()
+    order = _routing_order(doc, live_uuid)
+    ref = doc["usage_refreshes"]
+
+    def mark(acct: str) -> float | None:
+        try:
+            ts = float((ref.get(acct) or {}).get(tier))
+        except (TypeError, ValueError):
+            return None
+        return ts if ts > now else None        # expired reads as capacity
+
+    for acct in order:
+        if mark(acct) is None:
+            return {"account": acct, "available": True, "refresh_at": None}
+    # nowhere has capacity: name the account that refreshes SOONEST — that is
+    # where capacity next appears, where the dimmed chip sits, and where a
+    # probing spawn goes (if it fails it re-marks itself; self-bounding)
+    if order:
+        best = min(order, key=lambda a: mark(a) or float("inf"))
+        return {"account": best, "available": False, "refresh_at": mark(best)}
+    return {"account": None, "available": False, "refresh_at": None}
+
+
+def resolve(tier: str, now: float | None = None) -> dict[str, Any]:
+    """WHERE prompts for this tier go, right now:
+    `{"account": id|None, "available": bool, "refresh_at": epoch|None}`.
+    The single rule every consumer shares — the spawn seam injects the token
+    of exactly this answer, and the panel draws the tier's chip beside exactly
+    this row, so the two cannot disagree."""
+    now = time.time() if now is None else now
+    return _resolve_in(load(), live_identity()["uuid"], tier, now)
 
 
 def _iso(epoch: Any) -> str | None:
-    """Epoch seconds → ISO-8601 Z. The record keeps epoch (cheap to compare);
-    the WIRE speaks ISO, because every other timestamp this API emits does and
-    the frontend's `ago()` parses strings, not numbers."""
     if not isinstance(epoch, (int, float)):
         return None
     return (_dt.datetime.fromtimestamp(epoch, _dt.timezone.utc)
             .isoformat().replace("+00:00", "Z"))
 
 
-def _wire(rec: dict[str, Any], uuid: str) -> dict[str, Any]:
-    return {**rec, "uuid": uuid,
-            "first_seen": _iso(rec.get("first_seen")),
-            "last_seen": _iso(rec.get("last_seen"))}
-
-
 def readout() -> dict[str, Any]:
-    """What the panel renders. `effective` is the account a turn WOULD use if
-    selection existed — it does not yet (Phase 2), so the panel labels it as
-    intent, not as fact."""
+    """What the panel renders. One load, one live read, so the rows and the
+    chip assignments are a consistent snapshot."""
     doc = load()
+    live = live_identity()
+    now = time.time()
+    dup = {k["id"] for k in doc["keys"]
+           if live["uuid"] and str(k.get("account_uuid") or "") == live["uuid"]}
+    assignments = {}
+    for tier in TIERS:
+        r = _resolve_in(doc, live["uuid"], tier, now)
+        assignments[tier] = {"account": r["account"],
+                             "available": r["available"],
+                             "refresh_at": _iso(r["refresh_at"])}
     return {
         "version": VERSION,
-        "accounts": [_wire(doc["accounts"][u], u)
-                     for u in doc["order"] if u in doc["accounts"]],
-        "primary": doc["order"][0] if doc["order"] else None,
-        "pins": dict(doc["pins"]),
-        # ⚠ WAS HARDCODED `False` FROM D-144 ("Phase 1 ships the registry, not
-        # the switch"), and by 2026-08-25 that had become a LIE ON THE WIRE:
-        # selection and failover both exist and are wired. A field pinned to a
-        # constant is not a fact, it is a claim frozen at the moment someone
-        # stopped thinking about it — and the checks holding it there defended
-        # the wrong answer rather than catching the drift.
-        #
-        # It is now DERIVED, and deliberately answers the question this
-        # payload can actually answer: **can this install select an account
-        # for a turn at all?** That is true exactly when some account holds a
-        # stored token — an account with no token cannot serve, cannot be a
-        # failover target (`alternate_account_choice`), and cannot be
-        # selected (`set_account_selection` refuses it). On a fresh install
-        # this is False, and a panel gating on it is telling the truth.
-        #
-        # ⚠ It is NOT "does org X have a deliberate selection". That fact is
-        # per-org and this readout has no org; it already has an authoritative
-        # home in `GET /api/accounts/serving/{slug}` → `selection`. A second,
-        # org-blind spelling of it here would be two homes for one fact with
-        # nothing keeping them in step — the failure `supervisor.state`'s
-        # docstring records from the last time this codebase tried it.
-        "selection_active": any(tokens.has(u) for u in doc["order"]),
+        "primary": {"signed_in": bool(live["uuid"]),
+                    "email": live["email"] or None},
+        "keys": [{"id": k["id"], "duplicate": k["id"] in dup}
+                 for k in doc["keys"]],
+        "assignments": assignments,
     }
+
+
+# ------------------------------------------------------------ per-account usage
+def account_usage(account: str) -> dict[str, Any]:
+    """One account's usage-limit standing, for the panel's per-row button and
+    the header modal's list. `primary` reads the host subscription through
+    the shared `limits` cache; a key row fetches with its own token (cached
+    per row, stale-on-error, never raises — see `limits.fetch_for_token`).
+
+    A key row with no resolved identity gets one lazy retry here: the user
+    is already spending a network round-trip on this click, and the
+    duplicate-of-primary greying is worth piggybacking on it."""
+    account = str(account or "")
+    live = live_identity()
+    if account == PRIMARY:
+        data = limits.fetch()
+        return {"account": PRIMARY, "duplicate": False,
+                "label": live["email"] or "signed-in account",
+                **{k: v for k, v in data.items() if k != "account"}}
+    doc = load()
+    row = next((k for k in doc["keys"] if k["id"] == account), None)
+    if row is None:
+        return {"account": account, "label": account, "duplicate": False,
+                "available": False, "error": "no such key"}
+    tok = tokens.get(account)
+    if not tok:
+        return {"account": account, "label": account, "duplicate": False,
+                "available": False, "error": "no stored key for this row"}
+    if not row.get("account_uuid"):
+        resolve_key_identity(account)          # lazy identity retry, best-effort
+        doc = load()
+        row = next((k for k in doc["keys"] if k["id"] == account), row)
+    dup = bool(live["uuid"]
+               and str(row.get("account_uuid") or "") == live["uuid"])
+    ordinal = next((i + 1 for i, k in enumerate(doc["keys"])
+                    if k["id"] == account), None)
+    label = f"fallback {ordinal}" if ordinal else "fallback"
+    data = limits.fetch_for_token(tok, cache_key=account)
+    return {"account": account, "label": label, "duplicate": dup,
+            **{k: v for k, v in data.items() if k != "account"}}
+
+
+def usage_all() -> dict[str, Any]:
+    """Every account's standing, primary first then keys in priority order —
+    the header usage modal's list (user ruling 2026-08-25: the overall usage
+    button shows every registered account, fallbacks included)."""
+    doc = load()
+    out = [account_usage(PRIMARY)]
+    out += [account_usage(k["id"]) for k in doc["keys"]]
+    return {"accounts": out}

@@ -1,43 +1,93 @@
-// canvas/accounts.tsx — the accounts panel, redesigned to the user's spec
-// (2026-08-24): "minimal, comprehensible, show only what's necessary". ONE
-// fact up top — which account is serving turns — and ONE list: the fallback
-// keys, in the order failover will try them, drag to reorder, removable.
+// canvas/accounts.tsx — the accounts panel, rebuilt to the user's 2026-08-25
+// spec (machine-local per-model routing). A column of rows:
 //
-// Gone deliberately: the pin surface (the failover code never reads pins —
-// zero references, measured 2026-08-24) and the registry-browsing framing.
-// The registry itself is untouched and identity-only; keys live in their own
-// store, and this panel only ever learns PRESENCE, never content.
+//   · row 1, PRIMARY — whoever Claude Code is signed in as on this machine,
+//     shown by EMAIL. Not draggable, not switchable from here: the CLI login
+//     is the only mover. A usage button and nothing else.
+//   · one row per registered fallback KEY — drag grip (the order IS the
+//     routing priority), a greyed-out input whose value is deliberately
+//     omitted (the server never returns key material), usage button, delete.
+//   · a final row with a live input and a ✓ — paste a `claude setup-token`
+//     key to register a new fallback.
 //
-// ⚠ THERE IS DELIBERATELY NO STATUS BANNER. The old "Registry only — no
-// failover is running yet" line was gated on `selection_active`, a D-144-era
-// field then hardcoded to FALSE — it stopped tracking reality the night
-// failover first fired (2026-08-24), at which point the banner stated the
-// exact opposite of the truth. The field is DERIVED since 2026-08-25 (any
-// registered account holds a key) but is machine-wide, not a per-org fact:
-// nothing user-visible may key on it. The serving line below is resolved
-// from the real spawn environment and IS the status statement. Absence is
-// pinned by acctpanel.test.tsx §1/§2.
+// The H/S/O/F chips in the left gutter are the whole story: each model
+// tier's chip sits beside the row its prompts currently go to — the highest
+// row with remaining capacity, resolved by the SERVER from the same state
+// the spawn seam reads (`assignments`), so the panel cannot disagree with
+// what a turn would actually do. A dimmed chip means no row has capacity;
+// it sits where capacity returns first, tooltip saying when.
 //
-// ⚠ THE DRAG IS A REAL CONTROL, not cosmetics: failover walks the registry
-// order and takes the first account that isn't currently serving and has a
-// stored key. The submitted order is [active account, …keys as displayed];
-// the server appends anything omitted (proven: "set_order cannot delete an
-// omitted account"), so key-less registrations survive without being listed.
+// A key row that resolved to the SAME account as the login is greyed whole
+// and excluded from routing (`duplicate` — server-computed): failing over
+// to it would re-spend the identical limit (measured live 2026-08-24
+// 21:20Z, the no-op self-switch incident).
 
 import { useEffect, useRef, useState } from 'react'
-import type {
-  AccountsPayload, AccountEntry, ServingPayload, TokensPayload, ToastFn,
-} from '../types'
+import type { AccountsPayload, AccountUsage, ToastFn, UsageLimit } from '../types'
 import {
-  adoptAccount, forgetAccountToken, getAccounts, getAccountTokens,
-  getServingAccount, putAccountSelection, putAccountToken, relabelAccount,
-  setAccountOrder,
+  addAccountKey, deleteAccountKey, getAccounts, getAccountUsage,
+  setAccountKeyOrder,
 } from '../api'
-import { ago, useEsc } from './shared'
+import { CheckIcon, DataUsageIcon, DeleteIcon } from '../icons'
+import { TIER_LETTER, TIERS, useEsc } from './shared'
 
-export function AccountsPanel({ slug, toast, close }: {
-  /** the org whose serving account is resolved; omit for the bare list */
-  slug?: string
+// small local copies of the usage-modal label helpers (App.tsx owns the
+// originals beside UsageModal; importing them here would cycle App ↔ panel)
+const USAGE_LABEL: Record<string, string> = {
+  session: 'session (5hr)',
+  weekly_all: 'weekly (7 day)',
+}
+const usageLabel = (l: UsageLimit): string =>
+  l.kind === 'weekly_scoped' && l.model ? `weekly ${l.model}`
+    : USAGE_LABEL[l.kind] ?? l.kind.replace(/_/g, ' ')
+const usageResets = (iso: string | null): string => {
+  if (!iso) return ''
+  const ms = new Date(iso).getTime() - Date.now()
+  if (!Number.isFinite(ms)) return ''
+  if (ms <= 0) return 'resets soon'
+  const h = Math.floor(ms / 3600000)
+  const m = Math.floor((ms % 3600000) / 60000)
+  if (h >= 48) return `resets in ${Math.floor(h / 24)}d ${h % 24}h`
+  return h > 0 ? `resets in ${h}h ${m}m` : `resets in ${m}m`
+}
+const sevOf = (l: UsageLimit): '' | 'warn' | 'crit' => {
+  const pct = Math.max(0, Math.min(100, l.percent ?? 0))
+  return l.severity === 'critical' || pct >= 90 ? 'crit'
+    : (l.severity && l.severity !== 'normal') || pct >= 75 ? 'warn' : ''
+}
+
+/** one account's bars — the same markup family as the header usage modal */
+export function UsageBars({ u }: { u: AccountUsage }) {
+  if (!u.available) {
+    return <div className="dim">{u.error ?? 'usage unavailable'}</div>
+  }
+  return (
+    <>
+      {u.plan && <div className="dim">Claude {u.plan}</div>}
+      {(u.limits ?? []).map((l) => {
+        const pct = Math.max(0, Math.min(100, l.percent ?? 0))
+        const sev = sevOf(l)
+        return (
+          <div className="usage-row" key={l.kind + (l.model ?? '')}>
+            <div className="u-head">
+              <span className="u-label">{usageLabel(l)}</span>
+              <span className="u-reset">{usageResets(l.resets_at)}</span>
+              <span className={'u-pct' + (sev ? ' ' + sev : '')}>
+                {Math.round(l.percent ?? 0)}%</span>
+            </div>
+            <div className="usage-track">
+              <div className={'usage-fill' + (sev ? ' ' + sev : '')}
+                style={{ width: pct + '%' }} />
+            </div>
+          </div>
+        )
+      })}
+      {!(u.limits ?? []).length && <div className="dim">no limits reported</div>}
+    </>
+  )
+}
+
+export function AccountsPanel({ toast, close }: {
   toast: ToastFn
   close: () => void
 }) {
@@ -45,277 +95,194 @@ export function AccountsPanel({ slug, toast, close }: {
   const [data, setData] = useState<AccountsPayload | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  const [editing, setEditing] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
-  const [toks, setToks] = useState<TokensPayload | null>(null)
-  const [serving, setServing] = useState<ServingPayload | null>(null)
-  const [pasting, setPasting] = useState<string | null>(null)
-  const [paste, setPaste] = useState('')
-  // ⚠ a REF, not state: dragstart and drop can land in one React batch (they
-  // do under act() in tests, and nothing forbids it in a browser), and a drop
-  // reading the dragged id from its render closure would see the pre-drag
-  // null and silently do nothing. The state twin exists only for styling.
+  // which row's usage section is open, and each row's last-fetched bars
+  const [usageOpen, setUsageOpen] = useState<string | null>(null)
+  const [usage, setUsage] = useState<Record<string, AccountUsage | 'loading'>>({})
+  // ⚠ a REF, not state: dragstart and drop can land in one React batch, and a
+  // drop reading the dragged id from its render closure would see the
+  // pre-drag null and silently do nothing. The state twin is styling only.
   const dragRef = useRef<string | null>(null)
-  const [overU, setOverU] = useState<string | null>(null)
+  const [overId, setOverId] = useState<string | null>(null)
 
-  const load = () => getAccounts().then(setData)
+  const load = () => getAccounts().then((d) => { setData(d); setErr(null) })
     .catch((e: Error) => setErr(e.message))
-  const loadToks = () => getAccountTokens().then(setToks).catch(() => {})
-  // ⚠ re-read after EVERY mutation. The serving account is the one fact on
-  // this panel a user will act on, and a stale one is worse than none.
-  const loadServing = () => {
-    if (!slug) return
-    getServingAccount(slug).then(setServing).catch(() => {})
-  }
-  useEffect(() => { void load(); void loadToks(); void loadServing() }, [])
+  useEffect(() => { void load() }, [])
 
   const run = (p: Promise<AccountsPayload>, ok: string) => {
     setBusy(true)
-    p.then((d) => { setData(d); toast([ok]) })
-      .catch((e: Error) => toast([`error: ${e.message}`]))
-      .finally(() => { setBusy(false); loadServing() })
-  }
-
-  const adopt = () => {
-    setBusy(true)
-    adoptAccount()
-      .then((d) => {
-        setData(d)
-        // `adopted: null` is a NORMAL outcome, not a failure — nobody is
-        // logged in, or the identity lookup was unreachable. Saying so beats
-        // a silent no-op that looks like a broken button.
-        toast([d.adopted
-          ? 'registered the account currently logged in'
-          : 'nothing to register — no Claude login found on this host, or '
-            + 'the lookup was unreachable'])
-      })
-      .catch((e: Error) => toast([`error: ${e.message}`]))
-      .finally(() => { setBusy(false); loadServing() })
-  }
-
-  const saveLabel = (uuid: string) => {
-    const label = draft.trim()
-    setEditing(null)
-    if (!label) return
-    run(relabelAccount(uuid, label), 'renamed')
-  }
-
-  // ⚠ `toks?.tokens?.[…]`, never a bare deref: a response of an unexpected
-  // shape must degrade to "no key", not throw during render and blank the
-  // whole panel, banner included (acctpanel §3 caught exactly that crash).
-  const hasKey = (uuid: string) => !!toks?.tokens?.[uuid]
-
-  // the serving value is a registry uuid, or "ambient"/"api-key"/
-  // "token:unattributed" — only a uuid maps onto a listed account
-  const activeUuid =
-    serving && data?.accounts.some((a) => a.uuid === serving.serving)
-      ? serving.serving : null
-  // the STORED INTENT beside the resolved fact; an older backend omits it
-  const selection = serving?.selection ?? null
-
-  // ⚠ the PUT's response IS the new resolved truth (same shape as the read) —
-  // set it directly rather than racing a re-fetch that could answer stale
-  const select = (uuid: string | null) => {
-    if (!slug) return
-    setBusy(true)
-    putAccountSelection(slug, uuid)
-      .then((s) => { setServing(s); toast([`serving ${s.label}`]) })
-      // a refused selection that says nothing reads exactly like one that
-      // worked — the 422 detail names the reason and must reach the user
+    p.then((d) => { setData(d); if (ok) toast([ok]) })
       .catch((e: Error) => toast([`error: ${e.message}`]))
       .finally(() => setBusy(false))
   }
 
-  const keys: AccountEntry[] =
-    data?.accounts.filter((a) => a.uuid !== activeUuid && hasKey(a.uuid)) ?? []
-  const keyless: AccountEntry[] =
-    data?.accounts.filter((a) => a.uuid !== activeUuid && !hasKey(a.uuid)) ?? []
-
-  const commitOrder = (ks: string[]) => {
-    const head = activeUuid ? [activeUuid] : []
-    run(setAccountOrder([...head, ...ks]), 'order saved')
+  const register = () => {
+    // ⚠ NO CLIENT-SIDE FORMAT VALIDATION, DELIBERATELY. The CLI shows a
+    // minted token exactly once ("you won't be able to see it again"), so
+    // anything that could reject the paste before it is durable would
+    // destroy the only copy. The server stores first and resolves after.
+    const t = draft
+    if (!t.trim()) return
+    setBusy(true)
+    addAccountKey(t)
+      .then((d) => { setData(d); setDraft(''); toast(['key registered']) })
+      .catch((e: Error) => toast([`error: ${e.message}`]))
+      .finally(() => setBusy(false))
   }
 
-  // drop B on A ⇒ B takes A's place in the tried-order
+  const toggleUsage = (id: string) => {
+    if (usageOpen === id) { setUsageOpen(null); return }
+    setUsageOpen(id)
+    setUsage((u) => ({ ...u, [id]: u[id] && u[id] !== 'loading' ? u[id] : 'loading' }))
+    getAccountUsage(id)
+      .then((r) => setUsage((u) => ({ ...u, [id]: r })))
+      .catch((e: Error) => setUsage((u) => ({
+        ...u, [id]: { account: id, label: id, available: false, error: e.message },
+      })))
+  }
+
+  // drop B on A ⇒ B takes A's place in the priority order
   const dropOn = (target: string) => {
-    setOverU(null)
+    setOverId(null)
     const src = dragRef.current
-    if (!src || src === target) return
-    const ks = keys.map((k) => k.uuid).filter((u) => u !== src)
-    ks.splice(ks.indexOf(target), 0, src)
-    commitOrder(ks)
+    if (!src || src === target || !data) return
+    const ids = data.keys.map((k) => k.id).filter((i) => i !== src)
+    ids.splice(ids.indexOf(target), 0, src)
+    run(setAccountKeyOrder(ids), 'order saved')
   }
 
-  const label = (a: AccountEntry) => editing === a.uuid
-    ? <input
-        className="grow" autoFocus value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') saveLabel(a.uuid)
-          if (e.key === 'Escape') setEditing(null)
-        }}
-        onBlur={() => saveLabel(a.uuid)} />
-    : <span
-        className="acct-label" title="click to rename"
-        onClick={() => { setEditing(a.uuid); setDraft(a.label) }}
-      >{a.label}</span>
-
-  const identity = (a: AccountEntry) => (
-    <span className="dim">
-      {' '}{a.email_masked ?? ''}
-      {a.subscription_type ? ` · ${a.subscription_type}` : ''}
-      {a.last_seen ? ` · seen ${ago(a.last_seen)} ago` : ''}
+  /** the left gutter: each tier's chip sits beside the row it routes to */
+  const chips = (id: string) => (
+    <span className="acct-gutter">
+      {TIERS.map((t) => {
+        const a = data?.assignments?.[t]
+        if (!a || a.account !== id) return null
+        const when = usageResets(a.refresh_at)
+        return (
+          <span key={t}
+            className={'tier t-' + t + (a.available ? '' : ' acct-chip-dim')}
+            title={a.available
+              ? `${t} prompts run on this account`
+              : `${t}: no account has capacity right now — it returns here`
+                + (when ? ` (${when.replace('resets', 'refreshes')})` : '')}>
+            {TIER_LETTER[t]}</span>
+        )
+      })}
     </span>
   )
 
-  const pasteRow = (a: AccountEntry) => pasting === a.uuid && (
-    <div className="row">
-      {/* ⚠ NO CLIENT-SIDE FORMAT VALIDATION HERE, DELIBERATELY. The CLI
-          shows a minted token exactly once ("you won't be able to see it
-          again"), so anything that could reject the paste before it is
-          durable would destroy the only copy and cost the user a re-mint
-          plus another account-switch window. The server stores first and
-          validates after; the UI must not reintroduce the gate. */}
-      <input
-        className="grow" autoFocus type="password"
-        placeholder="paste the key — it is stored before anything checks it"
-        value={paste}
-        onChange={(e) => setPaste(e.target.value)}
-        onKeyDown={(e) => { if (e.key === 'Escape') setPasting(null) }} />
-      <button
-        className="primary" disabled={busy || !paste}
-        onClick={() => {
-          setBusy(true)
-          putAccountToken(a.uuid, paste)
-            .then((t) => {
-              setToks(t); setPasting(null); setPaste('')
-              toast(['key stored'])
-            })
-            .catch((e: Error) => toast([e.message]))
-            .finally(() => { setBusy(false); loadServing() })
-        }}>store</button>
-      <button onClick={() => setPasting(null)}>cancel</button>
+  const usageBtn = (id: string) => (
+    <button className={'acct-usage-btn' + (usageOpen === id ? ' on' : '')}
+      title="usage limits"
+      onClick={() => toggleUsage(id)}>
+      <DataUsageIcon fontSize="inherit" /></button>
+  )
+
+  const usagePane = (id: string) => usageOpen === id && (
+    <div className="acct-usage">
+      {usage[id] === 'loading' || !usage[id]
+        ? <div className="dim">reading usage…</div>
+        : <UsageBars u={usage[id] as AccountUsage} />}
     </div>
   )
 
   return (
     <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
-      <div className="settings" onClick={(e) => e.stopPropagation()}>
+      <div className="settings acct-panel" onClick={(e) => e.stopPropagation()}>
         <h3>Accounts</h3>
+        <div className="dim acct-blurb">
+          Each model runs on the highest row with remaining capacity — the
+          H/S/O/F markers show where each one currently routes. To add a
+          fallback account, run <code>claude setup-token</code> in a terminal
+          logged into that account and paste the key it prints below.
+        </div>
 
-        {err && <div className="ask-warn">could not read the registry: {err}</div>}
-        {!data && !err && <div className="dim">reading the registry…</div>}
+        {err && <div className="ask-warn">could not read accounts: {err}</div>}
+        {!data && !err && <div className="dim">reading accounts…</div>}
 
-        {/* ⚠ ALWAYS RENDERED when an org is open, not only when something is
-            wrong. A state you can see only when it breaks is one nobody
-            checks — and this is the only way the user can confirm which
-            account is actually serving turns without reading logs. The
-            server RESOLVES it from the real spawn environment, so it cannot
-            disagree with reality. */}
-        {slug && (
-          <div className="acct-serving">
-            <b>serving {slug}:</b>{' '}
-            {serving
-              ? <span title={`resolved: ${serving.serving}`}>{serving.label}</span>
-              : <span className="dim">…</span>}
-          </div>
-        )}
-
-        {/* the way BACK — rendered only while an intent is stored, because a
-            "return to my login" control with nothing to clear presents the
-            default as if it were a choice. When the stored intent is not what
-            resolution answered (its key was removed later), SAY so: stating
-            the intention as the state is the removed banner's bug again. */}
-        {slug && selection !== null && (
-          <div className="row">
-            {serving && serving.serving !== selection && (
-              <span className="dim">
-                stored selection is not in effect — that account can no longer
-                serve (no stored key)
-              </span>
-            )}
-            <button
-              disabled={busy}
-              title="clears the stored selection — turns then authenticate as whatever this machine is signed in to"
-              onClick={() => select(null)}>
-              serve from the account I'm signed in as
-            </button>
-          </div>
-        )}
-
-        {data && data.accounts.length === 0 && (
-          <div className="dim">No accounts known yet.</div>
-        )}
-
-        {keys.length > 0 && (
+        {data && (
           <>
-            <div className="dim acct-head">fallback keys — tried in this order</div>
-            {keys.map((a) => (
-              <div
-                key={a.uuid}
-                className={'acct-row acct-key' + (overU === a.uuid ? ' acct-over' : '')}
-                draggable
-                onDragStart={(e) => {
-                  dragRef.current = a.uuid
-                  e.dataTransfer?.setData('text/plain', a.uuid)
-                }}
-                onDragOver={(e) => { e.preventDefault(); if (overU !== a.uuid) setOverU(a.uuid) }}
-                onDragLeave={() => { if (overU === a.uuid) setOverU(null) }}
-                onDrop={(e) => { e.preventDefault(); dropOn(a.uuid) }}
-                onDragEnd={() => { dragRef.current = null; setOverU(null) }}
-              >
+            {/* ── the primary row: the machine's own login ─────────────── */}
+            <div className="acct-line">
+              {chips('primary')}
+              <div className="acct-row acct-primary">
                 <div className="acct-main">
-                  <span className="acct-grip" title="drag to reorder">⠿</span>
-                  {label(a)}
-                  {identity(a)}
+                  <span className="acct-email"
+                    title="whoever Claude Code is signed in as on this machine — log in or out with the CLI to change it; it cannot be switched here">
+                    {data.primary.signed_in
+                      ? (data.primary.email ?? 'signed in')
+                      : <span className="dim">not signed in — log in with the Claude CLI</span>}
+                  </span>
                   <span style={{ flex: 1 }} />
-                  <button
-                    disabled={busy}
-                    title="serve this org from this account — stored as a selection; the serving line above stays the resolved fact"
-                    onClick={() => select(a.uuid)}>serve from this account</button>
-                  <button
-                    disabled={busy}
-                    title="forgets the stored key — the CLI cannot show it again, so re-adding means re-minting"
-                    onClick={() => {
-                      setBusy(true)
-                      forgetAccountToken(a.uuid)
-                        .then((t) => { setToks(t); toast(['key removed']) })
-                        .catch((e: Error) => toast([e.message]))
-                        .finally(() => { setBusy(false); loadServing() })
-                    }}>remove key</button>
+                  {usageBtn('primary')}
                 </div>
-                {/* per-key usage limits render here once the cached
-                    GET /api/accounts/usage exists (backend piece, in flight
-                    separately); absence must stay silent, never an error */}
+                {usagePane('primary')}
+              </div>
+            </div>
+
+            {/* ── one row per registered fallback key ──────────────────── */}
+            {data.keys.map((k) => (
+              <div className="acct-line" key={k.id}>
+                {chips(k.id)}
+                <div
+                  className={'acct-row acct-key'
+                    + (overId === k.id ? ' acct-over' : '')
+                    + (k.duplicate ? ' acct-dup' : '')}
+                  title={k.duplicate
+                    ? 'this key belongs to the account you are signed in as — '
+                      + 'models will not line up on it (the primary row above '
+                      + 'already is that account, and switching to it would '
+                      + 're-spend the same limits)'
+                    : undefined}
+                  draggable
+                  onDragStart={(e) => {
+                    dragRef.current = k.id
+                    e.dataTransfer?.setData('text/plain', k.id)
+                  }}
+                  onDragOver={(e) => { e.preventDefault(); if (overId !== k.id) setOverId(k.id) }}
+                  onDragLeave={() => { if (overId === k.id) setOverId(null) }}
+                  onDrop={(e) => { e.preventDefault(); dropOn(k.id) }}
+                  onDragEnd={() => { dragRef.current = null; setOverId(null) }}
+                >
+                  <div className="acct-main">
+                    <span className="acct-grip" title="drag to reorder — the order is the routing priority">⠿</span>
+                    {/* the registered key: greyed out and OMITTED — the
+                        server never returns key material, not even masked */}
+                    <input className="grow acct-keyfield" disabled
+                      value="" placeholder="key registered" />
+                    {usageBtn(k.id)}
+                    <button className="acct-del"
+                      title="delete this account row and forget its key — the CLI cannot show a key again, so re-adding means re-minting"
+                      disabled={busy}
+                      onClick={() => run(deleteAccountKey(k.id), 'key removed')}>
+                      <DeleteIcon fontSize="inherit" /></button>
+                  </div>
+                  {usagePane(k.id)}
+                </div>
               </div>
             ))}
-          </>
-        )}
 
-        {keyless.length > 0 && (
-          <>
-            <div className="dim acct-head">registered, no key</div>
-            {keyless.map((a) => (
-              <div key={a.uuid} className="acct-row acct-nokey">
+            {/* ── the new-key row ──────────────────────────────────────── */}
+            <div className="acct-line">
+              <span className="acct-gutter" />
+              <div className="acct-row acct-new">
                 <div className="acct-main">
-                  {label(a)}
-                  {identity(a)}
-                  <span style={{ flex: 1 }} />
-                  <button disabled={busy}
-                    onClick={() => { setPasting(a.uuid); setPaste('') }}>
-                    add key
-                  </button>
+                  <input className="grow" type="password" autoComplete="off"
+                    placeholder="paste a new key (claude setup-token)"
+                    value={draft}
+                    onChange={(e) => setDraft(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') register() }} />
+                  <button className="acct-add" title="register this key as a fallback account"
+                    disabled={busy || !draft.trim()}
+                    onClick={register}>
+                    <CheckIcon fontSize="inherit" /></button>
                 </div>
-                {pasteRow(a)}
               </div>
-            ))}
+            </div>
           </>
         )}
 
         <div className="row">
-          <button className="primary" disabled={busy} onClick={adopt}>
-            register current login
-          </button>
           <span style={{ flex: 1 }} />
           <button onClick={close}>close</button>
         </div>

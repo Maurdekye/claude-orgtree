@@ -39,7 +39,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, model_validator
 
 from . import ledger as ledger_mod
-from . import accounts, limits, net, sandbox, store, subproxy, supervisor, tokens
+from . import accounts, limits, net, sandbox, store, subproxy, supervisor
 from .ledger import LedgerError, Org, USER, VIS_LEVELS, norm_dirs, norm_tools
 
 if TYPE_CHECKING:
@@ -240,13 +240,13 @@ def _public_denied(method: str, rest: str, slug: str) -> tuple[int, str] | None:
         or (method == "PUT" and rest.endswith("/orgmd"))     # org.md edits
         or rest == "/api/agent"                              # node MCP gateway
         or rest == "/api/mcp-servers"
-        # the account registry (D-144): which SUBSCRIPTIONS this install may
-        # bill is machine-global admin config, and a visitor pinning an org to
-        # an account would be choosing whose entitlement pays for it. The
-        # trailing `parts[2] == "orgs"` test below would 404 these anyway —
-        # frozen EXPLICITLY because an incidental 404 is not an access rule,
-        # and the next person to touch that test would not know they were
-        # holding this up.
+        # machine-local account routing (2026-08-25): which accounts this
+        # machine may bill — and their usage standings — is machine-global
+        # admin config, none of a visitor's business. The trailing
+        # `parts[2] == "orgs"` test below would 404 these anyway — frozen
+        # EXPLICITLY because an incidental 404 is not an access rule, and the
+        # next person to touch that test would not know they were holding
+        # this up.
         or rest.startswith("/api/accounts")
     )
     if frozen_config:
@@ -1841,219 +1841,86 @@ def claude_usage_peek() -> dict[str, Any]:
     return limits.peek()
 
 
-# ------------------------------------------------- the account registry (D-144)
-# Machine-global config, NOT org-scoped: which subscriptions this install may
-# bill. Admin-only — `_public_denied` freezes the whole `/api/accounts` prefix
+# ------------------------------------------ machine-local account routing
+# (user redesign 2026-08-25.) Machine-global config, NOT org-scoped: which
+# accounts this machine may bill and where each model tier's prompts route.
+# Admin-only -- `_public_denied` freezes the whole `/api/accounts` prefix
 # explicitly rather than relying on its trailing 404, because "it happens to
 # fall through" is not an access rule anyone can safely edit around later.
 #
-# ⚠ These routes READ the registry and never touch `~/.claude/.credentials.json`
-# beyond the point-in-time read `accounts.adopt_live` performs under its own
-# mtime/size guard. Nothing here selects an account for a turn: `selection_active`
-# is False and stays False until Phase 2 (D-144).
-class AccountOrder(BaseModel):
-    order: list[str]
-
-
-class AccountPin(BaseModel):
-    uuid: str | None = None
-
-
-class AccountSelection(BaseModel):
-    """`null` clears the selection and returns the org to the ambient login.
-    Deliberately its own model rather than a reuse of `AccountPin`: a pin and
-    a selection are different facts, and the supervisor reads only this one."""
-
-    uuid: str | None = None
-
-
-class AccountLabel(BaseModel):
-    label: str
-
-
-@app.get("/api/accounts")
-def accounts_list() -> dict[str, Any]:
-    """The registry as the panel renders it. Identity only — no token material
-    exists in this payload because none exists in the registry (D-144)."""
-    return accounts.readout()
-
-
-@app.post("/api/accounts/adopt")
-async def accounts_adopt() -> dict[str, Any]:
-    """PASSIVE adoption: notice whoever is logged in and record who they are.
-
-    Returns the readout either way. `adopted` names the account if one was
-    taken and is null when there was nothing to adopt — no credentials file,
-    no token in it, or the identity lookup failed (offline, expired, or the
-    endpoint rate-limiting, which it does under burst). None of those are
-    errors: the user simply has not logged in yet, or is not reachable, and a
-    500 here would make a normal state look broken.
-
-    A 409 is different and deliberate — it means the credentials store CHANGED
-    while we were reading it, which must never pass silently."""
-    from fastapi.concurrency import run_in_threadpool
-    try:
-        rec = await run_in_threadpool(accounts.adopt_live)
-    except accounts.LiveStoreWritten as e:
-        raise HTTPException(409, str(e)) from None
-    return {**accounts.readout(),
-            "adopted": rec["uuid"] if rec else None}
-
-
-@app.put("/api/accounts/order")
-def accounts_order(body: AccountOrder) -> dict[str, Any]:
-    """The waterfall order, primary first. An account omitted by a stale panel
-    is appended rather than deleted — a POST from a page that loaded before
-    the last adoption must not be able to drop an entitlement."""
-    accounts.set_order(list(body.order))
-    return accounts.readout()
-
-
-@app.put("/api/accounts/pins/{slug}")
-def accounts_pin(slug: str, body: AccountPin) -> dict[str, Any]:
-    """Nail one org to one account, or send `{"uuid": null}` to clear it.
-    Pinning an account the registry does not know is a 422, never a silent
-    no-op: a pin that fails to apply looks exactly like one that applied."""
-    try:
-        accounts.set_pin(slug, body.uuid)
-    except KeyError as e:
-        raise HTTPException(422, str(e).strip("'")) from None
-    hub_changed(slug)
-    return accounts.readout()
-
-
-@app.patch("/api/accounts/{uuid}")
-def accounts_relabel(uuid: str, body: AccountLabel) -> dict[str, Any]:
-    """Rename an account for the panel. Survives re-adoption — the scheduled
-    adopt must never clobber a name the user chose."""
-    # the mutation itself lives in accounts.relabel, which takes the module
-    # lock — this endpoint used to do its own load→mutate→save and was the one
-    # mutator running outside it (review 2026-08-24)
-    try:
-        accounts.relabel(uuid, body.label)
-    except KeyError:
-        raise HTTPException(404, f"no such account {uuid!r}") from None
-    except ValueError as e:
-        raise HTTPException(422, str(e)) from None
-    return accounts.readout()
-
-
-class AccountToken(BaseModel):
+# NO TOKEN MATERIAL IN ANY PAYLOAD HERE: a pasted key crosses the wire once,
+# inward, at registration -- after that every response speaks in row ids.
+class AccountKey(BaseModel):
     token: str
 
 
-@app.get("/api/accounts/tokens")
-def accounts_tokens() -> dict[str, Any]:
-    """WHICH accounts have a stored token. Never the token, never its length.
-
-    ⚠ THIS NEEDS ITS OWN LEAK CHECK AND CANNOT BORROW `/api/accounts`'s. That
-    one asserts no token text appears in the REGISTRY payload, and it passes
-    happily however this endpoint behaves — an absence check that guards the
-    wrong object. See test_token_api.py."""
-    return {"tokens": tokens.redacted()}
+class AccountKeyOrder(BaseModel):
+    keys: list[str]
 
 
-@app.put("/api/accounts/{uuid}/token")
-def accounts_put_token(uuid: str, body: AccountToken) -> dict[str, Any]:
-    """Store a long-lived token for one account.
+@app.get("/api/accounts")
+def accounts_readout() -> dict[str, Any]:
+    """The panel: the primary login (whoever Claude Code is signed in as on
+    this machine -- not switchable from here), the key rows in priority
+    order, and which account each model tier currently routes to."""
+    return accounts.readout()
 
-    ⚠ STORE FIRST, VALIDATE AFTER — and that ordering is the user's ruling,
-    not a preference. The CLI shows a minted token EXACTLY ONCE ("you won't be
-    able to see it again"), so a validation failure that rejected the paste
-    would destroy the only copy and cost a re-mint plus another
-    account-switch hazard window. The write happens before anything can form
-    an opinion about the value.
 
-    ⚠ The token is never echoed back, never logged, and never returned in any
-    response — success is reported as presence, not content."""
-    if uuid not in (accounts.load().get("accounts") or {}):
-        raise HTTPException(404, f"no such account {uuid!r}")
+@app.post("/api/accounts/keys")
+async def accounts_add_key(body: AccountKey) -> dict[str, Any]:
+    """Register a pasted `claude setup-token` key as a secondary account row.
+
+    STORE FIRST, RESOLVE AFTER -- the user's standing ruling: the CLI shows a
+    minted token exactly once ("you won't be able to see it again"), so the
+    write to the token store happens before anything can form an opinion
+    about the value. The identity lookup that powers duplicate-of-primary
+    greying runs afterwards, against a copy that is already durable;
+    threadpooled because it is a network call. The token is never echoed
+    back, never logged, and never appears in any response."""
+    from fastapi.concurrency import run_in_threadpool
     try:
-        tokens.put(uuid, body.token)          # ← durable before anything else
+        rec = await run_in_threadpool(accounts.register_key, body.token)
     except ValueError as e:
-        # the only two rejections, and both are checked BEFORE the write
-        # because neither is recoverable: an empty token is not a credential
-        # and an empty uuid has nowhere to go
         raise HTTPException(422, str(e)) from None
-    return {"tokens": tokens.redacted(), "stored": uuid}
+    return {**accounts.readout(), "registered": rec["id"]}
 
 
-@app.get("/api/accounts/serving/{slug}")
-def accounts_serving(slug: str) -> dict[str, Any]:
-    """WHICH account this org's next turn would actually authenticate as.
-
-    ⚠ RESOLVED THE SAME WAY ATTRIBUTION IS — it builds the real spawn env and
-    asks `identity_in_env`, rather than reading the org's stated intent. If the
-    panel answered from intent it could confidently display an account whose
-    token is missing, which is exactly the wrong-account confusion this whole
-    surface exists to prevent.
-
-    ⚠ The env built here holds the token; only the IDENTITY leaves this
-    function. Never return `env`."""
-    try:
-        return _serving_payload(slug)
-    except Exception:                                        # noqa: BLE001
-        raise HTTPException(404, f"no such org {slug!r}") from None
+@app.delete("/api/accounts/keys/{kid}")
+def accounts_delete_key(kid: str) -> dict[str, Any]:
+    """Remove a key row AND its stored key. Irreversible from orgtree's side
+    -- the CLI cannot show a token again, so this is a re-mint, not an
+    undo. The row's routing marks go with it."""
+    removed = accounts.remove_key(kid)
+    return {**accounts.readout(), "removed": removed}
 
 
-def _serving_payload(slug: str) -> dict[str, Any]:
-    """The one resolved answer both the GET and the PUT return, so a caller
-    that changes the selection and a caller that merely asks cannot end up
-    reading two differently-shaped truths."""
-    org = store.load_org(slug)
-    ident = supervisor.identity_in_env(supervisor.spawn_env(org), org)
-    label = ident
-    if ident == "ambient":
-        label = "the signed-in account"
-    elif ident not in ("api-key", "token:unattributed"):
-        # annotated because the registry is loosely typed on the way out;
-        # without it pyright reports four partially-unknown errors here (they
-        # predate this function and rode along when the body moved into it)
-        reg = cast("dict[str, dict[str, Any]]",
-                   accounts.load().get("accounts") or {})
-        label = str((reg.get(ident) or {}).get("label") or ident)
-    return {"serving": ident, "label": label,
-            # the stored INTENT, beside the resolved fact — they can disagree
-            # (a selection whose token was since deleted resolves to ambient),
-            # and a panel that sees only one of them cannot say so
-            "selection": str(org.d.get("account_token_uuid") or "") or None}
+@app.put("/api/accounts/order")
+def accounts_key_order(body: AccountKeyOrder) -> dict[str, Any]:
+    """The secondary rows' priority order (the panel's drag). A row omitted
+    by a stale panel is appended rather than deleted -- a POST from a page
+    that loaded before the last registration must not drop a key."""
+    accounts.set_key_order(list(body.keys))
+    return accounts.readout()
 
 
-@app.put("/api/accounts/selection/{slug}")
-def accounts_select(slug: str, body: AccountSelection) -> dict[str, Any]:
-    """Choose which registered account serves this org. Send
-    `{"uuid": null}` to clear it and return the org to the AMBIENT login.
-
-    ⚠ UNTIL THIS EXISTED, FAILOVER WAS THE ONLY WRITER AND IT ONLY MOVED ONE
-    WAY — it assigns another tokened account and never clears. A transient
-    capacity event therefore became a permanent configuration change nobody
-    chose: the 2026-08-24 21:20Z switch pinned an org to an account, and when
-    the user later signed in as a different one the org went on serving the
-    old token with no way back short of deleting it (irreversible, and it
-    destroys the failover to fix a selection).
-
-    Idempotent: selecting what is already selected, clearing an org already
-    on ambient, both succeed without writing.
-
-    Returns the RESOLVED serving identity, not an echo of the request — the
-    two can differ, and the resolved one is the answer the panel needs."""
-    try:
-        store.load_org(slug)
-    except Exception:                                        # noqa: BLE001
-        raise HTTPException(404, f"no such org {slug!r}") from None
-    try:
-        supervisor.set_account_selection(slug, body.uuid or "")
-    except supervisor.UnknownAccount as e:
-        raise HTTPException(422, str(e)) from None
-    hub_changed(slug)
-    return _serving_payload(slug)
+@app.get("/api/accounts/usage")
+async def accounts_usage_all() -> dict[str, Any]:
+    """Every account's usage standing, primary first then keys in priority
+    order -- the header usage modal's list (user ruling 2026-08-25: the
+    overall usage button shows every registered account, fallbacks
+    included). Network, cached ~30 s per account; threadpooled."""
+    from fastapi.concurrency import run_in_threadpool
+    return await run_in_threadpool(accounts.usage_all)
 
 
-@app.delete("/api/accounts/{uuid}/token")
-def accounts_forget_token(uuid: str) -> dict[str, Any]:
-    """Forget a stored token. ⚠ Irreversible from orgtree's side — the CLI
-    cannot show it again, so this is a re-mint, not an undo."""
-    return {"tokens": tokens.redacted(), "forgotten": tokens.forget(uuid)}
+@app.get("/api/accounts/usage/{account}")
+async def accounts_usage_one(account: str) -> dict[str, Any]:
+    """One account's usage standing -- `primary` or a key row id. Unknown
+    rows answer `{available: False, error}` rather than 404: the panel's
+    button must degrade to a message, not an error toast, when a row was
+    deleted under it."""
+    from fastapi.concurrency import run_in_threadpool
+    return await run_in_threadpool(accounts.account_usage, account)
 
 
 @app.get("/api/host")
