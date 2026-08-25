@@ -142,14 +142,20 @@ def _retry_after_seconds(err: urllib.error.HTTPError, now: float) -> float:
 
 
 def _plain_error(e: Exception) -> str:
-    """The message for a failure that did NOT open a window. A bare
-    `HTTP Error 403: Forbidden` tells the user nothing they can act on — and a
-    403 that reached here is, by `_throttle_window`'s discrimination, the
-    credential kind rather than the throttle kind, which IS actionable."""
+    """The message for a failure that did NOT open a window.
+
+    ⚠ Was. "re-mint it with `claude setup-token` and paste it again", shipped
+    2026-08-25 and WRONG — a token's scopes are fixed when it is minted and a
+    refresh preserves them, so re-minting a `setup-token` key produces another
+    inference-only key that is refused identically (D-147). Instructing the
+    user to perform a ritual that cannot work is worse than saying nothing:
+    when it fails they conclude their key is broken. Key rows no longer reach
+    this endpoint at all, so a 401/403 here is the HOST subscription login,
+    and the CLI is what fixes that."""
     if isinstance(e, urllib.error.HTTPError) and e.code in (401, 403):
-        return (f"this key was refused ({e.code}) — if it was revoked or has "
-                "expired, re-mint it with `claude setup-token` and paste it "
-                "again")
+        return (f"the host login was refused ({e.code}) — this is a sign-in "
+                "problem, not a usage limit. Sign in again with the Claude "
+                "CLI (`claude auth login`).")
     return f"usage fetch failed: {e}"
 
 
@@ -405,8 +411,17 @@ def fetch(force: bool = False, max_age: float | None = None) -> dict[str, Any]:
 
 
 def fetch_for_token(token: str, cache_key: str) -> dict[str, Any]:
-    """The same normalized readout for an ARBITRARY account token — the
-    machine-local key rows (accounts.py). `{available, limits[]}` or
+    """⚠ NO PRODUCTION CALLER SINCE 2026-08-25 (D-147), AND DO NOT ADD ONE FOR
+    A `claude setup-token` KEY. Those are inference-only; this endpoint needs
+    `user:profile`, which they never carry, so every such call is refused
+    before it leaves the machine and repeated attempts earn hour-long
+    rate-limit windows. `accounts.account_usage` answers key rows from local
+    state instead. Kept — with its tests — as the ready-made path for a token
+    that DOES hold the scope, should one ever exist; the cooldown machinery it
+    shares with `fetch` is live either way.
+
+    The same normalized readout for an ARBITRARY account token.
+    `{available, limits[]}` or
     `{available: False, error}`; cached per `cache_key` for `CACHE_TTL`,
     stale-on-error, never raises.
 

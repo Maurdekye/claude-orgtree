@@ -566,13 +566,19 @@ def readout() -> dict[str, Any]:
 # ------------------------------------------------------------ per-account usage
 def account_usage(account: str) -> dict[str, Any]:
     """One account's usage-limit standing, for the panel's per-row button and
-    the header modal's list. `primary` reads the host subscription through
-    the shared `limits` cache; a key row fetches with its own token (cached
-    per row, stale-on-error, never raises — see `limits.fetch_for_token`).
+    the header modal's list.
 
-    A key row with no resolved identity gets one lazy retry here: the user
-    is already spending a network round-trip on this click, and the
-    duplicate-of-primary greying is worth piggybacking on it."""
+    `primary` reads the host subscription through the shared `limits` cache —
+    a refreshed OAuth access token with the `user:profile` scope, which is why
+    that half works at all.
+
+    ⚠ A KEY ROW MAKES NO NETWORK CALL AT ALL (D-147). `claude setup-token`
+    keys are inference-only and can never read usage, so the row answers
+    `unsupported` from local state. Was. two round-trips per click — the usage
+    fetch, plus a lazy `resolve_key_identity` retry justified by "the user is
+    already spending a network round-trip on this click". That justification
+    died with the round-trip, and the retry was itself a forbidden request:
+    the profile endpoint wants the same scope the usage endpoint does."""
     account = str(account or "")
     live = live_identity()
     if account == PRIMARY:
@@ -589,17 +595,24 @@ def account_usage(account: str) -> dict[str, Any]:
     if not tok:
         return {"account": account, "label": account, "duplicate": False,
                 "available": False, "error": "no stored key for this row"}
-    if not row.get("account_uuid"):
-        resolve_key_identity(account)          # lazy identity retry, best-effort
-        doc = load()
-        row = next((k for k in doc["keys"] if k["id"] == account), row)
     dup = bool(live["uuid"]
                and str(row.get("account_uuid") or "") == live["uuid"])
     ordinal = fallback_ordinal(doc, account)      # the one count, shared
     label = f"fallback {ordinal}" if ordinal else "fallback"
-    data = limits.fetch_for_token(tok, cache_key=account)
+    # ⚠ WE DO NOT ASK. A `claude setup-token` key is INFERENCE-ONLY and the
+    # usage endpoint needs the `user:profile` scope it will never carry, so
+    # every such request was forbidden before it left this machine — see
+    # D-147 for the evidence out of the CLI's own binary. This used to call
+    # `limits.fetch_for_token`, which is how one key row earned an hour-long
+    # rate-limit window by being politely asked the same forbidden question
+    # on every panel open. Backoff would have been the wrong shape: the fix
+    # for a request that must never be made is not to make it.
     return {"account": account, "label": label, "duplicate": dup,
-            **{k: v for k, v in data.items() if k != "account"}}
+            "available": False, "unsupported": True,
+            "error": "usage limits can't be read for a `claude setup-token` "
+                     "key — these are inference-only, and the usage endpoint "
+                     "needs a permission they are never granted. Nothing is "
+                     "wrong with this key; re-minting it would not help."}
 
 
 def usage_all() -> dict[str, Any]:

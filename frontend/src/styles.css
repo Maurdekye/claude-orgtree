@@ -2795,6 +2795,10 @@ html.mobile .md table { display: block; overflow-x: auto; max-width: 100%; }
 /* the desk's "running off fallback N · uuid" badge. Bounded and ellipsised:
    the desk header is a flex row whose spacer does the balancing, and a 36-char
    uuid unconstrained there would shove the action buttons around. */
+/* "this can never work", as distinct from "this failed just now" — a settled
+   note, not a warning: there is nothing here for the user to retry or fix. */
+.acct-unsupported { font-size: 12.5px; line-height: 1.5; color: var(--dim);
+  border-left: 2px solid var(--line); padding: 2px 0 2px 10px; }
 .acct-ranas { font-family: var(--mono); font-size: 10.5px; max-width: 300px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .acct-panel .acct-btn { flex: none; width: 27px; height: 27px; padding: 0;

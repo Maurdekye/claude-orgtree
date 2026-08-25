@@ -2987,6 +2987,69 @@ before, on a different lane, so cramming it into the same enum would make
 a second, unrelated setting existing). A boolean gated by `api_fallback`
 mirrors how `api_fallback` itself is not folded into `headless`.
 
+### D-147 · a `claude setup-token` key can NEVER read usage limits — do not ask
+
+Ruling (2026-08-25, from evidence rather than preference): `account_usage`
+makes NO network call for a key row. It answers `unsupported` from local
+state, the panel renders that as a settled note, and nothing retries.
+
+Why — and this is the entry someone will otherwise reverse in three months by
+reasoning from first principles about how usage *ought* to work. Read out of
+the shipped Claude Code binary (`bin/claude.exe`), verbatim:
+
+> "Long-lived tokens (from `claude setup-token` or `CLAUDE_CODE_OAUTH_TOKEN`)
+> are limited to **inference-only** for security reasons."
+
+> "…OAuth token has no scope accepted by `/api/oauth/validate` (needs
+> user:profile, user:office, or user:ccr_inference; **env-var and setup-token
+> sessions default to user:inference only**)"
+
+and the CLI's own usage fetch, which will not even attempt the request:
+
+```js
+A4e = "user:profile"
+function KM(){let e=ya()?.scopes; return Array.isArray(e)&&e.includes(A4e)}
+if(!ds()||!KM())return{};                     // ← before any request
+_s.get("/api/oauth/usage",{timeout:5000,refreshOAuth:!0,credentials:e})
+```
+
+So the scope required is `user:profile`, a setup-token key carries only
+`user:inference`, and Claude Code itself declines client-side. The 403 we saw
+is the server enforcing the same rule — not a revoked key, not our bug. The
+429s were the edge throttling us for repeatedly making a forbidden request,
+which is why the two interleaved on one credential minutes apart.
+
+⚠ **Backoff was the wrong shape and was nearly built.** The fix for a request
+that must never be made is not to make it more politely. The D-146 cooldown
+machinery stays — `fetch()` (the host lane) legitimately calls that host — but
+key rows leave that path entirely.
+
+Bounds: this is about the TOKEN TYPE, not the account. The host lane still
+reads usage normally, because `subproxy` presents a refreshed OAuth access
+token carrying `user:profile`. Refreshing or re-minting cannot widen scope —
+scope is fixed when a token is issued — so "re-mint it" is not a remedy; only
+a full `claude auth login` grants `user:profile`, which is the in-app-OAuth
+path D-144 rejected on ToS grounds. The same scope wall applies to
+`/api/oauth/profile`, so `resolve_key_identity`'s lazy retry was removed from
+the usage path too; ⚠ **a consequence not yet chased: duplicate-of-primary
+detection may therefore never resolve for a NEWLY registered key** (the one
+row on this machine has a uuid only because a v1 migration keyed it that way,
+not because a profile call succeeded).
+
+Load-bearing: `unsupported` is a distinct field from `available: false`
+precisely so the UI can tell "impossible" from "unknown" — rendering them
+alike invites the user to keep clicking a button that can never do anything.
+And the user-facing string must not prescribe re-minting: the previous wording
+("re-mint it with `claude setup-token`") was approved and shipped that morning
+and was a dead end dressed as an instruction — a ritual that cannot work, from
+which the honest conclusion is "my key is broken".
+
+Method note, for the next person verifying a claim about a shipped binary:
+`strings` is NOT installed on this machine and a probe using it returns
+vacuous "clean" results for every file. This was scanned with chunked Python
+byte-search. A scan that finds NOTHING is not evidence of absence unless it
+has been shown to find a known positive first.
+
 ### D-146 · a 429 from the usage endpoint gates the REQUEST, not just the message
 
 Ruling (user report 2026-08-25, "when i try to query the usage limits for the

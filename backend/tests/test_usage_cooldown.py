@@ -479,8 +479,17 @@ def s5_forbidden() -> None:
                 limits.fetch_for_token("tok", cache_key="k1")
             eq(f"5.3 {label} stays retryable (3 calls, no window)",
                r.transport.calls, 3)
-            check(f"5.3 {label} says what to DO about it",
-                  "setup-token" in str(got.get("error")), repr(got.get("error")))
+            # ⚠ Was. `"setup-token" in error` — this assertion PINNED the
+            # wrong remedy. Scope is fixed at mint, so re-minting a
+            # setup-token key produces another inference-only key refused
+            # identically (D-147); the advice was a dead end dressed as an
+            # instruction. And key rows no longer reach this endpoint at all,
+            # so a 401/403 here is the HOST login, which the CLI fixes.
+            err = str(got.get("error")).lower()
+            check(f"5.3 {label} points at the CLI login, the actual remedy",
+                  "claude auth login" in err, repr(got.get("error")))
+            check(f"5.3 {label} does not send the user re-minting a key",
+                  "setup-token" not in err, repr(got.get("error")))
 
     # 5.4 …and the host path discriminates identically
     with Rig(Transport.http(403, None, RATE_BODY)) as r:

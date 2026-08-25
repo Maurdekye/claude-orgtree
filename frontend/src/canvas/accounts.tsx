@@ -58,6 +58,15 @@ const sevOf = (l: UsageLimit): '' | 'warn' | 'crit' => {
 
 /** one account's bars — the same markup family as the header usage modal */
 export function UsageBars({ u }: { u: AccountUsage }) {
+  // ⚠ "CAN'T" AND "DIDN'T" MUST NOT LOOK ALIKE. A setup-token key can never
+  // report usage (D-147), and rendering that as the same dim line an outage
+  // produces invites the user to keep clicking a button that will never do
+  // anything. `unsupported` is a settled fact, so it reads as a note; an
+  // error is a condition that might clear, so it keeps the warning styling.
+  if (u.unsupported) {
+    return <div className="acct-unsupported">{u.error
+      ?? 'usage limits are not available for this kind of key'}</div>
+  }
   if (!u.available) {
     return <div className="dim">{u.error ?? 'usage unavailable'}</div>
   }
@@ -171,11 +180,17 @@ export function AccountsPanel({ toast, close }: {
     </span>
   )
 
-  const usageBtn = (id: string) => (
-    <button className="acct-btn acct-usage-btn" title="usage limits"
+  // the key rows keep the button — the column discipline wants it there, and
+  // silently omitting it would leave "why do fallbacks have no usage?"
+  // unanswered — but it says up front that there is nothing to fetch (D-147)
+  const usageBtn = (id: string, title = 'usage limits') => (
+    <button className="acct-btn acct-usage-btn" title={title}
       onClick={() => openUsage(id)}>
       <DataUsageIcon fontSize="inherit" /></button>
   )
+  const KEY_USAGE_TITLE =
+    'usage limits are not available for `claude setup-token` keys — they are '
+    + 'inference-only, so this account cannot be asked. Click for detail.'
 
   // the row's human name, for the modal header — the payload's own label
   // once it arrives, else derived from position
@@ -270,7 +285,7 @@ export function AccountsPanel({ toast, close }: {
                         : ''}
                       placeholder={`fallback ${k.ordinal} — key registered, `
                         + 'identity not resolved yet'} />
-                    {usageBtn(k.id)}
+                    {usageBtn(k.id, KEY_USAGE_TITLE)}
                     <button className="acct-btn acct-del"
                       title="delete this account row and forget its key — the CLI cannot show a key again, so re-adding means re-minting"
                       disabled={busy}

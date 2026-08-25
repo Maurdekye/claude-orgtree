@@ -853,6 +853,13 @@ export interface AccountUsage {
   label: string
   duplicate?: boolean
   available: boolean
+  /** ⚠ this account CANNOT report usage, ever — not an outage. A
+   *  `claude setup-token` key is inference-only and the usage endpoint needs
+   *  a scope it never carries (D-147), so the server answers from local state
+   *  without a request. Rendered as a settled note rather than an error,
+   *  because a blank meaning "impossible" and a blank meaning "unknown" must
+   *  not look the same. */
+  unsupported?: boolean
   error?: string
   limits?: UsageLimit[]
   plan?: string
