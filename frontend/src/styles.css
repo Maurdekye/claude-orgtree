@@ -2680,12 +2680,30 @@ html.mobile .md table { display: block; overflow-x: auto; max-width: 100%; }
    ghost changes with it; add a per-row special case and the columns drift. */
 .acct-row { flex: 1; min-width: 0; border: 1px solid var(--line);
   border-radius: 8px; padding: 4px 8px; }
+/* no box around the primary row (user ruling 2026-08-25): it is the machine's
+   own login, not one of the reorderable key cards.
+   ⚠ TRANSPARENT, not `border: none` — that 1px is a column offset every other
+   row pays, so removing the box outright would slide this row's grip, email
+   and usage button 1px left of the key rows' and 1px up, i.e. break the very
+   alignment the ruling above exists to hold. */
+.acct-primary { border-color: transparent; }
 .acct-main { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .acct-label { font-weight: 600; }
 /* compact fields: app-base input metrics, not the roomy .settings ones —
-   the user wants short rows */
+   the user wants short rows.
+   ⚠ `flex: 1 1 0` IS THE ALIGNMENT, not decoration. These inputs used to carry
+   `className="grow"`, but `.grow` is not a rule in this sheet — only
+   `.chip.grow` is — so they got NO flex at all and sat at their intrinsic
+   ~20-character width. The usage/delete buttons then hugged the input instead
+   of standing in their columns, while the primary row's `.acct-email` (which
+   DOES say flex: 1) pushed its usage button to the right edge: measured
+   2026-08-25 at 248px of disagreement in a 660px panel.
+   `min-width: 0` is load-bearing too — a flex item's automatic minimum size
+   for an input is its intrinsic width, which would re-inflate the column on a
+   narrow panel (verified aligned down to a 380px viewport).
+   Measured by `tests/acctcols_probe.py`; jsdom cannot see any of this. */
 .acct-panel .acct-main input { font-size: 12.5px; padding: 5px 9px;
-  border-radius: 4px; }
+  border-radius: 4px; flex: 1 1 0; min-width: 0; }
 /* mirrors the compact input metrics (5px 9px padding + 1px border) so the
    email TEXT starts exactly where the key inputs' text does */
 .acct-email { flex: 1; font-weight: 600; font-size: 13px; min-width: 0;

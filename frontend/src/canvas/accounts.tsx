@@ -253,8 +253,12 @@ export function AccountsPanel({ toast, close }: {
                   <div className="acct-main">
                     <span className="acct-grip" title="drag to reorder — the order is the routing priority">⠿</span>
                     {/* the registered key: greyed out and OMITTED — the
-                        server never returns key material, not even masked */}
-                    <input className="grow acct-keyfield" disabled
+                        server never returns key material, not even masked.
+                        ⚠ no `grow` class: `.grow` is not a rule in this sheet
+                        (only `.chip.grow` is), and believing it was one is
+                        what left the buttons out of column. The field column
+                        is stretched by `.acct-panel .acct-main input`. */}
+                    <input className="acct-keyfield" disabled
                       value="" placeholder="key registered" />
                     {usageBtn(k.id)}
                     <button className="acct-btn acct-del"
@@ -273,7 +277,7 @@ export function AccountsPanel({ toast, close }: {
               <div className="acct-row acct-new">
                 <div className="acct-main">
                   <span className="acct-grip acct-ghost">⠿</span>
-                  <input className="grow" type="password" autoComplete="off"
+                  <input type="password" autoComplete="off"
                     placeholder="paste a new key (claude setup-token)"
                     value={draft}
                     onChange={(e) => setDraft(e.target.value)}
