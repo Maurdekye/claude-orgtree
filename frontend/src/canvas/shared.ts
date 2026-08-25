@@ -97,6 +97,8 @@ export interface CanvasNode {
   on_fallback?: boolean
   /** which account actually served the last turn (resolved at spawn) */
   ran_as?: string | null
+  /** "fallback 2 · <uuid>" when that account is a fallback row, else null */
+  ran_as_label?: string | null
   queued?: number
   /** concurrently running subagents (Task/Agent calls in flight) — desk
    *  header shows it beside the working clock, only when > 0 */

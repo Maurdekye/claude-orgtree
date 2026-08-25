@@ -652,10 +652,21 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
               || 'per-turn detail appears after the next turn'}>
             ${node.cost_usd!.toFixed(2)}</span>)}
         {(chat?.queued ?? 0) > 0 && <span className="badge">{chat!.queued} queued</span>}
-        {/* (the "ran as" badge lived here until 2026-08-25 — account routing
-            is machine-local and per model tier now, and the accounts panel's
-            per-tier assignment chips are the user-facing surface; `ran_as`
-            stays on the wire as backend telemetry only) */}
+        {/* The "ran as" badge, back for FALLBACKS ONLY (user ruling
+            2026-08-25: "when an agent is running off a fallback, cite the
+            fallback's number alongside its uuid"). The generic badge was
+            removed with the routing redesign because it repeated what the
+            panel's per-tier chips already said for the ordinary case; a turn
+            on a fallback is the case the chips do NOT tell you about, since
+            they describe where prompts go NEXT, not what this turn spawned
+            under. Null for the primary login and the api-key lane, so the
+            badge appears exactly when it carries news. */}
+        {node.ran_as_label &&
+          <span className="badge acct-ranas" title={
+            'this turn spawned under a fallback account — captured from the '
+            + 'resolved environment at spawn, so it describes what HAPPENED '
+            + 'rather than what routing currently intends'}>
+            {node.ran_as_label}</span>}
         <span className="spacer" />
         <span className="cc-actions">
           {live && !liveKids &&

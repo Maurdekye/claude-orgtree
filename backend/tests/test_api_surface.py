@@ -363,6 +363,58 @@ def _():
     assert r.json["slug"] == K and r.json["public"] is True, r
 
 
+FALLBACK_UUID = "11111111-2222-3333-4444-555555555555"
+
+
+@t("a fallback's uuid reaches the ADMIN tree and never the kiosk")
+def _():
+    """User ruling 2026-08-25: when an agent runs off a fallback, cite the
+    fallback's number alongside its uuid. D-145 keeps account identity off the
+    public side by freezing `/api/accounts` whole — but this label rides the
+    NODE payload, which a kiosk visitor CAN read. So the ordinal crosses and
+    the uuid does not, and that split is worth a real request rather than a
+    grep over the source."""
+    from orgtree import accounts, supervisor
+
+    def find(node, nid):
+        # the envelope nests under `roots`, each node under `children`
+        if node.get("id") == nid:
+            return node
+        for kid in (node.get("children") or node.get("roots") or []):
+            hit = find(kid, nid)
+            if hit:
+                return hit
+        return None
+
+    doc = accounts.load()
+    keep = doc["keys"]
+    doc["keys"] = [{"id": "kTESTROW01", "account_uuid": FALLBACK_UUID}]
+    accounts.save(doc)
+    try:
+        supervisor.state(K, NID)["ran_as"] = "kTESTROW01"
+        a = call(ADMIN, "GET", f"/api/orgs/{K}")
+        ok200(a, "admin tree")
+        p = pub("GET", f"/api/orgs/{K}")
+        ok200(p, "kiosk tree")
+        an, pn = find(a.json, NID), find(p.json, NID)
+        assert an and pn, "the node is missing from one of the trees"
+        assert an.get("ran_as_label") == f"fallback 1 · {FALLBACK_UUID}", an
+        assert pn.get("ran_as_label") == "fallback 1", pn
+        # ⚠ the strong form. Asserting the LABEL is scrubbed only proves this
+        # one field; asserting the uuid is absent from the whole body catches
+        # it leaking through `ran_as` or anything added later.
+        assert FALLBACK_UUID not in p.text, "the uuid reached a kiosk visitor"
+        # …and the control that makes that absence mean something: it really
+        # is in the admin body, so the check is not passing on a fixture that
+        # never carried the uuid in the first place.
+        assert FALLBACK_UUID in a.text, "fixture never had the uuid at all"
+    finally:
+        supervisor.state(K, NID).pop("ran_as", None)
+        doc = accounts.load()
+        doc["keys"] = keep
+        accounts.save(doc)
+
+
 @t("GET /api/orgs as a visitor lists exactly one org — its own")
 def _():
     r = pub("GET", "/api/orgs")

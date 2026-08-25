@@ -26,10 +26,16 @@ const HERE = path.dirname(fileURLToPath(import.meta.url))
 const PAYLOAD: AccountsPayload = {
   version: 2,
   primary: { signed_in: true, email: 'neoja.dev@gmail.com' },
+  // real-shaped uuids: the field now RENDERS identity (2026-08-25), so an
+  // empty fixture would prove alignment for a case that no longer occurs.
+  // k3 deliberately has no uuid — the unresolved-identity placeholder is a
+  // different string length and must hold the column too.
   keys: [
-    { id: 'k1', duplicate: false },
-    { id: 'k2', duplicate: true },
-    { id: 'k3', duplicate: false },
+    { id: 'k1', duplicate: false, ordinal: 1,
+      account_uuid: '2d37ed7a-ff4b-4fa5-93da-54b828225866' },
+    { id: 'k2', duplicate: true, ordinal: 2,
+      account_uuid: '9f1c04b6-71ae-4d33-8c02-1b7e5590aa41' },
+    { id: 'k3', duplicate: false, ordinal: 3, account_uuid: null },
   ],
   assignments: {
     haiku: { account: 'primary', available: true, refresh_at: null },

@@ -252,14 +252,24 @@ export function AccountsPanel({ toast, close }: {
                 >
                   <div className="acct-main">
                     <span className="acct-grip" title="drag to reorder — the order is the routing priority">⠿</span>
-                    {/* the registered key: greyed out and OMITTED — the
-                        server never returns key material, not even masked.
+                    {/* The row's IDENTITY — its account uuid, prefixed with
+                        the "fallback N" the desk badge and the usage modal
+                        cite (user ruling 2026-08-25). The KEY itself is still
+                        never shown: the server does not return key material,
+                        not even masked, and a uuid is identity rather than
+                        credential. Blank uuid ⇒ the profile lookup has not
+                        succeeded yet; it retries lazily, so say so instead of
+                        implying the row is broken.
                         ⚠ no `grow` class: `.grow` is not a rule in this sheet
                         (only `.chip.grow` is), and believing it was one is
                         what left the buttons out of column. The field column
                         is stretched by `.acct-panel .acct-main input`. */}
                     <input className="acct-keyfield" disabled
-                      value="" placeholder="key registered" />
+                      value={k.account_uuid
+                        ? `fallback ${k.ordinal} · ${k.account_uuid}`
+                        : ''}
+                      placeholder={`fallback ${k.ordinal} — key registered, `
+                        + 'identity not resolved yet'} />
                     {usageBtn(k.id)}
                     <button className="acct-btn acct-del"
                       title="delete this account row and forget its key — the CLI cannot show a key again, so re-adding means re-minting"

@@ -247,6 +247,12 @@ export interface TreeNode {
    *  per-tier assignments are the user-facing surface, so nothing renders
    *  this field; it stays typed because the wire still carries it. */
   ran_as?: string | null
+  /** the same fact, reader-shaped: "fallback 2 · <uuid>" when this turn is
+   *  running off a fallback account, null otherwise (the primary login and
+   *  the api-key lane say nothing here). Composed server-side — it owns the
+   *  registry, and the uuid is omitted for kiosk visitors. User ruling
+   *  2026-08-25; this is what the desk badge renders. */
+  ran_as_label?: string | null
   queued: number
   /** concurrently running subagents (Task/Agent calls in flight) — desk
    *  header shows it beside the working clock, only when > 0 */
@@ -812,7 +818,17 @@ export interface AccountsPayload {
   /** priority order after primary. `duplicate` marks a key that resolved to
    *  the SAME account as the current login: the row is greyed and excluded
    *  from routing — failing over to it would re-spend the identical limit. */
-  keys: { id: string; duplicate: boolean }[]
+  keys: {
+    id: string
+    duplicate: boolean
+    /** 1-based position among the key rows — the "fallback N" the usage
+     *  modal and the desk's serving label both cite. Server-counted, so the
+     *  three surfaces cannot disagree after a delete. */
+    ordinal: number
+    /** the account this key resolved to. IDENTITY, never credential — null
+     *  while the profile lookup has not succeeded yet (it retries lazily). */
+    account_uuid: string | null
+  }[]
   /** tier → where its prompts go. `account` is "primary", a key id, or null
    *  (no usable account at all). `available: false` means nothing has
    *  capacity: the chip sits dimmed on the row that refreshes soonest,

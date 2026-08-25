@@ -2781,7 +2781,22 @@ html.mobile .md table { display: block; overflow-x: auto; max-width: 100%; }
 /* a key that IS the signed-in account: whole row greyed, excluded from
    routing (tooltip on the row explains) */
 .acct-dup { opacity: .45; }
+/* the row's uuid: mono, because a uuid read in a proportional face is a uuid
+   you will misread. Width is still the flex column's business — an input
+   scrolls its own value rather than widening, so a long identity cannot push
+   the usage/delete buttons out of column.
+   ⚠ font-FAMILY only, and scoped to out-specify `.acct-panel .acct-main
+   input` rather than shouting `!important` at it. The SIZE stays 12.5px: row
+   height is padding + line-height off that number, and shrinking it here
+   would make the key rows shorter than the primary and the new-key rows —
+   undoing the row alignment for the sake of a font. */
+.acct-panel .acct-main input.acct-keyfield { font-family: var(--mono); }
 .acct-keyfield[disabled] { opacity: .6; cursor: default; }
+/* the desk's "running off fallback N · uuid" badge. Bounded and ellipsised:
+   the desk header is a flex row whose spacer does the balancing, and a 36-char
+   uuid unconstrained there would shove the action buttons around. */
+.acct-ranas { font-family: var(--mono); font-size: 10.5px; max-width: 300px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .acct-panel .acct-btn { flex: none; width: 27px; height: 27px; padding: 0;
   display: inline-flex; align-items: center; justify-content: center;
   border-radius: 4px; font-size: 15px; }

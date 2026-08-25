@@ -950,6 +950,17 @@ def org_tree(slug: str, request: Request) -> dict[str, Any]:
         # "fallback" looks identical to a correct one. An account uuid, or
         # "ambient" / "api-key" / "token:unattributed". Never a credential.
         node["ran_as"] = st.get("ran_as") or None
+        # …and the same fact in the form a READER needs (user ruling
+        # 2026-08-25): "fallback 2 · <uuid>" when this turn is running off a
+        # fallback, None otherwise. Composed in the backend because it owns
+        # the registry — the desk cannot count key rows it never fetched, and
+        # a second count is a second thing to disagree.
+        # ⚠ the uuid is dropped for kiosk visitors: `/api/accounts` is frozen
+        # whole on the public side, and this payload is NOT, so composing the
+        # label without that guard would route account identity straight
+        # around D-145's bound.
+        node["ran_as_label"] = accounts.serving_label(
+            str(st.get("ran_as") or ""), with_uuid=_public_slug(request) is None)
         node["queued"] = len(st["queue"])
         # concurrently running subagents (Task/Agent tool calls in flight) —
         # the desk header shows it beside the working clock, only when > 0

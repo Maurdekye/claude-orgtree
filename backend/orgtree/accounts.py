@@ -490,6 +490,47 @@ def _iso(epoch: Any) -> str | None:
             .isoformat().replace("+00:00", "Z"))
 
 
+def fallback_ordinal(doc: dict[str, Any], account: str) -> int | None:
+    """This row's 1-based position among the key rows, or None if `account`
+    is not a key row (the primary login, `api-key`, `key:unattributed`, an
+    unknown id). ONE definition of "fallback N", shared by the panel, the
+    per-row usage modal and the serving label — three surfaces that would
+    otherwise each count for themselves and disagree the moment a row is
+    deleted."""
+    if not account or account == PRIMARY:
+        return None
+    for i, k in enumerate(doc["keys"]):
+        if k["id"] == account:
+            return i + 1
+    return None
+
+
+def serving_label(account: str, *, with_uuid: bool = True) -> str | None:
+    """"fallback 2 · <account uuid>" for a turn served by a key row, else None
+    (user ruling 2026-08-25: cite the fallback's NUMBER alongside its uuid,
+    and only when an agent is actually running off a fallback — the primary
+    login and the api-key lane say nothing here).
+
+    ⚠ `with_uuid=False` for anything a KIOSK visitor can reach. D-145 keeps
+    account identity off the public side by freezing `/api/accounts` whole,
+    but the node payload this label rides on is reachable from a kiosk, so
+    the uuid is dropped there rather than the whole label. The ordinal is
+    positional and says nothing about who the account is.
+
+    Degrades to the bare ordinal when identity has not resolved yet: "fallback
+    2" is still true, and a row whose profile lookup failed must not vanish
+    from the readout that explains a running turn."""
+    doc = load()
+    n = fallback_ordinal(doc, account)
+    if n is None:
+        return None
+    if not with_uuid:
+        return f"fallback {n}"
+    row = next((k for k in doc["keys"] if k["id"] == account), None)
+    uuid = str((row or {}).get("account_uuid") or "")
+    return f"fallback {n} · {uuid}" if uuid else f"fallback {n}"
+
+
 def readout() -> dict[str, Any]:
     """What the panel renders. One load, one live read, so the rows and the
     chip assignments are a consistent snapshot."""
@@ -508,8 +549,16 @@ def readout() -> dict[str, Any]:
         "version": VERSION,
         "primary": {"signed_in": bool(live["uuid"]),
                     "email": live["email"] or None},
-        "keys": [{"id": k["id"], "duplicate": k["id"] in dup}
-                 for k in doc["keys"]],
+        # `account_uuid` is IDENTITY, never credential (user ruling
+        # 2026-08-25: render each registered key's uuid in the list). It is
+        # already what the duplicate check compares, and `/api/accounts` is
+        # frozen whole for kiosk visitors, so this adds no public surface.
+        # `ordinal` rides along so the panel's "fallback N" and the desk's
+        # serving label come from ONE count rather than two.
+        "keys": [{"id": k["id"], "duplicate": k["id"] in dup,
+                  "ordinal": i + 1,
+                  "account_uuid": str(k.get("account_uuid") or "") or None}
+                 for i, k in enumerate(doc["keys"])],
         "assignments": assignments,
     }
 
@@ -546,8 +595,7 @@ def account_usage(account: str) -> dict[str, Any]:
         row = next((k for k in doc["keys"] if k["id"] == account), row)
     dup = bool(live["uuid"]
                and str(row.get("account_uuid") or "") == live["uuid"])
-    ordinal = next((i + 1 for i, k in enumerate(doc["keys"])
-                    if k["id"] == account), None)
+    ordinal = fallback_ordinal(doc, account)      # the one count, shared
     label = f"fallback {ordinal}" if ordinal else "fallback"
     data = limits.fetch_for_token(tok, cache_key=account)
     return {"account": account, "label": label, "duplicate": dup,
