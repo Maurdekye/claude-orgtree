@@ -816,14 +816,20 @@ export interface AccountEntry {
   last_seen: string | null
 }
 
-/** GET /api/accounts. `accounts` is in WATERFALL ORDER, primary first.
+/** GET /api/accounts. `accounts` is in the order failover walks — the first
+ *  entry is tried first.
  *
- *  ⚠ `selection_active` is the machine-readable form of D-144 and is FALSE in
- *  Phase 1: the registry records which accounts exist and which org is pinned
- *  to which, but nothing selects an account for a turn and no failover runs.
- *  Any surface rendering this MUST say so — a panel showing two healthy
- *  accounts and a pin reads exactly like a working waterfall, and on today's
- *  supervisor a mid-turn auth rejection is terminal rather than a failover. */
+ *  ⚠ `primary` is POSITIONAL: the uuid at position 0 of the registry order,
+ *  nothing more. It does NOT mean "the user's primary account" — with a
+ *  one-row registry it resolves to whatever that row happens to be (observed
+ *  2026-08-25: it named the user's secondary). Never render the word
+ *  "primary" for this field; say "first in order" or let the serving line
+ *  speak.
+ *
+ *  ⚠ `selection_active` is a D-144 artifact the backend still hardcodes to
+ *  FALSE. It predates failover shipping and no longer tracks reality
+ *  (failover fired for real 2026-08-24). Gate nothing user-visible on it —
+ *  the resolved serving line is the honest statement. */
 export interface AccountsPayload {
   version: number
   accounts: AccountEntry[]

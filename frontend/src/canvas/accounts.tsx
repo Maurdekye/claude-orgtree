@@ -8,12 +8,14 @@
 // The registry itself is untouched and identity-only; keys live in their own
 // store, and this panel only ever learns PRESENCE, never content.
 //
-// ⚠ THE BANNER IS NOT DECORATION. While `selection_active` is false nothing
-// selects an account for a turn, and a panel of healthy accounts with keys
-// reads exactly like a working waterfall. The server says so in the payload;
-// the banner repeats it where it cannot be missed. When selection IS active
-// the banner disappears and the serving line + key order ARE the honest
-// statement. See D-144; pinned by acctpanel.test.tsx §1/§2.
+// ⚠ THERE IS DELIBERATELY NO STATUS BANNER. The old "Registry only — no
+// failover is running yet" line was gated on `selection_active`, a D-144-era
+// field the backend hardcodes to FALSE — it predates failover shipping and
+// stopped tracking reality the night failover first fired (2026-08-24), at
+// which point the banner stated the exact opposite of the truth. Nothing
+// user-visible may key on that field. The serving line below is resolved
+// from the real spawn environment and IS the status statement. Absence is
+// pinned by acctpanel.test.tsx §1/§2.
 //
 // ⚠ THE DRAG IS A REAL CONTROL, not cosmetics: failover walks the registry
 // order and takes the first account that isn't currently serving and has a
@@ -183,13 +185,6 @@ export function AccountsPanel({ slug, toast, close }: {
     <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
       <div className="settings" onClick={(e) => e.stopPropagation()}>
         <h3>Accounts</h3>
-
-        {/* D-144, stated where it cannot be missed — see the file banner. */}
-        {data && !data.selection_active && (
-          <div className="ask-warn">
-            Registry only — <b>no failover is running yet</b>.
-          </div>
-        )}
 
         {err && <div className="ask-warn">could not read the registry: {err}</div>}
         {!data && !err && <div className="dim">reading the registry…</div>}

@@ -1,17 +1,18 @@
-// acctpanel.test.tsx — the ONE load-bearing sentence in the accounts panel.
+// acctpanel.test.tsx — the accounts panel must not lie about failover.
 //
-// The 2026-08-24 copy trim removed every blurb explaining what the panel is
-// for, deliberately unpinned: that text is expected to churn. This banner is
-// different in kind and gets the panel's only string check. `selection_active`
-// is the machine-readable form of D-144 — in Phase 1 nothing selects an
-// account for a turn, and a panel of healthy accounts with a primary reads
-// exactly like a working waterfall unless it SAYS otherwise. The banner core
-// currently survives only because nobody has deleted it; after this file,
-// deleting it fails a named check instead.
+// HISTORY, because these checks inverted once already: until 2026-08-25 §1
+// pinned the PRESENCE of a "Registry only — no failover is running yet"
+// banner, gated on `selection_active` being false. Then failover shipped and
+// fired for real (2026-08-24 ~21:20) while the backend kept hardcoding
+// `selection_active: false` — so the most prominent line in the window stated
+// the exact opposite of the truth, on the user's own screen. §1/§2 now pin
+// the banner's ABSENCE in BOTH payload states: nothing user-visible may key
+// on that dead field. The serving line (resolved server-side from the real
+// spawn environment) is the honest statement, pinned by §8.
 //
-// ANTI-VACUITY: §2 flips only `selection_active` and asserts the warning is
-// ABSENT — so §1 cannot be passing on decorative always-on text, and a build
-// that warns even when selection IS live (the opposite lie) also fails.
+// ANTI-VACUITY: an absence assertion over a blank panel abstains rather than
+// tests, so §1/§2 assert a positive control from the SAME render first — the
+// register-current-login button, which the panel shows unconditionally.
 //
 // Run:  cd frontend && node tests/run.mjs acctpanel
 
@@ -81,42 +82,49 @@ async function panelText(
   return el.textContent ?? ''
 }
 
-uiTest('§1 while selection is not active, the panel SAYS no failover is running',
+uiTest('§1 the dead banner stays gone even when the payload says selection_active:false',
   async ({ mount }) => {
     const text = await panelText(mount, payload(false))
-    assert.match(text, /no failover is running/i,
-      'the D-144 banner core is gone — a registry of healthy accounts with a '
-      + '"primary" now reads exactly like a working waterfall (see D-144: '
-      + 'this sentence is load-bearing, not copy)')
+    // positive control first — a blank panel must fail HERE, not let the
+    // absence assertion below pass over nothing
+    assert.match(text, /register current login/i,
+      'panel rendered no content — the absence check below would abstain')
+    assert.doesNotMatch(text, /no failover is running/i,
+      'the "no failover is running yet" banner is back. Its gate '
+      + '(`selection_active`) is hardcoded FALSE by the backend while '
+      + 'failover is LIVE (first fired 2026-08-24), so this banner can only '
+      + 'state the opposite of the truth. Nothing user-visible may key on '
+      + 'that field — see the file banner in canvas/accounts.tsx')
   })
 
-uiTest('§2 CONTROL: when selection IS active, that warning is absent',
+uiTest('§2 CONTROL: absent in the other payload state too — no gate survives',
   async ({ mount }) => {
     const text = await panelText(mount, payload(true))
+    assert.match(text, /register current login/i,
+      'panel rendered no content — the absence check below would abstain')
     assert.doesNotMatch(text, /no failover is running/i,
-      'the warning renders even when selection is live — either the check '
-      + 'above is keying on decorative always-on text, or the panel now '
-      + 'tells the opposite lie')
+      'the banner renders when selection_active is true — someone re-added '
+      + 'it with the gate inverted; the field is dead either way')
   })
 
 // §3 — the panel must SURVIVE a response whose shape it did not expect.
 //
 // Added 2026-08-24 after a real crash: the token lookup dereferenced
 // `.tokens` on any truthy response, so a payload without that key threw
-// during render and took the WHOLE panel down — including the §1 banner
-// above, which is the one sentence in this file that must never silently
-// vanish. A blank panel passes no string check because there is no string.
+// during render and took the WHOLE panel down. A blank panel passes no
+// string check because there is no string.
 //
 // This is the shape a frontend talking to an older backend actually sees, and
 // the serveAccounts stub reproduces it for free: it answers EVERY request with
-// the accounts payload, tokens endpoint included.
+// the accounts payload, tokens endpoint included. Re-anchored 2026-08-25 from
+// the removed banner to the register button (rendered unconditionally).
 uiTest('§3 an unexpected token-endpoint shape does not blank the panel',
   async ({ mount }) => {
     const text = await panelText(mount, payload(false))
-    assert.match(text, /no failover is running/i,
+    assert.match(text, /register current login/i,
       'the panel rendered nothing at all — a response without the key the '
-      + 'token lookup expected threw during render, so the D-144 banner is '
-      + 'gone for a reason no string check could otherwise report')
+      + 'token lookup expected threw during render and took every control '
+      + 'down with it')
   })
 
 // ════════════════════════════════════════════ the 2026-08-24 redesign (user):
