@@ -479,8 +479,9 @@ export default function App() {
                 })()}
                 {(() => {   // usage-limit freeze: ▶ restarts every frozen agent
                   if (tree.spend_frozen) return null
-                  const frozen = [...flatNodes(tree).values()]
-                    .filter((n): n is TreeNode & { frozen: TreeFrozen } => n.frozen != null)
+                  // ⚠ resumableFrozen, NOT every node carrying a record: a
+                  // retired agent keeps its freeze and ▶ has never resumed it
+                  const frozen = resumableFrozen(tree)
                   if (!frozen.length) return null
                   const until = frozen.map((n) => n.frozen.until).find(Boolean)
                   // RED while the reported reset time is still ahead (resuming
@@ -1272,6 +1273,40 @@ function flatNodes(tree: TreePayload): Map<string, TreeNode> {
   const walk = (n: TreeNode) => { map.set(n.id, n); n.children.forEach(walk) }
   tree.roots.forEach(walk)
   return map
+}
+
+/** The nodes ▶ resume will ACTUALLY act on — the banner's count, its title
+ *  list and its wording all read from this and nothing else.
+ *
+ *  user report 2026-08-26: the banner read "resume 2 · 2 agents frozen" in an
+ *  org whose two frozen agents had since been RETIRED. Retiring does not clear
+ *  the freeze record — deliberately, since a retired agent keeps its context
+ *  and can be rehired — so the old test (`n.frozen != null` alone) counted
+ *  nodes that ▶ has never been willing to touch.
+ *
+ *  ⚠ THIS IS A MIRROR OF `supervisor._resumable`, and it must stay one. The
+ *  backend was already right: `_resumable` returns None for a node whose
+ *  `state != "live"` or that is `limit_locked`, so pressing ▶ on that banner
+ *  resumed nobody and reported "resumed 0 agent(s)". Only the count lied. Keep
+ *  the two in step — a banner promising more than ▶ delivers is this same bug
+ *  again, and the mobile status chip above (`state === 'live'`, twice) was
+ *  already doing it correctly, which is why only this one surface was wrong.
+ *
+ *  Keyed on LIVE STATE, not on a one-time scrub of the record: a retired agent
+ *  that gets rehired goes back to `state: 'live'` and starts counting again,
+ *  which is what should happen — its freeze is still real and still waiting.
+ *
+ *  Not mirrored: `_resumable`'s "another freeze kind owns this" test, whose
+ *  only reachable flag is `spend`. `TreeFrozen` does not carry it, and the
+ *  banner already returns early on the org-level `tree.spend_frozen`. If a
+ *  per-node spend freeze ever becomes reachable without that org flag, this
+ *  is where it belongs. */
+export function resumableFrozen(
+  tree: TreePayload,
+): (TreeNode & { frozen: TreeFrozen })[] {
+  return [...flatNodes(tree).values()].filter(
+    (n): n is TreeNode & { frozen: TreeFrozen } =>
+      n.frozen != null && n.state === 'live' && !n.limit_locked)
 }
 
 function SenderChip({ id, nodes }: { id: string; nodes: Map<string, TreeNode> }) {
