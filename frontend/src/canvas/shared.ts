@@ -543,6 +543,49 @@ export const ago = (at: string | null | undefined) => {
     : s < 5400 ? `${Math.round(s / 60)}m` : `${Math.round(s / 3600)}h`
 }
 
+/** WHEN THIS AGENT WAS LAST TOUCHED, as epoch ms — the END OF ITS LAST TURN.
+ *
+ *  This is the same clock FR-23's card badge already shows (`TurnStat.at`,
+ *  written unconditionally at turn completion, killed turns included), chosen
+ *  again here so a pile row and that agent's card can never disagree about how
+ *  long ago it last did anything. The two alternatives were both worse:
+ *    · `last_status.at` exists only when the agent CHOSE to report a status,
+ *      so a busy agent that never called orgtree_status would read as older
+ *      than one that reported once and then idled (FR-23 rejected it for the
+ *      same reason).
+ *    · `archived_at` is the retire time, and a dissolve stamps an entire
+ *      subtree with ONE instant — the order it produces for the common case
+ *      (a team retired together) is a single tie, i.e. no order at all.
+ *
+ *  0 = never ran. A positive timestamp always beats it, so a fresh hire that
+ *  was retired without ever taking a turn sorts to the BOTTOM. It is 0 and not
+ *  -Infinity deliberately: `-Infinity - -Infinity` is NaN, and a comparator
+ *  that returns NaN silently leaves the array in an arbitrary order. */
+export const lastTouched = (n: CanvasNode | undefined | null): number => {
+  const at = n?.turns?.[n.turns.length - 1]?.at
+  const t = at ? Date.parse(at) : NaN
+  return Number.isFinite(t) ? t : 0
+}
+
+/** the order a pile's members are LISTED in, top row first (user request
+ *  2026-08-27): most recently touched at the top, so the retirees you last
+ *  worked with are the ones you do not have to scroll for.
+ *
+ *  Ties (and the never-ran block at the bottom) keep the order the picker used
+ *  before this existed — newest-archived first, which is `list` reversed —
+ *  because `Array.prototype.sort` is stable. So this only ever REFINES the old
+ *  order; it never scrambles the members it has no clock for.
+ *
+ *  ⚠ It does NOT reorder `Pile.list` itself. `list` is the stack's own order
+ *  and its last entry is the default front card; re-sorting it would silently
+ *  move which retiree the canvas shows on top of the pile, which is a separate
+ *  decision the user already controls by hand (and one persisted per-org in
+ *  localStorage). This is a display order for the picker's rows, nothing more. */
+export const pileOrder = (list: string[],
+  map: Map<string, CanvasNode>): string[] =>
+  [...list].reverse()
+    .sort((a, b) => lastTouched(map.get(b)) - lastTouched(map.get(a)))
+
 // chat markdown: gfm + hard line breaks, sanitized (agents echo web content).
 // №21: cached by text identity — every streamed token used to re-parse the
 // ENTIRE visible transcript (~8 Hz × every message × every open panel)

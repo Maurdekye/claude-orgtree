@@ -18,7 +18,7 @@ import { pickFolder } from '../picker'
 import {
   CloseIcon, DeleteIcon, FolderIcon, LayersIcon, SettingsIcon,
 } from '../icons'
-import { ago, MODEL_VERSIONS, TIER_LETTER, TIER_SEAT, TIERS, USER, useEsc } from './shared'
+import { ago, MODEL_VERSIONS, pileOrder, TIER_LETTER, TIER_SEAT, TIERS, USER, useEsc } from './shared'
 import type { CanvasNode, DraftScope, DraftState, OpFn, Pile } from './shared'
 
 export interface ConfirmModalProps {
@@ -1078,9 +1078,17 @@ export function PilePicker({ pile, map, onPick, close, op, toast }: PilePickerPr
               + 'and can rehire; the rest wait beneath. Pick one to bring it '
               + 'forward.'}
         </div>
-        {[...pile.list].reverse().map((id) => {
+        {/* rows run MOST RECENTLY TOUCHED FIRST (user request 2026-08-27) —
+            `pileOrder`, which also carries why "touched" means the last turn
+            rather than the retire time. The pile's own stack order is
+            untouched: this is the list, not the deck. */}
+        {pileOrder(pile.list, map).map((id) => {
           const n = map.get(id)
           if (!n) return null
+          // the same TurnStat the card badge reads. Absent when the agent
+          // never took a turn, and then the row says nothing at all rather
+          // than "never" — FR-23's rule, kept so the two surfaces match.
+          const lastTurn = n.turns?.[n.turns.length - 1]
           return (
             <button key={id} className={'pile-row' + (id === pile.front ? ' on' : '')}
               onClick={() => onPick(id)}>
@@ -1091,6 +1099,13 @@ export function PilePicker({ pile, map, onPick, close, op, toast }: PilePickerPr
               {n.state === 'unrecoverable' && <span className="badge dim">unrecoverable</span>}
               {(n.mail_pending ?? 0) > 0 && <span className="badge free">{n.mail_pending} mail</span>}
               {id === pile.front && <span className="badge free">in front</span>}
+              {lastTurn && (
+                <span className="badge dim pile-ago"
+                  title={'last turn ended '
+                    + (lastTurn.at ?? '').slice(0, 16).replace('T', ' ')
+                    + (lastTurn.killed ? ' (killed)' : '')}>
+                  {ago(lastTurn.at)} ago</span>
+              )}
             </button>
           )
         })}

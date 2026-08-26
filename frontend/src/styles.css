@@ -1214,6 +1214,15 @@ button.cc-name:hover {
   flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap; font-family: var(--mono); font-weight: 600;
 }
+/* flex:none + nowrap on the badges, same reason as .cc-actions above: the row
+   is a fixed 420px and `.settings .badge` is the BIG 13px/10px variant, so a
+   long id beside several badges used to squeeze them until their labels wrapped
+   mid-word. The name has flex:1 + min-width:0 + ellipsis, so it is the one
+   thing in the row that should absorb the squeeze — everything else keeps its
+   size and the id truncates. (The recency badge added 2026-08-27 is short, but
+   it is the badge that took the row past the width where this stopped being
+   theoretical.) */
+.pile-row .badge { flex: none; white-space: nowrap; }
 
 /* ------------------------------------------------------- lineage stacks (§8.7) */
 /* channels COMPOSE (user ruling 2026-08-01, D-071): the audience glow rides
