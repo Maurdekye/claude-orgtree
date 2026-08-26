@@ -3199,6 +3199,167 @@ session's death. Approved and not yet built — reading `expiresAt` and
 reaches any payload, and a decision amending "incapable of touching a token"
 to "never the token VALUE").
 
+### D-155 · one rule, three copies: the severity thresholds are a recorded hazard, not a refactor
+
+Found 2026-08-26 while answering another org's question about an under-specified
+test fixture. Recorded rather than fixed, deliberately, and the reasoning is
+the point of the entry.
+
+The usage severity rule — gold from 75 %, red from 90 %, overridden by an
+explicit `severity` — exists **three times**:
+
+| where | what |
+|---|---|
+| `frontend/src/App.tsx:764` | `usageSeverity`, exported |
+| `frontend/src/App.tsx:766` | an inline copy inside it |
+| `frontend/src/canvas/accounts.tsx:70` | `sevOf`, a second inline copy |
+
+**They agree today.** Measured, not assumed: the bodies are byte-identical
+with whitespace removed. (⚠ The first comparison said `DIFFER` and that was a
+mismatched line range in the comparison, not a finding — worth recording
+because a false alarm here would have cost another team a file hold.)
+
+**Why it is written down instead of collapsed.** Merging them means editing
+`App.tsx` and `accounts.tsx` while another org has live seats in that
+directory, to fix something that is not currently wrong. That trade is bad
+today and fine next week. A recorded hazard with line numbers is worth more
+than a refactor done at the wrong moment.
+
+⚠ **Why it is a hazard at all, and the sentence that makes it matter: these
+agreed for months before `a27b929` touched one copy.** The freeze-path defect
+fixed the same day (no D-entry of its own — it is the commit that introduced
+`subscription_lane` in `supervisor.py`) was exactly this — two hand-copied forms of one
+condition, one of them strengthened, the other left behind, silently handing
+back the wrong answer for a day. **This is that shape one step earlier**, before
+anyone has edited one copy. The copies were the bug; the wording never was.
+
+`styles.css` used to document the thresholds against the `App.tsx` copy *as
+though it were canonical*, which is precisely how the next person picks the
+wrong source of truth and believes they are finished. That comment now says
+there are three and names them.
+
+Related, same shape, from the other org and worth stealing: a test constant
+that duplicates a source constant is a third copy of one idea. Their probe now
+reads its budgets out of the source by regex, because otherwise someone raises
+the source constant to make a unit test pass and the probe goes on silently
+checking the old number — still green.
+
+### D-154 · `api_cost_usd` is the FALLBACK SLICE, and it is zero for a permanent-key org
+
+Recorded because it existed only in working notes, which is the exact state in
+which the next person "fixes" it by reasoning about how cost *ought* to accrue.
+
+`api_cost_usd` (`schema.py`, org-level, monotonic) accumulates dollars billed
+to the org's own key **while an `api_fallback` window was open**. Every writer
+goes through `_bank_api_cost` (`supervisor.py:1123`) and every caller gates on
+the lane captured **at spawn**, so a window opening or closing mid-turn never
+rewrites where that turn's tokens were billed.
+
+⚠ **THE TRAP IS THE NAME.** It reads like "what this org spent on the API". It
+is not. `api_fallback_active` requires **both** `api_fallback` and `api_key`,
+so for a **permanent-key org** — `api_key` set, `api_fallback` unset — the
+counter is never written and stays `0.00` forever, **while `bills_the_key`
+returns True for every single turn.** For that org the API spend is not *a
+slice* of the cost; it is *all* of it, and the one field named after it reads
+zero.
+
+So the invariant to hold in mind, and to state wherever this is surfaced:
+
+> For a permanent-key org, every turn bills the key, so the org's **total**
+> cost IS the API spend. `api_cost_usd` is meaningful **only** as the fallback
+> slice — the part of a *subscription* org's spend that went to the key while
+> a limit window was open.
+
+It is not a bug and must not be "fixed" by banking permanent-key turns into it:
+that would make the hover split on the cost card report the same number twice
+for those orgs, and would silently change the meaning of a monotonic
+org-lifetime counter that existing documents already carry. If a total-API-spend
+figure is ever wanted, it is a **new** field, and the honest answer for a
+permanent-key org is `cost_total` itself.
+
+### D-153 · two ways a test run reports a pass it never measured
+
+Not a feature. A method entry, recorded in its own right (coordinator's
+instruction 2026-08-26) because both halves were found **inside one afternoon's
+work on D-152**, both are invisible by construction, and both would otherwise
+be rediscovered the expensive way. They are the same shape — *the check
+abstained, and an abstention reads exactly like a pass* — wearing two costumes.
+
+#### 1 · a stale `.pyc` ran the whole mutation round while the source read clean
+
+CPython validates a cached `.pyc` against the source file's **(mtime in whole
+seconds, size)**. Both. Nothing else.
+
+Mutant M6 of the D-152 round swaps the constant `"fable"` for `"fabel"` —
+**the same number of bytes** — and `shutil.copyfile` put the restore inside the
+same second as the mutation. Both freshness tests therefore passed, the
+interpreter never re-read the file, and **the suites went on executing the
+mutant against source that was clean on disk.**
+
+What was checked at the time, and what each check was actually worth:
+
+| check run | said | worth |
+|---|---|---|
+| `git diff` | clean | true, and beside the point |
+| `grep 'FABLE = '` | clean | true, and beside the point |
+| restored bytes `== `original bytes | `True` | true, and beside the point |
+
+All three describe **the file**. None of them describes **what the interpreter
+loaded**, and that was the only question.
+
+⚠ **Five of the six mutants would have been reported "killed" off a run that
+never touched them.** That sentence is here so nobody deletes the purge step as
+an unnecessary slowdown — it is not a slowdown, it is the difference between a
+mutation round and a ritual. M1–M5 happened to change the file's *length*, so
+they invalidated the cache by luck, not by design; the round's validity rested
+on a coincidence nobody had noticed they were relying on.
+
+The only thing that caught it was **re-running the baseline after the restore
+and finding it red** — done out of habit, with nothing pointing at it. Two
+rules follow:
+
+- **purge `__pycache__` before every run in a mutation round;**
+- **always re-run the baseline after restoring, and treat any drift as
+  invalidating the round.** Comparing file content to the original tells you
+  the file is right. It does not tell you the file is what ran.
+
+#### 2 · `rc=$?` after a pipeline measures the pipeline's LAST command
+
+An hour later, in the same task, verifying the same change:
+
+```bash
+out=$(timeout 300 python "$t" 2>&1 | tail -2 | tr '\n' ' '); rc=$?
+```
+
+`$?` here is `tr`'s exit status. `tr` always succeeds. **Every suite in that
+loop reported `rc=0`, including one that hit its timeout and was killed.**
+
+It was caught only because the reported line for `test_turn_lifecycle` was
+*empty* — no `ALL N CHECKS PASS`, no failure summary, nothing — and a suite
+that prints nothing is worth a second look. Run directly, it returned **124**:
+timed out. Every suite in that batch whose tail happened to include a summary
+line was genuinely verified *by the summary line*, not by the exit code; every
+suite that printed nothing quotable had been reported green on no evidence at
+all.
+
+Rules:
+
+- **capture exit codes outside the pipeline** (`${PIPESTATUS[0]}`, or drive the
+  process from Python and read `returncode` — which is what `tools/run_tests.py`
+  already does);
+- **and prefer `tools/run_tests.py` to a hand-rolled loop.** It exists, it
+  reports per-suite status honestly, and it has a `--full` tier. A loop written
+  fresh in a terminal has none of that and looks exactly as convincing.
+
+#### the common shape
+
+In both cases the operator asked a question the machinery could not answer, and
+the machinery answered anyway — with the *shape* of a pass. Neither failed
+loudly; neither could have. **When a check cannot fail, it is not a check.**
+The generalisation for this tree: verify the thing you actually care about
+(what ran, what exited non-zero), never a proxy that correlates with it
+(what's on disk, what the last process in a pipe returned).
+
 ### D-152 · fable rides along with a subscription limit — when it has nothing of its own
 
 Ruling (user, 2026-08-26): *"if any non-fable tier agent goes out of capacity,

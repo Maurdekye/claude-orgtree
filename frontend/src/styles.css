@@ -1816,8 +1816,15 @@ input:focus, select:focus, textarea:focus, button:focus-visible {
 
 /* the usage BUTTON's near-the-wall glow (user feature 2026-08-19): a freeze
    should not be the first notice that a lane is filling. Thresholds are the
-   bars' own (`usageSeverity` in App.tsx) — gold from 75%, red from 90% — so
-   the button and the modal it opens can never disagree. Steady at warn,
+   bars' own — gold from 75%, red from 90% — so the button and the modal it
+   opens can never disagree.
+   ⚠ THERE IS NO CANONICAL COPY OF THAT RULE, and this comment used to name
+   `usageSeverity` in App.tsx as though there were. The same thresholds are
+   written out THREE times: `usageSeverity` (App.tsx:764), an inline copy
+   (App.tsx:766) and another (accounts.tsx:70). They agree today — measured,
+   byte-identical bodies — but nothing keeps them in step, so citing one as
+   the source of truth is how the next person edits it and believes they are
+   done. See D-155. Steady at warn,
    breathing at crit: the tier has to survive an eye that cannot separate gold
    from red, and motion is the channel left once hue is spent.
    ⚠ this block sits AFTER `.iconbtn:hover` deliberately — that rule paints
