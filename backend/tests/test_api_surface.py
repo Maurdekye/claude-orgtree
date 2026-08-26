@@ -415,6 +415,149 @@ def _():
         accounts.save(doc)
 
 
+@t("tree · a limit freeze's reset is RE-DERIVED from the live roster, not the stamp")
+def _():
+    """User report 2026-08-26: "when an agent is stuck with usage limits, the
+    refresh time doesn't adapt to account changes or keys being added /
+    removed". `frozen.until`/`until_ts` are stamped ONCE by the supervisor and
+    never rewritten, so the only honest place to correct them is where the
+    payload is read.
+
+    THREE STATES, asserted separately because each fails for its own reason,
+    and the stamped label is never allowed to survive any of them. The middle
+    leg is the user's literal scenario (a key is added); the FIRST is the
+    control that has to fail — capacity genuinely absent, so a countdown must
+    still appear and "capacity available" would be a lie.
+
+    ⚠ `tier`, not `model`: the node DOCUMENT says `model`, `tree()` renames it
+    on the way out. Reading the wrong one makes the whole feature a silent
+    no-op, which is why leg ① asserts a re-derived VALUE rather than merely
+    that the field exists."""
+    import json as _json
+    import time as _time
+    from orgtree import accounts
+
+    def find(node, nid):
+        if node.get("id") == nid:
+            return node
+        for kid in (node.get("children") or node.get("roots") or []):
+            hit = find(kid, nid)
+            if hit:
+                return hit
+        return None
+
+    def frozen_now():
+        r = call(ADMIN, "GET", f"/api/orgs/{K}")
+        ok200(r, "admin tree")
+        n = find(r.json, NID)
+        assert n, "the node is missing from the tree"
+        return n["frozen"]
+
+    STAMP = "STAMPED-AT-FREEZE-TIME"
+    STAMP_TS = 1_000_000_000.0          # long past, and no roster value
+    with store.DOC_LOCK:
+        _o = store.load_org(K)
+        _n = _o.nodes[NID]
+        keep_fz, keep_model = _n.get("frozen"), _n["model"]
+        _n["frozen"] = {"at": "2026-01-01T00:00:00Z", "until": STAMP,
+                        "until_ts": STAMP_TS, "limit": True}
+        _n["model"] = "opus"
+        store.save_org(_o)
+    keep_doc = _json.loads(_json.dumps(accounts.load()))
+    keep_live = accounts.live_identity
+    try:
+        soon = _time.time() + 3600.0
+
+        # ① EVERY lane marked — the control that must fail. Capacity really is
+        # gone, so a countdown is the honest answer and it must be the
+        # ROSTER's, not the stamp's.
+        doc = _json.loads(_json.dumps(keep_doc))
+        doc["keys"] = []
+        doc["usage_refreshes"] = {"primary": {"opus": soon}}
+        accounts.save(doc)
+        fz = frozen_now()
+        assert fz["until_ts"] == soon, fz
+        assert "capacity resets" in (fz["until"] or ""), fz
+        assert STAMP not in (fz["until"] or ""), "the stamped label survived"
+
+        # ② a key is ADDED while the node sits parked — the user's scenario.
+        doc["keys"] = [{"id": "kFREE01", "account_uuid": None}]
+        accounts.save(doc)
+        fz = frozen_now()
+        assert fz["until"] == "capacity available — ▶ to resume", fz
+        # ⚠ `until_ts` must move WITH the label: the header's red "not yet"
+        # button reads the timestamp, so a countdown left standing here would
+        # colour the button red beside text saying capacity is back.
+        assert fz["until_ts"] is None, fz
+
+        # ③ no lane exists AT ALL (nobody signed in, no key rows) → there is
+        # no real T. It must say so rather than compute a plausible one.
+        accounts.live_identity = lambda: {"uuid": "", "email": ""}
+        doc["keys"] = []
+        doc["usage_refreshes"] = {}
+        accounts.save(doc)
+        fz = frozen_now()
+        assert fz["until"] == "reset time unknown", fz
+        assert fz["until_ts"] is None, fz
+    finally:
+        accounts.live_identity = keep_live
+        accounts.save(keep_doc)
+        with store.DOC_LOCK:
+            _o = store.load_org(K)
+            _o.nodes[NID]["frozen"] = keep_fz
+            _o.nodes[NID]["model"] = keep_model
+            store.save_org(_o)
+
+
+@t("tree · a CONNECTION freeze keeps its own stamped reset, untouched")
+def _():
+    """The re-derivation is scoped to the subscription pool. A connection
+    backoff is OUR OWN timer measured from our own failure — `resolve` knows
+    nothing about it, and rewriting it would replace a real number with an
+    unrelated one. Without this leg, a re-derivation that fired on every
+    freeze kind would still pass the three checks above."""
+    import json as _json
+    from orgtree import accounts
+
+    def find(node, nid):
+        if node.get("id") == nid:
+            return node
+        for kid in (node.get("children") or node.get("roots") or []):
+            hit = find(kid, nid)
+            if hit:
+                return hit
+        return None
+
+    STAMP, STAMP_TS = "network interruption — 30s", 1_000_000_000.0
+    with store.DOC_LOCK:
+        _o = store.load_org(K)
+        _n = _o.nodes[NID]
+        keep_fz = _n.get("frozen")
+        _n["frozen"] = {"at": "2026-01-01T00:00:00Z", "until": STAMP,
+                        "until_ts": STAMP_TS, "connection": True}
+        store.save_org(_o)
+    keep_doc = _json.loads(_json.dumps(accounts.load()))
+    try:
+        # a roster that WOULD have produced "capacity available" for a limit
+        # freeze — so this passing means the kind gate held, not that the
+        # roster had nothing to say
+        doc = _json.loads(_json.dumps(keep_doc))
+        doc["keys"] = [{"id": "kFREE01", "account_uuid": None}]
+        doc["usage_refreshes"] = {}
+        accounts.save(doc)
+        r = call(ADMIN, "GET", f"/api/orgs/{K}")
+        ok200(r, "admin tree")
+        fz = find(r.json, NID)["frozen"]
+        assert fz["until"] == STAMP, fz
+        assert fz["until_ts"] == STAMP_TS, fz
+    finally:
+        accounts.save(keep_doc)
+        with store.DOC_LOCK:
+            _o = store.load_org(K)
+            _o.nodes[NID]["frozen"] = keep_fz
+            store.save_org(_o)
+
+
 @t("GET /api/orgs as a visitor lists exactly one org — its own")
 def _():
     r = pub("GET", "/api/orgs")

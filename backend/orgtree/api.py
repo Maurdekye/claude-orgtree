@@ -908,6 +908,70 @@ def org_net(slug: str, request: Request) -> dict[str, Any]:
 _tree_slow_warned: set[str] = set()
 
 
+def _rederive_freeze_reset(node: dict[str, Any],
+                           cache: dict[str, dict[str, Any]]) -> None:
+    """Re-derive a usage-limit freeze's reset from the CURRENT account roster.
+
+    ⚠ THE STAMPED NUMBER DESCRIBES A ROSTER THAT MAY NO LONGER EXIST.
+    `frozen.until` / `until_ts` are written ONCE, at freeze time, from the
+    account that hit the wall (supervisor, the `_ensure_frozen` block). Add a
+    key, remove one, or reorder them and nothing writes them again — user
+    report 2026-08-26: "the refresh time doesn't adapt to account changes or
+    keys being added / removed". The record is the supervisor's to stamp, so
+    the only honest place to CORRECT it is where it is read.
+
+    ⚠ IT REPORTS CAPACITY, NEVER A WAKE — and that is the deeper half of the
+    same bug. The old wording promised "resumes <time>", which is false on
+    any org with `auto_resume` OFF (the default): nothing wakes the node when
+    capacity returns, the operator does. User ruling 2026-08-26 — "off means
+    off" — so a second account appearing is not consent nobody gave. This
+    says what the ROSTER supports and leaves resuming to ▶.
+
+    ⚠ THREE STATES, AND THE THIRD IS THE POINT. When no account carries a
+    real refresh time there is NO T — an auth freeze marks no lane by design
+    — and computing a plausible-looking countdown for it is exactly the
+    invented-T failure the expired-login rule exists to prevent. It says the
+    time is unknown instead. It also never SHORTENS a mark: it reads the
+    marks rather than recomputing a horizon, so it inherits the pool `max()`
+    floor by construction.
+
+    Scope is deliberately narrow — a pure `limit` freeze that is not
+    `limit_locked`. A connection freeze owns its own timer and both consumers
+    render it down a separate branch; a fable weekly lock is not a
+    subscription-pool question and `resolve` cannot describe it.
+
+    `cache` memoises per tier for the life of ONE tree render: `resolve`
+    re-reads the roster file per call, and a large org would otherwise pay
+    that once per frozen node (the O(n²) warning above is already watching
+    this endpoint).
+    """
+    fz = node.get("frozen")
+    if not isinstance(fz, dict):
+        return
+    if not fz.get("limit") or fz.get("connection") or node.get("limit_locked"):
+        return
+    # ⚠ THE PAYLOAD FIELD IS `tier`, NOT `model`. The node DOCUMENT calls it
+    # `model`; `tree()` renames it on the way out. Reading `model` here found
+    # nothing, returned early on every node, and made this whole function a
+    # silent no-op that looked exactly like a working feature — caught before
+    # it shipped only by checking the projection rather than assuming it.
+    tier = str(node.get("tier") or "")
+    if tier not in accounts.TIERS:
+        return
+    if tier not in cache:
+        cache[tier] = accounts.resolve(tier)
+    got = cache[tier]
+    if got.get("available"):
+        fz["until"], fz["until_ts"] = "capacity available — ▶ to resume", None
+        return
+    ts = got.get("refresh_at")
+    if not ts:
+        fz["until"], fz["until_ts"] = "reset time unknown", None
+        return
+    fz["until"] = f"capacity resets {supervisor._reset_label(float(ts))}"
+    fz["until_ts"] = float(ts)
+
+
 @app.get("/api/orgs/{slug}")
 def org_tree(slug: str, request: Request) -> dict[str, Any]:
     try:
@@ -928,7 +992,11 @@ def org_tree(slug: str, request: Request) -> dict[str, Any]:
               f"one-second threshold is crossed; the O(n²) children scan "
               f"is now relevant (see the 2026-08-06 ruling)", flush=True)
 
+    # one roster read per TIER per render, not per frozen node
+    _cap_cache: dict[str, dict[str, Any]] = {}
+
     def annotate(node: dict[str, Any]) -> None:
+        _rederive_freeze_reset(node, _cap_cache)
         st = supervisor.state(slug, node["id"])
         node["busy"] = st["busy"]
         # №12: three states wore one pulse — split them: waiting on a turn

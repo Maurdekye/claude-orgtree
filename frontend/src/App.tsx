@@ -513,7 +513,12 @@ export default function App() {
                             {' · retrying automatically'}</>
                           : <>usage limit hit — {frozen.length} agent
                             {frozen.length > 1 ? 's' : ''} frozen
-                            {until ? ` · resumable ${until}` : ''}</>}
+                            {/* ⚠ NO VERB — the backend re-derives this from
+                                the live roster and it already reads as a
+                                sentence. "resumable <time>" outlived its
+                                truth: with auto_resume off (the default)
+                                nothing resumes on its own. */}
+                            {until ? ` · ${until}` : ''}</>}
                       </span>
                       {!tree.public &&
                         <button className={'auto-resume' + (tree.auto_resume ? ' on' : '')}
