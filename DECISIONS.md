@@ -2406,6 +2406,55 @@ with EVERY tool switch ON: capabilities flow down, so restricting the
 coordinator's switches silently cripples every agent it hires — the
 CHARTER, not the switches, is what keeps it from using them itself.
 
+### D-160 · one hire call carries the whole seat — and the kickoff goes last
+Ruling (user, 2026-08-27): `orgtree_hire` accepts everything a caller would
+otherwise apply in the calls immediately after it — `permission_mode`,
+`effort` and `team_charter` (the three that were retool's alone), the
+`audiences` to grant, and a `kickoff` prompt that actually starts the agent.
+They apply in that order, and **the kickoff is last**: the hire's first turn
+may not begin until its scope, its mode and its audiences are all in place.
+A refusal at ANY step refuses the WHOLE call and leaves no node behind — the
+caller is never told "hired" while quietly getting less than it asked for.
+Every step runs through the same ledger method the standalone tool calls,
+with the same actor, so the shortcut grants exactly what the long way grants
+and refuses exactly what it refuses.
+Why: hiring one agent took four calls (hire, retool, audience grant,
+kickoff message), and in the gaps between them the seat EXISTS but is not yet
+the agent that was described — a hire left at the org's default permission
+mode cannot act at all in a headless turn, so the retool was never optional.
+The saved calls are the smaller half of this. The reason kickoff-last is the
+ruling rather than a detail: a shortcut that started the agent before that
+window closed would produce exactly the broken half-configured agent the
+four-call dance produced, faster and less visibly. Passes D-003 — the legal
+sequence has one unique end state, and nothing is defaulted on the caller's
+behalf (every field is still stated or absent, per D-056's no-defaults rule).
+`orgtree_rehire` carries the same composite, plus `name` — its five-call
+wake (rehire, rename, retool, audience grant, message) collapses the same
+way, and the scope fields it forwards are the whole retool set, since unlike
+hire it takes none of them as arguments of its own.
+Bounds — the ONE asymmetry, and it is deliberate: RENAME is not covered by
+the all-or-nothing guarantee. It moves folders on disk and re-keys the CLI's
+project directory outside any transaction, so it cannot be undone by a later
+refusal. It was included on the user's explicit ruling (2026-08-27) after
+being offered as the one part worth leaving out. It is therefore ordered
+FIRST, which is also forced from both ends: `rename_node` takes the doc lock
+itself and refuses a node that is mid-turn, so a rename after the kickoff
+would refuse exactly when the kickoff succeeded. First is also where it does
+least harm — if a later step refuses, the only residue is a still-archived
+node under its new name, and the refusal must SAY so and name the id to
+retry against. A caller who is told "refused" is owed the truth about what
+nevertheless happened; that obligation is the price of admitting an
+irreversible step into a transactional call, and it is what keeps this from
+being the silent partial failure the rest of the ruling forbids.
+Load-bearing, and the entry is worth nothing without both: (1) the agent
+dispatch loads the org FRESH from disk, mutates it under one lock, and saves
+ONCE at the end only if nothing raised — that single save is what makes
+"refuse the whole call" free rather than a rollback somebody has to write
+and maintain; (2) the ONLY thing that starts an agent's turn is the drive
+list, which is consumed AFTER that save — queued notices never wake anyone
+and the mail signal is UI animation — which is what makes kickoff-last
+structural rather than a matter of which statement comes first.
+
 ---
 
 ## Kiosks & sandboxing

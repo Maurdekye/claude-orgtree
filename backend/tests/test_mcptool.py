@@ -957,6 +957,282 @@ def _():
     assert store.load_org(A).node("aide")["parent"] == "mid"
 
 
+# ---------------------------------------------------------------- D-160
+# The one-call hire. Four checks, and the first is the one that matters: the
+# ORDERING property is the whole reason this feature can be a net loss rather
+# than a net win. A composite that starts the hire's turn before its mode and
+# audiences are applied produces exactly the broken half-configured agent the
+# four-call dance produced — faster, and less visibly.
+
+
+@t("D-160: one orgtree_hire call applies scope, audiences and kickoff")
+def _():
+    DRIVEN.clear()
+    r = MID.ok("orgtree_hire", {
+        "name": "runner", "tier": "haiku", "grant": 0,
+        "charter": "runs things", "add_dirs": [], "org_visibility": "team",
+        "tools": {"bash": False, "web": False, "edit": True,
+                  "subagents": False, "mcp": []},
+        # the three that used to force an immediate orgtree_retool
+        "permission_mode": "plan", "effort": "low",
+        "team_charter": "my team ships small",
+        # mid may delegate its own superior's ear and a live peer's
+        "audiences": ["boss", "peer"],
+        "kickoff": "start on the widget audit"})
+    assert r["node"] == "runner", r
+    assert r["started"] is True, r
+    assert "RUNNING" in r["next_step"], r["next_step"]
+    assert set(r["applied"]) == {"permission_mode", "effort", "team_charter",
+                                 "audience:boss", "audience:peer",
+                                 "kickoff"}, r["applied"]
+    o = store.load_org(A)
+    n = o.node("runner")
+    assert n["scope"]["permission_mode"] == "plan", n["scope"]
+    assert n["scope"]["effort"] == "low", n["scope"]
+    assert n["team_charter"] == "my team ships small", n
+    assert {g["grantor"] for g in o.d["audiences"]
+            if g["grantee"] == "runner"} == {"boss", "peer"}, o.d["audiences"]
+    bodies = [m.get("body") for m in mailbox(A, "runner")]
+    assert any("widget audit" in (b or "") for b in bodies), bodies
+    # ONE wake, not one per audience grant plus one for the kickoff. The
+    # four-call version woke the hire on the audience grant too, with nothing
+    # to do yet.
+    woke = [d for d in DRIVEN if d[1] == "runner"]
+    assert len(woke) == 1, f"the seat was woken {len(woke)}×: {DRIVEN}"
+
+
+@t("D-160: the kickoff turn cannot start before the seat is fully configured")
+def _():
+    # THE ordering check, and it is an instrument rather than an assertion
+    # about source order: it snapshots the PERSISTED doc at the instant the
+    # seat is actually woken. `drive` is consumed after store.save_org, so a
+    # kickoff that ran early — or a mode/audience applied after it — shows up
+    # here as a missing field at wake time. Reordering _seat_finish to kick
+    # off first, or moving the drive inside DOC_LOCK, turns this red.
+    DRIVEN.clear()
+    snap = {}
+    real_send = supervisor.send_message
+
+    def spy(slug, nid, text, command=False, wake=True):
+        # ⚠ the FIRST wake only. Recording every wake made this instrument
+        # lie: under a mutation that woke the seat early, the later legitimate
+        # wake overwrote the snapshot with the good state and the check passed
+        # on broken code. What is being asserted is when the seat's turn FIRST
+        # became possible, so only the first sample can answer it.
+        if nid == "timed" and not snap:
+            # reads the doc off DISK, which is the point — a wake that escapes
+            # the transaction finds the seat not merely half-configured but
+            # absent. Swallow that rather than raising, so the assertions
+            # below render the verdict instead of a confusing 422 from the
+            # hire call itself.
+            d = store.load_org(slug)
+            n = d.nodes.get("timed") or {"scope": {}}
+            snap["mode"] = n["scope"].get("permission_mode")
+            snap["effort"] = n["scope"].get("effort")
+            snap["team_charter"] = n.get("team_charter")
+            snap["auds"] = sorted(g["grantor"] for g in d.d["audiences"]
+                                  if g["grantee"] == "timed")
+            snap["mail"] = [m.get("body") for m in
+                            d.d.get("mail", {}).get("timed", [])]
+        return real_send(slug, nid, text, command=command, wake=wake)
+
+    supervisor.send_message = spy
+    try:
+        MID.ok("orgtree_hire", {
+            "name": "timed", "tier": "haiku", "grant": 0,
+            "charter": "ordering probe", "add_dirs": [],
+            "org_visibility": "team",
+            "tools": {"bash": False, "web": False, "edit": True,
+                      "subagents": False, "mcp": []},
+            "permission_mode": "plan", "effort": "high",
+            "team_charter": "set before the first turn",
+            "audiences": ["boss", "peer"],
+            "kickoff": "go"})
+    finally:
+        supervisor.send_message = real_send
+    assert snap, "the seat was never woken — the kickoff did not start it"
+    assert snap["mode"] == "plan", f"woken at mode {snap['mode']!r}"
+    assert snap["effort"] == "high", f"woken at effort {snap['effort']!r}"
+    assert snap["team_charter"] == "set before the first turn", snap
+    assert snap["auds"] == ["boss", "peer"], \
+        f"woken holding audiences {snap['auds']} — a grant landed after the turn"
+    assert any("go" == (b or "") for b in snap["mail"]), \
+        f"woken without the kickoff in its box: {snap['mail']}"
+
+
+@t("D-160: a refusal anywhere refuses the WHOLE hire — no half-made seat")
+def _():
+    # PARTIAL FAILURE, ruled all-or-nothing. `user` is a target mid genuinely
+    # may not grant (it is not top-level), so the audience step refuses AFTER
+    # org.hire has already created the node in memory. store.save_org is never
+    # reached, so the node is discarded with the unsaved doc.
+    DRIVEN.clear()
+    before = store.load_org(A)
+    free_before = before.free("mid")
+    args = {"name": "ghost", "tier": "haiku", "grant": 0,
+            "charter": "should never exist", "add_dirs": [],
+            "org_visibility": "team",
+            "tools": {"bash": False, "web": False, "edit": True,
+                      "subagents": False, "mcp": []},
+            "permission_mode": "plan",
+            "audiences": ["user"], "kickoff": "you should never read this"}
+    txt = MID.refuse("orgtree_hire", args)
+    assert "reach" in txt or "superior" in txt, txt
+    after = store.load_org(A)
+    assert "ghost" not in after.nodes, "a refused hire left a seat behind"
+    assert after.free("mid") == free_before, \
+        f"credits moved on a refused hire: {free_before} → {after.free('mid')}"
+    assert not after.d.get("mail", {}).get("ghost"), "the kickoff was posted anyway"
+    assert DRIVEN == [], f"a refused hire woke someone: {DRIVEN}"
+    # and the shortcut refuses exactly what the long way refuses — same
+    # ledger call, so this cannot drift apart from the check above
+    MID.ok("orgtree_hire", {**args, "name": "ghost", "audiences": [],
+                            "kickoff": None})
+    MID.refuse("orgtree_audience", {"action": "grant", "from": "ghost",
+                                    "target": "user"})
+
+
+@t("D-160: hire cannot hand out a permission mode the hirer lacks")
+def _():
+    # NO NEW AUTHORITY: mid runs at the org default (acceptEdits), so
+    # bypassPermissions is above its own — refused here exactly as retool
+    # refuses it, and the seat is discarded with the rest of the call.
+    DRIVEN.clear()
+    MID.refuse("orgtree_hire", {
+        "name": "overreach", "tier": "haiku", "grant": 0,
+        "charter": "nope", "add_dirs": [], "org_visibility": "team",
+        "tools": {"bash": False, "web": False, "edit": True,
+                  "subagents": False, "mcp": []},
+        "permission_mode": "bypassPermissions", "kickoff": "go"})
+    assert "overreach" not in store.load_org(A).nodes, \
+        "the seat survived a refused permission_mode"
+    assert DRIVEN == [], DRIVEN
+    # a kickoff that never wakes is a contradiction, not a default to silently
+    # rewrite
+    txt = MID.refuse("orgtree_hire", {
+        "name": "hushed", "tier": "haiku", "grant": 0, "charter": "nope",
+        "add_dirs": [], "org_visibility": "team",
+        "tools": {"bash": False, "web": False, "edit": True,
+                  "subagents": False, "mcp": []},
+        "kickoff": "go", "kickoff_kind": "notice"})
+    assert "notice" in txt, txt
+    assert "hushed" not in store.load_org(A).nodes, txt
+
+
+def _nap(name, **extra):
+    """A fresh haiku report of mid's, hired and immediately archived."""
+    MID.ok("orgtree_hire", {
+        "name": name, "tier": "haiku", "grant": 0, "charter": "naps",
+        "add_dirs": [], "org_visibility": "team",
+        "tools": {"bash": False, "web": False, "edit": True,
+                  "subagents": False, "mcp": []}, **extra})
+    MID.ok("orgtree_retire", {"node": name})
+    assert store.load_org(A).node(name)["state"] != "live"
+
+
+@t("D-160: one orgtree_rehire renames, re-scopes, grants and starts the seat")
+def _():
+    _nap("napper")
+    DRIVEN.clear()
+    r = MID.ok("orgtree_rehire", {
+        "node": "napper", "name": "sprinter",
+        "permission_mode": "plan", "effort": "low",
+        "charter": "runs fast now", "team_charter": "my team ships small",
+        "org_visibility": "self", "audiences": ["boss"],
+        "kickoff": "resume the audit"})
+    assert r["node"] == "sprinter", r
+    assert r["renamed_to"] == "sprinter", r
+    assert r["started"] is True, r
+    assert "RUNNING" in r["next_step"], r["next_step"]
+    o = store.load_org(A)
+    assert "napper" not in o.nodes, "the old id survived the rename"
+    n = o.node("sprinter")
+    assert n["state"] == "live", n["state"]
+    assert n["scope"]["permission_mode"] == "plan", n["scope"]
+    assert n["scope"]["effort"] == "low", n["scope"]
+    assert n["scope"]["org_visibility"] == "self", n["scope"]
+    assert n["charter"] == "runs fast now", n
+    assert n["team_charter"] == "my team ships small", n
+    assert {g["grantor"] for g in o.d["audiences"]
+            if g["grantee"] == "sprinter"} == {"boss"}, o.d["audiences"]
+    assert any("resume the audit" in (m.get("body") or "")
+               for m in mailbox(A, "sprinter")), mailbox(A, "sprinter")
+    woke = [d for d in DRIVEN if d[1] == "sprinter"]
+    assert len(woke) == 1, f"woken {len(woke)}×: {DRIVEN}"
+
+
+@t("D-160: a rehired seat is not woken until the rename and scope have landed")
+def _():
+    # the same instrument as the hire ordering probe, and it additionally
+    # pins the RENAME: the seat must be woken under its NEW id, with the new
+    # id's scope and audiences already on disk. Renaming after the kickoff
+    # cannot work anyway — rename_node refuses a node that is mid-turn — so
+    # this is the check that would catch someone "fixing" that by reordering.
+    _nap("dozer")
+    DRIVEN.clear()
+    snap = {}
+    real_send = supervisor.send_message
+
+    def spy(slug, nid, text, command=False, wake=True):
+        if nid in ("dozer", "racer") and not snap:      # FIRST wake only
+            d = store.load_org(slug)
+            snap["woken_as"] = nid
+            n = d.nodes.get(nid) or {"scope": {}}
+            snap["state"] = n.get("state")
+            snap["mode"] = n["scope"].get("permission_mode")
+            snap["auds"] = sorted(g["grantor"] for g in d.d["audiences"]
+                                  if g["grantee"] == nid)
+            snap["mail"] = [m.get("body") for m in
+                            d.d.get("mail", {}).get(nid, [])]
+            snap["old_id_gone"] = "dozer" not in d.nodes
+        return real_send(slug, nid, text, command=command, wake=wake)
+
+    supervisor.send_message = spy
+    try:
+        MID.ok("orgtree_rehire", {
+            "node": "dozer", "name": "racer", "permission_mode": "plan",
+            "audiences": ["boss", "peer"], "kickoff": "go"})
+    finally:
+        supervisor.send_message = real_send
+    assert snap, "the seat was never woken"
+    assert snap["woken_as"] == "racer", \
+        f"woken as {snap['woken_as']!r} — the rename had not landed"
+    assert snap["old_id_gone"], "the pre-rename id was still on disk at wake"
+    assert snap["state"] == "live", snap
+    assert snap["mode"] == "plan", f"woken at mode {snap['mode']!r}"
+    assert snap["auds"] == ["boss", "peer"], snap["auds"]
+    assert any("go" == (b or "") for b in snap["mail"]), snap["mail"]
+
+
+@t("D-160: a rehire refused AFTER its rename says the rename stuck")
+def _():
+    # THE asymmetry, pinned. Rename moves folders outside any transaction, so
+    # it alone cannot roll back — the user ruled it in anyway (2026-08-27).
+    # What that obliges is honesty: the refusal must name the state the caller
+    # is actually left in, and the id to retry against.
+    _nap("stayer")
+    DRIVEN.clear()
+    txt = MID.refuse("orgtree_rehire", {
+        "node": "stayer", "name": "mover",
+        # mid is not top-level, so it may not hand out a USER audience — this
+        # refuses after the rename has already run
+        "audiences": ["user"], "kickoff": "never read"})
+    assert "RENAME already happened" in txt, txt
+    assert "mover" in txt, txt
+    o = store.load_org(A)
+    # the rename stuck (it is outside the transaction) ...
+    assert "mover" in o.nodes and "stayer" not in o.nodes, sorted(o.nodes)
+    # ... and NOTHING else did
+    assert o.node("mover")["state"] != "live", "it was rehired anyway"
+    assert not [g for g in o.d["audiences"] if g["grantee"] == "mover"]
+    assert not o.d.get("mail", {}).get("mover"), "the kickoff was posted"
+    assert DRIVEN == [], f"a refused rehire woke someone: {DRIVEN}"
+    # and the advertised retry works
+    r = MID.ok("orgtree_rehire", {"node": "mover", "kickoff": "now go"})
+    assert store.load_org(A).node("mover")["state"] == "live"
+    assert r["started"] is True, r
+
+
 @t("orgtree_retool re-scopes a report, changing only the fields passed")
 def _():
     before = store.load_org(A).node("aide")["scope"]["tools"]["edit"]

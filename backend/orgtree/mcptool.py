@@ -563,10 +563,19 @@ TOOLS: list[dict[str, Any]] = [
             "folders, tools and org visibility it needs — you cannot grant "
             "anything you do not hold yourself. Seat costs: haiku 1, sonnet 2, "
             "opus 5, fable 10; seat + grant must fit within YOUR free credits. "
-            "⚠ HIRING DOES NOT START ANYONE. A new hire sits IDLE until it "
-            "receives its first message — the charter is who it is, not a task "
-            "to begin. Follow every hire with an orgtree_message to it saying "
-            "what to do now, or it will sit there doing nothing forever."),
+            "ONE CALL IS ENOUGH: this tool also takes the fields you would "
+            "otherwise have to orgtree_retool in straight afterwards "
+            "(permission_mode — SET IT, see below; effort; team_charter), the "
+            "`audiences` to grant, and a `kickoff` prompt that actually starts "
+            "the agent. They apply in that order, kickoff LAST, so the hire's "
+            "first turn never begins before it is fully the agent you "
+            "described. Any refusal anywhere in the call refuses the WHOLE "
+            "call — a hire that returns is a hire that got everything it "
+            "asked for. ⚠ WITHOUT `kickoff`, HIRING STARTS NO ONE: the hire "
+            "sits IDLE until it receives its first message — the charter is "
+            "who it is, not a task to begin — so either pass `kickoff` here "
+            "or follow up with an orgtree_message, or it will sit there doing "
+            "nothing forever."),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -590,6 +599,62 @@ TOOLS: list[dict[str, Any]] = [
                                    "enum": ["self", "team", "subtree", "full"]},
                 "parent": {"type": "string",
                            "description": "omit to hire directly under yourself"},
+                # D-160 — the retool-only trio, now settable at hire. Same
+                # rules retool enforces (it IS retool underneath): capped at
+                # your own, and you cannot grant what you do not hold.
+                "permission_mode": {
+                    "type": "string",
+                    "enum": ["plan", "default", "acceptEdits",
+                             "bypassPermissions"],
+                    "description":
+                        "how much the hire is asked before acting. SET THIS: "
+                        "the org default is usually 'default', which ASKS — "
+                        "and a headless turn has nobody to answer, so the "
+                        "hire cannot act at all. 'acceptEdits' is the normal "
+                        "working seat; 'plan' is a read-only planning seat; "
+                        "'bypassPermissions' asks nothing and is the only "
+                        "mode that can write a path containing a .claude "
+                        "segment — it removes guardrails on every path on the "
+                        "machine, not just the one you had in mind, so grant "
+                        "it only when the work needs it and say why. CAPPED "
+                        "AT YOUR OWN."},
+                "effort": {"type": "string",
+                           "enum": ["low", "medium", "high", "xhigh", "max", ""],
+                           "description": "thinking effort for the hire — a "
+                                          "cost/quality dial ('' = the CLI "
+                                          "default)"},
+                "team_charter": {"type": "string",
+                                 "description": "standing instructions binding "
+                                                "the hire's OWN subtree — set "
+                                                "it if it will hire in turn"},
+                "audiences": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description":
+                        "audiences to grant the hire on the spot — the same "
+                        "targets orgtree_audience action=grant takes, and "
+                        "enforced by that exact code: 'user' (a direct line "
+                        "to the user's inbox — yours to give only if you are "
+                        "top-level), 'extern' (the ORG INBOX: outside mail "
+                        "reaches holders only), your own id, a live peer of "
+                        "yours, or your direct superior. More than one is "
+                        "fine. A target you could not grant the long way is "
+                        "refused here too, and refuses the whole hire"},
+                "kickoff": {
+                    "type": "string",
+                    "description":
+                        "the hire's FIRST TASK — identical in effect to the "
+                        "orgtree_message you would send it next, but "
+                        "guaranteed to land after its scope, mode and "
+                        "audiences are all in place. Pass it and the agent "
+                        "starts working; omit it and the agent sits idle. "
+                        "Write what to do NOW, not who it is (that is the "
+                        "charter)"},
+                "kickoff_kind": {"type": "string",
+                                 "enum": ["message", "question", "request",
+                                          "decision", "status"],
+                                 "description": "kind of the kickoff mail "
+                                                "(default 'request')"},
             },
             "required": ["name", "tier", "grant", "charter", "add_dirs", "tools",
                          "org_visibility"],
@@ -709,11 +774,76 @@ TOOLS: list[dict[str, Any]] = [
             "instead: fresh session, same role, credits and reports. The one "
             "refusal: a LOST generation (marked so in the chart) has no "
             "surviving transcript — there is no memory to wake, so it can "
-            "never be rehired or consulted."),
-        "inputSchema": {"type": "object",
-                        "properties": {"node": {"type": "string"},
-                                       "grant": {"type": "integer", "minimum": 0}},
-                        "required": ["node"]},
+            "never be rehired or consulted. "
+            "ONE CALL IS ENOUGH (D-160): like orgtree_hire, this also takes "
+            "`name` (rename it as it wakes), the scope fields you would "
+            "otherwise orgtree_retool in (charter, tools, add_dirs, "
+            "org_visibility, permission_mode, effort, team_charter), the "
+            "`audiences` to grant, and a `kickoff` prompt. They apply in that "
+            "order, kickoff LAST, so the agent never starts its turn as "
+            "something other than what you described. ⚠ ONE ASYMMETRY worth "
+            "knowing: everything except `name` is all-or-nothing — a refusal "
+            "discards the lot. A RENAME cannot be, because it moves folders "
+            "on disk outside any transaction; it therefore runs FIRST, and if "
+            "a later step refuses you are told plainly that the node is still "
+            "archived under its new name."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "node": {"type": "string"},
+                "grant": {"type": "integer", "minimum": 0},
+                "name": {"type": "string",
+                         "description": "rename it as it wakes (D-160). The "
+                                        "one step that cannot be rolled back "
+                                        "— it runs first; see the warning "
+                                        "above"},
+                "charter": {"type": "string",
+                            "description": "replace its standing role card"},
+                "add_dirs": {"type": "array",
+                             "items": {"type": "object",
+                                       "properties": {"path": {"type": "string"},
+                                                      "mode": {"type": "string",
+                                                               "enum": ["rw", "ro"]}},
+                                       "required": ["path", "mode"]},
+                             "description": "REPLACES its folder grants when passed"},
+                "tools": TOOLS_SCHEMA,
+                "org_visibility": {"type": "string",
+                                   "enum": ["self", "team", "subtree", "full"]},
+                "permission_mode": {
+                    "type": "string",
+                    "enum": ["plan", "default", "acceptEdits",
+                             "bypassPermissions"],
+                    "description": "how much it is asked before acting — "
+                                   "'default' ASKS, and a headless turn has "
+                                   "nobody to answer, so it cannot act at "
+                                   "all. CAPPED AT YOUR OWN"},
+                "effort": {"type": "string",
+                           "enum": ["low", "medium", "high", "xhigh", "max", ""],
+                           "description": "thinking effort ('' = CLI default)"},
+                "team_charter": {"type": "string",
+                                 "description": "standing instructions binding "
+                                                "its own subtree"},
+                "audiences": {
+                    "type": "array", "items": {"type": "string"},
+                    "description": "audiences to grant it — the same targets "
+                                   "orgtree_audience action=grant takes "
+                                   "('user', 'extern' for the org inbox, "
+                                   "your own id, a live peer, your direct "
+                                   "superior), enforced by that exact code"},
+                "kickoff": {"type": "string",
+                            "description": "its first task on waking — same "
+                                           "effect as the orgtree_message you "
+                                           "would send next, but guaranteed "
+                                           "to land after everything else. "
+                                           "A rehire with mail already "
+                                           "waiting wakes anyway"},
+                "kickoff_kind": {"type": "string",
+                                 "enum": ["message", "question", "request",
+                                          "decision", "status"],
+                                 "description": "kind of the kickoff mail "
+                                                "(default 'request')"},
+            },
+            "required": ["node"]},
     },
     {
         "name": "orgtree_list_orgs",

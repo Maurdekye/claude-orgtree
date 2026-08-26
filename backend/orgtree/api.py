@@ -3248,7 +3248,14 @@ class AgentCall(Body):
 _ARG_STRS = ("node", "to", "from", "target", "grantee", "parent", "new_parent",
              "name", "tier", "kind", "body", "action", "status", "summary",
              "reason", "charter", "team_charter", "org_visibility", "effort",
-             "path")
+             "path",
+             # D-160: the one-call hire's own text arguments. `permission_mode`
+             # joins them at the same time — it has always been text-only, and
+             # retool simply never had it normalised, so a container landed in
+             # the clamp instead of 422ing at the door like every sibling.
+             # `audiences` is deliberately ABSENT: it is a list (see
+             # _seat_finish, which type-checks it itself).
+             "permission_mode", "kickoff", "kickoff_kind")
 
 
 def _norm_args(a: dict[str, Any]) -> dict[str, Any]:
@@ -3304,6 +3311,144 @@ def _arg_int(a: dict[str, Any], key: str, default: int) -> int:
 # the @net: attachment cap — same value as the user-upload per-file cap
 # (deliberately its own name; see the anchor note at the use site)
 _NET_ATT_MAX = 25 * 1048576
+
+
+# The scope fields each composite forwards to set_scope. `orgtree_hire`
+# already takes dirs/tools/visibility/charter as hire arguments, so it carries
+# only the three that used to be retool's alone; `orgtree_rehire` takes none of
+# them, so it carries the lot — which is what collapses the five-call wake
+# (rehire, rename, retool, audience grant, message) into one.
+_SEAT_SCOPE_HIRE = ("permission_mode", "effort", "team_charter")
+_SEAT_SCOPE_REHIRE = _SEAT_SCOPE_HIRE + ("charter", "org_visibility", "tools",
+                                         "add_dirs")
+
+
+def _seat_finish(org: Org, slug: str, actor: str, nid: str, a: dict[str, Any],
+                 result: dict[str, Any], drive: list[str],
+                 fields: tuple[str, ...] = _SEAT_SCOPE_HIRE) -> None:
+    """D-160 — the one-call hire, and the one-call rehire. Everything an agent
+    used to do in the calls AFTER `orgtree_hire` / `orgtree_rehire`: the
+    retool-only scope fields, the audience grants, and the kickoff that
+    actually starts the seat.
+
+    User request 2026-08-27: hiring one agent took four calls (hire, retool,
+    audience grant, kickoff message), and between them the seat exists but is
+    not yet the agent that was described — a hire left at the org's default
+    permission mode cannot act at all in a headless turn. Rehiring one took
+    five, the extra being a rename.
+
+    THREE PROPERTIES, in the order they matter.
+
+    1. KICKOFF IS LAST, structurally rather than by convention. Nothing here
+       starts a turn: `_notify` only queues (it never wakes, §7.4) and
+       `mail_notify` is a UI animation signal with no state on it. The ONE
+       wake path is `drive`, which `agent_call` consumes AFTER `store.save_org`
+       and outside DOC_LOCK. So the seat's mode, scope and audiences are all
+       persisted before its first turn can possibly begin. `audience_grant`
+       wants to drive the grantee itself; we collect that instead of letting
+       it through, and append the seat to `drive` exactly ONCE, here, at the
+       tail — which also spares a fresh hire the pointless "Audience granted"
+       wake the four-call version gave it.
+
+    2. ALL-OR-NOTHING on partial failure. The caller is never told "hired"
+       while quietly getting less than it asked for. This needs no new
+       machinery: the whole dispatch already runs inside DOC_LOCK on an org
+       freshly parsed from disk by `store.load_org`, and `store.save_org` is
+       reached only if nothing raised. A bad audience target or an unknown
+       folder in a later step therefore 422s with the failed step NAMED, and
+       the node that `org.hire` created moments earlier is discarded with the
+       unsaved doc — it never existed. Preferred over validating up front,
+       which would mean a SECOND copy of each check sitting beside the real
+       one, free to drift out of agreement with it.
+
+    3. NO NEW AUTHORITY. Every step calls the same ledger method the
+       standalone tool calls, with the same `actor` — `set_scope` for the
+       scope fields (its own strict `_actor_cap` clamp caps permission_mode at
+       the caller's own and refuses granting what the caller lacks),
+       `audience_grant` for every target (which is also what makes 'user',
+       a live peer and 'extern' the vocabulary here — it is that method's,
+       not a second one invented for the shortcut), and `post_mail` for the
+       kickoff. A shortcut that granted something the long way refuses would
+       be a privilege escalation wearing a convenience's clothes.
+    """
+    applied: list[str] = []
+    kw = {f: a[f] for f in fields if a.get(f) is not None}
+    if "add_dirs" in kw:
+        # the same sandbox path translation the standalone calls do — a
+        # container path means nothing to the host ledger
+        kw["add_dirs"], ddw = supervisor.sandbox_dirs_to_host(org, kw["add_dirs"])
+        result.setdefault("warnings", []).extend(ddw)
+    if kw:
+        sres = org.set_scope(actor, nid, **kw)
+        result.setdefault("warnings", []).extend(sres.get("warnings") or [])
+        applied.extend(sorted(kw))
+    # `audiences` mirrors orgtree_audience's target vocabulary exactly: 'user',
+    # a named live agent, or 'extern' for the org inbox. A plain string is
+    # accepted as the one-element case — an LLM writes that far more readily
+    # than a one-element array, and refusing it teaches nothing.
+    raw_aud = a.get("audiences")
+    if raw_aud is None or raw_aud == "":
+        targets: list[str] = []
+    elif isinstance(raw_aud, str):
+        targets = [raw_aud]
+    elif isinstance(raw_aud, (list, tuple)):
+        # a container of containers would reach audience_grant as an
+        # unhashable key; every element has to be a plain scalar
+        for t in cast("list[Any]", raw_aud):
+            if isinstance(t, (dict, list, tuple, set)):
+                raise LedgerError(
+                    f"each audiences entry must be text, not "
+                    f"{type(cast('object', t)).__name__}")
+        targets = [str(t) for t in cast("list[Any]", raw_aud)]
+    else:
+        raise LedgerError(
+            "audiences must be a list of targets ('user', a live agent's id, "
+            "or 'extern' for the org inbox), or a single one as text")
+    seat_drive = False
+    for tgt in targets:
+        if not str(tgt).strip():
+            raise LedgerError("audiences entries must each name a target: "
+                              "'user', a live agent's id, or 'extern' "
+                              "(the org inbox)")
+        ares = org.audience_grant(actor, nid, str(tgt).strip())
+        for d in ares.pop("drive", []):
+            # the grantee's own wake is folded into the single tail drive
+            # below; anyone ELSE the grant woke is driven normally
+            if d == nid:
+                seat_drive = True
+            elif d not in drive:
+                drive.append(d)
+        result.setdefault("warnings", []).extend(ares.get("warnings") or [])
+        applied.append(f"audience:{tgt}")
+    kickoff = a.get("kickoff")
+    if kickoff is not None and str(kickoff).strip():
+        kkind = str(a.get("kickoff_kind") or "request")
+        if kkind == "notice":
+            # the same refusal orgtree_message makes, for the same reason and
+            # then some: 'notice' is the marker every no-wake rule keys on, so
+            # a kickoff wearing it would be driven here yet skipped by every
+            # rehire and reconcile — a first turn that fires once and can
+            # never be re-delivered. A kickoff exists to wake; the two are
+            # contradictory, so say so rather than quietly rewriting it.
+            raise LedgerError(
+                "kickoff_kind 'notice' contradicts a kickoff — a notice is "
+                "mail that deliberately never wakes anyone, and the whole "
+                "point of kickoff is to start the hire's first turn. Use "
+                "'request' (the default), or drop kickoff and send an "
+                "orgtree_send_notice afterwards")
+        # identical in effect to the orgtree_message the caller used to send
+        # by hand, and deliberately the LAST mutation in the composite
+        m = org.post_mail(actor, nid, str(kickoff), kkind)
+        result.setdefault("warnings", []).extend(m.get("warnings") or [])
+        mail_notify(slug, actor, nid)
+        seat_drive = True
+        applied.append("kickoff")
+    if seat_drive and nid not in drive:
+        drive.append(nid)
+    if applied:
+        result["applied"] = applied
+    result["started"] = seat_drive
+    return None
 
 
 @app.post("/api/agent")
@@ -3389,6 +3534,38 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
     # target is run ONCE, outside the lock, and the result rides back on the
     # create
     smoke_req: tuple[str, str, str, Any, Any] | None = None
+    # D-160: a rehire that also RENAMES does the rename FIRST, here, before the
+    # lock — and the ordering is forced from both ends, not chosen.
+    #
+    # It cannot go later: `rename_node` takes DOC_LOCK itself and the lock is
+    # not reentrant, and it REFUSES a node that is mid-turn — so a rename
+    # after the kickoff would refuse exactly when the kickoff worked.
+    # It cannot go inside: same lock.
+    # So it goes first, which is also where it does least harm. The user
+    # ruled (2026-08-27) that rename joins this call despite being the one
+    # step that cannot be rolled back — moving folders on disk is outside any
+    # transaction. Putting it first shrinks the irreversible window to its
+    # minimum: if a LATER step refuses, the only residue is a still-archived
+    # node under its new name, and the refusal says so in those words rather
+    # than leaving the caller to discover it. Nothing else has happened, and
+    # the seat has certainly not woken.
+    if body.tool == "orgtree_rehire" and str(a.get("name") or "").strip():
+        try:
+            rn = supervisor.rename_node(body.org, str(a.get("node") or ""),
+                                        str(a.get("name") or ""),
+                                        actor=body.node)
+        except LedgerError as e:
+            raise HTTPException(422, f"rename refused, so nothing was "
+                                     f"rehired: {e}")
+        _new = str(rn.get("node") or a.get("node") or "")
+        # a `name` that slugs to the id it already has is a no-op the ledger
+        # returns early on — nothing moved, so it must not arm the
+        # "the rename already happened" warning below
+        _renamed_to: str | None = _new if _new != str(a.get("node") or "") else None
+        _rename_warnings: list[str] = list(rn.get("warnings") or [])
+        a = dict(a, node=_new)
+    else:
+        _renamed_to, _rename_warnings = None, []
     with store.DOC_LOCK:
         try:
             org = store.load_org(body.org)
@@ -3716,18 +3893,30 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                                   charter=a.get("charter"))
                 if dwarns:
                     result.setdefault("warnings", []).extend(dwarns)
+                if result.get("node"):
+                    # D-160: the scope fields, the audience grants and the
+                    # kickoff — all of it inside this same transaction, with
+                    # the kickoff strictly last. See _seat_finish.
+                    _seat_finish(org, body.org, body.node,
+                                 str(result["node"]), a, result, drive)
                 # observed on another install (user report 2026-08-02): an
                 # agent hires, writes a thorough charter, and considers the
                 # delegation DONE — the hire then sits idle forever, because
                 # nothing in the tree self-starts. The charter is identity;
                 # mail is what runs a turn. Said in the RESULT because that is
                 # what the hiring agent reads next, not the tool description
-                # it read once.
+                # it read once. D-160: a hire that carried a `kickoff` HAS
+                # been started, so the nag would now be a lie — it says what
+                # actually happened instead.
                 if result.get("node"):
                     result["next_step"] = (
+                        f'"{result["node"]}" is hired and RUNNING — its first '
+                        f'turn starts on your kickoff. Nothing further needed.'
+                        if result.get("started") else
                         f'"{result["node"]}" is hired and IDLE. Hiring does not '
                         f'start it — send it an orgtree_message now saying what '
-                        f'to do, or it will never run.')
+                        f'to do (or pass `kickoff` to this tool next time), or '
+                        f'it will never run.')
             elif body.tool == "orgtree_retool":
                 # effort joins retool (ceiling spec §6): a cost dial, so a
                 # superior may set it on REPORTS — never on itself (set_scope's
@@ -3767,6 +3956,37 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                                     None if _g is None or _g == ""
                                     else _arg_int(a, "grant", 0))
                 drive.extend(result.pop("drive", []))
+                # D-160: the other four calls. The rename already happened
+                # above (it cannot share this lock); the scope, the audiences
+                # and the kickoff all ride this transaction, kickoff last. A
+                # woken node is already in `drive` from the rehire itself —
+                # _seat_finish appends only if absent, so a rehire that had
+                # queued mail AND a kickoff still runs exactly one turn.
+                #
+                # ⚠ the id comes from `a`, NOT from `result`: rehire returns
+                # {cost, warnings, drive} and has never carried a `node` key.
+                # Keying the composite off result["node"] would have made
+                # every one of these steps silently skip. `a["node"]` is
+                # already the post-rename id (rebound above).
+                _rid = str(a.get("node") or "")
+                result["node"] = _rid
+                _seat_finish(org, body.org, body.node, _rid, a, result, drive,
+                             fields=_SEAT_SCOPE_REHIRE)
+                if _renamed_to:
+                    result["renamed_to"] = _renamed_to
+                    result.setdefault("warnings", []).extend(_rename_warnings)
+                # the drive list, not `started`: a rehire wakes the node by
+                # itself when mail was waiting for it, and saying "IDLE" over
+                # a turn that is about to run would be the same lie in the
+                # other direction
+                _woke = str(result.get("node") or "") in drive
+                result["started"] = _woke
+                result["next_step"] = (
+                    f'"{result.get("node")}" is back and RUNNING — nothing '
+                    f'further needed.' if _woke else
+                    f'"{result.get("node")}" is back and IDLE. Send it an '
+                    f'orgtree_message, or pass `kickoff` to this tool next '
+                    f'time, or it will sit there.')
             elif body.tool == "orgtree_move":
                 result = org.move(body.node, a.get("node", ""),
                                   a.get("new_parent") or None)
@@ -3874,6 +4094,19 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                     drive.append(str(routed))
             _kiosk_cap_check(org)
         except LedgerError as e:
+            # D-160: everything inside this block is discarded with the
+            # unsaved doc, so "refused" normally means "nothing happened".
+            # The ONE exception is a rehire's rename, which already ran above
+            # and outside any transaction — say so plainly, and name the id to
+            # retry against, rather than letting the caller retry under a name
+            # that no longer exists and meet a baffling "no such node".
+            if _renamed_to:
+                raise HTTPException(
+                    422, f'{e}  ⚠ The RENAME already happened and cannot be '
+                         f'undone here: the node is still archived, now named '
+                         f'"{_renamed_to}". Nothing else was applied and it '
+                         f'was not started — retry against "{_renamed_to}", '
+                         f'without `name`.')
             raise HTTPException(422, str(e))
         store.save_org(org)
     if smoke_req is not None:
