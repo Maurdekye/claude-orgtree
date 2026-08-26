@@ -5987,7 +5987,17 @@ class Org:
                                          # connection freeze, and a record
                                          # carrying both flags waits on the
                                          # auto_resume toggle
-                                         "connection", "limit")},
+                                         "connection", "limit",
+                                         # D-156: WHY, when the answer is not
+                                         # "capacity ran out". "auth" = the
+                                         # credential was rejected, so the
+                                         # record is a usage-limit freeze in
+                                         # SHAPE only — the count includes it
+                                         # (▶ really will act on it) but the
+                                         # words "usage limit" do not describe
+                                         # it. A reader that cannot see this
+                                         # field cannot help over-claiming.
+                                         "cause")},
                             # №41: freeze kinds are commutative — surface
                             # whichever reason(s) exist without overwriting
                             "error": " · ".join(

@@ -179,6 +179,15 @@ export interface TreeFrozen {
   /** D-122: present so the banner can tell a PURE connection freeze (always
    *  self-retries) from a record carrying both kinds (waits on the toggle) */
   limit?: boolean | null
+  /** D-156: WHY, when the answer is not "capacity ran out". `"auth"` = the
+   *  credential was rejected, so this is a usage-limit freeze in SHAPE only.
+   *  The auto-resume timer refuses it; ▶ still resumes it, which is why
+   *  `resumable` is true for it and the count includes it.
+   *
+   *  ⚠ So "usage limit hit — N agents frozen" over-claims whenever one of
+   *  the N has `cause === "auth"`: the COUNT is right and the WORDS are not.
+   *  This field is what a label branch needs to say so. */
+  cause?: string | null
 }
 
 // ledger.py tree(): one entry of the node's lineage stack (§8)

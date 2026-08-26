@@ -950,6 +950,17 @@ def _rederive_freeze_reset(node: dict[str, Any],
         return
     if not fz.get("limit") or fz.get("connection") or node.get("limit_locked"):
         return
+    # ⚠ AN AUTH FREEZE IS A LIMIT FREEZE IN SHAPE ONLY (D-156), and without
+    # this it lands here and gets its label REWRITTEN. The freeze deliberately
+    # cleared `until_ts` and said "credential rejected — replace it, then
+    # resume"; re-deriving would replace that with "capacity available", which
+    # is TRUE and completely beside the point — the credential is what is
+    # broken, and the operator would be told the opposite of what to fix.
+    # (This was only reachable once `cause` reached the payload at all: the
+    # projection dropped it, so this function could not see it and quietly
+    # clobbered the one label that says what to do.)
+    if fz.get("cause") == "auth":
+        return
     # ⚠ THE PAYLOAD FIELD IS `tier`, NOT `model`. The node DOCUMENT calls it
     # `model`; `tree()` renames it on the way out. Reading `model` here found
     # nothing, returned early on every node, and made this whole function a

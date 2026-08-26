@@ -509,6 +509,73 @@ def _():
             store.save_org(_o)
 
 
+@t("tree · an AUTH freeze reaches the payload and keeps its own label")
+def _():
+    """D-156 exposes `cause` so a reader can tell a rejected credential from
+    exhausted capacity. Two things are asserted, and the second is a bug the
+    first one uncovered:
+
+    · `cause` survives `ledger.tree()`'s fixed key list at all. That list
+      rebuilds `frozen` field by field, so anything not named there is
+      silently dropped — `spend` still is.
+    · the re-derivation LEAVES AN AUTH FREEZE ALONE. An auth freeze carries
+      `limit: True`, so it walked straight into `_rederive_freeze_reset` and
+      had "credential rejected — replace it, then resume" overwritten with a
+      capacity statement — true, and the opposite of what to fix. It was
+      unreachable until `cause` reached the payload, because the projection
+      dropped the only field that could tell them apart."""
+    import json as _json
+    from orgtree import accounts
+
+    def find(node, nid):
+        if node.get("id") == nid:
+            return node
+        for kid in (node.get("children") or node.get("roots") or []):
+            hit = find(kid, nid)
+            if hit:
+                return hit
+        return None
+
+    AUTH_LABEL = "credential rejected — replace it, then resume"
+    with store.DOC_LOCK:
+        _o = store.load_org(K)
+        _n = _o.nodes[NID]
+        keep_fz, keep_model = _n.get("frozen"), _n["model"]
+        _n["frozen"] = {"at": "2026-01-01T00:00:00Z", "until": AUTH_LABEL,
+                        "until_ts": None, "limit": True, "cause": "auth",
+                        "reset_src": "auth"}
+        _n["model"] = "opus"
+        store.save_org(_o)
+    keep_doc = _json.loads(_json.dumps(accounts.load()))
+    try:
+        # a roster with capacity — so an unguarded re-derivation WOULD
+        # rewrite the label to "capacity available". That is what makes the
+        # assertion below mean something.
+        doc = _json.loads(_json.dumps(keep_doc))
+        doc["keys"] = [{"id": "kFREE01", "account_uuid": None}]
+        doc["usage_refreshes"] = {}
+        accounts.save(doc)
+        r = call(ADMIN, "GET", f"/api/orgs/{K}")
+        ok200(r, "admin tree")
+        fz = find(r.json, NID)["frozen"]
+        assert fz.get("cause") == "auth", (
+            "`cause` did not survive tree()'s projection — the frontend "
+            "cannot tell an auth freeze from a capacity one, and the banner "
+            "counts it under the words 'usage limit hit'")
+        assert fz["until"] == AUTH_LABEL, (
+            "the re-derivation overwrote an AUTH freeze's label. The freeze "
+            "cleared until_ts and said what to do; this replaced it with a "
+            "capacity statement that is true and beside the point")
+        assert fz["until_ts"] is None, fz
+    finally:
+        accounts.save(keep_doc)
+        with store.DOC_LOCK:
+            _o = store.load_org(K)
+            _o.nodes[NID]["frozen"] = keep_fz
+            _o.nodes[NID]["model"] = keep_model
+            store.save_org(_o)
+
+
 @t("tree · a CONNECTION freeze keeps its own stamped reset, untouched")
 def _():
     """The re-derivation is scoped to the subscription pool. A connection
