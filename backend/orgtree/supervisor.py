@@ -372,7 +372,76 @@ def _result_detail(res: dict[str, Any]) -> str:
     return " · ".join(bits)
 
 
-def _for_the_record(err_blob: str, res: dict[str, Any]) -> str:
+#: the CLI's own typed vocabulary for an API failure, read out of the shipped
+#: binary 2026-08-25 (chunked byte scan — `strings` is not installed on this
+#: machine; D-147 records the method). It dispatches on these exact strings:
+#:   authentication_failed · oauth_org_not_allowed · account_on_hold ·
+#:   billing_error · rate_limit · model_not_found · invalid_request ·
+#:   server_error · max_output_tokens · dlp_request_denied · unknown
+#: Only the auth FAMILY is named here, because only it is worth a label the
+#: operator reads as "go and do something": every member of it stays broken
+#: until a human acts (D-149). `rate_limit` is deliberately absent — the
+#: freeze machinery owns that, and duplicating it here would give one failure
+#: two voices.
+_AUTH_ERROR_CODES = frozenset({
+    "authentication_failed", "oauth_org_not_allowed", "account_on_hold",
+})
+
+
+def _note_api_error(into: dict[str, str], code: Any, text: Any) -> None:
+    """Remember the FIRST API error the stream showed. RECORDING ONLY.
+
+    ⚠ TWO CARRIERS SHARE ONE VOCABULARY, AND ONLY ONE OF THEM IS MEASURED.
+    · MEASURED 2026-08-25, in the stdout stream, against the shipped CLI
+      (loopback 401 + fabricated key, no real credential): the code arrives on
+      `{"type":"system","subtype":"api_retry","error":"authentication_failed"}`
+      — one event per retry, streamed live, BEFORE any outcome.
+    · SEEN IN THE TRANSCRIPT FILE ONLY, from the real incident: a synthetic
+      assistant message with `isApiErrorMessage: true` carrying the same
+      `error` field plus the human sentence. I have NOT confirmed that carrier
+      in the stream, so this reads BOTH and neither is load-bearing alone.
+    Do not collapse the two on the assumption they are the same event — a
+    branch written against the assistant message alone was the shape that
+    would have matched nothing, silently, and it was only caught by measuring.
+
+    FIRST WINS: retries repeat the same code, and the first one is the
+    originating cause rather than the last echo of it."""
+    code, text = str(code or "").strip(), str(text or "").strip()
+    if not code and not text:
+        return
+    if into.get("code") or into.get("text"):
+        return
+    if code:
+        into["code"] = code[:60]
+    if text:
+        into["text"] = text[:300]
+
+
+def _stream_error_detail(stream_err: dict[str, str]) -> str:
+    """`stream_api_err` rendered for the durable record, or "".
+
+    The human sentence is preferred and the typed code rides alongside it: the
+    sentence is what tells the user WHICH remedy ("run `claude auth login`"),
+    while the code is what survives a wording change upstream. Neither is
+    trusted to be present."""
+    code, text = stream_err.get("code", ""), stream_err.get("text", "")
+    if not (code or text):
+        return ""
+    detail = text or f"the CLI reported {code}"
+    if code and text:
+        detail = f"{detail} [{code}]"
+    if code in _AUTH_ERROR_CODES or "authenticate" in text.lower():
+        # the same label the 401 path uses, so one cause reads one way
+        # wherever it is discovered — but say what to DO, because unlike a
+        # rejected key this one is fixed from a terminal in ten seconds
+        detail += ("  ⚠ AUTHENTICATION FAILURE — this machine's login is not "
+                   "usable; it stays broken until a human runs "
+                   "`claude auth login`. No amount of retrying will fix it.")
+    return detail
+
+
+def _for_the_record(err_blob: str, res: dict[str, Any],
+                    stream_err: dict[str, str] | None = None) -> str:
     """`err_blob` with the CLI's own reason appended, for the DURABLE RECORD
     ONLY — `last_error` and the `turn_error_log` row.
 
@@ -396,6 +465,16 @@ def _for_the_record(err_blob: str, res: dict[str, Any]) -> str:
     if not err_blob:
         return err_blob
     detail = _result_detail(res)
+    # ⚠ THE STREAM IS A FALLBACK, NEVER AN OVERRIDE (user incident
+    # 2026-08-25). It is consulted ONLY when the result event told us nothing
+    # — which is exactly the blind spot: the failing turn had no result event
+    # at all, so `res` was empty and every reader of it abstained. If the CLI
+    # DID account for itself, that account wins and this is not consulted, so
+    # a stale early retry cannot contradict a real outcome, and a turn that
+    # recovered from an auth blip and then died of something else is reported
+    # as what actually killed it.
+    if not detail and stream_err:
+        detail = _stream_error_detail(stream_err)
     # ⚠ the duplicate guard runs on the REASON, and BEFORE the label below.
     # Appending the label first makes `detail` differ from what is already in
     # the blob, so this guard stops matching and the whole reason is recorded
@@ -3387,6 +3466,18 @@ def _run_one_turn(slug: str, nid: str,
             # this: everything else that fills `synth_limit_txt` is the CLI's
             # own `<synthetic>` limit record, which an agent cannot forge.
             agent_authored = False
+            # THE API ERROR THE WIRE SAW, when the result event never comes
+            # (user incident 2026-08-25, `limit-test`'s first turn). The CLI's
+            # OAuth refresh failed locally — before any authenticated request —
+            # so there was no HTTP status, NO RESULT EVENT AT ALL, and
+            # `_result_detail`/`_looks_like_auth_failure` (which read `res`)
+            # had nothing to read. The operator was shown "the CLI exited 1
+            # without writing anything to stderr", which reads like an orgtree
+            # bug, while the real reason — "Failed to authenticate: OAuth
+            # session expired and could not be refreshed" — was in the CLI's
+            # own transcript the whole time. RECORDING ONLY: this feeds
+            # `_for_the_record` and nothing else. See D-149.
+            stream_api_err: dict[str, str] = {}
             turn_occ = 0        # context-size HIGH-WATER over the turn's calls
                                 # (per-message point-in-time usage — see the
                                 # max() site; №24 was about the result event)
@@ -3589,6 +3680,24 @@ def _run_one_turn(slug: str, nid: str,
                             live_row(slug, nid, {"kind": "text",
                                                  "text": body[:2000]})
                         continue
+                    if (ev.get("type") == "system"
+                            and ev.get("subtype") == "api_retry"):
+                        # ⚠ THE ONE CARRIER MEASURED IN THE STREAM (2026-08-25,
+                        # loopback 401 + fabricated key against the shipped
+                        # CLI): `{"type":"system","subtype":"api_retry",
+                        # "error":"authentication_failed"}`, one per retry,
+                        # live, BEFORE any outcome. That timing is the point —
+                        # the same measurement showed EIGHT retries and still
+                        # going at 100 s, so a turn dying of auth spends a long
+                        # while looking merely slow. RECORDING ONLY: nothing
+                        # here retries, freezes, routes or switches accounts.
+                        # An auth break is not a capacity fact and must never
+                        # reach `usage_refreshes` — there is no reset time to
+                        # write, and inventing one makes the lane silently
+                        # return, still broken (D-149).
+                        _note_api_error(stream_api_err, ev.get("error"),
+                                        ev.get("message") or ev.get("content"))
+                        continue
                     if ev.get("type") == "system" and ev.get("subtype") == "init":
                         # №14: the CLI's own resolution of what this turn can
                         # actually do — tools, MCP server health, model, mode
@@ -3699,6 +3808,18 @@ def _run_one_turn(slug: str, nid: str,
                                 if isinstance(b, dict))
                             if _looks_like_usage_limit(_t):
                                 synth_limit_txt = _t.strip()[:400]
+                            # …and the SAME message carries a typed `error`
+                            # for everything that is NOT a usage limit — the
+                            # branch this seam was one short of (D-149). The
+                            # limit path above is untouched and still wins its
+                            # own text; this only records what would otherwise
+                            # be thrown away. `error` sits on the EVENT in the
+                            # transcript records I read it from, so both
+                            # levels are tried.
+                            elif ev.get("error") or _msg.get("error"):
+                                _note_api_error(
+                                    stream_api_err,
+                                    ev.get("error") or _msg.get("error"), _t)
                         u = ev.get("message", {}).get("usage") or {}
                         t = (u.get("input_tokens", 0)
                              + u.get("cache_read_input_tokens", 0)
@@ -4663,7 +4784,7 @@ def _run_one_turn(slug: str, nid: str,
                             f"turn failed after {run} attempts ({kind_txt}) "
                             f"— it is not passing; the agent is no longer "
                             f"frozen, so send it anything to try again: "
-                            f"{_for_the_record(err_blob, res)[:300]}")
+                            f"{_for_the_record(err_blob, res, stream_api_err)[:300]}")
                 # DOOR 2 of 2: the terminal bucket. Everything retryable was
                 # claimed by a branch above — a usage limit froze, a filter
                 # halted, a connection drop or a died-in-flight went to the
@@ -4694,9 +4815,8 @@ def _run_one_turn(slug: str, nid: str,
                 # becomes `last_error` and the `turn_error_log` row, and it is
                 # AFTER every `_looks_like_*` call site, so the widened text
                 # cannot reach a predicate (OPEN-01 step 1, recording only)
-                raise RuntimeError(
-                    f"turn failed: "
-                    f"{_for_the_record(err_blob, res)[:400] or 'no output'}")
+                _rec = _for_the_record(err_blob, res, stream_api_err)[:400]
+                raise RuntimeError(f"turn failed: {_rec or 'no output'}")
             st["last_error"] = None
             st["turns_run"] += 1
             # ⚠ ONLY A COMPLETED TURN CLEARS THE SWITCH BOUND — the same

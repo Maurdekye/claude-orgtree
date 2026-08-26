@@ -3105,6 +3105,99 @@ by default and every rAF inside one chunk reads the same mocked clock, so the
 springs integrate once per CHUNK: `advance(3000)` is about 0.4s of spring
 time, not 3s, and a spring mid-flight then looks exactly like one that never
 converges.
+whose node never arrives opens nothing), §4 pins the scope decision above.
+Negative control run: with the source reverted and the tests kept, §1 fails
+and §2–§4 stay green.
+### D-149 · an auth failure is REPORTED, never routed around
+
+Ruling (user incident 2026-08-25, assessment requested by coordinator and
+accepted in full): when a turn dies because this machine's login will not
+authenticate, orgtree **names the cause loudly and stops**. It does not fail
+over to a fallback key, and it never writes the failure into `usage_refreshes`.
+
+What happened: a haiku seat's first turn died, and the operator was shown, in
+full, `the CLI exited 1 without writing anything to stderr`. The real reason —
+`Failed to authenticate: OAuth session expired and could not be refreshed` —
+sat in the CLI's own transcript the whole time. The user worked it out and
+re-logged in by hand. That message is worse than silence: it reads like an
+orgtree bug, so it points away from the one action that fixes it.
+
+**Why the existing machinery could not see it, and why that is not a bug in
+it.** `_result_detail` and `_looks_like_auth_failure` read the RESULT EVENT on
+purpose — a number cannot accidentally contain "usage limit reached" (D-133,
+and see their docstrings). But this failure emitted **no result event at all**
+and no HTTP status: the OAuth refresh failed locally, before any authenticated
+request went out. Every reader of `res` abstained, and an abstention reads
+exactly like "nothing was wrong". The fix therefore reads the STREAM, and adds
+a route rather than widening the existing one.
+
+⚠ **TWO CARRIERS SHARE ONE TYPED VOCABULARY, AND ONLY ONE IS MEASURED IN THE
+STREAM.** The CLI hands us a typed `error` code, not prose — read out of the
+shipped binary by chunked byte scan (D-147's method; `strings` is still not
+installed here): `authentication_failed`, `oauth_org_not_allowed`,
+`account_on_hold`, `billing_error`, `rate_limit`, `model_not_found`,
+`invalid_request`, `server_error`, `max_output_tokens`, `dlp_request_denied`,
+`unknown`. Measured 2026-08-25 against the shipped CLI (loopback 401 +
+fabricated key, no real credential): it arrives on
+`{"type":"system","subtype":"api_retry","error":"authentication_failed"}`, one
+event per retry, live, **before any outcome**. The real incident's carrier was
+different — a synthetic assistant message with `isApiErrorMessage: true` — and
+that one is confirmed only in the transcript file. Both are read, and the site
+says which half is measured and which is inferred. **The prediction was wrong
+about the carrier**: a branch written against the assistant message alone
+would have matched nothing, silently, and only running the measurement caught
+it. Do not collapse the two.
+
+**Why not route around it** (the question coordinator asked, and the reasoning
+matters more than the answer). The worry was that we could not tell a
+temporarily-expired session from a permanently revoked one. The truth inverts
+that: **every member of the auth family is permanent until a human acts**, so
+there is no temporary case to misclassify — which makes routing worse, not
+safer. Failing over on a usage limit buys real working time, because a limit
+clears itself. Failing over on an auth break buys only **delay before the user
+finds out**, and pays the fallback's capacity for it. Even the narrow
+route-once-and-warn version was declined: *"it kept working" is the single most
+reliable reason people don't act on alarms.* An auth failure costs no tokens,
+so stopping wastes nothing.
+
+⚠ **AND IT MUST NEVER BECOME A CAPACITY MARK.** `usage_refreshes` means "used
+up until T". There is no T here. An invented one makes the primary silently
+return, still broken, and die again — flapping that reads as a router bug.
+
+Bounds:
+- **RECORDING ONLY.** The capture feeds `_for_the_record` and nothing else: no
+  freeze, retry, resume, mail or account switch. Pinned structurally by
+  `test_auth_cause` §4, which mirrors `test_harvest` §7 onto the new route —
+  the old check watches `_looks_like_auth_failure`, and this path never calls
+  it, so without a second walk a wired capture would trip nothing.
+- **The stream is a FALLBACK, never an override.** It is consulted only when
+  the result event said nothing — which is exactly the blind spot. If the CLI
+  accounted for itself, that account wins, so a stale early retry cannot
+  contradict a real outcome, and a turn that recovered from an auth blip and
+  then died of something else is reported as what actually killed it.
+- The widened text still never becomes MAIL (`_for_the_record` rule 2:
+  auth-failure text arriving as mail is what has repeatedly destroyed
+  fable-tier sessions here), and an empty `err_blob` still yields an empty
+  record, so a manual ⏸ cannot be booked as a failure (rule 3).
+- `rate_limit` is deliberately NOT in the auth family: the freeze machinery
+  owns it, and duplicating it would give one failure two voices.
+
+Method note, and it is the reason this entry can be trusted: **a check written
+here to prove the subtype literal was live code asserted `'"api_retry"' in
+_SRC` — and the mutant survived**, because the literal also appears in the
+comment above the branch. That is this subtree's signature failure (a name
+matched inside a COMMENT rather than in live code) reproduced inside the very
+suite meant to prevent it. It is now asserted on the AST comparison node,
+which no prose can satisfy, and the mutation round is what found it.
+
+Still open, deliberately: **the accounts panel still shows a healthy signed-in
+primary while every turn fails**, because `live_identity()` reads
+`oauthAccount` out of `~/.claude.json`, which is metadata that survives the
+session's death. Approved and not yet built — reading `expiresAt` and
+`refreshTokenExpiresAt` from the credential store under four conditions
+(two integers only, one narrow named function, a proof that no token value
+reaches any payload, and a decision amending "incapable of touching a token"
+to "never the token VALUE").
 
 ### D-148 · one usage pool for haiku/sonnet/opus; a key row shows its own state
 
