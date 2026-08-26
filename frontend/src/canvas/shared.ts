@@ -455,6 +455,45 @@ export function freezeKind(
 // failure being fixed, and it is invisible unless something compares the
 // labels to each other. `freezelabel.test.ts` asserts both maps are TOTAL over
 // FreezeKind and that no two kinds share a label.
+// FR-27 · the primed-restart chip's WORDS.
+//
+// Here rather than inline in App.tsx's header, for the reason the two freeze
+// registers below are here: as a JSX ternary the one property that matters
+// could not be tested. That property is NOT "the chip renders" — it is that a
+// prime which will restart the orgs reading this says so, and a prime which
+// will NOT (target 'mailhub' rebuilds a container and touches no agent) does
+// not get to wear the same words.
+//
+// ⚠ The record is MACHINE-WIDE: api.py injects the same value into every org's
+// tree, so most of this chip's audience did not arm it and is only finding out
+// here. That is what the title has to serve — who armed it, why, whether THIS
+// org gets cut, and how to stop it.
+export interface PrimedChip { label: string; title: string; cutsUs: boolean }
+
+export function primedRestartChip(
+  pr: { target?: string | null; by_org?: string | null
+        by_node?: string | null; at?: string | null
+        reason?: string | null } | null | undefined,
+): PrimedChip | null {
+  if (!pr) return null
+  const cutsUs = pr.target !== 'mailhub'
+  return {
+    label: cutsUs
+      ? (pr.target === 'both' ? 'restart primed (+ mail hub)' : 'restart primed')
+      : 'mail hub restart primed',
+    title: [
+      `armed by ${pr.by_org ?? '?'}/${pr.by_node ?? '?'} at ${pr.at ?? '?'}`
+        + (pr.reason ? ` — ${pr.reason}` : ''),
+      cutsUs
+        ? 'every org on this machine restarts, including this one'
+        : 'rebuilds the mail hub container only — agents here are NOT restarted',
+      'nothing happens while anyone is mid-turn; it fires by itself once the machine is quiet',
+      'disarm with orgtree_prime_restart action=cancel',
+    ].join('\n'),
+    cutsUs,
+  }
+}
+
 export const FREEZE_LABEL: Record<FreezeKind, string> = {
   halted: 'HALTED — fable lock',
   spend: 'spend limit',

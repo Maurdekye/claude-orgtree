@@ -303,6 +303,53 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "orgtree_prime_restart",
+        "description": (
+            "ARM A RESTART THAT FIRES BY ITSELF once this machine goes "
+            "quiet — the deferred form of orgtree_self_restart. Nothing "
+            "happens at the moment you call it. A background engine watches, "
+            "and the deploy launches as soon as NO agent on this machine is "
+            "mid-turn or holding queued mail, and none has been for a short "
+            "settling period. Same deploy, same targets, same authority as "
+            "orgtree_self_restart; only the timing is handed to the machine. "
+            "☞ USE THIS INSTEAD OF WAITING. If self_restart refuses because "
+            "agents are working, do NOT plan to 'call again next wake' — "
+            "that plan dies with your session. Prime it and move on: an "
+            "armed prime survives YOUR COMPACTION, YOUR RETIREMENT and a "
+            "backend bounce, which is the entire reason this tool exists (a "
+            "merged fix once sat undeployed for a day because the agent "
+            "holding the intent was compacted before it ever called). "
+            "action: 'arm' (default) · 'cancel' (disarm it) · 'status' "
+            "(read-only: is one primed, by whom, for what). ARMING IS "
+            "IDEMPOTENT — priming while one is already armed changes "
+            "nothing, including the target; the answer says so and names who "
+            "armed the existing one, so 'did mine take effect' is always "
+            "answerable. While a prime is armed, EVERY org's header shows a "
+            "'restart primed' chip, because the restart cuts every org. "
+            "target: 'org' (the backend — restarts every org here), "
+            "'mailhub' (rebuilds the hub container in place), or 'both'. "
+            "Give a `reason`: it is what the person who sees the chip reads. "
+            "Top-level agents and user-audience holders only; kiosks sealed. "
+            "⚠ Still a real restart — have a REASON (code committed that "
+            "needs to be running, a backend that must be bounced). 'Primed' "
+            "does not make it free; it makes it PATIENT."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string",
+                           "enum": ["arm", "cancel", "status"],
+                           "description": "arm (default), cancel, or status"},
+                "target": {"type": "string",
+                           "enum": ["org", "mailhub", "both"],
+                           "description": "what to deploy (default 'org')"},
+                "reason": {"type": "string",
+                           "description": "why — shown on the chip and in "
+                                          "the record; keep it one line"},
+            },
+            "required": [],
+        },
+    },
+    {
         "name": "orgtree_present",
         "description": (
             "Present a DOCUMENT to the user for in-page reading — a plan, a "

@@ -3039,6 +3039,94 @@ and none should be bundled into a rename):
   actually deployed — and the event records neither the target nor which tool
   name was used.
 
+### D-159 · a deferred restart, because the thing that failed was the agent, not the tool
+Ruling (user, 2026-08-27, their own design, verbatim): "when executed, a
+restart will automatically occur the moment all agent turns have stopped and
+no pending turn-starting mail is in flight. this will both ensure a restart
+eventually happens, while also not interrupting any single agent's work."
+Shipped as `orgtree_prime_restart` (`arm` | `cancel` | `status`), beside
+`orgtree_self_restart` rather than replacing it.
+
+Why: the user's word for the old tool was "unreliable", but the measured
+failure was NOT the tool. `orgtree_self_restart`'s mid-turn refusal (D-104) is
+the precondition working. What failed is the human-shaped half — the agent
+holding the intent kept deferring the call to "next wake" and was
+cheap-compacted before making it, so a merged fix sat undeployed for a full
+day. ⇒ **The property being bought is that ARMING OUTLIVES THE ARMING AGENT:**
+its compaction, its retirement, its dissolution, and a backend bounce. Any
+design where the prime lives in a session, a node flag, or an in-process timer
+rebuilds the original bug with more steps.
+
+Load-bearing decisions, each of which could have gone the other way:
+
+· **What "idle" means is `others_working`, reused, not re-derived.** Its body
+  moved to `_working_locked` (caller holds `_state_lock`) with
+  `others_working` as the locking wrapper — one body, two doors. A second
+  hand-written loop would be a second definition of "is anyone working", and
+  the day they disagree is the day a primed restart cuts a turn the manual
+  tool would have refused to cut.
+· **"No pending turn-starting mail in flight" is already inspectable, and it
+  is `busy or queue`.** `deliver(..., wake=True)` sets `st["busy"]`
+  SYNCHRONOUSLY under `_state_lock` and only then starts the `_run_turn`
+  thread; `wake=False` (`orgtree_send_notice`) returns `{parked: true}` and
+  never sets it. So the user's distinction is exactly the `wake` flag, the
+  in-flight window is zero-width under the lock, and no new predicate was
+  needed. What remains outside it — a watchdog that will fire in 40s, a frozen
+  node whose auto-resume is due — is not "mail in flight" and is deliberately
+  NOT waited for: it is unbounded, and a machine with an armed dog would
+  never be quiet.
+· **The check→launch race is CLOSED, not narrowed.** `_claim_quiet_machine`
+  reads `_working_locked()` and clears `_deploy_done` under the SAME
+  `_state_lock`. Anyone already busy is visible and refuses the claim; anyone
+  who goes busy afterwards reaches `_hold_for_deploy` — "the single choke
+  point: all three thread starts target this function" (D-142/a) — and parks
+  at the threshold with nothing dequeued and no mail moved. There is no third
+  case. This is what D-142/a's deferred item was for, arriving from the other
+  side: the flag is cleared by the caller and adopted by the launch.
+  `_arm_deploy_window` therefore RETURNS a bool and `launch_self_restart`
+  reports `deploy_window`, because an ORPHANED hold (nothing spawned, nobody
+  to release it) silences every org on the machine for `DEPLOY_HOLD_MAX`.
+· **Disarm BEFORE the spawn.** The other order is a restart LOOP: `update.ps1`
+  Stop-Processes this backend, the disarm write never lands, and the next boot
+  finds the prime armed and restarts again — unattended. Disarm-first can lose
+  a prime instead, which is a nuisance that ANNOUNCES itself (the chip
+  disappears and `last_fired` records the launch's answer). A nuisance you can
+  see beats a loop you cannot.
+· **NOT re-gated at fire time.** `prime_restart_gate` runs at the arm, sharing
+  `_restart_authority` with `self_restart_gate` so the patient tool cannot be
+  laxer than the immediate one. Re-checking at the fire would mean a prime
+  armed by an agent since retired silently never fires — and that is the
+  motivating case, not an edge case. Authorization belongs to the decision;
+  the engine only executes it.
+· **Storage is a MACHINE-WIDE file** (`<DATA_ROOT>/primed-restart.json`), not
+  an org doc. The watchdog PRINCIPLE is copied ("the doc is the registry, the
+  loop is just its runtime attachment") but not the location, for two reasons
+  an org doc gets wrong: a restart armed in org A cuts org B, so a per-org
+  record is invisible to precisely the orgs that need warning; and the user
+  ruled priming idempotent, which has to hold across a bounce — one file is
+  one fact.
+· **Idempotent, not mute.** A second arm changes nothing (including the
+  target) and SAYS so, naming who holds the live prime and what target will
+  actually run. A silent success is the one answer indistinguishable from
+  "I armed it just now", and "did mine take effect" is the question the caller
+  is asking.
+· **The 300 s one-at-a-time gap is WAITED OUT, never spent on.** Hoisted to
+  `SELF_RESTART_MIN_GAP` — one constant, two readers. The engine additionally
+  reads a DURABLE `last_fired.at_ts`, because `_self_restart_at` is process
+  memory that a restart zeroes; without it a prime could fire straight into
+  the deploy that just finished.
+· **A 20 s settle (`PRIME_QUIET_S`) on top of the lock.** Not for the race —
+  that is closed. For the handoff: a turn can end microseconds before the mail
+  it just sent drives the next agent, and "all agent turns have stopped" does
+  not honestly mean "there was an instant with nobody running".
+
+Bounds: this tool cannot deploy itself — the first restart carrying it is
+still a manual `orgtree_self_restart`. `target: 'mailhub'` deliberately takes
+NO hold on the machine (it restarts no agent), the same call D-142/a made.
+Visibility: every org's header carries a `restart primed` chip fed by
+`tree.primed_restart`; a mailhub prime wears different words, because for that
+target the chip would otherwise be a false alarm to its entire audience.
+
 ### D-143 · fable_api_fallback: an opt-in override of D-130's boundary
 
 Decision (session seat, 2026-08-23, user feature request: "the api key
@@ -4196,11 +4284,40 @@ boolean marker this org originally proposed and is kept above as theirs.
   (b) a guard is credited because a registry *lists* it rather than because it
   *ran* — the live message-visibility suite never calls the contract check its
   sibling does. Repairing only the loud half makes the summary look healthy.
-- **`dogs · port: the DOWN edge fires` is a real flake, not a regression.** It
-  binds a socket, arms a 15-second port watchdog, sleeps a fixed 8 seconds,
-  then closes: if the first poll slips past the close, no UP edge is observed
-  and no DOWN edge can fire. Fails under load, passes idle. Fix by polling for
-  the UP observation rather than sleeping.
+- **`dogs · port: the DOWN edge fires` — FIXED 2026-08-27, and the recorded
+  diagnosis was only half of it.** This entry used to read "a real flake, not
+  a regression: it binds a socket, arms a 15-second port watchdog, sleeps a
+  fixed 8 seconds, then closes; if the first poll slips past the close, no UP
+  edge is observed and no DOWN edge can fire. Fails under load, passes idle.
+  Fix by polling for the UP observation rather than sleeping." That is true
+  and it is not the root cause. Fixing only it does not fix the check —
+  measured: with the socket held OPEN for a full 120 s the dog still reported
+  DOWN throughout.
+
+  **The root cause is the fixture.** It called `listen(1)` and never called
+  `accept()`. Such a socket answers exactly ONE probe: the first connection
+  fills the backlog and every later connect is REFUSED while the socket is
+  still bound and listening. Six back-to-back `_wd_proc_alive` calls against
+  it went `True, False, False, False, False, False`. And `watchdog_create`
+  runs a SMOKE probe ("port:N is UP right now") that consumes that single
+  slot — so the engine's first real check already saw DOWN, recorded
+  `high_water.up = False`, and the dog could never show an edge. It then
+  reported `fired: 0`, which is indistinguishable from a healthy dog still
+  waiting: an abstention reading as a pass, this subtree's standing failure.
+  A bigger backlog alone does not fix it either, because unaccepted
+  connections accumulate. A real service accepts, so the fixture now does —
+  `listen(64)` plus a daemon accept-loop stopped before the close.
+
+  Two things kept as well. The check now polls `high_water.up` (the UP
+  observation `_wd_tick` actually records) before closing the socket, under
+  its own assertion, so a missed UP is reported AS a missed UP rather than
+  letting the DOWN-edge check take the blame — that assertion is what exposed
+  the fixture. And both waits are 120 s, not 60: on an IDLE machine the dog
+  was created at 23:23:28 and its first check landed at 23:24:22, 54 seconds
+  later, because `_wd_tick` walks every org's every dog on one thread and a
+  slow sibling stretches the whole cadence. **A dog's `interval_s` bounds how
+  often it is DUE, not how soon it is SEEN — any watchdog test that budgets
+  against `interval_s` is writing this flake again.**
 - **The `_switches >= 4` edge dissolves.** `account_switches` lives in
   process-local turn state, not the org doc, so a restart zeroes it and the
   gate silently opens. It is not needed: a switch refused by the counter had

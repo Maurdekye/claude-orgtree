@@ -399,8 +399,9 @@ def _():
     tools = BOSS.rpc("tools/list")["result"]["tools"]
     # +orgtree_present (FR-03); +orgtree_withdraw_ask; +orgtree_self_update;
     # +orgtree_cheap_compact (FR-24); +orgtree_request_scope (FR-13);
-    # +orgtree_watchdog (FR-18); +orgtree_send_notice (2026-08-19)
-    assert len(tools) == 26, [x["name"] for x in tools]
+    # +orgtree_watchdog (FR-18); +orgtree_send_notice (2026-08-19);
+    # +orgtree_prime_restart (FR-27, 2026-08-27)
+    assert len(tools) == 27, [x["name"] for x in tools]
     for c in tools:
         assert c["name"].startswith("orgtree_"), c
         assert len(c["description"]) > 20, c
@@ -554,7 +555,7 @@ _DISPATCH = sorted(set(__import__("re").findall(r'"(orgtree_\w+)"', _AGENT_CALL)
 ALIASES = {"orgtree_self_update": "orgtree_self_restart"}
 
 
-@t("the catalogue and the /api/agent dispatch name exactly the same 23 verbs")
+@t("the catalogue and the /api/agent dispatch name exactly the same 27 verbs")
 def _():
     assert sorted(CARDS) == sorted(set(_DISPATCH) - set(ALIASES)), \
         f"drift: cards {sorted(set(CARDS) - set(_DISPATCH))}, " \
@@ -564,8 +565,9 @@ def _():
     # 2026-08-06) — renamed orgtree_self_restart 2026-08-21 (D-142);
     # +orgtree_cheap_compact (FR-24, 2026-08-11);
     # +orgtree_request_scope (FR-13) + orgtree_watchdog (FR-18, 2026-08-12);
-    # +orgtree_send_notice (mail that never wakes, 2026-08-19)
-    assert len(CARDS) == 26, len(CARDS)
+    # +orgtree_send_notice (mail that never wakes, 2026-08-19);
+    # +orgtree_prime_restart (FR-27, the deferred restart, 2026-08-27)
+    assert len(CARDS) == 27, len(CARDS)
 
 
 @t("☠ the deprecated self_update alias is dispatchable but NOT advertised")

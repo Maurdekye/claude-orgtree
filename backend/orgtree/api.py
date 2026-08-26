@@ -558,6 +558,11 @@ async def _wire_notify() -> None:  # type: ignore[unused-function]  # registered
     # FR-18: the watchdog scanner — polls due dogs and re-arms stream dogs'
     # children, which is also their restart-recovery (the doc is the registry)
     supervisor.start_watchdog_engine()
+    # FR-27: the primed-restart engine. Same shape and same reason as the
+    # watchdog scanner above — the durable record is the registry and this is
+    # only its runtime attachment, which is exactly what makes an armed prime
+    # survive the bounce that just brought us up here.
+    supervisor.start_prime_restart_engine()
     # one-time migration of the retired v1 env-var kiosk mode into the org doc
     legacy = os.environ.get("ORGTREE_KIOSK")
     if legacy:
@@ -991,6 +996,12 @@ def org_tree(slug: str, request: Request) -> dict[str, Any]:
         raise HTTPException(404, str(e))
     _t0 = time.perf_counter()
     tree = org.tree()
+    # FR-27: the primed restart is a MACHINE fact, not an org one — it is
+    # armed from one org and cuts every org on the box. So it is injected
+    # here, after the per-org projection, and every org's header renders the
+    # same chip. Putting it in `tree()` would have meant putting it in an org
+    # doc, which would have shown it only to the org that armed it.
+    tree["primed_restart"] = supervisor.primed_restart()
     # user ruling 2026-08-06 on the redteam's O(n²) Org.children finding:
     # "not relevant until the typical execution time exceeds one second" —
     # this makes the threshold self-announcing instead of relying on someone
@@ -3653,6 +3664,41 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                 org.self_restart_gate(body.node)
                 result = supervisor.launch_self_restart(
                     body.org, body.node, str(a.get("target") or "org"))
+            elif body.tool == "orgtree_prime_restart":
+                # FR-27: arm a restart that fires by itself once the machine
+                # is quiet. The gate + org-log ride this request's save, the
+                # same shape self_restart uses; the FIRING is a background
+                # loop that never comes back through here (that is the point
+                # — it outlives this agent's session entirely).
+                act = str(a.get("action") or "arm")
+                if act not in ("arm", "cancel", "status"):
+                    raise HTTPException(
+                        422, "action must be arm|cancel|status")
+                if act == "status":
+                    # read-only: no authority act, so no gate and no org-log
+                    # entry. `_require_live` still applies — a retired node
+                    # is not answered.
+                    org._require_live(body.node)
+                    pr = supervisor.primed_restart()
+                    result = {
+                        "primed": pr,
+                        "status": (
+                            f"a restart is primed by {pr.get('by_org')}/"
+                            f"{pr.get('by_node')} (target="
+                            f"{pr.get('target')!r}, armed {pr.get('at')}) — "
+                            "it fires when this machine goes quiet"
+                            if pr else
+                            "no restart is primed on this machine")}
+                elif act == "cancel":
+                    org.prime_restart_gate(body.node, "cancel")
+                    result = supervisor.cancel_prime_restart(
+                        body.org, body.node)
+                else:
+                    org.prime_restart_gate(body.node, "arm")
+                    result = supervisor.arm_prime_restart(
+                        body.org, body.node,
+                        str(a.get("target") or "org"),
+                        a.get("reason"))
             elif body.tool == "orgtree_present":
                 # FR-03: a reading card beside the node — non-blocking
                 result = org.present_document(body.node,

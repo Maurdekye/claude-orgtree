@@ -35,7 +35,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Iterable, Mapping
-from typing import Any, cast
+from typing import Any, Final, cast
 
 from . import accounts, limits, net, sandbox as sbx, store, tokens
 from .ledger import EXTERN, SYSTEM, USER, LedgerError, Org, expand_mcp, now as now_iso
@@ -2463,8 +2463,17 @@ def identity_prompt(org: Org, nid: str) -> str:
            "install). The tool spawns it detached, which is the only shape "
            "that survives you. If the machine is busy the tool REFUSES and "
            "names who is working: that is not an error, it is the "
-           "precondition doing its job — wait and call again rather than "
-           "working around it. A restart cuts every org here and may cut your "
+           "precondition doing its job — never work around it. ☞ WHEN IT "
+           "REFUSES, CALL orgtree_prime_restart INSTEAD OF PLANNING TO TRY "
+           "AGAIN. It arms the same deploy to fire by itself the moment this "
+           "machine goes quiet, and — unlike a plan to 'call again next "
+           "wake' — it survives your compaction, your retirement and a "
+           "backend bounce. That plan is what this tool exists to replace: a "
+           "merged fix once sat undeployed for a full day because the agent "
+           "holding the intent was compacted before it ever made the call. "
+           "Arming is idempotent, so priming one that is already armed is "
+           "safe and tells you who armed it. "
+           "A restart cuts every org here and may cut your "
            "own turn mid-flight; that is expected, and your next turn "
            "existing is the liveness check. Have a REASON — something to "
            "deploy, or a backend to bounce. Never restart speculatively, on a "
@@ -3110,13 +3119,24 @@ _deploy_done.set()             # nothing in flight at import
 DEPLOY_HOLD_MAX = 420.0        # ceiling: a wedged deploy must not wedge us
 
 
-def _arm_deploy_window(child: Any) -> None:
-    """A deploy child is running: hold turns until it exits."""
+def _arm_deploy_window(child: Any) -> bool:
+    """A deploy child is running: hold turns until it exits.
+
+    Returns True when a window was actually armed. ⚠ The return value is
+    load-bearing for `orgtree_prime_restart` and not a convenience: the prime
+    engine CLOSES the check→launch race by clearing `_deploy_done` itself,
+    before the launch, and it must then know whether the launch adopted that
+    hold (a watcher exists to release it) or whether the hold is now orphaned
+    and has to be released by hand. Without this answer the two cases are
+    indistinguishable and an orphaned hold silences every org on the machine
+    for DEPLOY_HOLD_MAX. Same reason `_detached_spawn` returns its handle
+    (D-142/a): "it worked" and "nothing happened" must not look alike.
+    """
     if child is None:
         # nothing was spawned (a refusal, or a spawn that raised) — there is
         # no deploy, so there is no window. Arming here would hold every
         # org on the machine for a kill that is never coming.
-        return
+        return False
     _deploy_done.clear()
 
     def _watch() -> None:
@@ -3129,6 +3149,7 @@ def _arm_deploy_window(child: Any) -> None:
             # leaves the machine unable to run a turn until it restarts.
             _deploy_done.set()
     threading.Thread(target=_watch, daemon=True).start()
+    return True
 
 
 def _hold_for_deploy(slug: str, nid: str) -> None:
@@ -8031,6 +8052,13 @@ def start_auto_resume_loop() -> None:
 _self_restart_at = [0.0]       # machine-wide one-at-a-time guard
 _self_restart_log = [""]       # the last launch's log path
 
+#: one launch per this many seconds, machine-wide. ⚠ ONE constant with two
+#: readers (`launch_self_restart` refuses inside it; the prime engine WAITS
+#: it out rather than spending an armed prime on a refusal) — two numbers
+#: here would be two policies that can disagree about what "one at a time"
+#: means, which is the whole reason `others_working` is not duplicated either.
+SELF_RESTART_MIN_GAP: Final = 300.0
+
 
 def _detached_spawn(args: list[str], cwd: str, logpath: str,
                     env: dict[str, str] | None = None) -> "subprocess.Popen[Any] | None":
@@ -8103,14 +8131,28 @@ def others_working(exclude: tuple[str, str] | None = None) -> list[str]:
     computed here, at the moment of the call, and reported by the tool. The
     scope is machine-wide because the blast radius is: `update.ps1` restarts
     the shared backend, cutting every in-flight turn in every org.
+
+    ⚠ THE BODY LIVES IN `_working_locked` AND THIS IS NOT A STYLE CHOICE.
+    `orgtree_prime_restart` needs the same question answered while it holds
+    `_state_lock` — that is how it closes the race between "reads idle" and
+    "the deploy is actually spawned" (see `_claim_quiet_machine`). Answering
+    it with a second, separately-written loop would put two definitions of
+    "is anyone working" on the machine, and the day they disagree is the day
+    a primed restart cuts a turn the manual tool would have refused to cut.
+    One body, two entry points, no possible drift.
     """
-    out: list[str] = []
     with _state_lock:
-        for (s, k), st in _state.items():
-            if exclude and (s, k) == exclude:
-                continue
-            if st.get("busy") or st.get("queue"):
-                out.append(f"{s}/{k}")
+        return _working_locked(exclude)
+
+
+def _working_locked(exclude: tuple[str, str] | None = None) -> list[str]:
+    """`others_working`'s body. ⚠ THE CALLER MUST HOLD `_state_lock`."""
+    out: list[str] = []
+    for (s, k), st in _state.items():
+        if exclude and (s, k) == exclude:
+            continue
+        if st.get("busy") or st.get("queue"):
+            out.append(f"{s}/{k}")
     return sorted(out)
 
 
@@ -8166,7 +8208,7 @@ def launch_self_restart(slug: str, nid: str, target: str) -> dict[str, Any]:
     now_t = time.time()
     with _state_lock:
         since = now_t - _self_restart_at[0]
-        if since < 300:
+        if since < SELF_RESTART_MIN_GAP:
             return {"status": f"a self-restart was already launched "
                               f"{int(since)}s ago — one at a time, "
                               f"machine-wide; read its log first",
@@ -8180,6 +8222,7 @@ def launch_self_restart(slug: str, nid: str, target: str) -> dict[str, Any]:
                  f"target={target} at {now_iso()} ==\n".encode())
     launched: list[str] = []
     warnings: list[str] = []
+    armed_window = False
     if target in ("org", "both"):
         # Linux is a first-class install target (user ruling 2026-08-06):
         # update.sh mirrors update.ps1 step for step
@@ -8210,7 +8253,7 @@ def launch_self_restart(slug: str, nid: str, target: str) -> dict[str, Any]:
         # coming. On target="both" TWO children are spawned and only this one
         # is the danger — the hub leg literally sleeps 45s and then rebuilds.
         if os.name == "nt":
-            _arm_deploy_window(_detached_spawn(
+            armed_window = _arm_deploy_window(_detached_spawn(
                 ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
                  "-File", os.path.join(repo, "update.ps1")], repo, logpath))
         else:
@@ -8220,7 +8263,7 @@ def launch_self_restart(slug: str, nid: str, target: str) -> dict[str, Any]:
             # systemd unit, a profile export on the box — silently re-gate the
             # deploy and reinstate the exact bug D-142 removed, on Linux only,
             # where it is hardest to notice.
-            _arm_deploy_window(_detached_spawn(
+            armed_window = _arm_deploy_window(_detached_spawn(
                 ["bash", os.path.join(repo, "update.sh")], repo, logpath,
                 env={**os.environ, "ORGTREE_ONLY_IF_BEHIND": ""}))
         launched.append("org backend (git pull + rebuild + restart — "
@@ -8247,12 +8290,338 @@ def launch_self_restart(slug: str, nid: str, target: str) -> dict[str, Any]:
             launched.append("mail hub container (rebuilt in place — the "
                             "data volume, ports and .env are never touched)")
     return {"launched": launched, "log": logpath,
+            # did the ORG leg arm the turn-hold window? The prime engine
+            # reads this to decide whether the hold it took before the launch
+            # now has an owner (see `_fire_prime`). Nothing else consumes it.
+            "deploy_window": armed_window,
             **({"warnings": warnings} if warnings else {}),
             "status": ("deploy running detached — if the backend restarts, "
                        "your turn may be cut and the org resumes on the new "
                        "build. Your own next turn existing IS the liveness "
                        "check; a quiet remote peer is NOT evidence of "
                        "breakage. The log tells the story: " + logpath)}
+
+
+# ── FR-27 · THE PRIMED RESTART ────────────────────────────────────────────
+# User design, 2026-08-27, verbatim: "when executed, a restart will
+# automatically occur the moment all agent turns have stopped and no pending
+# turn-starting mail is in flight. this will both ensure a restart eventually
+# happens, while also not interrupting any single agent's work."
+#
+# ⚠ WHAT WAS ACTUALLY BROKEN, because it decides the whole design.
+# `orgtree_self_restart` was not misbehaving. Its mid-turn refusal is the
+# precondition doing its job. What failed is the HUMAN-SHAPED half: the agent
+# holding the intent kept deferring the call to "next wake", and was then
+# cheap-compacted before making it — so a merged fix sat undeployed for a day
+# with nobody holding the thread. An intent that lives only in one agent's
+# head dies with that agent's session.
+#
+# ⇒ THE PROPERTY THAT MATTERS MOST IS THAT ARMING OUTLIVES THE ARMING AGENT:
+# its compaction, its retirement, its dissolution, and a backend bounce. A
+# flag on a node, a field in an org doc keyed by the arming agent, or an
+# in-process timer would each rebuild the original bug with more steps.
+#
+# ⚠ WHY A MACHINE-WIDE FILE AND NOT AN ORG DOC (the watchdog precedent).
+# Watchdogs persist in `org.d["watchdogs"]` and `_wd_tick` re-attaches them at
+# boot: "the doc is the registry, this loop is just its runtime attachment".
+# That PRINCIPLE is copied exactly. The LOCATION is not, for two reasons that
+# an org doc gets wrong:
+#   · A restart is machine-wide. Priming from org A restarts org B too, so a
+#     prime recorded in A's doc is invisible in B's UI — the indicator would
+#     under-report to precisely the orgs about to be cut. Every org's tree
+#     reads this one file, so every org's header says so.
+#   · The user ruled priming IDEMPOTENT, and idempotency has to hold across a
+#     bounce. One file is one fact: two orgs cannot each hold "the" prime, and
+#     "is one already armed?" is a single read that a restart cannot forget.
+# The file sits beside `self-restart-*.log` in the data root, which is where
+# `launch_self_restart` already keeps its own machine-wide records.
+_PRIME_FILE = "primed-restart.json"
+_prime_lock = threading.Lock()
+_prime_started = False
+
+#: the machine must read idle CONTINUOUSLY for this long before a prime
+#: fires. Not paranoia about the race — `_claim_quiet_machine` closes that
+#: exactly. This is about the SECOND before a handoff: an agent's turn can end
+#: microseconds before the mail it just sent drives the next agent, and the
+#: honest reading of "all agent turns have stopped" is not "there is an
+#: instant with nobody running". Cheap to hold: on a genuinely quiet machine
+#: it costs one extra tick.
+PRIME_QUIET_S: Final = 20.0
+PRIME_POLL_S: Final = 5.0
+
+#: monotonic stamp of the first tick that saw the machine idle; 0.0 = the
+#: machine is not currently idle (or we have not looked yet). Reset to 0.0 at
+#: import, so a backend that comes up with a prime still armed serves a fresh
+#: quiet period before firing rather than restarting into a restart.
+_prime_idle_since = [0.0]
+
+
+def _prime_path() -> str:
+    # store.DATA_ROOT, not the env var: `store` resolves it once at import, so
+    # a suite that sets ORGTREE_DATA late has an env var that says "isolated"
+    # and a module pointed at production — and `_no_deploy.assert_isolated_
+    # data_root` checks the resolved value for exactly that reason. Reading
+    # the same thing it checks is what makes that interlock cover this file.
+    return os.path.join(store.DATA_ROOT, _PRIME_FILE)
+
+
+def _prime_read() -> dict[str, Any]:
+    """The whole record: {"armed": {...}|None, "last_fired": {...}|None}.
+
+    Never raises. A missing file is the normal empty state; a CORRUPT file is
+    reported to the console and then treated as empty, because the failure
+    mode to avoid is a torn write making the tool permanently unusable — a
+    prime that has to be re-armed is a nuisance, a machine that can never be
+    primed again is the original bug back."""
+    try:
+        with open(_prime_path(), encoding="utf-8") as f:
+            d = json.load(f)
+        if not isinstance(d, dict):
+            raise ValueError(f"not an object: {type(d).__name__}")
+        return d
+    except FileNotFoundError:
+        return {}
+    except Exception as e:                                   # noqa: BLE001
+        print(f"[orgtree] primed-restart record unreadable ({e!r}) — "
+              f"treating the machine as UNPRIMED; re-arm if you meant to",
+              flush=True)
+        return {}
+
+
+def _prime_write(d: dict[str, Any]) -> None:
+    """Atomic replace, same shape store.save_org uses — a half-written record
+    here is read as "unprimed", which silently loses an armed restart."""
+    p = _prime_path()
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    tmp = p + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(d, f, indent=1)
+    os.replace(tmp, p)
+
+
+def primed_restart() -> dict[str, Any] | None:
+    """The armed prime, or None. This is the projection the org tree carries
+    to the UI and the tool's `status` action returns."""
+    with _prime_lock:
+        rec = _prime_read().get("armed")
+    return rec if isinstance(rec, dict) else None
+
+
+def arm_prime_restart(slug: str, nid: str, target: str,
+                      reason: str | None = None) -> dict[str, Any]:
+    """Arm the deferred restart. IDEMPOTENT (user ruling 2026-08-27): a second
+    arm while one is already armed changes nothing.
+
+    ⚠ It does not merely return quietly, though. "Did mine take effect?" is
+    the question the caller is actually asking, and a silent success is the
+    one answer that cannot be distinguished from "I armed it just now" — so
+    an already-armed call says so, names who armed it and when, and reports
+    the target that is actually going to run (which may not be the one asked
+    for). Idempotent, not mute."""
+    if target not in ("org", "mailhub", "both"):
+        raise ValueError(f"unknown self-restart target {target!r}")
+    with _prime_lock:
+        d = _prime_read()
+        cur = d.get("armed")
+        if isinstance(cur, dict):
+            return {
+                "armed": False, "already_armed": True, "primed": dict(cur),
+                "status": (
+                    f"a restart is ALREADY primed — armed by "
+                    f"{cur.get('by_org')}/{cur.get('by_node')} at "
+                    f"{cur.get('at')}, target={cur.get('target')!r}"
+                    + (f" ({cur.get('reason')})" if cur.get("reason") else "")
+                    + ". YOUR CALL CHANGED NOTHING (priming is idempotent) — "
+                    "in particular the target is still "
+                    f"{cur.get('target')!r}, not {target!r} if those differ. "
+                    "It fires by itself the moment this machine goes quiet. "
+                    "Cancel it with action='cancel' if it is wrong.")}
+        rec = {"target": target, "by_org": slug, "by_node": nid,
+               "at": now_iso(), "at_ts": time.time(),
+               **({"reason": reason[:200]} if reason else {})}
+        d["armed"] = rec
+        _prime_write(d)
+    print(f"[orgtree] restart PRIMED by {slug}/{nid} target={target} — fires "
+          f"when the machine has been idle {PRIME_QUIET_S:.0f}s", flush=True)
+    return {"armed": True, "already_armed": False, "primed": rec,
+            "status": (
+                f"restart PRIMED (target={target!r}). Nothing happens yet: it "
+                f"fires by itself the moment no agent on this machine is "
+                f"mid-turn or holding queued mail, and has not been for "
+                f"{PRIME_QUIET_S:.0f}s. ⚠ THIS OUTLIVES YOU — your "
+                f"compaction, your retirement and a backend bounce all leave "
+                f"it armed, which is the point. Every org's header now shows "
+                f"a 'restart primed' chip. Cancel with action='cancel'.")}
+
+
+def cancel_prime_restart(slug: str, nid: str) -> dict[str, Any]:
+    """Disarm. A cancel with nothing armed is a benign no-op that SAYS it was
+    a no-op — the caller is usually checking, not undoing."""
+    with _prime_lock:
+        d = _prime_read()
+        cur = d.get("armed")
+        if not isinstance(cur, dict):
+            return {"cancelled": False, "primed": None,
+                    "status": "no restart was primed — nothing to cancel"}
+        d["armed"] = None
+        d["last_cancelled"] = {"by_org": slug, "by_node": nid,
+                               "at": now_iso(), "was": dict(cur)}
+        _prime_write(d)
+    print(f"[orgtree] primed restart CANCELLED by {slug}/{nid}", flush=True)
+    return {"cancelled": True, "primed": None, "was": dict(cur),
+            "status": (f"the primed restart is disarmed (it had been armed by "
+                       f"{cur.get('by_org')}/{cur.get('by_node')} at "
+                       f"{cur.get('at')}). Nothing will restart on its own.")}
+
+
+def _claim_quiet_machine(hold: bool) -> list[str] | None:
+    """Verify the machine is idle AND, in the same breath, stop it going busy.
+
+    ⚠ THIS IS THE RACE CLOSE, and it is the reason `_working_locked` exists.
+    Between "reads idle" and "the deploy child is actually spawned" there are
+    milliseconds in which mail can wake somebody, and that turn would then be
+    cut mid-flight — the exact harm `others_working`'s refusal exists to
+    prevent, arriving through the automated door instead.
+    What makes the window closable is that the two facts share ONE lock:
+    `deliver()` sets `st["busy"] = True` under `_state_lock` and only THEN
+    starts the `_run_turn` thread, and `_run_turn`'s first act is
+    `_hold_for_deploy` — "the single choke point: all three thread starts
+    target this function" (D-142/a). So, under `_state_lock`:
+      · anyone already busy is visible to `_working_locked` → we refuse;
+      · anyone who goes busy AFTER we clear `_deploy_done` reaches
+        `_hold_for_deploy`, sees the cleared event and PARKS at the threshold
+        with nothing dequeued and no mail moved.
+    There is no third case. The window is not narrowed, it is closed.
+
+    Returns [] when the machine was claimed, a busy list when it was not, and
+    None when a deploy window is already open (someone else is deploying —
+    ours must not adopt or later release their hold).
+
+    ⚠ EVERY [] RETURN LEAVES A HOLD ON THE MACHINE when `hold` is true. The
+    caller owns releasing it. `hold` is false for a mailhub-only prime on
+    purpose: that leg rebuilds a container and never touches this backend, so
+    holding every org's turns for it would stop the machine for a restart
+    that was never coming (D-142/a made the same call for target='both')."""
+    with _state_lock:
+        if hold and not _deploy_done.is_set():
+            return None
+        busy = _working_locked()
+        if busy:
+            return busy
+        if hold:
+            _deploy_done.clear()
+    return []
+
+
+def _fire_prime(rec: dict[str, Any]) -> dict[str, Any]:
+    """Spend an armed prime: disarm it, then launch."""
+    target = str(rec.get("target") or "org")
+    hold = target in ("org", "both")
+    claim = _claim_quiet_machine(hold)
+    if claim is None:
+        return {"fired": False, "why": "a deploy is already in flight"}
+    if claim:
+        return {"fired": False, "why": "busy", "busy": claim}
+    adopted = False
+    try:
+        # ☠ DISARM BEFORE SPAWNING, and the order is not arbitrary.
+        # Spawn-then-disarm loses the race it cannot afford: `update.ps1`
+        # Stop-Processes this backend, so the disarm write may never land, and
+        # the next boot finds the prime still armed and restarts again — a
+        # restart LOOP, on a machine nobody is watching, from a feature whose
+        # whole selling point is that you can forget about it.
+        # Disarm-first can lose a prime instead (spawn refused after the
+        # write), which is a nuisance that ANNOUNCES itself: the launch's
+        # answer is recorded in `last_fired` below and the chip disappears, so
+        # "it didn't restart" is checkable. A nuisance you can see beats a
+        # loop you cannot.
+        with _prime_lock:
+            d = _prime_read()
+            d["armed"] = None
+            _prime_write(d)
+        # ⚠ NOT RE-GATED HERE, deliberately. `prime_restart_gate` ran at ARM
+        # time, when an authorized agent decided. Re-checking authority now
+        # would mean a prime armed by an agent since retired — the single
+        # most likely case, since surviving its author is the feature —
+        # silently never fires. Authorization belongs to the decision; this
+        # is only its deferred execution.
+        r = launch_self_restart(str(rec.get("by_org") or ""),
+                                str(rec.get("by_node") or ""), target)
+        adopted = bool(r.get("deploy_window"))
+        with _prime_lock:
+            d = _prime_read()
+            d["last_fired"] = {"at": now_iso(), "at_ts": time.time(),
+                               "was": dict(rec),
+                               "launched": r.get("launched") or [],
+                               "log": r.get("log"),
+                               "status": str(r.get("status") or "")[:400]}
+            _prime_write(d)
+        print(f"[orgtree] primed restart FIRED (target={target}, armed by "
+              f"{rec.get('by_org')}/{rec.get('by_node')}): "
+              f"{r.get('status')}", flush=True)
+        return {"fired": True, "result": r}
+    finally:
+        # ⚠ UNCONDITIONAL, and in a `finally` for the same reason
+        # `_arm_deploy_window`'s release is: we took the hold ourselves and
+        # nothing else will let go of it. If the launch armed its own window
+        # (`deploy_window`), that watcher now owns the release and clearing it
+        # here would readmit turns into a live deploy. If it did NOT — a rate
+        # limit, a mailhub-only leg, a raise — the hold is orphaned and every
+        # org on this machine is silent until DEPLOY_HOLD_MAX expires.
+        if hold and not adopted:
+            _deploy_done.set()
+
+
+def _prime_tick() -> None:
+    """One poll of the prime engine. Split out so a check can drive it."""
+    rec = primed_restart()
+    if rec is None:
+        _prime_idle_since[0] = 0.0
+        return
+    # WAIT OUT the launch's one-at-a-time window instead of spending the
+    # prime on a refusal. It also makes that rate limit survive a bounce for
+    # the automated path: `_self_restart_at` is process memory and a restart
+    # zeroes it, so without this a prime armed during a deploy could fire
+    # straight into the deploy that just finished.
+    with _prime_lock:
+        last = _prime_read().get("last_fired")
+    since_disk = (time.time() - float(last.get("at_ts") or 0)
+                  if isinstance(last, dict) else 1e9)
+    if (time.time() - _self_restart_at[0] < SELF_RESTART_MIN_GAP
+            or since_disk < SELF_RESTART_MIN_GAP):
+        return
+    busy = others_working()
+    if busy:
+        _prime_idle_since[0] = 0.0
+        return
+    t = time.monotonic()
+    if _prime_idle_since[0] == 0.0:
+        _prime_idle_since[0] = t
+        return
+    if t - _prime_idle_since[0] < PRIME_QUIET_S:
+        return
+    _prime_idle_since[0] = 0.0
+    _fire_prime(rec)
+
+
+def start_prime_restart_engine() -> None:
+    """FR-27: the runtime attachment for the primed restart. The FILE is the
+    registry; this loop only watches for the moment to spend it — which is
+    what makes an armed prime survive this process dying and coming back."""
+    global _prime_started
+    if _prime_started:
+        return
+    _prime_started = True
+
+    def run() -> None:
+        while True:
+            try:
+                _prime_tick()
+            except Exception:                                # noqa: BLE001
+                pass       # the engine must survive anything — next tick retries
+            time.sleep(PRIME_POLL_S)
+
+    threading.Thread(target=run, daemon=True, name="prime-restart").start()
 
 
 def _steer_fold_log(slug: str, nid: str, n: int, where: str) -> None:

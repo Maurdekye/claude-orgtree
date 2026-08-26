@@ -3954,11 +3954,36 @@ def live_watchdogs() -> None:
     wait_idle(slug, nid, 30)
 
     # PORT dog: fires on the DOWN edge, not on being down from birth
+    #
+    # ☠ THE FIXTURE MUST ACTUALLY ACCEPT. This was `listen(1)` with nothing
+    # ever calling accept(), and that socket can answer exactly ONE probe:
+    # the first connection fills the backlog and every later connect is
+    # REFUSED while the socket is still bound and listening. Measured
+    # 2026-08-27 — six back-to-back `_wd_proc_alive` calls against it went
+    # True, False, False, False, False, False.
+    # That is what actually broke this check, and it is nastier than the
+    # fixed sleep the register originally blamed: `watchdog_create` runs a
+    # SMOKE probe ("port:N is UP right now"), which consumes the one slot, so
+    # the engine's first real check already sees DOWN. The dog then records
+    # `high_water.up = False` and can never show an edge — and reports
+    # `fired: 0`, which is indistinguishable from a healthy dog still
+    # waiting. A backlog of 64 alone would not fix it either: unaccepted
+    # connections accumulate. A real service accepts, so the fixture does.
     import socket as _socket
     srv = _socket.socket()
     srv.bind(("127.0.0.1", 0))
-    srv.listen(1)
+    srv.listen(64)
     port = srv.getsockname()[1]
+    _srv_stop = threading.Event()
+
+    def _serve_until_closed() -> None:
+        while not _srv_stop.is_set():
+            try:
+                conn, _ = srv.accept()
+                conn.close()
+            except OSError:
+                return          # the socket was closed — that IS the DOWN edge
+    threading.Thread(target=_serve_until_closed, daemon=True).start()
     api("POST", "/api/agent", {"org": slug, "node": nid,
                                "tool": "orgtree_watchdog",
                                "args": {"action": "create",
@@ -3966,12 +3991,36 @@ def live_watchdogs() -> None:
                                         "kind": "process",
                                         "target": f"port:{port}",
                                         "interval_s": 15}})
-    time.sleep(8)          # one tick observes it UP (arms the edge)
-    srv.close()            # …and now it goes down
+    # ⚠ POLL for the UP observation; do NOT sleep a fixed span for it.
+    # DECISIONS.md already carries this one: "`dogs · port: the DOWN edge
+    # fires` is a real flake, not a regression … Fails under load, passes
+    # idle. Fix by polling for the UP observation rather than sleeping."
+    # This dog fires on an UP→DOWN TRANSITION, so the socket has to stay open
+    # until a tick has actually RECORDED it up (`high_water.up`, written by
+    # _wd_tick). An 8-second sleep loses that race whenever the machine is
+    # busy — which is precisely when the whole tier runs — and it loses it
+    # SILENTLY: with no UP ever seen, no DOWN edge can occur, so the check
+    # below reports "the dog never fired" as though the feature were broken.
+    # That is this suite blaming the code for its own timing.
+    # ⚠ 120 s, not 60. MEASURED on an idle machine 2026-08-27 while diagnosing
+    # this very flake: the dog was created at 23:23:28 and its FIRST check
+    # landed at 23:24:22 — 54 seconds, because `_wd_tick` walks every org's
+    # every dog on one thread and a slow sibling stretches the whole cadence.
+    # The dog's own `interval_s` is 15; the scheduler's real latency is not.
+    # A 60 s budget would have passed by four seconds, which is a flake
+    # waiting to come back.
+    assert wait_for(lambda: any(
+        w["name"] == "port-dog" and (w.get("high_water") or {}).get("up")
+        for w in doc(slug)["watchdogs"]), 120), (
+        "the port dog never observed the socket UP, so the DOWN edge it "
+        "waits for cannot occur — the check below would then fail for a "
+        "reason that has nothing to do with the DOWN edge")
+    _srv_stop.set()
+    srv.close()            # …and NOW it goes down, from a RECORDED up
     check("dogs · port: the DOWN edge fires", lambda: (
         None if wait_for(lambda: any(
             w["name"] == "port-dog" and w.get("fired", 0) >= 1
-            for w in doc(slug)["watchdogs"]), 60)
+            for w in doc(slug)["watchdogs"]), 120)
         else (_ for _ in ()).throw(AssertionError(doc(slug)["watchdogs"]))))
     wait_idle(slug, nid, 30)
 

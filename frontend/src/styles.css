@@ -1709,6 +1709,12 @@ button.danger.solid:hover { background: rgba(241, 76, 76, .24); }
 .chip.ok { color: var(--ok); border-color: rgba(111, 211, 119, .35); }
 .chip.bad { color: var(--bad); border-color: var(--bad); }
 .chip.mono { font-family: var(--mono); font-size: 10.5px; }
+/* FR-27: a primed restart. Accent, NOT `bad` — nothing is wrong, something is
+   scheduled; wearing the error colour would train the eye to ignore it. It
+   is also not silent: it stands out from the plain grey chips beside it,
+   because the whole job of this chip is to be noticed by someone who did not
+   arm it. Deliberately no animation — it may sit here for hours. */
+.chip.primed { color: var(--accent); border-color: rgba(217, 119, 87, .5); }
 
 /* -------------------------------------------------------------------- nodes */
 .node { margin: 6px 0; }

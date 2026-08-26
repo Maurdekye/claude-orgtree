@@ -20,7 +20,7 @@ import {
 } from './icons'
 import { DirList } from './forms'
 import { FolderPickerHost } from './picker'
-import { deskDpi, fallbackActive, freezeKind, orgPxc, setDeskDpi, usePolled, TIERS } from './canvas/shared'
+import { deskDpi, fallbackActive, freezeKind, orgPxc, primedRestartChip, setDeskDpi, usePolled, TIERS } from './canvas/shared'
 import { AskCard } from './canvas/asks'
 import { AccountsPanel, UsageBars } from './canvas/accounts'
 import { addPending, dropPending, ingestPulse, ingestStream, resetConvos } from './convo'
@@ -456,6 +456,24 @@ export default function App() {
                     <EyeIcon fontSize="inherit" /> headless
                   </span>
                 )}
+                {/* FR-27 (user spec 2026-08-27): "some visual indication
+                    somewhere that a prime is active and will trigger the next
+                    moment the system quiesces".
+                    ⚠ IT SHOWS IN EVERY ORG, and that is the point rather than
+                    a side effect: the record is machine-wide because the
+                    restart is machine-wide, so the org that gets cut without
+                    having armed anything is exactly the one that most needs
+                    the warning. The words live in `primedRestartChip` —
+                    see the note there for why they are not inline. */}
+                {(() => {
+                  const pc = primedRestartChip(tree.primed_restart)
+                  if (!pc) return null
+                  return (
+                    <span className="chip primed" title={pc.title}>
+                      <AutorenewIcon fontSize="inherit" /> {pc.label}
+                    </span>
+                  )
+                })()}
                 {(() => {   // F-06: hub connectivity chip (enabled, NON-hidden
                   // hubs — a local hub that never answered shows no UI at all,
                   // user ruling 2026-08-05)

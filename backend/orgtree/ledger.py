@@ -5096,23 +5096,51 @@ class Org:
         self._log("ask_answered", USER, {"id": aid, "node": a["node"]}, [])
         return {"node": a["node"], "body": body}
 
+    def _restart_authority(self, nid: str, what: str) -> None:
+        """May `nid` decide that this machine restarts? Live, not a kiosk,
+        and either top-level or holding a user audience.
+
+        ⚠ ONE body for `self_restart_gate` and `prime_restart_gate`. Priming
+        is the same decision as restarting — it IS a restart, merely deferred
+        — so a second copy of the rule would be a second thing to disagree,
+        and the way it would disagree is by being laxer: an agent refused the
+        immediate tool could reach for the primed one and get the same
+        machine-wide restart a few minutes later. Each caller still logs its
+        OWN event, because "restarted the machine" and "armed a restart" are
+        different facts about who did what."""
+        self._require_live(nid)
+        if self.is_kiosk:
+            raise LedgerError(f"kiosk orgs are sealed — no {what}")
+        n = self.node(nid)
+        if n["parent"] is not None and not self._has_audience(nid, USER):
+            raise LedgerError(
+                f"a {what} restarts the shared orgtree install for "
+                "EVERY org on this machine — only top-level agents (or "
+                "holders of a user audience) may trigger it; ask your "
+                "superior to run it, or to grant you a user audience")
+
     def self_restart_gate(self, nid: str) -> None:
         """FR-14 gate (user request 2026-08-06): a self-restart restarts the
         SHARED install — every org on this machine — so it takes the same
         gate as asking the user directly: top-level, or a held user
         audience. Kiosks are sealed outright. The launch itself lives in
         supervisor.launch_self_restart; this only authorizes and records."""
-        self._require_live(nid)
-        if self.is_kiosk:
-            raise LedgerError("kiosk orgs are sealed — no self-restart")
-        n = self.node(nid)
-        if n["parent"] is not None and not self._has_audience(nid, USER):
-            raise LedgerError(
-                "a self-restart restarts the shared orgtree install for "
-                "EVERY org on this machine — only top-level agents (or "
-                "holders of a user audience) may trigger it; ask your "
-                "superior to run it, or to grant you a user audience")
+        self._restart_authority(nid, "self-restart")
         self._log("self_restart", nid, {}, [])
+
+    def prime_restart_gate(self, nid: str, action: str) -> None:
+        """FR-27 gate (user design 2026-08-27): arming a deferred restart
+        takes the SAME authority as firing one now — the machine-wide
+        consequence is identical, only its timing is chosen by the machine
+        instead of the caller. Cancelling takes it too: disarming somebody
+        else's primed deploy is an authority act, not a read.
+
+        ⚠ The gate runs HERE, at the arm, and never again. The prime is
+        deliberately spent by a background loop with no re-check, because the
+        agent that armed it is expected to be gone by then — surviving its
+        author is the entire feature (see supervisor._fire_prime)."""
+        self._restart_authority(nid, "primed restart")
+        self._log("prime_restart_" + action, nid, {}, [])
 
     def _moot_asks(self, nid: str, why: str) -> None:
         """The asker leaving the org moots its active request (redteam gap

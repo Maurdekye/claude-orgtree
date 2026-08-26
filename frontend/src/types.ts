@@ -588,6 +588,23 @@ export interface TreePayload {
   /** 2026-08-23: a TRUSTED weekly Fable-tier hit opens this same window too
    *  (requires api_fallback + a key), instead of only fable_limit_policy */
   fable_api_fallback?: boolean
+  /** FR-27 (2026-08-27): a restart armed with orgtree_prime_restart, waiting
+   *  for the machine to go quiet. ⚠ MACHINE-WIDE, not org-scoped: api.py
+   *  injects the same record into EVERY org's tree, because the restart it is
+   *  waiting to fire cuts every org on the box. null = nothing primed. */
+  primed_restart?: PrimedRestart | null
+}
+
+/** FR-27: what supervisor.primed_restart() projects — see the header chip. */
+export interface PrimedRestart {
+  target: 'org' | 'mailhub' | 'both'
+  by_org: string
+  by_node: string
+  /** ISO stamp of the arming */
+  at: string
+  at_ts: number
+  /** the arming agent's one-line why, if it gave one */
+  reason?: string
 }
 
 // ----------------------------------------------------------------- org list
