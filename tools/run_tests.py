@@ -382,7 +382,25 @@ def run_one(suite, cmd, timeout, logdir):
     # PASS`, and its absence is how a silently truncated run looks
     r.truncated = bool(r.rc == 0 and oks and not _TOTAL_LINE.search(r.out))
 
-    fired = [ln for ln in r.out.splitlines() if _GUARD_FIRED.search(ln)]
+    # ⚠ A PASSING CHECK'S OWN LINE IS NOT EVIDENCE OF A FAILURE, and reading
+    # it as one turned this alarm into noise on every single run (measured
+    # 2026-08-26). `test_compaction.py` carries a check LABELLED
+    #     ok 326  drift · (the shape) the phantom no longer matches the live
+    #             node's session — it matches the BEARER that inherited it
+    # and `no longer matches` is one of the `_GUARD_FIRED` alternatives, so a
+    # clean fast tier printed the full DRIFT ALARM banner — "until then every
+    # check downstream of it is a fiction" — over a suite that had just
+    # passed. `_GUARD_HELD` did not rescue it either: that label reads
+    # "drift ·", not "drift guard".
+    #
+    # The `ok N` prefix is the discriminator rather than any phrase in the
+    # label, deliberately: label wording drifts (that is the whole subject
+    # here), while "a check that reported itself passing did not just report a
+    # failure" stays true however the labels are reworded. `_OK_LINE` is
+    # REUSED and not re-spelled — two definitions of "a passing check's line"
+    # in one file is the same rot this alarm exists to catch.
+    fired = [ln for ln in r.out.splitlines()
+             if _GUARD_FIRED.search(ln) and not _OK_LINE.match(ln)]
     held = _GUARD_HELD.search(r.out)
     if fired:
         r.guard_state, r.guard_lines = "FIRED", fired[:8]

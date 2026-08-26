@@ -349,4 +349,10 @@ check("tree() exposes the handle set", _tree_exposes_handles)
 check("tree() defaults to []", _tree_defaults_to_empty_list)
 check("_scrub_public drops handles from kiosk trees", _scrub_public_drops_handles)
 
-print(f"\n{PASS}/{PASS} passed\n")
+# `ALL N CHECKS PASS` is this tree's final-total convention, and the runner
+# reads it to tell a finished suite from a truncated one — `N/N passed` said
+# the same thing to a human and nothing at all to `run_tests.py`, so every run
+# flagged this suite "⚐ no final total" (D-157). Reaching this line means
+# every check passed: `check()` above does not catch, so a failure raises and
+# the script dies before here.
+print(f"\nALL {PASS} CHECKS PASS\n")
