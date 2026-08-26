@@ -281,7 +281,15 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
   const animBusyRef = useRef(false)  // a camera animation owns the view
   const focusRef = useRef<string | null>(null)   // №25: the desk the camera rides with
   const followRef = useRef<{ id: string; x: number; y: number } | null>(null)
-  const panRef = useRef<{ sx: number; sy: number; ox: number; oy: number; moved: boolean } | null>(null)
+  // an in-flight background pan. sx/sy is where the finger went down and ox/oy
+  // the camera at that moment; the pan then writes the camera ABSOLUTELY, as
+  // ox + (clientX - sx). lx/ly track where the pointer is NOW, which is what
+  // lets any OTHER camera writer re-base ox/oy onto the camera it just wrote
+  // (see rebasePan) instead of leaving this origin stale — a stale origin
+  // re-applied at a new zoom is what put the whole world off-screen.
+  const panRef = useRef<{
+    sx: number; sy: number; lx: number; ly: number
+    ox: number; oy: number; moved: boolean } | null>(null)
   const springs = useRef(new Map<string, Spring>())
   // id → {x,y,at}: a node that should MATERIALIZE at a specific spot (a hire
   // replacing its draft card) instead of gliding over from its parent. Lives
@@ -628,6 +636,35 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
   }, [])
 
   // ------------------------------------------------------------- camera math
+
+  // THE CAMERA INVARIANT (user bug 2026-08-26 — "the drag location is updated
+  // to a dramatically far away location, making all panels invisible").
+  //
+  // A background pan does not accumulate deltas; it re-derives the camera from
+  // the origin captured at pointerdown, `x = ox + (clientX - sx)`. That makes
+  // the pan authoritative over x/y for as long as a finger is down — so ANY
+  // other writer of the camera must leave `ox/oy` agreeing with what it wrote,
+  // or the very next pointermove silently reverts it. Reverting an x/y that
+  // was computed for one zoom level back onto a different zoom level is not a
+  // small jitter: the correct x for a world point is `mx - wx*z`, and wx runs
+  // into the thousands (the eye sits at world x=6000), so a single wheel notch
+  // mid-drag threw the world tens of thousands of px off-screen.
+  //
+  // Two writers are subject to this: the wheel (below) and animateTo (here).
+  // pointerdown already cancels a running animation, so the animation case is
+  // only reachable when a glide STARTS during a drag — which centerOn's buried
+  // pile-member path does, by deferring itself two frames.
+  //
+  // Call this after every camera write, with the view actually written. The
+  // pan continues from there, still carrying the delta the user has already
+  // travelled (lx/ly - sx/sy).
+  const rebasePan = useCallback((nv: View) => {
+    const d = panRef.current
+    if (!d) return
+    d.ox = nv.x - (d.lx - d.sx)
+    d.oy = nv.y - (d.ly - d.sy)
+  }, [])
+
   const animateTo = useCallback((to: View, ms = 460) => {
     cancelAnimationFrame(animRef.current!)
     animBusyRef.current = true
@@ -635,16 +672,22 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
     const t0 = performance.now()
     const step = (t: number) => {
       const k = Math.min(1, (t - t0) / ms), e = ease(k)
-      setView({
+      const nv = {
         x: from.x + (to.x - from.x) * e,
         y: from.y + (to.y - from.y) * e,
         z: from.z + (to.z - from.z) * e,
-      })
+      }
+      // the glide owns the camera frame by frame, so the re-base is per frame
+      // too — and the ref write keeps a pointerdown landing mid-glide from
+      // snapshotting a camera one commit out of date
+      rebasePan(nv)
+      viewRef.current = nv
+      setView(nv)
       if (k < 1) animRef.current = requestAnimationFrame(step)
       else animBusyRef.current = false
     }
     animRef.current = requestAnimationFrame(step)
-  }, [])
+  }, [rebasePan])
 
   // the HUD ± buttons zoom about the SCREEN CENTER — changing z with x/y
   // held fixed anchors the world origin instead, which (with the eye parked
@@ -813,11 +856,20 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
       const r = el.getBoundingClientRect()
       const mx = e.clientX - r.left, my = e.clientY - r.top
       const wx = (mx - v.x) / v.z, wy = (my - v.y) / v.z
-      setView({ x: mx - wx * z, y: my - wy * z, z })
+      const nv = { x: mx - wx * z, y: my - wy * z, z }
+      // zooming MID-DRAG: keep the pan's origin agreeing with the camera this
+      // zoom just wrote, or the next pointermove reverts it — see the camera
+      // invariant above rebasePan. This is the doorway the user's bug came in.
+      rebasePan(nv)
+      // synchronous ref coherence, same reason as the pinch path below: several
+      // wheel events can land inside one commit, and each must zoom off the
+      // LAST write rather than the last render or the notches cancel out
+      viewRef.current = nv
+      setView(nv)
     }
     el.addEventListener('wheel', onWheel, { passive: false })
     return () => el.removeEventListener('wheel', onWheel)
-  }, [])
+  }, [rebasePan])   // stable (useCallback []) — the listener still attaches once
 
   const toWorld = (e: { clientX: number; clientY: number }): Pt => {
     const r = viewportRef.current!.getBoundingClientRect()
@@ -837,7 +889,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
         // gesture becomes a pinch. The sentinel panRef keeps the follow off.
         const [a, b] = [...pointersRef.current.values()] as [Pt, Pt]
         pinchRef.current = { d0: Math.hypot(a.x - b.x, a.y - b.y), z0: viewRef.current.z }
-        panRef.current = { sx: 0, sy: 0, ox: 0, oy: 0, moved: true }
+        panRef.current = { sx: 0, sy: 0, lx: 0, ly: 0, ox: 0, oy: 0, moved: true }
         tapRef.current = null
         e.currentTarget.setPointerCapture(e.pointerId)
         return
@@ -847,7 +899,8 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
       tapRef.current = { x: e.clientX, y: e.clientY, t: performance.now(),
         target: e.target as Element }
     }
-    panRef.current = { sx: e.clientX, sy: e.clientY, ox: viewRef.current.x, oy: viewRef.current.y, moved: false }
+    panRef.current = { sx: e.clientX, sy: e.clientY, lx: e.clientX, ly: e.clientY,
+      ox: viewRef.current.x, oy: viewRef.current.y, moved: false }
     e.currentTarget.setPointerCapture(e.pointerId)
   }
   const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -877,6 +930,9 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
     const d = panRef.current
     if (!d) return
     const dx = e.clientX - d.sx, dy = e.clientY - d.sy
+    // where the pointer is NOW — rebasePan needs it to work out how much of
+    // the gesture is already spent when some other writer moves the camera
+    d.lx = e.clientX; d.ly = e.clientY
     if (Math.abs(dx) + Math.abs(dy) > 3) d.moved = true
     if (d.moved) setView((v) => ({ ...v, x: d.ox + dx, y: d.oy + dy }))
   }
