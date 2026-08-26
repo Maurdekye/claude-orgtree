@@ -845,11 +845,33 @@ def hermetic() -> None:
         now live.)"""
         src = open(os.path.join(_REPO, "backend", "orgtree", "supervisor.py"),
                    encoding="utf-8").read()
-        i = src.index("def auto_resume_ready")
-        seg = "\n".join(ln for ln in src[i:i + 3000].splitlines()
+        def _body(name: str) -> str:
+            """That function's ACTUAL body — to the next TOP-LEVEL def.
+
+            ⚠ This read `src[i:i + 3000]` and `src[j:j + 800]` until
+            2026-08-26. Those are character BUDGETS, and D-156 spent one: a
+            docstring and a `_pool_open` helper pushed the `_resumable(n)`
+            call to offset ~3885, the fixture tripped, and the check reported
+            "the resume loop's selection moved" when the selection had not
+            moved at all — it was in the same place, doing the same thing,
+            further down a longer function.
+
+            A guard that fires when a function GROWS is measuring length and
+            reporting behaviour, and it fails in the expensive direction: it
+            cried regression at a correct change, on a red tier, for another
+            seat to chase. (Its sibling — the frontend's hand-mirrored
+            `_resumable` plus a source-text drift guard — was deleted the
+            same day for the same family of reason.)
+
+            Indented `def`s inside the function are not top-level, so the
+            nested helper does not terminate the body."""
+            i = src.index(f"def {name}")
+            nxt = src.find("\ndef ", i + 1)
+            return src[i:nxt if nxt != -1 else len(src)]
+
+        seg = "\n".join(ln for ln in _body("auto_resume_ready").splitlines()
                         if not ln.lstrip().startswith("#"))
-        j = src.index("def _resumable")
-        pick = src[j:j + 800]
+        pick = _body("_resumable")
         fixture('n.get("frozen")' in pick and "_resumable(n)" in seg,
                 "the resume loop's selection moved — re-read this check")
         assert re.search(r"transient|connection|last_error", seg), (
