@@ -128,15 +128,49 @@ function wheel(x: number, y: number, deltaY: number): WheelEvent {
 }
 
 // -------------------------------------------------------------------- rig
+//
+// ⚠ WHY AN EASED GLIDE NORMALLY FINISHES IN ONE FRAME HERE, AND HOW §6 GETS
+// AROUND IT. `animateTo` stamps its start as `performance.now()` but receives
+// each frame's `t` from the rAF shim, which hands out the MOCKED `Date.now()`.
+// Those two have no common origin under the rig — mocked Date sits at epoch
+// 1.7e12 while `performance.now()` is a few seconds since process start — so
+// `k = (t - t0) / ms` is astronomically large on the very first frame and
+// clamps straight to 1. Every glide completes instantly, and a test can only
+// ever see where the camera ARRIVED, never how it travelled.
+//
+// That is fine for §5, which is about the endpoint. It is not fine for a fix
+// that re-bases the pan on EVERY frame of a glide: a version that re-based
+// only on the last frame would satisfy §5 exactly, while fighting the user's
+// drag for the whole animation in a real browser.
+//
+// `syncClock` puts `performance.now()` on the same mocked clock the rAF shim
+// uses, which is what a browser actually does (there both are real and share
+// an origin). The glide then eases across genuine frames and the journey is
+// observable. Scoped to the tests that ask for it and restored afterwards —
+// the shared harness is deliberately untouched, since every other suite in
+// this folder runs under it.
+function stubPerfNow(): () => void {
+  const perf = (globalThis as unknown as { performance: { now: () => number } }).performance
+  const had = perf.now
+  Object.defineProperty(perf, 'now', {
+    value: () => Date.now(), configurable: true, writable: true,
+  })
+  return () => { Object.defineProperty(perf, 'now', { value: had, configurable: true, writable: true }) }
+}
+
 function uiTest(name: string,
   body: (k: { mount: (el: React.ReactElement)
-    => Promise<{ el: HTMLElement }> }) => Promise<void>): void {
+    => Promise<{ el: HTMLElement }> }) => Promise<void>,
+  opts: { syncClock?: boolean } = {}): void {
   test(name, async (t: TestContext) => {
     useFakeClock()
     const unstub = stubPointerCapture()
+    // ⚠ after useFakeClock(), so `Date.now()` is already the mocked one
+    const unperf = opts.syncClock ? stubPerfNow() : () => {}
     const open: { unmount: () => Promise<void> }[] = []
     t.after(async () => {
       for (const m of open) { try { await m.unmount() } catch { /* gone */ } }
+      unperf()
       unstub()
       realClock()
     })
@@ -375,3 +409,59 @@ uiTest('§5 a glide that starts mid-drag also leaves the drag coherent',
       + `expected x=${glided.x + 20}, got ${after.x}`)
     assert.equal(after.y, glided.y + 30, 'and y likewise')
   })
+
+// ===================================================================== §6
+// §5 WATCHES THE GLIDE LAND. THIS ONE WATCHES IT TRAVEL.
+//
+// The distinction is not academic, and I shipped the fix without it. The
+// re-base runs on every frame of `animateTo`; §5 can only ever observe the
+// last one, because an eased glide completes in a single frame under the rig
+// (see the note on `stubPerfNow`). So a fix that re-based ONLY on the final
+// frame passes §5 while, in a real browser, every intermediate frame throws
+// the user's drag back to a stale origin — the camera fighting the pointer for
+// the whole 220ms and snapping straight only at the end.
+//
+// With the clock stubbed onto the mocked one the glide eases over real frames,
+// so this samples MID-flight: it interrupts a glide that is provably still
+// running and requires the drag to be coherent right there, not eventually.
+
+uiTest('§6 the pan stays coherent DURING a glide, not just once it lands',
+  async ({ mount }) => {
+    const { el, viewport } = await mountCanvas(mount)
+
+    await inAct(() => { viewport.dispatchEvent(pointer('pointerdown', 400, 300)) })
+    await inAct(() => { viewport.dispatchEvent(pointer('pointermove', 450, 330)) })
+    await flush()
+    const dragged = cam(el)
+
+    const zin = [...el.querySelectorAll('.zoomhud button')]
+      .find((b) => (b as HTMLElement).getAttribute('title') === 'zoom in') as HTMLElement
+    assert.ok(zin, 'the zoom-in button rendered')
+    await inAct(() => { zin.click() })
+
+    // step into the MIDDLE of the 220ms glide, one frame at a time
+    await advance(48, 16)
+    const mid = cam(el)
+    assert.ok(mid.z > dragged.z,
+      'the glide should have started zooming by now')
+
+    // prove it is genuinely still in flight — otherwise this section has
+    // silently degenerated into §5 and proves nothing extra
+    await advance(16, 16)
+    const nxt = cam(el)
+    assert.ok(nxt.z > mid.z,
+      'the glide already finished, so §6 never observed the journey — the '
+      + 'clock stub is not doing its job and this check has become a '
+      + `duplicate of §5 (z went ${dragged.z} -> ${mid.z} -> ${nxt.z})`)
+
+    // now interrupt it: keep dragging while the camera is still gliding. The
+    // pan must continue from the camera as it stands THIS frame.
+    await inAct(() => { viewport.dispatchEvent(pointer('pointermove', 460, 350)) })
+    await flush()
+    const after = cam(el)
+    assert.equal(after.x, nxt.x + 10,
+      'mid-glide, the pan must continue from the camera the glide has reached '
+      + `on THIS frame — expected x=${nxt.x + 10}, got ${after.x}. A re-base `
+      + 'that only runs on the final frame lands here.')
+    assert.equal(after.y, nxt.y + 20, 'and y likewise')
+  }, { syncClock: true })
