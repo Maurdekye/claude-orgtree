@@ -997,6 +997,33 @@ def org_tree(slug: str, request: Request) -> dict[str, Any]:
 
     def annotate(node: dict[str, Any]) -> None:
         _rederive_freeze_reset(node, _cap_cache)
+        # ⚠ WILL ▶ ACTUALLY RESUME THIS NODE? Composed here for the same reason
+        # `ran_as_label` below is: the backend owns the rule, and a second copy
+        # of it is a second thing to disagree. User report 2026-08-26 — the
+        # resume banner read "resume 2 · 2 agents frozen" for an org whose two
+        # frozen agents had been RETIRED. Retiring does not clear the freeze
+        # record (a retired agent keeps its context and can be rehired), and
+        # the banner was counting every node that still carried one. Nothing
+        # behind it was broken: `_resumable` already refused those nodes, so ▶
+        # resumed nobody. Only the count lied.
+        #
+        # The first fix mirrored `_resumable` in TypeScript and guarded the two
+        # with a source-text check. That is two expressions of one rule — and a
+        # source check cannot tell a rule that got STRONGER from one that got
+        # weaker, fires on a rename, and misses a semantic change that keeps
+        # the spelling. So the rule stays in one place and its answer travels.
+        #
+        # ⚠ READS THE DOCUMENT NODE, NOT THE PAYLOAD ONE THIS FUNCTION IS
+        # HANDED. `_resumable` is written against NodeDoc, and `resume_frozen`
+        # iterates `org.nodes.items()` — so passing the doc makes this field
+        # provably the same question the button asks. The projection is NOT a
+        # safe substitute and this is not a stylistic preference: `tree()`
+        # renames `model` → `tier`, and it rebuilds `frozen` from a fixed key
+        # list that omits `spend`. `_resumable` refuses a node carrying any
+        # other kind flag, so on a payload node a SPEND freeze would read as
+        # resumable — the exact class of silent wrong answer the `tier`/`model`
+        # warning above was written about.
+        node["resumable"] = supervisor.resumable(org.node(node["id"]))
         st = supervisor.state(slug, node["id"])
         node["busy"] = st["busy"]
         # №12: three states wore one pulse — split them: waiting on a turn

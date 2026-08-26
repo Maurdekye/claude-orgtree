@@ -220,6 +220,18 @@ export interface TreeNode {
   team_charter?: string | null
   mail_pending: number
   limit_locked: boolean
+  /** api.py annotate(): will ▶ resume actually act on this node? Composed in
+   *  the backend from `supervisor.resumable` — the ONE expression of that
+   *  rule — so the resume banner counts what the button will really do
+   *  instead of re-deriving it here. It used to re-derive it here, and
+   *  counted retired agents that ▶ has never been willing to touch (user
+   *  report 2026-08-26).
+   *  ⚠ It means "will ▶ act on this", NOT "is this waiting on capacity". The
+   *  two come apart on an auth freeze (D-156): the credential was rejected
+   *  rather than the capacity spent, the auto-resume timer refuses it, but ▶
+   *  still resumes it — replacing the credential and pressing ▶ is the fix.
+   *  Such a node is `resumable` and counts. Ask capacity separately. */
+  resumable: boolean
   last_status: NodeStatus | null
   prev_status: NodeStatus | null
   inflight_at: string | null

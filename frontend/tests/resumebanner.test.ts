@@ -3,33 +3,35 @@
 // user report 2026-08-26: the banner read "resume 2 — usage limit hit · 2
 // agents frozen" in an org whose two frozen agents had since been RETIRED.
 // Retiring does not clear the freeze record (a retired agent keeps its context
-// and can be rehired), so the old test — `n.frozen != null` and nothing else —
-// counted nodes the backend has never been willing to resume.
+// and can be rehired), so the old filter — `n.frozen != null` and nothing else
+// — counted nodes the backend has never been willing to resume. Nothing behind
+// the banner was broken: `_resumable` already refused them and ▶ resumed
+// nobody. Only the count lied.
 //
-// The backend was already correct: `supervisor._resumable` returns None when
-// `state != "live"` or the node is `limit_locked`, so pressing ▶ on that
-// banner resumed nobody. `resumableFrozen` is the frontend mirror of that
-// test, and this suite is what keeps the two in step.
+// ⚠ WHAT THIS FILE DOES *NOT* TEST, ON PURPOSE. The rule itself lives in
+// `supervisor.resumable`, and the payload carries its answer per node. The
+// first version of this fix re-derived that rule in TypeScript and pinned the
+// two copies together with a check that read `supervisor.py` as source text —
+// which cannot tell a rule that got stronger from one that got weaker, fires
+// on a rename, and misses a semantic change that keeps the same spelling. So
+// the rule is tested where it lives, in `backend/tests/test_resumable.py`,
+// including that `annotate` emits the field at all. What is left here is the
+// only thing the frontend still decides: that the banner reads that field and
+// nothing else.
 //
-// ⚠ WHY EVERY TEST HERE HAS TWO LEGS. "The banner shows 0" passes just as
-// happily if the fix hides EVERY frozen agent, or if the count is broken
-// outright and renders nothing — both are the bug in the other direction, and
-// both would look like a fix. So every check that something is excluded is
-// paired with a live, genuinely frozen agent that must still be counted. A
-// one-legged version of this suite would have signed off on `() => []`.
+// ⚠ WHY EVERY TEST STILL HAS TWO LEGS. "The banner shows 0" passes just as
+// happily if the filter drops EVERY frozen agent, or if it returns nothing at
+// all — both are the bug from the other end, and both look like a fix. So
+// every check that something is excluded is paired with a node that must
+// still be counted. Mutation-checked in both directions.
 //
 // Run:  cd frontend && node tests/run.mjs resumebanner
 
 import './harness'
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
-import path from 'node:path'
 import { resumableFrozen } from '../src/App'
 import type { TreePayload } from '../src/types'
-
-/** injected by tests/run.mjs — the bundle does not sit next to the sources */
-declare const __SRC_DIR__: string
 
 // ---------------------------------------------------------------- fixtures
 /** shaped like the payload, not type-checked into it — the fixture idiom of
@@ -38,9 +40,11 @@ const asTree = (v: unknown) => v as TreePayload
 
 interface FixNode {
   id: string
-  state?: 'live' | 'archived' | 'unrecoverable'
+  /** the backend's answer, stated outright — this is a payload FIELD, and a
+   *  fixture that recomputed it would be the mirror creeping back in */
+  resumable?: boolean
   frozen?: Record<string, unknown> | null
-  limit_locked?: boolean
+  state?: 'live' | 'archived' | 'unrecoverable'
   children?: FixNode[]
 }
 
@@ -53,8 +57,8 @@ function mk(n: FixNode): unknown {
     id: n.id, title: n.id, tier: 'opus', model_id: 'opus',
     state: n.state ?? 'live',
     seat: 1, grant: 0, free: 0, ui_order: 0, cost_usd: 0, occupancy: null,
-    context_window: null, charter: null, mail_pending: 0,
-    limit_locked: n.limit_locked ?? false,
+    context_window: null, charter: null, mail_pending: 0, limit_locked: false,
+    resumable: n.resumable ?? false,
     last_status: null, prev_status: null, inflight_at: null, last_denials: [],
     turns: [], frozen: n.frozen ?? null, audiences_held: [],
     bearer_state: null, generation: 0,
@@ -83,107 +87,70 @@ const ids = (t: TreePayload) => resumableFrozen(t).map((n) => n.id).sort()
 
 // ------------------------------------------------------------------- tests
 
-test('§1 the reported bug: retired frozen agents drop out, live ones remain', () => {
-  // exactly the user's org — two frozen agents, since retired — plus one
-  // live frozen agent, which is the leg that stops "return nothing" passing
+test('§1 the reported bug: a frozen node the backend refuses is not counted', () => {
+  // the user's org — two frozen agents the backend says are not resumable
+  // (they were retired) — plus one that is, which is the leg that stops
+  // "drop everything" from passing
   const t = tree([
-    { id: 'gone-1', state: 'archived', frozen: LIMIT },
-    { id: 'gone-2', state: 'archived', frozen: LIMIT },
-    { id: 'still-here', frozen: LIMIT },
+    { id: 'gone-1', frozen: LIMIT, resumable: false, state: 'archived' },
+    { id: 'gone-2', frozen: LIMIT, resumable: false, state: 'archived' },
+    { id: 'still-here', frozen: LIMIT, resumable: true },
   ])
   assert.deepEqual(ids(t), ['still-here'])
   assert.equal(resumableFrozen(t).length, 1,
     'the banner would have said "resume 3"; ▶ would have resumed 1')
 })
 
-test('§2 the user\'s exact screenshot: 2 retired and NOTHING live → no banner', () => {
-  // the banner renders only when the list is non-empty, so this is the case
-  // where it must disappear entirely rather than read "resume 0"
+test('§2 the exact screenshot: nothing resumable → no banner at all', () => {
+  // the banner renders only when the list is non-empty, so here it must
+  // disappear rather than read "resume 0"
   const t = tree([
-    { id: 'gone-1', state: 'archived', frozen: LIMIT },
-    { id: 'gone-2', state: 'archived', frozen: LIMIT },
+    { id: 'gone-1', frozen: LIMIT, resumable: false, state: 'archived' },
+    { id: 'gone-2', frozen: LIMIT, resumable: false, state: 'archived' },
   ])
   assert.deepEqual(resumableFrozen(t), [])
 })
 
-test('§3 a live frozen agent is ALWAYS counted — the leg that must not break', () => {
-  // no retired nodes anywhere: nothing here is excludable, so if this ever
-  // returns empty the fix has started eating the case it exists to serve
+test('§3 a resumable frozen agent is ALWAYS counted — the leg that must hold', () => {
+  // nothing here is excludable, at any depth: if this returns empty the
+  // filter has started eating the case it exists to serve
   const t = tree([
-    { id: 'a', frozen: LIMIT },
-    { id: 'b', frozen: LIMIT, children: [{ id: 'c', frozen: LIMIT }] },
+    { id: 'a', frozen: LIMIT, resumable: true },
+    { id: 'b', frozen: LIMIT, resumable: true,
+      children: [{ id: 'c', frozen: LIMIT, resumable: true }] },
   ])
   assert.deepEqual(ids(t), ['a', 'b', 'c'])
 })
 
-test('§4 every non-live state is excluded, and they are distinct states', () => {
-  // `archived` is what the UI calls RETIRED; `unrecoverable` is the other
-  // non-live state. Both must go, and the live one must stay — keyed on
-  // `state === 'live'` rather than on `!== 'archived'`, so a third state
-  // added later fails closed instead of silently counting.
+test('§4 the field decides — NOT the node state the frontend can see', () => {
+  // This is the anti-mirror check. Both nodes are `state: 'live'`, so any
+  // re-derivation in App.tsx would count both; only the backend's answer
+  // separates them. If someone reintroduces a `state === 'live'` test in
+  // resumableFrozen, this test still passes — but the one below fails.
   const t = tree([
-    { id: 'retired', state: 'archived', frozen: LIMIT },
-    { id: 'unrecoverable', state: 'unrecoverable', frozen: LIMIT },
-    { id: 'live', state: 'live', frozen: LIMIT },
+    { id: 'live-but-refused', frozen: LIMIT, resumable: false },
+    { id: 'live-and-allowed', frozen: LIMIT, resumable: true },
   ])
-  assert.deepEqual(ids(t), ['live'])
+  assert.deepEqual(ids(t), ['live-and-allowed'])
 })
 
-test('§5 rehiring counts again — a live property, not a scrubbed record', () => {
-  // the SAME node and the SAME freeze record, differing only in state. This
-  // is the reason the fix keys on state instead of clearing `frozen` at
-  // retire time: a rehired agent's freeze is still real and still waiting.
-  const retired = tree([{ id: 'n', state: 'archived', frozen: LIMIT }])
-  const rehired = tree([{ id: 'n', state: 'live', frozen: LIMIT }])
-  assert.deepEqual(resumableFrozen(retired), [])
-  assert.deepEqual(ids(rehired), ['n'])
+test('§5 an ARCHIVED node the backend calls resumable is still counted', () => {
+  // Deliberately contradictory fixture: the frontend must not second-guess
+  // the backend. `resumable` is the answer, not a hint to be re-checked —
+  // and this is the check that fails if the old `state === 'live'` test is
+  // ever reintroduced alongside the field.
+  const t = tree([{ id: 'odd', frozen: LIMIT, resumable: true, state: 'archived' }])
+  assert.deepEqual(ids(t), ['odd'],
+    'resumableFrozen re-derived the rule instead of trusting the payload')
 })
 
-test('§6 limit_locked is excluded too — ▶ will not touch it either', () => {
-  // `_resumable` refuses a limit_locked node (only clear_fable_lock releases
-  // it), so counting it is the same lie as counting a retired one
+test('§6 no freeze record, no count — whatever the flag says', () => {
+  // `resumable` is never true without a record in practice; the null test in
+  // resumableFrozen is TypeScript narrowing for the `.frozen.until` deref
+  // below it, and this pins that it cannot crash on a contradictory payload
   const t = tree([
-    { id: 'locked', frozen: LIMIT, limit_locked: true },
-    { id: 'open', frozen: LIMIT, limit_locked: false },
-  ])
-  assert.deepEqual(ids(t), ['open'])
-})
-
-test('§7 an unfrozen agent never counts, live or not', () => {
-  const t = tree([
-    { id: 'idle', frozen: null },
-    { id: 'retired-clean', state: 'archived', frozen: null },
-    { id: 'frozen', frozen: LIMIT },
+    { id: 'clean', frozen: null, resumable: true },
+    { id: 'frozen', frozen: LIMIT, resumable: true },
   ])
   assert.deepEqual(ids(t), ['frozen'])
-})
-
-// ---------------------------------------------------------------------------
-// DRIFT GUARD. `resumableFrozen` is a hand-written mirror of a Python function
-// in another language that no compiler checks against it. If `_resumable`
-// grows a condition, this mirror silently stops matching and the banner starts
-// over-counting again — the exact bug, returning by a route the tests above
-// cannot see, because they only ever ask this file's own opinion.
-//
-// So read the backend and assert its shape. This cannot prove the mirror is
-// correct, but it fails loudly when the thing being mirrored moves, which is
-// the failure that actually happened here.
-test('§8 DRIFT — supervisor._resumable still tests exactly what we mirror', () => {
-  // __SRC_DIR__ is frontend/src; the backend sits two levels up
-  const sup = path.join(__SRC_DIR__, '..', '..', 'backend', 'orgtree', 'supervisor.py')
-  const src = readFileSync(sup, 'utf8')
-  const at = src.indexOf('def _resumable(')
-  assert.ok(at > 0, 'could not find _resumable — it moved or was renamed')
-  const body = src.slice(at, src.indexOf('\ndef ', at + 10))
-
-  assert.match(body, /n\["state"\]\s*!=\s*"live"/,
-    '_resumable no longer keys on state != "live" — resumableFrozen mirrors it')
-  assert.match(body, /n\.get\("limit_locked"\)/,
-    '_resumable no longer tests limit_locked — resumableFrozen mirrors it')
-  // the kinds exempted from its other-kind test. If this list changes, the
-  // "not mirrored" note on resumableFrozen needs re-reading.
-  for (const kind of ['limit', 'connection', 'on_fallback', 'untrusted']) {
-    assert.ok(body.includes(`"${kind}"`),
-      `_resumable's exempt-kind list no longer names ${kind}`)
-  }
 })

@@ -506,6 +506,21 @@ export default function App() {
                           — the toggle governs only limit freezes. A record
                           carrying BOTH flags falls to the limit branch: its
                           wake waits on the toggle like any limit's. */}
+                      {/* ⚠ THE LABEL MUST DESCRIBE THE SET THE COUNT COUNTS.
+                          `resumable` means "▶ will act on this", NOT "this is
+                          waiting on capacity" — and D-156 pulls those apart:
+                          an AUTH freeze (rejected credential, not spent
+                          capacity) stays resumable on purpose, because
+                          replacing the credential and pressing ▶ is the fix.
+                          Such a node will be counted here and wants a third
+                          branch saying so, exactly as the connection kind got
+                          one. It cannot be written yet: `TreeFrozen` carries
+                          no `cause`, so this file cannot tell an auth freeze
+                          from a limit one. Whoever adds `cause` to the payload
+                          adds that branch — the count is already correct, it
+                          is only these words that would over-claim. This is
+                          the "resumes 3:10pm beside agents that never resume"
+                          failure, and it is not to be rebuilt here. */}
                       <span className="resume-note">
                         {frozen.every((n) => n.frozen.connection && !n.frozen.limit)
                           ? <>network interruption — {frozen.length} agent
@@ -1282,31 +1297,27 @@ function flatNodes(tree: TreePayload): Map<string, TreeNode> {
  *  org whose two frozen agents had since been RETIRED. Retiring does not clear
  *  the freeze record — deliberately, since a retired agent keeps its context
  *  and can be rehired — so the old test (`n.frozen != null` alone) counted
- *  nodes that ▶ has never been willing to touch.
+ *  nodes ▶ has never been willing to touch. Nothing behind the banner was
+ *  broken: the backend already refused them and ▶ resumed nobody.
  *
- *  ⚠ THIS IS A MIRROR OF `supervisor._resumable`, and it must stay one. The
- *  backend was already right: `_resumable` returns None for a node whose
- *  `state != "live"` or that is `limit_locked`, so pressing ▶ on that banner
- *  resumed nobody and reported "resumed 0 agent(s)". Only the count lied. Keep
- *  the two in step — a banner promising more than ▶ delivers is this same bug
- *  again, and the mobile status chip above (`state === 'live'`, twice) was
- *  already doing it correctly, which is why only this one surface was wrong.
+ *  ⚠ THE RULE IS NOT HERE, AND MUST NOT COME BACK HERE. `node.resumable` is
+ *  composed by the backend from `supervisor.resumable`, which is the single
+ *  expression of it. The first fix re-derived the rule in this file and held
+ *  the two copies together with a test that read `supervisor.py` as text —
+ *  and a source-text check cannot tell a rule that got STRONGER from one that
+ *  got weaker, fires on a harmless rename, and misses a semantic change that
+ *  keeps the same spelling. If you find yourself adding a condition below,
+ *  the condition belongs in `_resumable` instead.
  *
- *  Keyed on LIVE STATE, not on a one-time scrub of the record: a retired agent
- *  that gets rehired goes back to `state: 'live'` and starts counting again,
- *  which is what should happen — its freeze is still real and still waiting.
- *
- *  Not mirrored: `_resumable`'s "another freeze kind owns this" test, whose
- *  only reachable flag is `spend`. `TreeFrozen` does not carry it, and the
- *  banner already returns early on the org-level `tree.spend_frozen`. If a
- *  per-node spend freeze ever becomes reachable without that org flag, this
- *  is where it belongs. */
+ *  The `frozen != null` test is a TYPE NARROWING, not a second copy of the
+ *  rule: `resumable` is only ever true for a node carrying a record, and the
+ *  banner dereferences `.frozen.until` — this is how TypeScript is told. */
 export function resumableFrozen(
   tree: TreePayload,
 ): (TreeNode & { frozen: TreeFrozen })[] {
   return [...flatNodes(tree).values()].filter(
     (n): n is TreeNode & { frozen: TreeFrozen } =>
-      n.frozen != null && n.state === 'live' && !n.limit_locked)
+      n.resumable && n.frozen != null)
 }
 
 function SenderChip({ id, nodes }: { id: string; nodes: Map<string, TreeNode> }) {

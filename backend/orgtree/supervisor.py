@@ -7586,6 +7586,33 @@ def _resumable(n: NodeDoc) -> FrozenInfo | None:
     return fz
 
 
+def resumable(n: NodeDoc) -> bool:
+    """Will ▶ act on this node? The yes/no half of `_resumable`, for callers
+    outside this module.
+
+    The tree payload carries this per node (`api.py`'s `annotate`) so the
+    resume banner counts what ▶ will actually do. It used to re-implement the
+    rule in TypeScript and hold the two together with a source-text check —
+    two expressions of one rule, where the check could not tell a rule that
+    got stronger from one that got weaker. One expression, and its answer
+    travels to the client instead.
+
+    ⚠ Takes a NodeDoc, never a tree-payload node. `ledger.tree()` rebuilds
+    `frozen` from a fixed key list that omits `spend`, so on a projection this
+    would call a spend-frozen node resumable.
+
+    ⚠ IT MEANS "WILL ▶ ACT ON THIS", NOT "IS THIS WAITING ON CAPACITY". The
+    two read alike and come apart on an AUTH freeze (D-156, `cause == "auth"`:
+    a rejected credential rather than exhausted capacity). The auto-resume
+    timer refuses those; `_resumable` deliberately does not, because replacing
+    the credential and pressing ▶ IS the fix and the operator has to be able
+    to perform it. So an auth-frozen node is `resumable: True` and counts on
+    the banner. Anything that wants the capacity question must ask it
+    separately — do not reach for this field expecting that answer.
+    """
+    return _resumable(n) is not None
+
+
 def resume_frozen(slug: str, only: Iterable[str] | None = None,
                   cheap_first: bool = False) -> list[str]:
     """The ▶ button: un-freeze every usage-limit-frozen agent at once and replay
