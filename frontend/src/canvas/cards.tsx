@@ -157,6 +157,11 @@ export function UserNode({ pos, isDrop, stats, inboxCount, asksOpen = 0, seats,
         maxTier={kiosk?.max_tier} />
       {focused && (
         <EyeDesk map={map} op={op} slug={slug} toast={toast}
+          /* `onFocus` IS `centerOn(USER)` — the very glide an unfocused eye
+             gets from the click below. Re-centring is that same action asked
+             for again, so it is the same callback, not a second one that
+             could drift from it. */
+          onRecenter={onFocus}
           inboxCount={inboxCount} asksOpen={asksOpen} onInbox={onInbox}
           onGear={onGear} pub={pub} eyeW={eyeW} posX={posX} onJump={onJump}
           compactAt={compactAt} maxTop={maxTop} pxc={pxc}
@@ -198,11 +203,17 @@ interface EyeDeskProps {
    *  targets the full desk gets */
   onNodeLineage?: (id: string) => void
   onNodeConfig?: (id: string) => void
+  /** user bug 2026-08-26: clicking a focused AGENT's desk re-centres the
+   *  camera on it (`.desk-over`'s onClick, desk.tsx). The switchboard is the
+   *  eye's desk and already wore the same `.desk-over` class — but it is
+   *  built here, separately, and never got the same handler. So it re-centred
+   *  only while it was NOT already focused. Same gesture, same result. */
+  onRecenter?: () => void
 }
 
 function EyeDesk({ map, op, slug, toast, inboxCount, asksOpen = 0,
   onInbox, onGear, pub, eyeW, posX, onJump, compactAt, maxTop, pxc,
-  onMailLink, onOpenDoc, onNodeLineage, onNodeConfig }: EyeDeskProps) {
+  onMailLink, onOpenDoc, onNodeLineage, onNodeConfig, onRecenter }: EyeDeskProps) {
   const agents = [...map.values()].filter((n) =>
     n.id !== USER && n.id !== DRAFT && n.state === 'live' && !n.isBearerOf
     && (n.parent === USER || n.audiences_held?.includes(USER)))
@@ -259,7 +270,21 @@ function EyeDesk({ map, op, slug, toast, inboxCount, asksOpen = 0,
   const innerW = Math.round((eyeW - 4) / (DESK_SCALE * deskDpi()))
   return (
     <div className="desk-over eye-desk" onWheel={(e) => e.stopPropagation()}
-      onPointerDown={(e) => e.stopPropagation()}>
+      onPointerDown={(e) => e.stopPropagation()}
+      /* recenter-on-click, character-for-character the guard `.desk-over`
+         uses in desk.tsx — never steal a click meant for a control, never
+         fight a text selection in progress. Deliberately ONE handler on the
+         switchboard root rather than one per panel: the panels are `bare`
+         (no overlay wrapper, by design — a second one would double-scale),
+         so their clicks bubble to here and land on the eye, which is the
+         focused thing. The per-agent jump stays reachable because it is a
+         `button` (`.cc-name-jump`) and the guard excludes buttons. */
+      onClick={(e) => {
+        if ((e.target as Element).closest(
+          'button, input, textarea, select, a, label, .mailrow, .eff-pop')) return
+        if (window.getSelection()?.toString()) return
+        onRecenter?.()
+      }}>
       <div className="desk-inner desk-body eye-inner" style={{ width: innerW }}>
         {/* one row (user spec 2026-07-31): the "you · N direct lines" label
             was dead space — the TABS live in the head now, beside the eye */}
