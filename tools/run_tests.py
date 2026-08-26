@@ -69,6 +69,42 @@ SAFETY
 refuses to start a suite whose source names that port, strips every `ORGTREE_*`
 variable out of the child environment so no suite can inherit a pointer at the
 real data directory, and never assigns a port itself.
+
+DID IT FINISH? — the one question this runner used to be unable to answer
+-------------------------------------------------------------------------
+A run that is KILLED part-way is otherwise indistinguishable from a run that
+passed: the last thing on stdout is a column of `✓` lines, stderr is empty,
+and there is no marker of any kind. Measured 2026-08-26 — two tier runs died
+at 49 s and 36 s having completed 19 and 25 suites with ZERO failures between
+them, and the only record of a cause anyone wrote down was "a background
+teardown". A deploy was gated on one of those runs.
+
+So the last two things this runner does, and it does them together, are:
+
+  * print `RUN COMPLETE  suites=N/M  …  rc=X` as the final stdout line, and
+  * write a `COMPLETE` file into `logdir`.
+
+Their ABSENCE is the signal. Neither can be produced by a run that died early,
+because nothing writes them until every suite has been accounted for. The
+summary bar above them is not enough on its own — it is prose, and a reader
+skims it — while `RUN COMPLETE` is one grep and `COMPLETE` is one
+`os.path.exists`. Gate on those, never on "I did not see a ✗".
+
+⚠ The stdout line is printed BEFORE the marker file is written, and that order
+is deliberate. Any interruption between them then leaves a run looking
+UNFINISHED, never finished — the safe direction. Reversed, a truncated log
+would carry a marker asserting a completeness it cannot back up, and a marker
+that lies is worse than no marker: it turns "I cannot tell" into "I was told
+wrong".
+
+Retroactively, on a run whose stdout is long gone: the plan header prints
+`plan · N to run`, and `run_one` writes a suite's log only once that suite has
+FINISHED — so `ls <logdir> | wc -l` against N tells you how far a past run
+actually got. That one works on every run already on disk.
+
+`backend/tests/test_run_completion.py` is the acceptance suite, and it earns
+its keep by killing a real run mid-flight rather than by reasoning about this
+docstring.
 """
 
 from __future__ import annotations
@@ -369,6 +405,38 @@ def run_one(suite, cmd, timeout, logdir):
 
 BAR = "─" * 72
 
+#: written into `logdir` by `emit_completion`, and by nothing else
+COMPLETE_MARKER = "COMPLETE"
+
+
+def emit_completion(logdir, planned, results, bad, skipped, wall, rc):
+    """The last two acts of a run, kept in ONE function on purpose.
+
+    Split across two call sites, the day would come when a `return` was added
+    between them and a finished run stopped writing its own marker — which is
+    the exact failure this whole mechanism exists to detect, reintroduced by
+    the detector. One function, one caller: both artefacts or neither.
+
+    Line first, file second — see the module docstring. An interruption
+    between them must read as UNFINISHED.
+    """
+    line = (f"RUN COMPLETE  suites={len(results)}/{planned}  "
+            f"passed={len(results) - len(bad)}  failed={len(bad)}  "
+            f"skipped={len(skipped)}  rc={rc}  wall={wall:.1f}s")
+    print()
+    print(line, flush=True)
+    try:
+        with open(os.path.join(logdir, COMPLETE_MARKER), "w",
+                  encoding="utf-8") as fh:
+            fh.write(line + "\n" + time.strftime("%Y-%m-%dT%H:%M:%S") + "\n")
+    except OSError as e:
+        # say it rather than swallow it — a missing marker is read as "this run
+        # did not finish", so an unwritable logdir would make a complete run
+        # lie about itself, in the safe direction but for a reason nobody
+        # reading the log could ever find
+        print(f"⚠ could not write the {COMPLETE_MARKER} marker in {logdir}: "
+              f"{e}  — the run DID finish; the line above is the record.")
+
 
 def plan_for(suites, args):
     """(runnable, skipped) — skipped carries a reason, never an error."""
@@ -448,7 +516,8 @@ def main():
     for s, why in skipped:
         print(f"  skipped    {s.id:<24} {why}")
     if args.list:
-        return 0
+        return 0     # no marker: --list ran nothing, so there is nothing to
+                     # claim finished. Same for the refusal below.
     if not run:
         # silence is not success — a filter that leaves nothing to run is
         # an error, not a green run of zero suites
@@ -563,8 +632,15 @@ def main():
                 print(f"    {ln[:160]}")
             if hits:
                 print(f"    … {len(live)} lines in the log")
-        return 1
-    return 0
+
+    # ⚠ A RUN THAT FAILED STILL FINISHED. The marker answers "did this run
+    # reach the end", which is a different question from "did it pass" — rc
+    # carries that, in the line and in the exit status. Gating the marker on
+    # `not bad` would make a red run and a killed run identical again, and
+    # telling those two apart is the entire point.
+    rc = 1 if bad else 0
+    emit_completion(logdir, len(run), results, bad, skipped, wall, rc)
+    return rc
 
 
 if __name__ == "__main__":

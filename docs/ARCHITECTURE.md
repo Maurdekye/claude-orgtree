@@ -474,6 +474,63 @@ disk and the frontend have no automated tests and there is no CI: a green
 mail journal, kiosk gateway, or disk mounts. Those paths are verified by
 scripted live drills at change time — keep drilling them.
 
+(That paragraph is stale on the count — `backend/tests/test_*.py` is 40
+suites as of 2026-08-26, discovered by glob. Its point about *coverage* still
+stands; the number does not.)
+
+## Running a long job without losing it
+
+The full tier takes tens of minutes, which is longer than an agent's turn.
+Everything below was measured on this machine on 2026-08-26 (`task-timeouts`),
+after two tier runs were silently cut and one deploy was gated on a partial
+one. None of it involves a timeout: nothing on this machine has one short
+enough to have fired.
+
+- **A job started as a harness BACKGROUND TASK dies when the turn ends.** It
+  is a child of that turn's `claude.exe`, and `supervisor.py` closes the CLI's
+  stdin at every turn boundary (`stdin.close()` in `_run_one_turn`) — one CLI
+  process per turn, and its children go with it. Measured with a heartbeat
+  process: last beat at 23:09:32Z, the same second the CLI exited. Two tier
+  runs died this way at 49 s and 36 s, having completed 19 and 25 suites.
+- **The same applies to the WAITER, which makes the obvious pattern
+  circular.** Starting the run in one background task and then waiting on it
+  from a second one kills both at the same boundary — the agent learns
+  nothing, and the "task stopped" notice it eventually gets says only that no
+  completion record was found. That reads like the job failed, and it also
+  reads like the job succeeded.
+- **This is also how a liveness check comes back FALSE for a live process.**
+  A reaped harness task is not a dead runner. One agent read it that way,
+  relaunched a duplicate, and only avoided a port collision by noticing the
+  original was still running.
+- **A DETACHED process survives the turn — but not a backend restart.**
+  `Start-Process` (Windows) or `start_new_session` outlives the turn fine; a
+  detached tier run was measured completing all 40 suites across several turn
+  boundaries. But `_leash()` puts every CLI child in a Windows job object with
+  `KILL_ON_JOB_CLOSE` tied to the backend, and job membership is INHERITED by
+  every descendant — so `orgtree_self_restart` / `update.ps1` reaps detached
+  runners too. Confirmed with `IsProcessInJob`: processes started outside
+  orgtree read *not-in-job*; a deliberately-detached grandchild reads
+  *in-job*. **Sequence a deploy against runs in flight; the tool's own "no
+  agent is mid-turn" refusal does not know a detached test run exists.**
+- **So: launch detached, record your own exit status, and wait with a
+  watchdog.**
+
+  ```
+  python tools/run_tests.py --full > run.log 2>&1; echo "RUN-EXIT=$?" >> run.log
+  ```
+
+  Then `orgtree_watchdog` `kind=file` on `run.log` for `RUN-EXIT=`. The
+  watchdog is persistent, survives turn ends and backend restarts, and costs
+  nothing — it caught a process death in 12 s in the drill that established
+  all of this.
+- **A cut run and a passing run are otherwise identical.** Both end in a
+  column of `✓` with empty stderr. `run_tests.py` therefore ends a real run
+  with `RUN COMPLETE …` on stdout and a `COMPLETE` file in `logdir` (D-157);
+  gate on those, never on "I did not see a ✗". For a run whose stdout is gone,
+  `ls <logdir> | wc -l` against the `plan · N to run` header still tells you
+  how far it got — suite logs are written on completion, so the count measures
+  progress. That works on the ~800 runs already in `%TEMP%`.
+
 ## Test-tree authorship
 
 `backend/tests/` and `frontend/tests/` have a **single** adversarial

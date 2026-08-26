@@ -2760,6 +2760,47 @@ the node, not the camera), cursor parked off-card (hover bakes the hire
 chips into the shot). Upload is manual — GitHub has no API for the social
 preview.
 
+### D-157 · a test run must be able to say it did not finish
+Ruling (coordinator, 2026-08-26, on a diagnosis by `task-timeouts`): a run of
+`tools/run_tests.py` ends by emitting TWO artefacts together — a final
+`RUN COMPLETE  suites=N/M  passed=…  failed=…  rc=X` line on stdout, and a
+`COMPLETE` file in `logdir`. Their **absence** is the signal. Nothing else may
+write either one, and neither may be produced before every suite has been
+accounted for. Anything gating on a test run — a deploy above all — gates on
+those, never on "no `✗` appeared".
+
+Why: a killed run and a passing run were byte-for-byte the same shape. Both
+end in a column of `✓` with empty stderr and no marker; two tier runs were cut
+at 19 and 25 suites with **zero failures between them**, and a deploy was
+gated on one of them. The failure is not that runs get killed — it is that
+being killed was invisible, so "the tests passed" and "the tests stopped"
+were the same observation. Two suites in this tree (`extern-handle-attach`,
+`extern-peer`) print no final total of their own, which removes even the
+weak per-suite tell.
+
+A run that FAILED still finished: the verdict travels in `rc=` and `failed=`,
+never in the marker's presence. Gating the marker on success would collapse
+red and killed back into one shape, which is the thing being fixed.
+
+Bounds: `--list` and the nothing-to-run refusal emit no marker, correctly —
+they ran nothing, so they have nothing to claim. The mechanism says whether a
+run REACHED THE END; it says nothing about why one was killed (see
+docs/ARCHITECTURE.md § "Running a long job without losing it" for that, which
+is operational and would evaporate under a refactor).
+
+Load-bearing:
+- **stdout line first, marker file second.** An interruption between them must
+  leave the run looking unfinished. A marker that lies is worse than no
+  marker: it turns "I cannot tell" into "I was told wrong".
+- **`run_one` writes a suite's log only after that suite finishes.** That is
+  what makes `ls <logdir> | wc -l` against the `plan · N to run` header a
+  measure of progress, and it is the only discriminator that works
+  retroactively on runs already on disk. A refactor that opened suite logs up
+  front — to stream into them, say — would destroy it silently.
+- Both are pinned by `backend/tests/test_run_completion.py`, which kills a
+  real run mid-flight rather than reasoning about the source, and proves the
+  kill landed on a running run before reading the result.
+
 ---
 
 ## Deliberately not built
