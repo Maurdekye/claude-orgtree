@@ -49,6 +49,7 @@ no network. §2 spawns `node` (the stand-in) — skipped with a note if absent.
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 import os
@@ -91,7 +92,8 @@ os.environ["ORGTREE_CLAUDE_CLI"] = _CLI      # read at import time
 os.environ["SYNTHCLI_CONFIG"] = _CFG
 os.environ["SYNTHCLI_COUNT"] = _COUNT
 
-from orgtree import limits, sandbox as sbx, store, supervisor    # noqa: E402
+from orgtree import (accounts, limits, sandbox as sbx, store,    # noqa: E402
+                     supervisor, tokens)
 from orgtree.ledger import USER                                  # noqa: E402
 
 PASS = 0
@@ -1593,18 +1595,152 @@ def _sec_reset_timing_body() -> None:
           "(structural — the wire, not the arithmetic)",
           _the_window_goes_through_the_bounder)
 
-    def _the_stamp_is_told_the_billing_lane():
-        seg = _freeze_block()
-        i = seg.find("_rts, _rsrc = _limit_reset_ts(")
-        fixture(i > 0, "the stamp call moved — re-read this check")
-        rhs = " ".join(seg[i:seg.find(")", seg.find("trusted=", i))].split())
-        assert "subscription=not _billed_key" in rhs, (
-            "D-133 §WHOSE QUOTA is decided here: told `subscription=True` a "
-            "key-billed org has its freeze timed off the HOST's lanes, and "
-            "the correction pass — still told the truth — declines to "
-            "overwrite it: %s" % rhs)
-    check("lane · the stamp is told the billing lane (structural)",
-          _the_stamp_is_told_the_billing_lane)
+    # ---- D-133 §WHOSE QUOTA, exercised rather than read ---------------------
+    # ⚠ WHAT WAS HERE BEFORE, AND WHY IT IS GONE. A source-text check asserted
+    # the literal `subscription=not _billed_key` inside `_freeze_block()`. At
+    # a27b929 (2026-08-25) the real condition got STRICTLY STRONGER — it now
+    # also requires that the account which SERVED the turn was the primary,
+    # because a fallback key's wall is a different account's quota. The check
+    # could not tell that from a regression: a condition that gets stronger
+    # and one that gets weaker present as the identical failure line. It sat
+    # red for a day, and everything behind it was hidden.
+    #
+    # ⇒ these legs drive the REAL freeze path and read what it wrote. The
+    #   question "is the second `_limit_reset_ts` call site mirrored?" is then
+    #   answered by construction instead of by a note someone has to honour:
+    #   whatever the code does is what gets measured.
+    _R_OFF = 3 * 3600.0                       # the readout's reset, nowhere
+    _VAGUE = "Claude AI usage limit reached"  # near the 300 s probe floor.
+    #   The prose carries NO epoch, so a lane allowed to read the readout WILL
+    #   (and stamps `reset_src="usage:session"`), and one that is not cannot
+    #   reach that source by any other route. `reset_src` is the observable
+    #   rather than the timestamp: it names WHERE the number came from, which
+    #   is the actual question, and it cannot be arrived at by coincidence.
+
+    def _limited_turn(prep=None) -> tuple[dict, str]:
+        """One real limited turn → `(its frozen record, the account it ran
+        as)`. The readout is re-installed per leg because §6's wrapper
+        invalidates the cache and earlier legs run real turns."""
+        slug, nid = probe_org()
+        if prep:
+            o = store.load_org(slug)
+            prep(o)
+            store.save_org(o)
+        _readout(("session", "session", 99, "critical", _R_OFF, True, None))
+        set_mode("iserror", limit_text=_VAGUE)
+        run_turn(slug, nid)
+        return dict(node(slug, nid).get("frozen") or {}), \
+            supervisor.turn_identity(slug, nid)
+
+    def _from_readout(fz) -> bool:
+        return str(fz.get("reset_src") or "").startswith("usage:")
+
+    # ---- the lane decision itself, on its inputs ---------------------------
+    # The legs below drive real turns, which is what proves the WIRE. But a
+    # real turn cannot reach every shape: `bills_the_key` also returns True
+    # for a SANDBOXED org whose container was handed a key that never appears
+    # in `org.d`, and this suite builds no containers. On every reachable
+    # path a key-billed turn reports `ran_as="api-key"`, so the serving-
+    # account clause alone already refuses it and the `billed_key` term looks
+    # redundant — it is not, and the sandbox row below is the only check in
+    # this file that can tell. (Measured 2026-08-26: with the lane inlined in
+    # the turn body, deleting `billed_key` survived every behavioural leg.)
+    _PRIM = accounts.PRIMARY
+    for _bk, _ran, _want, _why in (
+            (False, "",        True,  "an ambient spawn IS the primary lane"),
+            (False, _PRIM,     True,  "…so is an explicit primary"),
+            (False, "kFB01",   False, "a FALLBACK row's wall is its own "
+                                      "account's (a27b929)"),
+            (True,  "api-key", False, "a key-billed turn hit the API's wall "
+                                      "(D-133)"),
+            (True,  _PRIM,     False, "⚠ THE SANDBOX SHAPE — billed the key "
+                                      "while spawning as the primary. Only "
+                                      "the `billed_key` term refuses this, "
+                                      "and no behavioural leg can reach it")):
+        check(f"lane · subscription_lane(billed_key={_bk}, ran_as={_ran!r}) "
+              f"is {_want} — {_why}",
+              (lambda bk=_bk, ran=_ran, want=_want: (
+                  None if supervisor.subscription_lane(bk, ran) is want
+                  else (_ for _ in ()).throw(AssertionError(
+                      "got %r" % supervisor.subscription_lane(bk, ran))))))
+
+    if not shutil.which("node"):
+        # ⚠ LOUD, not silent. A `shutil.which` guard that quietly skips is the
+        # ambient-environment abstention: the suite goes green having tested
+        # nothing, and green is exactly what a passing run looks like.
+        note("node is absent — the three D-133 §WHOSE QUOTA behaviour legs "
+             "did NOT run; this suite did not test the billing lane at all")
+    else:
+        # THE CONTROL FIRST, and it is not decoration. Every "did not consult
+        # the readout" leg below passes trivially if the readout was never
+        # reachable in this rig — a wrong `_readout` shape, prose that happens
+        # to parse, a freeze that never happened. This leg is what makes their
+        # silence mean something.
+        _ctl_fz, _ctl_ran = _limited_turn()
+        check("lane · CONTROL — a subscription turn on the primary IS timed "
+              "off the host readout (so the refusals below are not vacuous)",
+              lambda: (
+            None if _ctl_fz.get("limit") and _from_readout(_ctl_fz)
+            and _ctl_ran in ("", accounts.PRIMARY)
+            else (_ for _ in ()).throw(AssertionError(
+                "the rig never reached the readout, so nothing below proves "
+                "anything: ran_as=%r frozen=%r" % (_ctl_ran, _ctl_fz)))))
+
+        def _a_key_billed_freeze_ignores_the_host_readout():
+            # a PERMANENT-key org: `api_key`, no `api_fallback` — shape 1 of
+            # `bills_the_key`. Its turns hit the API's wall, not the
+            # subscription's.
+            fz, ran = _limited_turn(
+                lambda o: o.d.update({"api_key": "sk-test"}))
+            assert fz.get("limit"), (
+                "premise failed — no usage freeze at all: %r" % fz)
+            assert ran == "api-key", (
+                "premise failed — this leg must run on the org's own key, "
+                "and it ran as %r" % ran)
+            assert not _from_readout(fz), (
+                "D-133 §WHOSE QUOTA: this turn billed the ORG'S KEY, so the "
+                "host subscription's lanes describe someone else's quota. "
+                "Reading them is the four-hour wrong-lane bug (redteam "
+                "2026-08-18). reset_src=%r until_ts=%r"
+                % (fz.get("reset_src"), fz.get("until_ts")))
+        check("lane · a KEY-BILLED turn's freeze is not timed off the host's "
+              "subscription lanes (behavioural)",
+              _a_key_billed_freeze_ignores_the_host_readout)
+
+        def _a_fallback_served_freeze_ignores_the_host_readout():
+            # …and the clause a27b929 ADDED, which the old text check could
+            # not have seen: nothing here bills a key, but the turn ran on a
+            # FALLBACK ACCOUNT, whose wall is its own. Seeded by hand —
+            # `register_key` makes a network call and this suite is hermetic
+            # by assertion.
+            kid = "kFREEZEGUARD01"
+            doc = accounts.load()
+            doc["keys"] = [{"id": kid, "account_uuid": None}]
+            doc["usage_refreshes"] = {}
+            accounts.save(doc)
+            tokens.put(kid, "sk-ant-oat01-" + "z" * 80)
+            try:
+                fz, ran = _limited_turn()
+                assert fz.get("limit"), (
+                    "premise failed — no usage freeze at all: %r" % fz)
+                assert ran == kid, (
+                    "premise failed — this leg must run on the fallback row, "
+                    "and it ran as %r" % ran)
+                assert not _from_readout(fz), (
+                    "a27b929: this turn was served by a FALLBACK account and "
+                    "the host usage readout describes the HOST login — "
+                    "timing the freeze off it parks the node on a quota it "
+                    "never touched. reset_src=%r until_ts=%r"
+                    % (fz.get("reset_src"), fz.get("until_ts")))
+            finally:
+                doc = accounts.load()
+                doc["keys"] = []
+                doc["usage_refreshes"] = {}
+                accounts.save(doc)
+                tokens.forget(kid)
+        check("lane · a turn served by a FALLBACK account is not timed off "
+              "the primary's readout either (behavioural)",
+              _a_fallback_served_freeze_ignores_the_host_readout)
 
     def _the_fable_lock_goes_through_its_own_clock():
         seg = _freeze_block()
@@ -1804,15 +1940,54 @@ def _sec_reset_timing_body() -> None:
 
     # F7 · the correction pass has the FINAL say on both the stamp and the
     # window, so it must be told the same lane the freeze was.
+    #
+    # ⚠⚠ WHAT THIS CHECK USED TO BE, AND WHY IT IS THE CAUTIONARY TALE OF THIS
+    # FILE. It asserted the literal `not _billed_key` at the spawn call. When
+    # a27b929 strengthened the STAMP's lane with the serving-account clause
+    # and left this call on the old one-term form, the check did not merely
+    # fail to notice — **it pinned the drift in place.** The two expressions
+    # were hand-copied, they diverged, and the suite actively defended the
+    # stale copy: anyone repairing the correction pass would have been told by
+    # a green-until-then test that they had broken it. Measured consequence,
+    # 2026-08-26: a fallback-served freeze refused the host readout under the
+    # document lock and this pass handed it straight back off-lock, parking
+    # the node ~3 h on an account's quota it never touched.
+    #
+    # ⇒ the LANE'S MEANING is now pinned by behaviour (the three §6 legs that
+    #   drive real limited turns and read `reset_src`). What is left here is
+    #   the only thing behaviour cannot see: that there is exactly ONE
+    #   expression, shared, rather than two copies free to drift again. It is
+    #   asserted over the AST, so no comment or docstring can satisfy it, and
+    #   it says nothing about WHAT the condition is — that is behaviour's job,
+    #   and encoding it twice is what caused this.
     def _the_correction_pass_is_told_the_lane():
-        j = _code.find("_spawn_reset_refresh(slug, nid, err_blob")
-        fixture(j > 0, "the spawn call moved — re-read this check")
-        seg = " ".join(_code[j:j + 260].split())
-        assert "not _billed_key" in seg and "_trusted_blob" in seg, (
-            "the pass rewrites until_ts AND api_fallback_until; told "
-            "`subscription=True` for a key-billed freeze it re-introduces the "
-            "whole-quota bug in the one place that has the last word: %s"
-            % seg)
+        tree = ast.parse(_sup)
+        stamp = spawn = None
+        for n in ast.walk(tree):
+            if not isinstance(n, ast.Call):
+                continue
+            fname = getattr(n.func, "id", "")
+            if fname == "_limit_reset_ts":
+                kw = next((k for k in n.keywords
+                           if k.arg == "subscription"), None)
+                if kw is not None and isinstance(kw.value, ast.Name) \
+                        and kw.value.id != "subscription":
+                    stamp = kw.value.id
+            elif fname == "_spawn_reset_refresh":
+                args = [a for a in n.args if isinstance(a, ast.Name)]
+                spawn = [a.id for a in args]
+        fixture(stamp is not None and spawn is not None,
+                "the stamp or the spawn call moved — re-read this check "
+                f"(stamp={stamp!r} spawn={spawn!r})")
+        assert stamp in spawn, (
+            "the correction pass rewrites until_ts AND api_fallback_until, so "
+            "it has the LAST WORD on both. It must be handed the very name "
+            f"the stamp used ({stamp!r}) — a second copy of the condition is "
+            f"what drifted at a27b929 and cost a 3-hour wrong-account park. "
+            f"Got: {spawn!r}")
+        assert "_trusted_blob" in spawn, (
+            "…and the same trust: an untrusted blob does not get to name its "
+            f"own lane in the pass that has the last word. Got: {spawn!r}")
     check("lane · the correction pass inherits the freeze's lane and trust "
           "(structural)", _the_correction_pass_is_told_the_lane)
 

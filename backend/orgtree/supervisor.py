@@ -1451,6 +1451,40 @@ def bills_the_key(org: Org, on_fallback_key: bool) -> bool:
     return not org.d.get("api_fallback") or on_fallback_key
 
 
+def subscription_lane(billed_key: bool, ran_as: str) -> bool:
+    """Does the HOST SUBSCRIPTION's usage readout describe the wall this turn
+    hit? — the D-133 §WHOSE QUOTA question, in one place.
+
+    Two independent ways the answer is no, and they do not subsume each other:
+
+      · `billed_key` — the turn billed an API key, so it hit the API's wall
+        and not the subscription's (D-133).
+      · `ran_as` is not the primary — the turn was served by a FALLBACK row,
+        whose wall is its own account's (a27b929). An empty `ran_as` means an
+        ambient spawn, which IS the primary lane.
+
+    ⚠ IT IS A FUNCTION, AND THAT IS THE POINT. This was two hand-copied
+    expressions in the turn body — one at the freeze stamp, one at the
+    off-lock correction pass. a27b929 strengthened the first and left the
+    second on the older one-term form, so a fallback-served freeze refused the
+    host readout under the document lock and the correction pass handed it
+    straight back seconds later, parking the node ~3 h on a quota it never
+    touched (measured 2026-08-26). Two copies of one rule is what failed;
+    one callable is the fix.
+
+    ⚠ AND THE TWO TERMS ARE NOT REDUNDANT, though on the common path they
+    look it: a key-billed turn normally reports `ran_as="api-key"`, so the
+    second term alone would refuse it anyway. The case that needs the first
+    is the SANDBOX — `bills_the_key` returns True for a container handed a key
+    that never appears in `org.d`, while the parent env carries no
+    `ANTHROPIC_API_KEY` and `ran_as` reads as the primary. Dropping
+    `billed_key` is invisible everywhere except there. (Which is why this is
+    unit-tested on its inputs: the suite cannot build a real container, so
+    that shape is unreachable end-to-end.)
+    """
+    return not billed_key and (ran_as or accounts.PRIMARY) == accounts.PRIMARY
+
+
 def _result_names_a_limit(text: str) -> bool:
     """Does a CLEAN result event's text name a usage limit? In stream-json a
     clean result's `result` IS the agent's own final answer, so this must not
@@ -4204,6 +4238,16 @@ def _run_one_turn(slug: str, nid: str,
                     _stamped_ts: float | None = None
                     _stamped_win: float | None = None
                     _billed_key = False
+                    # ⚠ ONE call, TWO consumers — the stamp below and the
+                    # off-lock correction pass at the end of this block.
+                    # They used to be two hand-copied expressions and they
+                    # DRIFTED: a27b929 strengthened the stamp with the
+                    # serving-account clause and left the correction pass on
+                    # the old one-term form, so a fallback-served freeze
+                    # refused the host readout under the lock and had that
+                    # refusal handed back off-lock seconds later. They must
+                    # not be able to disagree again — see `subscription_lane`.
+                    _sub_lane = False
                     # a limit the CLI REPORTED — stderr, a result event flagged
                     # is_error, or its own `<synthetic>` limit record — versus
                     # one promoted out of the agent's own final answer by the
@@ -4221,6 +4265,8 @@ def _run_one_turn(slug: str, nid: str,
                             # was being retagged into one that ▶ resume skips
                             # forever. This flag is what tells them apart.
                             _billed_key = billed_key
+                            _sub_lane = subscription_lane(
+                                billed_key, str(st.get("ran_as") or ""))
                             fz["limit"] = True
                             # ⚠ the label is a CONSEQUENCE like the window and
                             # the wake, and it is the only one a person reads:
@@ -4246,11 +4292,7 @@ def _run_one_turn(slug: str, nid: str,
                             # account's quota (machine-local routing,
                             # 2026-08-25)
                             _rts, _rsrc = _limit_reset_ts(
-                                err_blob,
-                                subscription=(not _billed_key
-                                              and (str(st.get("ran_as") or "")
-                                                   or accounts.PRIMARY)
-                                              == accounts.PRIMARY),
+                                err_blob, subscription=_sub_lane,
                                 trusted=_trusted_blob)
                             # an INHERITED timestamp (a re-freeze on a node
                             # whose old record survived) is the one number
@@ -4446,9 +4488,15 @@ def _run_one_turn(slug: str, nid: str,
                     # endpoint routinely takes over a second (user report
                     # 2026-08-18). Re-ask off-lock and correct the record.
                     if _stamped_ts is not None:
+                        # ⚠ THE SAME LANE THE STAMP USED. This argument was
+                        # `not _billed_key` — the pre-a27b929 form — while
+                        # the stamp above had been strengthened, so a
+                        # fallback-served freeze refused the host readout
+                        # under the lock and this pass handed it straight
+                        # back off-lock. Pass the shared name, never a copy.
                         _spawn_reset_refresh(slug, nid, err_blob,
                                              _stamped_ts, _stamped_win,
-                                             not _billed_key, _trusted_blob)
+                                             _sub_lane, _trusted_blob)
                     notify(slug, nid, "frozen")
                     handled = True      # frozen — ▶ / auto-resume owns it now
                     if org.node(nid)["model"] == "fable" and _trusted_blob \
