@@ -14,7 +14,7 @@ import {
   LockIcon, MailIcon, RetireIcon, SettingsIcon,
 } from '../icons'
 import {
-  ago, DESK_SCALE, deskDpi, DRAFT, NODE_H, NODE_W, TIER_LETTER, TIERS, USER,
+  ago, DESK_SCALE, deskDpi, DRAFT, freezeKind, FREEZE_LABEL_SHORT, NODE_H, NODE_W, TIER_LETTER, TIERS, USER,
   USER_H, USER_W,
 } from './shared'
 import type {
@@ -996,8 +996,7 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, m
                     ...(r.warnings ?? [])]))
                   .catch((e2: Error) => toast([`error: ${e2.message}`]))
               }}><FrozenIcon fontSize="inherit" />{' '}
-              {node.limit_locked ? 'halted'
-                : node.frozen.connection ? 'net' : 'limit'}</button>}
+              {FREEZE_LABEL_SHORT[freezeKind(node.frozen, node.limit_locked) ?? 'limit']}</button>}
           {node.remote_controlled &&
             <span className="badge frozen"
               title="the user is driving this session from another device — mail queues until release (gear panel)">

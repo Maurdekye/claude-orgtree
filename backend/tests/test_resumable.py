@@ -222,9 +222,12 @@ def annotate_emits_it_everywhere() -> None:
     assert r.status_code == 200, (r.status_code, r.text[:300])
 
     seen: list[tuple[str, object]] = []
+    frozen_seen: dict[str, dict] = {}
 
     def walk(n) -> None:
         seen.append((n["id"], n.get("resumable", "<MISSING>")))
+        if n.get("frozen"):
+            frozen_seen[n["id"]] = n["frozen"]
         for ch in n.get("children") or []:
             walk(ch)
 
@@ -243,6 +246,23 @@ def annotate_emits_it_everywhere() -> None:
         f"away, instead of org.node(id). See supervisor.resumable.")
     # …and the depth actually exercised the recursion, not just the roots
     assert len(seen) >= 3, f"only {len(seen)} node(s) walked: {seen}"
+
+    # ⚠ THE PROJECTION MUST CARRY THE KIND, or every label branch downstream is
+    # dead code and the display silently falls through to "usage limit". That
+    # is not hypothetical: it is precisely how an auth freeze read as a usage
+    # limit and a spend freeze read as one on the node badge. `frozen` is
+    # rebuilt key by key in ledger.tree(), so a kind that is not NAMED there
+    # never reaches the client — the client cannot even make the test.
+    spend_fz = frozen_seen.get(spent)
+    assert spend_fz is not None, f"the spend-frozen node had no record: {frozen_seen}"
+    assert spend_fz.get("spend") is True, (
+        f"`spend` did not survive ledger.tree()'s frozen projection: "
+        f"{spend_fz} — the node badge cannot tell a spend freeze from a usage "
+        f"limit without it, and will say 'usage limit'")
+    limit_fz = frozen_seen.get(kid)
+    assert limit_fz is not None and "cause" in limit_fz, (
+        f"`cause` is not in the projection: {limit_fz} — an auth freeze would "
+        f"be indistinguishable from a usage limit")
 
 
 check("GET /api/orgs/{slug} emits `resumable` on every node at every depth",

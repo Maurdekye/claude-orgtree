@@ -402,6 +402,76 @@ export function sizeOf(id: string): { w: number; h: number } {
   return { w: NODE_W, h: NODE_H }
 }
 
+// ------------------------------------------------------------- freeze kinds
+// WHICH KIND OF FREEZE IS THIS? One classification, rendered three ways — the
+// org banner's note (App.tsx), the desk badge (desk.tsx) and the compact card
+// badge (cards.tsx). They are three registers of one question, and before this
+// existed each made its own two-way test and every one of them ended in the
+// same `else` reading "usage limit".
+//
+// ⚠ THAT DEFAULT IS THE BUG THIS FIXES, TWICE OVER. Every kind the payload
+// could not describe fell through to "usage limit" and the display said it
+// confidently:
+//   · an AUTH freeze (`cause === "auth"`, the credential was rejected) carries
+//     `limit: true` — it is a usage-limit freeze in SHAPE only. It read as
+//     "usage limit hit", telling the operator to wait for capacity when the
+//     fix is to replace a credential. ▶ really does resume it, so it is
+//     counted; only the words were wrong.
+//   · a SPEND freeze read as "usage limit" on the node badge. The org banner
+//     was right about it only because it returns early on the org-level
+//     `spend_frozen` flag — a badge has no org flag to consult.
+// Both were invisible until `ledger.tree()`'s frozen projection was taught to
+// carry `cause` and `spend`; it rebuilds the record key by key and silently
+// drops whatever it does not name.
+//
+// ⚠ ORDER IS MEANING, not style. `limit_locked` outranks everything: a fable
+// lock's clock can never fire, so naming any other kind there would promise a
+// reset that nobody performs. `spend` outranks `limit` because a spend freeze
+// also carries limit-ish shape but is released by raising the limit, not by
+// waiting. `auth` outranks `limit` for the same reason — same shape, different
+// remedy. `connection` is last of the real kinds because it is the only one
+// that retries itself.
+export type FreezeKind = 'halted' | 'spend' | 'auth' | 'connection' | 'limit'
+
+export function freezeKind(
+  fz: { connection?: boolean | null; limit?: boolean | null
+        cause?: string | null; spend?: boolean | null } | null | undefined,
+  limitLocked?: boolean,
+): FreezeKind | null {
+  if (limitLocked) return 'halted'
+  if (!fz) return null
+  if (fz.spend) return 'spend'
+  if (fz.cause === 'auth') return 'auth'
+  // a PURE connection freeze only — a record carrying both flags is a limit
+  // whose wake waits on the auto-resume toggle (D-122)
+  if (fz.connection && !fz.limit) return 'connection'
+  return 'limit'
+}
+
+// The two badge registers. They live here, beside the classification and as
+// data, for one reason: as inline ternaries in the JSX they could not be
+// tested for the property that actually matters — that every kind gets its
+// OWN words. A collapsed branch (two kinds sharing a string) is exactly the
+// failure being fixed, and it is invisible unless something compares the
+// labels to each other. `freezelabel.test.ts` asserts both maps are TOTAL over
+// FreezeKind and that no two kinds share a label.
+export const FREEZE_LABEL: Record<FreezeKind, string> = {
+  halted: 'HALTED — fable lock',
+  spend: 'spend limit',
+  auth: 'credential rejected',
+  connection: 'network',
+  limit: 'usage limit',
+}
+
+/** the 124px card's register — same kinds, shorter words */
+export const FREEZE_LABEL_SHORT: Record<FreezeKind, string> = {
+  halted: 'halted',
+  spend: 'spend',
+  auth: 'credential',
+  connection: 'net',
+  limit: 'limit',
+}
+
 // ------------------------------------------------ edge jump card placement
 // user bug 2026-08-26: the jump cards sat at a fixed 6px from the window edge
 // and overlapped the focused desk on a narrow window. Cards are SQUARE, and a

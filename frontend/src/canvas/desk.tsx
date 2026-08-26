@@ -24,7 +24,7 @@ import {
   HearingIcon, LayersIcon, LockIcon, MailIcon, PlayIcon, PsychologyIcon,
   SettingsIcon, SparkIcon, StopIcon, WarnIcon,
 } from '../icons'
-import { ago, CopyIcon, EXTERN, md, TIER_LETTER, TIER_SEAT, USER, useEsc, usePolled } from './shared'
+import { ago, CopyIcon, EXTERN, freezeKind, FREEZE_LABEL, md, TIER_LETTER, TIER_SEAT, USER, useEsc, usePolled } from './shared'
 import {
   addPending, CHAT_WINDOW, dropPending, loadOlder as storeLoadOlder, markBusy,
   MAX_WINDOW, refreshConvo, useConvo,
@@ -629,8 +629,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
             {/* a limit_locked node's freeze clock can never fire (the
                 resume path skips locked nodes) — say HALTED, never a
                 reset time that is a lie (redteam 2026-08-06) */}
-            {node.limit_locked ? 'HALTED — fable lock'
-              : node.frozen.connection ? 'network' : 'usage limit'}
+            {FREEZE_LABEL[freezeKind(node.frozen, node.limit_locked) ?? 'limit']}
             {/* ⚠ "resumes X" is a LIMIT's phrasing — there X is a reset time
                 and something does resume at it. A connection freeze's label
                 is a statement of fact ("network interruption — attempt 1/4"),
@@ -641,6 +640,12 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
             {!node.limit_locked && node.frozen.until
               ? ` · ${node.frozen.connection
                 ? node.frozen.until.replace(/^network interruption — /, '')
+                // an auth freeze's `until` says what to DO ("credential
+                // rejected — replace it, then resume"); the label above
+                // already carries the first half, so strip it exactly as the
+                // connection branch does rather than say it twice
+                : node.frozen.cause === 'auth'
+                ? node.frozen.until.replace(/^credential rejected — /, '')
                 // ⚠ NO VERB. The backend re-derives this string from the live
                 // account roster and it already says what it means ("capacity
                 // resets 3:10pm" / "capacity available — ▶ to resume" /

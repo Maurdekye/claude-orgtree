@@ -20,7 +20,7 @@ import {
 } from './icons'
 import { DirList } from './forms'
 import { FolderPickerHost } from './picker'
-import { deskDpi, fallbackActive, orgPxc, setDeskDpi, usePolled, TIERS } from './canvas/shared'
+import { deskDpi, fallbackActive, freezeKind, orgPxc, setDeskDpi, usePolled, TIERS } from './canvas/shared'
 import { AskCard } from './canvas/asks'
 import { AccountsPanel, UsageBars } from './canvas/accounts'
 import { addPending, dropPending, ingestPulse, ingestStream, resetConvos } from './convo'
@@ -508,25 +508,36 @@ export default function App() {
                           wake waits on the toggle like any limit's. */}
                       {/* ⚠ THE LABEL MUST DESCRIBE THE SET THE COUNT COUNTS.
                           `resumable` means "▶ will act on this", NOT "this is
-                          waiting on capacity" — and D-156 pulls those apart:
-                          an AUTH freeze (rejected credential, not spent
-                          capacity) stays resumable on purpose, because
-                          replacing the credential and pressing ▶ is the fix.
-                          Such a node will be counted here and wants a third
-                          branch saying so, exactly as the connection kind got
-                          one. It cannot be written yet: `TreeFrozen` carries
-                          no `cause`, so this file cannot tell an auth freeze
-                          from a limit one. Whoever adds `cause` to the payload
-                          adds that branch — the count is already correct, it
-                          is only these words that would over-claim. This is
-                          the "resumes 3:10pm beside agents that never resume"
-                          failure, and it is not to be rebuilt here. */}
+                          waiting on capacity", and D-156 pulls those apart: an
+                          AUTH freeze (rejected credential, not spent capacity)
+                          stays resumable on purpose — replacing the credential
+                          and pressing ▶ IS the fix. It is correctly counted;
+                          it was the WORDS that over-claimed, telling the
+                          operator to wait for capacity while a credential was
+                          what was broken.
+                          A cause is named only when the WHOLE set shares one.
+                          A mixed set says the count and the action and stops,
+                          because there is no honest single cause for it — an
+                          under-informative line beats a confident wrong one.
+                          (No spend branch here on purpose: this block already
+                          returned early on `tree.spend_frozen`, which
+                          `hard_freeze` always writes alongside the per-node
+                          flag. The node BADGES need that branch; this does
+                          not, and inventing one would be dead code pretending
+                          to be a safeguard.) */}
                       <span className="resume-note">
-                        {frozen.every((n) => n.frozen.connection && !n.frozen.limit)
+                        {frozen.every((n) => freezeKind(n.frozen) === 'connection')
                           ? <>network interruption — {frozen.length} agent
                             {frozen.length > 1 ? 's' : ''} frozen
                             {until ? ` · ${until.replace(/^network interruption — /, '')}` : ''}
                             {' · retrying automatically'}</>
+                          : frozen.every((n) => freezeKind(n.frozen) === 'auth')
+                          ? <>credential rejected — {frozen.length} agent
+                            {frozen.length > 1 ? 's' : ''} frozen
+                            {' · replace it, then ▶ to resume'}</>
+                          : frozen.some((n) => freezeKind(n.frozen) === 'auth')
+                          ? <>{frozen.length} agent{frozen.length > 1 ? 's' : ''} frozen
+                            {' · ▶ to resume'}</>
                           : <>usage limit hit — {frozen.length} agent
                             {frozen.length > 1 ? 's' : ''} frozen
                             {/* ⚠ NO VERB — the backend re-derives this from

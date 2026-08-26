@@ -188,6 +188,12 @@ export interface TreeFrozen {
    *  the N has `cause === "auth"`: the COUNT is right and the WORDS are not.
    *  This field is what a label branch needs to say so. */
   cause?: string | null
+  /** the kiosk SPEND kind (2026-08-26). `hard_freeze` writes this flag and the
+   *  org-level `spend_frozen` in the same locked block, so they always coexist
+   *  — which is why the org banner was right (it returns early on the org
+   *  flag) while the NODE BADGE was wrong: a badge has no org flag to consult,
+   *  so a spend-frozen agent wore the words "usage limit". */
+  spend?: boolean | null
 }
 
 // ledger.py tree(): one entry of the node's lineage stack (§8)

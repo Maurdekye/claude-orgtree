@@ -5997,7 +5997,35 @@ class Org:
                                          # words "usage limit" do not describe
                                          # it. A reader that cannot see this
                                          # field cannot help over-claiming.
+                                         # the kiosk SPEND kind. It rode the
+                                         # org-level `spend_frozen` flag alone
+                                         # for a long time, which is why the
+                                         # org banner was right and the NODE
+                                         # BADGE was not: the badge has no
+                                         # org flag to consult, so a
+                                         # spend-frozen agent wore the words
+                                         # "usage limit" (2026-08-26).
+                                         "spend",
                                          "cause")},
+                            # ⚠⚠ THIS LIST IS A FILTER, AND WHAT IT OMITS IT
+                            # DESTROYS SILENTLY. `frozen` is rebuilt key by
+                            # key, so a kind flag or qualifier added to
+                            # FrozenInfo does NOT reach the client until it is
+                            # named HERE — and the symptom is never a crash or
+                            # a blank. It is a display confidently saying the
+                            # wrong thing, because every reader falls to the
+                            # `else` branch of a test it cannot make.
+                            # It has now cost exactly that twice in one day:
+                            # `cause` (auth freezes labelled "usage limit hit"
+                            # — and `_rederive_freeze_reset` additionally
+                            # OVERWROTE their "replace the credential" text
+                            # with "capacity available", the opposite of the
+                            # fix) and `spend` (the node badge above).
+                            # ⚠ IF YOU ADD A FREEZE KIND, ADD IT HERE IN THE
+                            # SAME COMMIT, and give it a label branch in
+                            # App.tsx's resume-note, desk.tsx's badge and
+                            # cards.tsx's compact badge — all three fall
+                            # through to "usage limit" by default.
                             # №41: freeze kinds are commutative — surface
                             # whichever reason(s) exist without overwriting
                             "error": " · ".join(
