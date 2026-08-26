@@ -38,6 +38,16 @@ export interface OrgCanvasProps {
   onInbox?: (jump?: string) => void
 }
 
+/** has this spring arrived? Both the spring loop (which snaps to the target on
+ *  the frame this first holds) and the №25 follow ask it, and they have to ask
+ *  the SAME question: the follow may only engage on a node that has come to
+ *  rest, so a threshold that drifted between the two would let it engage on a
+ *  node the loop still considers in flight — which is the freeze it exists to
+ *  avoid. */
+const atRest = (s: Spring, tgt: Pt): boolean =>
+  Math.abs(tgt.x - s.x) <= 0.4 && Math.abs(tgt.y - s.y) <= 0.4
+  && Math.abs(s.vx) <= 2 && Math.abs(s.vy) <= 2
+
 export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvasProps) {
   const [draft, setDraft] = useState<DraftState | null>(null)
   const [configId, setConfigId] = useState<string | null>(null)
@@ -588,8 +598,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
         const ay = SPRING_K * (tgt.y - s.y) - SPRING_C * s.vy
         s.vx += ax * dt; s.vy += ay * dt
         s.x += s.vx * dt; s.y += s.vy * dt
-        if (Math.abs(tgt.x - s.x) > 0.4 || Math.abs(tgt.y - s.y) > 0.4
-            || Math.abs(s.vx) > 2 || Math.abs(s.vy) > 2) active = true
+        if (!atRest(s, tgt)) active = true
         else { s.x = tgt.x; s.y = tgt.y; s.vx = 0; s.vy = 0 }
       }
       for (const id of [...springs.current.keys()]) {
@@ -612,10 +621,31 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
       // were typing into ~1000 screen px out of the window — follow the
       // focused node's per-frame spring delta instead. Camera animations and
       // manual pans own the view; the follow yields to them.
+      //
+      // ENGAGING ONLY AT REST. Cancelling the spring delta holds the node at a
+      // FIXED SCREEN OFFSET — whatever offset it had on the frame the follow
+      // engaged. That is the whole point while the layout re-anchors under a
+      // settled node, and it is a trap the moment the follow engages on a node
+      // still in flight: the distance the spring had left to travel is exactly
+      // the distance the node is off-centre, and cancelling that motion freezes
+      // it there for good. The card never arrives.
+      //
+      // The reachable case is a camera animation, because it suppresses the
+      // follow while it runs and hands it back the instant it lands: centerOn
+      // aims at the node's layout TARGET, so if the spring is still short of
+      // that target when the glide ends, the follow engages on precisely the
+      // gap and pins it. A fresh hire is the common way in — the card's birth
+      // spring is still gliding in from the draft's seed.
+      //
+      // So gate ENGAGEMENT on the node having arrived. Once engaged it stays
+      // engaged and rides every later disturbance exactly as before, which is
+      // what keeps №25 intact; a node that is still travelling is simply left
+      // alone to finish, and the camera holds still while it lands.
       const fid = focusRef.current
       if (fid && !animBusyRef.current && !panRef.current) {
         const s = springs.current.get(fid)
-        if (s) {
+        const tgt = targetRef.current.get(fid)
+        if (s && tgt) {
           const prev = followRef.current
           if (prev && prev.id === fid) {
             const dx = s.x - prev.x, dy = s.y - prev.y
@@ -623,8 +653,10 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
               const z = viewRef.current.z
               setView((v) => ({ ...v, x: v.x - dx * z, y: v.y - dy * z }))
             }
+            followRef.current = { id: fid, x: s.x, y: s.y }
+          } else if (atRest(s, tgt)) {
+            followRef.current = { id: fid, x: s.x, y: s.y }
           }
-          followRef.current = { id: fid, x: s.x, y: s.y }
         }
       } else {
         followRef.current = null
