@@ -662,7 +662,7 @@ explicitly — the product is being asked to formalize the exact process that bu
 > lay on the docket as a future feature request: the ability for an agent to request *any*
 > permission scope increase that it can only get from you: access to a new folder, a tool, etc.
 
-*(user request 2026-08-06, recorded by the curator. **Status ruled (`DECISIONS.md` D-103 §⑤,
+*(user request 2026-08-06, recorded by the curator. **Status ruled (`DECISIONS.md` D-164 §⑤,
 `eedd139`): HELD-BUT-WILL-APPROACH when implementer capacity frees** — distinct from FR-02/FR-15's
 indefinite backlog below; this one is queued, not shelved.)*
 
@@ -701,7 +701,7 @@ this class of grant, human-only.
 
 *(user request 2026-08-06, recorded by the curator. Follows directly from FR-13 above — this is the
 batching shape for it and for `orgtree_request_credits`, not a new request kind of its own.
-**Status ruled (`DECISIONS.md` D-103 §⑤, `eedd139`): HELD-BUT-WILL-APPROACH when implementer
+**Status ruled (`DECISIONS.md` D-164 §⑤, `eedd139`): HELD-BUT-WILL-APPROACH when implementer
 capacity frees**, same as FR-13.)*
 
 **What exists today, and why this isn't a small extension of FR-04.** `orgtree_ask`'s `questions`
@@ -825,7 +825,7 @@ not (A). The four numbered build requirements above are the ones that apply.
 **HELD, same day — explicit user instruction: "don't begin implementation now, hold off."**
 Exploration only; no build to start on this entry until the user gives a separate go-ahead.
 
-**Formalized same day (`DECISIONS.md` D-103 §⑤, `eedd139`): BACKLOGGED INDEFINITELY** — a stronger,
+**Formalized same day (`DECISIONS.md` D-164 §⑤, `eedd139`): BACKLOGGED INDEFINITELY** — a stronger,
 distinct status from FR-13/FR-14's "held but will approach" above; grouped with FR-02 (mobile) as
 the two entries with no queued approach date.
 
@@ -1414,7 +1414,7 @@ built.)*
 **CLOSED — BUILT, then REWORKED IN-PLACE (D-108 → D-114, 2026-08-11/12).** Ships opt-in as
 `orgtree_cheap_compact` (superior-only) plus a second door on the desk's compact dialog — never an
 automatic default; auto-defaulting revisits only with cache telemetry. One premise below was wrong:
-the live transcript sits under `~/.claude/projects`, which no agent can be granted (D-100), so it
+the live transcript sits under `~/.claude/projects`, which no agent can be granted (D-161), so it
 is **copied into the predecessor's scratch at compact time** instead. D-114 then reshaped the
 mechanism away from retire-plus-fresh-hire: the seat keeps its id, parent, scope, charter, grant
 and team — only `session_id` is replaced, the pre-compact session archiving as the `nid@gen`

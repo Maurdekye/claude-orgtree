@@ -930,7 +930,7 @@ def export_predecessor_transcript(org: Org, nid: str,
 
     The copy exists because the live transcript is unreachable by design: it
     sits under ~/.claude/projects on the host home, and any path carrying a
-    .claude segment is gated above the permission system (D-100) — an agent
+    .claude segment is gated above the permission system (D-161) — an agent
     cannot be granted it. Moving the evidence to where the agent already
     works costs one file copy at compact time. Failure is non-fatal: the
     successor still works, it just cannot read history this couldn't find

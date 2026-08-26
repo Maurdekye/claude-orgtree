@@ -291,7 +291,7 @@ machines"); the user reversed the mechanism one day later for the
 unattended-host case, and the inheritance objection is handled by the strip
 rather than dismissed.
 
-### D-103 · robustness priorities: @net is the robust path; pins, not fixes
+### D-164 · robustness priorities: @net is the robust path; pins, not fixes
 Ruling (user, 2026-08-06, batch): ① gaps in the @mcp:/@org: transports are
 NOT critical while they don't obstruct immediate usage — every robust
 orgtree installation stands up a local mail hub, @net is the preferred
@@ -310,8 +310,12 @@ acting as liaison to org chats over the mailserver or other transports.
 ⑤ Docket statuses: FR-13 (scope requests) and FR-14 (mixed-kind batch
 cards) are HELD-BUT-WILL-APPROACH when implementer capacity frees; FR-02
 (mobile) and FR-15 (external providers) are backlogged indefinitely.
+Renumbered 2026-08-26 (was D-103): that number was carried by two entries at
+once. "an agent withdraws its own question when it stops mattering" is the
+one the code cites, so it kept D-103; this ruling moved and is otherwise
+unchanged. See D-158.
 
-### D-102 · self-update: unrestricted for user-authority agents; the remote is the trust root; Linux is first-class
+### D-163 · self-update: unrestricted for user-authority agents; the remote is the trust root; Linux is first-class
 Ruling (user, 2026-08-06, closing the two FR-14 questions): ① an agent
 with direct user authority (top-level or held user audience — the existing
 gate) runs the restart path WITHOUT further restriction or warning. The
@@ -325,8 +329,12 @@ the tracked remote does, and only the user pushes there. ③ Self-update
 must also function on LINUX — update.sh mirrors update.ps1 step for step
 (venv, esbuild self-heal, stale-pid restart check), since Linux is where
 orgtree is installed in plenty of locations.
+Renumbered 2026-08-26 (was D-102): that number was carried by two entries at
+once. "agents set their reports' permission mode, capped at their own" is
+the one the code cites, so it kept D-102; this ruling moved and is otherwise
+unchanged. See D-158.
 
-### D-101 · mailserver ports stay exactly as they are (7370 open, no migration)
+### D-162 · mailserver ports stay exactly as they are (7370 open, no migration)
 Ruling (user, 2026-08-06, two parts, second direct): ① leave nova-desk's
 7370 open on the LAN; do NOT flip HUB_BIND to loopback. ② "nobody should
 change their default ports for the mailserver, keep everything as-is" —
@@ -341,6 +349,10 @@ HUB_PUBLIC=1 live on nova-desk with the API-only 7378 listener answering
 — any future close is one .env line + a client port edit, no code.
 Was. Part ① alone read as a hold pending the remote's 7378 migration;
 part ② closed the migration itself.
+Renumbered 2026-08-26 (was D-101): that number was carried by two entries at
+once. "permission mode is editable after creation, at both levels" is the
+one the code cites, so it kept D-101; this ruling moved and is otherwise
+unchanged. See D-158.
 
 ### D-100 · presenting a document needs a DIRECT user audience
 Ruling (user, 2026-08-05, on the redteam's FR-03 finding that
@@ -779,7 +791,7 @@ default it on.
 
 ## Agent runtime
 
-### D-100 · the machine's global skills are granted to unsandboxed agents
+### D-161 · the machine's global skills are granted to unsandboxed agents
 Ruling (user, 2026-08-07): every UNSANDBOXED agent gets `~/.claude/skills`
 read+write as a standing grant — no scope row, no per-org opt-in. Sandboxed
 agents do not: the host home is not mounted, and the exclusion holds even for
@@ -834,6 +846,10 @@ BOTH scopes (home and a granted `.claude/skills`) in one turn, no permission
 request and no message. The gate held at acceptEdits until the mode changed
 and stopped holding the moment it did, in the same session, which is the
 cleanest confirmation of the model available: the mode is the whole variable.
+Renumbered 2026-08-26 (was D-100): that number was carried by two entries at
+once. "presenting a document needs a DIRECT user audience" is the one the
+code cites, so it kept D-100; this ruling moved and is otherwise unchanged.
+See D-158.
 
 ### D-101 · permission mode is editable after creation, at both levels
 Ruling (user report, 2026-08-07): the mode was write-once at org creation and
@@ -842,7 +858,7 @@ editable: the org field is the BORN-WITH default `_new_node` copies into every
 hire (org ⚙, admin-only), and each node carries its own (agent ⚙). Changing
 the org default is never retroactive — live agents keep the mode they were
 hired with and are raised one at a time, deliberately.
-Why: D-100 made the mode the difference between an agent that can maintain
+Why: D-161 made the mode the difference between an agent that can maintain
 the machine's skills and one that cannot, so an unsettable field became a
 dead end. Non-retroactivity is the safety property: raising one agent is a
 considered act, and a default that swept the whole org would turn it into an
@@ -886,7 +902,7 @@ the replacement copies tier/grant/charter/scope (net-zero on credits, cannot
 fail); live reports refuse (auto-moving a team under the replacement is its
 own scope decision, not assumed); the predecessor's transcript is COPIED
 into its scratch at compact time because the live transcript sits under
-~/.claude/projects, which no agent can be granted (D-100's segment gate) —
+~/.claude/projects, which no agent can be granted (D-161's segment gate) —
 the docket's "transcript is in the scratch dir" premise was wrong and the
 copy is the fix. The compact dialog warns when the node is idle past the
 cache TTL, which is the moment the choice actually matters.
@@ -1912,7 +1928,7 @@ so an agent adjusts any subordinate in its purview — capped at its own mode,
 like every other restriction. Nobody grants above themselves: the clamp is
 STRICT for agent actors (it raises, matching dirs/tools/visibility), and a
 hire is born at min(org default, parent) instead of the org default flat.
-Why: D-100 made the mode the difference between an agent that can do a job
+Why: D-161 made the mode the difference between an agent that can do a job
 and one that cannot, so leaving delegation to the user alone made every such
 need a stop-and-ask. Capping at the actor's own mode is what makes delegating
 it safe — the authority an agent hands down is bounded by what it holds, which
