@@ -96,7 +96,7 @@ const main = async () => {
   if (process.argv.includes('--usage')) {
     const btns = view.el.querySelectorAll<HTMLButtonElement>('.acct-usage-btn')
     if (btns.length < 2) throw new Error('no key-row usage button to click')
-    await act(async () => { btns[1].click() })
+    await act(async () => { btns[1]!.click() })
     await act(async () => { await flush(8) })
     if (!view.el.querySelector('.acct-tier-row')) {
       throw new Error('the capacity modal did not render — dump would be a lie')

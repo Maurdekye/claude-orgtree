@@ -56,7 +56,17 @@ const KEY_USAGE: AccountUsage = {
 
 const PRIMARY_USAGE: AccountUsage = {
   account: 'primary', label: 'host@example.test', available: true, plan: 'max',
-  limits: [{ kind: 'session', percent: 42, resets_at: iso(HOUR) }],
+  // group/severity/is_active/model mirror the backend's own fallback shape for
+  // a `kind: 'session'` limit (backend/orgtree/limits.py ~301-310): group
+  // echoes kind, severity defaults 'normal', is_active defaults false, model
+  // is null — not arbitrary compiler-satisfying filler. None of the four are
+  // read for this row today (group/is_active: never read in accounts.tsx;
+  // model: only branches on 'weekly_scoped', unreachable for 'session';
+  // severity: only changes sevOf()'s result via a literal 'critical', which
+  // 'normal' deliberately is not) — confirmed 2026-08-26, see acctstate
+  // fixture discussion with @org:resonite.
+  limits: [{ kind: 'session', group: 'session', percent: 42, severity: 'normal',
+    resets_at: iso(HOUR), is_active: false, model: null }],
 }
 
 const g = globalThis as unknown as Record<string, unknown>
@@ -89,7 +99,7 @@ async function openUsage(row: number): Promise<HTMLElement> {
   await inAct(async () => { await flush(8) })
   const btns = view.el.querySelectorAll<HTMLButtonElement>('.acct-usage-btn')
   assert.ok(btns[row], `no usage button in row ${row} (${btns.length} found)`)
-  await inAct(async () => { btns[row].click() })
+  await inAct(async () => { btns[row]!.click() })
   await inAct(async () => { await flush(8) })
   return view.el
 }
