@@ -461,6 +461,50 @@ button.badge.retired-fold:hover { border-color: var(--accent); }
 }
 .edge-jump .tier { width: 15px; height: 15px; font-size: 9px; }
 .edge-jump .ej-name { overflow: hidden; text-overflow: ellipsis; }
+/* NARROW WINDOWS (user bug 2026-08-26). A focus glide fits the square desk to
+   min(vw, vh) − 48, so on any window taller than it is wide the strip beside
+   it is exactly 24px — while the full card above wants 186. These cards used
+   to sit on the chat text. edgeJumpPlacement() in shared.ts picks the form
+   from the desk's measured screen rect; this only dresses the result.
+   Hover or keyboard focus restores the full card OVER the desk — a transient
+   overlap the reader asked for, in place of a permanent one they did not.
+   Written with :not(:hover) rather than display:none + a restore, so the
+   expanded state is just the cards' own base styling reasserting itself and
+   there is no second set of values to keep in sync. */
+.edge-jump.ej-mid:not(:hover):not(:focus-visible) .ej-name,
+.edge-jump.ej-tab:not(:hover):not(:focus-visible) .ej-name { display: none; }
+/* ⚠ THE COUNT GOES TOO, IN BOTH SHED FORMS, and not to save the pixels: it is
+   the only child whose width depends on its VALUE ("3" vs "128"). A shed form
+   has a width budget the placement code reasons about, and a budget that moves
+   with an agent's unread count is not a budget. Measured worst case with the
+   count left in was 101.63px against a 58px budget — see edgejump_probe.py,
+   which exists because jsdom cannot measure this and the unit test can only
+   assume it. It becomes a dot: presence kept, width fixed. */
+.edge-jump.ej-mid:not(:hover):not(:focus-visible) .eye-count,
+.edge-jump.ej-tab:not(:hover):not(:focus-visible) .eye-count { display: none; }
+.edge-jump.ej-mid.ej-mail:not(:hover):not(:focus-visible)::after,
+.edge-jump.ej-tab.ej-mail:not(:hover):not(:focus-visible)::after {
+  content: ''; width: 5px; height: 5px; border-radius: 50%; flex: none;
+  background: var(--accent);
+}
+/* ⚠ on the TAB the dot leaves the layout flow. Inline, it is a flex child of a
+   card already at its 22px max-width, so it rendered OUTSIDE the border and
+   the screen edge clipped it — a width assertion cannot see this, because the
+   button really was 22px wide; only looking at it showed the dot hanging off
+   the end. Cornered instead, where it costs no width at all. */
+.edge-jump.ej-tab.ej-mail:not(:hover):not(:focus-visible)::after {
+  position: absolute; top: 2px; right: 2px;
+}
+.edge-jump.ej-tab:not(:hover):not(:focus-visible) {
+  padding: 4px 3px; gap: 3px; max-width: 22px;
+}
+/* the tab keeps only the arrow — the tier token and the busy spinner go, since
+   at 22px there is room for the direction and nothing else */
+.edge-jump.ej-tab:not(:hover):not(:focus-visible) .tier,
+.edge-jump.ej-tab:not(:hover):not(:focus-visible) .cc-spin { display: none; }
+/* an expanded card is briefly over the desk, so it must sit above it */
+.edge-jump.ej-mid:hover, .edge-jump.ej-mid:focus-visible,
+.edge-jump.ej-tab:hover, .edge-jump.ej-tab:focus-visible { z-index: 8; }
 html.mobile .edge-jump { display: none; }
 
 /* ------------------------------------------------------------ the desk chat

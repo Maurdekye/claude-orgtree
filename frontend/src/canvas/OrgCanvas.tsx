@@ -13,7 +13,7 @@ import {
   FullscreenIcon, PublicIcon, RemoveIcon, ViewListIcon,
 } from '../icons'
 import {
-  ago, DOG_H, DOG_W, DRAFT, ease, EXTERN, fallbackActive, flatten, INBOX, INBOX_H, layout, NODE_H, NODE_W, orgPxc, segD,
+  ago, DOG_H, DOG_W, DRAFT, ease, edgeJumpPlacement, type EJForm, EXTERN, fallbackActive, flatten, INBOX, INBOX_H, layout, NODE_H, NODE_W, orgPxc, segD,
   segPoint, sizeOf, smooth, SPRING_C, SPRING_K, TIER_LETTER, TIERS, USER, USER_H,
   USER_W, withDraftTree, Z_DESK, Z_MAX, Z_MINI,
 } from './shared'
@@ -1251,7 +1251,18 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
       .sort((p, q) => (target.get(p)?.x ?? 0) - (target.get(q)?.x ?? 0))
     const at = sibs.indexOf(focusId)
     if (at < 0) return []
-    const out: { n: CanvasNode; side: 'l' | 'r'; y: number }[] = []
+    // the FOCUSED desk's own screen rect — every placement is measured against
+    // this, not against the window (user bug 2026-08-26)
+    const mp = posOf(focusId)
+    if (!mp) return []
+    const ms = sizeOf(focusId)
+    const desk = {
+      x0: mp.x * view.z + view.x, y0: mp.y * view.z + view.y,
+      x1: (mp.x + ms.w) * view.z + view.x, y1: (mp.y + ms.h) * view.z + view.y,
+    }
+    const out: {
+      n: CanvasNode; side: 'l' | 'r'; y: number; form: EJForm; band: boolean
+    }[] = []
     for (const [k, side] of [[sibs[at - 1], 'l'], [sibs[at + 1], 'r']] as const) {
       if (!k) continue
       const n = map.get(k), p = posOf(k)
@@ -1260,7 +1271,8 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
       const x0 = p.x * view.z + view.x, y0 = p.y * view.z + view.y
       const x1 = (p.x + w) * view.z + view.x, y1 = (p.y + h) * view.z + view.y
       if (x1 > 0 && x0 < vp.width && y1 > 0 && y0 < vp.height) continue  // visible
-      out.push({ n, side, y: Math.min(vp.height - 26, Math.max(26, (y0 + y1) / 2)) })
+      const put = edgeJumpPlacement(side, desk, vp, (y0 + y1) / 2)
+      out.push({ n, side, y: put.y, form: put.form, band: put.band })
     }
     return out
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1784,7 +1796,10 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
           side at the neighbor's own elevation (pointerdown stopped — the
           pan pointer-capture would swallow the click, see above) */}
       {edgeJumps.map((e) => (
-        <button key={e.n.id} className={'edge-jump ' + e.side}
+        <button key={e.n.id}
+          className={'edge-jump ' + e.side + ' ej-' + e.form
+            + (e.band ? ' ej-band' : '')
+            + ((e.n.mail_pending ?? 0) > 0 ? ' ej-mail' : '')}
           style={{ top: e.y }} title={`jump to ${e.n.id}`}
           onPointerDown={(ev) => ev.stopPropagation()}
           onClick={() => centerOn(e.n.id)}>

@@ -402,6 +402,68 @@ export function sizeOf(id: string): { w: number; h: number } {
   return { w: NODE_W, h: NODE_H }
 }
 
+// ------------------------------------------------ edge jump card placement
+// user bug 2026-08-26: the jump cards sat at a fixed 6px from the window edge
+// and overlapped the focused desk on a narrow window. Cards are SQUARE, and a
+// focus glide fits one to min(vw, vh) − 48 centred, so on any window taller
+// than it is wide the strip beside the desk is exactly 24px — while a full
+// card wants 186. Worse, coworkers share a layout row, so the card's elevation
+// lands mid-screen: over the chat text, not over a corner.
+//
+// Placement is chosen from the desk's MEASURED screen rect rather than from
+// the window, so hand-zooming past the standard fit behaves the same way —
+// including the case where the focus zoom is floored at Z_DESK and the desk
+// overflows the viewport entirely (see centerOn), where the gutter goes
+// negative and only the bare tab can sit in the desk's own padding.
+//
+// The shortage flips axes: a narrow window has thin gutters but a deep band
+// above and below the desk, a wide window the reverse. So prefer the gutter,
+// fall back to the band (which keeps the NAME — the thing worth keeping), and
+// only shed content when neither has room. A near-square window is the one
+// shape that is tight both ways, and that is what the tab form is for.
+// ⚠ EJ_MID IS A MEASUREMENT, NOT A GUESS, and it must stay one. jsdom has no
+// box model, so the unit test cannot check any of these against a rendered
+// card — it can only assume them. `tests/edgejump_probe.py` renders the real
+// markup against the real sheet in Edge and fails if a form outgrows its
+// number here; it reads these constants directly out of this file so the two
+// cannot drift apart. First measurement came in at 101.63px against a guessed
+// 58 — the guess would have shipped cards that still covered the desk on any
+// gutter between 66 and 110px, with the unit test green throughout.
+export const EJ_EDGE = 6     // the card's inset from the window edge
+export const EJ_FULL = 180   // .edge-jump max-width — the named card
+export const EJ_MID = 80     // measured 78.50 worst case (busy + unread dot)
+export const EJ_H = 26       // card height
+export const EJ_GAP = 8      // clearance insisted on between card and desk
+
+export type EJForm = 'full' | 'mid' | 'tab'
+export type EJRect = { x0: number; y0: number; x1: number; y1: number }
+
+export function edgeJumpPlacement(
+  side: 'l' | 'r',
+  desk: EJRect,
+  vp: { width: number; height: number },
+  elev: number,
+): { form: EJForm; y: number; band: boolean } {
+  const gutter = side === 'l'
+    ? desk.x0 - EJ_EDGE
+    : vp.width - desk.x1 - EJ_EDGE
+  // the neighbour's own elevation, kept inside the viewport
+  const atElev = Math.min(vp.height - EJ_H, Math.max(EJ_H, elev))
+  if (gutter >= EJ_FULL + EJ_GAP) return { form: 'full', y: atElev, band: false }
+  // the free band above / below the desk, whichever is deeper. No viewport
+  // clamp here: the band is inside the viewport by construction, and clamping
+  // would push a card in a shallow band back down onto the desk.
+  const above = desk.y0, below = vp.height - desk.y1
+  if (Math.max(above, below) >= EJ_H + EJ_GAP) {
+    return {
+      form: 'full', band: true,
+      y: above >= below ? above / 2 : vp.height - below / 2,
+    }
+  }
+  if (gutter >= EJ_MID + EJ_GAP) return { form: 'mid', y: atElev, band: false }
+  return { form: 'tab', y: atElev, band: false }
+}
+
 export const ease = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2)
 
 export const ago = (at: string | null | undefined) => {
