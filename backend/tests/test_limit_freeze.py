@@ -1068,6 +1068,68 @@ def _sec_d156_body() -> None:
     check("pool · the resolver is asked with the INJECTED clock, not the wall",
           _the_resolver_is_asked_with_the_injected_clock)
 
+    def _an_unreadable_roster_fails_closed():
+        """⚠ THIS CLOSES A MUTANT THAT SURVIVED THE ORIGINAL ROUND, and the
+        Resonite org named it rather than leave us to find it: flipping
+        `_pool_open`'s exception handler to fail OPEN killed nothing, because
+        no check ever forced `accounts.resolve` to raise. The handler was
+        correct and completely unproven — the exact shape of a guard that is
+        only holding by luck.
+
+        An unreadable roster is IGNORANCE, not evidence of capacity, and this
+        branch's whole job is spending a turn on the belief that capacity
+        exists. So it must fail CLOSED.
+
+        The fixture above the refusal is what stops this passing vacuously:
+        with a readable roster the identical record DOES wake, so the refusal
+        below is the exception handler doing it and not the record being
+        unwakeable for some unrelated reason."""
+        _set_pool("haiku", dry=False)
+        o = _fz_org(limit=True, pool="dry", until_ts=now + 6 * 3600)
+        fixture("n" in supervisor.auto_resume_ready(o, now),
+                "with a READABLE roster this record must wake, or the "
+                "refusal below proves nothing about the exception handler")
+        real = accounts.resolve
+
+        def _unreadable(*_a, **_k):
+            raise OSError("roster unreadable")
+
+        accounts.resolve = _unreadable                # type: ignore[assignment]
+        try:
+            assert "n" not in supervisor.auto_resume_ready(o, now), (
+                "the pool fast-path FAILED OPEN on an unreadable roster: it "
+                "woke a node on the belief that capacity exists, having just "
+                "failed to find out whether it does. An exception here is "
+                "ignorance, not capacity")
+        finally:
+            accounts.resolve = real                   # type: ignore[assignment]
+    check("pool · an unreadable roster fails CLOSED, and is proven to",
+          _an_unreadable_roster_fails_closed)
+
+    def _one_unreadable_tier_does_not_poison_the_tick():
+        """The cache stores the fail-closed answer, which is right — but it
+        must not outlive the tick. Cheap to assert, and the alternative (a
+        process-lifetime cache) would silently park every node of that tier
+        until the next restart."""
+        _set_pool("haiku", dry=False)
+        o = _fz_org(limit=True, pool="dry", until_ts=now + 6 * 3600)
+        real = accounts.resolve
+
+        def _unreadable(*_a, **_k):
+            raise OSError("roster unreadable")
+
+        accounts.resolve = _unreadable                # type: ignore[assignment]
+        try:
+            supervisor.auto_resume_ready(o, now)
+        finally:
+            accounts.resolve = real                   # type: ignore[assignment]
+        assert "n" in supervisor.auto_resume_ready(o, now), (
+            "a roster that was unreadable on ONE tick kept the node parked "
+            "on the NEXT one — the per-tier cache outlived the call it was "
+            "built for")
+    check("pool · a failed roster read does not persist past the tick",
+          _one_unreadable_tier_does_not_poison_the_tick)
+
 
 def sec_d156_resume() -> None:
     """§7 — ▶ still resumes an auth freeze. The leg the marker's shape decides.

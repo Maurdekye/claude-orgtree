@@ -3988,3 +3988,120 @@ panel could label the two entitlements. Reduced to a masked hint
 (`s*****e@example.com`) plus the uuid and a user-settable label: the panel's
 requirement is only to tell two accounts apart, the registry is read by more
 code than the credentials store is, and the uuid already carries identity.
+
+### D-156 · an auth freeze is not a wait, and a dry pool can become wet
+
+Two defects in one freeze record, found 2026-08-26 while tracing a user report
+that a limit-parked agent's refresh time "doesn't adapt to account changes or
+keys being added / removed".
+
+**1. A rejected credential was re-probed on a timer, forever.** A 401 whose
+text is *also* limit-shaped freezes as a usage limit, takes the blind
+~5-minute probe floor, and `auto_resume_ready` wakes it every ~6 minutes
+indefinitely. `untrusted` does not bound it — a CLI-reported 401 is trusted
+evidence. On a CLI that silently falls back to a stored login, each probe
+spends **another account's** quota. That is D-149's routed-around shape on a
+timer.
+
+**2. A node parked on a dry account pool never noticed a key being added.**
+`until_ts` is stamped once, from the pool as it stood at freeze time, and
+nothing re-derives it. That is the user's report.
+
+**The fix is a positive fact on the record, stamped at freeze time:**
+`fz["cause"] = "auth"` and `fz["pool"] = "dry"|"open"`, both written on
+**every** pass because `_ensure_frozen` returns a *surviving* record — a
+stale `cause` would park a genuine capacity freeze forever.
+
+**Why `cause` is a STRING and not `fz["auth"] = True`.** `_resumable` refuses
+any record carrying a `True` key it does not recognise, so a boolean marker
+would make **▶ skip the node forever** — the operator could never resume it
+after replacing the credential, which is the one action that fixes it.
+Beyond that accident: `limit`/`connection` are **kinds**, `on_fallback`/
+`untrusted` are **qualifiers on a kind**, and "why did this happen" is a
+**third category**. Adding it to that allowlist types it as a qualifier and
+invites the next person to add a genuine kind there by pattern-match — the
+failure the guard exists to prevent, arriving through the guard's own door.
+
+⚠ **The cost, stated rather than buried: fail-closed does not apply to
+`cause` at all.** A future `cause` value that *should* park a node gets no
+help from `_resumable` and needs explicit handling at **every** readiness
+site. That trade was taken deliberately.
+
+⚠ **THE MONEY TRAP.** The `elif` that opens `api_fallback_until` fires on an
+auth freeze unless gated (`and not _auth_fail`). Ungated, a rejected
+credential silently moves the whole org onto the user's metered key and the
+operator learns it from the bill.
+
+⚠ **A stale `cause` cannot be tested behaviourally, and that cost someone a
+wrong-green.** `_run_one_turn` refuses to drive a node carrying `frozen`, and
+▶ pops the record before resuming, so a re-freeze onto a surviving record is
+only reachable mid-flight. The behavioural check written first **never ran its
+turn and failed for the wrong reason** — the tell was `resume_texts` holding
+one entry instead of two. Test it structurally and say in the check why.
+
+⚠ **Any test touching the resolver must STUB THE LOGIN.** `_routing_order`
+drops the primary lane entirely when nobody is signed in, so on a signed-out
+machine `resolve` answers "no capacity" for every tier, always: every
+"dry pool" assertion passes **vacuously** and every "capacity exists" one
+fails for an unrelated reason.
+
+**The anti-flap is `pool == "dry"`, and it must be a freeze-time fact.**
+"Capacity exists now" is not evidence of anything new: **three** paths reach
+the freeze with capacity standing available (the 401 branch marks no lane;
+the api-key/no-tier branch marks no lane; a switch refused by the `_switches`
+counter had somewhere to go and declined). Waking those on "capacity exists"
+fires on the next 30-second tick, re-drives into the same wall, and repeats
+forever. Only a freeze that **asked** the resolver and was told "nowhere" can
+be told something new later.
+
+**Toggle ruling (user, 2026-08-26): `auto_resume` off means off.** No
+account-lane clause in the timer's toggle filter — a configured second
+account is **not** consent the user did not give. So the pool-readiness path
+is **dormant for default-configured orgs** and live only where the toggle is
+on (`api.py` forces it on for headless orgs, *"a limit freeze must not park an
+org nobody will un-park"* — which is also the severity argument for defect 1:
+the loop ran forever exactly where nobody was watching). **The auth exclusion
+and the money gate are live regardless of the toggle**, and they are the
+larger half.
+
+⚠ **`api_error_status` is NOT MEASURED.** The three CLI runs behind this
+captured exit codes and stderr only. The reachability argument rests on the
+synthetic-limit adoption path (`err_blob = synth_limit_txt`, limit-shaped by
+construction, with nothing excluding a `res` carrying 401) plus this CLI's
+recorded habit of shipping `subtype: 'success'` on a failed 401 — **not** on
+any measurement. "We could not produce one" and "it cannot happen" are
+different claims and only the second would justify not doing this.
+
+**Measured here:** `test_limit_freeze` 245 checks / 0 failed. The fail-open
+mutation of the roster-read handler is killed by a named check; it **survived**
+the original round because nothing forced `accounts.resolve` to raise — a
+guard that was correct and completely unproven.
+
+**Provenance.** Defects traced and the chain published by this org; the
+implementation began in the Resonite org and was returned here 2026-08-26
+under a user ruling that orgtree development stays in the orgtree
+organisation. Their `cause`-versus-allowlist reasoning is better than the
+boolean marker this org originally proposed and is kept above as theirs.
+
+#### Knowledge transferred with it, not yet acted on
+
+- **`tools/run_tests.py` — two halves of ONE bug; fix both or neither.**
+  (a) the guard-fired regex matches `no longer (contains|matches)` inside a
+  **passing** `ok` label, so a guard reads as fired when it never ran, and the
+  prose-stripper is applied only to **source** reads, never to stdout.
+  (b) a guard is credited because a registry *lists* it rather than because it
+  *ran* — the live message-visibility suite never calls the contract check its
+  sibling does. Repairing only the loud half makes the summary look healthy.
+- **`dogs · port: the DOWN edge fires` is a real flake, not a regression.** It
+  binds a socket, arms a 15-second port watchdog, sleeps a fixed 8 seconds,
+  then closes: if the first poll slips past the close, no UP edge is observed
+  and no DOWN edge can fire. Fails under load, passes idle. Fix by polling for
+  the UP observation rather than sleeping.
+- **The `_switches >= 4` edge dissolves.** `account_switches` lives in
+  process-local turn state, not the org doc, so a restart zeroes it and the
+  gate silently opens. It is not needed: a switch refused by the counter had
+  capacity, so it records `pool: "open"` and the capacity path skips it.
+- **`accounts.resolve` is two file reads** (roster + the CLI config via
+  `live_identity`), no network, and `accounts.py` never takes `store.DOC_LOCK`
+  — so no lock inversion under the resume loop. Hoist per tier anyway, and
+  **pass `now`**, or the injected-clock tests stop being deterministic.

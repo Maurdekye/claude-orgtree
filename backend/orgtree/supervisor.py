@@ -7767,8 +7767,7 @@ def interorg_send(src_slug: str, dst_slug: str, body: str) -> str | None:
 _auto_resume_started = False
 
 
-def auto_resume_ready(org: Org, now: float | None = None,
-                      why: dict[str, str] | None = None) -> set[str]:
+def auto_resume_ready(org: Org, now: float | None = None) -> set[str]:
     """Which frozen nodes the timer should wake RIGHT NOW — asked PER NODE.
 
     ⚠ This was an org-wide `max(every frozen node's until_ts)` gate until
