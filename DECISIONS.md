@@ -2987,6 +2987,76 @@ before, on a different lane, so cramming it into the same enum would make
 a second, unrelated setting existing). A boolean gated by `api_fallback`
 mirrors how `api_fallback` itself is not folded into `headless`.
 
+### D-150 · initializing an agent opens ITS desk — and only when YOU initialize it
+Ruling (user, 2026-08-26): "when initializing an agent, automatically zoom
+into the desk view for it." Confirming the hire on the dashed
+**uninitialized** draft box now glides the camera to the new agent's desk;
+on a sheet-gated viewport the desk sheet opens instead.
+
+Why: hiring is only half the gesture. A new agent sits idle until someone
+messages it — the tool docs say so to agents in as many words — and the desk
+is the only place that message can be typed. The draft form used to leave you
+at roughly overview zoom (`spawn` clamps to z 1.7–2.05, deliberately *under*
+the 2.1 desk threshold, so the form renders at authored scale), with a fresh
+card among its siblings and a second gesture still owed before you could say
+anything to it.
+
+(D-numbering note: D-149 was taken by an entry uncommitted in another seat's
+working tree when this one was written, so this is D-150 and the two are out
+of merge order. That is fine — a D-number identifies an entry, it does not
+place it in a sequence, and renumbering breaks every reference already
+written.)
+
+**Scope, stated because a narrowing nobody writes down is an omission the
+next person silently reverses: only hires made in THIS browser, from the
+draft form.** The trigger is armed in `confirmDraft`'s response handler, not
+off the tree refresh. An agent calling `orgtree_hire` deep in its own subtree
+arrives by the same broadcast and must NOT move the user's camera — the
+user's word was *initializing*, which is a thing the user does, and a
+viewport that jumps on events its owner did not cause is one they have to
+fight for control of. If this is ever widened, widen it deliberately.
+
+Bounds:
+- **It waits for the card to be BORN and to SETTLE**, in the spring tick, not
+  in the response handler. Two distinct reasons, and the second is not
+  obvious: the hire response carries an id frames before the tree that gives
+  that id a position (so there is nothing to centre on yet); and the №25
+  camera-follow, which the new desk immediately acquires, cancels the focused
+  node's per-frame spring delta out of the camera — so a glide that ends
+  while the birth spring is still travelling FREEZES the card at whatever
+  screen offset it happened to stop at, permanently off-centre. Centring on a
+  moving card is not "slightly early", it is wrong forever.
+- **A target with no spring is a phantom, not a race.** The tick's own spring
+  loop creates a spring for every laid-out id before this check runs, so the
+  two conditions are ordered, not coincidental.
+- **It yields to a live gesture** (`!panRef.current && !animBusyRef.current`),
+  the same yield the follow uses. Since `b5fdc00` (the same-day drag-zoom
+  fix, which carries its invariant as a comment above `rebasePan` rather than
+  as a numbered entry) `animateTo` also rebases an interrupted drag's anchor,
+  so this yield is belt-and-braces rather than load-bearing — kept anyway,
+  because a glide that never starts into a drag beats one that starts and
+  then repairs what it broke.
+- **The pending id expires after 10s**, the same bound `seedRef` uses for a
+  hire that never lands, so a failed or ignored hire cannot strand a camera
+  jump that fires much later into an unrelated view.
+- **Stamped and compared on `performance.now()`, not the rAF timestamp.** The
+  two share an origin in a browser, so either reads correctly there — but the
+  test rig's rAF hands out a mocked `Date.now()`, against which the 10s bound
+  expires instantly and the feature becomes unreachable. A bound no test can
+  get past is a bound nothing verifies.
+- The glide is the ordinary `centerOn`, unmodified: interruptible by wheel or
+  drag like every other camera animation, and inheriting whatever fit
+  `centerOn` computes rather than pinning a zoom of its own.
+
+Verified: `frontend/tests/deskinit.test.tsx`, four checks. The desk is
+asserted as the DOM consequence (`.sq.desk`, the class `focusId` drives) and
+the camera as the numbers this code wrote into `.space`'s transform — never
+as measured geometry, which jsdom does not produce. §2 is the positive
+control (no desk open at rest, z under threshold), §3 the mutation (a hire
+whose node never arrives opens nothing), §4 pins the scope decision above.
+Negative control run: with the source reverted and the tests kept, §1 fails
+and §2–§4 stay green.
+
 ### D-148 · one usage pool for haiku/sonnet/opus; a key row shows its own state
 
 Ruling (user, 2026-08-25, three parts in one message):

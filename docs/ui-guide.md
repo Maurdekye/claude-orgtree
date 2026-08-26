@@ -68,6 +68,15 @@ snowflake, lock, layers, fullscreen, hearing.
   **pre-hire scope panel** — the same surface as the per-agent ⚙ (folders
   RW/RO, tools, MCP, visibility, thinking effort), prefilled with what the
   hire would inherit anyway, staged locally and applied WITH the hire.
+- **Confirming the hire walks you straight to the new agent's desk.** The
+  camera waits for the new card to appear and settle where it belongs, then
+  glides in to desk zoom on it — on a phone, the desk sheet opens instead.
+  Hiring is only half the gesture: a new agent sits idle until someone
+  messages it, and the desk is where that first message is typed. The glide
+  is interruptible like any other — a wheel or a drag takes the camera back —
+  and it never starts on top of a drag or pinch you are already making. Only
+  hires **you** make here do this; an agent hiring its own report appears on
+  the canvas without moving your view.
 - **The overseer's ⚙ (on the eye, top-right like every card's gear)** is
   YOUR configuration panel, mirroring the agents' own — sections in the same
   order as a card's (folder access first). It also carries a **dissolve all

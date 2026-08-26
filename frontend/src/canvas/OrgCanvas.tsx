@@ -297,6 +297,13 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
   // layout doesn't know yet — and the hire response lands frames before the
   // refreshed tree does
   const seedRef = useRef(new Map<string, { x: number; y: number; at: number }>())
+  // user feature 2026-08-26: initializing an agent opens ITS desk. The id of a
+  // hire made HERE (this browser, from the draft form) that is still waiting
+  // for its card to exist and settle; the spring tick below does the opening.
+  // Same 10s stale bound as seedRef, and for the same reason — the hire
+  // response lands frames before the tree that gives the node a position, and
+  // a hire whose node never arrives must not strand a camera jump.
+  const hireDeskRef = useRef<{ id: string; at: number } | null>(null)
   const targetRef = useRef(target); targetRef.current = target
   const mapRef = useRef(map); mapRef.current = map
   const nodeDrag = useRef<{
@@ -621,6 +628,43 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
         }
       } else {
         followRef.current = null
+      }
+      // a fresh hire opens its own desk (user feature 2026-08-26). The hire
+      // response carries only an id: the card does not exist until the
+      // refreshed tree lands, and its birth spring then glides in from the
+      // draft's seed. BOTH have to finish before the camera moves —
+      //  · no layout entry yet, and there is nothing to centre on;
+      //  · spring still gliding, and the №25 follow directly above cancels the
+      //    remaining motion out of the camera — freezing the card at whatever
+      //    offset the glide happened to end on, permanently off-centre.
+      // Yields to a live gesture exactly as that follow does: a drag, a pinch
+      // or another camera animation owns the view, and the hire waits a frame.
+      const hd = hireDeskRef.current
+      if (hd) {
+        // (stamped and compared on the SAME clock — `performance.now()`, not
+        // the rAF timestamp `t`. The two share an origin in a browser, so
+        // either reads correctly there; only one of them does under a rig
+        // whose rAF hands out a mocked `Date.now()`, and a bound that expires
+        // instantly under test is a feature no test can reach.)
+        if (performance.now() - hd.at > 10000) hireDeskRef.current = null
+        else if (sheetGate()) {
+          // the sheet IS the desk here (D-123/D-125) and needs no camera —
+          // only a node the tree already knows about
+          if (mapRef.current.has(hd.id)) {
+            hireDeskRef.current = null
+            setSheetId(hd.id)
+          }
+        } else if (!animBusyRef.current && !panRef.current) {
+          // (the spring loop at the top of this same tick has already created
+          // a spring for every laid-out id, so a target with no spring means
+          // the card is not real yet — wait, don't centre on a phantom)
+          const tp = targetRef.current.get(hd.id)
+          const sp = springs.current.get(hd.id)
+          if (tp && sp && Math.abs(sp.x - tp.x) < 1 && Math.abs(sp.y - tp.y) < 1) {
+            hireDeskRef.current = null
+            centerRef.current?.(hd.id)
+          }
+        }
       }
       if (sparksRef.current.length) {
         const now = performance.now()
@@ -1321,6 +1365,18 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
         const born = r?.node
         if (typeof born === 'string' && born && ds) {
           seedRef.current.set(born, { x: ds.x, y: ds.y, at: performance.now() })
+        }
+        // user feature 2026-08-26: initializing an agent walks you to its
+        // desk. A hire is only half the gesture — the agent sits idle until
+        // someone messages it, and the desk is where that message is typed;
+        // the draft form used to leave you at overview zoom with the new card
+        // among its siblings and no way in but a second click.
+        // Deliberately armed HERE and not off the tree refresh: this fires for
+        // hires made in THIS browser only. An agent hiring its own subordinate
+        // arrives by the same broadcast, and yanking the camera across the org
+        // for something the user did not initiate is a different feature.
+        if (typeof born === 'string' && born) {
+          hireDeskRef.current = { id: born, at: performance.now() }
         }
         // F-03: pin the ordering the side chip promised. Best-effort — the
         // hire itself already succeeded, and reorder is cosmetic (its own
