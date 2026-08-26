@@ -3397,6 +3397,77 @@ adopted from the live login, hand-set labels and waterfall order, per-org
 pins nothing read, a per-org stored selection with a serve-from control, and
 failover as a one-switch-per-turn org-field write.
 
+### D-151 · the card's activity label is contained structurally, not by a fitting width
+
+User bug 2026-08-26: "when an agent is actively working, their zoomed out
+status text sometimes overflows and flows off of their card, going to the side
+or below it."
+
+Both halves were one cause. `Activity()` rendered the tool name as a BARE TEXT
+NODE inside `.actlabel`'s flex row. A bare text node is an anonymous flex item:
+it cannot be given `text-overflow`, and its automatic minimum size is its
+longest unbreakable word. Tool names are nothing but long unbreakable words —
+`mcp__resonite__get_sync_object_definition` shortens to
+`resonite: get_sync_object_definition` — so the item shrank to min-content,
+WRAPPED to a second line (the "below"), and that line was still wider than the
+card (the "to the side"). Measured in Edge against the real sheet: a 108px
+content box, min-content widths of 120–159px, spilling +12.47 to +50.95px past
+the border. At 50.95px it reaches the neighbouring card.
+
+The fix is structural, and deliberately so. The name now renders in its own
+element (`.actlabel-text`), the row is `nowrap; min-width: 0; overflow: hidden`,
+and the name is `nowrap` + `text-overflow: ellipsis` while the gear and the
+animated dots hold their size. Nothing here depends on any string being short
+enough. **The label's text is arbitrary — it is whatever tool the turn called —
+so a fix that has been measured to fit is only a fix for the names someone
+thought to measure. A fix that cannot overflow needs no such list.**
+
+**Why the card did not simply get `overflow: hidden`.** That is the obvious
+one-line answer and it is wrong here: `.cbar` hangs deliberately OUTSIDE the
+card at `left: -22px`. Clipping `.sq` would cut every credit bar on the canvas.
+The containment has to live on the label.
+
+**Why the card drops the `server: ` prefix** (`cardTool`, alongside `shortTool`
+which the desk transcript still uses). The card fits ~15 monospace characters.
+`shortTool` spends nine on the prefix, so `mcp__orgtree__orgtree_send_notice`
+and `mcp__orgtree__orgtree_request_credits` BOTH truncated to `orgtree: orgtr…`
+— a status line that cannot distinguish two states is not reporting one. For
+these servers the prefix is redundant with the tail anyway. The full form
+survives in the hover title: ellipsising is a display decision and must never
+be the only copy of the information.
+
+**On testing this, because the trap here is sharp.** The defect is text too
+wide for a box; jsdom has no box model and reports 0 for every width, on broken
+and correct code alike. So `tests/actlabel.test.tsx` asserts only the
+STRUCTURAL contract the stylesheet needs (own element, no stray text node,
+title carries the full name, two same-server tools stay distinguishable), and
+`tests/actlabel_probe.py` measures the layout in real headless Edge — reading
+`NODE_W`/`NODE_H` out of `shared.ts` by regex so the budget cannot drift from
+the source, and guarding that its fixture still matches what `Activity()` emits.
+
+Three things that green checks did not catch, recorded because each was caught
+by the next layer up:
+
+- The probe's first fixture wrapped the name in a span with NO class, so
+  `.actlabel-text` matched nothing, the text wrapped to a clipped second line —
+  and the probe reported OK, because the parent's `overflow: hidden` dutifully
+  contained the mess. A probe measuring markup the app does not render is worse
+  than no probe, because it is believed. Hence the fixture-vs-source guard.
+- `.name` in the head measures ~114px past the card while rendering as a tidy
+  `bug-over…`: `getBoundingClientRect`/`Range` ignore clipping ancestors. The
+  probe now intersects every rect with each `overflow != visible` ancestor and
+  asks what is actually PAINTED. Without that it both cried wolf AND could
+  never have seen this fix work, since this fix works by clipping.
+- The `orgtree: orgtr…` collision was invisible to every numeric check — all of
+  them passed — and obvious in a screenshot. **Look at the thing.**
+
+Both probe controls are known-negatives that must FAIL: `--expect-fail` runs the
+pre-fix sheet (must spill), `--expect-ambiguous` runs the prefixed labels (must
+be caught as indistinguishable). An assertion never seen to fail is a
+decoration. The unit tests were mutation-checked BOTH ways — reverting the fix
+fails all six, and a "fix" that hides the status text entirely also fails all
+six, so containment cannot be satisfied by rendering nothing.
+
 ---
 
 ## Retired

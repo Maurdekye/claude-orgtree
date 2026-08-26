@@ -91,6 +91,15 @@ function CopyablePre({ children }: { children: ReactNode }) {
 }
 
 const shortTool = (t: string | null | undefined) => (t || 'tool').replace(/^mcp__([^_]+)__/, '$1: ')
+// The CARD's version of the same name. The card label has ~108px — about 15
+// monospace characters — and `shortTool` spends nine of them on the server
+// prefix, so `mcp__orgtree__orgtree_send_notice` and
+// `mcp__orgtree__orgtree_request_credits` both truncate to the identical
+// `orgtree: orgtr…`: a status line that cannot distinguish two states is not
+// reporting one. The tail is the part that identifies the tool, and for these
+// servers the prefix is redundant with it anyway (`orgtree: orgtree_…`), so
+// the card drops the prefix and the hover title keeps the full form.
+const cardTool = (t: string | null | undefined) => (t || 'tool').replace(/^mcp__[^_]+__/, '')
 // fmtBytes moved to img.tsx (the attachment renderers need it too)
 
 export function Activity({ act, dotOnly }: { act?: ActivityInfo; dotOnly?: boolean }) {
@@ -100,11 +109,31 @@ export function Activity({ act, dotOnly }: { act?: ActivityInfo; dotOnly?: boole
       ? <span className="actgear" title={`running ${shortTool(act?.tool)}`}><SettingsIcon fontSize="inherit" /></span>
       : <span className="busydot" title={phase} />
   }
+  // The label text gets its OWN element (user bug 2026-08-26: a working
+  // agent's status text ran off the side of its card and onto a second line
+  // below). It used to be a bare text node — an anonymous flex item, which
+  // cannot be given `text-overflow` and whose automatic minimum size is its
+  // longest unbreakable word. Tool names are long and full of them:
+  // `mcp__resonite__get_sync_object_definition` shortens to
+  // `resonite: get_sync_object_definition`, whose min-content width is 159px
+  // inside a card that has 108px to give. So it wrapped, and the wrapped line
+  // still overflowed — measured at +50.95px past the border, far enough to
+  // land on the neighbouring card. A real element can be clipped and
+  // ellipsised; the string is arbitrary, so the containment has to be
+  // structural rather than a width anyone has checked.
+  const label = phase === 'tool' ? cardTool(act?.tool)
+    : phase === 'writing' ? 'writing' : 'thinking'
+  // the full, untruncated name — server prefix included — stays reachable on
+  // hover. Ellipsising is a display decision and must never be the only copy
+  // of the information.
+  const full = phase === 'tool' ? shortTool(act?.tool) : label
   return (
-    <div className="actlabel">
+    <div className="actlabel" title={full}>
       {phase === 'tool'
-        ? <><span className="actgear"><SettingsIcon fontSize="inherit" /></span> {shortTool(act?.tool)}</>
-        : phase === 'writing' ? <><EditIcon fontSize="inherit" /> writing</> : <><AutorenewIcon fontSize="inherit" className="cc-spin" /> thinking</>}
+        ? <span className="actgear"><SettingsIcon fontSize="inherit" /></span>
+        : phase === 'writing' ? <EditIcon fontSize="inherit" />
+        : <AutorenewIcon fontSize="inherit" className="cc-spin" />}
+      <span className="actlabel-text">{label}</span>
       <span className="actdots" />
     </div>
   )

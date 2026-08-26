@@ -413,11 +413,27 @@ button.badge.retired-fold:hover { border-color: var(--accent); }
   display: inline-block; animation: actspin 1.4s linear infinite;
 }
 @keyframes actspin { to { transform: rotate(360deg); } }
+/* The live-activity label — what a busy agent is doing, on the card at
+   overview zoom. Its text is an ARBITRARY tool name, so it is sized to be
+   uncontainable-proof rather than to any width someone measured once: the row
+   never wraps, never grows the card, and clips what will not fit (user bug
+   2026-08-26 — long names ran off the side and onto a second line below,
+   measured up to +50.95px past a 108px content box, onto the next card).
+   The card itself CANNOT take `overflow: hidden` to solve this: `.cbar` hangs
+   deliberately outside it at `left: -22px`, and clipping the parent would eat
+   every credit bar on the canvas. So the containment lives here. */
 .actlabel {
   display: flex; align-items: center; gap: 4px; font-size: 10px;
   color: var(--accent); font-family: var(--mono); padding: 0 2px;
+  flex-wrap: nowrap; min-width: 0; max-width: 100%; overflow: hidden;
 }
 .actlabel .actgear { font-size: 10px; }
+/* the icons and the animated dots hold their size; only the NAME gives way */
+.actlabel > svg, .actlabel .actgear, .actlabel .actdots { flex: none; }
+.actlabel-text {
+  min-width: 0; flex: 0 1 auto;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 .actdots::after {
   content: ''; animation: actdots 1.4s steps(4, end) infinite;
 }
