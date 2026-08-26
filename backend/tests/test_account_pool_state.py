@@ -10,6 +10,14 @@ The user's 2026-08-25 ruling, three parts:
   · duplicate-of-primary greying is GONE — a setup-token key can never resolve
     its own account, so the check could only ever fire for v1-migrated rows
 
+⚠ AMENDED 2026-08-26 by D-152: fable is still not IN the bucket, but it now
+RIDES ALONG with it — a non-fable limit also parks that account's fable, at
+the same time, when fable carries no live mark of its own. The checks that
+asserted fable stayed untouched (1.3, 1.8, 2.6, 2.11) are flipped and marked
+at their sites; the checks that keep the pool from becoming "mark everything"
+(1.4, 1.4l, 1.4e) are the replacement controls. The feature's own battery, and
+the mutation round for it, live in `test_fable_piggyback`.
+
 WHY THE MIRROR IS ASSERTED THROUGH `resolve`, NOT ONLY THROUGH THE DICT
 ----------------------------------------------------------------------
 The dict is the mechanism; the DEFECT was a wasted spawn. Before this, an opus
@@ -102,7 +110,8 @@ def marks(account: str) -> dict[str, float]:
 
 # --------------------------------------------------------------------------
 def s1_pool() -> None:
-    print("\n§1  one bucket: a limit on any of haiku/sonnet/opus marks all three")
+    print("\n§1  one bucket: a limit on any of haiku/sonnet/opus marks all "
+          "three — and fable rides along when it has nothing of its own")
     restore = signed_in_as()
     try:
         seed()
@@ -115,19 +124,36 @@ def s1_pool() -> None:
         check("1.2 …and lands on haiku and opus too, at the same time",
               m.get("haiku") == m.get("sonnet") == m.get("opus"), repr(m))
 
-        # 1.3 THE NEGATIVE CONTROL FOR 1.2. Without it, an implementation that
-        #     simply marks every known tier passes 1.2 exactly as well as the
-        #     pool-aware one does — and would park fable, which bills its own
-        #     lane, for a wall it never hit.
-        check("1.3 …but NOT on fable, which is not in the bucket",
-              "fable" not in m, repr(m))
+        # 1.3 ⚠ AMENDED 2026-08-26 (D-152). Fable is STILL not in the bucket —
+        #     it is not mirrored, it RIDES ALONG, and only when it has nothing
+        #     of its own. The distinction is the whole feature, so it is
+        #     asserted here rather than left to the name: the pool is a
+        #     max()-mirror, fable is absent-only. Full battery + mutants:
+        #     test_fable_piggyback.
+        check("1.3 …and onto fable too, which had nothing of its own",
+              abs(m.get("fable", 0) - m.get("sonnet", 0)) < 1e-6, repr(m))
 
-        # 1.4 …and the reverse direction: fable spreads to nobody
+        # 1.4 the two negative controls that keep 1.2/1.3 from being satisfied
+        #     by "mark every tier in TIERS at ts", which would otherwise pass
+        #     both exactly as well as the real implementation.
+        #     (a) the reverse direction: fable spreads to nobody
         seed()
         accounts.record_limit(accounts.PRIMARY, "fable", now + HOUR)
         m = marks(accounts.PRIMARY)
-        check("1.4 a fable limit marks fable alone",
+        check("1.4 a fable limit still marks fable alone",
               set(m) == {"fable"}, repr(m))
+        #     (b) …and a fable mark already standing is NOT moved by a pooled
+        #         limit, in EITHER direction — unlike a pooled sibling, which
+        #         1.6 shows being pushed out
+        for delta, label in ((3 * HOUR, "later"), (0.5 * HOUR, "earlier")):
+            seed()
+            doc = accounts.load()
+            doc["usage_refreshes"] = {accounts.PRIMARY: {"fable": now + delta}}
+            accounts.save(doc)
+            accounts.record_limit(accounts.PRIMARY, "sonnet", now + HOUR)
+            m = marks(accounts.PRIMARY)
+            check(f"1.4{label[0]} a fable mark standing {label} is left alone",
+                  abs(m.get("fable", 0) - (now + delta)) < 1, repr(m))
 
         # 1.5/1.6 the mirror is a FLOOR, never a ceiling.
         # ⚠ THE FIXTURE HAS TO BE SEEDED BY HAND, and that is the interesting
@@ -163,8 +189,13 @@ def s1_pool() -> None:
         check("1.7 haiku now routes OFF an account whose sonnet hit the wall",
               r["account"] == KID and r["available"] is True, repr(r))
         rf = accounts.resolve("fable")
-        check("1.8 …while fable still runs on it (its own lane, untouched)",
-              rf["account"] == accounts.PRIMARY, repr(rf))
+        # 1.8 ⚠ AMENDED 2026-08-26 (D-152): fable used to STAY on the primary
+        #     here. It now rides along and moves off with the pool. That it
+        #     lands on KID *with capacity* is the per-account control — the
+        #     ride-along parked one account's fable, not fable everywhere.
+        check("1.8 …and fable rides along, off that account and onto one "
+              "that still has capacity",
+              rf["account"] == KID and rf["available"] is True, repr(rf))
 
         # 1.9 the refusals `record_limit` already owed must survive the change
         seed()
@@ -209,17 +240,26 @@ def s2_standing() -> None:
         check("2.5 …all with the same refresh time, and it is an ISO string",
               len({st[t]["refresh_at"] for t in accounts.POOLED}) == 1
               and str(st["opus"]["refresh_at"]).endswith("Z"), repr(st))
-        check("2.6 …and fable still has capacity", st["fable"]["available"],
+        # 2.6 ⚠ AMENDED 2026-08-26 (D-152): fable had nothing of its own, so
+        #     it rode along and the row shows it waiting too — at the SAME
+        #     time, which is what "the same one" in the ruling means.
+        check("2.6 …and fable, which had nothing of its own, waits with them",
+              not st["fable"]["available"]
+              and st["fable"]["refresh_at"] == st["opus"]["refresh_at"],
               repr(st))
 
         # 2.7 ⚠ `available` MUST mean "this account has capacity", not "this
         #     tier runs here". They differ constantly and the wrong one would
         #     tell the user their untouched fallback is out of opus whenever
         #     the primary happens to be serving it.
-        r = accounts.resolve("fable")
+        #     (Demonstrated on a VIRGIN key since D-152: fable on a marked row
+        #     no longer shows the gap, because it is marked with the pool.)
+        seed()
+        st_v = {t["tier"]: t for t in accounts.tier_standing(accounts.load(), KID)}
+        r = accounts.resolve("opus")
         check("2.7 capacity is per-account, not 'where the tier routes'",
-              r["account"] == accounts.PRIMARY and st["fable"]["available"],
-              f"routes to {r['account']}, key fable={st['fable']}")
+              r["account"] == accounts.PRIMARY and st_v["opus"]["available"],
+              f"routes to {r['account']}, key opus={st_v['opus']}")
 
         # 2.8 an EXPIRED mark reads as capacity, not as a stale wall
         doc = accounts.load()
@@ -240,9 +280,14 @@ def s2_standing() -> None:
         check("2.10 …still flagged unsupported (percentages are not coming)",
               got.get("unsupported") is True and got.get("available") is False,
               repr(got)[:200])
+        # 2.11 ⚠ AMENDED 2026-08-26 (D-152): the pool plus the ride-along, so
+        #      a haiku limit on a virgin row now leaves nothing available.
+        #      Spelled `POOLED | {FABLE}` rather than `TIERS` on purpose: the
+        #      two are equal today and would stop being equal the moment a
+        #      fifth tier arrives, and the union is what this actually means.
         check("2.11 …and it agrees with the routing state, not a second copy",
               {t["tier"] for t in tiers if not t["available"]}
-              == set(accounts.POOLED), repr(tiers))
+              == set(accounts.POOLED) | {accounts.FABLE}, repr(tiers))
 
         # 2.12 the PRIMARY row is untouched: it reports real usage, so a
         #      standing table there would be a second answer to one question
@@ -327,6 +372,14 @@ def s4_controls() -> None:
           set(accounts.POOLED) == {"haiku", "sonnet", "opus"}
           and set(accounts.POOLED) <= set(accounts.TIERS),
           repr(accounts.POOLED))
+
+    # 4.4b `FABLE` is a REAL tier and is NOT in the pool — a typo there
+    #      ("fabel") would make §1's ride-along assertions describe a tier
+    #      `record_limit` refuses, and 1.4's "marks fable alone" would be
+    #      "marks nothing at all", which passes just as loudly.
+    check("4.4b FABLE is a real tier, outside the pool",
+          accounts.FABLE in accounts.TIERS
+          and accounts.FABLE not in accounts.POOLED, repr(accounts.FABLE))
 
     # 4.5 the standing view must not phone home. `account_usage` on a key row
     #     is a local read (D-147) and the new table did not change that.

@@ -74,8 +74,17 @@ TIERS = ("haiku", "sonnet", "opus", "fable")
 #: haiku, sonnet and opus all bill against ONE subscription usage pool, so
 #: running out on any of them is running out on all three (user ruling
 #: 2026-08-25). `fable` is deliberately NOT in it — the user named exactly
-#: these three, and fable's own lane is billed separately.
+#: these three, and fable's own lane is billed separately. ⚠ That is still
+#: true and still means what it says — but do not read it as "fable is never
+#: marked with them": `record_limit` gives fable a RIDE-ALONG mark under a
+#: different, one-directional, absent-only rule (D-152). Membership of the
+#: bucket and moving at the same time are two different things here.
 POOLED = ("haiku", "sonnet", "opus")
+
+#: the tier that bills its own lane. Named, not spelled inline, because two
+#: separate rules turn on it (`_pool_of` excludes it; `record_limit`
+#: piggybacks onto it) and a typo in either is silent.
+FABLE = "fable"
 
 
 def _pool_of(tier: str) -> tuple[str, ...]:
@@ -449,7 +458,33 @@ def record_limit(account: str, tier: str, refresh_at: float) -> bool:
 
     The mirror NEVER SHORTENS an existing mark: if a sibling is already parked
     later than `refresh_at`, that later time is the one still known to be
-    true, and lowering it would hand back capacity nobody watched return."""
+    true, and lowering it would hand back capacity nobody watched return.
+
+    ⚠ AND FABLE RIDES ALONG WHEN IT HAS NOTHING OF ITS OWN (user feature
+    2026-08-26, amending D-148 — see D-152). A limit on any NON-fable tier
+    also parks THIS ACCOUNT's fable, at the same time, **but only when fable
+    carries no live refresh time already**. Three properties, and each one is
+    load-bearing:
+
+      · ONE-DIRECTIONAL — a fable limit still spreads to nobody. Fable's own
+        wall is weekly and says nothing about the subscription bucket.
+      · ABSENT-ONLY, not `max()` like the pool mirror — a fable mark that is
+        already there was put there by a real fable limit (or by an earlier
+        ride-along), and it is neither raised nor lowered. This is also what
+        makes the feature testable at all: an implementation that simply
+        marked every tier in `TIERS` would be indistinguishable from this one
+        without it.
+      · PER-ACCOUNT — `usage_refreshes` is `[account][tier]`, so the account
+        whose subscription ran out is the only one whose fable is parked.
+        Parking fable everywhere because one account hit a wall would be a
+        different (and wrong) feature.
+
+    Nothing is BLOCKED by the extra mark: with every account marked,
+    `_resolve_in` still names the soonest-refreshing one and a spawn goes
+    there, re-marking itself if it fails. The cost of being wrong here is one
+    probing spawn; the cost of being right is not burning a fable turn — the
+    most expensive tier there is — on an account that has just proven it has
+    nothing left."""
     account, tier = str(account or ""), str(tier or "").lower()
     if tier not in TIERS:
         return False
@@ -470,6 +505,11 @@ def record_limit(account: str, tier: str, refresh_at: float) -> bool:
             prev = marks.get(t)
             marks[t] = (max(ts, float(prev))
                         if isinstance(prev, (int, float)) else ts)
+        # the ride-along. `_prune_expired` ran above, so "not in marks" is
+        # exactly "fable has no LIVE refresh time" — an expired one is
+        # capacity, and capacity is what this rule is allowed to spend.
+        if tier != FABLE and FABLE not in marks:
+            marks[FABLE] = ts
         save(doc)
         return True
 
@@ -617,7 +657,11 @@ def tier_standing(doc: dict[str, Any], account: str,
     never "is serving".
 
     `pool` lists the tiers whose capacity is the same capacity, this one
-    included, and is `None` for a tier that stands alone. ⚠ NOTHING RENDERS IT
+    included, and is `None` for a tier that stands alone. ⚠ `None` is NOT "is
+    never marked with the others": since D-152 fable rides along with a
+    subscription limit and can show as waiting at the same instant as the
+    bucket while still standing alone. `pool` answers "whose capacity is this
+    capacity", not "what moves together". ⚠ NOTHING RENDERS IT
     TODAY — it fed a "these three share one bucket" footnote that the user
     removed the same day (the table stands alone). It stays in the payload
     because it is the only thing that explains why three tiers carry one

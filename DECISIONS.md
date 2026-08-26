@@ -3199,6 +3199,76 @@ session's death. Approved and not yet built — reading `expiresAt` and
 reaches any payload, and a decision amending "incapable of touching a token"
 to "never the token VALUE").
 
+### D-152 · fable rides along with a subscription limit — when it has nothing of its own
+
+Ruling (user, 2026-08-26): *"if any non-fable tier agent goes out of capacity,
+and fable does not have a refresh period, then set fable's refresh period to
+the same one as well."* This **amends D-148**, which had put fable
+deliberately outside the haiku/sonnet/opus pool one day earlier.
+
+Fable is still **not in the pool**. It rides along, and the distinction is the
+whole design:
+
+| | the POOL (D-148) | the RIDE-ALONG (this) |
+|---|---|---|
+| direction | symmetric — any member marks all | one-way — a fable limit spreads to nobody |
+| an existing mark | `max()` — a sibling parked earlier is **pushed out** | **left alone**, in either direction |
+| `tier_standing.pool` | names the bucket | still `None` for fable |
+
+Three lines in `accounts.record_limit`, after the pool mirror:
+
+```python
+if tier != FABLE and FABLE not in marks:
+    marks[FABLE] = ts
+```
+
+**Why absent-only rather than `max()`.** A real fable limit is WEEKLY; a
+subscription window is hours. `max()` would never shorten one, so it passes
+the obvious check — but an unconditional write would replace a mark days out
+with one hours out, hand back fable capacity that does not exist, and walk the
+account into the same weekly wall every five hours until the week turned over.
+Absent-only is also what makes the feature testable: without it, "mark every
+tier in `TIERS`" is indistinguishable from the correct implementation.
+
+**Why per-account.** `usage_refreshes` is `[account][tier]`. Only the account
+that ran out gets its fable parked; parking fable machine-wide because one
+lane hit a wall would be a much larger and worse feature.
+
+**Nothing is blocked by the extra mark.** With every lane marked,
+`_resolve_in` still names the soonest-refreshing account and a spawn goes
+there, re-marking itself if it fails. The cost of being wrong is one probing
+spawn; the cost of being right is not burning a fable turn — the most
+expensive tier there is, at 10 seats — on an account that has just proven it
+has nothing left.
+
+`_prune_expired` runs before the branch, so "fable has no refresh period" and
+"fable's refresh period has passed" are one state by the time it is read.
+Expired reads as capacity, and capacity is exactly what this rule may spend.
+
+⚠ **The mutation round for this feature was run TWICE, because the first one
+was invalid** — a stale `.pyc` kept executing the mutant while the source read
+clean. It is written up as **D-153**, on its own, because it is a fact about
+this repo's test method and not about fable.
+
+Bounds and coverage:
+- `record_limit` remains the only writer of `usage_refreshes`, pinned by an
+  AST walk over every other module in the package (`supervisor.py` names the
+  key in a *comment*, which is why that check walks the AST rather than
+  grepping — D-149's method note, applied).
+- The ride-along branch itself is pinned to **live code** the same way: the
+  guard is asserted as `Compare` nodes and the body as an `Assign` to
+  `marks[FABLE]` from `ts`. No comment or docstring can satisfy either.
+- `test_fable_piggyback` (32 checks) is the feature's own battery;
+  `test_account_pool_state` grew from 34 to 37 and had four checks flipped —
+  1.3, 1.8, 2.6 and 2.11 asserted that fable stayed untouched. Each is marked
+  as amended at its site, and the controls that keep the pool from degenerating
+  into "mark everything" (1.4, 1.4l, 1.4e) are new.
+- Six mutants, all killed. M4 — fable takes the pool's resulting `max()`
+  instead of the recorded time — passes the pool suite untouched and is caught
+  only by the new one, which is the argument for having written it.
+- No frontend change: `TierStandings` renders whatever tiers the payload
+  carries, so the capacity modal shows fable waiting with the rest on its own.
+
 ### D-148 · one usage pool for haiku/sonnet/opus; a key row shows its own state
 
 Ruling (user, 2026-08-25, three parts in one message):

@@ -853,7 +853,13 @@ export interface AccountsPayload {
  *  gutter chips answer that, and the two legitimately differ). `pool` names
  *  the tiers that share this one's capacity, itself included, and is null for
  *  a tier that stands alone — haiku/sonnet/opus are one subscription bucket,
- *  so a limit on any of them marks all three. */
+ *  so a limit on any of them marks all three.
+ *
+ *  ⚠ `pool: null` does NOT mean "never marked alongside the others". Since
+ *  D-152 fable RIDES ALONG with a subscription limit — it can show as waiting,
+ *  at the same time as the bucket, while still reporting no pool of its own.
+ *  Nothing renders `pool` today; read it as "shares the same capacity", never
+ *  as "these are the only tiers that move together". */
 export interface TierStanding {
   tier: string
   available: boolean
