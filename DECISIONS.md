@@ -2801,6 +2801,69 @@ Load-bearing:
   real run mid-flight rather than reasoning about the source, and proves the
   kill landed on a running run before reading the result.
 
+### D-158 · an instrument that reads text as data must be proved able to fail
+Ruling (coordinator, 2026-08-26, on a finding by `task-timeouts`): a check
+that works by matching this repo's own OUTPUT or SOURCE as text — a drift
+guard, a rot alarm, a truncation detector, a mutation harness, any
+grep-shaped assertion — is not trusted until it has been shown to **fail** on
+the condition it claims to detect. Watching it pass is not evidence of
+anything: a matcher that matches nothing passes every run beautifully, and is
+indistinguishable in every log from one that is working. Three rules follow,
+and they are the reusable part:
+
+1. **A passing check's line is not evidence of failure.** Never classify a
+   line a suite reported `ok N` on as a failure, whatever phrases its label
+   happens to contain. Labels describe things going wrong; that is their job.
+2. **Prove the negative case, not just the positive one.** Every such
+   instrument needs a check that FAILS when fed the real fault — built from
+   the real thing, not from remembered text. Break a real contract, kill a
+   real run, mutate a real file.
+3. **When repairing one, prove the repair is not a GAG.** Narrowing what an
+   instrument matches and deleting what it matches look identical from the
+   outside — both turn the alarm off. So assert that the offending input
+   *still* matches the underlying pattern and is excluded by the new filter,
+   which is what stops a later widening from silently restoring the fault.
+
+Why: four instruments in three days lost the ability to fail, and nobody
+noticed, because each of them went green. A fixed-offset window into a source
+file that stopped pointing at the thing it measured. A `replace(..., 1)`
+mutation that hit the wrong one of two identical lines, so the suite ran
+against unmutated source and passed. Patterns written with `\n` against files
+that are CRLF on this machine, which therefore never matched anything. And
+`_GUARD_FIRED` matching `no longer matches` inside a PASSING check's own
+label, which made the rot alarm fire on every clean run — an alarm that cries
+wolf every run is an alarm nobody reads, and a false alarm standing beside a
+real one makes the real one unreadable. Four is a pattern, not four
+coincidences, which is why this is a rule and not four comments.
+
+Rule 3 earned its place on measurement rather than principle. Repairing the
+rot alarm, the mutation that deleted the matching phrase from the pattern
+outright — the pure gag — **still passed** the "does it fire on a real drift"
+check, because the real guard's message happens to carry three matching
+phrases and removing one left the other two. A PARTIAL gag is the subtle
+version of this bug: the instrument still fires, just no longer for the reason
+you think, and the outcome test cannot see the difference. Only the check on
+the raw pattern caught it.
+
+Bounds: this is about instruments whose failure mode is a SILENT NO-OP —
+text matchers, source readers, output classifiers. An ordinary assertion on a
+value or a return shape fails loudly when it is wrong and does not need this
+ceremony. The line is whether "matched nothing" and "found nothing wrong"
+produce the same result; where they do, rule 2 is not optional.
+
+Load-bearing:
+- **A mutation must be shown to have LANDED before its result is read.** A
+  mutant that does not compile, or an edit that changed no bytes, produces a
+  red run that says nothing about the check. Compile the mutant; assert the
+  file actually changed. Both were hit while establishing this entry.
+- **Restoring a mutated file with `git checkout <path>` reverts to HEAD, not
+  to your uncommitted work.** Copy the file aside first. That mistake
+  destroyed an implementation mid-session and is easy to repeat.
+- Pinned by `backend/tests/test_drift_alarm.py` (§3 is rule 3) and
+  `backend/tests/test_run_completion.py`. See also D-157, which is one
+  application of this rule, and docs/ARCHITECTURE.md for the operational
+  half.
+
 ---
 
 ## Deliberately not built
