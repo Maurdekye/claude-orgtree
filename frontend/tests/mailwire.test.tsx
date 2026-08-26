@@ -453,8 +453,8 @@ uiTest('§10.6 the WS event drives the spark on its own — the dev hook is not 
 async function readFirstRow(el: HTMLElement) {
   const rows = () => q(el, '.mailrow') as HTMLElement[]
   assert.ok(rows().length >= 2, 'fixture needs two rows to click between')
-  await inAct(() => { rows()[0].click() })
-  await inAct(() => { rows()[1].click() })
+  await inAct(() => { rows()[0]!.click() })
+  await inAct(() => { rows()[1]!.click() })
   await flush()
   return rows()
 }
@@ -629,14 +629,14 @@ test('§13.1 the preview names every ancestor a grant would raise, and what '
     'the chain between the user and leaf was not walked in order')
   const mid = got[0]!.gains
   // mid holds NOTHING of this: a fresh dir, three tools, a server, both ranks
-  assert.ok(mid.includes('E:/w rw'), mid)
-  assert.ok(mid.includes('web') && mid.includes('edit'), mid)
-  assert.ok(mid.includes('mcp:alpha'), mid)
-  assert.ok(mid.some((g) => g.startsWith('visibility self→full')), mid)
-  assert.ok(mid.some((g) => g.startsWith('mode default→bypassPermissions')), mid)
+  assert.ok(mid.includes('E:/w rw'), mid.join(', '))
+  assert.ok(mid.includes('web') && mid.includes('edit'), mid.join(', '))
+  assert.ok(mid.includes('mcp:alpha'), mid.join(', '))
+  assert.ok(mid.some((g) => g.startsWith('visibility self→full')), mid.join(', '))
+  assert.ok(mid.some((g) => g.startsWith('mode default→bypassPermissions')), mid.join(', '))
   // top holds E:/w read-only — an UPGRADE, not a fresh grant, and it must say so
   const top = got[1]!.gains
-  assert.ok(top.includes('E:/w ro→rw'), top)
+  assert.ok(top.includes('E:/w ro→rw'), top.join(', '))
   assert.ok(!top.includes('bash'), `top already holds bash: ${top}`)
 })
 
