@@ -3017,18 +3017,44 @@ viewport that jumps on events its owner did not cause is one they have to
 fight for control of. If this is ever widened, widen it deliberately.
 
 Bounds:
-- **It waits for the card to be BORN and to SETTLE**, in the spring tick, not
-  in the response handler. Two distinct reasons, and the second is not
-  obvious: the hire response carries an id frames before the tree that gives
-  that id a position (so there is nothing to centre on yet); and the №25
-  camera-follow, which the new desk immediately acquires, cancels the focused
-  node's per-frame spring delta out of the camera — so a glide that ends
-  while the birth spring is still travelling FREEZES the card at whatever
-  screen offset it happened to stop at, permanently off-centre. Centring on a
-  moving card is not "slightly early", it is wrong forever.
+- **It waits for the card to be BORN and to ARRIVE**, in the spring tick, not
+  in the response handler. Two distinct reasons: the hire response carries an
+  id frames before the tree that gives that id a position (so there is nothing
+  to centre on yet); and a card still travelling is a card the camera would
+  centre on where it is *going to be* rather than where it is.
 - **A target with no spring is a phantom, not a race.** The tick's own spring
   loop creates a spring for every laid-out id before this check runs, so the
   two conditions are ordered, not coincidental.
+- **Arrival is `atRest`, the shared predicate — not a threshold of this
+  block's own.** Originally this read `|Δpos| < 1`, which was both a second
+  spelling of an idea the spring loop already owned and a WEAKER one: position
+  only, no velocity, so it admitted a card crossing near its target at speed —
+  precisely the case where "settled" is most wrong. `6ad71b3` lifted `atRest`
+  to module scope for the follow; this now reads the same predicate, so
+  arrival cannot drift between the three places that ask about it.
+
+**Amended 2026-08-26, same day, and the amendment matters more than the
+change.** As first written this bound said the wait existed because the №25
+follow froze the screen offset it engaged at, so centring mid-glide left the
+card off-centre *permanently*. That was true when written and is no longer:
+`6ad71b3` fixed it at the source — the follow now only ENGAGES on a node that
+has arrived. So **the wait is belt-and-braces, not load-bearing**, and its
+author verified that directly by removing it against the fix (green).
+
+It is kept regardless, for a reason worth more than the frame it costs: it
+makes this feature correct on its own terms rather than by borrowing a
+guarantee from a gate three blocks up that nothing here would notice losing.
+
+⚠ **And the original entry's "Verified" line was overclaiming, which is the
+part worth recording.** §1-§4 never exercised this wait at all — the draft
+sits at the slot the hire lands in, so the birth spring is settled almost
+immediately and the condition is satisfied on the first frame it is tested.
+That was not deduced, it was measured: with the wait removed AND the follow's
+arrival gate disabled, all four still passed. A guard can be genuinely
+load-bearing and still be covered by nothing, and a suite that goes green
+either way cannot tell you which. §5 was added to close it — the layout moves
+under the hire so the birth spring genuinely travels — and it fails, alone,
+when the wait is removed.
 - **It yields to a live gesture** (`!panRef.current && !animBusyRef.current`),
   the same yield the follow uses. Since `b5fdc00` (the same-day drag-zoom
   fix, which carries its invariant as a comment above `rebasePan` rather than
@@ -3048,14 +3074,37 @@ Bounds:
   drag like every other camera animation, and inheriting whatever fit
   `centerOn` computes rather than pinning a zoom of its own.
 
-Verified: `frontend/tests/deskinit.test.tsx`, four checks. The desk is
+Verified: `frontend/tests/deskinit.test.tsx`, five checks. The desk is
 asserted as the DOM consequence (`.sq.desk`, the class `focusId` drives) and
 the camera as the numbers this code wrote into `.space`'s transform — never
 as measured geometry, which jsdom does not produce. §2 is the positive
 control (no desk open at rest, z under threshold), §3 the mutation (a hire
-whose node never arrives opens nothing), §4 pins the scope decision above.
-Negative control run: with the source reverted and the tests kept, §1 fails
-and §2–§4 stay green.
+whose node never arrives opens nothing), §4 pins the scope decision above,
+§5 covers the arrival wait (see the amendment). Negative controls, each run
+against the code it names: with the feature reverted, §1 fails and §2-§4 stay
+green; with the arrival wait alone removed, §5 fails and §1-§4 stay green.
+
+⚠ **What this suite does not see, stated so a green number is not read as
+more than it is.** For `animateTo` the rig's rAF hands the callback a mocked
+`Date.now()` while the ease stamps its start from the real `performance.now()`
+— so the glide completes in its first frame here, and these checks verify
+WHERE the camera arrives, never HOW it travels. Not *unobservable*, though,
+and the distinction is worth the sentence: `1054c4c` showed the way out with
+an opt-in `syncClock` that puts `performance.now()` on the same mocked clock
+(which is all a browser does anyway — there both are real and share an
+origin), scoped to the suites that ask for it rather than imposed on the
+shared harness. This suite does not opt in because it does not need to: the
+glide it triggers is the ordinary `centerOn`, whose travel is that fix's
+subject and is covered there. If a later change makes HOW this camera moves
+part of the feature, that is the technique to reach for — do not re-derive
+this limitation as a dead end. That limit does NOT
+extend to the spring engine, which is where the arrival question lives: the
+loop clamps `dt` and re-bases `last` every frame, so the journey is genuinely
+observable there — provided you step at 16ms. `advance(ms)` chunks at 250ms
+by default and every rAF inside one chunk reads the same mocked clock, so the
+springs integrate once per CHUNK: `advance(3000)` is about 0.4s of spring
+time, not 3s, and a spring mid-flight then looks exactly like one that never
+converges.
 
 ### D-148 · one usage pool for haiku/sonnet/opus; a key row shows its own state
 

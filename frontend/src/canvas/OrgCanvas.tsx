@@ -666,9 +666,19 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
       // refreshed tree lands, and its birth spring then glides in from the
       // draft's seed. BOTH have to finish before the camera moves —
       //  · no layout entry yet, and there is nothing to centre on;
-      //  · spring still gliding, and the №25 follow directly above cancels the
-      //    remaining motion out of the camera — freezing the card at whatever
-      //    offset the glide happened to end on, permanently off-centre.
+      //  · a card still travelling is a card the camera would centre on where
+      //    it is going to be, not where it is.
+      // ⚠ The second half is now BELT-AND-BRACES, and deliberately kept. It
+      // was load-bearing when written: the follow above froze whatever screen
+      // offset it engaged at, so centring mid-glide left the card off-centre
+      // permanently. `6ad71b3` fixed that at the source — the follow only
+      // ENGAGES on a node that has arrived — so the freeze can no longer
+      // happen here even without this wait (its author verified that by
+      // removing this condition against the fix: green). Kept anyway, for one
+      // reason worth more than the frame it costs: it makes this feature
+      // correct on its own terms rather than by borrowing a guarantee from a
+      // gate three blocks up that nothing here would notice losing. If you
+      // remove it, `deskinit.test.tsx` §5 is the check that should fail.
       // Yields to a live gesture exactly as that follow does: a drag, a pinch
       // or another camera animation owns the view, and the hire waits a frame.
       const hd = hireDeskRef.current
@@ -690,9 +700,15 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
           // (the spring loop at the top of this same tick has already created
           // a spring for every laid-out id, so a target with no spring means
           // the card is not real yet — wait, don't centre on a phantom)
+          // `atRest`, not a threshold of this block's own: arrival is defined
+          // once, next to the loop that snaps on it, and the follow reads the
+          // same predicate. The hand-rolled `|Δpos| < 1` that stood here was a
+          // second spelling of the same idea AND a weaker one — position-only,
+          // so it admitted a card travelling at speed through a near-target
+          // frame, which is the one case where "settled" was most wrong.
           const tp = targetRef.current.get(hd.id)
           const sp = springs.current.get(hd.id)
-          if (tp && sp && Math.abs(sp.x - tp.x) < 1 && Math.abs(sp.y - tp.y) < 1) {
+          if (tp && sp && atRest(sp, tp)) {
             hireDeskRef.current = null
             centerRef.current?.(hd.id)
           }

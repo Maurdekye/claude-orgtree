@@ -218,6 +218,15 @@ async function hireFromChip(host: HTMLElement, name: string): Promise<void> {
 /** the broadcast refetch: the tree now carries the new agent under boss */
 const withNewbie = (id: string) => tree([{ id: 'boss', children: [{ id }] }])
 
+/** …and the same refetch when the layout has MOVED underneath the hire: the
+ *  new agent is seeded at the draft's slot (centred under a childless boss)
+ *  but lands as the rightmost of four, columns away. Realistic — anything
+ *  that reshapes boss's row between the hire and the refetch does this — and
+ *  it is the only way to make the birth spring genuinely travel, which §5
+ *  needs and §1 (seed ≈ target, settled almost at once) cannot provide. */
+const withCrowd = (id: string) => tree([{ id: 'boss', children:
+  [{ id: 'o1' }, { id: 'o2' }, { id: 'o3' }, { id }] }])
+
 // ==========================================================================
 uiTest('§1 confirming the hire opens the NEW agent’s desk', async (k) => {
   await hireFromChip(k.host, 'newbie')
@@ -279,4 +288,44 @@ uiTest('§4 SCOPE: a node arriving by broadcast does not move the camera',
     assert.equal(k.ops.length, 0, 'the fixture submitted a hire it should not have')
     assert.equal(openDesk(k.host), null,
       'a background hire yanked the camera to a desk the user never asked for')
+  })
+
+// ==========================================================================
+// ⚠ STEP AT 16ms, NOT THE DEFAULT. `advance(ms)` chunks at 250ms, and every
+// rAF callback inside one chunk reads the SAME mocked `Date.now()` — so the
+// spring loop integrates ONCE PER CHUNK, not once per frame. `advance(3000)`
+// delivers ~12 steps of 33ms: 0.4s of spring time, not 3s. A spring still
+// visibly travelling then looks exactly like one that never converges.
+// (Found by drag-zoom-bug while fixing the follow; noted here because this
+// is the one suite whose subject IS the spring's journey.)
+//
+// WHY THIS EXISTS. §1-§4 do not exercise the arrival wait at all — the draft
+// sits at the slot the hire lands in, so the birth spring is settled almost
+// immediately and the wait is satisfied on the first frame it is tested.
+// Proven, not assumed: with the wait removed AND the follow's arrival gate
+// disabled, all four still passed. This is the check that fails if the wait
+// is removed, which the source comment now points at by name.
+uiTest('§5 the camera waits for the new card to ARRIVE, not merely to exist',
+  async (k) => {
+    await hireFromChip(k.host, 'newbie')
+    assert.equal(k.ops.length, 1, 'the draft did not submit a hire op')
+
+    // the card now exists in the layout, and is a long way from where it was
+    // seeded — it has to travel
+    await k.setTree(withCrowd('newbie'))
+    await advance(96, 16)          // ~6 frames: the spring is under way
+    assert.equal(openDesk(k.host), null,
+      'the camera dived while the new card was still in flight — it would '
+      + 'centre on where the card is going to be, not where it is')
+    const mid = camera(k.host)
+    assert.ok(mid.z < Z_DESK,
+      `camera already at z=${mid.z} (≥ Z_DESK ${Z_DESK}) while the card was `
+      + 'still travelling — the arrival wait is not holding')
+
+    await advance(3000, 16)        // …and now it has landed
+    assert.equal(openDesk(k.host), 'newbie',
+      'the desk never opened — the card arrived and the wait never released')
+    const end = camera(k.host)
+    assert.ok(end.z >= Z_DESK,
+      `camera finished at z=${end.z}, under the desk threshold ${Z_DESK}`)
   })
