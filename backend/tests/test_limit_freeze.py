@@ -207,8 +207,17 @@ function serve(text) {
                   usage: { input_tokens: 1000 } }
     say({ type: 'assistant', message: msg })
     record({ type: 'assistant', message: msg })
-    say({ type: 'result', subtype: 'success', is_error: true, result: cfg.limitText,
-          usage: { input_tokens: 1000 }, total_cost_usd: 0.0001 })
+    // §6 dial: the same limit-shaped result, carrying a STATUS CODE. This is
+    // the conjunction D-156 turns on — a blob `_looks_like_usage_limit`
+    // admits, on a result event that also says 401 — and it is written as a
+    // dial rather than a mode so the ONLY difference from the covered shape
+    // above is the number. `subtype` stays 'success' on purpose: that is what
+    // the shipped CLI was measured doing on a failed 401 turn.
+    const res = { type: 'result', subtype: 'success', is_error: true,
+                  result: cfg.limitText,
+                  usage: { input_tokens: 1000 }, total_cost_usd: 0.0001 }
+    if (cfg.apiErrorStatus) { res.api_error_status = cfg.apiErrorStatus }
+    say(res)
     return
   }
   if (cfg.mode === 'synthetic') {
@@ -306,11 +315,12 @@ with open(_CLI, "w", encoding="utf-8") as _f:
 
 
 def set_mode(mode: str, echo_result: bool = False, limit_text: str = REAL,
-             reply: str = "ack.") -> None:
+             reply: str = "ack.", api_error_status: int | None = None) -> None:
     """Reprogram the stand-in for the next launch (it re-reads on every run)."""
     with open(_CFG, "w", encoding="utf-8") as f:
         json.dump({"mode": mode, "limitText": limit_text,
-                   "echoResult": echo_result, "replyText": reply}, f)
+                   "echoResult": echo_result, "replyText": reply,
+                   "apiErrorStatus": api_error_status}, f)
     open(_COUNT, "w", encoding="utf-8").close()
 
 
@@ -839,6 +849,410 @@ def _sec_wake_body() -> None:
             "the 5-minute probe floor stopped applying"
     check("wake · a reset-less freeze still probes on the 5-minute floor",
           _a_reset_less_freeze_still_probes)
+
+
+D156_UUID = "d156d156-0000-4000-8000-000000000001"
+
+
+def _stub_login(uuid: str = D156_UUID):
+    """SET the login these checks route against; never inherit it.
+
+    ⚠ `accounts.live_identity` reads the CLI's own config file, and
+    `_routing_order` drops the primary lane ENTIRELY when nobody is signed in
+    — so on a signed-out machine `resolve` answers "no capacity" for every
+    tier, for every account, always. Every "the pool is dry" check below would
+    then pass without the code under test doing anything, and every "capacity
+    exists" check would fail for a reason that has nothing to do with the
+    freeze record. Returns the restore callable."""
+    real = accounts.live_identity
+    accounts.live_identity = lambda: {                   # type: ignore[assignment]
+        "uuid": uuid, "email": "d156@example.invalid"}
+    return lambda: setattr(accounts, "live_identity", real)
+
+
+def _set_pool(tier: str, *, dry: bool, now: float | None = None) -> None:
+    """Make the REAL resolver answer available=False (dry) or True, by writing
+    the routing state it actually reads. Not a stub of `resolve`: the thing
+    under test is what `auto_resume_ready` does with the resolver's answer, so
+    the resolver has to be the real one."""
+    doc = accounts.load()
+    doc["usage_refreshes"] = {}
+    accounts.save(doc)
+    if dry:
+        accounts.record_limit(accounts.PRIMARY, tier,
+                              (now or time.time()) + 3600)
+
+
+def _fz_org(**fz) -> _FakeOrg:
+    """A one-node org whose single node carries this freeze record."""
+    o = _FakeOrg(slug="zz-d156", auto_resume=True)
+    o.nodes["n"] = {"state": "live", "model": "haiku", "frozen": dict(fz)}
+    return o
+
+
+def sec_d156_readiness() -> None:
+    """§6 — D-156: what the timer refuses, and what it newly accepts.
+
+    TWO defects, one record. Both were found by the Orgtree org (2026-08-26),
+    who traced the chain and wrote to us before touching the file:
+
+      · a 401 whose text is ALSO limit-shaped freezes as a usage limit, gets
+        the blind 5-minute probe floor, and is then re-woken every ~6 minutes
+        FOREVER — a rejected credential re-presented on a timer. `untrusted`
+        does not bound it: a CLI-reported 401 is trusted evidence.
+      · a node parked because every account was out of capacity never notices
+        a key being ADDED. `until_ts` described the old pool and nothing
+        re-derives it.
+
+    ⚠ THE CONTROLS ARE THE POINT, and they are marked `control ·` below. A
+    check that only shows nodes NOT waking proves nothing here — nodes that
+    never wake are the trivial implementation. Each refusal is paired with the
+    same record, minimally different, that MUST still wake.
+
+    Pure: `auto_resume_ready` reads `.d` and `.nodes`, so these run on a fake
+    org with no data root, no hire and no CLI. The routing state is real.
+    """
+    print("\n§6 D-156 — an auth freeze is not a wait, and a dry pool can "
+          "become wet:")
+    undo = _stub_login()
+    try:
+        _sec_d156_body()
+    finally:
+        undo()
+
+
+def _sec_d156_body() -> None:
+    now = time.time()
+
+    # ── the auth half ────────────────────────────────────────────────────
+    def _auth_is_never_ready_by_time():
+        _set_pool("haiku", dry=True, now=now)
+        o = _fz_org(limit=True, cause="auth", until_ts=now - 600,
+                    until="credential rejected — replace it, then resume")
+        assert "n" not in supervisor.auto_resume_ready(o, now), (
+            "a freeze whose cause is a REJECTED CREDENTIAL was woken by its "
+            "own timestamp. Nothing about a 401 improves at a reset time; "
+            "the wake spends a turn re-presenting the same broken credential, "
+            "and repeats — which is D-149's routed-around shape on a timer")
+    check("auth · a rejected credential is never woken by its until_ts",
+          _auth_is_never_ready_by_time)
+
+    def _auth_is_never_ready_by_probe_floor():
+        o = _fz_org(limit=True, cause="auth")           # no until_ts at all
+        o.d["auto_resume_last"] = 0.0                   # floor wide open
+        assert "n" not in supervisor.auto_resume_ready(o, now), (
+            "the 5-minute blind probe floor picked up an auth freeze. This is "
+            "the branch that produced the ~6-minute loop in the first place")
+    check("auth · …nor by the 5-minute probe floor",
+          _auth_is_never_ready_by_probe_floor)
+
+    def _auth_is_never_ready_on_the_fallback_window():
+        o = _fz_org(limit=True, cause="auth", until_ts=now + 9999)
+        o.d.update(api_key="sk-test", api_fallback=True,
+                   api_fallback_until=now + 3600)
+        assert "n" not in supervisor.auto_resume_ready(o, now), (
+            "the api_fallback fast-wake picked up an auth freeze. That branch "
+            "exists because 'the key lane is open' answers a CAPACITY "
+            "question — it does not answer a credential being refused, and "
+            "waking here re-presents it on the METERED lane")
+    check("auth · …nor by the api_fallback fast-wake",
+          _auth_is_never_ready_on_the_fallback_window)
+
+    def _control_the_same_record_without_the_cause_wakes():
+        o = _fz_org(limit=True, until_ts=now - 600)
+        assert "n" in supervisor.auto_resume_ready(o, now), (
+            "CONTROL FAILED: the identical record with no `cause` did not "
+            "wake either, so the three checks above prove nothing about the "
+            "auth marker — they would pass on a build where limit freezes "
+            "simply stopped waking at all")
+    check("control · the same record WITHOUT cause=auth still wakes on time",
+          _control_the_same_record_without_the_cause_wakes)
+
+    def _an_unknown_cause_is_not_a_blanket_refusal():
+        o = _fz_org(limit=True, cause="capacity", until_ts=now - 600)
+        assert "n" in supervisor.auto_resume_ready(o, now), (
+            "any non-empty `cause` suppressed the wake. The refusal must be "
+            "keyed on the value 'auth', not on the field being present — "
+            "otherwise the next cause anyone records silently parks nodes")
+    check("control · a cause that is not 'auth' does not suppress the wake",
+          _an_unknown_cause_is_not_a_blanket_refusal)
+
+    # ── the pool half ────────────────────────────────────────────────────
+    def _a_dry_pool_that_became_wet_wakes():
+        _set_pool("haiku", dry=False)
+        o = _fz_org(limit=True, pool="dry", until_ts=now + 6 * 3600)
+        assert "n" in supervisor.auto_resume_ready(o, now), (
+            "a node parked because NOWHERE had capacity was not woken by "
+            "capacity appearing — a key added, an order changed, a mark "
+            "expired. Its until_ts described the pool as it was at freeze "
+            "time and nothing re-derives it, which is the user's report")
+    check("pool · a freeze that parked on a dry pool wakes when capacity "
+          "appears, whatever its until_ts says", _a_dry_pool_that_became_wet_wakes)
+
+    def _control_a_dry_pool_that_is_still_dry_stays_parked():
+        _set_pool("haiku", dry=True, now=now)
+        o = _fz_org(limit=True, pool="dry", until_ts=now + 6 * 3600)
+        assert "n" not in supervisor.auto_resume_ready(o, now), (
+            "THE LEG THAT CAN FAIL: with no capacity anywhere the node must "
+            "STAY parked. If this passes only because the wake never fires, "
+            "the check above is the one that says so — they are a pair and "
+            "both are required")
+    check("control · …and stays parked while the pool is still dry",
+          _control_a_dry_pool_that_is_still_dry_stays_parked)
+
+    def _capacity_standing_at_freeze_time_never_wakes_it():
+        _set_pool("haiku", dry=False)
+        o = _fz_org(limit=True, pool="open", until_ts=now + 6 * 3600)
+        assert "n" not in supervisor.auto_resume_ready(o, now), (
+            "THE ANTI-FLAP. This node froze while capacity was standing "
+            "available (a switch refused by the counter, a resolver naming "
+            "the serving account back). 'Capacity exists' is therefore not "
+            "news about it: waking on that re-drives into the same wall, "
+            "re-freezes, and fires again on the next 30-second tick, forever")
+    check("pool · a freeze recorded with capacity ALREADY available is never "
+          "woken by capacity being available",
+          _capacity_standing_at_freeze_time_never_wakes_it)
+
+    def _a_freeze_that_never_asked_the_resolver_never_wakes_it():
+        _set_pool("haiku", dry=False)
+        o = _fz_org(limit=True, until_ts=now + 6 * 3600)   # no `pool` key
+        assert "n" not in supervisor.auto_resume_ready(o, now), (
+            "a freeze carrying no pool fact was woken on capacity. Those are "
+            "the records the resolver was never asked about — the 401 branch "
+            "and the api-key/no-tier branch — and for them 'capacity exists' "
+            "was already true when we froze")
+    check("pool · a freeze that never asked the resolver is not woken by it",
+          _a_freeze_that_never_asked_the_resolver_never_wakes_it)
+
+    def _untrusted_is_excluded_from_the_pool_path():
+        _set_pool("haiku", dry=False)
+        o = _fz_org(limit=True, pool="dry", untrusted=True,
+                    until_ts=now + 6 * 3600)
+        assert "n" not in supervisor.auto_resume_ready(o, now), (
+            "a SELF-DIAGNOSED limit was woken on capacity. Nothing about it "
+            "was evidence of a wall, so capacity appearing is not evidence "
+            "the wall passed — and waking on it burns the untrusted run "
+            "budget in minutes instead of the ~15 the floor gives it")
+    check("pool · an untrusted freeze is not woken by capacity appearing",
+          _untrusted_is_excluded_from_the_pool_path)
+
+    def _an_auth_freeze_is_not_rescued_by_the_pool_path():
+        _set_pool("haiku", dry=False)
+        o = _fz_org(limit=True, pool="dry", cause="auth",
+                    until_ts=now + 6 * 3600)
+        assert "n" not in supervisor.auto_resume_ready(o, now), (
+            "the pool path woke an auth freeze. A 401 CAN be recorded on a "
+            "dry pool (the mark from an earlier, genuine limit is still "
+            "there), so the two exclusions have to compose — the auth "
+            "refusal must sit before every wake branch, not beside one")
+    check("auth+pool · the pool fast-path does not rescue an auth freeze",
+          _an_auth_freeze_is_not_rescued_by_the_pool_path)
+
+    def _the_resolver_is_asked_with_the_injected_clock():
+        # a mark that is live NOW and expired at `later`: the only way the
+        # answer can differ between the two calls is if `now` reaches the
+        # resolver. A resolver reading the wall clock behind our back gives
+        # the same answer twice.
+        _set_pool("haiku", dry=False)
+        accounts.record_limit(accounts.PRIMARY, "haiku", now + 600)
+        o = _fz_org(limit=True, pool="dry", until_ts=now + 6 * 3600)
+        fixture("n" not in supervisor.auto_resume_ready(o, now),
+                "the mark did not take — this check needs a pool that is dry "
+                "at `now`")
+        assert "n" in supervisor.auto_resume_ready(o, now + 601), (
+            "`now` is not threaded through to accounts.resolve: the pool's "
+            "mark expires at now+600 and a readiness call for now+601 still "
+            "saw it as live. This function takes an injected clock precisely "
+            "so its own tests are deterministic; a resolver reading "
+            "time.time() behind it makes every timing branch here untestable")
+    check("pool · the resolver is asked with the INJECTED clock, not the wall",
+          _the_resolver_is_asked_with_the_injected_clock)
+
+
+def sec_d156_resume() -> None:
+    """§7 — ▶ still resumes an auth freeze. The leg the marker's shape decides.
+
+    ⚠ THIS IS THE CHECK THAT CATCHES THE OBVIOUS IMPLEMENTATION. The natural
+    marker is `fz["auth"] = True`, and `supervisor._resumable` refuses a
+    record carrying ANY True key outside its allowlist — so a boolean marker
+    makes the node unwakeable by the TIMER *and* by the OPERATOR, forever,
+    after the one action that fixes a rejected credential (replace it, press
+    resume). Worse, every check in §6 goes GREEN on that build: they assert
+    the timer stays away, and it does, for the wrong reason. `untrusted` fell
+    into this exact trap on the day it was added.
+    """
+    print("\n§7 D-156 — ▶ still resumes what the timer refuses:")
+    real_run_turn = supervisor._run_turn
+    supervisor._run_turn = lambda *a, **k: None          # type: ignore[assignment]
+    try:
+        slug, a = probe_org()
+        _freeze(slug, a, limit=True, cause="auth", until_ts=None,
+                until="credential rejected — replace it, then resume")
+
+        def _play_resumes_an_auth_freeze():
+            assert supervisor._resumable(node(slug, a)) is not None, (
+                "_resumable disowned the record: ▶ will skip this node "
+                "forever. The marker must not be a True flag outside the "
+                "allowlist — see this section's docstring")
+            assert a in supervisor.resume_frozen(slug), (
+                "▶ did not resume an auth-frozen node. Replacing the "
+                "credential and pressing resume is the ONLY fix for this "
+                "freeze; suppressing the timer must not take it away")
+            assert not node(slug, a).get("frozen"), \
+                "the node is still frozen after ▶ reported resuming it"
+        check("resume · ▶ resumes an auth freeze the timer refuses",
+              _play_resumes_an_auth_freeze)
+    finally:
+        supervisor._run_turn = real_run_turn             # type: ignore[assignment]
+
+
+def sec_d156_stamp() -> None:
+    """§8 — the marker is written by the REAL path, from a REAL status code.
+
+    §6 asserts what `auto_resume_ready` does with a record. This section is
+    the other half: that a turn which fails the way the CLI actually fails
+    PRODUCES that record. Without it the suite would prove a branch nobody
+    can reach — the shape of check this project keeps catching itself
+    shipping.
+
+    The stand-in emits the conjunction D-156 turns on: a result event whose
+    text `_looks_like_usage_limit` admits, carrying `api_error_status: 401`,
+    with `subtype: 'success'` — the last of those measured on the shipped CLI
+    (see `_looks_like_auth_failure`). NOTE WHAT THIS DOES AND DOES NOT SHOW:
+    it proves our code handles the conjunction correctly. It does NOT prove
+    the shipped CLI emits it — that remains unmeasured, which is exactly why
+    the fix is a positive marker rather than a bet on the word list.
+    """
+    print("\n§8 D-156 — a real 401 turn writes the marker:")
+    undo = _stub_login()
+    try:
+        _sec_d156_stamp_body()
+    finally:
+        undo()
+
+
+def _sec_d156_stamp_body() -> None:
+    _set_pool("haiku", dry=True)
+    slug, a = probe_org()
+    o = store.load_org(slug)
+    o.d.update(api_key="sk-test", api_fallback=True)   # a window COULD open
+    store.save_org(o)
+    set_mode("iserror", api_error_status=401)
+    run_turn(slug, a)
+    fz_auth = dict(node(slug, a).get("frozen") or {})
+
+    def _the_401_is_recorded_as_the_cause():
+        fixture(bool(fz_auth), "the 401 turn did not freeze the node at all — "
+                               "this section needs a freeze to inspect")
+        assert fz_auth.get("cause") == "auth", (
+            "a turn rejected with 401, whose text is also limit-shaped, was "
+            f"recorded as an ordinary usage limit: {fz_auth}. Nothing on the "
+            "record then distinguishes a rejected credential from exhausted "
+            "capacity, and the timer re-presents it every ~6 minutes")
+    check("stamp · a limit-shaped 401 freezes with cause=auth",
+          _the_401_is_recorded_as_the_cause)
+
+    def _the_label_stops_promising_a_probe():
+        assert fz_auth.get("until_ts") is None, (
+            f"the record kept a reset time: {fz_auth.get('until_ts')!r}. That "
+            "number was priced as a WAIT and there is nothing to wait for")
+        assert fz_auth.get("reset_src") == "auth", (
+            f"reset_src still describes a number that is gone: {fz_auth}")
+        assert "probing" not in (fz_auth.get("until") or ""), (
+            "the operator's label still promises a probe in ~5 minutes while "
+            "the timer has been told never to probe it — a countdown for an "
+            f"event that never comes: {fz_auth.get('until')!r}")
+        assert "resume" in (fz_auth.get("until") or "").lower(), (
+            "the label must say what to DO instead of what to wait for — "
+            f"replacing the credential and resuming: {fz_auth.get('until')!r}")
+    check("stamp · …and its label says replace-and-resume, not 'probing in 5 min'",
+          _the_label_stops_promising_a_probe)
+
+    def _no_billing_window_opens_on_a_rejected_credential():
+        assert not store.load_org(slug).d.get("api_fallback_until"), (
+            "a 401 opened an api_fallback window: the org quietly moved onto "
+            "the user's METERED key because a credential was refused. That "
+            "branch prices 'the subscription is out of capacity'; a rejected "
+            "credential says no such thing, and the operator finds out from "
+            "the bill (D-149's routed-around shape, with money on it)")
+    check("stamp · no api_fallback billing window opens on a 401",
+          _no_billing_window_opens_on_a_rejected_credential)
+
+    slug2, b = probe_org()
+    o2 = store.load_org(slug2)
+    o2.d.update(api_key="sk-test", api_fallback=True)
+    store.save_org(o2)
+    set_mode("iserror")                       # SAME text, no status code
+    run_turn(slug2, b)
+    fz_plain = dict(node(slug2, b).get("frozen") or {})
+
+    def _control_the_same_text_without_the_401():
+        fixture(bool(fz_plain), "the control turn did not freeze")
+        assert fz_plain.get("limit") is True, \
+            f"the control did not record a usage-limit freeze: {fz_plain}"
+        assert "cause" not in fz_plain, (
+            "CONTROL FAILED: the identical limit text with NO status code was "
+            f"also marked as an auth cause: {fz_plain}. The marker would then "
+            "be keyed on the prose, which is the thing "
+            "`_looks_like_auth_failure`'s signature exists to prevent")
+        assert fz_plain.get("until_ts"), (
+            "CONTROL FAILED: an ordinary limit freeze lost its reset time "
+            "too, so the auth checks above would pass on a build that simply "
+            "stopped stamping timestamps")
+        assert store.load_org(slug2).d.get("api_fallback_until"), (
+            "CONTROL FAILED: no billing window opened for an ORDINARY limit "
+            "either — so 'no window on a 401' proves nothing about the 401")
+    check("control · the same limit text with no 401 keeps its cause-free "
+          "record, its reset time and its billing window",
+          _control_the_same_text_without_the_401)
+
+    def _the_pool_fact_is_recorded_from_the_real_resolver():
+        assert fz_plain.get("pool") == "dry", (
+            "an ordinary limit freeze recorded on an exhausted pool did not "
+            f"carry the resolver's answer: {fz_plain}. Without it the "
+            "readiness path can never wake this node when a key is added — "
+            "the user's original report")
+        assert "pool" not in fz_auth, (
+            "the 401 branch recorded a pool fact. It never asks the resolver "
+            "— by design, since a rejected credential is not a capacity fact "
+            f"— so there is no answer to record: {fz_auth}")
+    check("stamp · the pool answer is recorded on a capacity freeze, and "
+          "absent on a 401", _the_pool_fact_is_recorded_from_the_real_resolver)
+
+    # ── the stale-record leg. STRUCTURAL, and here is why: `_ensure_frozen`
+    # hands back a SURVIVING record, but `_run_one_turn` refuses to drive a
+    # node that carries one (supervisor ~3289) and ▶ pops it before resuming
+    # — so a re-freeze onto a stale record is only reachable when a node is
+    # frozen by another mechanism WHILE a turn is in flight, which this rig
+    # cannot drive. Same reason, and same shape, as `inherit · the call site
+    # bands what it inherits` in §6. MEASURED, not assumed: the behavioural
+    # version of this check was written first and its turn never ran.
+    _sup_src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "..", "orgtree", "supervisor.py"),
+                    encoding="utf-8").read()
+    _live = "\n".join(ln for ln in _sup_src.splitlines()
+                      if not ln.lstrip().startswith("#"))
+
+    def _both_markers_are_written_on_every_pass():
+        j = _live.find('fz["limit"] = True')
+        fixture(j > 0, "the freeze site moved — re-read this check")
+        window = _live[j:j + 700]
+        fixture('fz["cause"] = "auth"' in window and 'fz["pool"]' in window,
+                "the D-156 stamps are not at the freeze site any more — "
+                "re-read this check rather than trusting it")
+        assert 'fz.pop("cause", None)' in window, (
+            "`cause` is set when the turn was a 401 and left ALONE otherwise. "
+            "A record that survives (see the comment above this check) then "
+            "carries an auth cause into a freeze that has nothing to do with "
+            "a credential — and the timer refuses that node forever. The "
+            "field must be written on BOTH paths, like `reset_src`")
+        assert 'fz.pop("pool", None)' in window, (
+            "`pool` is not cleared when this freeze never asked the resolver, "
+            "so a surviving 'dry' from an earlier freeze would let capacity "
+            "wake a node whose freeze never had anything to do with capacity")
+    check("stamp · both markers are written on EVERY pass, never only when "
+          "true (structural — a frozen node runs no turns)",
+          _both_markers_are_written_on_every_pass)
 
 
 def _flat(tree: dict) -> list[dict]:
@@ -3568,13 +3982,18 @@ def main() -> None:
     print("═══ usage-limit freeze — the shape the CLI actually reports ═══")
     sec_detect()
     sec_wake()
+    sec_d156_readiness()      # pure — no CLI, no data root
+    sec_d156_resume()
     sec_reset_timing()
     if not shutil.which("node"):
-        note("node is not on PATH — §2/§3 skipped (they need the CLI stand-in)")
+        note("node is not on PATH — §2/§3/§8 skipped (they need the CLI "
+             "stand-in) — ⚠ §8 is the half that proves the §6 records are "
+             "REACHABLE, so a run without node leaves D-156 half-covered")
     else:
         sec_shapes()
         sec_reader()
         sec_attack_the_fix()
+        sec_d156_stamp()
     sec_died_in_flight()      # its predicate half needs no rig
     sec_deploy_window()       # D-142/a — most of it needs no rig either
     sec_abandoned()           # the terminal bucket, made loud

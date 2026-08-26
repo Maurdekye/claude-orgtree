@@ -155,6 +155,26 @@ class FrozenInfo(TypedDict, total=False):
     # wall; it waits for its own until_ts like any limit freeze.
     # (⚠ exempted in supervisor._resumable's other-kind test, like the kinds.)
     on_fallback: bool
+    # ── D-156, and note that BOTH are strings on purpose ──────────────────
+    # WHY this freeze happened, when the answer is not "capacity ran out":
+    # "auth" = the turn was rejected with a 401, so the record is a
+    # usage-limit freeze in shape only. The auto-resume timer refuses it
+    # (re-probing a rejected credential is D-149's routed-around shape on a
+    # timer), and no api_fallback window opens for it (that one spends money).
+    # ⚠ A STRING, NEVER `auth: True`. `supervisor._resumable` refuses a record
+    # carrying any True key outside its allowlist, which would make ▶ skip the
+    # node FOREVER — and ▶ is exactly what an operator needs after replacing
+    # the credential. `untrusted` fell into that trap the day it was added.
+    cause: str
+    # what `accounts.resolve` said about this tier AT FREEZE TIME: "dry"
+    # (nowhere had capacity) or "open" (capacity was standing available and
+    # this froze for another reason — the switch counter, or a resolver that
+    # named the serving account back). ABSENT means the freeze never asked —
+    # the 401 branch and the api-key/no-tier branch both skip the resolver.
+    # Readiness may wake a node on "capacity has appeared" ONLY from "dry":
+    # from "open" or absent, the capacity was already there when we froze, so
+    # waking on it re-drives into the same wall every tick.
+    pool: str
     # prompts to replay when the freeze lifts (supervisor queues them)
     resume_texts: list[str]
 

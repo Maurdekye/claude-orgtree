@@ -4286,6 +4286,22 @@ def _run_one_turn(slug: str, nid: str,
                 # broken thing to be fixed, not a capacity fact (user
                 # ruling) — it marks NO lane and falls straight through to
                 # the freeze path below, unchanged.
+                # ⚠ ONE call, TWO consumers — the refusal just below and the
+                # freeze record's `cause` stamp (D-156). Asked once and held
+                # in a local rather than asked twice: the same predicate on
+                # the same `res` cannot then answer differently at the two
+                # sites, which is the drift `subscription_lane` was extracted
+                # to stop. Also the reason the answer is computed HERE and
+                # not inside the freeze block — `res` is final by now, and a
+                # second call there would be a second thing to keep in step.
+                _auth_fail = _looks_like_auth_failure(res)
+                # ⚠ THE POOL FACT IS TAKEN AT FREEZE TIME, NOT AT WAKE TIME
+                # (D-156). `None` = "this freeze never asked the resolver"
+                # — the 401 branch and the api-key branch below both leave it
+                # that way, and so does a switch refused by the counter. Only
+                # a freeze that ASKED and was told "nowhere has capacity" may
+                # later be woken by capacity appearing; see auto_resume_ready.
+                _pool_dry: bool | None = None
                 if _looks_like_usage_limit(err_blob) and not handled:
                     # what actually served this turn — stamped at spawn from
                     # the resolved env; an unstamped turn ran ambient, which
@@ -4295,7 +4311,7 @@ def _run_one_turn(slug: str, nid: str,
                              if nid in org.nodes else "")
                     _trusted = not (agent_authored
                                     and err_blob is synth_limit_txt)
-                    if _looks_like_auth_failure(res):
+                    if _auth_fail:
                         log_failover_refusal(slug, nid, (
                             "the credential was rejected (401) — broken and "
                             "in need of replacing, not out of capacity; no "
@@ -4322,6 +4338,14 @@ def _run_one_turn(slug: str, nid: str,
                         accounts.record_limit(
                             _served, _tier, _rts or time.time() + PROBE_FLOOR)
                         _nxt = accounts.resolve(_tier)
+                        # the answer the resolver gave AT FREEZE TIME, kept
+                        # for the record below (D-156). False here means
+                        # capacity was standing available and we froze for
+                        # some other reason — the switch counter, or a
+                        # resolver that named the same account back — and a
+                        # readiness rule keyed on "capacity exists" must not
+                        # fire on a node whose capacity never went away.
+                        _pool_dry = not _nxt.get("available")
                         _switches = int(st.get("account_switches") or 0)
                         if (_nxt.get("available")
                                 and _nxt.get("account") != _served
@@ -4389,6 +4413,37 @@ def _run_one_turn(slug: str, nid: str,
                             _sub_lane = subscription_lane(
                                 billed_key, str(st.get("ran_as") or ""))
                             fz["limit"] = True
+                            # ── D-156: WHY this freeze happened, positively.
+                            # Both fields are written on EVERY pass, never
+                            # only when true: `_ensure_frozen` hands back a
+                            # SURVIVING record on a re-freeze, so a `cause`
+                            # left standing from an earlier auth failure
+                            # would park a genuine capacity freeze forever,
+                            # and a stale `pool` would wake one that never
+                            # asked the resolver. Same rule, and the same
+                            # reason, as `reset_src` two blocks down.
+                            #
+                            # ⚠ NOT `fz["auth"] = True`. `_resumable` refuses
+                            # a record carrying ANY True key it does not know
+                            # (7494), so a boolean marker here would make ▶
+                            # skip this node FOREVER — the operator could
+                            # never resume it after replacing the credential,
+                            # which is the one action that fixes it. A STRING
+                            # is invisible to that guard by construction.
+                            # `untrusted` fell into exactly this trap on the
+                            # day it was added; this is the same trap, seen
+                            # in time. (The test that catches it is the one
+                            # asserting ▶ still resumes an auth freeze — a
+                            # test that only checks the TIMER stays away goes
+                            # green on a node nothing can wake at all.)
+                            if _auth_fail:
+                                fz["cause"] = "auth"
+                            else:
+                                fz.pop("cause", None)
+                            if _pool_dry is None:
+                                fz.pop("pool", None)
+                            else:
+                                fz["pool"] = "dry" if _pool_dry else "open"
                             # ⚠ the label is a CONSEQUENCE like the window and
                             # the wake, and it is the only one a person reads:
                             # `ledger.tree()` projects `until`, and the UI
@@ -4481,6 +4536,27 @@ def _run_one_turn(slug: str, nid: str,
                                     # stop describing one
                                     fz["reset_src"] = "capped"
                                     _stamped_ts = None
+                            if _auth_fail:
+                                # ⚠ THE LABEL MUST STOP PROMISING A PROBE THE
+                                # MOMENT THE PROBE STOPS (D-156). Everything
+                                # above just priced a WAIT — the ~5-minute
+                                # floor, or a reset time parsed out of the
+                                # blob — and for a rejected credential there
+                                # is no wait: nothing about it improves at
+                                # 3:10pm. Leaving the number standing would
+                                # put a countdown in the org header (kiosk
+                                # visitors included) for an event that never
+                                # comes, which is the display-reports-intent
+                                # failure this team spent a day on. Same
+                                # shape as the untrusted cap directly above:
+                                # the number is GONE, the label says what to
+                                # do instead, and `reset_src` stops
+                                # describing a number that is not there.
+                                fz["until_ts"] = None
+                                fz["until"] = ("credential rejected — replace "
+                                               "it, then resume")
+                                fz["reset_src"] = "auth"
+                                _stamped_ts = None
                             fz["error"] = err_blob[:300]
                             # replay only what the CLI actually consumed: an
                             # unconsumed batch folds back as MAIL (C1) and
@@ -4579,7 +4655,20 @@ def _run_one_turn(slug: str, nid: str,
                                   and o2.d.get("api_key")
                                   and (not _fable_tier
                                        or _fable_fallback_eligible)
-                                  and _trusted_blob):
+                                  and _trusted_blob
+                                  and not _auth_fail):
+                                # ⚠ AND NOT ON A REJECTED CREDENTIAL (D-156).
+                                # This branch spends the user's metered key,
+                                # org-wide, on the strength of "the
+                                # subscription is out of capacity". A 401
+                                # says no such thing — it says the credential
+                                # is broken — and opening a billing window on
+                                # it is D-149's routed-around shape wearing
+                                # the one costume that costs money: the org
+                                # quietly moves onto the key and the operator
+                                # finds out from the bill. Parking is the
+                                # honest outcome; the key is still there to
+                                # be turned on deliberately.
                                 # ⚠ TRUSTED evidence only. Flooring an
                                 # unvouched window at 15 minutes bounded ONE
                                 # incident and not the RATE: the window makes
@@ -7678,7 +7767,8 @@ def interorg_send(src_slug: str, dst_slug: str, body: str) -> str | None:
 _auto_resume_started = False
 
 
-def auto_resume_ready(org: Org, now: float | None = None) -> set[str]:
+def auto_resume_ready(org: Org, now: float | None = None,
+                      why: dict[str, str] | None = None) -> set[str]:
     """Which frozen nodes the timer should wake RIGHT NOW — asked PER NODE.
 
     ⚠ This was an org-wide `max(every frozen node's until_ts)` gate until
@@ -7705,14 +7795,65 @@ def auto_resume_ready(org: Org, now: float | None = None) -> set[str]:
     floor instead of waiting for a human forever (redteam gap 2026-08-05);
     that floor is org-wide (`auto_resume_last`), since a probe is a guess and
     guessing once per org per 5 minutes is enough.
+
+    TWO THINGS THIS FUNCTION KNOWS THAT A TIMESTAMP CANNOT (D-156):
+
+    · an auth freeze (`cause == "auth"`) is never ready. Its `until_ts` was
+      priced as a wait, and a rejected credential is not waiting for
+      anything; the timer would re-present it forever.
+    · a freeze that parked on a DRY account pool becomes ready when the pool
+      has capacity again, whatever its `until_ts` says. That timestamp
+      described the old pool and nothing re-derives it when a key is added.
+      Keyed on the freeze's OWN record of what the resolver said at the time
+      — never on "capacity exists now", which is true at freeze time on three
+      separate paths and would make the wake self-triggering.
     """
     now = time.time() if now is None else now
     last = float(org.d.get("auto_resume_last") or 0)
     fb = api_fallback_active(org, now)
+    # ONE resolver answer per TIER per tick, not per node: this whole function
+    # runs under `store.DOC_LOCK` (see the loop), and `accounts.resolve` is two
+    # FILE reads — the roster and the CLI's own config. Neither is a network
+    # call and `accounts` never takes DOC_LOCK, so there is no inversion here;
+    # the cache is about not doing it 40 times for one answer. `now` is passed
+    # through DELIBERATELY: this function takes an injected clock so its tests
+    # are deterministic, and a resolver reading the wall clock behind its back
+    # would make exactly the timing-sensitive branches untestable.
+    _pool_seen: dict[str, bool] = {}
+
+    def _pool_open(tier: str) -> bool:
+        if not tier:
+            return False        # no tier, no lane — never "capacity exists"
+        if tier not in _pool_seen:
+            try:
+                _pool_seen[tier] = bool(
+                    accounts.resolve(tier, now).get("available"))
+            except Exception:   # noqa: BLE001 — unreadable roster
+                # fail CLOSED. An unreadable roster is not evidence of
+                # capacity, and this branch's whole job is spending a turn on
+                # the belief that capacity exists.
+                _pool_seen[tier] = False
+        return _pool_seen[tier]
+
     ready: set[str] = set()
     for nid, n in org.nodes.items():
         fz = _resumable(n)
         if fz is None:
+            continue
+        if fz.get("cause") == "auth":
+            # D-156: the credential was REJECTED, not exhausted. There is
+            # nothing to wait for and nothing a retry can discover — every
+            # automatic wake spends a turn re-presenting a broken credential,
+            # and on a CLI that silently falls back to a stored login it
+            # spends it on ANOTHER ACCOUNT'S quota. D-149 says an auth failure
+            # is reported, never routed around; a timer doing it every six
+            # minutes forever is routing around it, slowly.
+            # ▶ still resumes this node — that is the point of the marker
+            # being a string (see the stamp site) — because replacing the
+            # credential and pressing resume is the fix, and the operator must
+            # be able to perform it. This suppresses the TIMER, not the person.
+            # (Placed with the untrusted guard, before every branch below,
+            # including the fallback fast-wake.)
             continue
         if fz.get("untrusted") and fz.get("until_ts") is None:
             # a run of self-diagnosed limits, capped: nothing here is evidence
@@ -7726,6 +7867,36 @@ def auto_resume_ready(org: Org, now: float | None = None) -> set[str]:
             # api_fallback (2026-08-17): the key lane is open RIGHT NOW —
             # a subscription-side limit freeze has nothing to wait for.
             # (A freeze earned ON the key lane keeps its own until_ts.)
+            ready.add(nid)
+            continue
+        if (fz.get("limit") and fz.get("pool") == "dry"
+                and not fz.get("untrusted")
+                and _pool_open(str(n.get("model") or ""))):
+            # THE ACCOUNT LANE'S ANSWER TO THE SAME QUESTION (D-156, user
+            # report): this node parked because every account was out of
+            # capacity for its tier, and an account has capacity now — a key
+            # was added, an order changed, a mark expired. `until_ts` was the
+            # old pool's reset and stopped being true the moment the pool
+            # changed; nothing re-derives it, so without this the node sits
+            # out a deadline that no longer describes anything.
+            #
+            # ⚠ `pool == "dry"` IS THE ANTI-FLAP, AND IT IS A FREEZE-TIME
+            # FACT ON PURPOSE. "Capacity exists" alone is not evidence of
+            # anything new: three paths reach the freeze with capacity
+            # STANDING available (a 401 marks no lane; the api-key/no-tier
+            # branch marks no lane; a switch refused by the counter had
+            # somewhere to go and declined). Waking those on "capacity
+            # exists" fires on the very next tick, re-drives into the same
+            # wall, re-freezes, and fires again — every 30 seconds, forever.
+            # Only a freeze that ASKED the resolver and was told "nowhere"
+            # can be told something new later. This is the same lesson
+            # `on_fallback` encodes for the key lane, and it is the
+            # correction the Orgtree org accepted for their own proposal.
+            #
+            # `untrusted` excluded: a self-diagnosed limit is not evidence of
+            # a wall, so capacity appearing is not evidence it has passed —
+            # and waking on it burns the UNTRUSTED_LIMIT_RUNS budget in
+            # minutes instead of the ~15 the floor gives it.
             ready.add(nid)
             continue
         ts = fz.get("until_ts")
@@ -7797,6 +7968,20 @@ def start_auto_resume_loop() -> None:
                                           # so limits do not park the org
                                           or (fb and fz.get("limit")
                                               and not fz.get("on_fallback")))}
+                            # ⚠ AND THE ACCOUNT LANE IS NOT HERE, DELIBERATELY
+                            # (D-156). `auto_resume_ready` will now offer a
+                            # node whose account pool has capacity again, and
+                            # with the toggle OFF this filter drops it — so
+                            # for a default-configured org (the toggle ships
+                            # off; api.py forces it on only for headless) the
+                            # pool-readiness path changes NOTHING VISIBLE.
+                            # That is stated rather than quietly true: whether
+                            # configuring a second account is itself consent
+                            # to wake a parked node — the claim api_fallback
+                            # makes for itself two lines up — is the user's
+                            # call, not ours, and it is with them. If the
+                            # answer is yes this becomes one more clause here
+                            # and nothing else moves.
                     if not ready:
                         continue
                     with store.DOC_LOCK:
