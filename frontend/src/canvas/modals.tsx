@@ -263,7 +263,7 @@ export function UserConfig({ tree, slug, toast, close }: UserConfigProps) {
         <select value={vis} onChange={(e) => setVis(e.target.value)}>
           {VIS_OPTIONS.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
         </select>
-        {/* D-100: the born-with mode, editable post-creation. Admin-only —
+        {/* D-101: the born-with mode, editable post-creation. Admin-only —
             it rides /settings (frozen for kiosk visitors), never the
             visitor-open defaults endpoint. It is a DEFAULT: existing agents
             keep the mode they were hired with and change one at a time in

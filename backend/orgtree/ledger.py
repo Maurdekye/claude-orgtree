@@ -6104,7 +6104,7 @@ class Org:
             "default_tools": self.d.get("default_tools"),
             "default_visibility": self.d.get("default_visibility", "full"),
             # the mode NEW hires are born with — editable post-creation
-            # (D-100); each existing node carries its own in `scope`
+            # (D-101); each existing node carries its own in `scope`
             "permission_mode": self.d.get("permission_mode", "acceptEdits"),
             # "" = CLI default (user ruling 2026-08-01: visible inherit — an
             # unset node effort falls back to this at TURN time, live)

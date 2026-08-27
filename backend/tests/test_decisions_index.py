@@ -21,6 +21,17 @@ checker report it.
     §4  the citation form this suite recognises, and why it is not wider
     §5  naming a file on another drive must not crash the report
 
+⚠ WHAT §2 CANNOT FAIL ON, stated because a green run must not be read as more
+than it is. §2 proves every citation resolves to an entry that EXISTS. It says
+nothing about whether that entry is the one the citation MEANT. A citation
+pointing at a real-but-wrong ruling is a semantic error, it resolves perfectly,
+and no cheap check will find it. This is not hypothetical: repairing the
+duplicate numbers left four citations — `ledger.py`'s org-defaults comment,
+`modals.tsx`'s mode field, two in `types.ts` — reading `D-100` while plainly
+describing `D-101`'s ruling, and the duplication had been hiding it. They were
+resolved by a human reading them (coordinator, 2026-08-26), which is the only
+instrument that works on this class. Do not add a check that guesses.
+
 ⚠ §4 IS LOAD-BEARING, not decoration. `D-NNN` (three digits, zero-padded) is
 `DECISIONS.md`'s namespace. `D-NN` (one or two digits) is
 `docs/interim-docket.md`'s OWN, older series — its `## D-39` is

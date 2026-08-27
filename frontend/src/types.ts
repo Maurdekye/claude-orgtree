@@ -528,7 +528,7 @@ export interface TreePayload {
   compact_at: number
   default_tools: ToolGrant | null
   default_visibility: string
-  /** the mode NEW hires are born with (D-100); existing nodes carry their own
+  /** the mode NEW hires are born with (D-101); existing nodes carry their own
    *  in `scope.permission_mode` and are changed one at a time in the ⚙ */
   permission_mode?: string
   /** org-wide effort fallback ("" = fall through to effort_default) — live
@@ -1041,7 +1041,7 @@ export interface SettingsRequest {
   fable_filter_policy?: string | null
   default_tools?: Partial<ToolGrant> | null
   default_visibility?: string | null
-  /** D-100 — the mode NEW hires are born with; admin-only (this endpoint is
+  /** D-101 — the mode NEW hires are born with; admin-only (this endpoint is
    *  frozen for kiosk visitors, unlike /defaults) */
   permission_mode?: string | null
   default_effort?: string | null
