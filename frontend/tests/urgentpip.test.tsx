@@ -132,7 +132,7 @@ const userNode = (pip: ReturnType<typeof attentionPip>) => (
     stats={{ circ: 0, seats: 0, free: 0 }}
     pip={pip} seats={{ opus: 5 }} kiosk={undefined} pub={false}
     kioskRemaining={null} pxc={1} zoom={1} onSpawn={noop}
-    onMailLink={noop} focused={false} eyeW={124}
+    onMailLink={noop} focused={false} eyeW={124} posX={() => 0}
     map={new Map()} op={(() => Promise.resolve({})) as unknown as OpFn}
     slug="org" toast={noop} />
 )
