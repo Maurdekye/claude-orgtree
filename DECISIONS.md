@@ -2278,6 +2278,84 @@ All current Claude models accept image input, `claude-fable-5` included, so no
 tier needs a capability degrade. If the vendor's numbers change, this entry is
 stale and the suite will not notice — it pins our behaviour, not their limits.
 
+### D-169 · urgent mail: a second way in, on the ask's own signal
+Ruling (user, 2026-08-27): an agent may tag USER-BOUND mail urgent. The
+inbox then "pulses and lights up the same way a question ask does", until
+the mail is read; the count of unread questions + urgent mail OVERRIDES the
+normal unread count. To be "used sparingly, only if the user's attention is
+explicitly required in a way that doesn't involve them having to answer a
+question". Spec addition, same day: urgent mail is "visually distinct and
+more pronounced in the mailbox than other mail types, to set it apart".
+
+WIDENS D-092, does not supersede it. D-092 gave the header inbox icon the
+property of glowing ALONE IN THE CHROME iff an ask was open. What changed is
+the CONDITION, not the property: urgent mail now counts alongside an open
+ask. Nothing else began glowing, and the aura still means exactly one thing
+— "something here needs you", rather than "there is mail". A reader arriving
+at D-092 should come here for the current condition.
+
+READ MEANS DEALT WITH, NOT SEEN — D-076's two layers, and we take the second
+deliberately. `user_inbox` IS the unread set: the read endpoint MOVES an
+entry out of it into `user_mail_log`, and the client fires that when the user
+clicks OFF the row. So the pulse is derived from list membership and stops on
+exactly that event. It does NOT stop on the inbox being opened. There is no
+second seen-stamp that could leave the signal stuck on after the mail was
+dealt with, because there is no second notion of read.
+
+THE REASON IS REQUIRED, AND IT IS DISPLAYED. `urgent` without a non-blank
+`urgent_reason` is refused, as is a reason without the flag, as is urgent
+mail to any recipient but the user. The reason is shown to the user beside
+the mail. The point is not friction: a reason that were merely STORED would
+be a pure tax on the sender, whereas one that is shown makes the urgency
+ACCOUNTABLE — the user judges the claim, and that is the actual check on
+overuse. A blank reason is refused rather than accepted precisely so the
+requirement cannot evaporate into `urgent_reason=""` on every call within a
+week, which is D-168's shape (an abstention wired to the passing branch)
+aimed at a human process instead of at an instrument.
+
+NO LIMIT, and the argument is the load-bearing part. A hard cap fails at the
+worst possible moment: the Nth urgent mail is refused exactly when many
+agents genuinely do need attention. And a refusal must either drop the mail
+or silently downgrade it, which is the WON'T-FIRE failure — the sender
+believes it raised the alarm, the user is never interrupted, and nothing
+anywhere says so. That is strictly worse than over-firing, which at least
+announces itself. Overuse is attributable instead: every row carries its
+sender, and the reason it had to write is on the screen beside it.
+
+THE ROW DOES NOT PULSE. Two requests, kept separate: the INBOX pulses, the
+ROW is distinct and pronounced. The mailbox already grades its kinds on ONE
+axis (left border + optional tint + kind chip) from notice (dashed, quiet)
+up to open ask (solid accent + tint); urgent sits one notch above that on
+the same axis — wider bar, stronger tint, and the chip FILLED where every
+other chip is outlined. Filled-vs-outlined was the one step in the existing
+vocabulary still unspent, so this adds a RANK rather than a sixth colour.
+Motion was withheld on purpose: two pulsing rows read as an alarm and the
+mailbox stops being scannable, while two strong rows still read as a list.
+
+Load-bearing.
+· ONE CLASSIFIER. `attentionPip` (canvas/shared.ts) is the only place the
+  pip rule exists. It was written out by hand at FOUR sites — the header
+  bell, UserNode's pip, EyeDesk's pip, the compact map eye — which had
+  ALREADY drifted on their tooltips before this feature. Threading a third
+  input through four copies is the shape that produced the freeze-label bug.
+  UserNode and EyeDesk now take the decided pip as a required prop and
+  compute nothing, so for those two the agreement is structural.
+· THE ZERO EDGE (the spec did not settle it): with nothing urgent and no ask
+  open, an inbox holding ordinary unread mail shows its plain count and does
+  NOT pulse. 12 unread reads "12", quietly.
+· `urgent_unread` is a SUBSET of `user_inbox_count`, never a separate
+  population — both count entries still sitting in `user_inbox`. The pip
+  OVERRIDES rather than adds; adding would double-count the same mail.
+· `ledger.tree()` is a key list that drops silently what it does not name,
+  and the symptom is a confident wrong display, not a crash. If
+  `urgent_unread` ever stops being named there the pip quietly falls back to
+  the ordinary unread count and the pulse never fires again. The per-mail
+  flag reaches the client by a DIFFERENT route (GET /inbox returns
+  `user_inbox` verbatim, no per-entry rebuild) — the two are not protected by
+  the same mechanism.
+· The flag and its reason are written as a PAIR at the single site that can
+  write them, after the gate; `urgent` never exists without a reason.
+
 ### D-165 · a node may notice ITSELF — a fall-through, now load-bearing
 Ruling (notice-endpoint, 2026-08-27, measured): §7.2 permits a node to
 address itself, and this is recorded as **permitted** rather than merely

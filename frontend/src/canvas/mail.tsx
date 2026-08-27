@@ -219,6 +219,13 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
               /* passive notices (orgtree_send_notice) stand apart too — but
                  quietly: a dashed neutral edge, never the ask accent */
               + (!m._ask && m.kind === 'notice' ? ' notice' : '')
+              /* D-169: urgent mail sits at the TOP of that same ladder — one
+                 notch above an open ask on the one axis this list already
+                 uses (edge + tint + chip), not a new colour. It does NOT
+                 pulse: the user asked the INBOX to pulse and the ROW to be
+                 pronounced, and two pulsing rows would read as an alarm
+                 where two strong rows still read as a list. */
+              + (!m._ask && m.urgent ? ' urgent' : '')
               + (jumpTo && keyOf(m) === jumpTo ? ' jflash' : '')}
             onClick={() => {
               if (cur && keyOf(m) === keyOf(cur)) {
@@ -237,6 +244,14 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
               {m._ask && <span className="askkind">{m.kind ?? 'ask'}</span>}
               {!m._ask && m.kind === 'notice'
                 && <span className="noticekind">notice</span>}
+              {/* the FILLED chip — every other chip in this list is an
+                  outline, so filled is the one step up the vocabulary that
+                  was still unused. Its tooltip carries the sender's reason,
+                  which is the whole point of requiring one: the user judges
+                  the interruption instead of just receiving it. */}
+              {!m._ask && m.urgent
+                && <span className="urgentkind" title={m.urgent_reason
+                  ? `urgent — ${m.urgent_reason}` : 'urgent'}>urgent</span>}
               {rowMark?.(m)}
               <span className="mtime">{when(m.at)}</span>
               {m._wait && m.id && onRetract && (
@@ -259,10 +274,20 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
               {outgoing && !customS && <span className="dim">to</span>}
               {S(party(cur)!, cur)}
               <span className="dim">{cur.kind}</span>
+              {cur.urgent && <span className="urgentkind">urgent</span>}
               {cur.relationship && <span className="dim">{cur.relationship}</span>}
               <span className="dim">{cur.at}</span>
               {cur._wait && <span className="wait">{waitLabel}</span>}
             </div>
+            {/* D-169: WHY you are being interrupted, in the sender's own
+                words, on its own line above the mail. The reason exists to be
+                READ — an urgent flag whose justification were merely stored
+                would be a tax on the sender and no check at all, whereas one
+                shown here makes the claim accountable to the person whose
+                attention it took. */}
+            {cur.urgent && cur.urgent_reason && (
+              <div className="urgent-why">{cur.urgent_reason}</div>
+            )}
             {custom
               ? <div className="mailer-body">{custom}</div>
               : <div className="mailer-body md"

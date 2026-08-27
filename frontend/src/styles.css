@@ -1147,6 +1147,43 @@ button.cc-name:hover {
   padding-left: 7px;
 }
 .mailrow.notice .l2 { font-style: italic; }
+/* D-169 URGENT MAIL — the TOP of the ladder this list already grades on.
+   That ladder is one axis (left border + optional tint + a kind chip) and it
+   runs: ordinary mail (no edge) → notice (dashed neutral, no tint) →
+   resolved ask (solid, accent faded toward the line) → open ask (solid
+   accent + 7% tint). Urgent sits one notch above the open ask ON THE SAME
+   AXIS — a wider, fully saturated bar and a stronger tint — rather than
+   introducing a sixth colour, which would have added a category instead of a
+   rank.
+   ⚠ NO ANIMATION HERE, DELIBERATELY. The user asked the INBOX to pulse and
+   the ROW to be pronounced; those are two requests, not one. Two pulsing
+   rows read as an alarm and the mailbox stops being scannable, whereas two
+   strong rows still read as a list. The pulse lives on the inbox pip
+   (.eye-count.asks) and the header bell (.ask-bell.glow), which is also the
+   signal that already existed — nothing here is a second animation that
+   could drift out of step with it. */
+.mailrow.urgent {
+  border-left: 4px solid var(--accent); padding-left: 6px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.mailrow.urgent:hover { background: color-mix(in srgb, var(--accent) 16%, var(--panel-2)); }
+.mailrow.urgent.on { background: color-mix(in srgb, var(--accent) 21%, var(--bg)); }
+/* the FILLED chip. Every other chip in this list is an outline (.askkind,
+   .noticekind), so filled-vs-outlined is the one step in the existing
+   vocabulary that was still unspent — it reads as louder without needing a
+   new hue to say so. */
+.urgentkind {
+  flex: none; font-size: 9px; line-height: 1.6; font-weight: 700;
+  background: var(--accent); color: #fff; border: 1px solid var(--accent);
+  border-radius: 8px; padding: 0 5px; letter-spacing: .3px;
+}
+/* the sender's one-line justification, above the body in the reading pane */
+.urgent-why {
+  margin: 0 0 6px; padding: 5px 9px; font-size: 11.5px;
+  border-left: 3px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  color: var(--ink);
+}
 .noticekind {
   flex: none; font-size: 9px; line-height: 1.6; color: var(--dim);
   border: 1px dashed color-mix(in srgb, var(--dim) 45%, var(--line));

@@ -98,6 +98,15 @@ export interface MailEntry {
   attachments?: MailAttachment[]
   delivering?: boolean
   retracted?: boolean          // api.py node_mail_retract mirrors into the log
+  /** D-169: user-bound mail its sender tagged urgent, with the one-line
+   *  reason it had to give to do so. Written as a PAIR by ledger.post_mail
+   *  or not at all — `urgent` never appears without a non-blank reason.
+   *  ⚠ These reach the mailbox by a DIFFERENT route from `urgent_unread`:
+   *  GET /api/orgs/{slug}/inbox returns `user_inbox` verbatim, with no
+   *  per-entry rebuild, so unlike the tree projection there is no key list
+   *  here that could silently drop them. */
+  urgent?: boolean
+  urgent_reason?: string
   [k: string]: unknown
 }
 
@@ -550,6 +559,13 @@ export interface TreePayload {
   asks?: AskInfo[]
   asks_open?: number
   user_inbox_count: number
+  /** D-169: how many of those unread mails were tagged urgent by their
+   *  sender. Added to `asks_open` it makes the ATTENTION count, which
+   *  overrides the ordinary unread number and pulses — see `attentionPip`
+   *  in canvas/shared.ts, which is the only place that rule is written.
+   *  ⚠ A SUBSET of `user_inbox_count`, never a separate population: both
+   *  count entries still sitting in the server's `user_inbox`. */
+  urgent_unread?: number
   user_inbox_newest: string | null
   fable_lock: Record<string, unknown> | null
   spend_frozen: boolean

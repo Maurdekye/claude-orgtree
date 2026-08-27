@@ -352,6 +352,17 @@ UserMailEntry = TypedDict("UserMailEntry", {
     # SENDER's scratch (its outbox/ — _agent_send_file's card shape); the
     # inbox renders them with fileUrl keyed on `from`
     "attachments": NotRequired[list[dict[str, Any]]],
+    # D-169: the sender asked for the user's attention NOW. Absent on
+    # ordinary mail — presence is what the pulse, the count and the row
+    # styling all key on, and it stops mattering the moment the entry leaves
+    # `user_inbox` for `user_mail_log` (which is what "read" means here).
+    "urgent": NotRequired[bool],
+    # …and WHY, in one line, written for the USER to read. Required whenever
+    # `urgent` is set — post_mail refuses the pair otherwise, so the two are
+    # written together or not at all. It is displayed, not logged: an
+    # unshown reason would be a pure tax on the sender, while a shown one
+    # makes the claim accountable to the person it interrupted.
+    "urgent_reason": NotRequired[str],
 })
 
 

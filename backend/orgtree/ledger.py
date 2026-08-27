@@ -1132,7 +1132,9 @@ class Org:
 
     def post_mail(self, sender: str, to: str, body: str, kind: str = "message",
                   attachments: list[dict[str, Any]] | None = None,
-                  reply_to: dict[str, Any] | None = None) -> dict[str, Any]:
+                  reply_to: dict[str, Any] | None = None,
+                  urgent: bool = False,
+                  urgent_reason: str = "") -> dict[str, Any]:
         """Agent-to-agent (or agent-to-user) mail under the §7.2 addressing rules:
         downward any depth (deep reach implicitly grants the recipient an audience),
         one hop up, siblings, held audiences. Everything else is refused with the
@@ -1141,6 +1143,39 @@ class Org:
         if actor_kind(sender) == "agent":
             self.node(sender)
         warnings: list[str] = []
+        # D-169 URGENT: validated against the RESOLVED recipient and BEFORE
+        # anything records, so a refused send writes nothing (the same
+        # discipline the attachment and @net: gates above follow).
+        #
+        # ⚠ EVERY BAD USE REFUSES; NONE OF THEM DEGRADES QUIETLY. An urgent
+        # flag that is dropped on the floor is the won't-fire failure: the
+        # sender believes it raised the alarm, the user is never interrupted,
+        # and nothing anywhere says so. That is strictly worse than an
+        # over-eager alarm, which at least announces itself.
+        if urgent and to != USER:
+            raise LedgerError(
+                "only mail to the user can be urgent — urgency is about the "
+                "USER's attention, and no other recipient has an inbox that "
+                "pulses. To reach an agent now, send it a normal "
+                "orgtree_message (that already drives it on delivery)")
+        if urgent and not urgent_reason.strip():
+            # Blank is refused rather than stored, or the friction evaporates
+            # into `urgent_reason=""` on every call within a week — the
+            # D-168 shape (an abstention wired to the passing branch) aimed
+            # at a human process instead of a check.
+            raise LedgerError(
+                "urgent mail needs a reason: one line, written for the USER, "
+                "saying why they are being interrupted now. It is SHOWN to "
+                "them beside the mail, so it is the justification they judge "
+                "the interruption by — not a log entry")
+        if urgent_reason.strip() and not urgent:
+            # A reason with no flag would post ORDINARY mail while the sender
+            # believed it had raised the alarm — same silent miss as above,
+            # arrived at by a different typo.
+            raise LedgerError(
+                "urgent_reason was given without urgent=true, so this mail "
+                "would arrive as ordinary mail and never interrupt anyone — "
+                "pass urgent=true as well, or drop the reason")
         if to.startswith("@ext:"):
             # user ruling 2026-08-05 (relayed): @ext: is RETIRED with chatq.
             # The prefix used to parse and then silently black-hole (the
@@ -1225,6 +1260,15 @@ class Org:
                     "to the user — escalate to your superior instead (§7.5)")
             ue: UserMailEntry = {"id": uuid.uuid4().hex[:8], "from": sender,
                                  "kind": kind, "body": body, "at": now()}
+            if urgent:
+                # D-169: written as a PAIR, at the single site that can write
+                # them, after the gate above proved the reason non-blank. The
+                # entry is the whole state of the signal — it pulses while
+                # this row sits in `user_inbox` and stops when the read
+                # endpoint moves it to `user_mail_log`, so there is no second
+                # notion of "read" to drift out of step with the first.
+                ue["urgent"] = True
+                ue["urgent_reason"] = urgent_reason.strip()
             if attachments:
                 # FR-21: download-card metas — the api layer already routed
                 # each path through _agent_send_file (validate-and-copy into
@@ -6231,6 +6275,18 @@ class Org:
             "api_cost_usd_total": round(
                 float(self.d.get("api_cost_usd") or 0.0), 4),
             "user_inbox_count": len(self.d.get("user_inbox", [])),
+            # D-169: how many UNREAD user mails are urgent. `user_inbox` IS
+            # the unread set (the read endpoint moves an entry out of it into
+            # `user_mail_log`), so this falls to 0 on exactly the read event
+            # — no separate seen-stamp, nothing to leave the pulse stuck on.
+            # ⚠ THIS DICT IS A FILTER: it is built key by key and drops
+            # whatever it does not name, silently, and the symptom is a
+            # confident wrong display rather than a crash (see the `frozen`
+            # block below, which has cost exactly that twice). The pip reads
+            # this key; if it stops being named here the count quietly
+            # becomes the ordinary unread count and the pulse never fires.
+            "urgent_unread": sum(1 for m in self.d.get("user_inbox", [])
+                                 if m.get("urgent")),
             "user_inbox_newest": (self.d.get("user_inbox") or [{}])[-1].get("at"),
             "fable_lock": self.d.get("fable_lock"),
             "spend_frozen": bool(self.d.get("spend_frozen")),

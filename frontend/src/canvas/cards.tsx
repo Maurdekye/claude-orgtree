@@ -18,7 +18,7 @@ import {
   USER_H, USER_W,
 } from './shared'
 import type {
-  CanvasNode, DraftScope, DraftState, MailLinkFn, OpFn, Pile,
+  AttentionPip, CanvasNode, DraftScope, DraftState, MailLinkFn, OpFn, Pile,
   Pt,
 } from './shared'
 import { Activity, ContextWheel, DeskChat } from './desk'
@@ -31,10 +31,11 @@ interface UserNodeProps {
   pos: Pt
   isDrop: boolean
   stats: { circ: number; seats: number; free: number }
-  inboxCount: number
-  /** open asks waiting on the user — outranks inboxCount on the pip
-   *  (user spec 2026-08-06) */
-  asksOpen?: number
+  /** the inbox badge, already decided (D-169). Passed in rather than
+   *  re-derived from counts here: this component and EyeDesk below used to
+   *  each write the two-tier rule out by hand, and had already drifted apart
+   *  on the tooltip. `attentionPip` owns it now — see canvas/shared.ts. */
+  pip: AttentionPip | null
   seats: Record<string, number>
   kiosk: TreePayload['kiosk']
   pub: boolean
@@ -65,7 +66,7 @@ interface UserNodeProps {
   onNodeConfig?: (id: string) => void
 }
 
-export function UserNode({ pos, isDrop, stats, inboxCount, asksOpen = 0, seats,
+export function UserNode({ pos, isDrop, stats, pip, seats,
   kiosk, pub, kioskRemaining, kioskSegs, pxc, zoom, onInbox, onGear, onSpawn,
   onMailLink,
   focused, eyeW, onFocus, posX, onJump, map, op, slug, toast,
@@ -140,9 +141,8 @@ export function UserNode({ pos, isDrop, stats, inboxCount, asksOpen = 0, seats,
         onPointerDown={(e) => e.stopPropagation()}
         onClick={(e) => { e.stopPropagation(); onInbox?.() }}>
         <MailIcon fontSize="inherit" />
-        {(asksOpen > 0 || inboxCount > 0) &&
-          <span className={'count' + (asksOpen > 0 ? ' asks' : '')}>
-            {asksOpen > 0 ? asksOpen : inboxCount}</span>}
+        {pip && <span className={'count' + (pip.urgent ? ' asks' : '')}>
+          {pip.count}</span>}
       </button>}
       {/* open to visitors too (user ruling): agent-hire defaults are
           configurable by anyone, ceiling-clamped like any grant */}
@@ -162,7 +162,7 @@ export function UserNode({ pos, isDrop, stats, inboxCount, asksOpen = 0, seats,
              for again, so it is the same callback, not a second one that
              could drift from it. */
           onRecenter={onFocus}
-          inboxCount={inboxCount} asksOpen={asksOpen} onInbox={onInbox}
+          pip={pip} onInbox={onInbox}
           onGear={onGear} pub={pub} eyeW={eyeW} posX={posX} onJump={onJump}
           compactAt={compactAt} maxTop={maxTop} pxc={pxc}
           onMailLink={onMailLink} onOpenDoc={onOpenDoc}
@@ -183,9 +183,8 @@ interface EyeDeskProps {
   op: OpFn
   slug: string
   toast: ToastFn
-  inboxCount: number
-  /** open asks — outranks inboxCount on the ✉ pip (user spec 2026-08-06) */
-  asksOpen?: number
+  /** the ✉ badge, already decided — see UserNodeProps.pip above */
+  pip: AttentionPip | null
   onInbox?: () => void
   onGear?: () => void
   pub: boolean
@@ -211,7 +210,7 @@ interface EyeDeskProps {
   onRecenter?: () => void
 }
 
-function EyeDesk({ map, op, slug, toast, inboxCount, asksOpen = 0,
+function EyeDesk({ map, op, slug, toast, pip,
   onInbox, onGear, pub, eyeW, posX, onJump, compactAt, maxTop, pxc,
   onMailLink, onOpenDoc, onNodeLineage, onNodeConfig, onRecenter }: EyeDeskProps) {
   const agents = [...map.values()].filter((n) =>
@@ -329,14 +328,11 @@ function EyeDesk({ map, op, slug, toast, inboxCount, asksOpen = 0,
               flex:1, and a second flex:1 sibling split the header 50/50 so
               the tab strip wrapped at half width */}
           <button className="cc-icon"
-            title={asksOpen > 0
-              ? `${asksOpen} ask${asksOpen > 1 ? 's' : ''} waiting on your answer`
-              : 'your inbox'}
+            title={pip?.title ?? 'your inbox'}
             onClick={() => onInbox?.()}>
             <MailIcon fontSize="inherit" />
-            {(asksOpen > 0 || inboxCount > 0) &&
-              <b className={'eye-count' + (asksOpen > 0 ? ' asks' : '')}>
-                {asksOpen > 0 ? asksOpen : inboxCount}</b>}
+            {pip && <b className={'eye-count' + (pip.urgent ? ' asks' : '')}>
+              {pip.count}</b>}
           </button>
           <button className="cc-icon" title="agent-hire defaults"
             onClick={() => onGear?.()}><SettingsIcon fontSize="inherit" /></button>

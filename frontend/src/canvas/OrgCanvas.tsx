@@ -13,7 +13,7 @@ import {
   FullscreenIcon, PublicIcon, RemoveIcon, ViewListIcon,
 } from '../icons'
 import {
-  ago, DOG_H, DOG_W, DRAFT, ease, edgeJumpPlacement, type EJForm, EXTERN, fallbackActive, flatten, INBOX, INBOX_H, layout, NODE_H, NODE_W, orgPxc, segD,
+  ago, attentionPip, DOG_H, DOG_W, DRAFT, ease, edgeJumpPlacement, type EJForm, EXTERN, fallbackActive, flatten, INBOX, INBOX_H, layout, NODE_H, NODE_W, orgPxc, segD,
   segPoint, sizeOf, smooth, SPRING_C, SPRING_K, TIER_LETTER, TIERS, USER, USER_H,
   USER_W, withDraftTree, Z_DESK, Z_MAX, Z_MINI,
 } from './shared'
@@ -1642,9 +1642,11 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
                 style={{ transform: `translate(${p.x}px, ${p.y}px)`,
                          width: USER_W, height: USER_H }}>
                 <span className="map-name">you</span>
-                {(tree.asks_open ?? 0) + (tree.user_inbox_count ?? 0) > 0 &&
-                  <b className={'eye-count' + ((tree.asks_open ?? 0) > 0 ? ' asks' : '')}>
-                    {(tree.asks_open ?? 0) > 0 ? tree.asks_open : tree.user_inbox_count}</b>}
+                {(() => {
+                  const pip = attentionPip(tree)
+                  return pip && <b className={'eye-count' + (pip.urgent ? ' asks' : '')}
+                    title={pip.title}>{pip.count}</b>
+                })()}
               </div>
             }
             const vp = viewportRef.current?.getBoundingClientRect()
@@ -1668,11 +1670,12 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
               onJump={(id) => centerOn(id)}
               map={map} op={op} slug={slug} toast={toast}
               compactAt={tree.compact_at} maxTop={tree.max_top_grant ?? 1000}
-              /* split counts (user spec 2026-08-06): asks OUTRANK mail on the
-                 pip — asksOpen covers pending credit requests AND open
-                 questions (adding credit_requests too would double-count) */
-              inboxCount={tree.user_inbox_count ?? 0}
-              asksOpen={tree.asks_open ?? 0}
+              /* the pip is DECIDED HERE and handed down (D-169): asks + urgent
+                 mail outrank plain unread, and `asks_open` already covers
+                 pending credit requests as well as open questions (adding
+                 credit_requests too would double-count). One call, so the
+                 eye, its switchboard and the map marker cannot disagree. */
+              pip={attentionPip(tree)}
               onInbox={() => {
                 const nw = tree.user_inbox_newest ?? new Date().toISOString()
                 localStorage.setItem('orgtree-inbox-seen-' + slug, nw)

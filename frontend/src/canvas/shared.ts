@@ -625,6 +625,67 @@ export const pileOrder = (list: string[],
   [...list].reverse()
     .sort((a, b) => lastTouched(map.get(b)) - lastTouched(map.get(a)))
 
+// ------------------------------------------------- the attention pip (D-169)
+/** What the user's inbox pip shows, and whether it is the ATTENTION tier.
+ *  `null` = show no pip at all. */
+export interface AttentionPip {
+  /** the number on the badge */
+  count: number
+  /** the ATTENTION tier: the pulsing accent badge (`.asks`) and the header
+   *  bell's `.glow`. False = the quiet ordinary-unread badge. */
+  urgent: boolean
+  /** the control's tooltip. Here rather than at the call sites BECAUSE they
+   *  had already drifted — see the ⚠ below. */
+  title: string
+}
+
+/** THE user-inbox pip rule, in one place.
+ *
+ *  ⚠ WHY THIS IS A FUNCTION AND NOT FOUR TERNARIES. It used to be four:
+ *  the header ask-bell (App.tsx), UserNode's pip and EyeDesk's pip
+ *  (cards.tsx), and the compact map eye (OrgCanvas.tsx) each wrote
+ *  `asks > 0 ? asks : unread` out by hand with its own title string — and
+ *  they had ALREADY diverged before this feature (the bell's tooltip named
+ *  the unread count alongside the asks; EyeDesk's said only "your inbox").
+ *  Threading a THIRD input through four hand-written copies is exactly how
+ *  one of them ends up wrong, and this codebase has paid for that shape more
+ *  than once (freeze labels, three surfaces, one wrong default in each).
+ *
+ *  THE RULE. Attention = open asks + unread URGENT mail (D-169: an agent may
+ *  tag user-bound mail urgent, and the inbox then pulses the way it does for
+ *  an unanswered question). When that total is non-zero it OVERRIDES the
+ *  ordinary unread count and pulses.
+ *
+ *  THE ZERO EDGE, stated because the spec did not settle it: with nothing
+ *  urgent and no ask open, an inbox holding ordinary unread mail falls back
+ *  to the plain unread count, NOT pulsing — 12 unread reads "12", quietly.
+ *  The two branches are named (`attention` vs `unread`) rather than nested
+ *  so which is which can be read rather than inferred.
+ *
+ *  ⚠ `urgent_unread` is a SUBSET of `user_inbox_count` (both count entries
+ *  still sitting in `user_inbox`, which is what unread means server-side),
+ *  so the title lists them side by side and never adds them together. */
+export const attentionPip = (t: {
+  asks_open?: number | null
+  urgent_unread?: number | null
+  user_inbox_count?: number | null
+}): AttentionPip | null => {
+  const asks = t.asks_open ?? 0
+  const urgent = t.urgent_unread ?? 0
+  const unread = t.user_inbox_count ?? 0
+  const attention = asks + urgent
+  if (attention > 0) {
+    const parts: string[] = []
+    if (asks > 0) parts.push(`${asks} ask${asks > 1 ? 's' : ''} waiting on your answer`)
+    if (urgent > 0) parts.push(`${urgent} urgent mail`)
+    if (unread > 0) parts.push(`${unread} unread`)
+    return { count: attention, urgent: true, title: parts.join(' · ') }
+  }
+  return unread > 0
+    ? { count: unread, urgent: false, title: `${unread} unread` }
+    : null
+}
+
 // chat markdown: gfm + hard line breaks, sanitized (agents echo web content).
 // №21: cached by text identity — every streamed token used to re-parse the
 // ENTIRE visible transcript (~8 Hz × every message × every open panel)

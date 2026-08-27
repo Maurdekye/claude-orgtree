@@ -3660,9 +3660,18 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                             "attachments ride mail to the user or @net: "
                             "peers — for local agent recipients use "
                             "orgtree_send_file or paths")
+                # D-169: coerced, never trusted. This dispatch is fuzzed with
+                # junk arguments for every card, and an argument that reaches
+                # the ledger as the wrong TYPE would raise AttributeError
+                # there — a 500, which fails unrelated fuzz checks. bool() and
+                # str() are total over JSON, so a bad value becomes a refusal
+                # with a sentence (422), not a stack trace.
                 result = org.post_mail(body.node, a.get("to", ""), a.get("body", ""),
                                        a.get("kind", "message"),
-                                       attachments=user_atts or None)
+                                       attachments=user_atts or None,
+                                       urgent=bool(a.get("urgent")),
+                                       urgent_reason=str(
+                                           a.get("urgent_reason") or ""))
                 delivered = result.get("delivered")
                 if delivered and delivered.startswith("@"):
                     # spark on the wire (user spec 2026-08-05): outbound

@@ -20,7 +20,7 @@ import {
 } from './icons'
 import { DirList } from './forms'
 import { FolderPickerHost } from './picker'
-import { deskDpi, fallbackActive, freezeKind, orgPxc, primedRestartChip, setDeskDpi, usePolled, TIERS } from './canvas/shared'
+import { attentionPip, deskDpi, fallbackActive, freezeKind, orgPxc, primedRestartChip, setDeskDpi, usePolled, TIERS } from './canvas/shared'
 import { AskCard } from './canvas/asks'
 import { AccountsPanel, UsageBars } from './canvas/accounts'
 import { addPending, dropPending, ingestPulse, ingestStream, resetConvos } from './convo'
@@ -621,18 +621,19 @@ export default function App() {
                     the vibrant pulsing form; otherwise the unread-mail count,
                     muted. Click opens the inbox either way. */}
                 {(() => {
-                  const asks = tree.asks_open ?? 0
-                  const unread = tree.user_inbox_count ?? 0
-                  const n = asks > 0 ? asks : unread
+                  // D-169: the rule is `attentionPip` now — one classifier,
+                  // four surfaces. The 2026-08-04 ruling that this bell glows
+                  // ALONE in the whole chrome is untouched; the user widened
+                  // WHAT counts (urgent mail joins open asks), not the
+                  // property. Nothing else in the chrome starts glowing.
+                  const pip = attentionPip(tree)
                   return (
-                    <button className={'iconbtn ask-bell' + (asks > 0 ? ' glow' : '')}
-                      title={asks > 0
-                        ? `${asks} ask${asks > 1 ? 's' : ''} waiting on your answer`
-                          + (unread > 0 ? ` · ${unread} unread mail` : '')
-                        : unread > 0 ? `${unread} unread` : 'your inbox'}
+                    <button className={'iconbtn ask-bell' + (pip?.urgent ? ' glow' : '')}
+                      title={pip?.title ?? 'your inbox'}
                       onClick={() => { setInboxJump(null); setShowInbox(true) }}>
                       <MailIcon fontSize="inherit" />
-                      {n > 0 && <b className={'eye-count' + (asks > 0 ? ' asks' : '')}>{n}</b>}
+                      {pip && <b className={'eye-count' + (pip.urgent ? ' asks' : '')}>
+                        {pip.count}</b>}
                     </button>
                   )
                 })()}

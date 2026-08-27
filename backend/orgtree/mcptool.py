@@ -112,6 +112,32 @@ TOOLS: list[dict[str, Any]] = [
                                    "recipients: use orgtree_send_file or "
                                    "just tell them the path",
                 },
+                "urgent": {
+                    "type": "boolean",
+                    "description": "USE SPARINGLY. Mail to 'user' only. The "
+                                   "user's inbox PULSES and lights up the "
+                                   "way an unanswered question does, and "
+                                   "stays lit until they read it. Reach for "
+                                   "it only when their attention is genuinely "
+                                   "required NOW in a way that is not a "
+                                   "question you could have asked with "
+                                   "orgtree_ask. The signal only works while "
+                                   "it is rare: mail marked urgent as a "
+                                   "matter of course trains them to ignore "
+                                   "the pulse, and then it is worth nothing "
+                                   "to the agent that really needs it. "
+                                   "Requires urgent_reason.",
+                },
+                "urgent_reason": {
+                    "type": "string",
+                    "description": "Required with urgent. ONE LINE, WRITTEN "
+                                   "FOR THE USER, in their language: why they "
+                                   "are being interrupted right now. It is "
+                                   "SHOWN to them next to the mail, not "
+                                   "logged — so it is the justification they "
+                                   "will judge the interruption by. Not an "
+                                   "internal note, not a summary of the mail.",
+                },
             },
             "required": ["to", "body"],
         },
