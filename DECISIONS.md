@@ -2143,6 +2143,62 @@ fold-back, retraction, archive) is inherited because a notice IS mail.
 Bounds: delivery timing is best-effort by design — an idle recipient may
 not read a notice for a long time, and the tool card says so.
 
+### D-166 · a dead external channel must close itself, and a pull transport may not claim delivery
+Ruling (user, 2026-08-27, both halves taken): (a) a send to an `@mcp:` address
+stops reporting `delivered`. It is a PULL transport — the row is FILED and a
+peer may or may not ever collect it — so the answer says `filed`, sets
+`delivered: false`, and states how long that peer has been silent. (b) an
+`external_handles` entry whose peer has been silent past
+`EXTERN_HANDLE_TTL_S` is DETACHED by a periodic sweep.
+Why: a handle was injected into its holder's system prompt every turn, with
+the prompt instructing the agent to answer there, and **nothing ever removed
+one** — no liveness, no expiry, no reconciler. A panel that closed left a
+channel that was live forever: the agent kept reporting into it and every send
+returned a cheerful `200 "delivered"` it could not act on. A caller that
+crashes can by definition never clean up after itself, so detachment could not
+be left to it.
+**Why removal and not an announcement**, which decides the shape of the fix:
+the handle lives in the SYSTEM PROMPT, not the conversation, so a compacted
+agent knows the channel only through that line and cannot discover it died —
+there is no message it failed to read. An agent can miss a notice; it cannot
+read a line that is gone. The prompt is a pure function of the node doc and is
+rebuilt every turn, so deleting the handle is both necessary and sufficient.
+**The signal, which is the part neither this org nor Resonite could borrow
+from an existing structure:** `@mcp:` has no registry and no push, so a peer is
+visible only when it reaches in. Every inbound extern route — send, read AND
+wait — records a sighting; a read is not incidental, it is the only heartbeat
+a peer that never sends anything ever produces. Sightings are machine-global
+(peer identity is machine-level, one peer talks to several orgs, and per-org
+would mean taking `DOC_LOCK` on every 25-second poll). Silence is measured
+from the LATER of the last sighting and the handle's own attach time.
+**The threshold is derived, not chosen.** `externtool` slices `orgtree_wait`
+at `min(max(timeout_s,5),300)`, so a polling peer is never quiet longer than
+~300s of its own accord (the FR-08 listener is far tighter: a 25s wait, ~30s
+round trip). 24h is 288× that ceiling. The margin is that large because of
+what the ceiling does NOT bound — a live panel whose user is idle may not poll
+at all, and nothing we control bounds that silence — so the floor must clear
+an overnight gap.
+⚠ **The asymmetry that sets the number, and the thing to argue with if you
+want to lower it:** a FALSE detach breaks a working integration and is
+diagnosed from the far side by someone who cannot see this machine; a LATE
+detach merely delays cleanup of something already dead. Those costs are
+nowhere near equal, so this errs long deliberately. A handle lingering a day
+too long is a nuisance; one dropped from a live peer is an outage.
+Bounds: the sweep detaches, it does not notify — half (a) is what teaches the
+agent, at the moment it tries to send, which is the only moment it can act on.
+A detach writes an `extern_handle_detached` event carrying the handle, the
+last sighting and the threshold that fired, because "why did my channel drop"
+must be answerable afterwards; a detach nobody can explain is its own small
+phantom. `post_mail`'s return is UNCHANGED — the honest wording is applied in
+the `/api/agent` dispatch after routing, since a `delivered: false` from the
+ledger would fall through that dispatch's `elif delivered is not None` into
+`drive.append(False)`.
+Load-bearing: the attach stamp (`external_handles_at`) living on the NODE and
+being pruned to exactly the handles held. Inferring attach time from the
+sightings file instead cannot distinguish a handle that has sat unused for a
+week from one re-attached a second ago — which detached re-attached handles on
+the next tick, and is why the stamp is per-node.
+
 ### D-165 · a node may notice ITSELF — a fall-through, now load-bearing
 Ruling (notice-endpoint, 2026-08-27, measured): §7.2 permits a node to
 address itself, and this is recorded as **permitted** rather than merely

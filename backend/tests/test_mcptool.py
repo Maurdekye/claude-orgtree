@@ -2570,7 +2570,14 @@ def _():
 @t("an @mcp: address is recorded in the org inbox with no push transport")
 def _():
     r = BOSS.ok("orgtree_message", {"to": "@mcp:some-chat", "body": "polled"})
-    assert r["delivered"] == "@mcp:some-chat", r
+    # D-166: this used to assert `delivered == "@mcp:some-chat"`. It is a PULL
+    # transport — the row is filed and a peer may or may not ever collect it —
+    # so the answer now says `filed`, and `delivered` is False. The row itself
+    # (the assertion below) is what this check was really about, and it is
+    # unchanged; only the claim made to the agent moved.
+    assert r["delivered"] is False, r
+    assert r["filed"] == "@mcp:some-chat", r
+    assert "NEVER polled" in r.get("status", ""), r
     assert DRIVEN[-1][1] != "@mcp:some-chat" if DRIVEN else True
     out = store.load_org(A).d.get("org_inbox", [])
     assert any("polled" in (e.get("body") or "") for e in out), out[-2:]

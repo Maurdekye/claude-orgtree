@@ -558,6 +558,7 @@ async def _wire_notify() -> None:  # type: ignore[unused-function]  # registered
     # FR-18: the watchdog scanner — polls due dogs and re-arms stream dogs'
     # children, which is also their restart-recovery (the doc is the registry)
     supervisor.start_watchdog_engine()
+    supervisor.start_extern_sweeper()          # D-166
     # FR-27: the primed-restart engine. Same shape and same reason as the
     # watchdog scanner above — the durable record is the registry and this is
     # only its runtime attachment, which is exactly what makes an armed prime
@@ -2734,6 +2735,7 @@ def _extern_peer(peer: str) -> str:
 @app.post("/api/extern/{peer}/send")
 def extern_send(peer: str, body: ExternSend) -> dict[str, Any]:
     addr = _extern_peer(peer)
+    store.extern_seen(addr)          # D-166: reaching in is evidence of life
     if not body.body.strip():
         raise HTTPException(422, "empty message")
     # attachments (user spec 2026-07-31): absolute paths on this machine —
@@ -2815,7 +2817,10 @@ def _extern_scan(addr: str, org_slug: str | None, after: str | None,
 @app.get("/api/extern/{peer}/messages")
 def extern_messages(peer: str, org: str | None = None,
                     after: str | None = None) -> dict[str, Any]:
-    msgs = _extern_scan(_extern_peer(peer), org, after)
+    addr = _extern_peer(peer)
+    store.extern_seen(addr)          # D-166: a READ is a sighting too — it is
+    # the only heartbeat a peer that never sends anything ever produces
+    msgs = _extern_scan(addr, org, after)
     # the cursor rides every reply (review P1): pass it back as `after` and a
     # repeat wait/read can never re-deliver what this call already handed over
     return {"messages": msgs, **({"cursor": msgs[-1]["at"]} if msgs else {})}
@@ -2829,6 +2834,9 @@ async def extern_wait(peer: str, org: str | None = None,
     review finding: parked waiters were paying a full scan every second
     under the same lock the turn machinery serialises on."""
     addr = _extern_peer(peer)
+    store.extern_seen(addr)          # D-166: the listener's own heartbeat —
+    # recorded on ARRIVAL, not on return, so a peer that waits the full window
+    # and gets nothing still counts as alive
     deadline = time.monotonic() + min(max(timeout, 1), 55)
     rev = None
     while True:
@@ -3666,8 +3674,45 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                     org_send = (delivered[5:], a.get("body", ""))
                 elif delivered and delivered.startswith("@mcp:"):
                     # a polling external chat: the org-inbox entry IS the
-                    # delivery — the peer reads it via the extern MCP server
-                    pass
+                    # delivery — the peer reads it via the extern MCP server.
+                    #
+                    # D-166: so "delivered" was never true here, and the agent
+                    # acted on it. @mcp: is a PULL transport — the row is
+                    # FILED and a peer may or may not ever collect it; a send
+                    # into a handle whose panel closed returned exactly the
+                    # same cheerful 200 as one into a live channel, and the
+                    # agent had nothing it could ever act on. Say what really
+                    # happened instead, and — when we have a sighting to go on
+                    # — say how long the silence has run.
+                    #
+                    # ⚠ Rewritten HERE, after the branch above has already
+                    # routed, and never in post_mail: the elif chain below
+                    # tests `delivered is not None`, so a False from the
+                    # ledger would fall through it into mail_notify() and
+                    # drive.append(False).
+                    seen = store.extern_last_seen(delivered)
+                    silent_h = ((time.time() - store._epoch(seen)) / 3600
+                                if seen else 0.0)
+                    result["filed"] = delivered
+                    result["delivered"] = False
+                    if seen is None:
+                        result["status"] = (
+                            f"filed for {delivered} — but that peer has NEVER "
+                            f"polled this machine, so nothing is known to be "
+                            f"listening. It is a pull transport: nobody is "
+                            f"pushed to. Do not treat this as an answer "
+                            f"delivered.")
+                    elif silent_h >= 1:
+                        result["status"] = (
+                            f"filed for {delivered} — last heard from it "
+                            f"{silent_h:.1f}h ago (at {seen}). It collects on "
+                            f"its own schedule; if that silence looks wrong, "
+                            f"the channel may be gone.")
+                    else:
+                        result["status"] = (
+                            f"filed for {delivered} — it was polling recently "
+                            f"(last seen {seen}), so it should collect this. "
+                            f"Delivery is still its choice, not ours.")
                 elif delivered and delivered.startswith("@net:"):
                     # F-06: stage the spool entry on the SAME loaded org — it
                     # rides this block's save, so the org-inbox row and the
