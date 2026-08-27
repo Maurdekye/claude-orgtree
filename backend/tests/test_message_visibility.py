@@ -309,7 +309,7 @@ def run_steer_lifecycle(label: str, body: str, probe: str = "", *,
         desk.fetch(w.chat())
         watch.check("mail posted")
         # the real steer path: envelope + journal, carrier parked on the node
-        etext, tok = supervisor._envelope(w.slug, w.nid, "(nudge)", via="steer")
+        etext, tok, _ = supervisor._envelope(w.slug, w.nid, "(nudge)", via="steer")
         st = supervisor.state(w.slug, w.nid)
         st.setdefault("steer", []).append({"toks": [tok], "text": etext})
         desk.fetch(w.chat())

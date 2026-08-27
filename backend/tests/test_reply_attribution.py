@@ -120,7 +120,7 @@ def post(o: Org, reply_to=None, body: str = "do it", to: str = "boss",
 
 
 def block(entry: dict) -> str:
-    return supervisor._mail_block([entry])          # type: ignore[arg-type]
+    return supervisor._mail_block([entry])[0]       # type: ignore[arg-type]
 
 
 SNAP = {"id": "abc123", "from": "boss", "at": "2026-08-05T10:00:00Z",

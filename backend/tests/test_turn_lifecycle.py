@@ -371,7 +371,7 @@ def hermetic() -> None:
     t1, t2 = token(), token()
     hpost(slug, nid, f"first {t1}")
     hpost(slug, nid, f"second {t2}")
-    txt, tok = supervisor._envelope(slug, nid, "nudge", via="turn")
+    txt, tok, _ = supervisor._envelope(slug, nid, "nudge", via="turn")
     check("journal · drain empties the mailbox and journals one batch", lambda: (
         None if hbox(slug, nid) == [] and len(hjournal(slug, nid)) == 1
         and len(hjournal(slug, nid)[0]["mail"]) == 2
@@ -399,9 +399,9 @@ def hermetic() -> None:
 
     slug, (nid,) = horg()
     hpost(slug, nid, f"a {token()}")
-    _t, tokA = supervisor._envelope(slug, nid, "n", via="turn")
+    _t, tokA, _ = supervisor._envelope(slug, nid, "n", via="turn")
     hpost(slug, nid, f"b {token()}")
-    _t, tokB = supervisor._envelope(slug, nid, "n", via="turn")
+    _t, tokB, _ = supervisor._envelope(slug, nid, "n", via="turn")
     check("journal · two batches queue in drain order", lambda: (
         None if [b["tok"] for b in hjournal(slug, nid)] == [tokA, tokB]
         else (_ for _ in ()).throw(AssertionError(hjournal(slug, nid)))))
@@ -429,7 +429,7 @@ def hermetic() -> None:
         org = store.load_org(slug)
         org._notify([nid], "org changed under you")
         store.save_org(org)
-    txt, tok = supervisor._envelope(slug, nid, "n", via="turn")
+    txt, tok, _ = supervisor._envelope(slug, nid, "n", via="turn")
     check("journal · notices drain into the batch and fold back", lambda: (
         None if "ORG NOTICES" in txt
         and len(hjournal(slug, nid)[0]["notices"]) == 1
@@ -444,7 +444,7 @@ def hermetic() -> None:
     slug, (nid,) = horg()
     tk = token()
     hpost(slug, nid, f"body {tk}")
-    _t, _tok = supervisor._envelope(slug, nid, "n", via="turn")
+    _t, _tok, _i = supervisor._envelope(slug, nid, "n", via="turn")
     org = store.load_org(slug)
     check("delivering · surfaced with no evidence test", lambda: (
         None if len(supervisor.delivering_mail(org, nid)) == 1
@@ -1184,7 +1184,7 @@ def hermetic() -> None:
     slug, (nid,) = horg()
     tk = token()
     hpost(slug, nid, f"steered {tk}")
-    etext, stok = supervisor._envelope(slug, nid, "n")        # via defaults to steer
+    etext, stok, _ = supervisor._envelope(slug, nid, "n")     # via defaults to steer
     st = supervisor.state(slug, nid)
     st["steer"] = [{"toks": [stok], "text": etext}]
     out = supervisor.pop_steer(slug, nid)
@@ -1254,7 +1254,7 @@ def hermetic() -> None:
     print("\nfold-back edge cases:")
     slug, (nid,) = horg()
     hpost(slug, nid, f"orphan {token()}")
-    _t, _tok = supervisor._envelope(slug, nid, "n", via="turn")
+    _t, _tok, _i = supervisor._envelope(slug, nid, "n", via="turn")
     with store.DOC_LOCK:
         org = store.load_org(slug)
         org.nodes.pop(nid)                      # the node was deleted mid-turn
@@ -1278,7 +1278,7 @@ def hermetic() -> None:
     hpost(slug, nid, f"received, never answered {tk}")
     supervisor._envelope(slug, nid, "n", via="turn")
     supervisor._fold_back_undelivered(slug, nid)          # the CLI died
-    nxt, _t = supervisor._envelope(slug, nid, "next turn", via="turn")
+    nxt, _t, _i = supervisor._envelope(slug, nid, "next turn", via="turn")
     check("foldback-evidence · a folded-back message IS re-presented by the "
           "next envelope (what evidence-dropping would give up)", lambda: (
               None if tk in nxt and "[MAIL" in nxt
@@ -1294,7 +1294,7 @@ def hermetic() -> None:
         None if hjournal(slug, nid) == [] else
         (_ for _ in ()).throw(AssertionError()))[-1])
     check("envelope · unknown node returns the text untouched", lambda: (
-        lambda r: None if r == ("plain", None)
+        lambda r: None if r == ("plain", None, [])
         else (_ for _ in ()).throw(AssertionError(r))
     )(supervisor._envelope(slug, "nope", "plain")))
 

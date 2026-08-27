@@ -2198,6 +2198,85 @@ being pruned to exactly the handles held. Inferring attach time from the
 sightings file instead cannot distinguish a handle that has sat unused for a
 week from one re-attached a second ago — which detached re-attached handles on
 the next tick, and is why the stamp is per-node.
+### D-167 · byte size does not predict an image's context cost — count does
+Ruling (user 2026-08-27, verbatim: "if i send any images in a message, they
+should be immediately loaded into context if under a certain reasonable max
+size"). A user-attached image now arrives as a real `image` content block at
+the start of the receiving agent's turn, under three caps, and **no attachment
+is ever dropped without the agent being told.**
+
+**Lead with the cost model, because the intuitive one is wrong and produces
+the wrong cap.** "A big image eats a lot of context, so cap the bytes" is
+false. Claude DOWNSCALES an image before processing it and the cost is
+`ceil(w/28) * ceil(h/28)` visual tokens, hard-capped per model: **4784** on
+the high-resolution tier (Claude 4.7+ — `fable-5`, `opus-5`, `sonnet-5`) and
+**1568** on the standard tier (`haiku-4.5`). A 9 MB photograph and a 400 KB
+screenshot therefore cost **the same** once either is past the downscale
+threshold. So a byte cap never protected context at all. **The COUNT cap is
+the context control; the byte caps guard the vendor's own ceilings, request
+size, memory and latency.** These are three different jobs, which is why there
+are three constants and not one — a single number carrying all three would be
+precisely the undocumented magic number that a one-constant rule exists to
+prevent.
+
+| constant | value | what it actually protects |
+|---|---|---|
+| `INLINE_IMAGE_MAX_BYTES` | 5 MB / image | the 10 MB **base64** vendor limit (≈7.5 MB raw), plus JSON overhead |
+| `INLINE_IMAGE_MAX_COUNT` | 8 / turn | ⭐ the context control — ≤38K visual tokens worst case |
+| `INLINE_IMAGE_TURN_MAX_BYTES` | 12 MB / turn | request size: ≈16 MB base64, half the 32 MB request ceiling |
+
+**What an agent is now guaranteed.** At a turn boundary, a user's attached
+JPEG/PNG/GIF/WebP under the caps is in front of it as an image. In every other
+case — too large, corrupt, mislabelled, an unsupported format, past the count
+or byte budget, sent by anyone other than the user, or arriving mid-task — the
+mail block says the file existed, names it, says why it is not loaded, and
+offers `Read`. **An attachment that produces no image block and no explanation
+is the one outcome this feature forbids**: an agent that never learns a file
+was sent cannot ask for it, and the sender cannot discover it never arrived.
+An animated GIF is inlined AND flagged first-frame-only, because an agent
+describing one frame while believing it saw the animation is wrong in a way it
+cannot detect.
+
+**User attachments only; outside mail is announced, never inlined.** Org-inbox
+and `@net:` mail is untrusted input by this org's standing rule, and placing an
+untrusted image directly into an agent's context is a materially different risk
+posture from showing it the user's own screenshot. It is also not what was
+asked for. Widening this is a decision to be taken deliberately with the risk
+named — not a generalisation that arrives by accident because the renderer
+happens to be shared. (Note: agent→LOCAL-agent attachments do not exist today;
+`api.py` routes attachments to the user or `@net:` only.)
+
+**Mid-task cannot carry an image, and must not pretend otherwise.** Mail
+delivered mid-turn rides `steer.py`'s `additionalContext`, which is a JSON
+*string* — there is nowhere to put a content block. The note therefore hands
+over a REMEDY rather than an apology: the file is already in the agent's own
+`uploads/`, and `Read` renders images. ⚠ It must NOT promise a later load. A
+draft of this said "it loads at the start of your next turn"; that is a lie in
+the ordinary case, not merely in a race, because steered mail is DRAINED on
+delivery and is never presented again. An agent deferring on that promise would
+wait forever — the believed-it-would-arrive failure this feature exists to
+remove, reintroduced by a reassuring sentence.
+
+Load-bearing: `_envelope`'s `via` already means exactly "does this text travel
+as a CLI user event or as hook context?", so it is the correct discriminator
+for whether images can ride, by construction rather than by coincidence.
+`Pillow` is a declared dependency (`requirements.txt`) because without a real
+decode a truncated file reaches the API, which rejects the whole request and
+kills the TURN rather than the image; if Pillow is absent it routes to the same
+announce path as an oversized image — one degrade route, exercised by every
+oversized attachment, rather than a second branch that only runs in an
+emergency and is therefore known to compile rather than known to work.
+
+⚠ **Which half of this is measured and which is read** (D-158 applied to a
+documented fact rather than to a test). MEASURED here 2026-08-27: that an
+`image` block fed to the pinned CLI over `--input-format stream-json` reaches
+the model — a 64×64 blue PNG went through orgtree's exact flags and came back
+described. READ from Anthropic's published vision docs and **not** verified
+here: the 28×28 patch rule, the 4784/1568 token ceilings, the 10 MB base64 and
+32 MB request limits, the format list, and first-frame-only for animations.
+All current Claude models accept image input, `claude-fable-5` included, so no
+tier needs a capability degrade. If the vendor's numbers change, this entry is
+stale and the suite will not notice — it pins our behaviour, not their limits.
 
 ### D-165 · a node may notice ITSELF — a fall-through, now load-bearing
 Ruling (notice-endpoint, 2026-08-27, measured): §7.2 permits a node to
@@ -3445,6 +3524,23 @@ NO hold on the machine (it restarts no agent), the same call D-142/a made.
 Visibility: every org's header carries a `restart primed` chip fed by
 `tree.primed_restart`; a mailhub prime wears different words, because for that
 target the chip would otherwise be a false alarm to its entire audience.
+
+⚠ **The idle predicate counts agent TURNS, and a detached process is not a
+turn.** So "the machine is quiet" and "nothing important is running" are
+DIFFERENT STATEMENTS, and this tool only ever guaranteed the first. Found in
+use 2026-08-27 by the agent who built it: a primed restart can reap a detached
+test run, a build, or any other long job started outside the turn system —
+and for an agent that is the machine's last active party, the quiet window the
+prime waits for is *precisely* the window its own detached run occupies, so
+the reaping is near-certain rather than unlucky.
+
+This is a documented limit, not a defect, and closing it is worse than
+recording it: waiting on arbitrary detached processes is unbounded, which is
+the design argument this entry already makes for counting turns in the first
+place. What makes it survivable is that it is DETECTABLE — a reaped run leaves
+no `RUN COMPLETE … rc=0` line and no `COMPLETE` marker (D-157), so it reads as
+*killed* and never as a pass. The mitigation is procedural and cheap: cancel
+the prime for the length of a long detached run, then re-arm.
 
 ### D-143 · fable_api_fallback: an opt-in override of D-130's boundary
 

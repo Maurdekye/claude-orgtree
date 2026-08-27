@@ -37,7 +37,7 @@ import uuid
 from collections.abc import Callable, Iterable, Mapping
 from typing import Any, Final, cast
 
-from . import accounts, limits, net, sandbox as sbx, store, tokens
+from . import accounts, imgblock, limits, net, sandbox as sbx, store, tokens
 from .ledger import EXTERN, SYSTEM, USER, LedgerError, Org, expand_mcp, now as now_iso
 from .schema import (Denial, FrozenInfo, InflightInfo, KioskCfg, MailEntry,
                      NodeDoc, NoticeEntry, TurnStat)
@@ -2507,10 +2507,26 @@ def identity_prompt(org: Org, nid: str) -> str:
 
 
 # --------------------------------------------------------------------- turns
-def _user_event(text: str) -> str:
-    """One stream-json input line: a user message for the running CLI."""
+def _user_event(text: str,
+                images: list[dict[str, Any]] | None = None) -> str:
+    """One stream-json input line: a user message for the running CLI.
+
+    FR-28/D-167: `images` are `image` content blocks, appended AFTER the text.
+    That this works at all is MEASURED, not assumed — a real PNG was fed
+    through the pinned CLI with these exact flags and came back described (see
+    imgblock.py). The content list was always a list; nothing but text had
+    ever been put in it.
+
+    Text first, images after, each already introduced by its own line in the
+    [MAIL] block. Anthropic's guidance mildly prefers images BEFORE text, but
+    that ordering assumes the text is a question about the image. Here the
+    text is the envelope that says who sent it and why, and an image arriving
+    before any of that is an image with no provenance — which for mail from
+    another party is the wrong trade."""
+    content: list[dict[str, Any]] = [{"type": "text", "text": text}]
+    content.extend(images or [])
     return json.dumps({"type": "user", "message": {
-        "role": "user", "content": [{"type": "text", "text": text}]}}) + "\n"
+        "role": "user", "content": content}}) + "\n"
 
 
 def _journal_drain(org: Org, nid: str, mail: list[MailEntry] | None,
@@ -2661,19 +2677,28 @@ def _fold_back_undelivered(slug: str, nid: str,
 
 
 def _envelope(slug: str, nid: str, text: str,
-              via: str = "steer") -> tuple[str, str | None]:
+              via: str = "steer") -> tuple[str, str | None,
+                                           list[dict[str, Any]]]:
     """Drain notices + mail atomically and prepend them (№27 envelope, §7.4).
     Safe to call repeatedly — a second call finds nothing new. Returns the
     enveloped text plus the delivery-journal token when anything was drained
     (the caller confirms it once the text actually reaches the agent).
 
     `via` is passed straight to the journal — see _journal_drain. The caller
-    knows how its text travels; this function does not."""
+    knows how its text travels; this function does not.
+
+    FR-28/D-167: also returns the image content blocks to ride with the text.
+    ⚠ `via` decides whether images can be inlined AT ALL, and it is the right
+    discriminator by construction rather than by coincidence: it already means
+    exactly "does this text travel as a CLI user event, or as hook context?",
+    and only the first can carry a content block. Steer callers get [] — not
+    because images are unwanted mid-task, but because `additionalContext` is
+    a string and there is nowhere to put one."""
     tok = None
     with store.DOC_LOCK:
         org = store.load_org(slug)
         if nid not in org.nodes:
-            return text, None
+            return text, None, []
         pending = (org.d.get("notices") or {}).pop(nid, None)
         mail = org.take_mail(nid)
         if pending or mail:
@@ -2684,15 +2709,39 @@ def _envelope(slug: str, nid: str, text: str,
         lines = "\n".join(f"- {p['at']}: {p['text']}" for p in pending)
         prelude.append(f"[ORG NOTICES — {len(pending)} change(s) since your "
                        f"last turn]\n{lines}\n[END NOTICES]")
+    imgs: list[dict[str, Any]] = []
     if mail:
-        prelude.append(_mail_block(mail))
-    return (("\n\n".join(prelude) + "\n\n" + text) if prelude else text), tok
+        mtext, imgs = _mail_block(mail, slug, nid, inline=(via == "turn"))
+        prelude.append(mtext)
+    return ((("\n\n".join(prelude) + "\n\n" + text) if prelude else text),
+            tok, imgs)
 
 
-def _mail_block(mail: list[MailEntry]) -> str:
+def _mail_block(mail: list[MailEntry], slug: str = "", nid: str = "",
+                inline: bool = False) -> tuple[str, list[dict[str, Any]]]:
     """The one [MAIL] formatter — the envelope AND the turn-start feed use it
     (they diverged once: turn-start mail silently lacked the attachment
-    lines, live-caught 2026-07-31)."""
+    lines, live-caught 2026-07-31).
+
+    Returns (text, image_blocks). FR-28/D-167: when `inline` is true and the
+    sender is the USER, an attached image is decoded and returned as a real
+    `image` content block, and its [ATTACHED FILE] line says so.
+
+    ⚠ `inline` is FALSE on the mid-task path and that is structural, not an
+    oversight: mid-task mail rides `steer.py`'s `additionalContext`, which is
+    a JSON *string* — there is nowhere to put a content block. So mid-task
+    NAMES THE FILE AND THE REMEDY (`Read` renders images, and the file is
+    already in the agent's own working folder) instead of promising something
+    it cannot deliver.
+
+    ⚠ NOTHING IS EVER SILENTLY DROPPED. Every attachment produces a line
+    whatever happens to it — inlined, too large, undecodable, wrong format,
+    over the turn budget, or merely not an image. An agent that is never told
+    a file existed cannot ask for it, and the sender has no way to discover
+    that it never arrived. That failure — an absence that reads like a normal
+    turn — is the one this whole feature is shaped around."""
+    imgs: list[dict[str, Any]] = []
+    budget = imgblock.INLINE_IMAGE_TURN_MAX_BYTES
     blocks = []
     for m in mail:
         tag = " ⚠ THE USER — user instructions outrank your chain" \
@@ -2728,11 +2777,64 @@ def _mail_block(mail: list[MailEntry]) -> str:
             # the file already sits in the recipient's uploads/ (its cwd)
             nb = int(a.get("bytes") or 0)
             size = f"{nb} B" if nb < 1024 else f"{nb / 1024:.0f} KB"
-            b += (f"\n[ATTACHED FILE: {a.get('path')} ({size}) — in your "
+            rel = str(a.get("path") or "")
+            b += (f"\n[ATTACHED FILE: {rel} ({size}) — in your "
                   f"working folder]")
+            if not imgblock.is_image_name(rel):
+                continue
+            # ⭐ FR-28. USER ATTACHMENTS ONLY (ruling, coordinator
+            # 2026-08-27). Outside mail — the org inbox, @net: peers — is
+            # UNTRUSTED INPUT by this org's standing rule, and putting an
+            # untrusted image straight into an agent's context is a
+            # materially different risk posture from showing it the user's
+            # own screenshot. It is also not what was asked for. Those
+            # attachments keep the announce line above and nothing more;
+            # widening this is a decision for someone to make deliberately,
+            # with the risk named, not a generalisation that arrives by
+            # accident because the renderer happened to be shared.
+            if m["from"] != USER:
+                b += ("\n  ↳ not auto-loaded: only the user's own "
+                      "attachments are inlined. Read it if you need to see "
+                      "it.")
+                continue
+            if not inline:
+                # The mid-task path — a REMEDY, not an apology. The agent
+                # holds Read, Read renders images, and the file is already in
+                # its working folder, so "you cannot have this" would be both
+                # useless and, on its own, false.
+                #
+                # ⚠ AND IT MUST NOT PROMISE A LATER LOAD. An earlier draft of
+                # this line said "otherwise it loads by itself at the start of
+                # your next turn". That is a lie in the ordinary case, not
+                # merely in a race: steered mail is DRAINED from the mailbox
+                # when it is delivered, so this message is never presented
+                # again and no later turn will ever inline it. An agent that
+                # deferred on that promise would wait forever for an image
+                # that was already spent — the same
+                # believed-it-would-arrive failure this feature exists to
+                # remove, reintroduced by a reassuring sentence.
+                b += ("\n  ↳ an IMAGE. Mid-turn delivery is text-only, so it "
+                      "was NOT loaded into your context and will NOT load "
+                      "later — this message has already been delivered. "
+                      f"Read {rel} now if you need to see it.")
+                continue
+            if len(imgs) >= imgblock.INLINE_IMAGE_MAX_COUNT:
+                b += (f"\n  ↳ an IMAGE, not loaded: this turn already "
+                      f"carries {imgblock.INLINE_IMAGE_MAX_COUNT} images "
+                      f"(the per-turn limit). Read it if you need it.")
+                continue
+            block, note = imgblock.load_image_block(
+                os.path.join(scratch_dir(slug, nid), *rel.split("/")), budget)
+            if block is None:
+                b += f"\n  ↳ an IMAGE, NOT loaded into your context: {note}."
+                continue
+            imgs.append(block)
+            budget -= nb if nb > 0 else 0
+            b += (f"\n  ↳ loaded into your context as image {len(imgs)}"
+                  + (f" ({note})" if note else "") + " — look at it directly.")
         blocks.append(b)
-    return (f"[MAIL — {len(mail)} message(s)]\n"
-            + "\n---\n".join(blocks) + "\n[END MAIL]")
+    return ((f"[MAIL — {len(mail)} message(s)]\n"
+             + "\n---\n".join(blocks) + "\n[END MAIL]"), imgs)
 
 
 
@@ -3391,8 +3493,12 @@ def _run_one_turn(slug: str, nid: str,
                 lines = "\n".join(f"- {p['at']}: {p['text']}" for p in pending)
                 prelude.append(f"[ORG NOTICES — {len(pending)} change(s) since your "
                                f"last turn]\n{lines}\n[END NOTICES]")
+            turn_images: list[dict[str, Any]] = []
             if mail:
-                prelude.append(_mail_block(mail))
+                # inline=True: this text becomes a CLI user event a few lines
+                # below, which is the one carrier that can hold an image
+                mtext, turn_images = _mail_block(mail, slug, nid, inline=True)
+                prelude.append(mtext)
             if prelude:
                 text = "\n\n".join(prelude) + "\n\n" + text
             # persist the in-flight turn: if orgtree dies mid-turn, reconcile()
@@ -3622,7 +3728,7 @@ def _run_one_turn(slug: str, nid: str,
             try:
                 # (the pyright ignores below: stdin/stdout/stderr are PIPE ⇒
                 # non-None, which typeshed's Popen cannot express)
-                proc.stdin.write(_user_event(text))   # pyright: ignore[reportOptionalMemberAccess]
+                proc.stdin.write(_user_event(text, turn_images))   # pyright: ignore[reportOptionalMemberAccess]
                 proc.stdin.flush()                    # pyright: ignore[reportOptionalMemberAccess]
                 # ⚠ a successful write into the 64 KB pipe buffer is NOT
                 # consumption (review C1): a child that dies on argv (unknown
@@ -4063,12 +4169,19 @@ def _run_one_turn(slug: str, nid: str,
                             # delivery — restart durability): envelope now,
                             # and track it as the in-flight turn
                             ntoks = []
+                            # ⚠ bound BEFORE the `if not ncmd` below, which is
+                            # the only thing that assigns it: a slash command
+                            # skips the envelope entirely, and an unbound name
+                            # here would raise inside the boundary feed — on
+                            # the command path only, which is the path least
+                            # likely to be exercised before it shipped.
+                            nimgs: list[dict[str, Any]] = []
                             ncmd = False
                             if isinstance(nxt, dict):   # journaled leftover / cmd
                                 ncmd = bool(nxt.get("cmd"))
                                 ntoks, nxt = list(nxt.get("toks") or []), nxt["text"]
                             if not ncmd:      # a slash command goes verbatim
-                                nxt, ntok = _envelope(slug, nid, nxt, via="turn")
+                                nxt, ntok, nimgs = _envelope(slug, nid, nxt, via="turn")
                                 if ntok:
                                     ntoks.append(ntok)
                             try:
@@ -4084,7 +4197,7 @@ def _run_one_turn(slug: str, nid: str,
                             except Exception:                # noqa: BLE001
                                 pass
                             try:
-                                proc.stdin.write(_user_event(nxt))   # pyright: ignore[reportOptionalMemberAccess]
+                                proc.stdin.write(_user_event(nxt, nimgs))   # pyright: ignore[reportOptionalMemberAccess]
                                 proc.stdin.flush()                   # pyright: ignore[reportOptionalMemberAccess]
                                 # C1 again: confirmed by the next consuming
                                 # event, not by the pipe write (the prior
@@ -7085,7 +7198,7 @@ def send_message(slug: str, nid: str, text: str,
     with _state_lock:
         maybe_steer = st["busy"] and st.get("responding")
     if maybe_steer:
-        etext, tok = _envelope(slug, nid, text)  # ⚠ outside _state_lock (DOC_LOCK order)
+        etext, tok, _ = _envelope(slug, nid, text)  # ⚠ outside _state_lock (DOC_LOCK order)
         carrier = {"toks": [tok], "text": etext} if tok else etext
         with _state_lock:
             if st.get("responding"):

@@ -88,7 +88,7 @@ def main():
     print("\nthe envelope styling:")
 
     def _fmt():
-        blk = supervisor._mail_block(box(slug, "kid"))
+        blk, _ = supervisor._mail_block(box(slug, "kid"))
         assert "NOTICE FROM top" in blk, blk
         assert "no reply is expected" in blk, blk
         # the actionable sibling keeps the plain header
@@ -269,7 +269,7 @@ def main():
           _self_never_wakes)
 
     def _envelope():
-        blk = supervisor._mail_block(box(slug4, "kid"))
+        blk, _ = supervisor._mail_block(box(slug4, "kid"))
         assert "NOTICE FROM kid" in blk, blk
         # the label: ruled 2026-08-27 (user) — an agent noticing itself is
         # told so plainly. It read "your peer" until then, because

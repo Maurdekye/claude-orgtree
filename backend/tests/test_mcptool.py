@@ -847,7 +847,7 @@ def _():
 
 @t("the envelope renders a notice as NOTICE — visibly not actionable mail")
 def _():
-    blk = supervisor._mail_block(list(mailbox(A, "mid")))
+    blk, _ = supervisor._mail_block(list(mailbox(A, "mid")))
     assert "NOTICE FROM boss" in blk, blk
     assert "no reply is expected" in blk, blk
 

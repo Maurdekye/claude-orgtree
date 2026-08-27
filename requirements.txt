@@ -38,6 +38,21 @@ typing_extensions>=4.8  # schema.py — TypedDict/NotRequired on Python 3.10
 
 httpx>=0.27             # api.py — outbound calls (bridge, cloud, chatq)
 
+# FR-28/D-167 — imgblock.py, decode-validating an attached image before it is
+# inlined into an agent's turn.
+#
+# ⚠ NOT cosmetic, and not merely for reading dimensions. Without a real decode
+# a truncated or mislabelled file is base64'd straight to the API, which
+# rejects the whole request — so a broken attachment kills the TURN rather
+# than just the image, with an error naming nothing the user can act on.
+# Pillow is what makes "this file is not a decodable image" a thing we can say
+# in the mail block instead of a thing the agent discovers by dying.
+#
+# Degrades safely if absent: imgblock routes an unimportable Pillow to the
+# SAME announce path as an oversized image, so the feature loses inlining and
+# keeps its promise that nothing vanishes silently.
+Pillow>=10
+
 # optional — only for tools/ui_probe.py and tools/social_preview.py
 # (headless UI screenshots; not needed to run orgtree):
 # playwright>=1.40
