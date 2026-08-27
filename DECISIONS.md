@@ -3231,6 +3231,50 @@ and none should be bundled into a rename):
   watching the spawned child's pid is the promising design, but it changes
   `_detached_spawn`'s contract and lands in turn admission, which is being
   rewritten concurrently.
+  ⚠ **WHAT COUNTS AS AN EXIT PATH**, so the fourteen is checkable rather than
+  assertable (added 2026-08-27, after the coordinator verified the merge and
+  could not re-derive the number from the file — which is this follow-up's own
+  disease, caught one iteration later). The rule is: **literal `exit`
+  statements, wherever they sit on a line.** Five of the fourteen are INLINE
+  inside a single-line `if` — `if ($LASTEXITCODE -ne 0) { Write-Host ...; exit
+  1 }` — so a line-anchored `grep '^\s*exit [0-9]'` returns ELEVEN and looks
+  authoritative while being wrong. That grep is exactly how a later reader
+  would "correct" this entry back to a wrong number, which is why the counting
+  method is written down and not left to taste. Count with the parser, which
+  cannot miss an inline statement:
+
+      # Resolve-Path, NOT a bare 'update.ps1' — see the warning below it.
+      $f = (Resolve-Path 'update.ps1').Path
+      $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+                 $f, [ref]$null, [ref]$null)
+      $kill = ($ast.FindAll({ $args[0] -is
+                 [System.Management.Automation.Language.CommandAst] -and
+                 $args[0].GetCommandName() -eq 'Stop-Process' }, $true)
+              )[0].Extent.StartLineNumber
+      $e = $ast.FindAll({ $args[0] -is
+               [System.Management.Automation.Language.ExitStatementAst] }, $true)
+      "before=$(($e | Where-Object { $_.Extent.StartLineNumber -lt $kill }).Count)" +
+      " after=$(($e | Where-Object { $_.Extent.StartLineNumber -gt $kill }).Count)"
+
+  → `before=14 after=2` at `680ecd5`. Re-run it rather than trusting the
+  number; it also re-verifies the ordering property this follow-up rests on.
+  ⚠ The `Resolve-Path` is load-bearing and was itself a bug in the first draft
+  of this snippet, caught by running it: `ParseFile('update.ps1')` does NOT
+  follow PowerShell's own location. It resolves against the .NET process
+  `CurrentDirectory`, which `Set-Location`/`Push-Location` do not update — so
+  in a worktree it silently parsed the OTHER checkout's `update.ps1` and
+  reported a confident number for a file the reader was not looking at. It
+  agreed only because the two copies happened to be identical. A verification
+  command that reads the wrong file and answers anyway is the same defect
+  D-168 registers, which is worth the four extra characters.
+  **NOT counted, and deliberately: terminating errors** from
+  `$ErrorActionPreference='Stop'`. Those are also paths that leave before the
+  restart, and they are UNBOUNDED — any cmdlet failure is one — so they cannot
+  be enumerated. Fourteen is therefore a FLOOR, not a total. That is the safe
+  direction here (the argument needs "many exits fire on the common path", so
+  more is worse and the conclusion holds a fortiori); it would NOT be safe for
+  any future argument needing an upper bound, and such an argument must not
+  cite this number.
   Was. "six exit paths". Recounted 2026-08-27 (`ps-guards`, D-168): it was
   already wrong before that audit — eleven on `e724c21`, against six here and
   eleven in `supervisor.py`'s own comment, so the two records of the same
