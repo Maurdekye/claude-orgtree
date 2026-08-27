@@ -205,6 +205,94 @@ def main():
     finally:
         supervisor.send_message = real
 
+    print("\nself-notice — the §7.2 fall-through McpLink 2.9.1 depends on:")
+    # ⚠ THIS SECTION PINS A FALL-THROUGH, NOT A DESIGNED FEATURE. A node may
+    # address ITSELF because §7.2's sibling clause (`s["parent"] ==
+    # target["parent"]`, ledger.post_mail) is trivially true when sender and
+    # target are the same node. Nobody decided that; nothing excluded it.
+    #
+    # It became load-bearing on 2026-08-27: McpLink 2.9.1 ships panel
+    # open/close events as passive SELF-notices, actor pinned structurally to
+    # the recipient, because that is the only actor that borrows no authority
+    # and — unlike a downward notice — mints no §7.3 audience. See D-165.
+    #
+    # So if you are tidying §7.2 and this section goes red, you have not
+    # broken a test: you have found the decision. Closing the self case is
+    # allowed, but it is a RULING (and an outside consumer to tell), never a
+    # tidy-up. Investigated by notice-endpoint, 2026-08-27.
+    slug4, org4 = mkorg("self notice")
+    org4.hire("top", "top", "haiku", 0, "kid2", **spec())   # a REAL peer
+
+    def _leaf_self():
+        r = org4.post_mail("kid", "kid", "panel closed", "notice")
+        assert r["delivered"] == "kid", r
+        m = org4.d["mail"]["kid"]
+        assert m[-1]["kind"] == "notice", m
+        assert m[-1]["from"] == "kid", "a self-notice must be attributed to " \
+                                       "the node itself, not rewritten"
+    check("§7.2 PERMITS a node to notice itself (the sibling fall-through)",
+          _leaf_self)
+
+    def _top_self():
+        # the OTHER trivially-equal case: a top-level node's parent is None,
+        # and None == None passes the same clause
+        r = org4.post_mail("top", "top", "panel closed", "notice")
+        assert r["delivered"] == "top", r
+        assert org4.d["mail"]["top"][-1]["from"] == "top"
+    check("…and a TOP-LEVEL node too (parent None == None, same clause)",
+          _top_self)
+
+    def _no_audience():
+        # §7.3 grants a reply path on a DOWNWARD send to a non-child
+        # descendant. is_ancestor is strict, so self never trips it — which is
+        # what keeps a per-panel-event notice free of side effects. If this
+        # goes red, every panel event is silently mutating the audience list.
+        r = org4.post_mail("kid", "kid", "again", "notice")
+        assert r["warnings"] == [], r["warnings"]
+        assert not any(a["grantee"] == "kid" and a["grantor"] == "kid"
+                       for a in org4.d["audiences"]), org4.d["audiences"]
+    check("a self-notice grants NO audience and warns about nothing",
+          _no_audience)
+
+    def _self_never_wakes():
+        # the no-wake property, measured for the SELF case specifically
+        # rather than assumed to inherit from the peer case
+        store.save_org(org4)
+        st4 = supervisor.state(slug4, "kid")
+        assert not st4["busy"], "fixture started busy — result would be void"
+        r = supervisor.send_message(slug4, "kid", "(orgtree) notice nudge",
+                                    wake=False)
+        assert r.get("parked") and r["accepted"], r
+        assert not st4["busy"], "a self-notice set busy — a turn would run"
+        assert box(slug4, "kid"), "the park drained its own mailbox"
+    check("self-notice parks: no turn starts, the mailbox keeps it",
+          _self_never_wakes)
+
+    def _envelope():
+        blk = supervisor._mail_block(box(slug4, "kid"))
+        assert "NOTICE FROM kid" in blk, blk
+        # the label: ruled 2026-08-27 (user) — an agent noticing itself is
+        # told so plainly. It read "your peer" until then, because
+        # relationship() fell through the same parent-equality comparison the
+        # permission does. Only the LABEL moved; post_mail's `allowed` was
+        # not touched, and the section above is what proves that.
+        assert box(slug4, "kid")[-1]["relationship"] == "yourself", \
+            box(slug4, "kid")[-1]
+        assert "(yourself" in blk, blk
+    check("the envelope introduces it as from 'yourself', not 'your peer'",
+          _envelope)
+
+    def _label_is_not_permission():
+        # the fence the relabel had to respect: a PEER is still "your peer",
+        # so the new self case did not swallow the sibling label — and the
+        # sibling PERMISSION still works, which is the thing that must not
+        # have moved
+        r = org4.post_mail("kid", "kid2", "sideways", "notice")
+        assert r["delivered"] == "kid2", r
+        assert org4.d["mail"]["kid2"][-1]["relationship"] == "your peer"
+    check("a real peer is still 'your peer' — the relabel took only the self "
+          "case", _label_is_not_permission)
+
     print(f"\nall {PASS} checks passed")
 
 
