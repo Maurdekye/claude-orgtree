@@ -19,6 +19,7 @@ checker report it.
     §2  every citation resolves to an entry — proved by seeding a dangling one
     §3  the 2026-08-26 repair, pinned
     §4  the citation form this suite recognises, and why it is not wider
+    §5  naming a file on another drive must not crash the report
 
 ⚠ §4 IS LOAD-BEARING, not decoration. `D-NNN` (three digits, zero-padded) is
 `DECISIONS.md`'s namespace. `D-NN` (one or two digits) is
@@ -98,6 +99,23 @@ def cited_files():
     return out
 
 
+def label_for(p):
+    """A readable name for `p` that does NOT assume it shares a drive with the
+    repo.
+
+    ⚠ `os.path.relpath` RAISES on Windows across drives, and §2's seeded file
+    lives in TEMP (C:) while a checkout of this repo may sit on E:. Measured
+    2026-08-26: this suite passed from a C: worktree and died from the E: one
+    with `ValueError: path is on mount 'C:', start on mount 'E:'` — a cosmetic
+    call in an error path, aborting the very check that was about to prove the
+    instrument works. Pinned by §5.
+    """
+    try:
+        return os.path.relpath(p, REPO)
+    except ValueError:
+        return p
+
+
 def dangling_citations(paths, register_text):
     """cited number -> the files citing it, for numbers with no entry."""
     have = set(_HEADING.findall(register_text))
@@ -107,7 +125,7 @@ def dangling_citations(paths, register_text):
             for m in _CITATION.finditer(fh.read()):
                 n = "D-" + m.group(1)
                 if n not in have:
-                    bad.setdefault(n, set()).add(os.path.relpath(p, REPO))
+                    bad.setdefault(n, set()).add(label_for(p))
     return bad
 
 
@@ -239,6 +257,46 @@ def sec_namespace() -> None:
           _register_is_padded)
 
 
+# ═══════════════════════════════════════════ §5  the report survives any drive
+
+def sec_cross_drive() -> None:
+    print("\n§5  naming a file on another drive must not crash the report")
+    drive = os.path.splitdrive(os.path.abspath(REPO))[0]
+    alien = ("Z:\\t\\stray.py" if drive.upper() != "Z:" else "Y:\\t\\stray.py") \
+        if os.name == "nt" else "/somewhere/else/stray.py"
+
+    if os.name == "nt":
+        # ⚠ PROVE THE SCENARIO IS REAL ON THIS MACHINE before testing the
+        # guard against it. If relpath stopped raising here, the check below
+        # would pass while guarding nothing.
+        def _really_raises():
+            try:
+                os.path.relpath(alien, REPO)
+            except ValueError:
+                return
+            raise AssertionError(
+                f"os.path.relpath({alien!r}, {REPO!r}) no longer raises, so "
+                f"this section proves nothing — re-derive it")
+        check("os.path.relpath really does raise across drives here",
+              _really_raises)
+    else:
+        print("      (POSIX: no drives, so only the non-raising branch below "
+              "is meaningful)")
+
+    check("label_for returns instead of raising",
+          lambda: _true(label_for(alien) == alien if os.name == "nt"
+                        else isinstance(label_for(alien), str),
+                        f"label_for({alien!r}) did not survive"))
+
+    def _same_drive_unchanged():
+        inside = os.path.join(REPO, "DECISIONS.md")
+        _true(label_for(inside) == "DECISIONS.md",
+              f"label_for stopped shortening in-repo paths: "
+              f"{label_for(inside)!r}")
+    check("…and still shortens paths that ARE inside the repo",
+          _same_drive_unchanged)
+
+
 # ═════════════════════════════════════════════════════════════════════════ main
 
 def main() -> None:
@@ -247,6 +305,7 @@ def main() -> None:
     sec_citations()
     sec_repair()
     sec_namespace()
+    sec_cross_drive()
 
     print(f"\n{'═' * 70}\n{PASS} checks passed, {len(FAIL)} failed")
     for label, tb in FAIL:
