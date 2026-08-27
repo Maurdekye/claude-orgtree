@@ -2143,6 +2143,40 @@ fold-back, retraction, archive) is inherited because a notice IS mail.
 Bounds: delivery timing is best-effort by design — an idle recipient may
 not read a notice for a long time, and the tool card says so.
 
+### D-165 · a node may notice ITSELF — a fall-through, now load-bearing
+Ruling (notice-endpoint, 2026-08-27, measured): §7.2 permits a node to
+address itself, and this is recorded as **permitted** rather than merely
+observed. It is not a stated rule: `post_mail`'s sibling clause
+(`s["parent"] == target["parent"]`) is trivially true when sender and target
+are the same node, and a top-level node's `None == None` passes the same
+way. Nobody decided it; nothing excluded it. A self-notice parks without
+waking, is attributed `from` the node itself, and — because `is_ancestor` is
+strict — mints **no** §7.3 audience, so it carries no side effect per send.
+Why: McpLink 2.9.1 (outside this org) ships panel open/close events as
+passive self-notices, actor pinned structurally to the recipient. It chose
+that actor because it is the narrowest honest one available: presenting any
+other node would make an external mod speak in an agent's voice to deliver a
+system event, and a DOWNWARD notice would additionally mint a permanent
+§7.3 audience on every panel event. So an undecided fall-through is now
+public API for a shipped artifact, protected by nothing — someone tidying
+§7.2 could close it without ever knowing they had. Recording it converts an
+accident into a thing you must decide to break.
+The envelope says so plainly: `NOTICE FROM <node> (yourself)`. Ruled (user,
+2026-08-27) after it read `(your peer)` — an agent introduced to itself as a
+colleague — because `relationship()` fell through the same parent-equality
+comparison the permission does.
+Bounds: the relabel is a LABEL and nothing more. `relationship()` is a pure
+naming function with one call site (stamping the mail entry); post_mail's
+`allowed` computation was not touched, and the sibling label and sibling
+permission both still work — pinned either side in `test_send_notice.py`.
+The user chose the plain relabel over promoting self-send to a stated
+addressing rule, so **this stays a fall-through** — documented and pinned,
+not blessed into the §7.2 vocabulary.
+Load-bearing: `is_ancestor` staying STRICT (a node is not its own ancestor).
+If that ever changes, every self-notice silently starts granting an audience.
+Closing the self case is permitted — but it is a ruling with an outside
+consumer to notify, not a refactor.
+
 ### D-043 · messages ARE mail — one delivery system
 Ruling (design 2026-07-30; ratified 2026-07-31): a user message posts as
 mail (`@user` → node) and drives the node; there is no separate

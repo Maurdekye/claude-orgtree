@@ -1060,6 +1060,14 @@ class Org:
     def relationship(self, sender: str, to: str) -> str:
         if sender == USER:
             return "USER"
+        # A node addressing ITSELF (D-165 — McpLink ships panel events this
+        # way). Without this it fell through to the sibling test below and an
+        # agent was introduced to itself as "your peer"; the user ruled
+        # 2026-08-27 for the plain word. LABEL ONLY: the permission to
+        # self-send is computed in post_mail and is untouched by this — the
+        # two merely happen to rest on the same parent comparison.
+        if to == sender:
+            return "yourself"
         if to != USER and self.node(to)["parent"] == sender:
             return "your superior"
         if sender != USER and self.node(sender)["parent"] == (None if to == USER else to):
@@ -1244,6 +1252,15 @@ class Org:
             allowed = (
                 self.is_ancestor(sender, to)                      # downward, any depth
                 or (None if to == USER else to) == s["parent"]    # one hop up
+                # ⚠ SELF-SEND PASSES THROUGH HERE, and something outside this
+                # org depends on it. When sender and target are the SAME node
+                # this comparison is trivially true, so a node may address
+                # itself — nobody decided that; nothing excluded it. McpLink
+                # 2.9.1 ships panel events as passive SELF-notices precisely
+                # because that actor borrows no authority and mints no §7.3
+                # audience below. Narrowing this clause closes that channel:
+                # allowed, but it is a RULING with a consumer to notify, not a
+                # tidy-up. D-165; pinned by test_send_notice.py's last section.
                 or s["parent"] == target["parent"]                # sibling
                 or self._has_audience(sender, to))                # sanctioned upward
             if not allowed:
