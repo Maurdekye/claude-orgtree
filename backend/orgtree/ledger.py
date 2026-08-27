@@ -195,6 +195,20 @@ def _notice_subject(text: str) -> str:
 MAX_EXTERN_HANDLES: Final = 8
 
 
+def stamp_handles(n: Any, handles: list[str]) -> None:
+    """D-166: record WHEN each handle was attached, alongside the handles.
+
+    Pruned to exactly the current set on every write. That pruning is the
+    point: a stamp left behind for an address the node no longer holds would
+    be inherited by a LATER re-attach, handing the fresh handle a dead clock
+    and getting it swept on the next tick."""
+    prev = n.get("external_handles_at") or {}
+    if handles:
+        n["external_handles_at"] = {h: prev.get(h) or now() for h in handles}
+    else:
+        n.pop("external_handles_at", None)
+
+
 def norm_extern_handles(raw: Iterable[Any] | None, *, where: str) -> list[str]:
     """Validate + dedupe @mcp:<peer> response handles, preserving order.
 
@@ -1410,6 +1424,61 @@ class Org:
         return any(a["grantee"] == grantee and a["grantor"] == grantor
                    for a in self.d["audiences"])
 
+    def handle_attached_at(self, nid: str, handle: str) -> str:
+        """D-166: when this handle was bound to this node.
+
+        Attach time lives on the NODE, not in the machine-wide sightings file,
+        because that is whose fact it is — and because inferring it from the
+        peer store cannot tell a handle that has sat there for a week from one
+        re-attached a second ago, which made re-attached handles get swept on
+        the next tick.
+
+        A handle with no stamp predates D-166; it is stamped on first sight so
+        it gets a full grace period rather than being detached on the strength
+        of no evidence at all. Mutates when it stamps — the caller saves."""
+        n = self.node(nid)
+        at = (n.get("external_handles_at") or {}).get(handle)
+        if not at:
+            at = now()
+            n.setdefault("external_handles_at", {})[handle] = at
+        return str(at)
+
+    def detach_extern_handle(self, nid: str, handle: str, *,
+                             last_seen: str | None,
+                             silent_s: float, threshold_s: float) -> bool:
+        """D-166: drop a response handle whose peer has gone silent. Returns
+        False if it was already gone (the sweep races nothing, but a retool
+        between load and save would otherwise raise).
+
+        The detach IS the whole fix. The identity prompt is a pure function of
+        the node doc and is rebuilt every turn, so removing the handle here
+        removes the line from the agent's next prompt — and that is the only
+        thing that works: a compacted agent knows the channel only through
+        that line, so it cannot be TOLD the channel died. It can miss a
+        notice; it cannot read a line that is gone.
+
+        The event is the operator's answer to "why did my channel drop" — a
+        detach nobody can explain afterwards is its own small phantom, so it
+        carries the handle, the last sighting and the threshold that fired."""
+        n = self.node(nid)
+        handles = list(n.get("external_handles") or [])
+        if handle not in handles:
+            return False
+        handles.remove(handle)
+        if handles:
+            n["external_handles"] = handles
+        else:
+            n.pop("external_handles", None)
+        # the stamp goes with the handle, so a re-attach starts a fresh clock
+        stamp_handles(n, handles)
+        self._log("extern_handle_detached", SYSTEM, {
+            "node": nid, "handle": handle,
+            "last_seen": last_seen or "never",
+            "silent_s": round(silent_s),
+            "threshold_s": round(threshold_s),
+        }, [])
+        return True
+
     # ------------------------------------------------ the org inbox (user spec)
     # Outside parties (chatq sessions, other orgs) see ONE recipient: the org.
     # Their mail lands here; every live top-level agent and every org-inbox
@@ -2062,6 +2131,7 @@ class Org:
                              str(charter).strip() if charter else None)
         if handles:
             self.nodes[nid]["external_handles"] = handles
+            stamp_handles(self.nodes[nid], handles)      # D-166
         # D-030 hardening: the fresh node inherits the ORG-wide
         # permission_mode — clamp it against the kiosk ceiling like set_scope
         # does, or a "default"-ceiling kiosk hires above its own ceiling
@@ -3711,6 +3781,7 @@ class Org:
                 n["external_handles"] = want_handles
             else:
                 n.pop("external_handles", None)
+            stamp_handles(n, want_handles)               # D-166
         # §15 cascade: charter = this node's role card · team_charter = standing
         # instructions binding this node's whole subtree (manager-owned)
         if charter is not None:
