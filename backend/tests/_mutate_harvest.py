@@ -280,7 +280,31 @@ def main():
             continue
         path.write_text(src.replace(find, repl, 1), encoding="utf-8")
         try:
+            # ⚠ A MUTANT THAT NEVER RAN IS NOT A KILL (ps-guards audit
+            # 2026-08-27; the identical hole was measured in
+            # _mutate_handles.py and the full account is in that file).
+            # Short form: `killed = baseline - passed`, and a suite that never
+            # STARTED prints no `ok N` lines, so `passed` is empty, `killed` is
+            # the whole baseline, and `must_kill in killed` is trivially true —
+            # "✓ KILLED", exit 0, nothing executed. A mutant is SUPPOSED to
+            # turn the suite red, so redness carries no information here;
+            # positive evidence that the suite RAN does.
+            try:
+                compile(path.read_text(encoding="utf-8"), str(path), "exec")
+            except SyntaxError as e:
+                misses.append(f"{name}: MUTANT DOES NOT PARSE ({e}) — a file "
+                              f"that cannot be imported is not a killed check")
+                print(f"  ?? {name}\n     mutant does not parse — no verdict "
+                      f"is available: {e}")
+                continue
             ok, passed = run_suite()
+            if must_kill is not None and not passed:
+                misses.append(f"{name}: SUITE PRODUCED NO CHECK OUTPUT — it "
+                              f"did not run, so nothing can be attributed to "
+                              f"“{must_kill}”")
+                print(f"  ?? {name}\n     suite emitted no `ok` lines at all "
+                      f"— it did not run; NOT counted as a kill")
+                continue
             if must_kill is None and len(passed) != len(baseline):
                 misses.append(f"{name}: no-op control changed the pass COUNT "
                               f"({len(baseline)} -> {len(passed)})")

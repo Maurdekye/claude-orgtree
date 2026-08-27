@@ -42,7 +42,65 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
+
+# ---- AM I ACTUALLY STANDING IN THE ORGTREE CHECKOUT? ----------------------
+# $root is derived from the script's own location and nothing checked that it
+# landed anywhere real (peer report relayed by the coordinator 2026-08-27: two
+# of their probes had been resolving "repo root" to a directory holding no
+# project file, had not run for DAYS, and the harness then reported the fault
+# against the healthy component -- so the reader went and investigated the
+# wrong thing).
+# This script pulls, force-kills whatever holds a port, rebuilds a tree and
+# restarts a service. Pointed at the wrong directory it does all of that to
+# the WRONG tree, and the first thing that would notice is an incidental
+# failure much later, phrased as a git or pip problem rather than as a root
+# problem. Worse, a wrong root that happens to BE a git checkout with an
+# upstream would pull and build that repo and report success.
+# So: anchor it, and NAME the directory when it is wrong. The failure being
+# guarded against here is precisely a message that sends the reader elsewhere.
+if (-not $root) {
+    Write-Host "REFUSING to deploy: this script could not determine its own directory (`$MyInvocation.MyCommand.Path was empty -- run it with -File, not piped to powershell -Command). Nothing was pulled, rebuilt or restarted." -ForegroundColor Red
+    exit 1
+}
+# Scoped to what the MODE actually uses, deliberately. -EnsureUp is the
+# 5-minute crash-restart net: it builds nothing and only relaunches the
+# backend, so gating it on frontend/requirements files would newly refuse to
+# recover a downed backend over a file that leg never touches -- a guard a
+# correct run can trip is worse than no guard (the same argument the
+# dirty-tree pass-list below is built on).
+$anchors = if ($EnsureUp) { , 'backend\orgtree\api.py' }
+           else { 'requirements.txt', 'backend\orgtree\api.py', 'frontend\package.json' }
+foreach ($anchor in $anchors) {
+    if (-not (Test-Path (Join-Path $root $anchor))) {
+        Write-Host "REFUSING to deploy: resolved the repo root to" -ForegroundColor Red
+        Write-Host "    $root" -ForegroundColor Red
+        Write-Host "and that directory has no '$anchor', so it is not an orgtree checkout." -ForegroundColor Red
+        Write-Host "Nothing was pulled, rebuilt or restarted." -ForegroundColor Red
+        exit 1
+    }
+}
 Set-Location $root
+
+# ---- READING THE TREE MUST BE ABLE TO FAIL --------------------------------
+# `git status --porcelain` returns an EMPTY string two ways: the tree is clean,
+# or git could not read it at all. Every dirty-tree guard below tests the
+# capture for emptiness, so the second case was read as the first -- the guard
+# did not fire, printed nothing, and the deploy walked straight past it.
+# Measured 2026-08-27 (ps-guards audit): in a repo git refuses to open, the
+# capture is '' with exit 128, `if ($dirty.Trim())` is false, and execution
+# continues to the pull. An unreadable tree is not a clean tree, so refuse.
+# There is no `2>` here on purpose: git's own message is the operator's only
+# clue, and under PS 5.1 redirecting a native stderr stream turns it into a
+# terminating NativeCommandError (see the esbuild note further down).
+function Get-Porcelain {
+    param([string[]]$PathSpec = @())
+    $out = (git status --porcelain @PathSpec) | Out-String
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "git status FAILED (exit $LASTEXITCODE) -- the working tree could not be read, so the dirty-tree guards cannot run and would pass on the empty result. REFUSING: an unreadable tree is not a clean tree. Nothing was rebuilt and nothing was restarted." -ForegroundColor Red
+        exit 1
+    }
+    return $out
+}
 
 if ($EnsureUp) {
     $dr = $env:ORGTREE_DATA
@@ -92,7 +150,7 @@ Write-Host "== orgtree update (currently $before) =="
 # an operator reading a log has to be able to SEE the working-tree state --
 # `--ff-only` refuses on some dirt and sails past the rest, and "which was
 # it?" should never require going to the machine to find out.
-$dirty = (git status --porcelain) | Out-String
+$dirty = Get-Porcelain
 if ($dirty.Trim()) {
     Write-Host "-- working tree is DIRTY (the pull may refuse):" -ForegroundColor Yellow
     Write-Host $dirty.TrimEnd()
@@ -130,7 +188,7 @@ if ($dirty.Trim()) {
 # both this and any before/after shape; package.json edits (the way dependency
 # changes actually arrive) are caught by the main guard above.
 $lockPath = Join-Path $root 'frontend\package-lock.json'
-$lockDirtyBefore = ((git status --porcelain -- frontend/package-lock.json) | Out-String).Trim()
+$lockDirtyBefore = (Get-Porcelain @('--', 'frontend/package-lock.json')).Trim()
 $lockHashBefore = if ($lockDirtyBefore) { (Get-FileHash $lockPath -Algorithm SHA256).Hash } else { $null }
 git pull --ff-only
 if ($LASTEXITCODE -ne 0) {
@@ -227,14 +285,47 @@ if ($lockHashBefore -and -not $AllowDirty) {
 # leaving the next person to guess. Never edit package.json to "allow scripts":
 # it fixes nothing here, and rewriting the lockfile can DROP other platforms'
 # optional entries and break the very machines it was meant to help.
-node -e "require('esbuild').transformSync('let x=1')" 2>$null
-if ($LASTEXITCODE -ne 0) {
+# ⚠ THE PROBE RUNS UNDER EAP=Continue, AND THAT IS LOAD-BEARING (ps-guards
+# audit 2026-08-27, measured -- not tidiness, do not "simplify" it back).
+# Under Windows PowerShell 5.1 a native command whose stderr is REDIRECTED has
+# each stderr line wrapped in an ErrorRecord, and with the script's global
+# ErrorActionPreference='Stop' that record is a TERMINATING NativeCommandError.
+# node prints a stack trace to stderr EXACTLY when esbuild is broken. So as
+# written before today, `node -e ... 2>$null` killed the deploy on that line
+# and everything below it -- the entire clean-reinstall self-heal, the retry,
+# the diagnostic -- was unreachable in the only situation it exists for. It
+# looked perfect on every run because a HEALTHY node prints nothing at all:
+# the abstention was indistinguishable from a pass. expose.ps1 records the same
+# mechanism for cloudflared's banner; this file had not applied it.
+function Test-Esbuild {
+    $was = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    # $LASTEXITCODE is CLEARED first, and that is not decoration. It is a
+    # leftover global: if the probe below does not actually run, the variable
+    # still holds the PREVIOUS command's 0 (`npm install`'s), so "no answer"
+    # would read as "esbuild is fine" -- the same abstention-reads-as-a-pass
+    # bug this whole function exists to remove, reintroduced by the fix.
+    # Cleared and re-checked, an unanswered probe reports broken instead.
+    # A `node` missing ENTIRELY is a different case and is already safe:
+    # PowerShell raises CommandNotFoundException as TERMINATING whatever the
+    # preference is, so the deploy aborts loudly on "'node' is not recognized"
+    # and never reaches the restart (measured 2026-08-27). Fail-closed and
+    # correct -- a missing toolchain is not an esbuild fault to reinstall
+    # around, and pretending otherwise would burn a clean reinstall to
+    # rediscover it.
+    $global:LASTEXITCODE = $null
+    try {
+        node -e "require('esbuild').transformSync('let x=1')" 2>$null
+        if ($null -eq $LASTEXITCODE) { return 127 }
+        return $LASTEXITCODE
+    } finally { $ErrorActionPreference = $was }
+}
+if ((Test-Esbuild) -ne 0) {
     Write-Host "esbuild is not usable -- clean reinstall (npm optional-deps bug)" -ForegroundColor Yellow
     Remove-Item -Recurse -Force 'node_modules' -ErrorAction SilentlyContinue
     npm install --no-audit --no-fund
     if ($LASTEXITCODE -ne 0) { Write-Host "npm install failed" -ForegroundColor Red; exit 1 }
-    node -e "require('esbuild').transformSync('let x=1')" 2>$null
-    if ($LASTEXITCODE -ne 0) {
+    if ((Test-Esbuild) -ne 0) {
         Write-Host "esbuild still broken after a clean reinstall." -ForegroundColor Red
         Write-Host "Check that node/npm match your platform (nvm switches can leave" -ForegroundColor Red
         Write-Host "a tree built for another arch), then delete package-lock.json too." -ForegroundColor Red

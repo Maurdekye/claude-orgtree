@@ -2962,6 +2962,114 @@ Load-bearing:
   `backend/tests/test_run_completion.py`. See also D-157, which is one
   application of this rule, and docs/ARCHITECTURE.md for the operational
   half.
+- **Extended by D-168**: proving an instrument can FAIL is necessary and not
+  sufficient, because there is a third outcome — it never ran — and that one
+  had been wired to the pass branch in four places. Read the two together.
+
+### D-168 · an abstention is not a pass: prove the instrument can report DID-NOT-RUN
+Ruling (coordinator, 2026-08-27, on an audit by `ps-guards` prompted by a peer
+organisation's report): every instrument D-158 covers must additionally be
+proved able to report **did-not-run** as an outcome distinct from both pass and
+fail. Where abstention and success are genuinely indistinguishable in the
+mechanism, the abstention must be wired to the FAILING branch, never the
+passing one. An empty result from a reader that broke, a check whose statement
+was never reached, a score computed from output that was never produced — each
+of these is an absence of evidence, and none of them is evidence of health.
+
+Why: four instruments were audited that all satisfied D-158 — each could be
+made to fail on the fault it named — and all four still lied, because the
+question D-158 asks has three answers and it only pins two. In each case the
+third answer had been soldered to "pass":
+
+1. **A guard downstream of a redirected native stderr, under PS 5.1.** In
+   Windows PowerShell 5.1 a native command whose stderr is REDIRECTED has each
+   stderr line wrapped in an ErrorRecord, and under
+   `$ErrorActionPreference='Stop'` that record is TERMINATING. `update.ps1`
+   probed esbuild with `node -e "..." 2>$null` and branched on
+   `$LASTEXITCODE`. node writes a stack trace to stderr exactly when esbuild is
+   broken — so the script died ON the probe and the entire clean-reinstall
+   self-heal beneath it was unreachable in the only condition it exists for. A
+   healthy node prints nothing, so the line passed on every run for as long as
+   nothing was wrong. `expose.ps1` had recorded this mechanism for
+   cloudflared's banner since 2026-08; `update.ps1` had not applied it. The
+   `update.sh` mirror was correct throughout (`if ! cmd` is safe in a shell),
+   which is why the POSIX path self-healed and the symptom never appeared on
+   the side anyone watched — a defect present on one leg of a deliberately
+   mirrored pair hides behind the healthy leg.
+2. **A reader whose failure is spelled the same as success.**
+   `git status --porcelain` returns an empty string when the tree is clean AND
+   when git could not read it; both scripts tested only for emptiness. Measured:
+   exit 128, empty capture, dirty-tree guard skipped in silence, execution
+   continued to the pull.
+3. **A path resolved from the script's own location, with nothing checking it
+   landed anywhere real.** Demonstrated against a decoy — a genuine git
+   checkout, with a commit and an upstream, that was not this repo: `update.ps1`
+   announced itself as an orgtree update and ran into the git stage on it. The
+   peer report that prompted the audit is the sharper form of the same shape:
+   their probes resolved "repo root" to a directory with no project file, had
+   not run for days, and the harness then reported the fault against the
+   HEALTHY component — so the reader was sent to investigate the wrong thing.
+   A message that misdirects is worse than silence.
+4. **A score computed by set difference over scraped output.** Both mutation
+   harnesses compute `killed = baseline - passed` from the suite's `ok N`
+   lines and accept the mutant when `must_kill in killed`. A suite that never
+   RAN — the mutation broke the file, an import blew up — prints no `ok` lines,
+   so `passed` is empty, `killed` is the entire baseline, and the test is
+   trivially true: "✓ KILLED", exit 0, not one check executed. This is the
+   ugliest of the four, because it is the tool built to catch exactly this
+   class carrying an instance of it. D-158's own Load-bearing slot already
+   said "a mutation must be shown to have LANDED before its result is read" —
+   the rule was written down and the instrument did not implement it, which is
+   why this entry states the requirement as something to be PROVED rather than
+   merely intended.
+
+Bounds: this applies where "did not run" and "ran and found nothing wrong"
+produce the same artefact — the same empty string, the same absent line, the
+same exit code. It does not apply to an instrument that fails loudly on its own
+account. The discriminator is not the instrument's subject but its plumbing:
+ask what the check yields when the thing it reads is absent, and if the answer
+is what success looks like, the wiring is the bug.
+
+Load-bearing:
+- **Redness carries no information in a mutation harness.** A mutant is
+  SUPPOSED to turn the suite red, so "the suite failed" cannot distinguish a
+  kill from a crash. Only positive evidence that the suite RAN can, which is
+  why the fix is a compile check plus a refusal to attribute a kill when no
+  `ok` line was produced — not a stricter reading of the failure.
+- **A guard a correct run can trip is worse than no guard**, and that bounds
+  the repair as much as the fault. The anchor check is scoped per mode:
+  `-EnsureUp` is the five-minute crash-restart net, builds nothing, and is
+  gated only on the file it actually launches, because gating it on the
+  frontend would newly refuse to recover a downed backend. Same argument as
+  the dirty-tree pass-list.
+- **These guards check existence, not authenticity.** A stub file of the right
+  name satisfies the anchor check. It catches a wrong directory, not a
+  corrupted one, and is not a substitute for the dirty-tree guard.
+- **The compile check caught a real one on its first run, which is the
+  evidence this entry rests on.** `_mutate_handles.py` had shipped a mutant
+  whose replacement carried `))` where the anchor spanned both the last tuple
+  element and the tuple's own closing paren — one paren too many, so
+  `ledger.py` did not parse. That mutant had therefore never tested the
+  self-retool fence, and the old scoring reported it "✓ KILLED" every run,
+  because an empty `passed` makes `baseline - passed` contain everything.
+  Repaired to a single `)`; it now genuinely dies to "a self-retool may NOT
+  carry external_handles", and the harness is 10/10 with its no-op control
+  still surviving. One of eight mutants in a hand-maintained list was vacuous
+  and nothing could see it — the base rate for this class is not low.
+- **Separately and NOT fixed here**: `_mutate_harvest.py` reports four mutants
+  as `PATTERN NOT FOUND` — their anchors have rotted out of `supervisor.py`,
+  so that harness exits 1 on unmodified `main` today. That is its *existing*
+  anchor guard working correctly, not a new fault, and re-authoring four
+  auth/harvest mutants needs someone holding that subsystem. Recorded so it is
+  not rediscovered as new.
+- Proved by exercising each path directly rather than by review: the probes
+  and their before/after transcripts are recorded with the audit. Two of the
+  probes written for this entry were themselves wrong on their first run — one
+  extracted a window that did not compile and reported `ok` for every row, and
+  one used `2>&1` under `EAP=Stop` and died of the very defect it was written
+  to measure. Both were caught only because they carried rows whose expected
+  answer was the opposite polarity. An instrument for this class needs its own
+  negative control.
 
 ---
 
@@ -3117,12 +3225,24 @@ and none should be bundled into a rename):
   was mostly theoretical; now every call runs to the kill. Scoping is recorded
   with the follow-up: `_run_turn` is a genuine single choke point (three thread
   starts plus the turn-end drain), so the FLAG is small; the CLEARING is not.
-  `update.ps1` has six exit paths that never reach the restart, two of which
-  (dirty tree, `git pull` failure) fire routinely — so a timeout-cleared flag
-  would wedge every org on the machine on the COMMON path. Clearing it by
+  `update.ps1` has **fourteen** exit paths that never reach the restart, two of
+  which (dirty tree, `git pull` failure) fire routinely — so a timeout-cleared
+  flag would wedge every org on the machine on the COMMON path. Clearing it by
   watching the spawned child's pid is the promising design, but it changes
   `_detached_spawn`'s contract and lands in turn admission, which is being
   rewritten concurrently.
+  Was. "six exit paths". Recounted 2026-08-27 (`ps-guards`, D-168): it was
+  already wrong before that audit — eleven on `e724c21`, against six here and
+  eleven in `supervisor.py`'s own comment, so the two records of the same
+  number had already diverged from each other. D-168's guard fixes add three
+  more (an empty script root, a missing repo anchor, a `git status` that
+  failed), taking it to fourteen. ⚠ The PROPERTY this follow-up rests on was
+  re-checked rather than assumed to survive the recount: every one of the
+  fourteen still precedes the `Stop-Process` kill, so "a failure exit means no
+  restart happened" holds, and the three new ones are all before the pull. A
+  bare count in an argument that depends on it is exactly the drift D-168 is
+  about; if it needs updating again, re-check the ordering property too rather
+  than only the number.
 · **D-142/b — the mailhub leg's bare `git pull`.** `launch_self_restart`'s
   hub leg runs `git pull` (NOT `--ff-only`) with cwd `<repo>/hub` — a plain
   subdirectory of the backend's OWN repo, not a submodule. So it mutates the

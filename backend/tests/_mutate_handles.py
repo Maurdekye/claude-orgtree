@@ -42,10 +42,17 @@ MUTANTS = [
      'if False:\n                n["external_handles"] = want_handles',
      "a node hired without a handle can be given one"),
 
+    # ⚠ the replacement closes the OUTER tuple only — one `)`, not two. The
+    # anchor spans the last element AND the tuple's own closing paren, so
+    # carrying `))` over leaves the comprehension unbalanced. It shipped that
+    # way and this mutant therefore never ran: the file did not parse, the
+    # suite produced no `ok` lines, and `baseline - passed` made that look
+    # like a kill of every check including the named one. Caught 2026-08-27 by
+    # the compile check added below, on its first real run (D-168).
     ("drop external_handles from the self-retool fence",
      LEDGER,
      '("external_handles", external_handles)) if v is not None]',
-     ')) if v is not None]',
+     ') if v is not None]',
      "a self-retool may NOT carry external_handles"),
 
     ("attach APPENDS instead of replacing",
@@ -140,7 +147,36 @@ def main():
             continue
         path.write_text(src.replace(find, repl, 1), encoding="utf-8")
         try:
+            # ⚠ A MUTANT THAT NEVER RAN IS NOT A KILL — this file's own defect
+            # class, found in the tool built to catch it (ps-guards audit
+            # 2026-08-27, peer lead relayed by the coordinator).
+            # `killed = baseline - passed`, and `passed` is scraped from the
+            # suite's `ok N ...` lines. A suite that never STARTED — the
+            # mutation broke the file, an import blew up — prints no `ok`
+            # lines at all, so `passed` is empty, so `killed` is the ENTIRE
+            # baseline, so `must_kill in killed` is trivially true. The mutant
+            # is then reported "✓ KILLED by <check>" and the harness exits 0,
+            # although not one check executed. Measured by stubbing run_suite
+            # to (False, set()): it prints the same ✓ line as an honest kill,
+            # and the two were indistinguishable.
+            # A mutant is SUPPOSED to turn the suite red, so "the suite failed"
+            # carries no information here. Positive evidence that it RAN does.
+            try:
+                compile(path.read_text(encoding="utf-8"), str(path), "exec")
+            except SyntaxError as e:
+                misses.append(f"{name}: MUTANT DOES NOT PARSE ({e}) — a file "
+                              f"that cannot be imported is not a killed check")
+                print(f"  ?? {name}\n     mutant does not parse — no verdict "
+                      f"is available: {e}")
+                continue
             ok, passed = run_suite()
+            if must_kill is not None and not passed:
+                misses.append(f"{name}: SUITE PRODUCED NO CHECK OUTPUT — it "
+                              f"did not run, so nothing can be attributed to "
+                              f"“{must_kill}”")
+                print(f"  ?? {name}\n     suite emitted no `ok` lines at all "
+                      f"— it did not run; NOT counted as a kill")
+                continue
             killed = baseline - passed
             if must_kill is None:
                 if ok:
