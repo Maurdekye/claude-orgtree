@@ -58,6 +58,23 @@ good() { printf '%s%s%s\n' "$GRN" "$*" "$OFF"; }
 ROOT=$(cd -- "$(dirname -- "$0")" && pwd)
 cd "$ROOT" || die "cannot cd to $ROOT"
 
+# ⚠ AM I ACTUALLY STANDING IN THE ORGTREE CHECKOUT? (ps-guards audit
+# 2026-08-27; mirrors update.ps1.) ROOT comes from the script's own location
+# and nothing checked it landed anywhere real. This script pulls, kills
+# whatever holds a port, rebuilds and restarts; pointed at the wrong directory
+# it does all of that to the WRONG tree, and the first complaint would arrive
+# much later phrased as a git or pip problem rather than as a root problem.
+# NAME the directory when it is wrong — the failure this guards against is a
+# message that sends the reader somewhere else.
+# Scoped to what the MODE uses: update.sh has no -EnsureUp leg, so all three
+# apply here. Kept as a list so the ps1 and sh anchor sets stay comparable.
+for _anchor in requirements.txt backend/orgtree/api.py frontend/package.json; do
+  [ -e "$ROOT/$_anchor" ] || die "REFUSING to deploy: resolved the repo root to
+    $ROOT
+and that directory has no '$_anchor', so it is not an orgtree checkout.
+Nothing was pulled, rebuilt or restarted."
+done
+
 # Windows-under-bash needs the native tools for ports and process kills
 case "${OSTYPE:-}" in
   msys*|cygwin*|win32) WINDOWS=1 ;;
@@ -153,7 +170,13 @@ echo "== orgtree update (currently $BEFORE) =="
 # their self-update restarted every org, advanced nothing, and logged no
 # reason. --ff-only refuses on some dirt and sails past the rest; an operator
 # reading the log must be able to see which.
-DIRTY=$(git status --porcelain)
+# ⚠ AN UNREADABLE TREE IS NOT A CLEAN TREE (ps-guards audit 2026-08-27, and
+# the same fault was measured in update.ps1). `git status --porcelain` returns
+# an EMPTY string two ways -- the tree is clean, or git could not read it at
+# all -- and the guard below tests only for emptiness. There is no `set -e`
+# here (only `set -u`), so a failing git left DIRTY empty, the guard did not
+# fire, nothing was printed, and the deploy walked straight past it. Refuse.
+DIRTY=$(git status --porcelain) || die "git status FAILED -- the working tree could not be read, so the dirty-tree guard cannot run and would pass on the empty result. An unreadable tree is not a clean tree. Nothing was rebuilt and nothing was restarted."
 if [ -n "$DIRTY" ]; then
   echo "-- working tree is DIRTY (the pull may refuse):"
   echo "$DIRTY"
@@ -173,8 +196,13 @@ if [ -n "$DIRTY" ]; then
   # reproduce (a hand edit npm rewrites) refuses before the restart.
   # Residual on the record: a hand edit npm reproduces verbatim passes both
   # shapes; package.json edits are caught by the main guard.
+  # captured, not piped into grep: a pipeline hands back GREP's status, so a
+  # failing git was indistinguishable from a clean lockfile and silently
+  # disabled the after-install check below (same fault as the DIRTY capture).
+  LOCK_STATUS=$(git status --porcelain -- frontend/package-lock.json) \
+    || die "git status FAILED reading frontend/package-lock.json -- refusing rather than treating an unreadable lockfile as unmodified. Nothing was rebuilt and nothing was restarted."
   LOCK_HASH_BEFORE=""
-  if git status --porcelain -- frontend/package-lock.json | grep -q .; then
+  if [ -n "$LOCK_STATUS" ]; then
     LOCK_HASH_BEFORE=$(git hash-object frontend/package-lock.json)
   fi
   if [ -n "$BUILDING" ] && [ "${ORGTREE_ALLOW_DIRTY:-}" != "1" ]; then

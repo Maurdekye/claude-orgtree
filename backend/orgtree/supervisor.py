@@ -3103,17 +3103,29 @@ def _auto_cheap_ready(n: NodeDoc | dict[str, Any],
 # possible rather than merely tested for.
 #
 # ⚠ AND WHY THE CLEAR IS UNCONDITIONAL, with no exit-code branch. Measured in
-# update.ps1 on 2026-08-21: `Stop-Process` — the point of no return — is at
-# line 278, and EVERY failure exit (54, 72, 121, 138, 155, 207, 213, 235,
-# 241, 247, 253) is before it. Only 328/334 follow. So the tautology holds:
-# this flag lives in the backend's own memory, and if the kill had landed we
-# would not be here to clear anything. Being alive to watch the child die IS
-# the proof that no restart happened to us. Line 278 also wraps the kill in
-# `catch {}` — a FAILED kill is silently swallowed (which is why the stale-pid
-# check at 326 exists), so surviving our own deploy is a real path, and one
+# update.ps1 on 2026-08-21, re-checked 2026-08-27: the point of no return is
+# its `Stop-Process -Id $p -Force` call in the "restarting the backend"
+# section, and EVERY failure exit precedes it. Only the two after the kill —
+# the stale-pid refusal and "backend did not come up" — follow. So the
+# tautology holds: this flag lives in the backend's own memory, and if the kill
+# had landed we would not be here to clear anything. Being alive to watch the
+# child die IS the proof that no restart happened to us. That same
+# `Stop-Process` is wrapped in `catch {}` — a FAILED kill is silently swallowed
+# (which is why the stale-pid check exists, the one that compares the listening
+# pids before and after), so surviving our own deploy is a real path, and one
 # that must readmit turns or every org on the machine wedges for good.
 # Never gate on the exit code: `exit 0` is emitted by at least three
-# NO-RESTART paths (54 EnsureUp no-op, 72 mutex contention, 155 OnlyIfBehind).
+# NO-RESTART paths (the -EnsureUp no-op, mutex contention, and -OnlyIfBehind).
+#
+# ⚠ CITED BY ANCHOR, NOT BY LINE NUMBER, deliberately (D-168, 2026-08-27).
+# This comment used to name specific lines in update.ps1 — `Stop-Process` at
+# 278, the stale-pid check at 326, eleven numbered exits. They had already
+# drifted (278 was 289, 326 was 335) with nobody the wiser, because a comment
+# cannot fail a test. A citation that rots silently into a lie is worse than a
+# vaguer one that stays true, so these name marker text that moves with the
+# code. Do not re-pin them to numbers; that re-arms the same trap on a timer.
+# The claim to re-verify, if update.ps1 changes, is the ORDERING — that no
+# failure exit sits after the kill — not any count. D-142/a carries the count.
 _deploy_done = threading.Event()
 _deploy_done.set()             # nothing in flight at import
 DEPLOY_HOLD_MAX = 420.0        # ceiling: a wedged deploy must not wedge us
