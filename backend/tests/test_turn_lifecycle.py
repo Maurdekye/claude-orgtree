@@ -86,6 +86,12 @@ FAIL: list[tuple[str, str]] = []
 #: measured behaviours that break an invariant for a reason outside this
 #: suite's remit — reported loudly, never silently tolerated
 EXCEPTIONS: list[tuple[str, str]] = []
+#: the live phase DID NOT RUN — a precondition blocked it. Kept apart from
+#: FAIL because it is neither a pass nor a failure of anything tested, and
+#: apart from a clean run because it must never read as one: D-168's rule is
+#: that where abstention and success are indistinguishable, abstention is
+#: wired to the failing branch. It is, below — non-zero exit, no final total.
+BLOCKED: list[str] = []
 NOTES: list[str] = []
 
 
@@ -1922,6 +1928,79 @@ BASE = f"http://127.0.0.1:{PORT}"
 PROC: subprocess.Popen[str] | None = None
 _orgs: list[str] = []
 
+
+# ------------------------------------------------------- the rig's own leash
+# ⚠ A KILLED SUITE USED TO LEAVE A BACKEND HOLDING THIS PORT FOREVER, and that
+# orphan then failed EVERY later run of this suite with ~23 "section aborted"
+# entries until somebody killed it by hand. Measured 2026-08-28: start the
+# suite, wait for :7401 to LISTEN, kill only the suite process — the rig went
+# on listening. `main()`'s `finally: stop_backend()` covers an EXIT; it cannot
+# cover a KILL, and a kill is the normal case here, because an agent that runs
+# the tier as a background task has it killed the moment its turn ends.
+#
+# So the rig's lifetime is tied to this process by the OS, exactly as
+# `supervisor.py::_leash` ties CLI children to the backend: a job object with
+# KILL_ON_JOB_CLOSE reaps every process in it the instant the last handle goes
+# away, however this process dies. One lifetime mechanism in this tree, not
+# two. See D-170.
+_JOB: int | None = None
+
+
+def _job_handle() -> int | None:
+    global _JOB
+    if os.name != "nt":
+        return None
+    if _JOB is not None:
+        return _JOB
+    import ctypes
+    k32 = ctypes.windll.kernel32
+
+    class _BASIC(ctypes.Structure):
+        _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64),
+                    ("PerJobUserTimeLimit", ctypes.c_int64),
+                    ("LimitFlags", ctypes.c_uint32),
+                    ("MinimumWorkingSetSize", ctypes.c_size_t),
+                    ("MaximumWorkingSetSize", ctypes.c_size_t),
+                    ("ActiveProcessLimit", ctypes.c_uint32),
+                    ("Affinity", ctypes.c_size_t),
+                    ("PriorityClass", ctypes.c_uint32),
+                    ("SchedulingClass", ctypes.c_uint32)]
+
+    class _IO(ctypes.Structure):
+        _fields_ = [(f, ctypes.c_uint64) for f in (
+            "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+            "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
+
+    class _EXT(ctypes.Structure):
+        _fields_ = [("BasicLimitInformation", _BASIC), ("IoInfo", _IO),
+                    ("ProcessMemoryLimit", ctypes.c_size_t),
+                    ("JobMemoryLimit", ctypes.c_size_t),
+                    ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                    ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+    h = k32.CreateJobObjectW(None, None)
+    if h:
+        info = _EXT()
+        info.BasicLimitInformation.LimitFlags = 0x2000   # KILL_ON_JOB_CLOSE
+        k32.SetInformationJobObject(h, 9, ctypes.byref(info), ctypes.sizeof(info))
+    _JOB = h or None
+    return _JOB
+
+
+def _leash(proc: "subprocess.Popen[str]") -> None:
+    """Tie the rig backend's lifetime to this suite's, so a kill cannot orphan
+    a listener on PORT. Best effort: on POSIX the child is already in our
+    process group, and `stop_backend` remains the ordinary path on both."""
+    try:
+        if os.name == "nt":
+            h = _job_handle()
+            if h:
+                import ctypes
+                ctypes.windll.kernel32.AssignProcessToJobObject(
+                    h, int(proc._handle))   # pyright: ignore[reportAttributeAccessIssue]
+    except Exception:                                            # noqa: BLE001
+        pass
+
 WRAP_JS = r"""
 'use strict'
 // wrapcli.js — three turn shapes fakecli.js has no dial for, delegating to it
@@ -2138,6 +2217,39 @@ def set_cfg(default: dict | None = None, wrap: dict | None = None,
         json.dump(cfg, f)
 
 
+class PortHeld(RuntimeError):
+    """Somebody else is on PORT. An ENVIRONMENT precondition, not a defect in
+    anything this suite tests — and it must not be reported as one."""
+
+
+def port_holder(p: int) -> str:
+    """Best-effort description of whoever is listening on `p`, for the error
+    message. Never raises: a diagnosis that fails is still better than a bare
+    'never freed', and must not replace it with a traceback of its own."""
+    try:
+        if os.name == "nt":
+            out = subprocess.run(["netstat", "-ano"], capture_output=True,
+                                 text=True, timeout=20).stdout
+            pids = {ln.split()[-1] for ln in out.splitlines()
+                    if f":{p} " in ln and "LISTENING" in ln}
+            if not pids:
+                return "no LISTENING socket found — it may be closing"
+            who = []
+            for pid in sorted(pids):
+                t = subprocess.run(
+                    ["powershell", "-NoProfile", "-Command",
+                     f"(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}')"
+                     f".CommandLine"], capture_output=True, text=True,
+                    timeout=20).stdout.strip()
+                who.append(f"pid {pid}: {t[:120] or '(command line unavailable)'}")
+            return "; ".join(who)
+        out = subprocess.run(["lsof", "-nP", f"-iTCP:{p}", "-sTCP:LISTEN"],
+                             capture_output=True, text=True, timeout=20).stdout
+        return out.strip().splitlines()[-1] if out.strip() else "unknown"
+    except Exception as e:                                       # noqa: BLE001
+        return f"(could not determine: {e})"
+
+
 def port_free(p: int, tries: int = 100) -> None:
     for _ in range(tries):
         s = socket.socket()
@@ -2148,7 +2260,29 @@ def port_free(p: int, tries: int = 100) -> None:
         except OSError:
             s.close()
             time.sleep(0.1)
-    raise RuntimeError(f"port {p} never freed")
+    # ⚠ NAME THE HOLDER. This message was already TRUE before it said who —
+    # and three readers still took it for 23 broken behaviours, because it
+    # arrived once, buried under 23 identical "section aborted" entries that
+    # it had caused. A true message can still recruit the reader into the
+    # wrong conclusion; see D-170.
+    raise PortHeld(
+        f"port {p} is held by another process — this suite tested NOTHING "
+        f"live, and nothing below is evidence about the code.\n"
+        f"    holder: {port_holder(p)}\n"
+        # ⚠ THE PORT NUMBERS BELOW CARRY NO LEADING COLON, ON PURPOSE, AND
+        # THIS COMMENT NAMES NONE OF THEM. `run_tests.py` refuses to start any
+        # suite whose SOURCE puts one of `FORBIDDEN_PORTS` straight after a
+        # colon, comma, equals or open-paren — a guard against a suite
+        # touching the operator's deployment — and it reads prose exactly as
+        # readily as code. Measured twice, 2026-08-28: writing the hazard the
+        # obvious way dropped this whole suite from the plan ("0 to run"), and
+        # so did the first version of this very comment explaining why.
+        # Warning about the port must not disable the test. See D-170.
+        f"    ⚠ the LIVE deployment also runs as `python -m orgtree.api`, so "
+        f"do NOT kill by command-line match. This rig is the one on port {p}; "
+        f"the deployment uses the operator ports 7360-7362.\n"
+        f"    usual cause: an earlier run of this suite was KILLED rather than "
+        f"exiting, orphaning its backend here.")
 
 
 #: the pre-fix queue drain, restored at runtime by monkeypatch so the suite can
@@ -2227,6 +2361,7 @@ def start_backend(max_turns: int = 16, steer_hook: str = "0",
                 + "from orgtree import api; api.main()"]
     PROC = subprocess.Popen(argv, cwd=os.path.join(_REPO, "backend"),
                             env=env, stdout=log, stderr=log, text=True)
+    _leash(PROC)          # a killed suite must not orphan it (D-170)
     for _ in range(300):
         if PROC.poll() is not None:
             raise RuntimeError(f"backend exited {PROC.returncode} at startup:\n"
@@ -4416,6 +4551,17 @@ def main() -> None:
                     continue
                 try:
                     fn()
+                except PortHeld as e:
+                    # ⚠ STOP. Every remaining section would fail for this one
+                    # reason and each would look like its own broken
+                    # behaviour: 23 identical "section aborted" entries under
+                    # a "125 passed, 24 FAILED" banner is what sent three
+                    # agents hunting product defects that did not exist
+                    # (2026-08-28). ONE abort, named for what it is, and the
+                    # live phase does not pretend to have run. See D-170.
+                    BLOCKED.append(str(e))
+                    print(f"\n  ⚠ LIVE PHASE NOT RUN — {e}\n")
+                    break
                 except Exception:                                # noqa: BLE001
                     # a section that dies OUTSIDE a check (a rig failure, a
                     # precondition that never arrived) must not take the rest
@@ -4447,6 +4593,19 @@ def main() -> None:
         for label, tb in FAIL:
             print(f"\n--- {label} ---\n{tb}")
         print(f"\n{PASS} passed, {len(FAIL)} FAILED   (rig kept: {TMP})")
+        sys.exit(1)
+    if BLOCKED:
+        # ⚠ NOT a pass, and deliberately NOT `ALL N CHECKS PASS` — the runner
+        # reads that phrase as this suite's own verdict, and printing it here
+        # would report a live phase that never ran as a clean one. Exit
+        # non-zero so the abstention lands in the failing branch (D-168), and
+        # say plainly which half did run, because the hermetic half is real
+        # and throwing it away would be its own dishonesty.
+        for m in BLOCKED:
+            print(f"\n⚠ LIVE PHASE BLOCKED — {m}")
+        print(f"\nDID NOT RUN — {PASS} hermetic checks passed, the live phase "
+              f"was blocked by a precondition and tested NOTHING. This is not "
+              f"a pass and not a product failure.   (rig kept: {TMP})")
         sys.exit(1)
     if KEEP:
         print(f"\nrig kept: {TMP}")

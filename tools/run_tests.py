@@ -643,9 +643,19 @@ def main():
             # the tail of one of these suites is usually a pinned-exception
             # epilogue, not the failure — surface the failure lines first
             live = [ln for ln in r.out.splitlines() if ln.strip()]
+            # ⚠ A PASSING CHECK'S OWN LINE IS NOT THE FAILURE — the same rule
+            # the drift alarm needed, in the other reporting path. `Error:`
+            # matches inside labels like `ok 9  limit-detect · no 'API Error:
+            # 500 …'`, so a failing turn-lifecycle showed the reader four
+            # GREEN lines and "… 119 lines in the log", with the actual cause
+            # nowhere on screen (measured 2026-08-28). That excerpt is the
+            # only thing most readers see, and it was pointing at passing
+            # checks while three agents hunted defects that did not exist.
+            # `_OK_LINE` is reused, not re-spelled — one definition of "a
+            # passing check's line" in this file. See D-170.
             hits = [ln for ln in live
                     if re.search(r"\bFAIL(?:ED)?\b|Traceback|Error:|not ok|✗|✖",
-                                 ln)][:10]
+                                 ln) and not _OK_LINE.match(ln)][:10]
             for ln in hits or live[-12:]:
                 print(f"    {ln[:160]}")
             if hits:

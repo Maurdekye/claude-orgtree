@@ -3543,6 +3543,74 @@ Load-bearing:
   answer was the opposite polarity. An instrument for this class needs its own
   negative control.
 
+### D-170 · a test rig dies with its suite, and a blocked precondition is not 23 failures
+Ruling (coordinator, 2026-08-28, on a diagnosis by `lying-instruments`): a
+suite that starts a real listener must tie that listener's lifetime to its own
+by an OS mechanism, not by a `finally` — on Windows a job object with
+`KILL_ON_JOB_CLOSE`, the same idiom `supervisor.py::_leash` already uses.
+And when such a suite cannot run because a precondition is unmet, it reports
+that ONCE, as a precondition, naming the obstruction — never as a failure of
+each thing it did not get to test. Exit non-zero and print no final total, so
+the abstention lands in the failing branch (D-168) rather than reading as a
+pass.
+
+Why: **the failure count was not the number of causes.** `test_turn_lifecycle`
+binds a fixed port. A run that is KILLED rather than exiting never reaches its
+`finally: stop_backend()`, so it orphans a backend on that port; the orphan
+then fails EVERY later run with ~23 identical "section aborted" entries under a
+"125 passed, 24 FAILED" banner. One event, a long tail: three agents lost runs
+to it on 2026-08-27 and one lost three, with no real defect anywhere in the
+tree. Measured, in this order: killing the suite left the rig listening (rig
+pid survived the suite's death); a stub occupying the port reproduced the
+failure shape exactly (90 passed, 23 FAILED); and the real failing log carried
+18 occurrences of the guard's own `port … never freed`.
+
+**The guard's message was already true.** It said the port was held, once, in
+the first of 23 tracebacks it had itself caused — and three readers still
+concluded the product was broken. Truth is not sufficient; a true statement
+buried under its own consequences reads as one detail among many. That is the
+same hazard as a reassuring test NAME (see the Resonite report behind D-168):
+the presentation recruits the reader into a conclusion the evidence does not
+support.
+
+⚠ **NEVER kill `orgtree.api` by command-line match. Discriminate by PORT.**
+The operator's live deployment runs under a command line byte-identical to the
+throwaway rig's — same interpreter, same `-m orgtree.api`. The rig is the one
+on the suite's own port; the deployment holds the operator ports in the 7360s.
+A "clean up stray backends" helper written from the obvious reading kills
+production. This is recorded as a standing hazard because it was nearly hit,
+not merely foreseen: the first sweep of this investigation listed the live
+backend as a stray, and it was ruled out only by checking parentage and ports
+before acting.
+
+Bounds: the job object is Windows-only; on POSIX the child is already in the
+suite's process group and `stop_backend` remains the ordinary path. The leash
+makes the cascade unstartable, it does not clean up an orphan from an older
+build or from a `taskkill /F` on the whole tree — which is why the legible
+precondition is the other half and not a nicety.
+
+Load-bearing:
+- **This is D-157's cause wearing a second face, and a reader who finds one
+  should be handed the other.** Work an agent starts as a harness background
+  task is killed when its turn ends. That is how these rigs came to be killed
+  rather than exiting, so the bug that hid partial test runs is also the bug
+  that manufactured these phantom failures. Long jobs are launched detached and
+  waited on with a watchdog (docs/ARCHITECTURE.md § "Running a long job
+  without losing it").
+- **Warning about a forbidden port must not disable the test.** `run_tests.py`
+  refuses any suite whose SOURCE places a forbidden port straight after a
+  colon, comma, equals or open-paren, and it reads prose exactly as readily as
+  code. Measured twice while writing this: stating the hazard the obvious way
+  dropped the whole suite from the plan ("0 to run"), and so did the first
+  comment explaining why. Write such port numbers without the leading
+  punctuation.
+- **A passing check's line is not the failure, in the failure EXCERPT either.**
+  The runner picked its excerpt with a pattern matching `Error:` inside labels
+  like `ok 9 limit-detect · no 'API Error: 500 …'`, so a failing suite showed
+  the reader four GREEN lines and "… 119 lines in the log" while the real cause
+  sat off screen. Same rule and same fix as the drift alarm (D-158): exclude
+  lines a check reported itself passing on.
+
 ---
 
 ## Deliberately not built
