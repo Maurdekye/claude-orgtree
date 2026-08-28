@@ -397,7 +397,7 @@ function SpawnChips({ onSpawn, free, seats, maxTier, side, soleHire,
   // seat cost doubles as the tier rank, so the cap is a simple cost compare
   const shown = TIERS.filter((t) =>
     !maxTier || (seats[t] ?? 0) <= (seats[maxTier] ?? Infinity))
-  const chip = (t: string, letter: string) => {
+  const chip = (t: string, letter: string | undefined) => {
     const seat = seats[t] ?? CODEX_TIER_SEAT[t] ?? 0
     const cant = Number.isFinite(free) && free < seat
     return (
@@ -440,41 +440,47 @@ function SpawnChips({ onSpawn, free, seats, maxTier, side, soleHire,
     )
   }
   // PROVIDER ROWS (user spec 2026-08-28): each provider's chips on their own
-  // row (own COLUMN on the coworker edges), and the provider ordering
-  // REFLECTED about the card's axes — the Claude group always sits NEAREST
-  // the card, on every edge, which is what makes top/bottom mirror images
-  // about x and left/right about y. In DOM terms: the far-from-card group
-  // renders FIRST exactly on the edges where "first" points away (top's
-  // stack grows upward, left's grows outward).
-  const claudeFam = <div className="hs-fam" key="claude">
-    {shown.map((t) => chip(t, TIER_LETTER[t]))}</div>
-  // kiosks hold codex out entirely (user ruling — sandboxing unsettled), and
-  // the kiosk cap is the one thing that sets maxTier, so it doubles as the
-  // kiosk test here. When the provider payload has not enabled codex hire,
-  // the family still SHOWS — disabled, subordinate strip only, the accounts
-  // panel carrying the full install/connect story — so it exists without
-  // crowding the edge-gated sets.
-  const codexFam = maxTier ? null
-    : codexHire?.enabled
-      ? <div className="hs-fam" key="codex">
-          {CODEX_TIERS.map((t) => chip(t, CODEX_TIER_LETTER[t]))}</div>
-      : !side
-        ? <div className="hs-fam" key="codex">
-            {CODEX_TIERS.map((t) => (
-              <button key={t} disabled className={'t-' + t + ' codex-preview'}
-                title={`${t} — Codex; `
-                  + (codexHire?.reason
-                    ?? 'hiring is not enabled yet')
-                  + ` (-${seats[t] ?? CODEX_TIER_SEAT[t]})`}>
-                {CODEX_TIER_LETTER[t]}
-              </button>
-            ))}</div>
-        : null
+  // row (own COLUMN on the coworker edges), the families sorted INWARD-TO-
+  // OUTWARD by how many model tiers each has available, highest count
+  // nearest the card (user refinement 2026-08-28: "sort the provider rows
+  // inward-to-outward by number of available model tiers, highest to
+  // lowest"). The same inward-first list rendered on opposite edges is what
+  // makes top/bottom mirror about x and left/right about y — in DOM terms
+  // the list is REVERSED exactly on the edges where "first" points away
+  // (top's stack grows upward, left's grows outward).
+  //
+  // kiosks hold codex out entirely (user ruling — sandboxing unsettled),
+  // and the kiosk cap is the one thing that sets maxTier, so it doubles as
+  // the kiosk test here. When the provider payload has not enabled codex
+  // hire, the family still SHOWS — disabled, subordinate strip only, the
+  // accounts panel carrying the full install/connect story — so it exists
+  // without crowding the edge-gated sets.
+  const fams: { key: string; tiers: string[]; body: ReactNode }[] = [
+    { key: 'claude', tiers: shown,
+      body: shown.map((t) => chip(t, TIER_LETTER[t])) },
+  ]
+  if (!maxTier && codexHire?.enabled)
+    fams.push({ key: 'codex', tiers: CODEX_TIERS,
+                body: CODEX_TIERS.map((t) => chip(t, CODEX_TIER_LETTER[t])) })
+  else if (!maxTier && !side)
+    fams.push({
+      key: 'codex', tiers: CODEX_TIERS,
+      body: CODEX_TIERS.map((t) => (
+        <button key={t} disabled className={'t-' + t + ' codex-preview'}
+          title={`${t} — Codex; `
+            + (codexHire?.reason ?? 'hiring is not enabled yet')
+            + ` (-${seats[t] ?? CODEX_TIER_SEAT[t]})`}>
+          {CODEX_TIER_LETTER[t]}
+        </button>
+      )),
+    })
+  fams.sort((a, b) => b.tiers.length - a.tiers.length)   // inward-first
   const away = side === 'top' || side === 'left'   // "first" points away
+  if (away) fams.reverse()
   return (
     <div className={'hsof' + (side ? ` side side-${side[0]}` : '')}
       onPointerDown={(e) => e.stopPropagation()}>
-      {away ? [codexFam, claudeFam] : [claudeFam, codexFam]}
+      {fams.map((f) => <div className="hs-fam" key={f.key}>{f.body}</div>)}
     </div>
   )
 }
