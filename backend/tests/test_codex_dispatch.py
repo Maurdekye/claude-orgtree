@@ -89,17 +89,15 @@ def eq(got, want, what):
 
 
 def mkorg(label: str) -> tuple[str, str]:
-    """One org, one node, tier flipped to sol IN THE DOC (see module doc).
-    The org's own seat table gets the codex row too — identity_prompt prices
-    the seat from the DOC's tiers copy (M4's load hook will own this)."""
+    """One org, one sol-tier node — a plain ledger hire since M4 put the
+    codex tiers in the budget-bearing tables (the connected-provider gate is
+    the API layer's, exercised in §6)."""
     org = store.create_org(f"zz codexdisp {label}")
-    r = org.hire(USER, None, "haiku", 2, "cx", add_dirs=[],
+    r = org.hire(USER, None, "sol", 2, "cx", add_dirs=[],
                  tools={"bash": True, "web": False, "edit": True,
                         "subagents": False, "mcp": []},
                  org_visibility="team", charter="a codex dispatch test agent")
     nid = r["node"]
-    org.node(nid)["model"] = "sol"
-    org.d["tiers"]["sol"] = 5
     store.save_org(org)
     return org.d["slug"], nid
 
@@ -281,6 +279,41 @@ def main() -> int:
         n = node_doc(s5, n5)
         assert "codex_thread" not in n, "no thread ever started"
     check("signed-out codex fails loudly, never silently", t7)
+
+    print("§6 the connected-provider hire gate (M4)")
+    from orgtree.api import provider_hire_gate
+    from orgtree.ledger import LedgerError
+
+    def expect_refusal(fn, needle):
+        try:
+            fn()
+        except LedgerError as e:
+            assert needle in str(e), f"error said {e!r}, wanted {needle!r}"
+            return
+        raise AssertionError(f"no refusal ({needle!r} expected)")
+
+    def t8():
+        org = store.load_org(slug)
+        provider_hire_gate(org, "sol")          # signed in: passes silently
+        provider_hire_gate(org, "fable")        # claude: never gated
+        provider_hire_gate(org, None)           # no tier: not this gate's job
+        sign_in(False)
+        try:
+            expect_refusal(lambda: provider_hire_gate(org, "luna"),
+                           "not signed in")
+            provider_hire_gate(org, "fable")    # claude still ungated
+        finally:
+            sign_in(True)
+        org.d["kiosk"] = {"pin": "x"}
+        expect_refusal(lambda: provider_hire_gate(org, "terra"), "kiosk")
+        org.d.pop("kiosk")
+        org.d["headless"] = True
+        # this rig's auth is a subscription-shaped login, not an API key
+        expect_refusal(lambda: provider_hire_gate(org, "sol"), "headless")
+        provider_hire_gate(org, "fable")
+        org.d.pop("headless")
+    check("gate: connected passes; signed-out, kiosk and headless-"
+          "subscription refuse, naming the remedy; claude ungated", t8)
 
     print()
     if FAIL:

@@ -4001,6 +4001,7 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                                               a.get("body") or "",
                                               a.get("replaces"))
             elif body.tool == "orgtree_hire":
+                provider_hire_gate(org, a.get("tier"))
                 hdirs, dwarns = supervisor.sandbox_dirs_to_host(
                     org, a.get("add_dirs"))
                 result = org.hire(body.node, a.get("parent") or body.node,
@@ -4138,6 +4139,7 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
             elif body.tool == "orgtree_reallocate":
                 result = org.reallocate(body.node, a.get("node"), _arg_int(a, "delta", 0))  # type: ignore[arg-type]  # node() 422s on None
             elif body.tool == "orgtree_switch_model":
+                provider_hire_gate(org, a.get("tier"))
                 result = org.switch_model(body.node, a.get("node", ""),
                                           a.get("tier", ""))
             elif body.tool == "orgtree_status":
@@ -5228,6 +5230,46 @@ class Op(Body):
     raise_ceiling: bool = False
 
 
+def provider_hire_gate(org: Org, tier: str | None) -> None:
+    """FR-15 M4, the vision made checkable: a tier is hireable exactly while
+    its provider's CLI is CONNECTED on this machine. Raises LedgerError (the
+    ops/agent layers both turn that into a clean 422) NAMING the provider and
+    the next step, in the order the user would take them.
+
+    One gate for all four doors (user hire, agent hire, user switch, agent
+    switch). Claude is ungated here: it predates the provider axis, and its
+    absence already fails loudly at spawn — gating the incumbent would brick
+    every existing org on a transient detection bug.
+
+    Two provider-specific rulings ride along (user, 2026-08-28):
+      · kiosks hold codex out until its sandbox story is settled;
+      · a HEADLESS org may only hire tiers from KEYED providers — a
+        subscription login is a person's plan, and headless means nobody is
+        present to answer for it.
+    """
+    if not tier or tier not in providers.CODEX_TIERS:
+        return
+    st = providers.codex_status()
+    if not st.get("installed"):
+        raise LedgerError(
+            f"tier '{tier}' is a Codex tier and the Codex CLI is not "
+            f"installed on this machine — the accounts panel's Codex section "
+            f"has the install command")
+    if not st.get("connected"):
+        raise LedgerError(
+            f"tier '{tier}' is a Codex tier and Codex is not signed in — "
+            f"run `codex login` on this machine (accounts panel → Codex)")
+    if org.d.get("kiosk"):
+        raise LedgerError(
+            "kiosk orgs cannot hire Codex tiers yet — codex is held out of "
+            "kiosks until its sandboxing is settled (user ruling 2026-08-28)")
+    if org.d.get("headless") and st.get("kind") != "api-key":
+        raise LedgerError(
+            "a headless org may only hire tiers from KEYED providers (user "
+            "ruling 2026-08-28) — Codex here is signed in with a "
+            "subscription login, not an API key")
+
+
 @app.post("/api/orgs/{slug}/ops")
 def org_op(slug: str, body: Op, request: Request) -> dict[str, Any]:
     pub = bool(_public_slug(request))
@@ -5283,6 +5325,7 @@ def _org_op_locked(slug: str, body: Op, allow_raise: bool = False) -> dict[str, 
         if body.op == "hire":
             if body.tier is None or body.name is None:
                 raise LedgerError("hire needs tier and name")
+            provider_hire_gate(org, body.tier)
             if body.above is not None \
                     and org.node(body.above)["parent"] != body.parent:
                 raise LedgerError(
@@ -5345,6 +5388,7 @@ def _org_op_locked(slug: str, body: Op, allow_raise: bool = False) -> dict[str, 
         elif body.op == "switch_model":
             if body.tier is None:
                 raise LedgerError("switch_model needs tier")
+            provider_hire_gate(org, body.tier)
             result = org.switch_model(body.actor, body.node, body.tier)  # type: ignore[arg-type]
         elif body.op == "promote":
             result = org.promote(body.actor, body.node, body.new_parent)  # type: ignore[arg-type]

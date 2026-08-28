@@ -34,13 +34,17 @@ from typing import Any, Final, Literal, cast
 from .schema import (AudienceGrant, DirGrant, MailEntry, NodeDoc, NoticeEntry,
                      OrgDoc, OrgInboxEntry, ToolGrant, UserMailEntry)
 
-# §3.1 — derived from published API pricing (output:input is 5:1 for every model, so the
-# scale is not a judgment call). Sonnet is 3, not its introductory 2 (expires 2026-08-31).
-# sonnet 3 → 2 (user ruling 2026-08-12: sonnet input pricing locked in at
-# $2/M tokens — the seat can comfortably drop). Existing orgs migrate in the
-# load hook below IF they still carry the old shipped default; a customised
-# table keeps its own number.
-TIERS: Final[dict[str, int]] = {"fable": 10, "opus": 5, "sonnet": 2, "haiku": 1}
+# §3.1 — derived from published API pricing: a seat is the API $ per M INPUT
+# tokens at the STANDING price, floored to 1 (promos never set seats — the
+# sonnet-intro precedent, re-affirmed for sol by user ruling 2026-08-28).
+# Sonnet was 3, then 2 (user ruling 2026-08-12: $2/M locked in). The codex
+# family (FR-15, same ruling): sol $5 standard (the current $4 is a promo
+# through ≥2026-11-21), terra $2, luna $0.20 → floors to 1. Existing orgs
+# migrate in the load hook below IF they still carry the old shipped default;
+# a customised table keeps its own number. Tier names are ONE flat
+# vocabulary — a tier implies its provider (providers.py owns that axis).
+TIERS: Final[dict[str, int]] = {"fable": 10, "opus": 5, "sonnet": 2, "haiku": 1,
+                                "sol": 5, "terra": 2, "luna": 1}
 
 # №34 runaway insurance, and NOTHING else (user ruling 2026-08-04): "no need to
 # have any practical limit other than to prevent infinite recursion from a bug
@@ -56,6 +60,11 @@ MODELS: Final[dict[str, str]] = {
     "opus": "claude-opus-5",
     "sonnet": "claude-sonnet-5",
     "haiku": "claude-haiku-4-5",
+    # the codex family — ids as the installed CLI's own model/list reports
+    # them (measured, codex-cli 0.150.1)
+    "sol": "gpt-5.6-sol",
+    "terra": "gpt-5.6-terra",
+    "luna": "gpt-5.6-luna",
 }
 
 # A TIER is a price band — four of them, four chips. A model VERSION is a

@@ -8,13 +8,13 @@ Claude Code CLI; the codex tiers (sol/terra/luna, GPT-5.6) come from OpenAI
 via the Codex CLI. Tier names stay ONE flat vocabulary — a tier implies its
 provider, so nothing anywhere takes a provider argument next to a tier.
 
-⚠ SCOPE, deliberately narrow: this module introduces the provider AXIS, not
-the codex adapter. ledger.TIERS / ledger.MODELS remain the budget-bearing
-tables — codex tiers are NOT in them, so every hire / switch_model /
-kiosk-ceiling path rejects them exactly as it rejects any unknown tier, with
-no new guard to maintain. `hire_enabled` below stays hard-False for codex
-until the ProviderAdapter seam lands (design doc §5 Phase 1); flipping it is
-that phase's job, not a config option. Detection here is read-only: nothing
+⚠ SCOPE: this module owns the provider AXIS — which tier belongs to whom,
+detection, pricing views. ledger.TIERS / ledger.MODELS are the budget-bearing
+tables and (since M4 hire enablement) carry the codex rows too; this module
+DERIVES its views from them so seat prices exist in exactly one place. The
+turn adapter is codexrun.py + the supervisor's dispatch leg; the
+connected-provider hire gate is api.py's. `hire_enabled` below flips only
+when the full MVP path (M1–M8) stands. Detection here is read-only: nothing
 in this module spawns a codex turn or touches credentials beyond an existence
 check of auth.json.
 
@@ -43,8 +43,8 @@ import sys
 import time
 from typing import Any, Final, TypedDict
 
-from .ledger import MODELS as _CLAUDE_MODELS
-from .ledger import TIERS as _CLAUDE_TIERS
+from .ledger import MODELS as _LEDGER_MODELS
+from .ledger import TIERS as _LEDGER_TIERS
 
 _DATA: Final[str] = os.path.expanduser(os.environ.get("ORGTREE_DATA", "~/orgtree"))
 
@@ -65,22 +65,18 @@ class TierInfo(TypedDict):
 # canvas node can wear both families until codex hire is enabled.
 _CODEX_LETTER: Final[dict[str, str]] = {"luna": "L", "terra": "T", "sol": "S"}
 
-#: seat costs RULED 2026-08-28 (user, ask card): a seat is the API $ per M
-#: input tokens at the STANDING price — the same generating rule as
-#: ledger.TIERS. sol $5 standard (the current $4 is promotional through at
-#: least 2026-11-21, and per the sonnet-intro precedent promos don't set
-#: seats); terra $2; luna $0.20 floored to 1 (credits are integers). Not
-#: read by the ledger: display-only until codex hire is enabled.
-CODEX_TIERS: Final[dict[str, int]] = {"sol": 5, "terra": 2, "luna": 1}
-
-#: model ids as the installed CLI reports them (`model/list`, measured on
-#: codex-cli 0.150.1 — design doc Appendix B). Full ids only, same rule as
-#: ledger.MODELS: aliases drift.
+#: which tier names belong to the codex provider — the AXIS, nothing more.
+#: Seats and model ids live in ledger.TIERS / ledger.MODELS (the
+#: budget-bearing tables, codex rows added at M4 hire enablement); these
+#: views derive from them so there is exactly one copy to drift. Seat rule
+#: (user ruling 2026-08-28, ask card): STANDING API $ per M input — sol $5
+#: standard (the $4 promo, through ≥2026-11-21, never sets a seat), terra
+#: $2, luna $0.20 floored to 1.
+_CODEX_TIER_NAMES: Final = ("luna", "terra", "sol")
+CODEX_TIERS: Final[dict[str, int]] = {
+    t: _LEDGER_TIERS[t] for t in _CODEX_TIER_NAMES}
 CODEX_MODELS: Final[dict[str, str]] = {
-    "sol": "gpt-5.6-sol",
-    "terra": "gpt-5.6-terra",
-    "luna": "gpt-5.6-luna",
-}
+    t: _LEDGER_MODELS[t] for t in _CODEX_TIER_NAMES}
 
 #: the context window the app-server itself reports per turn
 #: (`thread/tokenUsage/updated → modelContextWindow: 258400`, measured on the
@@ -151,12 +147,15 @@ def codex_argv(exe: str) -> list[str]:
 
 def claude_tiers() -> list[TierInfo]:
     """The Claude family, FROM the ledger's own tables — this module adds the
-    provider axis without becoming a second copy of the seat prices."""
+    provider axis without becoming a second copy of the seat prices. The
+    ledger's tables carry EVERY provider's tiers (one flat vocabulary), so
+    membership in the codex axis is what says a row is not Claude's."""
     letters = {"fable": "F", "opus": "O", "sonnet": "S", "haiku": "H"}
     return [
         {"tier": t, "provider": "claude", "seat": seat,
-         "model": _CLAUDE_MODELS.get(t, ""), "letter": letters.get(t, t[:1].upper())}
-        for t, seat in sorted(_CLAUDE_TIERS.items(), key=lambda kv: kv[1])
+         "model": _LEDGER_MODELS.get(t, ""), "letter": letters.get(t, t[:1].upper())}
+        for t, seat in sorted(_LEDGER_TIERS.items(), key=lambda kv: kv[1])
+        if t not in CODEX_TIERS
     ]
 
 

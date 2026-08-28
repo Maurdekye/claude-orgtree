@@ -82,7 +82,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
   // The seen-stamp bookkeeping stays: the inbox count badge still uses it.
   const [, setInboxSeen] = useState(
     () => localStorage.getItem('orgtree-inbox-seen-' + slug) ?? '')
-  const seats = tree.tiers ?? { haiku: 1, sonnet: 2, opus: 5, fable: 10 }
+  const seats = tree.tiers ?? { haiku: 1, sonnet: 2, opus: 5, fable: 10, luna: 1, terra: 2, sol: 5 }
   // canonical retired-stack slot (user note 2026-08-06): display-order every
   // parent's children so archived siblings sit CONTIGUOUSLY at the first
   // archived ordinal. Buried members take no layout space, so with a

@@ -64,16 +64,26 @@ def raises(fn, needle, what):
 
 def main():
     print("§1 the registry's two families")
-    check("codex tiers are DISJOINT from ledger.TIERS — the load-bearing "
-          "invariant: no budget-bearing table knows them",
-          lambda: eq(sorted(set(providers.CODEX_TIERS) & set(TIERS)), [],
-                     "overlap"))
-    check("claude_tiers mirrors ledger exactly (name, seat, model), cheap "
-          "first",
+    # FLIPPED at M4 (hire enablement): the codex tiers are now IN the
+    # budget-bearing tables — the ledger prices every provider's seats from
+    # one flat vocabulary, and providers.py DERIVES its views from it so a
+    # seat price exists in exactly one place.
+    check("codex tiers are IN ledger.TIERS with the ruled seats (M4)",
+          lambda: eq({t: TIERS.get(t) for t in providers.CODEX_TIERS},
+                     {"luna": 1, "terra": 2, "sol": 5}, "codex rows"))
+    check("…and providers' views are DERIVED, not copied",
+          lambda: eq((providers.CODEX_TIERS,
+                      providers.CODEX_MODELS),
+                     ({t: TIERS[t] for t in providers.CODEX_TIERS},
+                      {t: MODELS[t] for t in providers.CODEX_TIERS}),
+                     "derived views"))
+    check("claude_tiers mirrors ledger minus the codex rows (name, seat, "
+          "model), cheap first",
           lambda: eq([(t["tier"], t["seat"], t["model"])
                       for t in providers.claude_tiers()],
                      [(t, TIERS[t], MODELS[t])
-                      for t in sorted(TIERS, key=lambda k: TIERS[k])],
+                      for t in sorted(TIERS, key=lambda k: TIERS[k])
+                      if t not in providers.CODEX_TIERS],
                      "claude family"))
     check("codex family is luna 1 · terra 2 · sol 5, gpt-5.6 ids, cheap first",
           lambda: eq([(t["tier"], t["seat"], t["model"])
@@ -85,25 +95,27 @@ def main():
           lambda: eq([bool(t["letter"]) for t in providers.codex_tiers()],
                      [True, True, True], "letters"))
 
-    print("§2 codex tiers cannot be hired, rehired into, or switched to")
+    print("§2 codex tiers are LEDGER-hireable since M4 (the connected-"
+          "provider gate is api.py's, tested in test_codex_dispatch §6)")
     org = Org.create("prov-test")
     org.hire(USER, None, "opus", 20, "top")
     top = next(i for i, n in org.d["nodes"].items()
                if n.get("parent") is None)
-    # anti-vacuity: the org demonstrably ACCEPTS hires before we lean on its
-    # refusals — a hire path broken for everyone would also "reject" sol
     org.hire(USER, top, "haiku", 0, "canary")
-    check("(canary) a claude hire works, so the refusals below mean something",
+    check("(canary) a claude hire works",
           lambda: eq(len(org.d["nodes"]), 2, "node count"))
-    for bad in providers.CODEX_TIERS:
-        check(f"hire of {bad!r} is refused as an unknown tier",
-              lambda b=bad: raises(
-                  lambda: org.hire(USER, top, b, 0, f"x-{b}"),
-                  "unknown tier", f"hire {bad}"))
-    canary = next(i for i in org.d["nodes"] if i != top)
-    check("switch_model to 'sol' is refused the same way",
-          lambda: raises(lambda: org.switch_model(USER, canary, "sol"),
-                         "unknown tier", "switch"))
+    check("a sol hire is a plain ledger hire, seat 5",
+          lambda: eq((org.hire(USER, top, "sol", 0, "x-sol") and
+                      org.d["nodes"]["x-sol"]["model"],
+                      org.seat_cost("x-sol")), ("sol", 5), "sol hire"))
+    canary = next(i for i in org.d["nodes"] if i not in (top, "x-sol"))
+    check("switch_model to 'terra' works and re-prices the seat",
+          lambda: (org.switch_model(USER, canary, "terra"),
+                   eq((org.d["nodes"][canary]["model"],
+                       org.seat_cost(canary)), ("terra", 2), "switch"))[1])
+    check("a truly unknown tier is still refused",
+          lambda: raises(lambda: org.hire(USER, top, "gemini-ultra", 0, "x"),
+                         "unknown tier", "unknown"))
 
     print("§3 detection — hermetic, against files this suite writes")
     tmp = tempfile.mkdtemp(prefix="orgtree-codexdet-")
