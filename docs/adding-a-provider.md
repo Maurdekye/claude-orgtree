@@ -156,18 +156,29 @@ The single most delicate step. The shape that works:
 
 ## 5. Hire enablement (ledger tables + guards) — M4
 
-- Codex status: NOT YET LANDED (this section is written from the increment
-  map; correct it when the increment does land).
-- Tiers/models into `ledger.TIERS`/`ledger.MODELS` via the add-only org-doc
-  load hook (org docs carry their own seat-table copy); kiosk rank = seat.
-- API hire guard: a tier whose provider is not CONNECTED → 422 naming the
-  provider (the §0 vision made checkable).
-- Known drift guards that must be updated DELIBERATELY, not discovered:
-  `chiptips.test.tsx` (regex-scrapes ledger's TIERS literal AND the
-  frontend fallback table — both sides), `test_ledger_authority` ("exactly
-  the four price bands" → grows), `test_mcptool` (enum == ledger.TIERS,
-  auto-follows). `accounts.py` TIERS stays FIRST-PROVIDER-ONLY until that
-  provider gets account routing.
+- Codex status: LANDED (74d150c). What it took, generalized:
+- Tiers/models into `ledger.TIERS`/`ledger.MODELS` (the add-only org-doc
+  load hook migrates EXISTING orgs automatically — org docs carry their own
+  seat-table copy); kiosk ceiling rank = seat (equal seats = equal rank is
+  fine). Make the provider module DERIVE its views from the ledger tables
+  once they land — two copies of a seat price will drift.
+- One `provider_hire_gate(org, tier)` in api.py, called at ALL FOUR doors
+  (user hire, agent hire, user switch_model, agent switch_model), raising
+  LedgerError (both layers 422 it cleanly): installed → signed-in → kiosk
+  holdout → headless-needs-keyed, each refusal naming the next step. The
+  incumbent provider stays ungated — a detection bug must not brick
+  existing orgs.
+- The MCP server's cards are DEPENDENCY-FREE (hand-written enums): grow the
+  hire + switch tier enums and the seat prose by hand; its test asserts
+  enum == ledger.TIERS and then follows automatically.
+- Drift guards updated DELIBERATELY, not discovered: `chiptips.test.tsx`
+  (regex-scrapes ledger's TIERS literal AND the frontend `tree.tiers ?? {…}`
+  fallback in OrgCanvas — update both sides), `test_ledger_authority`
+  ("exactly the N price bands" grows), and the provider suite's own
+  preview-era checks FLIP (from "refused as unknown tier" to "plain ledger
+  hire") — a test asserting the gap must flip the day the gap closes.
+  `accounts.py` TIERS stays FIRST-PROVIDER-ONLY until that provider gets
+  account routing.
 
 ## 6. Frontend — M8
 
