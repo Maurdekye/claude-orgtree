@@ -182,18 +182,25 @@ The single most delicate step. The shape that works:
 
 ## 6. Frontend — M8
 
-- Codex status: partially landed (accounts-panel provider sections, desk
-  theme, preview chips); hire-surface wiring NOT YET.
-- Hire surfaces render from the `/api/providers` payload (`hire_enabled`),
-  never a hardcoded tier list. Effort vocabulary mapped per provider
-  (codex reasoning efforts are a superset of orgtree's low…max —
-  pass-through, `ultra` unused).
-- USER SPEC (2026-08-28): each provider's hire buttons on their OWN ROW
-  (own COLUMN for coworker hire chips), row ordering REFLECTED
-  symmetrically about the x-axis for superior hire and about the y-axis
-  between the two coworker sides.
+- Codex status: LANDED (ee7b32a). Hire surfaces render as PROVIDER
+  FAMILIES from the `/api/providers` payload: the canvas fetches it
+  (non-fatal, absent payload degrades to a disabled preview — never to
+  hidden chips) and threads `{enabled, reason}` to every chip set and the
+  compact hire sheet. `hire_enabled` in the payload flips to "provider
+  connected" at this point — the same predicate the api hire gate
+  enforces, so UI and gate cannot disagree.
+- USER SPEC (2026-08-28), as implemented: each provider's chips are one
+  family row (family COLUMN on the coworker edges); the incumbent family
+  always sits NEAREST the card on every edge, which makes top/bottom
+  mirror about x and left/right about y. Kiosk orgs render no held-out
+  provider at all. Watch the strip ANCHORING when a second family row
+  appears: a top strip anchored by its top grows DOWN over the card —
+  re-anchor by the bottom (desk variants too).
+- Effort vocabulary mapped per provider (codex reasoning efforts are a
+  superset of orgtree's low…max — pass-through, `ultra` unused).
 - Tier chips keep distinctive hues; the provider's desk theme is one color
-  pair (`--prov-<id>`, `.sq.prov-<id>.desk/busy`).
+  pair (`--prov-<id>`, `.sq.prov-<id>.desk/busy`). Sweep for stale vendor
+  naming while there ("ChatGPT (Codex)" survived in the hire sheet).
 
 ## 7. Transcript durability — M3
 
