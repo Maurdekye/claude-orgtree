@@ -1503,9 +1503,16 @@ button.cc-name:hover {
   bottom: -21px;
   transform: translateX(-50%) scale(var(--invzf, 1));
   transform-origin: top center;
-  display: flex; gap: 4px; opacity: 0; pointer-events: none;
+  /* provider families (FR-15 M8, user spec): each provider's chips are one
+     .hs-fam row/column and the strip STACKS the families — a column of rows
+     on the top/bottom edges, a row of columns on the sides. The Claude
+     family always sits nearest the card (DOM order set in SpawnChips), so
+     opposite edges mirror about the card's axes. */
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  opacity: 0; pointer-events: none;
   transition: opacity .15s; z-index: 3;
 }
+.hsof .hs-fam { display: flex; gap: 4px; }
 /* NEAREST-EDGE gating (user ruling 2026-08-04): never all three sets at once —
    the card tracks which edge the cursor is closest to (edge-b/l/r on .sq) and
    only that edge's chips show. Same rule with and without the desk. */
@@ -1517,8 +1524,10 @@ button.cc-name:hover {
    for the same contiguous-hover reason */
 .hsof.side {
   left: auto; right: auto; bottom: auto; top: 50%;
-  flex-direction: column;
+  /* a ROW of family columns (the l/r mirror of the bottom's column of rows) */
+  flex-direction: row; align-items: center;
 }
+.hsof.side .hs-fam { flex-direction: column; }
 /* ⚠ ANCHOR EACH COLUMN OUTSIDE THE WORLD-SCALED THING BESIDE IT (user report
    2026-08-28: "the leftward hire coworker badges overlap the budget bar,
    making it untouchable unless zoomed in far enough").
@@ -1606,11 +1615,14 @@ button.cc-name:hover {
 /* FR-25 insert-parent chips: a horizontal row riding the TOP edge — the
    bottom row's mirror, same hover gate and counter-scaling */
 .hsof.side-t {
-  left: 50%; right: auto; bottom: auto; top: -21px;
+  /* bottom-anchored 1px inside the edge so a SECOND family row grows UPWARD
+     — top-anchored (the old -21px) it would grow down over the card */
+  left: 50%; right: auto; top: auto; bottom: calc(100% - 1px);
   transform: translateX(-50%) scale(var(--invzf, 1));
   transform-origin: bottom center;
-  flex-direction: row;
+  flex-direction: column;
 }
+.hsof.side-t .hs-fam { flex-direction: row; }
 .sq.edge-t:hover > .hsof.side-t { opacity: 1; pointer-events: auto; }
 /* ⚠ DESK FILL IS A DELIBERATE EXCEPTION TO THE CLEARANCE RULE (user ruling
    2026-08-28: "when in desk view move the coworker hire buttons back to their
@@ -1637,7 +1649,9 @@ button.cc-name:hover {
    setting the opposite offset would stretch a column that is now positioned by
    one edge only, and going through the variables takes the bridges with it. */
 .sq.desk { --hsof-l-clear: 2px; --hsof-r-clear: 2px; }
-.sq.desk > .hsof.side-t { top: -24px; }
+/* bottom-anchored like the base rule now (a second family row grows upward);
+   3px further out than the 1px-inside default, the old top:-24px's spacing */
+.sq.desk > .hsof.side-t { bottom: calc(100% + 4px); }
 .sq.desk.edge-t > .hsof.side-t { opacity: 1; pointer-events: auto; }
 /* the desk and the switchboard KEEP their hire chips (user spec): no hover
    gate — but still one edge at a time, following the cursor. Pushed fully

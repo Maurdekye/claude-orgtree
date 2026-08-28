@@ -170,11 +170,22 @@ def main():
           lambda: eq([p["id"] for p in pay["providers"]],
                      ["claude", "openai"], "order"))
     codex = next(p for p in pay["providers"] if p["id"] == "openai")
-    check("codex hire_enabled is HARD False in the preview — flipping it is "
-          "the adapter phase's job, not a config option",
-          lambda: eq(codex["hire_enabled"], False, "hire_enabled"))
-    check("…and connected-but-preview still explains itself",
-          lambda: eq(bool(codex["reason"]), True, "reason"))
+    # FLIPPED at the MVP (M1–M8 standing): the vision live — a CONNECTED CLI
+    # is a hireable provider, the same predicate the api hire gate enforces.
+    check("codex hire_enabled FOLLOWS connection: connected ⇒ hireable, "
+          "no reason to show",
+          lambda: eq((codex["hire_enabled"], codex["reason"]), (True, None),
+                     "connected entry"))
+
+    def disconnected_entry():
+        os.remove(os.path.join(os.environ["CODEX_HOME"], "auth.json"))
+        providers.codex_status(force=True)
+        p2 = providers.providers_payload({"installed": True})
+        cx = next(p for p in p2["providers"] if p["id"] == "openai")
+        eq((cx["hire_enabled"], "codex login" in (cx["reason"] or "")),
+           (False, True), "disconnected entry")
+    check("…and signed-out ⇒ not hireable, reason names the login",
+          disconnected_entry)
     claude = next(p for p in pay["providers"] if p["id"] == "claude")
     check("the claude entry passes the composed status through, hireable",
           lambda: eq((claude["hire_enabled"], claude["status"]["installed"]),

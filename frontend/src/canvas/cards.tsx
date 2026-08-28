@@ -37,6 +37,7 @@ interface UserNodeProps {
    *  on the tooltip. `attentionPip` owns it now — see canvas/shared.ts. */
   pip: AttentionPip | null
   seats: Record<string, number>
+  codexHire?: { enabled: boolean; reason: string | null } | null
   kiosk: TreePayload['kiosk']
   pub: boolean
   kioskRemaining: number | null
@@ -66,7 +67,7 @@ interface UserNodeProps {
   onNodeConfig?: (id: string) => void
 }
 
-export function UserNode({ pos, isDrop, stats, pip, seats,
+export function UserNode({ pos, isDrop, stats, pip, seats, codexHire,
   kiosk, pub, kioskRemaining, kioskSegs, pxc, zoom, onInbox, onGear, onSpawn,
   onMailLink,
   focused, eyeW, onFocus, posX, onJump, map, op, slug, toast,
@@ -157,7 +158,7 @@ export function UserNode({ pos, isDrop, stats, pip, seats,
           above), so its subordinate badge stands alone and needs no role word
           to tell it apart from anything */}
       <SpawnChips onSpawn={onSpawn} free={kioskRemaining ?? Infinity} seats={seats}
-        maxTier={kiosk?.max_tier} soleHire />
+        maxTier={kiosk?.max_tier} soleHire codexHire={codexHire} />
       {focused && (
         <EyeDesk map={map} op={op} slug={slug} toast={toast}
           /* `onFocus` IS `centerOn(USER)` — the very glide an unfocused eye
@@ -384,70 +385,96 @@ interface SpawnChipsProps {
    *  general, pass this at the crowd front too — one line, and this comment
    *  is why it was not done unasked. */
   soleHire?: boolean
+  /** FR-15 M8: the codex family's hire state, from the /api/providers
+   *  payload (threaded from OrgCanvas). undefined = payload not loaded —
+   *  degrade to the disabled preview, never to hidden. */
+  codexHire?: { enabled: boolean; reason: string | null } | null
 }
 
-function SpawnChips({ onSpawn, free, seats, maxTier, side, soleHire }: SpawnChipsProps) {
+function SpawnChips({ onSpawn, free, seats, maxTier, side, soleHire,
+  codexHire }: SpawnChipsProps) {
   // kiosk tier cap (user spec): tokens above the cap DISAPPEAR entirely —
   // seat cost doubles as the tier rank, so the cap is a simple cost compare
   const shown = TIERS.filter((t) =>
     !maxTier || (seats[t] ?? 0) <= (seats[maxTier] ?? Infinity))
+  const chip = (t: string, letter: string) => {
+    const seat = seats[t] ?? CODEX_TIER_SEAT[t] ?? 0
+    const cant = Number.isFinite(free) && free < seat
+    return (
+      <button key={t} disabled={cant} className={'t-' + t}
+        title={cant
+          // user report: an exhausted kiosk cap read as an opaque dead
+          // end — the tooltip now carries the REMEDY, not just the number
+          ? `${t}: needs ${seat} free (has ${free}) — the kiosk credit `
+            + 'cap is fully held; drag an agent’s credit bar down '
+            + 'or retire one to free credits'
+          // ONE SHAPE FOR ALL THREE (user request 2026-08-28: "make them
+          // more concise; just 3-5 words at most", "for subordinate,
+          // superior, and coworker"). They were written at different times
+          // and read like it: `hire a haiku (seat 1)` named no role at all,
+          // the coworker one appended its placement, the superior one
+          // explained the whole splice in twenty words. Now they are
+          // `hire <a|an> <tier> <role>` and differ in exactly the one word
+          // that differs in meaning — the role. Lowercase imperative to
+          // match every other control tooltip on the card (`retire — …`,
+          // `dissolve — …`), four words each.
+          //
+          // The seat cost rides along as `(-N)` — the user's own shape and
+          // their own example, after they were asked whether losing it to
+          // the word ceiling was acceptable and said it was not. The MINUS
+          // is the point: it reads as what this costs you, where the older
+          // `(seat 1)` read as a label. It is a suffix, not a word, so the
+          // four-word phrase above stays exactly as it is rather than
+          // being shortened to make room.
+          // ...and where this is the only hire badge on the card, the role
+          // word is dropped entirely — see `soleHire`. The cost badge
+          // stays: it is the one part that still says something the user
+          // cannot read off the badge's position.
+          : `hire ${/^[aeiou]/.test(t) ? 'an' : 'a'} ${t}`
+            + (soleHire ? ''
+              : ` ${side === 'top' ? 'superior' : side ? 'coworker' : 'subordinate'}`)
+            + ` (-${seat})`}
+        onClick={(e) => { e.stopPropagation(); onSpawn(t) }}>
+        {letter}
+      </button>
+    )
+  }
+  // PROVIDER ROWS (user spec 2026-08-28): each provider's chips on their own
+  // row (own COLUMN on the coworker edges), and the provider ordering
+  // REFLECTED about the card's axes — the Claude group always sits NEAREST
+  // the card, on every edge, which is what makes top/bottom mirror images
+  // about x and left/right about y. In DOM terms: the far-from-card group
+  // renders FIRST exactly on the edges where "first" points away (top's
+  // stack grows upward, left's grows outward).
+  const claudeFam = <div className="hs-fam" key="claude">
+    {shown.map((t) => chip(t, TIER_LETTER[t]))}</div>
+  // kiosks hold codex out entirely (user ruling — sandboxing unsettled), and
+  // the kiosk cap is the one thing that sets maxTier, so it doubles as the
+  // kiosk test here. When the provider payload has not enabled codex hire,
+  // the family still SHOWS — disabled, subordinate strip only, the accounts
+  // panel carrying the full install/connect story — so it exists without
+  // crowding the edge-gated sets.
+  const codexFam = maxTier ? null
+    : codexHire?.enabled
+      ? <div className="hs-fam" key="codex">
+          {CODEX_TIERS.map((t) => chip(t, CODEX_TIER_LETTER[t]))}</div>
+      : !side
+        ? <div className="hs-fam" key="codex">
+            {CODEX_TIERS.map((t) => (
+              <button key={t} disabled className={'t-' + t + ' codex-preview'}
+                title={`${t} — Codex; `
+                  + (codexHire?.reason
+                    ?? 'hiring is not enabled yet')
+                  + ` (-${seats[t] ?? CODEX_TIER_SEAT[t]})`}>
+                {CODEX_TIER_LETTER[t]}
+              </button>
+            ))}</div>
+        : null
+  const away = side === 'top' || side === 'left'   // "first" points away
   return (
     <div className={'hsof' + (side ? ` side side-${side[0]}` : '')}
       onPointerDown={(e) => e.stopPropagation()}>
-      {shown.map((t) => {
-        const seat = seats[t] ?? 0
-        const cant = Number.isFinite(free) && free < seat
-        return (
-          <button key={t} disabled={cant} className={'t-' + t}
-            title={cant
-              // user report: an exhausted kiosk cap read as an opaque dead
-              // end — the tooltip now carries the REMEDY, not just the number
-              ? `${t}: needs ${seat} free (has ${free}) — the kiosk credit `
-                + 'cap is fully held; drag an agent’s credit bar down '
-                + 'or retire one to free credits'
-              // ONE SHAPE FOR ALL THREE (user request 2026-08-28: "make them
-              // more concise; just 3-5 words at most", "for subordinate,
-              // superior, and coworker"). They were written at different times
-              // and read like it: `hire a haiku (seat 1)` named no role at all,
-              // the coworker one appended its placement, the superior one
-              // explained the whole splice in twenty words. Now they are
-              // `hire <a|an> <tier> <role>` and differ in exactly the one word
-              // that differs in meaning — the role. Lowercase imperative to
-              // match every other control tooltip on the card (`retire — …`,
-              // `dissolve — …`), four words each.
-              //
-              // The seat cost rides along as `(-N)` — the user's own shape and
-              // their own example, after they were asked whether losing it to
-              // the word ceiling was acceptable and said it was not. The MINUS
-              // is the point: it reads as what this costs you, where the older
-              // `(seat 1)` read as a label. It is a suffix, not a word, so the
-              // four-word phrase above stays exactly as it is rather than
-              // being shortened to make room.
-              // ...and where this is the only hire badge on the card, the role
-              // word is dropped entirely — see `soleHire`. The cost badge
-              // stays: it is the one part that still says something the user
-              // cannot read off the badge's position.
-              : `hire ${/^[aeiou]/.test(t) ? 'an' : 'a'} ${t}`
-                + (soleHire ? ''
-                  : ` ${side === 'top' ? 'superior' : side ? 'coworker' : 'subordinate'}`)
-                + ` (-${seat})`}
-            onClick={(e) => { e.stopPropagation(); onSpawn(t) }}>
-            {TIER_LETTER[t]}
-          </button>
-        )
-      })}
-      {/* the codex family (FR-15 preview) — on the SUBORDINATE strip only:
-          the side/top sets are edge-gated geometry that three more chips
-          would crowd, and one strip is enough to say the family exists.
-          Disabled until the provider adapter lands; the accounts panel
-          carries the full install/connect story. */}
-      {!side && CODEX_TIERS.map((t) => (
-        <button key={t} disabled className={'t-' + t + ' codex-preview'}
-          title={`${t} — ChatGPT (Codex) preview; hiring is not enabled yet`
-            + ` (-${CODEX_TIER_SEAT[t]})`}>
-          {CODEX_TIER_LETTER[t]}
-        </button>
-      ))}
+      {away ? [codexFam, claudeFam] : [claudeFam, codexFam]}
     </div>
   )
 }
@@ -779,6 +806,7 @@ interface NodeSquareProps {
   dragging: boolean
   isDrop: boolean
   seats: Record<string, number>
+  codexHire?: { enabled: boolean; reason: string | null } | null
   map: Map<string, CanvasNode>
   op: OpFn
   slug: string
@@ -819,7 +847,7 @@ interface NodeSquareProps {
   dogs?: number
 }
 
-export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, map, op, slug,
+export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, codexHire, map, op, slug,
   toast, pxc, zoom, onSpawn, onSpawnSide, onSpawnTop, onConfig, onInbox, onLineage, onOpenDoc,
   onRecenter, onJump, pub, kioskRemaining, cascadeAlloc, maxTop, pile, compactAt, maxTier,
   onMailLink, onDragStart, onDragMove, onDragEnd, onDragCancel,
@@ -1083,7 +1111,7 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, m
           (Kiosk mode will pass the cap remainder here instead.) */}
       {live && !node.isBearerOf && !node.bearer_state &&
         <SpawnChips onSpawn={onSpawn} free={kioskRemaining ?? Infinity} seats={seats}
-          maxTier={maxTier} />}
+          maxTier={maxTier} codexHire={codexHire} />}
       {/* FR-03: presented documents pop out the card's side as square icon
           chips — click opens the in-page reader. Not at desk zoom (the desk
           HEADER carries titled doc badges instead — world-scaled side chips
@@ -1107,9 +1135,11 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, m
           <div className="hsof-bridge bridge-l" aria-hidden="true" />
           <div className="hsof-bridge bridge-r" aria-hidden="true" />
           <SpawnChips side="left" onSpawn={(t) => onSpawnSide(t, 'left')}
-            free={kioskRemaining ?? Infinity} seats={seats} maxTier={maxTier} />
+            free={kioskRemaining ?? Infinity} seats={seats} maxTier={maxTier}
+            codexHire={codexHire} />
           <SpawnChips side="right" onSpawn={(t) => onSpawnSide(t, 'right')}
-            free={kioskRemaining ?? Infinity} seats={seats} maxTier={maxTier} />
+            free={kioskRemaining ?? Infinity} seats={seats} maxTier={maxTier}
+            codexHire={codexHire} />
         </>
       )}
       {/* FR-25: top-edge chips SPLICE a new superior above this node — the
@@ -1118,7 +1148,8 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, m
           atomically. Same pile/bearer exclusions as the side chips. */}
       {live && !node.isBearerOf && !node.bearer_state && !pile && onSpawnTop && (
         <SpawnChips side="top" onSpawn={(t) => onSpawnTop(t)}
-          free={kioskRemaining ?? Infinity} seats={seats} maxTier={maxTier} />
+          free={kioskRemaining ?? Infinity} seats={seats} maxTier={maxTier}
+          codexHire={codexHire} />
       )}
       {/* portal to <body>: the card lives inside the world transform, where
           position:fixed would resolve against the scaled ancestor (same

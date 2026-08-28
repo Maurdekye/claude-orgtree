@@ -319,13 +319,13 @@ def providers_payload(claude_status: dict[str, Any]) -> dict[str, Any]:
             "cli": "Codex CLI",
             "tiers": codex_tiers(),
             "status": codex,
-            # hard-False until the adapter exists — see the module docstring.
+            # the vision, live (M1–M8 standing): a CONNECTED CLI is a
+            # hireable provider — same predicate the api hire gate enforces.
             # The reason is the UI's tooltip, so it speaks to the user, in
             # order of what they'd have to do next.
-            "hire_enabled": False,
+            "hire_enabled": bool(codex.get("connected")),
             "reason": (
-                "codex support is a preview — hiring lands with the provider "
-                "adapter (design §5 Phase 1)" if codex.get("connected")
+                None if codex.get("connected")
                 else "not signed in — run `codex login` on this machine"
                 if codex.get("installed")
                 else "Codex CLI not installed — npm install --prefix "

@@ -7,7 +7,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { AudienceGrant, NodeStatus, ToastFn, TreeNode, TreePayload } from '../types'
-import { audienceAction, orgInboxRead, reorderNode } from '../api'
+import { audienceAction, getProviders, orgInboxRead, reorderNode } from '../api'
 import {
   AddIcon, AutorenewIcon, ChevronLeftIcon, ChevronRightIcon, FrozenIcon,
   FullscreenIcon, PublicIcon, RemoveIcon, ViewListIcon,
@@ -83,6 +83,19 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
   const [, setInboxSeen] = useState(
     () => localStorage.getItem('orgtree-inbox-seen-' + slug) ?? '')
   const seats = tree.tiers ?? { haiku: 1, sonnet: 2, opus: 5, fable: 10, luna: 1, terra: 2, sol: 5 }
+  // FR-15 M8: hire surfaces render from the provider payload — whether the
+  // codex family is hireable HERE and NOW (CLI installed + signed in) or
+  // still a disabled preview, with the payload's own reason as the tooltip.
+  // Non-fatal like the accounts panel's fetch: absent payload degrades to
+  // the disabled preview, never to hidden chips.
+  const [codexHire, setCodexHire] =
+    useState<{ enabled: boolean; reason: string | null } | null>(null)
+  useEffect(() => {
+    getProviders().then((p) => {
+      const cx = p.providers.find((v) => v.id === 'openai')
+      if (cx) setCodexHire({ enabled: !!cx.hire_enabled, reason: cx.reason })
+    }).catch(() => {})
+  }, [slug])
   // canonical retired-stack slot (user note 2026-08-06): display-order every
   // parent's children so archived siblings sit CONTIGUOUSLY at the first
   // archived ordinal. Buried members take no layout space, so with a
@@ -1659,6 +1672,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
               ? Math.round(USER_H * (vp.width - 48) / (vp.height - 48))
               : Math.round(USER_H * 16 / 9)
             return <UserNode key={USER} pos={p} isDrop={dropId === USER} seats={seats}
+              codexHire={codexHire}
               stats={orgStats}
               kiosk={tree.kiosk} pub={!!tree.public} kioskRemaining={kioskRemaining}
               kioskSegs={tree.roots.filter((n) => n.state === 'live')
@@ -1703,7 +1717,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
             <NodeSquare key={n.id} node={n} pos={p} lod={lod} focused={n.id === focusId}
               dragging={nodeDrag.current?.id === n.id && nodeDrag.current!.moved}
               isDrop={dropId === n.id}
-              seats={seats} map={map} op={op} slug={slug} toast={toast}
+              seats={seats} codexHire={codexHire} map={map} op={op} slug={slug} toast={toast}
               pxc={pxPerCredit} zoom={view.z}
               onSpawn={(t) => spawn(n.id, t)}
               onSpawnSide={(t, side) => spawnBeside(n, t, side)}
@@ -2098,7 +2112,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
       })()}
       {hireOpen && sheetId && map.get(sheetId) && (
         <MaybePortal>
-          <HireSheet anchor={map.get(sheetId)!} seats={seats}
+          <HireSheet anchor={map.get(sheetId)!} seats={seats} codexHire={codexHire}
             defaultGrant={!map.get(sheetId)!.parent ? (tree.default_top_grant ?? 50) : 0}
             onClose={() => setHireOpen(false)}
             onHire={(tier, name, grant, placement) => {
@@ -2138,9 +2152,11 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
  *  is a full-screen form — and it carries PLACEMENT, so the F-03 side-hire
  *  and FR-25 splice semantics survive: below (report), left/right (coworker
  *  ordering), above (new superior — the anchor moves under the hire). */
-function HireSheet({ anchor, seats, defaultGrant, onHire, onClose }: {
+function HireSheet({ anchor, seats, codexHire, defaultGrant, onHire,
+  onClose }: {
   anchor: CanvasNode
   seats: Record<string, number>
+  codexHire?: { enabled: boolean; reason: string | null } | null
   defaultGrant: number
   onHire: (tier: string, name: string, grant: number,
     placement: 'below' | 'left' | 'right' | 'above') => void
@@ -2158,7 +2174,9 @@ function HireSheet({ anchor, seats, defaultGrant, onHire, onClose }: {
         <h3>hire{placement === 'below' ? ` under ${anchor.id}`
           : placement === 'above' ? ` above ${anchor.id}`
           : ` beside ${anchor.id}`}</h3>
-        <div className="field-label">model tier</div>
+        {/* each provider's tiers on their own row (user spec 2026-08-28) —
+            the compact form's version of the canvas's mirrored rows */}
+        <div className="field-label">model tier — Claude</div>
         <div className="hs-tiers">
           {TIERS.map((t) => (
             <button key={t} className={'hs-tier t-' + t + (tier === t ? ' on' : '')}
@@ -2168,15 +2186,18 @@ function HireSheet({ anchor, seats, defaultGrant, onHire, onClose }: {
             </button>
           ))}
         </div>
-        {/* codex family (FR-15 preview) — visible, not selectable: hiring
-            lands with the provider adapter. Mirrors the canvas strip. */}
-        <div className="field-label">ChatGPT (Codex) — preview</div>
+        <div className="field-label">
+          {codexHire?.enabled ? 'Codex' : 'Codex — preview'}</div>
         <div className="hs-tiers">
           {CODEX_TIERS.map((t) => (
-            <button key={t} className={'hs-tier t-' + t} disabled
-              title="hiring is not enabled yet — codex support is a preview">
+            <button key={t}
+              className={'hs-tier t-' + t + (tier === t ? ' on' : '')}
+              disabled={!codexHire?.enabled}
+              title={codexHire?.enabled ? undefined
+                : (codexHire?.reason ?? 'hiring is not enabled yet')}
+              onClick={() => setTier(t)}>
               <span className={'tier t-' + t}>{CODEX_TIER_LETTER[t]}</span>
-              {t} · seat {CODEX_TIER_SEAT[t]}
+              {t} · seat {seats[t] ?? CODEX_TIER_SEAT[t]}
             </button>
           ))}
         </div>
