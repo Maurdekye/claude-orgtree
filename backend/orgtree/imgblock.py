@@ -186,7 +186,7 @@ def load_image_block(path: str, budget_left: int) -> tuple[
             f"{human_bytes(max(0, budget_left))} image budget — open it "
             f"yourself with Read if you need it")
 
-    media, dims, problem = _probe(path)
+    media, _dims, problem = _probe(path)
     if media is None:
         return None, f"{problem} — open it with Read if you want to try"
 
@@ -198,8 +198,12 @@ def load_image_block(path: str, budget_left: int) -> tuple[
 
     block = {"type": "image",
              "source": {"type": "base64", "media_type": media, "data": data}}
-    note = problem          # None, or the animated-GIF warning
-    if dims:
-        w, h = dims
-        note = (f"{w}x{h}" + (f", {note}" if note else ""))
-    return block, note
+    # ⚠ ON SUCCESS THE NOTE IS THE PROBLEM OR NOTHING — never a description of
+    # what worked (user ruling 2026-08-28: "the agent already knows its in its
+    # context, it can see the image"). This used to prepend "{w}x{h}", which
+    # made `note` non-None for EVERY successful image and gave the caller no
+    # way to distinguish "here are its dimensions" from "there is something
+    # wrong with this image you cannot see for yourself". The dimensions were
+    # the redundant half: a model looking at an image can see how big it is.
+    # The animated-GIF warning is the load-bearing half and still rides here.
+    return block, problem

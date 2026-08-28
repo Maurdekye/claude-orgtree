@@ -2953,8 +2953,31 @@ def _mail_block(mail: list[MailEntry], slug: str = "", nid: str = "",
                 continue
             imgs.append(block)
             budget -= nb if nb > 0 else 0
-            b += (f"\n  ↳ loaded into your context as image {len(imgs)}"
-                  + (f" ({note})" if note else "") + " — look at it directly.")
+            if note:
+                # ⚠ ONLY A PROBLEM GETS A LINE HERE, never a success note
+                # (user ruling 2026-08-28, verbatim: "remove that unnecessary
+                # 'loaded into your context as xyz' note in the message; the
+                # agent already knows its in its context, it can see the
+                # image"). A successful inline is self-evident to the reader
+                # — the image is right there — and the note was redundant in
+                # the agent's context AND visible clutter in the user's own
+                # chat, where the transcript replays this block verbatim.
+                #
+                # ⚠⚠ THE SILENCE IS ONLY SAFE BECAUSE IT MEANS EXACTLY ONE
+                # THING: the image loaded and there is nothing wrong with it.
+                # Every OTHER outcome above still says so and must keep
+                # saying so — not-the-user's, mid-turn, too large, over the
+                # turn budget, undecodable, wrong format, past the count cap,
+                # and D-171's not-delivered line. Those are not decoration:
+                # they are the only thing standing between an agent and a
+                # confident plan built on an image it never saw. Deleting one
+                # of them to "be consistent with the success case" would
+                # recreate the silent-drop class D-171 exists to close.
+                #
+                # Today `note` here is only ever the animated-GIF warning: an
+                # agent that describes one frame while believing it saw the
+                # animation is wrong in a way it cannot detect.
+                b += f"\n  ↳ {note}."
         for miss in m.get("attachments_missing") or []:
             # ⭐ D-171. An attachment the sender NAMED that never became a
             # file. It has no [ATTACHED FILE] line to hang a ↳ under, because

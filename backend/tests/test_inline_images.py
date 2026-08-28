@@ -163,9 +163,15 @@ def _a_real_png_becomes_a_real_block():
     assert blk["source"]["type"] == "base64"
     assert blk["source"]["media_type"] == "image/png", blk["source"]
     assert len(blk["source"]["data"]) > 0
-    # the note carries the dimensions, which is what lets the mail line say
-    # something checkable rather than "an image"
-    assert "12x34" in (note or ""), note
+    # ⚠ ON SUCCESS THE NOTE IS None (user ruling 2026-08-28 removed the
+    # success narration). It used to carry "12x34", which made `note`
+    # truthy for every good image and left the caller unable to tell
+    # "dimensions" from "something is wrong with this image". Now a note on
+    # a successful load means exactly one thing: a PROBLEM the reader cannot
+    # see for themselves — today only the animated-GIF warning.
+    assert note is None, (
+        f"a clean image came back with a note ({note!r}) — the caller "
+        f"treats any note here as a problem worth telling the agent about")
     # ⚠ and it must be REAL base64 of the REAL file, not a placeholder
     import base64
     raw = base64.b64decode(blk["source"]["data"])
@@ -286,7 +292,15 @@ def mail(frm, atts, body="look at this"):
              "attachments": atts}]
 
 
-def _the_users_image_is_inlined_and_announced():
+def _the_users_image_is_inlined_and_says_nothing_about_it():
+    """User ruling 2026-08-28: the SUCCESS note is gone. A loaded image needs
+    no narration — the agent can see it.
+
+    ⚠ THE PROOF OF INLINING IS THE IMAGE BLOCK, NOT THE PROSE. This check used
+    to assert `"loaded into your context" in txt`, i.e. it took the note as
+    evidence that inlining had happened. Removing the note would have left it
+    asserting nothing about the actual behaviour while still looking like a
+    coverage leg. `imgs` is the real artefact and is what this asserts now."""
     o, slug = mkorg("zz img user")
     try:
         rel, nb = upload(slug, "boss", png("shot.png", (20, 10)))
@@ -295,17 +309,62 @@ def _the_users_image_is_inlined_and_announced():
             slug, "boss", inline=True)
         assert len(imgs) == 1, f"expected one image block, got {len(imgs)}"
         assert imgs[0]["type"] == "image"
-        assert "loaded into your context" in txt, txt
-        assert "20x10" in txt, txt
-        # the announce line must still be there — the image block is IN
-        # ADDITION to being told a file arrived, never instead of it
+        assert imgs[0]["source"]["data"], "the block carries no bytes"
+        # the file is still ANNOUNCED — the agent needs the path to Read it
+        # deliberately, and the user's chat renders this line as a thumbnail
         assert "[ATTACHED FILE:" in txt and rel in txt, txt
+        # …and nothing narrates the success
+        assert "loaded into your context" not in txt, (
+            f"the removed success note is back: {txt}")
+        assert "20x10" not in txt, (
+            f"dimensions are back in the note — a model looking at an image "
+            f"can see how big it is: {txt}")
+        assert "↳" not in txt, (
+            f"a clean successful inline left a continuation line behind; the "
+            f"glyph renders as a stray character in the user's own chat: "
+            f"{txt}")
     finally:
         store.delete_org(slug)
 
 
-check("user image: a real block AND a line saying so (both, not either)",
-      _the_users_image_is_inlined_and_announced)
+check("☠ user image: inlined, announced as a FILE, and NOT narrated — the "
+      "proof is the block, not the prose",
+      _the_users_image_is_inlined_and_says_nothing_about_it)
+
+
+def _the_animated_warning_still_reaches_the_agent():
+    """⭐ THE ONE SURVIVING ↳ ON THE SUCCESS PATH, and the reason the success
+    branch could not simply be deleted.
+
+    An animated GIF IS inlined, but the model sees only its first frame. An
+    agent that describes one frame believing it saw the animation is wrong in
+    a way it cannot detect — so this note is load-bearing, not narration, and
+    it must still reach the [MAIL] block now that its neighbour is gone.
+    Previously only asserted at load_image_block; the removal reshaped how
+    `note` flows to the renderer, so it is pinned at the renderer too."""
+    o, slug = mkorg("zz img anim")
+    try:
+        rel, nb = upload(slug, "boss", animated_gif())
+        txt, imgs = supervisor._mail_block(
+            mail(USER, [{"name": "anim.gif", "path": rel, "bytes": nb}]),
+            slug, "boss", inline=True)
+        assert len(imgs) == 1, "the animated GIF stopped being inlined"
+        assert "ANIMATED" in txt and "first frame" in txt, (
+            f"the first-frame-only warning did not reach the agent: {txt}")
+        # control: a STILL image through the same path says nothing at all
+        rel2, nb2 = upload(slug, "boss", png("still2.png"), "still2.png")
+        txt2, imgs2 = supervisor._mail_block(
+            mail(USER, [{"name": "still2.png", "path": rel2, "bytes": nb2}]),
+            slug, "boss", inline=True)
+        assert len(imgs2) == 1 and "↳" not in txt2, (
+            f"a still image wears a continuation line it should not: {txt2}")
+    finally:
+        store.delete_org(slug)
+
+
+check("☠ the animated first-frame warning survives the note removal; a still "
+      "image says nothing (control pair)",
+      _the_animated_warning_still_reaches_the_agent)
 
 
 def _an_oversized_user_image_is_announced_never_dropped():
@@ -376,9 +435,15 @@ def _non_image_attachments_are_untouched():
             slug, "boss", inline=True)
         assert imgs == []
         assert "[ATTACHED FILE:" in txt and rel in txt
-        assert "loaded into your context" not in txt, txt
         assert "NOT loaded" not in txt, \
             "a plain text attachment is being described as a failed image"
+        # ⚠ STRENGTHENED with the success note's removal. "loaded into your
+        # context" is absent from EVERY successful render now, so asserting
+        # its absence here stopped saying anything about a .txt specifically.
+        # The property that still distinguishes a non-image is that it draws
+        # NO continuation line at all — not a success one, not a failure one.
+        assert "↳" not in txt, \
+            f"a plain .txt attachment grew an image continuation line: {txt}"
     finally:
         store.delete_org(slug)
 

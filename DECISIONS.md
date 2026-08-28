@@ -2257,6 +2257,37 @@ delivery and is never presented again. An agent deferring on that promise would
 wait forever — the believed-it-would-arrive failure this feature exists to
 remove, reintroduced by a reassuring sentence.
 
+**Amended 2026-08-28: THE SUCCESS NOTE IS GONE; every failure note stays.**
+User ruling, verbatim: *"update image attachments to remove that unnecessary
+'loaded into your context as xyz' note in the message; the agent already knows
+its in its context, it can see the image."* A loaded image needs no narration —
+and the line was not only redundant in the agent's context, it was visible
+clutter in the USER'S chat, because the transcript replays the `[MAIL]` block
+verbatim and the `↳` renders there as a stray glyph. The dimensions went with
+it: a model looking at an image can see how big it is.
+
+**The asymmetry is the whole point and must not be "tidied" into consistency.**
+The user's reasoning — the agent can see it — holds ONLY where the image was in
+fact loaded. Every other outcome still announces itself: not-the-user's,
+mid-turn (which names the PERMANENCE), too large, over the turn budget,
+undecodable, wrong format, past the count cap, and D-171's not-delivered line.
+Silence now means exactly one thing, *this image loaded and there is nothing
+wrong with it*, and that is the only reading under which silence is safe.
+Deleting a failure note to match the success case would recreate the
+silent-drop class D-171 exists to close.
+
+One `↳` survives on the success path: the **animated-GIF first-frame warning**,
+because an agent describing one frame while believing it saw the animation is
+wrong in a way it cannot detect. `load_image_block` now returns the *problem*
+as its note, or `None` — never a description of what worked — so a note on a
+successful load means a problem, full stop.
+
+⚠ The suite leg that asserted `"loaded into your context" in txt` had been
+using the note as its PROOF that inlining happened. Removing the note would
+have left it asserting nothing while still looking like coverage; it now
+asserts the image block itself. Same trap as D-171's archived-recipient branch:
+when you delete a message, check what was quietly using it as evidence.
+
 Load-bearing: `_envelope`'s `via` already means exactly "does this text travel
 as a CLI user event or as hook context?", so it is the correct discriminator
 for whether images can ride, by construction rather than by coincidence.
