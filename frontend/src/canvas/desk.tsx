@@ -16,7 +16,7 @@ import {
   getScratch, interruptNode, retractMail, saveScope, sendMessage,
   unstickNode, uploadFile,
 } from '../api'
-import { AttachThumb, fmtBytes, isImg, parseAttachedFiles } from './img'
+import { AttachThumb, fmtBytes, ImgCardCaption, isImg, parseAttachedFiles } from './img'
 import { openLightbox } from './lightbox'
 import {
   ArrowDownIcon, ArrowUpIcon, AutorenewIcon, CloseIcon, DocIcon, DotIcon,
@@ -1441,13 +1441,8 @@ function ToolChip({ t, slug, nid, onMailLink }: ToolChipProps) {
           <img className="imgcard-img" src={href} alt={file.name}
             loading="lazy" title={`${file.name} — click to view`}
             onClick={() => openLightbox(href, { name: file.name, download: href })} />
-          <span className="fc-body">
-            <span className="fc-name">{file.name}</span>
-            <span className="dim"> · {fmtBytes(file.bytes)}</span>
-            <a className="fdl" href={href} download={file.name}
-              title="download"><DownloadIcon fontSize="inherit" /></a>
-            {file.note && <span className="fc-note">{file.note}</span>}
-          </span>
+          <ImgCardCaption name={file.name} bytes={file.bytes} href={href}
+            note={file.note} />
         </div>
       )
     }

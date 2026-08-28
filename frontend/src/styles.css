@@ -2714,7 +2714,40 @@ a.attach-chip:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--
   max-width: min(100%, 420px); max-height: 280px; border-radius: 6px;
   cursor: zoom-in; object-fit: contain; display: block; align-self: flex-start;
 }
-.imgcard .fc-body { display: flex; align-items: center; gap: 4px; min-width: 0; }
+/* THE CAPTION ROW IS ONE LINE TALL, whatever the filename's length (user
+   report 2026-08-28: `kyo_spotlight_fixed_front.png` broke mid-word onto a
+   second row and `· 190 KB` split across both, doubling the row height and
+   leaving the download icon and caption centred against the double height).
+   The cause is `.filecard .fc-name`'s `overflow-wrap: anywhere`, which is
+   right for the PLAIN file card — a column layout where a long name may use
+   several lines — and wrong here. Overridden for the image card only.
+   The name is the sole elastic item; size and download are fixed, so a
+   narrow window shortens the name and never drops a control. */
+.imgcard .fc-body {
+  display: flex; flex-direction: column; align-items: stretch;
+  gap: 2px; min-width: 0;
+}
+/* the caption row proper: name · size · download, and it CANNOT wrap.
+   `flex-wrap: wrap` on the parent was tried and measured wrong — an
+   over-wide flex item takes a line of its own before it shrinks, so a long
+   name pushed size and download onto a second row. */
+.imgcard .fc-row {
+  display: flex; align-items: center; gap: 4px; min-width: 0;
+  flex-wrap: nowrap;
+}
+.imgcard .fc-name {
+  display: flex; min-width: 0; flex: 0 1 auto;
+  white-space: nowrap; overflow: hidden; overflow-wrap: normal;
+}
+/* middle elision: the head shrinks and gets the ellipsis, the tail (the
+   extension and the suffix that usually distinguishes these names) is never
+   cut. See MidElide in canvas/img.tsx. */
+.imgcard .fcn-head { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.imgcard .fcn-tail { flex: 0 0 auto; }
+.imgcard .fc-row > .dim { white-space: nowrap; flex: 0 0 auto; }
+.imgcard .fdl { flex: 0 0 auto; }
+/* the note sits on its own line beneath the row, which the column
+   direction above gives it for free */
 .imgcard .fc-note { display: block; width: 100%; }
 /* markdown-embedded images (`![](outbox/x.png)` resolved per node): bounded
    in the bubble, clickable to view */
