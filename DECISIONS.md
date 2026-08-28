@@ -3850,6 +3850,77 @@ worktree's directory name), D-168 (an abstention is not a pass), D-157, D-170.
 
 ---
 
+### D-177 · a runner bounds the damage of the tests it runs, because the tests cannot bound themselves
+Ruling (coordinator, 2026-08-29, on a diagnosis by `memory-leak`):
+`frontend/tests/run.mjs` passes an explicit `--test-timeout` to every child it
+spawns — default 10 s, scaled by `--reps`, overridden by
+`ORGTREE_TEST_TIMEOUT_MS`. Node's own default is **no timeout at all**: a child
+spawned by `--test` carries `--test-timeout=0`, so a hung test hangs until
+something outside the runner stops it. **An unbounded timeout converts a local
+hang into a machine-wide incident**, and those are two different failures with
+two different owners — the hang belongs to whoever wrote the test, the incident
+belongs to the runner. A test cannot bound its own damage, because the code that
+would enforce the bound is the code that is stuck.
+
+Why: one hung suite took the machine down. A single `kbdhire.test.mjs` child
+reached **17.5 GB resident in 13 seconds** and 22 GB / 66 GB commit in ~40 s,
+drove the machine to **0.44 GB free**, and killed the user's editor. Six earlier
+low-memory events the same day (Windows Event 2004) were the same shape; three
+are hard-attributed to frontend runs that ended in
+`RangeError: Array buffer allocation failed`. Every one of them died on its own
+at the commit ceiling — the failure is **self-limiting but not harmless**, which
+is exactly the shape that gets tolerated for a day because nothing stays broken.
+
+The bound is measured, not guessed: the slowest legitimate test in the suite is
+**593 ms** across 246 tests, so 10 s is ~17x real headroom. It is deliberately
+**not** the 60 s the first cut of this patch carried — at 13 s to 17.5 GB, a 60 s
+bound would have permitted nearly the whole incident. **A bound loose enough to
+never fire is not a bound**; picking it requires knowing what the slowest honest
+case actually costs, which means measuring the suite before choosing the number.
+
+Bounds: **a timeout bounds TIME, not MEMORY.** At the ~1.5 GB/s that incident
+allocated, even 10 s is several GB. This makes an unbounded machine-wide event
+into a bounded, survivable one; it does not make it free, and it is not a
+substitute for a suite's own `{ timeout }` or for fixing the hang. Note also
+that `--max-old-space-size` is **not** a second line of defence here: it bounds
+V8's old space only, and an `ArrayBuffer` backing store is external to it —
+measured, 1281 MB of external allocation under a 256 MB cap with the cap never
+firing. A V8 heap flag cannot bound this failure class.
+
+Load-bearing: the known trigger is **process-global `mock.timers`
+(`useFakeClock()`) under a concurrent runner** — node's MockTimers is per
+process, so concurrent top-level tests each swapping the clock leave a
+timer-driven component running against a clock another test has reset. The
+header of `sysnotice.test.tsx` recorded this before it recurred (a case that sat
+178 s and died on the same allocation failure); it recurred anyway in a second
+file, which is why it is registered here rather than left as a file comment. The
+demonstration is a clean before/after on one fault: with concurrent top-level
+tests a failing §6 took **121,902 ms** and a trivial §7 was starved to
+**6,037 ms**; restructured to sequential subtests, the same failing §6 took
+**18 ms**. A trivial test taking six seconds is the mechanism showing itself,
+not an inference about it. The remedy in a suite is one top-level `test()` with
+`{ concurrency: 1 }`; this ruling is the backstop for the ones nobody has found.
+
+Provenance worth keeping: the diagnosis came out of two agents correcting each
+other in the direction that cost each of them the argument. `urgent-mail`'s first
+mechanism (node serialising a jsdom element into an assert diff) was refuted by
+measurement — the failure message is a **constant 75 characters** from 31 to 6001
+elements — and they conceded it; `memory-leak`'s npm-log inference and its lean
+against a test runner were both wrong, and `urgent-mail` predicted correctly that
+the trap would catch a `node tests/run.mjs …` command line. Neither would have
+got there alone. The trap itself only worked because it was proved able to fire
+against a planted subject before being trusted to report a clean sheet (D-158).
+
+Outstanding, deliberately not absorbed: the **00:24:07** exhaustion event that
+day is unattributed. It is not covered by this ruling and should not be filed
+under it merely because the pattern fits the others.
+
+Cross-refs: D-157 (a test run must be able to say it did not finish), D-158 (an
+instrument must be proved able to fail), D-168 (an abstention is not a pass),
+D-170 (a test rig dies with its suite).
+
+---
+
 ## Deliberately not built
 
 The re-litigation stopper: each was considered and rejected or dropped, with
