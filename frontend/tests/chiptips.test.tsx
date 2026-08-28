@@ -90,9 +90,17 @@ async function tips(mount: (el: React.ReactElement) => Promise<{ el: HTMLElement
     <OrgCanvas tree={tree(['ceo', 'cto'])} op={() => Promise.resolve({} as never)}
       slug="mine" toast={noop} mailEvt={null} />)
   await flush()
+  // ⚠ `.sq:not(.user)` is load-bearing. The eye's own hire badges are also
+  // `.hsof:not(.side)` — it has no side or top sets — and the eye renders
+  // FIRST, so a bare selector silently returned the OVERSEER's tooltip as if
+  // it were an agent's. That was harmless only while the two strings were
+  // identical; the moment the eye dropped its role word it started comparing
+  // the overseer against itself. The ambiguity was always there — the change
+  // merely exposed it, which is why this is scoped rather than reordered.
   const pick = (sel: string) => {
-    const b = el.querySelector(`${sel} button.t-${tier}`) as HTMLElement | null
-    assert.ok(b, `no ${tier} badge rendered for ${sel}`)
+    const b = el.querySelector(
+      `.sq:not(.user) ${sel} button.t-${tier}`) as HTMLElement | null
+    assert.ok(b, `no ${tier} badge rendered on an agent card for ${sel}`)
     const t = b!.getAttribute('title')
     assert.ok(t, `the ${sel} badge carries no tooltip at all`)
     return t!
@@ -262,4 +270,82 @@ uiTest('§5 the cost badge is the tier’s actual seat price, per tier',
     assert.ok(new Set(Object.values(seen)).size > 1,
       `every tier quoted the same cost ${JSON.stringify(seen)} — either the `
       + 'fixture stopped varying seat costs or the badge is not reading them')
+  })
+
+// ===================================================================== §6
+// THE SECOND FAMILY: the overseer's lone badge.
+//
+// User 2026-08-28: "under the overseer badge, where only the subordinate hire
+// badges appear, make the text just say 'hire a haiku (-1)', with no
+// subordinate / coworker / superior language". The role word separates three
+// badges sitting side by side; the eye carries only the bottom set, so there
+// is no choice to get wrong and the word is noise.
+//
+// So there are now two families, and the cost rule is shared rather than
+// duplicated — that is the invariant a "just drop some words" edit is most
+// likely to break, and dropping the role word is exactly such an edit.
+
+uiTest('§6 the overseer’s lone badge drops the role word and keeps the cost',
+  async ({ mount }) => {
+    const { OrgCanvas } = await import('../src/canvas/OrgCanvas')
+    const { el } = await mount(
+      <OrgCanvas tree={tree(['ceo'])} op={() => Promise.resolve({} as never)}
+        slug="mine" toast={noop} mailEvt={null} />)
+    await flush()
+    const btns = [...el.querySelectorAll('.sq.user .hsof button')] as HTMLElement[]
+    assert.ok(btns.length >= 3,
+      `expected the eye's hire badges, saw ${btns.length}`)
+
+    const seen: Record<string, number> = {}
+    for (const b of btns) {
+      const s = b.getAttribute('title') ?? ''
+      const m = /^hire an? (\w+)/.exec(s)
+      if (!m) continue
+      const tier = m[1]!
+      // the role word is gone...
+      assert.doesNotMatch(s, /\b(subordinate|coworker|superior)\b/,
+        `the overseer badge still names a role ("${s}") — under the eye there `
+        + 'is only one hire badge, so the word distinguishes nothing')
+      // ...and nothing else went with it: shape is `hire <a|an> <tier> (-N)`
+      assert.match(s, /^hire an? \w+ \(-\d+\)$/,
+        `the overseer badge is not "hire <a|an> <tier> (-N)" ("${s}")`)
+      const { phrase, cost } = parts(s)
+      assert.equal(words(phrase).length, 3,
+        `the overseer phrase is ${words(phrase).length} words ("${s}") — `
+        + 'dropping the role should leave exactly "hire a <tier>"')
+      assert.ok(cost !== null, `no cost badge on the overseer tooltip ("${s}")`)
+      seen[tier] = cost!
+    }
+
+    // SHARED COST RULE — the same one §5 applies to the three-badge family.
+    // This is the half most at risk from an edit that only meant to remove a
+    // word, so it is asserted here rather than assumed to have survived.
+    assert.ok(Object.keys(seen).length >= 3,
+      `expected a badge per tier on the eye, saw ${JSON.stringify(seen)}`)
+    for (const [tier, cost] of Object.entries(seen)) {
+      const want = SEATS[tier]
+      assert.ok(want !== undefined,
+        `the fixture declares no seat cost for "${tier}"`)
+      assert.equal(cost, -want,
+        `the overseer's ${tier} badge quotes ${cost} but a ${tier} seat costs `
+        + `${want} — the cost must survive the role word being dropped`)
+    }
+    assert.ok(new Set(Object.values(seen)).size > 1,
+      `every tier quoted the same cost ${JSON.stringify(seen)} — this section `
+      + 'is not actually reading per-tier prices')
+  })
+
+// ===================================================================== §7
+// The two families must not bleed into each other: dropping the role word on
+// the eye must not drop it anywhere else. An agent card still shows three
+// badges and still needs all three words.
+
+uiTest('§7 an ordinary agent card keeps its role words',
+  async ({ mount }) => {
+    const t = await tips(mount)          // reads off a normal agent, not the eye
+    assert.match(t.subordinate, /\bsubordinate\b/,
+      `an agent card's bottom badge lost its role word ("${t.subordinate}") — `
+      + 'only the overseer, which shows one badge, drops it')
+    assert.match(t.coworker, /\bcoworker\b/, `("${t.coworker}")`)
+    assert.match(t.superior, /\bsuperior\b/, `("${t.superior}")`)
   })
