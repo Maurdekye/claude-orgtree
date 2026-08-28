@@ -793,9 +793,26 @@ def scratch_dir(slug: str, nid: str) -> str:
     return p
 
 
+def journal_store() -> str:
+    """The provider-neutral per-agent journal root (FR-15 M3): sessions the
+    SUPERVISOR itself records — codex threads today, any future provider whose
+    CLI keeps no transcript orgtree can read. Shaped `journals/projects/<org>/
+    <session>.jsonl` deliberately: the same layout as the Claude store, so
+    every transcript reader (read_chat, reconcile's liveness verdicts, the
+    never-run pardon) learns about these sessions through the SAME two
+    functions below instead of a parallel bookkeeping path. Records are
+    written in the same shape the readers already parse."""
+    return os.path.join(store.DATA_ROOT, "journals")
+
+
 def transcript_path(session_id: str, root: str | None = None) -> str | None:
     base = root or os.path.expanduser("~/.claude")
     hits = glob.glob(os.path.join(base, "projects", "*", session_id + ".jsonl"))
+    if not hits:
+        # …then the supervisor's own journals (see journal_store): a codex
+        # thread's record is as real a transcript as the Claude CLI's file
+        hits = glob.glob(os.path.join(journal_store(), "projects", "*",
+                                      session_id + ".jsonl"))
     return hits[0] if hits else None
 
 
@@ -837,10 +854,18 @@ def transcript_index(root: str | None = None,
         if strict:
             raise
         return out
+    # the supervisor's own journal store rides the same walk (one layout, one
+    # index — see journal_store): its project dirs are appended to the SAME
+    # loop so strictness and skip rules cannot diverge between the stores
+    jproj = os.path.join(journal_store(), "projects")
+    try:
+        dirs += [os.path.join(jproj, d) for d in os.listdir(jproj)]
+    except OSError:
+        pass          # no journals yet — absence holds nothing (never strict)
     for d in dirs:
-        if d.startswith("."):
+        if os.path.basename(d).startswith("."):
             continue
-        p = os.path.join(proj, d)
+        p = d if os.path.isabs(d) else os.path.join(proj, d)
         try:
             names = os.listdir(p)
         except (FileNotFoundError, NotADirectoryError):
@@ -3572,6 +3597,30 @@ class _CodexTurnDone(Exception):
     already fixed, stranding it (see the caller's comment at `_run_turn`)."""
 
 
+def _iso_ts(t: float) -> str:
+    """A wall-clock epoch as the ISO-Z shape transcript timestamps wear."""
+    return _dtm.datetime.fromtimestamp(
+        t, tz=_dtm.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _codex_journal(slug: str, sid: str, recs: list[dict[str, Any]]) -> None:
+    """Append turn records to the per-agent journal (see journal_store).
+    Best-effort by design: journaling must never be the reason a completed
+    turn is reported failed — the mail's delivery evidence is the turn
+    result itself, not this file."""
+    if not sid:
+        return
+    try:
+        d = os.path.join(journal_store(), "projects", slug)
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, sid + ".jsonl"), "a",
+                  encoding="utf-8") as f:
+            for r in recs:
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    except OSError as e:
+        print(f"[orgtree] {slug}: codex journal write failed: {e!r}")
+
+
 def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                text: str, toks: list[str]) -> tuple[dict[str, Any], int]:
     """One codex turn behind the provider seam (FR-15 M1b).
@@ -3771,6 +3820,31 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                            f"turn/failed{' — ' + tail if tail else ''}")
     # "interrupted" is a COMPLETED turn (C.3) — same as claude's ⏸
     tu = res_raw.get("token_usage")
+    # M3, the durable half: this turn enters the per-agent journal in the
+    # exact record shape read_chat / _occ_record already parse, so the desk
+    # history, reconcile's liveness verdicts and the occupancy readers all
+    # work unchanged. SUCCESS PATHS ONLY: a failed turn's mail folds back and
+    # redelivers, and a journal row for it would duplicate the bubble.
+    last_tu: dict[str, Any] = ((tu or {}).get("last")
+                               or (tu or {}).get("total") or {})
+    _codex_journal(slug, str(turn.thread_id or ""), [
+        {"type": "user", "timestamp": _iso_ts(t0),
+         "message": {"role": "user", "content": text}},
+        {"type": "assistant", "timestamp": now_iso(),
+         "message": {
+             "id": f"codex-{turn.turn_id or 'turn'}",
+             "role": "assistant", "model": turn.model,
+             "content": ([{"type": "text",
+                           "text": str(res_raw.get("agent_text") or "")}]
+                         if res_raw.get("agent_text") else []),
+             "usage": {
+                 "input_tokens": max(
+                     int(last_tu.get("inputTokens") or 0)
+                     - int(last_tu.get("cachedInputTokens") or 0), 0),
+                 "cache_read_input_tokens":
+                     int(last_tu.get("cachedInputTokens") or 0),
+                 "output_tokens": int(last_tu.get("outputTokens") or 0)}}},
+    ])
     res: dict[str, Any] = {
         "status": status,
         "total_cost_usd": providers.codex_cost(tier, tu),

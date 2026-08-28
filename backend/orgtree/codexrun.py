@@ -321,8 +321,15 @@ class CodexTurn:
         durable thread id (the provider session id the node records)."""
         self.client.initialize()
         if self.thread_id:
-            res = self.client.request("thread/resume",
-                                      {"threadId": self.thread_id})
+            # dynamicTools + developerInstructions ride the RESUME too —
+            # measured (probe_resume_dyntools.py, 2026-08-29): the server
+            # accepts both and calls the tool in the resumed turn. Without
+            # them every turn after an agent's first had no org powers and a
+            # stale identity, which fakecodex (mirroring the wire) caught.
+            res = self.client.request("thread/resume", {
+                "threadId": self.thread_id,
+                "developerInstructions": self.developer_instructions,
+                "dynamicTools": self.dynamic_tools or None})
             resumed = _thread_id_of(res)
             if resumed:
                 self.thread_id = resumed

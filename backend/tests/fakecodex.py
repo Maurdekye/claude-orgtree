@@ -153,6 +153,10 @@ def main():
             reply(rid, {"thread": {"id": thread_id}})
         elif method == "thread/resume":
             thread_id = str(params.get("threadId") or thread_id)
+            # the real server takes dynamicTools on resume too (measured,
+            # probe_resume_dyntools.py) — mirror it, so a runner that stops
+            # passing them on resume fails the tool scenario here first
+            dyn_tools = params.get("dynamicTools") or []
             reply(rid, {"thread": {"id": thread_id}})
         elif method == "turn/start":
             turn_id = "fake-turn-0001"

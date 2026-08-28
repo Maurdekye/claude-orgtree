@@ -32,6 +32,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 DATA = tempfile.mkdtemp(prefix="orgtree-codexdisp-")
 os.environ["ORGTREE_DATA"] = DATA
+# a PORT NOBODY SERVES: the codex leg's tool dispatcher POSTs /api/agent on
+# ORGTREE_PORT, and this rig runs no backend — left unset it would default to
+# 7360 and the tool calls of a TEST would land on the operator's LIVE
+# deployment (measured: the live backend answered "no such org"). Refused
+# fast on loopback, so the tool answer becomes the unreachable text, which
+# is exactly what §1 asserts on.
+os.environ["ORGTREE_PORT"] = "9"
 with open(os.path.join(DATA, "defaults.json"), "w", encoding="utf-8") as _f:
     _f.write('{"net_hub_address": "http://127.0.0.1:9"}')
 
@@ -168,6 +175,22 @@ def main() -> int:
         eq(node_doc(slug, nid)["session_id"], "fake-thread-resumed",
            "the stored codex thread was resumed, not replaced")
     check("a harvested thread id resumes on the next turn", t2b)
+
+    def t2c():
+        # M3: the supervisor's journal IS a transcript — found by the same
+        # lookup, rendered by the same projection, occupancy by the same fold
+        p = supervisor.transcript_path("fake-thread-resumed")
+        assert p and "journals" in p.replace("\\", "/"), f"not found: {p!r}"
+        assert supervisor.transcript_index().get("fake-thread-resumed") is not None, \
+            "the one-walk index misses the journal store"
+        chat = supervisor.read_chat(store.load_org(slug), nid)
+        texts = [m.get("text", "") for m in chat["messages"]]
+        assert any("second turn" in t for t in texts), \
+            f"user bubble missing: {texts!r}"
+        assert any("tool said:" in t for t in texts), \
+            f"assistant bubble missing: {texts!r}"
+        eq(chat["occupancy"], 30, "occupancy folded from the journal")
+    check("read_chat renders the codex turn from the journal", t2c)
 
     print("§2 spawn env hygiene (M5)")
 
