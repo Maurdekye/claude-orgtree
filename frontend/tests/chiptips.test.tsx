@@ -23,6 +23,8 @@ import { flush, inAct, mountView, realClock, useFakeClock } from './harness'
 import test from 'node:test'
 import type { TestContext } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
 import type { TreePayload } from '../src/types'
 
 const noop = () => {}
@@ -42,7 +44,10 @@ function tree(nodeIds: string[]): TreePayload {
     slug: 'mine', name: 'mine', workspace: null, dirs: [], max_top_grant: 1000,
     default_top_grant: 50, compact_at: 0, default_tools: null,
     default_visibility: 'team', default_effort: '', credit_requests: [],
-    tiers: { haiku: 1, sonnet: 3, opus: 5, fable: 10 }, audiences: [],
+    // the payload's tier table IS the backend's — the server seeds it from
+    // ledger.TIERS, so a fixture inventing its own prices tests a UI wired to
+    // an org that cannot exist
+    tiers: SEATS, audiences: [],
     roots: nodeIds.map(mk), cost_usd_total: 0,
     audit: { live_nodes: nodeIds.length, top_level_holds: 0, no_overdraft: true, problems: [] },
     user_inbox_count: 0, user_inbox_newest: null, fable_lock: null,
@@ -73,11 +78,36 @@ function uiTest(name: string,
   })
 }
 
-/** the tier costs this fixture declares. Asserted against, not assumed: the
- *  cost suffix has to be the tier's REAL seat price, and a suffix that merely
- *  looks plausible (`(-1)` everywhere) is exactly the bug a hard-coded
- *  expectation would hide. */
-const SEATS: Record<string, number> = { haiku: 1, sonnet: 3, opus: 5, fable: 10 }
+/** The tier seat costs, READ OUT OF THE BACKEND that charges them.
+ *
+ *  ⚠ This was a constant copied into the test, and it was WRONG: it said
+ *  sonnet 3, the value retired by a user ruling on 2026-08-12 when sonnet
+ *  dropped to 2. Nothing caught it, because the fixture supplied that number
+ *  AND the assertion expected it — a closed loop that agrees with itself and
+ *  with nothing else. It cost a false report of `hire a sonnet (-3)`, a price
+ *  the product has never charged.
+ *
+ *  So the number now comes from `ledger.TIERS`, the table the backend seeds
+ *  into every org doc and that `seat_cost()` reads when it actually charges a
+ *  hire. If that table moves, this test moves with it or fails loudly; it can
+ *  no longer quietly agree with a stale copy of itself. */
+declare const __SRC_DIR__: string
+const LEDGER = path.join(__SRC_DIR__, '..', '..', 'backend', 'orgtree', 'ledger.py')
+
+function backendSeats(): Record<string, number> {
+  const src = readFileSync(LEDGER, 'utf8')
+  const m = /^TIERS:\s*Final\[dict\[str,\s*int\]\]\s*=\s*\{([^}]*)\}/m.exec(src)
+  assert.ok(m, `could not read TIERS out of ${LEDGER} — this test must not `
+    + 'fall back to a guess, because a guess is the bug it exists to prevent')
+  const out: Record<string, number> = {}
+  for (const [, k, v] of m![1]!.matchAll(/"(\w+)"\s*:\s*(\d+)/g)) {
+    out[k!] = Number(v)
+  }
+  assert.ok(Object.keys(out).length >= 3,
+    `parsed only ${JSON.stringify(out)} from the backend TIERS table`)
+  return out
+}
+const SEATS = backendSeats()
 
 /** the enabled tooltip for one tier, off each of the three badge sets.
  *  Costs here are affordable on this fixture, so none of these is the
@@ -340,6 +370,43 @@ uiTest('§6 the overseer’s lone badge drops the role word and keeps the cost',
 // the eye must not drop it anywhere else. An agent card still shows three
 // badges and still needs all three words.
 
+// ===================================================================== §8
+// THE SECOND COPY. Everything above proves the UI renders whatever tier table
+// it is handed. The server hands it one — but `OrgCanvas` also carries a
+// literal fallback for a payload that arrives without `tiers`:
+//
+//     const seats = tree.tiers ?? { haiku: 1, sonnet: 2, opus: 5, fable: 10 }
+//
+// That is a genuine second price table living in the frontend. It agrees with
+// the backend today. Nothing made it agree, and nothing would notice if a
+// future ruling moved a seat price the way 2026-08-12 moved sonnet from 3 to
+// 2 — the UI would quote a price the backend does not charge, on exactly the
+// path (a payload missing `tiers`) that no fixture exercises.
+//
+// Checked as SOURCE rather than through a render on purpose: the fallback is
+// unreachable whenever the server behaves, so a behavioural test would have
+// to fake a broken payload to see it, and would then be asserting about a
+// state the server does not produce. What matters is that the two literals
+// agree, and that is a property of the text.
+
+test('§8 the frontend’s fallback tier table matches the backend’s', () => {
+  const src = readFileSync(
+    path.join(__SRC_DIR__, 'canvas', 'OrgCanvas.tsx'), 'utf8')
+  const m = /tree\.tiers\s*\?\?\s*\{([^}]*)\}/.exec(src)
+  assert.ok(m, 'OrgCanvas no longer has a `tree.tiers ?? {…}` fallback — if it '
+    + 'was removed, delete this check with it; if it moved, update the pattern')
+  const fallback: Record<string, number> = {}
+  for (const [, k, v] of m![1]!.matchAll(/(\w+)\s*:\s*(\d+)/g)) fallback[k!] = Number(v)
+
+  assert.deepEqual(fallback, SEATS,
+    'the tier prices hard-coded in OrgCanvas.tsx disagree with ledger.TIERS.\n'
+    + `  frontend fallback: ${JSON.stringify(fallback)}\n`
+    + `  backend charges:   ${JSON.stringify(SEATS)}\n`
+    + 'A payload without `tiers` would make the UI quote a price the backend '
+    + 'does not charge. Update the fallback, or drop it and let the tooltip '
+    + 'render nothing rather than a number nobody honours.')
+})
+
 uiTest('§7 an ordinary agent card keeps its role words',
   async ({ mount }) => {
     const t = await tips(mount)          // reads off a normal agent, not the eye
@@ -349,3 +416,4 @@ uiTest('§7 an ordinary agent card keeps its role words',
     assert.match(t.coworker, /\bcoworker\b/, `("${t.coworker}")`)
     assert.match(t.superior, /\bsuperior\b/, `("${t.superior}")`)
   })
+
