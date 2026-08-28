@@ -5045,13 +5045,41 @@ fix, and this entry is not a licence to reintroduce a clamp.
 **THE RULE.** A screen-constant decoration anchored near the card edge grows
 over a shrinking neighbour until it buries it. So anchor it by the edge that
 must stay clear — pin its near edge ON the neighbour's far edge, and let the
-counter-scale grow AWAY. `.hsof.side-l` uses `right: calc(100% + 22px)` (the
-bar's left edge); `.hsof.side-r` uses `left: calc(100% + 24px)` (past the doc
-chips). Clearance then holds at every zoom **by construction** — nothing
-depends on what `--invzf` happens to be, so it cannot be tuned into or out of
-correctness. Express desk-zoom overrides the same way (`right`/`left`, not the
-opposite offset), or you stretch a column positioned by one edge only and
-silently undo the clearance.
+counter-scale grow AWAY. `.hsof.side-l` uses `right: calc(100% +
+var(--hsof-l-clear))`; `.hsof.side-r` uses `left: calc(100% +
+var(--hsof-r-clear))`. Clearance then holds at every zoom **by construction** —
+nothing depends on what `--invzf` happens to be, so it cannot be tuned into or
+out of correctness. Express desk-zoom overrides through the same variables, not
+as `left`/`right` on the column, or you stretch a column positioned by one edge
+only and silently undo the clearance.
+
+**⚠ THE CLEARANCE IS THE NEIGHBOUR'S EXTENT, SO IT IS ONLY THERE WHEN THE
+NEIGHBOUR IS** (amended 2026-08-28 after the second report; the first cut of
+this entry got it wrong and said 22px and 24px flat). `.cbar` is drawn for every
+live card, so the left figure of 22px — the bar's own 8px offset plus its 14px
+width — is unconditional and correct. `.doc-chips` is drawn only for a node that
+has presented documents, so the right figure is **24px beside doc chips and 8px
+beside a bare card**, keyed on `.sq:has(> .doc-chips)`. Keyed on the chips
+themselves rather than on a React class computed from the same condition: a
+class can drift out of step with what actually renders, `:has` cannot. A card
+with no documents therefore shows the same 8px of open canvas on both sides,
+which is the property to preserve — not any particular number.
+
+**⚠ A WORLD-PX CLEARANCE MULTIPLIES BY THE ZOOM, AND THAT IS UNUSABLE UP
+CLOSE.** Stating the clearance in world px is what makes it hold at a distance;
+it also makes 22px into 264 screen px at z=12, which threw the hire columns most
+of a screen-width off a desk-filling card. User ruling 2026-08-28: "when in desk
+view move the coworker hire buttons back to their old positions right next to
+the card, so they're still on screen there." `.sq.desk` therefore sets both
+clearances to `2px` — exactly where the columns sat before this entry existed.
+The cost, measured rather than assumed: the left column crosses the OUTER third
+of the credit bar from z=2.1 to z≈3.3 (9.4px of a 29.4px bar at `Z_DESK`, none
+of it at z ≥ 4, where the bar has grown out from under a screen-constant
+column). The bar's centre is never covered and the click still lands on it at
+every desk zoom. This exception cannot leak back into the distance complaint:
+`focusId` is `null` below `Z_DESK`, so the desk rules only ever apply from 2.1
+up. **The general rule is unchanged — the desk is a bounded exception with a
+measured price, not a repeal.**
 
 Reported as: "the leftward hire coworker badges overlap the budget bar, making
 it untouchable unless zoomed in far enough to reduce their relative size"
@@ -5075,7 +5103,17 @@ becomes the new unreachable thing. The bridges are hit area only, children of
 the card, sitting UNDER the bar and doc chips (`z-index: 1` vs `2`) so they
 extend the hover region without taking anyone's clicks. Delete them and the bar
 stays clickable while the badges stop being reachable. Measured worst dead run
-with them: 0.0px at every zoom.
+with them: 0.0px at every zoom, on both sides, with and without doc chips.
+
+**Each bridge is sized from the same variable as the column it serves**
+(`width: var(--hsof-l-clear)` / `var(--hsof-r-clear)`). The right-hand gap is no
+longer one number, so a bridge written as its own constant can only ever be
+right for one of the two states; sharing the variable makes "the bridge covers
+exactly the gap" true by construction rather than by two edits staying in step.
+Desk fill is the one place this does not matter — `.sq.desk.edge-l/-r` drop the
+`:hover` from the gate entirely (user spec: the desk KEEPS its hire chips), so
+there is no hover to interrupt. Everywhere else the gate is `.sq…:hover` and the
+bridge is the only reason the columns are reachable at all.
 
 **Checked and left:** `.cbar-tip` also counter-scales into the left strip, but
 it is `pointer-events: none`, so it can never take a click. Recorded so the
@@ -5086,9 +5124,19 @@ rect as 0×0, so an overlap assertion there passes for the same reason it would
 on a blank page, and multiplying constants by an assumed scale is arithmetic
 wearing a measurement's clothes. `frontend/tests/chipbar_probe.py` renders the
 real markup against the real stylesheet in headless Edge, places a REAL cursor
-on the bar and asks `elementFromPoint` what receives the click, and walks the
-transit out to the chips. `--expect-fail` restores the pre-fix rules and must
-go red (18 findings); a green run means nothing without that control.
+on the bar and asks `elementFromPoint` what receives the click, walks the
+transit out to BOTH columns, and measures the open canvas on each side. It
+sweeps three cards — with documents, without, and at desk fill — because the
+right-hand strip has two states and the numbers differ in all three.
+
+**Two controls, because there are two claims.** `--expect-fail` restores the
+pre-fix rules and must go red (29 findings): that is the reachability claim.
+`--expect-fail-const` restores the unconditional 24px right clearance and must
+also go red (11 findings, all on the symmetry check): that is the second
+report's claim. A green run means nothing without both. The measurement to
+quote: with nothing on the right to clear, the open canvas beside the card reads
+7.00px on the left and 7.00px on the right at z=1, difference 0.00px, at every
+zoom in the sweep.
 
 **Two ways that probe lied, both reporting a working fix as broken.** Recorded
 because this repo has twice been bitten by instruments that lied in the
@@ -5103,3 +5151,14 @@ one that stays silent.
   the card is hovered, so approaching from outside they are not hit-testable at
   all and never can be. Direction is load-bearing: walk OUTWARD from inside the
   card, the only path a user can actually take.
+
+**Two things the second round changed in the instrument itself.** The viewport
+went from 1600×900 to 2400×1600: at desk fill a 124px card is 1488px square, so
+the old window put the bar, the column centres and the entire right-hand strip
+off-screen and the probe scored the whole of z=12 as "not measured" — at exactly
+the zoom where a 2px world error costs 24 screen px. And the fixture now runs a
+JS port of `NodeSquare`'s `trackEdge` instead of presetting `edge-l`, because
+the transit's whole question is whether a column STAYS live as the cursor leaves
+the card, and a preset class answers that by assumption. Both the port and the
+`.doc-chips` render condition are pinned to `cards.tsx` by the fixture-freshness
+guard, so the probe cannot quietly drift into measuring a card that never ships.
