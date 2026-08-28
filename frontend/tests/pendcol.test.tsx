@@ -31,14 +31,30 @@
 // there is a leg for each — and §3/§4 are the ones that fail if the blocks are
 // rendered unconditionally.
 //
-// ⚠ NEVER assert.equal() TWO DOM NODES HERE — assert.ok(a === b) instead.
-// When such a leg FAILS, node's assert formats a diff of both jsdom Elements,
-// whose parent chains reach the whole document; that allocation hangs the
-// runner for ~90 s and then kills it with "Array buffer allocation failed",
-// which the mutation harness can only report as BROKEN. It cost a real
-// mutation result here (M7) before it was tracked down, and it cost
-// sysnotice.test.tsx a 90-second false hang before that. A boolean formats in
-// constant space.
+// ⚠ CORRECTION, 2026-08-28. This header used to say that `assert.equal()` on
+// two jsdom Elements hangs the runner because node "formats a diff across the
+// whole document". THAT IS WRONG and the correction is left here rather than
+// deleted, because the wrong version was convincing and someone will think of
+// it again. `memory-leak` measured it: the failure message is a CONSTANT 75
+// characters from 31 elements to 6001, sub-millisecond, because a jsdom
+// element has no own enumerable properties to serialise. See
+// deepdom.test.tsx, which pins that behaviour.
+//
+// The ~90 s hang and the "Array buffer allocation failed" were real — M7 in
+// pendcol_mutate.py hit one — but the assert did not cause them. The better
+// candidate, documented in sysnotice.test.tsx's own header, is the fake
+// clock: node:test runs top-level tests concurrently, `useFakeClock()` swaps
+// a PROCESS-GLOBAL timer implementation, and a polling hook then spins
+// against a clock another test already reset. THIS FILE IS THAT SHAPE — its
+// `domTest` calls useFakeClock() and mounts DeskChat, which polls. Suspect
+// the clock before the assertion.
+//
+// The style rule below survives the correction on its own merits, for a
+// different reason than the one first given:
+// ⚠ COMPARE DOM NODES WITH assert.ok(a === b), NEVER deep equality.
+// `assert.deepEqual(<p>one</p>, <p>two</p>)` PASSES — two same-tag elements
+// are indistinguishable to a deep compare, so such a leg can never fail and a
+// mutation harness would certify it as "caught" while nothing was checked.
 //
 // Run:  cd frontend && node tests/run.mjs pendcol
 
