@@ -5316,7 +5316,7 @@ def _turn_abandoned(slug: str, nid: str, door: str, err: str) -> bool:
                 # report its own death. `parent is None` and "the parent is
                 # archived" both land here and both mean the same thing:
                 # there is no agent left to tell.
-                org.d.setdefault("user_inbox", []).append({
+                org.to_user_inbox({
                     "id": uuid_hex8(), "from": SYSTEM, "kind": "notice",
                     "at": now_iso(),
                     "body": (f"{name} ({nid}) stopped: its turn failed in a "
@@ -5494,7 +5494,7 @@ def _retry_exhausted(slug: str, nid: str, run: int, err: str,
                 # It is closed anyway because leaving ONE of two announce
                 # paths with a known hole is worse than either state: the
                 # next reader finds the fixed one and assumes this matches.
-                org.d.setdefault("user_inbox", []).append({
+                org.to_user_inbox({
                     "id": uuid_hex8(), "from": SYSTEM, "kind": "notice",
                     "at": now_iso(),
                     "body": (f"{name} ({nid}) is stuck: {run} turns in a row "
@@ -8970,7 +8970,7 @@ def start_cred_watcher() -> None:
                                         except ValueError:
                                             pass
                                     org.d["cred_warned_at"] = now_iso()
-                                    org.d.setdefault("user_inbox", []).append({
+                                    org.to_user_inbox({
                                         "id": uuid_hex8(), "from": "@system",
                                         "kind": "notice", "at": now_iso(),
                                         "body": (

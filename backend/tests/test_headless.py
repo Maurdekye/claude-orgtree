@@ -661,7 +661,7 @@ def sec_cred_watcher() -> None:
         """⚠ the user inbox carries other system notices (a kiosk is BORN with
         a permission-ceiling one), so every assertion here matches the
         credential warning itself rather than the inbox being empty."""
-        return [e for e in (store.load_org(slug).d.get("user_inbox") or [])
+        return [e for e in store.load_org(slug).user_mailbox()
                 if "log in" in str(e.get("body", "")).lower()
                 or "credential" in str(e.get("body", "")).lower()
                 or "api key" in str(e.get("body", "")).lower()]

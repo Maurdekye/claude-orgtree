@@ -196,7 +196,7 @@ def migrate_to_disk(org: Org) -> None:
             # review 2026-08-01: flooring RAISES a cap the operator
             # deliberately set — that change belongs in their inbox, not
             # only the backend log
-            o2.d.setdefault("user_inbox", []).append({
+            o2.to_user_inbox({
                 "id": uuid.uuid4().hex[:12], "from": SYSTEM, "kind": "notice",
                 "at": now(),
                 "body": f"Storage migration: this org's {floored_from} MB "
