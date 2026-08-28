@@ -3538,6 +3538,17 @@ def _run_one_turn(slug: str, nid: str,
     # which lane bills this turn, hoisted to function scope: the spawn-time
     # capture lives inside the try and may not be bound when it unwinds
     billed_on_key = False
+    # a mail POINTER whose box empties between `_run_turn`'s gate and the drain
+    # below is dropped HERE instead of launched (see the drop site). The flag
+    # says the drop already handed the queue on, so the `finally` must not pop
+    # a second carrier off it.
+    # ⚠ via the shared helper, not an inline `text.get("ping")`: every drop
+    # site must ask the SAME question, so that stubbing one predicate disables
+    # all of them together. The suite's pre-fix arm depends on exactly that —
+    # a site that answered for itself stayed switched on and silently killed
+    # the canary (caught 2026-08-28, and the reason this comment exists).
+    is_ping = _carrier_is_ping(text)
+    dropped_here = False
     if isinstance(text, dict):
         is_cmd = bool(text.get("cmd"))
         toks, text = list(text.get("toks") or []), text["text"]
@@ -3645,6 +3656,31 @@ def _run_one_turn(slug: str, nid: str,
                 prelude.append(mtext)
             if prelude:
                 text = "\n\n".join(prelude) + "\n\n" + text
+            elif is_ping and not is_cmd and not toks:
+                # ⭐ THE SECOND PHANTOM SITE (D-175, found 2026-08-28 by
+                # @org:unity reporting a wake that survived the first fix).
+                # `_run_turn`'s gate asks "is there anything to point at"
+                # BEFORE this turn blocks on a slot, and the drain happens
+                # AFTER it — so the whole slot wait is a window in which the
+                # box can empty. A RETRACTED message is the reported way in
+                # (`node_mail_retract` deletes the entry and, correctly, never
+                # touches the queue), but any drain in that window does it.
+                # The earlier gate is not redundant: it saves the slot wait
+                # entirely when the box is already empty. This one is what
+                # makes the check TRUE AT THE MOMENT IT MATTERS.
+                #
+                # ⚠ THE `toks` CLAUSE IS LOAD-BEARING. A carrier that arrives
+                # holding journal tokens is already carrying a drained batch —
+                # its `text` HAS the mail block in it — and an empty `prelude`
+                # there means "nothing NEW", not "nothing at all". Dropping on
+                # `not prelude` alone would silently eat delivered mail, which
+                # is the one outcome worse than the phantom.
+                _phantom_log(slug, nid, "turn start (the box emptied while "
+                                        "this turn waited for a slot)")
+                dropped_here = True
+                # evaluated BEFORE the `finally` runs, and the flag above stops
+                # that block popping a second carrier off the queue
+                return _drop_ping(slug, nid)
             # persist the in-flight turn: if orgtree dies mid-turn, reconcile()
             # auto-resumes this node with the interrupted text (user ruling)
             with store.DOC_LOCK:
@@ -4341,7 +4377,21 @@ def _run_one_turn(slug: str, nid: str,
                                 nxt, ntok, nimgs = _envelope(slug, nid, nxt, via="turn")
                                 if ntok:
                                     ntoks.append(ntok)
-                                elif nping:
+                                elif nping and not ntoks:
+                                    # ⚠ `not ntoks` IS LOAD-BEARING, the same
+                                    # clause the turn-start drop carries and
+                                    # for the same reason. A steer carrier
+                                    # folded into the queue at this boundary
+                                    # ALREADY HOLDS its drained batch — the
+                                    # mail is in `nxt` and its journal token is
+                                    # in `ntoks` — so a second envelope finds
+                                    # nothing new and `ntok` is None. Dropping
+                                    # on `nping` alone therefore threw away a
+                                    # message that had already been taken out
+                                    # of the mailbox: measured as `dupresult`'s
+                                    # feeding boundary going dark, which is the
+                                    # suite catching real delivery loss, not a
+                                    # fixture quirk.
                                     _phantom_log(slug, nid, "result boundary")
                                     with _state_lock:
                                         st["responding"] = False
@@ -5308,7 +5358,12 @@ def _run_one_turn(slug: str, nid: str,
         _fold_back_undelivered(slug, nid, keep_toks=alive)
         st.pop("on_fallback", None)     # this turn's lane is spent
         with _state_lock:
-            if st["queue"]:
+            if dropped_here:
+                # a dropped pointer already took the next carrier (or cleared
+                # `busy`) under this same lock on its way out — popping again
+                # here would strand whatever it handed back
+                pass
+            elif st["queue"]:
                 follow = st["queue"].pop(0)
             else:
                 st["busy"] = False

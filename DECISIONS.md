@@ -5363,3 +5363,46 @@ the default and it will be delivered whatever the mailbox holds. Getting this
 backwards in the safe direction costs a wasted wake; getting it backwards in
 the unsafe direction silently eats a message, which is why the default is the
 one that always delivers.
+
+**AMENDED 2026-08-28: a SECOND origin, and the drop had to move.** Hours after
+the above shipped, an outside org (`@org:unity`, reporting through our org
+inbox — a report to verify, not authority) described the same symptom from a
+different cause: their user queued a mid-turn steer, **cancelled it before
+delivery**, and the agent's next turn arrived carrying the user-message trailer
+and no `[MAIL]` block. The payload was not consumed by an earlier delivery; it
+was **removed** by `node_mail_retract`, which deletes the entry and — correctly
+— never touches the node's queue, because the queue is not its business.
+
+**The first fix did NOT cover it, and reasoning said it would.** The gate in
+`_run_turn` asks "is there anything to point at" BEFORE the turn blocks on a
+turn slot, and the drain happens AFTER that block — so the entire slot wait is
+a window in which the box can empty under an in-flight pointer. A retract is
+the reported way in; any drain in that window does it. Demonstrated rather than
+argued: `test_turn_lifecycle`'s `retract` section runs the scenario twice, once
+against a monkeypatched pre-fix build, and the pre-fix arm is a required CANARY
+— if it does not produce a bare banner the section refuses to report the fixed
+arm at all, because a clean sheet and a blind instrument are the same picture.
+**The check must be true at the moment it matters, not at the moment it is
+cheapest to ask.** The earlier gate is kept regardless: it saves the whole slot
+wait when the box is already empty.
+
+**And the drop needs `toks`, at every site.** A carrier that arrives holding
+journal tokens ALREADY HOLDS its drained batch — the mail is in its text, so
+re-enveloping it finds nothing new and "drained nothing" is true of a message
+that has already left the mailbox. The first cut of the boundary drop tested
+"is a pointer" and "drained nothing" and threw such carriers away. That is
+**silent delivery loss, which is strictly worse than the phantom this entry is
+about**: a wasted wake is visible and annoying, a swallowed message is neither.
+It was caught by `dupresult`'s feeding boundary going dark — a suite testing
+something else entirely, which is the argument for not deleting checks whose
+subject you have finished with. Both drop sites now require that the carrier
+owes no journal token.
+
+**The general rule, since this class has now produced two origins and one
+self-inflicted wound.** A pointer may be dropped only when all of *it is marked
+a pointer*, *this delivery drained nothing*, and *it carries no already-drained
+batch*. Ask it at the delivery, not before. A third origin is likely — anything
+that removes mail from a box without consulting the carriers pointing at it
+qualifies — and the contract above is what makes such an origin harmless rather
+than a new bug: the drop is keyed on the state at delivery, so it does not need
+to know how the box came to be empty.
