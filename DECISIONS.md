@@ -2515,12 +2515,17 @@ sandbox, limit-freeze, turn-lifecycle — had encoded the old contract by
 asserting a notice WAITING in `user_inbox`, and now ask the question they
 actually meant. The next author to touch this meets the same fork.
 
-STATED CONSEQUENCE, not an oversight. The supervisor's "<agent> stopped: its
-turn failed" and "<agent> is stuck" alerts are `notice` from `@system`
-(supervisor.py), so they now arrive pre-read, uncounted and one line tall.
-That follows the spec exactly and it is also the org reporting that an agent
-died. Raised to the user rather than decided here; if they want those two
-exempted it is a small change, and if not this paragraph is the ruling.
+THE FAILURE ALERTS ARE TREATED LIKE ANY OTHER SYSTEM NOTICE — RULED, NOT
+OVERLOOKED. The supervisor's "<agent> stopped: its turn failed" and "<agent>
+is stuck" alerts are `notice` from `@system` (supervisor.py), so they arrive
+pre-read, uncounted and one line tall. That is the org reporting that an
+agent died, so the consequence was put to the user explicitly, in those
+terms, with an exemption for those two offered and costed as a small change.
+Ruling (user, 2026-08-28): "Leave as specified." Every system notice is
+treated alike; there is no exemption and none is pending.
+⚠ So exempting them later is a CHANGE OF POLICY needing the user's
+agreement, not an unfinished corner to tidy up. The uniform treatment is the
+decision.
 
 RENDERING. The shorter row does not RENDER the preview line rather than
 hiding it in CSS — a `display:none` preview is a DOM node per row that nobody
