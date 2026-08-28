@@ -1896,6 +1896,27 @@ def hermetic() -> None:
     check("phantom · self-contained nudges neither coalesce nor drop",
           _self_contained_nudges_are_never_dropped)
 
+    def _a_carrier_already_holding_mail_is_never_dropped():
+        # ⚠ THE REGRESSION THIS PINS WAS SILENT DELIVERY LOSS, not a phantom.
+        # A steer carrier folded into the queue at a result boundary already
+        # holds its drained batch: the mail is in the TEXT and its journal
+        # token is in the carrier, so re-enveloping it finds nothing new. The
+        # first version of the drop tested "is a pointer" and "drained nothing"
+        # and threw such a carrier away — a message that had already left the
+        # mailbox. Both drop sites now also require that the carrier owes no
+        # journal token. Caught live by `dupresult`'s feeding boundary; pinned
+        # here because a hermetic check says WHICH property broke.
+        marked = supervisor._mark_ping({"toks": ["deadbeef"],
+                                        "text": "[MAIL — 1 message(s)]\n…"})
+        assert supervisor._carrier_is_ping(marked), \
+            "the fixture is not a pointer, so it proves nothing about the drop"
+        assert marked.get("toks"), \
+            ("_mark_ping dropped the journal tokens it was given — the drop "
+             "sites key on those to tell 'nothing to say' from 'already said "
+             "it', so losing them reintroduces the delivery loss")
+    check("phantom · a carrier already holding drained mail keeps its tokens",
+          _a_carrier_already_holding_mail_is_never_dropped)
+
     def _a_pointer_still_wakes_when_there_IS_mail():
         # the fix must not overshoot: real mail still drives a real turn
         slug, (nid,) = horg()
@@ -2164,11 +2185,25 @@ LEGACY_DRAIN = (
     "        legacy(slug, nid, nxt)\n"
     "s._run_turn = legacy\n")
 
+#: the pre-D-175 delivery, restored the same way. `_carrier_is_ping` is what
+#: BOTH surviving drop sites ask — the `_run_turn` gate and the result-boundary
+#: loop — so making it answer "no" restores exactly the build that shipped the
+#: phantom wake, with no other behaviour touched.
+#:
+#: ⚠ A VALUE REPLACEMENT, not a `NameError`. Deleting the name would prove the
+#: line executes; it would not prove the check DETECTS anything. This arm is
+#: the canary for the retract section: if the pre-fix build does NOT produce a
+#: bare banner, the instrument is broken and its clean sheet means nothing.
+LEGACY_NO_PING_DROP = (
+    "from orgtree import supervisor as s\n"
+    "s._carrier_is_ping = lambda c: False\n")
+
 
 def start_backend(max_turns: int = 16, steer_hook: str = "0",
                   turn_timeout: int = 60, recursion: int = 0,
                   legacy_drain: bool = False, bg_idle: int = 3600,
-                  turn_ceiling: int | None = None) -> None:
+                  turn_ceiling: int | None = None,
+                  no_ping_drop: bool = False) -> None:
     global PROC
     stop_backend()
     port_free(PORT)
@@ -2211,7 +2246,7 @@ def start_backend(max_turns: int = 16, steer_hook: str = "0",
     env.pop("ORGTREE_EXPOSE_ADMIN", None)
     log = open(LOG, "a", encoding="utf-8")
     argv = [sys.executable, "-m", "orgtree.api"]
-    if recursion or legacy_drain:
+    if recursion or legacy_drain or no_ping_drop:
         # the tail-recursive queue drain is only reachable at depth ~900 with
         # the stock limit; lowering it makes the same shape observable in a
         # test that finishes this decade
@@ -2224,6 +2259,7 @@ def start_backend(max_turns: int = 16, steer_hook: str = "0",
                 (f"import sys; sys.setrecursionlimit({recursion})\n"
                  if recursion else "")
                 + (LEGACY_DRAIN if legacy_drain else "")
+                + (LEGACY_NO_PING_DROP if no_ping_drop else "")
                 + "from orgtree import api; api.main()"]
     PROC = subprocess.Popen(argv, cwd=os.path.join(_REPO, "backend"),
                             env=env, stdout=log, stderr=log, text=True)
@@ -2413,6 +2449,134 @@ def served_messages(session_id: str) -> int:
                     (rec.get("message") or {}).get("content"), str):
                 n += 1
     return n
+
+
+def bare_banner_turns(session_id: str) -> list[str]:
+    """Turns whose ENTIRE user-side content is an "(orgtree) …" pointer with no
+    mail and no notices above it — the phantom wake, counted from the agent's
+    own transcript rather than inferred from backend state.
+
+    This is the symptom as an agent experiences it, which is the only place it
+    is unambiguous: the banner is the nudge itself, so its presence proves
+    nothing; what makes it a phantom is that NOTHING was prepended to it."""
+    out = []
+    for p in glob.glob(os.path.join(HOME, ".claude", "projects", "*",
+                                    session_id + ".jsonl")):
+        for line in open(p, encoding="utf-8", errors="replace"):
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            if rec.get("type") != "user":
+                continue
+            c = (rec.get("message") or {}).get("content")
+            if not isinstance(c, str):
+                continue
+            if c.lstrip().startswith("(orgtree)") and "[MAIL" not in c \
+                    and "[ORG NOTICES" not in c:
+                out.append(c[:120])
+    return out
+
+
+def live_retract_phantom() -> None:
+    """A RETRACTED message is a SECOND origin for the phantom wake, reported by
+    an outside org (@org:unity, 2026-08-28) hours after D-175 shipped: their
+    user queued a mid-turn steer, cancelled it before delivery, and the agent's
+    next turn arrived carrying the user-message trailer and no `[MAIL]` block.
+
+    The origin genuinely differs from D-175's. There the payload was CONSUMED
+    by an earlier delivery draining the box wholesale; here it is REMOVED from
+    the box by `node_mail_retract`, which deletes the entry and — correctly —
+    never touches the node's queue, because the queue is not its business. The
+    arithmetic ends up identical: a queued pointer outlives the mail it points
+    at. So the question this section answers is not "is it the same bug" but
+    "does the same DROP catch it", and that is a measurement, not an argument.
+
+    ⚠ BOTH ARMS ARE REQUIRED. The pre-fix arm is the canary: it must produce a
+    bare banner, or a clean post-fix sheet is indistinguishable from a detector
+    that cannot see anything."""
+    print("\nretract — a cancelled message must not leave its wake behind:")
+
+    def build(no_drop: bool) -> tuple[str, str, str]:
+        start_backend(max_turns=1, turn_timeout=8, no_ping_drop=no_drop)
+        set_cfg({"echoMs": 1, "firstEventMs": 1, "resultMs": 5},
+                agent0={"hang": True, "echoMs": 1, "firstEventMs": 1},
+                agent1={"echoMs": 1, "firstEventMs": 1, "resultMs": 5})
+        slug, (hog, worker) = make_org("retr" + ("L" if no_drop else "F"),
+                                       agents=2, grant=2)
+        send(slug, hog, f"hold the only slot {token()}")
+        time.sleep(1.0)
+        # blocked on the semaphore ⇒ busy but NOT responding ⇒ this QUEUES,
+        # which is the shape their user hit (a steer that never got steered)
+        send(slug, worker, f"cancel me {token()}")
+        box = ((doc(slug).get("mail") or {}).get(worker)) or []
+        assert len(box) == 1, f"expected exactly one boxed mail, got {box!r}"
+        mid = box[0]["id"]
+        # …the cancellation itself
+        api("DELETE", f"/api/orgs/{slug}/nodes/{worker}/mail/{mid}")
+        return slug, worker, mid
+
+    # ① PRE-FIX (the canary) — the build that shipped the phantom
+    slugL, workerL, midL = build(no_drop=True)
+
+    def _retract_empties_the_box_under_an_inflight_pointer() -> None:
+        # ⚠ THE POINTER IS NOT QUEUED, and assuming it was is what this check
+        # exists to stop the next reader repeating. The worker is idle when the
+        # message lands, so `send_message` starts a turn immediately; that turn
+        # then blocks on the single turn SLOT the hog is holding. So the
+        # carrier is IN FLIGHT (busy, waiting) rather than sitting in a queue,
+        # and the whole slot wait is the window in which the box can empty.
+        d = doc(slugL)
+        assert not ((d.get("mail") or {}).get(workerL) or []), \
+            "the retract did not remove the mail"
+        c = api("GET", f"/api/orgs/{slugL}/nodes/{workerL}/chat?last=3")
+        assert c.get("busy"), \
+            (f"the worker is not busy ({c!r}) — nothing is in flight, so this "
+             f"section is not reproducing the reported shape at all")
+    check("retract · the payload leaves the box under an IN-FLIGHT pointer "
+          "(not a queued one)",
+          _retract_empties_the_box_under_an_inflight_pointer)
+
+    assert wait_idle(slugL, workerL, 120), "pre-fix worker never went idle"
+    time.sleep(1.0)
+    sidL = str(((doc(slugL).get("nodes") or {}).get(workerL) or {})
+               .get("session_id") or "")
+    phantomsL = bare_banner_turns(sidL)
+
+    def _the_canary_sees_it(p=phantomsL) -> None:
+        if not p:
+            raise AssertionError(
+                "PRE-FIX produced NO bare banner — the canary did not fire, so "
+                "this section cannot tell a fixed build from a broken detector. "
+                "Either the retract no longer orphans a pointer, or the fake "
+                "CLI never served the turn. Refusing to report the fixed arm.")
+    check("retract · CANARY: the pre-fix build really does wake on nothing",
+          _the_canary_sees_it)
+
+    # ② the shipped build, same scenario
+    slugF, workerF, midF = build(no_drop=False)
+    assert wait_idle(slugF, workerF, 120), "fixed worker never went idle"
+    time.sleep(1.0)
+    sidF = str(((doc(slugF).get("nodes") or {}).get(workerF) or {})
+               .get("session_id") or "")
+    phantomsF = bare_banner_turns(sidF)
+
+    def _the_drop_covers_the_retract(p=phantomsF) -> None:
+        if p:
+            raise AssertionError(
+                f"a retracted message still woke the agent on nothing: {p!r} — "
+                f"D-175's drop does not reach this origin and needs a second "
+                f"site")
+    check("retract · a cancelled message wakes nobody (D-175's drop covers it)",
+          _the_drop_covers_the_retract)
+
+    def _and_the_node_is_not_wedged() -> None:
+        c = api("GET", f"/api/orgs/{slugF}/nodes/{workerF}/chat?last=3")
+        assert not c.get("busy") and not (c.get("queued") or 0), \
+            (f"dropping the pointer left the node busy/queued ({c.get('busy')}, "
+             f"{c.get('queued')}) — a drop must retire the carrier, not strand it")
+    check("retract · …and the dropped carrier does not strand the node",
+          _and_the_node_is_not_wedged)
 
 
 def live_subagents() -> None:
@@ -4399,6 +4563,7 @@ def main() -> None:
             ("slots", live_slots),
             ("qorder", live_queue_order_under_saturation),
             ("deepqueue", live_deep_queue),
+            ("retract", live_retract_phantom),
             ("cmdq", live_command_queue),
             ("timeout", live_timeout),
             ("freeze", live_freeze),
