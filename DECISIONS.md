@@ -5216,3 +5216,82 @@ the transit's whole question is whether a column STAYS live as the cursor leaves
 the card, and a preset class answers that by assumption. Both the port and the
 `.doc-chips` render condition are pinned to `cards.tsx` by the fixture-freshness
 guard, so the probe cannot quietly drift into measuring a card that never ships.
+
+### D-175 · a drive nudge is either a POINTER TO MAIL or a SELF-CONTAINED PROMPT
+
+Every nudge this system sends is one of two things, and until now nothing in
+the code said which. **A POINTER carries no information of its own — "there is
+mail above, go and read it" — and is meaningless if the mailbox is empty. A
+SELF-CONTAINED PROMPT reads correctly on its own** — a replayed message after a
+restart, an unstick text, a watchdog payload — **and must still be delivered
+against an empty box.** A pointer that drains nothing must not wake anyone.
+`supervisor.send_message`'s `mail_ping=True` is the declaration; the default is
+self-contained, because silently swallowing a prompt that carried its own
+content is the worse failure of the two.
+
+**The defect this came from: a cardinality mismatch, not a filter.** The banner
+is not a rendering of mail. It IS the nudge — the literal prompt string handed
+to the agent. The `[MAIL — N message(s)]` block is prepended separately by
+`_envelope`, which empties the mailbox with `take_mail` **wholesale**. So
+banners are counted per SEND and mail is counted per BOX, and the two counts
+are of different things. Two messages arriving while a node is busy queue two
+banners against one mailbox: the first delivery renders
+`[MAIL — 2 message(s)]` and empties it, and the second arrives pointing at
+nothing — a full agent turn whose entire user-side content is
+
+    (orgtree) You have new mail above — handle it as appropriate, and use
+    orgtree_status when your own task state changes.
+
+**Say the shape out loud, because four plausible wrong ones were proposed
+first.** The brief that opened this investigation offered a drained-by-steer
+race, a message whose rendering is suppressed, a wake consumed by a concurrent
+turn, and a D-165/166/167 regression. Every one was wrong, and each is the kind
+of story that can be argued into looking right. There is ONE cause and it is
+arithmetic: N sends, one wholesale-draining box.
+
+**The measurement.** 364 transcripts on the reporting machine: **657 banners
+carrying a real `[MAIL]` block, 8 carrying nothing at all.** The most recent
+was 100 seconds before the report, in the coordinator's own session, and both
+recent cases show the same signature — a turn that answers two mails ("Two
+things landed", "Both mails handled") followed 0.1 s later by a bare banner
+through the result-boundary feed. Recorded because *rare and real* is exactly
+the combination that gets dismissed as a glitch: 8-in-665 is easy to explain
+away as a hiccup, and it was costing a full agent turn every time. What it
+damaged was not the cycles but the credibility of the banner — an agent that
+learns the mail system lies to it starts checking, and then the wake is wasted
+even when it is honest.
+
+**The fix drops, it does not hide.** A pointer that reaches delivery and drains
+nothing is discarded at all three delivery sites — before the CLI is launched
+at a turn start, before the write at a result boundary, before the injection at
+a steer. The wake does not happen at all rather than happening quietly; a
+downstream filter that suppressed the banner would have left the pointless turn
+intact, which is the whole cost.
+
+**COALESCING WAS BUILT AND BACKED OUT. Do not re-attempt it without reading
+this.** Collapsing a second pointer into the one already queued is the
+tidier-sounding "make the two conditions agree at their source", it is the
+first thing anyone reading the fix will think of, and it is wrong here on two
+counts. It is **redundant**: once a pointer that drains nothing is dropped, no
+phantom reaches an agent whether or not a second one was ever queued. And it is
+**destructive to coverage**: ordinary mail is how `deepqueue` builds a long
+queue, and that suite exists to prove the iterative drain does not wedge with a
+`RecursionError`. Coalescing collapsed its 215 messages into 1 carrier, so the
+suite could no longer reach the state it guards — it went green by no longer
+testing anything. **A test that can no longer reach the condition it guards is
+worse than no test**, because its green is read as evidence. This is the same
+family as D-158's "an absent check and a check that cannot fail are the same
+thing", arriving by a route that looks like an optimisation: nobody deletes a
+safety test, but "my refactor made the suite faster" deletes what it could
+reach. The reasoning is also parked next to `_mark_ping` in `supervisor.py`,
+because the person contemplating this may be reading the code rather than the
+register — but the register is where it is normative.
+
+**What a new nudge site must do.** Decide which kind you are adding. If the
+text would be nonsense with an empty mailbox, pass `mail_ping=True`; there are
+thirteen such sites today, nine in `api.py` and four in `supervisor.py`, all of
+them a drive that follows a `post_mail`. If it carries its own content, leave
+the default and it will be delivered whatever the mailbox holds. Getting this
+backwards in the safe direction costs a wasted wake; getting it backwards in
+the unsafe direction silently eats a message, which is why the default is the
+one that always delivers.
