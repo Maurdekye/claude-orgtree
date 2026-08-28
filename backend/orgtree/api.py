@@ -2059,6 +2059,10 @@ def host_info() -> dict[str, Any]:
     checkbox is disabled at org creation)."""
     return {"docker": sandbox.docker_available(),
             "sandbox_mcp": supervisor.sandbox_mcp_enabled(),
+            # the commit this backend was started from, so the UI can show
+            # which deploy is actually serving (frozen at process start —
+            # see build_info)
+            "build": supervisor.build_info(),
             "cli_version": supervisor.cli_version(),
             # WHICH cli, not just its version: a bare version number is only
             # actionable to someone who already knows what it should be, so a

@@ -119,6 +119,12 @@ export default function App() {
   // the detail chips + resume banner collapse behind a ⋯ toggle
   const [barMore, setBarMore] = useState(false)
   const [nowTick, setNowTick] = useState(Date.now()) // drives the resume-red clock
+  // the running backend's build: a short commit + start time, so a person
+  // can look at the page and confirm which deploy is actually serving —
+  // fetched once, since it cannot change without a process restart (see
+  // supervisor.build_info)
+  const [build, setBuild] = useState<{ commit: string, started_at: string } | null>(null)
+  useEffect(() => { getHost().then((h) => setBuild(h.build)).catch(() => {}) }, [])
   const wsRef = useRef<WebSocket | null>(null)
   useEffect(() => {
     const t = setInterval(() => setNowTick(Date.now()), 15000)
@@ -295,6 +301,10 @@ export default function App() {
   const orgPanel = (
     <>
       <h1><SparkIcon fontSize="inherit" /> orgtree
+        {build && build.commit !== 'unknown' &&
+          <span className="build-badge"
+            title={`running commit ${build.commit} — started ${new Date(build.started_at).toLocaleString()}`}>
+            {build.commit}</span>}
         <a className="gh-link h1-gh" href="https://github.com/Maurdekye/claude-orgtree"
           target="_blank" rel="noreferrer" title="orgtree on GitHub">
           <GitHubIcon fontSize="inherit" /></a>

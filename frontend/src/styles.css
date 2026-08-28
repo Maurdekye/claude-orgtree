@@ -69,6 +69,11 @@ aside h1 svg, .welcome-card h1 svg { color: var(--accent); }
 .gh-link:hover { color: var(--ink-strong); }
 .gh-link svg { color: inherit; }
 .h1-gh { margin-left: auto; font-size: 14px; }
+/* the running backend's short commit — unobtrusive, next to the brand */
+.build-badge {
+  font-size: 10px; font-weight: 400; text-transform: none; letter-spacing: 0;
+  color: var(--dim); font-family: monospace; cursor: default;
+}
 /* the welcome-panel usage button rides in the h1 next to the GitHub link */
 .h1-usage {
   background: none; border: none; padding: 2px; cursor: pointer;

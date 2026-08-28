@@ -257,6 +257,34 @@ def cli_version() -> str:
     return ver
 
 
+_build_info_cache: dict[str, Any] | None = None
+
+
+def build_info() -> dict[str, Any]:
+    """The commit this backend was actually started from, for /api/host —
+    so a person can look at the running UI and confirm which deploy is
+    serving. Read ONCE and frozen for the process's life (unlike
+    `cli_version`'s mtime cache): the whole point is "what is SERVING", so a
+    `git pull` on disk after startup must not change the answer until the
+    next restart actually replaces this process."""
+    global _build_info_cache
+    if _build_info_cache is None:
+        commit = "unknown"
+        try:
+            r = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
+                                cwd=sbx.REPO_ROOT, capture_output=True,
+                                text=True, timeout=10)
+            if r.returncode == 0:
+                commit = r.stdout.strip() or "unknown"
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        _build_info_cache = {
+            "commit": commit,
+            "started_at": _dtm.datetime.now(_dtm.timezone.utc).isoformat(),
+        }
+    return _build_info_cache
+
+
 def _claude_argv() -> list[str]:
     if os.path.exists(CLAUDE_CLI_JS):
         return ["node", CLAUDE_CLI_JS]

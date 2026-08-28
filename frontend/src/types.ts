@@ -842,6 +842,9 @@ export interface McpServersPayload {
 export interface HostPayload {
   docker: boolean
   sandbox_mcp: boolean
+  // the commit the running backend was started from — frozen at process
+  // start, so it never goes stale from an on-disk `git pull` alone
+  build: { commit: string, started_at: string }
   cli_version: string
 }
 
