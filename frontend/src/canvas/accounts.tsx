@@ -401,8 +401,10 @@ export function AccountsPanel({ toast, close }: {
                 the tier family it will bring. Hiring stays off until the
                 provider adapter lands (design §5 Phase 1); the `reason`
                 line below is the server's word on what would come next. */}
+            {/* "Codex" (user ruling 2026-08-28, ask card) — the CLI's own
+                name is the provider's UI name */}
             <div className="acct-provider-head prov-openai">
-              ChatGPT (Codex)
+              Codex
               <span className="dim"> · Codex CLI
                 {codex?.status.version ? ` ${codex.status.version}` : ''}</span>
               <span className="acct-preview-tag">preview</span>

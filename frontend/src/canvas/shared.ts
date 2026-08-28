@@ -32,8 +32,9 @@ export const MODEL_VERSIONS: Record<string, string[]> = { opus: ['5', '4.8'] }
  *  SEPARATE list, never merged into TIERS: every existing surface iterates
  *  TIERS, and a family that cannot be hired yet must not grow chips there by
  *  accident. Mirrors backend providers.py (CODEX_TIERS / CODEX_MODELS) the
- *  same way TIER_SEAT mirrors ledger.TIERS. Seat costs are the design's §6
- *  proposal — display-only until codex hire is enabled. */
+ *  same way TIER_SEAT mirrors ledger.TIERS. Seat costs RULED 2026-08-28:
+ *  API $ per M input tokens at the STANDING price (sol $5 standard, not the
+ *  promo $4; luna $0.20 floors to 1) — display-only until codex hire lands. */
 export const CODEX_TIERS = ['luna', 'terra', 'sol']
 export const CODEX_TIER_LETTER: Record<string, string> = { luna: 'L', terra: 'T', sol: 'S' }
 export const CODEX_TIER_SEAT: Record<string, number> = { luna: 1, terra: 2, sol: 5 }

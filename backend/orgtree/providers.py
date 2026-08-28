@@ -64,10 +64,12 @@ class TierInfo(TypedDict):
 # canvas node can wear both families until codex hire is enabled.
 _CODEX_LETTER: Final[dict[str, str]] = {"luna": "L", "terra": "T", "sol": "S"}
 
-#: seat costs proposed in the design doc §6 Q1 (sol 5 · terra 2 · luna 1,
-#: mirroring opus/sonnet/haiku by capability band). Not read by the ledger:
-#: display-only until codex hire is enabled, so a later ruling can move them
-#: without a migration.
+#: seat costs RULED 2026-08-28 (user, ask card): a seat is the API $ per M
+#: input tokens at the STANDING price — the same generating rule as
+#: ledger.TIERS. sol $5 standard (the current $4 is promotional through at
+#: least 2026-11-21, and per the sonnet-intro precedent promos don't set
+#: seats); terra $2; luna $0.20 floored to 1 (credits are integers). Not
+#: read by the ledger: display-only until codex hire is enabled.
 CODEX_TIERS: Final[dict[str, int]] = {"sol": 5, "terra": 2, "luna": 1}
 
 #: model ids as the installed CLI reports them (`model/list`, measured on
@@ -244,7 +246,10 @@ def providers_payload(claude_status: dict[str, Any]) -> dict[str, Any]:
         },
         {
             "id": "openai",
-            "label": "ChatGPT (Codex)",
+            # "Codex", not "ChatGPT (Codex)" or "OpenAI" — user ruling
+            # 2026-08-28 (ask card): the CLI's own name is the provider's UI
+            # name; tier words luna/terra/sol carry everywhere else.
+            "label": "Codex",
             "cli": "Codex CLI",
             "tiers": codex_tiers(),
             "status": codex,
