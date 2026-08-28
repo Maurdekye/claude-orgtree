@@ -944,8 +944,28 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "orgtree_chart",
-        "description": "Your current view of the organization (scoped to your org-visibility level), with your credits and scope.",
-        "inputSchema": {"type": "object", "properties": {}},
+        "description": (
+            "Your current view of the organization (scoped to your "
+            "org-visibility level), with your credits and scope. RETIRED "
+            "agents are not listed by default — the chart shows who is "
+            "working, and on a long-running org the archived outnumber the "
+            "live several times over. They are hidden, not gone: each "
+            "superior that retired anyone carries a count in their place. "
+            "Pass include_archived=true to list every one of them by name. "
+            "⚠ WORTH DOING BEFORE YOU HIRE: rehiring an agent that already "
+            "did this work restores an expert that knows this codebase, its "
+            "decisions and its dead ends — check the archived list before "
+            "you pay to hire a stranger who has to learn them again."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "include_archived": {
+                    "type": "boolean",
+                    "description": "list every retired/archived agent by "
+                                   "name instead of counting them — the "
+                                   "rehire shortlist"},
+            },
+        },
     },
     {
         "name": "orgtree_read_transcript",

@@ -803,6 +803,156 @@ def _():
     assert "Mcp Alpha" in r["chart"]
 
 
+# ------------------------------------------------------------------ D-178
+# Archived agents are hidden from the default chart, which every agent's
+# prompt is rebuilt from every turn. The COUNT AND THE ROUTE are the whole
+# safety of it: the standing doctrine is that you check who you already
+# retired before hiring someone new, because rehiring restores an expert that
+# knows the codebase. A chart that merely omitted them would teach the next
+# agent that they do not exist.
+
+
+def _chart_block(chart):
+    """Just the org-chart region of the identity prompt.
+
+    ⚠ ANCHORED ON PURPOSE. The prompt's standing boilerplate independently
+    contains the words "include_archived", "rehire" and "archived" — the
+    tool catalogue and the rehire doctrine both mention them on every turn,
+    whatever the chart does. Asserting those substrings against the WHOLE
+    prompt therefore passes while the chart itself says nothing at all: a
+    mutation that removed the entire pointer footer was caught only after
+    this slice was introduced. Structural boundary, not a fixed offset.
+    """
+    i = chart.index("The full organization chart")
+    rest = chart[i:]
+    for end in ("\nYour charter:", "\nCredits:", "\nYour team charter"):
+        j = rest.find(end)
+        if j != -1:
+            rest = rest[:j]
+    return rest
+
+
+def _mk_archived():
+    """Two archived reports under mid, one of them a knowledge bearer."""
+    for nm in ("gone-one", "gone-two"):
+        MID.ok("orgtree_hire", {
+            "name": nm, "tier": "haiku", "grant": 0, "charter": "done",
+            "add_dirs": [], "org_visibility": "team",
+            "tools": {"bash": False, "web": False, "edit": True,
+                      "subagents": False, "mcp": []}})
+        MID.ok("orgtree_retire", {"node": nm})
+    o = store.load_org(A)
+    o.nodes["gone-two"]["bearer_state"] = "knowledge"
+    store.save_org(o)
+
+
+@t("D-178: the default chart hides archived agents but counts them")
+def _():
+    _mk_archived()
+    chart = _chart_block(BOSS.ok("orgtree_chart")["chart"])
+    assert "gone-one" not in chart and "gone-two" not in chart, \
+        "an archived agent is still named in the default chart"
+    assert "mid" in chart and "worker" in chart, \
+        "hiding the dead also hid the living"
+    assert "2 archived" in chart, chart[:400]
+    # the ROUTE must survive — a count with no way to act on it is a dead end
+    assert "include_archived" in chart, \
+        "the chart counts the archived but never says how to see them"
+    # and the reason, so the next reader knows why to bother
+    assert "rehir" in chart.lower(), \
+        "the pointer dropped the rehire doctrine that justifies it"
+
+
+@t("D-178: the pointer names knowledge bearers, which are the ones wanted")
+def _():
+    chart = _chart_block(BOSS.ok("orgtree_chart")["chart"])
+    assert "knowledge bearer" in chart, chart[:400]
+    assert "1 consultable knowledge bearer" in chart, \
+        "the bearer count is wrong or unpluralised: " + chart[:400]
+
+
+@t("D-178: the count sits under the superior that retired them, not at the foot")
+def _():
+    # per-parent placement is the point (coordinator ruling): the question is
+    # "did I retire someone who did this", which is answered by WHERE the
+    # count sits. A single global tally would pass a naive count assertion
+    # and destroy exactly this.
+    lines = _chart_block(BOSS.ok("orgtree_chart")["chart"]).splitlines()
+    mid_i = next(i for i, l in enumerate(lines) if l.strip().startswith("- mid "))
+    # explicit, not next(): a bare next() raises StopIteration here, which is
+    # a crash rather than a verdict — the reader is left to work out that the
+    # per-parent pointer is missing entirely
+    ptrs = [i for i, l in enumerate(lines) if l.strip().startswith("+ 2 archived")]
+    assert ptrs, ("no per-parent pointer line in the chart at all — the "
+                  "count may exist only as a global tally, which cannot say "
+                  "WHO retired them:\n" + "\n".join(lines[:25]))
+    ptr_i = ptrs[0]
+    assert ptr_i > mid_i, "the pointer is not beneath mid"
+    mid_indent = len(lines[mid_i]) - len(lines[mid_i].lstrip())
+    ptr_indent = len(lines[ptr_i]) - len(lines[ptr_i].lstrip())
+    assert ptr_indent == mid_indent + 2, \
+        (f"pointer indent {ptr_indent} is not one level under mid "
+         f"({mid_indent}) — it is not attached to the superior that "
+         f"retired them")
+    # nothing of another parent's may have been swept into mid's count
+    assert not any(l.strip().startswith("+ ") for l in lines[:mid_i])
+
+
+@t("D-178: include_archived=true lists every archived agent by name")
+def _():
+    chart = _chart_block(BOSS.ok("orgtree_chart", {"include_archived": True})["chart"])
+    assert "gone-one" in chart and "gone-two" in chart, chart[:600]
+    assert "consultable" in chart, "the bearer marker vanished from the full list"
+    # the pointer is pointless when the list is right there
+    assert "+ 2 archived" not in chart, "counted AND listed — pick one"
+
+
+@t("D-178: the string \"false\" does not switch the listing on")
+def _():
+    # an LLM writes include_archived:"false" often enough that plain
+    # truthiness — where any non-empty string is true — would turn a
+    # deliberate opt-out into an opt-in, silently
+    for falsey in ("false", "False", "no", "", "0"):
+        chart = _chart_block(BOSS.ok("orgtree_chart", {"include_archived": falsey})["chart"])
+        assert "gone-one" not in chart, f"{falsey!r} listed the archived"
+    for truthy in (True, "true", "TRUE", "yes", 1):
+        chart = _chart_block(BOSS.ok("orgtree_chart", {"include_archived": truthy})["chart"])
+        assert "gone-one" in chart, f"{truthy!r} did not list the archived"
+
+
+@t("D-178: an unrecoverable node stays visible — it still holds its seat")
+def _():
+    o = store.load_org(A)
+    o.nodes["gone-one"]["state"] = "unrecoverable"
+    store.save_org(o)
+    try:
+        chart = _chart_block(BOSS.ok("orgtree_chart")["chart"])
+        # hiding these was already caught once as a bug (org_children's own
+        # comment): the operator must be able to reach them to re-seed or
+        # retire, and they are not archived
+        assert "gone-one" in chart, \
+            "an unrecoverable node was hidden — it holds a seat and must " \
+            "stay reachable"
+        assert "1 archived" in chart, "the count did not shrink with it"
+    finally:
+        o = store.load_org(A)
+        o.nodes["gone-one"]["state"] = "archived"
+        store.save_org(o)
+
+
+@t("D-178: the CANVAS is unaffected — org.tree() still carries the archived")
+def _():
+    # the change is presentation on the AGENT-facing chart only. The canvas
+    # renders from org.tree(), a separate path; asserting that here rather
+    # than leaving it at inspection, because "the UI is unaffected" is
+    # exactly the kind of claim that is true when written and false later.
+    tree = store.load_org(A).tree()
+    flat = json.dumps(tree)
+    assert "gone-one" in flat and "gone-two" in flat, \
+        "hiding the archived from the chart also removed them from the " \
+        "tree the canvas draws"
+
+
 @t("orgtree_message reaches a direct report and wakes it")
 def _():
     DRIVEN.clear()

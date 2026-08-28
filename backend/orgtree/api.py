@@ -3359,6 +3359,19 @@ def _arg_int(a: dict[str, Any], key: str, default: int) -> int:
             raise LedgerError(f"{key} must be a number (got {v!r})")
 
 
+def _arg_flag(a: dict[str, Any], key: str) -> bool:
+    """A boolean off the same free-form wire (D-178). The schema says boolean
+    and the CLI usually honours it, but an LLM writes `"true"` often enough
+    that treating the STRING "false" as true — which plain truthiness does —
+    would turn a deliberate opt-out into an opt-in. Absent/null/empty is
+    False; the four textual falsehoods are False; anything else takes its
+    ordinary truth value."""
+    v = a.get(key)
+    if isinstance(v, str):
+        return v.strip().lower() not in ("", "false", "0", "no", "null", "none")
+    return bool(v)
+
+
 # the @net: attachment cap — same value as the user-upload per-file cap
 # (deliberately its own name; see the anchor note at the use site)
 _NET_ATT_MAX = 25 * 1048576
@@ -3527,7 +3540,16 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
             org = store.load_org(body.org)
             org.node(body.node)
             if body.tool == "orgtree_chart":
-                return {"chart": supervisor.identity_prompt(org, body.node)}
+                # D-178: archived nodes are hidden from the default chart (it
+                # is rebuilt into every turn of every agent); this flag is the
+                # explicit ask that lists them. A PARAMETER rather than a
+                # second tool on purpose — `identity_prompt` already derives
+                # what a caller may see from its org_visibility, and a
+                # separate listing tool would have to re-derive that. Two
+                # implementations of "what may this agent see" agree the day
+                # they are written and nothing makes them agree afterwards.
+                return {"chart": supervisor.identity_prompt(
+                    org, body.node, include_archived=_arg_flag(a, "include_archived"))}
             if body.tool == "orgtree_send_file":
                 # filesystem-only (org doc untouched) — runs outside DOC_LOCK
                 # with the other read-shaped tools
