@@ -1170,6 +1170,30 @@ button.cc-name:hover {
 /* …and the row stays legible when it is the SELECTED one: the reading pane
    carries the body, so the list row has no reason to grow back */
 .mailrow.sysnotice.on .l1 { color: var(--ink); }
+/* A RUN OF THEM FOLDS INTO ONE ROW (user, 2026-08-28). Deliberately almost
+   no styling of its own: it is the same one-line system row, and the only
+   difference the eye needs is the count already sitting on the `notice`
+   chip ("3 notices"). A second visual device here would undo the point,
+   which is that the machine's chatter takes ONE line however much of it
+   there is. The tabular figures just stop the count jittering the chip
+   width as it grows. */
+.mailrow.notepile .noticekind { font-variant-numeric: tabular-nums; }
+/* …and opened, it is a LIST of every notice it folded — the shape an agent
+   gets on its next turn ([ORG NOTICES], supervisor._envelope), which is the
+   model the user pointed at. `at` in the gutter, text beside it. */
+.mailer-body.notepile { display: flex; flex-direction: column; gap: 7px; }
+.notepile-row {
+  display: flex; gap: 9px; align-items: baseline;
+  padding-bottom: 7px; border-bottom: 1px solid var(--line-soft);
+}
+.notepile-row:last-child { padding-bottom: 0; border-bottom: none; }
+.notepile-at {
+  flex: none; font-family: var(--mono); font-size: 10px; color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+.notepile-text { min-width: 0; flex: 1; }
+.notepile-text > :first-child { margin-top: 0; }
+.notepile-text > :last-child { margin-bottom: 0; }
 /* D-169 URGENT MAIL — the TOP of the ladder this list already grades on.
    That ladder is one axis (left border + optional tint + a kind chip) and it
    runs: ordinary mail (no edge) → notice (dashed neutral, no tint) →

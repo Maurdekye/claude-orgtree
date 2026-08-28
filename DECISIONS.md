@@ -2533,6 +2533,60 @@ can ever see, and a long-lived org's mailbox carries many. The `l1` header
 stays, so the row is identifiable and still opens to its full body: folded,
 not hidden.
 
+AND A RUN OF THEM FOLDS INTO ONE ROW (user, 2026-08-28, same thread): "if
+there are multiple consecutive system notices in a row, collapse them all
+into a single mail entry, and then display them in a list in the full mail
+view to the right, kind of like how notices are already collapsed and
+collated into the next turn for an agent." The same contract carried one step
+further — a shorter row was not enough when the machine emits five of them in
+a minute — and the user named the model to copy rather than leaving it open:
+`supervisor._envelope`'s `[ORG NOTICES — n change(s) since your last turn]`
+block, which is how an agent already receives its own queued notices.
+
+CONSECUTIVE MEANS ADJACENCY IN THE LIST SHOWN, AND CARRIES NO TIME BOUND.
+Two system notices a day apart with nothing between them are one entry. The
+user described a POSITION ("in a row") and not a recency, and a time window
+would be the worse rule on its own terms: the same two rows would fold or not
+fold depending on when you happened to look, which is a display that changes
+under you for no reason you can see. ANY row that is not itself a foldable
+system notice breaks the run — ordinary mail read or unread, an agent's
+notice, an ask, a `@system` decision. Read state is not part of the rule.
+⚠ THAT IS THE WHOLE SAFETY PROPERTY, and it is the reason the fold predicate
+is the SHORTER-ROW predicate exactly (`kind == "notice"` AND
+`from == "@system"`) and never a hair wider. A row that says "3 notices" is a
+claim about what is inside it. The `@system` `decision` mail this entry
+already warns about — a Fable limit exhausted, agents halted, a subtree
+dissolved — would, if swept into a run, be hidden behind a label saying it is
+chatter. Getting the HEIGHT predicate wrong makes something the wrong size;
+getting the FOLD predicate wrong BURIES, and it buries the same mail the read
+predicate would have buried, by a different route. Most of the frontend suite
+for this is about what does NOT fold, in that proportion deliberately.
+A row still AWAITING delivery is never folded either, as head or as member:
+it carries an unread mark and, in a node mailbox, a retract button — things
+to act on, and burying an action inside a summary is the failure this whole
+entry is about. Two clauses enforce that and they guard OPPOSITE ENDS of a
+run (one stops a waiting row joining, one stops a run forming on top of one);
+a mutation killed only by the second slipped past the first test written, so
+there is a leg per end.
+
+THE FOLD IS DISPLAY AND DELIBERATELY NOTHING ELSE. `shared.pileNotices` is a
+pure function from rows to groups, applied in `MailList` after the filter (the
+fold is about what is on screen) and before the window (so paging counts
+entries, not members). No entry is merged, rewritten or dropped: the record
+of what happened is unchanged, `user_inbox` membership still means unread,
+and a folded notice is still findable by the filter. A synthetic merged entry
+written at post time would have destroyed information for the sake of how it
+looks, and could not be un-collapsed later.
+WHAT THE ROW SAYS: `@system · 3 notices · 08-28 12:44` — the count rides the
+outline `notice` chip that was already there, so a folded run is the same
+one-line system row with a number in it rather than a new species. A run of
+one still reads exactly `notice`; nothing about a lone notice changed.
+Opened, it is the list: one line per notice, its own timestamp then its full
+body, OLDEST FIRST — chronological like the `[ORG NOTICES]` block it copies,
+which reads forward like the log it is. The mail list itself stays
+newest-first; that is a different axis. Nothing is summarised or elided — the
+row is a shorter way IN, not a shorter version OF.
+
 ### D-165 · a node may notice ITSELF — a fall-through, now load-bearing
 Ruling (notice-endpoint, 2026-08-27, measured): §7.2 permits a node to
 address itself, and this is recorded as **permitted** rather than merely
