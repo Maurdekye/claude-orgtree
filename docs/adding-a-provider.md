@@ -197,9 +197,26 @@ The single most delicate step. The shape that works:
 
 ## 7. Transcript durability — M3
 
-- Codex status: NOT YET LANDED. Plan of record: the supervisor writes its
-  own provider-neutral per-agent journal consumed by the `read_chat`
-  projection — do NOT parse the provider's private rollout files for MVP.
+- Codex status: LANDED (abe495f). What worked: the supervisor writes its
+  own per-agent journal — `journals/projects/<org>/<session>.jsonl` under
+  the org data root, records in the INCUMBENT transcript's exact shape —
+  and the two transcript-lookup functions learn that store as a second
+  root. Every reader (desk history, reconcile liveness, never-run pardon,
+  occupancy fold) then works unchanged. Do NOT parse the provider's
+  private rollout files, and do NOT build a parallel bookkeeping path —
+  one layout, one index. Success paths only (failed mail folds back and
+  redelivers; journaling it would duplicate).
+- Two hard-won wire facts to re-verify per provider: (a) whatever rides
+  session OPEN must ride session RESUME too — codex's thread/resume takes
+  dynamicTools + developerInstructions (measured after the test double
+  caught the runner passing them on start only, which silently stripped
+  every post-first turn of its org powers); (b) rapid kill→spawn cycles on
+  one provider home can contend on the CLI's own state store (codex:
+  sqlite under ~/.codex — a fresh process within ~1s of a kill failed to
+  boot). Mind it wherever turns cycle fast.
+- Test-rig hygiene: a leg whose tool dispatcher POSTs the org API must be
+  pointed at a DEAD port in hermetic rigs, or the tests reach the
+  operator's live deployment on the default port (measured).
 
 ## 8. What stays deliberately out of the MVP
 
