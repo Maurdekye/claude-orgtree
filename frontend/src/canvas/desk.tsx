@@ -982,14 +982,35 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
               retractable until delivery (№17) */}
           {(chat?.pending_mail ?? []).filter((m) => m.from === USER).map((m) => (
             <div key={m.id ?? m.at} className="msg user pending pendrow">
-              <span className="md" dangerouslySetInnerHTML={md(m.body, fileBase(slug, node.id))} />
-              {/* a queued image renders viewable (dimmed like the bubble) —
-                  the upload already landed, only the MAIL is undelivered */}
-              {(m.attachments ?? []).map((a) => (a.path && isImg(a.name ?? a.path)
-                ? <AttachThumb key={a.path} dim href={fileUrl(slug, node.id, a.path)}
-                    name={a.name ?? a.path} meta={a.bytes != null ? fmtBytes(a.bytes) : undefined} />
-                : <span key={a.path ?? a.name} className="attach-chip dim">
-                    <FileIcon fontSize="inherit" /> {a.name}</span>))}
+              {/* ⚠ THIS IS A PREVIEW OF `Msg`, SO IT IS BUILT LIKE `Msg`
+                  (user, 2026-08-28): text in its own block, then the
+                  attachments in an `.attach-row` beneath it — a COLUMN. It
+                  used to lay text and thumbnails side by side, so the same
+                  message rearranged itself the instant it was delivered; a
+                  preview that does not predict its own result is the bug.
+                  Ruling (user): "the columnar display is best for this, yes".
+                  ⚠ The two blocks are GATED like Msg's too — an empty body
+                  renders no text block and no attachments render no row, so
+                  an image with no caption has no blank line above it and text
+                  with no image has no empty row below it.
+                  The `.pendrow` flex stays, with exactly one content child:
+                  that is what keeps the delivery tag / retract ✕ pinned at the
+                  top right where it already was, which the user asked for by
+                  name. */}
+              <div className="pendbody">
+                {m.body && <div className="msgtext md"
+                  dangerouslySetInnerHTML={md(m.body, fileBase(slug, node.id))} />}
+                {/* a queued image renders viewable (dimmed like the bubble) —
+                    the upload already landed, only the MAIL is undelivered */}
+                {(m.attachments ?? []).length > 0 && (
+                  <div className="attach-row">
+                    {(m.attachments ?? []).map((a) => (a.path && isImg(a.name ?? a.path)
+                      ? <AttachThumb key={a.path} dim href={fileUrl(slug, node.id, a.path)}
+                          name={a.name ?? a.path} meta={a.bytes != null ? fmtBytes(a.bytes) : undefined} />
+                      : <span key={a.path ?? a.name} className="attach-chip dim">
+                          <FileIcon fontSize="inherit" /> {a.name}</span>))}
+                  </div>)}
+              </div>
               {/* journal-riding mail (drained for a mid-task delivery) shows
                   as queued but is past the point of retraction */}
               {m.delivering

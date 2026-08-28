@@ -2567,9 +2567,18 @@ svg.MuiSvgIcon-root {
 @media (prefers-reduced-motion: reduce) {
   .msg.thinking.sealed { animation: none; opacity: .75 }
 }
-/* №11/№17: durable pending bubble + retract ✕ */
+/* №11/№17: durable pending bubble + retract ✕.
+   The flex here is NOT the message layout — it is the gutter that holds the
+   delivery tag / retract ✕ at the top right. The message itself is the ONE
+   child beside it, and it stacks (text, then `.attach-row`) exactly as the
+   delivered bubble does, because this bubble is a preview of that one and
+   used to contradict it: text and thumbnail sat side by side here and one
+   above the other once delivered, so a message visibly rearranged itself on
+   send (user, 2026-08-28 — "the columnar display is best for this, yes").
+   ⚠ Keep it at one content child. Adding a second sibling would put it
+   BESIDE the message again and bring the old bug back in a new place. */
 .pendrow { display: flex; align-items: flex-start; gap: 6px; }
-.pendrow .md { flex: 1; min-width: 0; }
+.pendbody { flex: 1; min-width: 0; }
 .sendmode { font-size: 10.5px; padding: 0 4px 2px; }
 /* №7: last turn's auto-denies */
 .denials {
