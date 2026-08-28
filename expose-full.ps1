@@ -1,4 +1,4 @@
-# expose-normal.ps1 - expose the orgtree ADMIN listener (normal operating
+# expose-full.ps1 - expose the orgtree ADMIN listener (normal operating
 # mode, NOT kiosk) to the internet via a Cloudflare quick tunnel
 # (TryCloudflare). No account, no port forwarding, no static URL: the tunnel
 # lives while this window is open, and the random *.trycloudflare.com
@@ -18,8 +18,8 @@
 # script exposes everything, with no limits. Only run it if that is what you
 # mean to do, and only for as long as you mean to do it.
 #
-# Usage:  .\expose-normal.ps1            (tunnels the admin port, default 7360)
-#         .\expose-normal.ps1 -Port 7362
+# Usage:  .\expose-full.ps1            (tunnels the admin port, default 7360)
+#         .\expose-full.ps1 -Port 7362
 #
 # Unlike the kiosk gateway, the admin listener does not need
 # ORGTREE_PUBLIC_PORT set - it's up whenever the backend is running at all
