@@ -89,7 +89,7 @@ DRIVEN: list[tuple[str, str, str]] = []          # (slug, node, nudge) — wake=
 PARKED: list[tuple[str, str, str]] = []          # wake=False (send_notice) nudges
 
 
-def _fake_send(slug, nid, text, command=False, wake=True):
+def _fake_send(slug, nid, text, command=False, wake=True, **kw):
     # mirror the real no-wake contract closely enough for the notice
     # assertions: every fixture node is idle, so wake=False PARKS — it never
     # belongs in DRIVEN, whose whole meaning here is "a turn would have run"
@@ -1013,7 +1013,7 @@ def _():
     snap = {}
     real_send = supervisor.send_message
 
-    def spy(slug, nid, text, command=False, wake=True):
+    def spy(slug, nid, text, command=False, wake=True, **kw):
         # ⚠ the FIRST wake only. Recording every wake made this instrument
         # lie: under a mutation that woke the seat early, the later legitimate
         # wake overwrote the snapshot with the good state and the check passed
@@ -1034,7 +1034,7 @@ def _():
                                   if g["grantee"] == "timed")
             snap["mail"] = [m.get("body") for m in
                             d.d.get("mail", {}).get("timed", [])]
-        return real_send(slug, nid, text, command=command, wake=wake)
+        return real_send(slug, nid, text, command=command, wake=wake, **kw)
 
     supervisor.send_message = spy
     try:
@@ -1173,7 +1173,7 @@ def _():
     snap = {}
     real_send = supervisor.send_message
 
-    def spy(slug, nid, text, command=False, wake=True):
+    def spy(slug, nid, text, command=False, wake=True, **kw):
         if nid in ("dozer", "racer") and not snap:      # FIRST wake only
             d = store.load_org(slug)
             snap["woken_as"] = nid
@@ -1185,7 +1185,7 @@ def _():
             snap["mail"] = [m.get("body") for m in
                             d.d.get("mail", {}).get(nid, [])]
             snap["old_id_gone"] = "dozer" not in d.nodes
-        return real_send(slug, nid, text, command=command, wake=wake)
+        return real_send(slug, nid, text, command=command, wake=wake, **kw)
 
     supervisor.send_message = spy
     try:

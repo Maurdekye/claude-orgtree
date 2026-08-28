@@ -176,7 +176,7 @@ DRIVEN: list[tuple] = []
 INTERORG: list[tuple] = []
 
 
-def _spy_send_message(slug, nid, text, command=False, wake=True):
+def _spy_send_message(slug, nid, text, command=False, wake=True, **kw):
     DRIVEN.append((slug, nid, text))
     if not wake:
         return {"accepted": True, "queued": 0, "parked": True}
@@ -477,7 +477,7 @@ def s2_funnel():
         # ordering proof: the spy sees a doc that already holds the mail
         seen = {}
 
-        def probe(slug, nid, text, command=False):
+        def probe(slug, nid, text, command=False, **kw):
             seen[nid] = len(mailbox(slug, nid))
             return {"accepted": True}
         old = supervisor.send_message
@@ -1749,7 +1749,7 @@ def s9_externtool():
         "from orgtree import supervisor, sandbox;"
         "sandbox.warm=lambda o: None;"
         "supervisor.storage_check=lambda s: None;"
-        "supervisor.send_message=lambda s,n,t,command=False: "
+        "supervisor.send_message=lambda s,n,t,command=False,**k: "
         "{'accepted': True, 'queued': 0};"
         "from orgtree import api;"
         "import uvicorn;"

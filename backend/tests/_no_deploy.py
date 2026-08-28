@@ -185,7 +185,7 @@ WAKES: list[tuple[str, str, str, bool]] = []
 _REAL_SEND_MESSAGE = supervisor.send_message
 
 
-def _no_wake(slug, nid, text, command=False, wake=True):    # noqa: ANN001,FBT002
+def _no_wake(slug, nid, text, command=False, wake=True, **kw):  # noqa: ANN001,FBT002
     WAKES.append((slug, nid, text, bool(wake)))
     return {"intercepted": True}
 

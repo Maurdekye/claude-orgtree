@@ -1778,7 +1778,8 @@ async def org_kiosk(slug: str, body: KioskCfg) -> dict[str, Any]:
     for t in drive_after:
         supervisor.send_message(
             slug, t, "(orgtree) The spend freeze was lifted — you have mail "
-                     "above that arrived while frozen; handle it now.")
+                     "above that arrived while frozen; handle it now.",
+            mail_ping=True)
     if supervisor.storage_check(slug) == "cleared":
         cleared.append("storage")
     _token_cache["at"] = 0.0             # rotation/enable takes effect now
@@ -2293,7 +2294,7 @@ def node_message(slug: str, nid: str, body: Message) -> dict[str, Any]:
     sent = supervisor.send_message(
         slug, nid,
         "(orgtree) The mail above includes a message from the user, addressed "
-        "to you — act on it now.")
+        "to you — act on it now.", mail_ping=True)
     if warn:
         sent = {**sent, "warnings": warn + list(sent.get("warnings") or [])}
     return sent
@@ -2515,7 +2516,7 @@ async def credit_request_decide(slug: str, body: CreditDecision) -> dict[str, An
         supervisor.send_message(
             slug, req["node"],
             "(orgtree) The mail above contains the user's decision on your "
-            "credit request — proceed accordingly.")
+            "credit request — proceed accordingly.", mail_ping=True)
     await hub.changed(slug)
     return req
 
@@ -2614,7 +2615,7 @@ async def ask_answer(slug: str, aid: str, body: AskAnswer) -> dict[str, Any]:
             "(orgtree) The mail above answers the question you asked the "
             "user — act on it now." if not body.dismiss else
             "(orgtree) The mail above reports that the user dismissed your "
-            "question — proceed accordingly.")
+            "question — proceed accordingly.", mail_ping=True)
     await hub.changed(slug)
     return {"answered": aid, "node": r["node"]}
 
@@ -2654,7 +2655,7 @@ async def batch_resolve(slug: str, nid: str, body: BatchResolve) -> dict[str, An
             slug, r["node"],
             "(orgtree) The mail above resolves your request batch — act on "
             "it now. A skipped tab returned unanswered; re-ask it later if "
-            "it still matters.")
+            "it still matters.", mail_ping=True)
     await hub.changed(slug)
     return {"resolved": nid}
 
@@ -3199,7 +3200,8 @@ async def user_audience(slug: str, body: AudienceAction) -> dict[str, Any]:
             raise HTTPException(422, str(e))
         store.save_org(org)
     for t in result.pop("drive", []):
-        supervisor.send_message(slug, t, "(orgtree) You have new mail above.")
+        supervisor.send_message(slug, t, "(orgtree) You have new mail above.",
+                                mail_ping=True)
     await hub.changed(slug)
     return result
 
@@ -4244,7 +4246,7 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
         supervisor.send_message(
             body.org, target,
             "(orgtree) You have new mail above — handle it as appropriate, and use "
-            "orgtree_status when your own task state changes.")
+            "orgtree_status when your own task state changes.", mail_ping=True)
     if notice_to is not None:
         # wake=False: steer a running recipient so the notice arrives
         # mid-task like any mail would, but an idle one stays idle — the
@@ -4253,7 +4255,7 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
             body.org, notice_to,
             "(orgtree) A notice arrived in your mail above — informational, "
             "no reply expected. Note it and continue your current task.",
-            wake=False)
+            wake=False, mail_ping=True)
         if isinstance(result, dict):
             result["delivery"] = (
                 "steered into the recipient's running turn"
@@ -5242,7 +5244,8 @@ def org_op(slug: str, body: Op, request: Request) -> dict[str, Any]:
         supervisor.send_message(
             slug, t,
             "(orgtree) Mail above arrived while you were archived and waited "
-            "for you — you are live again; handle it as appropriate.")
+            "for you — you are live again; handle it as appropriate.",
+            mail_ping=True)
     return result
 
 

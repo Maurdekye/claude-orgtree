@@ -1440,7 +1440,7 @@ def hermetic() -> None:
         real = supervisor.send_message
 
         def _spy(s: str, n: str, t: str, command: bool = False,
-                 wake: bool = True) -> dict:
+                 wake: bool = True, **kw) -> dict:
             seen.append((n, wake))
             return {}
         supervisor.send_message = _spy            # type: ignore[assignment]
@@ -1762,6 +1762,158 @@ def hermetic() -> None:
             "the refused call started the rate-limit clock"
     check("selfrestart · a refusal spends nothing — the rate limit is untouched",
           _refusal_launches_nothing_and_burns_no_rate_limit)
+
+    print("\nphantom wakes — a mail pointer must never arrive at an empty box:")
+
+    # THE BUG (user-reported 2026-08-28, measured in the coordinator's own
+    # transcript). A drive nudge is queued PER SEND, but `take_mail` drains the
+    # box WHOLESALE. Two messages to a busy node therefore queued two banners
+    # against one box: the first delivery rendered "[MAIL — 2 message(s)]" and
+    # emptied it, and the second arrived with nothing above it — a full agent
+    # turn whose entire user-side content was
+    #   "(orgtree) You have new mail above — handle it as appropriate…"
+    # Scanning every transcript on the reporting machine found 8 such turns,
+    # the last 100 seconds before the report.
+    #
+    # These checks pin BOTH halves of the repair: no two pointers may queue
+    # against one box, and a pointer that drains nothing is dropped rather
+    # than delivered. They fail on the parent commit.
+
+    def _the_mechanism_itself_two_banners_one_box():
+        # THE REPRO, written against primitives the buggy build also had, so
+        # it demonstrates the DEFECT rather than merely exercising the fix —
+        # it passes on both sides, and that is the point: what it pins is the
+        # WHOLESALE DRAIN, which is the reason two pointers can never both be
+        # honoured. Delete it only if `take_mail` stops emptying the box.
+        slug, (nid,) = horg()
+        banner = ("(orgtree) You have new mail above — handle it as "
+                  "appropriate, and use orgtree_status when your own task "
+                  "state changes.")
+        hpost(slug, nid, "first")
+        hpost(slug, nid, "second")
+        # what the boundary feed does to each queued carrier, in order
+        first, tok1, _ = supervisor._envelope(slug, nid, banner, via="turn")
+        second, tok2, _ = supervisor._envelope(slug, nid, banner, via="turn")
+        assert "[MAIL — 2 message(s)]" in first and tok1, \
+            f"the first delivery did not carry both messages: {first[:120]!r}"
+        assert tok2 is None and second.lstrip().startswith("(orgtree)"), \
+            f"expected the second delivery to be a bare banner: {second!r}"
+        assert "[MAIL" not in second, \
+            "the second delivery somehow rendered a mail block"
+        # ⇧ THAT is the phantom wake, reproduced: a turn whose entire
+        # user-side content is a banner pointing at an empty mailbox. The fix
+        # is upstream of here — never let a second pointer get this far.
+    check("phantom · REPRO: two banners, one wholesale-drained box",
+          _the_mechanism_itself_two_banners_one_box)
+
+    def _queued_pointers_are_marked_so_delivery_can_drop_them():
+        # Both pointers still QUEUE — coalescing was backed out on purpose
+        # (`_mark_ping`'s note: `deepqueue` needs ordinary mail to be able to
+        # build a long queue). What must hold is that each carrier is
+        # RECOGNISABLE as a pointer, because that is what lets the delivery
+        # sites drop the one that arrives at an empty box.
+        slug, (nid,) = horg()
+        st = supervisor.state(slug, nid)
+        st["busy"] = True                       # mid-turn: sends must queue
+        try:
+            hpost(slug, nid, "first")
+            supervisor.send_message(slug, nid, "(orgtree) mail above",
+                                    mail_ping=True)
+            hpost(slug, nid, "second")
+            supervisor.send_message(slug, nid, "(orgtree) mail above",
+                                    mail_ping=True)
+            assert len(st["queue"]) == 2, \
+                f"expected both pointers queued, got {len(st['queue'])}"
+            assert all(supervisor._carrier_is_ping(q) for q in st["queue"]), \
+                (f"a queued pointer is not marked as one ({st['queue']!r}) — "
+                 f"delivery cannot tell it apart from real text, so the "
+                 f"phantom wake survives")
+            # the FIRST delivery takes the whole box …
+            first, tok1, _ = supervisor._envelope(slug, nid, "p", via="turn")
+            assert "first" in first and "second" in first and tok1
+            # … and the second now has nothing, which is what gets it dropped
+            assert not supervisor._has_deliverable(slug, nid), \
+                "the box was not emptied by the first delivery"
+        finally:
+            st["busy"] = False
+            st["queue"].clear()
+    check("phantom · queued pointers are marked, so delivery can drop them",
+          _queued_pointers_are_marked_so_delivery_can_drop_them)
+
+    def _a_pointer_that_drains_nothing_is_not_delivered():
+        slug, (nid,) = horg()
+        # the box is empty — exactly the state the second pointer used to meet
+        text, tok, _ = supervisor._envelope(slug, nid, "(orgtree) mail above",
+                                            via="turn")
+        assert tok is None, "nothing should have drained from an empty box"
+        assert text.lstrip().startswith("(orgtree)"), \
+            "the envelope grew a prelude out of an empty mailbox"
+        # …so the gate must refuse to spend a turn on it
+        assert not supervisor._has_deliverable(slug, nid), \
+            "an empty mailbox reported something to deliver"
+        assert supervisor._carrier_is_ping(supervisor._mark_ping("x")), \
+            "a marked pointer did not read back as one"
+        assert not supervisor._carrier_is_ping("plain text"), \
+            "an unmarked carrier was mistaken for a pointer"
+    check("phantom · an empty box yields a bare banner, and the gate sees it",
+          _a_pointer_that_drains_nothing_is_not_delivered)
+
+    def _a_boxed_notice_still_counts_as_deliverable():
+        # `waking_mail` excludes notices (they must not START a turn), but the
+        # phantom gate asks a different question — "will the envelope have a
+        # body" — and a notice DOES render. Using the wrong predicate here
+        # would swallow every notice riding a turn somebody else started.
+        slug, (nid,) = horg()
+        with store.DOC_LOCK:
+            org = store.load_org(slug)
+            org.d.setdefault("notices", {})[nid] = [
+                {"at": "2026-08-28T00:00:00Z", "text": "cfg changed"}]
+            store.save_org(org)
+        assert supervisor._has_deliverable(slug, nid), \
+            "a boxed notice was treated as nothing to deliver"
+    check("phantom · a boxed NOTICE counts as deliverable (not waking_mail)",
+          _a_boxed_notice_still_counts_as_deliverable)
+
+    def _self_contained_nudges_are_never_dropped():
+        # a restart replay, a watchdog payload, an unstick text: these read
+        # correctly with an empty mailbox and MUST survive it. Only callers
+        # that opt in with mail_ping=True are droppable.
+        slug, (nid,) = horg()
+        st = supervisor.state(slug, nid)
+        st["busy"] = True
+        try:
+            supervisor.send_message(slug, nid, "[ORGTREE RESTART] continue")
+            supervisor.send_message(slug, nid, "[ORGTREE RESTART] continue")
+            assert len(st["queue"]) == 2, \
+                (f"self-contained nudges were coalesced ({len(st['queue'])} "
+                 f"queued) — those carry their own content and cannot be "
+                 f"reconstructed from a mailbox")
+            assert not any(supervisor._carrier_is_ping(q) for q in st["queue"]), \
+                "an unmarked nudge was tagged as a mail pointer"
+        finally:
+            st["busy"] = False
+            st["queue"].clear()
+    check("phantom · self-contained nudges neither coalesce nor drop",
+          _self_contained_nudges_are_never_dropped)
+
+    def _a_pointer_still_wakes_when_there_IS_mail():
+        # the fix must not overshoot: real mail still drives a real turn
+        slug, (nid,) = horg()
+        hpost(slug, nid, "genuine work")
+        assert supervisor._has_deliverable(slug, nid), \
+            "real boxed mail was judged undeliverable — this would DROP mail"
+        st = supervisor.state(slug, nid)
+        st["busy"] = True
+        try:
+            r = supervisor.send_message(slug, nid, "(orgtree) mail above",
+                                        mail_ping=True)
+            assert r.get("queued") == 1, \
+                f"a pointer against a FULL box was swallowed: {r}"
+        finally:
+            st["busy"] = False
+            st["queue"].clear()
+    check("phantom · real mail still queues its pointer and wakes the node",
+          _a_pointer_still_wakes_when_there_IS_mail)
 
 
 # ================================================================= live rig
