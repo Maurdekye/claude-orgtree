@@ -60,6 +60,12 @@ MUTANTS = {
     # M6 — OUTSIDE mail stops reporting its losses. Two lines in the file read
     # `entry["attachments_missing"] = lost`; this takes the LAST, which is
     # post_external_mail's.
+    # M7 — the ARCHIVED-recipient return stops carrying warnings while the
+    # live path keeps them. A value replacement, so the endpoint still
+    # returns a valid 200 dict and the check must fail on its ASSERTION.
+    "m7-deferred-no-warning": ("orgtree/api.py",
+                               'return {"accepted": True, "deferred": True, "queued": 0,', 2, None,
+                               '        return {"accepted": True, "deferred": True, "queued": 0}'),
     "m6-no-extern": ("orgtree/ledger.py",
                      'entry["attachments_missing"] = lost', 1, -1),
 }
@@ -88,7 +94,7 @@ def apply(name):
         i = hits[pick]
     indent = " " * (len(lines[i]) - len(lines[i].lstrip()))
     body = lines[i:i + span]
-    if not body[-1].rstrip().endswith((")", "]", ":", "lost", "split())")):
+    if not body[-1].rstrip().endswith((")", "]", "}", ":", "lost", "split())")):
         raise SystemExit(
             f"☠ REFUSING: {name} would cut a statement mid-expression — the "
             f"last line of its span is {body[-1]!r}. Fix the span.")
