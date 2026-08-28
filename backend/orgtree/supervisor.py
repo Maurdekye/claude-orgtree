@@ -9755,7 +9755,7 @@ def _wd_popen(org: Org, owner: str, cmd: str,
         argv, shell = [exe, "-lc", cmd], False
     else:
         argv, shell = cmd, True
-    return subprocess.Popen(
+    proc = subprocess.Popen(
         argv, shell=shell, cwd=scratch_dir(slug, owner),
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, encoding="utf-8", errors="replace",
@@ -9766,6 +9766,52 @@ def _wd_popen(org: Org, owner: str, cmd: str,
         env=spawn_env(org),
         creationflags=(subprocess.CREATE_NO_WINDOW      # type: ignore[attr-defined]
                        if os.name == "nt" else 0))
+    # ⚠ WHICH TREE THIS CHILD BELONGS TO IS THE WHOLE QUESTION (D-176). It is
+    # spawned HERE, on a backend thread, so its parent is the backend and NOT
+    # the CLI of whichever turn armed the dog — which is why a dog outlives its
+    # creator's turn, as advertised. Measured on the live box 2026-08-29: a
+    # stream dog's `cmd.exe` had the backend's pid as its parent while the
+    # arming agent's CLI was a different process entirely.
+    # `_leash` then ties it to the backend the same way every CLI child is
+    # tied, so the OTHER end is bounded too: a force-killed backend reaps its
+    # dogs' children instead of leaving listeners behind for the restarted
+    # engine to duplicate.
+    _leash(proc)
+    return proc
+
+
+def _wd_kill_tree(proc: "subprocess.Popen[str] | None") -> None:
+    """Kill a dog's child AND everything it started.
+
+    ⚠ `proc.kill()` IS NOT ENOUGH ON WINDOWS, and this was measured on the
+    live box (2026-08-29), not reasoned about. `_wd_popen` runs the target
+    through `cmd.exe /c <target>`, so the process we hold is the SHELL and the
+    target is its child. Killing the shell leaves the grandchild running with
+    no parent: a create-time smoke run of `ping -n 100000 127.0.0.1` was killed
+    after its 8-second timeout and the PING was still running afterwards,
+    orphaned, good for another twenty-seven hours. Every create with a target
+    that outlives the smoke window leaked one.
+
+    So the whole tree goes, by pid, through the OS. `taskkill /T` walks the
+    real parent-child links rather than a list we would have to keep in step
+    with reality."""
+    if proc is None or proc.poll() is not None:
+        return
+    if os.name == "nt":
+        try:
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                           capture_output=True, timeout=15,
+                           creationflags=subprocess.CREATE_NO_WINDOW)  # type: ignore[attr-defined]
+        except (OSError, subprocess.SubprocessError):
+            pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
+    try:
+        proc.wait(timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
 
 
 # How much of a check's raw output rides on the dog. Enough to READ the shell's
@@ -9776,6 +9822,25 @@ _WD_OUT_KEEP = 400
 _WD_QUIET_CHECKS = 20                    # checks with no match…
 _WD_QUIET_AGE_S = 2 * 3600               # …over this long
 _WD_NEVER_RAN_AGE_S = 300                # armed this long with ZERO checks
+
+# ---------------------------------------------- the subject-liveness detector
+# D-176. MEASURE THE SUBJECT, NOT THE WATCHER.
+#
+# ⚠ COUNTED IN OBSERVATIONS, NEVER IN WALL TIME, and that is the whole of this
+# subsystem's restart-safety. An orgtree restart kills every watcher process on
+# the machine — that is normal, and a dog's advertised virtue is surviving it.
+# A check only happens while orgtree is UP, so downtime accrues no staleness at
+# all: the counter simply stops. Immunity to the restart is therefore
+# STRUCTURAL, not a case someone has to remember to special-case.
+#
+# ⚠ SO DO NOT "SIMPLIFY" THIS TO `if now - last_seen > 3600`. That version
+# reads every deploy as a dead producer, and a false death here DELETES A
+# WORKING INSTRUMENT while a late one merely leaves us where we already are.
+# Those costs are not symmetric; the counter shape is what keeps them apart.
+_WD_STALE_CHECKS = 60          # consecutive checks with NO sign of life…
+_WD_STALE_AGE_S = 3600         # …and this long since the last sign
+_WD_BROKEN_STREAK = 3          # command checks that could not run AT ALL
+_WD_SPENT_CHECKS = 20          # a spent `pid:` dog, this many checks on
 
 
 def wd_shell(org: Org, shell_pref: Any = None) -> str:
@@ -9865,6 +9930,113 @@ def _wd_hours(sec: float) -> str:
     return f"{sec / 86400:.1f}d"
 
 
+def _wd_note_life(hw: dict[str, Any], alive: bool) -> None:
+    """Record whether THIS check saw the subject do something.
+
+    `alive` is a POSITIVE observation — the file grew, the process answered,
+    the command ran — not "nothing looked wrong". The counter it keeps is the
+    only input to `wd_subject_lost`, so what counts as a sign of life is
+    decided once, per kind, at the call site, and never inferred later from an
+    absence."""
+    if alive:
+        hw["quiet"] = 0
+        hw["alive_at"] = now_iso()
+    else:
+        hw["quiet"] = int(hw.get("quiet") or 0) + 1
+        hw.setdefault("alive_at", now_iso())
+
+
+def _wd_stale_ok(w: dict[str, Any]) -> tuple[int, float | None]:
+    """(consecutive silent checks, seconds since the last sign of life)."""
+    hw = cast("dict[str, Any]", w.get("high_water") or {})
+    return int(hw.get("quiet") or 0), _wd_age_s(hw.get("alive_at"))
+
+
+def wd_subject_lost(w: dict[str, Any]) -> dict[str, Any] | None:
+    """THE SUBJECT DETECTOR (D-176). Has the thing this dog watches stopped
+    producing? Returns {why, headline, advice, pause} or None.
+
+    ⚠ WHAT THIS IS NOT. It is not `wd_health`, which asks "has this dog ever
+    matched?" — a question that returns the SAME sentence for a dead producer
+    and for a healthy one still growing its log (measured 2026-08-29 against
+    the real numbers of the dog that prompted this: 535 checks, 4.5 h, and the
+    identical warning either way). Routing that signal to agents would have
+    been a false-alarm generator, and an alert everybody learns to ignore is
+    worth less than no alert. This asks a different question — has the SUBJECT
+    shown any sign of life — and that one discriminates.
+
+    ⚠ AND IT IS DELIBERATELY BLIND TO THE WATCHER. Whether the polling thread,
+    its process or the whole backend died is not evidence about the subject:
+    a restart kills all three and the producer may be perfectly alive. Every
+    input below is a fact about the watched thing, recorded by a check that
+    actually happened. See the counter note at `_WD_STALE_CHECKS`.
+
+    ⚠ ONE SOURCE OF TRUTH. `wd_health` renders this, so the pushed alert and
+    the pulled `list` line cannot drift into two different diagnoses of the
+    same dog — which is the failure this file already has three comments
+    about."""
+    if w.get("state") != "armed":
+        return None
+    kind, tgt = str(w.get("kind") or ""), str(w.get("target") or "")
+    quiet, since = _wd_stale_ok(w)
+    hw = cast("dict[str, Any]", w.get("high_water") or {})
+    if kind == "command":
+        # NOT "the command failed" — a `findstr` waiting for a string that has
+        # not appeared exits 1 every single time and that is the HEALTHY state
+        # of a working dog. The detectable thing is narrower and certain: the
+        # check could not be performed at all.
+        if int(hw.get("broken") or 0) >= _WD_BROKEN_STREAK:
+            return {
+                "why": "broken",
+                "headline": (f"its target could not be run at all on "
+                             f"{hw.get('broken')} consecutive checks"),
+                "advice": ("this dog cannot fire and never could — fix the "
+                           "target and re-create it. It is PAUSED rather than "
+                           "removed so its own evidence stays readable in "
+                           "`orgtree_watchdog list`."),
+                "pause": True}
+        return None
+    if kind == "process":
+        # A `pid:` dog that has already fired its DOWN edge is SPENT: the pid
+        # is gone and a pid does not come back, so the edge it waits for can
+        # never occur again. Worse than useless — if the OS later recycles the
+        # number onto an unrelated process, the dog fires about a stranger.
+        # `port:` is excluded on purpose: a port genuinely does come back when
+        # its service restarts, which is most of why port dogs exist.
+        if tgt.startswith("pid:") and int(w.get("fired") or 0) > 0 \
+                and hw.get("up") is False and quiet >= _WD_SPENT_CHECKS:
+            return {
+                "why": "spent",
+                "headline": (f"it already fired on {tgt} going DOWN, and a pid "
+                             f"cannot come back — {quiet} checks since have "
+                             f"found nothing and never will"),
+                "advice": ("this dog has done its job. It is PAUSED, not "
+                           "removed, so its record of the event it caught "
+                           "survives; remove it when you have read this."),
+                "pause": True}
+        return None
+    if kind == "file":
+        # ⚠ THE HONEST LIMIT, and it is the kind that actually bit us. A path
+        # does not know what writes it, so a dead producer and a producer with
+        # nothing to say are THE SAME OBSERVATION. This is therefore reported
+        # as STALENESS — a suspicion, said as one — and it NEVER removes or
+        # pauses the dog. Do not upgrade this wording to "died" without a new
+        # source of evidence to justify it (a producer pid would be one).
+        if quiet >= _WD_STALE_CHECKS and since is not None \
+                and since >= _WD_STALE_AGE_S:
+            return {
+                "why": "stale",
+                "headline": (f"{tgt} has not grown through {quiet} consecutive "
+                             f"checks over {_wd_hours(since)}"),
+                "advice": ("this is STALENESS, not proof of death: a quiet "
+                           "file and a dead writer look identical from here. "
+                           "If you expected something to be writing it, go and "
+                           "check that it is still alive. The dog is left "
+                           "ARMED and will fire normally if the file grows."),
+                "pause": False}
+    return None
+
+
 def wd_health(w: dict[str, Any]) -> str | None:
     """THE ABSTENTION DETECTOR (2026-08-22). Returns a plain-words warning
     about a dog that is quietly not working, or None when there is nothing to
@@ -9891,6 +10063,13 @@ def wd_health(w: dict[str, Any]) -> str | None:
         return (f"⚠ BROKEN — the target does not run: its output says "
                 f"\"{sig}\". This dog can never fire. Its last output was: "
                 f"{out[:200]!r}")
+    lost = wd_subject_lost(w)
+    if lost:
+        # rendered from the SAME predicate the engine mails on (D-176), so the
+        # pulled line and the pushed alert cannot become two diagnoses of one
+        # dog. It sits above the "never matched" note deliberately: that note
+        # is true of this dog too and says much less.
+        return f"⚠ {lost['headline']} — {lost['advice']}"
     if kind == "stream":
         if runs == 0 and age is not None and age >= _WD_QUIET_AGE_S:
             return (f"⚠ armed {_wd_hours(age)} ago and has read ZERO output "
@@ -10010,11 +10189,9 @@ def wd_smoke(org: Org, owner: str, kind: str, target: str,
         code = None
     t.join(0.5)
     if code is None:
-        try:
-            proc.kill()
-            proc.wait(timeout=2)
-        except (OSError, subprocess.TimeoutExpired):
-            pass
+        # THE TREE, not just the shell: `ping -n 100000 127.0.0.1` outlived
+        # exactly this kill on the live box and one leaked per create (D-176)
+        _wd_kill_tree(proc)
     out = "\n".join(lines).strip()
     res["exit_code"] = code
     res["output"] = out[:_WD_OUT_KEEP] or "(no output)"
@@ -10189,6 +10366,89 @@ def _wd_fire(slug: str, wid: str, name: str, lines: list[str],
                      wake=not notice, mail_ping=True)
 
 
+def wd_alert_body(w: dict[str, Any], lost: dict[str, Any]) -> str:
+    """The mail an owner gets when its dog's SUBJECT stopped producing.
+
+    ⚠ THE CONTEXT IS THE DELIVERABLE, not the fact. "Your watchdog stopped"
+    tells an agent nothing it can act on; "the log you are waiting on has not
+    grown in 1.4 h, last written 21:20, 168 checks, and here is what the dog
+    sees" tells it to go and look at the producer. The agent this was built
+    for sat idle for ninety minutes because nothing said either sentence."""
+    tgt = str(w.get("target") or "")
+    kind = str(w.get("kind") or "")
+    quiet, since = _wd_stale_ok(w)
+    age = _wd_age_s(w.get("at"))
+    facts = [f"watching   : {kind} · {tgt}",
+             f"armed      : {_wd_hours(age)} ago" if age is not None
+             else "armed      : (unknown)",
+             f"checks run : {int(w.get('checks_run') or 0)}"
+             f"  ·  fired so far: {int(w.get('fired') or 0)}",
+             f"silent for : {quiet} consecutive checks"
+             + (f", {_wd_hours(since)}" if since is not None else ""),
+             f"last check : {w.get('last_check') or '(never)'}"]
+    if kind == "file":
+        try:
+            st = os.stat(tgt)
+            facts.append(f"the file   : {st.st_size} bytes, last written "
+                         + _dtm.datetime.fromtimestamp(
+                             st.st_mtime, _dtm.timezone.utc)
+                         .isoformat(timespec="seconds").replace("+00:00", "Z"))
+        except OSError as e:
+            facts.append(f"the file   : CANNOT BE READ — {e.strerror or e}")
+    if w.get("last_output"):
+        facts.append(f"it sees    : {str(w['last_output'])[:300]!r}")
+    return (f"[WATCHDOG {w.get('name')}] ⚠ {lost['headline'].upper()}\n\n"
+            + "\n".join(facts)
+            + f"\n\n{lost['advice']}\n\n"
+            + ("⚠ This is about the THING BEING WATCHED, not about orgtree. "
+               "Restarts and deploys do not produce this message: the counter "
+               "above only advances on checks that actually ran (D-176)."))
+
+
+def _wd_alert(slug: str, wid: str, lost: dict[str, Any]) -> None:
+    """Tell the owner its dog's subject went quiet — ONCE per episode, and
+    wake it, because the whole defect is an agent sitting idle believing it is
+    still being watched over.
+
+    ⚠ The episode key is the REASON, and it is cleared by `_wd_note_life` the
+    moment the subject shows life again, so a log that goes quiet, comes back
+    and goes quiet again is reported twice — correctly — while one that is
+    simply dead is reported once and then left alone. An alert that repeats
+    every interval is an alert that gets filtered.
+
+    ⚠ Pause (when the reason says so) and mail are ordered so they cannot get
+    out of step in the direction that hurts: the pause is recorded first,
+    under the doc lock, and ONLY a dog this call actually claimed goes on to
+    mail. A dog silently paused and never announced would turn a wait into a
+    permanent AND invisible one — worse than the bug being fixed."""
+    owner = None
+    with store.DOC_LOCK:
+        try:
+            org = store.load_org(slug)
+            w = org._watchdog(wid)
+        except LedgerError:
+            return
+        if w.get("state") != "armed" or w.get("alerted_why") == lost["why"]:
+            return                            # already told them, or not ours
+        w["alerted_why"] = lost["why"]
+        owner = org.watchdog_alert(wid, wd_alert_body(w, lost))
+        if owner and lost.get("pause"):
+            # only after the mail is in the box, and under the same lock: a
+            # dog paused without anyone being told turns a wait into a
+            # permanent AND invisible one, which is worse than the bug
+            w["state"] = "paused"
+            w["paused_why"] = f"{lost['headline']} — {lost['advice']}"
+        store.save_org(org)
+    if not owner:
+        return
+    mail_spark(slug, "dogalert:" + wid, owner)
+    send_message(slug, owner,
+                 "(orgtree) A watchdog of yours reports that the thing it "
+                 "watches has gone quiet — the mail above carries what it "
+                 "last saw. It is NOT a report about orgtree restarting.",
+                 wake=True, mail_ping=True)
+
+
 def _wd_mark_check(w: dict[str, Any], now_t: float, raw: str = "",
                    code: Any = None) -> None:
     """Stamp a dog with the fact that a check RAN, and with what it saw.
@@ -10232,6 +10492,7 @@ def _wd_check_poll(slug: str, w: dict[str, Any],
         except OSError as e:
             # NOT silence: an unreadable target is the single most likely
             # reason a file dog never fires, and it used to look like patience
+            _wd_note_life(hw, False)
             return [], hw, f"(cannot read {tgt}: {e.strerror or e})"
         off = int(hw.get("off") or 0)
         grew = 0
@@ -10255,6 +10516,7 @@ def _wd_check_poll(slug: str, w: dict[str, Any],
                     fb.seek(off)
                     raw = fb.read(1_000_000)    # bounded per check
             except OSError as e:
+                _wd_note_life(hw, False)
                 return [], hw, f"(cannot open {tgt}: {e.strerror or e})"
             # …and a line is only an event once it is WHOLE. A writer that
             # flushes mid-line used to have its line split across two checks,
@@ -10279,12 +10541,18 @@ def _wd_check_poll(slug: str, w: dict[str, Any],
                     continue
                 if pat is None or pat.search(ln):
                     lines.append(ln)
+        # GROWTH is this kind's only sign of life, and it is a positive
+        # observation rather than an inference from "nothing looked wrong".
+        # It was already computed here and thrown away into a sentence; D-176
+        # keeps it as a number, because a sentence cannot be counted.
+        _wd_note_life(hw, grew > 0)
         return lines, hw, (f"({tgt} is {size} bytes; +{grew} new byte(s) this "
                            f"check, {len(lines)} matched)")
     if kind == "process":
         up = _wd_proc_alive(tgt)
         was_up = hw.get("up")
         hw["up"] = up
+        _wd_note_life(hw, up)
         seen = f"({tgt} is {'UP' if up else 'DOWN'})"
         if was_up is True and not up:           # the DOWN edge, only
             return [f"{tgt} went DOWN"], hw, seen
@@ -10317,14 +10585,17 @@ def _wd_run_command(org: Org,
         proc = _wd_popen(org, str(w["owner"]), tgt, w.get("shell"))
         out, _ = proc.communicate(timeout=60)
     except subprocess.TimeoutExpired:
+        # the TREE, not the shell (D-176) — a command dog whose target hangs
+        # past 60s used to leave the target itself running every interval,
+        # forever, while the dog reported a tidy timeout
+        _wd_kill_tree(proc)
         try:
-            proc.kill()
             # drain + reap after the kill (redteam, 2026-08-12): kill()
             # without a second communicate() leaks the pipe buffers and the
             # zombie — tolerable when checks were serial, a real leak once
             # several run concurrently on this pool
             proc.communicate(timeout=5)
-        except (OSError, subprocess.TimeoutExpired):
+        except (OSError, subprocess.TimeoutExpired, ValueError):
             pass
         msg = f"(watchdog command timed out after 60s: {tgt[:100]})"
         return [msg], msg, None
@@ -10364,10 +10635,27 @@ def _wd_cmd_submit(slug: str, w: dict[str, Any], org: Org,
                 w2 = o2._watchdog(wid)
             except LedgerError:
                 return                          # removed mid-check
+            # ⚠ NOT "the command failed" — a `findstr` waiting for a string
+            # that has not appeared exits 1 on every check, and that is a
+            # HEALTHY dog doing its job. The countable thing is narrower: the
+            # shell said the target does not exist, so no check happened at
+            # all. A timeout and a failed spawn are excluded here on purpose —
+            # both already come back as matching lines and FIRE, so the owner
+            # is told by the ordinary path (D-176).
+            hw2 = dict(cast("dict[str, Any]", w2.get("high_water") or {}))
+            broke = bool(wd_output_broken(raw))
+            hw2["broken"] = (int(hw2.get("broken") or 0) + 1) if broke else 0
+            _wd_note_life(hw2, not broke)
+            w2["high_water"] = hw2
             _wd_mark_check(w2, now_t, raw, code)
+            if not broke:
+                w2.pop("alerted_why", None)
             store.save_org(o2)
+            lost = wd_subject_lost(w2)
         if lines:
             _wd_fire(slug, wid, str(w["name"]), lines)
+        if lost:
+            _wd_alert(slug, wid, lost)
 
     try:
         fut = _wd_cmd_pool.submit(_wd_run_command, org, dict(w))
@@ -10427,9 +10715,17 @@ def _wd_tick() -> None:
                     continue                    # removed mid-check
                 w2["high_water"] = hw
                 _wd_mark_check(w2, now_t, seen)
+                if not int(hw.get("quiet") or 0):
+                    # the subject is alive again — re-arm the alert, so a log
+                    # that goes quiet, resumes and goes quiet again is
+                    # reported both times (D-176)
+                    w2.pop("alerted_why", None)
                 store.save_org(o2)
+                lost = wd_subject_lost(w2)
             if lines:
                 _wd_fire(slug, wid, str(w["name"]), lines)
+            if lost:
+                _wd_alert(slug, wid, lost)
     # streams whose dog was removed/paused since spawn: reap
     with _wd_lock:
         live_keys = list(_wd_streams.keys())
@@ -10555,10 +10851,10 @@ def _wd_reap_stream(key: tuple[str, str]) -> None:
     with _wd_lock:
         ent = _wd_streams.pop(key, None)
     if ent is not None:
-        try:
-            ent["proc"].kill()
-        except OSError:
-            pass
+        # a stream dog's target is a LISTENER — the longest-lived child this
+        # subsystem makes and the one most worth reaping properly. Killing the
+        # cmd.exe wrapper left the listener itself running (D-176).
+        _wd_kill_tree(ent["proc"])
 
 
 # ------------------------------------------- phantom external handles (D-166)

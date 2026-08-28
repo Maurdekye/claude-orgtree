@@ -4773,6 +4773,43 @@ class Org:
         self._log("watchdog_fire", owner, {"id": wid, "gist": gist[:80]}, [])
         return owner
 
+    def watchdog_alert(self, wid: str, body: str) -> str | None:
+        """Post a dog's SELF-REPORT to its owner — the subject went quiet, the
+        target cannot be run, the dog is spent (D-176). Returns the owner to
+        drive, or None.
+
+        ⚠ Deliberately NOT `watchdog_fire`, though it is the same mailbox.
+        A fire means "the condition you asked about happened"; this means "I
+        can no longer answer the question you asked". Routing it through
+        `watchdog_fire` would increment `fired`, and `fired` is the counter
+        the whole abstention diagnosis is read from — a dog reporting its own
+        failure would start looking like a dog that had been working. The
+        instrument must not corrupt the evidence it exists to preserve.
+
+        ⚠ It also does NOT pause an archived owner's dog the way a fire does.
+        That is `_wd_owner_lost`'s job on every tick now, and doing it here
+        as well would let an alert about a QUIET FILE overwrite a
+        `paused_why` that says the owner was archived."""
+        w = self._watchdog(wid)
+        owner = str(w["owner"])
+        if owner not in self.nodes or self.node(owner)["state"] != "live":
+            return None
+        entry: MailEntry = {
+            "id": uuid.uuid4().hex[:12], "from": str(w["name"]),
+            "kind": "watchdog", "body": body[:8000], "at": now(),
+            "relationship": "your watchdog"}
+        box = cast("dict[str, list[dict[str, Any]]]",
+                   self.d.setdefault("mail", {}))
+        box.setdefault(owner, []).append(dict(entry))
+        # same mirror as a fire, for the same reason: `mail` is the pending
+        # queue and the inbox tab reads `mail_log`, so an alert the owner's
+        # turn drains would otherwise vanish from the panel entirely
+        log = self.d.setdefault("mail_log", {}).setdefault(owner, [])
+        log.append(cast(MailEntry, dict(entry)))
+        del log[:-100]
+        self._log("watchdog_alert", owner, {"id": wid, "why": body[:80]}, [])
+        return owner
+
     def rename(self, actor: str, nid: str, new_name: str) -> dict[str, Any]:
         """FULL identity rename (user ruling 2026-08-05): the id itself
         changes and the whole doc re-keys — nodes (lineage generations

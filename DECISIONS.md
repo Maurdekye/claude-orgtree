@@ -3680,6 +3680,198 @@ Load-bearing:
   sat off screen. Same rule and same fix as the drift alarm (D-158): exclude
   lines a check reported itself passing on.
 
+### D-176 · a watchdog owes its owner a word when its subject dies — and the predicate is MEASURE THE SUBJECT, NOT THE WATCHER
+Ruling (coordinator, 2026-08-29, on a diagnosis by `lying-instruments`; user
+instruction: *"if a watchdog watcher process dies, the dog should be removed
+and the agent running it immediately notified with the context of the
+failure"*, with the added constraint *"make sure this doesnt conflict with
+orgtree shutdowns and restarts, which would also kill watchdog watcher
+processes, but shouldnt remove the dogs"*).
+
+**What happened.** `inline-images@0` armed a file dog on a tier log and waited
+for `RUN COMPLETE`. The tier was killed about a minute after its owner's turn
+ended. The log's last write was 21:20 and the string was never going to be
+appended. **The agent sat idle for ninety minutes believing it was waiting on
+a slow run.** It was not stuck and it was not wrong: it was watching a corpse,
+and an armed dog and a dog whose producer has died are indistinguishable from
+outside. `armed, fired: 0` cannot tell you which.
+
+**The finding, and it is worth more than the mechanism it justifies.** The
+diagnosis *already existed*. Reconstructing that dog's real numbers — 535
+checks over 4.5 h, never matched — and calling the shipped `wd_health` on them
+returns a warning, and always did, sitting in the org doc the whole time.
+Nobody was ever told, because **`wd_health` is pull-only: it answers a question
+you have to already suspect the answer to**, and an agent that believes it is
+waiting on a slow job does not call `list`.
+
+And then the measurement that saved us from the obvious fix: feed the same
+function a file that is demonstrably **growing**, with the same age and the
+same check count, and **it returns the identical sentence**. Routing that
+existing signal to agents would have been a false-alarm generator, and an
+alert everyone learns to ignore is worth less than no alert — it consumes the
+attention the one real alert needed. **An instrument that cannot discriminate
+is worse than none once you act on it.** That is the general lesson; the
+mechanism below is only what follows from it.
+
+**The rule.** *Measure the SUBJECT, not the WATCHER.* Whether the polling
+thread, its process, or the whole backend died is evidence about **nothing**:
+an orgtree restart kills every watcher on the machine, and surviving restarts
+is a watchdog's advertised virtue. So the naive detector — "my watcher is
+gone, therefore the dog is dead, therefore remove it" — deletes working
+instruments on the very event they exist to outlive.
+
+**And the counter is in OBSERVATIONS, not wall time.** A check only happens
+while orgtree is up, so downtime accrues no staleness at all: the counter
+stops. Restart-immunity is therefore **structural**, not a case someone has to
+remember to handle. ⚠ Do not "simplify" this to `if now - last_seen > 3600` —
+that version reads every deploy as a dead producer. A false death **destroys a
+working instrument**; a late one merely leaves us where we already were. Those
+costs are not symmetric, and the counter shape is what keeps them apart.
+
+**What each kind can honestly know** — three mechanisms, not one pretending to
+cover cases it cannot see:
+
+| kind | can it know? | what it does |
+|---|---|---|
+| `stream` | **yes** — the engine owns the child and has its exit code | already correct: fires `STREAM EXITED — (code N)` with the tail, state `exited`; an empty in-memory table after a restart means RE-SPAWN, never a false exit |
+| `process` | **yes** — a dead subject *is* the event | already correct: the DOWN edge lives in `high_water`, so a subject that died *during* a restart is still caught on the first tick back |
+| `command` | **partly** | NOT "the command failed" — a `findstr` waiting for a string exits 1 every check and that is **healthy**. Only "the check could not be performed at all", over a streak. **Paused**, not removed. |
+| `file` | **no** | a path does not know what writes it. Reported as **STALENESS in those words**, and the dog is **left armed**. |
+
+**Three decisions, taken deliberately.**
+1. **File dogs are never removed by this mechanism** — a deviation from the
+   user's literal instruction, ruled by the coordinator and reported to them.
+   "No bytes for an hour" and "dead producer" are the same observation;
+   removing on it would destroy working instruments on a suspicion.
+2. **Pause, not remove, wherever action is warranted.** `paused_why` keeps the
+   evidence readable in `list`; a removed dog takes its own diagnosis with it,
+   and the diagnosis is the deliverable.
+3. **The alert WAKES, once per episode, re-arming when the subject revives.**
+   A notice would land in the mailbox of an agent that is not running, which
+   is exactly the ninety minutes being fixed. Repeating every interval would
+   get it filtered, and then the next real one is invisible.
+
+**The context is the deliverable, not the notification.** "Your watchdog
+stopped" teaches an agent nothing it can act on. The mail carries what was
+watched, how long it waited, how many checks it ran, the file's size and last
+write time (or the command's last exit and output), what to conclude, and an
+explicit line saying this is *not* about orgtree restarting.
+
+**Two mechanical rules that fall out of the same work:**
+- **`watchdog_alert` is deliberately not `watchdog_fire`.** A fire means "the
+  condition you asked about happened"; an alert means "I can no longer answer
+  the question you asked". Routing the second through the first would
+  increment `fired`, and `fired` is the counter the whole abstention diagnosis
+  is read from — the instrument must not corrupt the evidence it exists to
+  preserve.
+- **Pause and mail may not get out of step.** A dog silently paused and never
+  announced turns a wait into a permanent *and invisible* one, which is worse
+  than the bug. The mail is posted first, under the same lock, and only a dog
+  the call actually claimed goes on to be paused.
+
+**A watchdog's own execution is already divorced from the turn that armed it,
+and that is now pinned by a test rather than assumed.** The engine is a daemon
+thread in the BACKEND (`api.py` → `start_watchdog_engine`), so a dog's child is
+the backend's child; measured on the live box, a stream dog's `cmd.exe` had the
+backend's pid as its parent while the arming agent's CLI was a different
+process entirely. The property is invisible until it fails, so
+`test_watchdog_death.py` §8 asserts it.
+
+⚠ **But killing a dog's child did not kill what the child started.** `_wd_popen`
+runs the target through `cmd.exe /c`, so `proc.kill()` reaped the SHELL and
+left the target running. Measured: a create-time smoke run of
+`ping -n 100000 127.0.0.1` was killed after its 8-second timeout and the PING
+was still going afterwards, orphaned, good for another twenty-seven hours —
+**one leaked per create** whose target outlived the smoke window, and the same
+shape in the command-dog timeout path and the stream reaper. Fixed with
+`_wd_kill_tree` (`taskkill /T`, which walks the real parent-child links), and
+dog children are now `_leash`ed to the backend so a force-killed backend cannot
+leave listeners behind for the restarted engine to duplicate.
+
+**Also found, live, while measuring the above**: a `pid:` process dog that has
+already fired its DOWN edge is **spent** — a pid does not come back, so the
+edge can never occur again, and if the OS recycles the number the dog fires
+about a stranger. One on this machine had run 2,412 further checks over a day
+against a pid gone since the previous morning, reporting `health: ok`. Spent
+`pid:` dogs are now paused and reported. `port:` dogs are excluded: a port
+genuinely does come back when its service restarts, which is most of why port
+dogs exist.
+
+Cross-refs: D-158 (an instrument that reads text as data must be proved able
+to fail — and this file's §1 caught itself finding the word "dead" in its own
+worktree's directory name), D-168 (an abstention is not a pass), D-157, D-170.
+
+---
+
+### D-177 · a runner bounds the damage of the tests it runs, because the tests cannot bound themselves
+Ruling (coordinator, 2026-08-29, on a diagnosis by `memory-leak`):
+`frontend/tests/run.mjs` passes an explicit `--test-timeout` to every child it
+spawns — default 10 s, scaled by `--reps`, overridden by
+`ORGTREE_TEST_TIMEOUT_MS`. Node's own default is **no timeout at all**: a child
+spawned by `--test` carries `--test-timeout=0`, so a hung test hangs until
+something outside the runner stops it. **An unbounded timeout converts a local
+hang into a machine-wide incident**, and those are two different failures with
+two different owners — the hang belongs to whoever wrote the test, the incident
+belongs to the runner. A test cannot bound its own damage, because the code that
+would enforce the bound is the code that is stuck.
+
+Why: one hung suite took the machine down. A single `kbdhire.test.mjs` child
+reached **17.5 GB resident in 13 seconds** and 22 GB / 66 GB commit in ~40 s,
+drove the machine to **0.44 GB free**, and killed the user's editor. Six earlier
+low-memory events the same day (Windows Event 2004) were the same shape; three
+are hard-attributed to frontend runs that ended in
+`RangeError: Array buffer allocation failed`. Every one of them died on its own
+at the commit ceiling — the failure is **self-limiting but not harmless**, which
+is exactly the shape that gets tolerated for a day because nothing stays broken.
+
+The bound is measured, not guessed: the slowest legitimate test in the suite is
+**593 ms** across 246 tests, so 10 s is ~17x real headroom. It is deliberately
+**not** the 60 s the first cut of this patch carried — at 13 s to 17.5 GB, a 60 s
+bound would have permitted nearly the whole incident. **A bound loose enough to
+never fire is not a bound**; picking it requires knowing what the slowest honest
+case actually costs, which means measuring the suite before choosing the number.
+
+Bounds: **a timeout bounds TIME, not MEMORY.** At the ~1.5 GB/s that incident
+allocated, even 10 s is several GB. This makes an unbounded machine-wide event
+into a bounded, survivable one; it does not make it free, and it is not a
+substitute for a suite's own `{ timeout }` or for fixing the hang. Note also
+that `--max-old-space-size` is **not** a second line of defence here: it bounds
+V8's old space only, and an `ArrayBuffer` backing store is external to it —
+measured, 1281 MB of external allocation under a 256 MB cap with the cap never
+firing. A V8 heap flag cannot bound this failure class.
+
+Load-bearing: the known trigger is **process-global `mock.timers`
+(`useFakeClock()`) under a concurrent runner** — node's MockTimers is per
+process, so concurrent top-level tests each swapping the clock leave a
+timer-driven component running against a clock another test has reset. The
+header of `sysnotice.test.tsx` recorded this before it recurred (a case that sat
+178 s and died on the same allocation failure); it recurred anyway in a second
+file, which is why it is registered here rather than left as a file comment. The
+demonstration is a clean before/after on one fault: with concurrent top-level
+tests a failing §6 took **121,902 ms** and a trivial §7 was starved to
+**6,037 ms**; restructured to sequential subtests, the same failing §6 took
+**18 ms**. A trivial test taking six seconds is the mechanism showing itself,
+not an inference about it. The remedy in a suite is one top-level `test()` with
+`{ concurrency: 1 }`; this ruling is the backstop for the ones nobody has found.
+
+Provenance worth keeping: the diagnosis came out of two agents correcting each
+other in the direction that cost each of them the argument. `urgent-mail`'s first
+mechanism (node serialising a jsdom element into an assert diff) was refuted by
+measurement — the failure message is a **constant 75 characters** from 31 to 6001
+elements — and they conceded it; `memory-leak`'s npm-log inference and its lean
+against a test runner were both wrong, and `urgent-mail` predicted correctly that
+the trap would catch a `node tests/run.mjs …` command line. Neither would have
+got there alone. The trap itself only worked because it was proved able to fire
+against a planted subject before being trusted to report a clean sheet (D-158).
+
+Outstanding, deliberately not absorbed: the **00:24:07** exhaustion event that
+day is unattributed. It is not covered by this ruling and should not be filed
+under it merely because the pattern fits the others.
+
+Cross-refs: D-157 (a test run must be able to say it did not finish), D-158 (an
+instrument must be proved able to fail), D-168 (an abstention is not a pass),
+D-170 (a test rig dies with its suite).
+
 ---
 
 ## Deliberately not built
