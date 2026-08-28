@@ -14,7 +14,7 @@ import {
   LockIcon, MailIcon, RetireIcon, SettingsIcon,
 } from '../icons'
 import {
-  ago, DESK_SCALE, deskDpi, DRAFT, freezeKind, FREEZE_LABEL_SHORT, NODE_H, NODE_W, TIER_LETTER, TIERS, USER,
+  ago, CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DESK_SCALE, deskDpi, DRAFT, freezeKind, FREEZE_LABEL_SHORT, NODE_H, NODE_W, TIER_LETTER, TIERS, USER,
   USER_H, USER_W,
 } from './shared'
 import type {
@@ -436,6 +436,18 @@ function SpawnChips({ onSpawn, free, seats, maxTier, side, soleHire }: SpawnChip
           </button>
         )
       })}
+      {/* the codex family (FR-15 preview) — on the SUBORDINATE strip only:
+          the side/top sets are edge-gated geometry that three more chips
+          would crowd, and one strip is enough to say the family exists.
+          Disabled until the provider adapter lands; the accounts panel
+          carries the full install/connect story. */}
+      {!side && CODEX_TIERS.map((t) => (
+        <button key={t} disabled className={'t-' + t + ' codex-preview'}
+          title={`${t} — ChatGPT (Codex) preview; hiring is not enabled yet`
+            + ` (-${CODEX_TIER_SEAT[t]})`}>
+          {CODEX_TIER_LETTER[t]}
+        </button>
+      ))}
     </div>
   )
 }

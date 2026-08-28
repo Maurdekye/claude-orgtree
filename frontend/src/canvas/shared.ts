@@ -28,6 +28,15 @@ export const TIER_SEAT: Record<string, number> =
  *  seat cost and never appears as a chip, only in the gear. A tier absent
  *  here, or present with one entry, offers no choice. */
 export const MODEL_VERSIONS: Record<string, string[]> = { opus: ['5', '4.8'] }
+/** The codex family (FR-15 preview) — ChatGPT/OpenAI tiers, GPT-5.6. A
+ *  SEPARATE list, never merged into TIERS: every existing surface iterates
+ *  TIERS, and a family that cannot be hired yet must not grow chips there by
+ *  accident. Mirrors backend providers.py (CODEX_TIERS / CODEX_MODELS) the
+ *  same way TIER_SEAT mirrors ledger.TIERS. Seat costs are the design's §6
+ *  proposal — display-only until codex hire is enabled. */
+export const CODEX_TIERS = ['luna', 'terra', 'sol']
+export const CODEX_TIER_LETTER: Record<string, string> = { luna: 'L', terra: 'T', sol: 'S' }
+export const CODEX_TIER_SEAT: Record<string, number> = { luna: 1, terra: 2, sol: 5 }
 
 // ---------------------------------------------------------------- view types
 // The canvas overlays the payload's TreeNode with synthetic cards — the eye

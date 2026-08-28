@@ -270,16 +270,30 @@ def build_info() -> dict[str, Any]:
     global _build_info_cache
     if _build_info_cache is None:
         commit = "unknown"
+        branch = None
         try:
             r = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
                                 cwd=sbx.REPO_ROOT, capture_output=True,
                                 text=True, timeout=10)
             if r.returncode == 0:
                 commit = r.stdout.strip() or "unknown"
+            # the BRANCH too (FR-15 preview deploys): a branch deploy was
+            # identifiable only by its unfamiliar SHA, which is only
+            # actionable to someone holding the log. "HEAD" (detached) and
+            # "main" stay None — the badge shows a name only when the name
+            # says something the SHA does not.
+            b = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                               cwd=sbx.REPO_ROOT, capture_output=True,
+                               text=True, timeout=10)
+            if b.returncode == 0:
+                name = b.stdout.strip()
+                if name and name not in ("HEAD", "main"):
+                    branch = name
         except (OSError, subprocess.TimeoutExpired):
             pass
         _build_info_cache = {
             "commit": commit,
+            "branch": branch,
             "started_at": _dtm.datetime.now(_dtm.timezone.utc).isoformat(),
         }
     return _build_info_cache

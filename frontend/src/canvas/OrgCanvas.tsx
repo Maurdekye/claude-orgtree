@@ -13,7 +13,7 @@ import {
   FullscreenIcon, PublicIcon, RemoveIcon, ViewListIcon,
 } from '../icons'
 import {
-  ago, attentionPip, DOG_H, DOG_W, DRAFT, ease, edgeJumpPlacement, type EJForm, EXTERN, fallbackActive, flatten, INBOX, INBOX_H, layout, NODE_H, NODE_W, orgPxc, segD,
+  ago, attentionPip, CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DOG_H, DOG_W, DRAFT, ease, edgeJumpPlacement, type EJForm, EXTERN, fallbackActive, flatten, INBOX, INBOX_H, layout, NODE_H, NODE_W, orgPxc, segD,
   segPoint, sizeOf, smooth, SPRING_C, SPRING_K, TIER_LETTER, TIERS, USER, USER_H,
   USER_W, withDraftTree, Z_DESK, Z_MAX, Z_MINI,
 } from './shared'
@@ -2165,6 +2165,18 @@ function HireSheet({ anchor, seats, defaultGrant, onHire, onClose }: {
               onClick={() => setTier(t)}>
               <span className={'tier t-' + t}>{TIER_LETTER[t]}</span>
               {t} · seat {seats[t] ?? '?'}
+            </button>
+          ))}
+        </div>
+        {/* codex family (FR-15 preview) — visible, not selectable: hiring
+            lands with the provider adapter. Mirrors the canvas strip. */}
+        <div className="field-label">ChatGPT (Codex) — preview</div>
+        <div className="hs-tiers">
+          {CODEX_TIERS.map((t) => (
+            <button key={t} className={'hs-tier t-' + t} disabled
+              title="hiring is not enabled yet — codex support is a preview">
+              <span className={'tier t-' + t}>{CODEX_TIER_LETTER[t]}</span>
+              {t} · seat {CODEX_TIER_SEAT[t]}
             </button>
           ))}
         </div>

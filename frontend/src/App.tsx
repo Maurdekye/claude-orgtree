@@ -25,7 +25,8 @@ import { AskCard } from './canvas/asks'
 import { AccountsPanel, UsageBars } from './canvas/accounts'
 import { addPending, dropPending, ingestPulse, ingestStream, resetConvos } from './convo'
 import type {
-  AskInfo, AudiencesPayload, DefaultsPayload, InboxPayload, KioskSpecRequest,
+  AskInfo, AudiencesPayload, DefaultsPayload, HostPayload, InboxPayload,
+  KioskSpecRequest,
   MailEntry, OpRequest, OrgEvent, OrgListEntry, SweepPreview, ToastFn,
   ToastUndo, TreeFrozen, TreeNode, TreePayload, UsageLimit, UsagePeek,
 } from './types'
@@ -123,7 +124,7 @@ export default function App() {
   // can look at the page and confirm which deploy is actually serving —
   // fetched once, since it cannot change without a process restart (see
   // supervisor.build_info)
-  const [build, setBuild] = useState<{ commit: string, started_at: string } | null>(null)
+  const [build, setBuild] = useState<HostPayload['build'] | null>(null)
   useEffect(() => { getHost().then((h) => setBuild(h.build)).catch(() => {}) }, [])
   const wsRef = useRef<WebSocket | null>(null)
   useEffect(() => {
@@ -318,8 +319,10 @@ export default function App() {
       <h1><SparkIcon fontSize="inherit" /> orgtree
         {build && build.commit !== 'unknown' &&
           <span className="build-badge"
-            title={`running commit ${build.commit} — started ${new Date(build.started_at).toLocaleString()}`}>
-            {build.commit}</span>}
+            title={`running commit ${build.commit}`
+              + (build.branch ? ` (branch ${build.branch})` : '')
+              + ` — started ${new Date(build.started_at).toLocaleString()}`}>
+            {build.branch ? `${build.branch}@${build.commit}` : build.commit}</span>}
         <a className="gh-link h1-gh" href="https://github.com/Maurdekye/claude-orgtree"
           target="_blank" rel="noreferrer" title="orgtree on GitHub">
           <GitHubIcon fontSize="inherit" /></a>

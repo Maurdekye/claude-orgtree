@@ -812,6 +812,13 @@ button.cc-name:hover {
   --tier-sonnet: #3d8ce6;
   --tier-opus: #dcb0f5;
   --tier-fable: #e8b04b;
+  /* the codex family (FR-15 preview) — placeholder hues pending the same
+     CVD ΔE pass the four above got: separation leans on LIGHTNESS (luna pale,
+     terra mid, sol saturated-warm), and every surface that shows them also
+     shows the L/T/S letter, so color is never the only channel. */
+  --tier-luna: #b9c4d6;
+  --tier-terra: #7fae5f;
+  --tier-sol: #ff8a3d;
   --ice: #a8d4ea;           /* frozen (usage limit) — pale ice, deliberately
                                whiter than the saturated credit-bar cyans */
 }
@@ -824,6 +831,9 @@ button.cc-name:hover {
 .tier.t-sonnet { color: var(--tier-sonnet); border-color: color-mix(in srgb, var(--tier-sonnet) 45%, var(--line)); }
 .tier.t-opus { color: var(--tier-opus); border-color: color-mix(in srgb, var(--tier-opus) 45%, var(--line)); }
 .tier.t-fable { color: var(--tier-fable); border-color: color-mix(in srgb, var(--tier-fable) 45%, var(--line)); }
+.tier.t-luna { color: var(--tier-luna); border-color: color-mix(in srgb, var(--tier-luna) 45%, var(--line)); }
+.tier.t-terra { color: var(--tier-terra); border-color: color-mix(in srgb, var(--tier-terra) 45%, var(--line)); }
+.tier.t-sol { color: var(--tier-sol); border-color: color-mix(in srgb, var(--tier-sol) 45%, var(--line)); }
 /* lifecycle fills: archived fades (existing); knowledge bearers wash grey.
 
    ⚠ THE WASH IS A LIFECYCLE FILL, SO IT ONLY BELONGS ON A CARD THAT IS NOT
@@ -1630,6 +1640,13 @@ button.cc-name:hover {
 .hsof button.t-sonnet:hover:not(:disabled) { border-color: var(--tier-sonnet); }
 .hsof button.t-opus:hover:not(:disabled) { border-color: var(--tier-opus); }
 .hsof button.t-fable:hover:not(:disabled) { border-color: var(--tier-fable); }
+/* codex family (FR-15 preview) — same idiom; the strip's preview chips are
+   permanently disabled, so no hover leg. A touch dimmer than the generic
+   :disabled .35 would leave them: these are "coming", not "can't afford". */
+.hsof button.t-luna { color: var(--tier-luna); border-color: color-mix(in srgb, var(--tier-luna) 45%, var(--line)); }
+.hsof button.t-terra { color: var(--tier-terra); border-color: color-mix(in srgb, var(--tier-terra) 45%, var(--line)); }
+.hsof button.t-sol { color: var(--tier-sol); border-color: color-mix(in srgb, var(--tier-sol) 45%, var(--line)); }
+.hsof button.codex-preview:disabled { opacity: .45; border-style: dashed; }
 /* (the desk needs no special case — the universal --invz counter-scale keeps
    the chips screen-constant below the card border at any zoom) */
 
@@ -3065,6 +3082,8 @@ html.mobile .hire-sheet .hs-tier {
   border-radius: 8px; color: var(--ink); padding: 0 12px; font-size: 14px;
 }
 html.mobile .hire-sheet .hs-tier.on { border-color: var(--accent); background: var(--accent-soft); }
+/* the codex preview group's rows — "coming", not selectable */
+html.mobile .hire-sheet .hs-tier:disabled { opacity: .45; border-style: dashed; }
 html.mobile .hire-sheet .hs-place { display: flex; flex-direction: column; gap: 4px; }
 html.mobile .hire-sheet input { font-size: 16px; min-height: 44px; }
 
@@ -3169,6 +3188,19 @@ html.mobile .md table { display: block; overflow-x: auto; max-width: 100%; }
   display: inline-flex; align-items: center; justify-content: center;
   border-radius: 4px; font-size: 15px; }
 .acct-panel .acct-add { width: 62px; }
+/* ---- provider sections (FR-15 preview): a head per vendor over its rows ---- */
+.acct-provider-head { display: flex; align-items: baseline; gap: 6px;
+  font-size: 13px; font-weight: 600; color: var(--ink-strong);
+  border-bottom: 1px solid var(--line); padding-bottom: 3px; margin-top: 4px; }
+.acct-provider-head .dim { font-weight: 400; font-size: 11.5px; }
+.acct-preview-tag { margin-left: auto; font-size: 9.5px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .06em; color: var(--dim);
+  border: 1px dashed var(--line); border-radius: 8px; padding: 1px 7px; }
+.acct-prov-note { font-size: 12.5px; line-height: 1.5; }
+.acct-prov-note code { font-size: 11px; }
+.acct-prov-tiers { display: flex; flex-wrap: wrap; gap: 6px 14px;
+  font-size: 12.5px; }
+.acct-prov-tier { display: inline-flex; align-items: center; gap: 6px; }
 /* ---- the header usage modal's per-account sections ---- */
 .usage-acct { display: flex; flex-direction: column; gap: 6px;
   border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }

@@ -1,0 +1,175 @@
+"""The provider registry (FR-15 preview): codex tiers exist as DATA, never as
+hireable seats.
+
+    python backend/tests/test_providers.py      (no pytest; plain asserts)
+
+The axis ships before the adapter, so the ONE invariant that matters is
+negative: nothing budget-bearing may learn the codex tiers. providers.py keeps
+them out of ledger.TIERS on purpose — that way hire/rehire/switch_model reject
+"sol" with the same "unknown tier" every other bad string gets, and there is
+no new guard anywhere to rot. §2 proves the rejection AGAINST a proven-working
+hire (anti-vacuity: a broken hire path would also "reject" sol, silently).
+
+Detection (§3) is exercised hermetically: ORGTREE_CODEX pointed at files this
+suite writes — a missing path, then a stub that answers `--version` — and
+CODEX_HOME at a temp dir whose auth.json this suite authors. No network, no
+real codex, no credential material beyond a fabricated JWT whose only claim
+is an email this suite invented.
+"""
+
+import base64
+import json
+import os
+import sys
+import tempfile
+
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+os.environ["ORGTREE_DATA"] = tempfile.mkdtemp(prefix="orgtree-providers-")
+os.makedirs(os.environ["ORGTREE_DATA"], exist_ok=True)
+# an unreachable hub, or every org this rig creates registers against the
+# operator's REAL roster (test_external_mail §1 guards exactly this)
+with open(os.path.join(os.environ["ORGTREE_DATA"], "defaults.json"), "w",
+          encoding="utf-8") as _f:
+    _f.write('{"net_hub_address": "http://127.0.0.1:9"}')
+
+from orgtree import providers                                      # noqa: E402
+from orgtree.ledger import (LedgerError, MODELS, Org, TIERS,       # noqa: E402
+                            USER)
+
+PASS = 0
+
+
+def check(label, fn):
+    global PASS
+    fn()
+    PASS += 1
+    print(f"  ok {PASS:2d}  {label}")
+
+
+def eq(got, want, what):
+    if got != want:
+        raise AssertionError(f"{what}: got {got!r}, wanted {want!r}")
+
+
+def raises(fn, needle, what):
+    try:
+        fn()
+    except LedgerError as e:
+        if needle not in str(e):
+            raise AssertionError(f"{what}: error said {e!r}, wanted {needle!r}")
+        return
+    raise AssertionError(f"{what}: no error raised")
+
+
+def main():
+    print("§1 the registry's two families")
+    check("codex tiers are DISJOINT from ledger.TIERS — the load-bearing "
+          "invariant: no budget-bearing table knows them",
+          lambda: eq(sorted(set(providers.CODEX_TIERS) & set(TIERS)), [],
+                     "overlap"))
+    check("claude_tiers mirrors ledger exactly (name, seat, model), cheap "
+          "first",
+          lambda: eq([(t["tier"], t["seat"], t["model"])
+                      for t in providers.claude_tiers()],
+                     [(t, TIERS[t], MODELS[t])
+                      for t in sorted(TIERS, key=lambda k: TIERS[k])],
+                     "claude family"))
+    check("codex family is luna 1 · terra 2 · sol 5, gpt-5.6 ids, cheap first",
+          lambda: eq([(t["tier"], t["seat"], t["model"])
+                      for t in providers.codex_tiers()],
+                     [("luna", 1, "gpt-5.6-luna"),
+                      ("terra", 2, "gpt-5.6-terra"),
+                      ("sol", 5, "gpt-5.6-sol")], "codex family"))
+    check("every codex tier carries a chip letter",
+          lambda: eq([bool(t["letter"]) for t in providers.codex_tiers()],
+                     [True, True, True], "letters"))
+
+    print("§2 codex tiers cannot be hired, rehired into, or switched to")
+    org = Org.create("prov-test")
+    org.hire(USER, None, "opus", 20, "top")
+    top = next(i for i, n in org.d["nodes"].items()
+               if n.get("parent") is None)
+    # anti-vacuity: the org demonstrably ACCEPTS hires before we lean on its
+    # refusals — a hire path broken for everyone would also "reject" sol
+    org.hire(USER, top, "haiku", 0, "canary")
+    check("(canary) a claude hire works, so the refusals below mean something",
+          lambda: eq(len(org.d["nodes"]), 2, "node count"))
+    for bad in providers.CODEX_TIERS:
+        check(f"hire of {bad!r} is refused as an unknown tier",
+              lambda b=bad: raises(
+                  lambda: org.hire(USER, top, b, 0, f"x-{b}"),
+                  "unknown tier", f"hire {bad}"))
+    canary = next(i for i in org.d["nodes"] if i != top)
+    check("switch_model to 'sol' is refused the same way",
+          lambda: raises(lambda: org.switch_model(USER, canary, "sol"),
+                         "unknown tier", "switch"))
+
+    print("§3 detection — hermetic, against files this suite writes")
+    tmp = tempfile.mkdtemp(prefix="orgtree-codexdet-")
+    os.environ["CODEX_HOME"] = os.path.join(tmp, "home")
+    os.makedirs(os.environ["CODEX_HOME"], exist_ok=True)
+
+    os.environ["ORGTREE_CODEX"] = os.path.join(tmp, "nowhere", "codex.exe")
+    st = providers.codex_status(force=True)
+    check("an env override pointing at NOTHING is not 'installed' — it must "
+          "route the user to the override, not to `codex login`",
+          lambda: eq((st["installed"], st["source"]), (False, "env"), "state"))
+    pay = providers.providers_payload({"installed": True})
+    codex = next(p for p in pay["providers"] if p["id"] == "openai")
+    check("…and the payload's reason says install, not sign-in",
+          lambda: eq("not installed" in (codex["reason"] or ""), True,
+                     f"reason {codex['reason']!r}"))
+
+    stub = os.path.join(tmp, "codex.cmd")
+    with open(stub, "w", encoding="ascii") as f:
+        f.write("@echo codex-cli 9.9.9\n")
+    os.environ["ORGTREE_CODEX"] = stub
+    st = providers.codex_status(force=True)
+    check("a real (stub) CLI probes to its --version — no package.json "
+          "anywhere above it, so this exercises the subprocess leg",
+          lambda: eq((st["installed"], st["version"]), (True, "9.9.9"),
+                     "probe"))
+    check("…but with no auth.json it is not connected",
+          lambda: eq(st["connected"], False, "connected"))
+
+    email = "probe@example.test"
+    payload = base64.urlsafe_b64encode(
+        json.dumps({"email": email}).encode()).decode().rstrip("=")
+    with open(os.path.join(os.environ["CODEX_HOME"], "auth.json"), "w",
+              encoding="utf-8") as f:
+        json.dump({"tokens": {"id_token": f"eyJh.{payload}.sig"}}, f)
+    st = providers.codex_status(force=True)
+    check("a chatgpt-login auth.json reads as connected, with the identity "
+          "decoded for display (anti-vacuity: the planted email must be SEEN)",
+          lambda: eq((st["connected"], st["kind"], st["email"]),
+                     (True, "chatgpt", email), "chatgpt lane"))
+    with open(os.path.join(os.environ["CODEX_HOME"], "auth.json"), "w",
+              encoding="utf-8") as f:
+        json.dump({"OPENAI_API_KEY": "sk-proj-fake"}, f)
+    st = providers.codex_status(force=True)
+    check("an API-key auth.json reads as connected via the key lane",
+          lambda: eq((st["connected"], st["kind"]), (True, "api-key"),
+                     "key lane"))
+
+    print("§4 the payload the panel renders")
+    pay = providers.providers_payload({"installed": True, "connected": True})
+    check("exactly two providers, claude first",
+          lambda: eq([p["id"] for p in pay["providers"]],
+                     ["claude", "openai"], "order"))
+    codex = next(p for p in pay["providers"] if p["id"] == "openai")
+    check("codex hire_enabled is HARD False in the preview — flipping it is "
+          "the adapter phase's job, not a config option",
+          lambda: eq(codex["hire_enabled"], False, "hire_enabled"))
+    check("…and connected-but-preview still explains itself",
+          lambda: eq(bool(codex["reason"]), True, "reason"))
+    claude = next(p for p in pay["providers"] if p["id"] == "claude")
+    check("the claude entry passes the composed status through, hireable",
+          lambda: eq((claude["hire_enabled"], claude["status"]["installed"]),
+                     (True, True), "claude entry"))
+
+    print(f"\n{PASS} checks passed")
+
+
+if __name__ == "__main__":
+    main()

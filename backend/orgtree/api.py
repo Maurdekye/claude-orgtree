@@ -39,7 +39,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, model_validator
 
 from . import ledger as ledger_mod
-from . import accounts, limits, net, sandbox, store, subproxy, supervisor
+from . import accounts, limits, net, providers, sandbox, store, subproxy, supervisor
 from .ledger import LedgerError, Org, USER, VIS_LEVELS, norm_dirs, norm_tools
 
 if TYPE_CHECKING:
@@ -2086,6 +2086,27 @@ def host_info() -> dict[str, Any]:
             "python": {"prefix": sys.prefix,
                        "venv": sys.prefix != sys.base_prefix,
                        "version": sys.version.split()[0]}}
+
+
+@app.get("/api/providers")
+async def providers_info() -> dict[str, Any]:
+    """The provider axis (FR-15 preview): each vendor's tier family and this
+    machine's install/connect state for its CLI. The claude entry is composed
+    from state the API layer already owns; the codex entry is providers.py's
+    own read-only detection. Threadpooled: a cold codex probe may run a
+    `--version` subprocess (hard 15s timeout), which must not stall the
+    event loop the way it would stall nothing else."""
+    from fastapi.concurrency import run_in_threadpool
+
+    def _payload() -> dict[str, Any]:
+        live = accounts.live_identity()
+        return providers.providers_payload({
+            "installed": True,
+            "version": supervisor.cli_version(),
+            "connected": bool(live.get("uuid")),
+            "email": live.get("email") or None,
+        })
+    return await run_in_threadpool(_payload)
 
 
 class Reorder(Body):

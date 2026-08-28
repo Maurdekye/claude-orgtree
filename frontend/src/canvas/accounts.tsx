@@ -25,11 +25,12 @@
 
 import { useEffect, useRef, useState } from 'react'
 import type {
-  AccountsPayload, AccountUsage, TierStanding, ToastFn, UsageLimit,
+  AccountsPayload, AccountUsage, ProviderInfo, TierStanding, ToastFn,
+  UsageLimit,
 } from '../types'
 import {
   addAccountKey, deleteAccountKey, getAccounts, getAccountUsage,
-  setAccountKeyOrder,
+  getProviders, setAccountKeyOrder,
 } from '../api'
 import { CheckIcon, DataUsageIcon, DeleteIcon } from '../icons'
 import { TIER_LETTER, TIERS, useEsc } from './shared'
@@ -176,6 +177,19 @@ export function AccountsPanel({ toast, close }: {
     .catch((e: Error) => setErr(e.message))
   useEffect(() => { void load() }, [])
 
+  // the provider axis (FR-15 preview) — the section heads' install/connect
+  // state. NON-FATAL by design: the Claude rows above predate providers and
+  // must keep working if this endpoint is missing (an old backend) or slow.
+  const [providers, setProviders] = useState<ProviderInfo[] | null>(null)
+  useEffect(() => {
+    getProviders().then((p) => setProviders(p.providers)).catch(() => {})
+  }, [])
+  const claudeProv = providers?.find((p) => p.id === 'claude')
+  const codex = providers?.find((p) => p.id === 'openai')
+  const srcLabel: Record<string, string> = {
+    pin: 'private pin', env: 'ORGTREE_CODEX', path: 'on PATH',
+  }
+
   const run = (p: Promise<AccountsPayload>, ok: string) => {
     setBusy(true)
     p.then((d) => { setData(d); if (ok) toast([ok]) })
@@ -282,6 +296,15 @@ export function AccountsPanel({ toast, close }: {
 
         {data && (
           <>
+            {/* ── provider section: Claude (FR-15 preview) — a head over
+                the rows that were the whole panel while Claude was the only
+                provider; everything under it is untouched. */}
+            <div className="acct-provider-head">
+              Claude
+              <span className="dim"> · Claude Code
+                {claudeProv?.status.version ? ` ${claudeProv.status.version}` : ''}</span>
+            </div>
+
             {/* ── the primary row: the machine's own login ─────────────── */}
             <div className="acct-line">
               {chips('primary')}
@@ -372,6 +395,55 @@ export function AccountsPanel({ toast, close }: {
                 </div>
               </div>
             </div>
+
+            {/* ── provider section: ChatGPT (Codex) — FR-15 preview.
+                Machine-level install/connect state for the Codex CLI, and
+                the tier family it will bring. Hiring stays off until the
+                provider adapter lands (design §5 Phase 1); the `reason`
+                line below is the server's word on what would come next. */}
+            <div className="acct-provider-head">
+              ChatGPT (Codex)
+              <span className="dim"> · Codex CLI
+                {codex?.status.version ? ` ${codex.status.version}` : ''}</span>
+              <span className="acct-preview-tag">preview</span>
+            </div>
+            {!codex && (
+              <div className="dim acct-prov-note">
+                {providers ? 'provider state unavailable' : 'reading provider state…'}
+              </div>
+            )}
+            {codex && (
+              <>
+                <div className="acct-prov-note">
+                  {codex.status.installed
+                    ? <>
+                      installed
+                      {codex.status.source
+                        && <span className="dim"> ({srcLabel[codex.status.source]
+                          ?? codex.status.source})</span>}
+                      {' — '}
+                      {codex.status.connected
+                        ? <>signed in
+                          {codex.status.email && <> as <b>{codex.status.email}</b></>}
+                          {codex.status.kind === 'api-key' && <> (API key)</>}
+                        </>
+                        : 'not signed in'}
+                    </>
+                    : 'not installed on this machine'}
+                </div>
+                <div className="acct-prov-tiers">
+                  {codex.tiers.map((t) => (
+                    <span key={t.tier} className="acct-prov-tier">
+                      <span className={'tier t-' + t.tier}>{t.letter}</span>
+                      {t.tier} · seat {t.seat}
+                      <span className="dim"> · {t.model}</span>
+                    </span>
+                  ))}
+                </div>
+                {codex.reason
+                  && <div className="dim acct-prov-note">{codex.reason}</div>}
+              </>
+            )}
           </>
         )}
 

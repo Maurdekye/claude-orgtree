@@ -842,11 +842,45 @@ export interface McpServersPayload {
 export interface HostPayload {
   docker: boolean
   sandbox_mcp: boolean
-  // the commit the running backend was started from — frozen at process
-  // start, so it never goes stale from an on-disk `git pull` alone
-  build: { commit: string, started_at: string }
+  // the commit (and branch, when not main/detached) the running backend was
+  // started from — frozen at process start, so it never goes stale from an
+  // on-disk `git pull` alone
+  build: { commit: string, branch?: string | null, started_at: string }
   cli_version: string
 }
+
+/** GET /api/providers — the provider axis (FR-15 preview): which model
+ *  vendors this install knows, each with its tier family and this machine's
+ *  install/connect state for its CLI. `hire_enabled` stays false for codex
+ *  until the provider adapter lands; `reason` is the UI's tooltip/why. */
+export interface ProviderTier {
+  tier: string
+  provider: string
+  seat: number
+  model: string
+  letter: string
+}
+export interface ProviderInfo {
+  id: string
+  label: string
+  cli: string
+  tiers: ProviderTier[]
+  status: {
+    installed: boolean
+    version?: string | null
+    path?: string | null
+    /** how the CLI was found: 'env' | 'pin' | 'path' | '' */
+    source?: string
+    connected?: boolean
+    email?: string | null
+    /** 'chatgpt' (subscription login) or 'api-key' */
+    kind?: string | null
+    codex_home?: string
+  }
+  hire_enabled: boolean
+  reason: string | null
+}
+export interface ProvidersPayload { providers: ProviderInfo[] }
 
 /** one bar of the host subscription's rate-limit standing (GET /api/usage —
  *  the same readout Claude Code shows under /usage). `model` is the display
