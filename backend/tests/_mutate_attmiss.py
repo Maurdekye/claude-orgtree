@@ -35,16 +35,25 @@ MUTANTS = {
     # original defect, restored deliberately.
     "m1-no-record": ("orgtree/api.py",
                      'missing.append(f"{rel} — no such file', 2, None),
-    # M2 — the HTTP caller stops being told (half (b) removed)
+    # M2 — the HTTP caller stops being told (half (b) removed).
+    # ⚠ A REPLACEMENT, not a deletion. Commenting the line out left `warn`
+    # referenced below and the suite died of NameError — which proves only
+    # that the line EXECUTES. A mutant must leave working code that lacks the
+    # behaviour, or the check it "kills" was never shown to detect anything.
     "m2-no-http-warning": ("orgtree/api.py",
-                           'warn = list(r.get("warnings") or [])', 1, None),
+                           'warn = list(r.get("warnings") or [])', 1, None,
+                           "    warn = []"),
     # M3 — the agent stops being told (half (a) removed)
     "m3-no-mail-line": ("orgtree/supervisor.py",
                         'for miss in m.get("attachments_missing") or []:',
                         11, None),
     # M4 — the sanitiser stops collapsing whitespace (forgery re-opened)
+    # M4 — same reasoning as M2: a REPLACEMENT, so the function still returns
+    # a string and the forgery check must fail on its ASSERTION rather than on
+    # a NameError.
     "m4-no-sanitise": ("orgtree/ledger.py",
-                       's = " ".join(str(raw or "").split())', 1, None),
+                       's = " ".join(str(raw or "").split())', 1, None,
+                       '    s = str(raw or "")'),
     # M5 — the cap goes back to trimming silently
     "m5-silent-trim": ("orgtree/ledger.py",
                        'notes.append(f"{over} further attachment(s)', 2, None),
@@ -57,7 +66,9 @@ MUTANTS = {
 
 
 def apply(name):
-    rel, needle, span, pick = MUTANTS[name]
+    spec = MUTANTS[name]
+    rel, needle, span, pick = spec[:4]
+    repl = spec[4] if len(spec) > 4 else None
     path = os.path.join(BE, rel)
     text = io.open(path, encoding="utf-8", newline="").read()
     lines = text.split("\r\n")
@@ -81,7 +92,8 @@ def apply(name):
         raise SystemExit(
             f"☠ REFUSING: {name} would cut a statement mid-expression — the "
             f"last line of its span is {body[-1]!r}. Fix the span.")
-    lines[i:i + span] = [indent + "pass  # MUTANT " + name] + \
+    head = repl if repl is not None else indent + "pass"
+    lines[i:i + span] = [head + "  # MUTANT " + name] + \
                         ["# MUTANT " + b for b in body]
     io.open(path, "w", encoding="utf-8", newline="").write("\r\n".join(lines))
     print(f"applied {name}: {rel} line {i + 1}, {span} line(s) commented")

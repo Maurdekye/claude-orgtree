@@ -2278,6 +2278,85 @@ All current Claude models accept image input, `claude-fable-5` included, so no
 tier needs a capability degrade. If the vendor's numbers change, this entry is
 stale and the suite will not notice — it pins our behaviour, not their limits.
 
+### D-171 · a guarantee is only as wide as the layer that can see it
+Found 2026-08-28 by **@org:resonite**, an outside org, testing an answer this
+org had just given them in writing. They asked whether a user's attached image
+reaches an agent as image content or only as a path. Our reply described the
+never-dropped guarantee in D-167 — and, in the same message, described the
+API-layer filter that made it false. They sent a message whose only attachment
+was `uploads/definitely-never-uploaded.png`, got HTTP 200 `{"accepted":true}`,
+and found ZERO attachment lines in the delivered mail. Reproduced here over
+real HTTP against a live uvicorn before any fix; the probe is the record.
+
+**The defect.** `api.py`'s staged-attachment loop turned a path into a `meta`
+only if it resolved inside the node's scratch. A path that did not resolve was
+skipped — no error, no warning, no record. `metas` is the only thing handed to
+`post_mail`, `entry["attachments"]` is the only thing `_mail_block` iterates,
+so every "nothing is ever silently dropped" line in that renderer was running
+strictly downstream of a list the attachment never entered. **The renderer
+could not report what it was never given.** The agent could not tell an
+attachment had ever been intended; the sender could not tell it had not
+arrived.
+
+**The general lesson, which is why this is an entry and not a patch note.** The
+D-167 guarantee was true of `_mail_block` and stated as true of the system. A
+guarantee inherits the blindness of the layer that enforces it, and the failure
+mode is specific: it reads as *stronger* than it is, precisely where the gap
+is. Their upload code deliberately fails loudly when our endpoint returns no
+path; under our wording that looks like over-engineering someone would tidy
+away. A false guarantee is worse than none, because it is acted on.
+
+**What was built.** Both audiences are told, and neither substitutes for the
+other — an HTTP client cannot read an agent's context, and an agent cannot
+retry the caller's upload:
+- the AGENT gets `[ATTACHMENT NOT DELIVERED — …]` from a new
+  `attachments_missing` field on the mail entry;
+- the CALLER gets `warnings` in the 200 response. `post_mail` had always
+  built that list and `node_message` had always discarded it, which is why a
+  message with a dead attachment was byte-identical to a clean send.
+
+**Why `attachments_missing` is a separate field.** The obvious shape — a
+placeholder in `attachments` with `bytes: 0`, reusing the renderer — is wrong,
+and checking rather than assuming is what caught it: `attachments` is ALSO what
+the chat renders as download cards and inline images (`canvas/desk.tsx`), and
+the user's own Sent copy carries the same list. A placeholder there would put a
+dead card and a broken image in the user's chat — a worse bug than the one
+being fixed, wearing a fix's clothes.
+
+**Status stays 200.** The message WAS delivered; only an attachment was not. A
+non-200 for delivered mail would be its own lie, and would bounce the user's
+text along with it.
+
+**Caller-supplied names are sanitised** (`undeliverable_note`: whitespace
+collapsed, 160 chars). The text reaches an agent's context, and on the
+org-inbox path the sender is untrusted — a newline would forge a line inside
+the `[MAIL]` block, the same injection the FR-05 `reply_to` gist collapses for.
+
+**Three siblings of the same defect, closed here.** Two independent silent
+`[:10]` truncations (`api.py` and `ledger.py`) — now one named
+`ATTACHMENT_MAX` whose overflow is REPORTED, because `list(x)[:10]` is a
+silent drop wearing a slice's clothes; and `deliver_org_inbox`'s
+`except OSError: pass`, whose own comment admitted the drop. A known silent
+failure with a note explaining it is worse than an unknown one: everyone who
+read it moved on.
+
+**Bounds, stated rather than glossed.** On the agent→USER path the loss is
+recorded and the SENDING AGENT is warned, but the user's inbox UI does not
+render it — it renders `attachments` and knows nothing of the new field. That
+is sufficient only because `_agent_send_file` already refuses a bad path
+outright, so the sole cause reaching that branch is the sender's own overflow,
+and the sender is who can resend. A cause the USER must see would need a UI
+leg this entry does not build.
+
+**Pinned by** `test_inline_images.py` §5, which enters at `node_message` — the
+layer that decides what becomes an attachment — and not at the renderer. A
+suite that only ever enters at the renderer cannot see a caller that never
+calls it, which is exactly how the original defect stayed green. Six mutants
+(`tests/_mutate_attmiss.py`), each proven landed by `git diff` before its
+result was read; two were rewritten as value REPLACEMENTS after the first pass
+killed checks with `NameError`, which proves only that a line executes, not
+that a check detects the missing behaviour.
+
 ### D-169 · urgent mail: a second way in, on the ask's own signal
 Ruling (user, 2026-08-27): an agent may tag USER-BOUND mail urgent. The
 inbox then "pulses and lights up the same way a question ask does", until
