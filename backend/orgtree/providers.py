@@ -39,6 +39,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 from typing import Any, Final, TypedDict
 
@@ -80,6 +81,72 @@ CODEX_MODELS: Final[dict[str, str]] = {
     "terra": "gpt-5.6-terra",
     "luna": "gpt-5.6-luna",
 }
+
+#: the context window the app-server itself reports per turn
+#: (`thread/tokenUsage/updated → modelContextWindow: 258400`, measured on the
+#: live account, Appendix C) — all three gpt-5.6 tiers share it. Long-context
+#: API pricing (2× input) starts near this boundary, so treating it as "full"
+#: keeps compaction ahead of the price step.
+CODEX_CONTEXT: Final[int] = 258_400
+
+#: CURRENT listed API prices per M tokens — (input, cached input, output) —
+#: for COST-dollars, including sol's promotional $4/$20 cut (standard $5/$30,
+#: promo through at least 2026-11-21). SEATS deliberately use the STANDING
+#: input price instead (CODEX_TIERS above): dollars ≠ seats, both by user
+#: ruling 2026-08-28. Cached reads are 10% of input on every tier. Sources
+#: (2×-checked 2026-08-29): aipricing.guru/openai-pricing,
+#: cloudzero.com/blog/gpt-5-6-pricing, layer3labs.io/guides/gpt-5-6-pricing.
+CODEX_PRICES: Final[dict[str, tuple[float, float, float]]] = {
+    "sol": (4.00, 0.40, 20.00),
+    "terra": (2.00, 0.20, 12.00),
+    "luna": (0.20, 0.02, 1.20),
+}
+
+
+def codex_cost(tier: str, token_usage: dict[str, Any] | None) -> float:
+    """Dollars for one turn from the app-server's tokenUsage document.
+
+    The codex CLI reports tokens, never dollars, so orgtree prices the turn
+    itself (design §3.5). Measured field semantics (probe-live.jsonl):
+    `total.inputTokens` INCLUDES the cached reads (totalTokens = input +
+    output), and `outputTokens` includes reasoning — so the bill is
+    (input − cached)·p_in + cached·p_cached + output·p_out."""
+    if not token_usage:
+        return 0.0
+    p = CODEX_PRICES.get(tier)
+    if not p:
+        return 0.0
+    tot: dict[str, Any] = token_usage.get("total") or {}
+    inp = int(tot.get("inputTokens") or 0)
+    cached = min(int(tot.get("cachedInputTokens") or 0), inp)
+    out = int(tot.get("outputTokens") or 0)
+    return round(((inp - cached) * p[0] + cached * p[1] + out * p[2]) / 1e6, 6)
+
+
+def codex_occupancy(token_usage: dict[str, Any] | None) -> int:
+    """Context occupancy after a turn: the LAST call's input+cache size — the
+    same rule the claude lane's `occ` follows (`total.*` is cumulative across
+    the turn's calls and would overcount, the ~123% bug in another coat).
+    `last.inputTokens` already includes the cached reads (measured); a compact
+    or zero-input trailing call reports last=0, and 0 is treated as "no
+    measurement" by `_after_turn`, never as an empty context."""
+    if not token_usage:
+        return 0
+    last: dict[str, Any] = token_usage.get("last") or {}
+    n = int(last.get("inputTokens") or 0)
+    if not n:
+        n = int((token_usage.get("total") or {}).get("inputTokens") or 0)
+    return n
+
+
+def codex_argv(exe: str) -> list[str]:
+    """The argv HEAD for spawning this codex executable — the same shape as
+    supervisor's `_claude_argv`. A `.py` path (the test double) runs under
+    this interpreter; anything else is the native binary, invoked directly so
+    no `.CMD` shim can truncate argv."""
+    if exe.lower().endswith(".py"):
+        return [sys.executable, exe]
+    return [exe]
 
 
 def claude_tiers() -> list[TierInfo]:

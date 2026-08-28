@@ -78,6 +78,7 @@ class AppServerClient:
     """
 
     def __init__(self, argv_head: list[str], *, codex_home: str | None = None,
+                 cwd: str | None = None,
                  on_event: Callable[[dict[str, Any]], None] | None = None,
                  tool_dispatch: Callable[[str, dict[str, Any]], str] | None = None,
                  approval_decide: Callable[[str, dict[str, Any]], str] | None = None,
@@ -99,9 +100,13 @@ class AppServerClient:
             env["CODEX_HOME"] = codex_home
         if env_extra:
             env.update(env_extra)
+        # cwd is the agent's own scratch, same as the claude lane's Popen —
+        # the process-level cwd, not just thread/start's `cwd` param, because
+        # AGENTS.md discovery and any relative path the model touches resolve
+        # against the PROCESS
         self.proc = subprocess.Popen(
             argv_head + ["app-server"], stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, cwd=cwd)
         self.on_event = on_event
         self.tool_dispatch = tool_dispatch
         self.approval_decide = approval_decide
@@ -258,7 +263,7 @@ class CodexTurn:
                  approval_decide: Callable[[str, dict[str, Any]], str] | None = None,
                  env_extra: dict[str, str] | None = None) -> None:
         self.client = AppServerClient(
-            argv_head, codex_home=codex_home, on_event=self._observe,
+            argv_head, codex_home=codex_home, cwd=cwd, on_event=self._observe,
             tool_dispatch=tool_dispatch, approval_decide=approval_decide,
             env_extra=env_extra)
         self._caller_on_event = on_event

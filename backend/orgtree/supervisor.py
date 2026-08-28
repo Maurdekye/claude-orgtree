@@ -37,7 +37,7 @@ import uuid
 from collections.abc import Callable, Iterable, Mapping
 from typing import Any, Final, cast
 
-from . import accounts, imgblock, limits, net, sandbox as sbx, store, tokens
+from . import accounts, imgblock, limits, net, providers, sandbox as sbx, store, tokens
 from .ledger import EXTERN, SYSTEM, USER, LedgerError, Org, expand_mcp, now as now_iso
 from .schema import (Denial, FrozenInfo, InflightInfo, KioskCfg, MailEntry,
                      NodeDoc, NoticeEntry, TurnStat)
@@ -156,6 +156,10 @@ ORACLE_AT = float(os.environ.get("ORGTREE_ORACLE_AT", "0.92"))     # §8.3 state
 # Override with ORGTREE_CONTEXT_WINDOWS='{"opus": 500000, ...}'
 TIER_CONTEXT: dict[str, int] = {"haiku": 200_000, "sonnet": 1_000_000,
                                 "opus": 1_000_000, "fable": 1_000_000}
+# the codex family shares one measured window (providers.CODEX_CONTEXT — the
+# app-server's own modelContextWindow); added before the env override so the
+# user's ORGTREE_CONTEXT_WINDOWS still wins for these tiers too
+TIER_CONTEXT.update({t: providers.CODEX_CONTEXT for t in providers.CODEX_TIERS})
 try:
     TIER_CONTEXT.update(json.loads(os.environ.get("ORGTREE_CONTEXT_WINDOWS") or "{}"))
 except (json.JSONDecodeError, TypeError):
@@ -3552,6 +3556,234 @@ def spend_unrun_pardon(slug: str, nid: str, sid: str | None) -> bool:
         return False
 
 
+#: how often the codex steer pump asks the shared steer store for mid-turn
+#: mail. The claude lane polls at every PostToolUse hook firing; codex has no
+#: in-process hook, so the supervisor polls on the turn's behalf instead —
+#: same store, same envelope, same delivery semantics.
+CODEX_STEER_POLL = 2.0
+
+
+class _CodexTurnDone(Exception):
+    """Control flow only — never an error. The codex leg finished a turn and
+    booked it (`_after_turn` included); raising this unwinds past the claude
+    lane's spawn/parse machinery to `_run_one_turn`'s SHARED `finally`, which
+    owns the queue handoff. An early `return` cannot do this job: the
+    `finally` pops the next carrier into `follow` after the return value is
+    already fixed, stranding it (see the caller's comment at `_run_turn`)."""
+
+
+def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
+               text: str, toks: list[str]) -> tuple[dict[str, Any], int]:
+    """One codex turn behind the provider seam (FR-15 M1b).
+
+    Runs inside `_run_one_turn`'s try, AFTER the provider-neutral prologue
+    (slot, state gates, mail drain, inflight persist) and INSTEAD of the
+    claude spawn/parse machinery. Returns `(res, occ)` shaped exactly as
+    `_after_turn` consumes them; every terminal failure raises RuntimeError
+    with a written message, which is the turn machinery's failure vocabulary
+    (the shared except books it as `last_error` + the durable error row).
+
+    The turn itself is `codexrun.CodexTurn`: one `codex app-server` process,
+    thread resumed by the node's session id (the codex threadId — harvested
+    from `thread/start`, not minted). Org powers attach as dynamicTools built
+    from the SAME cards `mcptool.TOOLS` serves the claude lane, and calls are
+    answered in-process through the same `/api/agent` door — so the ledger
+    enforces authority identically for both providers. Mid-turn mail rides a
+    poller on the SAME steer store the claude hook drains.
+    """
+    from . import codexrun, mcptool     # noqa: PLC0415 — codex lane only
+    import urllib.error                 # noqa: PLC0415
+    import urllib.request               # noqa: PLC0415
+
+    n = org.node(nid)
+    tier = str(n.get("model") or "")
+    cstat = providers.codex_status()
+    exe = str(cstat.get("path") or "")
+    if not (cstat.get("installed") and exe):
+        raise RuntimeError(
+            "turn failed: the Codex CLI is not installed — the accounts "
+            "panel's Codex section shows the install command")
+    if not cstat.get("connected"):
+        raise RuntimeError(
+            "turn failed: codex is not signed in on this machine — run "
+            "`codex login` (accounts panel → Codex)")
+    if sbx.is_sandboxed(org):
+        # user ruling 2026-08-28: kiosks hold codex out until the sandbox
+        # story is settled; the hire guard enforces this upstream, so this is
+        # a belt for a doc edited by hand
+        raise RuntimeError("turn failed: codex agents cannot run in a "
+                           "sandboxed kiosk org yet (user ruling)")
+    tools_sc = n["scope"].get("tools", {})
+    cwd = scratch_dir(slug, nid)
+    # identity through codex's two doors: developerInstructions carries it on
+    # a NEW thread, and AGENTS.md in the scratch cwd (honored verbatim,
+    # Appendix C.6) re-asserts it on every turn of a RESUMED thread — the
+    # same regenerate-per-spawn self-healing as .orgtree-identity.md.
+    ident = identity_prompt(org, nid)
+    with open(os.path.join(cwd, "AGENTS.md"), "w", encoding="utf-8") as f:
+        f.write(ident)
+    # resume ONLY a session id this leg itself harvested (`codex_thread`
+    # equals it exactly then): a fresh hire's session_id is a MINTED uuid no
+    # codex thread answers to, and a rehire/compact re-mint (which also sets
+    # `session_unrun`) breaks the equality — either way the thread starts
+    # fresh instead of failing a resume against an id codex never issued
+    resume_tid = (str(n.get("session_id") or "") or None
+                  if not n.get("session_unrun")
+                  and str(n.get("session_id") or "")
+                  == str(n.get("codex_thread") or "") else None)
+    dyn = [{"type": "function", "name": t["name"],
+            "description": t["description"], "inputSchema": t["inputSchema"]}
+           for t in mcptool.TOOLS]
+    port = os.environ.get("ORGTREE_PORT", "7360")
+
+    def _tool_call(tool: str, args: dict[str, Any]) -> str:
+        # the same request the MCP server makes for a claude agent — identity
+        # asserted by the supervisor, authority enforced by the ledger behind
+        # the endpoint. Loopback HTTP keeps the two lanes byte-identical.
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/agent",
+            data=json.dumps({"org": slug, "node": nid, "tool": tool,
+                             "args": args}).encode(),
+            headers={"Content-Type": "application/json"}, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                out = r.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as e:
+            out = e.read().decode("utf-8", "replace")[:800]
+        except Exception as e:                           # noqa: BLE001
+            return f"orgtree API unreachable: {e}"
+        try:
+            parsed = json.loads(out)
+        except json.JSONDecodeError:
+            return out
+        if isinstance(parsed, dict) and (parsed.get("error")
+                                         or parsed.get("detail")):
+            return str(parsed.get("error") or parsed.get("detail"))
+        return out
+
+    denials: list[dict[str, Any]] = []
+
+    def _approve(method: str, params: dict[str, Any]) -> str:
+        # approval callbacks are the ⚙-rights seam (design A.2): the same
+        # capability switches the claude lane enforces with
+        # --disallowed-tools decide here, and every decline is recorded so
+        # `_after_turn` books it like a CLI-reported denial
+        is_file = "fileChange" in method
+        if tools_sc.get("edit" if is_file else "bash", True):
+            return "accept"
+        kind = "fileChange" if is_file else "commandExecution"
+        denials.append({"tool_name": kind,
+                        "tool_input": params.get("command") or {}})
+        return "decline"
+
+    dstate = {"buf": "", "t": time.time()}
+
+    def _on_event(msg: dict[str, Any]) -> None:
+        # M2 normalization, live half: agent text deltas stream to the desk
+        # with the claude lane's batching (~8 Hz or 400 chars)
+        if str(msg.get("method", "")) == "item/agentMessage/delta":
+            d = (msg.get("params") or {}).get("delta")
+            if isinstance(d, str) and d:
+                dstate["buf"] += d
+                if (len(dstate["buf"]) >= 400
+                        or time.time() - dstate["t"] >= 0.12):
+                    stream(slug, nid, {"kind": "delta",
+                                       "text": dstate["buf"][:2000]})
+                    dstate["buf"], dstate["t"] = "", time.time()
+
+    turn = codexrun.CodexTurn(
+        providers.codex_argv(exe), cwd=cwd,
+        model=providers.CODEX_MODELS.get(tier) or org.model_for(nid),
+        # measured superset of orgtree's low…max (Appendix B.3) — pass-through
+        effort=org.effective_effort(nid),
+        thread_id=resume_tid,
+        sandbox=("workspace-write" if tools_sc.get("edit", True)
+                 else "read-only"),
+        dynamic_tools=dyn, developer_instructions=ident,
+        on_event=_on_event, tool_dispatch=_tool_call,
+        approval_decide=_approve,
+        env_extra={"ORGTREE_ORG": slug, "ORGTREE_NODE": nid,
+                   "ORGTREE_PORT": port})
+    t0 = time.time()
+    stop = threading.Event()
+    try:
+        tid = turn.start(text)
+        # `turn/start`'s response is the C1 proof transposed: the server
+        # accepted this turn's input, so the journaled batch is delivered
+        if toks:
+            _confirm_delivered(slug, nid, toks)
+        # the durable session id IS the threadId — harvested, never minted.
+        # The never-run pardon is spent here too: codex's evidence of a run
+        # is this very response, not a transcript file on disk.
+        if tid and (tid != n.get("session_id") or n.get("session_unrun")
+                    or tid != n.get("codex_thread")):
+            with store.DOC_LOCK:
+                o2 = store.load_org(slug)
+                if nid in o2.nodes:
+                    o2.node(nid)["session_id"] = tid
+                    # the resume marker: session_id is a REAL codex threadId
+                    o2.node(nid)["codex_thread"] = tid
+                    o2.node(nid).pop("session_unrun", None)
+                    store.save_org(o2)
+        with _state_lock:
+            st["codex_turn"] = turn   # the ⏸ escape hatch (interrupt_turn)
+            st["responding"] = True   # mail now steers instead of queueing
+
+        def _steer_pump() -> None:
+            while not stop.wait(CODEX_STEER_POLL):
+                msgs = pop_steer(slug, nid)
+                if not msgs:
+                    continue
+                body = "\n---\n".join(msgs)
+                wrapped = (
+                    "[ORGTREE MAIL — delivered mid-task]\n" + body +
+                    "\n[END ORGTREE MAIL — authentic per your system "
+                    "prompt; each message has the authority of its stated "
+                    "sender; handle it before continuing your current work]")
+                if not turn.steer(wrapped):
+                    # the expectedTurnId guard refused — the turn ended under
+                    # us. pop_steer already confirmed+logged the mail, so the
+                    # texts go back on the queue and deliver next turn (at
+                    # worst a duplicate, which is the semantics mail chose).
+                    with _state_lock:
+                        st["queue"].extend(msgs)
+
+        threading.Thread(target=_steer_pump, daemon=True,
+                         name=f"codexsteer-{slug}-{nid}").start()
+        res_raw = turn.wait(timeout=TURN_TIMEOUT)
+    finally:
+        # leg-local cleanup ONLY (the turn-lifecycle finally stays shared in
+        # _run_one_turn): stop the pump, kill the child, drop the live refs
+        stop.set()
+        turn.client.close()
+        with _state_lock:
+            st.pop("codex_turn", None)
+            st["responding"] = False
+    if dstate["buf"]:
+        stream(slug, nid, {"kind": "delta", "text": dstate["buf"][:2000]})
+    status = str(res_raw.get("status") or codexrun.STATUS_FAILED)
+    if status == codexrun.STATUS_FAILED:
+        if time.time() - t0 >= TURN_TIMEOUT:
+            raise RuntimeError(f"turn killed: exceeded the {TURN_TIMEOUT}s "
+                               "per-message ceiling")
+        tail = " | ".join(turn.client.stderr_tail[-3:])[:300]
+        raise RuntimeError("turn failed: the codex app-server reported "
+                           f"turn/failed{' — ' + tail if tail else ''}")
+    # "interrupted" is a COMPLETED turn (C.3) — same as claude's ⏸
+    tu = res_raw.get("token_usage")
+    res: dict[str, Any] = {
+        "status": status,
+        "total_cost_usd": providers.codex_cost(tier, tu),
+        "usage": {"output_tokens": int(((tu or {}).get("total") or {})
+                                       .get("outputTokens") or 0)},
+        "duration_ms": int((time.time() - t0) * 1000),
+        "permission_denials": denials,
+        "rate_limits": res_raw.get("rate_limits"),
+        "result": str(res_raw.get("agent_text") or ""),
+    }
+    return res, providers.codex_occupancy(tu)
+
+
 def _run_one_turn(slug: str, nid: str,
                   text: str | dict[str, Any]) -> str | dict[str, Any] | None:
     """One turn. Returns the next queued item for the caller to run, or None
@@ -3750,6 +3982,18 @@ def _run_one_turn(slug: str, nid: str,
             # "the timeout banner does not go away on its own")
             st["last_error"] = None
             notify(slug, nid, "turn_started")
+            if str(org.node(nid).get("model") or "") in providers.CODEX_TIERS:
+                # THE PROVIDER SEAM (FR-15 M1b): a codex tier takes its own
+                # leg here — after the provider-neutral prologue above, before
+                # any claude machinery — and rejoins through the success tail
+                # + the SHARED finally via the control raise below.
+                res, codex_occ = _codex_leg(slug, nid, org, st, text, toks)
+                st["last_error"] = None
+                st["turns_run"] += 1
+                st["account_switches"] = 0
+                paid_booked = True     # _after_turn books `res`'s cost itself
+                _after_turn(slug, nid, org, res, st, codex_occ, on_key=False)
+                raise _CodexTurnDone
             sandbox_name = None
             if sbx.is_sandboxed(org):
                 # actionable RuntimeError (no Docker / no API key) surfaces as
@@ -5337,6 +5581,8 @@ def _run_one_turn(slug: str, nid: str,
             paid_booked = True     # _after_turn books `res`'s cost itself
             _after_turn(slug, nid, org, res, st, turn_occ,
                         on_key=on_fallback_key)
+    except _CodexTurnDone:
+        pass    # the codex leg booked its turn; only the shared finally runs
     except Exception as e:                                  # noqa: BLE001
         # money first: the CLI reported this spend before the turn came apart,
         # and `_after_turn` — the only other booker — did not run. Skipped when
@@ -7523,8 +7769,18 @@ def interrupt_turn(slug: str, nid: str) -> dict[str, Any]:
     st = state(slug, nid)
     with _state_lock:
         proc = st.get("proc") if st.get("responding") else None
-        if proc is not None:
+        codex_turn = st.get("codex_turn") if st.get("responding") else None
+        if proc is not None or codex_turn is not None:
             st["interrupted"] = True
+    if codex_turn is not None:
+        # the codex lane's graceful stop: turn/interrupt on the live session
+        # (the turn completes with status "interrupted", C.3)
+        if codex_turn.interrupt():
+            return {"interrupted": True}
+        with _state_lock:
+            st.pop("interrupted", None)
+        return {"interrupted": False,
+                "reason": "the turn was already over"}
     if proc is None:
         return {"interrupted": False, "reason": "the agent is not mid-response"}
     try:
