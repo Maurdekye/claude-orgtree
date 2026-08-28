@@ -2452,6 +2452,82 @@ Load-bearing.
 · The flag and its reason are written as a PAIR at the single site that can
   write them, after the gate; `urgent` never exists without a reason.
 
+### D-173 · `user_inbox` means UNREAD, not RECEIVED
+Ruling (user, 2026-08-28, in two notes): "do not include system notices in the
+unread user mail count. in fact, don't even mark them as unread: they should
+arrive in the mailbox as already read. they should also be much narrower in
+height to deemphasize their presence in the mailbox." Then, sharpening it:
+"in fact any notice arrives to the user mailbox as already read. but only
+system notices should be given this narrower height adjustment."
+
+TWO PREDICATES, AND THEY ARE NOT THE SAME ONE.
+· READ ON ARRIVAL, and therefore out of every unread count: `kind ==
+  "notice"`, whatever its source. A notice is passive by construction
+  (D-137: mail minus the wake) — it lands to be read at leisure and never
+  wakes anyone — so it never had business claiming unread status.
+· SHORTER ROW: `kind == "notice"` AND `from == "@system"`. An agent's notice
+  keeps full height; in a node mailbox agent-to-agent notices are the ordinary
+  traffic, not chatter.
+
+⚠ THE READ PREDICATE IS THE KIND AND NEVER THE SENDER. This is the trap
+waiting for anyone who "simplifies" the two predicates into one. `@system`
+also sends the user `kind: "decision"` mail — a Fable content filter fired, a
+weekly Fable limit exhausted, agents halted or whole subtrees dissolved
+(ledger.fable_* ). Widening the read rule to "notice OR from @system" would
+silently pre-read exactly the mail the user most needs to see: it would leave
+the unread count, the tab title, the pip and the folder badge all at once,
+and nothing would ever draw them back to it. Getting the HEIGHT predicate
+wrong makes something the wrong size; getting the READ predicate wrong HIDES
+REAL MAIL. The suite spends four legs on "everything else is still unread"
+and one on the happy path, in that proportion deliberately.
+
+THE FIX IS TO THE FACT, NOT TO ITS READERS — and why that was available here.
+Six places derive "how much is unread": tree()'s `user_inbox_count` and
+`urgent_unread`, the tab title, `attentionPip` (D-169), the folder tab's badge
+and the mark-all-read gate. Exactly ONE computes it. All six read MEMBERSHIP
+OF ONE LIST rather than each re-deriving a rule, so keeping notices out of
+that list corrects all six at once, with no predicate written anywhere and
+nothing to keep agreed.
+⚠ THIS IS THE OPPOSITE OUTCOME TO THE `mail_pending` DUPLICATION, and the
+difference is worth naming because "six readers" looks identical from a
+distance. `mail_pending` is ONE FACT WITH SIX HAND-WRITTEN RENDERINGS — six
+copies of a rule, which must be collapsed or they drift. This is ONE FACT WITH
+SIX DERIVATIONS — six readers of a single field, which is simply what a
+single source of truth looks like in use. A future author who finds six
+readers should ask which of the two they are looking at before reaching for a
+refactor: only copied RULES drift.
+
+MECHANISM. `Org.to_user_inbox()` is the only way into the user's mailbox — all
+twelve writers (ledger 8, supervisor 3, sandbox 1) go through it, and a
+source-level guard in the suite fails if a thirteenth ever appends directly,
+because the whole design rests on `user_inbox` holding unread mail only. A
+notice goes to `user_mail_log` instead, which is where the read endpoint
+already moves anything the user has read — so it is read on arrival BY
+CONSTRUCTION, with no `read` flag and no second notion of "read" to fall out
+of step with the first. The archive's own invariants (chronological, capped
+at 100) are mirrored from that endpoint.
+
+"WAS THE USER TOLD?" AND "IS IT WAITING FOR THEM?" ARE NOW DIFFERENT
+QUESTIONS. They were the same until today, and `user_inbox` answered both.
+`Org.user_mailbox()` (both sides of the read line) answers the first; the
+list itself answers the second. Six suites — ledger, external-mail, headless,
+sandbox, limit-freeze, turn-lifecycle — had encoded the old contract by
+asserting a notice WAITING in `user_inbox`, and now ask the question they
+actually meant. The next author to touch this meets the same fork.
+
+STATED CONSEQUENCE, not an oversight. The supervisor's "<agent> stopped: its
+turn failed" and "<agent> is stuck" alerts are `notice` from `@system`
+(supervisor.py), so they now arrive pre-read, uncounted and one line tall.
+That follows the spec exactly and it is also the org reporting that an agent
+died. Raised to the user rather than decided here; if they want those two
+exempted it is a small change, and if not this paragraph is the ruling.
+
+RENDERING. The shorter row does not RENDER the preview line rather than
+hiding it in CSS — a `display:none` preview is a DOM node per row that nobody
+can ever see, and a long-lived org's mailbox carries many. The `l1` header
+stays, so the row is identifiable and still opens to its full body: folded,
+not hidden.
+
 ### D-165 · a node may notice ITSELF — a fall-through, now load-bearing
 Ruling (notice-endpoint, 2026-08-27, measured): §7.2 permits a node to
 address itself, and this is recorded as **permitted** rather than merely
