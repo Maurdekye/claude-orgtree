@@ -3221,6 +3221,44 @@ colors without re-running it.
 Why: the previous palette had opus↔sonnet ΔE 0.5 under deuteranopia —
 indistinguishable; the channels were validated against exactly this chrome.
 
+**⚠ WORKED EXAMPLE, 2026-08-28 — how this rule gets broken by accident, and
+what it costs.** No new number: this was already the rule, and the fix is a
+restoration of it rather than a new ruling. Recorded here because it is the
+concrete case a future author needs, and because the failure mode is silent.
+
+`bearer_state` records where an agent's context CAME FROM — a rehired knowledge
+bearer holds a seat, takes turns and works like any other report. It is not a
+lifecycle state. But the card put it in the lifecycle channel anyway:
+
+    .sq.bearer { background:#262628; border-color:#3a3a3c;
+                 border-top-color:#4a4a4c; opacity:.7 }
+
+**Fill is lifecycle** (above), so a non-lifecycle fact wearing the lifecycle
+fill was already wrong. The cascade then took two more channels with it, and
+this is the part that is invisible in review: all three declarations sat at the
+SAME specificity as the rules they were beating, and `.sq.bearer` merely came
+later in the file. `border-top-color` beat the `.sq.tier-*` block, so the tier
+HUE went grey. `border-color` beat `.sq.busy`, so "a turn is running right now"
+went grey. And `opacity: .7` sat next to `.sq.archived`'s `.5`. Three channels
+suppressed by one rule that named none of them — exactly what "one channel
+never silently suppresses another" exists to stop.
+
+What it cost: the user looked at a live, mid-turn agent beside a genuinely
+archived pile and asked why the two piles had not merged — they could not tell
+alive from retired, the most basic state a node has. Measured pre-fix, a busy
+live bearer was byte-identical to an archived bearer in all four properties.
+
+The fix is to scope the wash to the lifecycle it belongs to
+(`.sq.bearer:not(.live)`) and give provenance its own quieter channel — a
+dashed outline chip, reusing `.noticekind`'s existing "this is a label, not a
+state" idiom rather than minting a colour. The archived bearer is unchanged.
+**When you add a channel, check what already sets that property and where you
+sit relative to it; equal specificity plus source order is not a decision
+anyone made.** `frontend/tests/bearercard_probe.py` measures all six cards in a
+real browser and carries the pre-fix rules as its known-negative control;
+`tests/bearerchip.test.tsx` pins the class list the scoping depends on, because
+a sheet can stay correct about a card that no longer exists.
+
 ### D-072 · the credit bar is the single credit display, scaled by top-level holdings
 Ruling (user): the left-edge bar is the ONLY place credits appear on a card
 — no seat/free numeric badges. Brightness encodes ownership depth (own seat

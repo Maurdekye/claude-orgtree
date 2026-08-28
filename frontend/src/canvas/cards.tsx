@@ -986,11 +986,25 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, m
       {!focused && lod !== 'mini' && (
         <div className="sq-badges">
           {/* no seat/free badges — the credit bar carries all of that */}
-          {node.bearer_state
-            ? <span className="badge dim">
-                {node.state === 'live' ? '' : node.state + ' · '}{node.bearer_state}</span>
-            : node.state !== 'live' &&
-              <span className="badge dim">{node.state}</span>}
+          {/* LIFECYCLE AND PROVENANCE ARE TWO FACTS AND GET TWO CHIPS (user
+              report 2026-08-28: "it looks retired… the ui is too similar; it
+              needs to look more like a normal agent"). These used to share one
+              `badge dim`, with the bearer state STANDING IN for the lifecycle
+              state whenever it existed: a live bearer's only chip read
+              `knowledge`, in the same grey, in the same slot where every other
+              card says `archived`. So a rehired bearer mid-turn was labelled
+              as though `knowledge` were its state. Now the lifecycle chip
+              appears on exactly the cards that are not live — bearer or not —
+              and the bearer mark is its own quieter, outlined chip beside it.
+              An archived bearer therefore still shows `archived`, and shows it
+              first. */}
+          {node.state !== 'live' &&
+            <span className="badge dim">{node.state}</span>}
+          {node.bearer_state &&
+            <span className="badge bearermark"
+              title={`${node.bearer_state} bearer — where this agent's context `
+                + 'came from, not what it is doing; a rehired bearer works '
+                + 'like any other agent'}>{node.bearer_state}</span>}
           {node.last_status &&
             <span className={'statuschip ' + node.last_status.status}
               title={node.last_status.summary}>{node.last_status.status}</span>}

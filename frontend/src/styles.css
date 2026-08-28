@@ -824,14 +824,38 @@ button.cc-name:hover {
 .tier.t-sonnet { color: var(--tier-sonnet); border-color: color-mix(in srgb, var(--tier-sonnet) 45%, var(--line)); }
 .tier.t-opus { color: var(--tier-opus); border-color: color-mix(in srgb, var(--tier-opus) 45%, var(--line)); }
 .tier.t-fable { color: var(--tier-fable); border-color: color-mix(in srgb, var(--tier-fable) 45%, var(--line)); }
-/* lifecycle fills: archived fades (existing); knowledge bearers wash grey */
-.sq.bearer {
+/* lifecycle fills: archived fades (existing); knowledge bearers wash grey.
+
+   ⚠ THE WASH IS A LIFECYCLE FILL, SO IT ONLY BELONGS ON A CARD THAT IS NOT
+   LIVE (user report 2026-08-28). `bearer_state` says where an agent's context
+   CAME FROM; it says nothing about whether the agent is running. A rehired
+   knowledge bearer holds a seat, takes turns and does work like any other
+   report — but this rule was keyed on the bearer state alone, so it washed a
+   live, mid-turn agent in the same grey as a retired one and the user read two
+   cards side by side as two piles of retired agents. Three separate live
+   signals were being erased, and the `:not(.live)` is what hands them back:
+
+     · `opacity: .7` sat next to `.sq.archived`'s `.5` — near enough to read as
+       the same "this is over" fade.
+     · `border-top-color` overrode the `.sq.tier-*` block (same specificity,
+       later in the file), so the tier stripe — the card's loudest "which model
+       is this" mark — went grey.
+     · `border-color` overrode `.sq.busy` the same way, so an agent with a turn
+       RUNNING lost the terracotta border that says so.
+
+   Scoping it leaves the archived bearer exactly as it was: `:not(.live)` is
+   three classes to the tier block's two, so it still wins there, and the
+   retired bearer keeps the grey wash it is supposed to have. That pair —
+   live bearer against archived bearer — is the test of this rule, and
+   tests/bearercard_probe.py measures it in a real browser. */
+.sq.bearer:not(.live) {
   background: #262628; border-color: #3a3a3c; border-top-color: #4a4a4c;
   opacity: .7;
 }
-.sq.bearer .name { color: var(--dim); }
-.sq.mini.bearer { background: #262628; }   /* lifecycle wash beats the mini tier tint */
-.sq.mini.bearer .mini-name { color: var(--dim); }
+.sq.bearer:not(.live) .name { color: var(--dim); }
+/* lifecycle wash beats the mini tier tint */
+.sq.mini.bearer:not(.live) { background: #262628; }
+.sq.mini.bearer:not(.live) .mini-name { color: var(--dim); }
 /* permission border: dashed = cannot edit files (read-only agent); the tier
    edge stays solid — dashing it too read as noise, not as a channel */
 .sq.ro-agent { border-style: dashed; border-top-style: solid; }
@@ -1930,6 +1954,18 @@ button.danger.solid:hover { background: rgba(241, 76, 76, .24); }
 }
 .badge.free { color: var(--accent); border-color: rgba(217, 119, 87, .3); }
 .badge.dim { color: #7a7a7a; }
+/* A BEARER CHIP STATES PROVENANCE, NOT LIFECYCLE (user report 2026-08-28: "it
+   looks retired… the ui is too similar"). It used to be `badge dim` — the same
+   element, the same two classes, in the same slot as the `archived` chip it
+   sits beside, so the card said "knowledge" in the exact voice it says
+   "archived". It has to stay QUIET (the information is wanted, it just must
+   not shout), so this borrows `.noticekind`'s dashed outline rather than
+   inventing a colour: in this sheet a dashed edge already means "a label about
+   what this is", where a filled chip means "a state this is in". */
+.badge.bearermark {
+  color: var(--dim); background: none;
+  border: 1px dashed color-mix(in srgb, var(--dim) 45%, var(--line));
+}
 
 .actions { margin-left: auto; display: flex; gap: 4px; }
 
