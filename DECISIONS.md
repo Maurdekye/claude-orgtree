@@ -3680,6 +3680,127 @@ Load-bearing:
   sat off screen. Same rule and same fix as the drift alarm (D-158): exclude
   lines a check reported itself passing on.
 
+### D-176 · a watchdog owes its owner a word when its subject dies — and the predicate is MEASURE THE SUBJECT, NOT THE WATCHER
+Ruling (coordinator, 2026-08-29, on a diagnosis by `lying-instruments`; user
+instruction: *"if a watchdog watcher process dies, the dog should be removed
+and the agent running it immediately notified with the context of the
+failure"*, with the added constraint *"make sure this doesnt conflict with
+orgtree shutdowns and restarts, which would also kill watchdog watcher
+processes, but shouldnt remove the dogs"*).
+
+**What happened.** `inline-images@0` armed a file dog on a tier log and waited
+for `RUN COMPLETE`. The tier was killed about a minute after its owner's turn
+ended. The log's last write was 21:20 and the string was never going to be
+appended. **The agent sat idle for ninety minutes believing it was waiting on
+a slow run.** It was not stuck and it was not wrong: it was watching a corpse,
+and an armed dog and a dog whose producer has died are indistinguishable from
+outside. `armed, fired: 0` cannot tell you which.
+
+**The finding, and it is worth more than the mechanism it justifies.** The
+diagnosis *already existed*. Reconstructing that dog's real numbers — 535
+checks over 4.5 h, never matched — and calling the shipped `wd_health` on them
+returns a warning, and always did, sitting in the org doc the whole time.
+Nobody was ever told, because **`wd_health` is pull-only: it answers a question
+you have to already suspect the answer to**, and an agent that believes it is
+waiting on a slow job does not call `list`.
+
+And then the measurement that saved us from the obvious fix: feed the same
+function a file that is demonstrably **growing**, with the same age and the
+same check count, and **it returns the identical sentence**. Routing that
+existing signal to agents would have been a false-alarm generator, and an
+alert everyone learns to ignore is worth less than no alert — it consumes the
+attention the one real alert needed. **An instrument that cannot discriminate
+is worse than none once you act on it.** That is the general lesson; the
+mechanism below is only what follows from it.
+
+**The rule.** *Measure the SUBJECT, not the WATCHER.* Whether the polling
+thread, its process, or the whole backend died is evidence about **nothing**:
+an orgtree restart kills every watcher on the machine, and surviving restarts
+is a watchdog's advertised virtue. So the naive detector — "my watcher is
+gone, therefore the dog is dead, therefore remove it" — deletes working
+instruments on the very event they exist to outlive.
+
+**And the counter is in OBSERVATIONS, not wall time.** A check only happens
+while orgtree is up, so downtime accrues no staleness at all: the counter
+stops. Restart-immunity is therefore **structural**, not a case someone has to
+remember to handle. ⚠ Do not "simplify" this to `if now - last_seen > 3600` —
+that version reads every deploy as a dead producer. A false death **destroys a
+working instrument**; a late one merely leaves us where we already were. Those
+costs are not symmetric, and the counter shape is what keeps them apart.
+
+**What each kind can honestly know** — three mechanisms, not one pretending to
+cover cases it cannot see:
+
+| kind | can it know? | what it does |
+|---|---|---|
+| `stream` | **yes** — the engine owns the child and has its exit code | already correct: fires `STREAM EXITED — (code N)` with the tail, state `exited`; an empty in-memory table after a restart means RE-SPAWN, never a false exit |
+| `process` | **yes** — a dead subject *is* the event | already correct: the DOWN edge lives in `high_water`, so a subject that died *during* a restart is still caught on the first tick back |
+| `command` | **partly** | NOT "the command failed" — a `findstr` waiting for a string exits 1 every check and that is **healthy**. Only "the check could not be performed at all", over a streak. **Paused**, not removed. |
+| `file` | **no** | a path does not know what writes it. Reported as **STALENESS in those words**, and the dog is **left armed**. |
+
+**Three decisions, taken deliberately.**
+1. **File dogs are never removed by this mechanism** — a deviation from the
+   user's literal instruction, ruled by the coordinator and reported to them.
+   "No bytes for an hour" and "dead producer" are the same observation;
+   removing on it would destroy working instruments on a suspicion.
+2. **Pause, not remove, wherever action is warranted.** `paused_why` keeps the
+   evidence readable in `list`; a removed dog takes its own diagnosis with it,
+   and the diagnosis is the deliverable.
+3. **The alert WAKES, once per episode, re-arming when the subject revives.**
+   A notice would land in the mailbox of an agent that is not running, which
+   is exactly the ninety minutes being fixed. Repeating every interval would
+   get it filtered, and then the next real one is invisible.
+
+**The context is the deliverable, not the notification.** "Your watchdog
+stopped" teaches an agent nothing it can act on. The mail carries what was
+watched, how long it waited, how many checks it ran, the file's size and last
+write time (or the command's last exit and output), what to conclude, and an
+explicit line saying this is *not* about orgtree restarting.
+
+**Two mechanical rules that fall out of the same work:**
+- **`watchdog_alert` is deliberately not `watchdog_fire`.** A fire means "the
+  condition you asked about happened"; an alert means "I can no longer answer
+  the question you asked". Routing the second through the first would
+  increment `fired`, and `fired` is the counter the whole abstention diagnosis
+  is read from — the instrument must not corrupt the evidence it exists to
+  preserve.
+- **Pause and mail may not get out of step.** A dog silently paused and never
+  announced turns a wait into a permanent *and invisible* one, which is worse
+  than the bug. The mail is posted first, under the same lock, and only a dog
+  the call actually claimed goes on to be paused.
+
+**A watchdog's own execution is already divorced from the turn that armed it,
+and that is now pinned by a test rather than assumed.** The engine is a daemon
+thread in the BACKEND (`api.py` → `start_watchdog_engine`), so a dog's child is
+the backend's child; measured on the live box, a stream dog's `cmd.exe` had the
+backend's pid as its parent while the arming agent's CLI was a different
+process entirely. The property is invisible until it fails, so
+`test_watchdog_death.py` §8 asserts it.
+
+⚠ **But killing a dog's child did not kill what the child started.** `_wd_popen`
+runs the target through `cmd.exe /c`, so `proc.kill()` reaped the SHELL and
+left the target running. Measured: a create-time smoke run of
+`ping -n 100000 127.0.0.1` was killed after its 8-second timeout and the PING
+was still going afterwards, orphaned, good for another twenty-seven hours —
+**one leaked per create** whose target outlived the smoke window, and the same
+shape in the command-dog timeout path and the stream reaper. Fixed with
+`_wd_kill_tree` (`taskkill /T`, which walks the real parent-child links), and
+dog children are now `_leash`ed to the backend so a force-killed backend cannot
+leave listeners behind for the restarted engine to duplicate.
+
+**Also found, live, while measuring the above**: a `pid:` process dog that has
+already fired its DOWN edge is **spent** — a pid does not come back, so the
+edge can never occur again, and if the OS recycles the number the dog fires
+about a stranger. One on this machine had run 2,412 further checks over a day
+against a pid gone since the previous morning, reporting `health: ok`. Spent
+`pid:` dogs are now paused and reported. `port:` dogs are excluded: a port
+genuinely does come back when its service restarts, which is most of why port
+dogs exist.
+
+Cross-refs: D-158 (an instrument that reads text as data must be proved able
+to fail — and this file's §1 caught itself finding the word "dead" in its own
+worktree's directory name), D-168 (an abstention is not a pass), D-157, D-170.
+
 ---
 
 ## Deliberately not built
