@@ -387,14 +387,24 @@ function SpawnChips({ onSpawn, free, seats, maxTier, side }: SpawnChipsProps) {
               ? `${t}: needs ${seat} free (has ${free}) — the kiosk credit `
                 + 'cap is fully held; drag an agent’s credit bar down '
                 + 'or retire one to free credits'
-              : side === 'top'
-                ? `insert ${/^[aeiou]/.test(t) ? 'an' : 'a'} ${t} SUPERIOR — `
-                  + `it takes this agent's place and this agent moves `
-                  + `underneath it (seat ${seat})`
-                : side
-                  ? `hire ${/^[aeiou]/.test(t) ? 'an' : 'a'} ${t} COWORKER — same `
-                    + `superior, to the ${side} (seat ${seat})`
-                  : `hire ${/^[aeiou]/.test(t) ? 'an' : 'a'} ${t} (seat ${seat})`}
+              // ONE SHAPE FOR ALL THREE (user request 2026-08-28: "make them
+              // more concise; just 3-5 words at most", "for subordinate,
+              // superior, and coworker"). They were written at different times
+              // and read like it: `hire a haiku (seat 1)` named no role at all,
+              // the coworker one appended its placement, the superior one
+              // explained the whole splice in twenty words. Now they are
+              // `hire <a|an> <tier> <role>` and differ in exactly the one word
+              // that differs in meaning — the role. Lowercase imperative to
+              // match every other control tooltip on the card (`retire — …`,
+              // `dissolve — …`), four words each.
+              //
+              // The seat cost went with the trim and that is a real loss, not
+              // an oversight: `(seat 1)` cannot survive a five-word ceiling.
+              // It is still on the credit bar beside the card, and the
+              // can't-afford tooltip above still states the cost and the
+              // remedy at the moment it starts to matter.
+              : `hire ${/^[aeiou]/.test(t) ? 'an' : 'a'} ${t} `
+                + `${side === 'top' ? 'superior' : side ? 'coworker' : 'subordinate'}`}
             onClick={(e) => { e.stopPropagation(); onSpawn(t) }}>
             {TIER_LETTER[t]}
           </button>
@@ -1029,6 +1039,16 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, m
           stack's layers, and "the side of the agent" is not a free position. */}
       {live && !node.isBearerOf && !node.bearer_state && !pile && onSpawnSide && (
         <>
+          {/* transparent hover bridges (user report 2026-08-28). The columns
+              now sit beyond the credit bar and the doc chips so they cannot
+              cover them at any zoom — which puts a strip of empty canvas
+              between card and chips, and the chips only exist while the card
+              is hovered. Without these the chips would blink out as the cursor
+              crossed that strip and the hire gesture would become the new
+              unreachable thing. Pure hit area: no paint, under the bar and the
+              doc chips, so they take nothing else's clicks. */}
+          <div className="hsof-bridge bridge-l" aria-hidden="true" />
+          <div className="hsof-bridge bridge-r" aria-hidden="true" />
           <SpawnChips side="left" onSpawn={(t) => onSpawnSide(t, 'left')}
             free={kioskRemaining ?? Infinity} seats={seats} maxTier={maxTier} />
           <SpawnChips side="right" onSpawn={(t) => onSpawnSide(t, 'right')}

@@ -1419,8 +1419,54 @@ button.cc-name:hover {
   left: auto; right: auto; bottom: auto; top: 50%;
   flex-direction: column;
 }
-.hsof.side-l { left: -21px; transform: translateY(-50%) scale(var(--invzf, 1)); transform-origin: center right; }
-.hsof.side-r { right: -21px; transform: translateY(-50%) scale(var(--invzf, 1)); transform-origin: center left; }
+/* ⚠ ANCHOR EACH COLUMN OUTSIDE THE WORLD-SCALED THING BESIDE IT (user report
+   2026-08-28: "the leftward hire coworker badges overlap the budget bar,
+   making it untouchable unless zoomed in far enough").
+
+   The strip beside a card holds two kinds of furniture that scale differently.
+   `.cbar` (left) and `.doc-chips` (right) are WORLD-scaled: their screen width
+   is 14*z and 21*z, collapsing toward nothing as you zoom out. These columns
+   carry the unclamped `--invzf`, so they hold a constant SCREEN size at every
+   zoom. Anchored near the card edge, a screen-constant column therefore grows
+   over a shrinking neighbour until it covers it completely — measured at
+   z<=1.0 the click aimed at the bar landed on the chips, and the bar could not
+   be reached at all.
+
+   The cure is to anchor by the edge that must stay clear, not by the card:
+   pin the column's near edge ON the neighbour's far edge, so the counter-scale
+   grows AWAY from it. `right: calc(100% + 22px)` puts the left column's right
+   edge exactly on the bar's left edge (.cbar is left:-22px), and the mirror
+   clears the doc chips. That holds at EVERY zoom by construction rather than
+   by tuning, because the anchor is expressed in the same world units the
+   neighbour is laid out in — nothing here depends on what --invzf happens to
+   be. Reordering z-index or pointer-events instead would have made the bar
+   clickable while the badge still sat on top of it, hiding the thing the user
+   was trying to see. (tests/chipbar_probe.py measures all of this.) */
+.hsof.side-l {
+  left: auto; right: calc(100% + 22px);
+  transform: translateY(-50%) scale(var(--invzf, 1));
+  transform-origin: center right;
+}
+/* the doc chips start at 100% + 3px and are 21px wide, so 24px clears them —
+   and clears the bare card by the same margin when the node has no documents */
+.hsof.side-r {
+  right: auto; left: calc(100% + 24px);
+  transform: translateY(-50%) scale(var(--invzf, 1));
+  transform-origin: center left;
+}
+/* Moving the columns off the card opens a strip the cursor must cross to
+   reach them, and the chips only exist while `.sq` is hovered — so without
+   this they would vanish mid-reach and the hire gesture would become the new
+   unreachable thing. These bridges are transparent hit area, children of the
+   card, filling exactly the gap between the card edge and the furniture
+   beyond it. They sit UNDER the bar and the doc chips (z-index 1 against 2),
+   so they extend the hover region without taking anything's clicks. */
+.sq > .hsof-bridge {
+  position: absolute; top: 0; height: 100%; width: 22px;
+  z-index: 1; pointer-events: auto; opacity: 0;
+}
+.sq > .hsof-bridge.bridge-l { right: 100%; }
+.sq > .hsof-bridge.bridge-r { left: 100%; width: 24px; }
 /* FR-25 insert-parent chips: a horizontal row riding the TOP edge — the
    bottom row's mirror, same hover gate and counter-scaling */
 .hsof.side-t {
@@ -1431,8 +1477,11 @@ button.cc-name:hover {
 }
 .sq.edge-t:hover > .hsof.side-t { opacity: 1; pointer-events: auto; }
 /* at desk fill the panel is opaque — push the columns fully outside */
-.sq.desk > .hsof.side-l { left: -24px; }
-.sq.desk > .hsof.side-r { right: -24px; }
+/* (stated as the same near-edge anchor as above, not as `left`/`right` on the
+   card: setting the opposite offset here would stretch a column that is now
+   positioned by one edge only, and silently undo the clearance) */
+.sq.desk > .hsof.side-l { right: calc(100% + 24px); }
+.sq.desk > .hsof.side-r { left: calc(100% + 26px); }
 .sq.desk > .hsof.side-t { top: -24px; }
 .sq.desk.edge-t > .hsof.side-t { opacity: 1; pointer-events: auto; }
 /* the desk and the switchboard KEEP their hire chips (user spec): no hover
