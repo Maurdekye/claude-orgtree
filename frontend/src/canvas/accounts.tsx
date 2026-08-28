@@ -401,7 +401,7 @@ export function AccountsPanel({ toast, close }: {
                 the tier family it will bring. Hiring stays off until the
                 provider adapter lands (design §5 Phase 1); the `reason`
                 line below is the server's word on what would come next. */}
-            <div className="acct-provider-head">
+            <div className="acct-provider-head prov-openai">
               ChatGPT (Codex)
               <span className="dim"> · Codex CLI
                 {codex?.status.version ? ` ${codex.status.version}` : ''}</span>

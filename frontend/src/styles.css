@@ -357,6 +357,22 @@ button.badge.retired-fold:hover { border-color: var(--accent); }
 .sq.mini.tier-sonnet { background: color-mix(in srgb, var(--tier-sonnet) 6%, var(--panel)); }
 .sq.mini.tier-opus { background: color-mix(in srgb, var(--tier-opus) 6%, var(--panel)); }
 .sq.mini.tier-fable { background: color-mix(in srgb, var(--tier-fable) 6%, var(--panel)); }
+/* the codex family's card dressing (FR-15; dormant until codex hire lands).
+   Provider theming (user spec 2026-08-28): a codex agent's DESK is teal
+   where a claude desk is terracotta — same geometry, recolored — and its
+   busy ring follows. Keyed on `prov-openai` from cards.tsx, not on the tier
+   classes, so a future codex tier joins the theme by joining the family. */
+.sq.tier-luna { border-top-color: color-mix(in srgb, var(--tier-luna) 55%, var(--line)); }
+.sq.tier-terra { border-top-color: color-mix(in srgb, var(--tier-terra) 55%, var(--line)); }
+.sq.tier-sol { border-top-color: color-mix(in srgb, var(--tier-sol) 55%, var(--line)); }
+.sq.mini.tier-luna { background: color-mix(in srgb, var(--tier-luna) 6%, var(--panel)); }
+.sq.mini.tier-terra { background: color-mix(in srgb, var(--tier-terra) 6%, var(--panel)); }
+.sq.mini.tier-sol { background: color-mix(in srgb, var(--tier-sol) 6%, var(--panel)); }
+.sq.prov-openai.busy { border-color: rgba(43, 191, 174, .55); }
+.sq.prov-openai.desk {
+  border-color: var(--prov-openai);
+  box-shadow: 0 8px 40px rgba(0, 0, 0, .55), 0 0 0 1px rgba(43, 191, 174, .25);
+}
 /* status never rides color alone (dataviz rule): the dots carry a SHAPE
    channel too — done is a filled circle, working pulses, blocked is a diamond,
    idle is a hollow ring */
@@ -812,13 +828,19 @@ button.cc-name:hover {
   --tier-sonnet: #3d8ce6;
   --tier-opus: #dcb0f5;
   --tier-fable: #e8b04b;
-  /* the codex family (FR-15 preview) — placeholder hues pending the same
-     CVD ΔE pass the four above got: separation leans on LIGHTNESS (luna pale,
-     terra mid, sol saturated-warm), and every surface that shows them also
-     shows the L/T/S letter, so color is never the only channel. */
-  --tier-luna: #b9c4d6;
-  --tier-terra: #7fae5f;
-  --tier-sol: #ff8a3d;
+  /* the codex family (FR-15) — AQUAMARINE-TEAL by user spec 2026-08-28: the
+     HUE FAMILY is the provider's identity (claude wears terracotta/orange,
+     codex wears aquamarine-teal), so no codex tier may borrow a warm hue.
+     Tiers separate by LIGHTNESS inside the family (luna pale, terra mid,
+     sol deep-saturated); exact values pending the CVD ΔE pass the four
+     above got, and the L/T/S letter stays the redundant glyph. */
+  --tier-luna: #a9e2dc;
+  --tier-terra: #3ec6b8;
+  --tier-sol: #0ea5b5;
+  /* the provider ACCENT — the teal counterpart of --accent: desk border,
+     desk shadow ring and busy border for codex agents (dormant until codex
+     hire lands; the class comes from cards.tsx `prov-openai`) */
+  --prov-openai: #2bbfae;
   --ice: #a8d4ea;           /* frozen (usage limit) — pale ice, deliberately
                                whiter than the saturated credit-bar cyans */
 }
@@ -3196,6 +3218,10 @@ html.mobile .md table { display: block; overflow-x: auto; max-width: 100%; }
 .acct-preview-tag { margin-left: auto; font-size: 9.5px; font-weight: 700;
   text-transform: uppercase; letter-spacing: .06em; color: var(--dim);
   border: 1px dashed var(--line); border-radius: 8px; padding: 1px 7px; }
+/* the codex section wears its provider's teal (user spec 2026-08-28) */
+.acct-provider-head.prov-openai { border-bottom-color: color-mix(in srgb, var(--prov-openai) 45%, var(--line)); }
+.acct-provider-head.prov-openai .acct-preview-tag { color: var(--prov-openai);
+  border-color: color-mix(in srgb, var(--prov-openai) 45%, var(--line)); }
 .acct-prov-note { font-size: 12.5px; line-height: 1.5; }
 .acct-prov-note code { font-size: 11px; }
 .acct-prov-tiers { display: flex; flex-wrap: wrap; gap: 6px 14px;
