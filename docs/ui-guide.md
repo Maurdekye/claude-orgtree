@@ -633,6 +633,113 @@ itself; the panel's single **save** commits everything.
   once — settings, kiosk caps, the permission ceiling, org.md. There are no
   inline apply buttons.
 
+## Fable autopsy — diagnosing a fable that trips its own filters
+
+A fable agent can fail by tripping its own safety filters — refusing,
+derailing, or looping mid-task — rather than by getting the work wrong. A
+brief can read one way to its author and another way to the filter; that
+mismatch is not usually visible from outside. Retrying the same brief
+reproduces the same refusal almost every time, and whoever is retrying
+cannot see what tripped it — but the failed agent's own transcript can. This
+pattern replaces guessing with reading: put a senior agent in place to read
+the wreck and rewrite the brief before the next attempt, instead of just
+trying again with the same words.
+
+**This is not the fable content-filter policy above.** That policy is a
+blind retry: a filter-flagged message either halts the fable's turn (the
+org decides what happens next) or converts the *same* agent to opus in
+place and reruns the *identical* brief — no diagnosis, same wording, just a
+different model behind it. The autopsy pattern is the deliberate manual
+alternative: before anything runs again, a senior agent reads the
+transcript, works out what in the brief the filter actually caught on, and
+hires a fresh fable with a rewritten brief. Reach for it when a fable has
+failed the same brief more than once, or when the failure looks like it
+came from *how something was asked* rather than from the task being hard.
+
+**The shape.** An opus is inserted as the failed fable's superior; a new
+fable is hired as its coworker, reporting to that same opus, sitting beside
+the failed one; the failed fable is retired, not dissolved (see why below);
+the opus reads what the retired fable left behind and briefs the new fable
+with wording aimed at not tripping the same wire.
+
+**Naming.** The opus takes the failed fable's name plus the suffix
+`-autopsy`; the new fable takes the same base name with an incremented
+index. Worked example: a failed fable named `poem` becomes opus
+`poem-autopsy` reporting to whoever ran the autopsy, and a new fable
+`poem-2` reporting to `poem-autopsy`. If `poem-2` also fails, the next
+attempt is `poem-3` — normally under the *same* `poem-autopsy` seat (see
+"a second failure" below).
+
+**Doing it.** The canvas has a one-click version of step 1 for a human at
+the keyboard: hover the failed fable's card and pick its TOP-edge opus chip
+(badge cost −5) — the draft splices in atomically, the fable ends up
+reporting to the new opus, and nothing else needs to move. **There is no
+equivalent one-call tool for an agent** — `orgtree_hire`'s `above` parameter
+is a canvas-only mechanic; the MCP `orgtree_hire` tool agents call has no
+such field, and passing one anyway is silently ignored. An agent runs the
+same shape as two calls instead:
+
+1. **Hire the opus.** `orgtree_hire` it at opus tier with `parent` set to
+   the failed fable's *current* parent, so it lands as the fable's sibling —
+   not yet its superior.
+2. **Move the fable under it.** `orgtree_move(node=<failed fable>,
+   new_parent=<new opus>)` reparents it. This is **not atomic** with step 1
+   — there is a real window between the two calls where the opus exists as
+   a plain sibling and the fable has not moved yet. If a turn dies in that
+   window, nothing is lost; just finish the move rather than hiring a
+   second opus. Both calls need the acting agent to already hold authority
+   over the fable's current parent, the fable itself, and the freshly hired
+   opus — true automatically whenever the agent running the autopsy is
+   already the failed fable's own superior, which is the normal case.
+3. **Hire the new fable under the opus**, as its coworker — same parent as
+   the failed fable now has, i.e. the new opus. **Restate the old fable's
+   folder grants and tool switches explicitly before or as part of this
+   hire** (read them off `orgtree_chart` or the old fable's own status
+   first) — `orgtree_hire` has no defaults, so nothing carries over from
+   the retired fable automatically. Skipping this step produces a new fable
+   that fails for a reason that has nothing to do with the filter it was
+   hired to avoid (it simply can't reach a folder it needs), and that
+   failure reads as though the autopsy itself didn't work.
+   ⚠ **From this point on, the autopsy opus cannot be safely retired while
+   the new fable is its live report.** `retire` on a node with live reports
+   auto-dissolves the whole subtree (documented ledger behavior, not a
+   bug) — retiring the opus "to tidy up" after the re-brief would take the
+   new fable down with it. The opus stays in place, permanently, for as
+   long as the fable line under it is alive.
+4. **Read the old fable's transcript.** `orgtree_read_transcript` works on
+   an archived node exactly as it does on a live one, and the opus is
+   already an ancestor of the fable from step 2 — so this can happen before
+   or after step 5, whichever is convenient. Read for *where the turn
+   stopped* (the last exchange before the refusal or derailment), *what the
+   brief was actually asking for at that exact point* — not the brief as a
+   whole, the specific instruction in play when it broke — and *whether any
+   wording in that instruction is open to a reading its author didn't
+   intend*. The output is a rewritten instruction for that step, stated as
+   a change to the words ("ask for X instead of Y", "split step 3 into two
+   smaller instructions"), not a theory about what the filter is or a
+   workaround for it.
+5. **Retire the old fable.** Use `retire`, not `dissolve` — not because
+   dissolve is destructive (it isn't: `dissolve` is recursive retire, and
+   for a fable with no reports of its own the two do the exact same thing —
+   archive it, transcript untouched). Use retire because it's the correct
+   verb for a single leaf node; retire auto-bridges to dissolve on its own
+   if the fable somehow turns out to have live reports. The only verb that
+   actually erases anything is `delete`, and that one is the user's alone —
+   no agent, autopsy opus included, can reach it.
+6. **Brief the new fable** with the rewritten instruction from step 4 and
+   start it (`kickoff` on the hire, or a follow-up `orgtree_message` — a
+   hire sits idle until one arrives).
+
+**A second failure.** If `poem-2` also trips a filter, default to reusing
+the existing `poem-autopsy` seat rather than hiring a second one: it
+already holds authority over the fable line, already has read access, and
+already carries the first autopsy's findings in its context, which a fresh
+opus would have to reconstruct from scratch. Hire `poem-3` under it the
+same way `poem-2` was hired, and repeat step 4's reading against `poem-2`'s
+own transcript. Spin up a *new* autopsy seat only when the failing fable
+sits under a different superior than the one the first autopsy already
+covers.
+
 ## Thinking effort
 
 A per-agent cost/quality dial with five levels — low · medium · high ·

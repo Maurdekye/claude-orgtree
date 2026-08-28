@@ -326,7 +326,7 @@ def main():
     check("only top-level (or user-audience) agents write to the user inbox", lambda: (
         org8.post_mail("vp", "user", "weekly summary"),
         expect_error(lambda: org8.post_mail("leaf", "user", "hi user"), "top-level"),
-        None if len(org8.d["user_inbox"]) == 1
+        None if len(org8.user_mailbox()) == 1
         else (_ for _ in ()).throw(AssertionError))[-1])
     check("user deep reach notices the chain and grants a user audience", lambda: (
         org8.user_deep_reach("leaf", "please refocus on X"),
@@ -408,7 +408,7 @@ def main():
         and r["dissolved"] == [] and r["converted"] == []
         and orgF.nodes["solo-f"]["state"] == "live"
         and orgF.nodes["chief"].get("limit_locked")
-        and any("Fable usage limit" in m["body"] for m in orgF.d["user_inbox"])
+        and any("Fable usage limit" in m["body"] for m in orgF.user_mailbox())
         else (_ for _ in ()).throw(AssertionError(r))
     )(orgF.fable_limit_hit("chief", "weekly usage limit reached")))
     check("agent fable-rehire is permitted but warned FUTILE (soft gate)", lambda: (
@@ -463,9 +463,9 @@ def main():
             orgF.post_mail("chief", "user", "hello name-twin"),
             orgF.post_mail("chief", USER, "hello actual user"),
             None if len((orgF.d.get("mail") or {}).get("user", [])) == 1
-            and len(orgF.d["user_inbox"]) == before + 1
+            and len(orgF.user_mailbox()) == before + 1
             else (_ for _ in ()).throw(AssertionError(orgF.d.get("mail"))))[-1]
-    )(len(orgF.d.get("user_inbox", []))))
+    )(len(orgF.user_mailbox())))
 
     print("lineage extensions:")
     orgL = Org.create("lin2")
@@ -531,7 +531,7 @@ def main():
                     and a.get("delegated_by") == "alpha"
                     for a in orgA.d["audiences"])
         and any('granted "deep" a direct audience' in m["body"]
-                for m in orgA.d.get("user_inbox", []))
+                for m in orgA.user_mailbox())
         else (_ for _ in ()).throw(AssertionError(orgA.d["audiences"])))[-1])
     check("delegated user audience lets the subagent mail the user", lambda: (
         lambda r: None if r["delivered"] == "user_inbox"
@@ -576,7 +576,7 @@ def main():
     orgF.hire(USER, None, "fable", 5, "seer")
     check("filter halt: no conversion, user informed", lambda: (
         lambda p: None if p == "halt" and orgF.nodes["seer"]["model"] == "fable"
-        and any("flagged" in m["body"] for m in orgF.d["user_inbox"])
+        and any("flagged" in m["body"] for m in orgF.user_mailbox())
         else (_ for _ in ()).throw(AssertionError(p))
     )(orgF.fable_filter_hit("seer", "Output blocked by content filtering policy")))
     check("filter opus: converts fable->opus", lambda: (
@@ -1320,7 +1320,7 @@ def main():
          and o2.d["kiosk"]["max_scope"]["tools"]["bash"] is True
          and o2.d["kiosk"]["auto_raise"] is False
          and any("PERMISSION CEILING" in m["body"]
-                 for m in o2.d.get("user_inbox", []))
+                 for m in o2.user_mailbox())
          else (_ for _ in ()).throw(AssertionError(o2.d["kiosk"]))
          )(Org(_mig.d))))
 

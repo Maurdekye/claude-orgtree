@@ -153,8 +153,11 @@ export function UserNode({ pos, isDrop, stats, pip, seats,
           (infinite pool) but read as wrong next to every other card. The
           chips survive switchboard focus too (user spec) — hiring is never
           out of reach. */}
+      {/* soleHire: the eye carries no side or top sets (see the static edge-b
+          above), so its subordinate badge stands alone and needs no role word
+          to tell it apart from anything */}
       <SpawnChips onSpawn={onSpawn} free={kioskRemaining ?? Infinity} seats={seats}
-        maxTier={kiosk?.max_tier} />
+        maxTier={kiosk?.max_tier} soleHire />
       {focused && (
         <EyeDesk map={map} op={op} slug={slug} toast={toast}
           /* `onFocus` IS `centerOn(USER)` — the very glide an unfocused eye
@@ -366,9 +369,24 @@ interface SpawnChipsProps {
    *  FR-25: 'top' is the third variant — a horizontal row above the card
    *  whose hire SPLICES IN as the anchor's new superior. */
   side?: 'left' | 'right' | 'top'
+  /** this is the ONLY hire badge on its card, so the tooltip drops the role
+   *  word (user 2026-08-28: "under the overseer badge, where only the
+   *  subordinate hire badges appear, make the text just say 'hire a haiku
+   *  (-1)'"). The role exists to separate three badges sitting side by side;
+   *  where one appears alone it names a choice that cannot be got wrong.
+   *
+   *  ⚠ Passed ONLY by UserNode, deliberately. The overseer is not the only
+   *  card that shows a lone subordinate badge — the front of a CROWD pile is
+   *  another (live leaf reports of a >8-report team; `pile` suppresses the
+   *  side and top sets while the bottom set survives). The user described the
+   *  overseer and justified it by the lone badge, and those are not the same
+   *  predicate, so this implements what they asked for. If they later want it
+   *  general, pass this at the crowd front too — one line, and this comment
+   *  is why it was not done unasked. */
+  soleHire?: boolean
 }
 
-function SpawnChips({ onSpawn, free, seats, maxTier, side }: SpawnChipsProps) {
+function SpawnChips({ onSpawn, free, seats, maxTier, side, soleHire }: SpawnChipsProps) {
   // kiosk tier cap (user spec): tokens above the cap DISAPPEAR entirely —
   // seat cost doubles as the tier rank, so the cap is a simple cost compare
   const shown = TIERS.filter((t) =>
@@ -387,14 +405,32 @@ function SpawnChips({ onSpawn, free, seats, maxTier, side }: SpawnChipsProps) {
               ? `${t}: needs ${seat} free (has ${free}) — the kiosk credit `
                 + 'cap is fully held; drag an agent’s credit bar down '
                 + 'or retire one to free credits'
-              : side === 'top'
-                ? `insert ${/^[aeiou]/.test(t) ? 'an' : 'a'} ${t} SUPERIOR — `
-                  + `it takes this agent's place and this agent moves `
-                  + `underneath it (seat ${seat})`
-                : side
-                  ? `hire ${/^[aeiou]/.test(t) ? 'an' : 'a'} ${t} COWORKER — same `
-                    + `superior, to the ${side} (seat ${seat})`
-                  : `hire ${/^[aeiou]/.test(t) ? 'an' : 'a'} ${t} (seat ${seat})`}
+              // ONE SHAPE FOR ALL THREE (user request 2026-08-28: "make them
+              // more concise; just 3-5 words at most", "for subordinate,
+              // superior, and coworker"). They were written at different times
+              // and read like it: `hire a haiku (seat 1)` named no role at all,
+              // the coworker one appended its placement, the superior one
+              // explained the whole splice in twenty words. Now they are
+              // `hire <a|an> <tier> <role>` and differ in exactly the one word
+              // that differs in meaning — the role. Lowercase imperative to
+              // match every other control tooltip on the card (`retire — …`,
+              // `dissolve — …`), four words each.
+              //
+              // The seat cost rides along as `(-N)` — the user's own shape and
+              // their own example, after they were asked whether losing it to
+              // the word ceiling was acceptable and said it was not. The MINUS
+              // is the point: it reads as what this costs you, where the older
+              // `(seat 1)` read as a label. It is a suffix, not a word, so the
+              // four-word phrase above stays exactly as it is rather than
+              // being shortened to make room.
+              // ...and where this is the only hire badge on the card, the role
+              // word is dropped entirely — see `soleHire`. The cost badge
+              // stays: it is the one part that still says something the user
+              // cannot read off the badge's position.
+              : `hire ${/^[aeiou]/.test(t) ? 'an' : 'a'} ${t}`
+                + (soleHire ? ''
+                  : ` ${side === 'top' ? 'superior' : side ? 'coworker' : 'subordinate'}`)
+                + ` (-${seat})`}
             onClick={(e) => { e.stopPropagation(); onSpawn(t) }}>
             {TIER_LETTER[t]}
           </button>
@@ -1029,6 +1065,16 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, m
           stack's layers, and "the side of the agent" is not a free position. */}
       {live && !node.isBearerOf && !node.bearer_state && !pile && onSpawnSide && (
         <>
+          {/* transparent hover bridges (user report 2026-08-28). The columns
+              now sit beyond the credit bar and the doc chips so they cannot
+              cover them at any zoom — which puts a strip of empty canvas
+              between card and chips, and the chips only exist while the card
+              is hovered. Without these the chips would blink out as the cursor
+              crossed that strip and the hire gesture would become the new
+              unreachable thing. Pure hit area: no paint, under the bar and the
+              doc chips, so they take nothing else's clicks. */}
+          <div className="hsof-bridge bridge-l" aria-hidden="true" />
+          <div className="hsof-bridge bridge-r" aria-hidden="true" />
           <SpawnChips side="left" onSpawn={(t) => onSpawnSide(t, 'left')}
             free={kioskRemaining ?? Infinity} seats={seats} maxTier={maxTier} />
           <SpawnChips side="right" onSpawn={(t) => onSpawnSide(t, 'right')}

@@ -17,7 +17,9 @@ import {
   AttachIcon, CloseIcon, DownloadIcon, EditIcon, FileIcon, HearingIcon,
   MailIcon, PublicIcon,
 } from '../icons'
-import { EXTERN, md, USER, useEsc, usePolled } from './shared'
+import {
+  EXTERN, isSystemNotice, md, pileNotices, USER, useEsc, usePolled,
+} from './shared'
 import type { CanvasNode, MailRow } from './shared'
 import { isMobile } from '../mobile'
 
@@ -125,8 +127,19 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
     ? all.filter((m) => String(partyOf(m) ?? '').toLowerCase().includes(qn)
       || String(m.body ?? '').toLowerCase().includes(qn))
     : all
-  const cur = selId == null ? undefined
-    : shown.find((m) => keyOf(m) === selId)
+  // …then consecutive system notices fold into one ROW (user, 2026-08-28).
+  // AFTER the filter, because the fold is about what is on screen: filtering
+  // to "@system" should show you the pile, not a run broken by rows the
+  // filter removed. Before the window, so `vis` pages entries and not
+  // members — otherwise a 40-notice run would spend a whole page on one row.
+  const piles = pileNotices(shown)
+  // selection is still BY ROW IDENTITY, but it resolves through the pile: a
+  // notice selected on its own stays selected when a newer one arrives and
+  // folds it into a run (the key would otherwise address a row that no
+  // longer renders, and the reading pane would silently empty)
+  const curPile = selId == null ? undefined
+    : piles.find((g) => g.some((m) => keyOf(m) === selId))
+  const cur = curPile?.[0]
   // per-mail read (user ruling): a VIEWED unread mail is marked read the
   // moment you click OFF it — select another mail, or leave the list
   const curRef = useRef<MailRow | undefined>(undefined); curRef.current = cur
@@ -160,7 +173,8 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
     if (e.defaultPrevented) return
     if ((e.target as HTMLElement).closest?.('.askcard')) return
     e.preventDefault()
-    const list = shown.slice(0, vis)
+    // one step = one ROW, so a folded run of notices is one stop, not five
+    const list = piles.slice(0, vis).map((g) => g[0]!)
     if (!list.length) return
     const idx = cur ? list.findIndex((m) => keyOf(m) === keyOf(cur)) : -1
     const next = idx < 0 ? 0
@@ -188,7 +202,7 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
         onScroll={(e) => {
           const el = e.currentTarget
           if (el.scrollHeight - el.scrollTop - el.clientHeight < 240
-            && vis < shown.length && !paging.current) {
+            && vis < piles.length && !paging.current) {
             paging.current = true
             setVis((v) => v + MAIL_WINDOW)
           }
@@ -203,10 +217,18 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
             render; the rest page in on demand. The filter searches the WHOLE
             set (`shown`), not just the window — hunting an old message must
             not depend on how far you have paged. */}
-        {shown.slice(0, vis).map((m, i) => (
+        {piles.slice(0, vis).map((g) => {
+          // the run's FIRST member is the row: the list is newest-first, so
+          // that is the newest, and the row keeps its place in the ordering
+          const m = g[0]!
+          const pile = g.length > 1
+          return (
           <div key={keyOf(m)}
             ref={(el) => {
-              if (el && jumpTo && keyOf(m) === jumpTo && !jumpedRef.current) {
+              // a jump aimed at a folded member lands on the row that now
+              // carries it, not on nothing
+              if (el && jumpTo && g.some((x) => keyOf(x) === jumpTo)
+                && !jumpedRef.current) {
                 jumpedRef.current = true
                 el.scrollIntoView({ block: 'center' })
               }
@@ -219,6 +241,21 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
               /* passive notices (orgtree_send_notice) stand apart too — but
                  quietly: a dashed neutral edge, never the ask accent */
               + (!m._ask && m.kind === 'notice' ? ' notice' : '')
+              /* …and a SYSTEM notice shrinks to a single line (user,
+                 2026-08-28). ⚠ The `from` test is what keeps this off an
+                 AGENT's notice, which stays full height: the user asked only
+                 for the machine's own chatter to be de-emphasised, and in a
+                 node mailbox agent-to-agent notices are the common case.
+                 This is a DIFFERENT predicate from the read-on-arrival rule
+                 above it, which is every notice whatever its source — the two
+                 must not be collapsed into one test. */
+              + (isSystemNotice(m) ? ' sysnotice' : '')
+              /* a FOLDED RUN of them is that same row carrying a count — see
+                 pileNotices. No new edge, no new tint: this is meant to read
+                 as more of the one-line system row, not as a new species.
+                 (`notepile`, not `pile` — `.pile-*` is the retired-sibling
+                 stack on the canvas and the two share nothing.) */
+              + (pile ? ' notepile' : '')
               /* D-169: urgent mail sits at the TOP of that same ladder — one
                  notch above an open ask on the one axis this list already
                  uses (edge + tint + chip), not a new colour. It does NOT
@@ -226,7 +263,10 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
                  pronounced, and two pulsing rows would read as an alarm
                  where two strong rows still read as a list. */
               + (!m._ask && m.urgent ? ' urgent' : '')
-              + (jumpTo && keyOf(m) === jumpTo ? ' jflash' : '')}
+              /* …and it FLASHES on the same test it scrolls on: a jump at a
+                 folded member must not scroll to a row that then sits there
+                 unmarked */
+              + (jumpTo && g.some((x) => keyOf(x) === jumpTo) ? ' jflash' : '')}
             onClick={() => {
               if (cur && keyOf(m) === keyOf(cur)) {
                 // toggling the selected row off — reading it counts as read
@@ -242,8 +282,15 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
                 {outgoing ? '→ ' : ''}{party(m) === USER ? '@user' : party(m)}
               </span>
               {m._ask && <span className="askkind">{m.kind ?? 'ask'}</span>}
+              {/* the count rides the chip that already said `notice`, so the
+                  folded row is the same row with a number in it: "@system ·
+                  3 notices · 08-28 12:44". A run of one still reads exactly
+                  `notice` — nothing about a lone notice changes. */}
               {!m._ask && m.kind === 'notice'
-                && <span className="noticekind">notice</span>}
+                && <span className="noticekind"
+                  title={pile ? `${g.length} system notices — open to read them`
+                    : undefined}>
+                  {pile ? `${g.length} notices` : 'notice'}</span>}
               {/* the FILLED chip — every other chip in this list is an
                   outline, so filled is the one step up the vocabulary that
                   was still unused. Its tooltip carries the sender's reason,
@@ -259,12 +306,21 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
                   onClick={(e) => { e.stopPropagation(); onRetract(m) }}>
                   <CloseIcon fontSize="inherit" /></button>)}
             </div>
-            <div className="l2">{brief(m.body)}</div>
+            {/* the preview line is what makes a row two lines tall, so a
+                SYSTEM notice simply does not render one (user, 2026-08-28:
+                "much narrower in height"). Not hidden in CSS — not built:
+                a long-lived org's mailbox carries a lot of these, and a
+                display:none preview is a DOM node per row that nobody can
+                ever see. The body is still one click away in the reading
+                pane, and the `l1` header keeps the row identifiable. */}
+            {!isSystemNotice(m)
+              && <div className="l2">{brief(m.body)}</div>}
           </div>
-        ))}
-        {shown.length > vis && (
+          )
+        })}
+        {piles.length > vis && (
           <div className="dim pad loadolder-status">
-            {shown.length - vis} earlier
+            {piles.length - vis} earlier
           </div>)}
       </div>
       <div className="mailer-read">
@@ -273,7 +329,9 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
             <div className="mailer-head">
               {outgoing && !customS && <span className="dim">to</span>}
               {S(party(cur)!, cur)}
-              <span className="dim">{cur.kind}</span>
+              <span className="dim">
+                {curPile && curPile.length > 1
+                  ? `${curPile.length} notices` : cur.kind}</span>
               {cur.urgent && <span className="urgentkind">urgent</span>}
               {cur.relationship && <span className="dim">{cur.relationship}</span>}
               <span className="dim">{cur.at}</span>
@@ -288,10 +346,31 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
             {cur.urgent && cur.urgent_reason && (
               <div className="urgent-why">{cur.urgent_reason}</div>
             )}
+            {/* A FOLDED RUN OPENS AS THE LIST OF WHAT IT FOLDED (user,
+                2026-08-28: "display them in a list in the full mail view to
+                the right"), modelled on the block an agent gets on its next
+                turn — supervisor._envelope's `[ORG NOTICES — n change(s)]`,
+                which the user named as the thing to copy. Same shape as that
+                block: one line per notice, `at` then text, OLDEST FIRST, so a
+                run reads forward like the log it is. The list itself is
+                newest-first and stays that way; this is a different axis.
+                ⚠ Nothing is summarised or elided — every folded entry's whole
+                body is here. The row is a shorter way IN, not a shorter
+                version OF. */}
             {custom
               ? <div className="mailer-body">{custom}</div>
-              : <div className="mailer-body md"
-                  dangerouslySetInnerHTML={md(cur.body, mdBase?.(cur) || undefined)} />}
+              : curPile && curPile.length > 1
+                ? <div className="mailer-body notepile">
+                    {curPile.slice().reverse().map((n) => (
+                      <div className="notepile-row" key={keyOf(n)}>
+                        <span className="notepile-at">{when(n.at)}</span>
+                        <span className="notepile-text md"
+                          dangerouslySetInnerHTML={md(n.body, mdBase?.(n) || undefined)} />
+                      </div>
+                    ))}
+                  </div>
+                : <div className="mailer-body md"
+                    dangerouslySetInnerHTML={md(cur.body, mdBase?.(cur) || undefined)} />}
             {(cur.attachments ?? []).length > 0 && (
               <div className="attach-row">
                 {/* extern-shaped attachments may lack `path` — a download

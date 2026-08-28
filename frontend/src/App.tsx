@@ -145,11 +145,26 @@ export default function App() {
     setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 12000)
   }, [])
 
-  const refreshOrgs = useCallback(() => listOrgs().then(setOrgs).catch((e: Error) => setError(e.message)), [])
+  // the error banner used to have no clearer at all: a transient fetch
+  // failure set it and it sat there until F5, even once polling (below)
+  // had long since started succeeding again. Asymmetric on purpose — slow
+  // to alarm, quick to reassure — so ONE blip doesn't flicker the banner,
+  // but recovery is instant: a streak ref (not state) survives across
+  // polls without a re-render of its own, and any successful fetch either
+  // source makes is proof the backend is reachable again.
+  const errStreak = useRef(0)
+  const ERROR_STREAK = 2
+  const fetchOk = useCallback(() => { errStreak.current = 0; setError(null) }, [])
+  const fetchErr = useCallback((e: Error) => {
+    errStreak.current += 1
+    if (errStreak.current >= ERROR_STREAK) setError(e.message)
+  }, [])
+  const refreshOrgs = useCallback(() =>
+    listOrgs().then((o) => { setOrgs(o); fetchOk() }).catch(fetchErr), [fetchOk, fetchErr])
   const refreshTree = useCallback((s: string | null) => {
     if (!s) return
-    getTree(s).then(setTree).catch((e: Error) => setError(e.message))
-  }, [])
+    getTree(s).then((t) => { setTree(t); fetchOk() }).catch(fetchErr)
+  }, [fetchOk, fetchErr])
 
   useEffect(() => { refreshOrgs() }, [refreshOrgs])
   // G1 — THE TREE HEARTBEAT. Everything on screen that is not the conversation

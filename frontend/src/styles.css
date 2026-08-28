@@ -1152,6 +1152,48 @@ button.cc-name:hover {
   padding-left: 7px;
 }
 .mailrow.notice .l2 { font-style: italic; }
+/* SYSTEM notices shrink to ONE LINE (user, 2026-08-28): "much narrower in
+   height to deemphasize their presence in the mailbox". The machine's own
+   chatter — a turn that failed, a storage migration, a limit reset — is
+   worth keeping and not worth a two-line card each.
+   HOW THE HEIGHT ACTUALLY GOES: the preview line is what makes a row tall,
+   and mail.tsx does not RENDER one for these at all — not `display:none`,
+   which would leave a DOM node per row that nobody can ever see. This rule
+   only halves the padding and quiets the header that remains. The row still
+   opens to its full body on click: folded, not hidden.
+   ⚠ SYSTEM ONLY. An AGENT's notice keeps full height — the user asked for
+   the machine to be quieter, not for notices as a category to shrink, and in
+   a node mailbox agent-to-agent notices are the ordinary traffic. This is a
+   narrower predicate than the read-on-arrival rule, which is every notice. */
+.mailrow.sysnotice { padding-top: 3px; padding-bottom: 3px; }
+.mailrow.sysnotice .l1 { font-size: 10px; color: var(--dim); }
+/* …and the row stays legible when it is the SELECTED one: the reading pane
+   carries the body, so the list row has no reason to grow back */
+.mailrow.sysnotice.on .l1 { color: var(--ink); }
+/* A RUN OF THEM FOLDS INTO ONE ROW (user, 2026-08-28). Deliberately almost
+   no styling of its own: it is the same one-line system row, and the only
+   difference the eye needs is the count already sitting on the `notice`
+   chip ("3 notices"). A second visual device here would undo the point,
+   which is that the machine's chatter takes ONE line however much of it
+   there is. The tabular figures just stop the count jittering the chip
+   width as it grows. */
+.mailrow.notepile .noticekind { font-variant-numeric: tabular-nums; }
+/* …and opened, it is a LIST of every notice it folded — the shape an agent
+   gets on its next turn ([ORG NOTICES], supervisor._envelope), which is the
+   model the user pointed at. `at` in the gutter, text beside it. */
+.mailer-body.notepile { display: flex; flex-direction: column; gap: 7px; }
+.notepile-row {
+  display: flex; gap: 9px; align-items: baseline;
+  padding-bottom: 7px; border-bottom: 1px solid var(--line-soft);
+}
+.notepile-row:last-child { padding-bottom: 0; border-bottom: none; }
+.notepile-at {
+  flex: none; font-family: var(--mono); font-size: 10px; color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+.notepile-text { min-width: 0; flex: 1; }
+.notepile-text > :first-child { margin-top: 0; }
+.notepile-text > :last-child { margin-bottom: 0; }
 /* D-169 URGENT MAIL — the TOP of the ladder this list already grades on.
    That ladder is one axis (left border + optional tint + a kind chip) and it
    runs: ordinary mail (no edge) → notice (dashed neutral, no tint) →
@@ -1419,8 +1461,90 @@ button.cc-name:hover {
   left: auto; right: auto; bottom: auto; top: 50%;
   flex-direction: column;
 }
-.hsof.side-l { left: -21px; transform: translateY(-50%) scale(var(--invzf, 1)); transform-origin: center right; }
-.hsof.side-r { right: -21px; transform: translateY(-50%) scale(var(--invzf, 1)); transform-origin: center left; }
+/* ⚠ ANCHOR EACH COLUMN OUTSIDE THE WORLD-SCALED THING BESIDE IT (user report
+   2026-08-28: "the leftward hire coworker badges overlap the budget bar,
+   making it untouchable unless zoomed in far enough").
+
+   The strip beside a card holds two kinds of furniture that scale differently.
+   `.cbar` (left) and `.doc-chips` (right) are WORLD-scaled: their screen width
+   is 14*z and 21*z, collapsing toward nothing as you zoom out. These columns
+   carry the unclamped `--invzf`, so they hold a constant SCREEN size at every
+   zoom. Anchored near the card edge, a screen-constant column therefore grows
+   over a shrinking neighbour until it covers it completely — measured at
+   z<=1.0 the click aimed at the bar landed on the chips, and the bar could not
+   be reached at all.
+
+   The cure is to anchor by the edge that must stay clear, not by the card:
+   pin the column's near edge ON the neighbour's far edge, so the counter-scale
+   grows AWAY from it. `right: calc(100% + 22px)` puts the left column's right
+   edge exactly on the bar's left edge (.cbar is left:-22px), and the mirror
+   clears the doc chips. That holds at EVERY zoom by construction rather than
+   by tuning, because the anchor is expressed in the same world units the
+   neighbour is laid out in — nothing here depends on what --invzf happens to
+   be. Reordering z-index or pointer-events instead would have made the bar
+   clickable while the badge still sat on top of it, hiding the thing the user
+   was trying to see. (tests/chipbar_probe.py measures all of this.)
+
+   ⚠ THE CLEARANCE IS THE NEIGHBOUR'S EXTENT, SO IT IS ONLY THERE WHEN THE
+   NEIGHBOUR IS (user report 2026-08-28, second round: "on the left side they
+   look good, but on the right they stick out too far, since there's no budget
+   bar there"). The first cut wrote the right-hand clearance as an unconditional
+   24px, which is right only for a card that HAS documents. `.cbar` is drawn for
+   every live card, so the left column always has a bar filling the strip it
+   stands off; `.doc-chips` is drawn only when the node has presented documents
+   and never at desk fill, so on most cards the right column stood 24px out with
+   nothing in between — three times the 8px of open canvas the left side shows,
+   and it read as sticking out. So each side names its clearance ONCE, here, and
+   the rule is: clear the neighbour if there is one, otherwise sit at the same
+   distance from the card as the other side's nearest furniture (8px). */
+.sq {
+  /* left: 22px = .cbar's own 8px offset + its 14px width (it is at left:-22px),
+     so the column's right edge lands exactly on the bar's left edge. */
+  --hsof-l-clear: 22px;
+  /* right, bare card: mirror the 8px of open canvas the bar leaves on the left,
+     so neither column floats further off the card than the other. */
+  --hsof-r-clear: 8px;
+}
+/* right, with documents: the chips start at 100% + 3px and are 21px wide, so
+   24px puts the column's left edge exactly on their right edge. Keyed on the
+   chips THEMSELVES rather than on a React class computed from the same
+   condition — a class can drift out of step with what actually renders; `:has`
+   cannot. */
+.sq:has(> .doc-chips) { --hsof-r-clear: 24px; }
+.hsof.side-l {
+  left: auto; right: calc(100% + var(--hsof-l-clear));
+  transform: translateY(-50%) scale(var(--invzf, 1));
+  transform-origin: center right;
+}
+.hsof.side-r {
+  right: auto; left: calc(100% + var(--hsof-r-clear));
+  transform: translateY(-50%) scale(var(--invzf, 1));
+  transform-origin: center left;
+}
+/* Moving the columns off the card opens a strip the cursor must cross to
+   reach them, and the chips only exist while `.sq` is hovered — so without
+   this they would vanish mid-reach and the hire gesture would become the new
+   unreachable thing. These bridges are transparent hit area, children of the
+   card, filling exactly the gap between the card edge and the furniture
+   beyond it. They sit UNDER the bar and the doc chips (z-index 1 against 2),
+   so they extend the hover region without taking anything's clicks.
+
+   ⚠ EACH BRIDGE IS SIZED FROM THE SAME VARIABLE AS THE COLUMN IT SERVES. The
+   right-hand gap is no longer one number — it is 24px beside doc chips and 8px
+   beside a bare card — and a bridge written as its own constant can only be
+   right for one of them. Sharing the variable makes "the bridge covers exactly
+   the gap" true by construction instead of by two edits staying in step.
+   (Desk fill is the one place this does not matter: `.sq.desk.edge-l/-r` drop
+   the `:hover` from the gate entirely — user spec, the desk KEEPS its hire
+   chips — so there is nothing there for a gap to interrupt. Everywhere else
+   the gate is `.sq…:hover` and the bridge is the whole reason the columns are
+   reachable at all.) */
+.sq > .hsof-bridge {
+  position: absolute; top: 0; height: 100%;
+  z-index: 1; pointer-events: auto; opacity: 0;
+}
+.sq > .hsof-bridge.bridge-l { right: 100%; width: var(--hsof-l-clear); }
+.sq > .hsof-bridge.bridge-r { left: 100%; width: var(--hsof-r-clear); }
 /* FR-25 insert-parent chips: a horizontal row riding the TOP edge — the
    bottom row's mirror, same hover gate and counter-scaling */
 .hsof.side-t {
@@ -1430,9 +1554,31 @@ button.cc-name:hover {
   flex-direction: row;
 }
 .sq.edge-t:hover > .hsof.side-t { opacity: 1; pointer-events: auto; }
-/* at desk fill the panel is opaque — push the columns fully outside */
-.sq.desk > .hsof.side-l { left: -24px; }
-.sq.desk > .hsof.side-r { right: -24px; }
+/* ⚠ DESK FILL IS A DELIBERATE EXCEPTION TO THE CLEARANCE RULE (user ruling
+   2026-08-28: "when in desk view move the coworker hire buttons back to their
+   old positions right next to the card, so they're still on screen there").
+
+   The clearance above is stated in WORLD px because that is the unit its
+   neighbour is laid out in — which means it multiplies by the zoom on screen.
+   That is what makes it hold at a distance, and it is also what makes it
+   absurd up close: 22 world px is 264 screen px at z=12, so a desk-filling
+   card threw its hire columns most of a screen-width away from the panel they
+   belong to. 2px restores exactly where they sat before the clearance existed
+   (the old rules were `left: -24px` / `right: -24px` against a 22px column, so
+   the near edge was 2px outside the card).
+
+   What that costs, measured rather than assumed: the left column crosses the
+   OUTER third of the credit bar between z=2.1 and z≈3.3 — 9.4px of a 29.4px
+   bar at Z_DESK, none of it at z>=4, where the bar has grown out from under a
+   screen-constant column. The bar's centre is never covered and the click
+   still lands on it at every desk zoom (chipbar_probe.py asserts exactly
+   that). The distance complaint cannot recur here: `focusId` is null below
+   Z_DESK, so this rule only ever applies from 2.1 up.
+
+   Stated as the clearance variables, not as `left`/`right` on the columns:
+   setting the opposite offset would stretch a column that is now positioned by
+   one edge only, and going through the variables takes the bridges with it. */
+.sq.desk { --hsof-l-clear: 2px; --hsof-r-clear: 2px; }
 .sq.desk > .hsof.side-t { top: -24px; }
 .sq.desk.edge-t > .hsof.side-t { opacity: 1; pointer-events: auto; }
 /* the desk and the switchboard KEEP their hire chips (user spec): no hover
@@ -2421,9 +2567,18 @@ svg.MuiSvgIcon-root {
 @media (prefers-reduced-motion: reduce) {
   .msg.thinking.sealed { animation: none; opacity: .75 }
 }
-/* №11/№17: durable pending bubble + retract ✕ */
+/* №11/№17: durable pending bubble + retract ✕.
+   The flex here is NOT the message layout — it is the gutter that holds the
+   delivery tag / retract ✕ at the top right. The message itself is the ONE
+   child beside it, and it stacks (text, then `.attach-row`) exactly as the
+   delivered bubble does, because this bubble is a preview of that one and
+   used to contradict it: text and thumbnail sat side by side here and one
+   above the other once delivered, so a message visibly rearranged itself on
+   send (user, 2026-08-28 — "the columnar display is best for this, yes").
+   ⚠ Keep it at one content child. Adding a second sibling would put it
+   BESIDE the message again and bring the old bug back in a new place. */
 .pendrow { display: flex; align-items: flex-start; gap: 6px; }
-.pendrow .md { flex: 1; min-width: 0; }
+.pendbody { flex: 1; min-width: 0; }
 .sendmode { font-size: 10.5px; padding: 0 4px 2px; }
 /* №7: last turn's auto-denies */
 .denials {

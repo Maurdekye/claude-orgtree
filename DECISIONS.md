@@ -2278,6 +2278,102 @@ All current Claude models accept image input, `claude-fable-5` included, so no
 tier needs a capability degrade. If the vendor's numbers change, this entry is
 stale and the suite will not notice — it pins our behaviour, not their limits.
 
+### D-171 · a guarantee is only as wide as the layer that can see it
+Found 2026-08-28 by **@org:resonite**, an outside org, testing an answer this
+org had just given them in writing. They asked whether a user's attached image
+reaches an agent as image content or only as a path. Our reply described the
+never-dropped guarantee in D-167 — and, in the same message, described the
+API-layer filter that made it false. They sent a message whose only attachment
+was `uploads/definitely-never-uploaded.png`, got HTTP 200 `{"accepted":true}`,
+and found ZERO attachment lines in the delivered mail. Reproduced here over
+real HTTP against a live uvicorn before any fix; the probe is the record.
+
+**The defect.** `api.py`'s staged-attachment loop turned a path into a `meta`
+only if it resolved inside the node's scratch. A path that did not resolve was
+skipped — no error, no warning, no record. `metas` is the only thing handed to
+`post_mail`, `entry["attachments"]` is the only thing `_mail_block` iterates,
+so every "nothing is ever silently dropped" line in that renderer was running
+strictly downstream of a list the attachment never entered. **The renderer
+could not report what it was never given.** The agent could not tell an
+attachment had ever been intended; the sender could not tell it had not
+arrived.
+
+**The general lesson, which is why this is an entry and not a patch note.** The
+D-167 guarantee was true of `_mail_block` and stated as true of the system. A
+guarantee inherits the blindness of the layer that enforces it, and the failure
+mode is specific: it reads as *stronger* than it is, precisely where the gap
+is. Their upload code deliberately fails loudly when our endpoint returns no
+path; under our wording that looks like over-engineering someone would tidy
+away. A false guarantee is worse than none, because it is acted on.
+
+**What was built.** Both audiences are told, and neither substitutes for the
+other — an HTTP client cannot read an agent's context, and an agent cannot
+retry the caller's upload:
+- the AGENT gets `[ATTACHMENT NOT DELIVERED — …]` from a new
+  `attachments_missing` field on the mail entry;
+- the CALLER gets `warnings` in the 200 response. `post_mail` had always
+  built that list and `node_message` had always discarded it, which is why a
+  message with a dead attachment was byte-identical to a clean send.
+
+**Why `attachments_missing` is a separate field.** The obvious shape — a
+placeholder in `attachments` with `bytes: 0`, reusing the renderer — is wrong,
+and checking rather than assuming is what caught it: `attachments` is ALSO what
+the chat renders as download cards and inline images (`canvas/desk.tsx`), and
+the user's own Sent copy carries the same list. A placeholder there would put a
+dead card and a broken image in the user's chat — a worse bug than the one
+being fixed, wearing a fix's clothes.
+
+**Status stays 200.** The message WAS delivered; only an attachment was not. A
+non-200 for delivered mail would be its own lie, and would bounce the user's
+text along with it.
+
+**Caller-supplied names are sanitised** (`undeliverable_note`: whitespace
+collapsed, 160 chars). The text reaches an agent's context, and on the
+org-inbox path the sender is untrusted — a newline would forge a line inside
+the `[MAIL]` block, the same injection the FR-05 `reply_to` gist collapses for.
+
+**Three siblings of the same defect, closed here.** Two independent silent
+`[:10]` truncations (`api.py` and `ledger.py`) — now one named
+`ATTACHMENT_MAX` whose overflow is REPORTED, because `list(x)[:10]` is a
+silent drop wearing a slice's clothes; and `deliver_org_inbox`'s
+`except OSError: pass`, whose own comment admitted the drop. A known silent
+failure with a note explaining it is worse than an unknown one: everyone who
+read it moved on.
+
+**Bounds, stated rather than glossed.** On the agent→USER path the loss is
+recorded and the SENDING AGENT is warned, but the user's inbox UI does not
+render it — it renders `attachments` and knows nothing of the new field. That
+is sufficient only because `_agent_send_file` already refuses a bad path
+outright, so the sole cause reaching that branch is the sender's own overflow,
+and the sender is who can resend. A cause the USER must see would need a UI
+leg this entry does not build.
+
+**Follow-on 2026-08-28: `warnings` is now a CONSUMED DEPENDENCY, not a
+nicety.** @org:resonite's send path uses it to detect the one case it could
+not see before — it did everything right and the attachment still did not
+land, because `200 {"accepted": true}` was indistinguishable from success. If
+this field is later dropped, renamed, or stops being populated on that branch,
+their failure detection reverts to what it was before this entry existed **and
+still looks like it is working**. Both of `node_message`'s returns carry it —
+the live path and the archived-recipient early return — and both are pinned,
+because an edit that kept one and dropped the other would be green in testing
+and blind whenever the recipient happened to be archived.
+
+**The "Bounds" paragraph above is now also a comment at the branch it
+describes**, per their observation, which is the sharpest thing in this whole
+thread: the bound holds *because of the current set of causes*, which is a
+claim about today's code and not a property of the design. A bound stated only
+in a document is not in the path of the edit that breaks it.
+
+**Pinned by** `test_inline_images.py` §5, which enters at `node_message` — the
+layer that decides what becomes an attachment — and not at the renderer. A
+suite that only ever enters at the renderer cannot see a caller that never
+calls it, which is exactly how the original defect stayed green. Six mutants
+(`tests/_mutate_attmiss.py`), each proven landed by `git diff` before its
+result was read; two were rewritten as value REPLACEMENTS after the first pass
+killed checks with `NameError`, which proves only that a line executes, not
+that a check detects the missing behaviour.
+
 ### D-169 · urgent mail: a second way in, on the ask's own signal
 Ruling (user, 2026-08-27): an agent may tag USER-BOUND mail urgent. The
 inbox then "pulses and lights up the same way a question ask does", until
@@ -2355,6 +2451,141 @@ Load-bearing.
   the same mechanism.
 · The flag and its reason are written as a PAIR at the single site that can
   write them, after the gate; `urgent` never exists without a reason.
+
+### D-173 · `user_inbox` means UNREAD, not RECEIVED
+Ruling (user, 2026-08-28, in two notes): "do not include system notices in the
+unread user mail count. in fact, don't even mark them as unread: they should
+arrive in the mailbox as already read. they should also be much narrower in
+height to deemphasize their presence in the mailbox." Then, sharpening it:
+"in fact any notice arrives to the user mailbox as already read. but only
+system notices should be given this narrower height adjustment."
+
+TWO PREDICATES, AND THEY ARE NOT THE SAME ONE.
+· READ ON ARRIVAL, and therefore out of every unread count: `kind ==
+  "notice"`, whatever its source. A notice is passive by construction
+  (D-137: mail minus the wake) — it lands to be read at leisure and never
+  wakes anyone — so it never had business claiming unread status.
+· SHORTER ROW: `kind == "notice"` AND `from == "@system"`. An agent's notice
+  keeps full height; in a node mailbox agent-to-agent notices are the ordinary
+  traffic, not chatter.
+
+⚠ THE READ PREDICATE IS THE KIND AND NEVER THE SENDER. This is the trap
+waiting for anyone who "simplifies" the two predicates into one. `@system`
+also sends the user `kind: "decision"` mail — a Fable content filter fired, a
+weekly Fable limit exhausted, agents halted or whole subtrees dissolved
+(ledger.fable_* ). Widening the read rule to "notice OR from @system" would
+silently pre-read exactly the mail the user most needs to see: it would leave
+the unread count, the tab title, the pip and the folder badge all at once,
+and nothing would ever draw them back to it. Getting the HEIGHT predicate
+wrong makes something the wrong size; getting the READ predicate wrong HIDES
+REAL MAIL. The suite spends four legs on "everything else is still unread"
+and one on the happy path, in that proportion deliberately.
+
+THE FIX IS TO THE FACT, NOT TO ITS READERS — and why that was available here.
+Six places derive "how much is unread": tree()'s `user_inbox_count` and
+`urgent_unread`, the tab title, `attentionPip` (D-169), the folder tab's badge
+and the mark-all-read gate. Exactly ONE computes it. All six read MEMBERSHIP
+OF ONE LIST rather than each re-deriving a rule, so keeping notices out of
+that list corrects all six at once, with no predicate written anywhere and
+nothing to keep agreed.
+⚠ THIS IS THE OPPOSITE OUTCOME TO THE `mail_pending` DUPLICATION, and the
+difference is worth naming because "six readers" looks identical from a
+distance. `mail_pending` is ONE FACT WITH SIX HAND-WRITTEN RENDERINGS — six
+copies of a rule, which must be collapsed or they drift. This is ONE FACT WITH
+SIX DERIVATIONS — six readers of a single field, which is simply what a
+single source of truth looks like in use. A future author who finds six
+readers should ask which of the two they are looking at before reaching for a
+refactor: only copied RULES drift.
+
+MECHANISM. `Org.to_user_inbox()` is the only way into the user's mailbox — all
+twelve writers (ledger 8, supervisor 3, sandbox 1) go through it, and a
+source-level guard in the suite fails if a thirteenth ever appends directly,
+because the whole design rests on `user_inbox` holding unread mail only. A
+notice goes to `user_mail_log` instead, which is where the read endpoint
+already moves anything the user has read — so it is read on arrival BY
+CONSTRUCTION, with no `read` flag and no second notion of "read" to fall out
+of step with the first. The archive's own invariants (chronological, capped
+at 100) are mirrored from that endpoint.
+
+"WAS THE USER TOLD?" AND "IS IT WAITING FOR THEM?" ARE NOW DIFFERENT
+QUESTIONS. They were the same until today, and `user_inbox` answered both.
+`Org.user_mailbox()` (both sides of the read line) answers the first; the
+list itself answers the second. Six suites — ledger, external-mail, headless,
+sandbox, limit-freeze, turn-lifecycle — had encoded the old contract by
+asserting a notice WAITING in `user_inbox`, and now ask the question they
+actually meant. The next author to touch this meets the same fork.
+
+THE FAILURE ALERTS ARE TREATED LIKE ANY OTHER SYSTEM NOTICE — RULED, NOT
+OVERLOOKED. The supervisor's "<agent> stopped: its turn failed" and "<agent>
+is stuck" alerts are `notice` from `@system` (supervisor.py), so they arrive
+pre-read, uncounted and one line tall. That is the org reporting that an
+agent died, so the consequence was put to the user explicitly, in those
+terms, with an exemption for those two offered and costed as a small change.
+Ruling (user, 2026-08-28): "Leave as specified." Every system notice is
+treated alike; there is no exemption and none is pending.
+⚠ So exempting them later is a CHANGE OF POLICY needing the user's
+agreement, not an unfinished corner to tidy up. The uniform treatment is the
+decision.
+
+RENDERING. The shorter row does not RENDER the preview line rather than
+hiding it in CSS — a `display:none` preview is a DOM node per row that nobody
+can ever see, and a long-lived org's mailbox carries many. The `l1` header
+stays, so the row is identifiable and still opens to its full body: folded,
+not hidden.
+
+AND A RUN OF THEM FOLDS INTO ONE ROW (user, 2026-08-28, same thread): "if
+there are multiple consecutive system notices in a row, collapse them all
+into a single mail entry, and then display them in a list in the full mail
+view to the right, kind of like how notices are already collapsed and
+collated into the next turn for an agent." The same contract carried one step
+further — a shorter row was not enough when the machine emits five of them in
+a minute — and the user named the model to copy rather than leaving it open:
+`supervisor._envelope`'s `[ORG NOTICES — n change(s) since your last turn]`
+block, which is how an agent already receives its own queued notices.
+
+CONSECUTIVE MEANS ADJACENCY IN THE LIST SHOWN, AND CARRIES NO TIME BOUND.
+Two system notices a day apart with nothing between them are one entry. The
+user described a POSITION ("in a row") and not a recency, and a time window
+would be the worse rule on its own terms: the same two rows would fold or not
+fold depending on when you happened to look, which is a display that changes
+under you for no reason you can see. ANY row that is not itself a foldable
+system notice breaks the run — ordinary mail read or unread, an agent's
+notice, an ask, a `@system` decision. Read state is not part of the rule.
+⚠ THAT IS THE WHOLE SAFETY PROPERTY, and it is the reason the fold predicate
+is the SHORTER-ROW predicate exactly (`kind == "notice"` AND
+`from == "@system"`) and never a hair wider. A row that says "3 notices" is a
+claim about what is inside it. The `@system` `decision` mail this entry
+already warns about — a Fable limit exhausted, agents halted, a subtree
+dissolved — would, if swept into a run, be hidden behind a label saying it is
+chatter. Getting the HEIGHT predicate wrong makes something the wrong size;
+getting the FOLD predicate wrong BURIES, and it buries the same mail the read
+predicate would have buried, by a different route. Most of the frontend suite
+for this is about what does NOT fold, in that proportion deliberately.
+A row still AWAITING delivery is never folded either, as head or as member:
+it carries an unread mark and, in a node mailbox, a retract button — things
+to act on, and burying an action inside a summary is the failure this whole
+entry is about. Two clauses enforce that and they guard OPPOSITE ENDS of a
+run (one stops a waiting row joining, one stops a run forming on top of one);
+a mutation killed only by the second slipped past the first test written, so
+there is a leg per end.
+
+THE FOLD IS DISPLAY AND DELIBERATELY NOTHING ELSE. `shared.pileNotices` is a
+pure function from rows to groups, applied in `MailList` after the filter (the
+fold is about what is on screen) and before the window (so paging counts
+entries, not members). No entry is merged, rewritten or dropped: the record
+of what happened is unchanged, `user_inbox` membership still means unread,
+and a folded notice is still findable by the filter. A synthetic merged entry
+written at post time would have destroyed information for the sake of how it
+looks, and could not be un-collapsed later.
+WHAT THE ROW SAYS: `@system · 3 notices · 08-28 12:44` — the count rides the
+outline `notice` chip that was already there, so a folded run is the same
+one-line system row with a number in it rather than a new species. A run of
+one still reads exactly `notice`; nothing about a lone notice changed.
+Opened, it is the list: one line per notice, its own timestamp then its full
+body, OLDEST FIRST — chronological like the `[ORG NOTICES]` block it copies,
+which reads forward like the log it is. The mail list itself stays
+newest-first; that is a different axis. Nothing is summarised or elided — the
+row is a shorter way IN, not a shorter version OF.
 
 ### D-165 · a node may notice ITSELF — a fall-through, now load-bearing
 Ruling (notice-endpoint, 2026-08-27, measured): §7.2 permits a node to
@@ -2701,6 +2932,34 @@ and maintain; (2) the ONLY thing that starts an agent's turn is the drive
 list, which is consumed AFTER that save — queued notices never wake anyone
 and the mail signal is UI animation — which is what makes kickoff-last
 structural rather than a matter of which statement comes first.
+
+### D-174 · fable-autopsy naming — `<base>-autopsy` for the opus, `<base>-N` for the fable
+Ruling (user via coordinator, 2026-08-28): the recovery pattern for a fable
+that fails by tripping its own safety filters — insert an opus superior over
+it, hire a fresh fable as that opus's coworker, retire the failed fable, have
+the opus read its transcript and re-brief the replacement — uses a fixed
+naming convention. The opus takes the failed fable's name plus the suffix
+`-autopsy`; the replacement fable takes the same base name with an
+incremented numeric suffix starting at `-2`. Worked example: failed fable
+`poem` becomes opus `poem-autopsy` and replacement fable `poem-2`; if
+`poem-2` also fails, the next attempt is `poem-3`, normally under the same
+`poem-autopsy` seat rather than a fresh one. Full procedure:
+docs/ui-guide.md, "Fable autopsy — diagnosing a fable that trips its own
+filters".
+Why: the opus's job is diagnosis and re-briefing, not doing the fable's own
+work — a distinct suffix keeps it visually and structurally separate from
+the fable line it supervises, while the incrementing fable name keeps every
+attempt at the same brief legible as one lineage without reusing an archived
+node's name for an agent that is not a continuation of it.
+Bounds: this is a fresh org identity for a fresh diagnostic attempt, not a
+continuation of one — deliberately unlike compaction's successor (D-053),
+which keeps the SAME name across a split because it IS the same agent
+carrying on. Applies to the fable tier specifically; the failure mode is a
+filter trip, not an ordinary bug.
+Load-bearing: retiring the autopsy opus while the replacement fable is its
+live report auto-dissolves the whole subtree (retire-with-live-reports is
+documented ledger behavior, not a bug) — the opus cannot be retired for as
+long as the fable line under it stays alive.
 
 ---
 
@@ -4819,3 +5078,141 @@ boolean marker this org originally proposed and is kept above as theirs.
   `live_identity`), no network, and `accounts.py` never takes `store.DOC_LOCK`
   — so no lock inversion under the resume loop. Hoist per tier anyway, and
   **pass `now`**, or the injected-clock tests stop being deterministic.
+
+### D-172 · anchor a counter-scaled decoration by the edge that must stay clear, never by the card
+
+The strips immediately left and right of an agent card hold furniture that
+scales two different ways, and mixing the two without saying so is what this
+entry exists to stop repeating.
+
+**WORLD-scaled** furniture shrinks with the canvas: `.cbar` (the credit bar,
+`left: -22px; width: 14px`) and `.doc-chips` (`left: calc(100% + 3px)`). Their
+screen width is `14·z` and `21·z`, collapsing toward nothing as you zoom out.
+
+**SCREEN-constant** furniture carries the counter-scale `--invzf` and holds its
+size at every zoom: the hire columns `.hsof.side-l/.side-r`. That is deliberate
+and load-bearing — they ARE the hire gesture (user report 2026-08-04: the older
+clamped `--invz` let them shrink away while zoomed out, which is why they use
+the UNCLAMPED `--invzf`), so shrinking them at distance is not an available
+fix, and this entry is not a licence to reintroduce a clamp.
+
+**THE RULE.** A screen-constant decoration anchored near the card edge grows
+over a shrinking neighbour until it buries it. So anchor it by the edge that
+must stay clear — pin its near edge ON the neighbour's far edge, and let the
+counter-scale grow AWAY. `.hsof.side-l` uses `right: calc(100% +
+var(--hsof-l-clear))`; `.hsof.side-r` uses `left: calc(100% +
+var(--hsof-r-clear))`. Clearance then holds at every zoom **by construction** —
+nothing depends on what `--invzf` happens to be, so it cannot be tuned into or
+out of correctness. Express desk-zoom overrides through the same variables, not
+as `left`/`right` on the column, or you stretch a column positioned by one edge
+only and silently undo the clearance.
+
+**⚠ THE CLEARANCE IS THE NEIGHBOUR'S EXTENT, SO IT IS ONLY THERE WHEN THE
+NEIGHBOUR IS** (amended 2026-08-28 after the second report; the first cut of
+this entry got it wrong and said 22px and 24px flat). `.cbar` is drawn for every
+live card, so the left figure of 22px — the bar's own 8px offset plus its 14px
+width — is unconditional and correct. `.doc-chips` is drawn only for a node that
+has presented documents, so the right figure is **24px beside doc chips and 8px
+beside a bare card**, keyed on `.sq:has(> .doc-chips)`. Keyed on the chips
+themselves rather than on a React class computed from the same condition: a
+class can drift out of step with what actually renders, `:has` cannot. A card
+with no documents therefore shows the same 8px of open canvas on both sides,
+which is the property to preserve — not any particular number.
+
+**⚠ A WORLD-PX CLEARANCE MULTIPLIES BY THE ZOOM, AND THAT IS UNUSABLE UP
+CLOSE.** Stating the clearance in world px is what makes it hold at a distance;
+it also makes 22px into 264 screen px at z=12, which threw the hire columns most
+of a screen-width off a desk-filling card. User ruling 2026-08-28: "when in desk
+view move the coworker hire buttons back to their old positions right next to
+the card, so they're still on screen there." `.sq.desk` therefore sets both
+clearances to `2px` — exactly where the columns sat before this entry existed.
+The cost, measured rather than assumed: the left column crosses the OUTER third
+of the credit bar from z=2.1 to z≈3.3 (9.4px of a 29.4px bar at `Z_DESK`, none
+of it at z ≥ 4, where the bar has grown out from under a screen-constant
+column). The bar's centre is never covered and the click still lands on it at
+every desk zoom. This exception cannot leak back into the distance complaint:
+`focusId` is `null` below `Z_DESK`, so the desk rules only ever apply from 2.1
+up. **The general rule is unchanged — the desk is a bounded exception with a
+measured price, not a repeal.**
+
+Reported as: "the leftward hire coworker badges overlap the budget bar, making
+it untouchable unless zoomed in far enough to reduce their relative size"
+(2026-08-28). Measured pre-fix: at z ≤ 1.0 a cursor placed on the bar had its
+click land on `.hsof.side-l` — the bar was not merely covered but
+**unreachable**; overlap peaked at 13px at z=1.0 and the hit returned only at
+z ≥ 2.1. The right column overlapped `.doc-chips` by the same mechanism at
+every zoom below 12 (18px at z=1.0), found by looking for the mirror rather
+than by a second report.
+
+**Reordering is not the fix.** Flipping `z-index` or `pointer-events` makes the
+bar clickable while the badge still sits on top of it — the click goes through
+to a control the user cannot see. Remove the overlap.
+
+**⚠ THE BRIDGES ARE NOT DEAD MARKUP.** `.hsof-bridge.bridge-l/.bridge-r` are
+transparent, paint nothing, and look deletable. They exist because this fix
+creates a second defect if you stop at the anchor: moving the columns off the
+card opens a strip the cursor must cross, and the chips are `pointer-events:
+none` until `.sq` is hovered — so they blink out mid-reach and the HIRE gesture
+becomes the new unreachable thing. The bridges are hit area only, children of
+the card, sitting UNDER the bar and doc chips (`z-index: 1` vs `2`) so they
+extend the hover region without taking anyone's clicks. Delete them and the bar
+stays clickable while the badges stop being reachable. Measured worst dead run
+with them: 0.0px at every zoom, on both sides, with and without doc chips.
+
+**Each bridge is sized from the same variable as the column it serves**
+(`width: var(--hsof-l-clear)` / `var(--hsof-r-clear)`). The right-hand gap is no
+longer one number, so a bridge written as its own constant can only ever be
+right for one of the two states; sharing the variable makes "the bridge covers
+exactly the gap" true by construction rather than by two edits staying in step.
+Desk fill is the one place this does not matter — `.sq.desk.edge-l/-r` drop the
+`:hover` from the gate entirely (user spec: the desk KEEPS its hire chips), so
+there is no hover to interrupt. Everywhere else the gate is `.sq…:hover` and the
+bridge is the only reason the columns are reachable at all.
+
+**Checked and left:** `.cbar-tip` also counter-scales into the left strip, but
+it is `pointer-events: none`, so it can never take a click. Recorded so the
+next author knows it was looked at rather than missed.
+
+**Verify in a browser, not in jsdom.** This is geometry; jsdom reports every
+rect as 0×0, so an overlap assertion there passes for the same reason it would
+on a blank page, and multiplying constants by an assumed scale is arithmetic
+wearing a measurement's clothes. `frontend/tests/chipbar_probe.py` renders the
+real markup against the real stylesheet in headless Edge, places a REAL cursor
+on the bar and asks `elementFromPoint` what receives the click, walks the
+transit out to BOTH columns, and measures the open canvas on each side. It
+sweeps three cards — with documents, without, and at desk fill — because the
+right-hand strip has two states and the numbers differ in all three.
+
+**Two controls, because there are two claims.** `--expect-fail` restores the
+pre-fix rules and must go red (29 findings): that is the reachability claim.
+`--expect-fail-const` restores the unconditional 24px right clearance and must
+also go red (11 findings, all on the symmetry check): that is the second
+report's claim. A green run means nothing without both. The measurement to
+quote: with nothing on the right to clear, the open canvas beside the card reads
+7.00px on the left and 7.00px on the right at z=1, difference 0.00px, at every
+zoom in the sweep.
+
+**Two ways that probe lied, both reporting a working fix as broken.** Recorded
+because this repo has twice been bitten by instruments that lied in the
+reassuring direction; these lied in the alarming direction, which is cheaper
+but the same class — and an alarm that cries wolf is discounted just as fast as
+one that stays silent.
+- **Hit-testing a bar taller than the window.** At desk zoom the bar's
+  geometric centre is off-viewport and `elementFromPoint` returns `null`, which
+  read as "unreachable". Aim at the centre of the bar's VISIBLE part, and say
+  plainly when none of it is visible rather than scoring it.
+- **Walking the transit inward from open canvas.** The chips do not exist until
+  the card is hovered, so approaching from outside they are not hit-testable at
+  all and never can be. Direction is load-bearing: walk OUTWARD from inside the
+  card, the only path a user can actually take.
+
+**Two things the second round changed in the instrument itself.** The viewport
+went from 1600×900 to 2400×1600: at desk fill a 124px card is 1488px square, so
+the old window put the bar, the column centres and the entire right-hand strip
+off-screen and the probe scored the whole of z=12 as "not measured" — at exactly
+the zoom where a 2px world error costs 24 screen px. And the fixture now runs a
+JS port of `NodeSquare`'s `trackEdge` instead of presetting `edge-l`, because
+the transit's whole question is whether a column STAYS live as the cursor leaves
+the card, and a preset class answers that by assumption. Both the port and the
+`.doc-chips` render condition are pinned to `cards.tsx` by the fixture-freshness
+guard, so the probe cannot quietly drift into measuring a card that never ships.

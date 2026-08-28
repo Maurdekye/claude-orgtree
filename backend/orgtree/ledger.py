@@ -86,6 +86,47 @@ EXTERN: Final = "@extern"  # the ORG INBOX: the org's single face to the outside
                     # EXTERN lets a sub-level agent read/answer outside mail.
 
 
+# ── attachments that did NOT travel (D-171) ───
+#: How many attachments one message actually carries. Named ONCE because the
+#: API layer and this module both used to cap at a bare literal 10, and two
+#: independent silent truncations of the same list is how a caller loses a
+#: file twice over without either layer admitting to it.
+ATTACHMENT_MAX: Final = 10
+
+
+def undeliverable_note(raw: str) -> str:
+    """Sanitise one not-delivered attachment note for the [MAIL] block.
+
+    ⚠ THE TEXT IS CALLER-SUPPLIED and is rendered straight into an agent's
+    context: an attachment path typed by the composer, or a filename chosen
+    by an untrusted outside party. A newline in it would forge a line inside
+    the [MAIL] block — the same injection `rt_gist` collapses whitespace for
+    in the FR-05 reply_to snapshot below. Collapse, cap, never trust.
+    """
+    s = " ".join(str(raw or "").split())
+    return (s if len(s) <= 160 else s[:159] + "…") or "(unnamed)"
+
+
+def _attachments_and_losses(
+        attachments: list[dict[str, Any]] | None,
+        missing: list[str] | None) -> tuple[list[dict[str, Any]], list[str]]:
+    """Split into (what travels, what must be REPORTED as not travelling).
+
+    D-171: the cap is applied HERE and its overflow is folded into the
+    not-delivered report rather than trimmed off the end. `list(a)[:10]` is
+    a silent drop wearing a slice's clothes — the sender believes ten files
+    went and eleven were named, and nothing anywhere says otherwise.
+    """
+    delivered = list(attachments or [])
+    notes = [undeliverable_note(m) for m in (missing or [])]
+    over = len(delivered) - ATTACHMENT_MAX
+    if over > 0:
+        delivered = delivered[:ATTACHMENT_MAX]
+        notes.append(f"{over} further attachment(s) — past the "
+                     f"{ATTACHMENT_MAX}-per-message limit")
+    return delivered, notes
+
+
 def actor_kind(actor: str) -> str:
     if actor == USER:
         return "user"
@@ -361,7 +402,7 @@ class Org:
                     "add_dirs": [{"path": p, "mode": m} for p, m in md.items()],
                     "org_visibility": VIS_LEVELS[vr],
                     "permission_mode": PM_LEVELS[pr]}
-                self.d.setdefault("user_inbox", []).append({
+                self.to_user_inbox({
                     "id": uuid.uuid4().hex[:8], "from": SYSTEM,
                     "kind": "notice", "at": now(),
                     "body": ("This kiosk now carries a PERMISSION CEILING — the "
@@ -484,7 +525,7 @@ class Org:
                 self._notify([k], "The weekly Fable limit has reset: you "
                                   "are no longer halted. Carry on.")
             if _freed:
-                self.d.setdefault("user_inbox", []).append({
+                self.to_user_inbox({
                     "from": SYSTEM, "kind": "notice", "at": now(),
                     "body": "Weekly Fable limit reset — halted fable "
                             "agent(s) released: " + ", ".join(sorted(_freed))
@@ -1130,15 +1171,80 @@ class Org:
                     + ". Address the full form to pick one.")
         return to
 
+    def to_user_inbox(self, entry: UserMailEntry) -> UserMailEntry:
+        """Put one entry in the user's mailbox, on the right side of the read
+        line. THE ONLY WAY anything should reach that mailbox.
+
+        A NOTICE ARRIVES ALREADY READ (user, 2026-08-28). A notice is passive
+        by construction — it lands to be read at leisure and never wakes
+        anyone — so it never had business claiming unread status. Rather than
+        teaching every unread count to skip notices, they simply never enter
+        the unread set: `user_inbox` IS that set (the read endpoint's whole
+        job is moving an entry out of it into `user_mail_log`), so a notice
+        goes straight to the archive and is read on arrival by construction.
+
+        ⚠ WHY AT THE SOURCE RATHER THAN IN THE COUNTS. Six places derive "how
+        much is unread" — tree()'s `user_inbox_count` and `urgent_unread`, the
+        tab title, `attentionPip`, the folder tab's badge and the mark-all-read
+        button — and every one of them reads membership of this one list. A
+        filter added to the counts would have to be added to all six and stay
+        agreed forever; keeping notices out of the list fixes all six at once
+        and leaves nothing to keep in step. (This is the same reasoning as the
+        D-169 pip classifier, applied one layer further down: fix the fact,
+        not each reader of it.)
+
+        ⚠ THE PREDICATE IS `kind == "notice"` AND NOTHING ELSE. It is a
+        first-class mail kind, minted only by orgtree_send_notice and by the
+        ledger's own hand. It is deliberately NOT "came from @system": the
+        ledger sends the user `decision` entries from @system too — a Fable
+        limit exhausted, agents halted or dissolved — and those are exactly
+        the mail a user must not have silently pre-read. Getting this
+        predicate wrong HIDES REAL MAIL, which is far worse than the bug it
+        fixes, so it stays narrow.
+        """
+        if entry.get("kind") == "notice":
+            log = self.d.setdefault("user_mail_log", [])
+            log.append(entry)
+            # the archive's own invariants, mirrored from the read endpoint:
+            # CHRONOLOGICAL (the reader renders by list position) and bounded.
+            # `at` is ISO-8601 Z, so a string sort is a time sort.
+            log.sort(key=lambda m: m.get("at") or "")
+            del log[:-100]
+        else:
+            self.d.setdefault("user_inbox", []).append(entry)
+        return entry
+
+    def user_mailbox(self) -> list[UserMailEntry]:
+        """EVERYTHING in the user's mailbox — unread and already-read together,
+        oldest first. Use this to ask "was the user told?", which is a
+        different question from "is it waiting for them?".
+
+        The two became different questions on 2026-08-28, when notices started
+        arriving already read (see to_user_inbox). Before that `user_inbox`
+        answered both, and a reader that wants "was the user told" and reaches
+        for `user_inbox` now gets the wrong answer for every notice.
+        """
+        return [*self.d.get("user_inbox", []),
+                *self.d.get("user_mail_log", [])]
+
     def post_mail(self, sender: str, to: str, body: str, kind: str = "message",
                   attachments: list[dict[str, Any]] | None = None,
                   reply_to: dict[str, Any] | None = None,
                   urgent: bool = False,
-                  urgent_reason: str = "") -> dict[str, Any]:
+                  urgent_reason: str = "",
+                  missing: list[str] | None = None) -> dict[str, Any]:
         """Agent-to-agent (or agent-to-user) mail under the §7.2 addressing rules:
         downward any depth (deep reach implicitly grants the recipient an audience),
         one hop up, siblings, held audiences. Everything else is refused with the
-        proper route named."""
+        proper route named.
+
+        `missing` (D-171): attachments the CALLER could not turn into files —
+        a path that resolved to nothing, or one past the cap. They ride the
+        entry as `attachments_missing` so the recipient is told the sender
+        MEANT to send something and it did not arrive, and they come back in
+        `warnings` so the calling code can retry. The two audiences need
+        different things: a line an agent reads cannot be acted on by an HTTP
+        client, and a warning field is invisible to the agent."""
         to = self._resolve_recipient(to, outward=True)
         if actor_kind(sender) == "agent":
             self.node(sender)
@@ -1269,13 +1375,45 @@ class Org:
                 # notion of "read" to drift out of step with the first.
                 ue["urgent"] = True
                 ue["urgent_reason"] = urgent_reason.strip()
-            if attachments:
+            keep, lost = _attachments_and_losses(attachments, missing)
+            if keep:
                 # FR-21: download-card metas — the api layer already routed
                 # each path through _agent_send_file (validate-and-copy into
                 # the SENDER's outbox), so `path` here is outbox-relative and
                 # the inbox serves it via the sender's /file endpoint
-                ue["attachments"] = list(attachments)[:10]
-            self.d.setdefault("user_inbox", []).append(ue)
+                ue["attachments"] = keep
+            if lost:
+                # ⚠⚠ READ THIS BEFORE ADDING A SECOND WAY TO REACH `lost` HERE.
+                #
+                # On this branch the SENDING AGENT is told (the warning below
+                # rides its tool result) and the USER IS NOT — the inbox UI
+                # renders `attachments` and knows nothing of this field.
+                #
+                # That is adequate today because of an ASSUMPTION ABOUT THE
+                # CURRENT SET OF CAUSES, not because of anything the design
+                # guarantees: `_agent_send_file` already refuses a bad path
+                # outright, so the ONLY cause that reaches here is the
+                # sender's own overflow past ATTACHMENT_MAX — and the sender
+                # is exactly who can resend it. Telling the agent is therefore
+                # telling the one party who can act.
+                #
+                # ⚠ THE ASSUMPTION IS LOAD-BEARING AND IT IS NOT SELF-
+                # ENFORCING. Add a cause where the USER is the party who needs
+                # to know — a file that vanished after staging, a quota
+                # refusal, anything the sender cannot fix by resending — and
+                # this branch silently stops being adequate. Nothing here will
+                # fail, no test will go red, and the loss will simply not be
+                # shown to the person it happened to. Widening the causes
+                # means building the UI leg, not just extending the list.
+                # (D-171 records this under "Bounds"; @org:resonite's
+                # observation is why it is written at the branch as well —
+                # a bound stated only in a document is not in the path of the
+                # edit that breaks it.)
+                ue["attachments_missing"] = lost
+                warnings.append(
+                    f"{len(lost)} attachment(s) did NOT reach the user: "
+                    + "; ".join(lost))
+            self.to_user_inbox(ue)
             if self.d.get("headless"):
                 # §9.6 ☞: NEVER deny mail to the user — the inbox is the audit
                 # trail of an unattended run. Accept, and tell the sender the
@@ -1342,12 +1480,30 @@ class Org:
             "from": sender, "kind": kind, "body": body, "at": now(),
             "relationship": self.relationship(sender, to),
         }
-        if attachments:
+        keep, lost = _attachments_and_losses(attachments, missing)
+        if keep:
             # user spec 2026-07-31: mail carries FILES — [{name, path, bytes}]
             # where path is relative to the recipient's working folder (the
             # bytes already landed in its uploads/); the envelope announces
             # each one at delivery
-            entry["attachments"] = list(attachments)[:10]
+            entry["attachments"] = keep
+        if lost:
+            # ⭐ D-171, THE WHOLE POINT. A file the sender named and that never
+            # became bytes is announced to the recipient as NOT DELIVERED.
+            # Measured 2026-08-28 (@org:resonite, reproduced here over real
+            # HTTP): before this, such an attachment produced HTTP 200, no
+            # mail line, and no warning — the agent could not tell an
+            # attachment had ever been intended, and the sender could not
+            # tell it had not arrived. NOT folded into `attachments`: that
+            # list is also what the chat renders as download cards
+            # (canvas/desk.tsx) and the user's own Sent copy carries it, so a
+            # placeholder there would put a dead card and a broken image in
+            # the user's chat — a worse bug than the one being fixed, wearing
+            # a fix's clothes.
+            entry["attachments_missing"] = lost
+            warnings.append(
+                f"{len(lost)} attachment(s) did NOT reach {to}: "
+                + "; ".join(lost))
         rt_gist = " ".join(str((reply_to or {}).get("gist") or "").split())
         if reply_to and rt_gist:
             # FR-05: a sanitized SNAPSHOT of the mail being replied to —
@@ -1408,7 +1564,9 @@ class Org:
     def post_external_mail(self, peer: str, body: str,
                            attachments_by_node: Mapping[str, list[dict[str, Any]]]
                            | None = None,
-                           net_id: str | None = None) -> list[str]:
+                           net_id: str | None = None,
+                           missing_by_node: Mapping[str, list[str]]
+                           | None = None) -> list[str]:
         """Inbound from OUTSIDE the org — an external chat or another
         org (@org:<slug>). Org-inbox model (user spec): the message is addressed
         to the ORGANIZATION, not to any agent. It lands in the org-wide inbox;
@@ -1441,8 +1599,19 @@ class Org:
             # external attachments (user spec 2026-07-31): the caller copied
             # the files into each recipient's uploads/ — per-node metadata
             # because collision suffixes may differ per recipient
-            if attachments_by_node and attachments_by_node.get(t):
-                entry["attachments"] = list(attachments_by_node[t])[:10]
+            # Per-node for the LOSSES too (D-171): a copy can fail for one
+            # recipient and succeed for another, so "what did not arrive" is
+            # not a property of the message.
+            keep, lost = _attachments_and_losses(
+                list((attachments_by_node or {}).get(t) or []),
+                list((missing_by_node or {}).get(t) or []))
+            if keep:
+                entry["attachments"] = keep
+            if lost:
+                # ⚠ these names came from OUTSIDE the org. undeliverable_note
+                # inside the helper is what stands between an attacker-chosen
+                # filename and a forged line in this agent's [MAIL] block.
+                entry["attachments_missing"] = lost
             if net_id:
                 # F-06: the hub message id — _confirm_delivered reports READ
                 entry["net_id"] = net_id
@@ -1452,7 +1621,7 @@ class Org:
             del log[:-100]
         if not tops:
             # nobody to receive it: surface to the user instead of losing it
-            self.d.setdefault("user_inbox", []).append({
+            self.to_user_inbox({
                 "id": uuid.uuid4().hex[:8], "from": SYSTEM, "kind": "notice",
                 "at": now(),
                 "body": (f"Outside party {peer} messaged this org, but "
@@ -1653,7 +1822,7 @@ class Org:
         drive: list[str] = []
         if nxt == target:
             if target == USER:
-                self.d.setdefault("user_inbox", []).append({
+                self.to_user_inbox({
                     "from": frm, "kind": "request", "at": now(),
                     "body": (f'Audience request (forwarded up the chain): "{frm}" asks '
                              f'to speak with you directly. Reason: {req["reason"]}. '
@@ -1735,7 +1904,7 @@ class Org:
                 self._notify([frm],
                              f'{who} granted you a direct USER AUDIENCE — you may '
                              f'write to the user directly until it is rescinded.')
-                self.d.setdefault("user_inbox", []).append({
+                self.to_user_inbox({
                     "id": uuid.uuid4().hex[:8], "from": SYSTEM, "kind": "notice",
                     "at": now(),
                     "body": f'{who} granted "{frm}" a direct audience to you — it '
@@ -5456,7 +5625,7 @@ class Org:
                          f'content filters — its turn HALTED (org policy). Re-task '
                          f'it, or the user may switch the org filter policy to '
                          f'auto-convert to opus.')
-        self.d.setdefault("user_inbox", []).append({
+        self.to_user_inbox({
             "id": uuid.uuid4().hex[:8], "from": SYSTEM, "kind": "decision",
             "at": now(),
             "body": (f'A Fable content filter flagged a message from "{nid}" '
@@ -5538,7 +5707,7 @@ class Org:
                              f'Your peer "{k}" has halted (weekly Fable limit).')
                 self._notify([k], "Weekly Fable usage limit exhausted: you are halted. "
                                   "Your reports remain active.")
-        self.d.setdefault("user_inbox", []).append({
+        self.to_user_inbox({
             "from": SYSTEM, "kind": "decision", "at": now(),
             "body": (f"Weekly Fable usage limit exhausted (detected at "
                      f"{detecting_node or 'unknown'}; policy: {policy}). "

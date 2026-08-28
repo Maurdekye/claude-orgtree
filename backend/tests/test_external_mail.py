@@ -685,12 +685,12 @@ def s3_orginbox_model():
         o.retire(USER, "ceo")
         assert o.post_external_mail("@mcp:p", "anyone home?") == []
         store.save_org(o)
-        ui = o.d["user_inbox"]
+        ui = o.user_mailbox()
         assert len(ui) == 1 and ui[0]["from"] == SYSTEM and ui[0]["kind"] == "notice"
 
     @t("the rescue notice names the peer and quotes the body")
     def _():
-        b = load("rescue").d["user_inbox"][0]["body"]
+        b = load("rescue").user_mailbox()[0]["body"]
         assert "@mcp:p" in b and "anyone home?" in b and "no top-level agents" in b
 
     @t("the rescue quotes at most 2 000 chars of the body")
@@ -698,7 +698,7 @@ def s3_orginbox_model():
         o = mkorg("rescue2", ("ceo",))
         o.retire(USER, "ceo")
         o.post_external_mail("@mcp:p", "Q" * 5000)
-        assert o.d["user_inbox"][0]["body"].count("Q") == 2000
+        assert o.user_mailbox()[0]["body"].count("Q") == 2000
 
     @t("⚑→✓ a LONE UNRECOVERABLE top-level still triggers the rescue (the 2026-08-01 defect)")
     def _():
@@ -708,7 +708,7 @@ def s3_orginbox_model():
         o = mkorg("lonedead", ("ceo",))
         o.nodes["ceo"]["state"] = "unrecoverable"
         assert o.post_external_mail("@mcp:p", "help") == []
-        assert len(o.d.get("user_inbox", [])) == 1
+        assert len(o.user_mailbox()) == 1
         assert not o.d.get("mail", {}).get("ceo"), "must not queue into a dead node"
 
     @t("the rescue does NOT fire when a live top-level can be bootstrapped")
@@ -717,7 +717,7 @@ def s3_orginbox_model():
         o.retire(USER, "cfo")
         assert o.extern_holders() == [], "precondition: nobody holds it yet"
         assert o.post_external_mail("@mcp:p", "x") == ["ceo"]
-        assert not o.d.get("user_inbox"), (
+        assert not o.user_mailbox(), (
             "the bootstrap must run BEFORE the user-inbox rescue")
 
     @t("the rescue path still logs the inbound entry and the event")
@@ -747,7 +747,7 @@ def s3_orginbox_model():
         o = Org.create("emptyorg")
         store.save_org(o)
         assert o.post_external_mail("@mcp:p", "x") == []
-        assert len(o.d["user_inbox"]) == 1
+        assert len(o.user_mailbox()) == 1
 
     @t("delivery is per-message: two messages give every holder two copies")
     def _():
@@ -785,9 +785,9 @@ def s4_kiosk():
     @t("kiosk: inbound does NOT reach the user inbox either (a sealed org is silent)")
     def _():
         o = load("sealed")
-        before = len(o.d.get("user_inbox", []))   # a kiosk is born with a notice
+        before = len(o.user_mailbox())   # a kiosk is born with a notice
         o.post_external_mail("@mcp:p", "x")
-        assert len(o.d.get("user_inbox", [])) == before
+        assert len(o.user_mailbox()) == before
 
     @t("kiosk: inbound logs no event")
     def _():

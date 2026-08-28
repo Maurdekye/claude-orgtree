@@ -852,7 +852,7 @@ if section("§2  the container contract"):
         FDISK.calls.clear()
         sandbox.ensure_container(store.load_org(s))
         assert ("create", s, 4096) in FDISK.calls, FDISK.calls
-        inbox = store.load_org(s).d.get("user_inbox") or []
+        inbox = store.load_org(s).user_mailbox()
         assert inbox and "256 MB" in inbox[-1]["body"] \
             and "4096" in inbox[-1]["body"], inbox
         drop(s)
