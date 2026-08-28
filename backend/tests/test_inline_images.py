@@ -593,12 +593,14 @@ print("\n§5 · an attachment that never became a file (D-171)")
 from orgtree import api, ledger as ledger_mod                     # noqa: E402
 
 
-def _endpoint(slug, nid, text, attachments):
+def _endpoint(slug, nid, text, attachments, drive_expected=True):
     """Call the message endpoint with the TURN DRIVE stubbed out.
 
-    The stub is asserted to have fired: a drive that silently stopped being
-    called would otherwise turn these checks into a test of nothing, which is
-    the same class of failure the section is about."""
+    The stub's firing is ASSERTED EITHER WAY — fired when a live node is
+    driven, and NOT fired on the archived-recipient path, which returns
+    before the drive. A drive that silently stopped being called would
+    otherwise turn these checks into a test of nothing, which is the same
+    class of failure this section is about."""
     fired = []
     real = supervisor.send_message
 
@@ -613,8 +615,14 @@ def _endpoint(slug, nid, text, attachments):
                                            attachments=attachments))
     finally:
         supervisor.send_message = real
-    assert fired, ("the endpoint never drove the node — this helper's stub "
-                   "did not fire, so nothing below is being exercised")
+    if drive_expected:
+        assert fired, ("the endpoint never drove the node — this helper's "
+                       "stub did not fire, so nothing below is being "
+                       "exercised")
+    else:
+        assert not fired, ("the archived-recipient path drove the node — "
+                           "this check believes it is exercising the early "
+                           "return and is not")
     return res
 
 
@@ -787,6 +795,41 @@ def _a_forged_line_cannot_ride_the_note():
 
 check("☠ a newline in an attachment name cannot forge a line in the [MAIL] "
       "block, and the note is length-capped", _a_forged_line_cannot_ride_the_note)
+
+
+def _the_archived_recipient_path_carries_warnings_too():
+    """⭐ node_message has TWO returns that carry `warnings`, and the check
+    above only walks one of them.
+
+    This is not a hypothetical branch: an archived recipient is an ordinary
+    state (mail waits in its inbox and is acted on at rehire), and it returns
+    BEFORE the drive. An edit that kept `warnings` on the live path and
+    dropped it here would leave a caller's failure detection working in
+    testing and silently blind whenever the recipient happened to be
+    archived — which is exactly the shape of defect D-171 exists to close.
+    """
+    o, slug = mkorg("zz att archived")
+    try:
+        with store.DOC_LOCK:
+            org = store.load_org(slug)
+            org.retire(USER, "boss")
+            store.save_org(org)
+        ghost = "uploads/never-here.png"
+        res = _endpoint(slug, "boss", "to an archived node", [ghost],
+                        drive_expected=False)
+        assert res.get("deferred"), (
+            f"this check believes it is on the archived path and is not: "
+            f"{res!r}")
+        assert ghost in " ".join(res.get("warnings") or []), (
+            f"the archived-recipient return dropped the attachment warning: "
+            f"{res!r}")
+    finally:
+        store.delete_org(slug)
+
+
+check("☠ the ARCHIVED-recipient return carries `warnings` too (the second "
+      "exit from node_message, which the check above never walks)",
+      _the_archived_recipient_path_carries_warnings_too)
 
 
 def _outside_mail_reports_its_losses_too():

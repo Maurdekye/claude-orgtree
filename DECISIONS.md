@@ -2348,6 +2348,23 @@ outright, so the sole cause reaching that branch is the sender's own overflow,
 and the sender is who can resend. A cause the USER must see would need a UI
 leg this entry does not build.
 
+**Follow-on 2026-08-28: `warnings` is now a CONSUMED DEPENDENCY, not a
+nicety.** @org:resonite's send path uses it to detect the one case it could
+not see before — it did everything right and the attachment still did not
+land, because `200 {"accepted": true}` was indistinguishable from success. If
+this field is later dropped, renamed, or stops being populated on that branch,
+their failure detection reverts to what it was before this entry existed **and
+still looks like it is working**. Both of `node_message`'s returns carry it —
+the live path and the archived-recipient early return — and both are pinned,
+because an edit that kept one and dropped the other would be green in testing
+and blind whenever the recipient happened to be archived.
+
+**The "Bounds" paragraph above is now also a comment at the branch it
+describes**, per their observation, which is the sharpest thing in this whole
+thread: the bound holds *because of the current set of causes*, which is a
+claim about today's code and not a property of the design. A bound stated only
+in a document is not in the path of the edit that breaks it.
+
 **Pinned by** `test_inline_images.py` §5, which enters at `node_message` — the
 layer that decides what becomes an attachment — and not at the renderer. A
 suite that only ever enters at the renderer cannot see a caller that never

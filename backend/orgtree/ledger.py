@@ -1327,15 +1327,32 @@ class Org:
                 # the inbox serves it via the sender's /file endpoint
                 ue["attachments"] = keep
             if lost:
-                # ⚠ BOUNDED HONESTY, stated so nobody reads more into it than
-                # is here: the SENDING AGENT is told (the warning below rides
-                # its tool result), the user's inbox is NOT — the chat renders
-                # `attachments` and knows nothing of this field. That is
-                # enough for the only cause that can reach here: a bad path
-                # is already refused outright by _agent_send_file, so `lost`
-                # on this branch is the sender's own overflow, and the sender
-                # is exactly who can resend it. If a cause ever arrives that
-                # the USER must see, this needs a UI leg too.
+                # ⚠⚠ READ THIS BEFORE ADDING A SECOND WAY TO REACH `lost` HERE.
+                #
+                # On this branch the SENDING AGENT is told (the warning below
+                # rides its tool result) and the USER IS NOT — the inbox UI
+                # renders `attachments` and knows nothing of this field.
+                #
+                # That is adequate today because of an ASSUMPTION ABOUT THE
+                # CURRENT SET OF CAUSES, not because of anything the design
+                # guarantees: `_agent_send_file` already refuses a bad path
+                # outright, so the ONLY cause that reaches here is the
+                # sender's own overflow past ATTACHMENT_MAX — and the sender
+                # is exactly who can resend it. Telling the agent is therefore
+                # telling the one party who can act.
+                #
+                # ⚠ THE ASSUMPTION IS LOAD-BEARING AND IT IS NOT SELF-
+                # ENFORCING. Add a cause where the USER is the party who needs
+                # to know — a file that vanished after staging, a quota
+                # refusal, anything the sender cannot fix by resending — and
+                # this branch silently stops being adequate. Nothing here will
+                # fail, no test will go red, and the loss will simply not be
+                # shown to the person it happened to. Widening the causes
+                # means building the UI leg, not just extending the list.
+                # (D-171 records this under "Bounds"; @org:resonite's
+                # observation is why it is written at the branch as well —
+                # a bound stated only in a document is not in the path of the
+                # edit that breaks it.)
                 ue["attachments_missing"] = lost
                 warnings.append(
                     f"{len(lost)} attachment(s) did NOT reach the user: "
