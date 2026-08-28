@@ -2704,6 +2704,90 @@ def _fold_back_undelivered(slug: str, nid: str,
         pass
 
 
+# ------------------------------------------------------- mail POINTER nudges
+# A "ping" is a drive nudge whose entire content is *there is mail in your
+# box, go and read it* — "(orgtree) You have new mail above…" and its
+# siblings. It carries no information of its own, which is exactly what makes
+# it droppable: if the box is empty when it lands, it says nothing at all.
+#
+# ⚠ THE DEFECT THIS EXISTS FOR (2026-08-28, user-reported "phantom wakes").
+# One nudge is queued PER SEND, but `take_mail` drains the box WHOLESALE. So
+# two messages arriving while a node is busy queue two pings; the first
+# delivery renders "[MAIL — 2 message(s)]" and empties the box, and the second
+# arrives pointing at nothing — a full agent turn whose entire user-side
+# content is the banner. Measured in the coordinator's own transcript: a turn
+# that answered two mails ("Two things landed") followed immediately by a bare
+# banner, 0.1 s later, through the result-boundary feed.
+#
+# The counts disagree because they are counts of DIFFERENT things: banners are
+# per-send, mail is per-box. THE FIX: a pointer that drains nothing is dropped
+# at the moment of delivery — before the CLI is launched at a turn start,
+# before the write at a result boundary, before the injection at a steer — so
+# the wake never happens at all rather than happening quietly. A self-contained
+# nudge (a replayed message, a restart notice) is never a ping, is never
+# dropped, and still delivers against an empty box.
+#
+# ⚠ COALESCING WAS TRIED AND BACKED OUT. Collapsing a second pointer into the
+# one already queued is the tidier-sounding "make them agree at the source",
+# and it is redundant: the drop above already guarantees no phantom reaches an
+# agent. What it cost was real — ordinary mail is how `deepqueue` builds a long
+# queue, and that suite exists to prove the iterative drain does not wedge on
+# one. A fix that quietly removes another suite's ability to reach the state it
+# guards is worse than the duplication it saves.
+def _mark_ping(carrier: str | dict[str, Any]) -> dict[str, Any]:
+    """Tag a queue carrier as a mail pointer, preserving any journal tokens."""
+    if isinstance(carrier, dict):
+        return {**carrier, "ping": True}
+    return {"ping": True, "text": carrier}
+
+
+def _carrier_is_ping(carrier: Any) -> bool:
+    return isinstance(carrier, dict) and bool(carrier.get("ping"))
+
+
+def _drop_ping(slug: str, nid: str) -> str | dict[str, Any] | None:
+    """Retire a pointer we are NOT going to deliver, and hand back whatever the
+    queue holds next.
+
+    ⚠ The queue read and the `busy` clear happen under ONE `_state_lock`, for
+    the reason `_run_one_turn`'s own tail states: a concurrent `send_message`
+    takes the same lock to decide whether it must queue or may start a turn, so
+    there is no instant where the queue is non-empty and nobody owns it. Doing
+    these as two separate lock takes would strand a message that arrived in
+    between — the exact class of bug this whole change is about."""
+    st = state(slug, nid)
+    with _state_lock:
+        if st["queue"]:
+            return st["queue"].pop(0)
+        st["busy"] = False
+        return None
+
+
+def _has_deliverable(slug: str, nid: str) -> bool:
+    """Is there anything a pointer could actually point AT — mail or notices?
+
+    Deliberately NOT `waking_mail`: that predicate answers "does this box
+    justify STARTING a turn", and excludes passive notices. Here the turn is
+    already being started by a nudge that exists, and the only question is
+    whether the envelope will have a body. A boxed notice does render, so it
+    counts."""
+    try:
+        org = store.load_org(slug)
+    except Exception:                                        # noqa: BLE001
+        return True     # can't tell — deliver rather than silently swallow
+    if nid not in org.nodes:
+        return True
+    return bool((org.d.get("mail") or {}).get(nid)
+                or (org.d.get("notices") or {}).get(nid))
+
+
+def _phantom_log(slug: str, nid: str, where: str) -> None:
+    """Say it out loud. A dropped wake is invisible by construction, and an
+    invisible fix cannot be told apart from a bug that stopped reproducing."""
+    print(f"[orgtree] {slug}/{nid}: mail pointer dropped at {where} — its "
+          f"mailbox was already drained (no phantom wake)")
+
+
 def _envelope(slug: str, nid: str, text: str,
               via: str = "steer") -> tuple[str, str | None,
                                            list[dict[str, Any]]]:
@@ -3335,6 +3419,16 @@ def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
     _hold_for_deploy(slug, nid)
     nxt: str | dict[str, Any] | None = text
     while nxt is not None:
+        # DO NOT WAKE AT ALL, rather than wake quietly: a mail pointer whose
+        # box is already empty is dropped BEFORE the CLI is launched, so it
+        # costs nothing. Checked here — outside `_run_one_turn` — on purpose:
+        # the turn body is one long try whose `finally` owns the queue handoff,
+        # and an early return from inside it would report None to this loop
+        # while that finally had already popped the next carrier, stranding it.
+        if _carrier_is_ping(nxt) and not _has_deliverable(slug, nid):
+            _phantom_log(slug, nid, "turn start")
+            nxt = _drop_ping(slug, nid)
+            continue
         nxt = _run_one_turn(slug, nid, nxt)
 
 
@@ -4186,32 +4280,52 @@ def _run_one_turn(slug: str, nid: str,
                             st["steer"] = []
                             if leftover:
                                 st["queue"][0:0] = leftover
-                            if st["queue"] and not limited:
-                                nxt = st["queue"].pop(0)
-                                st["responding"] = True
                         if leftover:
                             _steer_fold_log(slug, nid, len(leftover),
                                             "result boundary")
-                        if nxt is not None:
-                            # queued texts are RAW (mail stays in the doc until
-                            # delivery — restart durability): envelope now,
-                            # and track it as the in-flight turn
-                            ntoks = []
-                            # ⚠ bound BEFORE the `if not ncmd` below, which is
-                            # the only thing that assigns it: a slash command
-                            # skips the envelope entirely, and an unbound name
-                            # here would raise inside the boundary feed — on
-                            # the command path only, which is the path least
-                            # likely to be exercised before it shipped.
-                            nimgs: list[dict[str, Any]] = []
-                            ncmd = False
-                            if isinstance(nxt, dict):   # journaled leftover / cmd
+                        # queued texts are RAW (mail stays in the doc until
+                        # delivery — restart durability): envelope now, and
+                        # track it as the in-flight turn.
+                        ntoks: list[str] = []
+                        # ⚠ bound BEFORE the `if not ncmd` below, which is
+                        # the only thing that assigns it: a slash command
+                        # skips the envelope entirely, and an unbound name
+                        # here would raise inside the boundary feed — on
+                        # the command path only, which is the path least
+                        # likely to be exercised before it shipped.
+                        nimgs: list[dict[str, Any]] = []
+                        ncmd = False
+                        # ⚠ A LOOP, not a single pop, and THIS is the site the
+                        # reported phantom actually came through: the box is
+                        # drained wholesale, so the second of two queued
+                        # pointers envelopes to nothing and would be written to
+                        # the live process as a bare banner — a whole turn
+                        # about nothing. Drop it and take the next carrier
+                        # instead. Only a POINTER is droppable; anything
+                        # self-contained still goes even with an empty box.
+                        while True:
+                            with _state_lock:
+                                if not (st["queue"] and not limited):
+                                    nxt = None
+                                    break
+                                nxt = st["queue"].pop(0)
+                                st["responding"] = True
+                            nping = _carrier_is_ping(nxt)
+                            ntoks, nimgs, ncmd = [], [], False
+                            if isinstance(nxt, dict):   # journaled/cmd
                                 ncmd = bool(nxt.get("cmd"))
                                 ntoks, nxt = list(nxt.get("toks") or []), nxt["text"]
                             if not ncmd:      # a slash command goes verbatim
                                 nxt, ntok, nimgs = _envelope(slug, nid, nxt, via="turn")
                                 if ntok:
                                     ntoks.append(ntok)
+                                elif nping:
+                                    _phantom_log(slug, nid, "result boundary")
+                                    with _state_lock:
+                                        st["responding"] = False
+                                    continue
+                            break
+                        if nxt is not None:
                             try:
                                 with store.DOC_LOCK:
                                     o2 = store.load_org(slug)
@@ -7143,12 +7257,13 @@ def remote_control_stop(slug: str, nid: str) -> dict[str, Any]:
         send_message(slug, nid,
                      "(orgtree) Remote control released — mail queued while "
                      "the user drove your session directly is above; catch "
-                     "up and continue.")
+                     "up and continue.", mail_ping=True)
     return {"ok": True}
 
 
 def send_message(slug: str, nid: str, text: str,
-                 command: bool = False, wake: bool = True) -> dict[str, Any]:
+                 command: bool = False, wake: bool = True,
+                 mail_ping: bool = False) -> dict[str, Any]:
     """Drive a node with a nudge; returns immediately. EVERY substantive message
     — user and agent alike — is MAIL (user ruling: the direct-message channel
     was folded into the mail system): it already sits persisted in the node's
@@ -7170,7 +7285,16 @@ def send_message(slug: str, nid: str, text: str,
     wake=False (orgtree_send_notice): deliver only into a turn that is
     already running — steer a responding node, queue on a busy one — but
     NEVER start one. An idle node's mail stays boxed for its next turn's
-    envelope, and the call reports {"parked": True}."""
+    envelope, and the call reports {"parked": True}.
+
+    mail_ping=True marks `text` as a MAIL POINTER — "there is mail above, go
+    and read it" — rather than a self-contained message. Set it wherever the
+    nudge would be meaningless on its own, which is every drive that follows a
+    post_mail. A pointer that reaches delivery and drains NOTHING is dropped
+    rather than shown (see `_mark_ping`), which is what stops the phantom
+    wake. Leave it False for anything that still reads correctly with an empty
+    mailbox — a replayed message, a restart notice — or that text will be
+    silently swallowed."""
     st = state(slug, nid)
     # a FROZEN node runs nothing: mail stays safe in its mailbox (not drained)
     # until the org-wide ▶ resume. Both freeze kinds land here — the usage
@@ -7227,7 +7351,16 @@ def send_message(slug: str, nid: str, text: str,
         maybe_steer = st["busy"] and st.get("responding")
     if maybe_steer:
         etext, tok, _ = _envelope(slug, nid, text)  # ⚠ outside _state_lock (DOC_LOCK order)
+        if mail_ping and tok is None:
+            # the box was already empty — this pointer has nothing to point at,
+            # and injecting it would put a bare banner into a working agent's
+            # context mid-task. The mail it was sent for has demonstrably been
+            # delivered by whatever drained the box.
+            _phantom_log(slug, nid, "steer")
+            return {"accepted": True, "queued": 0, "already_delivered": True}
         carrier = {"toks": [tok], "text": etext} if tok else etext
+        if mail_ping:
+            carrier = _mark_ping(carrier)
         with _state_lock:
             if st.get("responding"):
                 st.setdefault("steer", []).append(carrier)
@@ -7237,7 +7370,15 @@ def send_message(slug: str, nid: str, text: str,
             text = carrier   # pyright: ignore[reportAssignmentType]
     with _state_lock:
         if st["busy"]:
-            st["queue"].append(text)
+            # ⚠ NOT COALESCED, deliberately — see the note on `_mark_ping`.
+            # Collapsing a second pointer into the one already waiting was
+            # tried and BACKED OUT: it is redundant (a pointer that drains
+            # nothing is already dropped before it can start a turn, so no
+            # phantom survives either way) and it silently changed how deep a
+            # node's queue can get, which `deepqueue` pins as a real invariant
+            # — the iterative drain must not wedge on a long queue, and
+            # ordinary mail is how that queue gets long enough to test.
+            st["queue"].append(_mark_ping(text) if mail_ping else text)
             return {"accepted": True, "queued": len(st["queue"])}
         if wake:
             st["busy"] = True
@@ -7251,7 +7392,12 @@ def send_message(slug: str, nid: str, text: str,
         if toks:
             _fold_back_undelivered(slug, nid, only_toks=toks)
         return {"accepted": True, "queued": 0, "parked": True}
-    threading.Thread(target=_run_turn, args=(slug, nid, text), daemon=True).start()
+    # carry the pointer marking into the turn as well, so `_run_turn`'s gate
+    # can drop it if the box is emptied between here and the launch (reconcile
+    # re-driving mail a concurrent turn has already taken is the live case)
+    threading.Thread(target=_run_turn, daemon=True,
+                     args=(slug, nid,
+                           _mark_ping(text) if mail_ping else text)).start()
     return {"accepted": True, "queued": 0}
 
 
@@ -7943,7 +8089,7 @@ def deliver_org_inbox(slug: str, peer: str, body: str,
             "AUDIENCE HOLDER got this same copy: coordinate internally on who "
             "answers, then send ONE reply with orgtree_message to the "
             "sender's @org:/@mcp:/@net: address — it goes out as the "
-            "org speaking, not as you.")
+            "org speaking, not as you.", mail_ping=True)
     return delivered
 
 
@@ -9583,7 +9729,7 @@ def _wd_fire(slug: str, wid: str, name: str, lines: list[str],
                       if notice else
                       "(orgtree) Your watchdog fired — the mail above carries "
                       "the event(s); handle them as appropriate."),
-                     wake=not notice)
+                     wake=not notice, mail_ping=True)
 
 
 def _wd_mark_check(w: dict[str, Any], now_t: float, raw: str = "",
