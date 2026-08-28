@@ -2767,7 +2767,18 @@ def _mail_block(mail: list[MailEntry], slug: str = "", nid: str = "",
     over the turn budget, or merely not an image. An agent that is never told
     a file existed cannot ask for it, and the sender has no way to discover
     that it never arrived. That failure — an absence that reads like a normal
-    turn — is the one this whole feature is shaped around."""
+    turn — is the one this whole feature is shaped around.
+
+    ⚠⚠ AND READ THE SCOPE OF THAT SENTENCE, because it was once written
+    without one and the missing half was a real bug (D-171, found by an
+    outside party testing our own written answer). This function can only
+    report attachments that REACHED the mail entry. A path the API layer
+    could not resolve never became a `meta`, so it never arrived here, and
+    the guarantee above said nothing about it while sounding like it did.
+    The `attachments_missing` leg below is that half: the entry now carries
+    what did NOT become a file, and it is announced here too. If you add a
+    new way for an attachment to die, it must land in one of those two lists
+    or this docstring goes back to being a comfortable falsehood."""
     imgs: list[dict[str, Any]] = []
     budget = imgblock.INLINE_IMAGE_TURN_MAX_BYTES
     blocks = []
@@ -2860,6 +2871,17 @@ def _mail_block(mail: list[MailEntry], slug: str = "", nid: str = "",
             budget -= nb if nb > 0 else 0
             b += (f"\n  ↳ loaded into your context as image {len(imgs)}"
                   + (f" ({note})" if note else "") + " — look at it directly.")
+        for miss in m.get("attachments_missing") or []:
+            # ⭐ D-171. An attachment the sender NAMED that never became a
+            # file. It has no [ATTACHED FILE] line to hang a ↳ under, because
+            # there is no attached file — so it gets its own line, and the
+            # line says NOT SENT rather than not loaded. "Not delivered" and
+            # "not yet delivered" are exactly the distinction that was
+            # missing: before this the agent saw nothing at all and could not
+            # know an attachment had ever been intended.
+            b += (f"\n[ATTACHMENT NOT DELIVERED — {miss}. Nothing arrived, so "
+                  f"do not go looking for it. Ask the sender to send it "
+                  f"again.]")
         blocks.append(b)
     return ((f"[MAIL — {len(mail)} message(s)]\n"
              + "\n---\n".join(blocks) + "\n[END MAIL]"), imgs)
@@ -7894,6 +7916,7 @@ def deliver_org_inbox(slug: str, peer: str, body: str,
     the hub message id, stamped onto each MailEntry so _confirm_delivered can
     report a true READ receipt."""
     by_node: dict[str, list[dict[str, Any]]] = {}
+    missing_by_node: dict[str, list[str]] = {}
     if attachments:
         with store.DOC_LOCK:
             org = store.load_org(slug)
@@ -7921,15 +7944,27 @@ def deliver_org_inbox(slug: str, peer: str, body: str,
                     shutil.copy2(src, os.path.join(updir, final))
                     metas.append({"name": final, "path": f"uploads/{final}",
                                   "bytes": os.path.getsize(src)})
-                except OSError:
-                    pass          # a missing/unreadable file drops silently…
+                except OSError as e:
+                    # D-171: it used to drop silently, and the comment that
+                    # sat here SAID SO — a known silent failure with a note
+                    # explaining it, which is worse than an unknown one
+                    # because everyone who read it moved on. The recipient is
+                    # now told the outside party sent a file that did not
+                    # arrive; only the basename travels, and the ledger
+                    # sanitises it, because this name was chosen by someone
+                    # outside the org.
+                    missing_by_node.setdefault(nid, []).append(
+                        f"{os.path.basename(src)} — the sender's file could "
+                        f"not be stored ({e.strerror or 'I/O error'})")
             if metas:
                 by_node[nid] = metas
     with store.DOC_LOCK:
         org = store.load_org(slug)
         delivered = org.post_external_mail(peer, body,
                                            attachments_by_node=by_node or None,
-                                           net_id=net_id)
+                                           net_id=net_id,
+                                           missing_by_node=missing_by_node
+                                           or None)
         store.save_org(org)
     for t in delivered:
         # spark on the wire (user spec 2026-08-05): inbound org mail rides

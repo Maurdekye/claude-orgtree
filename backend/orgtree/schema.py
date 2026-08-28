@@ -352,6 +352,12 @@ UserMailEntry = TypedDict("UserMailEntry", {
     # SENDER's scratch (its outbox/ — _agent_send_file's card shape); the
     # inbox renders them with fileUrl keyed on `from`
     "attachments": NotRequired[list[dict[str, Any]]],
+    # D-171: what the sender named and could not send. On THIS entry it is a
+    # record only — the inbox UI renders `attachments` and not this — because
+    # the sending AGENT is told via post_mail's `warnings`, and on this path
+    # a bad path is already refused outright by _agent_send_file, so the only
+    # cause that reaches here is the sender's own overflow.
+    "attachments_missing": NotRequired[list[str]],
     # D-169: the sender asked for the user's attention NOW. Absent on
     # ordinary mail — presence is what the pulse, the count and the row
     # styling all key on, and it stops mattering the moment the entry leaves
@@ -379,6 +385,13 @@ MailEntry = TypedDict("MailEntry", {
     "at": str,
     "relationship": NotRequired[Optional[str]],
     "attachments": NotRequired[list[dict[str, Any]]],
+    # D-171: attachments the sender NAMED that never became files — an
+    # unresolved path, or one past ATTACHMENT_MAX. Sanitised display strings,
+    # NOT metas, and deliberately a SEPARATE key: `attachments` above is what
+    # the chat renders as download cards and images, so a placeholder in that
+    # list would put a dead card in the user's own chat. _mail_block prints
+    # one [ATTACHMENT NOT DELIVERED] line per entry.
+    "attachments_missing": NotRequired[list[str]],
     "delivering": NotRequired[bool],
     "retracted": NotRequired[bool],   # api node_mail_retract tombstones in place
     "net_id": NotRequired[str],       # F-06: hub message id — _confirm_delivered

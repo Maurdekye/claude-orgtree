@@ -86,6 +86,47 @@ EXTERN: Final = "@extern"  # the ORG INBOX: the org's single face to the outside
                     # EXTERN lets a sub-level agent read/answer outside mail.
 
 
+# ── attachments that did NOT travel (D-171) ───
+#: How many attachments one message actually carries. Named ONCE because the
+#: API layer and this module both used to cap at a bare literal 10, and two
+#: independent silent truncations of the same list is how a caller loses a
+#: file twice over without either layer admitting to it.
+ATTACHMENT_MAX: Final = 10
+
+
+def undeliverable_note(raw: str) -> str:
+    """Sanitise one not-delivered attachment note for the [MAIL] block.
+
+    ⚠ THE TEXT IS CALLER-SUPPLIED and is rendered straight into an agent's
+    context: an attachment path typed by the composer, or a filename chosen
+    by an untrusted outside party. A newline in it would forge a line inside
+    the [MAIL] block — the same injection `rt_gist` collapses whitespace for
+    in the FR-05 reply_to snapshot below. Collapse, cap, never trust.
+    """
+    s = " ".join(str(raw or "").split())
+    return (s if len(s) <= 160 else s[:159] + "…") or "(unnamed)"
+
+
+def _attachments_and_losses(
+        attachments: list[dict[str, Any]] | None,
+        missing: list[str] | None) -> tuple[list[dict[str, Any]], list[str]]:
+    """Split into (what travels, what must be REPORTED as not travelling).
+
+    D-171: the cap is applied HERE and its overflow is folded into the
+    not-delivered report rather than trimmed off the end. `list(a)[:10]` is
+    a silent drop wearing a slice's clothes — the sender believes ten files
+    went and eleven were named, and nothing anywhere says otherwise.
+    """
+    delivered = list(attachments or [])
+    notes = [undeliverable_note(m) for m in (missing or [])]
+    over = len(delivered) - ATTACHMENT_MAX
+    if over > 0:
+        delivered = delivered[:ATTACHMENT_MAX]
+        notes.append(f"{over} further attachment(s) — past the "
+                     f"{ATTACHMENT_MAX}-per-message limit")
+    return delivered, notes
+
+
 def actor_kind(actor: str) -> str:
     if actor == USER:
         return "user"
@@ -1134,11 +1175,20 @@ class Org:
                   attachments: list[dict[str, Any]] | None = None,
                   reply_to: dict[str, Any] | None = None,
                   urgent: bool = False,
-                  urgent_reason: str = "") -> dict[str, Any]:
+                  urgent_reason: str = "",
+                  missing: list[str] | None = None) -> dict[str, Any]:
         """Agent-to-agent (or agent-to-user) mail under the §7.2 addressing rules:
         downward any depth (deep reach implicitly grants the recipient an audience),
         one hop up, siblings, held audiences. Everything else is refused with the
-        proper route named."""
+        proper route named.
+
+        `missing` (D-171): attachments the CALLER could not turn into files —
+        a path that resolved to nothing, or one past the cap. They ride the
+        entry as `attachments_missing` so the recipient is told the sender
+        MEANT to send something and it did not arrive, and they come back in
+        `warnings` so the calling code can retry. The two audiences need
+        different things: a line an agent reads cannot be acted on by an HTTP
+        client, and a warning field is invisible to the agent."""
         to = self._resolve_recipient(to, outward=True)
         if actor_kind(sender) == "agent":
             self.node(sender)
@@ -1269,12 +1319,27 @@ class Org:
                 # notion of "read" to drift out of step with the first.
                 ue["urgent"] = True
                 ue["urgent_reason"] = urgent_reason.strip()
-            if attachments:
+            keep, lost = _attachments_and_losses(attachments, missing)
+            if keep:
                 # FR-21: download-card metas — the api layer already routed
                 # each path through _agent_send_file (validate-and-copy into
                 # the SENDER's outbox), so `path` here is outbox-relative and
                 # the inbox serves it via the sender's /file endpoint
-                ue["attachments"] = list(attachments)[:10]
+                ue["attachments"] = keep
+            if lost:
+                # ⚠ BOUNDED HONESTY, stated so nobody reads more into it than
+                # is here: the SENDING AGENT is told (the warning below rides
+                # its tool result), the user's inbox is NOT — the chat renders
+                # `attachments` and knows nothing of this field. That is
+                # enough for the only cause that can reach here: a bad path
+                # is already refused outright by _agent_send_file, so `lost`
+                # on this branch is the sender's own overflow, and the sender
+                # is exactly who can resend it. If a cause ever arrives that
+                # the USER must see, this needs a UI leg too.
+                ue["attachments_missing"] = lost
+                warnings.append(
+                    f"{len(lost)} attachment(s) did NOT reach the user: "
+                    + "; ".join(lost))
             self.d.setdefault("user_inbox", []).append(ue)
             if self.d.get("headless"):
                 # §9.6 ☞: NEVER deny mail to the user — the inbox is the audit
@@ -1342,12 +1407,30 @@ class Org:
             "from": sender, "kind": kind, "body": body, "at": now(),
             "relationship": self.relationship(sender, to),
         }
-        if attachments:
+        keep, lost = _attachments_and_losses(attachments, missing)
+        if keep:
             # user spec 2026-07-31: mail carries FILES — [{name, path, bytes}]
             # where path is relative to the recipient's working folder (the
             # bytes already landed in its uploads/); the envelope announces
             # each one at delivery
-            entry["attachments"] = list(attachments)[:10]
+            entry["attachments"] = keep
+        if lost:
+            # ⭐ D-171, THE WHOLE POINT. A file the sender named and that never
+            # became bytes is announced to the recipient as NOT DELIVERED.
+            # Measured 2026-08-28 (@org:resonite, reproduced here over real
+            # HTTP): before this, such an attachment produced HTTP 200, no
+            # mail line, and no warning — the agent could not tell an
+            # attachment had ever been intended, and the sender could not
+            # tell it had not arrived. NOT folded into `attachments`: that
+            # list is also what the chat renders as download cards
+            # (canvas/desk.tsx) and the user's own Sent copy carries it, so a
+            # placeholder there would put a dead card and a broken image in
+            # the user's chat — a worse bug than the one being fixed, wearing
+            # a fix's clothes.
+            entry["attachments_missing"] = lost
+            warnings.append(
+                f"{len(lost)} attachment(s) did NOT reach {to}: "
+                + "; ".join(lost))
         rt_gist = " ".join(str((reply_to or {}).get("gist") or "").split())
         if reply_to and rt_gist:
             # FR-05: a sanitized SNAPSHOT of the mail being replied to —
@@ -1408,7 +1491,9 @@ class Org:
     def post_external_mail(self, peer: str, body: str,
                            attachments_by_node: Mapping[str, list[dict[str, Any]]]
                            | None = None,
-                           net_id: str | None = None) -> list[str]:
+                           net_id: str | None = None,
+                           missing_by_node: Mapping[str, list[str]]
+                           | None = None) -> list[str]:
         """Inbound from OUTSIDE the org — an external chat or another
         org (@org:<slug>). Org-inbox model (user spec): the message is addressed
         to the ORGANIZATION, not to any agent. It lands in the org-wide inbox;
@@ -1441,8 +1526,19 @@ class Org:
             # external attachments (user spec 2026-07-31): the caller copied
             # the files into each recipient's uploads/ — per-node metadata
             # because collision suffixes may differ per recipient
-            if attachments_by_node and attachments_by_node.get(t):
-                entry["attachments"] = list(attachments_by_node[t])[:10]
+            # Per-node for the LOSSES too (D-171): a copy can fail for one
+            # recipient and succeed for another, so "what did not arrive" is
+            # not a property of the message.
+            keep, lost = _attachments_and_losses(
+                list((attachments_by_node or {}).get(t) or []),
+                list((missing_by_node or {}).get(t) or []))
+            if keep:
+                entry["attachments"] = keep
+            if lost:
+                # ⚠ these names came from OUTSIDE the org. undeliverable_note
+                # inside the helper is what stands between an attacker-chosen
+                # filename and a forged line in this agent's [MAIL] block.
+                entry["attachments_missing"] = lost
             if net_id:
                 # F-06: the hub message id — _confirm_delivered reports READ
                 entry["net_id"] = net_id

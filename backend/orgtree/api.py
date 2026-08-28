@@ -2223,6 +2223,7 @@ def node_message(slug: str, nid: str, body: Message) -> dict[str, Any]:
     # staged attachments: already-uploaded files in the node's own scratch —
     # verify each really exists there (traversal-guarded) and ride metadata
     metas: list[dict[str, Any]] = []
+    missing: list[str] = []
     if body.attachments:
         # same rule as /scratch: `nid` reaches the filesystem here (via
         # scratch_dir's makedirs), so it must name a real node first — an
@@ -2233,18 +2234,42 @@ def node_message(slug: str, nid: str, body: Message) -> dict[str, Any]:
         except LedgerError as e:
             raise HTTPException(404, str(e))
         base = os.path.realpath(supervisor.scratch_dir(slug, nid))
-        for rel in body.attachments[:10]:
+        extra = len(body.attachments) - ledger_mod.ATTACHMENT_MAX
+        for rel in body.attachments[:ledger_mod.ATTACHMENT_MAX]:
             full = os.path.realpath(
                 os.path.join(base, _no_nul(str(rel)).lstrip("/\\")))
+            # ⚠⚠ RESOLVE-OR-REPORT, AND IT IS DELIBERATE — do not "helpfully"
+            # fall back to guessing a filename from `rel` (D-171). A caller
+            # MUST send back the `path` this org's upload endpoint returned:
+            # that endpoint de-duplicates, so the name it stores is often NOT
+            # the name that was uploaded (`shot.png` becomes `shot-2.png`),
+            # and a guess would attach the WRONG existing file — silently, and
+            # to whoever the earlier upload belonged to. Refusing to guess is
+            # the safe half; what was missing until D-171 was the other half,
+            # SAYING SO. @org:resonite measured the gap against a live backend
+            # (HTTP 200, no mail line, no warning, nothing to detect) and it
+            # was reproduced here before the fix. The report below is now
+            # load-bearing for callers that fail loudly on a missing path — it
+            # is not decoration, and deleting it re-opens a defect an outside
+            # party had to find for us. Pinned by test_inline_images.py §5.
             if full.startswith(base + os.sep) and os.path.isfile(full):
                 metas.append({"name": os.path.basename(full),
                               "path": str(rel).replace("\\", "/"),
                               "bytes": os.path.getsize(full)})
+            else:
+                missing.append(f"{rel} — no such file in your working folder "
+                               f"(never uploaded, or the upload failed)")
+        if extra > 0:
+            # bounded on purpose: the report names what it can and COUNTS the
+            # rest, rather than echoing an unbounded caller-supplied list into
+            # an agent's context
+            missing.append(f"{extra} further attachment(s) — past the "
+                           f"{ledger_mod.ATTACHMENT_MAX}-per-message limit")
     with store.DOC_LOCK:
         try:
             org = store.load_org(slug)
             r = org.post_mail(USER, nid, body.text, attachments=metas or None,
-                              reply_to=body.reply_to)
+                              reply_to=body.reply_to, missing=missing or None)
             # 80 chars truncated most instructions mid-clause; the notice is a
             # gist, but it has to survive being read on its own
             org.user_deep_reach(nid, body.text.strip().splitlines()[0][:160])
@@ -2252,14 +2277,26 @@ def node_message(slug: str, nid: str, body: Message) -> dict[str, Any]:
         except LedgerError as e:
             raise HTTPException(422, str(e))
     mail_notify(slug, USER, nid)
+    # ⭐ D-171: `warnings` reaches CODE; the [MAIL] line reaches an AGENT. Both
+    # halves are needed and neither substitutes for the other — an HTTP client
+    # cannot read an agent's context, and an agent cannot retry the caller's
+    # upload. post_mail has always built this list and this endpoint always
+    # threw it away, which is why a message whose attachment never resolved
+    # was indistinguishable from a clean send. Status stays 200: the message
+    # WAS delivered, and a non-200 for delivered mail would be its own lie.
+    warn = list(r.get("warnings") or [])
     if r.get("deferred"):
         # archived recipient (user ruling): the mail waits in its inbox and is
         # acted on at rehire — nothing to drive now
-        return {"accepted": True, "deferred": True, "queued": 0}
-    return supervisor.send_message(
+        return {"accepted": True, "deferred": True, "queued": 0,
+                **({"warnings": warn} if warn else {})}
+    sent = supervisor.send_message(
         slug, nid,
         "(orgtree) The mail above includes a message from the user, addressed "
         "to you — act on it now.")
+    if warn:
+        sent = {**sent, "warnings": warn + list(sent.get("warnings") or [])}
+    return sent
 
 
 @app.post("/api/orgs/{slug}/nodes/{nid}/steer")
