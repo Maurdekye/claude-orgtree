@@ -398,13 +398,16 @@ function SpawnChips({ onSpawn, free, seats, maxTier, side }: SpawnChipsProps) {
               // match every other control tooltip on the card (`retire — …`,
               // `dissolve — …`), four words each.
               //
-              // The seat cost went with the trim and that is a real loss, not
-              // an oversight: `(seat 1)` cannot survive a five-word ceiling.
-              // It is still on the credit bar beside the card, and the
-              // can't-afford tooltip above still states the cost and the
-              // remedy at the moment it starts to matter.
+              // The seat cost rides along as `(-N)` — the user's own shape and
+              // their own example, after they were asked whether losing it to
+              // the word ceiling was acceptable and said it was not. The MINUS
+              // is the point: it reads as what this costs you, where the older
+              // `(seat 1)` read as a label. It is a suffix, not a word, so the
+              // four-word phrase above stays exactly as it is rather than
+              // being shortened to make room.
               : `hire ${/^[aeiou]/.test(t) ? 'an' : 'a'} ${t} `
-                + `${side === 'top' ? 'superior' : side ? 'coworker' : 'subordinate'}`}
+                + `${side === 'top' ? 'superior' : side ? 'coworker' : 'subordinate'}`
+                + ` (-${seat})`}
             onClick={(e) => { e.stopPropagation(); onSpawn(t) }}>
             {TIER_LETTER[t]}
           </button>

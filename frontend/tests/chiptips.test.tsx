@@ -73,19 +73,26 @@ function uiTest(name: string,
   })
 }
 
+/** the tier costs this fixture declares. Asserted against, not assumed: the
+ *  cost suffix has to be the tier's REAL seat price, and a suffix that merely
+ *  looks plausible (`(-1)` everywhere) is exactly the bug a hard-coded
+ *  expectation would hide. */
+const SEATS: Record<string, number> = { haiku: 1, sonnet: 3, opus: 5, fable: 10 }
+
 /** the enabled tooltip for one tier, off each of the three badge sets.
- *  `haiku` costs 1 seat, so on this fixture none of them is the can't-afford
- *  variant — that string is deliberately long (it carries the remedy) and is
- *  not one of the three the user scoped. */
-async function tips(mount: (el: React.ReactElement) => Promise<{ el: HTMLElement }>) {
+ *  Costs here are affordable on this fixture, so none of these is the
+ *  can't-afford variant — that string is deliberately long (it carries the
+ *  remedy) and is not one of the three the user scoped. */
+async function tips(mount: (el: React.ReactElement) => Promise<{ el: HTMLElement }>,
+  tier = 'haiku') {
   const { OrgCanvas } = await import('../src/canvas/OrgCanvas')
   const { el } = await mount(
     <OrgCanvas tree={tree(['ceo', 'cto'])} op={() => Promise.resolve({} as never)}
       slug="mine" toast={noop} mailEvt={null} />)
   await flush()
   const pick = (sel: string) => {
-    const b = el.querySelector(`${sel} button.t-haiku`) as HTMLElement | null
-    assert.ok(b, `no haiku badge rendered for ${sel}`)
+    const b = el.querySelector(`${sel} button.t-${tier}`) as HTMLElement | null
+    assert.ok(b, `no ${tier} badge rendered for ${sel}`)
     const t = b!.getAttribute('title')
     assert.ok(t, `the ${sel} badge carries no tooltip at all`)
     return t!
@@ -97,23 +104,40 @@ async function tips(mount: (el: React.ReactElement) => Promise<{ el: HTMLElement
   }
 }
 
+/** split a tooltip into its PHRASE and its COST SUFFIX.
+ *
+ *  The user set a 3-5 word ceiling and then, asked directly, added a cost
+ *  badge in their own notation — `hire a haiku coworker (-1)`. So the suffix
+ *  rides along and is deliberately NOT counted as a word; the phrase carries
+ *  the ceiling, the suffix carries the price. Splitting them here keeps that
+ *  distinction explicit instead of letting a looser word-count quietly absorb
+ *  it, which is how "3-5 words" would rot into "about five-ish words". */
+function parts(s: string): { phrase: string; cost: number | null } {
+  const m = /^(.*?)\s*\((-\d+)\)$/.exec(s.trim())
+  if (!m) return { phrase: s.trim(), cost: null }
+  return { phrase: m[1]!, cost: Number(m[2]) }
+}
+
 const words = (s: string) => s.trim().split(/\s+/)
 
 uiTest('§1 every badge tooltip is within the user’s 3-5 word ceiling',
   async ({ mount }) => {
     const t = await tips(mount)
     for (const [role, s] of Object.entries(t)) {
-      const n = words(s).length
+      const n = words(parts(s).phrase).length
       assert.ok(n >= 3 && n <= 5,
-        `the ${role} tooltip is ${n} words ("${s}") — the user set a hard `
-        + 'ceiling of 3-5 words per tooltip, not a target to approach')
+        `the ${role} tooltip's phrase is ${n} words ("${s}") — the user set a `
+        + 'hard ceiling of 3-5 words, not a target to approach. The (-N) cost '
+        + 'suffix is exempt by their own later instruction; the WORDS are not, '
+        + 'and must not creep to make room for it')
     }
   })
 
 uiTest('§2 the three read as one family — same shape, one word apart',
   async ({ mount }) => {
     const t = await tips(mount)
-    const [a, b, c] = [words(t.subordinate), words(t.coworker), words(t.superior)]
+    const [a, b, c] = [words(parts(t.subordinate).phrase),
+      words(parts(t.coworker).phrase), words(parts(t.superior).phrase)]
 
     assert.equal(a.length, b.length,
       `subordinate ("${t.subordinate}") and coworker ("${t.coworker}") are `
@@ -136,6 +160,20 @@ uiTest('§2 the three read as one family — same shape, one word apart',
       [a[a.length - 1], b[b.length - 1], c[c.length - 1]],
       ['subordinate', 'coworker', 'superior'],
       'the differing word must actually name the role being hired')
+
+    // ...and the cost suffix is part of the family too: three badges hiring
+    // the SAME tier cost the same, so all three suffixes must agree. Checked
+    // here rather than folded into the word comparison, because the suffix
+    // varies across tiers where the phrase does not — that is exactly the
+    // distinction that would have been lost by relaxing the word check.
+    const costs = [parts(t.subordinate).cost, parts(t.coworker).cost,
+      parts(t.superior).cost]
+    assert.ok(costs.every((c2) => c2 !== null),
+      `every tooltip must carry the cost badge — got `
+      + `${JSON.stringify([t.subordinate, t.coworker, t.superior])}`)
+    assert.equal(new Set(costs).size, 1,
+      `the three badges hire the same tier and must quote the same cost, got `
+      + `${JSON.stringify(costs)}`)
   })
 
 uiTest('§3 one voice — imperative, verb first, matching the card’s other controls',
@@ -149,9 +187,14 @@ uiTest('§3 one voice — imperative, verb first, matching the card’s other co
       assert.doesNotMatch(s, /[A-Z]/,
         `the ${role} tooltip shouts ("${s}") — the card's other control `
         + 'tooltips are lowercase ("retire — …", "dissolve — …")')
+      // the cost is a MINUS BADGE in the user's own notation — `(-1)`, which
+      // reads as what it costs you. Not `(seat 1)`, which read as a label, and
+      // not a tidied `· -1` or a typographic minus: they wrote the example.
       assert.doesNotMatch(s, /\(seat/,
-        `the ${role} tooltip still carries a seat cost ("${s}") — it does not `
-        + 'fit the five-word ceiling, and the credit bar states it anyway')
+        `the ${role} tooltip uses the old "(seat N)" label ("${s}") — the user `
+        + 'asked for a minus badge, "(-1)", which reads as a price')
+      assert.match(s, /\s\(-\d+\)$/,
+        `the ${role} tooltip does not end in a "(-N)" cost badge ("${s}")`)
     }
   })
 
@@ -175,4 +218,48 @@ uiTest('§4 the article still agrees with the tier it names',
       assert.equal(art, /^[aeiou]/.test(tier) ? 'an' : 'a',
         `"${art} ${tier}" — the article does not agree with the tier name`)
     }
+  })
+
+// ===================================================================== §5
+// The cost badge must quote each tier's REAL price, not a plausible one.
+//
+// This is the leg that the old word-count check could never have carried, and
+// the reason the family invariant had to get harder rather than looser when
+// the suffix arrived: within one tier the three tooltips are identical bar the
+// role, but ACROSS tiers the suffix is the thing that must vary. A badge that
+// said `(-1)` on every tier would satisfy every other check in this file and
+// would be lying about the price of an opus.
+
+uiTest('§5 the cost badge is the tier’s actual seat price, per tier',
+  async ({ mount }) => {
+    const { OrgCanvas } = await import('../src/canvas/OrgCanvas')
+    const { el } = await mount(
+      <OrgCanvas tree={tree(['ceo'])} op={() => Promise.resolve({} as never)}
+        slug="mine" toast={noop} mailEvt={null} />)
+    await flush()
+    const seen: Record<string, number> = {}
+    for (const b of [...el.querySelectorAll('.hsof.side-l button')] as HTMLElement[]) {
+      const title = b.getAttribute('title') ?? ''
+      const tier = /^hire an? (\w+)/.exec(title)?.[1]
+      if (!tier) continue
+      const { cost } = parts(title)
+      assert.ok(cost !== null,
+        `the ${tier} badge carries no cost badge ("${title}")`)
+      seen[tier] = cost!
+    }
+    assert.ok(Object.keys(seen).length >= 3,
+      `expected a badge per tier, saw ${JSON.stringify(seen)}`)
+    for (const [tier, cost] of Object.entries(seen)) {
+      const want = SEATS[tier]
+      assert.ok(want !== undefined,
+        `the fixture declares no seat cost for "${tier}" — this check cannot `
+        + 'say whether the badge is right, so it must not pretend to')
+      assert.equal(cost, -want,
+        `the ${tier} badge quotes ${cost} but a ${tier} seat costs ${want} — `
+        + 'the badge must be a real price, negated, not a decoration')
+    }
+    // and the prices really do differ, or this section proves nothing
+    assert.ok(new Set(Object.values(seen)).size > 1,
+      `every tier quoted the same cost ${JSON.stringify(seen)} — either the `
+      + 'fixture stopped varying seat costs or the badge is not reading them')
   })
