@@ -828,15 +828,17 @@ button.cc-name:hover {
   --tier-sonnet: #3d8ce6;
   --tier-opus: #dcb0f5;
   --tier-fable: #e8b04b;
-  /* the codex family (FR-15) — AQUAMARINE-TEAL by user spec 2026-08-28: the
-     HUE FAMILY is the provider's identity (claude wears terracotta/orange,
-     codex wears aquamarine-teal), so no codex tier may borrow a warm hue.
-     Tiers separate by LIGHTNESS inside the family (luna pale, terra mid,
-     sol deep-saturated); exact values pending the CVD ΔE pass the four
-     above got, and the L/T/S letter stays the redundant glyph. */
-  --tier-luna: #a9e2dc;
-  --tier-terra: #3ec6b8;
-  --tier-sol: #0ea5b5;
+  /* the codex family (FR-15) — DISTINCTIVE per-tier shades (user correction
+     2026-08-28: "return the individual model tier colors to their prior
+     distinctive shades; just the desk view theme itself takes on the
+     tealish color scheme"). Provider identity lives in the DESK theme
+     (--prov-openai below), NOT in the chip hues — tiers separate by hue
+     like claude's four do: luna pale silver, terra olive, sol solar
+     orange. CVD ΔE pass still pending; L/T/S letters stay the redundant
+     glyph. */
+  --tier-luna: #b9c4d6;
+  --tier-terra: #7fae5f;
+  --tier-sol: #ff8a3d;
   /* the provider ACCENT — the teal counterpart of --accent: desk border,
      desk shadow ring and busy border for codex agents (dormant until codex
      hire lands; the class comes from cards.tsx `prov-openai`) */
