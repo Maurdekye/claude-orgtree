@@ -2879,6 +2879,34 @@ list, which is consumed AFTER that save — queued notices never wake anyone
 and the mail signal is UI animation — which is what makes kickoff-last
 structural rather than a matter of which statement comes first.
 
+### D-174 · fable-autopsy naming — `<base>-autopsy` for the opus, `<base>-N` for the fable
+Ruling (user via coordinator, 2026-08-28): the recovery pattern for a fable
+that fails by tripping its own safety filters — insert an opus superior over
+it, hire a fresh fable as that opus's coworker, retire the failed fable, have
+the opus read its transcript and re-brief the replacement — uses a fixed
+naming convention. The opus takes the failed fable's name plus the suffix
+`-autopsy`; the replacement fable takes the same base name with an
+incremented numeric suffix starting at `-2`. Worked example: failed fable
+`poem` becomes opus `poem-autopsy` and replacement fable `poem-2`; if
+`poem-2` also fails, the next attempt is `poem-3`, normally under the same
+`poem-autopsy` seat rather than a fresh one. Full procedure:
+docs/ui-guide.md, "Fable autopsy — diagnosing a fable that trips its own
+filters".
+Why: the opus's job is diagnosis and re-briefing, not doing the fable's own
+work — a distinct suffix keeps it visually and structurally separate from
+the fable line it supervises, while the incrementing fable name keeps every
+attempt at the same brief legible as one lineage without reusing an archived
+node's name for an agent that is not a continuation of it.
+Bounds: this is a fresh org identity for a fresh diagnostic attempt, not a
+continuation of one — deliberately unlike compaction's successor (D-053),
+which keeps the SAME name across a split because it IS the same agent
+carrying on. Applies to the fable tier specifically; the failure mode is a
+filter trip, not an ordinary bug.
+Load-bearing: retiring the autopsy opus while the replacement fable is its
+live report auto-dissolves the whole subtree (retire-with-live-reports is
+documented ledger behavior, not a bug) — the opus cannot be retired for as
+long as the fable line under it stays alive.
+
 ---
 
 ## Kiosks & sandboxing
