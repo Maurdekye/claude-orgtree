@@ -1,0 +1,208 @@
+# Adding a model provider to orgtree — the playbook
+
+Standing notes kept WHILE the second provider (Codex / OpenAI, tiers
+luna·terra·sol) was being implemented, at the user's instruction
+(2026-08-28): every step taken, generalized so the third provider (gemini,
+grok, kimi, z-ai, …) is a walk down a checklist instead of a re-derivation.
+The Codex-specific design record is `design-multi-provider.md` in the
+implementing agent's scratch; DECISIONS.md and §6 of that doc hold the user
+rulings. THIS file is the transferable method.
+
+Maintained live: every increment that lands for a provider updates the
+matching section here. If you are adding provider #3 and a step below didn't
+match reality, fix the step — this document is only worth what it predicts.
+
+## 0. Principles (user rulings, provider-agnostic)
+
+- **The set of CONNECTED provider CLIs is the set of hireable tiers.**
+  orgtree is not Claude-centric; Claude is one provider among others (design
+  §1 principle 3, user 2026-08-28).
+- **Tier names stay ONE flat vocabulary** — a tier implies its provider;
+  nothing takes a provider argument next to a tier (providers.py docstring).
+- **Seats = API $ per M input tokens at the STANDING price**, floored to 1
+  (promos don't set seats — sonnet-intro precedent). **Cost-dollars use
+  CURRENT listed prices** (promos included). Dollars ≠ seats; write both in
+  providers.py with sources and dates.
+- **Naming: the CLI's own product name** ("Codex", not "ChatGPT (Codex)" or
+  "OpenAI") — the user names the tool they installed, not the vendor.
+- **Kiosks hold a new provider out until its sandbox story is settled.**
+- **Headless orgs may only HIRE tiers from keyed providers.**
+- **Distinctive tier-chip hues per tier; the provider gets ONE desk theme
+  color** (codex: aquamarine-teal `--prov-openai`), not a chip recolor.
+- **Credentials are never read, copied or moved.** Connect-state detection
+  is an existence/JWT-display read of the CLI's own auth store at most; the
+  child process inherits the CLI's own home and refreshes in place. Copying
+  an auth file split-brains its refresh cycle.
+- **One credential per spawn:** the child sees ITS provider's credentials
+  and nobody else's — strip the other providers' env vars at spawn
+  (`ANTHROPIC_*`/`CLAUDE_CODE_*`/`CLAUDECODE` from a codex child, and a
+  stray `OPENAI_API_KEY` too, which would silently flip billing from the
+  subscription login to metered API).
+
+## 1. Recon before any code (the probe phase)
+
+What it looked like for codex, and what to reproduce per provider:
+
+1. **Find the machine substrate.** Prefer a long-lived structured-IO server
+   surface over a bare one-shot exec if the CLI has one (codex: `codex
+   app-server`, stdio NDJSON JSON-RPC — the surface its own IDE extension
+   uses; bare `exec --json` was the fallback). The docs will be incomplete:
+   probe the binary, don't trust prose — orgtree's codex recon was wrong
+   TWICE before a live probe settled it.
+2. **Install a private pin** (`npm install --prefix <data>/codex
+   @openai/codex` pattern), resolve env-override > pin > PATH, and never
+   route through a `.CMD` shim (argv truncation at embedded newlines).
+3. **Probe UNAUTHED first** (isolated home dir, no login): protocol
+   handshake, model list, error shapes. Then the auth-gated battery on a
+   real account. Bank every event log. The codex battery that mattered:
+   end-to-end turn, MID-TURN STEER, graceful interrupt, fork/compact,
+   N-parallel on one account, identity-file honoring, approval callbacks,
+   usage/limit telemetry shapes, account read.
+4. **Verify the six seam capabilities** the adapter needs (each has a codex
+   answer to compare against): session resume by durable id · mid-turn
+   input · graceful interrupt · tool attachment with per-agent identity ·
+   usage+limit telemetry · identity/system-prompt injection.
+5. **Price table**: web-verify input/cached/output per M for every tier,
+   twice, with sources and dates in the code comment.
+
+## 2. The provider registry (backend/orgtree/providers.py)
+
+Additive module, no adapter yet — shippable as a read-only preview:
+
+- `<PROV>_TIERS` (tier → seat), `<PROV>_MODELS` (tier → full model id, as
+  the CLI itself reports them — aliases drift), chip letters, and later
+  `<PROV>_CONTEXT` (measured window) and `<PROV>_PRICES` (see §0 pricing).
+- Detection: `<prov>_path()` env > pin > PATH; `<prov>_version()` read from
+  package metadata WITHOUT running the binary when possible, hard-timeout
+  probe otherwise; `<prov>_account()` connect-state from the CLI's auth
+  store (existence + display identity only); `<prov>_status()` cached ~60s
+  (panels poll).
+- `providers_payload()` grows one entry: id, label (§0 naming), cli, tiers,
+  status, `hire_enabled` (hard-False until the adapter lands), `reason`
+  (the user-facing tooltip, ordered by what they'd do next: install cmd →
+  login cmd → preview note).
+- Tests: `test_providers.py` — detection resolution order, tier tables,
+  payload shape, connect-state against planted auth files.
+
+## 3. The turn runner (backend/orgtree/<prov>run.py — codexrun.py)
+
+One module owning the wire, one process per turn, hermetically testable:
+
+- A client class (spawn from an ARGV HEAD, not a bare exe; reader thread
+  pumps stdout; server→client requests answered synchronously via caller
+  hooks; env hygiene per §0 applied AT SPAWN in one place). Process-level
+  `cwd` = the agent's scratch (identity-file discovery and relative paths
+  resolve against the PROCESS, not a protocol param — measured the hard
+  way).
+- A turn class normalizing the provider vocabulary to orgtree's:
+  `start(input) -> durable session id`, `steer(text) -> bool` (False = the
+  turn-over guard refused; caller re-queues), `interrupt() -> bool`,
+  `wait(timeout) -> {status: completed|interrupted|failed, agent_text,
+  token_usage, rate_limits, thread_id}`. "Interrupted" is a COMPLETED
+  turn, not a failure.
+- Tool attachment: if the CLI supports client-answered dynamic tools
+  (codex: `dynamicTools` + `item/tool/call` server-requests — probe it, it
+  gated the whole architecture), org powers attach as the SAME tool cards
+  `mcptool.TOOLS` serves the first provider, answered in-process by POSTing
+  `/api/agent` — the ledger enforces authority identically and no bridge
+  process or user-config write exists. A tool error is an ANSWER, not a
+  hang; unexpected server-requests are refused loudly; approvals fail
+  CLOSED.
+- **The test double first** (`backend/tests/fake<prov>.py`): a scripted
+  stand-in speaking the real wire (shapes copied from the probe logs), with
+  scenarios for tool round-trip, steer, interrupt, and an env probe that
+  dumps named env vars to a file — credential hygiene proven without any
+  real credential near the tests. Suite: `test_<prov>run.py`.
+
+## 4. Supervisor dispatch (the seam inside _run_one_turn) — M1b
+
+The single most delicate step. The shape that works:
+
+- The prologue (slot gate, state gates, mail drain, inflight persist,
+  `turn_started`) is provider-neutral — dispatch AFTER it, on tier
+  membership (`model in providers.<PROV>_TIERS`), BEFORE any first-provider
+  machinery.
+- **Do not early-return** (the shared `finally` pops the next queued
+  carrier into the return value AFTER a return fixes it — returning early
+  strands mail) and **do not write a second function with its own
+  finally** (drift). Run the provider leg, replicate the tiny success tail
+  (`last_error=None`, `turns_run+=1`, `account_switches=0`,
+  `paid_booked=True`, `_after_turn(...)`), then `raise _<Prov>TurnDone` — a
+  control-flow exception caught by its own `except … : pass` arm ABOVE the
+  generic handler, unwinding to the SHARED finally. Failures raise plain
+  `RuntimeError("turn failed: …")` into the existing machinery
+  (last_error + durable error row).
+- The leg: connect-state guard (loud failure naming the remedy) · sandbox
+  guard (kiosk holdout) · identity written pre-spawn (provider's
+  identity-file door + per-thread instructions param) · session id =
+  HARVESTED from the provider, stored under DOC_LOCK **with a
+  `<prov>_thread` marker — only ever resume an id the leg itself
+  harvested; a fresh hire's minted uuid resumes nothing** · steer pump
+  polling `pop_steer` every ~2s wrapping messages in the SAME mid-task
+  envelope the steer hook uses, falling back to the queue when the
+  turn-over guard refuses · live text deltas through `stream()` with the
+  first provider's batching (~8 Hz / 400 chars) · `interrupt_turn` taught
+  the new live-session handle (`st["<prov>_turn"]`) next to `st["proc"]`.
+- Bookkeeping mapping: cost = tokens × `<PROV>_PRICES` (know whether
+  `inputTokens` INCLUDES cached — codex: yes — and whether output includes
+  reasoning — codex: yes); occupancy = the LAST call's input (cumulative
+  totals overcount, the "123% context" bug); context window pinned in
+  `TIER_CONTEXT` from the provider's own reported number, added BEFORE the
+  env override so the user still wins.
+- Suite: `test_<prov>_dispatch.py` driving `_run_one_turn` in-process
+  against the test double: dispatch+bookkeeping, tool round-trip,
+  resume-vs-fresh, env hygiene, identity file, live steer, live interrupt,
+  and a PLANTED FAULT the failure path must see (anti-vacuity).
+
+## 5. Hire enablement (ledger tables + guards) — M4
+
+- Codex status: NOT YET LANDED (this section is written from the increment
+  map; correct it when the increment does land).
+- Tiers/models into `ledger.TIERS`/`ledger.MODELS` via the add-only org-doc
+  load hook (org docs carry their own seat-table copy); kiosk rank = seat.
+- API hire guard: a tier whose provider is not CONNECTED → 422 naming the
+  provider (the §0 vision made checkable).
+- Known drift guards that must be updated DELIBERATELY, not discovered:
+  `chiptips.test.tsx` (regex-scrapes ledger's TIERS literal AND the
+  frontend fallback table — both sides), `test_ledger_authority` ("exactly
+  the four price bands" → grows), `test_mcptool` (enum == ledger.TIERS,
+  auto-follows). `accounts.py` TIERS stays FIRST-PROVIDER-ONLY until that
+  provider gets account routing.
+
+## 6. Frontend — M8
+
+- Codex status: partially landed (accounts-panel provider sections, desk
+  theme, preview chips); hire-surface wiring NOT YET.
+- Hire surfaces render from the `/api/providers` payload (`hire_enabled`),
+  never a hardcoded tier list. Effort vocabulary mapped per provider
+  (codex reasoning efforts are a superset of orgtree's low…max —
+  pass-through, `ultra` unused).
+- USER SPEC (2026-08-28): each provider's hire buttons on their OWN ROW
+  (own COLUMN for coworker hire chips), row ordering REFLECTED
+  symmetrically about the x-axis for superior hire and about the y-axis
+  between the two coworker sides.
+- Tier chips keep distinctive hues; the provider's desk theme is one color
+  pair (`--prov-<id>`, `.sq.prov-<id>.desk/busy`).
+
+## 7. Transcript durability — M3
+
+- Codex status: NOT YET LANDED. Plan of record: the supervisor writes its
+  own provider-neutral per-agent journal consumed by the `read_chat`
+  projection — do NOT parse the provider's private rollout files for MVP.
+
+## 8. What stays deliberately out of the MVP
+
+Account pooling/routing for the new provider (Phase 2) · sandbox/kiosk
+admission (own decision, §0) · provider-side compaction verbs beyond
+orgtree's own cheap-compact · rate-limit-driven freezes from provider
+telemetry (P2 autonomy parity; the telemetry is already normalized and
+carried in the turn result for it).
+
+## 9. Process rules that made this survivable
+
+Small commits, every increment, tier-green before any deploy · the full
+increment map lives in the working agent's CLAUDE.md so compaction lands
+between commits · breadcrumbs updated as things happen, written for a
+stranger · an instrument that reports "nothing found" must first prove it
+can find a planted fault · commit BEFORE running anything that mutates and
+restores the tree.
