@@ -1097,14 +1097,14 @@ def hermetic() -> None:
         # it, hiding the very delta this check measures. The org we called
         # fable_limit_hit on predates its own lock, so it holds exactly the
         # halt's rows.
-        fixture(bool(org.d.get("user_inbox")),
+        fixture(bool(org.user_mailbox()),
                 "the halt itself told nobody — wrong fixture, not the finding")
-        seen = len(org.d.get("user_inbox") or [])
+        seen = len(org.user_mailbox())
         # the load that RELEASES it (the lock is already expired above)
         rel = store.load_org(org.d["slug"])
         fixture(not rel.node("f1").get("limit_locked"),
                 "the lock did not release — this check tests the wrong thing")
-        after = len(rel.d.get("user_inbox") or [])
+        after = len(rel.user_mailbox())
         assert after > seen, (
             "a fable halt announces itself to the parent ('decide how to "
             "cover its work'), the peers and the node, and writes a "

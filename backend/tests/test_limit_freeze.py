@@ -3518,7 +3518,7 @@ def sec_died_in_flight() -> None:
             store.save_org(o)
         run_turn(slug, solo, "and again")         # the attempt past the cap
         time.sleep(0.6)
-        inbox = store.load_org(slug).d.get("user_inbox", [])
+        inbox = store.load_org(slug).user_mailbox()
         hits = [m for m in inbox if solo in (m.get("body") or "")]
         assert hits, (
             "a TOP-LEVEL node exhausted its retries and the user's inbox got "
@@ -3863,7 +3863,7 @@ def sec_abandoned() -> None:
         # so without this the one agent the user actually watches is the only
         # one that cannot report its own death. Measured before it was fixed:
         # `user_inbox` held ZERO entries.
-        inbox = store.load_org(slug).d.get("user_inbox", [])
+        inbox = store.load_org(slug).user_mailbox()
         hits = [m for m in inbox if solo in (m.get("body") or "")]
         assert hits, (
             "a top-level node died terminally and the USER'S INBOX got "

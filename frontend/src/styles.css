@@ -1152,6 +1152,24 @@ button.cc-name:hover {
   padding-left: 7px;
 }
 .mailrow.notice .l2 { font-style: italic; }
+/* SYSTEM notices shrink to ONE LINE (user, 2026-08-28): "much narrower in
+   height to deemphasize their presence in the mailbox". The machine's own
+   chatter — a turn that failed, a storage migration, a limit reset — is
+   worth keeping and not worth a two-line card each.
+   HOW THE HEIGHT ACTUALLY GOES: the preview line is what makes a row tall,
+   and mail.tsx does not RENDER one for these at all — not `display:none`,
+   which would leave a DOM node per row that nobody can ever see. This rule
+   only halves the padding and quiets the header that remains. The row still
+   opens to its full body on click: folded, not hidden.
+   ⚠ SYSTEM ONLY. An AGENT's notice keeps full height — the user asked for
+   the machine to be quieter, not for notices as a category to shrink, and in
+   a node mailbox agent-to-agent notices are the ordinary traffic. This is a
+   narrower predicate than the read-on-arrival rule, which is every notice. */
+.mailrow.sysnotice { padding-top: 3px; padding-bottom: 3px; }
+.mailrow.sysnotice .l1 { font-size: 10px; color: var(--dim); }
+/* …and the row stays legible when it is the SELECTED one: the reading pane
+   carries the body, so the list row has no reason to grow back */
+.mailrow.sysnotice.on .l1 { color: var(--ink); }
 /* D-169 URGENT MAIL — the TOP of the ladder this list already grades on.
    That ladder is one axis (left border + optional tint + a kind chip) and it
    runs: ordinary mail (no edge) → notice (dashed neutral, no tint) →

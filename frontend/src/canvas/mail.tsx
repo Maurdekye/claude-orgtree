@@ -17,7 +17,7 @@ import {
   AttachIcon, CloseIcon, DownloadIcon, EditIcon, FileIcon, HearingIcon,
   MailIcon, PublicIcon,
 } from '../icons'
-import { EXTERN, md, USER, useEsc, usePolled } from './shared'
+import { EXTERN, md, SYSTEM, USER, useEsc, usePolled } from './shared'
 import type { CanvasNode, MailRow } from './shared'
 import { isMobile } from '../mobile'
 
@@ -219,6 +219,16 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
               /* passive notices (orgtree_send_notice) stand apart too — but
                  quietly: a dashed neutral edge, never the ask accent */
               + (!m._ask && m.kind === 'notice' ? ' notice' : '')
+              /* …and a SYSTEM notice shrinks to a single line (user,
+                 2026-08-28). ⚠ The `from` test is what keeps this off an
+                 AGENT's notice, which stays full height: the user asked only
+                 for the machine's own chatter to be de-emphasised, and in a
+                 node mailbox agent-to-agent notices are the common case.
+                 This is a DIFFERENT predicate from the read-on-arrival rule
+                 above it, which is every notice whatever its source — the two
+                 must not be collapsed into one test. */
+              + (!m._ask && m.kind === 'notice' && m.from === SYSTEM
+                ? ' sysnotice' : '')
               /* D-169: urgent mail sits at the TOP of that same ladder — one
                  notch above an open ask on the one axis this list already
                  uses (edge + tint + chip), not a new colour. It does NOT
@@ -259,7 +269,15 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
                   onClick={(e) => { e.stopPropagation(); onRetract(m) }}>
                   <CloseIcon fontSize="inherit" /></button>)}
             </div>
-            <div className="l2">{brief(m.body)}</div>
+            {/* the preview line is what makes a row two lines tall, so a
+                SYSTEM notice simply does not render one (user, 2026-08-28:
+                "much narrower in height"). Not hidden in CSS — not built:
+                a long-lived org's mailbox carries a lot of these, and a
+                display:none preview is a DOM node per row that nobody can
+                ever see. The body is still one click away in the reading
+                pane, and the `l1` header keeps the row identifiable. */}
+            {!(m.kind === 'notice' && m.from === SYSTEM)
+              && <div className="l2">{brief(m.body)}</div>}
           </div>
         ))}
         {shown.length > vis && (
