@@ -4915,3 +4915,82 @@ boolean marker this org originally proposed and is kept above as theirs.
   `live_identity`), no network, and `accounts.py` never takes `store.DOC_LOCK`
   — so no lock inversion under the resume loop. Hoist per tier anyway, and
   **pass `now`**, or the injected-clock tests stop being deterministic.
+
+### D-172 · anchor a counter-scaled decoration by the edge that must stay clear, never by the card
+
+The strips immediately left and right of an agent card hold furniture that
+scales two different ways, and mixing the two without saying so is what this
+entry exists to stop repeating.
+
+**WORLD-scaled** furniture shrinks with the canvas: `.cbar` (the credit bar,
+`left: -22px; width: 14px`) and `.doc-chips` (`left: calc(100% + 3px)`). Their
+screen width is `14·z` and `21·z`, collapsing toward nothing as you zoom out.
+
+**SCREEN-constant** furniture carries the counter-scale `--invzf` and holds its
+size at every zoom: the hire columns `.hsof.side-l/.side-r`. That is deliberate
+and load-bearing — they ARE the hire gesture (user report 2026-08-04: the older
+clamped `--invz` let them shrink away while zoomed out, which is why they use
+the UNCLAMPED `--invzf`), so shrinking them at distance is not an available
+fix, and this entry is not a licence to reintroduce a clamp.
+
+**THE RULE.** A screen-constant decoration anchored near the card edge grows
+over a shrinking neighbour until it buries it. So anchor it by the edge that
+must stay clear — pin its near edge ON the neighbour's far edge, and let the
+counter-scale grow AWAY. `.hsof.side-l` uses `right: calc(100% + 22px)` (the
+bar's left edge); `.hsof.side-r` uses `left: calc(100% + 24px)` (past the doc
+chips). Clearance then holds at every zoom **by construction** — nothing
+depends on what `--invzf` happens to be, so it cannot be tuned into or out of
+correctness. Express desk-zoom overrides the same way (`right`/`left`, not the
+opposite offset), or you stretch a column positioned by one edge only and
+silently undo the clearance.
+
+Reported as: "the leftward hire coworker badges overlap the budget bar, making
+it untouchable unless zoomed in far enough to reduce their relative size"
+(2026-08-28). Measured pre-fix: at z ≤ 1.0 a cursor placed on the bar had its
+click land on `.hsof.side-l` — the bar was not merely covered but
+**unreachable**; overlap peaked at 13px at z=1.0 and the hit returned only at
+z ≥ 2.1. The right column overlapped `.doc-chips` by the same mechanism at
+every zoom below 12 (18px at z=1.0), found by looking for the mirror rather
+than by a second report.
+
+**Reordering is not the fix.** Flipping `z-index` or `pointer-events` makes the
+bar clickable while the badge still sits on top of it — the click goes through
+to a control the user cannot see. Remove the overlap.
+
+**⚠ THE BRIDGES ARE NOT DEAD MARKUP.** `.hsof-bridge.bridge-l/.bridge-r` are
+transparent, paint nothing, and look deletable. They exist because this fix
+creates a second defect if you stop at the anchor: moving the columns off the
+card opens a strip the cursor must cross, and the chips are `pointer-events:
+none` until `.sq` is hovered — so they blink out mid-reach and the HIRE gesture
+becomes the new unreachable thing. The bridges are hit area only, children of
+the card, sitting UNDER the bar and doc chips (`z-index: 1` vs `2`) so they
+extend the hover region without taking anyone's clicks. Delete them and the bar
+stays clickable while the badges stop being reachable. Measured worst dead run
+with them: 0.0px at every zoom.
+
+**Checked and left:** `.cbar-tip` also counter-scales into the left strip, but
+it is `pointer-events: none`, so it can never take a click. Recorded so the
+next author knows it was looked at rather than missed.
+
+**Verify in a browser, not in jsdom.** This is geometry; jsdom reports every
+rect as 0×0, so an overlap assertion there passes for the same reason it would
+on a blank page, and multiplying constants by an assumed scale is arithmetic
+wearing a measurement's clothes. `frontend/tests/chipbar_probe.py` renders the
+real markup against the real stylesheet in headless Edge, places a REAL cursor
+on the bar and asks `elementFromPoint` what receives the click, and walks the
+transit out to the chips. `--expect-fail` restores the pre-fix rules and must
+go red (18 findings); a green run means nothing without that control.
+
+**Two ways that probe lied, both reporting a working fix as broken.** Recorded
+because this repo has twice been bitten by instruments that lied in the
+reassuring direction; these lied in the alarming direction, which is cheaper
+but the same class — and an alarm that cries wolf is discounted just as fast as
+one that stays silent.
+- **Hit-testing a bar taller than the window.** At desk zoom the bar's
+  geometric centre is off-viewport and `elementFromPoint` returns `null`, which
+  read as "unreachable". Aim at the centre of the bar's VISIBLE part, and say
+  plainly when none of it is visible rather than scoring it.
+- **Walking the transit inward from open canvas.** The chips do not exist until
+  the card is hovered, so approaching from outside they are not hit-testable at
+  all and never can be. Direction is load-bearing: walk OUTWARD from inside the
+  card, the only path a user can actually take.
