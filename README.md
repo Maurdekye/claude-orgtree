@@ -8,8 +8,7 @@ office-room canvas, and full agent-to-agent delegation. You sit at the root as
 the overseer; you hire top-level agents, they hire their own reports, and each
 agent runs through the provider CLI for its selected tier.
 
-Documentation map: [docs/README.md](docs/README.md) · Project history: [docs/history/PLAN.md](docs/history/PLAN.md) · UI manual: [docs/ui-guide.md](docs/ui-guide.md)
-· Documentation map: [docs/README.md](docs/README.md) · How much infrastructure to run, and what each tier buys: [docs/infrastructure-tiers.md](docs/infrastructure-tiers.md)
+Documentation: [map](docs/README.md) | [project history](docs/history/PLAN.md) | [UI manual](docs/ui-guide.md) | [infrastructure tiers](docs/infrastructure-tiers.md)
 
 **Design motto:** one thing, done very very well. orgtree is a simple idea —
 a persistent, visual organization of coding agents — refined meticulously and
