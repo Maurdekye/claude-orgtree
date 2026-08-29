@@ -1917,6 +1917,42 @@ sheet are indistinguishable from the outside; the canary is the difference, and
 that is the argument for keeping such arms rather than deleting them once the
 bug they were written for is fixed.
 
+### D-192 · the org-state block is delivered to the agent and hidden from the reader
+Ruling (user, 2026-08-29): "i really do not think the org structure needs to be
+seen by the user; that's extraneous information to them that they can just
+observe directly" — and, on frequency, "since it's rather short comparatively
+it's fine to send it every fresh turn start, but it still shouldn't take up the
+visual chat history." So D-181's block keeps reaching the agent on every
+non-command turn, unchanged, and is DELETED from the chat view.
+
+Why deleted rather than carded, when `[ORG NOTICES]` beside it gets a collapsed
+card: a card still costs a row, and there is nothing in the block the canvas is
+not already drawing live. A notice is an EVENT the reader may have missed; the
+org chart is a picture they are already looking at.
+
+Why the display layer and not the delivery: the transcript is the real
+conversation and the block really was sent, so removing it at the source would
+make the record lie about what the agent received — and would undo D-181's
+measured fix. `read_chat` returns the transcript verbatim; chrome is the view's
+business, which is where `[ORG NOTICES]` and `[MAIL]` were already handled.
+
+Bounds: display only. Nothing here licenses trimming what the agent receives.
+
+Load-bearing: ① **ANYTHING PREPENDED AHEAD OF THE PRELUDE BREAKS THE NOTICES
+CARD.** The wire order is `[ORG STATE]` · `[ORG NOTICES]` · `[MAIL]` · body, and
+desk.tsx's `NOTICE_RE` is ANCHORED AT STRING START. D-181 shipped the state
+block in front of it and the notices card silently stopped rendering, putting
+raw `[ORG NOTICES …]` chrome in the reader's bubble — nobody noticed until the
+user complained about the *other* block. The strip therefore lives INSIDE
+`splitNotices`, so no call site can get one fix without the other. A future
+block in front of these two must extend that same function.
+② The strip must be NON-GREEDY. Agents discuss this machinery by name and quote
+the markers in ordinary messages — the mail commissioning this entry did, and so
+does D-181 above. A greedy match eats the reader's message up to the last
+`[END ORG STATE]` anywhere in it. `frontend/tests/orgstate.test.tsx` §5 pins it;
+the suite was blind to this until a mutant proved the other six checks passed
+greedy and non-greedy alike.
+
 ### D-110 · FR-19 (name-gen button) is DISMISSED — no viable access path
 Ruling (user, 2026-08-14): the feature is dropped entirely. Both branches of
 the access fork fail its size: "an entire cli turn is excessive, expensive,
