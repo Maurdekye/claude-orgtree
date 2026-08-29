@@ -32,7 +32,10 @@ import type {
 } from './types'
 import type { MailRow } from './canvas/shared'
 
-const TIER_LETTER: Record<string, string> = { haiku: 'H', sonnet: 'S', opus: 'O', fable: 'F' }
+const TIER_LETTER: Record<string, string> = {
+  haiku: 'H', sonnet: 'S', opus: 'O', fable: 'F',
+  luna: 'L', terra: 'T', sol: 'S',
+}
 
 /** the cost chip's hover split: how much of the org total was billed to the
  *  api_fallback key vs the subscription. '' when the org has never used (and

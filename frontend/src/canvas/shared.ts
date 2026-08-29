@@ -17,7 +17,13 @@ import type {
   OpRequest, OpResult, ToolGrant, TreeNode, TreePayload,
 } from '../types'
 
-export const TIER_LETTER: Record<string, string> = { haiku: 'H', sonnet: 'S', opus: 'O', fable: 'F' }
+// One display alphabet for every provider-backed tier. Keeping the Codex rows
+// out of this shared map made every generic card/header caller fall through to
+// `?` even though the hire sheet had a separate Codex-only map.
+export const TIER_LETTER: Record<string, string> = {
+  haiku: 'H', sonnet: 'S', opus: 'O', fable: 'F',
+  luna: 'L', terra: 'T', sol: 'S',
+}
 export const TIERS = ['haiku', 'sonnet', 'opus', 'fable']
 /** seat cost per tier — mirrors ledger.TIERS. One table, four tiers; the
  *  frontend had four copies of this before. */

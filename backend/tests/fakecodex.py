@@ -9,6 +9,8 @@ scenarios selected by FAKECODEX_SCENARIO:
                into its agent text — proves the round trip codexrun relies on
     steer      the turn stalls until a turn/steer arrives (≤8s), then echoes
                STEERED[<text>] into the agent text and completes
+    delta_pause emits one short agent-message delta, then pauses long enough
+                to prove the client's time-based live flush actually fires
     interrupt  the turn stalls until turn/interrupt, then completes with
                status "interrupted"
 
@@ -79,17 +81,48 @@ def run_turn(thread_id, turn_id, dyn_tools):
     if probe:
         with open(probe_path, "w", encoding="utf-8") as f:
             json.dump({k: os.environ.get(k) for k in probe.split(",")}, f)
-    notify("item/agentMessage/delta",
-           {"threadId": thread_id, "delta": "working… "})
+    def item_event(phase, item):
+        now = int(time.time() * 1000)
+        notify(f"item/{phase}", {
+            "threadId": thread_id, "turnId": turn_id, "item": item,
+            ("startedAtMs" if phase == "started" else "completedAtMs"): now})
+
+    def agent_message(iid, text):
+        base = {"id": iid, "type": "agentMessage", "text": ""}
+        item_event("started", base)
+        notify("item/agentMessage/delta", {
+            "threadId": thread_id, "turnId": turn_id,
+            "itemId": iid, "delta": text})
+        item_event("completed", {**base, "text": text})
+
+    if SCENARIO == "delta_pause":
+        base = {"id": "msg-paused", "type": "agentMessage", "text": ""}
+        item_event("started", base)
+        notify("item/agentMessage/delta", {
+            "threadId": thread_id, "turnId": turn_id,
+            "itemId": "msg-paused", "delta": "short live fragment"})
+        # The supervisor's latency target is 120 ms. Keep the item open well
+        # beyond that so the test cannot pass via the item/completed flush.
+        time.sleep(0.45)
+        item_event("completed", {**base, "text": "short live fragment"})
+    else:
+        agent_message("msg-working", "working… ")
     if SCENARIO == "tool" and dyn_tools:
         tool = dyn_tools[0].get("name", "tool0")
+        tool_item = {"id": "c1", "type": "dynamicToolCall",
+                     "tool": tool, "arguments": {"message": "from-fake"},
+                     "status": "inProgress", "success": None,
+                     "contentItems": None, "durationMs": None,
+                     "namespace": None}
+        item_event("started", tool_item)
         ans = server_request("item/tool/call", {
             "threadId": thread_id, "turnId": turn_id, "callId": "c1",
             "tool": tool, "arguments": {"message": "from-fake"}})
         items = ((ans or {}).get("result") or {}).get("contentItems") or []
         text = items[0].get("text", "") if items else "NO ANSWER"
-        notify("item/agentMessage/delta",
-               {"threadId": thread_id, "delta": f"tool said: {text}"})
+        item_event("completed", {**tool_item, "status": "completed",
+                                  "success": True, "contentItems": items})
+        agent_message("msg-tool", f"tool said: {text}")
     elif SCENARIO == "steer":
         st = wait_request("turn/steer")
         if st:
@@ -97,11 +130,9 @@ def run_turn(thread_id, turn_id, dyn_tools):
             text = ""
             for part in (st.get("params", {}).get("input") or []):
                 text += str(part.get("text", ""))
-            notify("item/agentMessage/delta",
-                   {"threadId": thread_id, "delta": f"STEERED[{text}]"})
+            agent_message("msg-steer", f"STEERED[{text}]")
         else:
-            notify("item/agentMessage/delta",
-                   {"threadId": thread_id, "delta": "no steer arrived"})
+            agent_message("msg-nosteer", "no steer arrived")
     elif SCENARIO == "interrupt":
         irr = wait_request("turn/interrupt")
         if irr:
@@ -131,7 +162,7 @@ def run_turn(thread_id, turn_id, dyn_tools):
 
 def main():
     dyn_tools = []
-    thread_id = "fake-thread-0001"
+    thread_id = os.environ.get("FAKECODEX_THREAD_ID", "fake-thread-0001")
     for raw in sys.stdin:
         try:
             msg = json.loads(raw)

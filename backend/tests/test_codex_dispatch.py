@@ -189,6 +189,11 @@ def main() -> int:
             f"user bubble missing: {texts!r}"
         assert any("tool said:" in t for t in texts), \
             f"assistant bubble missing: {texts!r}"
+        tools = [t for m in chat["messages"] for t in (m.get("tools") or [])]
+        assert tools, f"dynamic tool chip missing: {tools!r}"
+        hit = tools[0]
+        assert "unreachable" in (hit.get("result") or ""), \
+            f"tool result never attached to its chip: {hit!r}"
         eq(chat["occupancy"], 30, "occupancy folded from the journal")
     check("read_chat renders the codex turn from the journal", t2c)
 
@@ -234,18 +239,30 @@ def main() -> int:
 
     def t5():
         os.environ["FAKECODEX_SCENARIO"] = "steer"
+        # Fake processes otherwise reuse one globally-colliding thread id;
+        # production ids are globally unique. Give this in-flight journal its
+        # own id so read_chat cannot find §1's completed fixture first.
+        os.environ["FAKECODEX_THREAD_ID"] = "fake-thread-steer"
         s3, n3 = mkorg("steer")
         STREAMED.clear()
         st = supervisor.state(s3, n3)
         done: list = []
         th = threading.Thread(
-            target=lambda: done.append(run_turn(s3, n3, "stall for steer")))
+            target=lambda: done.append(run_turn(
+                s3, n3, "[ORG NOTICES — 1 change]\n- peer status arrived")))
         th.start()
         for _ in range(300):
             if st.get("responding"):
                 break
             time.sleep(0.02)
         assert st.get("responding"), "turn never reached responding"
+        os.environ.pop("FAKECODEX_THREAD_ID", None)
+        # The journal is opened at turn START. A running Codex turn must not
+        # show streamed prose under a contradictory "no conversation yet".
+        running_chat = supervisor.read_chat(store.load_org(s3), n3)
+        assert any(m.get("role") == "user"
+                   and "peer status arrived" in (m.get("text") or "")
+                   for m in running_chat["messages"]), running_chat
         with supervisor._state_lock:
             st.setdefault("steer", []).append("FROM @user: mid-turn hello")
         th.join(20)
@@ -256,9 +273,43 @@ def main() -> int:
         assert "mid-turn hello" in text, "steered body delivered verbatim"
         assert "[ORGTREE MAIL — delivered mid-task]" in text, \
             "steered mail wears the delivery envelope"
+        finished_chat = supervisor.read_chat(store.load_org(s3), n3)
+        user_text = "\n".join(m.get("text") or ""
+                              for m in finished_chat["messages"]
+                              if m.get("role") == "user")
+        assert "peer status arrived" in user_text, \
+            f"opening org notice vanished from history: {user_text!r}"
+        assert "mid-turn hello" in user_text, \
+            f"steered agent/user mail vanished from history: {user_text!r}"
         eq(st.get("steer"), [], "steer store drained")
         eq(st["turns_run"], 1, "steered turn completes normally")
     check("mid-turn mail steers into the live codex turn", t5)
+
+    def t5b():
+        os.environ["FAKECODEX_SCENARIO"] = "delta_pause"
+        os.environ["FAKECODEX_THREAD_ID"] = "fake-thread-delta-pause"
+        s3b, n3b = mkorg("delta-pause")
+        STREAMED.clear()
+        st = supervisor.state(s3b, n3b)
+        done: list = []
+        th = threading.Thread(
+            target=lambda: done.append(run_turn(s3b, n3b, "show it live")))
+        th.start()
+        for _ in range(300):
+            if st.get("responding"):
+                break
+            time.sleep(0.01)
+        assert st.get("responding"), "turn never reached responding"
+        os.environ.pop("FAKECODEX_THREAD_ID", None)
+        time.sleep(0.25)
+        assert th.is_alive(), "fixture completed before the live-flush check"
+        text = "".join(p.get("text", "") for p in STREAMED
+                       if p.get("kind") == "delta")
+        assert "short live fragment" in text, \
+            f"a short delta remained buffered until another event: {text!r}"
+        th.join(20)
+        assert not th.is_alive(), "paused-delta turn never ended"
+    check("a short Codex delta flushes while the item is still open", t5b)
 
     def t6():
         os.environ["FAKECODEX_SCENARIO"] = "interrupt"

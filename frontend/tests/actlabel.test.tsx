@@ -151,3 +151,15 @@ test('the text label appears on a busy card, and only there', async () => {
   assert.equal(mini.el.querySelector('.actlabel'), null)
   assert.ok(mini.el.querySelector('.actgear'), 'the mini card lost its busy dot')
 })
+
+test('a Sol card carries the OpenAI theme and the S tier tag', async () => {
+  const codex = await card(node('codex-sol', {
+    tier: 'sol', model_id: 'gpt-5.6-sol', seat: 5,
+  }))
+  const sq = codex.el.querySelector('.sq')
+  assert.ok(sq?.classList.contains('prov-openai'),
+    'the provider theme class is missing from the Codex card')
+  assert.ok(sq?.classList.contains('tier-sol'),
+    'the independent Sol tier stripe class is missing from the Codex card')
+  assert.equal(sq?.querySelector('.tier')?.textContent, 'S')
+})

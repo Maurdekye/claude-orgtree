@@ -203,13 +203,13 @@ main {
 }
 .edge.aud-line.from-user {
   stroke: var(--accent); stroke-width: 2.2px; opacity: .7;
-  filter: drop-shadow(0 0 4px rgba(217, 119, 87, .65));
+  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--accent) 65%, transparent));
 }
 /* a message in flight */
 .spark {
   fill: #ffd9a8; pointer-events: none;
-  filter: drop-shadow(0 0 4px rgba(217, 119, 87, .95))
-    drop-shadow(0 0 9px rgba(217, 119, 87, .5));
+  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--accent) 95%, transparent))
+    drop-shadow(0 0 9px color-mix(in srgb, var(--accent) 50%, transparent));
 }
 
 .sq {
@@ -230,7 +230,8 @@ main {
 }
 .sq.drop {
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(217, 119, 87, .45), 0 0 18px rgba(217, 119, 87, .3);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent),
+    0 0 18px color-mix(in srgb, var(--accent) 30%, transparent);
 }
 .gearbtn {
   position: absolute; top: 6px; right: 6px; z-index: 3;
@@ -333,10 +334,11 @@ button.badge.retired-fold:hover { border-color: var(--accent); }
 .sq:hover { border-color: #4a4a4a; }
 .sq.archived { opacity: .5; }
 .sq.unrecoverable { border-color: var(--bad); opacity: .8; }
-.sq.busy { border-color: rgba(217, 119, 87, .55); }
+.sq.busy { border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
 .sq.desk {
   cursor: default; border-color: var(--accent);
-  box-shadow: 0 8px 40px rgba(0, 0, 0, .55), 0 0 0 1px rgba(217, 119, 87, .25);
+  box-shadow: 0 8px 40px rgba(0, 0, 0, .55),
+    0 0 0 1px color-mix(in srgb, var(--accent) 25%, transparent);
   /* a chat window, not a rounded game tile — under the inverted scale regime
      even 4px world radius reads ~30px at desk-fill. 2px keeps a visibly-soft
      (but very small) corner without eating the composer (user ruling) */
@@ -368,11 +370,33 @@ button.badge.retired-fold:hover { border-color: var(--accent); }
 .sq.mini.tier-luna { background: color-mix(in srgb, var(--tier-luna) 6%, var(--panel)); }
 .sq.mini.tier-terra { background: color-mix(in srgb, var(--tier-terra) 6%, var(--panel)); }
 .sq.mini.tier-sol { background: color-mix(in srgb, var(--tier-sol) 6%, var(--panel)); }
-.sq.prov-openai.busy { border-color: rgba(43, 191, 174, .55); }
+.sq.prov-openai.busy {
+  border-color: color-mix(in srgb, var(--prov-openai) 55%, transparent);
+}
 .sq.prov-openai.desk {
   border-color: var(--prov-openai);
-  box-shadow: 0 8px 40px rgba(0, 0, 0, .55), 0 0 0 1px rgba(43, 191, 174, .25);
+  box-shadow: 0 8px 40px rgba(0, 0, 0, .55),
+    0 0 0 1px color-mix(in srgb, var(--prov-openai) 25%, transparent);
 }
+/* A provider theme is inherited chrome, not a list of individual teal
+   exceptions. Every desk control below this card already speaks in the shared
+   accent variables (composer focus, send/effort controls, working labels,
+   links, context wheel, tool dots, hover borders); rebinding those variables
+   at the provider root makes the WHOLE Codex panel teal and keeps future
+   controls honest automatically. Model-tier identity remains a separate
+   channel: Luna/Terra/Sol keep their distinct badge and top-edge hues while
+   the provider chrome changes. Semantic red/green states are untouched. */
+.sq.prov-openai {
+  --accent: var(--prov-openai);
+  --accent-soft: color-mix(in srgb, var(--prov-openai) 16%, transparent);
+  --accent-hover: #6aada7;
+}
+/* `.sq.prov-openai.desk { border-color: teal }` deliberately dresses the
+   other three edges, but its greater specificity would also erase the tier
+   stripe. Reassert the independent tier channel on the top edge. */
+.sq.prov-openai.desk.tier-luna { border-top-color: var(--tier-luna); }
+.sq.prov-openai.desk.tier-terra { border-top-color: var(--tier-terra); }
+.sq.prov-openai.desk.tier-sol { border-top-color: var(--tier-sol); }
 /* status never rides color alone (dataviz rule): the dots carry a SHAPE
    channel too — done is a filled circle, working pulses, blocked is a diamond,
    idle is a hollow ring */
@@ -842,7 +866,7 @@ button.cc-name:hover {
   /* the provider ACCENT — the teal counterpart of --accent: desk border,
      desk shadow ring and busy border for codex agents (dormant until codex
      hire lands; the class comes from cards.tsx `prov-openai`) */
-  --prov-openai: #2bbfae;
+  --prov-openai: #589b95;
   --ice: #a8d4ea;           /* frozen (usage limit) — pale ice, deliberately
                                whiter than the saturated credit-bar cyans */
 }
@@ -906,11 +930,13 @@ button.cc-name:hover {
 @keyframes askglow {
   0%, 100% {
     box-shadow: var(--aud-glow, 0 0 0 0 transparent),
-      0 0 12px rgba(217, 119, 87, .55), 0 0 0 0 rgba(217, 119, 87, .35);
+      0 0 12px color-mix(in srgb, var(--accent) 55%, transparent),
+      0 0 0 0 color-mix(in srgb, var(--accent) 35%, transparent);
   }
   50% {
     box-shadow: var(--aud-glow, 0 0 0 0 transparent),
-      0 0 26px rgba(217, 119, 87, .8), 0 0 0 8px rgba(217, 119, 87, .14);
+      0 0 26px color-mix(in srgb, var(--accent) 80%, transparent),
+      0 0 0 8px color-mix(in srgb, var(--accent) 14%, transparent);
   }
 }
 /* api_fallback (user feature 2026-08-19): RED means "this is spending the
@@ -968,9 +994,9 @@ button.cc-name:hover {
   animation: askpip 2s ease-in-out infinite;
 }
 @keyframes askpip {
-  0%, 100% { box-shadow: 0 0 5px rgba(217, 119, 87, .55); }
-  50% { box-shadow: 0 0 12px rgba(217, 119, 87, .9),
-                    0 0 0 3px rgba(217, 119, 87, .18); }
+  0%, 100% { box-shadow: 0 0 5px color-mix(in srgb, var(--accent) 55%, transparent); }
+  50% { box-shadow: 0 0 12px color-mix(in srgb, var(--accent) 90%, transparent),
+                    0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
 }
 
 /* ------------------------------------ the ask system (F-04 + F-05 cards) */
@@ -1138,8 +1164,8 @@ button.cc-name:hover {
   animation: askbell 2s ease-in-out infinite;
 }
 @keyframes askbell {
-  0%, 100% { box-shadow: 0 0 6px rgba(217, 119, 87, .4); }
-  50% { box-shadow: 0 0 16px rgba(217, 119, 87, .8); }
+  0%, 100% { box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 40%, transparent); }
+  50% { box-shadow: 0 0 16px color-mix(in srgb, var(--accent) 80%, transparent); }
 }
 /* ------------------------------- the mail interface (webmail two-pane layout):
    list on the left (sender · time · truncated brief), reading pane on the
@@ -1437,8 +1463,9 @@ button.cc-name:hover {
 /* -------------------------------------------------------------- the overseer */
 .sq.user {
   cursor: default; align-items: center; justify-content: center; gap: 4px;
-  border-color: rgba(217, 119, 87, .45);
-  background: radial-gradient(ellipse at 50% 30%, rgba(217, 119, 87, .09), var(--panel) 70%);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: radial-gradient(ellipse at 50% 30%,
+    color-mix(in srgb, var(--accent) 9%, transparent), var(--panel) 70%);
 }
 /* the overseer's bar: no top — capacity fades into infinity. Hover reports
    the org's circulation (tip is a SIBLING: the mask would fade a child). */
@@ -1462,7 +1489,7 @@ button.cc-name:hover {
 }
 .eye { width: 62px; height: 34px; }
 .eye path { fill: none; stroke: var(--accent); stroke-width: 2; }
-.eye .iris { fill: rgba(217, 119, 87, .18); stroke: var(--accent); stroke-width: 1.6; }
+.eye .iris { fill: color-mix(in srgb, var(--accent) 18%, transparent); stroke: var(--accent); stroke-width: 1.6; }
 .eye .pupil { fill: var(--accent); }
 /* §9.6 headless (user amendments 2026-08-05): every eye rendering goes GREY
    and EMPTY — outline only, no iris/pupil (nobody is looking). One class on
@@ -1500,7 +1527,13 @@ button.cc-name:hover {
      1px INSIDE the card: the chips are only hit-testable while the card is
      hovered, so any gap between border and chips is a dead zone that hides
      them before they can be clicked — the hover region must be contiguous. */
-  bottom: -21px;
+  /* TOP-anchored 1px inside the card's bottom edge (identical placement to
+     the old `bottom: -21px` for one 22px row — that anchor held the strip by
+     its BOTTOM, so the second provider family grew the box UPWARD into the
+     card, floating the chips over the panel content; user regression report
+     2026-08-29). Growth now goes DOWNWARD, away from the card, matching the
+     side-t mirror fix. The 1px-inside contiguous-hover rule is unchanged. */
+  top: calc(100% - 1px);
   transform: translateX(-50%) scale(var(--invzf, 1));
   transform-origin: top center;
   /* provider families (FR-15 M8, user spec): each provider's chips are one
@@ -1660,7 +1693,9 @@ button.cc-name:hover {
 .sq.desk.edge-b > .hsof:not(.side),
 .sq.desk.edge-l > .hsof.side-l,
 .sq.desk.edge-r > .hsof.side-r { opacity: 1; pointer-events: auto; }
-.sq.desk > .hsof:not(.side) { bottom: -24px; }
+/* top-anchored like the base rule (growth must go DOWN, not into the desk);
+   +2px = the old bottom:-24px's "fully below the border" placement */
+.sq.desk > .hsof:not(.side) { top: calc(100% + 2px); }
 .hsof button {
   width: 22px; height: 22px; padding: 0; border-radius: 50%;
   font-family: var(--mono); font-size: 10px; font-weight: 700;
@@ -1777,7 +1812,7 @@ button.cc-name:hover {
 /* --------------------------------------------------------- uninitialized box */
 .sq.draft {
   cursor: default; border: 1px dashed var(--accent);
-  box-shadow: 0 0 14px rgba(217, 119, 87, .25);
+  box-shadow: 0 0 14px color-mix(in srgb, var(--accent) 25%, transparent);
   background: repeating-linear-gradient(135deg,
     var(--panel) 0, var(--panel) 9px, #27272a 9px, #27272a 10px);
 }
@@ -1981,7 +2016,7 @@ button.danger.solid:hover { background: rgba(241, 76, 76, .24); }
    is also not silent: it stands out from the plain grey chips beside it,
    because the whole job of this chip is to be noticed by someone who did not
    arm it. Deliberately no animation — it may sit here for hours. */
-.chip.primed { color: var(--accent); border-color: rgba(217, 119, 87, .5); }
+.chip.primed { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 50%, transparent); }
 
 /* -------------------------------------------------------------------- nodes */
 .node { margin: 6px 0; }
@@ -2007,7 +2042,7 @@ button.danger.solid:hover { background: rgba(241, 76, 76, .24); }
   font-size: 10.5px; font-family: var(--mono); padding: 1px 7px; border-radius: 9px;
   background: var(--input); color: var(--dim); border: 1px solid transparent;
 }
-.badge.free { color: var(--accent); border-color: rgba(217, 119, 87, .3); }
+.badge.free { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
 .badge.dim { color: #7a7a7a; }
 /* A BEARER CHIP STATES PROVENANCE, NOT LIFECYCLE (user report 2026-08-28: "it
    looks retired… the ui is too similar"). It used to be `badge dim` — the same
@@ -2394,7 +2429,9 @@ svg.MuiSvgIcon-root {
 .eye-chat .cc-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* the context wheel as a compact-now button (zoomed desk only) */
 .ctxbtn { background: none; border: none; padding: 0; display: inline-flex; cursor: pointer; }
-.ctxbtn:hover .ctxwheel .fill { filter: drop-shadow(0 0 3px rgba(217, 119, 87, .8)); }
+.ctxbtn:hover .ctxwheel .fill {
+  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--accent) 80%, transparent));
+}
 .ctxbtn:hover { background: none; }
 .kiosk-sbx { font-size: 11px; color: var(--dim); gap: 6px; align-items: center; }
 .kiosk-sbx input { width: auto; }

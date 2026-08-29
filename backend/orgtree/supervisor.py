@@ -3707,6 +3707,87 @@ def _codex_journal(slug: str, sid: str, recs: list[dict[str, Any]]) -> None:
         print(f"[orgtree] {slug}: codex journal write failed: {e!r}")
 
 
+def _codex_tool_item(item: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
+    """Translate an app-server ThreadItem into the existing transcript tool
+    vocabulary. The app-server reports *all* Codex work through item lifecycle
+    notifications; treating only dynamic orgtree calls as tools made shell,
+    patch, MCP and web work disappear from the desk entirely."""
+    typ = str(item.get("type") or "")
+    if typ == "dynamicToolCall":
+        return str(item.get("tool") or "tool"), (
+            item.get("arguments") if isinstance(item.get("arguments"), dict)
+            else {"arguments": item.get("arguments")})
+    if typ == "mcpToolCall":
+        server, tool = str(item.get("server") or "mcp"), str(item.get("tool") or "tool")
+        return f"mcp__{server}__{tool}", (
+            item.get("arguments") if isinstance(item.get("arguments"), dict)
+            else {"arguments": item.get("arguments")})
+    if typ == "commandExecution":
+        return "exec_command", {"command": str(item.get("command") or "")}
+    if typ == "fileChange":
+        changes = item.get("changes") or []
+        paths = [str(c.get("path") or "") for c in changes
+                 if isinstance(c, dict) and c.get("path")]
+        return "apply_patch", {"path": ", ".join(paths)}
+    if typ == "webSearch":
+        return "web_search", {"query": str(item.get("query") or "")}
+    if typ == "imageView":
+        return "view_image", {"path": str(item.get("path") or "")}
+    if typ == "collabAgentToolCall":
+        return str(item.get("tool") or "collaboration"), {
+            "prompt": str(item.get("prompt") or "")}
+    if typ == "subAgentActivity":
+        return "collaboration", {
+            "agent": str(item.get("agentPath") or item.get("agentThreadId") or ""),
+            "action": str(item.get("kind") or "activity")}
+    if typ == "sleep":
+        return "wait", {"duration_ms": item.get("durationMs")}
+    if typ == "imageGeneration":
+        return "image_generation", {
+            "prompt": str(item.get("revisedPrompt") or "")}
+    return None
+
+
+def _codex_tool_result(item: dict[str, Any]) -> tuple[str, bool]:
+    """A compact result body for a completed Codex tool item."""
+    typ = str(item.get("type") or "")
+    status = str(item.get("status") or "").lower()
+    failed = (item.get("success") is False or bool(item.get("error"))
+              or any(x in status for x in ("fail", "error", "declin")))
+    if typ == "commandExecution":
+        body = str(item.get("aggregatedOutput") or "")
+        if item.get("exitCode") is not None:
+            body += ("\n" if body else "") + f"exit code {item['exitCode']}"
+        return body, failed or item.get("exitCode") not in (None, 0)
+    if typ == "dynamicToolCall":
+        bits = []
+        for c in item.get("contentItems") or []:
+            if isinstance(c, dict):
+                t = c.get("text") or c.get("content")
+                if t is not None:
+                    bits.append(str(t))
+        return "\n".join(bits), failed
+    if typ == "fileChange":
+        changes = item.get("changes") or []
+        paths = [str(c.get("path") or c.get("filePath") or "")
+                 for c in changes if isinstance(c, dict)]
+        return (str(item.get("status") or "completed")
+                + ((": " + ", ".join(x for x in paths if x)) if paths else "")), failed
+    if typ == "webSearch":
+        results = item.get("results")
+        return (json.dumps(results, ensure_ascii=False)[:2000]
+                if results is not None else str(item.get("query") or "")), failed
+    raw = item.get("result") if item.get("result") is not None else item.get("error")
+    if isinstance(raw, str):
+        return raw, failed
+    if raw is not None:
+        try:
+            return json.dumps(raw, ensure_ascii=False)[:2000], failed
+        except (TypeError, ValueError):
+            return str(raw)[:2000], failed
+    return str(item.get("status") or "completed"), failed
+
+
 def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                text: str, toks: list[str]) -> tuple[dict[str, Any], int]:
     """One codex turn behind the provider seam (FR-15 M1b).
@@ -3811,24 +3892,170 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                         "tool_input": params.get("command") or {}})
         return "decline"
 
-    dstate = {"buf": "", "t": time.time()}
+    dstate: dict[str, Any] = {"buf": "", "timer": None}
+    dlock = threading.Lock()
+
+    def _flush_draft() -> None:
+        # A size-or-time batch needs an ACTUAL timer. The old "elapsed >=
+        # .12" check only ran when the next delta arrived, so a short final
+        # fragment before a tool call sat buffered for the whole tool and the
+        # live stream looked frozen. The timer makes 120 ms a ceiling rather
+        # than a hope about future traffic.
+        with dlock:
+            body = str(dstate["buf"] or "")
+            dstate["buf"] = ""
+            dstate["timer"] = None
+        while body:
+            stream(slug, nid, {"kind": "delta", "text": body[:2000]})
+            body = body[2000:]
+
+    def _queue_delta(body: str) -> None:
+        fire = False
+        with dlock:
+            dstate["buf"] += body
+            if len(dstate["buf"]) >= 400:
+                timer = dstate.get("timer")
+                if timer:
+                    timer.cancel()
+                dstate["timer"] = None
+                fire = True
+            elif dstate.get("timer") is None:
+                timer = threading.Timer(0.12, _flush_draft)
+                timer.daemon = True
+                dstate["timer"] = timer
+                timer.start()
+        if fire:
+            _flush_draft()
+    jlock = threading.Lock()
+    jstate: dict[str, Any] = {
+        "sid": "", "pending": [], "agent_items": 0, "tool_ids": set()}
+
+    def _journal_records(recs: list[dict[str, Any]]) -> None:
+        """Serialize reader-thread item events with the turn thread's start /
+        usage records. Before turn/start yields its durable thread id, events
+        wait in memory; activation writes the user row first, then this queue."""
+        with jlock:
+            sid = str(jstate["sid"] or "")
+            if not sid:
+                jstate["pending"].extend(recs)
+                return
+            _codex_journal(slug, sid, recs)
+
+    def _event_ts(params: dict[str, Any], completed: bool) -> str:
+        raw = params.get("completedAtMs" if completed else "startedAtMs")
+        try:
+            return _iso_ts(float(raw) / 1000.0) if raw is not None else now_iso()
+        except (TypeError, ValueError, OSError):
+            return now_iso()
+
+    def _tool_started(item: dict[str, Any], ts: str) -> None:
+        info = _codex_tool_item(item)
+        if not info:
+            return
+        _flush_draft()
+        iid = str(item.get("id") or f"codex-tool-{time.time_ns()}")
+        if iid in jstate["tool_ids"]:
+            return
+        jstate["tool_ids"].add(iid)
+        name, inp = info
+        _journal_records([{
+            "type": "assistant", "timestamp": ts,
+            "message": {"id": f"codex-{iid}", "role": "assistant",
+                        "model": codex_model,
+                        "content": [{"type": "tool_use", "id": iid,
+                                     "name": name, "input": inp}]}}])
+        live_row(slug, nid, {"kind": "tool", "id": iid,
+                             "text": name + ((" · " + _tool_arg(name, inp))
+                                              if _tool_arg(name, inp) else "")})
+
+    def _on_item(msg: dict[str, Any]) -> None:
+        method = str(msg.get("method") or "")
+        if method not in ("item/started", "item/completed"):
+            return
+        params = msg.get("params") if isinstance(msg.get("params"), dict) else {}
+        item = params.get("item") if isinstance(params.get("item"), dict) else {}
+        completed = method == "item/completed"
+        ts = _event_ts(params, completed)
+        typ = str(item.get("type") or "")
+        if typ == "agentMessage" and completed:
+            body = str(item.get("text") or "")
+            if not body:
+                return
+            _flush_draft()
+            jstate["agent_items"] += 1
+            _journal_records([{
+                "type": "assistant", "timestamp": ts,
+                "message": {"id": str(item.get("id") or
+                                           f"codex-{time.time_ns()}"),
+                            "role": "assistant", "model": codex_model,
+                            "content": [{"type": "text", "text": body}]}}])
+            live_row(slug, nid, {"kind": "text", "text": body[:2000],
+                                 **({"truncated": True}
+                                    if len(body) > 2000 else {})})
+            return
+        if typ == "plan" and completed:
+            body = str(item.get("text") or "")
+            if not body:
+                return
+            _journal_records([{
+                "type": "assistant", "timestamp": ts,
+                "message": {"id": str(item.get("id") or
+                                           f"codex-plan-{time.time_ns()}"),
+                            "role": "assistant", "model": codex_model,
+                            "content": [{"type": "text", "text": body}]}}])
+            live_row(slug, nid, {"kind": "text", "text": body[:2000],
+                                 **({"truncated": True}
+                                    if len(body) > 2000 else {})})
+            return
+        if typ == "reasoning" and completed:
+            parts = item.get("summary") or item.get("content") or []
+            body = "\n".join(
+                str(x.get("text") or x.get("summary") or x)
+                if isinstance(x, dict) else str(x)
+                for x in parts if x)
+            _journal_records([{
+                "type": "assistant", "timestamp": ts,
+                "message": {"id": str(item.get("id") or
+                                           f"codex-think-{time.time_ns()}"),
+                            "role": "assistant", "model": codex_model,
+                            "content": [{"type": "thinking", "thinking": body,
+                                         "signature": "codex"}]}}])
+            live_row(slug, nid, {"kind": "thought", "text": body[:2000]})
+            return
+        info = _codex_tool_item(item)
+        if not info:
+            return
+        _tool_started(item, ts)
+        if not completed:
+            return
+        iid = str(item.get("id") or "")
+        body, failed = _codex_tool_result(item)
+        _journal_records([{
+            "type": "user", "timestamp": ts,
+            "message": {"role": "user", "content": [{
+                "type": "tool_result", "tool_use_id": iid,
+                "content": body, "is_error": failed}]}}])
+        # The start event already put a live tool row on screen. Nudge the
+        # fetched transcript so its result body attaches without waiting for
+        # the heartbeat or the end of the turn.
+        stream(slug, nid, {"kind": "journal", "text": ""})
 
     def _on_event(msg: dict[str, Any]) -> None:
-        # M2 normalization, live half: agent text deltas stream to the desk
-        # with the claude lane's batching (~8 Hz or 400 chars)
-        if str(msg.get("method", "")) == "item/agentMessage/delta":
+        # M2 normalization: deltas are the sub-second draft; authoritative
+        # item lifecycle events above are the durable, correctly separated
+        # conversation (agent messages, reasoning and every tool kind).
+        method = str(msg.get("method", ""))
+        if method == "item/agentMessage/delta":
             d = (msg.get("params") or {}).get("delta")
             if isinstance(d, str) and d:
-                dstate["buf"] += d
-                if (len(dstate["buf"]) >= 400
-                        or time.time() - dstate["t"] >= 0.12):
-                    stream(slug, nid, {"kind": "delta",
-                                       "text": dstate["buf"][:2000]})
-                    dstate["buf"], dstate["t"] = "", time.time()
+                _queue_delta(d)
+        _on_item(msg)
+
+    codex_model = providers.CODEX_MODELS.get(tier) or org.model_for(nid)
 
     turn = codexrun.CodexTurn(
         providers.codex_argv(exe), cwd=cwd,
-        model=providers.CODEX_MODELS.get(tier) or org.model_for(nid),
+        model=codex_model,
         # measured superset of orgtree's low…max (Appendix B.3) — pass-through
         effort=org.effective_effort(nid),
         thread_id=resume_tid,
@@ -3860,6 +4087,21 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                     o2.node(nid)["codex_thread"] = tid
                     o2.node(nid).pop("session_unrun", None)
                     store.save_org(o2)
+        # A Codex thread has no CLI-owned transcript. Start orgtree's journal
+        # NOW, not at turn completion: the user's opening message and every
+        # item already emitted are durable and renderable while the turn is
+        # still running. This is what prevents a live desk full of streamed
+        # prose from simultaneously claiming "no conversation yet".
+        with jlock:
+            jstate["sid"] = str(tid or "")
+            pending_recs = list(jstate["pending"])
+            jstate["pending"].clear()
+            _codex_journal(slug, str(tid or ""), [
+                {"type": "user", "timestamp": _iso_ts(t0),
+                 "message": {"role": "user", "content": text}},
+                *pending_recs,
+            ])
+        stream(slug, nid, {"kind": "journal", "text": ""})
         with _state_lock:
             st["codex_turn"] = turn   # the ⏸ escape hatch (interrupt_turn)
             st["responding"] = True   # mail now steers instead of queueing
@@ -3894,8 +4136,12 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         with _state_lock:
             st.pop("codex_turn", None)
             st["responding"] = False
-    if dstate["buf"]:
-        stream(slug, nid, {"kind": "delta", "text": dstate["buf"][:2000]})
+    with dlock:
+        draft_timer = dstate.get("timer")
+        if draft_timer:
+            draft_timer.cancel()
+            dstate["timer"] = None
+    _flush_draft()
     status = str(res_raw.get("status") or codexrun.STATUS_FAILED)
     if status == codexrun.STATUS_FAILED:
         if time.time() - t0 >= TURN_TIMEOUT:
@@ -3906,31 +4152,32 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                            f"turn/failed{' — ' + tail if tail else ''}")
     # "interrupted" is a COMPLETED turn (C.3) — same as claude's ⏸
     tu = res_raw.get("token_usage")
-    # M3, the durable half: this turn enters the per-agent journal in the
-    # exact record shape read_chat / _occ_record already parse, so the desk
-    # history, reconcile's liveness verdicts and the occupancy readers all
-    # work unchanged. SUCCESS PATHS ONLY: a failed turn's mail folds back and
-    # redelivers, and a journal row for it would duplicate the bubble.
+    # The item lifecycle already journaled the conversation in real time.
+    # Retain one fallback for a non-conforming/older app-server that emitted
+    # deltas but no authoritative item/completed notification, then append a
+    # render-empty usage record so the normal occupancy fold still works.
     last_tu: dict[str, Any] = ((tu or {}).get("last")
                                or (tu or {}).get("total") or {})
-    _codex_journal(slug, str(turn.thread_id or ""), [
-        {"type": "user", "timestamp": _iso_ts(t0),
-         "message": {"role": "user", "content": text}},
-        {"type": "assistant", "timestamp": now_iso(),
-         "message": {
-             "id": f"codex-{turn.turn_id or 'turn'}",
-             "role": "assistant", "model": turn.model,
-             "content": ([{"type": "text",
-                           "text": str(res_raw.get("agent_text") or "")}]
-                         if res_raw.get("agent_text") else []),
-             "usage": {
-                 "input_tokens": max(
-                     int(last_tu.get("inputTokens") or 0)
-                     - int(last_tu.get("cachedInputTokens") or 0), 0),
-                 "cache_read_input_tokens":
-                     int(last_tu.get("cachedInputTokens") or 0),
-                 "output_tokens": int(last_tu.get("outputTokens") or 0)}}},
-    ])
+    final_recs: list[dict[str, Any]] = []
+    if not jstate["agent_items"] and res_raw.get("agent_text"):
+        final_recs.append({
+            "type": "assistant", "timestamp": now_iso(),
+            "message": {"id": f"codex-{turn.turn_id or 'turn'}",
+                        "role": "assistant", "model": turn.model,
+                        "content": [{"type": "text",
+                                     "text": str(res_raw["agent_text"])}]}})
+    final_recs.append({
+        "type": "assistant", "timestamp": now_iso(),
+        "message": {"id": f"codex-{turn.turn_id or 'turn'}-usage",
+                    "role": "assistant", "model": turn.model, "content": [],
+                    "usage": {
+                        "input_tokens": max(
+                            int(last_tu.get("inputTokens") or 0)
+                            - int(last_tu.get("cachedInputTokens") or 0), 0),
+                        "cache_read_input_tokens":
+                            int(last_tu.get("cachedInputTokens") or 0),
+                        "output_tokens": int(last_tu.get("outputTokens") or 0)}}})
+    _journal_records(final_recs)
     res: dict[str, Any] = {
         "status": status,
         "total_cost_usd": providers.codex_cost(tier, tu),

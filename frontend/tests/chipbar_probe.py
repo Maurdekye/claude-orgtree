@@ -48,6 +48,14 @@ GAP as well as the overlap, on both sides, for a card WITH documents and a card
 WITHOUT, and at desk fill — and asserts they are the same when there is nothing
 on the right to clear.
 
+THIRD ROUND, 2026-08-29: when a second provider family was added, the bottom
+strip grew upward into the card and covered its content. The strip was held by
+its bottom edge (`bottom: -21px`), so a second row necessarily moved its top
+further inside the panel. The shipped rule holds the strip by its top edge;
+this probe renders and measures that bottom strip in both overview and desk
+cards and asserts that its visual top stays at the card's bottom edge rather
+than drifting into the content.
+
     python tests/chipbar_probe.py                 # measure and check
     python tests/chipbar_probe.py --expect-fail   # KNOWN-NEGATIVE CONTROL:
                                                   # restores the PRE-FIX rules;
@@ -57,6 +65,10 @@ on the right to clear.
                                                   # unconditional 24px right
                                                   # clearance; must FAIL on the
                                                   # symmetry check.
+    python tests/chipbar_probe.py --expect-fail-bottom
+                                                  # THIRD CONTROL: restores the
+                                                  # old bottom-edge anchor; must
+                                                  # FAIL on two provider rows.
     python tests/chipbar_probe.py --shot out.png  # and look at it
 
 The controls are the point. "The bar is reachable at every zoom" and "the two
@@ -153,7 +165,8 @@ def _check_fixture_still_matches_source() -> None:
     css = CSS.read_text(encoding="utf-8")
     for needed in (".hsof.side-l", ".cbar {", "--invzf",
                    "--hsof-l-clear", "--hsof-r-clear",
-                   ".hsof .hs-fam", ".hsof.side .hs-fam"):
+                   ".hsof .hs-fam", ".hsof.side .hs-fam",
+                   ".sq.desk > .hsof:not(.side)"):
         if needed not in css:
             raise SystemExit(
                 f"styles.css no longer contains {needed!r} — the rules under "
@@ -196,6 +209,8 @@ VARIANTS = [
     # bar/doc-chip clearances are anchored at the inner edge and must hold.
     {"key": "two providers", "docs": True, "desk": False, "zooms": ZOOMS,
      "bar_overlap_ok": False, "families": 2},
+    {"key": "two providers desk", "docs": False, "desk": True,
+     "zooms": DESK_ZOOMS, "bar_overlap_ok": True, "families": 2},
 ]
 
 # A mid-sized holding: seat 1 + grant 5 at the default 7px/credit. Height is
@@ -207,7 +222,8 @@ BAR_H = 42
 # geometry is easiest to read. The cursor is parked on the card's RIGHT edge
 # first, because nearest-edge gating means the app never shows both columns at
 # once and the right one is what the second report is about.
-SHOT_ZOOM = {"with documents": 1.0, "no documents": 1.0, "desk fill": 4.0}
+SHOT_ZOOM = {"with documents": 1.0, "no documents": 1.0, "desk fill": 4.0,
+             "two providers": 1.0, "two providers desk": 4.0}
 
 # A JS port of NodeSquare's trackEdge (cards.tsx) — the nearest-edge rule that
 # decides which column is live. Ported rather than preset as a class because the
@@ -254,6 +270,7 @@ def card(docs: bool, desk: bool, families: int = 1) -> str:
                        ("sol", "S"))) + "</div>") if families > 1 else ""
     chips_l = codex + claude          # away-edge: outer family first
     chips_r = claude + codex          # near-edge order
+    chips_b = claude + codex          # bottom: inward-first, then outward
     # `focused ? 'desk' : lod` — the desk card also drops .sq-head (the desk
     # renders its own chrome) and gains the opaque .desk-over panel inset 2px
     lod = "desk" if desk else "norm"
@@ -269,6 +286,7 @@ def card(docs: bool, desk: bool, families: int = 1) -> str:
         f"<div class='hsof-bridge bridge-r'></div>"
         f"<div class='hsof side side-l'>{chips_l}</div>"
         f"<div class='hsof side side-r'>{chips_r}</div>"
+        f"<div class='hsof'>{chips_b}</div>"
         + ("<div class='doc-chips'><div class='doc-chip'>D</div></div>"
            if docs else "")
         + body +
@@ -306,10 +324,12 @@ MEASURE = """
   const bar = document.querySelector('.cbar');
   const chipsL = document.querySelector('.hsof.side-l');
   const chipsR = document.querySelector('.hsof.side-r');
+  const chipsB = document.querySelector('.hsof:not(.side)');
   const docs = document.querySelector('.doc-chips');
   const cs = getComputedStyle(chipsL);
   return {
-    sq: r(sq), bar: r(bar), chipsL: r(chipsL), chipsR: r(chipsR), docs: r(docs),
+    sq: r(sq), bar: r(bar), chipsL: r(chipsL), chipsR: r(chipsR),
+    chipsB: r(chipsB), docs: r(docs),
     chipsLPointer: cs.pointerEvents, chipsLOpacity: cs.opacity,
   };
 }
@@ -362,6 +382,16 @@ CONST_CSS = """
 .sq.desk > .hsof.side-r { left: calc(100% + 26px); }
 .sq > .hsof-bridge.bridge-l { width: 22px; }
 .sq > .hsof-bridge.bridge-r { width: 24px; }
+"""
+
+# Restores the user-visible multi-provider regression by value replacement:
+# the old rule holds the bottom strip by its bottom edge, so the second family
+# row grows upward over the card. Both overview and desk overrides are restored
+# because the defect existed in both places.
+BOTTOM_CSS = """
+/* ---- probe control: old bottom-edge anchor, restored ---- */
+.hsof:not(.side) { top: auto; bottom: -21px; }
+.sq.desk > .hsof:not(.side) { top: auto; bottom: -24px; }
 """
 
 # How far apart the two sides may sit before it counts as an asymmetry. Both
@@ -432,12 +462,14 @@ def _transit(pg, m, side: str):
         x_from, x_to, step = m["sq"]["right"] - 4, col["right"] - 2, 1.0
     if not 0 <= x_from <= VIEW_W or not 0 <= x_to <= VIEW_W:
         return None
+    # One Playwright RPC per pixel made the full matrix take many minutes on
+    # Windows. Chromium can generate the same real pointermove sequence inside
+    # one call via `steps`; keep the positioning move out of the measurement.
+    pg.evaluate("() => { window.__probe.sel = null; window.__probe.log = [] }")
+    pg.mouse.move(x_from, cy)
     pg.evaluate("(s) => { window.__probe.sel = s; window.__probe.log = [] }",
                 ".hsof.side-" + side)
-    x = x_from
-    while (x >= x_to) if step < 0 else (x <= x_to):
-        pg.mouse.move(x, cy)
-        x += step
+    pg.mouse.move(x_to, cy, steps=max(1, int(abs(x_to - x_from))))
     log = pg.evaluate("() => { const l = window.__probe.log; "
                       "window.__probe.sel = null; return l }")
     if not log:
@@ -472,9 +504,10 @@ def run(css_text: str, shot: str | None = None, verbose: bool = True):
                     pg.wait_for_selector(".cbar", timeout=8000)
                     pg.evaluate(TRANSIT_TAP)
                     m = pg.evaluate(MEASURE)
-                    if not m["bar"] or not m["chipsL"] or not m["chipsR"]:
+                    if (not m["bar"] or not m["chipsL"] or not m["chipsR"]
+                            or not m["chipsB"]):
                         raise SystemExit(
-                            "the fixture did not render a bar and both chip "
+                            "the fixture did not render a bar, both side chip "
                             "columns — nothing below would mean anything")
                     if v["docs"] and not m["docs"]:
                         raise SystemExit(
@@ -504,7 +537,8 @@ def run(css_text: str, shot: str | None = None, verbose: bool = True):
                     if vis_x1 <= vis_x0 or vis_y1 <= vis_y0:
                         row["offscreen"] = True
                         row.update({k: m[k] for k in
-                                    ("sq", "bar", "chipsL", "chipsR", "docs")})
+                                    ("sq", "bar", "chipsL", "chipsR", "chipsB",
+                                     "docs")})
                         rows.append(row)
                         continue
                     bx = (vis_x0 + vis_x1) / 2
@@ -531,7 +565,8 @@ def run(css_text: str, shot: str | None = None, verbose: bool = True):
                             "width": min(float(VIEW_W), s["w"] + 2 * pad),
                             "height": min(float(VIEW_H), s["h"] + 2 * pad)})
                     row.update({k: m2[k] for k in
-                                ("sq", "bar", "chipsL", "chipsR", "docs")})
+                                ("sq", "bar", "chipsL", "chipsR", "chipsB",
+                                 "docs")})
                     row["hit"] = hit
                     row["deadL"] = _transit(pg, m2, "l")
                     row["deadR"] = _transit(pg, m2, "r")
@@ -594,6 +629,35 @@ def run(css_text: str, shot: str | None = None, verbose: bool = True):
                   "2026-08-28 put the columns back beside the card here.\n"
                   "     The click landing on the bar is still asserted, and "
                   "that is the complaint.)")
+
+        # THE THIRD USER REPORT: adding a provider family must not move the
+        # bottom strip's TOP upward. Compare the two-family fixture with the
+        # one-family fixture at the same desk state and zoom. This is stronger
+        # than guessing the border-box offset (which scales with the world
+        # transform): a top anchor is invariant; the old bottom anchor moves
+        # upward by exactly the added family's row height.
+        if v.get("families", 1) > 1:
+            if verbose:
+                print("\n    bottom strip: top shift after adding provider")
+            base_key = "desk fill" if v["desk"] else "no documents"
+            for r in mine:
+                base = next((b for b in rows
+                             if b["v"] == base_key and b["z"] == r["z"]), None)
+                if not base:
+                    fails.append(f"[{v['key']}] z={r['z']}: no one-provider "
+                                 "baseline; bottom-anchor check is vacuous")
+                    continue
+                shift = r["chipsB"]["y"] - base["chipsB"]["y"]
+                if verbose:
+                    print(f"    z={r['z']:5.2f}  one {base['chipsB']['y']:7.1f}  "
+                          f"two {r['chipsB']['y']:7.1f}  shift {shift:6.1f}px")
+                if abs(shift) > 0.25:
+                    fails.append(
+                        f"[{v['key']}] z={r['z']}: the two-provider bottom "
+                        f"strip moved its top by {shift:.1f}px â€” the second "
+                        f"provider row is growing over panel "
+                        f"content instead of away from the bottom edge. This "
+                        f"is the user's third complaint.")
 
         # the mirror strip: the right column must still clear the doc chips
         if v["docs"]:
@@ -668,10 +732,13 @@ def main() -> int:
     ap.add_argument("--expect-fail-const", action="store_true",
                     help="restore the unconditional 24px right-hand "
                          "clearance; the run MUST fail")
+    ap.add_argument("--expect-fail-bottom", action="store_true",
+                    help="restore the old bottom-edge anchor; two provider "
+                         "rows MUST overlap the card")
     ap.add_argument("--shot", help="write a screenshot of the bare card at z=1")
     a = ap.parse_args()
 
-    if a.expect_fail and a.expect_fail_const:
+    if sum((a.expect_fail, a.expect_fail_const, a.expect_fail_bottom)) > 1:
         raise SystemExit("pick one control: they answer different questions")
 
     _check_fixture_still_matches_source()
@@ -684,6 +751,10 @@ def main() -> int:
         css, control = css + CONST_CSS, "unconditional right clearance"
         print("chipbar_probe: KNOWN-NEGATIVE CONTROL (the first fix's "
               "unconditional 24px right clearance restored)")
+    elif a.expect_fail_bottom:
+        css, control = css + BOTTOM_CSS, "old bottom-edge anchor"
+        print("chipbar_probe: KNOWN-NEGATIVE CONTROL (the old bottom-edge "
+              "anchor restored)")
     else:
         print("chipbar_probe: measuring the shipped rules")
     fails = run(css, shot=a.shot)
@@ -707,7 +778,9 @@ def main() -> int:
         return 1
     print("\n  OK — the cursor on the bar hits the bar at every zoom; the "
           "columns clear\n  whatever stands beside them; and with nothing to "
-          "clear the two sides sit\n  the same distance off the card.")
+          "clear the two sides sit\n  the same distance off the card; and "
+          "multi-provider bottom rows grow away\n  from card content in both "
+          "overview and desk layouts.")
     return 0
 
 
