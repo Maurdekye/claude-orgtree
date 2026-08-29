@@ -4918,6 +4918,89 @@ org-lifetime counter that existing documents already carry. If a total-API-spend
 figure is ever wanted, it is a **new** field, and the honest answer for a
 permanent-key org is `cost_total` itself.
 
+### D-194 · a cost-booking point decides its lane from the provider that will actually bill it
+Ruling (coordinator, 2026-08-29, on a drift pin that fired): a booking point
+must ask about the credential the process it is pricing **can actually spend**,
+never about the org's state in general. `api_fallback_active(org)` answers "is
+the ANTHROPIC key window open" — a correct question at a Claude booking point
+and a meaningless one at any other provider's. `api_fallback_active_for(org,
+tier)` is the tier-aware form, and multi-provider booking points take it.
+
+What went wrong, as the instance that produced the rule: the Codex compaction
+fork (`_compact_split_codex_body`) captured `api_fallback_active(org)` and
+banked through `_bank_api_cost` on all three of its branches. But `codexrun`
+strips **every** `ANTHROPIC_*` and `CLAUDE_CODE_*` variable out of the Codex
+child on purpose (and `OPENAI_API_KEY` too, so the mirror mistake is equally
+impossible), and the fork's dollars are priced by `providers.codex_cost` from
+OpenAI rates. It was asking whether a credential window was open for a
+credential the process had been deliberately deprived of. Per D-154 that
+counter is the FALLBACK SLICE, and the canvas renders it as
+`subscription $X · api key $Y` with the subscription half derived as
+`total − api` — so a wrongly banked dollar corrupts **both** halves of a
+figure a person reads.
+
+The tie-break is worth recording because it needed no external authority: the
+Codex **turn** already books `_after_turn(..., on_key=False)` and raises
+`_CodexTurnDone` before the Anthropic capture is reached. The turn and the
+fork gave **opposite** answers about the same provider in the same org, so one
+of them was a bug on the file's own evidence.
+
+**Never fired.** At the time of the fix no live org held an `api_key` at all,
+`api_cost_usd` was `0` everywhere, and no Codex node had ever compacted — all
+three preconditions absent. Latent, not historical: no cost card has been wrong.
+
+Load-bearing — **the axis is POSITIVE**. `api_fallback_active_for` asks "is
+this a KNOWN Anthropic tier", reading `providers.claude_tiers()` rather than
+keeping a second exclusion list that could drift from it. An unrecognised tier
+therefore reads as NOT billing the key. That is the safe direction for money —
+under-reporting the split leaves a true number small, while over-reporting puts
+another provider's spend into the user's "api key" figure and removes it from
+their "subscription" figure at once — and it means a provider added tomorrow is
+correct here by being **absent** from the Claude table rather than by someone
+remembering to add it to an exclusion list.
+
+Bounds: the two remaining `api_fallback_active(org)` captures (`_run_one_turn`,
+`_compact_split_body`) are correct as they stand and were deliberately not
+changed. Both are provably Anthropic-only paths — the turn raises
+`_CodexTurnDone` for a codex tier before reaching its capture, and the Claude
+fork returns early into the Codex body — so a tier-aware call there would
+change nothing except the risk of an empty-tier regression.
+
+**THE COROLLARY, and it is the half that outlives this instance: a drift pin
+that fires is EVIDENCE OF DRIFT, and the first question is WHICH SIDE DRIFTED
+— not how to make the number match.** This pin was
+`src.count("on_fallback_key = api_fallback_active(org)") == 2`. It fired when
+the Codex fork's capture landed, and it was telling the truth. Bumping it to 3
+would have silenced a true alarm and preserved a money bug **with a reviewer's
+name attached to the blessing**, which is worse than leaving the tier red: a
+red pin gets looked at, a blessed 3 does not. It nearly happened — one agent
+had audited the site, found it *internally* consistent (it captures at its own
+spawn and banks on every branch, both true), and had the 2→3 commit on a branch
+about to land. The audit asked whether the site was coherent; it never asked
+whether the value it captured meant anything for that provider.
+
+Hence the shape a pin of this kind must take, which is the general form of the
+ruling: **an integer cannot express a rule about providers**, because a
+legitimate new booking point and one asking the wrong provider's question both
+move the count by exactly one. The invariant is now *stated* — the pin slices
+`_compact_split_codex_body`'s own source and requires the tier-aware predicate
+present and the org-only call absent — and the behavioural half lives in
+`test_codex_cost_lane.py`, which opens an `api_fallback` window, drives all
+three of the fork's booking branches and asserts `api_cost_usd` stays zero. It
+fails on the bug rather than on the arithmetic, and no future provider can make
+it pass by counting. A count survives only for the two Claude-lane sites, where
+it is asserting that two known-Anthropic captures did not vanish rather than
+standing in for a rule; its failure message tells the next author to give a new
+provider's site `api_fallback_active_for` and a zero-assert of its own instead
+of incrementing anything.
+
+⚠ And the anti-vacuity control earned its place here too: the behavioural
+suite's first draft used flat snake_case `token_usage` keys, which
+`providers.codex_cost` priced at **$0.00**, so "api_cost_usd stayed 0" passed
+while proving nothing. The §1 control — *the fork under test really costs
+money* — is what caught it. A zero-assert needs a witness that the number could
+have been non-zero.
+
 ### D-153 · two ways a test run reports a pass it never measured
 
 Not a feature. A method entry, recorded in its own right (coordinator's
