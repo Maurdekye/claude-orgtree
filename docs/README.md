@@ -34,8 +34,10 @@ Markdown file in this repository as current operating guidance.
 
 ## Historical and exploratory records
 
-`feature-docket.md`, `interim-docket.md`, `mobile-spec.md`, and the files in
-`attic/` preserve design history,
+[`history/PLAN.md`](history/PLAN.md),
+[`history/feature-docket.md`](history/feature-docket.md),
+[`history/interim-docket.md`](history/interim-docket.md), `mobile-spec.md`,
+and the files in `attic/` preserve design history,
 accepted work, or exploratory reasoning. They are not the source of truth for
 current runtime behavior. Verify a claim in source and then update the
 appropriate current guide or decision entry.

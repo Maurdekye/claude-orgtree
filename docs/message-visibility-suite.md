@@ -11,7 +11,7 @@ rule broken: **something on screen was retired before its replacement existed.**
 
 ⚠ **Not committed.** The branch belongs to another session; the files are left
 in the working tree. Whoever owns the branch should fold the entry below into
-`docs/interim-docket.md` as D-57 rather than take this file as the home for it.
+`docs/history/interim-docket.md` as D-57 rather than take this file as the home for it.
 
 ---
 
