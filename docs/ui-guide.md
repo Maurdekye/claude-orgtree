@@ -21,7 +21,7 @@ snowflake, lock, layers, fullscreen, hearing.
   scroll (user ruling; move the cursor off the desk, or use the +/− HUD, to
   zoom). Wheel over a modal always scrolls the modal. ⛶ fits the whole org.
 - **Click a card** to glide in: the node fills the window (small margin) and
-  its desk — a miniature Claude Code chat — opens in place. The desk belongs to
+  its desk — a miniature coding-agent chat — opens in place. The desk belongs to
   whichever card sits nearest the viewport centre once zoom ≥ 2.1.
 - **Drag a card** onto another card (or the eye) to re-parent it — promote or
   demote, its whole subtree rides along. Dropping on empty space just reorders
@@ -372,12 +372,16 @@ org).
 
 - **Retired pile**: two or more archived siblings in a cohort stack into one
   pile of retirees.
-- **Crowd pile**: a team with more than 8 active reports stacks its LEAF
-  reports (those with no subtree of their own) into one pile, wearing a live
-  tint. Non-leaf reports keep their own columns, and the draft card never
-  stacks — hiring stays visible at any width.
+- **Crowd pile**: optionally, a team with more than 8 active reports stacks
+  its LEAF reports (those with no subtree of their own) into one pile, wearing
+  a live tint. Non-leaf reports keep their own columns, and the draft card
+  never stacks — hiring stays visible at any width. This is off by default:
+  enable **collapse a wide team's active agents into one stack** in the
+  settings panel's **canvas — this browser only** section. It is an
+  app-wide browser preference, not an org setting, and retired piles are
+  unaffected.
 
-The structural limit is a separate thing: **256 reports per parent**
+The structural limit is a separate thing: **1024 reports per parent**
 (compaction generations/bearers don't count) — runaway insurance, not a
 shape rule; wide flat teams are legitimate.
 
@@ -518,10 +522,14 @@ and anything further goes through their superior.
 
 Compaction splits a node: the successor continues under the same name; the
 pre-compaction self is archived in place as a **knowledge bearer** (rehire at
-0 grant — optionally at a cheaper tier — to consult everything the compaction
-summary flattened). When its own headroom runs out it becomes a **preserving
-oracle**: still answers, retains nothing. Live bearers float tethered above
-their successor. A predecessor is NOT an org child — it holds no authority.
+0 grant — optionally at a cheaper tier from the bearer's own provider — to
+consult everything the compaction summary flattened). A bearer cannot rehire
+on another provider because its saved conversation cannot cross that boundary;
+the lineage picker shows those choices as disabled. To move it deliberately,
+rehire it on its own provider first, then use the confirmed model switch.
+When its own headroom runs out it becomes a **preserving oracle**: still
+answers, retains nothing. Live bearers float tethered above their successor. A
+predecessor is NOT an org child — it holds no authority.
 
 ## Inboxes (✉ on the eye AND on every card)
 
@@ -580,12 +588,15 @@ toast repeats that warning. Refused while the agent is mid-turn.
   parent-peers-reports regardless.
 - **thinking effort**: this agent's effort level, or inherit — see "Thinking
   effort" below.
-- **model**: switchable ON THE FLY, any time — the session and its context
-  survive; the next turn runs the new model. Switching cheaper melts the seat
-  difference into the agent's own free allocation; switching pricier spends
-  the agent's free first and bubbles any shortfall up the chain to you
-  (refused in kiosks when the cap has no room). Agents can switch models
-  anywhere in their own subtree — never their own.
+- **model**: switchable ON THE FLY, any time. A switch within Claude, Codex,
+  or Gemini keeps the session and its context; the next turn runs the new
+  model. A cross-provider switch asks for confirmation because the
+  conversation cannot move between providers: confirming starts a fresh
+  session. Scratch files, `breadcrumbs.md`, and mail survive the reset.
+  Switching cheaper melts the seat difference into the agent's own free
+  allocation; switching pricier spends the agent's free first and bubbles any
+  shortfall up the chain to you (refused in kiosks when the cap has no room).
+  Agents can switch models anywhere in their own subtree — never their own.
 - **charter**: this agent's standing role card, in its prompt every turn.
   **team charter**: standing instructions cascading into every descendant.
 - **🗑 delete permanently** is user-only and irreversible: takes the subtree,

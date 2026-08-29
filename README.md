@@ -9,10 +9,10 @@ the overseer; you hire top-level agents, they hire their own reports, and each
 agent runs through the provider CLI for its selected tier.
 
 Design document: [PLAN.md](PLAN.md) · UI manual: [docs/ui-guide.md](docs/ui-guide.md)
-· How much infrastructure to run, and what each tier buys: [docs/infrastructure-tiers.md](docs/infrastructure-tiers.md)
+· Documentation map: [docs/README.md](docs/README.md) · How much infrastructure to run, and what each tier buys: [docs/infrastructure-tiers.md](docs/infrastructure-tiers.md)
 
 **Design motto:** one thing, done very very well. orgtree is a simple idea —
-a persistent, visual organization of Claude agents — refined meticulously and
+a persistent, visual organization of coding agents — refined meticulously and
 taken to its logical conclusion, not a feature jamboree. And within that one
 thing: permit as much as possible; close gaps with minimal-friction
 shortcuts; step out of the way. The tree is not a rigid structure you're
@@ -295,6 +295,9 @@ No manual wiring is needed; the supervisor does all of it per turn:
 
 ### Configuration (environment variables)
 
+This is a quick-start subset. For every environment variable, org setting,
+default, and precedence rule, see the [complete configuration reference](docs/configuration.md).
+
 | variable | default | meaning |
 |---|---|---|
 | `ORGTREE_PORT` | `7360` | API + UI port |
@@ -304,7 +307,7 @@ No manual wiring is needed; the supervisor does all of it per turn:
 | `ORGTREE_GEMINI` | auto-detected | Gemini CLI location |
 | `ORGTREE_GEMINI_HOME` | `~/.gemini` | Gemini CLI configuration and login home |
 | `ORGTREE_MAX_TURNS` | `16` | concurrent agent turns, shared across all orgs (~306 MB resident each) |
-| `ORGTREE_TURN_TIMEOUT` | `1800` | seconds before a turn is abandoned |
+| `ORGTREE_TURN_TIMEOUT` | `14400` | absolute per-message ceiling in seconds |
 | `ORGTREE_COMPACT_AT` | `0.80` | context occupancy that triggers a compaction split |
 | `ORGTREE_CONTEXT_WINDOWS` | haiku 200k, others 1M | per-tier window override, JSON like `{"opus": 500000}` |
 | `ORGTREE_ORACLE_AT` | `0.92` | bearer occupancy that demotes it to a preserving oracle |
