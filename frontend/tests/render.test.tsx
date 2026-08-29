@@ -84,7 +84,7 @@ domTest('a Codex desk keeps the user-audience tag on the audience color channel'
       .find((x) => x.textContent?.trim().startsWith('user'))
     assert.ok(tag, 'the granted user-audience tag is missing from the desk')
     assert.ok(tag.classList.contains('aud-user'),
-      'the tag lost its relationship-color hook and will inherit Codex teal')
+      'the tag lost its relationship-color hook and will inherit Codex blue')
   })
 
 /** jsdom does no layout, so scroll geometry is stated rather than measured —

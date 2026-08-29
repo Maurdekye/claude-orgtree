@@ -23,6 +23,7 @@ for stream in (sys.stdout, sys.stderr):
 
 HERE = pathlib.Path(__file__).resolve().parent
 CSS = (HERE.parent / "src" / "styles.css").read_text(encoding="utf-8")
+CODEX = "rgb(21, 154, 205)"
 
 
 def main() -> int:
@@ -92,6 +93,8 @@ def main() -> int:
             failures.append(f"{provider} rail is {v['railWidth']}, expected 6px")
     if values["claude"]["rail"] == values["codex"]["rail"]:
         failures.append("Claude and Codex rails resolve to the same color")
+    if values["codex"]["rail"] != CODEX:
+        failures.append(f"Codex rail is {values['codex']['rail']}, expected {CODEX}")
     if values["claude"]["surface"] == values["codex"]["surface"]:
         failures.append("Claude and Codex card washes resolve to the same color")
     for provider in ("claudeNorm", "codexNorm"):
@@ -115,7 +118,7 @@ def main() -> int:
         for failure in failures:
             print(f"  · {failure}")
         return 1
-    print("OK — far and middle cards carry distinct Claude orange / Codex teal cues")
+    print("OK — far and middle cards carry distinct Claude orange / Codex #159acd blue cues")
     return 0
 
 

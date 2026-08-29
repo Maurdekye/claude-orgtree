@@ -3,7 +3,7 @@
     python -B tests/codex_theme_probe.py
     python -B tests/codex_theme_probe.py --expect-fail
 
-The provider chrome is muted teal, while the model-tier badge and top stripe
+The provider chrome is #159acd blue, while the model-tier badge and top stripe
 remain tier-colored (Sol = reddish orange). The known-negative control restores
 Claude terracotta as the provider accent and must be detected.
 """
@@ -14,7 +14,7 @@ from playwright.sync_api import sync_playwright
 
 
 CSS = pathlib.Path(__file__).resolve().parents[1] / "src" / "styles.css"
-PROVIDER = "rgb(88, 155, 149)"
+PROVIDER = "rgb(21, 154, 205)"
 SOL = "rgb(255, 138, 61)"
 AUDIENCE = "rgb(217, 119, 87)"
 CONTROL = """
@@ -79,10 +79,10 @@ def findings(got: dict[str, str]) -> list[str]:
     fail = []
     for key in ("side", "working", "wheel", "composer", "send", "effort"):
         if got[key] != PROVIDER:
-            fail.append(f"{key} is {got[key]}, expected provider teal {PROVIDER}")
+            fail.append(f"{key} is {got[key]}, expected provider blue {PROVIDER}")
     for key in ("draftBorder", "draftTag", "draftHire"):
         if got[key] != PROVIDER:
-            fail.append(f"{key} is {got[key]}, expected provider teal {PROVIDER}")
+            fail.append(f"{key} is {got[key]}, expected provider blue {PROVIDER}")
     for key in ("top", "tier"):
         if got[key] != SOL:
             fail.append(f"{key} is {got[key]}, expected Sol tier color {SOL}")
@@ -91,7 +91,7 @@ def findings(got: dict[str, str]) -> list[str]:
             fail.append(f"{key} is {got[key]}, expected user-audience orange {AUDIENCE}")
     if got["askAnimation"] != "askglow":
         fail.append("question aura lost its askglow animation")
-    # The ask card is a teal/line mix, so it is intentionally not the solid
+    # The ask card is a blue/line mix, so it is intentionally not the solid
     # provider color. It must, however, differ from Claude's root accent.
     if got["askBorder"] == "rgb(217, 119, 87)":
         fail.append("question card fell back to Claude terracotta")
@@ -114,7 +114,7 @@ def main() -> int:
     if fail:
         print("\n".join("FAIL: " + x for x in fail))
         return 1
-    print("OK — Codex live and uninitialized chrome are muted teal; Sol badge/top stripe stay tier orange; ask aura is provider-themed")
+    print("OK — Codex live and uninitialized chrome are #159acd blue; Sol badge/top stripe stay tier orange; ask aura is provider-themed")
     return 0
 
 

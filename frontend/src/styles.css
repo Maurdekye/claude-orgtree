@@ -388,7 +388,7 @@ button.badge.retired-fold:hover { border-color: var(--accent); }
 .sq.mini.tier-opus { --mini-tier: var(--tier-opus); }
 .sq.mini.tier-fable { --mini-tier: var(--tier-fable); }
 /* the codex family's card dressing (FR-15; dormant until codex hire lands).
-   Provider theming (user spec 2026-08-28): a codex agent's DESK is teal
+   Provider theming (user spec 2026-08-28): a codex agent's DESK is blue
    where a claude desk is terracotta — same geometry, recolored — and its
    busy ring follows. Keyed on `prov-openai` from cards.tsx, not on the tier
    classes, so a future codex tier joins the theme by joining the family. */
@@ -427,7 +427,7 @@ button.badge.retired-fold:hover { border-color: var(--accent); }
    exceptions. Every desk control below this card already speaks in the shared
    accent variables (composer focus, send/effort controls, working labels,
    links, context wheel, tool dots, hover borders); rebinding those variables
-   at the provider root makes the WHOLE Codex panel teal and keeps future
+   at the provider root makes the WHOLE Codex panel blue and keeps future
    controls honest automatically. Model-tier identity remains a separate
    channel: Luna/Terra/Sol keep their distinct badge and top-edge hues while
    the provider chrome changes. Semantic red/green states are untouched. */
@@ -435,9 +435,9 @@ button.badge.retired-fold:hover { border-color: var(--accent); }
   --provider-accent: var(--prov-openai);
   --accent: var(--prov-openai);
   --accent-soft: color-mix(in srgb, var(--prov-openai) 16%, transparent);
-  --accent-hover: #6aada7;
+  --accent-hover: color-mix(in srgb, var(--prov-openai) 82%, white);
 }
-/* `.sq.prov-openai.desk { border-color: teal }` deliberately dresses the
+/* `.sq.prov-openai.desk { border-color: blue }` deliberately dresses the
    other three edges, but its greater specificity would also erase the tier
    stripe. Reassert the independent tier channel on the top edge. */
 .sq.prov-openai.desk.tier-luna { border-top-color: var(--tier-luna); }
@@ -909,10 +909,10 @@ button.cc-name:hover {
   --tier-luna: #b9c4d6;
   --tier-terra: #7fae5f;
   --tier-sol: #ff8a3d;
-  /* the provider ACCENT — the teal counterpart of --accent: desk border,
+  /* the provider ACCENT — the blue counterpart of --accent: desk border,
      desk shadow ring and busy border for codex agents (dormant until codex
      hire lands; the class comes from cards.tsx `prov-openai`) */
-  --prov-openai: #589b95;
+  --prov-openai: #159acd;
   --ice: #a8d4ea;           /* frozen (usage limit) — pale ice, deliberately
                                whiter than the saturated credit-bar cyans */
 }
@@ -2090,7 +2090,7 @@ button.danger.solid:hover { background: rgba(241, 76, 76, .24); }
 }
 .badge.free { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
 /* A direct user audience is the same relationship in the desk and on the
-   canvas. Codex desks rebind --accent to teal for provider chrome, but this
+   canvas. Codex desks rebind --accent to blue for provider chrome, but this
    badge stays orange to match its orange user-audience line. */
 .badge.aud-user {
   color: var(--aud-user);
@@ -3324,7 +3324,7 @@ html.mobile .md table { display: block; overflow-x: auto; max-width: 100%; }
 .acct-preview-tag { margin-left: auto; font-size: 9.5px; font-weight: 700;
   text-transform: uppercase; letter-spacing: .06em; color: var(--dim);
   border: 1px dashed var(--line); border-radius: 8px; padding: 1px 7px; }
-/* the codex section wears its provider's teal (user spec 2026-08-28) */
+/* the codex section wears its provider's blue (user spec 2026-08-29) */
 .acct-provider-head.prov-openai { border-bottom-color: color-mix(in srgb, var(--prov-openai) 45%, var(--line)); }
 .acct-provider-head.prov-openai .acct-preview-tag { color: var(--prov-openai);
   border-color: color-mix(in srgb, var(--prov-openai) 45%, var(--line)); }

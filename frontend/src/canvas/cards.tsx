@@ -889,7 +889,7 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, c
   const cls = ['sq', node.state, focused ? 'desk' : lod, 'tier-' + node.tier,
                'edge-' + edge]
   // provider theming (user spec 2026-08-28): codex agents wear an
-  // aquamarine-teal accent — desk border/shadow and busy ring — where claude
+  // blue accent — desk border/shadow and busy ring — where claude
   // wears terracotta. Dormant until codex hire lands; keyed on the tier
   // family so it needs no new payload field.
   if (node.tier && CODEX_TIERS.includes(node.tier)) cls.push('prov-openai')
