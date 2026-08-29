@@ -345,6 +345,14 @@ button.badge.retired-fold:hover { border-color: var(--accent); }
 .chip.agents b.t-sonnet { color: var(--tier-sonnet); }
 .chip.agents b.t-opus { color: var(--tier-opus); }
 .chip.agents b.t-fable { color: var(--tier-fable); }
+/* The summary is a model inventory, so every provider's model count keeps
+   the same tier colour it wears on cards and pickers. Provider identity
+   belongs to the surrounding chrome; these tokens distinguish the models. */
+.chip.agents b.t-luna { color: var(--tier-luna); }
+.chip.agents b.t-terra { color: var(--tier-terra); }
+.chip.agents b.t-sol { color: var(--tier-sol); }
+.chip.agents b.t-flash { color: var(--tier-flash); }
+.chip.agents b.t-pro { color: var(--tier-pro); }
 /* credit requests (inbox panel): old → new (+Δ), reason, one-click verdict */
 .credreq {
   background: var(--bg); border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line-soft));

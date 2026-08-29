@@ -85,9 +85,9 @@ const options = (el: HTMLElement) =>
 const option = (el: HTMLElement, tier: string) =>
   options(el).find((o) => o.value === tier)!
 
-test('the header summary counts both provider families', async (t: TestContext) => {
+test('the header summary counts every provider family', async (t: TestContext) => {
   useFakeClock()
-  const tiers = ['opus', 'luna', 'terra', 'sol']
+  const tiers = ['opus', 'luna', 'terra', 'sol', 'flash', 'pro']
   const roots = tiers.map((tier, i) => ({
     ...node(tier), id: tier, busy: i === tiers.length - 1,
   })) as unknown as TreeNode[]
@@ -96,11 +96,14 @@ test('the header summary counts both provider families', async (t: TestContext) 
     (el) => el,
   )
   t.after(async () => { await view.unmount(); realClock() })
-  assert.match(view.el.textContent ?? '', /4 live · 1 working/)
+  assert.match(view.el.textContent ?? '', /6 live · 1 working/)
   assert.deepEqual(
     [...view.el.querySelectorAll<HTMLBRElement>('.agents b')]
       .map((b) => [b.className, b.textContent]),
-    [['t-opus', 'O1'], ['t-luna', 'L1'], ['t-terra', 'T1'], ['t-sol', 'S1']],
+    [
+      ['t-opus', 'O1'], ['t-luna', 'L1'], ['t-terra', 'T1'], ['t-sol', 'S1'],
+      ['t-flash', 'F1'], ['t-pro', 'P1'],
+    ],
   )
 })
 
