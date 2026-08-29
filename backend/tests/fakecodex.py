@@ -231,6 +231,10 @@ def main():
             threading.Thread(target=run_compact, args=(thread_id,),
                              daemon=True).start()
         elif method == "turn/start":
+            input_probe = os.environ.get("FAKECODEX_INPUTPROBE")
+            if input_probe:
+                with open(input_probe, "w", encoding="utf-8") as f:
+                    json.dump(params.get("input") or [], f)
             turn_id = "fake-turn-0001"
             reply(rid, {"turn": {"id": turn_id}})
             threading.Thread(target=run_turn,

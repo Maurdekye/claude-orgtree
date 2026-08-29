@@ -402,7 +402,8 @@ class CodexTurn:
 
     # ── lifecycle ────────────────────────────────────────────────────────
 
-    def start(self, input_text: str) -> str:
+    def start(self, input_text: str,
+              image_inputs: list[dict[str, Any]] | None = None) -> str:
         """Initialize, open/resume the thread, start the turn. Returns the
         durable thread id (the provider session id the node records)."""
         self.client.initialize()
@@ -432,9 +433,12 @@ class CodexTurn:
                     f"thread/start returned no thread id: "
                     f"{json.dumps(res)[:300]}")
             self.thread_id = tid
+        user_input: list[dict[str, Any]] = [
+            {"type": "text", "text": input_text}]
+        user_input.extend(image_inputs or [])
         turn = self.client.request("turn/start", {
             "threadId": self.thread_id,
-            "input": [{"type": "text", "text": input_text}],
+            "input": user_input,
             "model": self.model, "effort": self.effort,
             "cwd": self.cwd, "summary": "none"})
         t = turn.get("turn")

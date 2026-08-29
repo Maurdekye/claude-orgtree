@@ -19,6 +19,7 @@ failure detector to SEE it — per the working rule that an instrument
 reporting "nothing found" must first prove it can find something.
 """
 
+import base64
 import json
 import os
 import sys
@@ -218,6 +219,45 @@ def main() -> int:
             f"tool result never attached to its chip: {hit!r}"
         eq(chat["occupancy"], 30, "occupancy folded from the journal")
     check("read_chat renders the codex turn from the journal", t2c)
+
+    def t2d():
+        # Exact user report: a screenshot is attached to the opening mail of a
+        # Codex turn. Exercise the entire seam (mail drain -> validation ->
+        # provider dispatch -> turn/start), not only the block converter.
+        from PIL import Image
+        os.environ["FAKECODEX_SCENARIO"] = "tool"
+        os.environ["FAKECODEX_THREAD_ID"] = "fake-thread-image"
+        si, ni = mkorg("image")
+        upload_dir = os.path.join(supervisor.scratch_dir(si, ni), "uploads")
+        os.makedirs(upload_dir, exist_ok=True)
+        image_path = os.path.join(upload_dir, "screenshot.png")
+        Image.new("RGB", (2, 2), (45, 120, 115)).save(image_path)
+        raw = open(image_path, "rb").read()
+        with store.DOC_LOCK:
+            oi = store.load_org(si)
+            oi.post_mail(USER, ni, "please inspect the screenshot",
+                         attachments=[{"name": "screenshot.png",
+                                       "path": "uploads/screenshot.png",
+                                       "bytes": len(raw)}])
+            store.save_org(oi)
+        input_probe = os.path.join(supervisor.scratch_dir(si, ni),
+                                   "input-probe.json")
+        os.environ["FAKECODEX_INPUTPROBE"] = input_probe
+        try:
+            run_turn(si, ni, "act on the user's message")
+        finally:
+            os.environ.pop("FAKECODEX_INPUTPROBE", None)
+            os.environ.pop("FAKECODEX_THREAD_ID", None)
+        sent = json.load(open(input_probe, encoding="utf-8"))
+        assert len(sent) == 2, f"image was dropped at dispatch: {sent!r}"
+        assert sent[0].get("type") == "text" \
+            and "please inspect" in sent[0].get("text", ""), sent
+        assert sent[1].get("type") == "image", sent
+        url = str(sent[1].get("url") or "")
+        assert url.startswith("data:image/png;base64,"), url[:80]
+        eq(base64.b64decode(url.split(",", 1)[1]), raw,
+           "the screenshot bytes reaching Codex")
+    check("a user's opening-turn image reaches Codex as real image input", t2d)
 
     print("§2 spawn env hygiene (M5)")
 

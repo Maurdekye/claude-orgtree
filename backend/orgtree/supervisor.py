@@ -3788,8 +3788,33 @@ def _codex_tool_result(item: dict[str, Any]) -> tuple[str, bool]:
     return str(item.get("status") or "completed"), failed
 
 
+def _codex_image_inputs(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Translate validated inline image blocks to Codex ``UserInput``.
+
+    ``imgblock`` already decoded, size-limited and MIME-checked these bytes.
+    The app-server's v2 protocol accepts an image URL, including a base64 data
+    URL, so no provider-owned temp file or second validation policy is needed.
+    Malformed blocks are skipped defensively; their attachment line remains in
+    the text, so a file is still never silently hidden from the agent.
+    """
+    out: list[dict[str, Any]] = []
+    for block in blocks:
+        source = (block.get("source")
+                  if isinstance(block.get("source"), dict) else {})
+        media = source.get("media_type")
+        data = source.get("data")
+        if (block.get("type") == "image" and source.get("type") == "base64"
+                and isinstance(media, str) and media.startswith("image/")
+                and isinstance(data, str) and data):
+            out.append({"type": "image",
+                        "url": f"data:{media};base64,{data}"})
+    return out
+
+
 def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
-               text: str, toks: list[str]) -> tuple[dict[str, Any], int]:
+               text: str, toks: list[str],
+               images: list[dict[str, Any]] | None = None
+               ) -> tuple[dict[str, Any], int]:
     """One codex turn behind the provider seam (FR-15 M1b).
 
     Runs inside `_run_one_turn`'s try, AFTER the provider-neutral prologue
@@ -4069,7 +4094,7 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
     t0 = time.time()
     stop = threading.Event()
     try:
-        tid = turn.start(text)
+        tid = turn.start(text, _codex_image_inputs(images or []))
         # `turn/start`'s response is the C1 proof transposed: the server
         # accepted this turn's input, so the journaled batch is delivered
         if toks:
@@ -4394,7 +4419,8 @@ def _run_one_turn(slug: str, nid: str,
                 # leg here — after the provider-neutral prologue above, before
                 # any claude machinery — and rejoins through the success tail
                 # + the SHARED finally via the control raise below.
-                res, codex_occ = _codex_leg(slug, nid, org, st, text, toks)
+                res, codex_occ = _codex_leg(
+                    slug, nid, org, st, text, toks, turn_images)
                 st["last_error"] = None
                 st["turns_run"] += 1
                 st["account_switches"] = 0

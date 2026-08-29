@@ -146,7 +146,23 @@ def main():
     check("thread/resume keeps the recorded session id",
           lambda: eq(tid5, "carried-thread-77", "resumed id"))
 
-    print("§6 native fork + compaction waits for durable completion")
+    print("§6 image UserInput rides beside the text")
+    input_probe = os.path.join(tmp, "input-probe.json")
+    turn6 = codexrun.CodexTurn(
+        FAKE, cwd=tmp, model=None, effort=None, thread_id=None,
+        env_extra={"FAKECODEX_SCENARIO": "tool",
+                   "FAKECODEX_INPUTPROBE": input_probe})
+    turn6.start("look at this", [{
+        "type": "image", "url": "data:image/png;base64,AA=="}])
+    turn6.wait(timeout=20)
+    image_input = json.load(open(input_probe, encoding="utf-8"))
+    check("text and image are both sent in the turn/start input",
+          lambda: eq(image_input, [
+              {"type": "text", "text": "look at this"},
+              {"type": "image", "url": "data:image/png;base64,AA=="}],
+              "turn input"))
+
+    print("§7 native fork + compaction waits for durable completion")
     compact = codexrun.compact_fork(
         FAKE, cwd=tmp, model="gpt-5.6-sol",
         thread_id="source-thread-88", timeout=20,
