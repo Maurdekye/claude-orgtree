@@ -82,7 +82,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
   // The seen-stamp bookkeeping stays: the inbox count badge still uses it.
   const [, setInboxSeen] = useState(
     () => localStorage.getItem('orgtree-inbox-seen-' + slug) ?? '')
-  const seats = tree.tiers ?? { haiku: 1, sonnet: 2, opus: 5, fable: 10, luna: 1, terra: 2, sol: 5 }
+  const seats = tree.tiers ?? { haiku: 1, sonnet: 2, opus: 5, fable: 10, luna: 1, terra: 2, sol: 5, flash: 1, pro: 2 }
   // FR-15 M8: hire surfaces render from the provider payload — whether the
   // codex family is hireable HERE and NOW (CLI installed + signed in) or
   // still a disabled preview, with the payload's own reason as the tooltip.

@@ -604,6 +604,8 @@ TOOLS: list[dict[str, Any]] = [
             "anything you do not hold yourself. Seat costs: haiku 1, sonnet 2, "
             "opus 5, fable 10 (Claude); luna 1, terra 2, sol 5 (Codex — "
             "hireable only while the Codex CLI is signed in on this machine); "
+            "flash 1, pro 2 (Gemini — hireable only while the Gemini CLI is "
+            "signed in on this machine); "
             "seat + grant must fit within YOUR free credits. "
             "ONE CALL IS ENOUGH: this tool also takes the fields you would "
             "otherwise have to orgtree_retool in straight afterwards "
@@ -624,7 +626,7 @@ TOOLS: list[dict[str, Any]] = [
                 "name": {"type": "string", "description": "1-2 words, the node id"},
                 "tier": {"type": "string",
                          "enum": ["haiku", "sonnet", "opus", "fable",
-                                  "luna", "terra", "sol"]},
+                                  "luna", "terra", "sol", "flash", "pro"]},
                 "grant": {"type": "integer", "minimum": 0,
                           "description": "credits it may spend on ITS OWN hires"},
                 "charter": {"type": "string",
@@ -1034,14 +1036,16 @@ TOOLS: list[dict[str, Any]] = [
             "any shortfall bubbles up the chain to YOU — refused only if the "
             "whole chain lacks it. Tiers: haiku 1 · sonnet 2 · opus 5 · "
             "fable 10 (Claude); luna 1 · terra 2 · sol 5 (Codex, needs the "
-            "CLI signed in)."),
+            "CLI signed in); flash 1 · pro 2 (Gemini, needs the CLI signed "
+            "in)."),
         "inputSchema": {"type": "object",
                         "properties": {"node": {"type": "string"},
                                        "tier": {"type": "string",
                                                 "enum": ["haiku", "sonnet",
                                                          "opus", "fable",
                                                          "luna", "terra",
-                                                         "sol"]}},
+                                                         "sol", "flash",
+                                                         "pro"]}},
                         "required": ["node", "tier"]},
     },
     {
