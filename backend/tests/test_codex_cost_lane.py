@@ -54,6 +54,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 DATA = tempfile.mkdtemp(prefix="orgtree-codexlane-")
 os.environ["ORGTREE_DATA"] = DATA
+# an unreachable hub, or every org this rig creates registers against the
+# operator's REAL roster (test_external_mail §1 guards exactly this — and
+# caught this rig missing the pin, 2026-08-29)
+os.makedirs(DATA, exist_ok=True)
+with open(os.path.join(DATA, "defaults.json"), "w", encoding="utf-8") as _f:
+    _f.write('{"net_hub_address": "http://127.0.0.1:9"}')
 # a port nobody serves — nothing here should reach a backend, and defaulting
 # to 7360 would point a TEST at the operator's live deployment
 os.environ["ORGTREE_PORT"] = "9"
