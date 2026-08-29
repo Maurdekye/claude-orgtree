@@ -1020,6 +1020,12 @@ def org_tree(slug: str, request: Request) -> dict[str, Any]:
 
     def annotate(node: dict[str, Any]) -> None:
         _rederive_freeze_reset(node, _cap_cache)
+        # A model capability is derived from the tier, not historical turn
+        # state. Existing nodes may still carry an older CLI observation in
+        # their document after a provider updates its published window; never
+        # project that stale value back onto the desk while waiting for the
+        # node's next completed turn to rewrite it.
+        node["context_window"] = supervisor.context_window(node)
         # ⚠ WILL ▶ ACTUALLY RESUME THIS NODE? Composed here for the same reason
         # `ran_as_label` below is: the backend owns the rule, and a second copy
         # of it is a second thing to disagree. User report 2026-08-26 — the
@@ -1109,10 +1115,8 @@ def org_tree(slug: str, request: Request) -> dict[str, Any]:
             {"phase": "tool", "tool": last.get("text")} if kind == "tool"
             else {"phase": "writing"} if kind == "text"
             else {"phase": "thinking"})
-        # (occupancy / context_window were re-read from the supervisor's
-        # in-memory copy here, on the belief that it was fresher. It was not:
-        # _after_turn wrote both in the same block, so the mirror could only
-        # ever agree or be stale. The doc projection is the answer.)
+        # Occupancy stays document-owned. Context-window capability is derived
+        # above, rather than mirrored from process state.
         for c in node["children"]:
             annotate(c)
 

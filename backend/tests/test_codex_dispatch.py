@@ -151,6 +151,28 @@ def main() -> int:
         assert not n.get("inflight"), "inflight popped by the shared finally"
     check("codex tier takes the codex leg; books like a turn", t1)
 
+    def t1b():
+        # Upgrade fixture: this node completed a turn under the old Codex
+        # integration and persisted the app-server's 258.4k observation. The
+        # desk must derive the current tier capability immediately instead of
+        # waiting for another turn to happen to rewrite the document.
+        with store.DOC_LOCK:
+            o = store.load_org(slug)
+            o.node(nid)["context_window"] = 258_400
+            store.save_org(o)
+        from starlette.requests import Request
+        from orgtree.api import org_tree
+        tree = org_tree(slug, Request({"type": "http", "headers": []}))
+        row = tree["roots"][0]
+        eq(row.get("context_window"), 1_050_000,
+           "tree derives current Sol capability over stale stored value")
+        # Prove the stale fixture really remained stale; otherwise this check
+        # could pass because setup accidentally migrated the document.
+        eq(node_doc(slug, nid).get("context_window"), 258_400,
+           "anti-vacuity: stored value is still stale")
+    check("existing Codex nodes show the current context window immediately",
+          t1b)
+
     def t2():
         # the fake's tool scenario calls the first dynamic tool and echoes the
         # answer; with no backend listening the answer is the unreachable

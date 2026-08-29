@@ -3442,7 +3442,7 @@ def _auto_cheap_ready(n: NodeDoc | dict[str, Any],
     `turns[].at` uses now_iso today, but a malformed stamp must not kill the
     very turn the swap was trying to cheapen — an optimization is never allowed
     to be the reason a turn dies."""
-    occ, cw = n.get("occupancy"), n.get("context_window")
+    occ, cw = n.get("occupancy"), context_window(n)
     if not occ or not cw:
         return False
     # BOTH markers, and the FACT is the load-bearing one: `occupancy_est`
@@ -4295,7 +4295,7 @@ def _run_one_turn(slug: str, nid: str,
                     if _c is not None:
                         _n0 = org.node(nid)
                         _occ = _n0.get("occupancy")
-                        _cw = _n0.get("context_window")
+                        _cw = context_window(_n0)
                         if _auto_cheap_ready(_n0, _c):
                             try:
                                 _r0 = org.cheap_compact(SYSTEM, nid)
@@ -12085,7 +12085,10 @@ def context_window(n: NodeDoc | dict[str, Any]) -> int | None:
     wins (the rule `_after_turn` already follows — the CLI under-reported 1M
     models as 200k); the doc's observed `context_window` is the fallback, and
     it is absent until the node's first turn writes one."""
-    return TIER_CONTEXT.get(str(n.get("model") or "")) or n.get("context_window")
+    # Ledger documents call the field `model`; API tree projections call the
+    # same tier `tier`. Accept both so every surface derives one answer.
+    tier = str(n.get("model") or n.get("tier") or "")
+    return TIER_CONTEXT.get(tier) or n.get("context_window")
 
 
 def session_occupancy(org: Org, nid: str,
