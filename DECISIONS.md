@@ -2467,6 +2467,135 @@ the helper is redundant defence (removing it alone is an equivalent mutant) and
 is kept only so a future change to `expand_mcp`'s contract cannot silently
 reintroduce the fault.
 
+### D-183 · the gemini probe phase: ACP is the substrate, and four wire facts are load-bearing
+Findings (gemini-provider, 2026-08-29; every one measured live on gemini-cli
+0.57.0, probe logs banked in the implementing agent's scratch). The third
+provider's machine substrate is `gemini --acp` — a STABLE stdio JSON-RPC
+server surface (the deprecated `--experimental-acp` era is over), chosen per
+the playbook's prefer-the-server-surface rule. The facts the adapter stands
+on: **(1) unknown model ids fail SILENTLY** — `-m gemini-3.7-flash` served
+3.5-flash with no warning while `-m gemini-3.1-pro` 404'd loudly, so a pin
+must be asserted against the session result's `models.currentModelId`
+(reported by BOTH open verbs), never assumed. **(2) session/load REPLAYS the
+stored conversation** as session/update notifications before the live turn —
+an adapter without a replay gate re-streams and re-journals the node's whole
+history on every resume. **(3) an api-key login stores the key in the OS
+keychain** (Windows Credential Manager target `gemini-cli-api-key/…`), not in
+env or any file — connect-state detection reads settings.json's
+`selectedType` and never opens the secret; the child self-authenticates.
+**(4) GEMINI.md is re-read on session/load** (the ZORBLATT probe), so the
+identity door regenerates per spawn exactly like AGENTS.md and
+`--append-system-prompt`. Also settled here: "Gemini Flash 3.7" and the
+plain id "gemini-3.1-pro" do not exist on the reachable API — the CLI's own
+ACP registry is the authoritative model list, and it names
+`gemini-3.1-pro-preview-customtools` and `gemini-3.5-flash`.
+
+### D-184 · the gemini axis: flash and pro join the flat vocabulary, priced per MODEL ID
+Ruling (user 2026-08-29, brief + endorsed recommendation): tiers `flash`
+("Gemini Flash", letter F — shares F with fable by the sol/sonnet-S
+precedent) and `pro` ("Gemini Pro", letter P). Seats by the standing rule:
+pro $2/M standing input → 2; flash $1.50 → 1, and STILL 1 when the tier's
+default model moves to 3.7-flash ($0.38) — the flash tier LAUNCHES on
+`gemini-3.5-flash` because 3.7 is not on the developer API yet (live 404),
+with the MODEL_VERSIONS mechanism as the upgrade path; the user approved
+launching under the "Gemini Flash" name rather than waiting. Two pricing
+divergences no earlier provider forced: **prices are keyed by MODEL ID, not
+tier**, because the CLI spends tokens on side models inside one turn
+(measured: a `utility_router` role on gemini-3.1-flash-lite), and an
+UNLISTED model is priced at the pro row rather than $0 — overstating a
+stranger is recoverable, a silent zero is not; and **gemini-3.1-pro doubles
+above 200K prompt tokens** ($4/$18, strict >, two sources), a band switch
+`codex_cost`'s flat rates never needed. The provider entry is id `google`,
+label "Gemini" (the CLI's own product name, the D-naming rule that produced
+"Codex").
+
+### D-185 · the gemini turn adapter: one ACP process per turn, and steer refuses by design
+Decision (gemini-provider, 2026-08-29): `geminirun.py` mirrors the codexrun
+seam contract — one process per turn, session id HARVESTED from session/new
+and resumed via session/load, `wait()` normalizing to
+completed/interrupted/failed. The wire has NO mid-turn steer verb: `steer()`
+always returns False and the supervisor's queue fallback delivers at the
+turn boundary — the pump still wraps and offers every message so the day the
+wire grows the verb, the envelope is already right. `session/cancel` is a
+NOTIFICATION whose effect is the in-flight prompt resolving
+`stopReason: "cancelled"` with NO usage metadata (measured) — an interrupted
+gemini turn books $0 and leaves occupancy unmeasured rather than fabricating
+a number. Usage telemetry is `_meta.quota.model_usage` — per model but with
+no cached/thoughts split, so the cost fold documents its approximation
+(cached reads priced as full input, reasoning output uncounted) instead of
+hiding it. MCP env entries are an ARRAY of {name,value} pairs and a var not
+named in the spec is INHERITED from the CLI process (measured leak), so the
+leg always names the full ORGTREE_* set.
+
+### D-186 · the gemini dispatch leg rejoins through the shared finally, and the split refuses
+Decision (gemini-provider, 2026-08-29): the supervisor seam is the codex
+shape exactly — dispatch on tier membership after the provider-neutral
+prologue, the same success tail, `_GeminiTurnDone` unwinding to the SHARED
+finally (the queue-handoff proof is a live test: a mid-turn message lands on
+the queue and comes back as the follow carrier). Org powers attach as MCP
+SERVERS on the session verbs — the same `python -m orgtree.mcptool` stdio
+server the claude lane spawns, grant from `granted_mcp_servers` (D-182)
+narrowed only by expressibility, the undeliverable named in the identity
+(D-180). Identity rides GEMINI.md in the scratch cwd. The ⚙-rights seam maps
+approval modes: full edit+bash rights run yolo; a narrowed node runs default
+mode and the permission hook decides per ToolCallKind against the same
+capability switches, failing CLOSED. `interrupt_turn` learns the live
+handle. The generation SPLIT refuses cleanly on this lane (ACP has no
+fork/compact verb) instead of falling into the claude fork machinery — the
+cheap compact is the supported path, which is the same §8 exclusion the
+codex MVP shipped with, made explicit; the pre-split codex precedent (fall
+through to a claude error) is the bug this arm exists to not repeat.
+
+### D-187 · gemini transcripts ride the codex journal store unchanged
+Decision (gemini-provider, 2026-08-29): no third store. The gemini leg
+writes the SAME `journals/projects/<org>/<session>.jsonl` records through
+the same helper the codex leg uses, so every reader — desk history,
+reconcile liveness, the never-run pardon, the occupancy fold — works without
+learning anything new. The M3 playbook section predicted this exactly;
+nothing to fix there. Chunk streams journal differently than codex items:
+message deltas journal as ONE final assistant text record (plus one folded
+thinking record), while tool_call/tool_call_update fold to tool_use/
+tool_result rows as they happen.
+
+### D-188 · gemini hire enablement: the ledger rows land, the guards flip deliberately
+Decision (gemini-provider, 2026-08-29): `ledger.TIERS/MODELS` carry flash/pro
+(the add-only org-doc load hook migrates existing orgs), `provider_hire_gate`
+grows the gemini arm — installed → signed-in → kiosk holdout (mirroring the
+codex sandbox ruling) → headless-needs-keyed, where **api-key AND vertex
+count as keyed** and a Google-account login does not. The MCP cards'
+hand-written enums grow both tiers; the drift guards flip in the same
+commits that close the gaps (`test_ledger_authority` pins NINE bands,
+`test_providers` pins three providers, `modelswitch` pins three optgroups) —
+a test asserting a gap must flip the day the gap closes.
+
+### D-189 · the gemini colors: one blue-violet family, provider bluer than pro
+Ruling (user, 2026-08-29, spec refined across three messages): the flash
+chip is a very light icy blue (`--tier-flash: #aee2f9`), the pro chip a DEEP
+bluish-violet that leans VIOLET (`--tier-pro: #6b45d6`), and the provider
+accent a mid-toned bluish-violet that leans BLUE (`--prov-google: #5f6fdb`)
+— similar to pro but bluer and lighter. The three sit at ~198°/~232°/~256°
+so the family reads as a unit while each hue stays clear of sonnet's
+saturated mid-blue and opus's light lavender; F/P letters remain the
+redundant glyph channel. The provider chrome rides the same
+inherited-accent contract as prov-openai (desk border/shadow, busy ring,
+mini wash + rail, tray accent, accounts header) — a theme is rebound
+variables at the family root, never a list of individual recolors. The
+accounts panel's preview tag renders only while hiring is actually
+disabled.
+
+### D-190 · what stays deliberately OUT of the gemini MVP
+Decision (gemini-provider, 2026-08-29), so the gaps are chosen rather than
+discovered: **(1)** the generation split (D-186's refusal arm) — pending
+either a native provider verb or an emulated summarize-then-seed design;
+**(2)** a `codex_limits` analog — an api-key login has no usage windows to
+render; 429s surface as loud turn errors; **(3)** orgtree's effort
+vocabulary — the ACP wire exposes no reasoning-effort knob; the org's
+effort setting is accepted and unused on this lane; **(4)** exact cached/
+thoughts cost splitting — the ACP telemetry doesn't carry it (D-185
+documents the approximation); **(5)** account pooling/routing (Phase 2,
+same as codex) and kiosk admission (the sandbox story owns it). Each is
+named in code where a reader would otherwise assume the capability.
+
 ---
 
 ## Mail & messaging

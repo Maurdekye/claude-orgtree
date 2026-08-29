@@ -8,8 +8,14 @@ The Codex-specific design record is `design-multi-provider.md` in the
 implementing agent's scratch; DECISIONS.md and §6 of that doc hold the user
 rulings. THIS file is the transferable method.
 
+Provider #3 (Gemini, tiers flash·pro, D-183…D-190) walked this checklist
+2026-08-29 and it predicted well — the steps below carry `[gemini:]` marks
+where the third walk added a variant or corrected a prediction. Its probe
+record is the implementing agent's scratch (`gemini-provider/breadcrumbs.md`
++ banked probe logs).
+
 Maintained live: every increment that lands for a provider updates the
-matching section here. If you are adding provider #3 and a step below didn't
+matching section here. If you are adding provider #4 and a step below didn't
 match reality, fix the step — this document is only worth what it predicts.
 
 ## 0. Principles (user rulings, provider-agnostic)
@@ -48,7 +54,10 @@ What it looked like for codex, and what to reproduce per provider:
    app-server`, stdio NDJSON JSON-RPC — the surface its own IDE extension
    uses; bare `exec --json` was the fallback). The docs will be incomplete:
    probe the binary, don't trust prose — orgtree's codex recon was wrong
-   TWICE before a live probe settled it.
+   TWICE before a live probe settled it. [gemini: `gemini --acp` (stable
+   ACP, stdio JSON-RPC); the one-shot `-p … -o json` lane stayed as the
+   diagnostic surface. The ACP `session/new` response is ALSO the
+   authoritative model registry — richer than any docs page.]
 2. **Install a private pin** (`npm install --prefix <data>/codex
    @openai/codex` pattern), resolve env-override > pin > PATH, and never
    route through a `.CMD` shim (argv truncation at embedded newlines).
@@ -61,9 +70,27 @@ What it looked like for codex, and what to reproduce per provider:
 4. **Verify the six seam capabilities** the adapter needs (each has a codex
    answer to compare against): session resume by durable id · mid-turn
    input · graceful interrupt · tool attachment with per-agent identity ·
-   usage+limit telemetry · identity/system-prompt injection.
+   usage+limit telemetry · identity/system-prompt injection. [gemini: a
+   capability may simply be ABSENT and that can be fine — no steer verb
+   exists, and the supervisor's queue fallback already gives boundary
+   delivery; ship the refusing `steer()` rather than inventing a lane.]
 5. **Price table**: web-verify input/cached/output per M for every tier,
-   twice, with sources and dates in the code comment.
+   twice, with sources and dates in the code comment. [gemini: the table may
+   need to be keyed by MODEL ID, not tier — the CLI spends tokens on SIDE
+   MODELS inside one turn (a `utility_router` on flash-lite, measured), so
+   the cost fold prices every model the usage document names, with a
+   non-zero fallback row for strangers. Watch for LONG-CONTEXT rate bands
+   (3.1-pro doubles above 200K prompt tokens).]
+6. **Three gemini-walk hazards worth probing on any provider:** (a) an
+   unknown `--model` id may be SILENTLY replaced by the default — pin ids
+   exactly as the CLI's own registry reports them AND assert the served
+   model in the session/turn result, failing loudly on mismatch; (b) the
+   auth secret may live in an OS KEYCHAIN (gemini api-key: Windows
+   Credential Manager) — detect connect-state from the CLI's own config
+   records, never open the secret, and let a missing credential fail the
+   turn with the CLI's own error; (c) a resume verb may REPLAY stored
+   history as live-looking events — gate stream/journal folding until the
+   new turn's input is actually on the wire.
 
 ## 2. The provider registry (backend/orgtree/providers.py)
 
@@ -107,7 +134,15 @@ One module owning the wire, one process per turn, hermetically testable:
   `/api/agent` — the ledger enforces authority identically and no bridge
   process or user-config write exists. A tool error is an ANSWER, not a
   hang; unexpected server-requests are refused loudly; approvals fail
-  CLOSED.
+  CLOSED. [gemini: the EASIER door, when the wire has it — a per-session
+  MCP-servers PARAM (ACP `session/new`/`session/load` `mcpServers`): the
+  `python -m orgtree.mcptool` stdio server the claude lane already spawns
+  plugs in UNCHANGED, per agent, no config writes and no in-process
+  answering layer at all. Two wire facts to probe: env entries may be an
+  ARRAY of {name,value}, and vars NOT named in the spec INHERIT from the
+  CLI process — always name the full ORGTREE_* identity set. And whatever
+  rides session OPEN must ride session RESUME (the §7 rule) — the param
+  goes on BOTH verbs.]
 - **The test double first** (`backend/tests/fake<prov>.py`): a scripted
   stand-in speaking the real wire (shapes copied from the probe logs), with
   scenarios for tool round-trip, steer, interrupt, and an env probe that
@@ -143,6 +178,16 @@ The single most delicate step. The shape that works:
   turn-over guard refuses · live text deltas through `stream()` with the
   first provider's batching (~8 Hz / 400 chars) · `interrupt_turn` taught
   the new live-session handle (`st["<prov>_turn"]`) next to `st["proc"]`.
+  [gemini: markers `gemini_session`/`st["gemini_turn"]`; the identity door
+  is GEMINI.md alone (no instructions param exists) — measured re-read on
+  session/load, so the per-spawn rewrite self-heals resumes too. A provider
+  with NO steer verb keeps the SAME pump: every offer refuses and the
+  texts requeue — identical code, boundary-delivery semantics, and the day
+  the wire grows the verb nothing needs rewiring. And mind the SPLIT:
+  `_compact_split_body` dispatches per provider — a lane without a native
+  fork/compact must REFUSE cleanly there (cheap compact is the supported
+  path), or a gemini/next-provider node falls into the claude fork
+  machinery.]
 - Bookkeeping mapping: cost = tokens × `<PROV>_PRICES` (know whether
   `inputTokens` INCLUDES cached — codex: yes — and whether output includes
   reasoning — codex: yes); occupancy = the LAST call's input (cumulative
@@ -156,7 +201,9 @@ The single most delicate step. The shape that works:
 
 ## 5. Hire enablement (ledger tables + guards) — M4
 
-- Codex status: LANDED (74d150c). What it took, generalized:
+- Codex status: LANDED (74d150c). Gemini status: LANDED (D-188), same
+  shape; its keyed-login set is {api-key, vertex}. What it took,
+  generalized:
 - Tiers/models into `ledger.TIERS`/`ledger.MODELS` (the add-only org-doc
   load hook migrates EXISTING orgs automatically — org docs carry their own
   seat-table copy); kiosk ceiling rank = seat (equal seats = equal rank is
@@ -182,7 +229,11 @@ The single most delicate step. The shape that works:
 
 ## 6. Frontend — M8
 
-- Codex status: LANDED (ee7b32a). Hire surfaces render as PROVIDER
+- Codex status: LANDED (ee7b32a). Gemini status: LANDED (D-189) — the
+  provider threading is per-family props (codexHire/geminiHire), so
+  provider #4 adds one more; the chrome contract (`--prov-<id>` rebinding
+  the accent variables at the family root) held perfectly.
+- Hire surfaces render as PROVIDER
   FAMILIES from the `/api/providers` payload: the canvas fetches it
   (non-fatal, absent payload degrades to a disabled preview — never to
   hidden chips) and threads `{enabled, reason}` to every chip set and the
@@ -204,7 +255,10 @@ The single most delicate step. The shape that works:
 
 ## 7. Transcript durability — M3
 
-- Codex status: LANDED (abe495f). What worked: the supervisor writes its
+- Codex status: LANDED (abe495f). Gemini status: LANDED (D-187) — the
+  codex journal store carried the third provider UNCHANGED, exactly as
+  this section predicted; write records through the same helper.
+- What worked: the supervisor writes its
   own per-agent journal — `journals/projects/<org>/<session>.jsonl` under
   the org data root, records in the INCUMBENT transcript's exact shape —
   and the two transcript-lookup functions learn that store as a second
