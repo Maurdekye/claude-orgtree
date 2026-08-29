@@ -135,7 +135,16 @@ def _check_fixture_still_matches_source() -> None:
                    ": d === x ? 'l' : 'r'",
                    # the right column is only drawn beyond the doc chips when
                    # there ARE doc chips; both render conditions live here
-                   "(node.documents?.length ?? 0) > 0 && onOpenDoc"):
+                   "(node.documents?.length ?? 0) > 0 && onOpenDoc",
+                   # FR-15 M8 provider families: the .hs-fam wrapper layer,
+                   # the tier-count ordering and the away-edge reversal are
+                   # DOM this fixture now mirrors — if any of them moves,
+                   # update card() and this guard together. (The wrapper
+                   # landed without a guard needle once and this probe spent
+                   # an evening measuring a card the app never draws.)
+                   'fams.map((f) => <div className="hs-fam" key={f.key}>',
+                   "fams.sort((a, b) => b.tiers.length - a.tiers.length)",
+                   "if (away) fams.reverse()"):
         if needed not in src:
             raise SystemExit(
                 f"cards.tsx no longer emits {needed!r} — this probe's fixture "
@@ -143,7 +152,8 @@ def _check_fixture_still_matches_source() -> None:
                 f"Update card() and this guard together.")
     css = CSS.read_text(encoding="utf-8")
     for needed in (".hsof.side-l", ".cbar {", "--invzf",
-                   "--hsof-l-clear", "--hsof-r-clear"):
+                   "--hsof-l-clear", "--hsof-r-clear",
+                   ".hsof .hs-fam", ".hsof.side .hs-fam"):
         if needed not in css:
             raise SystemExit(
                 f"styles.css no longer contains {needed!r} — the rules under "
@@ -181,6 +191,11 @@ VARIANTS = [
      "bar_overlap_ok": False},
     {"key": "desk fill", "docs": False, "desk": True, "zooms": DESK_ZOOMS,
      "bar_overlap_ok": True},
+    # FR-15 M8: codex signed in — each side strip is TWO family columns
+    # (codex outer, claude inner). Width growth must go OUTWARD only; the
+    # bar/doc-chip clearances are anchored at the inner edge and must hold.
+    {"key": "two providers", "docs": True, "desk": False, "zooms": ZOOMS,
+     "bar_overlap_ok": False, "families": 2},
 ]
 
 # A mid-sized holding: seat 1 + grant 5 at the default 7px/credit. Height is
@@ -214,17 +229,31 @@ sq.addEventListener('pointermove', (e) => {
 """
 
 
-def card(docs: bool, desk: bool) -> str:
+def card(docs: bool, desk: bool, families: int = 1) -> str:
     """The real card markup, trimmed to what the rules under test key on.
 
     No `edge-*` class is preset: TRACK_EDGE sets it from the real pointer, the
     way the app does. `.doc-chips` is present or absent exactly as cards.tsx
     renders it, because that is now the thing the geometry depends on.
+
+    FR-15 M8: SpawnChips wraps each provider's chips in an `.hs-fam` and the
+    side strips are a ROW of family COLUMNS — the fixture mirrors that DOM
+    exactly, including the order rule (higher tier count nearest the card, so
+    the codex family renders FIRST on side-l and LAST on side-r). `families=2`
+    is the codex-signed-in card; `families=1` the signed-out/kiosk one. Both
+    ship. (This fixture measured bare un-wrapped chips for one evening and
+    the probe spent it measuring a card the app never draws — see the guard.)
     """
-    chips = "".join(
+    claude = "<div class='hs-fam'>" + "".join(
         f"<button class='t-{t}'>{ltr}</button>"
         for t, ltr in (("haiku", "H"), ("sonnet", "S"),
-                       ("opus", "O"), ("fable", "F")))
+                       ("opus", "O"), ("fable", "F"))) + "</div>"
+    codex = ("<div class='hs-fam'>" + "".join(
+        f"<button class='t-{t}'>{ltr}</button>"
+        for t, ltr in (("luna", "L"), ("terra", "T"),
+                       ("sol", "S"))) + "</div>") if families > 1 else ""
+    chips_l = codex + claude          # away-edge: outer family first
+    chips_r = claude + codex          # near-edge order
     # `focused ? 'desk' : lod` — the desk card also drops .sq-head (the desk
     # renders its own chrome) and gains the opaque .desk-over panel inset 2px
     lod = "desk" if desk else "norm"
@@ -238,15 +267,16 @@ def card(docs: bool, desk: bool) -> str:
         f"<div class='cbar-clip'></div></div>"
         f"<div class='hsof-bridge bridge-l'></div>"
         f"<div class='hsof-bridge bridge-r'></div>"
-        f"<div class='hsof side side-l'>{chips}</div>"
-        f"<div class='hsof side side-r'>{chips}</div>"
+        f"<div class='hsof side side-l'>{chips_l}</div>"
+        f"<div class='hsof side side-r'>{chips_r}</div>"
         + ("<div class='doc-chips'><div class='doc-chip'>D</div></div>"
            if docs else "")
         + body +
         "</div>")
 
 
-def build_page(css: str, z: float, docs: bool, desk: bool) -> str:
+def build_page(css: str, z: float, docs: bool, desk: bool,
+               families: int = 1) -> str:
     """One card at one zoom, inside a .space carrying exactly the custom
     properties OrgCanvas sets on it — same expressions, so the probe cannot
     disagree with the app about what --invzf is."""
@@ -262,7 +292,7 @@ def build_page(css: str, z: float, docs: bool, desk: bool) -> str:
         f"<div class='space' style=\"transform:scale({z});"
         f"transform-origin:top left;"
         f"--invz:{invz:.3f};--invzf:{invzf:.3f};--z:{z:.3f}\">"
-        + card(docs, desk) +
+        + card(docs, desk, families) +
         "</div></div><script>" + TRACK_EDGE + "</script></body></html>")
 
 
@@ -435,7 +465,8 @@ def run(css_text: str, shot: str | None = None, verbose: bool = True):
             for v in VARIANTS:
                 for z in v["zooms"]:
                     pathlib.Path(page).write_text(
-                        build_page(css_text, z, v["docs"], v["desk"]),
+                        build_page(css_text, z, v["docs"], v["desk"],
+                                   v.get("families", 1)),
                         encoding="utf-8")
                     pg.goto(pathlib.Path(page).as_uri())
                     pg.wait_for_selector(".cbar", timeout=8000)
