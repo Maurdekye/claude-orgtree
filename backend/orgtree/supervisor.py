@@ -2052,6 +2052,34 @@ def sandbox_mcp_passthrough(granted: list[str],
     return out
 
 
+def codex_mcp_grant(org: Org, nid: str) -> tuple[dict[str, Any], list[str]]:
+    """(external MCP servers a CODEX node actually receives, granted names its
+    lane cannot attach).
+
+    D-180. ONE source of truth for the identity prompt AND the spawn. The codex
+    lane shipped without any mcp handling at all, so `identity_prompt` promised
+    servers `_codex_leg` never attached — the same bug class `_build_cmd`'s
+    allowlist comment warns about, hit a second time because the identity
+    builder was only ever kept in step with the CLAUDE lane.
+
+    Scope is deliberately the SAME math the claude lane does at `_build_cmd`:
+    `expand_mcp(granted, kiosk ceiling, registry)`, so "*" means every
+    registered server present and future, intersected with the ceiling. Nothing
+    here widens a grant; `deliverable_mcp` can only NARROW it, and what it
+    narrows away is returned so the prompt can say so out loud.
+    """
+    from . import codexrun            # noqa: PLC0415 — codex lane only
+    tools = org.node(nid)["scope"].get("tools", {})
+    registry = registered_mcp_servers()
+    ceil = org.kiosk_ceiling()
+    granted = expand_mcp(tools.get("mcp") or [],
+                         (ceil or {}).get("tools", {}).get("mcp")
+                         if ceil else None,
+                         sorted(registry))
+    return codexrun.deliverable_mcp(
+        {k: registry[k] for k in granted if k in registry})
+
+
 # ------------------------------------------------------------------ identity
 def _claudemd_block(org: Org, nid: str) -> str:
     """Granted-folder CLAUDE.md files, injected explicitly (spike-verified: headless
@@ -2363,6 +2391,22 @@ def identity_prompt(org: Org, nid: str, include_archived: bool = False) -> str:
                           f"container ({', '.join(dropped)} unavailable despite "
                           f"the grant) — they are outside contact points the "
                           f"sandbox restricts. ")
+    if str(n.get("model") or "") in providers.CODEX_TIERS:
+        # D-180: the codex lane attaches granted servers by LAUNCHING the
+        # app-server with `-c mcp_servers.…` overrides, which cannot express
+        # every registry shape (a name that is not a TOML bare key aborts the
+        # process outright). Promise EXACTLY what that lane delivers — the same
+        # discipline as the sandbox branch above, and for the same reason: an
+        # assertion in this text reads to the agent as the capability itself.
+        codex_ok, codex_undeliverable = codex_mcp_grant(org, nid)
+        mcp_names = sorted(codex_ok)
+        if codex_undeliverable:
+            tool_line += (f"Note: {', '.join(codex_undeliverable)} "
+                          f"{'is' if len(codex_undeliverable) == 1 else 'are'} "
+                          f"in your grant but cannot be attached on the Codex "
+                          f"provider (the server definition is not expressible "
+                          f"in codex config) — do not plan around "
+                          f"{'it' if len(codex_undeliverable) == 1 else 'them'}. ")
     if mcp_names:
         tool_line += (f"MCP servers available to you: {', '.join(mcp_names)} "
                       f"(their tools are named mcp__<server>__<tool> — under "
@@ -3966,6 +4010,13 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
     dyn = [{"type": "function", "name": t["name"],
             "description": t["description"], "inputSchema": t["inputSchema"]}
            for t in mcptool.TOOLS]
+    # D-180: orgtree's OWN suite rides dynamicTools (above); the node's GRANTED
+    # EXTERNAL servers ride `-c mcp_servers.…` on the app-server launch, which
+    # is a different mechanism for a different problem and was simply missing.
+    # `codex_mcp_grant` is the same call `identity_prompt` promises from, so the
+    # text above and the capability below cannot drift apart again.
+    mcp_chosen, _ = codex_mcp_grant(org, nid)
+    mcp_overrides = codexrun.mcp_config_overrides(mcp_chosen)
     port = os.environ.get("ORGTREE_PORT", "7360")
 
     def _tool_call(tool: str, args: dict[str, Any]) -> str:
@@ -4178,6 +4229,7 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         sandbox=("workspace-write" if tools_sc.get("edit", True)
                  else "read-only"),
         dynamic_tools=dyn, developer_instructions=ident,
+        config_overrides=mcp_overrides,
         on_event=_on_event, tool_dispatch=_tool_call,
         approval_decide=_approve,
         env_extra={"ORGTREE_ORG": slug, "ORGTREE_NODE": nid,

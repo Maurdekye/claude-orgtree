@@ -2247,6 +2247,59 @@ the same motive — long-running orgs fill with retirees.
 
 ---
 
+### D-180 · the Codex lane delivers a node's granted MCP servers, and the identity promises exactly what the lane delivers
+Ruling (coordinator, 2026-08-29): a codex-tier node's granted external MCP
+servers are attached by launching `codex app-server` with
+`-c mcp_servers.<name>.<field>=…` overrides, under the SAME scope math the
+claude lane applies — `expand_mcp(granted, kiosk ceiling, registry)`, so `"*"`
+means every registered server present and future, intersected with the ceiling.
+`identity_prompt` announces exactly the set that launch will carry, never the
+raw grant. **One function answers both questions** (`supervisor.codex_mcp_grant`),
+because the defect was precisely that two places answered them separately.
+Why: `_codex_leg` shipped with no reference to the node's `mcp` scope at all —
+it built its tool set from `mcptool.TOOLS` alone — while `identity_prompt`
+emitted "MCP servers available to you: …" regardless of provider. A codex agent
+was told it had McpLink, planned around having it, and found nothing. This is
+the bug class `_build_cmd`'s allowlist comment already names ("promising a
+capability the config drops is a bug class already hit once here"); it recurred
+because the identity builder was kept in step with the CLAUDE lane only, and
+the codex lane was added later without re-checking the promise. **An assertion
+in the identity text reads to an agent as the capability itself**, and "the
+tool didn't work" is far harder to diagnose than "the tool isn't there" — which
+is why the promise, not just the delivery, is normative here.
+The mechanism is LAUNCH-scoped rather than per-thread, and that is deliberate.
+Measured 2026-08-29 against codex 0.150.1: configured MCP servers are started
+when the APP-SERVER starts, not when a thread is created (a planted server was
+launched, handshaked and had its tools listed in a run where no thread existed
+at all). Since orgtree spawns one app-server per turn per node, launch scope IS
+per-node scope, and no thread operation — `start`, `resume` or `fork` — can drop
+the set. That closes by construction the failure `thread/resume` already caused
+once for `dynamicTools`, where a capability attached at turn one silently
+vanished at turn two. A per-thread `config` object was the alternative and was
+rejected for that reason.
+Nothing here writes the user's `~/.codex/config.toml` or repoints `CODEX_HOME`:
+that file is the user's, and moving `CODEX_HOME` would split-brain the auth
+refresh cycle (codexrun §3.4 forbids touching credential material).
+Bounds: orgtree's OWN tool suite continues to ride `dynamicTools` — a different
+mechanism for a different problem, unchanged by this ruling. Compaction's
+`compact_fork` deliberately gets NO external servers: it summarises a thread and
+calls no tools. Sandboxed orgs are untouched because the codex lane already
+refuses to run in one, so `sandbox_mcp_passthrough` never applies on this lane —
+a deliberate divergence from the claude lane, and the reason it is safe is that
+the exclusion is total rather than partial.
+Load-bearing: a server NAME must be a TOML bare key. `-c` splits its dotted path
+before honouring quotes, so `mcp_servers."dot.name".command=…` does not merely
+fail to attach — it aborts the whole app-server with "failed to load bootstrap
+configuration", killing the turn. Names that cannot be expressed are therefore
+dropped from the config AND named in the identity as unavailable; they are never
+silently promised, which would reinstate this very defect in a smaller form.
+Claude's `type` discriminator is not forwarded (codex infers transport from
+command-vs-url and `--strict-config` rejects unknown keys), and values are
+encoded with `json.dumps`, whose escaping is a subset of TOML's — the encoder
+that survives the backslashes in a Windows command path.
+
+---
+
 ## Mail & messaging
 
 ### D-137 · notices are mail minus the wake

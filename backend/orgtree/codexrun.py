@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import threading
 import time
@@ -67,6 +68,80 @@ def _dyn_tool(name: str, description: str,
             "inputSchema": input_schema}
 
 
+#: the registry fields we translate into codex `[mcp_servers.*]`. Claude's
+#: `type` discriminator is deliberately NOT among them: codex infers transport
+#: from command-vs-url, and `--strict-config` rejects keys it does not know.
+_MCP_FIELDS: Final = ("command", "args", "env", "url")
+
+#: a server name must be a TOML BARE KEY. `-c` splits its dotted path BEFORE
+#: honouring quotes, so `mcp_servers."dot.name".command=…` does not merely fail
+#: to attach — it aborts the whole app-server with "failed to load bootstrap
+#: configuration / invalid transport" (measured, codex 0.150.1). A name we
+#: cannot express is therefore undeliverable, and `deliverable_mcp` reports it
+#: so the identity prompt can stop promising it.
+_BARE_KEY: Final = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_-]*$")
+
+
+def _toml(value: Any) -> str:
+    """One TOML scalar for `-c`. JSON string escaping is a subset of TOML's
+    basic-string escaping, so json.dumps is a correct encoder here — and it is
+    the one that survives the BACKSLASHES in a registered server's Windows
+    command path, which naive quoting corrupts silently."""
+    return json.dumps(str(value))
+
+
+def deliverable_mcp(servers: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """Split a registry subset into (what this lane can attach, what it cannot).
+
+    The codex lane cannot carry every shape the claude lane can, and BOTH the
+    spawn and the identity prompt are built from this one split — promising a
+    capability the config drops is the bug class this function exists to close.
+    """
+    ok: dict[str, Any] = {}
+    dropped: list[str] = []
+    for name in sorted(servers):
+        srv = servers[name]
+        if (isinstance(srv, dict) and _BARE_KEY.match(name)
+                and (srv.get("command") or srv.get("url"))):
+            ok[name] = srv
+        else:
+            dropped.append(name)
+    return ok, dropped
+
+
+def mcp_config_overrides(servers: dict[str, Any]) -> list[str]:
+    """`-c key=value` argv attaching `servers` as codex `[mcp_servers.*]`.
+
+    LAUNCH-scoped by design. Measured 2026-08-29 (probe_resume.py): codex
+    starts configured MCP servers when the APP-SERVER starts, not when a thread
+    is created — the marker appeared in a run where no thread existed at all.
+    So the set is process-scoped and no thread operation (start, resume, fork)
+    can drop it, which is the failure `thread/resume` already caused once for
+    dynamicTools. It also writes NOTHING to the user's config.toml and never
+    repoints CODEX_HOME (that would split-brain the auth refresh cycle, §3.4).
+    """
+    out: list[str] = []
+    for name, srv in sorted(servers.items()):
+        for field in _MCP_FIELDS:
+            if field not in srv:
+                continue
+            val = srv[field]
+            if field == "args":
+                if not isinstance(val, list):
+                    continue
+                rendered = "[" + ", ".join(_toml(v) for v in val) + "]"
+            elif field == "env":
+                if not isinstance(val, dict):
+                    continue
+                rendered = "{" + ", ".join(
+                    f"{k} = {_toml(v)}" for k, v in sorted(val.items())
+                    if _BARE_KEY.match(str(k))) + "}"
+            else:
+                rendered = _toml(val)
+            out += ["-c", f"mcp_servers.{name}.{field}={rendered}"]
+    return out
+
+
 class AppServerClient:
     """One `codex app-server` child process spoken to over stdio NDJSON.
 
@@ -82,7 +157,8 @@ class AppServerClient:
                  on_event: Callable[[dict[str, Any]], None] | None = None,
                  tool_dispatch: Callable[[str, dict[str, Any]], str] | None = None,
                  approval_decide: Callable[[str, dict[str, Any]], str] | None = None,
-                 env_extra: dict[str, str] | None = None) -> None:
+                 env_extra: dict[str, str] | None = None,
+                 config_overrides: list[str] | None = None) -> None:
         # an ARGV HEAD, not a bare exe — the same shape as supervisor's
         # _claude_argv(): production passes [codex.exe], tests pass
         # [python, fakecodex.py], and nobody ever routes through a .CMD shim
@@ -104,8 +180,11 @@ class AppServerClient:
         # the process-level cwd, not just thread/start's `cwd` param, because
         # AGENTS.md discovery and any relative path the model touches resolve
         # against the PROCESS
+        # `-c` overrides are GLOBAL options and must precede the subcommand —
+        # codex parses them off the top-level command line, not off app-server.
         self.proc = subprocess.Popen(
-            argv_head + ["app-server"], stdin=subprocess.PIPE,
+            argv_head + list(config_overrides or []) + ["app-server"],
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, cwd=cwd)
         self.on_event = on_event
         self.tool_dispatch = tool_dispatch
@@ -347,11 +426,12 @@ class CodexTurn:
                  on_event: Callable[[dict[str, Any]], None] | None = None,
                  tool_dispatch: Callable[[str, dict[str, Any]], str] | None = None,
                  approval_decide: Callable[[str, dict[str, Any]], str] | None = None,
-                 env_extra: dict[str, str] | None = None) -> None:
+                 env_extra: dict[str, str] | None = None,
+                 config_overrides: list[str] | None = None) -> None:
         self.client = AppServerClient(
             argv_head, codex_home=codex_home, cwd=cwd, on_event=self._observe,
             tool_dispatch=tool_dispatch, approval_decide=approval_decide,
-            env_extra=env_extra)
+            env_extra=env_extra, config_overrides=config_overrides)
         self._caller_on_event = on_event
         self.cwd = cwd
         self.model = model
