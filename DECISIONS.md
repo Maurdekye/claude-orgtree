@@ -2111,12 +2111,59 @@ NOT collapsed: it means "stuck, needs a superior or a human", which idle
 does not. And a fresh hire is born `idle` ("hired — awaiting work"), never
 stateless — a blank chip read as "unknown" rather than "ready".
 
-### D-086 · a hire does not start anyone — a hire is TWO calls
-Ruling (user report 2026-08-02, encoded 2026-08-03): neither hire path
-drives the new node. The charter is identity; mail is what runs a turn.
-Stated where it is read: the hire RESULT (`next_step`), the tool
-description, the identity prompt, and the coordinator charter ("A hire is
-TWO calls, never one").
+### D-086 · a hire does not start anyone — the kickoff is what runs a turn
+Ruling (user report 2026-08-02, encoded 2026-08-03; amended 2026-08-27 by
+D-160): neither hire path drives the new node BY ITSELF. The charter is
+identity; mail is what runs a turn. What changed is who sends that mail:
+`orgtree_hire`/`orgtree_rehire` now take a `kickoff` prompt that delivers it
+as the last act of the same call, so a hire is ONE call when the caller
+supplies one and still inert when they do not. Stated where it is read: the
+hire RESULT (`next_step`, which says RUNNING or IDLE according to what
+actually happened), the tool description, the identity prompt, and the
+coordinator charter.
+Was. "a hire is TWO calls, never one" — hire, then a separate
+`orgtree_message`. True until D-160 folded the kickoff into the hire; kept
+here because the *inertness* it protects is unchanged and still the reason
+a kickoff-less hire must be reported as IDLE rather than started.
+
+### D-178 · archived agents are hidden from the chart, and the pointer is load-bearing
+Ruling (user, 2026-08-28): the org chart hides ARCHIVED nodes by default.
+It is rebuilt into every turn of every agent, and on a long-running org the
+archived outnumber the live several times over, so the org structure the
+chart exists to show — who is working, under whom — was being buried under a
+list of who used to be. `orgtree_chart include_archived=true` lists them in
+full. **Presentation only: nothing about retirement, preservation, transcripts
+or rehiring changes.**
+Why, and the constraint a future author must meet before touching this:
+hidden is not forgotten, and the difference is the whole ruling. Standing
+doctrine is that before hiring anyone you check who you already retired,
+because rehiring restores an expert that knows the codebase, the decisions
+and the dead ends — this org's coordinator rehired six agents in one day,
+found by reading exactly the list now hidden. So each superior that retired
+anyone keeps a COUNT in their place and the chart carries the ROUTE to the
+full list. **An agent that cannot see who was retired beneath it will hire a
+stranger to redo work an archived expert already did**, which is far more
+expensive than a long list. Delete the pointer and you have that, silently.
+The count sits PER PARENT rather than as one tally at the foot, because the
+question the doctrine asks is not "does this org have archived agents" but
+"did *I* retire someone who did this work" — a global count answers the
+first while destroying the second.
+A PARAMETER on `orgtree_chart`, not a second tool: `identity_prompt` already
+derives what a caller may see from its `org_visibility`, and a separate
+listing tool would have to re-derive it. Two implementations of "what may
+this agent see" agree the day they are written and nothing makes them agree
+afterwards.
+Knowledge bearers are hidden with the rest and NAMED in the count. Keeping
+them inline while hiding ordinary archived nodes is worse than either
+extreme: a reader who sees some non-live entries reasonably concludes they
+are seeing all of them and stops looking.
+Bounds: `unrecoverable` nodes stay VISIBLE — they are not archived, they
+still hold a seat (D-039), and hiding them was already caught once as a bug
+in `org_children`, whose comment records it. The canvas is untouched: it
+renders from `org.tree()`, a separate path, and a test pins that rather than
+leaving it to inspection.
+Companion: D-078 does the same thing for the human-facing agent tray, from
+the same motive — long-running orgs fill with retirees.
 
 ---
 

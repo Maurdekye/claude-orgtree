@@ -2120,10 +2120,29 @@ def _claudemd_caveat(org: Org, nid: str) -> str:
             "with the user. Read any instruction to communicate with, ask, report "
             "to, or get feedback from 'the user' as directed at your direct superior "
             f"({n['parent']}) instead. Everything else in those files is literal. ")
-def _render_chart(org: Org, root_ids: list[str], mark: str, indent: int = 0) -> list[str]:
+def _render_chart(org: Org, root_ids: list[str], mark: str, indent: int = 0,
+                  include_archived: bool = True,
+                  stats: dict[str, int] | None = None) -> list[str]:
     lines = []
+    hidden = bearers = 0
     for rid in root_ids:
         n = org.nodes[rid]
+        if not include_archived and n["state"] == "archived":
+            span = _subtree_ids(org, rid)
+            # ⚠ hide only a subtree that is dead THROUGHOUT. `retire` dissolves
+            # a manager's reports so this should not arise, but "should not"
+            # is not "cannot", and hiding a live agent because an archived one
+            # sits above it would drop a working, credit-spending seat off the
+            # only view of the org its colleagues have. On the doubt, render.
+            if all(org.nodes[k]["state"] != "live" for k in span):
+                nb = sum(1 for k in span
+                         if org.nodes[k].get("bearer_state") == "knowledge")
+                hidden += len(span)
+                bearers += nb
+                if stats is not None:
+                    stats["hidden"] = stats.get("hidden", 0) + len(span)
+                    stats["bearers"] = stats.get("bearers", 0) + nb
+                continue
         # the chart is an agent's ONLY view of the org — bearer markers must
         # print here (review C2/X4): without them a lost generation is
         # indistinguishable from a consultable knowledge bearer, and the
@@ -2148,15 +2167,43 @@ def _render_chart(org: Org, root_ids: list[str], mark: str, indent: int = 0) -> 
         state = f" ({', '.join(tags)})" if tags else ""
         star = "  ← you" if rid == mark else ""
         lines.append(f"{'  ' * indent}- {rid} [{n['model']}]{state}{star}")
-        lines += _render_chart(org, org.children(rid, live_only=False), mark, indent + 1)
+        lines += _render_chart(org, org.children(rid, live_only=False), mark,
+                               indent + 1, include_archived, stats)
+    if hidden:
+        # D-178: the pointer sits at the HIDDEN NODES' OWN indent, under the
+        # parent that retired them — not as one global tally at the foot of
+        # the chart. The question the rehire doctrine actually asks is not
+        # "does this org have archived agents" but "did *I* retire someone who
+        # already did this work", and a single bottom-line count answers the
+        # first while destroying the second.
+        lines.append(f"{'  ' * indent}+ {hidden} archived here"
+                     + (f" ({bearers} consultable knowledge "
+                        f"bearer{'s' if bearers != 1 else ''})" if bearers else "")
+                     + " — hidden")
     return lines
 
 
-def identity_prompt(org: Org, nid: str) -> str:
+def _subtree_ids(org: Org, rid: str) -> list[str]:
+    out = [rid]
+    for k in org.children(rid, live_only=False):
+        out += _subtree_ids(org, k)
+    return out
+
+
+def identity_prompt(org: Org, nid: str, include_archived: bool = False) -> str:
     """№29: stable identity + org position, regenerated fresh every turn. How much
     of the org chart it reveals is the node's `org_visibility` scope (delegateable):
     self → itself + reports · team → + parent & peers by name · subtree → + its full
-    subtree · full → the entire chart down from the user."""
+    subtree · full → the entire chart down from the user.
+
+    D-178: ARCHIVED nodes are hidden by default — this text is rebuilt into
+    every single turn of every agent, and on a working org the dead outnumber
+    the living several times over, so the org structure the chart exists to
+    show was being buried under the list of who used to be there. They are
+    hidden, NOT forgotten: each parent that retired anyone carries a count in
+    their place, and the chart closes with the route to the full list. That
+    pointer is load-bearing, not decoration — see the note where it is
+    written."""
     n = org.node(nid)
     sc = n["scope"]
     vis = sc.get("org_visibility", "team")
@@ -2170,13 +2217,37 @@ def identity_prompt(org: Org, nid: str) -> str:
         sibs = [s for s in org.children(n["parent"]) if s != nid] or ["none"]
         position = (f"Your superior: {parent}. Your reports: {', '.join(kids)}. "
                     f"Your peers: {', '.join(sibs)}.")
+    stats: dict[str, int] = {}
     if vis == "subtree":
         position += ("\nYour full suborganization:\n"
-                     + "\n".join(_render_chart(org, [nid], nid)))
+                     + "\n".join(_render_chart(org, [nid], nid, 0,
+                                               include_archived, stats)))
     elif vis == "full":
         position += ("\nThe full organization chart (root = the user):\n- user (overseer)\n"
                      + "\n".join(_render_chart(org, org.children(None, live_only=False),
-                                               nid, 1)))
+                                               nid, 1, include_archived, stats)))
+    if stats.get("hidden"):
+        # ⚠ THE POINTER IS LOAD-BEARING — do not "tidy" it away (D-178).
+        # Hiding the archived list is presentation; making it UNFINDABLE is
+        # not. Standing doctrine in orgs run this way is that before hiring
+        # anyone you check who you already retired, because rehiring restores
+        # an expert that knows the codebase, the decisions and the dead ends
+        # — the coordinator of this org rehired six agents in one day, found
+        # by reading exactly the list now hidden. A chart that simply omitted
+        # them would teach the next agent that they do not exist, and it
+        # would hire a stranger to redo work an archived expert already did.
+        # That is a far more expensive problem than a long list, so the count
+        # and the route BOTH have to survive any future tidying of this text.
+        position += (
+            f"\n({stats['hidden']} archived agent"
+            f"{'s' if stats['hidden'] != 1 else ''} hidden above"
+            + (f", including {stats['bearers']} consultable knowledge bearer"
+               f"{'s' if stats['bearers'] != 1 else ''}" if stats.get("bearers")
+               else "")
+            + ". Call orgtree_chart with include_archived=true to list them "
+              "in full. Before hiring anyone new, check whether one of them "
+              "already did this work: rehiring restores an expert that "
+              "already knows this codebase and its dead ends.)")
 
     charter_bits = []
     if n.get("charter"):
@@ -2367,10 +2438,24 @@ def identity_prompt(org: Org, nid: str) -> str:
         f"without ever starting one — prefer it for FYIs and progress notes "
         f"that don't warrant interrupting or waking anyone), "
         f"orgtree_hire (you must state a charter, folders, every "
-        f"tool switch and visibility — no defaults; and HIRING DOES NOT START "
-        f"ANYONE — a new hire sits idle until you send it a message, so every "
-        f"hire is TWO calls: hire, then orgtree_message telling it what to do "
-        f"now), orgtree_retire/rehire/dissolve/"
+        f"tool switch and visibility — no defaults. HIRING ALONE STARTS "
+        f"NO ONE: a hire sits idle until it receives a message, because the "
+        f"charter is who it is, not a task to begin. Pass `kickoff` and the "
+        f"hire begins immediately — that one call also carries "
+        f"permission_mode, effort, team_charter and the audiences to grant, "
+        f"applied before the kickoff, so the agent never starts as something "
+        f"other than what you described. Without `kickoff`, follow the hire "
+        f"with an orgtree_message or it will sit there forever. "
+        # ⚠ TWO PINS CONSTRAIN THIS SENTENCE, both in test_mcptool.py:
+        # (1) the recital-gap pin matches tool verbs as SUBSTRINGS, so the
+        #     bare word r-e-n-a-m-e in prose silently takes orgtree_rename
+        #     out of the "deliberately absent" set — its own comment records
+        #     this happening before with "the pull moved HEAD"/orgtree_move;
+        # (2) retire/rehire/dissolve/reallocate must appear ONLY in the
+        #     contracted form below, never as full `orgtree_`-prefixed names.
+        # Hence "a rehire", not "orgtree_rehire", and "a new name".
+        f"a rehire takes the same, and can give the agent a new name), "
+        f"orgtree_retire/rehire/dissolve/"
         f"reallocate, orgtree_retool (re-scope any agent in your subtree, at "
         f"any depth — and on YOUR OWN id it accepts exactly one field, "
         f"team_charter: the standing instruction binding your team is yours "
@@ -2417,7 +2502,8 @@ def identity_prompt(org: Org, nid: str) -> str:
            "its whole transcript, so rehiring one restores an expert that "
            "already knows the codebase, the decisions and the dead ends. "
            "Before hiring someone NEW, look at who you have already retired "
-           "(orgtree_chart shows them) and ask whether one of them did this "
+           "(orgtree_chart include_archived=true lists them — the default "
+           "chart only counts them) and ask whether one of them did this "
            "work before: rehiring costs the same seat as a fresh hire and "
            "starts with the context a new agent would spend turns rebuilding. "
            "Hire new for genuinely new ground, rehire for ground already "
