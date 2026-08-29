@@ -75,6 +75,18 @@ function domTest(name: string,
 const txt = (el: HTMLElement) => el.textContent ?? ''
 const rows = (el: HTMLElement, sel: string) => [...el.querySelectorAll(sel)]
 
+domTest('a Codex desk keeps the user-audience tag on the audience color channel',
+  async ({ SL, ND, mount }) => {
+    const { el } = await mount(deskEl(node(ND, {
+      tier: 'sol', model_id: 'gpt-5.6-sol', audiences_held: [USER],
+    }), SL))
+    const tag = [...el.querySelectorAll<HTMLElement>('.badge')]
+      .find((x) => x.textContent?.trim().startsWith('user'))
+    assert.ok(tag, 'the granted user-audience tag is missing from the desk')
+    assert.ok(tag.classList.contains('aud-user'),
+      'the tag lost its relationship-color hook and will inherit Codex teal')
+  })
+
 /** jsdom does no layout, so scroll geometry is stated rather than measured —
  *  which is what makes the paging predicate testable at all */
 function geometry(el: Element, g: { top: number; height: number; client: number }) {

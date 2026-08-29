@@ -574,7 +574,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
   const heldRet = held.filter((g) => g !== USER && g !== EXTERN
     && map.get(g)?.state !== 'live')
   const heldChip = (g: string, dim = false) => (
-    <span key={g} className={'badge ' + (g === USER ? 'free' : dim ? 'dim' : '')}>
+    <span key={g} className={'badge ' + (g === USER ? 'free aud-user' : dim ? 'dim' : '')}>
       <HearingIcon fontSize="inherit" />
       {g === USER ? 'user' : g === EXTERN ? 'org inbox' : g}
       <button className="chip-x"

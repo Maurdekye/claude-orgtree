@@ -16,6 +16,8 @@
   --line: #3c3c3c;
   --line-soft: #2b2b2b;
   --accent: #d97757;        /* Claude terracotta */
+  --aud-user: #d97757;      /* direct line to the user — relationship color,
+                               independent of the agent provider theme */
   --accent-soft: rgba(217, 119, 87, .16);
   --accent-hover: #e08a6d;
   --accent-ink: #fff;
@@ -202,8 +204,8 @@ main {
   filter: drop-shadow(0 0 3px rgba(169, 194, 216, .5));
 }
 .edge.aud-line.from-user {
-  stroke: var(--accent); stroke-width: 2.2px; opacity: .7;
-  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--accent) 65%, transparent));
+  stroke: var(--aud-user); stroke-width: 2.2px; opacity: .7;
+  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--aud-user) 65%, transparent));
 }
 /* a message in flight */
 .spark {
@@ -2043,6 +2045,13 @@ button.danger.solid:hover { background: rgba(241, 76, 76, .24); }
   background: var(--input); color: var(--dim); border: 1px solid transparent;
 }
 .badge.free { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
+/* A direct user audience is the same relationship in the desk and on the
+   canvas. Codex desks rebind --accent to teal for provider chrome, but this
+   badge stays orange to match its orange user-audience line. */
+.badge.aud-user {
+  color: var(--aud-user);
+  border-color: color-mix(in srgb, var(--aud-user) 30%, transparent);
+}
 .badge.dim { color: #7a7a7a; }
 /* A BEARER CHIP STATES PROVENANCE, NOT LIFECYCLE (user report 2026-08-28: "it
    looks retired… the ui is too similar"). It used to be `badge dim` — the same

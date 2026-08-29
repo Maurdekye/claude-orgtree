@@ -16,6 +16,7 @@ from playwright.sync_api import sync_playwright
 CSS = pathlib.Path(__file__).resolve().parents[1] / "src" / "styles.css"
 PROVIDER = "rgb(88, 155, 149)"
 SOL = "rgb(255, 138, 61)"
+AUDIENCE = "rgb(217, 119, 87)"
 CONTROL = """
 .sq.prov-openai { --accent: #d97757; --accent-soft: rgba(217,119,87,.16); }
 .sq.prov-openai.desk { border-color: #d97757; }
@@ -30,8 +31,10 @@ HTML = """
   <div class="cc-composer"><textarea></textarea></div>
   <button class="primary">send</button>
   <button class="cc-eff set">high</button>
+  <span class="badge free aud-user">user</span>
   <div class="askcard"><button class="ask-submit">answer</button></div>
 </div>
+<svg><path class="edge aud-line from-user" /></svg>
 <div class="sq draft prov-openai">
   <span class="draft-tag">uninitialized</span>
   <div class="draft-over"><div class="draft-inner">
@@ -61,6 +64,8 @@ def measure(css: str) -> dict[str, str]:
             effort: one('.cc-eff').borderColor,
             askAnimation: sq.animationName,
             askBorder: one('.askcard').borderColor,
+            audienceTag: one('.badge.aud-user').color,
+            audienceLine: one('.edge.aud-line.from-user').stroke,
             draftBorder: one('.sq.draft').borderRightColor,
             draftTag: one('.draft-tag').color,
             draftHire: one('.sq.draft button.primary').backgroundColor,
@@ -81,6 +86,9 @@ def findings(got: dict[str, str]) -> list[str]:
     for key in ("top", "tier"):
         if got[key] != SOL:
             fail.append(f"{key} is {got[key]}, expected Sol tier color {SOL}")
+    for key in ("audienceTag", "audienceLine"):
+        if got[key] != AUDIENCE:
+            fail.append(f"{key} is {got[key]}, expected user-audience orange {AUDIENCE}")
     if got["askAnimation"] != "askglow":
         fail.append("question aura lost its askglow animation")
     # The ask card is a teal/line mix, so it is intentionally not the solid
