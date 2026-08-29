@@ -209,8 +209,9 @@ The single most delicate step. The shape that works:
   seat-table copy); kiosk ceiling rank = seat (equal seats = equal rank is
   fine). Make the provider module DERIVE its views from the ledger tables
   once they land — two copies of a seat price will drift.
-- One `provider_hire_gate(org, tier)` in api.py, called at ALL FOUR doors
-  (user hire, agent hire, user switch_model, agent switch_model), raising
+- One `provider_hire_gate(org, tier)` in api.py, called at ALL FIVE doors
+  (user hire, agent hire, user switch_model, agent switch_model, and a user
+  rehire that overrides the tier), raising
   LedgerError (both layers 422 it cleanly): installed → signed-in → kiosk
   holdout → headless-needs-keyed, each refusal naming the next step. The
   incumbent provider stays ungated — a detection bug must not brick
