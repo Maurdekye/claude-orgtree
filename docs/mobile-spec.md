@@ -302,7 +302,7 @@ capability removed at this tier.
 | Tap a card | ADAPT — **no zoom change**; 200 ms centering pan at constant z, then the sheet opens. Kills the 10× dive, the glide-cancel trap, and the no-way-back-out state | ADAPT | unchanged |
 | Drag to reparent/reorder | **HIDE** (§6) | ADAPT — 350 ms long-press arm, lifted state, screen-constant drop ring; edge-pan 48→24 px and `dt`-normalized (currently px *per frame*) | unchanged |
 | Credit bar | REPLACE — read-only gauge; `grant · alloc · free · seat` become text in the caption and roster row; reallocation is a stepper + confirm | ADAPT | unchanged |
-| HSOF hire chips | REPLACE — hire is a full-screen form from the roster header and card overflow; four tiers become four 56 px rows | ADAPT | unchanged |
+| Provider-family hire chips | REPLACE — hire is a full-screen form from the roster header and card overflow; Claude, Codex, and Gemini tiers remain separate, labelled rows with 56 px choices | ADAPT | unchanged |
 | Per-card ⚙ / ✉ | HIDE — moved to roster-row overflow and the sheet header | ADAPT — `visibility`, 44 px, 12 px separation | unchanged |
 | Piles | ADAPT — one card + screen-constant 20 px count badge → PilePicker bottom sheet; phantom layers hidden | ADAPT — fan out on `:focus-within` too | unchanged |
 | Switchboard (EyeDesk) | HIDE — replaced by a roster filter "direct lines" | HIDE unless landscape | shown iff `vpW > vpH ∧ min ≥ 780` |
