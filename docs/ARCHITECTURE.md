@@ -464,7 +464,11 @@ ledger, supervisor, the gateways, or the canvas.
   wholesale, so a card with both shows only the stack (ruling direction
   pending: DECISIONS §Open).
 
-## Testing reality
+## Testing reality (historical snapshot)
+
+The following pre-CI snapshot is retained for context only. For current test
+commands and coverage, use the README's development section and
+`tools/run_tests.py`.
 
 One automated test file exists: `backend/tests/test_ledger.py` (ledger
 only; deliberately excluded from pyright because it passes wrong shapes to
@@ -478,7 +482,16 @@ scripted live drills at change time — keep drilling them.
 suites as of 2026-08-26, discovered by glob. Its point about *coverage* still
 stands; the number does not.)
 
-## Running a long job without losing it
+## Current practice: a long job that outlives a turn
+
+Harness background tasks and processes started from the turn's shell do not
+survive that turn. On Windows, create a necessary long-running test process
+through WMI `Win32_Process.Create`, which gives the WMI service ownership
+outside the turn job object. Watch it with `orgtree_watchdog`, and consider a
+test run successful only when both `RUN COMPLETE` appears in its output and
+the runner's `COMPLETE` marker exists in its log directory.
+
+## Running a long job without losing it (historical snapshot)
 
 The full tier takes tens of minutes, which is longer than an agent's turn.
 Everything below was measured on this machine on 2026-08-26 (`task-timeouts`),

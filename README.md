@@ -501,6 +501,11 @@ Useful flags: `--only <substring>` · `--serial` · `--jobs N` · `--no-frontend
 · `--logdir DIR` (per-suite logs; otherwise a temp directory, path printed).
 Exit status is non-zero if any suite fails.
 
+**Frontend test memory control:** `ORGTREE_TEST_CONCURRENCY` limits Node's
+parallel frontend-test children. It defaults to `4`; lower it when the machine
+is under pressure, or set it to `0` only to restore Node's old unbounded
+parallelism. This is a test-runner setting, not a runtime orgtree setting.
+
 **The two tiers.** The fast tier runs every suite in the cheapest mode that
 suite advertises — `--hermetic` if it has one, else `--quick`, else plain — and
 touches no real listener that matters. It is what CI runs. The full tier runs

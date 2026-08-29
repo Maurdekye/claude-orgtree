@@ -13,8 +13,13 @@ Markdown file in this repository as current operating guidance.
   environment variables, settings, defaults, and their scope.
 - [`ui-guide.md`](ui-guide.md) describes the shipped user interface and its
   controls.
+- [`agent-tools.md`](agent-tools.md) is the complete agent-facing MCP tool
+  catalog and its operational boundaries.
 - [`infrastructure-tiers.md`](infrastructure-tiers.md) compares deployment
   shapes and their operational trade-offs.
+- [`autostart.md`](autostart.md) covers Windows service startup; the
+  [mail-server specification](mailserver-spec.md) and
+  [hub README](../hub/README.md) cover cross-organization mail.
 
 ## Developer references
 
@@ -29,8 +34,8 @@ Markdown file in this repository as current operating guidance.
 
 ## Historical and exploratory records
 
-`feature-docket.md`, `interim-docket.md`, `mobile-spec.md`,
-`mailserver-spec.md`, and the files in `attic/` preserve design history,
+`feature-docket.md`, `interim-docket.md`, `mobile-spec.md`, and the files in
+`attic/` preserve design history,
 accepted work, or exploratory reasoning. They are not the source of truth for
 current runtime behavior. Verify a claim in source and then update the
 appropriate current guide or decision entry.
