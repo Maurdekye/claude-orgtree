@@ -32,6 +32,12 @@ HTML = """
   <button class="cc-eff set">high</button>
   <div class="askcard"><button class="ask-submit">answer</button></div>
 </div>
+<div class="sq draft prov-openai">
+  <span class="draft-tag">uninitialized</span>
+  <div class="draft-over"><div class="draft-inner">
+    <div class="df-foot"><button class="primary">hire</button></div>
+  </div></div>
+</div>
 """
 
 
@@ -55,6 +61,9 @@ def measure(css: str) -> dict[str, str]:
             effort: one('.cc-eff').borderColor,
             askAnimation: sq.animationName,
             askBorder: one('.askcard').borderColor,
+            draftBorder: one('.sq.draft').borderRightColor,
+            draftTag: one('.draft-tag').color,
+            draftHire: one('.sq.draft button.primary').backgroundColor,
           };
         }""")
         browser.close()
@@ -64,6 +73,9 @@ def measure(css: str) -> dict[str, str]:
 def findings(got: dict[str, str]) -> list[str]:
     fail = []
     for key in ("side", "working", "wheel", "composer", "send", "effort"):
+        if got[key] != PROVIDER:
+            fail.append(f"{key} is {got[key]}, expected provider teal {PROVIDER}")
+    for key in ("draftBorder", "draftTag", "draftHire"):
         if got[key] != PROVIDER:
             fail.append(f"{key} is {got[key]}, expected provider teal {PROVIDER}")
     for key in ("top", "tier"):
@@ -94,7 +106,7 @@ def main() -> int:
     if fail:
         print("\n".join("FAIL: " + x for x in fail))
         return 1
-    print("OK — Codex chrome is muted teal; Sol badge/top stripe stay tier orange; ask aura is provider-themed")
+    print("OK — Codex live and uninitialized chrome are muted teal; Sol badge/top stripe stay tier orange; ask aura is provider-themed")
     return 0
 
 

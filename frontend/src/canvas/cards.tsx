@@ -715,8 +715,13 @@ export function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRem
   }, [onCancel])
   const ok = name.trim().length > 0
   const hire = () => { if (ok) onConfirm(name.trim(), grant, finalCharter(), scope) }
+  // A draft already knows its tier, so it also knows its provider. Do not wait
+  // for the hire to become a persisted TreeNode before applying provider
+  // chrome: otherwise the dashed "uninitialized" Codex card briefly wears
+  // Claude terracotta and flips to teal only after creation.
+  const providerClass = CODEX_TIERS.includes(draft.tier) ? ' prov-openai' : ''
   return (
-    <div className="sq draft" style={{
+    <div className={'sq draft' + providerClass} style={{
       transform: `translate(${pos.x}px, ${pos.y}px)`, width: NODE_W, height: NODE_H,
     }} onPointerDown={(e) => e.stopPropagation()}>
       {/* unbounded drag — the ghost ceiling only exists under a kiosk cap */}
