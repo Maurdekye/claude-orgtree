@@ -2592,7 +2592,22 @@ svg.MuiSvgIcon-root {
   position: absolute; left: 48px; top: 10px; bottom: 10px; z-index: 7;
   display: flex; flex-direction: column; justify-content: flex-end;
   align-items: flex-start; gap: 6px;
+  /* ⚠ THE WRAP IS A LAYOUT BOX, NOT A HIT TARGET (user report 2026-08-29:
+     "the left 50px or so of agent desk view is uninteractable; it just shows
+     a grab hand"). The definite height above is also a definite AREA: an
+     invisible column as wide as the toggle (~77px) running the full height of
+     the canvas at z-index 7 — above the desk. Measured over the desk panel it
+     swallowed the composer, the desk buttons and the left hire chips, while
+     still showing `.viewport`'s `grab` cursor, because the cursor is
+     inherited and the wrap sets none of its own. The press did not even pan:
+     the wrap's onPointerDown stops propagation.
+     The wrap must keep its size and claim no clicks; its children claim their
+     own. pointer-events does not affect DOM bubbling, so that stopPropagation
+     still runs for presses that begin inside the toggle or the tray.
+     (tests/traystrip_probe.py measures this in a real browser.) */
+  pointer-events: none;
 }
+.tray-wrap > * { pointer-events: auto; }
 .tray-toggle {
   display: inline-flex; align-items: center; gap: 6px;
   background: var(--panel); border: 1px solid var(--line);
