@@ -3161,11 +3161,54 @@ class Org:
             n["model"] = tier
             # runtime int: own = min(free, delta), both int-valued for a real node
             n["grant"] -= cast(int, own)   # holding grows by exactly the shortfall
+        # D-196: a switch that CROSSES PROVIDERS cannot keep the session, and
+        # must not pretend to. `session_id` holds a provider-owned handle — a
+        # codex threadId, a gemini ACP sessionId, a Claude session uuid — and
+        # no provider can resume another's. Left in place it is not merely
+        # useless but ACTIVELY FATAL: the claude lane decides "may I resume?"
+        # by asking whether a transcript file exists, and `transcript_path`
+        # deliberately falls back to the supervisor's own journal store, where
+        # a codex thread's record IS written. So the file is found, `--resume
+        # <codex threadId>` is emitted, and the CLI answers "No conversation
+        # found with session ID …" — which killed a live agent's whole
+        # transcript (2026-08-29) and marked the node unrecoverable.
+        #
+        # The honest behaviour is a CLEAN, ANNOUNCED reset at switch time. A
+        # cross-provider conversation cannot be carried over at all (the
+        # sessions live in three separate provider stores with no transport
+        # between them), so promising continuity would be D-180's failure in
+        # another field. A failure the user sees when they act is worth far
+        # more than one that surfaces on their next message.
+        from . import providers        # noqa: PLC0415 — avoids a cycle: providers reads TIERS from this module
+        crossed = providers.provider_of(old) != providers.provider_of(tier)
+        if crossed:
+            # a MINTED id no lane will resume: the claude lane starts it with
+            # --session-id, and codex/gemini both fail their marker equality
+            n["session_id"] = str(uuid.uuid4())
+            n["session_unrun"] = True          # the never-run pardon, re-armed
+            n.pop("codex_thread", None)        # lane markers die with the lane
+            n.pop("gemini_session", None)
+            # the ACTOR is told at switch time, not left to discover it on the
+            # next message — that is the whole point of moving this failure
+            # forward. Whether the UI should REFUSE such a switch rather than
+            # warn is a user-facing rule and deliberately not decided here.
+            warnings.append(
+                f"{nid} moves from {providers.provider_of(old)} to "
+                f"{providers.provider_of(tier)} — a different provider, so its "
+                f"conversation CANNOT carry over and it starts a fresh session. "
+                f"Its scratch folder, breadcrumbs and mail are untouched.")
         who = "the user" if actor == USER else f'"{actor}"'
         self._notify([x for x in [nid] if x != actor],
                      f'{who.capitalize()} switched your model {old}→{tier} '
                      f'(seat {self.d["tiers"][old]}→{self.d["tiers"][tier]}). '
-                     f'Your context is intact — carry on.')
+                     + ('Your context is intact — carry on.' if not crossed else
+                        f'That is a different PROVIDER '
+                        f'({providers.provider_of(old)}→'
+                        f'{providers.provider_of(tier)}), so your conversation '
+                        f'could NOT be carried over and you are starting a '
+                        f'fresh session. Your scratch folder, breadcrumbs and '
+                        f'mail are untouched — read them to pick up where you '
+                        f'left off.'))
         self._notify([x for x in [n["parent"]] if x not in (actor, None)],
                      f'{who.capitalize()} switched "{nid}" {old}→{tier}.')
         self._log("switch_model", actor,

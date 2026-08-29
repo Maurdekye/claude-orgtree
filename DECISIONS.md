@@ -2467,6 +2467,57 @@ the helper is redundant defence (removing it alone is an equivalent mutant) and
 is kept only so a future change to `expand_mcp`'s contract cannot silently
 reintroduce the fault.
 
+### D-196 · a model switch that crosses PROVIDERS resets the session, and says so
+Ruling (coordinator, 2026-08-29): `switch_model` compares
+`providers.provider_of(old)` with `providers.provider_of(new)`. Same provider →
+the session survives unchanged (№16). **Different provider → the session is
+replaced**: a freshly minted `session_id`, `session_unrun` re-armed, and the
+dead lane markers (`codex_thread`, `gemini_session`) dropped. The agent is told
+its conversation could not carry over, and the ACTOR gets a warning at switch
+time. `providers.provider_of` is the one implementation of the tier→provider
+axis; callers must not re-ask it inline.
+Why: `session_id` holds a PROVIDER-OWNED handle — a codex threadId, a gemini ACP
+sessionId, a Claude session uuid — and no provider can resume another's. The old
+code never touched the field on a switch, and its docstring explained why: "the
+session survives (№16: --resume honors a changed --model)". **True within the
+Claude lane, false across providers**, and nothing re-checked it when the codex
+and gemini lanes were added.
+Left in place the stale id is not merely useless but FATAL, and the route is
+worth stating because it is not obvious. Each lane decides "may I resume?"
+differently: codex tests `session_id == codex_thread`, gemini tests
+`session_id == gemini_session` — explicit markers, so both correctly refuse a
+foreign id and start fresh. The CLAUDE lane instead asks whether a transcript
+FILE EXISTS, and `transcript_path` deliberately falls back to the supervisor's
+own journal store so a codex thread's record counts as a real transcript (that
+fallback is what lets the desk render codex turns). A codex node that has run
+therefore leaves a journal at exactly the path the claude lane's resume test
+inspects. The test finds it, answers "resumable", and the lane emits
+`--resume <codex threadId>` → "No conversation found with session ID …", which
+destroyed a live agent's whole transcript and marked the node unrecoverable
+(2026-08-29). **A BLINDED DETECTOR**: it does not error, it confidently answers
+the wrong question — D-181's hazard one field over.
+The conversation genuinely cannot be carried across: the three sessions live in
+three separate provider stores with no transport between them, so continuity
+could only ever be pretended, which is D-180's failure in another field. The
+honest behaviour is a clean reset the user is told about **at the moment they
+act**, not a crash on their next message.
+Bounds, and what is deliberately NOT decided here: whether the UI should REFUSE
+a cross-provider switch, or demand confirmation, rather than warn — that is a
+user-facing rule and the user's call, not this ruling's. The ledger behaviour
+above is the safe floor either way: it cannot crash and it cannot lie.
+Knowledge-bearer REHIRE across providers is the same family and is handled
+separately by `multi-provider-fix`'s bearer-rehire ruling — including the
+`bearer_state == "preserving"` consult path, which resumes unconditionally and
+so has no safe cross-provider path at all. (Deliberately not cited by number
+here: that entry is not yet written, and a forward citation would dangle.)
+Load-bearing: `provider_of` answers `"claude"` for an UNKNOWN tier on purpose.
+It decides whether a change crosses lanes, and a wrong "crossed" would reset a
+session that did not need it — destroying a conversation — while a wrong "not
+crossed" merely leaves prior behaviour. The acceptance suite pins BOTH
+directions: a same-lane switch must still preserve and resume its session, so
+"just reset on every switch" — the lazy fix that passes every cross-provider
+check — cannot pass it.
+
 ### D-183 · the gemini probe phase: ACP is the substrate, and four wire facts are load-bearing
 Findings (gemini-provider, 2026-08-29; every one measured live on gemini-cli
 0.57.0, probe logs banked in the implementing agent's scratch). The third

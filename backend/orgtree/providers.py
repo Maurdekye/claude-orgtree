@@ -118,6 +118,29 @@ GEMINI_TIERS: Final[dict[str, int]] = {
 GEMINI_MODELS: Final[dict[str, str]] = {
     t: _LEDGER_MODELS[t] for t in _GEMINI_TIER_NAMES}
 
+def provider_of(tier: str) -> str:
+    """Which PROVIDER a tier runs on — `"openai"` | `"google"` | `"claude"`.
+
+    THE one implementation of that axis (D-196). Tier names are one flat
+    vocabulary and a tier implies its provider (ledger.TIERS' own comment), but
+    until now every caller re-asked the question inline as
+    `tier in CODEX_TIERS` / `tier in GEMINI_TIERS`. D-182 is the standing
+    warning about exactly that shape: three copies of "which MCP servers may
+    this node see" existed, two agreed, and the odd one out was a live bug.
+
+    Unknown tiers answer `"claude"` deliberately. This is used to decide
+    whether a change CROSSES providers, and the safe default for an
+    unrecognised tier is "same lane as the default lane" — a wrong `True` here
+    would silently reset a session that did not need resetting, which destroys
+    a conversation; a wrong `False` merely leaves today's behaviour.
+    """
+    if tier in CODEX_TIERS:
+        return "openai"
+    if tier in GEMINI_TIERS:
+        return "google"
+    return "claude"
+
+
 #: both launch models publish a 1M-token context window. As with the other
 #: providers, the pinned model capability wins over any per-call observation.
 GEMINI_CONTEXT: Final[int] = 1_000_000
