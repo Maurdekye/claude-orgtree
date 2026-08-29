@@ -2577,6 +2577,10 @@ svg.MuiSvgIcon-root {
 }
 .tray-row:hover { background: var(--panel-2); }
 .tray-row.off { opacity: .5; }
+/* The tray is outside a card's provider-theme root, so give its context wheel
+   the row's provider accent explicitly. Without this, Codex rows inherit the
+   page's Claude-orange --accent instead of their own #159acd blue. */
+.tray-row.prov-openai { --accent: var(--prov-openai); }
 /* FR-16: a filtered-out ancestor kept visible so a matching descendant's
    indent still has a parent above it — dimmer than .off, and italic so it
    reads as context rather than a result */

@@ -1965,7 +1965,8 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
                 return (
                 <div key={n.id} role="button" tabIndex={0}
                   className={'tray-row' + (n.state !== 'live' ? ' off' : '')
-                    + (ghost ? ' ghost' : '')}
+                    + (ghost ? ' ghost' : '')
+                    + (n.tier && CODEX_TIERS.includes(n.tier) ? ' prov-openai' : '')}
                   style={{ paddingLeft: 8 + depth * 14 }}
                   title={ghost
                     ? 'shown for context — this row does not match the '

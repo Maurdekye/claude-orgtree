@@ -145,6 +145,28 @@ uiTest('§2 a wheel over the empty canvas still zooms (the carve-out is scoped)'
       'and the camera must actually have zoomed')
   })
 
+uiTest('§2b a Codex agent row carries the provider-theme class for its context wheel',
+  async ({ mount }) => {
+    const { OrgCanvas } = await import('../src/canvas/OrgCanvas')
+    const fixture = tree(['codex-agent'])
+    fixture.roots[0]!.tier = 'sol'
+    fixture.roots[0]!.model_id = 'gpt-5.6-sol'
+    fixture.roots[0]!.occupancy = 58_000
+    fixture.roots[0]!.context_window = 200_000
+    const { el } = await mount(
+      <OrgCanvas tree={fixture} op={() => Promise.resolve({} as never)}
+        slug="mine" toast={noop} mailEvt={null} />)
+    await flush()
+    await inAct(() => { (el.querySelector('.tray-toggle') as HTMLElement).click() })
+    await flush()
+    const row = el.querySelector('.tray-row')
+    assert.ok(row?.classList.contains('prov-openai'),
+      'the Codex tray row lost its provider class, so its context wheel falls '
+      + 'back to the global Claude-orange accent')
+    assert.ok(row?.querySelector('.ctxwheel .fill'),
+      'the fixture context wheel did not render')
+  })
+
 // ------------------------------------------------------------------- height
 // jsdom does no layout (see the file banner), so the CSS is read back from
 // the real stylesheet the app ships, not from a computed box.

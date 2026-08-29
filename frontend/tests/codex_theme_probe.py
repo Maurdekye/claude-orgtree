@@ -1,11 +1,12 @@
-"""Real-browser contract for the Codex desk's two independent color channels.
+"""Real-browser contract for Codex chrome's two independent color channels.
 
     python -B tests/codex_theme_probe.py
     python -B tests/codex_theme_probe.py --expect-fail
 
-The provider chrome is #159acd blue, while the model-tier badge and top stripe
-remain tier-colored (Sol = reddish orange). The known-negative control restores
-Claude terracotta as the provider accent and must be detected.
+The provider chrome is #159acd blue, including the agent-tray context wheel,
+while the model-tier badge and top stripe remain tier-colored (Sol = reddish
+orange). The known-negative control restores Claude terracotta as the provider
+accent and must be detected.
 """
 import argparse
 import pathlib
@@ -21,6 +22,7 @@ CONTROL = """
 .sq.prov-openai { --accent: #d97757; --accent-soft: rgba(217,119,87,.16); }
 .sq.prov-openai.desk { border-color: #d97757; }
 .sq.prov-openai.desk.tier-sol { border-top-color: var(--tier-sol); }
+.tray-row.prov-openai { --accent: #d97757; }
 """
 
 HTML = """
@@ -41,6 +43,9 @@ HTML = """
     <div class="df-foot"><button class="primary">hire</button></div>
   </div></div>
 </div>
+<div class="tray-row prov-openai"><div class="tray-main">
+  <svg class="ctxwheel" viewBox="0 0 16 16"><circle class="fill" /></svg>
+</div></div>
 """
 
 
@@ -69,6 +74,7 @@ def measure(css: str) -> dict[str, str]:
             draftBorder: one('.sq.draft').borderRightColor,
             draftTag: one('.draft-tag').color,
             draftHire: one('.sq.draft button.primary').backgroundColor,
+            trayWheel: one('.tray-row .ctxwheel .fill').stroke,
           };
         }""")
         browser.close()
@@ -83,6 +89,8 @@ def findings(got: dict[str, str]) -> list[str]:
     for key in ("draftBorder", "draftTag", "draftHire"):
         if got[key] != PROVIDER:
             fail.append(f"{key} is {got[key]}, expected provider blue {PROVIDER}")
+    if got["trayWheel"] != PROVIDER:
+        fail.append(f"tray wheel is {got['trayWheel']}, expected provider blue {PROVIDER}")
     for key in ("top", "tier"):
         if got[key] != SOL:
             fail.append(f"{key} is {got[key]}, expected Sol tier color {SOL}")
@@ -114,7 +122,7 @@ def main() -> int:
     if fail:
         print("\n".join("FAIL: " + x for x in fail))
         return 1
-    print("OK — Codex live and uninitialized chrome are #159acd blue; Sol badge/top stripe stay tier orange; ask aura is provider-themed")
+    print("OK — Codex desk, draft, and tray wheel are #159acd blue; Sol badge/top stripe stay tier orange; ask aura is provider-themed")
     return 0
 
 
