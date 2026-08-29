@@ -1,8 +1,8 @@
 # orgtree — the complete configuration reference
 
-Author: session 4f69f83a · 2026-08-04 · compiled from a source sweep, not from memory. Every value
-below was read at the cited line. Build-pinned to `interim-authority` at the time of writing;
-re-check the cited lines if the code has moved.
+Originally compiled from a source sweep on 2026-08-04 and revised as features
+shipped. The source code is authoritative; file and line references here are
+breadcrumbs, not a promise that a later refactor leaves them unchanged.
 
 **How to read this.** Configuration lives at six levels. Each one is set in a different place, at a
 different time, by a different person, and — the part that actually matters — **overrides or is
@@ -166,8 +166,8 @@ Editable at any time; takes effect immediately unless noted. Model at `api.py:75
 | `cascade_hire` | bool | a hire's cost bubbles up the chain (§4.6) |
 | `cascade_alloc` | bool | allocations and upgrades bubble up |
 
-Also on the org doc but not in that panel: `max_depth` (default **10**) and `max_children` (default
-**256**) — runaway insurance, read with defaults at `ledger.py:1350,1358`.
+Also on the org doc but not in that panel: `max_depth` and `max_children` both default to **1024** —
+runaway insurance, read with defaults from `ledger.py`.
 
 ### Org-wide content
 
