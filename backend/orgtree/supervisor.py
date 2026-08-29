@@ -156,9 +156,9 @@ ORACLE_AT = float(os.environ.get("ORGTREE_ORACLE_AT", "0.92"))     # §8.3 state
 # Override with ORGTREE_CONTEXT_WINDOWS='{"opus": 500000, ...}'
 TIER_CONTEXT: dict[str, int] = {"haiku": 200_000, "sonnet": 1_000_000,
                                 "opus": 1_000_000, "fable": 1_000_000}
-# the codex family shares one measured window (providers.CODEX_CONTEXT — the
-# app-server's own modelContextWindow); added before the env override so the
-# user's ORGTREE_CONTEXT_WINDOWS still wins for these tiers too
+# the codex family shares the published model window
+# (providers.CODEX_CONTEXT).  It is added before the env override so the
+# user's ORGTREE_CONTEXT_WINDOWS still wins for these tiers too.
 TIER_CONTEXT.update({t: providers.CODEX_CONTEXT for t in providers.CODEX_TIERS})
 try:
     TIER_CONTEXT.update(json.loads(os.environ.get("ORGTREE_CONTEXT_WINDOWS") or "{}"))

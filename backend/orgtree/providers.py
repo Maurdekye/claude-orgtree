@@ -78,12 +78,12 @@ CODEX_TIERS: Final[dict[str, int]] = {
 CODEX_MODELS: Final[dict[str, str]] = {
     t: _LEDGER_MODELS[t] for t in _CODEX_TIER_NAMES}
 
-#: the context window the app-server itself reports per turn
-#: (`thread/tokenUsage/updated → modelContextWindow: 258400`, measured on the
-#: live account, Appendix C) — all three gpt-5.6 tiers share it. Long-context
-#: API pricing (2× input) starts near this boundary, so treating it as "full"
-#: keeps compaction ahead of the price step.
-CODEX_CONTEXT: Final[int] = 258_400
+#: GPT-5.6's published context window.  The Codex app-server may report a
+#: smaller `modelContextWindow` for an individual call, but that operational
+#: hint is not the model's ceiling and must not make Orgtree compact a Sol
+#: thread hundreds of thousands of tokens early.  As with Claude's 1M tiers,
+#: the pinned model capability wins over a CLI-side observation.
+CODEX_CONTEXT: Final[int] = 1_050_000
 
 #: CURRENT listed API prices per M tokens — (input, cached input, output) —
 #: for COST-dollars, including sol's promotional $4/$20 cut (standard $5/$30,

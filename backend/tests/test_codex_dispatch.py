@@ -144,7 +144,7 @@ def main() -> int:
         # at sol's CURRENT prices (4.00 / 0.40 / 20.00 per M)
         eq(n.get("cost_usd"), 0.000324, "dollars priced from tokens")
         eq(n.get("occupancy"), 30, "occupancy = input incl cached")
-        eq(n.get("context_window"), 258_400, "codex window pinned")
+        eq(n.get("context_window"), 1_050_000, "codex window pinned")
         ring = n.get("turns") or []
         eq(len(ring), 1, "one turn ring entry")
         eq(ring[0].get("toks"), 12, "output tokens ride the ring")
