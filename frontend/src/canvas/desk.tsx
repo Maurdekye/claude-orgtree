@@ -1384,8 +1384,27 @@ export function LineagePanel({ node, op, slug, close }: LineagePanelProps) {
 // 2026-08-02). Anchored at the start because _envelope builds the prelude
 // notices-first; the trailing \n* eats the blank line before the mail block.
 const NOTICE_RE = /^\s*\[ORG NOTICES[^\]\n]*\]\n([\s\S]*?)\n\[END NOTICES\]\n*/
+// D-192 (user, 2026-08-29): "i really do not think the org structure needs to
+// be seen by the user; that's extraneous information to them that they can
+// just observe directly." D-181 prepends an [ORG STATE …] block — roster,
+// chart, credits — to EVERY non-command turn so the agent's cached prefix
+// stops churning. The agent must keep receiving it; the reader has the live
+// chart on screen and does not need a text rendering of it in every bubble.
+// So it is DELETED here, not carded like notices are: a collapsed card would
+// still cost a row, and there is nothing in it the canvas is not already
+// showing. The transcript keeps it — this is display only.
+const ORGSTATE_RE = /^\s*\[ORG STATE[^\]\n]*\]\n[\s\S]*?\n\[END ORG STATE\]\n*/
 const splitNotices = (t: string | null | undefined) => {
-  const s = t ?? ''
+  // ⚠ THE STATE BLOCK COMES OFF FIRST, AND THE ORDER IS LOAD-BEARING.
+  // `_run_one_turn` prepends the state block AFTER the prelude is joined, so
+  // the wire order is [ORG STATE] · [ORG NOTICES] · [MAIL] · body. NOTICE_RE
+  // is anchored at start, so once D-181 shipped it stopped matching and the
+  // notices card silently stopped rendering — the reader got raw
+  // `[ORG NOTICES …]` chrome in the bubble instead. Stripping the state block
+  // here restores that, which is why this lives inside `splitNotices` rather
+  // than beside it: every call site needs both, and one that got only the
+  // strip would go back to leaking notices chrome.
+  const s = (t ?? '').replace(ORGSTATE_RE, '')
   const m = NOTICE_RE.exec(s)
   if (!m) return { notices: [] as string[], rest: s }
   const notices = (m[1] ?? '').split('\n')
