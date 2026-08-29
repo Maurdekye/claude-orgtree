@@ -42,8 +42,9 @@ const USAGE_LABEL: Record<string, string> = {
   weekly_all: 'weekly (7 day)',
 }
 const usageLabel = (l: UsageLimit): string =>
-  l.kind === 'weekly_scoped' && l.model ? `weekly ${l.model}`
+  l.label || (l.kind === 'weekly_scoped' && l.model ? `weekly ${l.model}`
     : USAGE_LABEL[l.kind] ?? l.kind.replace(/_/g, ' ')
+  )
 const usageResets = (iso: string | null): string => {
   if (!iso) return ''
   const ms = new Date(iso).getTime() - Date.now()
@@ -130,12 +131,13 @@ export function UsageBars({ u }: { u: AccountUsage }) {
   }
   return (
     <>
-      {u.plan && <div className="dim">Claude {u.plan}</div>}
+      {u.plan && <div className="dim">{u.provider ?? 'Claude'} {u.plan}</div>}
       {(u.limits ?? []).map((l) => {
         const pct = Math.max(0, Math.min(100, l.percent ?? 0))
         const sev = sevOf(l)
         return (
-          <div className="usage-row" key={l.kind + (l.model ?? '')}>
+          <div className="usage-row"
+            key={l.group + l.kind + (l.model ?? '') + (l.label ?? '')}>
             <div className="u-head">
               <span className="u-label">{usageLabel(l)}</span>
               <span className="u-reset">{usageResets(l.resets_at)}</span>

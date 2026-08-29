@@ -3,7 +3,8 @@ import type { ReactNode } from 'react'
 import {
   audienceAction, BASE, clearInbox, createOrg, deleteOrg,
   fileBase, fileUrl, getAudiences, getDefaults, getEvents, getHost, getInbox, getOrgMd,
-  getOrgNet, getSweepPreview, getTree, getUsageAll, getUsagePeek, killAll, listOrgs,
+  getCodexUsage, getCodexUsagePeek, getOrgNet, getSweepPreview, getTree,
+  getUsageAll, getUsagePeek, killAll, listOrgs,
   markRead, openWs,
   probeHub, putOrgMd,
   resumeFrozen, runOp, saveDefaults, saveKiosk, saveSettings, sendMessage,
@@ -118,7 +119,9 @@ export default function App() {
   // that cache worth reading. usePolled also wakes on the livebus, so the
   // interval is only the floor.
   const usagePeek = usePolled(BASE ? noUsagePeek : getUsagePeek, [], 60000)
-  const usageAlert = useMemo(() => usagePeak(usagePeek), [usagePeek])
+  const codexUsagePeek = usePolled(BASE ? noUsagePeek : getCodexUsagePeek, [], 60000)
+  const usageAlert = useMemo(
+    () => usagePeak(usagePeek, codexUsagePeek), [usagePeek, codexUsagePeek])
   // mobile compact orgbar (D-125 ruling 2026-08-14, 'one row, banner→chip'):
   // the detail chips + resume banner collapse behind a ⋯ toggle
   const [barMore, setBarMore] = useState(false)
@@ -331,7 +334,7 @@ export default function App() {
           <GitHubIcon fontSize="inherit" /></a>
         {!BASE &&
           <button className={'h1-usage' + (usageAlert ? ' u-' + usageAlert.sev : '')}
-            title={usageAlert?.title ?? 'Claude usage — every registered account'}
+            title={usageAlert?.title ?? 'usage limits — Claude and Codex'}
             onClick={() => setShowUsage(true)}>
             <DataUsageIcon fontSize="inherit" /></button>}
         {/* the accounts panel (machine-local routing, 2026-08-25). Beside
@@ -676,7 +679,7 @@ export default function App() {
                     endpoint (the public gateway 404s it) */}
                 {!tree.public &&
                   <button className={'iconbtn' + (usageAlert ? ' u-' + usageAlert.sev : '')}
-                    title={usageAlert?.title ?? 'Claude subscription usage'}
+                    title={usageAlert?.title ?? 'usage limits — Claude and Codex'}
                     onClick={() => setShowUsage(true)}>
                     <DataUsageIcon fontSize="inherit" /></button>}
                 {!tree.public &&
@@ -823,8 +826,8 @@ const USAGE_LABEL: Record<string, string> = {
 }
 
 const usageLabel = (l: UsageLimit): string =>
-  l.kind === 'weekly_scoped' && l.model ? `weekly ${l.model}`
-    : USAGE_LABEL[l.kind] ?? l.kind.replace(/_/g, ' ')
+  l.label || (l.kind === 'weekly_scoped' && l.model ? `weekly ${l.model}`
+    : USAGE_LABEL[l.kind] ?? l.kind.replace(/_/g, ' '))
 
 const usageResets = (iso: string | null): string => {
   if (!iso) return ''
@@ -854,24 +857,28 @@ export const usageSeverity = (l: UsageLimit): '' | 'warn' | 'crit' => {
  *  whichever lane arrives first is the one that freezes an agent, and the
  *  breakdown is one click away. Ties break on percent so the tooltip names
  *  the lane actually closest to it. */
-export const usagePeak = (u: UsagePeek | null):
+export const usagePeak = (...readouts: (UsagePeek | null)[]):
 { sev: 'warn' | 'crit'; title: string } | null => {
-  if (!u?.available) return null
-  let best: { sev: 'warn' | 'crit'; l: UsageLimit } | null = null
-  for (const l of u.limits ?? []) {
-    const sev = usageSeverity(l)
-    if (!sev) continue
-    if (!best || (sev === 'crit' && best.sev === 'warn')
-      || (sev === best.sev && (l.percent ?? 0) > (best.l.percent ?? 0))) {
-      best = { sev, l }
+  let best: { sev: 'warn' | 'crit'; l: UsageLimit; provider: string } | null = null
+  for (const u of readouts) {
+    if (!u?.available) continue
+    for (const l of u.limits ?? []) {
+      const sev = usageSeverity(l)
+      if (!sev) continue
+      if (!best || (sev === 'crit' && best.sev === 'warn')
+        || (sev === best.sev && (l.percent ?? 0) > (best.l.percent ?? 0))) {
+        best = { sev, l, provider: u.provider ?? 'Claude' }
+      }
     }
   }
   if (!best) return null
   const r = usageResets(best.l.resets_at)
+  const source = best.provider === 'Claude'
+    ? 'Claude subscription usage' : `${best.provider} usage`
   return {
     sev: best.sev,
     title: `${usageLabel(best.l)} at ${Math.round(best.l.percent ?? 0)}%`
-      + (r ? ` · ${r}` : '') + ' — Claude subscription usage',
+      + (r ? ` · ${r}` : '') + ` — ${source}`,
   }
 }
 
@@ -883,19 +890,21 @@ export const usagePeak = (u: UsagePeek | null):
 const NO_PEEK: UsagePeek = Object.freeze({ available: false })
 const noUsagePeek = (): Promise<UsagePeek> => Promise.resolve(NO_PEEK)
 
-function UsageModal({ close }: { close: () => void }) {
+export function UsageModal({ close }: { close: () => void }) {
   useEsc(close)
   // ⚠ EVERY registered account, primary first then fallbacks in priority
   // order (user ruling 2026-08-25) — one section of bars per account. The
   // bar markup itself lives in UsageBars (canvas/accounts.tsx) so this modal
   // and the panel's per-row buttons cannot drift apart.
   const all = usePolled(getUsageAll, [], 60000)
+  const codex = usePolled(getCodexUsage, [], 60000)
   return (
     <div className="overlay" onClick={(e) => { e.stopPropagation(); close() }}>
       <div className="settings usage-modal" onClick={(e) => e.stopPropagation()}>
-        <h3><DataUsageIcon fontSize="inherit" /> usage</h3>
-        {!all ? <div className="dim">loading…</div>
-          : (all.accounts ?? []).map((a) => (
+        <h3><DataUsageIcon fontSize="inherit" /> usage limits</h3>
+        {!all && !codex ? <div className="dim">loading…</div>
+          : <>
+          {(all?.accounts ?? []).map((a) => (
             <div className="usage-acct" key={a.account}>
               <div className="usage-acct-head">
                 <span className="acct-label">{a.label}</span>
@@ -905,6 +914,14 @@ function UsageModal({ close }: { close: () => void }) {
               <UsageBars u={a} />
             </div>
           ))}
+          {codex && <div className="usage-acct" key={codex.account}>
+            <div className="usage-acct-head">
+              <span className="acct-label">{codex.provider ?? 'Codex'}</span>
+              <span className="dim"> · {codex.label}</span>
+            </div>
+            <UsageBars u={codex} />
+          </div>}
+          </>}
         {all && !(all.accounts ?? []).length &&
           <div className="dim">no accounts registered</div>}
         <div className="row">

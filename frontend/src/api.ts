@@ -263,6 +263,9 @@ export const getProviders = (): Promise<ProvidersPayload> => req('/api/providers
 export const getUsage = (): Promise<UsagePayload> => req('/api/usage')
 // cache-only — the glow polls this; only the modal above may cost a fetch
 export const getUsagePeek = (): Promise<UsagePeek> => req('/api/usage/peek')
+export const getCodexUsage = (): Promise<AccountUsage> => req('/api/codex/usage')
+// cache-only, like the Claude peek above
+export const getCodexUsagePeek = (): Promise<UsagePeek> => req('/api/codex/usage/peek')
 // ---- machine-local account routing (user redesign 2026-08-25) ----------
 // The primary row is the machine's own login; `keys` are pasted
 // `claude setup-token` fallbacks. NO token material in any response — a key

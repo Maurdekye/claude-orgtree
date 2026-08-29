@@ -39,7 +39,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, model_validator
 
 from . import ledger as ledger_mod
-from . import accounts, limits, net, providers, sandbox, store, subproxy, supervisor
+from . import (accounts, codex_limits, limits, net, providers, sandbox, store,
+               subproxy, supervisor)
 from .ledger import LedgerError, Org, USER, VIS_LEVELS, norm_dirs, norm_tools
 
 if TYPE_CHECKING:
@@ -1973,6 +1974,24 @@ async def claude_usage() -> dict[str, Any]:
 def claude_usage_peek() -> dict[str, Any]:
     """Cache-only usage standing for the header glow — see `limits.peek`."""
     return limits.peek()
+
+
+@app.get("/api/codex/usage")
+async def codex_usage() -> dict[str, Any]:
+    """The signed-in Codex account's rate-limit windows.
+
+    The local Codex app-server owns both the protocol and the credentials;
+    this route only normalizes its read-only response for the shared bars.
+    The process exchange is blocking, so keep it off the event loop.
+    """
+    from fastapi.concurrency import run_in_threadpool
+    return await run_in_threadpool(codex_limits.fetch)
+
+
+@app.get("/api/codex/usage/peek")
+def codex_usage_peek() -> dict[str, Any]:
+    """Cache-only Codex usage standing for the header warning glow."""
+    return codex_limits.peek()
 
 
 # ------------------------------------------ machine-local account routing

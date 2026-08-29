@@ -212,6 +212,38 @@ def main():
             reply(rid, {"serverInfo": {"name": "fakecodex", "version": "0"}})
         elif method == "initialized":
             pass
+        elif method == "account/rateLimits/read":
+            # The real 0.150.1 protocol's full snapshot: one canonical bucket
+            # plus a named/model bucket with two windows.  `codex` is repeated
+            # in the map on purpose — the production normalizer must dedupe it.
+            codex = {
+                "limitId": "codex", "limitName": None,
+                "primary": {"usedPercent": 12,
+                            "windowDurationMins": 10080,
+                            "resetsAt": 1_900_000_000},
+                "secondary": None, "planType": "prolite",
+                "rateLimitReachedType": None,
+            }
+            reply(rid, {
+                "rateLimits": codex,
+                "rateLimitsByLimitId": {
+                    "codex": codex,
+                    "codex_spark": {
+                        "limitId": "codex_spark",
+                        "limitName": "GPT-Spark",
+                        "primary": {"usedPercent": 81,
+                                    "windowDurationMins": 300,
+                                    "resetsAt": 1_900_000_100},
+                        "secondary": {"usedPercent": 93,
+                                      "windowDurationMins": 10080,
+                                      "resetsAt": 1_900_000_200},
+                        "planType": "prolite",
+                        "rateLimitReachedType": None,
+                    },
+                },
+                "rateLimitResetCredits": {"availableCount": 0,
+                                           "credits": []},
+            })
         elif method == "thread/start":
             dyn_tools = params.get("dynamicTools") or []
             reply(rid, {"thread": {"id": thread_id}})

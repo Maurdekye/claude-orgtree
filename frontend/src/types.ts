@@ -893,6 +893,9 @@ export interface UsageLimit {
   resets_at: string | null
   is_active: boolean
   model: string | null
+  /** Provider-supplied display label. Claude's established kinds omit it;
+   *  Codex uses it for named quota buckets and their actual window lengths. */
+  label?: string | null
 }
 
 export interface UsagePayload {
@@ -967,6 +970,8 @@ export interface TierStanding {
 export interface AccountUsage {
   account: string
   label: string
+  /** Present for a non-Claude provider section in the combined usage modal. */
+  provider?: string
   available: boolean
   /** a KEY row's answer in place of percentages, which it can never have
    *  (user ruling 2026-08-25): the internal routing state we hold for this
@@ -999,6 +1004,8 @@ export interface UsageAllPayload {
  *  a claim about now (the modal still shows those bars, dated). */
 export interface UsagePeek {
   available: boolean
+  /** Defaults to Claude for the established endpoint. */
+  provider?: string
   error?: string
   limits?: UsageLimit[]
   /** seconds since the cached readout was fetched */

@@ -37,7 +37,8 @@ import uuid
 from collections.abc import Callable, Iterable, Mapping
 from typing import Any, Final, cast
 
-from . import accounts, imgblock, limits, net, providers, sandbox as sbx, store, tokens
+from . import (accounts, codex_limits, imgblock, limits, net, providers,
+               sandbox as sbx, store, tokens)
 from .ledger import EXTERN, SYSTEM, USER, LedgerError, Org, expand_mcp, now as now_iso
 from .schema import (Denial, FrozenInfo, InflightInfo, KioskCfg, MailEntry,
                      NodeDoc, NoticeEntry, TurnStat)
@@ -4320,6 +4321,10 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                            f"turn/failed{' — ' + tail if tail else ''}")
     # "interrupted" is a COMPLETED turn (C.3) — same as claude's ⏸
     tu = res_raw.get("token_usage")
+    # The app-server pushes the same account standing the usage modal can read.
+    # Fold it into the shared cache so the header glow can warn before anyone
+    # opens the modal.  Notifications are sparse; codex_limits merges them.
+    codex_limits.observe(res_raw.get("rate_limits"))
     # The item lifecycle already journaled the conversation in real time.
     # Retain one fallback for a non-conforming/older app-server that emitted
     # deltas but no authoritative item/completed notification, then append a
