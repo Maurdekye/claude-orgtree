@@ -21,7 +21,7 @@ import {
 } from './icons'
 import { DirList } from './forms'
 import { FolderPickerHost } from './picker'
-import { ALL_TIERS, attentionPip, deskDpi, fallbackActive, freezeKind, orgPxc, primedRestartChip, setDeskDpi, TIER_LETTER, usePolled } from './canvas/shared'
+import { ALL_TIERS, attentionPip, deskDpi, fallbackActive, freezeKind, orgPxc, primedRestartChip, setCrowdPilesOn, setDeskDpi, TIER_LETTER, useCrowdPiles, usePolled } from './canvas/shared'
 import { AskCard } from './canvas/asks'
 import { AccountsPanel, UsageBars } from './canvas/accounts'
 import { addPending, dropPending, ingestPulse, ingestStream, resetConvos } from './convo'
@@ -1834,6 +1834,33 @@ function DeskTextSize() {
   )
 }
 
+// D-198 — collapsing a wide team's ACTIVE agents into one stack. A DEVICE
+// preference like the desk text size above: it lives in localStorage under a
+// key with no slug in it, so it is APP-WIDE and survives switching org (user,
+// verbatim: "app wide, not org wide"). It sits in this per-org panel only
+// because that is where the other browser-local preference already lives —
+// the label says so, since a machine setting inside an org's settings would
+// otherwise read as belonging to that org. Applied immediately, so like the
+// text size it is not part of the settings save.
+function CrowdStackToggle() {
+  const on = useCrowdPiles()
+  return (
+    <>
+      <div className="field-label">canvas — this browser only</div>
+      <label className="checkline">
+        <input type="checkbox" checked={on}
+          onChange={(e) => setCrowdPilesOn(e.target.checked)} />
+        collapse a wide team&apos;s active agents into one stack
+      </label>
+      <div className="hint">Off by default: every active agent keeps its own
+        card, however wide the team gets. Turn this on and an agent with more
+        than eight active reports stacks the reports that have none of their
+        own into a single card you page through — the same stack the retired
+        agents use, which is unaffected either way.</div>
+    </>
+  )
+}
+
 function SettingsPanel({ tree, toast, close }: {
   tree: TreePayload
   toast: ToastFn
@@ -1936,6 +1963,7 @@ function SettingsPanel({ tree, toast, close }: {
       <div className="settings" onClick={(e) => e.stopPropagation()}>
         <h3><SettingsIcon fontSize="inherit" /> {tree.name} — settings</h3>
         <DeskTextSize />
+        <CrowdStackToggle />
         {/* folder access lives on the eye's ⚙ gear panel (user ruling) */}
         <div className="field-label">top-level grant cap</div>
         <input type="number" min="1" step="1" value={maxTop} style={{ width: '8em' }}

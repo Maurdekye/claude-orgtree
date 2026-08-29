@@ -14,7 +14,7 @@ import {
 } from '../icons'
 import {
   ago, attentionPip, CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DOG_H, DOG_W, DRAFT, ease, edgeJumpPlacement, type EJForm, EXTERN, fallbackActive, flatten, GEMINI_TIER_LETTER, GEMINI_TIER_SEAT, GEMINI_TIERS, INBOX, INBOX_H, layout, NODE_H, NODE_W, orgPxc, segD,
-  segPoint, sizeOf, smooth, SPRING_C, SPRING_K, TIER_LETTER, TIERS, USER, USER_H,
+  segPoint, sizeOf, smooth, SPRING_C, SPRING_K, TIER_LETTER, TIERS, useCrowdPiles, USER, USER_H,
   USER_W, withDraftTree, Z_DESK, Z_MAX, Z_MINI,
 } from './shared'
 import type {
@@ -163,6 +163,10 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
       return nf
     })
   }, [slug])
+  // D-198: collapsing ACTIVE agents into a stack is opt-in and off by default.
+  // Read as state (not by calling crowdPilesOn() inline) so flipping the switch
+  // re-piles the canvas under live agents instead of waiting for a reload.
+  const crowdPiles = useCrowdPiles()
   const piles = useMemo(() => {   // pile key ("<parent>|a"/"<parent>|c") → pile
     const out = new Map<string, Pile>()
     const walk = (n: CanvasNode) => {
@@ -182,8 +186,16 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
       // their own) into one pile, same front/picker mechanics as the retired
       // pile. Non-leaf reports keep their own columns; the draft card never
       // stacks (hiring stays visible at any width).
+      // ⚠ OPT-IN since D-198 (user ruling 2026-08-29): OFF unless the reader
+      // has turned it on, so a wide team shows every one of its agents by
+      // default. Gated HERE, at the one place a crowd pile is constructed,
+      // rather than at each consumer: `hidden`, `layout`, `pileByFront`,
+      // `pileOfRef`, the picker and the `.pile-stack` render all derive from
+      // this map, so an empty map is exactly the shape they already handle for
+      // every org with eight reports or fewer. The RETIRED pile above is a
+      // separate behaviour and is deliberately untouched.
       const active = kids.filter((c) => c.state !== 'archived' && c.id !== DRAFT)
-      if (active.length > 8) {
+      if (crowdPiles && active.length > 8) {
         const leaves = active.filter((c) => !(c.children ?? []).length)
         if (leaves.length >= 2) {
           const key = n.id + '|c'
@@ -200,7 +212,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
     }
     walk(vroot)
     return out
-  }, [vroot, pileFront])
+  }, [vroot, pileFront, crowdPiles])
   const pileByFront = useMemo(() => {
     const out = new Map<string, Pile>()
     for (const p of piles.values()) out.set(p.front, p)
