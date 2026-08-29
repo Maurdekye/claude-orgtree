@@ -1853,6 +1853,56 @@ idle — `_auto_cheap_ready` does not check `bearer_state`, while the archived
 bearer is exempt at `supervisor.py`'s sweep. Same rule, more occasions to meet
 it. Unresolved on purpose; it is a separate ruling and not this one's to make.
 
+### D-181 · live org state never rides the appended system prompt
+Ruling (coordinator, 2026-08-29, on a measured diagnosis): anything whose value
+can change because a DIFFERENT agent was hired, retired, retooled or
+reallocated is delivered in the per-turn user envelope (`org_state_block`),
+never in `identity_prompt`. The system prompt keeps only what is stable for the
+agent itself — id, superior, charter and the §15 ancestor cascade, folder
+grants, skills, tool rules.
+
+Why: `identity_prompt` is written to `.orgtree-identity.md` and passed as
+`--append-system-prompt-file` before EVERY spawn (№29). The Anthropic prompt
+cache is a strict PREFIX match and `system` precedes `messages`, so one byte of
+drift there discards the whole conversation cache and the agent re-pays its
+entire context. The old string carried the org chart, the roster, the credit
+balance, the org-wide fable lock and the open ask — so the org's ordinary
+bookkeeping was silently billing every agent for a full context reload.
+
+Measured before the split (60 nodes, 1,441 resumes, 3 orgs, from the CLI
+transcripts): **68% of all resumes were cold**; one hire rewrote **6 of 8** live
+agents' system prompts; an org-wide `fable_lock` toggle hit **8 of 8**; cold
+rate tracked how much org state a node rendered (`org_visibility` self 33% vs
+full 73%) and that gap **survives a gap-length control** (0% vs 55% cold at
+sub-60s gaps, so it is not TTL); 196.6M cache-creation tokens were written on
+cold resumes against 2.6M on warm ones. After the split the same instrument
+reports **0/8 for every one of those org changes**
+(`test_prompt_cache_stability.py` pins it; the A/B harness lives in the
+diagnosing agent's scratch and is re-runnable).
+
+Bounds: an agent's OWN scope change may still cost that agent one cold turn,
+and deliberately does — that is one agent, once, for a change to itself, rather
+than six bystanders. Note the ledger CASCADES dir grants to the ancestor and
+re-clamps descendants, so "its own scope" is a slightly wider set than one
+node; that behaviour predates this entry and is unchanged by it. Slash-command
+turns get no state block, matching the existing drain, which already skips
+notices and mail for them because the `/` must be the first character the CLI
+sees. This entry does NOT touch the `org_visibility` default (which is `full`);
+that is a standing user ruling and remains the user's call.
+
+Load-bearing: ① the block is prepended AFTER the `prelude` construction and is
+never folded into it — `prelude` being empty is D-175's phantom-drop predicate,
+and a block that is never empty would silently disable that drop. ② It is
+attached AFTER the inflight snapshot, so a replay re-derives a fresh block
+instead of replaying a stale one. ③ It is attached BEFORE the provider seam, so
+the codex lane gets it through the same door. ④ The system prompt must keep
+POINTING at the block; without that an agent reads a prompt naming no reports
+and no peers and concludes it has none. ⑤ Nothing in that pointer sentence may
+contain a bare tool verb — `test_mcptool`'s recital-gap pin matches verbs as
+substrings, and a first draft saying "when other agents move" took
+`orgtree_move` out of the deliberately-absent set. ⑥ `orgtree_chart` must call
+BOTH halves, or the chart tool renders no chart.
+
 ### D-110 · FR-19 (name-gen button) is DISMISSED — no viable access path
 Ruling (user, 2026-08-14): the feature is dropped entirely. Both branches of
 the access fork fail its size: "an entire cli turn is excessive, expensive,

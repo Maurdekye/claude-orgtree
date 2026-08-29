@@ -401,14 +401,30 @@ def main():
             "the per-turn nudge fires with no request open — it would tell " \
             "an agent to re-read a question it never asked"
         org.ask_user("boss", "ship now or wait?")
-        p = supervisor.identity_prompt(org, "boss")
-        assert "still OPEN" in p and "orgtree_withdraw_ask" in p, p[-600:]
+        # ⚠ D-181 MOVED THE PER-TURN NUDGE, NOT REMOVED IT. It now rides
+        # `org_state_block`, which is prepended to the turn text instead of
+        # baked into the appended system prompt — an open ask is live org
+        # state, and anything live in the system prompt discards the whole
+        # conversation cache every time it changes (see
+        # test_prompt_cache_stability.py). The D-103 property this check
+        # exists for is unchanged: on a turn that begins with a request open,
+        # the agent is told so, is shown the question, and is told to
+        # withdraw rather than re-ask.
+        p = supervisor.org_state_block(org, "boss")
+        assert "still OPEN" in p, p[-600:]
         assert "ship now or wait?" in p, \
             "the prompt does not quote the question, so the agent cannot " \
             "judge whether it still stands"
         # and it must not suggest re-asking: that REPLACES, it does not end
         assert "do not re-ask" in p, p[-600:]
-    check("☞ the identity prompt names an open request and says to withdraw "
+        assert "orgtree_withdraw_ask" in p, \
+            "the nudge no longer names the tool that ends the request"
+        # the STANDING catalogue entry stays in the system prompt (asserted
+        # via `bare` above) — the two must not collapse into one place
+        assert "still OPEN" not in supervisor.identity_prompt(org, "boss"), \
+            "the live per-turn nudge leaked back into the cached system " \
+            "prompt — that is the D-181 regression"
+    check("☞ the turn briefing names an open request and says to withdraw "
           "it if this turn made it moot", _prompt_names_the_open_request)
 
     print("FR-13/FR-14 · scope requests + the one-submit batch:")

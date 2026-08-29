@@ -2593,7 +2593,18 @@ def bare_banner_turns(session_id: str) -> list[str]:
 
     This is the symptom as an agent experiences it, which is the only place it
     is unambiguous: the banner is the nudge itself, so its presence proves
-    nothing; what makes it a phantom is that NOTHING was prepended to it."""
+    nothing; what makes it a phantom is that NOTHING was prepended to it.
+
+    ⚠ D-181 CHANGED WHAT "NOTHING" LOOKS LIKE, and this detector had to follow
+    or it could never fire again. Every non-command turn now opens with an
+    `[ORG STATE …]` block carrying the roster, chart and credits. That block is
+    unconditional scaffolding — exactly like the `(orgtree)` banner itself — so
+    its presence is no more evidence of real content than the banner's is.
+    Strip it first, then ask the original question of what remains. Left
+    unstripped, this function returned [] for every turn including genuine
+    phantoms, which is a detector that reports a clean sheet because it has
+    gone blind (caught by this suite's own pre-fix canary, 2026-08-29 — the
+    canary earning its keep exactly as intended)."""
     out = []
     for p in glob.glob(os.path.join(HOME, ".claude", "projects", "*",
                                     session_id + ".jsonl")):
@@ -2607,9 +2618,14 @@ def bare_banner_turns(session_id: str) -> list[str]:
             c = (rec.get("message") or {}).get("content")
             if not isinstance(c, str):
                 continue
-            if c.lstrip().startswith("(orgtree)") and "[MAIL" not in c \
-                    and "[ORG NOTICES" not in c:
-                out.append(c[:120])
+            body = c.lstrip()
+            if body.startswith("[ORG STATE"):          # D-181 scaffolding
+                end = body.find("[END ORG STATE]")
+                if end != -1:
+                    body = body[end + len("[END ORG STATE]"):].lstrip()
+            if body.startswith("(orgtree)") and "[MAIL" not in body \
+                    and "[ORG NOTICES" not in body:
+                out.append(body[:120])
     return out
 
 

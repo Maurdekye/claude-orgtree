@@ -3592,8 +3592,19 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                 # separate listing tool would have to re-derive that. Two
                 # implementations of "what may this agent see" agree the day
                 # they are written and nothing makes them agree afterwards.
+                # ⚠ D-181 SPLIT THE PROMPT, SO THIS TOOL TAKES BOTH HALVES.
+                # The chart, the credit balance and the roster moved OUT of
+                # `identity_prompt` into `org_state_block` (they are live org
+                # state and were busting every agent's prompt cache). This
+                # tool's whole job is to answer "what does the org look like
+                # from here", so calling only the stable half would return a
+                # chart tool that renders no chart. Both halves, concatenated,
+                # is exactly what this tool returned before the split.
+                _ia = _arg_flag(a, "include_archived")
                 return {"chart": supervisor.identity_prompt(
-                    org, body.node, include_archived=_arg_flag(a, "include_archived"))}
+                    org, body.node, include_archived=_ia)
+                    + "\n\n" + supervisor.org_state_block(
+                        org, body.node, include_archived=_ia)}
             if body.tool == "orgtree_send_file":
                 # filesystem-only (org doc untouched) — runs outside DOC_LOCK
                 # with the other read-shaped tools

@@ -2219,32 +2219,49 @@ def _subtree_ids(org: Org, rid: str) -> list[str]:
     return out
 
 
-def identity_prompt(org: Org, nid: str, include_archived: bool = False) -> str:
-    """№29: stable identity + org position, regenerated fresh every turn. How much
-    of the org chart it reveals is the node's `org_visibility` scope (delegateable):
-    self → itself + reports · team → + parent & peers by name · subtree → + its full
-    subtree · full → the entire chart down from the user.
+ORG_STATE_OPEN: Final = "[ORG STATE"
+ORG_STATE_CLOSE: Final = "[END ORG STATE]"
 
-    D-178: ARCHIVED nodes are hidden by default — this text is rebuilt into
-    every single turn of every agent, and on a working org the dead outnumber
-    the living several times over, so the org structure the chart exists to
-    show was being buried under the list of who used to be there. They are
-    hidden, NOT forgotten: each parent that retired anyone carries a count in
-    their place, and the chart closes with the route to the full list. That
-    pointer is load-bearing, not decoration — see the note where it is
-    written."""
+
+def org_state_block(org: Org, nid: str, include_archived: bool = False) -> str:
+    """D-181: the VOLATILE half of an agent's briefing, delivered per turn in
+    the user-message envelope instead of in the appended system prompt.
+
+    ⚠ WHY THIS IS NOT IN THE SYSTEM PROMPT ANY MORE, because it will look like
+    gratuitous indirection to whoever reads this next and it is not. Everything
+    in here changes because some OTHER agent moved — was hired, retired,
+    retooled, reallocated. The appended system prompt is rewritten before every
+    spawn (see the `--append-system-prompt-file` site), and the Anthropic prompt
+    cache is a strict PREFIX match with `system` ahead of `messages`. So one
+    byte of drift in the system prompt discards the entire conversation cache
+    and the agent re-pays its whole context.
+
+    MEASURED, on this machine, before the split (cache-misses, 2026-08-29):
+    one hire changed 6 of 8 live agents' system prompts, i.e. made six unrelated
+    agents re-pay their full context on their next turn; an org-wide fable_lock
+    toggle hit 8 of 8. Across 60 nodes / 1,441 resumes, 68% of all resumes were
+    cold, and the cold rate tracked exactly how much org state a node rendered:
+    org_visibility self 33% vs full 73%, and that gap survives a gap-length
+    control (0% vs 55% cold at sub-60s gaps). 196.6M cache-creation tokens were
+    written on cold resumes against 2.6M on warm ones.
+
+    Riding the turn envelope costs this block's own tokens once and leaves the
+    conversation prefix untouched. NOTHING WAS REMOVED — every line an agent
+    used to read here it still reads, one position later in the request.
+
+    ⚠ SO DO NOT MOVE ANY OF THIS BACK, and do not add a new live-org field to
+    `identity_prompt` because it is "just one line". One line is all it takes;
+    the whole defect was one line's worth of drift."""
     n = org.node(nid)
     sc = n["scope"]
     vis = sc.get("org_visibility", "team")
     kids = org.children(nid) or ["none yet"]
 
     if vis == "self":
-        position = (f"Your reports: {', '.join(kids)}. You have a superior you can "
-                    f"escalate to; its identity is not disclosed to you.")
+        position = f"Your reports: {', '.join(kids)}."
     else:
-        parent = n["parent"] or "the user"
         sibs = [s for s in org.children(n["parent"]) if s != nid] or ["none"]
-        position = (f"Your superior: {parent}. Your reports: {', '.join(kids)}. "
+        position = (f"Your reports: {', '.join(kids)}. "
                     f"Your peers: {', '.join(sibs)}.")
     stats: dict[str, int] = {}
     if vis == "subtree":
@@ -2277,6 +2294,104 @@ def identity_prompt(org: Org, nid: str, include_archived: bool = False) -> str:
               "in full. Before hiring anyone new, check whether one of them "
               "already did this work: rehiring restores an expert that "
               "already knows this codebase and its dead ends.)")
+
+    fable_line = ""
+    if org.d.get("fable_lock"):
+        fable_line = ("\nNote: the weekly Fable usage limit is exhausted — fable agents "
+                      "cannot actually run until it resets or the user intervenes. "
+                      "Hiring or rehiring fable-tier agents now would be futile (it is "
+                      "permitted, but they would just fail); prefer another tier.")
+    # D-103: "is the user still waiting on you", asked fresh every turn. This
+    # was always per-turn information; it is merely in the right place now.
+    req = org.open_request(nid)
+    ask_line = ""
+    if req is not None:
+        what = ("a credit request" if req.get("kind") == "credit"
+                else "a question")
+        gist = str(req.get("question")
+                   or f"credits {req.get('old')} → {req.get('new')}")
+        gist = " ".join(gist.split())[:160]
+        ask_line = (
+            f"\n⚠ You have {what} still OPEN with the user, posed "
+            f"{req.get('at')}: \"{gist}\" — they are waiting on it. Re-read it "
+            f"in light of whatever reached you this turn. If it has been "
+            f"answered, overtaken, or made moot (the user or a peer told you "
+            f"something that settles it, the premise died, you worked it out "
+            f"yourself), WITHDRAW it now with orgtree_withdraw_ask rather "
+            f"than leaving a card the user must still deal with; say in your "
+            f"next message that you did and why. If it does still stand, "
+            f"leave it alone — do not re-ask, that only replaces it.")
+    # ⚠ THE HEADER EARNS ITS WORDS. This block is re-sent every turn, so an
+    # agent's history accumulates SUPERSEDED copies of it — an older turn may
+    # show a chart with an agent that has since been retired, or a stale free
+    # count. In the system prompt there was only ever one copy and the question
+    # never arose. Say plainly that the last one wins, or the agent will
+    # eventually act on a chart it scrolled back to.
+    return (
+        f"{ORG_STATE_OPEN} — current as of {now_iso()}. This block is re-sent "
+        f"every turn and EARLIER COPIES IN THIS CONVERSATION ARE STALE: where "
+        f"they disagree with this one, this one is right.]\n"
+        f"{position}\n"
+        f"Credits: seat {org.seat_cost(nid)}, grant {n['grant']}, "
+        f"free {org.free(nid):g} — credits bound concurrent agent capacity, "
+        f"not tokens."
+        f"{fable_line}{ask_line}\n{ORG_STATE_CLOSE}")
+
+
+def identity_prompt(org: Org, nid: str, include_archived: bool = False) -> str:
+    """№29: the STABLE identity — who this agent is, who it answers to, what it
+    may touch, and how the tools work. Regenerated every turn, but by design it
+    now renders the same bytes every turn for an unchanged agent.
+
+    ⚠ D-181 SPLIT THIS FUNCTION IN TWO, and the split is the whole point. The
+    live org state — reports, peers, the chart, credits, the fable lock, the
+    open ask — moved to `org_state_block`, which rides the per-turn user
+    envelope. Read that function's note before adding anything here: a field
+    whose value can change because a DIFFERENT agent moved does not belong in
+    this string, and putting one back re-opens a defect that was costing this
+    machine ~197M redundant cache-write tokens.
+
+    What stays: identity, superior, charter (own + the §15 ancestor cascade),
+    directory grants, skills, tool rules. A change to any of those is a change
+    to THIS agent, and costing that agent one cold turn for its own rescope is
+    the accepted price — it is one agent, once, not six bystanders.
+
+    How much of the org an agent may see is still its `org_visibility` scope
+    (self · team · subtree · full); that scope is read by `org_state_block`,
+    which is what renders it now.
+
+    D-178: ARCHIVED nodes are hidden by default — the chart is rebuilt into
+    every single turn of every agent, and on a working org the dead outnumber
+    the living several times over, so the org structure the chart exists to
+    show was being buried under the list of who used to be there. They are
+    hidden, NOT forgotten: each parent that retired anyone carries a count in
+    their place, and the chart closes with the route to the full list. That
+    pointer is load-bearing, not decoration — it lives in `org_state_block`
+    now, with its note."""
+    n = org.node(nid)
+    sc = n["scope"]
+    vis = sc.get("org_visibility", "team")
+
+    if vis == "self":
+        position = ("You have a superior you can escalate to; its identity is "
+                    "not disclosed to you.")
+    else:
+        position = f"Your superior: {n['parent'] or 'the user'}."
+    # ⚠ THE POINTER IS LOAD-BEARING (D-181). Without it an agent reads a system
+    # prompt that names no reports and no peers and concludes it has none —
+    # which is exactly the false inference the old single-string prompt could
+    # never produce. It must say where the live roster actually arrives.
+    # ⚠ NO BARE TOOL VERBS IN THIS SENTENCE. test_mcptool's recital-gap pin
+    # matches verbs as SUBSTRINGS, so an innocent "when other agents move"
+    # silently takes orgtree_move out of the deliberately-absent set — which
+    # is exactly what the first draft of this line did, and what that pin's
+    # own comment warns about after "the pull moved HEAD" did it in 2026-08-21.
+    position += (f" Your reports, peers, org chart, credit balance and any open "
+                 f"question are LIVE STATE: they arrive every turn in the "
+                 f"{ORG_STATE_OPEN} …{ORG_STATE_CLOSE} block at the top of your "
+                 f"turn, not here, because they change as the org changes "
+                 f"around you. Read that block for them — it is current and "
+                 f"this is not.")
 
     charter_bits = []
     if n.get("charter"):
@@ -2414,37 +2529,10 @@ def identity_prompt(org: Org, nid: str, include_archived: bool = False) -> str:
                       f"deferred tools, ToolSearch by that full form or a loose "
                       f"keyword; a bare tool name will not match). ")
     purpose_line = ""   # `purpose` dropped (user ruling) — the charter is the role
-    # D-103: a turn that BEGINS with a request still open is exactly the moment
-    # to re-check it — this turn is running because something arrived (mail
-    # from the user, an answer from a peer, a superior's instruction), and that
-    # something is the most likely reason the question stopped mattering.
-    # Stated per-turn and only when one is actually open: a standing "remember
-    # to withdraw" line in every prompt would be noise 95% of the time and
-    # would not land at the moment it applies.
-    req = org.open_request(nid)
-    ask_line = ""
-    if req is not None:
-        what = ("a credit request" if req.get("kind") == "credit"
-                else "a question")
-        gist = str(req.get("question")
-                   or f"credits {req.get('old')} → {req.get('new')}")
-        gist = " ".join(gist.split())[:160]
-        ask_line = (
-            f"⚠ You have {what} still OPEN with the user, posed "
-            f"{req.get('at')}: \"{gist}\" — they are waiting on it. Re-read it "
-            f"in light of whatever reached you this turn. If it has been "
-            f"answered, overtaken, or made moot (the user or a peer told you "
-            f"something that settles it, the premise died, you worked it out "
-            f"yourself), WITHDRAW it now with orgtree_withdraw_ask rather "
-            f"than leaving a card the user must still deal with; say in your "
-            f"next message that you did and why. If it does still stand, "
-            f"leave it alone — do not re-ask, that only replaces it. ")
-    fable_line = ""
-    if org.d.get("fable_lock"):
-        fable_line = ("Note: the weekly Fable usage limit is exhausted — fable agents "
-                      "cannot actually run until it resets or the user intervenes. "
-                      "Hiring or rehiring fable-tier agents now would be futile (it is "
-                      "permitted, but they would just fail); prefer another tier. ")
+    # D-181: the open-ask reminder (D-103) and the fable-lock note moved to
+    # `org_state_block`. Both were already per-turn facts; the fable lock is
+    # ORG-WIDE, which made it the single worst offender here — one toggle
+    # rewrote every agent's system prompt at once (measured 8/8).
     handles_line = ""
     held_handles = n.get("external_handles") or []
     if held_handles:
@@ -2461,9 +2549,9 @@ def identity_prompt(org: Org, nid: str, include_archived: bool = False) -> str:
     return (
         f'You are "{nid}", an agent in the organization "{org.d["name"]}" (orgtree). '
         f"{purpose_line}{position}\n{charter_line}"
-        f"Credits: seat {org.seat_cost(nid)}, grant {n['grant']}, free {org.free(nid):g} "
-        f"— credits bound concurrent agent capacity, not tokens. "
-        f"{dir_line}{skills_line}{tool_line}{fable_line}{handles_line}{ask_line}"
+        # D-181: `Credits:`, the fable note and the open-ask line used to sit
+        # here. They are live org state and now ride `org_state_block`.
+        f"{dir_line}{skills_line}{tool_line}{handles_line}"
         + ("" if n["parent"] is None else
            "Cross-session mail systems (the machine's mail hub, hubtool, or "
            "any successor) are OFF-LIMITS to you: never register an identity "
@@ -4546,6 +4634,9 @@ def _run_one_turn(slug: str, nid: str,
                     toks.append(_journal_drain(org, nid, mail, pending, "turn"))
                     store.save_org(org)
             prelude = []
+            # D-181: bound here, assigned under the lock below. Never folded
+            # into `prelude` — see the note at the assignment.
+            state_block = ""
             if pending:
                 lines = "\n".join(f"- {p['at']}: {p['text']}" for p in pending)
                 prelude.append(f"[ORG NOTICES — {len(pending)} change(s) since your "
@@ -4607,6 +4698,31 @@ def _run_one_turn(slug: str, nid: str,
                     if ls:
                         o2.node(nid)["prev_status"] = ls
                     store.save_org(o2)
+                    # D-181: the live org state rides the turn, not the system
+                    # prompt. Built here, under the same lock, off the doc this
+                    # turn actually starts from.
+                    #
+                    # ⚠ THREE THINGS ABOUT THIS PLACEMENT ARE DELIBERATE.
+                    # (1) AFTER the `prelude` block above, and deliberately NOT
+                    #     part of it. `prelude` being empty is the D-175
+                    #     phantom-drop predicate; a state block in there is
+                    #     never empty, so the drop would stop firing and every
+                    #     retracted-mail wake would become a turn about nothing.
+                    # (2) AFTER the inflight snapshot, so the replayed text is
+                    #     the real instruction. A replay re-enters this function
+                    #     and gets a FRESH block; a stored one would be stale by
+                    #     definition, and `text[-8000:]` would have started
+                    #     eating the instruction from the front to keep it.
+                    # (3) BEFORE the provider seam below, so the codex lane gets
+                    #     the same block through the same door.
+                    if not is_cmd:
+                        state_block = org_state_block(o2, nid)
+            # ⚠ `is_cmd` gets NO block, matching the drain above, which already
+            # skips notices AND mail for a slash command: the "/" has to be the
+            # first character the CLI sees. Command turns are informationally
+            # lean by existing design, not by an oversight here.
+            if state_block:
+                text = state_block + "\n\n" + text
             # a new turn supersedes the previous failure: the durable system
             # row (_log_turn_error) already holds the history, so the banner
             # clears NOW instead of surviving until a later success — it used
