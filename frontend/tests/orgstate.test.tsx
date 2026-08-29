@@ -225,3 +225,41 @@ domTest('§4 the block is stripped whether or not notices ride behind it',
     assert.equal(el.querySelectorAll('.noticeline').length, 1,
       'the notices card did not survive alongside a block-only bubble')
   })
+
+// ======================================================================= §5
+// the strip stops at the FIRST terminator
+// ======================================================================= §5
+
+// ⚠ THIS LEG EXISTS BECAUSE THE SUITE WITHOUT IT WAS BLIND. Mutating
+// ORGSTATE_RE from non-greedy (`[\s\S]*?`) to greedy (`[\s\S]*`) passed every
+// other check in this file, because no fixture above contains a SECOND
+// `[END ORG STATE]` — and with only one terminator the two regexes agree.
+// A greedy match would swallow everything up to the LAST occurrence anywhere
+// in the message.
+//
+// That is not a hypothetical. Agents discuss this machinery by name: the very
+// mail that commissioned D-192 quoted the markers, and so does the D-181
+// register entry. A reader asking their agent about the block would have had
+// their whole message eaten by the greedy form.
+domTest('§5 a body that QUOTES the markers is not swallowed by the strip',
+  async ({ SL, ND, s, mount }) => {
+    const quoting = [
+      'About that block — it opens with [ORG STATE …] and closes with',
+      '[END ORG STATE], and I want it gone from my chat.',
+      'PAYLOAD-SENTINEL keep every word of this.',
+    ].join('\n')
+    s.userMsg(STATE + '\n\n' + quoting)
+    await refreshConvo(SL, ND)
+    const { el } = await mount(deskEl(node(ND), SL))
+    await flush()
+    const t = txt(el)
+    assert.ok(t.includes('PAYLOAD-SENTINEL keep every word of this.'),
+      'the strip ran past the real terminator and ate the message body — '
+      + 'ORGSTATE_RE must be non-greedy')
+    assert.ok(t.includes('About that block'),
+      'the opening of the quoting message was eaten')
+    // the REAL block is still gone: quoting the markers must not protect it
+    assert.ok(!t.includes('Your peers:'),
+      'the real state block survived because the body quoted the markers')
+    assert.ok(!t.includes('Credits: seat'), 'the credit line survived')
+  })
