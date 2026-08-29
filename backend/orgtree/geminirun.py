@@ -299,12 +299,22 @@ def _current_model(result: dict[str, Any]) -> str | None:
 
 
 def _normalize_usage(meta: dict[str, Any] | None,
-                     main_model: str | None) -> dict[str, Any] | None:
+                     main_model: str | None,
+                     requests: int = 1) -> dict[str, Any] | None:
     """The ACP result's `_meta.quota` → the normalized usage document
     `providers.gemini_cost` consumes. Measured wire shape (probe logs):
     {"quota": {"token_count": {...}, "model_usage": [{"model": id,
     "token_count": {"input_tokens": n, "output_tokens": n}}]}} — per model,
-    no cached/thoughts split (the cost fn documents that approximation)."""
+    no cached/thoughts split (the cost fn documents that approximation).
+
+    ⚠ `input_tokens` is the SUM over every API request the turn made, not
+    the last request's prompt (measured twice: the M0 tool probe reported
+    21,320 for a 2-request session whose context was ~10.6K, and the first
+    real user-driven flash agent booked a 3.6M "occupancy" against a 1M
+    window after a ~30-round tool loop). The sum is what Google BILLS — the
+    cost fold wants exactly it — but context occupancy must not read it as
+    a prompt size, so the document carries `requests` (the turn's observed
+    request count) for `gemini_occupancy` to divide by."""
     if not isinstance(meta, dict):
         return None
     quota = meta.get("quota")
@@ -335,7 +345,7 @@ def _normalize_usage(meta: dict[str, Any] | None,
         return None
     main = main_model if main_model in models else max(
         models, key=lambda m: int(models[m].get("prompt") or 0))
-    return {"models": models, "main": main}
+    return {"models": models, "main": main, "requests": max(1, int(requests))}
 
 
 class GeminiTurn:
@@ -373,6 +383,13 @@ class GeminiTurn:
         #: Nothing is folded to the caller until session/prompt is sent.
         self._live = False
         self._prompt_rid: int | None = None
+        #: observed tool rounds — the request-count estimate the usage
+        #: normalizer needs (every tool call adds an API request; the
+        #: initial prompt is request one). Counting individual calls
+        #: OVERCOUNTS a parallel batch, which only pushes the occupancy
+        #: estimate LOWER — the safe direction; the unfixed reading was a
+        #: 3.6× overestimate that spuriously pressured compaction.
+        self._tool_calls: set[str] = set()
 
     # ── event fold ───────────────────────────────────────────────────────
 
@@ -383,13 +400,15 @@ class GeminiTurn:
         update: dict[str, Any] = (params.get("update")
                                   if isinstance(params.get("update"), dict)
                                   else {})
-        if (str(msg.get("method", "")) == "session/update"
-                and str(update.get("sessionUpdate") or "")
-                == "agent_message_chunk"):
-            content = update.get("content")
-            if isinstance(content, dict) and isinstance(
-                    content.get("text"), str):
-                self.agent_text.append(content["text"])
+        if str(msg.get("method", "")) == "session/update":
+            kind = str(update.get("sessionUpdate") or "")
+            if kind == "agent_message_chunk":
+                content = update.get("content")
+                if isinstance(content, dict) and isinstance(
+                        content.get("text"), str):
+                    self.agent_text.append(content["text"])
+            elif kind == "tool_call":
+                self._tool_calls.add(str(update.get("toolCallId") or ""))
         if self._caller_on_event:
             self._caller_on_event(msg)
 
@@ -476,7 +495,8 @@ class GeminiTurn:
                            else STATUS_COMPLETED)
             self.token_usage = _normalize_usage(
                 result.get("_meta") if isinstance(result.get("_meta"), dict)
-                else None, self.model)
+                else None, self.model,
+                requests=1 + len(self._tool_calls))
         self.client.close()
         return {
             "session_id": self.session_id,

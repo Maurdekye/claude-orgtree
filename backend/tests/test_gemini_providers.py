@@ -142,6 +142,15 @@ def main():
         "input": 5, "cached": 0, "output": 5, "prompt": 5}}}
     check("a doc with no 'main' key still measures occupancy (max prompt)",
           lambda: eq(providers.gemini_occupancy(headless), 5, "mainless"))
+    looped = {"models": {"gemini-3.5-flash": {
+        "input": 3_614_165, "cached": 0, "output": 4_093,
+        "prompt": 3_614_165}}, "main": "gemini-3.5-flash", "requests": 30}
+    check("a tool-looping turn's SUMMED input divides by the request count — "
+          "the live 3.6M-against-a-1M-window regression reads ~120K, and the "
+          "same doc still BILLS the full sum (that is what Google charges)",
+          lambda: eq((providers.gemini_occupancy(looped),
+                      providers.gemini_cost(looped)),
+                     (120_472, 5.458085), "request divisor"))
 
     print("§4 detection — hermetic, against files this suite writes")
     tmp = tempfile.mkdtemp(prefix="orgtree-gemdet-")

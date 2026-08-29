@@ -178,8 +178,13 @@ def gemini_cost(usage: dict[str, Any] | None) -> float:
 
 
 def gemini_occupancy(usage: dict[str, Any] | None) -> int:
-    """Context occupancy after a turn: the MAIN model's full prompt size
-    (input + cached), which is what the next turn re-sends. Side models'
+    """Context occupancy after a turn: an ESTIMATE of the main model's last
+    prompt size. The wire reports only the SUM of every request's input
+    across the turn (measured — a ~30-round tool loop booked 3.6M against a
+    1M window before this divisor existed), so the sum is divided by the
+    turn's observed request count. A parallel tool batch makes the divisor
+    overcount and the estimate run LOW — the safe direction: a low estimate
+    delays compaction, the raw sum spuriously forced it. Side models'
     prompts are other conversations and must not count. 0 means "no
     measurement" to `_after_turn`, never an empty context."""
     if not usage:
@@ -188,9 +193,12 @@ def gemini_occupancy(usage: dict[str, Any] | None) -> int:
     main = str(usage.get("main") or "")
     tok = models.get(main)
     if isinstance(tok, dict) and int(tok.get("prompt") or 0):
-        return int(tok["prompt"])
-    return max((int(t.get("prompt") or 0) for t in models.values()
-                if isinstance(t, dict)), default=0)
+        total = int(tok["prompt"])
+    else:
+        total = max((int(t.get("prompt") or 0) for t in models.values()
+                     if isinstance(t, dict)), default=0)
+    requests = max(1, int(usage.get("requests") or 1))
+    return total // requests
 
 
 def codex_cost(tier: str, token_usage: dict[str, Any] | None) -> float:

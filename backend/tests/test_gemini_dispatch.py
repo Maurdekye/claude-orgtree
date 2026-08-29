@@ -168,6 +168,9 @@ def main():
 
     def t2():
         run_turn(s2, n2, "use your tool")
+        # the tool round means TWO requests: occupancy is the divided
+        # estimate, never the wire's raw per-turn sum (the 361% regression)
+        eq(node_doc(s2, n2).get("occupancy"), 8290 // 2, "divided occupancy")
         recs = journal_lines(s2, "fake-gem-sess-0001")
         uses = [c for r in recs
                 for c in (r.get("message") or {}).get("content") or []

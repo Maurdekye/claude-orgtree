@@ -108,6 +108,14 @@ def main():
                      [("new", "orgtree", "o"), ("load", "orgtree", "o")],
                      "mcp probe"))
     os.environ.pop("FAKEGEMINI_MCPPROBE", None)
+    _, res_t, _ = _run("toolevents")
+    check("a tool round adds a request: the wire's SUMMED input is divided "
+          "by the observed request count for occupancy (the 3.6M-against-a-"
+          "1M-window live regression), while cost keeps billing the sum",
+          lambda: eq((res_t["token_usage"]["requests"],
+                      providers.gemini_occupancy(res_t["token_usage"]),
+                      providers.gemini_cost(res_t["token_usage"])),
+                     (2, 4145, 0.01312), "request divisor"))
 
     print("§3 the planted faults the guards must SEE")
 
