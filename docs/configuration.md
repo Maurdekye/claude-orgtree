@@ -166,8 +166,9 @@ Editable at any time; takes effect immediately unless noted. Model at `api.py:75
 | `cascade_hire` | bool | a hire's cost bubbles up the chain (§4.6) |
 | `cascade_alloc` | bool | allocations and upgrades bubble up |
 
-Also on the org doc but not in that panel: `max_depth` and `max_children` both default to **1024** —
-runaway insurance, read with defaults from `ledger.py`.
+Also on the org doc but not in that panel: `max_depth` and `max_children`, both defaulting to
+**1024**. They are runaway insurance; the authoritative defaults are
+`MAX_DEPTH` and `MAX_CHILDREN` in `backend/orgtree/ledger.py`.
 
 ### Org-wide content
 

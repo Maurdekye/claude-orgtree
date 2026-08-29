@@ -88,8 +88,8 @@ Credits are derived from published Anthropic first-party API pricing, verified 2
 | Claude Opus 4.8 (`claude-opus-4-8`) | $5.00 | $25.00 | 5.0 | **5** |
 | Claude Opus 4.7 (`claude-opus-4-7`) | $5.00 | $25.00 | 5.0 | **5** |
 | Claude Opus 4.6 (`claude-opus-4-6`) | $5.00 | $25.00 | 5.0 | **5** |
-| Claude Sonnet 5 (`claude-sonnet-5`) | $3.00 | $15.00 | 3.0 | **3** |
-| Claude Sonnet 4.6 (`claude-sonnet-4-6`) | $3.00 | $15.00 | 3.0 | **3** |
+| Claude Sonnet 5 (`claude-sonnet-5`) | $2.00 | $10.00 | 2.0 | **2** |
+| Claude Sonnet 4.6 (`claude-sonnet-4-6`) | $2.00 | $10.00 | 2.0 | **2** |
 | Claude Haiku 4.5 (`claude-haiku-4-5`) | $1.00 | $5.00 | 1.0 | **1** |
 
 **The output:input ratio is exactly 5:1 for every current model.** Normalizing by input price and
@@ -310,7 +310,7 @@ Single JSON ledger, `orgtree.json`:
 ```jsonc
 {
   "version": 1,
-  "tiers": { "fable": 10, "opus": 5, "sonnet": 3, "haiku": 1 },
+  "tiers": { "fable": 10, "opus": 5, "sonnet": 2, "haiku": 1 },
   "models": {                      // tier → concrete model id passed to --model
     "fable": "claude-fable-5",
     "opus":  "claude-opus-5",

@@ -1077,7 +1077,7 @@ the same not-yet-built feature.
 **Ruling, added same day: watchdogs are framed as "pets" for agents, and cost no credits to
 spawn.** A real, load-bearing design decision, not just a naming flourish — it settles what would
 otherwise be an open question this docket would have had to flag. Confirmed against the actual
-gate: `orgtree_hire`'s seat cost (`TIERS`, `ledger.py:39` — haiku 1, sonnet 3, opus 5, fable 10) is
+gate: `orgtree_hire`'s seat cost (`TIERS` in `backend/orgtree/ledger.py` — haiku 1, sonnet 2, opus 5, fable 10) is
 deducted from the hiring agent's free-credit balance at hire time, the same balance FR-13's
 scope-request grants and FR-14's batch cards above are reasoning about. "No credits to spawn" is an
 explicit exception to that gate, not an oversight to close later — a watchdog never enters `TIERS`/

@@ -214,7 +214,8 @@ The single most delicate step. The shape that works:
   rehire that overrides the tier), raising
   LedgerError (both layers 422 it cleanly): installed → signed-in → kiosk
   holdout → headless-needs-keyed, each refusal naming the next step. The
-  incumbent provider stays ungated — a detection bug must not brick
+  Agent-side `orgtree_rehire` is not another door: its schema has no `tier`
+  override. The incumbent provider stays ungated — a detection bug must not brick
   existing orgs.
 - The MCP server's cards are DEPENDENCY-FREE (hand-written enums): grow the
   hire + switch tier enums and the seat prose by hand; its test asserts

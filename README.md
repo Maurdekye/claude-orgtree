@@ -293,26 +293,12 @@ No manual wiring is needed; the supervisor does all of it per turn:
   transcript records are kept in orgtree's journal store. Org state lives in
   **`~/orgtree/`** (ledger docs, per-org workspaces, per-node scratch dirs).
 
-### Configuration (environment variables)
+### Configuration
 
-This is a quick-start subset. For every environment variable, org setting,
-default, and precedence rule, see the [complete configuration reference](docs/configuration.md).
-
-| variable | default | meaning |
-|---|---|---|
-| `ORGTREE_PORT` | `7360` | API + UI port |
-| `ORGTREE_DATA` | `~/orgtree` | data root (ledgers, workspaces, scratch) |
-| `ORGTREE_CLAUDE` | `claude` on PATH | Claude Code CLI location |
-| `ORGTREE_CODEX` | auto-detected | Codex CLI location |
-| `ORGTREE_GEMINI` | auto-detected | Gemini CLI location |
-| `ORGTREE_GEMINI_HOME` | `~/.gemini` | Gemini CLI configuration and login home |
-| `ORGTREE_MAX_TURNS` | `16` | concurrent agent turns, shared across all orgs (~306 MB resident each) |
-| `ORGTREE_TURN_TIMEOUT` | `14400` | absolute per-message ceiling in seconds |
-| `ORGTREE_COMPACT_AT` | `0.80` | context occupancy that triggers a compaction split |
-| `ORGTREE_CONTEXT_WINDOWS` | haiku 200k, others 1M | per-tier window override, JSON like `{"opus": 500000}` |
-| `ORGTREE_ORACLE_AT` | `0.92` | bearer occupancy that demotes it to a preserving oracle |
-| `ORGTREE_PUBLIC_PORT` | off | public kiosk listener (serves only `/k/<token>` URLs) |
-| `ORGTREE_PUBLIC_ORIGIN` | LAN-IP guess | origin shown in share URLs (set to your tunnel/forwarded host) |
+The source-verified [configuration reference](docs/configuration.md) is the
+authoritative list of environment variables, defaults, provider CLI locations,
+and org settings. Use it instead of copying a partial table into deployment
+notes: these values change with the implementation.
 
 ## Talking to orgs from the outside — the extern MCP server
 
