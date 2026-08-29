@@ -6,7 +6,7 @@
 
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 // side effect: the document-level "click a markdown image → full-size viewer"
 // listener — loaded here because every .md surface renders through this module
 import './lightbox'
@@ -357,6 +357,48 @@ export const setDeskDpi = (v: number) => {
   try { localStorage.setItem(DESK_DPI_KEY, String(v)) } catch { /* private mode */ }
   document.documentElement.style.setProperty('--desk-dpi', String(v))
 }
+
+/* ------------------------------------------- D-198: the crowd-pile toggle
+   Collapsing a wide team's ACTIVE agents into one stack is OPT-IN (user
+   ruling 2026-08-29). The behaviour it gates is the CROWD pile in
+   OrgCanvas — the retired pile is a different thing and is not affected.
+
+   ⚠ APP-WIDE, NOT PER-ORG (user, verbatim: "app wide, not org wide"), so the
+   key carries NO slug — unlike `orgtree-pile-<slug>` next door, which stores
+   which member fronts a pile and is genuinely per-org. A machine-level
+   preference filed under an org key looks fine until you switch org, at
+   which point it silently reverts to the default and reads as the app
+   forgetting it.
+
+   ⚠ OFF BY CONSTRUCTION, not by a default value written down somewhere. A
+   key that was never set reads back as `null`, and `null !== '1'` is false,
+   so a fresh install, a private window, a cleared cache and every existing
+   user all get the uncollapsed canvas without anything having to migrate.
+   There is deliberately no third "unset" state to behave differently. */
+export const CROWD_PILE_KEY = 'orgtree-crowd-piles'
+export const crowdPilesOn = (): boolean => {
+  try { return localStorage.getItem(CROWD_PILE_KEY) === '1' } catch { return false }
+}
+const crowdSubs = new Set<() => void>()
+export const setCrowdPilesOn = (on: boolean): void => {
+  try {
+    localStorage.setItem(CROWD_PILE_KEY, on ? '1' : '0')
+  } catch { /* private mode */ }
+  for (const fn of [...crowdSubs]) fn()          // copy: a listener may detach
+}
+/* useSyncExternalStore's subscribe half. Same-tab writes come through
+   setCrowdPilesOn; `storage` fires only in OTHER tabs, and covers them
+   because a preference that disagreed between two windows on the same
+   machine would not be app-wide. The event is not filtered by key: the
+   snapshot is a boolean, so a spurious wake re-reads the same value and
+   React bails out of the render. */
+const subscribeCrowdPiles = (fn: () => void): (() => void) => {
+  crowdSubs.add(fn)
+  window.addEventListener('storage', fn)
+  return () => { crowdSubs.delete(fn); window.removeEventListener('storage', fn) }
+}
+export const useCrowdPiles = (): boolean =>
+  useSyncExternalStore(subscribeCrowdPiles, crowdPilesOn)
 
 export function withDraftTree(tree: TreePayload, draft: DraftState | null): CanvasNode {
   const draftNode = (): CanvasNode => ({

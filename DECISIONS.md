@@ -2467,6 +2467,64 @@ the helper is redundant defence (removing it alone is an equivalent mutant) and
 is kept only so a future change to `expand_mcp`'s contract cannot silently
 reintroduce the fault.
 
+### D-198 · collapsing ACTIVE agents into a stack is opt-in, off by default, and app-wide
+Ruling (user, 2026-08-29): "collapsing active agents into a stack should be an
+optional toggle and off by default" — and, on the follow-up, "app wide, not org
+wide."
+
+The behaviour is the CROWD pile (commit `02713e9`, "Wide teams", 2026-07-31 —
+it shipped on a user spec and never took a register number): an agent with
+more than eight active reports folds the reports that have none of their own
+into one stacked card. It is the only thing in the app that stacks *active*
+agents. The RETIRED pile — archived siblings collapsing into a cohort card — is
+a different behaviour and is deliberately untouched by this ruling; it was
+never what the reader complained about.
+
+**Why off rather than on is the interesting half, and it is not "the user
+prefers it".** The crowd pile trades a legible canvas for a *complete* one, and
+it makes that trade silently, at a threshold the reader never set, on the basis
+of a count they cannot see. Crossing from eight reports to nine makes agents
+disappear from the picture with no event to notice and nothing on screen saying
+how many went. A view that hides working agents by default is a view that can
+be wrong about the org without ever looking wrong. Opt-in inverts that: the
+reader who wants the compaction asks for it and therefore knows it is on, and
+everyone else sees every agent they employ.
+
+**Off BY CONSTRUCTION, not by a default written down.** `crowdPilesOn()` is
+`localStorage.getItem(KEY) === '1'`. A key that was never set reads `null`,
+`null !== '1'`, so a fresh install, a private window, a cleared cache and every
+existing user all take the off branch with nothing to migrate. There is
+deliberately no third "unset" state that could behave as a fourth thing. The
+probe pins this as its own check (`§3`): "off by default" is not satisfied by
+storing `'0'` at first run, because that is a value someone can later fail to
+write.
+
+**App-wide, so the key carries NO slug.** Its neighbour `orgtree-pile-<slug>`
+is genuinely per-org — it stores which member fronts a given pile — and copying
+that shape here was the available mistake. A machine-level preference filed
+under an org key looks correct until you switch org, at which point it reverts
+to the default and reads as the app forgetting it. `orgtree-crowd-piles` is one
+key for the machine; the probe navigates between two real orgs and asserts both
+that the setting still applies and that no key holding it carries a slug.
+
+Load-bearing: ① **GATED WHERE THE PILE IS CONSTRUCTED, NOT AT EACH CONSUMER.**
+`hidden`, `layout`, `pileByFront`, `pileOfRef`, the picker and the `.pile-stack`
+render all derive from the one `piles` map, and an empty map is exactly the
+shape they already handle for every org with eight reports or fewer — so "off"
+is a well-worn path, not a new one. Gating at the consumers would have meant six
+places that must agree, and the first one missed would hide a card with nothing
+to click it back.
+② The switch is read through `useSyncExternalStore`, not by calling the getter
+inline, so flipping it re-piles the canvas under live agents instead of waiting
+for a reload. The subscribe half also listens for `storage`, because a
+preference that disagreed between two windows on the same machine would not be
+app-wide.
+
+Bounds: this governs the crowd pile only. Nothing here licenses making the
+retired pile optional, changing the >8 threshold, or hiding active agents by
+any other mechanism — a future feature that folds working agents away by
+default is the thing this entry exists to refuse.
+
 ### D-196 · a model switch that crosses PROVIDERS resets the session, and says so
 Ruling (coordinator, 2026-08-29): `switch_model` compares
 `providers.provider_of(old)` with `providers.provider_of(new)`. Same provider →
