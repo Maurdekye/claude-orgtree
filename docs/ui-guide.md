@@ -34,17 +34,24 @@ snowflake, lock, layers, fullscreen, hearing.
 
 ## Hiring
 
-- Hover any live card (or the eye) and click one of the round **H S O F**
-  chips (tinted in their model's color): haiku · sonnet · opus · fable, seat
-  costs 1 · 3 · 5 · 10. The BOTTOM chips hire a subordinate; the LEFT and
-  RIGHT edge chips hire a **coworker** — same superior, landing on that side
-  of the card (the draft previews the spot, and the ordering is pinned at
-  birth); the TOP chips **insert a superior**: the draft immediately takes
-  the card's own place — the card hangs beneath it on a dashed line, purely a
-  preview, nothing real moves — and confirming hires the new agent straight
-  into that spot (same horizontal position, the old card now reporting to it,
-  all in one atomic step; cancel and the card pops back). Only ONE set shows
-  at a time — the edge your cursor is closest
+- Hover any live card (or the eye) to reveal a row for each available provider
+  family. Claude's round **H S O F** chips are haiku · sonnet · opus · fable
+  (seat costs 1 · 2 · 5 · 10); Codex adds **L T S** for luna · terra · sol
+  (1 · 2 · 5); Gemini adds **F P** for flash · pro (1 · 2). A tier name picks
+  its provider—there is no separate provider setting. If Codex or Gemini is
+  not installed or signed in, its disabled row appears on the bottom edge with
+  a tooltip explaining the next step; connected providers appear on every
+  eligible edge. Kiosk orgs show Claude only.
+
+  The BOTTOM chips hire a subordinate; the LEFT and RIGHT edge chips hire a
+  **coworker** — same superior, landing on that side of the card (the draft
+  previews the spot, and the ordering is pinned at birth); the TOP chips
+  **insert a superior**: the draft immediately takes the card's own place —
+  the card hangs beneath it on a dashed line, purely a preview, nothing real
+  moves — and confirming hires the new agent straight into that spot (same
+  horizontal position, the old card now reporting to it, all in one atomic
+  step; cancel and the card pops back). Only ONE set shows at a time — the
+  edge your cursor is closest
   to — and the chips stay screen-sized however far you zoom out, for as
   long as the card is on screen. Side chips don't appear on pile/crowd
   stacks, where the card's edges belong to the stack's layers. Chips are NEVER disabled by the node's own free
@@ -324,8 +331,10 @@ clicking it opens your inbox where the cards are. When nothing is asked it
 is a plain quiet inbox shortcut.
 
 The agents chip summarizes the org at a glance: total live agents, how many
-are working right now, and a per-model breakdown (H/S/O/F counts in their
-tier colors). Beside it: cumulative cost, the ledger self-audit (only speaks
+are working right now, and a per-tier breakdown in the tier colors. It includes
+every provider family represented in the org, so repeated letters such as
+Claude Fable and Gemini Flash remain distinguishable by color. Beside it:
+cumulative cost, the ledger self-audit (only speaks
 when something is wrong), the fable-limit chip, and ▶ resume when agents are
 frozen by a usage limit. The resume button is **red** while the reported
 reset time is still ahead (pressing it would just re-hit the limit) and

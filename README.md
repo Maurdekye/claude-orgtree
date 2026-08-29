@@ -2,11 +2,11 @@
 
 # claude-orgtree
 
-A persistent, visual **organization of Claude Code agents** — a tree of real,
-addressable Claude Code sessions with a credit budget, an office-room canvas,
-and full agent-to-agent delegation. You sit at the root as the overseer; you
-hire top-level agents, they hire their own reports, and the whole org runs on
-your existing Claude Code installation and subscription.
+A persistent, visual **organization of coding agents** — a tree of real,
+addressable Claude Code, Codex, and Gemini sessions with a credit budget, an
+office-room canvas, and full agent-to-agent delegation. You sit at the root as
+the overseer; you hire top-level agents, they hire their own reports, and each
+agent runs through the provider CLI for its selected tier.
 
 Design document: [PLAN.md](PLAN.md) · UI manual: [docs/ui-guide.md](docs/ui-guide.md)
 · How much infrastructure to run, and what each tier buys: [docs/infrastructure-tiers.md](docs/infrastructure-tiers.md)
@@ -30,10 +30,12 @@ chose the nesting that makes them so.
 
 **You are the root.** You hire top-level agents; agents hire their own reports
 with the `orgtree_*` MCP tools every node is given. **Credits are occupancy,
-not spend** — a live node *holds* its seat (haiku 1 · sonnet 3 · opus 5 ·
-fable 10) plus its grant; retiring releases everything back; tokens are
-unlimited (real dollars are *tracked* per node and per org, but deliberately
-not capped). Messaging is **downward any depth, one hop up, sideways between
+not spend** — a live node *holds* its seat plus its grant; retiring releases
+everything back; tokens are unlimited (real dollars are *tracked* per node and
+per org, but deliberately not capped). The tier name chooses the provider:
+Claude has haiku (1), sonnet (2), opus (5), and fable (10); Codex has luna
+(1), terra (2), and sol (5); Gemini has flash (1) and pro (2). Messaging is
+**downward any depth, one hop up, sideways between
 peers** — deep reach grants the recipient an audience to reply; only top-level
 agents write to your inbox unbidden. Every manual action you take notifies the
 agents it affects at their next turn. Reading (transcripts, scratch files) is
@@ -41,11 +43,11 @@ strictly downward. Capabilities — folders with rw/ro modes, terminal, web,
 file editing, subagents, MCP servers, org-structure visibility — flow down
 like credits: a parent cannot grant what it does not hold.
 
-Nodes are ordinary Claude Code sessions. They run **resume-on-demand**: no
-idle processes; each delivered message runs one `claude -p` turn and the
-session sleeps again. A node near its context limit is **compacted by
-splitting**: the successor carries on under the same name while the
-pre-compaction self is archived in place as a consultable *knowledge bearer*.
+Nodes run **resume-on-demand**: no idle processes; each delivered message
+starts a turn through its provider CLI and the session sleeps again. A node
+near its context limit is **compacted by splitting**: the successor carries on
+under the same name while the pre-compaction self is archived in place as a
+consultable *knowledge bearer*.
 
 ## What you can do — a tour
 
@@ -58,10 +60,13 @@ becomes a full Claude-Code-style chat desk — transcript, live per-message
 and per-tool feed, markdown rendering, and a composer whose send button
 turns into a red ■ STOP while the agent is responding.
 
-**Hire in one gesture.** Hover any card (or the eye) and pick a tier chip —
-H/S/O/F. A dashed draft appears: name it, drag its credit bar to set the
-grant, optionally give it a **charter** (a standing role card — pick a named
-preset from `docs/charters/`, or write your own), and hire. Your hires
+**Hire in one gesture.** Hover any card (or the eye) and pick a tier chip.
+The Claude, Codex, and Gemini families sit in separate rows: H/S/O/F,
+L/T/S, and F/P respectively. A dashed draft appears: name it, drag its credit
+bar to set the grant, optionally give it a **charter** (a standing role card —
+pick a named preset from `docs/charters/`, or write your own), and hire. The
+Codex and Gemini rows become active after their local CLI is installed and
+signed in; otherwise the disabled chips explain what is missing. Your hires
 cascade credits automatically down the chain; agents hire their own reports
 through the same ledger with explicit, no-defaults specs. Drag cards onto
 other cards to re-parent whole subtrees; every hire, retire, move, or grant
@@ -136,9 +141,10 @@ The full interaction manual — every gesture, badge, and panel — is
 
 ## Requirements
 
-- **[Claude Code](https://claude.com/claude-code)** installed and
-  authenticated (`claude` must work from your terminal). Agent turns run on
-  your Claude subscription or API key — **real usage costs real money**.
+- **At least one provider CLI** installed and authenticated. Claude Code,
+  Codex, and Gemini are supported; install only the providers whose tiers you
+  want to hire. Agent turns use that provider's subscription or API account —
+  **real usage costs real money**.
 - **Python 3.11+**
 - **Node.js 18+** (builds the frontend; also used to invoke the Claude Code
   CLI in a newline-safe way on Windows)
@@ -196,6 +202,33 @@ The supervisor auto-detects this private install and prefers it; your global
 `claude` stays untouched. Without it, messages to a busy agent deliver when
 its current response ends instead of after its next tool call.
 
+### Optional providers: Codex and Gemini
+
+Install and sign in to either CLI on the machine running orgtree. The Accounts
+panel reports whether each provider is installed and connected; once it is,
+its tier row is immediately available in the hire controls.
+
+```bash
+# Codex: luna (seat 1), terra (2), sol (5)
+npm install --prefix ~/orgtree/codex @openai/codex
+npx --prefix ~/orgtree/codex codex login
+
+# Gemini: flash (seat 1), pro (2)
+npm install --prefix ~/orgtree/gemini @google/gemini-cli
+npx --prefix ~/orgtree/gemini gemini
+```
+
+The first Gemini launch asks you to select a login method. Existing global
+installs also work: orgtree resolves an explicit environment override, then
+its private install under `ORGTREE_DATA`, then the CLI on `PATH`. It leaves
+each CLI's credentials in that CLI's own home directory and never copies them.
+
+Codex and Gemini agents can use the same orgtree tools, folder grants, and
+charters as Claude agents. They are currently host-mode providers: kiosk orgs
+cannot hire them. A headless org must use a keyed login for these providers
+(Codex API key; Gemini API key or Vertex AI), not a personal subscription or
+Google OAuth login.
+
 **Mail hub (cross-session and cross-machine mail):** to let orgs, other
 machines, and independent Claude Code sessions mail each other, start the hub
 and wire the session hook — two commands, once per machine:
@@ -239,29 +272,26 @@ hire your first agent. The full interaction manual — hiring chips, credit-bar
 dragging, desks, lineage, audiences — is in
 [docs/ui-guide.md](docs/ui-guide.md).
 
-### How it hooks into your Claude Code instance
+### How provider CLIs connect to orgtree
 
 No manual wiring is needed; the supervisor does all of it per turn:
 
-- The `claude` CLI is resolved from your `PATH` (override with the
-  `ORGTREE_CLAUDE` environment variable if you keep it elsewhere). On
-  Windows the supervisor invokes `node …/cli.js` directly rather than the
-  `.CMD` shim, because `cmd.exe` truncates multiline arguments.
-- Each node is a normal Claude Code **session UUID**. Turns run headless via
-  `claude -p` with `--session-id` (first turn) / `--resume` (after).
+- The `claude`, `codex`, and `gemini` CLIs are each resolved from an explicit
+  `ORGTREE_*` override, then an orgtree private install, then `PATH`. On
+  Windows orgtree bypasses unsafe command shims where a CLI's protocol can
+  carry multiline input.
+- Each node has a durable session in its selected provider. Turns run
+  headlessly and resume that provider session on demand.
 - Every node loads a per-org **MCP server** (`backend/orgtree/mcptool.py`, a
   dependency-free stdio bridge back to the running backend) that provides the
   `orgtree_*` tools: message, hire, retire/rehire/dissolve, reallocate,
   status, chart, read_transcript, read_scratch, audience.
-- Nodes run with `--permission-mode acceptEdits` plus `--add-dir` for exactly
-  the folders you granted, an isolating `--settings`, and
-  `--strict-mcp-config` — the contract: **your personal hooks and MCP servers
-  do not run in agent sessions** unless you grant them explicitly in the
-  per-agent ⚙ panel. (Mechanism and its one caveat: docs/ARCHITECTURE.md.)
-- Transcripts live where Claude Code always puts them (`~/.claude/projects`).
-  Org state lives in **`~/orgtree/`** (ledger docs, per-org workspaces,
-  per-node scratch dirs) — kept outside `~/.claude`, which Claude tools treat
-  as a protected path.
+- Nodes receive exactly the folders, tools, and MCP servers you grant. The
+  provider adapters attach orgtree's MCP tools without changing your personal
+  CLI configuration.
+- Claude transcripts stay in Claude Code's normal store. Codex and Gemini
+  transcript records are kept in orgtree's journal store. Org state lives in
+  **`~/orgtree/`** (ledger docs, per-org workspaces, per-node scratch dirs).
 
 ### Configuration (environment variables)
 
@@ -270,6 +300,9 @@ No manual wiring is needed; the supervisor does all of it per turn:
 | `ORGTREE_PORT` | `7360` | API + UI port |
 | `ORGTREE_DATA` | `~/orgtree` | data root (ledgers, workspaces, scratch) |
 | `ORGTREE_CLAUDE` | `claude` on PATH | Claude Code CLI location |
+| `ORGTREE_CODEX` | auto-detected | Codex CLI location |
+| `ORGTREE_GEMINI` | auto-detected | Gemini CLI location |
+| `ORGTREE_GEMINI_HOME` | `~/.gemini` | Gemini CLI configuration and login home |
 | `ORGTREE_MAX_TURNS` | `16` | concurrent agent turns, shared across all orgs (~306 MB resident each) |
 | `ORGTREE_TURN_TIMEOUT` | `1800` | seconds before a turn is abandoned |
 | `ORGTREE_COMPACT_AT` | `0.80` | context occupancy that triggers a compaction split |

@@ -9,7 +9,7 @@ re-check a cited line if the code has since moved.
 The four shapes are additive, not exclusive: shapes ②–④ all start from shape ①'s install. Pick the
 section(s) you need.
 
-1. [Local-only — a Claude Code replacement, nothing more](#1-local-only--a-claude-code-replacement-nothing-more)
+1. [Local-only — a local agent organization](#1-local-only--a-local-agent-organization)
 2. [Kiosk hosting — sandboxing, limits, and exposure](#2-kiosk-hosting--sandboxing-limits-and-exposure)
 3. [Mailserver — the hub, from scratch](#3-mailserver--the-hub-from-scratch)
 4. [Headless — autonomous, API-key-billed, unattended](#4-headless--autonomous-api-key-billed-unattended)
@@ -27,9 +27,9 @@ Every shape below starts here.
 
 | requirement | notes |
 |---|---|
-| **[Claude Code](https://claude.com/claude-code)**, installed and authenticated | `claude` must work from a terminal. Agent turns run on your subscription or an API key — **real usage costs real money**. |
+| **One or more provider CLIs**, installed and authenticated | Claude Code, Codex, and Gemini are supported. Install the CLI for every provider whose tiers you plan to hire; turns use that provider's subscription or API account — **real usage costs real money**. |
 | **Python 3.11+** | |
-| **Node.js 18+** | builds the frontend; also invokes the Claude Code CLI in a newline-safe way on Windows |
+| **Node.js 18+** | builds the frontend and runs the JavaScript-based provider CLIs where needed |
 | **Windows, macOS, or Linux** | the host-mode core (ledger, turns, canvas, kiosk URLs) runs anywhere; developed and battle-tested on Windows, POSIX paths handled but less traveled |
 | **Docker Desktop, WSL2 backend** | only for **sandboxed orgs** (kiosks default the sandbox on) — each org's virtual disk is loop-mounted inside the docker-desktop WSL distro, read via `\\wsl.localhost` |
 
@@ -70,27 +70,48 @@ mid-task message delivery — an older CLI never runs tool hooks headless, so wi
 sent to a busy agent waits for its current response to finish rather than arriving after its next
 tool call.
 
+**Optional Codex and Gemini providers:** install and sign in to their CLIs on
+the host. These private installs are discovered automatically; a global install
+on `PATH` works too.
+
+```bash
+# Codex: luna (seat 1), terra (2), sol (5)
+npm install --prefix ~/orgtree/codex @openai/codex
+npx --prefix ~/orgtree/codex codex login
+
+# Gemini: flash (seat 1), pro (2)
+npm install --prefix ~/orgtree/gemini @google/gemini-cli
+npx --prefix ~/orgtree/gemini gemini
+```
+
+The first Gemini launch asks you to pick a login method. The Accounts panel
+then confirms each provider's connection state. See
+[`configuration.md`](configuration.md#provider-clis-and-tier-availability)
+for CLI overrides, headless authentication requirements, and the current
+kiosk limitation.
+
 **Updating, once installed:** `update.ps1` (or double-click `update.cmd`) on Windows, `./update.sh`
 on Linux/macOS (also runs under Git Bash on Windows). Both pull, rebuild the UI, install any new
 dependencies, and restart the backend in the background with a health check.
 
 ---
 
-## 1. Local-only — a Claude Code replacement, nothing more
+## 1. Local-only — a local agent organization
 
 Nothing here is a separate mode to turn on — it's what you get by doing *only* the install above
-and none of the sections that follow. orgtree's own framing: *"a persistent, visual organization of
-Claude Code agents... the whole org runs on your existing Claude Code installation and
-subscription"* (`README.md`).
+and none of the sections that follow. It is a persistent, visual organization
+of Claude Code, Codex, and Gemini agents running through the provider CLIs
+installed on this host (`README.md`).
 
 1. Start the backend (`python -m orgtree.api`, or `update.ps1`/`update.sh` if already installed)
    and open **http://127.0.0.1:7360**.
 2. Create an organization — the collapsed creation form is just a name and a folder grant; leave
    the `advanced` disclosure closed (that's where kiosk, sandbox, and the mailserver connection
    live — §2–§4 below).
-3. Hover the eye and hire one top-level agent (pick a tier: haiku/sonnet/opus/fable). That single
-   card, zoomed in, **is** a Claude-Code-style chat desk — transcript, live tool feed, markdown,
-   a composer. Talk to it exactly as you would `claude` in a terminal.
+3. Hover the eye and hire one top-level agent. Claude provides
+   haiku/sonnet/opus/fable; a connected Codex CLI adds luna/terra/sol and a
+   connected Gemini CLI adds flash/pro. That single card, zoomed in, is a chat
+   desk with transcript, live tool feed, markdown, and a composer.
 
 That's the whole shape: one persistent, revisitable session instead of a terminal you close. You
 can still hire more agents, build out a tree, etc. — "nothing more" describes what's *off* by
