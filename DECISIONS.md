@@ -3022,8 +3022,7 @@ incremented numeric suffix starting at `-2`. Worked example: failed fable
 `poem` becomes opus `poem-autopsy` and replacement fable `poem-2`; if
 `poem-2` also fails, the next attempt is `poem-3`, normally under the same
 `poem-autopsy` seat rather than a fresh one. Full procedure:
-docs/ui-guide.md, "Fable autopsy — diagnosing a fable that trips its own
-filters".
+docs/ui-guide.md, "Fable autopsy — diagnosing a fable whose turn died".
 Why: the opus's job is diagnosis and re-briefing, not doing the fable's own
 work — a distinct suffix keeps it visually and structurally separate from
 the fable line it supervises, while the incrementing fable name keeps every
@@ -3032,8 +3031,28 @@ node's name for an agent that is not a continuation of it.
 Bounds: this is a fresh org identity for a fresh diagnostic attempt, not a
 continuation of one — deliberately unlike compaction's successor (D-053),
 which keeps the SAME name across a split because it IS the same agent
-carrying on. Applies to the fable tier specifically; the failure mode is a
-filter trip, not an ordinary bug.
+carrying on. Applies to the fable tier specifically.
+Amended (measured, 2026-08-29): the failure mode is NOT reliably a filter
+trip, and this entry originally assumed it was. Establish the cause BEFORE
+choosing a response. When a turn dies this way the engine reports "the CLI
+exited 1 without writing anything to stderr" — that string is a WRAPPER, not
+a diagnosis, and it is byte-identical across unrelated causes. The CLI's own
+reason IS recorded, as a trailing system entry in the node's transcript:
+read it with orgtree_read_transcript before concluding anything. Two deaths
+on one evening carried that same wrapper and had nothing in common: one was
+an AUP safeguards trip ("Fable 5's safeguards flagged this message"), the
+other a transient "API Error: 500 ... server-side issue, usually temporary".
+The correct responses are OPPOSITE. A filter trip earns this whole pattern —
+autopsy, re-brief, replacement. A 500 earns a one-line RE-DRIVE of an agent
+that is perfectly healthy, and nothing else; running an autopsy on it burns
+a fable seat and an hour re-briefing for a cause that never happened. Other
+causes (context overflow, OOM, a crash, a tool loop) are ruled in or out the
+same way — occupancy is reported alongside the transcript, so an overflow is
+checkable rather than assumable. Before re-driving after a 500, confirm the
+outage has passed: the diagnosing agent's own successful API calls are that
+check. And note "I cannot tell, and here is what I ruled out" is a sound
+verdict — a replacement told the cause is not understood takes more care
+than one told it is safe.
 Load-bearing: retiring the autopsy opus while the replacement fable is its
 live report auto-dissolves the whole subtree (retire-with-live-reports is
 documented ledger behavior, not a bug) — the opus cannot be retired for as
