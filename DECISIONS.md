@@ -1903,6 +1903,20 @@ substrings, and a first draft saying "when other agents move" took
 `orgtree_move` out of the deliberately-absent set. ⑥ `orgtree_chart` must call
 BOTH halves, or the chart tool renders no chart.
 
+**⚠ THE GENERAL FORM, for whoever hits this next: after D-181, anything keying
+off "the turn text starts with X" or "nothing was prepended" is wrong.** Every
+non-command turn now opens with an `[ORG STATE …]` block. This already broke
+one thing, and it broke it in the worst available direction: `bare_banner_turns`
+in `test_turn_lifecycle.py` defined a phantom wake as "the content starts with
+`(orgtree)` and nothing was prepended to it", so after the split it returned an
+EMPTY LIST for every turn — including real phantoms. An empty list reads exactly
+like "no phantoms found". It was caught only because that section runs a
+PRE-FIX CANARY first and refuses to report the fixed arm when the canary cannot
+see the fault it is meant to see. A detector that has gone blind and a clean
+sheet are indistinguishable from the outside; the canary is the difference, and
+that is the argument for keeping such arms rather than deleting them once the
+bug they were written for is fixed.
+
 ### D-110 · FR-19 (name-gen button) is DISMISSED — no viable access path
 Ruling (user, 2026-08-14): the feature is dropped entirely. Both branches of
 the access fork fail its size: "an entire cli turn is excessive, expensive,
