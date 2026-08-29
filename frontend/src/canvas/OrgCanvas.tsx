@@ -6,7 +6,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import type { AudienceGrant, NodeStatus, ToastFn, TreeNode, TreePayload } from '../types'
+import type { AudienceGrant, NodeStatus, ProviderInfo, ToastFn, TreeNode, TreePayload } from '../types'
 import { audienceAction, getProviders, orgInboxRead, reorderNode } from '../api'
 import {
   AddIcon, AutorenewIcon, ChevronLeftIcon, ChevronRightIcon, FrozenIcon,
@@ -88,14 +88,17 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
   // still a disabled preview, with the payload's own reason as the tooltip.
   // Non-fatal like the accounts panel's fetch: absent payload degrades to
   // the disabled preview, never to hidden chips.
-  const [codexHire, setCodexHire] =
-    useState<{ enabled: boolean; reason: string | null } | null>(null)
+  const [codexProvider, setCodexProvider] = useState<ProviderInfo | null>(null)
   useEffect(() => {
     getProviders().then((p) => {
       const cx = p.providers.find((v) => v.id === 'openai')
-      if (cx) setCodexHire({ enabled: !!cx.hire_enabled, reason: cx.reason })
+      if (cx) setCodexProvider(cx)
     }).catch(() => {})
   }, [slug])
+  const codexHire = codexProvider && {
+    enabled: !!codexProvider.hire_enabled,
+    reason: codexProvider.reason,
+  }
   // canonical retired-stack slot (user note 2026-08-06): display-order every
   // parent's children so archived siblings sit CONTIGUOUSLY at the first
   // archived ordinal. Buried members take no layout space, so with a
@@ -2016,7 +2019,8 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
           DOM subtree ON MOBILE ONLY; desktop renders exactly as before. */}
       {configId && map.get(configId) && (
         <MaybePortal><NodeConfig node={map.get(configId)!} map={map} tree={tree} slug={slug}
-          op={op} toast={toast} close={() => setConfigId(null)} /></MaybePortal>
+          op={op} toast={toast} codexProvider={codexProvider}
+          close={() => setConfigId(null)} /></MaybePortal>
       )}
       {lineageId && map.get(lineageId) && (
         <MaybePortal><LineagePanel node={map.get(lineageId)!} op={op} slug={slug}
