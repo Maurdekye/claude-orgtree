@@ -1271,6 +1271,42 @@ def api_fallback_active(org: Org, now: float | None = None) -> bool:
     return now < float(org.d.get("api_fallback_until") or 0)
 
 
+def api_fallback_active_for(org: Org, tier: str,
+                            now: float | None = None) -> bool:
+    """`api_fallback_active`, asked about ONE TIER — i.e. will a process for
+    this tier bill the org's ANTHROPIC API KEY? (D-194.)
+
+    ⚠ THE ORG-ONLY QUESTION IS THE WRONG QUESTION AT A MULTI-PROVIDER BOOKING
+    POINT, and this is the whole reason the function exists. `api_fallback`
+    is an ANTHROPIC key: `spawn_env` injects it as `ANTHROPIC_API_KEY`, and
+    `_bank_api_cost` accumulates what it billed onto `api_cost_usd`, which the
+    canvas renders to the user as "subscription $X · api key $Y" with the
+    subscription half derived as `total − api`. A dollar banked there wrongly
+    corrupts BOTH halves of a number a person reads.
+
+    A codex-tier process cannot bill that key, and not by accident: `codexrun`
+    strips every `ANTHROPIC_*` and `CLAUDE_CODE_*` variable out of the child's
+    environment on purpose (and `OPENAI_API_KEY` too, so the mirror mistake is
+    equally impossible), and its dollars are priced by `providers.codex_cost`
+    from OpenAI rates. Asking `api_fallback_active(org)` about such a process
+    asks whether a credential window is open for a credential the process has
+    been deliberately deprived of — the answer is real, and irrelevant.
+
+    ⚠ THE AXIS IS POSITIVE — "is this a KNOWN Anthropic tier", not "is this
+    not a known codex one". An unrecognised tier therefore reads as NOT
+    billing the key, which is the safe direction for money: under-reporting
+    the split leaves a true number small, while over-reporting puts another
+    provider's spend into the user's "api key" figure and takes it out of
+    their "subscription" figure at the same time. It also means a provider
+    added tomorrow is correct here the moment it is absent from
+    `providers.claude_tiers()`, rather than correct only if someone remembers
+    to add it to an exclusion list. (`claude_tiers()` is the one place that
+    already answers "which tiers are Claude's"; this reads it rather than
+    keeping a second copy that could disagree with it.)"""
+    return (tier in {t["tier"] for t in providers.claude_tiers()}
+            and api_fallback_active(org, now))
+
+
 def _bank_api_cost(org: Org, amount: float) -> None:
     """api_fallback split (user feature 2026-08-17): dollars billed while the
     key lane was open accumulate on this org-lifetime counter, surfaced as
@@ -8016,7 +8052,19 @@ def _compact_split_codex_body(slug: str, nid: str, org: Org,
     from . import codexrun                              # noqa: PLC0415
 
     tier = str(n.get("model") or "")
-    on_fallback_key = api_fallback_active(org)
+    # ⚠ THE TIER-AWARE PREDICATE, NOT THE ORG-ONLY ONE (D-194). This asked
+    # `api_fallback_active(org)` — "is the Anthropic key window open?" — about
+    # a process `codexrun` deliberately strips every `ANTHROPIC_*` variable
+    # from, whose dollars are priced by `providers.codex_cost` at OpenAI
+    # rates. The answer was real and irrelevant, and it put OpenAI spend into
+    # the user's "api key" figure while subtracting it from their
+    # "subscription" one. The codex TURN already knew better: `_run_one_turn`
+    # books `on_key=False` for a codex tier and raises `_CodexTurnDone` before
+    # the Anthropic capture is reached — the turn and this fork gave opposite
+    # answers about the same provider in the same org. It resolves to False
+    # for every codex tier; the name is kept so all three branches below read
+    # the same as the claude fork's.
+    on_fallback_key = api_fallback_active_for(org, tier)
     fork_cost = 0.0
     try:
         cstat = providers.codex_status()
