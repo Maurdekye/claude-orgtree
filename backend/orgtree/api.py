@@ -5303,7 +5303,33 @@ def provider_hire_gate(org: Org, tier: str | None) -> None:
         subscription login is a person's plan, and headless means nobody is
         present to answer for it.
     """
-    if not tier or tier not in providers.CODEX_TIERS:
+    if not tier:
+        return
+    if tier in providers.GEMINI_TIERS:
+        gst = providers.gemini_status()
+        if not gst.get("installed"):
+            raise LedgerError(
+                f"tier '{tier}' is a Gemini tier and the Gemini CLI is not "
+                f"installed on this machine — the accounts panel's Gemini "
+                f"section has the install command")
+        if not gst.get("connected"):
+            raise LedgerError(
+                f"tier '{tier}' is a Gemini tier and Gemini is not signed "
+                f"in — run `gemini` once on this machine and pick a login "
+                f"method (accounts panel → Gemini)")
+        if org.d.get("kiosk"):
+            raise LedgerError(
+                "kiosk orgs cannot hire Gemini tiers yet — gemini is held "
+                "out of kiosks until its sandboxing is settled (the same "
+                "holdout as codex, user ruling 2026-08-28)")
+        if org.d.get("headless") and gst.get("kind") not in ("api-key",
+                                                             "vertex"):
+            raise LedgerError(
+                "a headless org may only hire tiers from KEYED providers "
+                "(user ruling 2026-08-28) — Gemini here is signed in with a "
+                "Google account login, not an API key")
+        return
+    if tier not in providers.CODEX_TIERS:
         return
     st = providers.codex_status()
     if not st.get("installed"):

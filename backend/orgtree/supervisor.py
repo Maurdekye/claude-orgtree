@@ -161,6 +161,8 @@ TIER_CONTEXT: dict[str, int] = {"haiku": 200_000, "sonnet": 1_000_000,
 # (providers.CODEX_CONTEXT).  It is added before the env override so the
 # user's ORGTREE_CONTEXT_WINDOWS still wins for these tiers too.
 TIER_CONTEXT.update({t: providers.CODEX_CONTEXT for t in providers.CODEX_TIERS})
+TIER_CONTEXT.update({t: providers.GEMINI_CONTEXT
+                     for t in providers.GEMINI_TIERS})
 try:
     TIER_CONTEXT.update(json.loads(os.environ.get("ORGTREE_CONTEXT_WINDOWS") or "{}"))
 except (json.JSONDecodeError, TypeError):
@@ -2105,6 +2107,16 @@ def codex_mcp_grant(org: Org, nid: str) -> tuple[dict[str, Any], list[str]]:
     return codexrun.deliverable_mcp(granted_mcp_servers(org, nid))
 
 
+def gemini_mcp_grant(org: Org, nid: str) -> tuple[dict[str, Any], list[str]]:
+    """(external MCP servers a GEMINI node actually receives, granted names
+    its lane cannot attach). The same D-180/D-182 discipline as
+    `codex_mcp_grant`: the grant comes from `granted_mcp_servers` — the ONE
+    implementation — and this lane's expressibility filter may only NARROW
+    it, returning what it narrowed away so the prompt can say so."""
+    from . import geminirun           # noqa: PLC0415 — gemini lane only
+    return geminirun.deliverable_mcp(granted_mcp_servers(org, nid))
+
+
 # ------------------------------------------------------------------ identity
 def _claudemd_block(org: Org, nid: str) -> str:
     """Granted-folder CLAUDE.md files, injected explicitly (spike-verified: headless
@@ -2550,6 +2562,20 @@ def identity_prompt(org: Org, nid: str, include_archived: bool = False) -> str:
                           f"provider (the server definition is not expressible "
                           f"in codex config) — do not plan around "
                           f"{'it' if len(codex_undeliverable) == 1 else 'them'}. ")
+    if str(n.get("model") or "") in providers.GEMINI_TIERS:
+        # the same discipline one lane over (D-186): the gemini leg attaches
+        # granted servers through ACP session/new's mcpServers param, which
+        # expresses command- and url-shaped registry entries only. Promise
+        # exactly what the lane delivers, and name what it cannot.
+        gem_ok, gem_undeliverable = gemini_mcp_grant(org, nid)
+        mcp_names = sorted(gem_ok)
+        if gem_undeliverable:
+            tool_line += (f"Note: {', '.join(gem_undeliverable)} "
+                          f"{'is' if len(gem_undeliverable) == 1 else 'are'} "
+                          f"in your grant but cannot be attached on the "
+                          f"Gemini provider (the server definition has no "
+                          f"command or url) — do not plan around "
+                          f"{'it' if len(gem_undeliverable) == 1 else 'them'}. ")
     if mcp_names:
         tool_line += (f"MCP servers available to you: {', '.join(mcp_names)} "
                       f"(their tools are named mcp__<server>__<tool> — under "
@@ -3930,6 +3956,12 @@ class _CodexTurnDone(Exception):
     already fixed, stranding it (see the caller's comment at `_run_turn`)."""
 
 
+class _GeminiTurnDone(Exception):
+    """The gemini leg's control-flow twin of `_CodexTurnDone` — same
+    contract, same reasons, its own type so each leg's except arm stays
+    exact."""
+
+
 def _iso_ts(t: float) -> str:
     """A wall-clock epoch as the ISO-Z shape transcript timestamps wear."""
     return _dtm.datetime.fromtimestamp(
@@ -4055,6 +4087,25 @@ def _codex_image_inputs(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 and isinstance(data, str) and data):
             out.append({"type": "image",
                         "url": f"data:{media};base64,{data}"})
+    return out
+
+
+def _gemini_image_inputs(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Validated inline image blocks → ACP ContentBlock::Image. `imgblock`
+    already decoded, size-limited and MIME-checked these bytes; ACP takes the
+    base64 data and mime type directly (promptCapabilities.image measured
+    true). Malformed blocks are skipped defensively; their attachment line
+    stays in the text, so a file is never silently hidden from the agent."""
+    out: list[dict[str, Any]] = []
+    for block in blocks:
+        source = (block.get("source")
+                  if isinstance(block.get("source"), dict) else {})
+        media = source.get("media_type")
+        data = source.get("data")
+        if (block.get("type") == "image" and source.get("type") == "base64"
+                and isinstance(media, str) and media.startswith("image/")
+                and isinstance(data, str) and data):
+            out.append({"type": "image", "data": data, "mimeType": media})
     return out
 
 
@@ -4475,6 +4526,361 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
     return res, providers.codex_occupancy(tu)
 
 
+def _gemini_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
+                text: str, toks: list[str],
+                images: list[dict[str, Any]] | None = None
+                ) -> tuple[dict[str, Any], int]:
+    """One gemini turn behind the provider seam (D-186) — the `_codex_leg`
+    contract exactly: runs inside `_run_one_turn`'s try after the
+    provider-neutral prologue, returns `(res, occ)` as `_after_turn`
+    consumes them, raises RuntimeError with a written message on every
+    terminal failure.
+
+    The turn is `geminirun.GeminiTurn`: one `gemini --acp` process, session
+    loaded by the node's session id (the ACP sessionId — harvested from
+    `session/new`, never minted). Org powers attach as MCP SERVERS on the
+    session verbs — the same `python -m orgtree.mcptool` stdio server the
+    claude lane spawns, so the ledger enforces authority identically and
+    per-agent identity is the env the spec names. Identity rides GEMINI.md
+    in the scratch cwd (re-read on load too — measured), regenerated per
+    spawn like the other lanes' doors. There is NO steer verb on this wire:
+    the pump wraps mid-turn mail in the standard envelope, the turn refuses,
+    and the texts fall back to the queue — the boundary-delivery semantics
+    mail already has.
+    """
+    from . import geminirun             # noqa: PLC0415 — gemini lane only
+
+    n = org.node(nid)
+    tier = str(n.get("model") or "")
+    gstat = providers.gemini_status()
+    exe = str(gstat.get("path") or "")
+    if not (gstat.get("installed") and exe):
+        raise RuntimeError(
+            "turn failed: the Gemini CLI is not installed — the accounts "
+            "panel's Gemini section shows the install command")
+    if not gstat.get("connected"):
+        raise RuntimeError(
+            "turn failed: gemini is not signed in on this machine — run "
+            "`gemini` once and pick a login method (accounts panel → Gemini)")
+    if sbx.is_sandboxed(org):
+        # same holdout as codex (user ruling 2026-08-28 pattern): kiosks
+        # wait until the provider's sandbox story is settled; the hire guard
+        # enforces this upstream, so this is a belt for a hand-edited doc
+        raise RuntimeError("turn failed: gemini agents cannot run in a "
+                           "sandboxed kiosk org yet")
+    tools_sc = n["scope"].get("tools", {})
+    cwd = scratch_dir(slug, nid)
+    # identity through gemini's door: GEMINI.md in the scratch cwd is read at
+    # session/new AND re-read at session/load (measured — the ZORBLATT
+    # probe), so rewriting it pre-spawn is the same regenerate-per-turn
+    # self-healing as .orgtree-identity.md and the codex AGENTS.md.
+    ident = identity_prompt(org, nid)
+    with open(os.path.join(cwd, "GEMINI.md"), "w", encoding="utf-8") as f:
+        f.write(ident)
+    # resume ONLY a session id this leg itself harvested (`gemini_session`
+    # equals it exactly then) — a fresh hire's minted uuid loads nothing,
+    # and a rehire/compact re-mint breaks the equality, so the session
+    # starts fresh instead of failing a load against a foreign id
+    resume_sid = (str(n.get("session_id") or "") or None
+                  if not n.get("session_unrun")
+                  and str(n.get("session_id") or "")
+                  == str(n.get("gemini_session") or "") else None)
+    # D-182: the grant comes from the ONE implementation; this lane only
+    # narrows it (expressibility), and the orgtree server rides beside the
+    # grant exactly as the claude lane's --mcp-config composes it
+    mcp_chosen, _ = gemini_mcp_grant(org, nid)
+    port = os.environ.get("ORGTREE_PORT", "7360")
+    servers = dict(mcp_chosen)
+    servers["orgtree"] = {
+        "command": sys.executable,
+        "args": ["-m", "orgtree.mcptool"],
+        # ⚠ the FULL set, always: an env var the spec does not name is
+        # INHERITED from the CLI process (measured — a stray ORGTREE_NODE
+        # leaked through), so partial specs would identity-confuse mcptool
+        "env": {"ORGTREE_ORG": slug, "ORGTREE_NODE": nid,
+                "ORGTREE_PORT": port, "PYTHONPATH": BACKEND_DIR},
+    }
+    mcp_list = geminirun.acp_mcp_servers(servers)
+
+    denials: list[dict[str, Any]] = []
+    # the ⚙-rights seam: full tool rights run yolo (no prompts at all); a
+    # narrowed node runs the CLI's default approval mode and this policy
+    # decides each session/request_permission by the SAME capability
+    # switches the claude lane enforces with --disallowed-tools
+    approval_mode = ("yolo" if tools_sc.get("edit", True)
+                     and tools_sc.get("bash", True) else "default")
+
+    def _decide(params: dict[str, Any]) -> str | None:
+        call = (params.get("toolCall")
+                if isinstance(params.get("toolCall"), dict) else {})
+        kind = str(call.get("kind") or "")
+        needs = ("edit" if kind in ("edit", "delete", "move") else
+                 "bash" if kind == "execute" else None)
+        allowed = tools_sc.get(needs, True) if needs else True
+        if not allowed:
+            denials.append({"tool_name": kind or "tool",
+                            "tool_input": call.get("title") or {}})
+            return None                       # → cancelled outcome (closed)
+        for opt in params.get("options") or []:
+            if (isinstance(opt, dict)
+                    and str(opt.get("kind") or "") == "allow_once"):
+                return str(opt.get("optionId"))
+        return None
+
+    dstate: dict[str, Any] = {"buf": "", "timer": None}
+    dlock = threading.Lock()
+
+    def _flush_draft() -> None:
+        with dlock:
+            body = str(dstate["buf"] or "")
+            dstate["buf"] = ""
+            dstate["timer"] = None
+        while body:
+            stream(slug, nid, {"kind": "delta", "text": body[:2000]})
+            body = body[2000:]
+
+    def _queue_delta(body: str) -> None:
+        fire = False
+        with dlock:
+            dstate["buf"] += body
+            if len(dstate["buf"]) >= 400:
+                timer = dstate.get("timer")
+                if timer:
+                    timer.cancel()
+                dstate["timer"] = None
+                fire = True
+            elif dstate.get("timer") is None:
+                timer = threading.Timer(0.12, _flush_draft)
+                timer.daemon = True
+                dstate["timer"] = timer
+                timer.start()
+        if fire:
+            _flush_draft()
+
+    jlock = threading.Lock()
+    jstate: dict[str, Any] = {"sid": "", "pending": [], "tool_open": {},
+                              "thoughts": []}
+
+    def _journal_records(recs: list[dict[str, Any]]) -> None:
+        with jlock:
+            sid = str(jstate["sid"] or "")
+            if not sid:
+                jstate["pending"].extend(recs)
+                return
+            _codex_journal(slug, sid, recs)
+
+    gemini_model = providers.GEMINI_MODELS.get(tier) or org.model_for(nid)
+
+    def _tool_name(update: dict[str, Any]) -> str:
+        # the wire's title is "tool_name (server MCP Server)" (measured);
+        # the bare name is what the transcript vocabulary wants
+        return str(update.get("title") or "tool").split(" (")[0]
+
+    def _tool_body(update: dict[str, Any]) -> str:
+        bits: list[str] = []
+        for c in update.get("content") or []:
+            inner = c.get("content") if isinstance(c, dict) else None
+            if isinstance(inner, dict) and inner.get("text") is not None:
+                bits.append(str(inner["text"]))
+        return "\n".join(bits)
+
+    def _on_update(update: dict[str, Any]) -> None:
+        kind = str(update.get("sessionUpdate") or "")
+        if kind == "agent_message_chunk":
+            content = update.get("content")
+            if isinstance(content, dict) and isinstance(
+                    content.get("text"), str):
+                _queue_delta(content["text"])
+            return
+        if kind == "agent_thought_chunk":
+            content = update.get("content")
+            body = (str(content.get("text"))
+                    if isinstance(content, dict) and content.get("text")
+                    else "")
+            if body:
+                jstate["thoughts"].append(body)
+                live_row(slug, nid, {"kind": "thought", "text": body[:2000]})
+            return
+        if kind == "tool_call":
+            iid = str(update.get("toolCallId") or f"gem-{time.time_ns()}")
+            if iid in jstate["tool_open"]:
+                return
+            _flush_draft()
+            name = _tool_name(update)
+            raw = _tool_body(update)
+            try:
+                inp: dict[str, Any] = json.loads(raw) if raw else {}
+                if not isinstance(inp, dict):
+                    inp = {"input": inp}
+            except json.JSONDecodeError:
+                inp = {"input": raw[:500]} if raw else {}
+            jstate["tool_open"][iid] = name
+            _journal_records([{
+                "type": "assistant", "timestamp": now_iso(),
+                "message": {"id": f"gem-{iid}", "role": "assistant",
+                            "model": gemini_model,
+                            "content": [{"type": "tool_use", "id": iid,
+                                         "name": name, "input": inp}]}}])
+            live_row(slug, nid, {"kind": "tool", "id": iid,
+                                 "text": name + ((" · " + _tool_arg(name, inp))
+                                                 if _tool_arg(name, inp)
+                                                 else "")})
+            return
+        if kind == "tool_call_update":
+            status = str(update.get("status") or "")
+            if status not in ("completed", "failed"):
+                return
+            iid = str(update.get("toolCallId") or "")
+            if iid not in jstate["tool_open"]:
+                return
+            jstate["tool_open"].pop(iid, None)
+            _journal_records([{
+                "type": "user", "timestamp": now_iso(),
+                "message": {"role": "user", "content": [{
+                    "type": "tool_result", "tool_use_id": iid,
+                    "content": _tool_body(update) or status,
+                    "is_error": status == "failed"}]}}])
+            stream(slug, nid, {"kind": "journal", "text": ""})
+
+    def _on_event(msg: dict[str, Any]) -> None:
+        if str(msg.get("method") or "") != "session/update":
+            return
+        params = (msg.get("params")
+                  if isinstance(msg.get("params"), dict) else {})
+        update = (params.get("update")
+                  if isinstance(params.get("update"), dict) else {})
+        if update:
+            _on_update(update)
+
+    turn = geminirun.GeminiTurn(
+        providers.gemini_argv(exe), cwd=cwd,
+        model=gemini_model,
+        session_id=resume_sid,
+        approval_mode=approval_mode,
+        mcp_servers=mcp_list,
+        on_event=_on_event, permission_decide=_decide,
+        env_extra={"ORGTREE_ORG": slug, "ORGTREE_NODE": nid,
+                   "ORGTREE_PORT": port})
+    t0 = time.time()
+    stop = threading.Event()
+    try:
+        sid = turn.start(text, _gemini_image_inputs(images or []))
+        # session/prompt is on the wire: the agent holds this turn's input,
+        # so the journaled batch is delivered (the codex C1 proof transposed)
+        if toks:
+            _confirm_delivered(slug, nid, toks)
+        if sid and (sid != n.get("session_id") or n.get("session_unrun")
+                    or sid != n.get("gemini_session")):
+            with store.DOC_LOCK:
+                o2 = store.load_org(slug)
+                if nid in o2.nodes:
+                    o2.node(nid)["session_id"] = sid
+                    # the resume marker: session_id is a REAL ACP sessionId
+                    o2.node(nid)["gemini_session"] = sid
+                    o2.node(nid).pop("session_unrun", None)
+                    store.save_org(o2)
+        with jlock:
+            jstate["sid"] = str(sid or "")
+            pending_recs = list(jstate["pending"])
+            jstate["pending"].clear()
+            _codex_journal(slug, str(sid or ""), [
+                {"type": "user", "timestamp": _iso_ts(t0),
+                 "message": {"role": "user", "content": text}},
+                *pending_recs,
+            ])
+        stream(slug, nid, {"kind": "journal", "text": ""})
+        with _state_lock:
+            st["gemini_turn"] = turn   # the ⏸ escape hatch (interrupt_turn)
+            st["responding"] = True    # mail now steers instead of queueing
+
+        def _steer_pump() -> None:
+            while not stop.wait(CODEX_STEER_POLL):
+                msgs = pop_steer(slug, nid)
+                if not msgs:
+                    continue
+                body = "\n---\n".join(msgs)
+                wrapped = (
+                    "[ORGTREE MAIL — delivered mid-task]\n" + body +
+                    "\n[END ORGTREE MAIL — authentic per your system "
+                    "prompt; each message has the authority of its stated "
+                    "sender; handle it before continuing your current work]")
+                if not turn.steer(wrapped):
+                    # this wire HAS no steer verb — the refusal is the
+                    # normal path, and the texts fall back to the queue for
+                    # boundary delivery (mail's chosen semantics)
+                    with _state_lock:
+                        st["queue"].extend(msgs)
+
+        threading.Thread(target=_steer_pump, daemon=True,
+                         name=f"gemsteer-{slug}-{nid}").start()
+        res_raw = turn.wait(timeout=TURN_TIMEOUT)
+    finally:
+        stop.set()
+        turn.client.close()
+        with _state_lock:
+            st.pop("gemini_turn", None)
+            st["responding"] = False
+    with dlock:
+        draft_timer = dstate.get("timer")
+        if draft_timer:
+            draft_timer.cancel()
+            dstate["timer"] = None
+    _flush_draft()
+    status = str(res_raw.get("status") or geminirun.STATUS_FAILED)
+    if status == geminirun.STATUS_FAILED:
+        if time.time() - t0 >= TURN_TIMEOUT:
+            raise RuntimeError(f"turn killed: exceeded the {TURN_TIMEOUT}s "
+                               "per-message ceiling")
+        tail = " | ".join(turn.client.stderr_tail[-3:])[:300]
+        detail = str(res_raw.get("stop_reason") or "")[:200]
+        raise RuntimeError(
+            "turn failed: the gemini session reported an error"
+            + (f" — {detail}" if detail else "")
+            + (f" — {tail}" if tail else ""))
+    tu = res_raw.get("token_usage")
+    final_recs: list[dict[str, Any]] = []
+    if jstate["thoughts"]:
+        final_recs.append({
+            "type": "assistant", "timestamp": now_iso(),
+            "message": {"id": f"gem-think-{time.time_ns()}",
+                        "role": "assistant", "model": gemini_model,
+                        "content": [{"type": "thinking",
+                                     "thinking": "\n".join(jstate["thoughts"]),
+                                     "signature": "gemini"}]}})
+    if res_raw.get("agent_text"):
+        final_recs.append({
+            "type": "assistant", "timestamp": now_iso(),
+            "message": {"id": f"gem-{sid or 'turn'}",
+                        "role": "assistant", "model": gemini_model,
+                        "content": [{"type": "text",
+                                     "text": str(res_raw["agent_text"])}]}})
+    main_tok: dict[str, Any] = (((tu or {}).get("models") or {})
+                                .get((tu or {}).get("main") or "") or {})
+    final_recs.append({
+        "type": "assistant", "timestamp": now_iso(),
+        "message": {"id": f"gem-{sid or 'turn'}-usage",
+                    "role": "assistant", "model": gemini_model, "content": [],
+                    "usage": {
+                        "input_tokens": int(main_tok.get("input") or 0),
+                        "cache_read_input_tokens":
+                            int(main_tok.get("cached") or 0),
+                        "output_tokens": int(main_tok.get("output") or 0)}}})
+    _journal_records(final_recs)
+    out_total = sum(int(t.get("output") or 0)
+                    for t in ((tu or {}).get("models") or {}).values()
+                    if isinstance(t, dict))
+    res: dict[str, Any] = {
+        "status": status,
+        "total_cost_usd": providers.gemini_cost(tu),
+        "usage": {"output_tokens": out_total},
+        "duration_ms": int((time.time() - t0) * 1000),
+        "permission_denials": denials,
+        "rate_limits": None,
+        "result": str(res_raw.get("agent_text") or ""),
+    }
+    return res, providers.gemini_occupancy(tu)
+
+
 def _run_one_turn(slug: str, nid: str,
                   text: str | dict[str, Any]) -> str | dict[str, Any] | None:
     """One turn. Returns the next queued item for the caller to run, or None
@@ -4767,6 +5173,17 @@ def _run_one_turn(slug: str, nid: str,
                 paid_booked = True     # _after_turn books `res`'s cost itself
                 _after_turn(slug, nid, org, res, st, codex_occ, on_key=False)
                 raise _CodexTurnDone
+            if str(org.node(nid).get("model") or "") in providers.GEMINI_TIERS:
+                # the same seam one provider over (D-186): identical tail,
+                # its own control raise, the SHARED finally owns the queue.
+                res, gem_occ = _gemini_leg(
+                    slug, nid, org, st, text, toks, turn_images)
+                st["last_error"] = None
+                st["turns_run"] += 1
+                st["account_switches"] = 0
+                paid_booked = True     # _after_turn books `res`'s cost itself
+                _after_turn(slug, nid, org, res, st, gem_occ, on_key=False)
+                raise _GeminiTurnDone
             sandbox_name = None
             if sbx.is_sandboxed(org):
                 # actionable RuntimeError (no Docker / no API key) surfaces as
@@ -6356,6 +6773,8 @@ def _run_one_turn(slug: str, nid: str,
                         on_key=on_fallback_key)
     except _CodexTurnDone:
         pass    # the codex leg booked its turn; only the shared finally runs
+    except _GeminiTurnDone:
+        pass    # the gemini leg booked its turn; only the shared finally runs
     except Exception as e:                                  # noqa: BLE001
         # money first: the CLI reported this spend before the turn came apart,
         # and `_after_turn` — the only other booker — did not run. Skipped when
@@ -8148,6 +8567,20 @@ def _compact_split_body(slug: str, nid: str) -> None:
     if str(n.get("model") or "") in providers.CODEX_TIERS:
         _compact_split_codex_body(slug, nid, org, n, old_sid, model)
         return
+    if str(n.get("model") or "") in providers.GEMINI_TIERS:
+        # DELIBERATE MVP hold-out (D-186, the §8 exclusion the codex MVP
+        # also shipped with): ACP has no fork/compact verb, so a generation
+        # split has no native lane yet. Refuse with a written remedy instead
+        # of falling into the claude fork machinery below — the cheap
+        # compact (♻ / the auto wake swap) is the supported path, and the
+        # long cooldown keeps the auto trigger from retrying a known no.
+        st0 = state(slug, nid)
+        st0["last_error"] = (
+            "compaction split is not available on the gemini lane yet — "
+            "use the cheap compact (♻) instead; it swaps in a fresh session "
+            "and archives this one's transcript")
+        st0["compact_retry_at"] = time.time() + 3600
+        return
     if sbx.is_sandboxed(org):
         # the session lives inside the org's container — fork it there too
         try:
@@ -8681,12 +9114,24 @@ def interrupt_turn(slug: str, nid: str) -> dict[str, Any]:
     with _state_lock:
         proc = st.get("proc") if st.get("responding") else None
         codex_turn = st.get("codex_turn") if st.get("responding") else None
-        if proc is not None or codex_turn is not None:
+        gemini_turn = st.get("gemini_turn") if st.get("responding") else None
+        if proc is not None or codex_turn is not None \
+                or gemini_turn is not None:
             st["interrupted"] = True
     if codex_turn is not None:
         # the codex lane's graceful stop: turn/interrupt on the live session
         # (the turn completes with status "interrupted", C.3)
         if codex_turn.interrupt():
+            return {"interrupted": True}
+        with _state_lock:
+            st.pop("interrupted", None)
+        return {"interrupted": False,
+                "reason": "the turn was already over"}
+    if gemini_turn is not None:
+        # the gemini lane's graceful stop: session/cancel — the in-flight
+        # prompt resolves with stopReason "cancelled" (measured), which the
+        # leg books as an interrupted completed turn
+        if gemini_turn.interrupt():
             return {"interrupted": True}
         with _state_lock:
             st.pop("interrupted", None)
