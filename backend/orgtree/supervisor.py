@@ -7638,12 +7638,150 @@ def _compact_split(slug: str, nid: str) -> None:
             st0["on_fallback"] = prev_fb
 
 
+def _compact_split_codex_body(slug: str, nid: str, org: Org,
+                              n: NodeDoc | dict[str, Any],
+                              old_sid: str, model: str) -> None:
+    """Codex half of a generation split.
+
+    Codex threads are provider-owned, so the app-server forks the source and
+    compacts the fork. The source handle remains the archived knowledge bearer
+    and the compacted handle becomes the live node's resumable thread.
+    """
+    from . import codexrun                              # noqa: PLC0415
+
+    tier = str(n.get("model") or "")
+    on_fallback_key = api_fallback_active(org)
+    fork_cost = 0.0
+    try:
+        cstat = providers.codex_status()
+        exe = str(cstat.get("path") or "")
+        if not (cstat.get("installed") and exe):
+            raise RuntimeError("the Codex CLI is not installed")
+        if not cstat.get("connected"):
+            raise RuntimeError("codex is not signed in on this machine")
+        if sbx.is_sandboxed(org):
+            raise RuntimeError(
+                "codex agents cannot run in a sandboxed kiosk org yet")
+        if str(n.get("codex_thread") or "") != old_sid:
+            raise RuntimeError(
+                "the current session is not a resumable Codex thread")
+        cwd = scratch_dir(slug, nid)
+        tools_sc = n["scope"].get("tools", {})
+        compacted = codexrun.compact_fork(
+            providers.codex_argv(exe), cwd=cwd, model=model,
+            thread_id=old_sid, timeout=COMPACT_TIMEOUT,
+            sandbox=("workspace-write" if tools_sc.get("edit", True)
+                     else "read-only"),
+            developer_instructions=identity_prompt(org, nid),
+            env_extra={"ORGTREE_ORG": slug, "ORGTREE_NODE": nid,
+                       "ORGTREE_PORT": os.environ.get("ORGTREE_PORT", "7360")})
+        new_sid = str(compacted.get("thread_id") or "")
+        token_usage = compacted.get("token_usage")
+        usage = token_usage if isinstance(token_usage, dict) else None
+        fork_cost = providers.codex_cost(tier, usage)
+        occ_new = providers.codex_occupancy(usage) or None
+
+        # The provider owns thread memory; Orgtree owns the journal rendered
+        # by the desk and transcript tool. Copy the visible history, then add
+        # a boundary and an invisible measured-usage row. This invalidates the
+        # old high-water immediately without fabricating a summary body the
+        # app-server does not expose.
+        try:
+            jdir = os.path.join(journal_store(), "projects", slug)
+            os.makedirs(jdir, exist_ok=True)
+            old_journal = os.path.join(jdir, old_sid + ".jsonl")
+            new_journal = os.path.join(jdir, new_sid + ".jsonl")
+            if os.path.exists(old_journal):
+                shutil.copyfile(old_journal, new_journal)
+            records: list[dict[str, Any]] = [{
+                "type": "system", "subtype": "compact_boundary",
+                "timestamp": now_iso(), "content": "Conversation compacted",
+                "compactMetadata": {
+                    "trigger": "orgtree",
+                    **({"preTokens": int(n["occupancy"])}
+                       if isinstance(n.get("occupancy"), int) else {}),
+                    **({"postTokens": occ_new} if occ_new else {})}}]
+            if occ_new:
+                records.append({
+                    "type": "assistant", "timestamp": now_iso(),
+                    "message": {
+                        "id": f"codex-{new_sid}-compact-usage",
+                        "role": "assistant", "model": model, "content": [],
+                        "usage": {"input_tokens": occ_new,
+                                  "cache_read_input_tokens": 0,
+                                  "output_tokens": 0}}})
+            _codex_journal(slug, new_sid, records)
+        except OSError as e:
+            print(f"[orgtree] {slug}/{nid}: compacted Codex journal copy "
+                  f"failed: {e!r}")
+    except Exception as e:                                   # noqa: BLE001
+        st = state(slug, nid)
+        st["last_error"] = f"compaction split failed: {e}"
+        st["compact_retry_at"] = time.time() + 900
+        return
+
+    with store.DOC_LOCK:
+        try:
+            current = store.load_org(slug)
+        except LedgerError:
+            print(f"[orgtree] {slug}/{nid}: Codex compaction finished after "
+                  f"the org was deleted (${fork_cost:.4f} unrecorded)")
+            return
+        if nid not in current.nodes:
+            if fork_cost:
+                current.d["deleted_cost_usd"] = round(
+                    float(current.d.get("deleted_cost_usd") or 0.0)
+                    + fork_cost, 6)
+                if on_fallback_key:
+                    _bank_api_cost(current, fork_cost)
+                store.save_org(current)
+            return
+        if current.node(nid)["session_id"] != old_sid:
+            if fork_cost:
+                live0 = current.node(nid)
+                live0["cost_usd"] = round(
+                    float(live0.get("cost_usd") or 0.0) + fork_cost, 6)
+                if on_fallback_key:
+                    _bank_api_cost(current, fork_cost)
+                store.save_org(current)
+            print(f"[orgtree] {slug}/{nid}: Codex compaction abandoned; "
+                  "the session was replaced while the fork ran")
+            return
+        pred = current.compact_split(nid, new_sid)
+        live = current.node(nid)
+        # compact_split copies provider-specific fields before rebinding the
+        # generic session_id. Rebind the Codex resume marker too; otherwise the
+        # next turn rejects this real fork and silently starts an empty thread.
+        live["codex_thread"] = new_sid
+        if fork_cost:
+            live["cost_usd"] = round(
+                float(live.get("cost_usd") or 0.0) + fork_cost, 6)
+            if on_fallback_key:
+                _bank_api_cost(current, fork_cost)
+        live["occupancy"] = occ_new
+        live.pop("occupancy_est", None)
+        live["compacted_unrun"] = True
+        store.save_org(current)
+        spend_total = current.cost_total()
+        kcfg = kiosk_cfg(current)
+    if (kcfg and float(kcfg.get("spend_limit") or 0) > 0
+            and spend_total >= float(kcfg["spend_limit"])):  # pyright: ignore[reportTypedDictNotRequiredAccess]
+        hard_freeze(slug, "spend", "kiosk spend limit reached")
+    st = state(slug, nid)
+    st.pop("compact_retry_at", None)
+    notify(slug, nid, "compacted")
+    notify(slug, pred, "created")
+
+
 def _compact_split_body(slug: str, nid: str) -> None:
     with store.DOC_LOCK:
         org = store.load_org(slug)
         n = org.node(nid)
         old_sid = n["session_id"]
         model = org.model_for(nid)   # tier default, or this node's chosen version
+    if str(n.get("model") or "") in providers.CODEX_TIERS:
+        _compact_split_codex_body(slug, nid, org, n, old_sid, model)
+        return
     if sbx.is_sandboxed(org):
         # the session lives inside the org's container — fork it there too
         try:

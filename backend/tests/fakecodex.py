@@ -160,6 +160,39 @@ def run_turn(thread_id, turn_id, dyn_tools):
                                        "error": None}})
 
 
+def run_compact(thread_id):
+    """The native manual-compaction lifecycle: request acknowledgement is
+    not completion; the turn and item events that follow are."""
+    turn_id = "fake-compact-turn-0001"
+    notify("turn/started", {"threadId": thread_id,
+                            "turn": {"id": turn_id}})
+    item = {"id": "fake-compact-item", "type": "contextCompaction"}
+    notify("item/started", {"threadId": thread_id, "turnId": turn_id,
+                            "item": item})
+    if SCENARIO == "compact_fail":
+        notify("turn/completed", {
+            "threadId": thread_id,
+            "turn": {"id": turn_id, "status": "failed",
+                     "error": {"message": "planted compact failure"}}})
+        return
+    notify("item/completed", {"threadId": thread_id, "turnId": turn_id,
+                              "item": item})
+    notify("thread/tokenUsage/updated", {
+        "threadId": thread_id,
+        "tokenUsage": {
+            "last": {"totalTokens": 50, "inputTokens": 44,
+                     "cachedInputTokens": 20, "outputTokens": 6,
+                     "reasoningOutputTokens": 0},
+            "total": {"totalTokens": 50, "inputTokens": 44,
+                      "cachedInputTokens": 20, "outputTokens": 6,
+                      "reasoningOutputTokens": 0}}})
+    notify("thread/compacted", {"threadId": thread_id,
+                                "turnId": turn_id})
+    notify("turn/completed", {"threadId": thread_id,
+                              "turn": {"id": turn_id,
+                                       "status": "completed", "error": None}})
+
+
 def main():
     dyn_tools = []
     thread_id = os.environ.get("FAKECODEX_THREAD_ID", "fake-thread-0001")
@@ -189,6 +222,14 @@ def main():
             # passing them on resume fails the tool scenario here first
             dyn_tools = params.get("dynamicTools") or []
             reply(rid, {"thread": {"id": thread_id}})
+        elif method == "thread/fork":
+            thread_id = os.environ.get("FAKECODEX_FORK_ID",
+                                       "fake-forked-thread-0002")
+            reply(rid, {"thread": {"id": thread_id}})
+        elif method == "thread/compact/start":
+            reply(rid, {})
+            threading.Thread(target=run_compact, args=(thread_id,),
+                             daemon=True).start()
         elif method == "turn/start":
             turn_id = "fake-turn-0001"
             reply(rid, {"turn": {"id": turn_id}})

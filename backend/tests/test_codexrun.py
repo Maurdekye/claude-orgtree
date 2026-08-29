@@ -146,6 +146,35 @@ def main():
     check("thread/resume keeps the recorded session id",
           lambda: eq(tid5, "carried-thread-77", "resumed id"))
 
+    print("§6 native fork + compaction waits for durable completion")
+    compact = codexrun.compact_fork(
+        FAKE, cwd=tmp, model="gpt-5.6-sol",
+        thread_id="source-thread-88", timeout=20,
+        env_extra={"FAKECODEX_SCENARIO": "compact",
+                   "FAKECODEX_FORK_ID": "successor-thread-89"})
+    check("the provider minted a distinct fork for the successor",
+          lambda: eq(compact.get("thread_id"), "successor-thread-89",
+                     "forked id"))
+    check("the completed compact turn's usage is returned for accounting",
+          lambda: eq((compact.get("token_usage") or {}).get("total", {})
+                     .get("inputTokens"), 44, "compact input tokens"))
+
+    def compact_failure_seen():
+        try:
+            codexrun.compact_fork(
+                FAKE, cwd=tmp, model="gpt-5.6-sol",
+                thread_id="source-thread-fail", timeout=20,
+                env_extra={"FAKECODEX_SCENARIO": "compact_fail",
+                           "FAKECODEX_FORK_ID": "failed-successor"})
+        except codexrun.CodexServerError as e:
+            if "compact turn failed" not in str(e):
+                raise AssertionError(f"wrong compact failure: {e}")
+            return
+        raise AssertionError("a failed compact turn was reported successful")
+
+    check("a planted failed compact turn is rejected (anti-vacuity)",
+          compact_failure_seen)
+
     print(f"\n{PASS} checks passed")
 
 

@@ -242,6 +242,92 @@ def _thread_id_of(result: dict[str, Any]) -> str | None:
     return None
 
 
+def compact_fork(argv_head: list[str], *, cwd: str, model: str | None,
+                 thread_id: str, timeout: float,
+                 codex_home: str | None = None,
+                 sandbox: str = "workspace-write",
+                 approval_policy: str = "on-request",
+                 developer_instructions: str | None = None,
+                 env_extra: dict[str, str] | None = None) -> dict[str, Any]:
+    """Fork ``thread_id`` and compact the fork with the app-server's native
+    lifecycle.  The source thread is never modified, so it remains a usable
+    knowledge bearer while the returned thread becomes the live successor.
+
+    ``thread/compact/start`` only acknowledges that compaction started.  The
+    durable success proof is the compact turn's ``turn/completed`` event; an
+    empty request response must never be mistaken for a completed compact.
+    """
+    client = AppServerClient(
+        argv_head, codex_home=codex_home, cwd=cwd, env_extra=env_extra)
+    try:
+        client.initialize()
+        forked = client.request("thread/fork", {
+            "threadId": thread_id,
+            "model": model,
+            "cwd": cwd,
+            "sandbox": sandbox,
+            "approvalPolicy": approval_policy,
+            "developerInstructions": developer_instructions,
+            # A compaction split needs the new handle, not a second copy of a
+            # potentially enormous turn list in the JSON-RPC response.
+            "excludeTurns": True,
+            # Preserve an active goal but let the next explicit Orgtree turn
+            # own its continuation; compaction itself is not agent work.
+            "deferGoalContinuation": True,
+        })
+        new_thread_id = _thread_id_of(forked)
+        if not new_thread_id or new_thread_id == thread_id:
+            raise CodexServerError(
+                "thread/fork returned no distinct successor thread id")
+
+        first_event = len(client.notifications)
+        client.request("thread/compact/start", {"threadId": new_thread_id})
+        deadline = time.time() + timeout
+        seen = first_event
+        token_usage: dict[str, Any] | None = None
+        while time.time() < deadline:
+            while seen < len(client.notifications):
+                msg = client.notifications[seen]
+                seen += 1
+                method = str(msg.get("method") or "")
+                params = (msg.get("params")
+                          if isinstance(msg.get("params"), dict) else {})
+                event_thread = str(params.get("threadId") or "")
+                if event_thread and event_thread != new_thread_id:
+                    continue
+                if method == "thread/tokenUsage/updated":
+                    value = params.get("tokenUsage")
+                    if isinstance(value, dict):
+                        token_usage = value
+                    continue
+                if method == "turn/failed":
+                    raise CodexServerError(
+                        "thread/compact/start: compact turn failed")
+                if method != "turn/completed":
+                    continue
+                turn = params.get("turn")
+                status = (str(turn.get("status") or "completed")
+                          if isinstance(turn, dict) else "completed")
+                if status not in (STATUS_COMPLETED, STATUS_INTERRUPTED):
+                    detail = (turn.get("error")
+                              if isinstance(turn, dict) else None)
+                    raise CodexServerError(
+                        f"thread/compact/start: compact turn {status}: "
+                        f"{str(detail)[:300]}")
+                return {"thread_id": new_thread_id,
+                        "token_usage": token_usage}
+            if client.proc.poll() is not None:
+                raise CodexServerError(
+                    "thread/compact/start: app-server exited "
+                    f"rc={client.proc.returncode}; stderr tail: "
+                    f"{' | '.join(client.stderr_tail[-3:])[:400]}")
+            time.sleep(0.02)
+        raise CodexServerError(
+            f"thread/compact/start: no completion in {timeout:.0f}s")
+    finally:
+        client.close()
+
+
 class CodexTurn:
     """One turn's lifecycle, from spawn to normalized result.
 

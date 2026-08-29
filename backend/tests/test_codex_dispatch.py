@@ -376,7 +376,59 @@ def main() -> int:
         assert "codex_thread" not in n, "no thread ever started"
     check("signed-out codex fails loudly, never silently", t7)
 
-    print("§6 the connected-provider hire gate (M4)")
+    print("§6 native Codex compaction preserves both resumable generations")
+
+    def t7b():
+        os.environ["FAKECODEX_SCENARIO"] = "tool"
+        os.environ["FAKECODEX_THREAD_ID"] = "compact-source-thread"
+        s6, n6 = mkorg("compact")
+        try:
+            run_turn(s6, n6, "history that must survive the split")
+        finally:
+            os.environ.pop("FAKECODEX_THREAD_ID", None)
+        before = node_doc(s6, n6)
+        eq(before.get("session_id"), "compact-source-thread", "source id")
+        os.environ["FAKECODEX_SCENARIO"] = "compact"
+        os.environ["FAKECODEX_FORK_ID"] = "compact-successor-thread"
+        try:
+            supervisor._compact_split_body(s6, n6)
+        finally:
+            os.environ.pop("FAKECODEX_FORK_ID", None)
+            os.environ["FAKECODEX_SCENARIO"] = "tool"
+        o = store.load_org(s6)
+        live = o.node(n6)
+        pred_id = live.get("predecessor")
+        assert pred_id and pred_id in o.nodes, "knowledge bearer was not made"
+        pred = o.node(pred_id)
+        eq(live.get("session_id"), "compact-successor-thread",
+           "live generic session id")
+        eq(live.get("codex_thread"), "compact-successor-thread",
+           "live Codex resume marker")
+        eq(pred.get("session_id"), "compact-source-thread",
+           "bearer source session id")
+        eq(pred.get("codex_thread"), "compact-source-thread",
+           "bearer remains resumable through Codex")
+        eq(live.get("occupancy"), 44, "post-compact occupancy")
+        eq(live.get("compacted_unrun"), True,
+           "successor protected until its first turn")
+        eq(live.get("cost_usd"), 0.000548,
+           "turn plus compact usage both accounted")
+        path = supervisor.transcript_path("compact-successor-thread")
+        assert path and os.path.exists(path), "successor journal missing"
+        chat = supervisor.read_chat(o, n6)
+        assert any(m.get("role") == "system"
+                   and "context compacted" in (m.get("text") or "")
+                   for m in chat["messages"]), chat
+        assert any("history that must survive" in (m.get("text") or "")
+                   for m in chat["messages"]), \
+            "copied visible history vanished from successor"
+        eq(chat.get("occupancy"), 44,
+           "journal and node agree immediately after compact")
+        eq(supervisor.state(s6, n6).get("last_error"), None,
+           "no Claude fork error on a Codex thread")
+    check("app-server fork+compact replaces the Claude-only failure path", t7b)
+
+    print("§7 the connected-provider hire gate (M4)")
     from orgtree.api import provider_hire_gate
     from orgtree.ledger import LedgerError
 
