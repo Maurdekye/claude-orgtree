@@ -120,7 +120,12 @@ configTest('the switch lists every provider family with its ledger seats',
     ])
   })
 
-configTest('selecting Sol sends a provider-crossing switch_model op',
+// D-196 (user ruling 2026-08-29): a provider-crossing switch now asks first,
+// so `save` alone no longer sends the op — the CONFIRM does. This test kept
+// its original claim (the crossing reaches the backend intact) and gained the
+// step that now stands in front of it; the gate itself is covered in full by
+// tests/crossprovider.test.tsx, including that cancelling sends nothing.
+configTest('a confirmed provider-crossing switch sends the switch_model op',
   async (mount) => {
     const { el, ops } = await mount()
     const { act } = await import('react')
@@ -132,6 +137,12 @@ configTest('selecting Sol sends a provider-crossing switch_model op',
     const save = [...el.querySelectorAll<HTMLButtonElement>('button')]
       .find((b) => b.textContent?.trim() === 'save')!
     await act(async () => { save.click() })
+    assert.equal(ops.find((o) => o.op === 'switch_model'), undefined,
+      'the switch must not fire before the user confirms')
+    const confirm = [...document.querySelectorAll<HTMLButtonElement>(
+      '.confirm-box button')].find((b) => /^switch to sol/.test(
+      b.textContent?.trim() ?? ''))!
+    await act(async () => { confirm.click() })
     assert.deepEqual(ops.find((o) => o.op === 'switch_model'), {
       op: 'switch_model', node: 'agent', tier: 'sol',
     })

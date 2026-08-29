@@ -18,7 +18,7 @@ import { pickFolder } from '../picker'
 import {
   CloseIcon, DeleteIcon, FolderIcon, LayersIcon, SettingsIcon,
 } from '../icons'
-import { ago, CODEX_TIER_SEAT, CODEX_TIERS, GEMINI_TIER_SEAT, GEMINI_TIERS, MODEL_VERSIONS, pileOrder, TIER_LETTER, TIER_SEAT, TIERS, USER, useEsc } from './shared'
+import { ago, CODEX_TIER_SEAT, CODEX_TIERS, GEMINI_TIER_SEAT, GEMINI_TIERS, MODEL_VERSIONS, pileOrder, PROVIDER_LABEL, providerOf, TIER_LETTER, TIER_SEAT, TIERS, USER, useEsc } from './shared'
 import type { CanvasNode, DraftScope, DraftState, OpFn, Pile } from './shared'
 
 export interface ConfirmModalProps {
@@ -578,7 +578,7 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
   geminiProvider, close }: NodeConfigProps) {
   useEsc(close)
   const [asking, setAsking] =
-    useState<'delete' | 'dissolve' | 'retire' | 'rescind' | null>(null)
+    useState<'delete' | 'dissolve' | 'retire' | 'rescind' | 'crossprovider' | null>(null)
   // every card that opens a config panel carries a scope (real nodes and
   // bearer stubs both) — only the eye root and drafts lack one
   const scope = node.scope!
@@ -651,6 +651,55 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
     getChat(slug, node.id, 1).then((c) => setInitInfo(c.init ?? null))
       .catch(() => {})
   }, [slug, node.id])
+  // D-196: does this save move the agent to a DIFFERENT PROVIDER? Answered by
+  // the shared `providerOf`, never by testing tier membership inline — the
+  // second copy of that question is what D-182 was about.
+  const crossProvider = model !== node.tier
+    && providerOf(model) !== providerOf(node.tier ?? '')
+  // ONE save implementation, reached either directly or through the
+  // confirmation. Extracted rather than duplicated so the confirmed path
+  // cannot drift from the unconfirmed one — and so CANCEL is simply "never
+  // call this", which is what makes cancelling total rather than partial.
+  const doSave = () =>
+    (model !== node.tier
+      ? op({ op: 'switch_model', node: node.id, tier: model })
+      : Promise.resolve())
+      .then(() => saveScope(slug, node.id,
+        { add_dirs: dirs, tools, org_visibility: vis,
+          permission_mode: pm,
+          charter, team_charter: teamCharter, effort,
+          auto_cheap_compact: accMode === '' ? {}
+            : { enabled: accMode === 'on',
+                occ: (+accOcc || 50) / 100,
+                // 60 min = _auto_cheap_cfg's idle_s 3600 default; an
+                // emptied box must save what the unset box displays
+                idle_s: Math.round((+accIdle || 60) * 60) },
+          model_version: versions.includes(modelVersion)
+            ? modelVersion : '' }))
+      .then((r) => {
+        if (r?.bridge?.raise_ceiling) {
+          // one-action bridge (ceiling spec §1): same save, flag set
+          toast(r.warnings?.length ? r.warnings
+            : ['clamped to the kiosk permission ceiling'],
+          { label: 'raise ceiling & apply',
+            fn: () => saveScope(slug, node.id,
+              { add_dirs: dirs, tools, org_visibility: vis,
+                permission_mode: pm,
+                charter, team_charter: teamCharter, effort,
+                auto_cheap_compact: accMode === '' ? {}
+                  : { enabled: accMode === 'on',
+                      occ: (+accOcc || 50) / 100,
+                      idle_s: Math.round((+accIdle || 60) * 60) },
+                model_version: versions.includes(modelVersion)
+                  ? modelVersion : '',
+                raise_ceiling: true })
+              .then((r2) => toast(r2.warnings?.length ? r2.warnings
+                : ['ceiling raised — applied']))
+              .catch((e: Error) => toast([`error: ${e.message}`])) })
+        } else toast(r.warnings)
+        close()
+      })
+      .catch((e: Error) => toast([`error: ${e.message}`]))
   const parent = map.get(node.id)?.parent
   const parentNode = parent && parent !== USER ? map.get(parent) : null
   const parentTools = parentNode?.scope?.tools ?? null   // null = the user: everything
@@ -992,48 +1041,27 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
         )}
         <div className="row">
           <button className="primary" onClick={() =>
-            (model !== node.tier
-              ? op({ op: 'switch_model', node: node.id, tier: model })
-              : Promise.resolve())
-              .then(() => saveScope(slug, node.id,
-                { add_dirs: dirs, tools, org_visibility: vis,
-                  permission_mode: pm,
-                  charter, team_charter: teamCharter, effort,
-                  auto_cheap_compact: accMode === '' ? {}
-                    : { enabled: accMode === 'on',
-                        occ: (+accOcc || 50) / 100,
-                        // 60 min = _auto_cheap_cfg's idle_s 3600 default; an
-                        // emptied box must save what the unset box displays
-                        idle_s: Math.round((+accIdle || 60) * 60) },
-                  model_version: versions.includes(modelVersion)
-                    ? modelVersion : '' }))
-              .then((r) => {
-                if (r?.bridge?.raise_ceiling) {
-                  // one-action bridge (ceiling spec §1): same save, flag set
-                  toast(r.warnings?.length ? r.warnings
-                    : ['clamped to the kiosk permission ceiling'],
-                  { label: 'raise ceiling & apply',
-                    fn: () => saveScope(slug, node.id,
-                      { add_dirs: dirs, tools, org_visibility: vis,
-                        permission_mode: pm,
-                        charter, team_charter: teamCharter, effort,
-                        auto_cheap_compact: accMode === '' ? {}
-                          : { enabled: accMode === 'on',
-                              occ: (+accOcc || 50) / 100,
-                              idle_s: Math.round((+accIdle || 60) * 60) },
-                        model_version: versions.includes(modelVersion)
-                          ? modelVersion : '',
-                        raise_ceiling: true })
-                      .then((r2) => toast(r2.warnings?.length ? r2.warnings
-                        : ['ceiling raised — applied']))
-                      .catch((e: Error) => toast([`error: ${e.message}`])) })
-                } else toast(r.warnings)
-                close()
-              })
-              .catch((e: Error) => toast([`error: ${e.message}`]))}>save</button>
+            // D-196 (user ruling 2026-08-29, "ask me to confirm first"): a
+            // switch that CROSSES PROVIDERS asks before it does anything. The
+            // whole save is gated, not just the switch_model call — cancelling
+            // must leave the agent exactly as it was, and a half-applied save
+            // (scope written, model refused) would be worse than no dialog.
+            // A within-provider switch stays a plain one-click save.
+            (crossProvider ? setAsking('crossprovider') : doSave())}>save</button>
           <button onClick={close}>cancel</button>
         </div>
       </div>
+      {asking === 'crossprovider' && (
+        <ConfirmModal
+          title={`move ${node.id} from ${PROVIDER_LABEL[providerOf(node.tier ?? '')]} to ${PROVIDER_LABEL[providerOf(model)]}?`}
+          // names what is SPENT and what SURVIVES. Only naming the loss reads
+          // as more destructive than it is, and someone would avoid a switch
+          // they should make.
+          body={`${node.id} is running on ${PROVIDER_LABEL[providerOf(node.tier ?? '')]} and ${model} runs on ${PROVIDER_LABEL[providerOf(model)]}. Its conversation CANNOT move between providers, so it will be reset and it will not remember this conversation. Its scratch files, breadcrumbs.md and mail all survive, and it is told to read them to pick up where it left off.`}
+          confirmLabel={`switch to ${model} and reset the conversation`}
+          onConfirm={doSave}
+          close={() => setAsking(null)} />
+      )}
       {asking === 'retire' && (
         <ConfirmModal title={`retire ${node.id}?`}
           body={`It stops working and frees ${(node.seat ?? 0) + (node.grant ?? 0)} credit(s) back to its superior. Its context is KEPT — rehire brings it back exactly as it was.`}

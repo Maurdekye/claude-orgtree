@@ -2501,10 +2501,28 @@ three separate provider stores with no transport between them, so continuity
 could only ever be pretended, which is D-180's failure in another field. The
 honest behaviour is a clean reset the user is told about **at the moment they
 act**, not a crash on their next message.
-Bounds, and what is deliberately NOT decided here: whether the UI should REFUSE
-a cross-provider switch, or demand confirmation, rather than warn — that is a
-user-facing rule and the user's call, not this ruling's. The ledger behaviour
-above is the safe floor either way: it cannot crash and it cannot lie.
+THE UI ASKS FIRST (user ruling, 2026-08-29, choosing from refuse / warn /
+confirm: *"Ask me to confirm first."*). A save that crosses providers opens a
+confirmation naming BOTH halves — what is spent (this agent's conversation,
+which cannot move and will be reset) and what survives (scratch files,
+breadcrumbs.md, mail, which it is told to read). A confirmation that named only
+the loss would read as more destructive than it is, and someone would avoid a
+switch they should make. **A WITHIN-provider switch stays a plain one-click
+save with no prompt** — that was explicit in the ruling and is the part a
+careless implementation breaks, so it is pinned by test.
+Cancel is TOTAL: the whole save is gated, not merely the `switch_model` call.
+A dialog that let the scope through while refusing the model would leave a
+half-applied save, which is worse than no dialog at all. Implemented by
+extracting ONE save function that the confirmed path calls and the cancelled
+path simply never calls.
+The ledger floor above is unchanged and still authoritative: the dialog is an
+addition, not a replacement. Anything reaching `switch_model` through the API
+without passing it — a script, a peer agent, a future surface — still gets the
+announced reset rather than an orphaned session. That separation is why the
+floor was put at the ledger in the first place.
+Bounds: the gate keys on the PROVIDER changing, never on the tier changing, via
+the shared `providerOf` in `canvas/shared.ts` (the UI mirror of the backend
+helper). Two Codex tiers, or two Claude tiers, are one click apart as before.
 Knowledge-bearer REHIRE across providers is the same family and is handled
 separately by `multi-provider-fix`'s bearer-rehire ruling — including the
 `bearer_state == "preserving"` consult path, which resumes unconditionally and

@@ -59,6 +59,28 @@ export const GEMINI_TIER_SEAT: Record<string, number> = { flash: 1, pro: 2 }
  * provider-specific controls keep using their family list. */
 export const ALL_TIERS = [...TIERS, ...CODEX_TIERS, ...GEMINI_TIERS]
 
+/** Which PROVIDER a tier runs on — the UI mirror of backend
+ *  `providers.provider_of` (D-196). Derived from the family lists ABOVE
+ *  rather than a fresh table, so a tier added to one of them is classified
+ *  correctly here without a second edit.
+ *
+ *  Every caller that needs "do these two tiers live on the same provider"
+ *  must use this instead of testing membership inline — D-182's lesson, which
+ *  cost a live bug: three copies of one question existed, two agreed, and the
+ *  odd one out shipped. Unknown tiers answer 'claude', matching the backend:
+ *  the answer decides whether a change CROSSES providers, and wrongly
+ *  claiming a crossing would offer to destroy a conversation that was never
+ *  at risk. */
+export const providerOf = (tier: string): 'openai' | 'google' | 'claude' =>
+  (CODEX_TIERS.includes(tier) ? 'openai'
+    : GEMINI_TIERS.includes(tier) ? 'google' : 'claude')
+
+/** How a provider is named to the user in prose. The dialog says "Codex",
+ *  not "openai" — the user picks tiers by the product name they see on the
+ *  chips and in the accounts panel. */
+export const PROVIDER_LABEL: Record<string, string> = {
+  openai: 'Codex', google: 'Gemini', claude: 'Claude' }
+
 // ---------------------------------------------------------------- view types
 // The canvas overlays the payload's TreeNode with synthetic cards — the eye
 // root, the draft card, live lineage bearers — plus flatten()'s plumbing.
