@@ -3429,7 +3429,7 @@ UNATTRIBUTED = "key:unattributed"
 def _cache_moved_account(n: NodeDoc | dict[str, Any],
                          serving: Callable[[], str] | None) -> bool:
     """Will the coming turn run on a DIFFERENT account than the one holding
-    this session's prompt cache? (D-<TBD>, user request 2026-08-29.)
+    this session's prompt cache? (D-179, user request 2026-08-29.)
 
     ⚠ THIS IS NOT A NEW TRIGGER — IT IS A SECOND WAY TO BE COLD. Read
     `_auto_cheap_cfg` first: `idle_s` defaults to 3600 because that is the

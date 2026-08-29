@@ -2343,7 +2343,7 @@ def _plant_transcript(sid: str, home: str = HOME) -> str:
 
 # =============== 3a-bis. hermetic: the cheap-compact fires at an ACCOUNT SWITCH
 #
-# D-<TBD> (user request 2026-08-29): "when a fallback key is triggered, it
+# D-179 (user request 2026-08-29): "when a fallback key is triggered, it
 # doesn't take advantage of any existing agent cached context; it has to send
 # the full context all the way up to the new account, wasting tons of usage.
 # autocompact should trigger on this boundary too for that reason."

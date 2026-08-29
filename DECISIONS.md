@@ -1773,6 +1773,86 @@ present, and cheap_compact carries no headless refusal).
 Was. D-108's retire-plus-fresh-hire mechanism (2ca1a14) with a live-reports
 refusal and a suffixed replacement name.
 
+### D-179 · an ACCOUNT SWITCH is a cold cache — the same bar `idle_s` tests, by the other road
+Ruling (user, 2026-08-29): "when a fallback key is triggered, it doesn't take
+advantage of any existing agent cached context; it has to send the full
+context all the way up to the new account, wasting tons of usage. autocompact
+should trigger on this boundary too for that reason." Implemented as an
+amendment to D-114's ③, not as a new trigger: the wake-time cheap compact
+fires when the context is over `occ` **AND** the resume is cold, and coldness
+now has two roads in — `idle >= idle_s`, **or the account serving this node
+has changed since its last stamped turn**.
+
+Why it is one bar and not two: `idle_s` never meant "has been quiet a while".
+D-114 states it tracks the PROMPT-CACHE TTL, and its whole content is "past
+this, the resume is cold and the swap pays for itself". Idle time was always a
+PROXY for coldness. The prompt cache is scoped to the account that wrote it, so
+a fallback moves the agent to somewhere that has never seen the session and the
+resume pays the full cold-wake price at any idle time. Writing it as a third
+condition would have invited the next author to give it its own threshold; it
+has none, because it is the same question.
+
+**⚠ THE OCCUPANCY `AND` IS NOT A COST GATE, AND THE NEXT AUTHOR MUST NOT READ
+IT AS ONE.** The obvious objection to firing here — "a fallback followed by one
+or two more turns could cost more than it saves" — assumes the compaction is
+itself a billed full-context call and that occupancy exists to earn that cost
+back over enough subsequent turns. **It is not, and it does not.**
+`cheap_compact` makes NO API CALL AT ALL (ledger.cheap_compact: archive the
+session as a `nid@gen` bearer, assign a fresh `session_id`, done — the
+successor starts EMPTY, not with a summary). Token cost: zero. There is no
+break-even in turns and no arithmetic to do. What a needless swap spends is the
+agent's WORKING MEMORY, and occupancy is the entire protection of it: a switch
+says the reload is expensive, occupancy says the session is big enough that
+losing it is the better trade, and neither alone is permission to fire. That
+distinction is the reason this entry exists; the ruling is easy, the reason it
+is conditioned is what a future author will otherwise get wrong. (Contrast
+`_compact_split`, which IS a real 600 s billed fork — the objection is sound
+there and unsound here, which is exactly how the confusion arises.)
+
+Load-bearing, and each was a live choice:
+- **The comparison is two RESOLVED identities, never two intents.** The
+  predicate reads `identity_in_env(spawn_env(...))` — the env the spawn will
+  actually carry, api-key lane included — for the reason `identity_in_env`
+  takes an env dict at all. `accounts.resolve` alone answers "where would this
+  tier route now", a different question the moment an org bills its own key.
+- **Unknown on either side is not a switch.** An absent `ran_as`, an empty
+  answer, or `key:unattributed` (a token no row explains, which two consecutive
+  turns could hold different values of) all read as cannot-tell, and cannot-tell
+  means do not. D-114's asymmetry decides the direction: a skipped compaction
+  costs one cold reload, a needless one destroys a live session.
+- **It lives at the WAKE, not at the failover site.** Routing is machine-global
+  (per tier, not per agent), so an agent's account also moves SILENTLY when a
+  *different* org's usage limit marks the lane — no re-drive, no notice. The
+  wake catches both that and `redrive_after_limit`'s re-drive; the failover site
+  would have caught only the second.
+- **Occupancy is tested FIRST.** Logically the two bars commute, but the switch
+  test reads the registry and token store off disk, once per wake, under
+  `DOC_LOCK`, on the turn path. A node at 10% must not pay for an answer that
+  cannot change the verdict.
+
+Bounds — and the premise is only HALF true, measured rather than assumed
+(2026-08-29, live transcripts, `cache_read_input_tokens` at genuine resumes):
+a switch does kill the cache, and there is one clean proof — a primary→fallback
+resume at 275,148 tokens read **zero** cached, the only zero-read resume in the
+sample, while every same-account cold resume still hit the ~20.9k shared
+system-prompt prefix. **But the cache is already missing on most resumes
+anyway**: 20 cold of 27, and 10 of 23, on two live agents, on the SAME account,
+at gaps as short as 13 seconds, with cold contexts averaging 275k–339k. Hit
+rates are bimodal (~99% or ~5%) and gap length does not separate them, so this
+is NOT TTL expiry and the cause is **undiagnosed** — do not repeat a guess as
+fact. Consequence for this ruling: a switch is a *guaranteed* cold resume where
+an ordinary one is cold perhaps half the time, so it remains the strongest
+available "definitely cold" signal and the trigger is right — but its MARGINAL
+saving is far smaller than the ruling's own motivation implies, and anyone
+reaching for this entry to justify a bigger intervention should go and diagnose
+the baseline miss first, because that is where the money is.
+
+Also true, and deliberately left alone: this makes the standing
+live-rehired-knowledge-bearer inconsistency reachable at a switch as well as at
+idle — `_auto_cheap_ready` does not check `bearer_state`, while the archived
+bearer is exempt at `supervisor.py`'s sweep. Same rule, more occasions to meet
+it. Unresolved on purpose; it is a separate ruling and not this one's to make.
+
 ### D-110 · FR-19 (name-gen button) is DISMISSED — no viable access path
 Ruling (user, 2026-08-14): the feature is dropped entirely. Both branches of
 the access fork fail its size: "an entire cli turn is excessive, expensive,
