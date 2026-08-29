@@ -566,8 +566,42 @@ def sec_selectors() -> None:
         # checkable at the source like the keyed-env guard above
         src = open(os.path.join(_HERE, "..", "orgtree", "supervisor.py"),
                    encoding="utf-8").read()
+        # ⚠ THIS USED TO BE `== 2` AND IT WAS THE WRONG SHAPE (D-194).
+        # A count cannot tell a LEGITIMATE new booking point from one asking
+        # the wrong provider's question — both move it by one. It fired when
+        # the Codex compaction fork landed, and the reflex repair (bump it to
+        # 3) would have silenced a true alarm and kept a real money bug, with
+        # a reviewer's name on the blessing. A pin that gets bumped every time
+        # it fires trains people to bump it.
+        #
+        # So the invariant is stated instead of counted: EVERY cost-booking
+        # point decides its lane from the provider that will actually bill it.
+        # The behavioural half — that Codex dollars never reach api_cost_usd —
+        # lives in test_codex_cost_lane.py, which fails on the bug rather than
+        # on the arithmetic. What is pinned HERE is only what a behaviour test
+        # cannot see: which predicate each site reached for.
+        import inspect as _inspect
+        from orgtree import supervisor as _sv
+        _codex_fork = _inspect.getsource(_sv._compact_split_codex_body)
+        assert "api_fallback_active_for(org, tier)" in _codex_fork, \
+            ("the Codex compaction fork no longer asks the TIER-AWARE lane "
+             "predicate — see D-194: a codex child is stripped of every "
+             "ANTHROPIC_* variable and cannot bill that key")
+        assert "on_fallback_key = api_fallback_active(org)" not in _codex_fork, \
+            ("the Codex compaction fork went back to the org-only Anthropic "
+             "question (D-194) — that books OpenAI dollars onto api_cost_usd")
+        # …and the Claude-lane sites still take the org-only call, which is
+        # correct for them: `_run_one_turn` is unreachable for a codex tier
+        # (it raises `_CodexTurnDone` first) and `_compact_split_body` returns
+        # early into the codex body above, so both are provably Anthropic-only
+        # paths. A count is still the right shape for THIS half — it is
+        # asserting that two known-Anthropic sites did not quietly lose their
+        # lane capture, not standing in for a rule about providers.
         assert src.count("on_fallback_key = api_fallback_active(org)") == 2, \
-            "the spawn-time lane capture moved (turn + compaction fork)"
+            ("a Claude-lane spawn-time capture moved (turn + claude "
+             "compaction fork). If you added a booking point for a NEW "
+             "PROVIDER, do not bump this — give that site "
+             "api_fallback_active_for and a zero-assert of its own")
         # ⚠ matched WITHOUT a closing paren: the call gained a `reported=`
         # argument (D-136) and wrapped across two lines, which silently failed
         # this guard on the exact-call literal — a drift check that fires on a
