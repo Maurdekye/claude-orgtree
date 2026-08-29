@@ -13,7 +13,7 @@ import {
   FullscreenIcon, PublicIcon, RemoveIcon, ViewListIcon,
 } from '../icons'
 import {
-  ago, attentionPip, CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DOG_H, DOG_W, DRAFT, ease, edgeJumpPlacement, type EJForm, EXTERN, fallbackActive, flatten, INBOX, INBOX_H, layout, NODE_H, NODE_W, orgPxc, segD,
+  ago, attentionPip, CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DOG_H, DOG_W, DRAFT, ease, edgeJumpPlacement, type EJForm, EXTERN, fallbackActive, flatten, GEMINI_TIER_LETTER, GEMINI_TIER_SEAT, GEMINI_TIERS, INBOX, INBOX_H, layout, NODE_H, NODE_W, orgPxc, segD,
   segPoint, sizeOf, smooth, SPRING_C, SPRING_K, TIER_LETTER, TIERS, USER, USER_H,
   USER_W, withDraftTree, Z_DESK, Z_MAX, Z_MINI,
 } from './shared'
@@ -89,15 +89,23 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
   // Non-fatal like the accounts panel's fetch: absent payload degrades to
   // the disabled preview, never to hidden chips.
   const [codexProvider, setCodexProvider] = useState<ProviderInfo | null>(null)
+  const [geminiProvider, setGeminiProvider] =
+    useState<ProviderInfo | null>(null)
   useEffect(() => {
     getProviders().then((p) => {
       const cx = p.providers.find((v) => v.id === 'openai')
       if (cx) setCodexProvider(cx)
+      const gm = p.providers.find((v) => v.id === 'google')
+      if (gm) setGeminiProvider(gm)
     }).catch(() => {})
   }, [slug])
   const codexHire = codexProvider && {
     enabled: !!codexProvider.hire_enabled,
     reason: codexProvider.reason,
+  }
+  const geminiHire = geminiProvider && {
+    enabled: !!geminiProvider.hire_enabled,
+    reason: geminiProvider.reason,
   }
   // canonical retired-stack slot (user note 2026-08-06): display-order every
   // parent's children so archived siblings sit CONTIGUOUSLY at the first
@@ -1675,7 +1683,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
               ? Math.round(USER_H * (vp.width - 48) / (vp.height - 48))
               : Math.round(USER_H * 16 / 9)
             return <UserNode key={USER} pos={p} isDrop={dropId === USER} seats={seats}
-              codexHire={codexHire}
+              codexHire={codexHire} geminiHire={geminiHire}
               stats={orgStats}
               kiosk={tree.kiosk} pub={!!tree.public} kioskRemaining={kioskRemaining}
               kioskSegs={tree.roots.filter((n) => n.state === 'live')
@@ -1720,7 +1728,8 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
             <NodeSquare key={n.id} node={n} pos={p} lod={lod} focused={n.id === focusId}
               dragging={nodeDrag.current?.id === n.id && nodeDrag.current!.moved}
               isDrop={dropId === n.id}
-              seats={seats} codexHire={codexHire} map={map} op={op} slug={slug} toast={toast}
+              seats={seats} codexHire={codexHire} geminiHire={geminiHire}
+              map={map} op={op} slug={slug} toast={toast}
               pxc={pxPerCredit} zoom={view.z}
               onSpawn={(t) => spawn(n.id, t)}
               onSpawnSide={(t, side) => spawnBeside(n, t, side)}
@@ -1966,7 +1975,9 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
                 <div key={n.id} role="button" tabIndex={0}
                   className={'tray-row' + (n.state !== 'live' ? ' off' : '')
                     + (ghost ? ' ghost' : '')
-                    + (n.tier && CODEX_TIERS.includes(n.tier) ? ' prov-openai' : '')}
+                    + (n.tier && CODEX_TIERS.includes(n.tier) ? ' prov-openai'
+                       : n.tier && GEMINI_TIERS.includes(n.tier)
+                         ? ' prov-google' : '')}
                   style={{ paddingLeft: 8 + depth * 14 }}
                   title={ghost
                     ? 'shown for context — this row does not match the '
@@ -2021,6 +2032,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
       {configId && map.get(configId) && (
         <MaybePortal><NodeConfig node={map.get(configId)!} map={map} tree={tree} slug={slug}
           op={op} toast={toast} codexProvider={codexProvider}
+          geminiProvider={geminiProvider}
           close={() => setConfigId(null)} /></MaybePortal>
       )}
       {lineageId && map.get(lineageId) && (
@@ -2118,6 +2130,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
       {hireOpen && sheetId && map.get(sheetId) && (
         <MaybePortal>
           <HireSheet anchor={map.get(sheetId)!} seats={seats} codexHire={codexHire}
+            geminiHire={geminiHire}
             defaultGrant={!map.get(sheetId)!.parent ? (tree.default_top_grant ?? 50) : 0}
             onClose={() => setHireOpen(false)}
             onHire={(tier, name, grant, placement) => {
@@ -2157,11 +2170,13 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
  *  is a full-screen form — and it carries PLACEMENT, so the F-03 side-hire
  *  and FR-25 splice semantics survive: below (report), left/right (coworker
  *  ordering), above (new superior — the anchor moves under the hire). */
-function HireSheet({ anchor, seats, codexHire, defaultGrant, onHire,
+function HireSheet({ anchor, seats, codexHire, geminiHire, defaultGrant,
+  onHire,
   onClose }: {
   anchor: CanvasNode
   seats: Record<string, number>
   codexHire?: { enabled: boolean; reason: string | null } | null
+  geminiHire?: { enabled: boolean; reason: string | null } | null
   defaultGrant: number
   onHire: (tier: string, name: string, grant: number,
     placement: 'below' | 'left' | 'right' | 'above') => void
@@ -2203,6 +2218,21 @@ function HireSheet({ anchor, seats, codexHire, defaultGrant, onHire,
               onClick={() => setTier(t)}>
               <span className={'tier t-' + t}>{CODEX_TIER_LETTER[t]}</span>
               {t} · seat {seats[t] ?? CODEX_TIER_SEAT[t]}
+            </button>
+          ))}
+        </div>
+        <div className="field-label">
+          {geminiHire?.enabled ? 'Gemini' : 'Gemini — preview'}</div>
+        <div className="hs-tiers">
+          {GEMINI_TIERS.map((t) => (
+            <button key={t}
+              className={'hs-tier t-' + t + (tier === t ? ' on' : '')}
+              disabled={!geminiHire?.enabled}
+              title={geminiHire?.enabled ? undefined
+                : (geminiHire?.reason ?? 'hiring is not enabled yet')}
+              onClick={() => setTier(t)}>
+              <span className={'tier t-' + t}>{GEMINI_TIER_LETTER[t]}</span>
+              {t} · seat {seats[t] ?? GEMINI_TIER_SEAT[t]}
             </button>
           ))}
         </div>

@@ -188,6 +188,7 @@ export function AccountsPanel({ toast, close }: {
   }, [])
   const claudeProv = providers?.find((p) => p.id === 'claude')
   const codex = providers?.find((p) => p.id === 'openai')
+  const gemini = providers?.find((p) => p.id === 'google')
   const srcLabel: Record<string, string> = {
     pin: 'private pin', env: 'ORGTREE_CODEX', path: 'on PATH',
   }
@@ -446,6 +447,55 @@ export function AccountsPanel({ toast, close }: {
                 </div>
                 {codex.reason
                   && <div className="dim acct-prov-note">{codex.reason}</div>}
+              </>
+            )}
+
+            {/* ── provider section: Gemini (D-189) — the same machine-level
+                install/connect surface, the CLI's own name as the label.
+                The preview tag only while hiring is actually off. */}
+            <div className="acct-provider-head prov-google">
+              Gemini
+              <span className="dim"> · Gemini CLI
+                {gemini?.status.version ? ` ${gemini.status.version}` : ''}</span>
+              {!gemini?.hire_enabled
+                && <span className="acct-preview-tag">preview</span>}
+            </div>
+            {!gemini && (
+              <div className="dim acct-prov-note">
+                {providers ? 'provider state unavailable' : 'reading provider state…'}
+              </div>
+            )}
+            {gemini && (
+              <>
+                <div className="acct-prov-note">
+                  {gemini.status.installed
+                    ? <>
+                      installed
+                      {gemini.status.source
+                        && <span className="dim"> ({srcLabel[gemini.status.source]
+                          ?? gemini.status.source})</span>}
+                      {' — '}
+                      {gemini.status.connected
+                        ? <>signed in
+                          {gemini.status.email && <> as <b>{gemini.status.email}</b></>}
+                          {gemini.status.kind === 'api-key' && <> (API key)</>}
+                          {gemini.status.kind === 'vertex' && <> (Vertex AI)</>}
+                        </>
+                        : 'not signed in'}
+                    </>
+                    : 'not installed on this machine'}
+                </div>
+                <div className="acct-prov-tiers">
+                  {gemini.tiers.map((t) => (
+                    <span key={t.tier} className="acct-prov-tier">
+                      <span className={'tier t-' + t.tier}>{t.letter}</span>
+                      {t.tier} · seat {t.seat}
+                      <span className="dim"> · {t.model}</span>
+                    </span>
+                  ))}
+                </div>
+                {gemini.reason
+                  && <div className="dim acct-prov-note">{gemini.reason}</div>}
               </>
             )}
           </>

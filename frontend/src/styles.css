@@ -395,9 +395,13 @@ button.badge.retired-fold:hover { border-color: var(--accent); }
 .sq.tier-luna { border-top-color: color-mix(in srgb, var(--tier-luna) 55%, var(--line)); }
 .sq.tier-terra { border-top-color: color-mix(in srgb, var(--tier-terra) 55%, var(--line)); }
 .sq.tier-sol { border-top-color: color-mix(in srgb, var(--tier-sol) 55%, var(--line)); }
+.sq.tier-flash { border-top-color: color-mix(in srgb, var(--tier-flash) 55%, var(--line)); }
+.sq.tier-pro { border-top-color: color-mix(in srgb, var(--tier-pro) 55%, var(--line)); }
 .sq.mini.tier-luna { --mini-tier: var(--tier-luna); }
 .sq.mini.tier-terra { --mini-tier: var(--tier-terra); }
 .sq.mini.tier-sol { --mini-tier: var(--tier-sol); }
+.sq.mini.tier-flash { --mini-tier: var(--tier-flash); }
+.sq.mini.tier-pro { --mini-tier: var(--tier-pro); }
 /* At map zoom the old provider signal collapsed to a sub-pixel busy border,
    so provider could only be inferred from the tier token. Give the mini card
    a large-area family wash plus a solid rail: orange for Claude, teal for
@@ -443,6 +447,24 @@ button.badge.retired-fold:hover { border-color: var(--accent); }
 .sq.prov-openai.desk.tier-luna { border-top-color: var(--tier-luna); }
 .sq.prov-openai.desk.tier-terra { border-top-color: var(--tier-terra); }
 .sq.prov-openai.desk.tier-sol { border-top-color: var(--tier-sol); }
+/* the gemini family's card dressing (D-189) — the same inherited-chrome
+   contract as the codex block above, bluish-violet where codex is blue. */
+.sq.prov-google.busy {
+  border-color: color-mix(in srgb, var(--prov-google) 55%, transparent);
+}
+.sq.prov-google.desk {
+  border-color: var(--prov-google);
+  box-shadow: 0 8px 40px rgba(0, 0, 0, .55),
+    0 0 0 1px color-mix(in srgb, var(--prov-google) 25%, transparent);
+}
+.sq.prov-google {
+  --provider-accent: var(--prov-google);
+  --accent: var(--prov-google);
+  --accent-soft: color-mix(in srgb, var(--prov-google) 16%, transparent);
+  --accent-hover: color-mix(in srgb, var(--prov-google) 82%, white);
+}
+.sq.prov-google.desk.tier-flash { border-top-color: var(--tier-flash); }
+.sq.prov-google.desk.tier-pro { border-top-color: var(--tier-pro); }
 /* status never rides color alone (dataviz rule): the dots carry a SHAPE
    channel too — done is a filled circle, working pulses, blocked is a diamond,
    idle is a hollow ring */
@@ -909,10 +931,21 @@ button.cc-name:hover {
   --tier-luna: #b9c4d6;
   --tier-terra: #7fae5f;
   --tier-sol: #ff8a3d;
+  /* the gemini family (D-189), to the user's spec (2026-08-29): flash a very
+     light icy blue, pro a DEEP bluish-violet that leans violet — while the
+     provider accent below leans BLUE. One blue-violet family (icy ~198° →
+     ~232° → ~256°) so gemini reads as a unit, each hue clear of sonnet's
+     saturated mid-blue and opus's light lavender. F/P letters stay the
+     redundant glyph. */
+  --tier-flash: #aee2f9;
+  --tier-pro: #6b45d6;
   /* the provider ACCENT — the blue counterpart of --accent: desk border,
      desk shadow ring and busy border for codex agents (dormant until codex
      hire lands; the class comes from cards.tsx `prov-openai`) */
   --prov-openai: #159acd;
+  /* the gemini provider accent — mid bluish-violet, MORE BLUE than violet
+     (the pro chip is more violet than blue; user spec 2026-08-29) */
+  --prov-google: #5f6fdb;
   --ice: #a8d4ea;           /* frozen (usage limit) — pale ice, deliberately
                                whiter than the saturated credit-bar cyans */
 }
@@ -928,6 +961,8 @@ button.cc-name:hover {
 .tier.t-luna { color: var(--tier-luna); border-color: color-mix(in srgb, var(--tier-luna) 45%, var(--line)); }
 .tier.t-terra { color: var(--tier-terra); border-color: color-mix(in srgb, var(--tier-terra) 45%, var(--line)); }
 .tier.t-sol { color: var(--tier-sol); border-color: color-mix(in srgb, var(--tier-sol) 45%, var(--line)); }
+.tier.t-flash { color: var(--tier-flash); border-color: color-mix(in srgb, var(--tier-flash) 45%, var(--line)); }
+.tier.t-pro { color: var(--tier-pro); border-color: color-mix(in srgb, var(--tier-pro) 45%, var(--line)); }
 /* lifecycle fills: archived fades (existing); knowledge bearers wash grey.
 
    ⚠ THE WASH IS A LIFECYCLE FILL, SO IT ONLY BELONGS ON A CARD THAT IS NOT
@@ -1765,6 +1800,8 @@ button.cc-name:hover {
 .hsof button.t-luna { color: var(--tier-luna); border-color: color-mix(in srgb, var(--tier-luna) 45%, var(--line)); }
 .hsof button.t-terra { color: var(--tier-terra); border-color: color-mix(in srgb, var(--tier-terra) 45%, var(--line)); }
 .hsof button.t-sol { color: var(--tier-sol); border-color: color-mix(in srgb, var(--tier-sol) 45%, var(--line)); }
+.hsof button.t-flash { color: var(--tier-flash); border-color: color-mix(in srgb, var(--tier-flash) 45%, var(--line)); }
+.hsof button.t-pro { color: var(--tier-pro); border-color: color-mix(in srgb, var(--tier-pro) 45%, var(--line)); }
 .hsof button.codex-preview:disabled { opacity: .45; border-style: dashed; }
 /* (the desk needs no special case — the universal --invz counter-scale keeps
    the chips screen-constant below the card border at any zoom) */
@@ -2581,6 +2618,7 @@ svg.MuiSvgIcon-root {
    the row's provider accent explicitly. Without this, Codex rows inherit the
    page's Claude-orange --accent instead of their own #159acd blue. */
 .tray-row.prov-openai { --accent: var(--prov-openai); }
+.tray-row.prov-google { --accent: var(--prov-google); }
 /* FR-16: a filtered-out ancestor kept visible so a matching descendant's
    indent still has a parent above it — dimmer than .off, and italic so it
    reads as context rather than a result */
@@ -3332,6 +3370,9 @@ html.mobile .md table { display: block; overflow-x: auto; max-width: 100%; }
 .acct-provider-head.prov-openai { border-bottom-color: color-mix(in srgb, var(--prov-openai) 45%, var(--line)); }
 .acct-provider-head.prov-openai .acct-preview-tag { color: var(--prov-openai);
   border-color: color-mix(in srgb, var(--prov-openai) 45%, var(--line)); }
+.acct-provider-head.prov-google { border-bottom-color: color-mix(in srgb, var(--prov-google) 45%, var(--line)); }
+.acct-provider-head.prov-google .acct-preview-tag { color: var(--prov-google);
+  border-color: color-mix(in srgb, var(--prov-google) 45%, var(--line)); }
 .acct-prov-note { font-size: 12.5px; line-height: 1.5; }
 .acct-prov-note code { font-size: 11px; }
 .acct-prov-tiers { display: flex; flex-wrap: wrap; gap: 6px 14px;

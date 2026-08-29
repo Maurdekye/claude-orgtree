@@ -31,7 +31,7 @@ function tree(extra: Partial<TreePayload> = {}): TreePayload {
   return {
     slug: 'org', dirs: [], tiers: {
       haiku: 1, sonnet: 2, opus: 5, fable: 10,
-      luna: 1, terra: 2, sol: 5,
+      luna: 1, terra: 2, sol: 5, flash: 1, pro: 2,
     }, max_top_grant: 100, default_effort: '', effort_default: 'high',
     cascade_hire: true, sandboxed: false, ...extra,
   } as TreePayload
@@ -49,6 +49,7 @@ type Mounted = { el: HTMLElement; ops: OpRequest[] }
 
 function configTest(name: string, body: (mount: (o?: {
   node?: CanvasNode; tree?: TreePayload; provider?: ProviderInfo | null
+  gemini?: ProviderInfo | null
 }) => Promise<Mounted>) => Promise<void> | void): void {
   test(name, async (t: TestContext) => {
     useFakeClock(); installFetch(new FakeServer())
@@ -65,6 +66,11 @@ function configTest(name: string, body: (mount: (o?: {
           tree={o.tree ?? tree()} slug="org"
           op={(x) => { ops.push(x); return Promise.resolve({} as OpResult) }}
           toast={noop} codexProvider={o.provider === undefined ? provider() : o.provider}
+          geminiProvider={o.gemini === undefined
+            ? provider({ id: 'google', label: 'Gemini', cli: 'Gemini CLI',
+                         status: { installed: true, connected: true,
+                                   kind: 'api-key' } })
+            : o.gemini}
           close={noop} />,
         (el) => el,
       )
@@ -98,16 +104,19 @@ test('the header summary counts both provider families', async (t: TestContext) 
   )
 })
 
-configTest('the switch lists both provider families with their ledger seats',
+configTest('the switch lists every provider family with its ledger seats',
   async (mount) => {
     const { el } = await mount()
     const groups = [...el.querySelectorAll('select.model-switch optgroup')]
-    assert.deepEqual(groups.map((g) => g.getAttribute('label')), ['Claude', 'Codex'])
+    // grew to three at D-189 (gemini)
+    assert.deepEqual(groups.map((g) => g.getAttribute('label')),
+      ['Claude', 'Codex', 'Gemini'])
     assert.deepEqual(options(el).map((o) => [o.value, o.textContent?.trim()]), [
       ['haiku', 'haiku · seat 1'], ['sonnet', 'sonnet · seat 2'],
       ['opus', 'opus · seat 5'], ['fable', 'fable · seat 10'],
       ['luna', 'luna · seat 1'], ['terra', 'terra · seat 2'],
       ['sol', 'sol · seat 5'],
+      ['flash', 'flash · seat 1'], ['pro', 'pro · seat 2'],
     ])
   })
 
@@ -147,8 +156,8 @@ configTest('kiosk policy and seat cap disable options instead of hiding them',
     const { el } = await mount({ tree: tree({
       kiosk: { max_tier: 'sonnet' } as TreePayload['kiosk'],
     }) })
-    assert.equal(options(el).length, 7)
-    for (const tier of ['luna', 'terra', 'sol']) {
+    assert.equal(options(el).length, 9)   // 4 claude + 3 codex + 2 gemini
+    for (const tier of ['luna', 'terra', 'sol', 'flash', 'pro']) {
       assert.equal(option(el, tier).disabled, true)
       assert.match(option(el, tier).textContent ?? '', /unavailable in kiosk orgs/)
     }

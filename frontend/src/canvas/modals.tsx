@@ -18,7 +18,7 @@ import { pickFolder } from '../picker'
 import {
   CloseIcon, DeleteIcon, FolderIcon, LayersIcon, SettingsIcon,
 } from '../icons'
-import { ago, CODEX_TIER_SEAT, CODEX_TIERS, MODEL_VERSIONS, pileOrder, TIER_LETTER, TIER_SEAT, TIERS, USER, useEsc } from './shared'
+import { ago, CODEX_TIER_SEAT, CODEX_TIERS, GEMINI_TIER_SEAT, GEMINI_TIERS, MODEL_VERSIONS, pileOrder, TIER_LETTER, TIER_SEAT, TIERS, USER, useEsc } from './shared'
 import type { CanvasNode, DraftScope, DraftState, OpFn, Pile } from './shared'
 
 export interface ConfirmModalProps {
@@ -570,11 +570,12 @@ interface NodeConfigProps {
   op: OpFn
   toast: ToastFn
   codexProvider?: ProviderInfo | null
+  geminiProvider?: ProviderInfo | null
   close: () => void
 }
 
 export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
-  close }: NodeConfigProps) {
+  geminiProvider, close }: NodeConfigProps) {
   useEsc(close)
   const [asking, setAsking] =
     useState<'delete' | 'dissolve' | 'retire' | 'rescind' | null>(null)
@@ -667,7 +668,7 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
   // while the frontend constants are only a startup fallback. Provider is an
   // axis over that one flat tier vocabulary, never a second price table.
   const tierSeat = (t: string) => tree.tiers?.[t]
-    ?? TIER_SEAT[t] ?? CODEX_TIER_SEAT[t] ?? 0
+    ?? TIER_SEAT[t] ?? CODEX_TIER_SEAT[t] ?? GEMINI_TIER_SEAT[t] ?? 0
   // Keep the same refusal order as provider_hire_gate: provider presence and
   // login first, then org policy, then the headless authentication rule.
   const codexUnavailable = !codexProvider?.hire_enabled
@@ -677,11 +678,20 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
       : tree.headless && codexProvider.status.kind !== 'api-key'
         ? 'headless requires a Codex API-key login'
         : null
+  const geminiUnavailable = !geminiProvider?.hire_enabled
+    ? geminiProvider?.reason ?? 'provider state unavailable'
+    : tree.kiosk
+      ? 'unavailable in kiosk orgs'
+      : tree.headless && geminiProvider.status.kind !== 'api-key'
+        && geminiProvider.status.kind !== 'vertex'
+        ? 'headless requires a Gemini API-key login'
+        : null
   const unavailable = (t: string): string | null => {
     // The current tier remains a truthful selected no-op even if policy has
     // since tightened around it; save does not call switch_model for a no-op.
     if (t === node.tier) return null
     if (CODEX_TIERS.includes(t) && codexUnavailable) return codexUnavailable
+    if (GEMINI_TIERS.includes(t) && geminiUnavailable) return geminiUnavailable
     const cap = tree.kiosk?.max_tier
     if (cap && tierSeat(t) > tierSeat(cap)) return `above kiosk cap (${cap})`
     return null
@@ -880,6 +890,9 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
           </optgroup>
           <optgroup label="Codex">
             {CODEX_TIERS.map(modelOption)}
+          </optgroup>
+          <optgroup label="Gemini">
+            {GEMINI_TIERS.map(modelOption)}
           </optgroup>
         </select>
 

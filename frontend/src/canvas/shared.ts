@@ -23,6 +23,9 @@ import type {
 export const TIER_LETTER: Record<string, string> = {
   haiku: 'H', sonnet: 'S', opus: 'O', fable: 'F',
   luna: 'L', terra: 'T', sol: 'S',
+  // flash shares F with fable by the same accepted collision as sol/sonnet's
+  // S — the chip class carries the family
+  flash: 'F', pro: 'P',
 }
 export const TIERS = ['haiku', 'sonnet', 'opus', 'fable']
 /** seat cost per tier — mirrors ledger.TIERS. One table, four tiers; the
@@ -44,9 +47,17 @@ export const MODEL_VERSIONS: Record<string, string[]> = { opus: ['5', '4.8'] }
 export const CODEX_TIERS = ['luna', 'terra', 'sol']
 export const CODEX_TIER_LETTER: Record<string, string> = { luna: 'L', terra: 'T', sol: 'S' }
 export const CODEX_TIER_SEAT: Record<string, number> = { luna: 1, terra: 2, sol: 5 }
+/** The gemini family (D-189) — Google tiers: Gemini Flash (3.5-flash at
+ *  launch, 3.7 via the version menu when it reaches the API) and Gemini Pro
+ *  (3.1-pro). Same separate-list rule as the codex family. Seats by the
+ *  standing rule: flash $1.50 → 1 (and still 1 at 3.7's $0.38), pro $2 → 2
+ *  (the >200K long-context surcharge never sets a seat). */
+export const GEMINI_TIERS = ['flash', 'pro']
+export const GEMINI_TIER_LETTER: Record<string, string> = { flash: 'F', pro: 'P' }
+export const GEMINI_TIER_SEAT: Record<string, number> = { flash: 1, pro: 2 }
 /** Provider-neutral surfaces (for example the live-agent summary) use this;
  * provider-specific controls keep using their family list. */
-export const ALL_TIERS = [...TIERS, ...CODEX_TIERS]
+export const ALL_TIERS = [...TIERS, ...CODEX_TIERS, ...GEMINI_TIERS]
 
 // ---------------------------------------------------------------- view types
 // The canvas overlays the payload's TreeNode with synthetic cards — the eye
