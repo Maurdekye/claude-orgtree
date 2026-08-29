@@ -141,6 +141,22 @@ def provider_of(tier: str) -> str:
     return "claude"
 
 
+#: provider id → the name the UI calls it, and the name any message shown to a
+#: person must use. User ruling 2026-08-28: the CLI's OWN name is the
+#: provider's UI name — "Codex", not "ChatGPT (Codex)" or "OpenAI"; "Gemini",
+#: not "Google". `providers_payload` publishes these same three labels, and
+#: reads them from here so a refusal written in the ledger and a heading drawn
+#: in the accounts panel cannot come to disagree about what a provider is
+#: called.
+PROVIDER_LABEL: Final[dict[str, str]] = {
+    "claude": "Claude", "openai": "Codex", "google": "Gemini"}
+
+
+def provider_label(tier: str) -> str:
+    """The user-facing name of the provider `tier` runs on (D-197)."""
+    return PROVIDER_LABEL[provider_of(tier)]
+
+
 #: both launch models publish a 1M-token context window. As with the other
 #: providers, the pinned model capability wins over any per-call observation.
 GEMINI_CONTEXT: Final[int] = 1_000_000
@@ -599,7 +615,7 @@ def providers_payload(claude_status: dict[str, Any]) -> dict[str, Any]:
     return {"providers": [
         {
             "id": "claude",
-            "label": "Claude",
+            "label": PROVIDER_LABEL["claude"],
             "cli": "Claude Code",
             "tiers": claude_tiers(),
             "status": claude_status,
@@ -611,7 +627,7 @@ def providers_payload(claude_status: dict[str, Any]) -> dict[str, Any]:
             # "Codex", not "ChatGPT (Codex)" or "OpenAI" — user ruling
             # 2026-08-28 (ask card): the CLI's own name is the provider's UI
             # name; tier words luna/terra/sol carry everywhere else.
-            "label": "Codex",
+            "label": PROVIDER_LABEL["openai"],
             "cli": "Codex CLI",
             "tiers": codex_tiers(),
             "status": codex,
@@ -631,7 +647,7 @@ def providers_payload(claude_status: dict[str, Any]) -> dict[str, Any]:
             "id": "google",
             # "Gemini", by the same §0 naming rule that made "Codex" the
             # label: the CLI's own product name, not the vendor's.
-            "label": "Gemini",
+            "label": PROVIDER_LABEL["google"],
             "cli": "Gemini CLI",
             "tiers": gemini_tiers(),
             "status": gemini,

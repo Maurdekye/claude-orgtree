@@ -105,6 +105,37 @@ const REPS_N = Math.max(1, Number(repsIdx > 0
   : process.env.ORGTREE_TEST_REPS) || 1)
 const TIMEOUT_MS = process.env.ORGTREE_TEST_TIMEOUT_MS ?? String(10_000 * REPS_N)
 
+// ⚠ CONCURRENCY IS BOUNDED, AND IT IS THE OTHER HALF OF D-177 (user, 2026-08-29:
+// "make sure parallel tests arent fighting ovrr the virtual timer like what
+// caused oom before; vscode crashed anhandful of times").
+//
+// `node --test` with N files defaults to `availableParallelism()` children —
+// SIXTEEN on this machine — and each child bundles the whole app plus its own
+// jsdom, and 21 of the 35 suites enable `mock.timers` (`useFakeClock`), which
+// is process-global per child. The timeout above bounds how long ONE runaway
+// child lives; it does nothing about how many live at once, and its own note
+// says so ("a timeout bounds TIME, not MEMORY"). Peak memory is the product of
+// the two, which is why the incident was machine-wide rather than one hung
+// suite's problem.
+//
+// MEASURED on this machine (16 cores), whole suite, 282 tests passing either
+// way — sampled total working set across the runner's own node children:
+//   unbounded → peak 2,345 MB across 17 processes, 11.6 s wall
+//   bounded 4 → peak   873 MB across  6 processes, 15.7 s wall  (two runs:
+//               871/875 MB, 15.2/16.3 s)
+// A 2.7x cut in peak memory for ~4 s of wall time. That is the trade this line
+// makes, and on a machine also running a backend, a browser probe and several
+// agents it is the difference between headroom and none. Re-measure before
+// changing the number rather than reasoning about it: the first draft of this
+// comment guessed 716 MB / 12.4 s and both figures were wrong.
+//
+// It does NOT replace either existing defence: the per-test timeout still
+// bounds a runaway's lifetime, and a suite that does not need the clock should
+// still not enable it (see sysnotice.test.tsx's header, and bearerrehire's).
+// ORGTREE_TEST_CONCURRENCY overrides; set it to 0 for node's old unbounded
+// behaviour, which should only ever be temporary.
+const CONCURRENCY = process.env.ORGTREE_TEST_CONCURRENCY ?? '4'
+
 const files = readdirSync(out).filter((f) => f.endsWith('.mjs'))
 try {
   // --test-force-exit: React's scheduler holds a ref'd MessageChannel open for
@@ -112,6 +143,7 @@ try {
   // never exit.
   execFileSync(process.execPath, ['--test', '--test-force-exit',
     `--test-timeout=${TIMEOUT_MS}`,
+    ...(Number(CONCURRENCY) > 0 ? [`--test-concurrency=${CONCURRENCY}`] : []),
     ...files.map((f) => path.join(out, f))], {
     stdio: 'inherit',
     env: {

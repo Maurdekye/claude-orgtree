@@ -5292,10 +5292,19 @@ def provider_hire_gate(org: Org, tier: str | None) -> None:
     ops/agent layers both turn that into a clean 422) NAMING the provider and
     the next step, in the order the user would take them.
 
-    One gate for all four doors (user hire, agent hire, user switch, agent
-    switch). Claude is ungated here: it predates the provider axis, and its
-    absence already fails loudly at spawn — gating the incumbent would brick
-    every existing org on a transient detection bug.
+    One gate for all FIVE doors (user hire, agent hire, user switch, agent
+    switch, and — D-197 — a user rehire that OVERRIDES the tier). Claude is
+    ungated here: it predates the provider axis, and its absence already fails
+    loudly at spawn — gating the incumbent would brick every existing org on a
+    transient detection bug.
+
+    ⚠ THE COUNT IN THIS SENTENCE IS LOAD-BEARING, so update it when you add a
+    door. It said "four" while rehire-with-a-tier went ungated, and that gap
+    was invisible precisely because the docstring asserted completeness — the
+    same shape as D-180 and D-182, a rule written down in one place and not
+    applied at every site it claims to cover. The agent-side `orgtree_rehire`
+    is NOT a fifth door: its schema has no `tier`, so an agent cannot move a
+    node across the axis by rehiring it. If you ever add one, gate it here.
 
     Two provider-specific rulings ride along (user, 2026-08-28):
       · kiosks hold codex out until its sandbox story is settled;
@@ -5456,6 +5465,14 @@ def _org_op_locked(slug: str, body: Op, allow_raise: bool = False) -> dict[str, 
                 org, cast(str, body.node),
                 old_sid=cast(str, result.get("old_session")))
         elif body.op == "rehire":
+            # D-197: rehire-with-a-tier is a door onto the provider axis like
+            # any other, and it was the one the gate's own docstring named
+            # four of and missed. Gated only when a tier is actually
+            # OVERRIDDEN: a plain rehire restores the node as it was, and
+            # refusing that because a provider is signed out would strand an
+            # agent nobody can retire or read.
+            if body.tier is not None:
+                provider_hire_gate(org, body.tier)
             result = org.rehire(body.actor, body.node, body.grant, tier=body.tier,  # type: ignore[arg-type]
                                 raise_ceiling=rc)
         elif body.op == "dissolve":

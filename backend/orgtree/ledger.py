@@ -2824,6 +2824,48 @@ class Org:
         # Input validation belongs before the first mutation.
         if tier is not None and tier not in self.d["tiers"]:
             raise LedgerError(f"unknown tier {tier!r}")
+        # D-197: a rehire may not CROSS PROVIDERS. The tier override exists so
+        # a knowledge bearer can be consulted more cheaply than it ran (№16) —
+        # but a session cannot follow a tier across a provider boundary, and
+        # an UNRECOVERABLE node re-seeds anyway (the override is ignored and
+        # warned about below), so the rule applies only to a real resume.
+        #
+        # ⚠ THE SILENT DIRECTION IS THE DANGEROUS ONE, and it is why this is a
+        # refusal rather than a warning. Crossing TO claude fails loudly: the
+        # supervisor's journal store makes `transcript_path` hit for a codex
+        # thread, so `_build_cmd` takes the resume branch and hands the Claude
+        # CLI a `--resume <threadId>` it never issued. Crossing AWAY from
+        # claude does not fail at all: the provider legs resume only when
+        # `session_id` equals the harvested `codex_thread`/`gemini_session`,
+        # a claude id never does, so the leg quietly starts a FRESH thread —
+        # an empty session wakes wearing the bearer's name and presents as
+        # institutional memory. Someone consults it, gets fluent answers drawn
+        # from nothing, and has no way to tell. That is the same impossibility
+        # `bearer_state == "lost"` refuses a few lines above, arriving through
+        # a different door; refusing it here is that existing rule applied
+        # consistently, not a new policy.
+        if tier is not None and n["state"] != "unrecoverable":
+            # deferred import: providers reads ledger.TIERS/MODELS at module
+            # level, so importing it up top would be circular. providers owns
+            # the tier→provider axis (D-196) and this must not become a second
+            # copy of it (D-182).
+            from . import providers  # noqa: PLC0415
+
+            was = providers.provider_of(n["model"])
+            if was != providers.provider_of(tier):
+                # the LABELS, not the ids: this is read by a person, and the
+                # panel calls them Claude/Codex/Gemini (user ruling 2026-08-28)
+                wl, nl = (providers.provider_label(n["model"]),
+                          providers.provider_label(tier))
+                raise LedgerError(
+                    f"cannot rehire {nid} as {tier!r}: that would move it from "
+                    f"{wl} to {nl}, and its saved conversation cannot cross "
+                    f"providers — {nl} has no record of a {wl} session, so "
+                    f"{nid} would wake up empty while still answering as "
+                    f"itself. Rehire it on a {wl} tier"
+                    + (f" (it ran as {n['model']!r})" if n["model"] else "")
+                    + "; to start it fresh on another provider deliberately, "
+                    f"rehire it first and then switch its model.")
         # kiosk tier cap: an archived over-cap agent re-entering service is
         # "using" that tier — blocked like a fresh hire (reseed too). The
         # EFFECTIVE tier is tested: a rehire that downgrades below the cap
