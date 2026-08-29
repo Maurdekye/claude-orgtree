@@ -3420,8 +3420,81 @@ def _auto_cheap_cfg(org: Org, nid: str) -> dict[str, float] | None:
         return {"occ": 0.5, "idle_s": 3600.0}
 
 
+#: `identity_in_env`'s "a token no stored row explains" answer. Named here
+#: because `_cache_moved_account` must REFUSE it, and a bare string literal in
+#: that test would drift silently from the one `identity_in_env` returns.
+UNATTRIBUTED = "key:unattributed"
+
+
+def _cache_moved_account(n: NodeDoc | dict[str, Any],
+                         serving: Callable[[], str] | None) -> bool:
+    """Will the coming turn run on a DIFFERENT account than the one holding
+    this session's prompt cache? (D-<TBD>, user request 2026-08-29.)
+
+    ⚠ THIS IS NOT A NEW TRIGGER — IT IS A SECOND WAY TO BE COLD. Read
+    `_auto_cheap_cfg` first: `idle_s` defaults to 3600 because that is the
+    prompt-cache TTL, and its whole meaning is "past this, the resume is cold
+    and the swap pays for itself". Idle time is a PROXY for coldness, not the
+    thing itself. An account switch makes the cache cold at any idle time —
+    the prompt cache is scoped to the account that wrote it, so the new
+    account has never seen a byte of this session and the resume pays the full
+    1.25×C cold-wake price (docs/cache-economics.md) no matter how recently
+    the last turn ran. So this answers the SAME question `idle_s` answers, on
+    the other axis, and it is OR-ed with it rather than added as a third bar.
+
+    ⚠ AND WHY THE OCCUPANCY BAR IS NOT TOUCHED. `cheap_compact` is FREE — it
+    makes no API call at all, it swaps `session_id` for a fresh uuid and
+    archives the old session as a knowledge bearer (ledger.cheap_compact).
+    There is no token cost to amortise and therefore no "did we get enough
+    turns out of it" break-even. What a needless swap costs is CONTEXT, and
+    the occupancy bar is the whole of what protects it. A switch says the
+    reload is expensive; only occupancy says the session is big enough that
+    losing it is the better trade. Both, always.
+
+    ⚠ IT COMPARES TWO RESOLVED IDENTITIES, NEVER TWO INTENTS. `serving`
+    returns `identity_in_env(spawn_env(...))` — the account the spawn will
+    ACTUALLY authenticate as, api-key lane included — for the same reason
+    `identity_in_env` takes an env dict at all (read its docstring). Asking
+    `accounts.resolve` here instead would answer "where would this tier route
+    now", which is a different question the moment an org bills its own key.
+
+    ⚠ UNKNOWN ON EITHER SIDE IS NOT A SWITCH, and the asymmetry is deliberate.
+    `_auto_cheap_cfg` states the direction: "a skipped compaction costs one
+    cold reload, a needless one destroys a live session". A false NEGATIVE
+    here is one cold wake; a false POSITIVE throws away a live agent's whole
+    context. So this fires only when both sides are known AND attributed:
+    an absent `ran_as` (the node has not run in this backend process), an
+    empty answer from `serving`, or `key:unattributed` on either side — a
+    token no row explains, which two consecutive turns could hold different
+    values of — all read as "cannot tell", and cannot tell means do not.
+
+    `serving is None` means the caller is not asking about accounts at all
+    (every hermetic caller, and every test that predates this), and the
+    answer is a plain False: the idle bar then decides alone, exactly as it
+    did before."""
+    if serving is None:
+        return False
+    try:
+        turns = cast("list[dict[str, Any]]", n.get("turns") or [])
+        prev = str(turns[-1].get("ran_as") or "") if turns else ""
+        if not prev or prev == UNATTRIBUTED:
+            return False                      # nothing to compare against
+        now_on = str(serving() or "")
+        if not now_on or now_on == UNATTRIBUTED:
+            return False                      # nothing to compare with
+        return now_on != prev
+    except Exception:                                            # noqa: BLE001
+        # Same rule as the caller's own defensive parse, and the same reason:
+        # this runs under DOC_LOCK on the turn path, and `serving` reaches the
+        # filesystem (the token store, the registry). An optimization is never
+        # allowed to be the reason a turn dies — least of all one whose whole
+        # job is to make the turn cheaper.
+        return False
+
+
 def _auto_cheap_ready(n: NodeDoc | dict[str, Any],
-                      cfg: dict[str, float]) -> bool:
+                      cfg: dict[str, float],
+                      serving: Callable[[], str] | None = None) -> bool:
     """Does this node meet FR-24b's bar for the wake-time cheap-compact?
 
     A NAMED decision rather than six lines inside the turn loop, because what
@@ -3441,7 +3514,16 @@ def _auto_cheap_ready(n: NodeDoc | dict[str, Any],
     Defensive throughout (redteam hardening 2026-08-12): every writer of
     `turns[].at` uses now_iso today, but a malformed stamp must not kill the
     very turn the swap was trying to cheapen — an optimization is never allowed
-    to be the reason a turn dies."""
+    to be the reason a turn dies.
+
+    ⚠ THE FIRST BAR IS COLDNESS, AND IT HAS TWO ROADS IN (2026-08-29). It used
+    to read `idle >= idle_s` and that was the only way to be cold; an ACCOUNT
+    SWITCH is the other, and `_cache_moved_account` is it. The bar itself has
+    not moved — `idle_s` never meant "has been quiet for a while", it meant
+    "the prompt cache is gone" — so a switch satisfies the SAME condition by
+    the other route rather than adding a third one. The occupancy bar below is
+    unchanged and still ANDed: see `_cache_moved_account` on why a free
+    compaction still needs it."""
     occ, cw = n.get("occupancy"), n.get("context_window")
     if not occ or not cw:
         return False
@@ -3468,7 +3550,16 @@ def _auto_cheap_ready(n: NodeDoc | dict[str, Any],
         idle = (_dtm.datetime.now(_dtm.timezone.utc)
                 - _dtm.datetime.fromisoformat(last.replace("Z", "+00:00"))
                 ).total_seconds()
-        return idle >= cfg["idle_s"] and float(occ) / float(cw) >= cfg["occ"]
+        # ⚠ OCCUPANCY IS TESTED FIRST, and that is not cosmetic. The two bars
+        # are ANDed and so commute logically, but `_cache_moved_account` calls
+        # `serving`, which reads the registry and the token store off disk —
+        # once per wake, under DOC_LOCK, on the turn path. Asking it about a
+        # node that is 10% full would pay for an answer that cannot change the
+        # verdict. Cheap in-doc arithmetic decides first; the filesystem is
+        # only consulted for a node the swap could actually fire on.
+        if float(occ) / float(cw) < cfg["occ"]:
+            return False
+        return idle >= cfg["idle_s"] or _cache_moved_account(n, serving)
     except (ValueError, TypeError, ZeroDivisionError, KeyError,
             AttributeError, IndexError):
         return False
@@ -4043,13 +4134,59 @@ def _run_one_turn(slug: str, nid: str,
                 # would otherwise re-pay their whole context every time.
                 # A refusal (raced state change) falls through to a normal
                 # turn — the swap is an optimization, never a gate.
+                #
+                # ⚠ AND AT AN ACCOUNT SWITCH TOO (user request 2026-08-29).
+                # The prompt cache belongs to the account that wrote it, so a
+                # fallback moves this agent to a machine that has never seen
+                # its context: the resume pays the full cold-wake price at any
+                # idle time. `_cache_moved_account` is what notices, and this
+                # is the ONE site that needs it — every way an agent's account
+                # can change arrives here. The re-drive after a usage limit
+                # (`redrive_after_limit`) drives the node, which becomes a
+                # turn, which wakes through this branch; and a SILENT switch —
+                # routing is machine-global, so another org's limit can move
+                # this tier's lane with no re-drive at all — lands here too, on
+                # this node's next turn. Putting the trigger at the re-drive
+                # site would have caught only the first of those.
                 if not is_cmd:
                     _c = _auto_cheap_cfg(org, nid)
                     if _c is not None:
                         _n0 = org.node(nid)
                         _occ = _n0.get("occupancy")
                         _cw = _n0.get("context_window")
-                        if _auto_cheap_ready(_n0, _c):
+                        # ⚠ the SAME construction the spawn below uses, not a
+                        # resolver call — `identity_in_env` answers about a
+                        # resolved env on purpose, and the api-key lane means
+                        # `accounts.resolve` alone would sometimes name an
+                        # account this turn will not authenticate as. Passed
+                        # as a thunk so it is only paid for by a node that has
+                        # already cleared the occupancy bar, and MEMOISED so
+                        # that the readiness test and the log line below share
+                        # one answer: two calls would be two registry reads AND
+                        # two chances to disagree, on the turn path, under the
+                        # doc lock.
+                        _memo: list[str] = []
+
+                        def _serving_now(_o: Org = org) -> str:
+                            if not _memo:
+                                _memo.append(identity_in_env(spawn_env(
+                                    _o,
+                                    tier=str(_o.node(nid).get("model") or ""))))
+                            return _memo[0]
+                        if _auto_cheap_ready(_n0, _c, _serving_now):
+                            # ⚠ WHICH BAR OPENED THE GATE, decided BEFORE the
+                            # swap runs — for the same reason `_occ` is read up
+                            # here. `cheap_compact` mutates this very dict in
+                            # place (it nulls `occupancy`), so anything the log
+                            # line wants to say about the pre-swap node has to
+                            # be settled while the pre-swap node still exists.
+                            # It does not touch `turns` today and this would
+                            # survive; that is luck, and a log line is not
+                            # worth resting on it.
+                            _why = ("the serving account changed — the prompt "
+                                    "cache does not move with it"
+                                    if _cache_moved_account(_n0, _serving_now)
+                                    else f"idle past {int(_c['idle_s'])}s")
                             try:
                                 _r0 = org.cheap_compact(SYSTEM, nid)
                                 export_predecessor_transcript(
@@ -4057,10 +4194,17 @@ def _run_one_turn(slug: str, nid: str,
                                     old_sid=str(_r0.get("old_session")
                                                 or ""))
                                 store.save_org(org)
+                                # `_why` and not a fixed "idle past N s": that
+                                # string printed on a swap that in fact fired
+                                # 20 seconds after the last turn because the
+                                # account moved is what makes a feature
+                                # unexplainable, and this print is the only
+                                # trace the swap leaves an operator reading a
+                                # console after the fact.
                                 print(f"[orgtree] {slug}/{nid}: auto "
                                       f"cheap-compact (context "
                                       f"{100 * float(_occ or 0) / float(_cw or 1):.0f}"
-                                      f"%, idle past {int(_c['idle_s'])}s)")
+                                      f"%, {_why})")
                             except LedgerError:
                                 pass
                 pending = None if is_cmd \
