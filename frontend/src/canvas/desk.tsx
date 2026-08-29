@@ -24,7 +24,7 @@ import {
   HearingIcon, LayersIcon, LockIcon, MailIcon, PlayIcon, PsychologyIcon,
   SettingsIcon, SparkIcon, StopIcon, WarnIcon,
 } from '../icons'
-import { ago, CopyIcon, EXTERN, freezeKind, FREEZE_LABEL, md, TIER_LETTER, TIER_SEAT, USER, useEsc, usePolled } from './shared'
+import { ago, ALL_TIERS, CODEX_TIER_SEAT, CODEX_TIERS, CopyIcon, EXTERN, freezeKind, FREEZE_LABEL, GEMINI_TIER_SEAT, GEMINI_TIERS, md, TIER_LETTER, TIER_SEAT, USER, useEsc, usePolled } from './shared'
 import {
   addPending, CHAT_WINDOW, dropPending, loadOlder as storeLoadOlder, markBusy,
   MAX_WINDOW, refreshConvo, useConvo,
@@ -1294,7 +1294,30 @@ export function LineagePanel({ node, op, slug, close }: LineagePanelProps) {
         if (readingRef.current === bid) setReadChat({ messages: [] })
       })
   }
-  const SEAT = TIER_SEAT      // one table (shared.ts), mirrors ledger.TIERS
+  // D-197: seats for EVERY provider's tiers. This was `TIER_SEAT` alone —
+  // the claude-only table — so a codex or gemini bearer rendered "as sol ·
+  // seat undefined" and "retire · frees undefined" in its own lineage panel.
+  const SEAT = (t: string) =>
+    TIER_SEAT[t] ?? CODEX_TIER_SEAT[t] ?? GEMINI_TIER_SEAT[t] ?? 0
+  // D-197: which tiers a generation may be rehired at. A bearer is rehired to
+  // be CONSULTED, and a consult resumes the transcript it holds — but a
+  // transcript cannot cross providers, so the offer is every tier of the
+  // bearer's OWN provider, cheapest first (№16: consulting at a cheaper tier
+  // is the whole point of the override).
+  //
+  // The cross-provider tiers are still LISTED, disabled, each carrying its
+  // own reason. That is deliberate: this list used to be the literal
+  // `['haiku','sonnet','opus']`, written before fable, codex and gemini
+  // existed, and silently omitting the rest read to the user as a system
+  // quirk rather than a rule — which is exactly how it was reported. A gap
+  // explains nothing; a disabled row with a reason does. Same semantics as
+  // the model-switch dropdown in modals.tsx.
+  const famOf = (t: string) => CODEX_TIERS.includes(t) ? 'codex'
+    : GEMINI_TIERS.includes(t) ? 'gemini' : 'claude'
+  const rehireWhy = (t: string, bearerTier: string): string | null =>
+    famOf(t) === famOf(bearerTier) ? null
+      : `its transcript is a ${famOf(bearerTier)} session — ${famOf(t)} `
+        + 'cannot resume it'
   const gens = [...(node.lineage ?? [])].sort(
     (a, b) => (b.generation ?? 0) - (a.generation ?? 0))
   return (
@@ -1304,8 +1327,8 @@ export function LineagePanel({ node, op, slug, close }: LineagePanelProps) {
         <div className="dim lin-blurb">
           Every generation is this agent's pre-compaction self, archived in
           place with its full context. Rehire one as a consultable knowledge
-          bearer — it answers questions beside its successor; any tier works,
-          cheaper tiers consult for fewer credits.
+          bearer — it answers questions beside its successor; any tier of its
+          own provider works, and cheaper tiers consult for fewer credits.
         </div>
         {gens.map((b) => (
           <div key={b.id}>
@@ -1326,11 +1349,15 @@ export function LineagePanel({ node, op, slug, close }: LineagePanelProps) {
                 <>
                   <select value={tiers[b.id] ?? ''} onChange={(e) =>
                     setTiers((t) => ({ ...t, [b.id]: e.target.value }))}>
-                    <option value="">as {b.tier} · seat {SEAT[b.tier]}</option>
-                    {['haiku', 'sonnet', 'opus'].filter((t) => t !== b.tier)
-                      .map((t) => (
-                        <option key={t} value={t}>as {t} · seat {SEAT[t]}</option>
-                      ))}
+                    <option value="">as {b.tier} · seat {SEAT(b.tier)}</option>
+                    {ALL_TIERS.filter((t) => t !== b.tier).map((t) => {
+                      const why = rehireWhy(t, b.tier)
+                      return (
+                        <option key={t} value={t} disabled={!!why}>
+                          as {t} · seat {SEAT(t)}{why ? ` — ${why}` : ''}
+                        </option>
+                      )
+                    })}
                   </select>
                   <button className="primary" onClick={() =>
                     op({ op: 'rehire', node: b.id, grant: 0,
@@ -1346,7 +1373,7 @@ export function LineagePanel({ node, op, slug, close }: LineagePanelProps) {
                 <>
                   <span className="badge free">consultable</span>
                   <button className="danger" onClick={() => setRetiring(b.id)}>
-                    retire · frees {SEAT[b.tier]}</button>
+                    retire · frees {SEAT(b.tier)}</button>
                 </>
               )}
             </div>

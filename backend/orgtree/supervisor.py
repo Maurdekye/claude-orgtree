@@ -3595,10 +3595,61 @@ def _build_cmd(org: Org, nid: str) -> list[str]:
     if n.get("bearer_state") == "preserving":
         # §8.4: preserving oracle — resume + fork, converse, discard. The canonical
         # session is never written; we simply never record the fork's session id.
+        #
+        # D-197: this branch is UNCONDITIONAL — unlike the else below it has no
+        # `--session-id` fallback, because a consult that cannot reach the
+        # transcript has nothing to consult. So a session belonging to another
+        # provider has no safe path here at all, not even the silent-fresh one
+        # the provider legs fall into. Refuse it in writing instead of handing
+        # the Claude CLI a `--resume` for a thread it never issued: an
+        # "expected failure ... a RuntimeError this function itself raised with
+        # a written message" is the shape `_run_one_turn`'s handler documents,
+        # so this lands in `last_error` and the conversation without a
+        # traceback. D-197's rehire gate and D-196's switch gate stop new
+        # crossings; this is the backstop for a node ALREADY crossed before
+        # either shipped, where the alternative is a bare CLI resume error
+        # that names nothing.
+        if foreign := _foreign_session_provider(n):
+            lbl = providers.PROVIDER_LABEL[foreign]
+            raise RuntimeError(
+                f"{nid} is a preserving knowledge bearer whose saved session "
+                f"is a {lbl} one, but it now runs on a Claude tier "
+                f"({n.get('model')!r}). A consult forks the original "
+                f"transcript, and that transcript cannot cross providers — "
+                f"there is nothing here to fork. Switch it back to a {lbl} "
+                f"tier to consult it, or read its transcript instead: "
+                f"reading is free and needs no session.")
         cmd += ["--resume", sid, "--fork-session"]
     else:
         cmd += ["--session-id", sid] if first else ["--resume", sid]
     return cmd
+
+
+def _foreign_session_provider(n: NodeDoc) -> str | None:
+    """The provider ID that OWNS this node's current session, when that is not
+    the claude lane — otherwise None (D-197). Same vocabulary as
+    `providers.provider_of`, so `PROVIDER_LABEL` renders it for a person.
+
+    Read off the harvested resume markers rather than off the tier, and that
+    distinction is the whole point: the tier says which lane will RUN the node
+    next, while `codex_thread`/`gemini_session` say which lane actually WROTE
+    the session it is carrying. They agree until something moves a node across
+    the axis, and disagreeing is exactly the state worth refusing.
+
+    The equality is the same one `_codex_leg`/`_gemini_leg` resume on, so this
+    cannot drift from what those legs consider a live thread: a re-mint (a
+    fresh hire, a compaction, a re-seed) breaks it there and here together, and
+    a broken equality means the marker is stale — the node is claude-native
+    again and this correctly answers None.
+    """
+    sid = str(n.get("session_id") or "")
+    if not sid:
+        return None
+    if sid == str(n.get("codex_thread") or ""):
+        return "openai"
+    if sid == str(n.get("gemini_session") or ""):
+        return "google"
+    return None
 
 
 def _auto_cheap_cfg(org: Org, nid: str) -> dict[str, float] | None:

@@ -2582,10 +2582,9 @@ Bounds: the gate keys on the PROVIDER changing, never on the tier changing, via
 the shared `providerOf` in `canvas/shared.ts` (the UI mirror of the backend
 helper). Two Codex tiers, or two Claude tiers, are one click apart as before.
 Knowledge-bearer REHIRE across providers is the same family and is handled
-separately by `multi-provider-fix`'s bearer-rehire ruling — including the
+separately by D-197, which refuses rather than confirms — including the
 `bearer_state == "preserving"` consult path, which resumes unconditionally and
-so has no safe cross-provider path at all. (Deliberately not cited by number
-here: that entry is not yet written, and a forward citation would dangle.)
+so has no safe cross-provider path at all.
 Load-bearing: `provider_of` answers `"claude"` for an UNKNOWN tier on purpose.
 It decides whether a change crosses lanes, and a wrong "crossed" would reset a
 session that did not need it — destroying a conversation — while a wrong "not
@@ -2593,6 +2592,78 @@ crossed" merely leaves prior behaviour. The acceptance suite pins BOTH
 directions: a same-lane switch must still preserve and resume its session, so
 "just reset on every switch" — the lazy fix that passes every cross-provider
 check — cannot pass it.
+
+### D-197 · a knowledge bearer may be rehired at any tier of its OWN provider, and no other
+Ruling (coordinator, 2026-08-29, from a user report: *"cant select non-claude
+models for knowledgebearer rehire. is that by design or just a system
+quirk?"*). Both, in different halves. **The panel was a quirk; the backend was
+the defect; the restriction itself is correct.** `ledger.rehire` now refuses a
+tier override that crosses providers, and the lineage panel offers every tier
+of the bearer's own provider while SHOWING the others disabled with the reason
+written on them.
+Why: a bearer exists to be consulted, and a consult resumes the transcript it
+holds. `session_id` is a provider-owned handle (D-196), so the transcript
+cannot follow the tier across a provider boundary — the answer is the same as
+D-196's and for the same reason, but the two rulings land differently and the
+difference is the point.
+**A SWITCH CONFIRMS; A REHIRE REFUSES.** D-196 asks the user first because a
+live agent that changes provider keeps doing its job — the conversation is a
+real cost, knowingly paid. A bearer that loses its conversation has no job
+left: consulting it IS reading the transcript, so a cross-provider rehire does
+not trade something for something, it produces a thing with no remaining
+purpose. The refusal names the two-step path (rehire on its own provider, then
+switch), which routes deliberate crossings through D-196's confirmation rather
+than around it.
+THE SILENT DIRECTION IS WHY THIS IS A REFUSAL AND NOT A WARNING, and it is the
+opposite one from D-196's. Crossing TO claude fails LOUDLY (the blinded
+detector: `transcript_path`'s journal-store fallback hits, the lane emits
+`--resume <foreign id>`). Crossing AWAY from claude does not fail at all —
+the provider legs resume only on `session_id == codex_thread` /
+`== gemini_session`, a claude id never matches, so the leg quietly starts a
+FRESH thread. **An empty session then wakes wearing the bearer's name and
+presents as institutional memory.** Someone consults it, gets fluent answers
+drawn from nothing, and has no way to tell they are reading an invention. A
+crash is loud and someone fixes it; this is silent and it corrupts what people
+believe they know. `ledger.rehire` already refuses exactly this for a `lost`
+generation, so the rule is an existing one applied at another door, not a new
+policy.
+THE ACTUAL DEFECT WAS THE BACKEND, NOT THE PANEL, and the inversion is the
+finding worth keeping: the picker was the literal `['haiku','sonnet','opus']`,
+written before fable/codex/gemini existed, so it UNDER-offered its own provider
+(`fable` was simply missing) — while `ledger.rehire` validated only
+`tier in d["tiers"]` and so ACCEPTED precisely the crossing the interface had
+merely forgotten to offer. A UI-only fix would have left that door open and
+looked complete.
+`provider_hire_gate`'s docstring said "all four doors" while a
+tier-overriding rehire went ungated — the gap was invisible BECAUSE the
+sentence asserted completeness (D-180/D-182's shape: a rule written down in one
+place and not applied at every site it claims to cover). It now says five, the
+count is pinned by test, and the agent-side `orgtree_rehire` is not a door only
+because its schema has no `tier` — also pinned, so adding one fails loudly.
+Bounds: the rule keys on the PROVIDER changing, never on the tier changing —
+haiku↔fable and luna↔sol are unaffected, and re-stating a node's own tier stays
+an idempotent no-op. A rehire with NO tier override is untouched: it restores
+the node as it was and never consults the axis, so a codex node does not need
+its provider present merely to come back. An UNRECOVERABLE node is exempt
+because rehire re-seeds it — there is no session left to strand, and refusing
+would block a legitimate recovery to protect something that no longer exists.
+Load-bearing: the crossing check sits with the tier-NAME check, before the
+archived-superior walk. That walk is a mutation (it wakes ancestors, spends
+their parents' credits, sends notices), and the same atomicity argument already
+written above the tier-name check applies verbatim — a refusal that fires after
+it would leave a woken chain behind. Pinned by test.
+Also load-bearing: the consult path is a SEPARATE door with no safe fallback.
+`bearer_state == "preserving"` resumes-and-forks UNCONDITIONALLY — it has no
+`--session-id` branch, because a consult that cannot reach the transcript has
+nothing to consult — so a foreign session there cannot even degrade to the
+silent-fresh case. It refuses in writing (a `RuntimeError` with a written
+message, the shape `_run_one_turn`'s handler documents) rather than emitting a
+doomed `--resume`. The guard reads the harvested `codex_thread`/`gemini_session`
+markers, NOT the tier: the tier says which lane will run the node next, the
+markers say which lane wrote the session it carries, and their disagreeing is
+exactly the state worth refusing. Because it is the same equality the provider
+legs resume on, a re-mint (fresh hire, compaction, re-seed) breaks it here and
+there together, so a stale marker correctly reads as claude-native.
 
 ### D-183 · the gemini probe phase: ACP is the substrate, and four wire facts are load-bearing
 Findings (gemini-provider, 2026-08-29; every one measured live on gemini-cli
