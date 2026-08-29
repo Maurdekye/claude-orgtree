@@ -228,6 +228,28 @@ main {
     border-color .15s, box-shadow .3s, border-radius .3s;
   cursor: grab;
 }
+/* Middle zoom keeps the full card layout, but provider identity must not
+   disappear until the mini LOD takes over. A quiet card gets a thin family
+   border and a restrained halo; semantic states below (busy, frozen, error,
+   fallback) can still replace the border with their stronger signal. The
+   halo lives on a pseudo-element so audience/lineage box-shadows compose
+   instead of silently erasing it. */
+.sq.norm {
+  border-color: color-mix(
+    in srgb, var(--provider-accent) 30%, var(--line));
+}
+.sq.norm::before {
+  content: '';
+  position: absolute; inset: -1px;
+  border-radius: inherit;
+  box-shadow: 0 0 7px color-mix(
+    in srgb, var(--provider-accent) 16%, transparent);
+  pointer-events: none;
+}
+.sq.norm.busy::before {
+  box-shadow: 0 0 9px color-mix(
+    in srgb, var(--provider-accent) 28%, transparent);
+}
 .sq.lifted {
   cursor: grabbing; border-color: #5a5a5a;
   box-shadow: 0 14px 44px rgba(0, 0, 0, .6);

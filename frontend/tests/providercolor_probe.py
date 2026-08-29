@@ -1,4 +1,4 @@
-"""Real-browser check for provider color on zoomed-out agent cards.
+"""Real-browser check for provider color on far- and middle-zoom agent cards.
 
 Run from frontend/:
   python tests/providercolor_probe.py
@@ -34,14 +34,18 @@ def main() -> int:
     mutant = """
       .sq.mini { background-color: var(--panel) !important; }
       .sq.mini::before { width: 0 !important; }
+      .sq.norm { border-color: var(--line) !important; }
+      .sq.norm::before { box-shadow: none !important; }
     """ if args.expect_fail else ""
 
     html = f"""<!doctype html><style>{CSS}\n{mutant}
       body {{ margin: 30px; background: #1f1f1f; color: #e8e8e8; }}
       .row {{ display: flex; gap: 30px; align-items: flex-start; }}
       .zoomslot {{ width: 55px; height: 55px; }}
+      .zoomslot.middle-slot {{ width: 100px; height: 100px; }}
       .sample {{ position: relative !important; width: 124px; height: 124px;
                  transform: scale(.4) !important; transform-origin: top left; }}
+      .sample.middle {{ transform: scale(.75) !important; }}
       .caption {{ font: 13px sans-serif; margin: 8px 0 24px; }}
     </style>
     <div class="row">
@@ -51,8 +55,12 @@ def main() -> int:
       <div><div class="zoomslot"><div id="codex" class="sq mini tier-sol prov-openai sample">
         <div class="mini-name">codex-agent</div></div></div>
         <div class="caption">Codex · overview</div></div>
-      <div><div class="zoomslot"><div id="normal" class="sq norm tier-opus sample"></div></div>
-        <div class="caption">normal LOD control</div></div>
+      <div><div class="zoomslot middle-slot"><div id="claudeNorm"
+        class="sq norm tier-sol sample middle"><div class="mini-name">claude-agent</div>
+        </div></div><div class="caption">Claude · middle</div></div>
+      <div><div class="zoomslot middle-slot"><div id="codexNorm"
+        class="sq norm tier-sol prov-openai sample middle"><div class="mini-name">codex-agent</div>
+        </div></div><div class="caption">Codex · middle</div></div>
     </div>"""
 
     with sync_playwright() as pw:
@@ -64,11 +72,12 @@ def main() -> int:
             const el = document.getElementById(id)
             const s = getComputedStyle(el)
             const rail = getComputedStyle(el, '::before')
-            return { surface: s.backgroundColor, rail: rail.backgroundColor,
-                     railWidth: rail.width, railContent: rail.content }
+            return { surface: s.backgroundColor, border: s.borderLeftColor,
+                     rail: rail.backgroundColor, railWidth: rail.width,
+                     railContent: rail.content, glow: rail.boxShadow }
           }
           return { claude: read('claude'), codex: read('codex'),
-                   normal: read('normal') }
+                   claudeNorm: read('claudeNorm'), codexNorm: read('codexNorm') }
         }""")
         if args.shot:
             page.screenshot(path=args.shot)
@@ -85,8 +94,13 @@ def main() -> int:
         failures.append("Claude and Codex rails resolve to the same color")
     if values["claude"]["surface"] == values["codex"]["surface"]:
         failures.append("Claude and Codex card washes resolve to the same color")
-    if values["normal"]["railContent"] not in ("none", "normal"):
-        failures.append("provider rail leaked into normal/zoomed-in LOD")
+    for provider in ("claudeNorm", "codexNorm"):
+        if values[provider]["glow"] == "none":
+            failures.append(f"{provider} middle card has no provider glow")
+    if values["claudeNorm"]["border"] == values["codexNorm"]["border"]:
+        failures.append("Claude and Codex middle-card borders resolve to the same color")
+    if values["claudeNorm"]["glow"] == values["codexNorm"]["glow"]:
+        failures.append("Claude and Codex middle-card glows resolve to the same color")
 
     if args.expect_fail:
         if len(failures) < 2:
@@ -101,7 +115,7 @@ def main() -> int:
         for failure in failures:
             print(f"  · {failure}")
         return 1
-    print("OK — mini cards carry distinct Claude orange / Codex teal washes and rails")
+    print("OK — far and middle cards carry distinct Claude orange / Codex teal cues")
     return 0
 
 
