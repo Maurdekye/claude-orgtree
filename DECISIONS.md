@@ -82,6 +82,7 @@ opus 5 · sonnet 3 · haiku 1, DERIVED from published API pricing (output:input
 is exactly 5:1 for every current model, so the scale is not a judgment call);
 sonnet is pinned at the standard 3, not the introductory 2 that expires
 2026-08-31. A node's seat always equals the model it is actually running —
+**Later amended by D-116 (2026-08-12): Sonnet seats changed from 3 to 2.**
 no path (hire, rehire, cheaper-consult rehire, reseed) may seat an agent
 below its model; the cheaper-consult rehire is a model *switch* precisely so
 the identity holds, and seat cost doubles as the kiosk tier-ceiling rank.

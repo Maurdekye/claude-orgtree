@@ -98,9 +98,10 @@ is the natural unit.
 
 ### 3.2 Two footnotes on the numbers
 
-- **Sonnet 5 introductory pricing.** $2.00 / $10.00 per MTok through **2026-08-31**, reverting to
-  $3.00 / $15.00. The table uses the standard rate deliberately; pinning Sonnet at 2 credits would
-  bake in a promotion that lapses.
+- **Sonnet pricing and the later ruling.** This plan originally pinned Sonnet at the standard
+  3-credit rate because the $2.00 / $10.00 rate was described as introductory and expected to
+  expire. The user later changed the seat from 3 to 2 in **D-116** (2026-08-12); the table above
+  reflects that later ruling.
 - **Opus 5 fast mode** (`speed: "fast"`, beta `fast-mode-2026-02-01`) is priced at $10 / $50 —
   Fable-tier. If fast mode becomes a per-node option, it costs **10 credits**, not 5.
 
