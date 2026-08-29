@@ -44,6 +44,9 @@ export const MODEL_VERSIONS: Record<string, string[]> = { opus: ['5', '4.8'] }
 export const CODEX_TIERS = ['luna', 'terra', 'sol']
 export const CODEX_TIER_LETTER: Record<string, string> = { luna: 'L', terra: 'T', sol: 'S' }
 export const CODEX_TIER_SEAT: Record<string, number> = { luna: 1, terra: 2, sol: 5 }
+/** Provider-neutral surfaces (for example the live-agent summary) use this;
+ * provider-specific controls keep using their family list. */
+export const ALL_TIERS = [...TIERS, ...CODEX_TIERS]
 
 // ---------------------------------------------------------------- view types
 // The canvas overlays the payload's TreeNode with synthetic cards — the eye

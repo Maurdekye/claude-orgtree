@@ -8,10 +8,11 @@ import {
 import test from 'node:test'
 import type { TestContext } from 'node:test'
 import assert from 'node:assert/strict'
+import { ActiveAgentSummary } from '../src/App'
 import { NodeConfig } from '../src/canvas/modals'
 import { USER } from '../src/canvas/shared'
 import type { CanvasNode } from '../src/canvas/shared'
-import type { OpRequest, OpResult, ProviderInfo, TreePayload } from '../src/types'
+import type { OpRequest, OpResult, ProviderInfo, TreeNode, TreePayload } from '../src/types'
 
 const noop = () => {}
 
@@ -77,6 +78,25 @@ const options = (el: HTMLElement) =>
   [...el.querySelectorAll<HTMLOptionElement>('.model-switch option')]
 const option = (el: HTMLElement, tier: string) =>
   options(el).find((o) => o.value === tier)!
+
+test('the header summary counts both provider families', async (t: TestContext) => {
+  useFakeClock()
+  const tiers = ['opus', 'luna', 'terra', 'sol']
+  const roots = tiers.map((tier, i) => ({
+    ...node(tier), id: tier, busy: i === tiers.length - 1,
+  })) as unknown as TreeNode[]
+  const view = await mountView(
+    <ActiveAgentSummary tree={tree({ roots })} />,
+    (el) => el,
+  )
+  t.after(async () => { await view.unmount(); realClock() })
+  assert.match(view.el.textContent ?? '', /4 live · 1 working/)
+  assert.deepEqual(
+    [...view.el.querySelectorAll<HTMLBRElement>('.agents b')]
+      .map((b) => [b.className, b.textContent]),
+    [['t-opus', 'O1'], ['t-luna', 'L1'], ['t-terra', 'T1'], ['t-sol', 'S1']],
+  )
+})
 
 configTest('the switch lists both provider families with their ledger seats',
   async (mount) => {

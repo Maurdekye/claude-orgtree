@@ -21,7 +21,7 @@ import {
 } from './icons'
 import { DirList } from './forms'
 import { FolderPickerHost } from './picker'
-import { attentionPip, deskDpi, fallbackActive, freezeKind, orgPxc, primedRestartChip, setDeskDpi, usePolled, TIERS } from './canvas/shared'
+import { ALL_TIERS, attentionPip, deskDpi, fallbackActive, freezeKind, orgPxc, primedRestartChip, setDeskDpi, TIER_LETTER, usePolled } from './canvas/shared'
 import { AskCard } from './canvas/asks'
 import { AccountsPanel, UsageBars } from './canvas/accounts'
 import { addPending, dropPending, ingestPulse, ingestStream, resetConvos } from './convo'
@@ -32,11 +32,6 @@ import type {
   ToastUndo, TreeFrozen, TreeNode, TreePayload, UsageLimit, UsagePeek,
 } from './types'
 import type { MailRow } from './canvas/shared'
-
-const TIER_LETTER: Record<string, string> = {
-  haiku: 'H', sonnet: 'S', opus: 'O', fable: 'F',
-  luna: 'L', terra: 'T', sol: 'S',
-}
 
 /** the cost chip's hover split: how much of the org total was billed to the
  *  api_fallback key vs the subscription. '' when the org has never used (and
@@ -57,6 +52,28 @@ type WsEvent =
   | { type: 'mail'; from: string; to: string }
   | { type: 'node_stream'; node: string; kind: string; text?: string; sticky?: boolean; id?: string }
   | { type: 'node_event'; node: string; event: string }
+
+/** The provider-neutral header summary. It deliberately walks ALL_TIERS:
+ * this is an inventory of live agents, not a provider picker. */
+export function ActiveAgentSummary({ tree }: { tree: TreePayload }) {
+  const nodes = [...flatNodes(tree).values()].filter((n) => n.state === 'live')
+  const busy = nodes.filter((n) => n.busy).length
+  const byTier: Record<string, number> = {}
+  for (const node of nodes) byTier[node.tier] = (byTier[node.tier] ?? 0) + 1
+  return (
+    <span className="chip agents"
+      title="live agents · currently working · breakdown by model">
+      {nodes.length} live{busy > 0 ? ` · ${busy} working` : ''}
+      {ALL_TIERS
+        .filter((tier) => byTier[tier])
+        .map((tier) => (
+          <b key={tier} className={'t-' + tier}>
+            {TIER_LETTER[tier]}{byTier[tier]}
+          </b>
+        ))}
+    </span>
+  )
+}
 
 // live-feed state threaded into OrgCanvas (boundary shapes — Canvas declares
 // its own; reconcile if they drift)
@@ -427,21 +444,7 @@ export default function App() {
                     credit totals live on the eye's bar */}
                 {!tree.audit.no_overdraft &&
                   <span className="chip bad"><WarnIcon fontSize="inherit" /> {tree.audit.problems.join(', ')}</span>}
-                {(() => {   // active-agent summary: total · working · per-model
-                  const ns = [...flatNodes(tree).values()].filter((n) => n.state === 'live')
-                  const busy = ns.filter((n) => n.busy).length
-                  const byTier: Record<string, number> = {}
-                  for (const n of ns) byTier[n.tier] = (byTier[n.tier] ?? 0) + 1
-                  return (
-                    <span className="chip agents"
-                      title="live agents · currently working · breakdown by model">
-                      {ns.length} live{busy > 0 ? ` · ${busy} working` : ''}
-                      {TIERS
-                        .filter((t) => byTier[t])
-                        .map((t) => <b key={t} className={'t-' + t}>{TIER_LETTER[t]}{byTier[t]}</b>)}
-                    </span>
-                  )
-                })()}
+                <ActiveAgentSummary tree={tree} />
                 {/* the bare cost chip is redundant when the kiosk spend chip
                     already shows the same figure against its limit (user
                     spec 2026-07-31) — limitless orgs keep it */}
