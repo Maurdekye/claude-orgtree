@@ -633,7 +633,7 @@ itself; the panel's single **save** commits everything.
   once — settings, kiosk caps, the permission ceiling, org.md. There are no
   inline apply buttons.
 
-## Fable autopsy — diagnosing a fable that trips its own filters
+## Fable autopsy — diagnosing a fable whose turn died
 
 A fable agent can fail by tripping its own safety filters — refusing,
 derailing, or looping mid-task — rather than by getting the work wrong. A
@@ -644,6 +644,38 @@ cannot see what tripped it — but the failed agent's own transcript can. This
 pattern replaces guessing with reading: put a senior agent in place to read
 the wreck and rewrite the brief before the next attempt, instead of just
 trying again with the same words.
+
+**⚠ First, find out what actually killed it — do not assume a filter trip.**
+When a turn dies this way the engine says "the CLI exited 1 without writing
+anything to stderr". **That is a wrapper, not a diagnosis**, and it reads
+byte-identically for causes that have nothing to do with each other. The
+CLI's own reason *is* recorded — as a trailing system entry in the failed
+agent's transcript — so `orgtree_read_transcript` on it, read the last few
+entries, and let that decide what you do next. Measured 2026-08-29: two
+fable deaths one evening carried that identical wrapper; one was a
+safeguards trip ("Fable 5's safeguards flagged this message"), the other a
+transient "API Error: 500 ... server-side issue, usually temporary".
+
+**The response depends entirely on which it was, and they are opposites:**
+
+| what the transcript says | what to do |
+| --- | --- |
+| safeguards / AUP flagged the message | run this pattern — autopsy, re-brief, replacement fable |
+| API 500 or another transient server error | **re-drive it with one message. No autopsy, no replacement.** The agent is healthy |
+| context-window overflow | check `occupancy` (returned beside the transcript) before believing it — it is measurable, not a guess |
+| a crash, an OOM, a tool loop | an ordinary bug; fix the cause, then re-drive |
+
+Running the full pattern on a transient 500 costs a fable seat and an hour
+re-briefing against a cause that never happened. Before re-driving after a
+500, confirm the outage has passed — your own successful calls are that
+check; the engine warns that waking an agent whose fault is its CLI or
+environment just burns another turn, and that warning is right for those
+causes even though it does not apply to a server-side blip.
+
+And when the transcript does not settle it, **"I cannot tell, and here is
+what I ruled out" is a sound verdict** — say so in the replacement's brief.
+A fable that knows the risk is not understood works more carefully than one
+that has been told it is safe.
 
 **This is not the fable content-filter policy above.** That policy is a
 blind retry: a filter-flagged message either halts the fable's turn (the
