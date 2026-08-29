@@ -2364,6 +2364,42 @@ that survives the backslashes in a Windows command path.
 
 ---
 
+### D-182 · ONE implementation of "which MCP servers may this node see"
+Ruling (coordinator, 2026-08-29): `supervisor.granted_mcp_servers(org, nid)` is
+the single answer to that question — `expand(grant) ∩ expand(kiosk ceiling)`
+against the live registry. `identity_prompt`, `_build_cmd` and `codex_mcp_grant`
+all call it; none of them re-derives the grant. A lane may NARROW what it
+received (the sandbox passthrough, codex's expressibility filter) but the grant
+itself is computed once.
+Why: there were three copies and only two agreed. `_build_cmd` clamped with the
+kiosk ceiling; `identity_prompt` read `tools["mcp"]`, expanded `"*"` straight
+against the registry, and applied the ceiling **nowhere**. A kiosk agent could
+therefore be told it had a server its ceiling cuts, and then not be given it —
+**the same promise/delivery drift as D-180, one lane over**, found while fixing
+that one. The second, quieter half: a LITERAL grant was printed verbatim without
+ever meeting the registry, so an unregistered name was announced to the agent as
+though it existed.
+The trigger is a CEILING THAT MOVES AFTER THE HIRE. `"*"` materialises to the
+ceiling's list at grant time, so a hire under a narrow ceiling is already clamped
+in storage; the drift only appears when the ceiling is narrowed afterwards and
+the stored grant keeps the wider set. That is the "outpaced sweep" state the
+ledger suite already models — a real state, not a contrived one.
+Load-bearing, and the reason this is a shared helper rather than a repaired
+copy: two implementations of "what may this agent see" agree the day they are
+written and nothing afterwards makes them keep agreeing. D-078 makes the same
+argument for `identity_prompt`'s visibility derivation, and D-180 is the same
+failure in the codex lane. This is the third instance of one bug class, which is
+why the fix is deduplication rather than another clamp.
+Bounds: the acceptance check compares the PROMISE against the DELIVERY directly,
+on the same node, rather than each against a fixed list — two sides pinned to
+constants can drift together the next time one is edited. `expand_mcp`'s own
+registry-bounding is what stops a ghost name; the `if k in registry` filter in
+the helper is redundant defence (removing it alone is an equivalent mutant) and
+is kept only so a future change to `expand_mcp`'s contract cannot silently
+reintroduce the fault.
+
+---
+
 ## Mail & messaging
 
 ### D-137 · notices are mail minus the wake

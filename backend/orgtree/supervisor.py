@@ -2053,6 +2053,37 @@ def sandbox_mcp_passthrough(granted: list[str],
     return out
 
 
+def granted_mcp_servers(org: Org, nid: str) -> dict[str, Any]:
+    """The registry entries a node is actually granted: expand(grant) ∩
+    expand(kiosk ceiling), against the live registry.
+
+    D-182: THE one implementation of "which MCP servers may this node see".
+    There were three, and only two agreed. `_build_cmd` applied the kiosk
+    ceiling; `identity_prompt` expanded `"*"` straight against the registry and
+    ignored the ceiling entirely — so a KIOSK agent's prompt could name a
+    server its ceiling cuts, and the spawn would then not deliver it. That is
+    the same promise/delivery drift as D-180, one lane over, and it recurred
+    for the same reason: a second copy of this question agreed on the day it
+    was written and nothing afterwards made it keep agreeing.
+
+    Callers add their own lane's narrowing on top (the sandbox passthrough,
+    codex's expressibility filter) — but none of them re-derive the GRANT.
+    """
+    tools = org.node(nid)["scope"].get("tools", {})
+    registry = registered_mcp_servers()
+    ceil = org.kiosk_ceiling()
+    granted = expand_mcp(tools.get("mcp") or [],
+                         (ceil or {}).get("tools", {}).get("mcp")
+                         if ceil else None,
+                         sorted(registry))
+    # `if k in registry` is DEFENCE, not the ghost guard: expand_mcp already
+    # bounds the grant by the registry universe it is handed, so an
+    # unregistered name is gone before this line (verified — removing this
+    # filter alone is an equivalent mutant). Kept so a future change to
+    # expand_mcp's contract cannot silently promise a server that is not there.
+    return {k: registry[k] for k in granted if k in registry}
+
+
 def codex_mcp_grant(org: Org, nid: str) -> tuple[dict[str, Any], list[str]]:
     """(external MCP servers a CODEX node actually receives, granted names its
     lane cannot attach).
@@ -2071,14 +2102,7 @@ def codex_mcp_grant(org: Org, nid: str) -> tuple[dict[str, Any], list[str]]:
     """
     from . import codexrun            # noqa: PLC0415 — codex lane only
     tools = org.node(nid)["scope"].get("tools", {})
-    registry = registered_mcp_servers()
-    ceil = org.kiosk_ceiling()
-    granted = expand_mcp(tools.get("mcp") or [],
-                         (ceil or {}).get("tools", {}).get("mcp")
-                         if ceil else None,
-                         sorted(registry))
-    return codexrun.deliverable_mcp(
-        {k: registry[k] for k in granted if k in registry})
+    return codexrun.deliverable_mcp(granted_mcp_servers(org, nid))
 
 
 # ------------------------------------------------------------------ identity
@@ -2492,9 +2516,12 @@ def identity_prompt(org: Org, nid: str, include_archived: bool = False) -> str:
         tool_line += ("Terminal: Bash. " if sbx.is_sandboxed(org) else
                       "Terminal: Bash and PowerShell are both available to "
                       "you; for a cmd command, run `cmd /c …` from either. ")
-    mcp_names = tools.get("mcp") or []
-    if "*" in mcp_names:      # "*" = every registered server, present and future
-        mcp_names = sorted(registered_mcp_servers())
+    # D-182: the SAME grant `_build_cmd` spawns with — `"*"` is every
+    # registered server, present and future, INTERSECTED WITH THE KIOSK
+    # CEILING. This used to expand `"*"` straight against the registry and
+    # skip the ceiling, so a kiosk agent was promised servers its ceiling cuts
+    # and the spawn then withheld them.
+    mcp_names = sorted(granted_mcp_servers(org, nid))
     if sbx.is_sandboxed(org):
         # never promise servers the sandbox drops: MCP servers are excluded
         # from sandboxes by design (external contact points), except the
@@ -3428,18 +3455,14 @@ def _build_cmd(org: Org, nid: str) -> list[str]:
     # (ceiling spec §6): "*" under a list ceiling must yield the ceiling's
     # servers, never the whole registry
     registry = registered_mcp_servers()
-    ceil = org.kiosk_ceiling()
-    granted = expand_mcp(tools.get("mcp") or [],
-                         (ceil or {}).get("tools", {}).get("mcp")
-                         if ceil else None,
-                         sorted(registry))
+    grant = granted_mcp_servers(org, nid)     # D-182: shared, ceiling-aware
     if sandboxed:
         # NO MCP servers in the sandbox (user ruling): they are points of
         # external contact that the sandbox is explicitly designed to
         # restrict — the container gets exactly one server, orgtree, via the
         # bridge. ORGTREE_SANDBOX_MCP=1 experimentally re-enables granted
         # URL-based and portable-stdio servers (no full support).
-        chosen = sandbox_mcp_passthrough(granted, registry)
+        chosen = sandbox_mcp_passthrough(sorted(grant), registry)
         chosen["orgtree"] = {
             "command": "python3",
             "args": ["/opt/orgtree-backend/orgtree/mcptool.py"],
@@ -3448,7 +3471,7 @@ def _build_cmd(org: Org, nid: str) -> list[str]:
                     "ORGTREE_BRIDGE_SECRET": sbx.sandbox_secret(org)},
         }
     else:
-        chosen = {k: registry[k] for k in granted if k in registry}
+        chosen = dict(grant)
         chosen["orgtree"] = {
             "command": sys.executable,
             "args": ["-m", "orgtree.mcptool"],
