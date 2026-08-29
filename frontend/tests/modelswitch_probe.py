@@ -1,0 +1,176 @@
+"""Real-Edge probe for the settings model switch against the built app.
+
+Runs a throwaway backend on 7451, opens a real agent settings panel, and
+reads the native select/option state. `--expect-fail` replaces the provider
+availability value with a disconnected state; the healthy assertions must
+then fire, proving the probe distinguishes an available Codex family from a
+disabled one rather than merely finding a select element.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.request
+
+from playwright.sync_api import sync_playwright
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.normpath(os.path.join(HERE, "..", ".."))
+PORT = 7451
+BASE = f"http://127.0.0.1:{PORT}"
+
+
+def api(method: str, path: str, body=None):
+    req = urllib.request.Request(
+        BASE + path, method=method,
+        data=None if body is None else json.dumps(body).encode(),
+        headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        raw = r.read().decode("utf-8", "replace")
+    return json.loads(raw) if raw else {}
+
+
+def provider_payload(enabled: bool) -> dict:
+    return {"providers": [{
+        "id": "openai", "label": "Codex", "cli": "Codex CLI",
+        "tiers": [
+            {"tier": "luna", "provider": "openai", "seat": 1,
+             "model": "gpt-5.6-luna", "letter": "L"},
+            {"tier": "terra", "provider": "openai", "seat": 2,
+             "model": "gpt-5.6-terra", "letter": "T"},
+            {"tier": "sol", "provider": "openai", "seat": 5,
+             "model": "gpt-5.6-sol", "letter": "S"},
+        ],
+        "status": {"installed": True, "connected": enabled,
+                   "kind": "chatgpt" if enabled else None},
+        "hire_enabled": enabled,
+        "reason": None if enabled else "CONTROL: Codex is disconnected",
+    }]}
+
+
+def findings(rows: list[dict]) -> list[str]:
+    fail: list[str] = []
+    want = [
+        ("haiku", "Claude", 1), ("sonnet", "Claude", 2),
+        ("opus", "Claude", 5), ("fable", "Claude", 10),
+        ("luna", "Codex", 1), ("terra", "Codex", 2),
+        ("sol", "Codex", 5),
+    ]
+    got = [(r["value"], r["group"], r["seat"]) for r in rows]
+    if got != want:
+        fail.append(f"tier/group/seat rows differ: {got!r}")
+    disabled = [r["value"] for r in rows if r["disabled"]]
+    if disabled:
+        fail.append(f"available-provider options disabled: {disabled!r}")
+    return fail
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--expect-fail", action="store_true")
+    args = ap.parse_args()
+    with tempfile.TemporaryDirectory(prefix="orgtree-modelswitch-") as tmp:
+        data = os.path.join(tmp, "data")
+        home = os.path.join(tmp, "home")
+        os.makedirs(data); os.makedirs(home)
+        with open(os.path.join(data, "defaults.json"), "w", encoding="utf-8") as f:
+            json.dump({"net_hub_address": "http://127.0.0.1:9"}, f)
+        env = dict(os.environ)
+        env.update({
+            "ORGTREE_DATA": data, "USERPROFILE": home, "HOME": home,
+            "ORGTREE_PORT": str(PORT), "ORGTREE_BRIDGE_PORT": "0",
+            "ORGTREE_PUBLIC_PORT": "0", "ORGTREE_EXPOSE_ADMIN": "0",
+            "PYTHONPATH": os.path.join(REPO, "backend"),
+            "PYTHONIOENCODING": "utf-8",
+            "ORGTREE_CLAUDE_CLI": os.path.join(
+                REPO, "backend", "tests", "fakecli.js"),
+        })
+        log = open(os.path.join(tmp, "backend.log"), "w", encoding="utf-8")
+        backend_python = os.path.join(
+            REPO, ".venv", "Scripts" if os.name == "nt" else "bin",
+            "python.exe" if os.name == "nt" else "python")
+        if not os.path.exists(backend_python):
+            backend_python = sys.executable
+        proc = subprocess.Popen(
+            [backend_python, "-m", "orgtree.api"],
+            cwd=os.path.join(REPO, "backend"), env=env,
+            stdout=log, stderr=log, text=True)
+        try:
+            for _ in range(150):
+                try:
+                    api("GET", "/api/orgs")
+                    break
+                except Exception:
+                    if proc.poll() is not None:
+                        log.flush()
+                        with open(log.name, encoding="utf-8", errors="replace") as f:
+                            tail = f.read()[-4000:]
+                        raise RuntimeError("throwaway backend exited:\n" + tail)
+                    time.sleep(.1)
+            else:
+                raise RuntimeError("throwaway backend did not start")
+
+            made = api("POST", "/api/orgs", {"name": "model switch probe"})
+            slug = made.get("slug") or made["org"]["slug"]
+            api("POST", f"/api/orgs/{slug}/ops", {
+                "op": "hire", "actor": "@user", "parent": None,
+                "tier": "haiku", "grant": 10, "name": "agent",
+                "add_dirs": [], "tools": {"bash": False, "web": False,
+                    "edit": False, "subagents": False, "mcp": []},
+                "org_visibility": "team",
+            })
+
+            with sync_playwright() as p:
+                browser = p.chromium.launch(channel="msedge", headless=True)
+                page = browser.new_page(viewport={"width": 1500, "height": 900})
+                payload = provider_payload(not args.expect_fail)
+                page.route("**/api/providers", lambda route:
+                    route.fulfill(status=200, content_type="application/json",
+                                  body=json.dumps(payload)))
+                page.goto(f"{BASE}/o/{slug}")
+                card = page.locator('.sq:has(.name:text-is("agent"))').first
+                card.wait_for(timeout=10000)
+                # The overview gear is intentionally hover-only. Trigger its real
+                # React click handler without making probe success depend on CSS
+                # hover timing or the browser's current pointer position.
+                card.locator(".gearbtn").evaluate("el => el.click()")
+                page.locator(".settings.cfg select.model-switch").wait_for(timeout=10000)
+                rows = page.locator("select.model-switch option").evaluate_all("""opts =>
+                  opts.map(o => ({
+                    value: o.value,
+                    group: o.parentElement.label,
+                    disabled: o.disabled,
+                    text: o.textContent.trim(),
+                    seat: Number((o.textContent.match(/seat (\\d+)/) || [0, 0])[1]),
+                  }))
+                """)
+                browser.close()
+
+            fail = findings(rows)
+            if args.expect_fail:
+                if not fail:
+                    print("CONTROL FAILED — disconnected provider escaped detection")
+                    return 1
+                print("CONTROL OK — disconnected provider detected: " + "; ".join(fail))
+                return 0
+            if fail:
+                print("\n".join("FAIL: " + x for x in fail))
+                return 1
+            print("OK — real settings panel lists Claude + Codex with correct seats and enabled Codex choices")
+            return 0
+        finally:
+            proc.terminate()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            log.close()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

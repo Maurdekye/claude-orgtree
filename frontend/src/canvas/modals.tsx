@@ -8,7 +8,7 @@ import { useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import type {
-  ChatInit, DirGrant, ToastFn, ToolGrant, TreePayload, Watchdog,
+  ChatInit, DirGrant, ProviderInfo, ToastFn, ToolGrant, TreePayload, Watchdog,
 } from '../types'
 import {
   dissolveAll, getChat, getMcpServers, remoteControl, saveHireDefaults,
@@ -18,7 +18,7 @@ import { pickFolder } from '../picker'
 import {
   CloseIcon, DeleteIcon, FolderIcon, LayersIcon, SettingsIcon,
 } from '../icons'
-import { ago, MODEL_VERSIONS, pileOrder, TIER_LETTER, TIER_SEAT, TIERS, USER, useEsc } from './shared'
+import { ago, CODEX_TIER_SEAT, CODEX_TIERS, MODEL_VERSIONS, pileOrder, TIER_LETTER, TIER_SEAT, TIERS, USER, useEsc } from './shared'
 import type { CanvasNode, DraftScope, DraftState, OpFn, Pile } from './shared'
 
 export interface ConfirmModalProps {
@@ -569,10 +569,12 @@ interface NodeConfigProps {
   slug: string
   op: OpFn
   toast: ToastFn
+  codexProvider?: ProviderInfo | null
   close: () => void
 }
 
-export function NodeConfig({ node, map, tree, slug, op, toast, close }: NodeConfigProps) {
+export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
+  close }: NodeConfigProps) {
   useEsc(close)
   const [asking, setAsking] =
     useState<'delete' | 'dissolve' | 'retire' | 'rescind' | null>(null)
@@ -661,6 +663,37 @@ export function NodeConfig({ node, map, tree, slug, op, toast, close }: NodeConf
   const parentHoldsMcp = (s: string) => parentTools == null
     || (parentTools.mcp ?? []).includes('*') || (parentTools.mcp ?? []).includes(s)
   const holdsAllMcp = tools.mcp.includes('*')
+  // The ledger owns the actual seat table (including customized org values),
+  // while the frontend constants are only a startup fallback. Provider is an
+  // axis over that one flat tier vocabulary, never a second price table.
+  const tierSeat = (t: string) => tree.tiers?.[t]
+    ?? TIER_SEAT[t] ?? CODEX_TIER_SEAT[t] ?? 0
+  // Keep the same refusal order as provider_hire_gate: provider presence and
+  // login first, then org policy, then the headless authentication rule.
+  const codexUnavailable = !codexProvider?.hire_enabled
+    ? codexProvider?.reason ?? 'provider state unavailable'
+    : tree.kiosk
+      ? 'unavailable in kiosk orgs'
+      : tree.headless && codexProvider.status.kind !== 'api-key'
+        ? 'headless requires a Codex API-key login'
+        : null
+  const unavailable = (t: string): string | null => {
+    // The current tier remains a truthful selected no-op even if policy has
+    // since tightened around it; save does not call switch_model for a no-op.
+    if (t === node.tier) return null
+    if (CODEX_TIERS.includes(t) && codexUnavailable) return codexUnavailable
+    const cap = tree.kiosk?.max_tier
+    if (cap && tierSeat(t) > tierSeat(cap)) return `above kiosk cap (${cap})`
+    return null
+  }
+  const modelOption = (t: string) => {
+    const why = unavailable(t)
+    return (
+      <option key={t} value={t} disabled={!!why}>
+        {t} · seat {tierSeat(t)}{why ? ` — ${why}` : ''}
+      </option>
+    )
+  }
   return (
     // pointerdown must not reach the viewport: its pan pointer-CAPTURE retargets
     // the click, so backdrop-close and every button in here silently broke
@@ -840,18 +873,14 @@ export function NodeConfig({ node, map, tree, slug, op, toast, close }: NodeConf
         <div className="field-label">model (switchable on the fly — context
           survives; cheaper frees the seat difference to the agent, pricier
           bubbles any shortfall up the chain)</div>
-        <select value={model} onChange={(e) => setModel(e.target.value)}>
-          {/* kiosk tier cap: options above it vanish — but the node's OWN
-              tier stays listed so a pre-cap agent still shows truthfully */}
-          {TIERS.filter((t) => {
-            const cap = tree.kiosk?.max_tier
-            return t === node.tier || !cap
-              || (TIER_SEAT[t] ?? 0) <= (TIER_SEAT[cap] ?? Infinity)
-          }).map((t) => (
-            <option key={t} value={t}>
-              {t} · seat {TIER_SEAT[t]}
-            </option>
-          ))}
+        <select className="model-switch" aria-label="model tier"
+          value={model} onChange={(e) => setModel(e.target.value)}>
+          <optgroup label="Claude">
+            {TIERS.map(modelOption)}
+          </optgroup>
+          <optgroup label="Codex">
+            {CODEX_TIERS.map(modelOption)}
+          </optgroup>
         </select>
 
         <div className="field-label">org-structure visibility</div>
