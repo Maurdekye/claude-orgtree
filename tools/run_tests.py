@@ -462,13 +462,16 @@ def plan_for(suites, args):
     for s in suites:
         if args.only and not any(f in s.id for f in args.only):
             continue
-        if s.skip:
+        # Explicitly declining the frontend suite is a policy choice, not a
+        # missing prerequisite. It must win over discovery's dependency check
+        # so `--no-frontend` remains the intentional escape hatch.
+        if s.id == "frontend" and args.no_frontend:
+            skipped.append((s, "--no-frontend"))
+        elif s.skip:
             skipped.append((s, s.skip))
         elif s.windows_only and os.name != "nt":
             skipped.append((s, "asserts Windows filesystem semantics "
                                "(WinError/MoveFileEx) — not meaningful here"))
-        elif s.id == "frontend" and args.no_frontend:
-            skipped.append((s, "--no-frontend"))
         elif s.cmd(args.full) is None:
             skipped.append((s, SLOW.get("test_" + s.id.replace("-", "_") + ".py",
                                         {}).get("why", "full tier only")
@@ -476,6 +479,17 @@ def plan_for(suites, args):
         else:
             run.append(s)
     return run, skipped
+
+
+def required_skip_failures(skipped):
+    """Mandatory suites blocked by setup, rather than intentionally skipped.
+
+    The frontend is part of both ordinary tiers. Missing Node or dependencies
+    means the tier did not establish its claim, even when every backend suite
+    passed. `--no-frontend` is the one explicit opt-out and stays green.
+    """
+    return [(s, why) for s, why in skipped
+            if s.id == "frontend" and why != "--no-frontend"]
 
 
 def main():
@@ -591,8 +605,11 @@ def main():
         g = {"FIRED": "⚑ FIRED", "held": "held", "silent": "⚐ silent"}.get(
             r.guard_state, "—")
         print(f"{r.suite.id:<26}{r.state:<10}{n:>8}{r.secs:9.1f}s   {g}")
+    blocked = required_skip_failures(skipped)
+    blocked_ids = {s.id for s, _why in blocked}
     for s, why in skipped:
-        print(f"{s.id:<26}{'SKIP':<10}{'':>8}{'':>10}   {why[:40]}")
+        state = "BLOCKED" if s.id in blocked_ids else "SKIP"
+        print(f"{s.id:<26}{state:<10}{'':>8}{'':>10}   {why[:40]}")
     print(BAR)
 
     bad = [r for r in results if r.state != "PASS"]
@@ -605,6 +622,12 @@ def main():
     fired = [r for r in guards if r.guard_state == "FIRED"]
     silent = [r for r in guards if r.guard_state == "silent"]
     print(f"drift guards: {held} held · {len(fired)} FIRED · {len(silent)} silent")
+
+    if blocked:
+        print()
+        print("REQUIRED SUITE BLOCKED — this run is not green:")
+        for s, why in blocked:
+            print(f"  {s.id}: {why}")
 
     if fired:
         print()
@@ -666,7 +689,7 @@ def main():
     # carries that, in the line and in the exit status. Gating the marker on
     # `not bad` would make a red run and a killed run identical again, and
     # telling those two apart is the entire point.
-    rc = 1 if bad else 0
+    rc = 1 if bad or blocked else 0
     emit_completion(logdir, len(run), results, bad, skipped, wall, rc)
     return rc
 

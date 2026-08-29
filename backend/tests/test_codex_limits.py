@@ -19,6 +19,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 root = tempfile.mkdtemp(prefix="orgtree-codex-limits-")
 home = os.path.join(root, "codex-home")
 os.makedirs(home)
+# A throwaway ORGTREE_DATA does not isolate the machine's mail hub.  This
+# suite creates no org today, but every private data root in this directory
+# carries the same dead-hub invariant so a future fixture cannot register
+# against the operator's real roster merely by importing the net daemon.
+with open(os.path.join(root, "defaults.json"), "w", encoding="utf-8") as f:
+    json.dump({"net_hub_address": "http://127.0.0.1:9"}, f)
 with open(os.path.join(home, "auth.json"), "w", encoding="utf-8") as f:
     json.dump({"tokens": {}}, f)
 os.environ["ORGTREE_DATA"] = root

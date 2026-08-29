@@ -1953,6 +1953,39 @@ does D-181 above. A greedy match eats the reader's message up to the last
 the suite was blind to this until a mutant proved the other six checks passed
 greedy and non-greedy alike.
 
+### D-193 · a missing mandatory test prerequisite makes the tier fail
+
+Decision (implementer, 2026-08-29; number allocated by the coordinator): the
+frontend suite is part of both ordinary `tools/run_tests.py` tiers. If Node or
+`frontend/node_modules` is missing, the aggregate run is **BLOCKED and exits
+nonzero** even when every backend suite passes. `--no-frontend` remains the
+explicit, green opt-out: choosing not to claim frontend coverage is different
+from believing the machine supplied it when it did not.
+
+The runner already printed the missing-dependency reason in its plan and final
+table, so the original report that it skipped "silently" was too broad. The
+defect was the stronger automation boundary: the final `RUN COMPLETE` line and
+process status still carried `rc=0`. A person could notice the `SKIP`; a gate
+reading the status saw a green tier. The fixed summary calls the row BLOCKED,
+repeats the remediation beside `REQUIRED SUITE BLOCKED`, and carries `rc=1` in
+both completion artefacts.
+
+Measured with a value-replacement canary, not an exception: replacing
+`required_skip_failures` with its old empty result makes one real passing child
+plus one dependency-blocked frontend exit 0; restoring the policy makes the
+identical run exit 1. The same rig proves `--no-frontend` still exits 0.
+
+Adjacent hygiene, not a broader runner rule: every test that assigns its own
+`ORGTREE_DATA` must also write a dead `net_hub_address`, even if it creates no
+org today. `test_codex_limits.py` omitted that invariant and was correctly
+caught by `test_external_mail`'s directory-wide guard. The reported historical
+pollution mechanism did **not** apply to that suite as written: it creates no
+org and never starts the net daemon, and the live roster contains no identity
+attributable to its `orgtree-codex-limits-*` data roots. There was therefore
+nothing from this suite to deregister; deleting unrelated old fixture entries
+would have been cleanup without provenance. The dead-hub default is still
+added so a future fixture cannot turn the latent hazard into real pollution.
+
 ### D-110 · FR-19 (name-gen button) is DISMISSED — no viable access path
 Ruling (user, 2026-08-14): the feature is dropped entirely. Both branches of
 the access fork fail its size: "an entire cli turn is excessive, expensive,
