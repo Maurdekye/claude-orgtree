@@ -32,6 +32,12 @@ os.makedirs(os.environ["ORGTREE_DATA"], exist_ok=True)
 with open(os.path.join(os.environ["ORGTREE_DATA"], "defaults.json"), "w",
           encoding="utf-8") as _f:
     _f.write('{"net_hub_address": "http://127.0.0.1:9"}')
+# hermetic on the gemini axis too: providers_payload probes EVERY provider,
+# so an unpinned rig would read the operator's real ~/.gemini (D-184)
+os.environ["ORGTREE_GEMINI"] = os.path.join(
+    os.environ["ORGTREE_DATA"], "nowhere", "gemini.js")
+os.environ["ORGTREE_GEMINI_HOME"] = os.path.join(
+    os.environ["ORGTREE_DATA"], "ghome")
 
 from orgtree import providers                                      # noqa: E402
 from orgtree.ledger import (LedgerError, MODELS, Org, TIERS,       # noqa: E402
@@ -77,13 +83,14 @@ def main():
                      ({t: TIERS[t] for t in providers.CODEX_TIERS},
                       {t: MODELS[t] for t in providers.CODEX_TIERS}),
                      "derived views"))
-    check("claude_tiers mirrors ledger minus the codex rows (name, seat, "
+    check("claude_tiers mirrors ledger minus the OTHER families (name, seat, "
           "model), cheap first",
           lambda: eq([(t["tier"], t["seat"], t["model"])
                       for t in providers.claude_tiers()],
                      [(t, TIERS[t], MODELS[t])
                       for t in sorted(TIERS, key=lambda k: TIERS[k])
-                      if t not in providers.CODEX_TIERS],
+                      if t not in providers.CODEX_TIERS
+                      and t not in providers.GEMINI_TIERS],
                      "claude family"))
     check("codex family is luna 1 · terra 2 · sol 5, gpt-5.6 ids, cheap first",
           lambda: eq([(t["tier"], t["seat"], t["model"])
@@ -166,9 +173,11 @@ def main():
 
     print("§4 the payload the panel renders")
     pay = providers.providers_payload({"installed": True, "connected": True})
-    check("exactly two providers, claude first",
+    # grew to three at D-184 (gemini) — the gemini entry's own behaviour is
+    # test_gemini_providers.py's; here it only has to hold its place in line
+    check("exactly three providers, claude first",
           lambda: eq([p["id"] for p in pay["providers"]],
-                     ["claude", "openai"], "order"))
+                     ["claude", "openai", "google"], "order"))
     codex = next(p for p in pay["providers"] if p["id"] == "openai")
     # FLIPPED at the MVP (M1–M8 standing): the vision live — a CONNECTED CLI
     # is a hireable provider, the same predicate the api hire gate enforces.

@@ -39,12 +39,16 @@ from .schema import (AudienceGrant, DirGrant, MailEntry, NodeDoc, NoticeEntry,
 # sonnet-intro precedent, re-affirmed for sol by user ruling 2026-08-28).
 # Sonnet was 3, then 2 (user ruling 2026-08-12: $2/M locked in). The codex
 # family (FR-15, same ruling): sol $5 standard (the current $4 is a promo
-# through ≥2026-11-21), terra $2, luna $0.20 → floors to 1. Existing orgs
-# migrate in the load hook below IF they still carry the old shipped default;
-# a customised table keeps its own number. Tier names are ONE flat
+# through ≥2026-11-21), terra $2, luna $0.20 → floors to 1. The gemini family
+# (D-188): pro $2 standard (the ≤200K band — the >200K long-context surcharge
+# is a cost-dollars concern, never a seat), flash $1.50 → floors to 1 and
+# STAYS 1 when the tier's default model moves to 3.7-flash ($0.38). Existing
+# orgs migrate in the load hook below IF they still carry the old shipped
+# default; a customised table keeps its own number. Tier names are ONE flat
 # vocabulary — a tier implies its provider (providers.py owns that axis).
 TIERS: Final[dict[str, int]] = {"fable": 10, "opus": 5, "sonnet": 2, "haiku": 1,
-                                "sol": 5, "terra": 2, "luna": 1}
+                                "sol": 5, "terra": 2, "luna": 1,
+                                "flash": 1, "pro": 2}
 
 # №34 runaway insurance, and NOTHING else (user ruling 2026-08-04): "no need to
 # have any practical limit other than to prevent infinite recursion from a bug
@@ -65,6 +69,16 @@ MODELS: Final[dict[str, str]] = {
     "sol": "gpt-5.6-sol",
     "terra": "gpt-5.6-terra",
     "luna": "gpt-5.6-luna",
+    # the gemini family — ids EXACTLY as the CLI's ACP session/new registry
+    # reports them (measured, gemini-cli 0.57.0, 2026-08-29). ⚠ an id the CLI
+    # does not know is SILENTLY replaced by its default model (measured:
+    # `-m gemini-3.7-flash` served 3.5-flash with no warning), which is why
+    # geminirun asserts the served model against this pin every session.
+    # "Gemini Flash 3.7" is not on the developer API yet (404, verified) —
+    # the flash tier launches on 3.5-flash and moves via MODEL_VERSIONS the
+    # day 3.7 lands (user-approved recommendation, 2026-08-29).
+    "flash": "gemini-3.5-flash",
+    "pro": "gemini-3.1-pro-preview-customtools",
 }
 
 # A TIER is a price band — four of them, four chips. A model VERSION is a
