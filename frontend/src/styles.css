@@ -216,6 +216,9 @@ main {
 
 .sq {
   position: absolute; left: 0; top: 0;
+  /* Provider is its own visual channel. Claude is the default family; Codex
+     rebinds this below without changing model-tier or status colors. */
+  --provider-accent: var(--accent);
   background: var(--panel); border: 1px solid var(--line);
   border-radius: 8px; padding: 7px 7px;
   display: flex; flex-direction: column; gap: 5px;
@@ -356,11 +359,12 @@ button.badge.retired-fold:hover { border-color: var(--accent); }
   line-height: 1.25; color: var(--ink-strong); overflow: hidden;
   overflow-wrap: anywhere; padding: 0 2px;
 }
-/* faint tier wash so the tier hue survives when borders are hairline-thin */
-.sq.mini.tier-haiku { background: color-mix(in srgb, var(--tier-haiku) 6%, var(--panel)); }
-.sq.mini.tier-sonnet { background: color-mix(in srgb, var(--tier-sonnet) 6%, var(--panel)); }
-.sq.mini.tier-opus { background: color-mix(in srgb, var(--tier-opus) 6%, var(--panel)); }
-.sq.mini.tier-fable { background: color-mix(in srgb, var(--tier-fable) 6%, var(--panel)); }
+/* Preserve a faint tier wash under the louder provider wash. The actual
+   background is composed once below so neither channel erases the other. */
+.sq.mini.tier-haiku { --mini-tier: var(--tier-haiku); }
+.sq.mini.tier-sonnet { --mini-tier: var(--tier-sonnet); }
+.sq.mini.tier-opus { --mini-tier: var(--tier-opus); }
+.sq.mini.tier-fable { --mini-tier: var(--tier-fable); }
 /* the codex family's card dressing (FR-15; dormant until codex hire lands).
    Provider theming (user spec 2026-08-28): a codex agent's DESK is teal
    where a claude desk is terracotta — same geometry, recolored — and its
@@ -369,9 +373,26 @@ button.badge.retired-fold:hover { border-color: var(--accent); }
 .sq.tier-luna { border-top-color: color-mix(in srgb, var(--tier-luna) 55%, var(--line)); }
 .sq.tier-terra { border-top-color: color-mix(in srgb, var(--tier-terra) 55%, var(--line)); }
 .sq.tier-sol { border-top-color: color-mix(in srgb, var(--tier-sol) 55%, var(--line)); }
-.sq.mini.tier-luna { background: color-mix(in srgb, var(--tier-luna) 6%, var(--panel)); }
-.sq.mini.tier-terra { background: color-mix(in srgb, var(--tier-terra) 6%, var(--panel)); }
-.sq.mini.tier-sol { background: color-mix(in srgb, var(--tier-sol) 6%, var(--panel)); }
+.sq.mini.tier-luna { --mini-tier: var(--tier-luna); }
+.sq.mini.tier-terra { --mini-tier: var(--tier-terra); }
+.sq.mini.tier-sol { --mini-tier: var(--tier-sol); }
+/* At map zoom the old provider signal collapsed to a sub-pixel busy border,
+   so provider could only be inferred from the tier token. Give the mini card
+   a large-area family wash plus a solid rail: orange for Claude, teal for
+   Codex. The tier wash underneath and the tier-colored top edge remain intact,
+   so provider and model are readable as separate facts. */
+.sq.mini {
+  background-color: color-mix(
+    in srgb, var(--provider-accent) 18%,
+    color-mix(in srgb, var(--mini-tier, var(--line)) 6%, var(--panel)));
+}
+.sq.mini::before {
+  content: '';
+  position: absolute; inset: 0 auto 0 0; width: 6px;
+  border-radius: 6px 0 0 6px;
+  background: var(--provider-accent);
+  opacity: .9; pointer-events: none;
+}
 .sq.prov-openai.busy {
   border-color: color-mix(in srgb, var(--prov-openai) 55%, transparent);
 }
@@ -389,6 +410,7 @@ button.badge.retired-fold:hover { border-color: var(--accent); }
    channel: Luna/Terra/Sol keep their distinct badge and top-edge hues while
    the provider chrome changes. Semantic red/green states are untouched. */
 .sq.prov-openai {
+  --provider-accent: var(--prov-openai);
   --accent: var(--prov-openai);
   --accent-soft: color-mix(in srgb, var(--prov-openai) 16%, transparent);
   --accent-hover: #6aada7;
