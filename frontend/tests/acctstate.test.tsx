@@ -29,7 +29,11 @@ const ACCOUNTS: AccountsPayload = {
   version: 2,
   primary: { signed_in: true, email: 'host@example.test' },
   keys: [{ id: 'k1', ordinal: 1,
-    account_uuid: '2d37ed7a-ff4b-4fa5-93da-54b828225866' }],
+    account_uuid: '2d37ed7a-ff4b-4fa5-93da-54b828225866',
+    registered_at: '2026-08-30T13:00:00Z',
+    mint_config_dir: 'C:\\Users\\operator\\.claude-secondary',
+    registered_from_config_dir: 'C:\\Users\\host\\.claude',
+    liveness: 'alive', liveness_checked_at: '2026-08-30T14:00:00Z' }],
   assignments: {
     haiku: { account: 'primary', available: true, refresh_at: null },
     sonnet: { account: 'primary', available: true, refresh_at: null },
@@ -117,6 +121,37 @@ function panelTest(name: string,
     }
   })
 }
+
+// ---------------------------------------------------------------- §0
+panelTest('§0 provenance names the observed registration and optional mint facts', async () => {
+  const view = await mountView(
+    <AccountsPanel toast={() => {}} close={() => {}} />, (el) => el)
+  await inAct(async () => { await flush(8) })
+  const body = txt(view.el)
+  assert.match(body, /registered 2026-08-30T13:00:00Z/)
+  assert.match(body, /mint config: C:\\Users\\operator\\.claude-secondary/)
+  assert.match(body, /registration config: C:\\Users\\host\\.claude/)
+  assert.match(body, /authentication: alive \(probe had capacity then; not current capacity\)/)
+  assert.ok(view.el.querySelector('input[placeholder="mint config directory (optional)"]'),
+    'the operator can supply mint provenance, but is never forced to invent it')
+})
+
+panelTest('§0.1 authenticated-but-limited never claims fallback serving capacity', async () => {
+  const key = ACCOUNTS.keys[0]!
+  const was = key.liveness
+  key.liveness = 'limited'
+  try {
+    const view = await mountView(
+      <AccountsPanel toast={() => {}} close={() => {}} />, (el) => el)
+    await inAct(async () => { await flush(8) })
+    const body = txt(view.el)
+    assert.match(body, /authentication: alive, rate-limited \(not serving capacity\)/)
+    assert.doesNotMatch(body, /fallback ready/i,
+      'a liveness probe is not evidence that this account can serve a turn')
+  } finally {
+    key.liveness = was
+  }
+})
 
 // ---------------------------------------------------------------- §1
 panelTest('§1.1 a key row lists every model tier by name', async () => {

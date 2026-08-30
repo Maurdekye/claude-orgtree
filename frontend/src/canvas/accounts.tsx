@@ -165,6 +165,7 @@ export function AccountsPanel({ toast, close }: {
   const [err, setErr] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [draft, setDraft] = useState('')
+  const [mintConfigDir, setMintConfigDir] = useState('')
   // which row's usage MODAL is open (user ruling 2026-08-25: a modal, never
   // an inline expansion), and each row's last-fetched bars
   const [usageFor, setUsageFor] = useState<string | null>(null)
@@ -214,8 +215,10 @@ export function AccountsPanel({ toast, close }: {
     const t = draft
     if (!t.trim()) return
     setBusy(true)
-    addAccountKey(t)
-      .then((d) => { setData(d); setDraft(''); toast(['key registered']) })
+    addAccountKey(t, mintConfigDir.trim() || undefined)
+      .then((d) => {
+        setData(d); setDraft(''); setMintConfigDir(''); toast(['key registered'])
+      })
       .catch((e: Error) => toast([`error: ${e.message}`]))
       .finally(() => setBusy(false))
   }
@@ -270,6 +273,16 @@ export function AccountsPanel({ toast, close }: {
   const KEY_USAGE_TITLE =
     'which models still have capacity on this account, and when the spent '
     + 'ones refresh'
+
+  // The isolated probe proves authentication only. A limit response is proof
+  // of life but specifically NOT proof that this account can serve now; the
+  // separate capacity table remains the routing authority.
+  const livenessLabel = (state: AccountsPayload['keys'][number]['liveness']): string => {
+    if (state === 'alive') return 'authentication: alive (probe had capacity then; not current capacity)'
+    if (state === 'limited') return 'authentication: alive, rate-limited (not serving capacity)'
+    if (state === 'dead') return 'authentication: dead (not routed)'
+    return 'authentication: no decisive probe result'
+  }
 
   // the heading follows the CONTENT: a key row shows this machine's capacity
   // record, not usage, and heading that "usage — fallback 1" is what would
@@ -393,13 +406,36 @@ export function AccountsPanel({ toast, close }: {
                         ? `fallback ${k.ordinal} · ${k.account_uuid}`
                         : ''}
                       placeholder={`fallback ${k.ordinal} — key registered, `
-                        + 'identity not resolved yet'} />
+                        + 'identity not resolved yet'}
+                      title={[
+                        k.registered_at
+                          ? `registered: ${k.registered_at} (lower bound on survival)`
+                          : 'registered before provenance recording existed',
+                        k.mint_config_dir
+                          ? `operator supplied mint config: ${k.mint_config_dir}`
+                          : 'mint config dir was not supplied',
+                        k.registered_from_config_dir
+                          ? `backend registration config: ${k.registered_from_config_dir}`
+                          : '',
+                        livenessLabel(k.liveness),
+                      ].filter(Boolean).join('\n')} />
                     {usageBtn(k.id, KEY_USAGE_TITLE)}
                     <button className="acct-btn acct-del"
                       title="delete this account row and forget its key — the CLI cannot show a key again, so re-adding means re-minting"
                       disabled={busy}
                       onClick={() => run(deleteAccountKey(k.id), 'key removed')}>
                       <DeleteIcon fontSize="inherit" /></button>
+                  </div>
+                  <div className="acct-provenance">
+                    <span>{k.registered_at
+                      ? `registered ${k.registered_at}`
+                      : 'registered before provenance recording'}</span>
+                    {k.mint_config_dir && <span>mint config: {k.mint_config_dir}</span>}
+                    {k.registered_from_config_dir &&
+                      <span>registration config: {k.registered_from_config_dir}</span>}
+                    <span className={k.liveness === 'dead' ? 'acct-dead' : ''}>
+                      {livenessLabel(k.liveness)}
+                    </span>
                   </div>
                 </div>
               </div>
@@ -421,6 +457,13 @@ export function AccountsPanel({ toast, close }: {
                     disabled={busy || !draft.trim()}
                     onClick={register}>
                     <CheckIcon fontSize="inherit" /></button>
+                </div>
+                <div className="acct-provenance acct-mint-entry">
+                  <input className="acct-mint-input" autoComplete="off"
+                    placeholder="mint config directory (optional)"
+                    value={mintConfigDir}
+                    onChange={(e) => setMintConfigDir(e.target.value)} />
+                  <span>Only enter the directory actually used to mint this key; leave blank if unknown.</span>
                 </div>
               </div>
             </div>

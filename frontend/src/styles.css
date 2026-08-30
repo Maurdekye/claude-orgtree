@@ -3509,6 +3509,13 @@ html.mobile .md table { display: block; overflow-x: auto; max-width: 100%; }
    undoing the row alignment for the sake of a font. */
 .acct-panel .acct-main input.acct-keyfield { font-family: var(--mono); }
 .acct-keyfield[disabled] { opacity: .6; cursor: default; }
+.acct-provenance { display: flex; flex-wrap: wrap; gap: 2px 10px; margin: 3px 24px 1px;
+  color: var(--dim); font-size: 10.5px; line-height: 1.25; }
+.acct-provenance span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acct-provenance .acct-dead { color: var(--warn, #d45); }
+.acct-mint-entry { align-items: center; }
+.acct-panel input.acct-mint-input { flex: 0 1 280px; min-width: 0; font-size: 12.5px;
+  padding: 5px 9px; border-radius: 4px; }
 /* the desk's "running off fallback N · uuid" badge. Bounded and ellipsised:
    the desk header is a flex row whose spacer does the balancing, and a 36-char
    uuid unconstrained there would shove the action buttons around. */

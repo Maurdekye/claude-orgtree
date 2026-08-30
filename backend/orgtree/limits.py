@@ -624,6 +624,17 @@ _RATE_RE = re.compile(
     re.IGNORECASE)
 
 
+# The CLI's subscription walls use a possessive sentence shape: “You've hit
+# your weekly limit” and “You've hit your Opus limit”.  This is deliberately
+# structural rather than a list of lane adjectives, and deliberately narrower
+# than a bare ``limit``: “401 invalid token (see your organisation limit
+# policy)” must remain a credential rejection, not proof of life.
+_POSSESSIVE_LIMIT_RE = re.compile(
+    r"\b(?:hit|reached|exceeded)\s+(?:your|the)\s+[^.\n]{0,24}?\blimit\b",
+    re.IGNORECASE,
+)
+
+
 def is_rate_limit(blob: str) -> bool:
     """A short-window RATE limit (429, per-minute tokens) rather than a
     subscription usage LANE. `supervisor._looks_like_usage_limit` matches both
@@ -631,6 +642,17 @@ def is_rate_limit(blob: str) -> bool:
     described by this readout, and answering a per-minute 429 with the session
     lane's reset parks the node for hours (redteam 2026-08-18)."""
     return bool(_RATE_RE.search(blob))
+
+
+def is_limit_message(blob: str) -> bool:
+    """Does CLI prose establish an authenticated usage/rate refusal?
+
+    This shared predicate combines rate shapes, the model-tier possessive
+    form, and the general possessive CLI sentence rather than teaching each
+    consumer an ever-growing private list of replies it happened to observe.
+    """
+    return bool(_RATE_RE.search(blob) or _TIER_RE.search(blob)
+                or _POSSESSIVE_LIMIT_RE.search(blob))
 
 
 def classify(blob: str) -> tuple[str | None, str | None]:

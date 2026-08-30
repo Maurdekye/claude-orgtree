@@ -2049,8 +2049,14 @@ def start_usage_warm_loop() -> None:
                 # nothing to warm the cache FOR on an install with no orgs —
                 # 288 requests a day at a semi-documented endpoint, each one
                 # possibly refreshing the host's OAuth token (redteam)
-                if limits.available() and store.list_orgs():
-                    limits.fetch(force=True)
+                if store.list_orgs():
+                    # D-205: shares this paced background pass rather than a
+                    # new timer. `accounts` owns a durable once-hourly gate;
+                    # this call is never on a turn path and its isolated CLI
+                    # request cannot block a spawn.
+                    accounts.probe_fallback_keys()
+                    if limits.available():
+                        limits.fetch(force=True)
             except Exception as e:                            # noqa: BLE001
                 print(f"[orgtree] usage warm-up failed: {e}")
             now = time.time()

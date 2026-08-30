@@ -2893,6 +2893,55 @@ that has never heard of the field reads as every provider ON. Kept distinct
 from `installed` on purpose — Claude reports absence on the accounts page and
 must not nag about installing something that is sitting there switched off.
 
+### D-205 · fallback-key liveness is isolated, conservative, and never capacity
+
+The fallback registry has one job that the normal agent path cannot do safely:
+answer whether a stored OAuth setup key can still authenticate when the primary
+login is unavailable. Claude Code 2.1.220 silently retries its ordinary login
+after a setup-token 401, so a normal-config probe can return success for a
+revoked key and quietly bill the primary. The check therefore runs its one
+Haiku request with a fresh temporary `CLAUDE_CONFIG_DIR`, the registered key as
+its only credential, and the exact CLI argv `supervisor` resolves (override,
+private pin, then PATH). Neither the token nor raw CLI output is logged,
+printed, or persisted.
+
+> **LIMITED IS AUTHENTICATED; IT IS NOT CAPACITY.** A rate/subscription wall is
+> proof that the key authenticated, but says that the account cannot serve the
+> turn it just refused. `alive` means that one probe had capacity then, not that
+> capacity exists now. The panel renders those separate facts explicitly and
+> never labels either one “fallback ready”.
+
+Classifier order is a safety property: shared limit detection first, then
+credential rejection (`401`/invalid/auth), then exit-zero success, otherwise
+UNKNOWN. A response can contain both a limit and `invalid`; the limit wins,
+because reaching a usage wall requires authentication. The limit detector is
+not another local list of phrases: it delegates to `limits.is_limit_message`,
+which combines the battle-tested rate matcher, possessive tier matcher, and the
+structural “hit your … limit” form. That retains the established protections
+against model-id and “organisation limit policy” false positives while covering
+unseen lanes such as weekly and per-model limits. UNKNOWN remains a non-verdict
+and preserves the last decisive state.
+
+The probe is part of the existing paced usage-warm loop, never a turn path and
+never a second timer. A durable per-key scheduler claim limits it to once per
+hour across restarts; UNKNOWN changes only that scheduling fact, specifically
+so ambiguity cannot retry itself into an apparent verdict. A confirmed dead
+key stays visible for diagnosis but routing skips it. A limited key stays
+distinct from capacity bookkeeping rather than being treated as ready.
+
+Registry provenance names only what the backend knows. `registered_at` is an
+observed registration time and thus a lower bound on survival, not a fictional
+mint time. `mint_config_dir` is optional operator-supplied provenance and is
+absent when unknown; `registered_from_config_dir` is the separately named
+backend registration session. A field named for an unobservable mint fact must
+be optional operator input, never inferred from a convenient nearby fact.
+
+Controls include real weekly/session limit replies, an unseen per-model reply,
+429-only, 429-plus-invalid precedence, bare invalid, transport UNKNOWN, the
+“organisation limit policy” false-ALIVE trap, shared-detector value replacement,
+and a child-process environment witness. The old exact-sentence classifier is
+kept as a failing control for the first three blind spots.
+
 ### D-183 · the gemini probe phase: ACP is the substrate, and four wire facts are load-bearing
 Findings (gemini-provider, 2026-08-29; every one measured live on gemini-cli
 0.57.0, probe logs banked in the implementing agent's scratch). The third

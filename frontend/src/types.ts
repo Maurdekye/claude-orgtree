@@ -956,6 +956,18 @@ export interface AccountsPayload {
     /** the account this key resolved to. IDENTITY, never credential — null
      *  while the profile lookup has not succeeded yet (it retries lazily). */
     account_uuid: string | null
+    /** Observed when this backend registered the paste: a lower bound on
+     *  survival, not a claim about when an external CLI minted the key. */
+    registered_at?: string | null
+    /** Optional operator-supplied external mint-session provenance. */
+    mint_config_dir?: string | null
+    /** The backend registration session's config directory, deliberately
+     *  distinct from the external mint-session directory. */
+    registered_from_config_dir?: string | null
+    /** Last decisive isolated probe result; null means legacy or unknown. */
+    liveness?: 'alive' | 'limited' | 'dead' | null
+    /** Last probe attempt, including UNKNOWN attempts retained for cadence. */
+    liveness_checked_at?: string | null
   }[]
   /** tier → where its prompts go. `account` is "primary", a key id, or null
    *  (no usable account at all). `available: false` means nothing has
