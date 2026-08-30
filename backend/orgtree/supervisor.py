@@ -3184,6 +3184,30 @@ def _carrier_is_ping(carrier: Any) -> bool:
     return isinstance(carrier, dict) and bool(carrier.get("ping"))
 
 
+def _carrier_owes_mail(carrier: Any) -> bool:
+    """Is this carrier still HOLDING a drained batch (an unconfirmed journal
+    token), rather than merely POINTING AT a mailbox?
+
+    ⚠ THE DISTINCTION THE DROP SITES LIVE OR DIE ON, and the reason a drop
+    cannot be decided from the mailbox alone. A steer carrier folded into the
+    queue has already taken its mail OUT of `doc["mail"]` — `_envelope` moved
+    it to `doc["delivering"]` under this token — so the box is empty BY
+    CONSTRUCTION, and `_has_deliverable` answers "nothing to point at" about a
+    carrier that is itself the only live pointer at a real message.
+
+    The result-boundary drop always had this test, spelled inline as
+    `not ntoks` and commented as load-bearing. The TURN-START drop never got
+    it, and threw such carriers away: the message survived only as an
+    unconfirmed batch in `doc["delivering"]` until some LATER, unrelated turn
+    happened to call `_fold_back_undelivered` and put it back. That is the
+    user report of 2026-08-30 — "stuff keeps getting held and never
+    delivered", then "there it just arrived for some reason" — seen twice,
+    once for a scope-approval decision (held 5m21s) and once for a plain
+    message. Named once, here, so the two sites cannot drift apart again.
+    Repro: tests/test_stuck_mail_pointer_drop.py D1."""
+    return isinstance(carrier, dict) and bool(carrier.get("toks"))
+
+
 def _drop_ping(slug: str, nid: str) -> str | dict[str, Any] | None:
     """Retire a pointer we are NOT going to deliver, and hand back whatever the
     queue holds next.
@@ -4135,7 +4159,8 @@ def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
         # the turn body is one long try whose `finally` owns the queue handoff,
         # and an early return from inside it would report None to this loop
         # while that finally had already popped the next carrier, stranding it.
-        if _carrier_is_ping(nxt) and not _has_deliverable(slug, nid):
+        if _carrier_is_ping(nxt) and not _carrier_owes_mail(nxt) \
+                and not _has_deliverable(slug, nid):
             _phantom_log(slug, nid, "turn start")
             nxt = _drop_ping(slug, nid)
             continue
