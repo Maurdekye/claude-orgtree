@@ -21,6 +21,81 @@ right way to trial a CLI flag on one agent. Credential names
 (`ANTHROPIC_*`, `CLAUDE_CODE_OAUTH_TOKEN`) are refused in overrides — the
 billing lane belongs to `spawn_env` alone.
 
+## Native CLAUDE.md is a startup input, even though orgtree did not render it
+
+Claude Code reads instruction files from the native working-directory chain
+once at session start and holds them in the process. The agent's own scratch
+`CLAUDE.md` is **not** a folder grant, so `identity_prompt` does not render it.
+Before the 2026-08-30 audit, editing that file left `ident_hash` byte-identical
+and a parked process could serve stale self-instructions forever.
+
+The prompt component of the warm identity now also fingerprints the startup
+files the CLI loads: managed/user/project `CLAUDE.md` and `CLAUDE.local.md`,
+project `.claude/CLAUDE.md`, unscoped `.claude/rules/**/*.md`, imported files
+(five hops), and the documented startup prefix of auto-memory `MEMORY.md`.
+Adding, editing, deleting or restoring one moves/restores the hash and the
+keeper re-warms the process. Raw instruction text never enters telemetry.
+
+Two deliberate exclusions matter:
+
+* Global **skills** are watched live by the pinned CLI, so content edits do
+  not belong in the warm identity. The skills directory's presence can still
+  add the standing `--add-dir` argv entry; that is a real spawn-input change.
+* Path-scoped rules load lazily when a matching file is read, not at startup.
+  Hashing them would turn a harmless edit into a cold opening.
+
+## MCP object-key order is not process identity
+
+`~/.claude.json` preserves JSON insertion order, while MCP object-key order is
+semantically meaningless. Serializing that mapping directly made a formatter
+or reorder change the spawn argv and kill a valid warm process. The emitted
+`--mcp-config` JSON is canonical (`sort_keys`, compact separators); arrays keep
+their order, object keys do not. A server value change still moves the argv
+hash, and restoring it restores the exact command and identity.
+
+## Set-like grants need one canonical order
+
+Directory grants are a path→mode capability map, and external response handles
+are a set of addresses. Caller list order changes neither access nor mail
+routing, but both lists render into cached identity (directory grants also
+become spawn argv). Reversing an unchanged list used to kill a valid warm
+process. Normalization now sorts directory grants by platform-normalized
+path/mode and handles by address after validation and deduplication. A real
+path, mode, or handle change still invalidates identity. Production frequency
+and savings were not measured.
+
+## OPEN: alwaysLoad can make turn 1 wait for MCP handshakes
+
+The old source comment said orgtree never waits for MCP handshakes. Orgtree
+adds no explicit barrier, but that is not the whole runtime truth:
+`alwaysLoad` requires the CLI to have each server's tools before it builds the
+first request, so a cold or too-young parked process can wait for connection
+timeouts. The post-D-206 audit measured admit-to-first-user at **5.084s** and
+**7.270s** for cold multi-MCP processes and **7.001s** for a 2.4-second-young
+prewarm, versus **0.039s** for a long-warm orgtree-only control. Popen itself
+took only **203–375ms**.
+
+Coordinator ruling 2026-08-30: retain `alwaysLoad` as deployed for now. There
+are zero successful post-deploy Claude requests, so its cache benefit is still
+unmeasured and a revert would trade a measured delay for an unknown cache
+effect. This explicitly conflicts with the earlier no-first-request-handshake-
+wait ruling and remains an **OPEN ITEM**: once successful Claude traffic
+returns, measure the cache result and re-decide retention versus rollback.
+
+## Capability guidance must not depend on whether a report exists today
+
+D-181 moved the live roster out of the cached system prompt, but five guidance
+branches still checked child count: a manager's own set team charter; inspect,
+retire, and cheap-compact guidance; and archived-agent guidance. The first-ever
+hire therefore changed the parent's prompt/hash even though the fixed scratch
+root kept its argv stable. Last retirement moved it again.
+
+Render capability guidance before it becomes immediately useful. A real
+0→1→2→1→0 ledger cycle must keep the parent's prompt, normalized argv, four
+component digests, and combined identity byte-identical. Actual role or team
+charter content changes still move the prompt component; merely adding or
+removing a report does not.
+
 ## CLAUDE_CODE_IS_COWORK is ON fleet-wide (cache-break diagnoser) — and it disables skills' inline shell preprocessing
 
 Since D-206 every unsandboxed claude spawn carries `CLAUDE_CODE_IS_COWORK=1`.

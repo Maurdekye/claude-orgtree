@@ -2650,8 +2650,9 @@ def identity_prompt(org: Org, nid: str, include_archived: bool = False) -> str:
     # D-105: a manager may now edit its OWN team charter, so it has to be able
     # to READ it — the §15 cascade below shows a node its ANCESTORS' team
     # charters (that is what binds it), never its own, which is what it binds
-    # others with. Shown only when set and only when it has someone to bind.
-    if n.get("team_charter") and org.children(nid):
+    # others with. D-181: child count is live state, so a set team charter is
+    # shown before the first hire too; 0↔1 reports must not rewrite identity.
+    if n.get("team_charter"):
         charter_bits.append(
             f"The standing charter YOU give your team (yours to edit — "
             f"orgtree_retool on your own id, team_charter): "
@@ -2874,7 +2875,10 @@ def identity_prompt(org: Org, nid: str, include_archived: bool = False) -> str:
         # that finished work is still holding. The other four (rename, move,
         # list_orgs, switch_model) have no MOMENT that arrives unbidden — you
         # reach for them once you have already decided to reorganize — so they
-        # stay in their cards, where a decided agent will find them.
+        # stay in their cards, where a decided agent will find them. D-181:
+        # capability guidance is identity, but whether a report happens to be
+        # live is turn state. Keep this text present across the 0↔1 boundary;
+        # the agent that is about to hire its first report needs it too.
         + ("WHEN A REPORT'S ANSWER DOES NOT ADD UP, LOOK — do not interrogate. "
            "orgtree_read_transcript reads any descendant's actual conversation "
            "and orgtree_read_scratch reads the files in its working folder; "
@@ -2893,8 +2897,7 @@ def identity_prompt(org: Org, nid: str, include_archived: bool = False) -> str:
            "orgtree_cheap_compact over letting its context grow further: it "
            "replaces the report with a fresh same-tier hire that reads the "
            "old transcript selectively, read-only — instead of a compaction "
-           "that re-reads the whole cold transcript at near-full price. "
-           if org.children(nid) else "")
+           "that re-reads the whole cold transcript at near-full price. ")
         # the other half of that loop (user ruling 2026-08-09), and it must be
         # said to EVERY agent, not only current managers: an agent with no
         # live reports is exactly the one that would otherwise hire a stranger
@@ -2909,8 +2912,7 @@ def identity_prompt(org: Org, nid: str, include_archived: bool = False) -> str:
            "starts with the context a new agent would spend turns rebuilding. "
            "Hire new for genuinely new ground, rehire for ground already "
            "covered. And to READ what a retired agent knew you need not "
-           "rehire at all — orgtree_read_transcript works on it as it stands. "
-           if org.children(nid, live_only=False) else "")
+           "rehire at all — orgtree_read_transcript works on it as it stands. ")
         + ("THE ORG INBOX: mail from @org:<slug> (another organization), "
            "@mcp:<id> (a polling external "
            "chat) or @net:<slug> (a chat or org elsewhere, via the mail hub) "
@@ -3805,7 +3807,14 @@ def _build_cmd(org: Org, nid: str, write_ident: bool = True) -> list[str]:
     # true — the day the registry gets a cache, in-place writes become a real
     # leak and this line is already correct.
     chosen = {k: {**v, "alwaysLoad": True} for k, v in chosen.items()}
-    cmd += ["--mcp-config", json.dumps({"mcpServers": chosen})]
+    # Canonical JSON is part of the cache contract, not cosmetic formatting.
+    # The CLI sees object-key order as semantically irrelevant, but argv is an
+    # identity input: preserving ~/.claude.json insertion order made a pure
+    # formatter/reorder kill and re-warm the process. Arrays deliberately keep
+    # their order; object keys do not.
+    cmd += ["--mcp-config",
+            json.dumps({"mcpServers": chosen}, sort_keys=True,
+                       separators=(",", ":"), ensure_ascii=False)]
     # Headless permission reality: acceptEdits auto-approves FILE tools only.
     # Bash, the web tools and MCP tools all prompt — and a headless prompt is
     # an auto-DENY (an agent saw python "blocked by a permission hook") — so

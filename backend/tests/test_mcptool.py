@@ -723,13 +723,16 @@ def _():
     assert absent == ["orgtree_list_orgs", "orgtree_move",
                       "orgtree_rename", "orgtree_switch_model"], \
         f"the recital gap changed — update or retire this pin: {absent}"
-    # …and the read-down pair is gated on HAVING reports: an agent with none
-    # would be told to go read a subtree it does not have
+    # D-181 audit amendment: capability guidance is identity, while today's
+    # child count is live state. The leaf must already know the read/retire
+    # triggers before its first hire; gating them on HAVING reports made the
+    # 0↔1 boundary rewrite its cached system prompt.
     assert "orgtree_read_transcript" in recital, "the manager recital lost it"
     leaf = supervisor.identity_prompt(org, "worker")
-    assert "orgtree_read_transcript" not in leaf, \
-        "an agent with no reports is told to read its reports' transcripts"
-    assert "RETIRE IT" not in leaf, "…and to retire reports it does not have"
+    assert "orgtree_read_transcript" in leaf, \
+        "a leaf would gain report-reading guidance at its first hire"
+    assert "RETIRE IT" in leaf, \
+        "a leaf would gain report-retirement guidance at its first hire"
     # …and it must reach EVERY agent, not just the audience holders: any of
     # them can be asked for a file by their superior's relay or the user
     for who in ("boss", "mid", "worker"):
