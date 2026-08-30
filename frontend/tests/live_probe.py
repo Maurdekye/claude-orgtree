@@ -31,14 +31,14 @@ HARD CONSTRAINTS OBSERVED
 - Deletes every org it creates; prints the surviving org list at the end.
 - No time.sleep() while a Playwright page is live (it blocks the event loop
   and browser-side timers/scroll events never get dispatched — this bit a
-  previous probe, see docs/interim-docket.md D-34's method note). All
+  previous probe, see docs/history/interim-docket.md D-34's method note). All
   page-side waiting uses page.wait_for_timeout(). time.sleep() is used only
   for pure-HTTP polling loops with no page open (backend startup, mail
   drain), where there is no Playwright event loop to block.
 
 WHAT THIS PROBES AND HOW
 -------------------------
-D-56a/b (docs/interim-docket.md "## D-56") — chat transcript paging.
+D-56a/b (docs/history/interim-docket.md "## D-56") — chat transcript paging.
     A node is hired, then a 1220-row synthetic transcript (610 synthetic
     user/assistant pairs) is written DIRECTLY into its transcript .jsonl
     (supervisor.transcript_path()) — no CLI turns run, so this is fast and
@@ -73,7 +73,7 @@ D-56c (same docket section) — mail list paging.
     ever grows (never resets), and confirms scrolling further once
     everything is shown does not error or duplicate rows.
 
-D-38 (docs/interim-docket.md "## D-38") — frame-drop convergence, re-run
+D-38 (docs/history/interim-docket.md "## D-38") — frame-drop convergence, re-run
 with three WebSocket tamperings instead of one. A `Wonky` WebSocket
 subclass is installed with `page.add_init_script` BEFORE any app code runs
 (so the very first `new WebSocket(...)` the app makes is already wrapped).

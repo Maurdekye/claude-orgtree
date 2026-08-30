@@ -1,4 +1,4 @@
-"""Ledger test suite — replays PLAN.md §10's validated scenarios on the ported core,
+"""Ledger test suite — replays docs/history/PLAN.md §10's validated scenarios on the ported core,
 plus the v0.1 additions: user-as-root, §4.5 LCA moves, §4.6 cascades, №30 dirs,
 corrected stranding semantics. Plain asserts; run with:  python tests/test_ledger.py
 """
