@@ -3115,10 +3115,57 @@ a.attach-chip:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--
 }
 .wd-chip .wd-glyph { flex: none; font-size: 8px; }
 .wd-chip.armed .wd-glyph { color: var(--ok, #4a9); }
+/* D-200: a ONE-SHOT DOG promises to vanish after its next wake. The warm 1×
+   token states that promise literally, while the dashed perimeter reads as a
+   temporary/finite companion rather than a health or error colour. This must
+   stay distinct from the ordinary armed glyph: both dogs are healthy now.
+   Paused one-shots preserve the finite border/token and dim only their normal
+   watch-state chrome, so "paused" cannot hide "one-shot dog". */
+.wd-chip.oneshot {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--warn, #e5c07b) 68%, var(--line));
+  box-shadow: 0 0 7px color-mix(in srgb, var(--warn, #e5c07b) 24%, transparent),
+    var(--shadow);
+}
+.wd-once {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  min-width: 12px; height: 11px; padding: 0 1px; border-radius: 3px;
+  border: 1px solid color-mix(in srgb, var(--warn, #e5c07b) 72%, var(--line));
+  background: color-mix(in srgb, var(--warn, #e5c07b) 13%, var(--panel));
+  color: var(--warn, #e5c07b); font: 700 7px/1 var(--mono);
+}
+.wd-once-label {
+  display: inline-flex; align-items: center; margin-left: 5px; padding: 1px 5px;
+  border: 1px dashed color-mix(in srgb, var(--warn, #e5c07b) 72%, var(--line));
+  border-radius: 8px; color: var(--warn, #e5c07b); font-size: 10px;
+  font-weight: 600; vertical-align: middle;
+}
+.wd-once-note {
+  margin: 5px 0; padding: 5px 7px;
+  border-left: 2px dashed var(--warn, #e5c07b);
+  background: color-mix(in srgb, var(--warn, #e5c07b) 8%, transparent);
+  color: var(--ink); font-size: 12px;
+}
 .wd-chip.paused { opacity: .6; }
+.wd-chip.oneshot.paused { opacity: 1; }
+.wd-chip.oneshot.paused .wd-glyph,
+.wd-chip.oneshot.paused .wd-name { opacity: .6; }
+.wd-chip.oneshot.paused .wd-once { opacity: .72; }
 .wd-chip.exited { border-color: var(--accent); }
 .wd-chip.exited .wd-glyph { color: var(--accent); }
+.wd-chip.spent {
+  animation: wd-depart 15s linear both;
+  border-color: color-mix(in srgb, var(--warn, #e5c07b) 45%, var(--line));
+  cursor: default;
+}
+.wd-chip.spent .wd-glyph { color: var(--warn, #e5c07b); }
 .edge.tether.wd.off { opacity: .3; }
+.edge.tether.wd.oneshot { stroke-dasharray: 4 3; }
+.edge.tether.wd.spent { animation: wd-depart 15s linear both; }
+@keyframes wd-depart {
+  0%, 12% { opacity: 1; filter: saturate(1); }
+  100% { opacity: .12; filter: saturate(.35); }
+}
 .wd-events {
   max-height: 220px; overflow-y: auto; border: 1px solid var(--line);
   border-radius: 6px; padding: 6px 8px; font-size: 12px;
@@ -3191,6 +3238,12 @@ html.mobile .ms-doglist button {
   background: none; border: none; border-top: 1px solid var(--line-soft);
   color: var(--ink);
 }
+html.mobile .ms-doglist button.oneshot {
+  border-left: 2px dashed color-mix(in srgb, var(--warn, #e5c07b) 70%, var(--line));
+}
+html.mobile .ms-doglist .wd-once {
+  min-width: 23px; height: 16px; font-size: 9px;
+}
 html.mobile .mobsheet-body {
   flex: 1; min-height: 0; display: flex; flex-direction: column;
   touch-action: pan-y;
@@ -3257,6 +3310,10 @@ html.mobile .chip-x { min-width: 28px; min-height: 28px; }
     transform: scale(calc(var(--invz, 1))); }
   html.mobile .sq.maplod .map-off { font-size: 10px; color: var(--dim); }
   html.mobile .sq.maplod .map-dogs { font-size: 10px; color: var(--dim); }
+  html.mobile .sq.maplod .map-dogs.oneshot { color: var(--warn, #e5c07b); }
+  html.mobile .sq.maplod .map-dogs small {
+    margin-left: 2px; font: 700 8px/1 var(--mono); vertical-align: 1px;
+  }
   html.mobile .sq.maplod.eye-map .map-name { font-size: 15px; }
   html.mobile .sq.maplod .eye-count { position: absolute; top: -8px; right: -8px; }
   /* desktop card affordances that have no meaning on the map */
