@@ -3659,6 +3659,44 @@ def _build_cmd(org: Org, nid: str, write_ident: bool = True) -> list[str]:
                     "ORGTREE_PORT": os.environ.get("ORGTREE_PORT", "7360"),
                     "PYTHONPATH": BACKEND_DIR},
         }
+    # ALWAYSLOAD (cache-structural's finding, coordinator-approved 2026-08-30;
+    # decision number to be allocated). Schema-verified in the pinned CLI
+    # 2.1.220: every mcp server entry — stdio, sse and http alike — accepts
+    # `alwaysLoad: boolean`, "all tools from this server are always included in
+    # the prompt and never deferred behind tool search".
+    #
+    # WHY IT IS A CACHE FIX. Without it the tools array is assembled from
+    # whichever servers have finished their handshake when the turn's first
+    # request goes out — so the array, which sits AHEAD of the system prompt in
+    # the cached prefix, differs run to run for the same agent. Measured
+    # association on n=1,063: MCP-pending openings are 78.7% cold (370/470)
+    # against 43.8% (260/593) for non-pending. It also stops the deferred-tool
+    # hint section flapping ("defer_loading presence flipped" is in the CLI's
+    # own break-cause list, inc-5316), and this fleet runs with tool search on.
+    #
+    # ⚠ THIS IS NOT THE HANDSHAKE WAIT THE USER RULED OUT ON 2026-08-30, and it
+    # will look like it to a reviewer. That ruling forbids making a TURN wait on
+    # the handshake. alwaysLoad blocks at PROCESS SPAWN only, capped at the
+    # CLI's 5s connect timeout — and warmpool spawns processes in the background
+    # at boot, on hire and on invalidation, so no turn waits on it. The ruling
+    # is untouched.
+    #
+    # ⚠ COST, STATED RATHER THAN DISCOVERED: full tool schemas now ride every
+    # prompt instead of being deferred, so multi-server agents carry a FATTER
+    # prefix. That is the deliberate trade — bigger but STABLE beats smaller but
+    # varying, because the prefix is re-paid only when it changes.
+    #
+    # Copied rather than written in place. ⚠ AND THE OBVIOUS JUSTIFICATION FOR
+    # THAT IS WRONG, so it is not given here: an in-place write would NOT
+    # currently escape this call. `registered_mcp_servers` re-parses
+    # ~/.claude.json on every call and `granted_mcp_servers` calls it again, so
+    # every read hands back fresh objects and there is no shared structure to
+    # corrupt. I checked that rather than assuming it, after a mutant that
+    # mutated in place failed to break anything and exposed the claim.
+    # The copy stays because it is free and does not DEPEND on that remaining
+    # true — the day the registry gets a cache, in-place writes become a real
+    # leak and this line is already correct.
+    chosen = {k: {**v, "alwaysLoad": True} for k, v in chosen.items()}
     cmd += ["--mcp-config", json.dumps({"mcpServers": chosen})]
     # Headless permission reality: acceptEdits auto-approves FILE tools only.
     # Bash, the web tools and MCP tools all prompt — and a headless prompt is
