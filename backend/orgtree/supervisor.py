@@ -1234,10 +1234,13 @@ def spawn_env(org: Org, tier: str | None = None,
         return env
     # D-206 (fleet ruling 2026-08-30): turn on the CLI's own prompt-cache
     # break diagnoser. CLAUDE_CODE_IS_COWORK gates Claude Code's per-request
-    # cache diff — named causes in the debug log ("[PROMPT CACHE BREAK] …",
-    # tengu_prompt_cache_break) and a state file that SURVIVES RESPAWNS,
-    # which is what makes turn-opening breaks attributable at all. Side
-    # effects enumerated on the pinned 2.1.220 (docs/cache-hazards.md):
+    # cache diff — named "[PROMPT CACHE BREAK] …" warning lines plus
+    # tengu_prompt_cache_break telemetry. D-206 initially claimed its state
+    # file made this durable across respawns; runtime disproved that: the CLI
+    # writes %TEMP%/claude/cache-break-state-${session}.json, but almost every
+    # stream-json file ends at {}. warmpool therefore journals ONLY the exact
+    # warning sentinel from both stderr owners (docs/cache-hazards.md). Side
+    # effects enumerated on the pinned 2.1.220:
     # eager transcript flush, OTel diag level WARN, telemetry labels — and
     # skills' inline !`cmd` preprocessing is DISABLED (no skill on this
     # machine uses it). Must stay AFTER clean_env(), which strips every
@@ -3752,12 +3755,14 @@ def _build_cmd(org: Org, nid: str, write_ident: bool = True) -> list[str]:
     # hint section flapping ("defer_loading presence flipped" is in the CLI's
     # own break-cause list, inc-5316), and this fleet runs with tool search on.
     #
-    # ⚠ THIS IS NOT THE HANDSHAKE WAIT THE USER RULED OUT ON 2026-08-30, and it
-    # will look like it to a reviewer. That ruling forbids making a TURN wait on
-    # the handshake. alwaysLoad blocks at PROCESS SPAWN only, capped at the
-    # CLI's 5s connect timeout — and warmpool spawns processes in the background
-    # at boot, on hire and on invalidation, so no turn waits on it. The ruling
-    # is untouched.
+    # ⚠ THIS CAN BECOME THE HANDSHAKE WAIT THE USER RULED OUT ON 2026-08-30.
+    # alwaysLoad blocks the turn-1 prompt on connection, capped at the CLI's 5s
+    # timeout per server. Prewarming hides that only when the parked process is
+    # old enough. The post-D-206 audit measured admit-to-first-user at 5.084s
+    # and 7.270s for cold multi-MCP processes and 7.001s for a 2.4s-young
+    # prewarm, versus 0.039s for a long-warm orgtree-only process; Popen itself
+    # took only 203–375ms. Retention versus rollback is a policy decision — do
+    # not describe this as a zero-turn-latency cache fix.
     #
     # ⚠ COST, STATED RATHER THAN DISCOVERED: full tool schemas now ride every
     # prompt instead of being deferred, so multi-server agents carry a FATTER
@@ -5656,6 +5661,7 @@ def _run_one_turn(slug: str, nid: str,
             # cold spawn, which is byte-for-byte today's behaviour.
             wp_turn: warmpool.WarmProc | None = None
             turn_hash: str | None = None      # identity hash at spawn/claim
+            turn_components: dict[str, str] | None = None
             warm_cost_base = 0.0              # $ booked by this process's
             warm_out_base = 0                 # earlier turns (see park site)
             raw_cost_high = 0.0               # process-cumulative $ high-water
@@ -5674,14 +5680,22 @@ def _run_one_turn(slug: str, nid: str,
             _elig_ok, _elig_why = warmpool.eligible(org, nid)
             if _elig_ok and warm_on:
                 try:
-                    turn_hash = warmpool.ident_hash(org, nid)
+                    # Hash the ACTUAL credential env already resolved for
+                    # this turn. Re-resolving here can select another account
+                    # and manufacture an identity change that the spawned
+                    # process does not have (D-206 attribution fix).
+                    turn_hash, turn_components = warmpool.identity_snapshot(
+                        org, nid,
+                        cmd=_build_cmd(org, nid, write_ident=False),
+                        env=env, overrides=env_overrides(slug, nid))
                 except Exception:                            # noqa: BLE001
                     turn_hash = None      # unhashable = ineligible, not fatal
             _adm_reason = (_elig_why or "not-eligible") \
                 if not _elig_ok else "disabled" \
                 if not warm_on else "no-process"
             if turn_hash is not None:
-                wp_turn, _adm_reason = warmpool.claim(slug, nid, turn_hash)
+                wp_turn, _adm_reason = warmpool.claim_snapshot(
+                    slug, nid, turn_hash, turn_components)
             _spawn_t0 = time.monotonic()
             if wp_turn is not None:
                 proc = wp_turn.proc
@@ -6358,7 +6372,8 @@ def _run_one_turn(slug: str, nid: str,
                         proc_current, bnd_lbl = True, warm_lbl
                         if turn_hash is not None:
                             proc_current, bnd_lbl, _bnd_why = \
-                                warmpool.boundary_check(slug, nid, turn_hash)
+                                warmpool.boundary_check(
+                                    slug, nid, turn_hash, wp_turn)
                             if not proc_current and wp_turn is not None:
                                 # note WHY on the process now — its exit row
                                 # (written once, at EOF) must be classified,
@@ -6526,7 +6541,7 @@ def _run_one_turn(slug: str, nid: str,
                     proc.wait()
                     err = wp_turn.err_text()
                 else:
-                    err = proc.stderr.read()   # pyright: ignore[reportOptionalMemberAccess]
+                    err = warmpool.read_cold_stderr(proc, slug, nid, sid)
                     proc.wait()
             finally:
                 dog_stop.set()
