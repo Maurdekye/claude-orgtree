@@ -3612,6 +3612,21 @@ html.mobile .md table { display: block; overflow-x: auto; max-width: 100%; }
 .settings .app-settings-tab.on {
   color: var(--ink-strong); border-bottom-color: var(--accent);
 }
+@media (max-width: 420px) {
+  .app-settings-tabs {
+    align-items: stretch; flex-wrap: wrap; border-bottom: 0;
+  }
+  .settings .app-settings-tab {
+    flex: 1 1 auto; justify-content: center; margin-bottom: 0;
+    border-bottom-color: var(--line);
+  }
+  .app-settings-panel .app-pref-row:not(.app-pref-check) {
+    align-items: stretch; flex-direction: column; gap: 7px;
+  }
+  .app-settings-panel .app-pref-control {
+    margin-left: 0; justify-content: flex-start;
+  }
+}
 .app-settings-scope {
   color: var(--dim); border: 1px solid var(--line); border-radius: 8px;
   padding: 0 6px; font-size: 9.5px; font-weight: 400;
