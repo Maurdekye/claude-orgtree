@@ -974,13 +974,16 @@ interface NodeSquareProps {
   /** D-125 ②: watchdogs hide from the compact map; the owner card carries
    *  their count as a dot instead */
   dogs?: number
+  /** D-200: compact maps still need to expose that part of the count is a
+   * finite one-shot dog, even though the individual satellites are hidden. */
+  oneShotDogs?: number
 }
 
 export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, codexHire, geminiHire, claudeHire, onNoHarness, map, op, slug,
   toast, pxc, zoom, onSpawn, onSpawnSide, onSpawnTop, onConfig, onInbox, onLineage, onOpenDoc,
   onRecenter, onJump, pub, kioskRemaining, cascadeAlloc, maxTop, pile, compactAt, maxTier,
   onMailLink, onDragStart, onDragMove, onDragEnd, onDragCancel,
-  mapMode, dogs }: NodeSquareProps) {
+  mapMode, dogs, oneShotDogs }: NodeSquareProps) {
   // pile fronts zoom on a plain CENTER click (user spec) — track the
   // pointer-down point so a drag's trailing click doesn't re-zoom
   const downAt = useRef<Pt | null>(null)
@@ -1074,7 +1077,11 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, c
             : node.state !== 'live' ? <span className="map-off">{node.state}</span>
             : stat ? <span className={'statusdot ' + stat.status} />
             : <span className="statusdot idle" />}
-          {(dogs ?? 0) > 0 && <span className="map-dogs">◉{dogs}</span>}
+          {(dogs ?? 0) > 0 && <span className={'map-dogs' + ((oneShotDogs ?? 0) > 0 ? ' oneshot' : '')}
+            aria-label={`${dogs} watchdog${dogs === 1 ? '' : 's'}${(oneShotDogs ?? 0) > 0
+              ? `, ${oneShotDogs} one-shot dog${oneShotDogs === 1 ? '' : 's'}` : ''}`}>
+            ◉{dogs}{(oneShotDogs ?? 0) > 0 && <small>1×{oneShotDogs}</small>}
+          </span>}
         </div>
         <span className="map-name">{node.id}</span>
         {lastTurn && !node.busy &&

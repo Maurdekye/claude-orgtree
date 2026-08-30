@@ -497,7 +497,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
       return
     }
     const a = norm(from), b = norm(to)
-    if (a === b || !m.has(a) || !m.has(b)) return
+    if (a === b) return
     // ⚠ presence in `m` is NOT a position (neoja org, 2026-08-12 — a crash,
     // not a cosmetic gap). The seg builders assert `posOf(id)!` and the
     // contract at the top of this block says every caller pre-checks BOTH
@@ -514,6 +514,25 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
     // simply not drawn — the animation is decoration, and no decoration is
     // worth a blank canvas.
     const placed = (id: string) => posOf(id) !== undefined
+    // D-200: watchdog mail originates at a satellite, not an agent. It is
+    // deliberately absent from `map` (which only holds TreeNodes), so the
+    // ordinary tree-route guard below would reject `dog:<id>` before it ever
+    // asked whether the one-shot tombstone supplied a position. Its owner
+    // tether is already a direct line; draw the spark on that same line.
+    const aDog = a.startsWith('dog:'), bDog = b.startsWith('dog:')
+    if (aDog || bDog) {
+      const dog = aDog ? a : b
+      const owner = aDog ? b : a
+      if (!m.has(owner) || !placed(dog) || !placed(owner)) return
+      const dp = posOf(dog)!, op = posOf(owner)!
+      sparksRef.current.push({ id: ++sparkId.current, segs: [{ kind: 'l', pts: [
+        { x: dp.x + DOG_W / 2, y: dp.y + 4 },
+        { x: op.x + NODE_W / 2, y: op.y + NODE_H - 8 },
+      ], rev: !aDog }], start: performance.now(), segDur: 420 })
+      setFrame((f) => f + 1)
+      return
+    }
+    if (!m.has(a) || !m.has(b)) return
     if (!placed(a) || !placed(b)) return
     const segs: (Seg & { rev: boolean })[] = []
     const aud = audSetRef.current
@@ -1515,8 +1534,13 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
   // D-125 ②: at compact the watchdog chips leave the map; owners carry the
   // count as a dot and the sheet header lists them
   const dogsByOwner = useMemo(() => {
-    const out: Record<string, number> = {}
-    for (const w of tree.watchdogs ?? []) out[w.owner] = (out[w.owner] ?? 0) + 1
+    const out: Record<string, { total: number; oneShot: number }> = {}
+    for (const w of tree.watchdogs ?? []) {
+      const own = out[w.owner] ?? { total: 0, oneShot: 0 }
+      own.total += 1
+      if (w.once) own.oneShot += 1
+      out[w.owner] = own
+    }
     return out
   }, [tree.watchdogs])
 
@@ -1647,7 +1671,10 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
             if (!a || !b) return null
             return <path key={'w' + w.id}
               d={`M ${a.x + DOG_W / 2} ${a.y + 4} L ${b.x + NODE_W / 2} ${b.y + NODE_H - 8}`}
-              className={'edge tether wd' + (w.state !== 'armed' ? ' off' : '')} />
+              className={'edge tether wd'
+                + (w.state !== 'armed' && !w.spent ? ' off' : '')
+                + (w.once ? ' oneshot' : '')
+                + (w.spent ? ' spent' : '')} />
           })}
           {tree.org_inbox?.visible && posOf(INBOX) && (() => {
             // no box↔eye tether (user revision) — the panel stands alone;
@@ -1774,7 +1801,8 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
               pile={pileHere} compactAt={tree.compact_at}
               onDragStart={startNodeDrag} onDragMove={moveNodeDrag}
               onDragEnd={endNodeDrag} onDragCancel={abortNodeDrag}
-              mapMode={compact} dogs={dogsByOwner[n.id] ?? 0} />
+              mapMode={compact} dogs={dogsByOwner[n.id]?.total ?? 0}
+              oneShotDogs={dogsByOwner[n.id]?.oneShot ?? 0} />
           )
           if (!pileHere) return square
           // the pile's stack layers render BEHIND the front card as real
@@ -1818,15 +1846,19 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
           if (!p || hidden.has(w.owner)) return null
           return (
             <button key={'dog' + w.id}
-              className={'wd-chip ' + w.state}
+              className={'wd-chip ' + w.state
+                + (w.once ? ' oneshot' : '')
+                + (w.spent ? ' spent' : '')}
               style={{ transform: `translate(${p.x}px, ${p.y}px)`,
                        width: DOG_W, height: DOG_H }}
-              title={`watchdog "${w.name}" (${w.kind}) — ${w.state}; `
+              title={`${w.once ? 'one-shot dog' : 'watchdog'} "${w.name}" (${w.kind}) — `
+                + `${w.spent ? 'departing after its spark' : w.state}; `
                 + 'click for detail'}
               onPointerDown={(e) => e.stopPropagation()}
               onClick={(e) => { e.stopPropagation(); setDogView(w.id) }}>
               <span className="wd-glyph">{w.state === 'armed' ? '◉'
-                : w.state === 'paused' ? '◫' : '✕'}</span>
+                : w.state === 'paused' ? '◫' : w.spent ? '↗' : '✕'}</span>
+              {w.once && <span className="wd-once" aria-label="one-shot dog">1×</span>}
               <span className="wd-name">{w.name}</span>
             </button>
           )
@@ -2131,11 +2163,13 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
               {sheetDogs && myDogs.length > 0 && (
                 <div className="ms-doglist">
                   {myDogs.map((w) => (
-                    <button key={w.id}
+                    <button key={w.id} className={(w.once ? 'oneshot ' : '') + w.state}
                       onClick={() => { setDogView(w.id); setSheetDogs(false) }}>
                       <span className="wd-glyph">{w.state === 'armed' ? '◉'
-                        : w.state === 'paused' ? '◫' : '✕'}</span>
-                      {w.name} · {w.state}
+                        : w.state === 'paused' ? '◫' : w.spent ? '↗' : '✕'}</span>
+                      {w.once && <span className="wd-once" aria-label="one-shot dog">1×</span>}
+                      {w.name} · {w.once ? 'one-shot dog · ' : ''}
+                      {w.spent ? 'departing' : w.state}
                     </button>
                   ))}
                 </div>

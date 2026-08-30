@@ -80,7 +80,13 @@ export function WatchdogPanel({ slug, dog, toast, close }: {
   return (
     <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
       <div className="settings" onClick={(e) => e.stopPropagation()}>
-        <h3>🐕 {dog.name} <span className="dim">· watchdog · {dog.state}</span></h3>
+        <h3>🐕 {dog.name} <span className="dim">· watchdog · {dog.spent ? 'departing' : dog.state}</span>
+          {dog.once && <span className="wd-once-label">one-shot dog</span>}</h3>
+        {dog.once && <div className="wd-once-note">
+          {dog.spent
+            ? 'This one-shot dog has fired. Its spark is travelling to its owner; it will disappear shortly.'
+            : 'One-shot dog — it will fire once and then disappear.'}
+        </div>}
         <div className="field-label">owner</div>
         <div className="chip mono">{dog.owner}</div>
         <div className="field-label">{dog.kind === 'file' ? 'watched file'
@@ -113,7 +119,7 @@ export function WatchdogPanel({ slug, dog, toast, close }: {
           ({(dog.events ?? []).length} kept)</div>
         <div className="wd-events">
           {(dog.events ?? []).length === 0 &&
-            <div className="dim">none yet — it is watching</div>}
+            <div className="dim">{dog.spent ? 'the one-shot dog has departed' : 'none yet — it is watching'}</div>}
           {[...(dog.events ?? [])].reverse().map((e, i) => (
             <div key={i} className="wd-event">
               <span className="dim">{ago(e.at)} ago</span> {e.gist}
@@ -121,12 +127,12 @@ export function WatchdogPanel({ slug, dog, toast, close }: {
           ))}
         </div>
         <div className="row">
-          {dog.state === 'armed'
+          {!dog.spent && (dog.state === 'armed'
             ? <button onClick={() => act('pause')}>pause</button>
             : <button className="primary" onClick={() => act('resume')}>
-                {dog.state === 'exited' ? 'resume (re-spawn)' : 'resume'}</button>}
+                {dog.state === 'exited' ? 'resume (re-spawn)' : 'resume'}</button>)}
           <span style={{ flex: 1 }} />
-          <button className="danger" onClick={() => act('remove')}>remove</button>
+          {!dog.spent && <button className="danger" onClick={() => act('remove')}>remove</button>}
           <button onClick={close}>close</button>
         </div>
       </div>
