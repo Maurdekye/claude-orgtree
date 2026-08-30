@@ -2374,7 +2374,15 @@ if section("§6  the sandboxed turn"):
     @t("☞ a §7.6 read-down grant reaches the descendant's CONTAINER scratch")
     def _():
         adds = [CMD[i + 1] for i, x in enumerate(CMD) if x == "--add-dir"]
-        assert sandbox.cpath_scratch(S6, "bob") in adds, adds
+        # D-201/S2(a): the read-down is one fixed parent path now, not one
+        # entry per descendant, so bob is reached by COVERAGE rather than by
+        # being named. The assertion tests the same property it always did —
+        # can the agent's file tools reach its report's container scratch —
+        # and deliberately does not care which shape delivers it. Exact-match
+        # here would have been an assertion about the implementation.
+        want = sandbox.cpath_scratch(S6, "bob")
+        assert any(want == a or want.startswith(a.rstrip("/") + "/")
+                   for a in adds), (want, adds)
 
     @t("an external folder grant cannot follow into the container")
     def _():
