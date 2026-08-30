@@ -64,9 +64,21 @@ def probe(token: str, argv: Sequence[str]) -> str:
     try:
         with tempfile.TemporaryDirectory(prefix="orgtree-fallback-probe-") as cfg:
             env["CLAUDE_CONFIG_DIR"] = cfg
+            # Every other Windows spawn site in this codebase sets
+            # CREATE_NO_WINDOW (see supervisor.py's `_detached_spawn` and
+            # `_wd_popen`) so a console child can never paint a window when it
+            # inherits a hidden/console-less parent. This one shipped without
+            # it (D-205) -- harmless under today's launch chain (measured: the
+            # backend's own hidden console is what every child actually
+            # inherits), but it is the one spawn in this file that runs on a
+            # bare hourly clock rather than in response to a turn, so it is
+            # the one most likely to eventually run under a parent with no
+            # console to inherit at all.
             run = subprocess.run(
                 [*argv, "-p", "say ok", "--model", "haiku"], env=env,
                 capture_output=True, text=True, timeout=120,
+                creationflags=(subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
+                               if os.name == "nt" else 0),
             )
             response = (run.stdout or "") + (run.stderr or "")
             return classify(run.returncode, response)
