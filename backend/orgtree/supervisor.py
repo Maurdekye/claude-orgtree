@@ -2246,9 +2246,25 @@ def _breadcrumbs_block(org: Org, nid: str) -> str:
     EMPTY — no CLI summary — so the predecessor's realtime compaction log is
     spliced into the system prompt directly, the way a normal compaction's
     summary rides inside the CLI's own session, instead of only being pointed
-    at. Rides EVERY spawn of the marked session (the CLI re-applies the append
-    file on resume; dropping it later would un-remember it); a normal
-    compaction clears the marker with the session. Tail-taken — the file's own
+    at.
+
+    ⚠ THIS DOCSTRING USED TO SAY "Rides EVERY spawn of the marked session
+    (the CLI re-applies the append file on resume; dropping it later would
+    un-remember it)". THAT IS NO LONGER TRUE, and the stale sentence outlived
+    the behaviour long enough to send three agents after a fix that was
+    already shipped (2026-08-30). D-201/S1 made the splice FIRST-TURN-ONLY:
+    `_retire_breadcrumb_splice` clears `cheap_compacted` at the successor's
+    first successful result boundary, so this block renders once and then
+    stops. The "would un-remember it" worry was real and was accepted
+    deliberately — the content genuinely does NOT persist (it rides
+    `--append-system-prompt-file`, i.e. the `system` field, which is outside
+    `messages` and re-supplied wholesale every spawn; verified empirically by
+    `cache-misses`, which found zero records carrying its own appended-prompt
+    text in its own transcript). The successor is meant to run turn 2 onward
+    on the breadcrumb-free prompt, because re-splicing a file the charter
+    tells every agent to append to EVERY TURN rewrites the agent's own prompt
+    once per turn, by its own hand. A normal compaction still clears the
+    marker with the session. Tail-taken — the file's own
     convention is newest-last — and the cut is declared, not silent."""
     if not org.node(nid).get("cheap_compacted"):
         return ""
