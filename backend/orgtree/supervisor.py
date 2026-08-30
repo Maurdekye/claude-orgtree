@@ -1123,9 +1123,72 @@ def clean_env() -> dict[str, str]:
     return env
 
 
-def spawn_env(org: Org, tier: str | None = None) -> dict[str, str]:
+_ENV_OVERRIDES_CACHE: dict[str, Any] = {"at": 0.0, "mtime": None, "val": {}}
+_ENV_OVERRIDES_TTL = 2.0
+
+
+def env_overrides(slug: str, nid: str) -> dict[str, str]:
+    """D-206: per-node spawn-env overrides from
+    <ORGTREE_DATA>/env-overrides.json — {"<slug>/<nid>": {"VAR": "value"}}.
+    The runtime knob that lets the NEXT CLI flag be trialled on one agent
+    instead of argued about (warm.flag precedent: a data-root file, no
+    schema, no redeploy to change). Absent file, absent entry, malformed
+    JSON or a non-dict entry all mean {} — an override must be explicit to
+    exist. Cached ~2s by mtime, same shape as warmpool's flag read.
+
+    ⚠ CREDENTIAL NAMES ARE REFUSED HERE: the billing lane is spawn_env's
+    exclusive business (key-lane exclusivity above), so ANTHROPIC_* and
+    CLAUDE_CODE_OAUTH_TOKEN never pass through an override — silently
+    dropping them beats honouring half a credential swap.
+
+    ⚠ Changing a node's overrides RESPAWNS its warm process — the dict is
+    hashed into warmpool.ident_hash. That is the point: spawn env is
+    otherwise invisible to the pool, so a changed override would silently
+    not apply until some unrelated respawn (docs/cache-hazards.md)."""
+    now = time.time()
+    c = _ENV_OVERRIDES_CACHE
+    if now - c["at"] >= _ENV_OVERRIDES_TTL:
+        p = os.path.join(store.DATA_ROOT, "env-overrides.json")
+        try:
+            mt = os.path.getmtime(p)
+        except OSError:
+            mt = None
+        if mt != c["mtime"]:
+            val: dict[str, Any] = {}
+            if mt is not None:
+                try:
+                    with open(p, encoding="utf-8") as f:
+                        raw = json.load(f)
+                    if isinstance(raw, dict):
+                        val = raw
+                except (OSError, ValueError):
+                    val = {}
+            c["val"] = val
+            c["mtime"] = mt
+        c["at"] = now
+    ent = c["val"].get(f"{slug}/{nid}")
+    if not isinstance(ent, dict):
+        return {}
+    out: dict[str, str] = {}
+    for k, v in ent.items():
+        ks = str(k)
+        if ks.startswith("ANTHROPIC_") or ks == "CLAUDE_CODE_OAUTH_TOKEN":
+            continue
+        out[ks] = str(v)
+    return out
+
+
+def spawn_env(org: Org, tier: str | None = None,
+              nid: str | None = None) -> dict[str, str]:
     """`clean_env` plus the ONE credential this spawn should bill — the
     complete environment for any `claude` process this org owns.
+
+    `nid` (D-206, optional): apply that node's env_overrides() on top of the
+    base env, before the credential branches — overrides can never carry a
+    credential (refused in env_overrides), so lane exclusivity holds. Callers
+    that pass no nid (watchdog shells, compaction/oracle forks) get no
+    overrides, deliberately: an override is a per-agent trial knob, and a
+    fork billing the same lane as its agent needs nothing from it.
 
     ⚠ The strip and the re-injection belong together and were not (user
     report 2026-08-10: "I ran a compaction on a headless agent with an API
@@ -1169,6 +1232,21 @@ def spawn_env(org: Org, tier: str | None = None) -> dict[str, str]:
     env = clean_env()
     if sbx.is_sandboxed(org):
         return env
+    # D-206 (fleet ruling 2026-08-30): turn on the CLI's own prompt-cache
+    # break diagnoser. CLAUDE_CODE_IS_COWORK gates Claude Code's per-request
+    # cache diff — named causes in the debug log ("[PROMPT CACHE BREAK] …",
+    # tengu_prompt_cache_break) and a state file that SURVIVES RESPAWNS,
+    # which is what makes turn-opening breaks attributable at all. Side
+    # effects enumerated on the pinned 2.1.220 (docs/cache-hazards.md):
+    # eager transcript flush, OTel diag level WARN, telemetry labels — and
+    # skills' inline !`cmd` preprocessing is DISABLED (no skill on this
+    # machine uses it). Must stay AFTER clean_env(), which strips every
+    # CLAUDE_CODE_* var. Revert = revert this commit alone.
+    # ⚠ Spawn env is NOT part of warmpool's ident_hash: a parked process
+    # only picks this up at its next respawn — it rides a deploy restart.
+    env["CLAUDE_CODE_IS_COWORK"] = "1"
+    if nid is not None:
+        env.update(env_overrides(org.d["slug"], nid))
     key = str(org.d.get("api_key") or "")
     if key:
         # api_fallback (user feature 2026-08-17): with the option ON the key
@@ -5538,7 +5616,8 @@ def _run_one_turn(slug: str, nid: str,
             # routes the account lane: this node's model tier picks the
             # highest-priority account with capacity for it (user redesign
             # 2026-08-25, machine-local per-model routing).
-            env = spawn_env(org, tier=str(org.node(nid).get("model") or ""))
+            env = spawn_env(org, tier=str(org.node(nid).get("model") or ""),
+                            nid=nid)
             # api_fallback cost split: which lane bills THIS turn is decided
             # here, at spawn — capture it so the accounting below attributes
             # the whole turn to that lane even if the window expires mid-turn
