@@ -1635,6 +1635,54 @@ button.cc-name:hover {
   transition: opacity .15s; z-index: 3;
 }
 .hsof .hs-fam { display: flex; gap: 4px; }
+/* FAR-MAP HIRE EXPANDER (user request 2026-08-30): all provider/tier badges
+   are intentionally screen-constant, which makes a three-family cluster
+   larger than its card below z≈.75. In that band SpawnChips renders one
+   neutral arrow on the active edge first; clicking it opens the same dynamic
+   family rows the normal-zoom path emits. The arrow lives nearest the card,
+   so its direction is a literal "hire outward from here" cue. */
+.hsof.hire-compact .hire-expand {
+  background: color-mix(in srgb, #8e959e 56%, var(--input));
+  border-color: color-mix(in srgb, #d6d9de 42%, var(--line));
+  color: #f0f2f4; font-size: 16px; line-height: 1;
+  transition: background .14s, border-color .14s, transform .14s;
+}
+.hsof.hire-compact .hire-expand:hover {
+  background: color-mix(in srgb, #aab1ba 68%, var(--panel-2));
+  border-color: #e6e9ed;
+}
+.hsof.hire-compact.is-expanded .hire-expand { transform: scale(.9); }
+.hsof.hire-compact.is-expanded .hs-fam {
+  animation: hire-families-down .18s cubic-bezier(.18, .8, .3, 1) both;
+}
+.hsof.hire-compact.side-l.is-expanded .hs-fam {
+  animation-name: hire-families-left;
+}
+.hsof.hire-compact.side-r.is-expanded .hs-fam {
+  animation-name: hire-families-right;
+}
+.hsof.hire-compact.side-t.is-expanded .hs-fam {
+  animation-name: hire-families-up;
+}
+@keyframes hire-families-down {
+  from { opacity: 0; transform: translateY(-5px) scale(.78); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes hire-families-up {
+  from { opacity: 0; transform: translateY(5px) scale(.78); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes hire-families-left {
+  from { opacity: 0; transform: translateX(5px) scale(.78); }
+  to { opacity: 1; transform: translateX(0) scale(1); }
+}
+@keyframes hire-families-right {
+  from { opacity: 0; transform: translateX(-5px) scale(.78); }
+  to { opacity: 1; transform: translateX(0) scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hsof.hire-compact.is-expanded .hs-fam { animation-duration: .01ms; }
+}
 /* NEAREST-EDGE gating (user ruling 2026-08-04): never all three sets at once —
    the card tracks which edge the cursor is closest to (edge-b/l/r on .sq) and
    only that edge's chips show. Same rule with and without the desk. */

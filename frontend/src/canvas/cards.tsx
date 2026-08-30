@@ -394,10 +394,17 @@ interface SpawnChipsProps {
   codexHire?: { enabled: boolean; reason: string | null } | null
   /** D-189: the gemini family's hire state, same contract. */
   geminiHire?: { enabled: boolean; reason: string | null } | null
+  /** At far map zoom the screen-constant family cluster exceeds its card.
+   *  Keep its provider/tier selection intact, but stage it behind one neutral
+   *  outward-pointing control until the user asks to see it. */
+  farCompact?: boolean
+  expanded?: boolean
+  onToggleExpanded?: () => void
 }
 
 function SpawnChips({ onSpawn, free, seats, maxTier, side, soleHire,
-  codexHire, geminiHire }: SpawnChipsProps) {
+  codexHire, geminiHire, farCompact = false, expanded = false,
+  onToggleExpanded }: SpawnChipsProps) {
   // kiosk tier cap (user spec): tokens above the cap DISAPPEAR entirely —
   // seat cost doubles as the tier rank, so the cap is a simple cost compare
   const shown = TIERS.filter((t) =>
@@ -496,12 +503,34 @@ function SpawnChips({ onSpawn, free, seats, maxTier, side, soleHire,
       )),
     })
   fams.sort((a, b) => b.tiers.length - a.tiers.length)   // inward-first
+  // Provider availability is dynamic. A compact arrow with no corresponding
+  // hire choice is worse than an absent affordance, so leave the whole strip
+  // out when the current provider policy offers no families at all.
+  if (!fams.length) return null
   const away = side === 'top' || side === 'left'   // "first" points away
   if (away) fams.reverse()
+  const direction = side === 'left' ? '←' : side === 'right' ? '→'
+    : side === 'top' ? '↑' : '↓'
+  const rows = (!farCompact || expanded)
+    ? fams.map((f) => <div className="hs-fam" key={f.key}>{f.body}</div>)
+    : null
+  const expand = farCompact && (
+    <button className="hire-expand" type="button" aria-expanded={expanded}
+      title={expanded ? 'hide hire tiers' : 'show hire tiers'}
+      aria-label={expanded ? 'hide hire tiers' : 'show hire tiers'}
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={(e) => { e.stopPropagation(); onToggleExpanded?.() }}>
+      {direction}
+    </button>
+  )
   return (
-    <div className={'hsof' + (side ? ` side side-${side[0]}` : '')}
+    <div className={'hsof' + (side ? ` side side-${side[0]}` : '')
+      + (farCompact ? ' hire-compact' : '')
+      + (farCompact && expanded ? ' is-expanded' : '')}
       onPointerDown={(e) => e.stopPropagation()}>
-      {fams.map((f) => <div className="hs-fam" key={f.key}>{f.body}</div>)}
+      {away && rows}
+      {expand}
+      {!away && rows}
     </div>
   )
 }
@@ -881,6 +910,13 @@ interface NodeSquareProps {
   dogs?: number
 }
 
+// A complete provider stack is 72 screen px tall (three 22px rows + gaps),
+// while a 124px map card is only 68px at mini LOD (z=.55). At z=.75 the card
+// is 93px, leaving the normal direct-selection rows legible without eclipsing
+// the card. The boundary deliberately stays above Z_MINI: the crowding begins
+// before that label-only LOD switch, not at it.
+const HIRE_COMPACT_ZOOM = .75
+
 export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, codexHire, geminiHire, map, op, slug,
   toast, pxc, zoom, onSpawn, onSpawnSide, onSpawnTop, onConfig, onInbox, onLineage, onOpenDoc,
   onRecenter, onJump, pub, kioskRemaining, cascadeAlloc, maxTop, pile, compactAt, maxTier,
@@ -900,6 +936,11 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, c
   // card's own pointer moves; normalized distances so the card's aspect
   // ratio doesn't bias the pick.
   const [edge, setEdge] = useState<'b' | 'l' | 'r' | 't'>('b')
+  const [expandedHireEdge, setExpandedHireEdge] =
+    useState<'b' | 'l' | 'r' | 't' | null>(null)
+  // A cluster cannot remain floating over a card after the camera moves. This
+  // also clears it when zooming back into the unchanged, direct-chip path.
+  useEffect(() => { setExpandedHireEdge(null) }, [zoom])
   const trackEdge = (e: React.PointerEvent<HTMLDivElement>) => {
     const r = e.currentTarget.getBoundingClientRect()
     if (!r.width || !r.height) return
@@ -907,7 +948,8 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, c
     const y = (e.clientY - r.top) / r.height
     const d = Math.min(x, 1 - x, 1 - y, y)
     const next = d === 1 - y ? 'b' : d === y ? 't' : d === x ? 'l' : 'r'
-    setEdge((cur) => (cur === next ? cur : next))
+    if (edge !== next) setExpandedHireEdge(null)
+    setEdge((cur) => cur === next ? cur : next)
   }
   const cls = ['sq', node.state, focused ? 'desk' : lod, 'tier-' + node.tier,
                'edge-' + edge]
@@ -941,6 +983,9 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, c
   const stackN = (node.lineage ?? []).length
   if (!focused && stackN) cls.push('stack' + Math.min(stackN, 3))
   const live = node.state === 'live'
+  const compactHire = !focused && zoom < HIRE_COMPACT_ZOOM
+  const toggleCompactHire = (which: 'b' | 'l' | 'r' | 't') =>
+    setExpandedHireEdge((open) => open === which ? null : which)
   // FR-23: the most recent completed turn (killed included — TurnStat.at is
   // written unconditionally at completion, unlike NodeStatus.at)
   const lastTurn = node.turns?.[node.turns.length - 1]
@@ -987,6 +1032,7 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, c
       }}
       onPointerMove={(e) => { trackEdge(e); onDragMove(e, node.id) }}
       onPointerUp={(e) => onDragEnd(e, node.id, node, focused)}
+      onPointerLeave={() => setExpandedHireEdge(null)}
       /* a UA-initiated cancel (touch arbitration, capture loss) must ABORT
          the drag — the end path's no-drop branch commits a reorder POST, so
          routing cancel through it turned a browser gesture cancellation
@@ -1146,7 +1192,9 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, c
           (Kiosk mode will pass the cap remainder here instead.) */}
       {live && !node.isBearerOf && !node.bearer_state &&
         <SpawnChips onSpawn={onSpawn} free={kioskRemaining ?? Infinity} seats={seats}
-          maxTier={maxTier} codexHire={codexHire} geminiHire={geminiHire} />}
+          maxTier={maxTier} codexHire={codexHire} geminiHire={geminiHire}
+          farCompact={compactHire} expanded={expandedHireEdge === 'b'}
+          onToggleExpanded={() => toggleCompactHire('b')} />}
       {/* FR-03: presented documents pop out the card's side as square icon
           chips — click opens the in-page reader. Not at desk zoom (the desk
           HEADER carries titled doc badges instead — world-scaled side chips
@@ -1171,10 +1219,14 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, c
           <div className="hsof-bridge bridge-r" aria-hidden="true" />
           <SpawnChips side="left" onSpawn={(t) => onSpawnSide(t, 'left')}
             free={kioskRemaining ?? Infinity} seats={seats} maxTier={maxTier}
-            codexHire={codexHire} geminiHire={geminiHire} />
+            codexHire={codexHire} geminiHire={geminiHire}
+            farCompact={compactHire} expanded={expandedHireEdge === 'l'}
+            onToggleExpanded={() => toggleCompactHire('l')} />
           <SpawnChips side="right" onSpawn={(t) => onSpawnSide(t, 'right')}
             free={kioskRemaining ?? Infinity} seats={seats} maxTier={maxTier}
-            codexHire={codexHire} geminiHire={geminiHire} />
+            codexHire={codexHire} geminiHire={geminiHire}
+            farCompact={compactHire} expanded={expandedHireEdge === 'r'}
+            onToggleExpanded={() => toggleCompactHire('r')} />
         </>
       )}
       {/* FR-25: top-edge chips SPLICE a new superior above this node — the
@@ -1184,7 +1236,9 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, c
       {live && !node.isBearerOf && !node.bearer_state && !pile && onSpawnTop && (
         <SpawnChips side="top" onSpawn={(t) => onSpawnTop(t)}
           free={kioskRemaining ?? Infinity} seats={seats} maxTier={maxTier}
-          codexHire={codexHire} geminiHire={geminiHire} />
+          codexHire={codexHire} geminiHire={geminiHire}
+          farCompact={compactHire} expanded={expandedHireEdge === 't'}
+          onToggleExpanded={() => toggleCompactHire('t')} />
       )}
       {/* portal to <body>: the card lives inside the world transform, where
           position:fixed would resolve against the scaled ancestor (same
