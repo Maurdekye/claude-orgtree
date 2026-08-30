@@ -1241,10 +1241,14 @@ function NewOrg({ onCreate }: {
 /** F-06: the settings modal's mailserver tab. Deliberately saves IMMEDIATELY
  *  (the auto-resume header-toggle precedent) — hub membership is operational
  *  state, not a form draft; the footer says so. */
-function NetTab({ tree, toast }: { tree: TreePayload; toast: ToastFn }) {
+function NetTab({ tree, toast, adding, setAdding }: {
+  tree: TreePayload
+  toast: ToastFn
+  adding: string
+  setAdding: (value: string) => void
+}) {
   const hubs = tree.net?.hubs ?? []
   const [reveal, setReveal] = useState<string | null>(null)
-  const [adding, setAdding] = useState('')
   const apply = (next: { id?: string; address: string; enabled?: boolean }[],
                  note: string) =>
     saveSettings(tree.slug, { net_hubs: next })
@@ -1329,8 +1333,12 @@ function NetTab({ tree, toast }: { tree: TreePayload; toast: ToastFn }) {
 /** §9.5/§9.6: per-org API key + headless mode. Saves IMMEDIATELY (the
  *  couplings are server-enforced 422s — instant feedback beats a buffered
  *  save that fails later). */
-function AutonomyTab({ tree, toast }: { tree: TreePayload; toast: ToastFn }) {
-  const [key, setKey] = useState('')
+function AutonomyTab({ tree, toast, keyDraft, setKeyDraft }: {
+  tree: TreePayload
+  toast: ToastFn
+  keyDraft: string
+  setKeyDraft: (value: string) => void
+}) {
   const save = (opts: Parameters<typeof saveSettings>[1], note: string) =>
     saveSettings(tree.slug, opts)
       .then((r) => toast(r.warnings?.length ? r.warnings : [note]))
@@ -1351,10 +1359,10 @@ function AutonomyTab({ tree, toast }: { tree: TreePayload; toast: ToastFn }) {
           : <>
               <input style={{ flex: 1 }} type="password"
                 placeholder="sk-ant-… (stored server-side, never shown again)"
-                value={key} onChange={(e) => setKey(e.target.value)} />
-              <button disabled={!key.trim()}
-                onClick={() => { save({ api_key: key.trim() }, 'API key set')
-                  setKey('') }}>set</button>
+                value={keyDraft} onChange={(e) => setKeyDraft(e.target.value)} />
+              <button disabled={!keyDraft.trim()}
+                onClick={() => { save({ api_key: keyDraft.trim() }, 'API key set')
+                  setKeyDraft('') }}>set</button>
             </>}
       </div>
       <div className="dim hub-hint">an API key removes the subscription's
@@ -1882,6 +1890,12 @@ function SettingsPanel({ tree, toast, close }: {
   const clearEdits = () => setEdit({})
   const [orgMd, setOrgMd] = useState<string | null>(null)
   const [showAdv, setShowAdv] = useState(false)   // F-07: the shared modal
+  // D-204: these are unsaved inputs, and the advanced modal deliberately
+  // unmounts both inactive tabs and the whole shell on close. Keep the only
+  // copies in the owning SettingsPanel so a tab switch or close/reopen cannot
+  // destroy a one-time API key paste or a half-typed mailserver address.
+  const [netHubDraft, setNetHubDraft] = useState('')
+  const [apiKeyDraft, setApiKeyDraft] = useState('')
 
   // kiosk permission ceiling (consensus spec): admin payload only — the
   // public tree never carries max_scope
@@ -2191,10 +2205,12 @@ function SettingsPanel({ tree, toast, close }: {
               </>) },
               ...(tree.net != null
                 ? [{ label: 'mailserver',
-                     content: <NetTab tree={tree} toast={toast} /> }] : []),
+                     content: <NetTab tree={tree} toast={toast}
+                       adding={netHubDraft} setAdding={setNetHubDraft} /> }] : []),
               ...(!kk
                 ? [{ label: 'autonomy',
-                     content: <AutonomyTab tree={tree} toast={toast} /> }]
+                     content: <AutonomyTab tree={tree} toast={toast}
+                       keyDraft={apiKeyDraft} setKeyDraft={setApiKeyDraft} /> }]
                 : []),
             ]} />
         )}
