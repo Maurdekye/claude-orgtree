@@ -1993,6 +1993,130 @@ sheet are indistinguishable from the outside; the canary is the difference, and
 that is the argument for keeping such arms rather than deleting them once the
 bug they were written for is fixed.
 
+### D-201 · one warm CLI process per live agent; the death list is closed
+Ruling (user, 2026-08-30, refined across the day): orgtree keeps ONE parked
+CLI process per live eligible agent — started for everyone at launch before
+any turn begins, started immediately on hire, handed to each turn and parked
+back at its end. **A warm process ends ONLY on: (1) agent retirement, (2) an
+explicit system-prompt change, (3) orgtree shutdown.** No idle reaping, no
+cap eviction, no tidiness. A prompt change respawns the process IMMEDIATELY
+in the background; an agent MID-TURN is never disturbed — its re-warm
+happens the instant its turn ends, before the next turn is admitted, and a
+message queued at a result boundary counts as "the next turn". There is NO
+wait for the MCP handshake anywhere (user override of an earlier
+coordinator ruling): in steady state the handshake finished long before any
+message arrives, and a new hire's possibly-cold first turn is accepted.
+
+Why: orgtree ran one CLI process per TURN, so everything an interactive
+harness reads once per session — the MCP handshake, the system prompt, the
+directory scan — was re-paid per turn. Measured (40,571 real requests):
+agents cold on 44.3% of quiet turns vs 0.2% interactive, ~200,689 tokens
+re-sent per cold resume; 50.6% of turn openings raced the MCP handshake.
+Invalidation is a HASH, not an event list: sha256 of the rendered
+`identity_prompt` + the spawn argv (session-flag name normalized; the sid
+itself stays in, so a compact dirties and the first-transcript
+`--session-id`→`--resume` flip does not) + the resolved credential identity.
+An enumerated event list is exactly what goes stale when someone adds a
+surface; the audit found surfaces nobody had enumerated. Verified
+independently: 0 false hits on 80 live perturbation probes, 93/93 on the
+expanded oracle, constant-hash mutant caught both times.
+
+**The authoritative death vocabulary** (enforced at the single teardown
+funnel in `warmpool.py`; every exit journals EXACTLY ONE classified row —
+zero rows was measured to hide a serving-path death, and a tripwire cannot
+fire on a row that does not exist):
+- `retirement`, `prompt-change` — the user's causes (1) and (2). A rename,
+  an eligibility lapse and a scope/model change are prompt changes.
+- shutdown — cause (3) — is DELIBERATELY NOT a vocabulary row: it is
+  enforced by the OS job object (`_leash`, KILL_ON_JOB_CLOSE), the only
+  shape a hard backend kill cannot skip. No Python runs when orgtree dies.
+- `kill-switch` — ADDITION (coordinator): `ORGTREE_WARM` env + runtime
+  `warm.flag` (per-node excludes; atomic writer; a malformed flag falls to
+  the env for behaviour but labels its A/B arm null, never guessed). It is
+  both the back-out lever and what makes the before/after a same-period A/B
+  — the transcript corpus was measured to drift between runs, so
+  snapshot-vs-snapshot comparison is weak by construction. The switch is
+  authoritative at claim, at park AND at the boundary feed, mid-turn.
+- `duplicate-resolution` — ADDITION (engineering): the hire-kickoff/keeper
+  race can briefly double-spawn one seat (the alternative was a global lock
+  across Popen on the turn path); the redundant process is killed, the seat
+  keeps warm coverage throughout, and every occurrence is journaled so
+  "rare" stays checkable.
+- `turn-machinery` — not pool decisions: a serving process that could not
+  park (usage-limit freeze, live background children, watchdog timeout,
+  generic drain-to-exit) ends the way turns always ended, journaled with
+  the specific reason.
+- `observed-death` — bookkeeping for a process found already dead. Grants
+  nobody permission to end anything.
+
+Eligibility v1 and its bases (21 live agents at ruling time; 15 covered):
+Claude-lane, unsandboxed, non-preserving-bearer. Sandbox: the leash cannot
+reach in-container processes, so a parked one would SURVIVE shutdown —
+violates cause (3); zero live sandboxed agents today. Preserving oracles:
+each consult is a deliberately discarded `--fork-session`; a parked process
+would accumulate state the oracle promises not to. Codex/Gemini (6 agents):
+their turns never touch the Claude CLI. **Measured on the real CLIs
+2026-08-30: per-turn teardown on BOTH provider lanes is OUR WRAPPER POLICY
+(`CodexTurn.wait` / `GeminiTurn.wait` close explicitly), not a wire limit —
+across all three lanes the thing ending the process every turn was a choice
+made three times and never revisited.** Codex real probe: two resumed turns
+on one live PID, PASS — inclusion is a user scoping decision (roughly the
+size of the claude-lane supervisor half). Gemini real probe: **verified
+blocker** — real `session/load` refuses ("No previous sessions found for
+this project") where the protocol-faithful fake succeeds, so the fake
+diverges from the real CLI and gemini stays excluded until that is
+understood; zero live gemini agents today.
+
+Bounds & residuals, stated rather than hidden:
+- **UNTESTED: N persistent clients against a live single-application MCP
+  server** (blender/unity/resonite). User ruled ship-without ("we will
+  determine if it's a problem when we cross that bridge"). Baseline at
+  ruling: warming everyone creates 7 Blender, 7 Unity and 6 Resonite
+  clients, 6 agents holding the whole registry; none of those apps was
+  running to test against. THE TEST, for whoever crosses the bridge: start
+  those applications, run a warm pass, observe app-side behaviour under
+  many persistent connections. Do not read this entry as "passed".
+- S1 companion (schema `cheap_compacted`): the breadcrumbs splice serves
+  the compaction successor's FIRST turn only; the first successful boundary
+  retires the marker durably BEFORE the queue-feed decision (a queued msg2
+  must not ride the breadcrumb prompt); a failed first turn retains it.
+  Without this, D-201 prevents ~24% of today's cold resumes; with it, ~61%
+  (pre-registered arithmetic in the cache-misses scratch).
+- Memory, measured 2026-08-30 on real parked claude.exe trees WITH two
+  injected spawn failures (a clean-run ceiling is not the ceiling): 405.6
+  MB per agent tree, snapshot == psutil ground truth to the decimal, zero
+  orphans after failure retries; ~6.1 GB projected at 15 warm agents
+  against 7.8 GB free at measurement. The rig figure INCLUDES a
+  cmd.exe/conhost wrapper (~16 MB) that PRODUCTION DOES NOT PAY: the
+  earlier "15.8 MB wrapper per agent" brief premise was a rig artifact —
+  probes' isolated data roots miss the CLI pin so they fall to
+  `cmd /c claude.CMD`, while production resolves the pinned native .exe
+  directly. There is no wrapper to remove in production.
+- `total_cost_usd` and result usage are PROCESS-cumulative and a warm
+  process spans turns: every booking subtracts the process's already-booked
+  baseline or turn 2 re-books turn 1's spend.
+- Boundary-fed messages get their own admit telemetry rows (reason
+  `boundary-feed`); a dead-between-claim-and-write process becomes an
+  exactly-once cold retry (`claim-died`), safe precisely because nothing
+  was consumed — the delivery gate opens only after the first stdin write.
+
+Load-bearing: ① the per-turn idle watchdog is scoped to turns-in-flight —
+a parked process emits no stdout by definition, and a process-scoped
+watchdog would silently un-build the feature at TURN_IDLE while every test
+stayed green (pinned by a park-survival check whose dog-outlives-turn
+mutant goes red). ② The warm pool starts BEFORE every boot turn driver,
+synchronously — otherwise the feature is absent at exactly the moment the
+ruling specifies it present, ~10 restarts/day. ③ The stdout pump owns a
+warm process's pipes for its whole life; a turn attaches through a
+per-claim fresh queue gated open only after its first stdin write (a
+pre-write or prior-claim event delivered into a turn can falsely confirm
+mail delivery or terminate the wrong turn). ④ `rename_node` kills the
+parked process only AFTER the ledger validates a state-changing rename (a
+no-op rename killing a process is a death outside the list) — and must
+kill it, or the parked cwd blocks the scratch move on Windows. ⑤ A failed
+spawn kills the child it started, or keeper retries leak whole CLI+MCP
+trees while every correctness test stays green.
+
 ### D-192 · the org-state block is delivered to the agent and hidden from the reader
 Ruling (user, 2026-08-29): "i really do not think the org structure needs to be
 seen by the user; that's extraneous information to them that they can just
