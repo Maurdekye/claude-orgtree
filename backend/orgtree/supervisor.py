@@ -13870,11 +13870,24 @@ def read_chat(org: Org, nid: str, last: int | None = None) -> dict[str, Any]:
                         # mail sends (user spec 2026-07-31: ALL of them —
                         # messages and status reports alike) carry an inline
                         # "open in mailbox" link: the result's id + delivered
-                        # name the exact mail in the exact box
-                        if (entry.get("name") in
-                                ("mcp__orgtree__orgtree_message",
-                                 "mcp__orgtree__orgtree_send_notice",
-                                 "mcp__orgtree__orgtree_status")
+                        # name the exact mail in the exact box.
+                        #
+                        # ⚠ THE NAME ARRIVES BARE FOR CODEX/GEMINI. Claude
+                        # Code prefixes every MCP-server tool with
+                        # `mcp__<server>__` on its own; the codex/gemini lanes
+                        # register these as plain function tools (mcptool.TOOLS'
+                        # own names — see codexrun._dyn_tool / the `dyn` list
+                        # in supervisor._run_codex_turn) and journal tool_use
+                        # blocks with THAT bare name. Matching only the
+                        # prefixed form meant a Codex- or Gemini-tier agent's
+                        # own sent mail never carried this link at all (user
+                        # report 2026-08-30) — the delivered TEXT was always
+                        # identical across tiers; only this chip metadata,
+                        # keyed off a Claude-only naming convention, silently
+                        # never matched.
+                        if (entry.get("name", "").removeprefix("mcp__orgtree__")
+                                in ("orgtree_message", "orgtree_send_notice",
+                                    "orgtree_status")
                                 and not block.get("is_error")):
                             try:
                                 r = json.loads(body)
