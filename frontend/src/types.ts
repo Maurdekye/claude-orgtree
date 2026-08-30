@@ -269,6 +269,9 @@ export interface TreeNode {
   lineage: LineageEntry[]
   // ---- api.py annotate() — live supervisor state layered on the projection
   busy: boolean
+  /** D-201: a parked CLI process is ready with this agent's current prompt.
+   * False is a normal cold-cache condition, never a health/error signal. */
+  proc_warm: boolean
   waiting: boolean
   responding: boolean
   phase: string | null

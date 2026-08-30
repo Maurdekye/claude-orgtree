@@ -776,7 +776,12 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
     // the click, so backdrop-close and every button in here silently broke
     <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
       <div className="settings cfg" onClick={(e) => e.stopPropagation()}>
-        <h3><SettingsIcon fontSize="inherit" /> {node.id} <span className="dim">· {node.tier} · configuration</span></h3>
+        <h3><SettingsIcon fontSize="inherit" /> {node.id}
+          {node.state === 'live' && <span className={'proc-mark ' + (node.proc_warm ? 'warm' : 'cold')}
+            aria-label={node.proc_warm ? 'process warm' : 'process cold'}
+            title={node.proc_warm ? 'process warm — ready for its next turn'
+              : 'process cold — starts normally on its next turn'} />}
+          <span className="dim">· {node.tier} · configuration</span></h3>
         {/* FULL identity rename (user ruling 2026-08-05): id, mailbox,
             working folder and session all move; history keeps the old name
             (the warning rides the toast). Refused while mid-turn. */}

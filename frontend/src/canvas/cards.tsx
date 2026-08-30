@@ -21,7 +21,7 @@ import type {
   AttentionPip, CanvasNode, DraftScope, DraftState, HireState, MailLinkFn, OpFn, Pile,
   Pt,
 } from './shared'
-import { Activity, ContextWheel, DeskChat } from './desk'
+import { Activity, ContextWheel, DeskChat, ProcessWarmMark } from './desk'
 import { DocChips } from './docs'
 import { isMobile } from '../mobile'
 import { ConfirmModal, DraftScopeModal } from './modals'
@@ -1013,6 +1013,7 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, c
     if (edge !== next) setExpandedHireEdge(null)
     setEdge((cur) => cur === next ? cur : next)
   }
+  const live = node.state === 'live'
   const cls = ['sq', node.state, focused ? 'desk' : lod, 'tier-' + node.tier,
                'edge-' + edge]
   // provider theming (user spec 2026-08-28): codex agents wear an
@@ -1021,6 +1022,7 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, c
   // family so it needs no new payload field.
   if (node.tier && CODEX_TIERS.includes(node.tier)) cls.push('prov-openai')
   if (node.tier && GEMINI_TIERS.includes(node.tier)) cls.push('prov-google')
+  if (live) cls.push(node.proc_warm ? 'proc-warm' : 'proc-cold')
   if (node.busy) cls.push('busy')
   // api_fallback (user feature 2026-08-19): a turn RUNNING on the org's own
   // API key wears the same red as the canvas border. No `busy` companion
@@ -1044,7 +1046,6 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, c
   if (node.audiences_held?.length) cls.push('aud')
   const stackN = (node.lineage ?? []).length
   if (!focused && stackN) cls.push('stack' + Math.min(stackN, 3))
-  const live = node.state === 'live'
   const toggleCompactHire = (which: 'b' | 'l' | 'r' | 't') =>
     setExpandedHireEdge((open) => open === which ? null : which)
   // FR-23: the most recent completed turn (killed included — TurnStat.at is
@@ -1077,6 +1078,7 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, c
             : node.state !== 'live' ? <span className="map-off">{node.state}</span>
             : stat ? <span className={'statusdot ' + stat.status} />
             : <span className="statusdot idle" />}
+          {live && <ProcessWarmMark warm={Boolean(node.proc_warm)} />}
           {(dogs ?? 0) > 0 && <span className={'map-dogs' + ((oneShotDogs ?? 0) > 0 ? ' oneshot' : '')}
             aria-label={`${dogs} watchdog${dogs === 1 ? '' : 's'}${(oneShotDogs ?? 0) > 0
               ? `, ${oneShotDogs} one-shot dog${oneShotDogs === 1 ? '' : 's'}` : ''}`}>
@@ -1166,6 +1168,7 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, c
           onClick={(e) => { e.stopPropagation(); onConfig() }}><SettingsIcon fontSize="inherit" /></button>
         <ContextWheel occ={node.occupancy} cw={node.context_window}
           est={node.occupancy_est} compactAt={compactAt} />
+        {live && <ProcessWarmMark warm={Boolean(node.proc_warm)} />}
         {lod === 'mini' && node.last_status &&
           <span className={'statusdot ' + node.last_status.status}
             title={`${node.last_status.status} — ${node.last_status.summary ?? ''}`} />}

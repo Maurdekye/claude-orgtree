@@ -281,6 +281,8 @@ export interface CanvasNode {
   generation?: number
   lineage?: TreeNode['lineage']
   busy?: boolean
+  /** D-201 warm-process cache state. Synthetic canvas cards never have one. */
+  proc_warm?: boolean
   /** G4: server-derived, from the supervisor's live tail (absent on the
    *  synthetic cards — eye root, draft, bearers — which never run turns) */
   activity?: ActivityInfo

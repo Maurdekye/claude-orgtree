@@ -76,6 +76,15 @@ export function ContextWheel({ occ, cw, onCompact, compactAt, est }: ContextWhee
   return <button className="ctxbtn" onClick={onCompact}>{svg}</button>
 }
 
+/** D-201: a filled dot means the agent has a parked process ready; a quiet
+ * hollow dot means its next turn needs a normal cold spawn. This is speed
+ * information only, so it deliberately borrows no warning/error colour. */
+export function ProcessWarmMark({ warm }: { warm: boolean }) {
+  return <span className={'proc-mark ' + (warm ? 'warm' : 'cold')}
+    aria-label={warm ? 'process warm' : 'process cold'}
+    title={warm ? 'process warm — ready for its next turn' : 'process cold — starts normally on its next turn'} />
+}
+
 /* click-to-copy for the React-rendered pres (filepre/respre/diffpre) — same
    .codewrap/.code-copy contract as the md() pipeline, so the one delegated
    click listener in shared.ts serves both. The listener swaps the button's
@@ -215,6 +224,11 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
   // What stays local below is only what is genuinely per-VIEW: this desk's
   // scroll position, its open tab, its composer draft.
   const convo = useConvo(slug, node.id)
+  const providerClass = node.tier && CODEX_TIERS.includes(node.tier)
+    ? ' prov-openai' : node.tier && GEMINI_TIERS.includes(node.tier)
+      ? ' prov-google' : ''
+  const processClass = node.state === 'live'
+    ? (node.proc_warm ? ' proc-warm' : ' proc-cold') : ''
   const { chat, live_feed, draft, thinking, thinkSecs, pending } = {
     chat: convo.chat, live_feed: convo.live, draft: convo.draft,
     thinking: convo.thinking, thinkSecs: convo.thinkSecs, pending: convo.pending }
@@ -619,6 +633,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
           // post-compaction arc there was no button here to press at all
           onCompact={live && !node.bearer_state && !node.compacted_unrun
             ? () => setAskCompact(true) : undefined} />
+        {live && <ProcessWarmMark warm={Boolean(node.proc_warm)} />}
         {node.last_status &&
           <span className={'statuschip ' + node.last_status.status}
             title={node.last_status.summary}>{node.last_status.status}</span>}
@@ -1203,7 +1218,8 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
   // bare: the switchboard hosts many chats inside ONE counter-scaled surface —
   // no overlay wrapper, no second scale (that would double-scale), no
   // recenter-on-click
-  if (bare) return <div className="desk-body eye-chat" {...dropProps}>{content}</div>
+  if (bare) return <div className={'desk-body eye-chat' + providerClass + processClass}
+    {...dropProps}>{content}</div>
   return (
     <div className="desk-over" onWheel={(e) => e.stopPropagation()}
       onPointerDown={(e) => e.stopPropagation()} {...dropProps}
@@ -1215,7 +1231,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
         if (window.getSelection()?.toString()) return
         onRecenter?.()
       }}>
-      <div className="desk-inner desk-body">{content}</div>
+      <div className={'desk-inner desk-body' + providerClass + processClass}>{content}</div>
     </div>
   )
 }
