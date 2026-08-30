@@ -18,7 +18,8 @@ import { pickFolder } from '../picker'
 import {
   CloseIcon, DeleteIcon, FolderIcon, LayersIcon, SettingsIcon,
 } from '../icons'
-import { ago, CODEX_TIER_SEAT, CODEX_TIERS, GEMINI_TIER_SEAT, GEMINI_TIERS, MODEL_VERSIONS, pileOrder, PROVIDER_LABEL, providerOf, TIER_LETTER, TIER_SEAT, TIERS, USER, useEsc } from './shared'
+import { ago, ALL_PRESENT, CODEX_TIER_SEAT, CODEX_TIERS, GEMINI_TIER_SEAT, GEMINI_TIERS, MODEL_VERSIONS, pileOrder, PROVIDER_LABEL, providerOf, TIER_LETTER, TIER_SEAT, TIERS, tierShown, USER, useEsc } from './shared'
+import type { ProviderPresence } from './shared'
 import type { CanvasNode, DraftScope, DraftState, OpFn, Pile } from './shared'
 
 export interface ConfirmModalProps {
@@ -577,11 +578,15 @@ interface NodeConfigProps {
   toast: ToastFn
   codexProvider?: ProviderInfo | null
   geminiProvider?: ProviderInfo | null
+  /** D-202: which provider families this machine has at all. Absent = the
+   *  optimistic default (everything), so a caller that has not resolved the
+   *  payload behaves exactly as this panel did before. */
+  presence?: ProviderPresence
   close: () => void
 }
 
 export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
-  geminiProvider, close }: NodeConfigProps) {
+  geminiProvider, presence = ALL_PRESENT, close }: NodeConfigProps) {
   useEsc(close)
   const [asking, setAsking] =
     useState<'delete' | 'dissolve' | 'retire' | 'rescind' | 'crossprovider' | null>(null)
@@ -751,6 +756,13 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
     if (cap && tierSeat(t) > tierSeat(cap)) return `above kiosk cap (${cap})`
     return null
   }
+  // D-202. `tierShown` is the shared rule; `node.tier` is the `keep` that
+  // survives it. Note the asymmetry with `unavailable` directly above: a tier
+  // whose provider is INSTALLED but signed out is still listed and disabled
+  // with its reason (user confirmed 2026-08-30), while one whose provider is
+  // absent is not listed at all. Two different claims, two different answers.
+  const shownTiers = (fam: readonly string[]) =>
+    fam.filter((t) => tierShown(presence, t, node.tier))
   const modelOption = (t: string) => {
     const why = unavailable(t)
     return (
@@ -938,17 +950,22 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
         <div className="field-label">model (switchable on the fly — context
           survives; cheaper frees the seat difference to the agent, pricier
           bubbles any shortfall up the chain)</div>
+        {/* D-202: a family this machine does not have is not listed at all —
+            not as a disabled row, not as an empty group. `shownTiers` keeps
+            this node's OWN tier whatever happens to its provider, so the
+            select can never lose its own value and silently switch the model
+            on save (and so the panel never lies about what this agent is). */}
         <select className="model-switch" aria-label="model tier"
           value={model} onChange={(e) => setModel(e.target.value)}>
-          <optgroup label="Claude">
-            {TIERS.map(modelOption)}
-          </optgroup>
-          <optgroup label="Codex">
-            {CODEX_TIERS.map(modelOption)}
-          </optgroup>
-          <optgroup label="Gemini">
-            {GEMINI_TIERS.map(modelOption)}
-          </optgroup>
+          {([['Claude', TIERS], ['Codex', CODEX_TIERS],
+             ['Gemini', GEMINI_TIERS]] as const)
+            .map(([label, fam]) => [label, shownTiers(fam)] as const)
+            .filter(([, fam]) => fam.length > 0)
+            .map(([label, fam]) => (
+              <optgroup key={label} label={label}>
+                {fam.map(modelOption)}
+              </optgroup>
+            ))}
         </select>
 
         <div className="field-label">org-structure visibility</div>

@@ -33,7 +33,7 @@ import {
   getProviders, setAccountKeyOrder,
 } from '../api'
 import { CheckIcon, DataUsageIcon, DeleteIcon } from '../icons'
-import { TIER_LETTER, TIERS, useEsc } from './shared'
+import { hireOf, providerShown, TIER_LETTER, TIERS, useEsc } from './shared'
 
 // small local copies of the usage-modal label helpers (App.tsx owns the
 // originals beside UsageModal; importing them here would cycle App ↔ panel)
@@ -189,6 +189,12 @@ export function AccountsPanel({ toast, close }: {
   const claudeProv = providers?.find((p) => p.id === 'claude')
   const codex = providers?.find((p) => p.id === 'openai')
   const gemini = providers?.find((p) => p.id === 'google')
+  // D-202: the SAME verdict the hire chips use, so the accounts page and the
+  // canvas cannot disagree about whether a provider exists. Undefined (the
+  // payload has not arrived, or an old backend omits the entry) shows the
+  // section — see `providerShown` for why unknown is optimistic.
+  const codexShown = providerShown(hireOf(codex))
+  const geminiShown = providerShown(hireOf(gemini))
   const srcLabel: Record<string, string> = {
     pin: 'private pin', env: 'ORGTREE_CODEX', path: 'on PATH',
   }
@@ -307,6 +313,26 @@ export function AccountsPanel({ toast, close }: {
               <span className="dim"> · Claude Code
                 {claudeProv?.status.version ? ` ${claudeProv.status.version}` : ''}</span>
             </div>
+            {/* D-202: Claude is the ONE provider whose absence is reported
+                rather than hidden — "since orgtree is built around it, do show
+                that its not installed on the accounts page, but make it a very
+                small piece of ui" (user, 2026-08-30). So: one dim line under
+                the head, here and nowhere else in the app. Deliberately NOT a
+                warning banner, an install command or a button — the ask was
+                explicitly for something small, and a call to action here would
+                compete with every row below it. The rows still render: the
+                account list is machine state worth seeing whether or not the
+                CLI is on this box.
+                Guarded on `claudeProv &&` so an unresolved payload says
+                nothing at all — `providerShown`'s optimism in its local form,
+                since claiming "not installed" on no evidence is the one
+                failure this line could actually cause. */}
+            {claudeProv && !claudeProv.status.installed && (
+              <div className="dim acct-prov-note">
+                {claudeProv.reason
+                  ?? 'Claude Code is not installed on this machine'}
+              </div>
+            )}
 
             {/* ── the primary row: the machine's own login ─────────────── */}
             <div className="acct-line">
@@ -405,7 +431,17 @@ export function AccountsPanel({ toast, close }: {
                 provider adapter lands (design §5 Phase 1); the `reason`
                 line below is the server's word on what would come next. */}
             {/* "Codex" (user ruling 2026-08-28, ask card) — the CLI's own
-                name is the provider's UI name */}
+                name is the provider's UI name.
+                ⚠ D-202: THE WHOLE SECTION IS CONDITIONAL. A Codex that is not
+                installed produces no head, no note, no tier list and no
+                preview tag — the accounts page is not an exception to "absent
+                means absent", and this was the surface most likely to become
+                one, because until now it was the designated home for the
+                "here is how to install it" story. The user overruled that:
+                an uninstalled provider is not part of the product until it is
+                installed. Installed-but-signed-out is untouched and still
+                renders in full, reason and all. */}
+            {codexShown && <>
             <div className="acct-provider-head prov-openai">
               Codex
               <span className="dim"> · Codex CLI
@@ -449,10 +485,13 @@ export function AccountsPanel({ toast, close }: {
                   && <div className="dim acct-prov-note">{codex.reason}</div>}
               </>
             )}
+            </>}
 
             {/* ── provider section: Gemini (D-189) — the same machine-level
                 install/connect surface, the CLI's own name as the label.
-                The preview tag only while hiring is actually off. */}
+                The preview tag only while hiring is actually off.
+                D-202 hides it whole when absent, exactly as Codex above. */}
+            {geminiShown && <>
             <div className="acct-provider-head prov-google">
               Gemini
               <span className="dim"> · Gemini CLI
@@ -498,6 +537,7 @@ export function AccountsPanel({ toast, close }: {
                   && <div className="dim acct-prov-note">{gemini.reason}</div>}
               </>
             )}
+            </>}
           </>
         )}
 

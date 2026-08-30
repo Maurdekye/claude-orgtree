@@ -169,6 +169,32 @@ def provider_label(tier: str) -> str:
     return PROVIDER_LABEL[provider_of(tier)]
 
 
+def install_hint(provider: str) -> str:
+    """The command THIS machine would actually install `provider` with.
+
+    D-202 made this one string instead of two. It was written twice — once as
+    the `/api/providers` reason (the accounts panel's tooltip) and once,
+    differently, in the api hire gate's refusal — and the accounts panel was
+    the only place it was maintained. That stopped being survivable when the
+    user ruled an uninstalled provider absent from the whole UI including the
+    accounts page: the gate's refusal became the ONLY place a user is ever
+    told how to install Codex or Gemini, so it cannot be the copy that drifts.
+
+    ⚠ NOT `npm i -g`. These CLIs install under the orgtree data dir with
+    `--prefix` so the version orgtree spawns is the one it manages, and a
+    global install is not what `codex_path`/`gemini_path` resolve first. The
+    hint must name the command that produces a CLI this machine will FIND,
+    which is why it interpolates `_DATA` rather than reading well.
+    """
+    if provider == "openai":
+        return ("npm install --prefix "
+                f"{os.path.join(_DATA, 'codex')} @openai/codex")
+    if provider == "google":
+        return ("npm install --prefix "
+                f"{os.path.join(_DATA, 'gemini')} @google/gemini-cli")
+    return "npm install -g @anthropic-ai/claude-code"
+
+
 #: both launch models publish a 1M-token context window. As with the other
 #: providers, the pinned model capability wins over any per-call observation.
 GEMINI_CONTEXT: Final[int] = 1_000_000
@@ -647,8 +673,8 @@ def providers_payload(claude_status: dict[str, Any]) -> dict[str, Any]:
                 else "not signed in — run `claude` once on this machine "
                      "and complete the login"
                 if claude_status.get("installed")
-                else "Claude Code is not installed — npm install -g "
-                     "@anthropic-ai/claude-code"),
+                else "Claude Code is not installed — "
+                     f"{install_hint('claude')}"),
         },
         {
             "id": "openai",
@@ -668,8 +694,7 @@ def providers_payload(claude_status: dict[str, Any]) -> dict[str, Any]:
                 None if codex.get("connected")
                 else "not signed in — run `codex login` on this machine"
                 if codex.get("installed")
-                else "Codex CLI not installed — npm install --prefix "
-                     f"{os.path.join(_DATA, 'codex')} @openai/codex"),
+                else f"Codex CLI not installed — {install_hint('openai')}"),
         },
         {
             "id": "google",
@@ -685,7 +710,6 @@ def providers_payload(claude_status: dict[str, Any]) -> dict[str, Any]:
                 else "not signed in — run `gemini` once on this machine and "
                      "pick a login method"
                 if gemini.get("installed")
-                else "Gemini CLI not installed — npm install --prefix "
-                     f"{os.path.join(_DATA, 'gemini')} @google/gemini-cli"),
+                else f"Gemini CLI not installed — {install_hint('google')}"),
         },
     ]}

@@ -902,6 +902,11 @@ export interface ProviderInfo {
   }
   hire_enabled: boolean
   reason: string | null
+  /** D-203 (`settings-menu`): the user's own on/off switch for this provider,
+   *  machine-wide. OMITTED MEANS ON — an old backend must not read as every
+   *  provider switched off. Deliberately separate from `status.installed`:
+   *  the UI needs to tell "absent" from "turned off". See `HireState`. */
+  user_enabled?: boolean
 }
 export interface ProvidersPayload { providers: ProviderInfo[] }
 
