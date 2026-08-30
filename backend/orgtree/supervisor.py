@@ -3676,13 +3676,57 @@ def _build_cmd(org: Org, nid: str, write_ident: bool = True) -> list[str]:
         cmd += ["--add-dir", GLOBAL_SKILLS]
     # §7.6 read-down: a node's file tools reach its own scratch (cwd) plus every
     # descendant's — regenerated per turn, so re-parenting never leaves stale access
+    #
+    # D-201/S2(a) (USER-RULED 2026-08-30, an explicit security trade): this used
+    # to emit ONE `--add-dir` PER DESCENDANT. That list is in the spawn argv,
+    # the argv is in `warmpool.ident_hash`, and the CLI renders it into its own
+    # base prompt as "Additional working directories" — which sits BEFORE our
+    # appended prompt. So every hire anywhere in a subtree changed the prefix of
+    # the parent AND every ancestor and re-paid it. Caught in production by
+    # cache-misses: a coordinator turn-pair with a BYTE-IDENTICAL appended
+    # prompt, `read 20,888 / create 92,149`, with `argv:add_dir` the only thing
+    # that moved.
+    #
+    # ONE FIXED PATH INSTEAD. Membership no longer depends on who exists, so
+    # hires and retires stop invalidating anyone. It is granted
+    # UNCONDITIONALLY — not "when the node has descendants" — because a
+    # conditional grant would just move the instability to the 0↔1 descendant
+    # boundary. Every agent in the org now contributes the same constant string
+    # here.
+    #
+    # ⚠ WHAT THIS WIDENS, STATED PLAINLY: the scratch ROOT holds every agent's
+    # folder in the org, so this grants reach to NON-DESCENDANTS — peers,
+    # ancestors, unrelated subtrees — where the old form was strictly downward
+    # (§7.6). That is a real weakening of the isolation and the user ruled on it
+    # knowing so ("is a significant security change, but we can tolerate it if
+    # it reduces cache misses"). The condition is load-bearing: it was bought
+    # for a cache improvement, so if this ever stops paying for itself the
+    # trade lapses and this should go back to the user, not be kept for free.
+    # `orgtree_read_scratch` remains the downward-only, audited route.
+    #
+    # ⚠ AND NOT THE OTHER FIX. Pruning ARCHIVED descendants from the old list
+    # looks obvious — the coordinator carried 43 paths of which 32 were dead —
+    # and is NET NEGATIVE, measured: today the list contains archived nodes, so
+    # a retire changes nothing in it, and pruning would make retire a change
+    # event where it is not, roughly doubling the invalidations to save ~547
+    # tokens a turn against a ~200k-token cold turn (break-even ~365 turns per
+    # retire). Held and abandoned at commit 2e0eb47. LENGTH IS NOT THE COST;
+    # STABILITY IS. Do not re-derive it.
+    # ⚠ DERIVED FROM `scratch_dir`, NOT REBUILT FROM `store.scratch_root`. A
+    # DISK-MIGRATED org keeps its scratch on the disk (`dsk.windows_sub`), so a
+    # root composed from the data root would name a directory the agents' own
+    # folders are not under — granting a real path that covers nothing, which
+    # fails silently as "the file tools stopped reaching my reports". Taking the
+    # parent of the same function that mints the per-node dirs cannot drift.
+    root = (os.path.dirname(sbx.cpath_scratch(slug, nid)) if sandboxed
+            else os.path.dirname(scratch_dir(org.d["slug"], nid)))
     seen = set()
-    for k in org.descendants(nid, live_only=False):
-        host_p = scratch_dir(org.d["slug"], k)      # host dir must exist (mount)
-        p = sbx.cpath_scratch(slug, k) if sandboxed else host_p
-        if p not in seen:
-            seen.add(p)
-            cmd += ["--add-dir", p]
+    if sandboxed or os.path.isdir(root):
+        # `--add-dir` on a missing host path is a CLI error, not a no-op. The
+        # root exists as soon as any node has a scratch dir, but a brand-new
+        # org spawning its first agent is exactly the case that would not.
+        seen.add(root)
+        cmd += ["--add-dir", root]
     if pred_dir and pred_dir not in seen:
         # FR-24: the predecessor's scratch (deny rules above make it ro)
         cmd += ["--add-dir", pred_dir]
