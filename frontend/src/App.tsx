@@ -387,7 +387,9 @@ export default function App() {
             are read together. */}
         {!BASE &&
           <button className="h1-usage" title="App settings"
-            onClick={() => setShowAccounts(true)}>◑</button>}</h1>
+            onClick={() => setShowAccounts(true)}>
+            <SettingsIcon fontSize="inherit" />
+          </button>}</h1>
       {slug && <button className="home" onClick={goHome}><HomeIcon fontSize="inherit" /> all organizations</button>}
       <nav>
         {orgs.map((o) => (
