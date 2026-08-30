@@ -639,6 +639,8 @@ export interface TreePayload {
 
 /** FR-27: what supervisor.primed_restart() projects — see the header chip. */
 export interface PrimedRestart {
+  /** Missing on pre-transition records, which are treated as armed. */
+  state?: 'armed' | 'executing'
   target: 'org' | 'mailhub' | 'both'
   by_org: string
   by_node: string
@@ -647,6 +649,8 @@ export interface PrimedRestart {
   at_ts: number
   /** the arming agent's one-line why, if it gave one */
   reason?: string
+  /** ISO stamp of the armed -> executing transition. */
+  triggered_at?: string
 }
 
 // ----------------------------------------------------------------- org list

@@ -4119,6 +4119,8 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                     result = {
                         "primed": pr,
                         "status": (
+                            "restart in progress..."
+                            if pr and pr.get("state") == "executing" else
                             f"a restart is primed by {pr.get('by_org')}/"
                             f"{pr.get('by_node')} (target="
                             f"{pr.get('target')!r}, armed {pr.get('at')}) — "

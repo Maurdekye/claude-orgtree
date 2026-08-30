@@ -103,10 +103,11 @@ def reset_machine():
     every later check's `_claim_quiet_machine` return None ("a deploy is
     already in flight"), and they would all pass their negative half for
     entirely the wrong reason."""
-    try:
-        os.remove(supervisor._prime_path())
-    except FileNotFoundError:
-        pass
+    with supervisor._prime_lock:
+        try:
+            os.remove(supervisor._prime_path())
+        except FileNotFoundError:
+            pass
     with supervisor._state_lock:
         supervisor._state.clear()
     supervisor._deploy_done.set()
@@ -651,11 +652,13 @@ def _the_whole_path_arm_then_idle_then_fire():
         #    other order is a restart LOOP: update.ps1 Stop-Processes this
         #    backend, the disarm write never lands, and the next boot finds
         #    the prime still armed.
-        assert spy.primed_at_spawn[-1] is None, (
+        assert (spy.primed_at_spawn[-1] is not None
+                and spy.primed_at_spawn[-1]["state"] == "executing"), (
             f"the prime was STILL ARMED at the moment the deploy was "
             f"spawned ({spy.primed_at_spawn[-1]}) — if the restart lands "
             f"before the disarm write, this machine restarts forever")
-        assert supervisor.primed_restart() is None
+        raw = json.load(open(supervisor._prime_path(), encoding="utf-8"))
+        assert raw["armed"] is None, raw
         # ⑤ and it is not merely gone: what happened is on the record
         d = json.load(open(supervisor._prime_path(), encoding="utf-8"))
         assert d["last_fired"]["was"]["by_node"] == "boss", d

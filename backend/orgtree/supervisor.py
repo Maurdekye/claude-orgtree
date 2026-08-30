@@ -10615,7 +10615,10 @@ def _working_locked(exclude: tuple[str, str] | None = None) -> list[str]:
     return sorted(out)
 
 
-def launch_self_restart(slug: str, nid: str, target: str) -> dict[str, Any]:
+def launch_self_restart(
+        slug: str, nid: str, target: str,
+        *, child_started: Callable[[Any], None] | None = None,
+) -> dict[str, Any]:
     """FR-14 (user request 2026-08-06): an org redeploys ITSELF — the shared
     backend install and/or the machine's mail hub — without an outside
     operator chat. The gate (ledger.self_restart_gate) has already run.
@@ -10712,9 +10715,12 @@ def launch_self_restart(slug: str, nid: str, target: str) -> dict[str, Any]:
         # coming. On target="both" TWO children are spawned and only this one
         # is the danger — the hub leg literally sleeps 45s and then rebuilds.
         if os.name == "nt":
-            armed_window = _arm_deploy_window(_detached_spawn(
+            child = _detached_spawn(
                 ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-                 "-File", os.path.join(repo, "update.ps1")], repo, logpath))
+                 "-File", os.path.join(repo, "update.ps1")], repo, logpath)
+            if child is not None and child_started is not None:
+                child_started(child)
+            armed_window = _arm_deploy_window(child)
         else:
             # ⚠ the var is cleared EXPLICITLY, not merely left unset. update.sh
             # reads ${ORGTREE_ONLY_IF_BEHIND:-} from its inherited environment,
@@ -10722,9 +10728,12 @@ def launch_self_restart(slug: str, nid: str, target: str) -> dict[str, Any]:
             # systemd unit, a profile export on the box — silently re-gate the
             # deploy and reinstate the exact bug D-142 removed, on Linux only,
             # where it is hardest to notice.
-            armed_window = _arm_deploy_window(_detached_spawn(
+            child = _detached_spawn(
                 ["bash", os.path.join(repo, "update.sh")], repo, logpath,
-                env={**os.environ, "ORGTREE_ONLY_IF_BEHIND": ""}))
+                env={**os.environ, "ORGTREE_ONLY_IF_BEHIND": ""})
+            if child is not None and child_started is not None:
+                child_started(child)
+            armed_window = _arm_deploy_window(child)
         launched.append("org backend (git pull + rebuild + restart — "
                         "EVERY org on this machine restarts)")
     if target in ("mailhub", "both"):
@@ -10742,10 +10751,12 @@ def launch_self_restart(slug: str, nid: str, target: str) -> dict[str, Any]:
             else:
                 cmd_nt = "git pull; docker compose up -d --build"
                 cmd_px = "git pull && docker compose up -d --build"
-            _detached_spawn(
+            child = _detached_spawn(
                 ["powershell", "-NoProfile", "-Command", cmd_nt]
                 if os.name == "nt" else ["bash", "-lc", cmd_px],
                 hubdir, logpath)
+            if child is not None and child_started is not None:
+                child_started(child)
             launched.append("mail hub container (rebuilt in place — the "
                             "data volume, ports and .env are never touched)")
     return {"launched": launched, "log": logpath,
@@ -10825,7 +10836,7 @@ def _prime_path() -> str:
 
 
 def _prime_read() -> dict[str, Any]:
-    """The whole record: {"armed": {...}|None, "last_fired": {...}|None}.
+    """The machine record: armed/executing plus the last outcome fields.
 
     Never raises. A missing file is the normal empty state; a CORRUPT file is
     reported to the console and then treated as empty, because the failure
@@ -10859,11 +10870,21 @@ def _prime_write(d: dict[str, Any]) -> None:
 
 
 def primed_restart() -> dict[str, Any] | None:
-    """The armed prime, or None. This is the projection the org tree carries
-    to the UI and the tool's `status` action returns."""
+    """The machine-wide prime state projected to the API and status tool.
+
+    Old records have no explicit state, so an ``armed`` record still projects
+    as armed. Once firing begins, ``executing`` wins until the deploy helper
+    exits without killing us, or this process is replaced by the restart.
+    """
     with _prime_lock:
-        rec = _prime_read().get("armed")
-    return rec if isinstance(rec, dict) else None
+        data = _prime_read()
+        executing = data.get("executing")
+        armed = data.get("armed")
+    if isinstance(executing, dict):
+        return {**executing, "state": "executing"}
+    if isinstance(armed, dict):
+        return {**armed, "state": "armed"}
+    return None
 
 
 def arm_prime_restart(slug: str, nid: str, target: str,
@@ -10881,6 +10902,12 @@ def arm_prime_restart(slug: str, nid: str, target: str,
         raise ValueError(f"unknown self-restart target {target!r}")
     with _prime_lock:
         d = _prime_read()
+        executing = d.get("executing")
+        if isinstance(executing, dict):
+            return {
+                "armed": False, "already_armed": True,
+                "primed": {**executing, "state": "executing"},
+                "status": "restart in progress..."}
         cur = d.get("armed")
         if isinstance(cur, dict):
             return {
@@ -10918,6 +10945,11 @@ def cancel_prime_restart(slug: str, nid: str) -> dict[str, Any]:
     a no-op — the caller is usually checking, not undoing."""
     with _prime_lock:
         d = _prime_read()
+        executing = d.get("executing")
+        if isinstance(executing, dict):
+            return {"cancelled": False,
+                    "primed": {**executing, "state": "executing"},
+                    "status": "restart in progress..."}
         cur = d.get("armed")
         if not isinstance(cur, dict):
             return {"cancelled": False, "primed": None,
@@ -10972,6 +11004,26 @@ def _claim_quiet_machine(hold: bool) -> list[str] | None:
     return []
 
 
+def _clear_prime_execution(execution_id: str, why: str) -> None:
+    """Clear only the execution this caller observed.
+
+    Matching the id prevents a late child watcher from erasing a newer prime.
+    In the successful backend-restart path this code never runs: the process
+    is killed first, and startup clears the stale record in the replacement.
+    """
+    with _prime_lock:
+        data = _prime_read()
+        current = data.get("executing")
+        if (not isinstance(current, dict)
+                or current.get("execution_id") != execution_id):
+            return
+        data["executing"] = None
+        data["last_execution_ended"] = {
+            "at": now_iso(), "why": why, "was": dict(current),
+        }
+        _prime_write(data)
+
+
 def _fire_prime(rec: dict[str, Any]) -> dict[str, Any]:
     """Spend an armed prime: disarm it, then launch."""
     target = str(rec.get("target") or "org")
@@ -10982,6 +11034,8 @@ def _fire_prime(rec: dict[str, Any]) -> dict[str, Any]:
     if claim:
         return {"fired": False, "why": "busy", "busy": claim}
     adopted = False
+    execution_id = uuid.uuid4().hex
+    children: list[Any] = []
     try:
         # ☠ DISARM BEFORE SPAWNING, and the order is not arbitrary.
         # Spawn-then-disarm loses the race it cannot afford: `update.ps1`
@@ -10997,6 +11051,10 @@ def _fire_prime(rec: dict[str, Any]) -> dict[str, Any]:
         with _prime_lock:
             d = _prime_read()
             d["armed"] = None
+            d["executing"] = {
+                **dict(rec), "execution_id": execution_id,
+                "triggered_at": now_iso(), "triggered_at_ts": time.time(),
+            }
             _prime_write(d)
         # ⚠ NOT RE-GATED HERE, deliberately. `prime_restart_gate` ran at ARM
         # time, when an authorized agent decided. Re-checking authority now
@@ -11004,8 +11062,10 @@ def _fire_prime(rec: dict[str, Any]) -> dict[str, Any]:
         # most likely case, since surviving its author is the feature —
         # silently never fires. Authorization belongs to the decision; this
         # is only its deferred execution.
-        r = launch_self_restart(str(rec.get("by_org") or ""),
-                                str(rec.get("by_node") or ""), target)
+        r = launch_self_restart(
+            str(rec.get("by_org") or ""),
+            str(rec.get("by_node") or ""), target,
+            child_started=children.append)
         adopted = bool(r.get("deploy_window"))
         with _prime_lock:
             d = _prime_read()
@@ -11015,10 +11075,29 @@ def _fire_prime(rec: dict[str, Any]) -> dict[str, Any]:
                                "log": r.get("log"),
                                "status": str(r.get("status") or "")[:400]}
             _prime_write(d)
+        if children:
+            def watch_execution() -> None:
+                for child in children:
+                    try:
+                        child.wait()
+                    except Exception:                         # noqa: BLE001
+                        pass
+                _clear_prime_execution(execution_id,
+                                       "deploy helper exited")
+
+            threading.Thread(target=watch_execution, daemon=True,
+                             name="prime-restart-progress").start()
+        else:
+            # A rate-limit/refusal/spawn-failure launched nothing. Keeping
+            # the executing indicator would be as false as the old idle gap.
+            _clear_prime_execution(execution_id, "nothing launched")
         print(f"[orgtree] primed restart FIRED (target={target}, armed by "
               f"{rec.get('by_org')}/{rec.get('by_node')}): "
               f"{r.get('status')}", flush=True)
         return {"fired": True, "result": r}
+    except Exception:
+        _clear_prime_execution(execution_id, "launch raised")
+        raise
     finally:
         # ⚠ UNCONDITIONAL, and in a `finally` for the same reason
         # `_arm_deploy_window`'s release is: we took the hold ourselves and
@@ -11035,6 +11114,9 @@ def _prime_tick() -> None:
     """One poll of the prime engine. Split out so a check can drive it."""
     rec = primed_restart()
     if rec is None:
+        _prime_idle_since[0] = 0.0
+        return
+    if rec.get("state") == "executing":
         _prime_idle_since[0] = 0.0
         return
     # WAIT OUT the launch's one-at-a-time window instead of spending the
@@ -11063,6 +11145,21 @@ def _prime_tick() -> None:
     _fire_prime(rec)
 
 
+def _clear_stale_prime_execution_on_start() -> None:
+    """A new backend process ends the previous process's UI transition."""
+    with _prime_lock:
+        d = _prime_read()
+        stale = d.get("executing")
+        if not isinstance(stale, dict):
+            return
+        d["executing"] = None
+        d["last_execution_ended"] = {
+            "at": now_iso(), "why": "backend process restarted",
+            "was": dict(stale),
+        }
+        _prime_write(d)
+
+
 def start_prime_restart_engine() -> None:
     """FR-27: the runtime attachment for the primed restart. The FILE is the
     registry; this loop only watches for the moment to spend it — which is
@@ -11070,6 +11167,10 @@ def start_prime_restart_engine() -> None:
     global _prime_started
     if _prime_started:
         return
+    # An executing record belongs to the process that wrote it. Reaching this
+    # startup hook proves that process shut down and a replacement backend is
+    # taking over, so the shutdown-window indicator is now stale.
+    _clear_stale_prime_execution_on_start()
     _prime_started = True
 
     def run() -> None:

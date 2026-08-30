@@ -797,10 +797,25 @@ export interface PrimedChip { label: string; title: string; cutsUs: boolean }
 export function primedRestartChip(
   pr: { target?: string | null; by_org?: string | null
         by_node?: string | null; at?: string | null
-        reason?: string | null } | null | undefined,
+        reason?: string | null; state?: string | null
+        triggered_at?: string | null } | null | undefined,
 ): PrimedChip | null {
   if (!pr) return null
   const cutsUs = pr.target !== 'mailhub'
+  if (pr.state === 'executing') {
+    return {
+      label: 'restart in progress...',
+      title: [
+        `triggered at ${pr.triggered_at ?? '?'}; deploy has started`,
+        cutsUs
+          ? 'this backend is shutting down; every org on this machine will restart'
+          : 'the mail hub container is rebuilding; agents here are NOT restarted',
+        `originally armed by ${pr.by_org ?? '?'}/${pr.by_node ?? '?'}`
+          + (pr.reason ? ` — ${pr.reason}` : ''),
+      ].join('\n'),
+      cutsUs,
+    }
+  }
   return {
     label: cutsUs
       ? (pr.target === 'both' ? 'restart primed (+ mail hub)' : 'restart primed')
