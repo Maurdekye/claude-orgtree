@@ -512,6 +512,10 @@ class OrgDoc(TypedDict):
     org_inbox_read: NotRequired[int]
     kiosk: NotRequired[KioskCfg | None]
     sandbox: NotRequired[dict[str, Any]]    # api: {enabled, secret, limit_mb?}
+    # Frozen per-org bridge credential rotation state. Both are non-secret;
+    # the host-only signing key is a separate install file.
+    bridge_credential_generation: NotRequired[int]
+    bridge_credential_rotated_at: NotRequired[str]
     sandbox_vols_base: NotRequired[int]     # HISTORICAL (pre-disk legacy
                                             # enforcement, retired D-063) —
                                             # system-volume image seed (bytes);

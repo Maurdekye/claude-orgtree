@@ -24,7 +24,9 @@ from typing import cast
 
 def identity() -> tuple[str | None, str | None, str | None, str | None]:
     """(org, node, base_url, secret) — org+node from argv when the backend
-    passed them (it does since review C10), the cwd split as fallback.
+    passed them (it does since review C10), the cwd split as fallback. A third
+    argv value carries the frozen org's rotatable bridge credential when
+    present; same-org sandbox nodes are mutually trusted for this bearer.
 
     ⚠ The cwd is SHARED across a lineage: scratch_dir maps "name@gen" to the
     base "name" directory, so a live knowledge bearer's hook resolved as its
@@ -34,7 +36,8 @@ def identity() -> tuple[str | None, str | None, str | None, str | None]:
     Sandboxed kiosk containers mirror the host layout at ~/orgtree, so the
     cwd derivation is identical there; a `.bridge` file in the data root
     (written by the host into the mounted sandbox home) carries the
-    off-container backend URL + the org's bridge secret."""
+    off-container backend URL. Standard mode also keeps the legacy org-wide
+    secret there; frozen mode deliberately does not."""
     cwd = os.path.realpath(os.getcwd())
     data_root = os.path.realpath(
         os.environ.get("ORGTREE_DATA", os.path.expanduser("~/orgtree")))
@@ -48,6 +51,7 @@ def identity() -> tuple[str | None, str | None, str | None, str | None]:
         if len(parts) < 2:
             return None, None, None, None
         org, node = parts[0], parts[1]
+    argv_secret = sys.argv[3] if len(sys.argv) >= 4 else ""
     try:
         # ⚠ the file is written by ANOTHER process (sandbox.py, into a mounted
         # sandbox home) and can be truncated mid-write, a list, or carry a null
@@ -62,7 +66,8 @@ def identity() -> tuple[str | None, str | None, str | None, str | None]:
             url, secret = b.get("url"), b.get("secret", "")
             if isinstance(url, str) and url.strip():
                 return (org, node, url.strip().rstrip("/"),
-                        secret if isinstance(secret, str) else "")
+                        argv_secret or (secret if isinstance(secret, str)
+                                        else ""))
     except (OSError, ValueError):
         pass
     port = os.environ.get("ORGTREE_PORT")

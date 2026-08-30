@@ -18,29 +18,33 @@ Container layout (bind mounts):
 The in-container data layout mirrors the host's ~/orgtree shape on purpose:
 steer.py's cwd-derived identity and its ~/orgtree fallback work unchanged.
 `.bridge` in the container's data root carries the backend URL
-(host.docker.internal:<bridge port>) + the org's sandbox secret — the only
-door out, gated by api.BridgeGateway to /api/agent and the steer fetch.
+(host.docker.internal:<bridge port>) and, in standard mode, the org's legacy
+sandbox secret — the only door out, gated by api.BridgeGateway.
 
 Auth: the default is the PROXIED SUBSCRIPTION — the container's CLI points at
 the bridge's /anthropic/<secret> proxy (host-side OAuth, no credential file
-ever enters the sandbox); a kiosk `api_key` (creation form / dashboard) or
-ORGTREE_SANDBOX_API_KEY overrides it with a plain env key. The literal value
-'subscription' copies the host credentials into the sandbox home — private
-single-user installs only.
+ever enters the sandbox). In standard mode, a kiosk `api_key` (creation form /
+dashboard) or ORGTREE_SANDBOX_API_KEY overrides it with a plain env key, and
+the literal value 'subscription' copies host credentials into the sandbox
+home. Frozen mode keeps supported provider keys host-side and routes each org
+through a rotatable bridge token; nodes in that shared root-capable container
+are mutually trusted at the bridge identity boundary.
 """
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import shutil
 import subprocess
+import sys
 import threading
 import time
 import uuid
 from typing import TYPE_CHECKING, Any
 
-from . import deployment, store
+from . import bridgeauth, deployment, store
 
 if TYPE_CHECKING:
     from .ledger import Org
@@ -57,6 +61,18 @@ IMG_REV: str = "r2"
 BRIDGE_PORT: int = int(os.environ.get("ORGTREE_BRIDGE_PORT", "7362") or 0)
 MEM: str = os.environ.get("ORGTREE_SANDBOX_MEM", "4g")
 CPUS: str = os.environ.get("ORGTREE_SANDBOX_CPUS", "2")
+
+# Frozen deployments put every agent container on its own Docker-internal
+# network.  A tiny, unprivileged relay is the only dual-homed process: it can
+# reach the host bridge, but it accepts only the bridge operations frozen mode
+# needs (see frozen_gateway.py).  The alias is deliberately identical on every
+# per-org network; containers never share a network, so the name resolves only
+# to their own relay.
+FROZEN_GATEWAY_ALIAS = "orgtree-frozen-gateway"
+FROZEN_GATEWAY_PORT = 8765
+FROZEN_GATEWAY_LAYOUT = "gateway-v2"
+FROZEN_NETWORK_LAYOUT = "frozen-v1"
+_frozen_network_lock = threading.Lock()
 
 # --- the one-disk sandbox (user hard requirement 2026-07-31; pivot shipped
 # 2026-08-01, D-063: no one in the container may exhaust host disk beyond a
@@ -291,7 +307,18 @@ def docker_available() -> bool:
 
 
 def sandbox_secret(org: Org) -> str:
-    return (_cfg(org) or {}).get("secret", "")
+    """The persisted org-wide bridge root (legacy compatibility only)."""
+    return bridgeauth.root_secret(org)
+
+
+def bridge_credential(org: Org) -> str:
+    """The rotatable per-org credential used under the live policy."""
+    return bridgeauth.credential_for_org(org)
+
+
+def legacy_bridge_credentials_allowed() -> bool:
+    """Whether shared org-wide bridge credentials remain policy-allowed."""
+    return bridgeauth.legacy_credentials_allowed()
 
 
 def uses_subscription_auth(k: dict[str, Any] | None) -> bool:
@@ -354,6 +381,14 @@ def container_name(slug: str) -> str:
     return "orgtree-" + slug
 
 
+def frozen_network_name(slug: str) -> str:
+    return "orgtree-frozen-" + slug
+
+
+def frozen_gateway_name(slug: str) -> str:
+    return "orgtree-frozen-gateway-" + slug
+
+
 def sandbox_root(slug: str) -> str:
     return os.path.join(_DATA, "sandboxes", slug)
 
@@ -385,6 +420,12 @@ def auth_label(org: Org, k: Any = None) -> str:
     recreates the container instead of leaving it billing the old way."""
     import hashlib
     auth = container_auth(org, k)
+    # Frozen containers inherit no provider auth material, so their identity
+    # does not depend on which host-side provider lane is selected. This fixed label
+    # forces one recreate at either profile boundary but lets explicit keys
+    # rotate live without exposing even a key digest or recreating the box.
+    if not bridgeauth.legacy_credentials_allowed():
+        return "org-v1"
     low = auth.lower()
     if "prox" in low or low == "subscription":
         return low
@@ -417,6 +458,53 @@ def container_auth(org: Org, k: Any = None) -> str:
     return auth
 
 
+def shared_container_auth_env(org: Org, k: Any = None) -> dict[str, str]:
+    """Auth env baked into the shared container at ``docker run``.
+
+    Frozen mode returns nothing for every supported provider auth selection:
+    its provider URL and per-org bridge token are attached later by
+    ``docker exec``, and an explicit provider key stays on the host. The
+    ``container_auth`` call is deliberately before the policy branch so its
+    fail-closed validation cannot be bypassed by this helper.
+    """
+    key = container_auth(org, k)
+    if not legacy_bridge_credentials_allowed():
+        return {}
+    low = key.lower()
+    if "prox" in low:
+        return {
+            "ANTHROPIC_BASE_URL": f"{bridge_url()}/anthropic/{sandbox_secret(org)}",
+            "ANTHROPIC_API_KEY": "orgtree-proxied",
+        }
+    if low == "subscription":
+        return {}
+    return {"ANTHROPIC_API_KEY": key}
+
+
+def anthropic_proxy_api_key(org: Org, *, fallback_active: bool = False) -> str:
+    """Explicit key the host-side Anthropic relay should attach.
+
+    Standard mode keeps its historical split: literal keys live directly in
+    the container, while only api-fallback temporarily switches relay traffic
+    to the org key. Frozen mode routes literal keys through the per-org relay
+    too, so the actual provider credential never enters the shared container.
+    An empty return means the relay should use the host OAuth subscription.
+
+    Always resolve ``container_auth`` first.  Besides choosing org, kiosk, and
+    install-default keys consistently, it owns frozen policy validation of
+    forbidden legacy selectors.
+    """
+    selected = container_auth(org)
+    if fallback_active:
+        return str(org.d.get("api_key") or "").strip()
+    if legacy_bridge_credentials_allowed():
+        return ""
+    low = selected.lower()
+    if "prox" in low or low == "subscription":
+        return ""
+    return selected
+
+
 def sandbox_home(slug: str) -> str:
     if on_disk(slug):
         from . import disk
@@ -438,7 +526,70 @@ def cpath_scratch(slug: str, nid: str) -> str:
 
 
 def bridge_url() -> str:
+    """The bridge address visible inside an agent container.
+
+    Standard deployments keep the historical direct host-gateway route.
+    Frozen containers have no external route at all; the stable hostname is
+    their private network's fixed-upstream relay instead.
+    """
+    if not deployment.current_policy().allow_sandbox_internet:
+        validate_deployment_network()
+        return f"http://{FROZEN_GATEWAY_ALIAS}:{FROZEN_GATEWAY_PORT}"
     return f"http://host.docker.internal:{BRIDGE_PORT}"
+
+
+def validate_deployment_network(
+        *, policy: deployment.DeploymentPolicy | None = None) -> None:
+    """Refuse a frozen profile that has no usable host bridge listener."""
+    selected = policy or deployment.current_policy()
+    if selected.allow_sandbox_internet:
+        return
+    if not 1 <= BRIDGE_PORT <= 65535:
+        raise deployment.DeploymentConfigError(
+            "the frozen deployment profile requires ORGTREE_BRIDGE_PORT to "
+            "be an enabled TCP port from 1 through 65535; the private "
+            "sandbox gateway is the only permitted service path")
+
+
+def bridge_bind_host() -> str:
+    """Return the host-only address for the backend bridge listener.
+
+    Docker Desktop forwards ``host.docker.internal`` to loopback services on
+    Windows and macOS.  Native Linux uses the default bridge's host-side
+    gateway address instead: it is reachable by the relay container but is
+    not a LAN bind.  Refuse startup if that address cannot be established;
+    falling back to 0.0.0.0 would silently undo the frozen boundary.
+    """
+    if deployment.current_policy().allow_sandbox_internet:
+        return "0.0.0.0"
+    validate_deployment_network()
+    if sys.platform in ("win32", "darwin"):
+        return "127.0.0.1"
+    try:
+        r = _docker("network", "inspect", "bridge", "--format",
+                    "{{(index .IPAM.Config 0).Gateway}}")
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise RuntimeError("frozen deployment cannot inspect Docker's host "
+                           f"bridge address: {e}") from e
+    raw = r.stdout.strip()
+    try:
+        addr = ipaddress.ip_address(raw)
+    except ValueError as e:
+        detail = (r.stderr or raw or "no address returned").strip()
+        raise RuntimeError("frozen deployment cannot determine Docker's "
+                           f"host-only bridge address: {detail}") from e
+    if addr.is_unspecified or addr.is_loopback or addr.is_multicast:
+        raise RuntimeError("frozen deployment got an unusable Docker bridge "
+                           f"address: {addr}")
+    return str(addr)
+
+
+def bridge_file_config(org: Org) -> dict[str, str]:
+    """Shared ``.bridge`` content; frozen mode contains no credential."""
+    out = {"url": bridge_url()}
+    if legacy_bridge_credentials_allowed():
+        out["secret"] = sandbox_secret(org)
+    return out
 
 
 def chown_agent(org: Org, nid: str, *rel: str) -> None:
@@ -540,12 +691,125 @@ def ensure_image() -> str:
     return tag
 
 
+def _ensure_frozen_gateway(slug: str, image_tag: str) -> None:
+    """Create the per-org internal network and its fixed-upstream relay.
+
+    Only the relay is dual-homed.  The agent container joins the ``--internal``
+    network below and therefore has no route to the host, LAN, or internet.
+    The relay has no writable state, no capabilities, no published port, and
+    runs only frozen_gateway.py from the backend's read-only bind.
+    """
+    validate_deployment_network()
+    net = frozen_network_name(slug)
+    name = frozen_gateway_name(slug)
+    with _frozen_network_lock:
+        net_fmt = '{{.Internal}} {{index .Labels "orgtree.frozen"}}'
+        net_ins = _docker("network", "inspect", net, "--format", net_fmt)
+        if net_ins.returncode != 0:
+            made = _docker("network", "create", "--driver", "bridge",
+                           "--internal", "--label", "orgtree.frozen=1", net)
+            if made.returncode != 0 \
+                    and _docker("network", "inspect", net).returncode != 0:
+                raise RuntimeError("frozen sandbox network creation failed: "
+                                   + (made.stderr or made.stdout)[-500:])
+            net_ins = _docker("network", "inspect", net, "--format", net_fmt)
+        if net_ins.returncode != 0 \
+                or net_ins.stdout.strip().split() != ["true", "1"]:
+            raise RuntimeError(
+                f"refusing existing Docker network {net!r}: frozen mode "
+                "requires an internal network carrying orgtree.frozen=1")
+
+        ins = _docker(
+            "container", "inspect", "-f",
+            "{{.State.Running}} {{.Config.Image}} "
+            '{{index .Config.Labels "orgtree.layout"}}', name)
+        valid = False
+        running = False
+        if ins.returncode == 0:
+            parts = ins.stdout.split()
+            running = bool(parts and parts[0] == "true")
+            valid = (len(parts) >= 3 and parts[1] == image_tag
+                     and parts[2] == FROZEN_GATEWAY_LAYOUT)
+            if not valid:
+                _docker("rm", "-f", name, timeout=60)
+        if not valid:
+            relay = os.path.join("/opt/orgtree-backend", "orgtree",
+                                 "frozen_gateway.py")
+            run = _docker(
+                "create", "--name", name,
+                "--label", f"orgtree.layout={FROZEN_GATEWAY_LAYOUT}",
+                "--label", f"orgtree.frozen.slug={slug}",
+                "--read-only", "--tmpfs", "/tmp:rw,size=16m,mode=1777",
+                "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+                "--memory", "128m", "--cpus", "0.25", "--pids-limit", "64",
+                "--network", "bridge",
+                "--add-host", "host.docker.internal:host-gateway",
+                "-e", "PYTHONDONTWRITEBYTECODE=1",
+                "-v", f"{BACKEND_DIR}:/opt/orgtree-backend:ro",
+                image_tag, "python3", "-B", relay,
+                "--upstream", f"http://host.docker.internal:{BRIDGE_PORT}",
+                "--bind", FROZEN_GATEWAY_ALIAS,
+                "--port", str(FROZEN_GATEWAY_PORT), timeout=120)
+            if run.returncode != 0:
+                raise RuntimeError("frozen sandbox gateway creation failed: "
+                                   + (run.stderr or run.stdout)[-500:])
+
+        nets = _docker("container", "inspect", "-f",
+                       "{{json .NetworkSettings.Networks}}", name)
+        try:
+            attachments = set(json.loads(nets.stdout))
+        except (json.JSONDecodeError, TypeError):
+            raise RuntimeError("cannot verify frozen sandbox gateway network: "
+                               + (nets.stderr or nets.stdout)[-500:])
+        if "bridge" not in attachments or attachments - {"bridge", net}:
+            raise RuntimeError("refusing frozen sandbox gateway with unexpected "
+                               f"network attachments: {sorted(attachments)}")
+        attached = net in attachments
+        if not attached:
+            joined = _docker("network", "connect", "--alias",
+                             FROZEN_GATEWAY_ALIAS, net, name)
+            if joined.returncode != 0:
+                raise RuntimeError("cannot attach frozen sandbox gateway to "
+                                   "its private network: "
+                                   + (joined.stderr or joined.stdout)[-500:])
+        # Attach the private network before first start.  frozen_gateway binds
+        # only its alias on that interface, so its HTTP listener is not
+        # reachable from unrelated containers on the ordinary bridge.
+        if not running:
+            started = _docker("start", name)
+            if started.returncode != 0:
+                raise RuntimeError("frozen sandbox gateway failed to start: "
+                                   + (started.stderr or started.stdout)[-500:])
+        elif not attached:
+            # A running relay which lost and regained the private endpoint is
+            # still bound to the old address.  Restart it after reconnecting.
+            stopped = _docker("stop", "-t", "2", name)
+            started = _docker("start", name) if stopped.returncode == 0 \
+                else stopped
+            if started.returncode != 0:
+                raise RuntimeError("frozen sandbox gateway failed to restart "
+                                   "after network repair: "
+                                   + (started.stderr or started.stdout)[-500:])
+
+
+def _remove_frozen_gateway(slug: str) -> None:
+    """Best-effort cleanup after the agent container has been removed."""
+    try:
+        _docker("rm", "-f", frozen_gateway_name(slug), timeout=60)
+        _docker("network", "rm", frozen_network_name(slug), timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
 def ensure_container(org: Org) -> str:
     """The org's container, created on first need and restarted if stopped.
     Raises RuntimeError with an actionable message when it cannot run."""
     slug = org.d["slug"]
     k = org.d.get("kiosk") or {}
     name = container_name(slug)
+    policy = deployment.current_policy()
+    network_layout = ("standard" if policy.allow_sandbox_internet
+                      else FROZEN_NETWORK_LAYOUT)
     if not docker_ok():
         raise RuntimeError("Docker is not running — start Docker Desktop "
                            "(kiosk sandboxes run their turns in containers)")
@@ -578,13 +842,20 @@ def ensure_container(org: Org) -> str:
     ins = _docker("container", "inspect", "-f",
                   "{{.State.Running}} {{.Config.Image}} "
                   '{{index .Config.Labels "orgtree.layout"}} '
-                  '{{index .Config.Labels "orgtree.auth"}}', name)
+                  '{{index .Config.Labels "orgtree.auth"}} '
+                  '{{index .Config.Labels "orgtree.network"}}', name)
     if ins.returncode == 0:
         parts = ins.stdout.split()
         running = parts[0] if parts else ""
         cur_img = parts[1] if len(parts) > 1 else ""
         layout = parts[2] if len(parts) > 2 else ""
         cur_auth = parts[3] if len(parts) > 3 else ""
+        cur_network = parts[4] if len(parts) > 4 else ""
+        # Containers created before this profile existed are ordinary Docker
+        # bridge containers.  Treat the missing label as standard so merely
+        # upgrading a normal install does not recreate them.
+        if cur_network in ("", "<no value>"):
+            cur_network = "standard"
         # №44: the CLI rides the version-tagged read-only /usr/local volume,
         # so an image move requires a recreate (which re-mounts that volume);
         # a pre-disk layout recreates too (its state already migrated).
@@ -595,9 +866,15 @@ def ensure_container(org: Org) -> str:
         # the container's own API limits against the host subscription's
         # lanes. Recreating on change is what makes the config truthful.
         if (cur_img and cur_img != want) or layout != LAYOUT \
-                or cur_auth != auth_label(org, k):
+                or cur_auth != auth_label(org, k) \
+                or cur_network != network_layout:
             _docker("rm", "-f", name, timeout=60)
+            if cur_network == FROZEN_NETWORK_LAYOUT \
+                    and network_layout == "standard":
+                _remove_frozen_gateway(slug)
         else:
+            if network_layout == FROZEN_NETWORK_LAYOUT:
+                _ensure_frozen_gateway(slug, want)
             if running != "true":
                 _docker("start", name)
                 _heal_ownership(name)
@@ -615,7 +892,6 @@ def ensure_container(org: Org) -> str:
     # bridge's /anthropic passthrough instead; skipping the org key here is
     # what routes it there
     key = container_auth(org, k)
-    use_proxy = "prox" in key.lower()
     use_sub = key.lower() == "subscription"
     if use_sub and k.get("enabled") and k.get("token"):
         # structural, not a filter: see uses_subscription_auth
@@ -638,16 +914,23 @@ def ensure_container(org: Org) -> str:
         if not os.path.exists(cfg):
             with open(cfg, "w", encoding="utf-8") as f:
                 json.dump({"hasCompletedOnboarding": True}, f)
-    # the only door out: backend URL + this org's secret, read by steer.py
-    # and mcptool.py inside the container
+    # The locator is shared because the container is shared. Frozen mode keeps
+    # its rotatable per-org bearer out of the persistent file and injects it
+    # into each process/hook. This is at-rest reduction, not node isolation:
+    # root-capable siblings can read each other's live process state. Standard
+    # mode keeps the old document shape as its migration path.
+    bridge_doc = bridge_file_config(org)
     with open(os.path.join(home, "orgtree", ".bridge"), "w",
               encoding="utf-8") as f:
-        json.dump({"url": bridge_url(), "secret": sandbox_secret(org)}, f)
+        json.dump(bridge_doc, f)
     mp = dsk.mount_path(slug)
+    if network_layout == FROZEN_NETWORK_LAYOUT:
+        _ensure_frozen_gateway(slug, image_tag)
     r = _docker(
         "run", "-d", "--name", name,
         "--label", f"orgtree.layout={LAYOUT}",
         "--label", f"orgtree.auth={auth_label(org, k)}",
+        "--label", f"orgtree.network={network_layout}",
         "--memory", MEM, "--cpus", CPUS,
         # ONE capped disk (user verdict): rootfs read-only, every persistent
         # write — system dirs, home incl. transcripts, workspace, scratch —
@@ -657,20 +940,23 @@ def ensure_container(org: Org) -> str:
         "--read-only",
         "--tmpfs", f"/tmp:rw,size={TMP_SIZE},mode=1777",
         "--tmpfs", f"/run:rw,size={RUN_SIZE}",
+        *(["--network", frozen_network_name(slug)]
+          if network_layout == FROZEN_NETWORK_LAYOUT else []),
         *[a for d in SYS_DIRS for a in ("-v", f"{mp}/{d}:/{d}")],
         "-v", f"{usrlocal_volume(ver)}:/usr/local:ro",
-        "--add-host", "host.docker.internal:host-gateway",
-        *(["-e", "ANTHROPIC_BASE_URL="
-               f"{bridge_url()}/anthropic/{sandbox_secret(org)}",
-           "-e", "ANTHROPIC_API_KEY=orgtree-proxied"] if use_proxy
-          else [] if use_sub
-          else ["-e", "ANTHROPIC_API_KEY=" + key]),
+        *([] if network_layout == FROZEN_NETWORK_LAYOUT else
+          ["--add-host", "host.docker.internal:host-gateway"]),
+        *[item for env_key, env_val in
+          sorted(shared_container_auth_env(org, k).items())
+          for item in ("-e", f"{env_key}={env_val}")],
         "-v", f"{mp}/home:/home/agent",
         "-v", f"{mp}/workspace:{cpath_workspace(slug)}",
         "-v", f"{mp}/scratch:{cpath_data()}/scratch/{slug}",
         "-v", f"{BACKEND_DIR}:/opt/orgtree-backend:ro",
         image_tag, "sleep", "infinity", timeout=300)
     if r.returncode != 0:
+        if network_layout == FROZEN_NETWORK_LAYOUT:
+            _remove_frozen_gateway(slug)
         raise RuntimeError("sandbox container failed to start: "
                            + (r.stderr or r.stdout)[-500:])
     _heal_ownership(name)
@@ -771,9 +1057,31 @@ def sandbox_volumes_bytes(slug: str, max_age: float = 60.0) -> int | None:
     return total
 
 
-def exec_argv(name: str, cwd: str) -> list[str]:
+def bridge_exec_env(org: Org) -> dict[str, str]:
+    """Per-process provider proxy env for a sandboxed org.
+
+    Standard mode leaves the container's historical auth env untouched.
+    Frozen mode always routes through the bridge, including orgs configured
+    with explicit API keys; only the host relay sees the provider credential.
+    Resolving auth first preserves its fail-closed policy validation.
+    """
+    container_auth(org)
+    if legacy_bridge_credentials_allowed():
+        return {}
+    credential = bridge_credential(org)
+    return {
+        "ANTHROPIC_BASE_URL": f"{bridge_url()}/anthropic/{credential}",
+        "ANTHROPIC_API_KEY": "orgtree-proxied",
+    }
+
+
+def exec_argv(name: str, cwd: str,
+              env: dict[str, str] | None = None) -> list[str]:
     """Prefix that runs a command inside the org's container."""
-    return ["docker", "exec", "-i", "-w", cwd, name]
+    args = ["docker", "exec", "-i", "-w", cwd]
+    for key, value in sorted((env or {}).items()):
+        args += ["-e", f"{key}={value}"]
+    return args + [name]
 
 
 def kill_claude(name: str, match: str = "claude") -> None:
@@ -802,6 +1110,7 @@ def remove(slug: str) -> None:
     _dead.add(slug)
     try:
         _docker("rm", "-f", container_name(slug), timeout=60)
+        _remove_frozen_gateway(slug)
         _docker("volume", "rm", "-f", *[sys_volume(slug, d) for d in SYS_DIRS],
                 timeout=60)
     except (OSError, subprocess.TimeoutExpired):
@@ -828,6 +1137,7 @@ def warm(org: Org) -> None:
         if slug in _dead:        # deleted while we were building — tear down
             try:
                 _docker("rm", "-f", container_name(slug), timeout=60)
+                _remove_frozen_gateway(slug)
             except (OSError, subprocess.TimeoutExpired):
                 pass
     threading.Thread(target=run, daemon=True).start()
