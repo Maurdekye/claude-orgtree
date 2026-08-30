@@ -1439,6 +1439,78 @@ const splitNotices = (t: string | null | undefined) => {
   return { notices, rest: s.slice(m[0].length) }
 }
 
+/** A turn-start envelope can carry several authors.  Keep it structured until
+ * render time: treating its raw text as one user markdown bubble made passive
+ * notices look authored by the user, and a bold notice header could visually
+ * run into its body.  This is display-only; the backend's durable envelope is
+ * deliberately unchanged. */
+export interface TurnMail {
+  from: string
+  relationship: string
+  kind: string
+  at: string
+  body: string
+  passive: boolean
+}
+
+const TURN_MAIL_RE = /^\s*\[MAIL — \d+ message\(s\)\]\n([\s\S]*?)\n\[END MAIL\]\n*/
+const NOTICE_MAIL_RE = /^NOTICE FROM (\S+) \((.*?)\) · (.*?) — informational, delivered passively; no reply is expected\n?([\s\S]*)$/
+const DIRECT_MAIL_RE = /^FROM (\S+) \((.*?)\) · ([^·\n]+) · ([^\n]+)\n?([\s\S]*)$/
+
+export const splitTurnMail = (text: string | null | undefined) => {
+  const value = text ?? ''
+  const matched = TURN_MAIL_RE.exec(value)
+  if (!matched) return { mail: [] as TurnMail[], rest: value }
+  const mail: TurnMail[] = []
+  for (const block of (matched[1] ?? '').split('\n---\n')) {
+    const notice = NOTICE_MAIL_RE.exec(block)
+    if (notice) {
+      mail.push({ from: notice[1] ?? '', relationship: notice[2] ?? '', kind: 'notice',
+        at: notice[3] ?? '', body: notice[4] ?? '', passive: true })
+      continue
+    }
+    const direct = DIRECT_MAIL_RE.exec(block)
+    if (direct) {
+      mail.push({ from: direct[1] ?? '', relationship: direct[2] ?? '', kind: direct[3] ?? '',
+        at: direct[4] ?? '', body: direct[5] ?? '', passive: false })
+      continue
+    }
+    // A future envelope shape must stay visible rather than silently vanish.
+    return { mail: [] as TurnMail[], rest: value }
+  }
+  return { mail, rest: value.slice(matched[0].length) }
+}
+
+function TurnMailCard({ mail, slug, nid }: { mail: TurnMail; slug: string; nid: string }) {
+  const { rest: body, files } = parseAttachedFiles(mail.body)
+  const fb = fileBase(slug, nid)
+  return (
+    <section className={'turn-mail' + (mail.passive ? ' passive' : '')
+      + (mail.from === USER ? ' from-user' : '')}>
+      <header className="turn-mail-head">
+        <b>{mail.from}</b>
+        <span>{mail.relationship}</span>
+        <span>{mail.kind}</span>
+        <time>{mail.at}</time>
+        {mail.passive && <span className="turn-mail-passive">no reply expected</span>}
+      </header>
+      {body && <div className="turn-mail-body md" dangerouslySetInnerHTML={md(body, fb)} />}
+      {files.length > 0 && (
+        <div className="attach-row">
+          {files.map((f) => {
+            const name = f.path.split('/').pop() || f.path
+            const href = fileUrl(slug, nid, f.path)
+            return isImg(name)
+              ? <AttachThumb key={f.path} href={href} name={name} meta={f.size} />
+              : <a key={f.path} className="attach-chip" href={href} download={name} title="download">
+                  <DownloadIcon fontSize="inherit" /> {name}<span className="dim"> {f.size}</span></a>
+          })}
+        </div>
+      )}
+    </section>
+  )
+}
+
 // The restart replay (supervisor.reconcile) re-sends the message that drove an
 // interrupted turn, prefixed with this marker. Re-delivery is deliberate and
 // load-bearing — D-045's "worst case a duplicate, never a loss" — but the
@@ -1552,7 +1624,7 @@ function ToolChip({ t, slug, nid, onMailLink }: ToolChipProps) {
 }
 
 // №21: memoized — rows are static once fetched; only identity changes matter
-const Msg = memo(function Msg({ m, slug, nid, onMailLink }: {
+export const Msg = memo(function Msg({ m, slug, nid, onMailLink }: {
   m: ChatMessage; slug: string; nid: string; onMailLink?: MailLinkFn
 }) {
   if (m.role === 'system') return <SysLine m={m} />
@@ -1573,6 +1645,21 @@ const Msg = memo(function Msg({ m, slug, nid, onMailLink }: {
   // machine chrome, like the rest of the envelope: parsed OUT of the bubble
   // and rendered as real attachments below it, images viewable in place
   // (user spec 2026-08-25)
+  const turnMail = m.role === 'user'
+    ? splitTurnMail(rest) : { mail: [] as TurnMail[], rest }
+  if (turnMail.mail.length > 0) {
+    const tail = stripEnvelope(turnMail.rest)
+    return (
+      <div className="turn-mail-batch">
+        {notices.length > 0 && <NoticeLine notices={notices} />}
+        {turnMail.mail.map((mail, i) =>
+          <TurnMailCard key={`${mail.at}-${i}`} mail={mail} slug={slug} nid={nid} />)}
+        {tail && <div className="msg user turn-mail-tail">
+          <div className="msgtext md" dangerouslySetInnerHTML={md(tail, fileBase(slug, nid))} />
+        </div>}
+      </div>
+    )
+  }
   const { rest: text, files } = m.role === 'user'
     ? parseAttachedFiles(stripEnvelope(rest))
     : { rest: m.text, files: [] }
