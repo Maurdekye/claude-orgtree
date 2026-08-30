@@ -35,9 +35,11 @@ invalidating events is exactly what goes stale when someone adds a surface;
 the audit found surfaces nobody had enumerated.
 
 KILL SWITCH (cache-misses' A/B requirement): ORGTREE_WARM env sets the
-default; the file <ORGTREE_DATA>/warm.flag overrides it AT RUNTIME without a
-rebuild — write "0"/"1", or JSON {"enabled": bool, "exclude": ["slug/nid"]}
-for per-agent arms. Checked cheaply (mtime cache) on every decision.
+default — which is ON (user ruling 2026-08-30). The file
+<ORGTREE_DATA>/warm.flag overrides the env AT RUNTIME without a rebuild —
+write "0"/"1", or JSON {"enabled": bool, "exclude": ["slug/nid"]} for
+per-agent arms; the D-203 settings toggle writes the same file through
+set_enabled(). Checked cheaply (mtime cache) on every decision.
 
 TELEMETRY: append-only JSONL at <ORGTREE_DATA>/journals/warm.jsonl, in the
 exact shape cache-misses registered (admit / proc / pool lines). Deliberately
@@ -144,6 +146,16 @@ def warm_decision() -> tuple[bool, bool | None]:
     misattribution in the A/B. Callers journal THIS label, never a re-read:
     the flag can flip between a decision and a later read, and an admit row
     labelled with an arm the turn was not served under is worse than no row."""
+    # ⚠ THE DEFAULT IS ON (user ruling at merge, 2026-08-30: "warming on by
+    # default, though if you like, toggleable in the new app-wide
+    # settings"). A fresh deploy warms every eligible agent at boot. The
+    # runtime flag below is therefore the ONLY control arm for the A/B and
+    # the only back-out that needs no redeploy — and the user-facing
+    # settings toggle (D-203) is THE SAME UNDERLYING VALUE, written through
+    # set_enabled(): the preference and the lever are deliberately one
+    # piece of state, so do not "deduplicate" them apart later. A flip
+    # takes effect at the next keeper pass — within ORGTREE_WARM_POLL
+    # seconds, or immediately on any org activity.
     f = _read_flag()
     if f is None:
         env_on = os.environ.get("ORGTREE_WARM", "1") != "0"
@@ -151,6 +163,24 @@ def warm_decision() -> tuple[bool, bool | None]:
     if f.get("malformed"):
         return os.environ.get("ORGTREE_WARM", "1") != "0", None
     return bool(f["enabled"]), bool(f["enabled"])
+
+
+def set_enabled(on: bool) -> None:
+    """THE ONE WRITE PATH for the on/off half of the flag — the D-203
+    settings toggle and any operator flip both come through here. Preserves
+    the per-node exclude list (cache-misses' A/B arms): a bare "0"/"1" write
+    would clobber it. The toggle is a user preference and the flag is the
+    A/B control and back-out lever — SAME VALUE, on purpose; splitting them
+    would let the off-arm measurement and the user's setting disagree."""
+    f = _read_flag()
+    exclude = list(f.get("exclude") or []) if f and not f.get("malformed") \
+        else []
+    if exclude:
+        set_flag(json.dumps({"enabled": bool(on), "exclude": exclude}))
+    else:
+        set_flag("1" if on else "0")
+    _FLAG_CACHE["at"] = 0.0        # visible to the very next decision
+    poke()
 
 
 def warm_enabled() -> bool:

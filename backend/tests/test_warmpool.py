@@ -976,6 +976,42 @@ check("C4 · pool snapshot counts serving processes (the ceiling witness)",
       c_snapshot_counts_serving_processes)
 
 
+def h_default_is_on_and_set_enabled_preserves_excludes():
+    """USER RULING at merge (2026-08-30): "warming on by default, though if
+    you like, toggleable in the new app-wide settings." No env, no flag →
+    ON. And the D-203 toggle's write path (set_enabled) must not clobber
+    the A/B exclude list — the preference and the lever are one value."""
+    assert not os.path.exists(FLAG)
+    saved = os.environ.pop("ORGTREE_WARM", None)
+    W._FLAG_CACHE["at"] = 0.0            # bypass the mtime cache
+    try:
+        assert W.warm_decision() == (True, True), (
+            "with no env and no flag, warming must come up ON (user ruling)")
+    finally:
+        if saved is not None:
+            os.environ["ORGTREE_WARM"] = saved
+        W._FLAG_CACHE["at"] = 0.0
+    W.set_flag(json.dumps({"enabled": True,
+                           "exclude": [f"{SLUG}/slowboy"]}))
+    W._FLAG_CACHE["at"] = 0.0
+    W.set_enabled(False)                 # the settings-toggle write path
+    W._FLAG_CACHE["at"] = 0.0
+    on, lbl = W.warm_decision()
+    assert (on, lbl) == (False, False)
+    assert W.node_excluded(SLUG, "slowboy"), (
+        "set_enabled clobbered the A/B exclude list")
+    W.set_enabled(True)
+    W._FLAG_CACHE["at"] = 0.0
+    assert W.warm_decision() == (True, True)
+    assert W.node_excluded(SLUG, "slowboy")
+    os.remove(FLAG)
+    W._FLAG_CACHE["at"] = 0.0
+
+
+check("H1 · default is ON (user ruling); set_enabled preserves A/B excludes",
+      h_default_is_on_and_set_enabled_preserves_excludes)
+
+
 # ── teardown ───────────────────────────────────────────────────────────────
 with W._pool_lock:
     _left = list(W._pool.values())
