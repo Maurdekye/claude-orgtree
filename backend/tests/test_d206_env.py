@@ -30,6 +30,32 @@ def _no_sandbox(monkeypatch):
     monkeypatch.setattr(supervisor.sbx, "is_sandboxed", lambda _o: False)
 
 
+def test_cowork_env_set_for_unsandboxed_spawns(monkeypatch, tmp_path):
+    # Mutant that must fail here: deleting the env["CLAUDE_CODE_IS_COWORK"]
+    # line in spawn_env.
+    _no_sandbox(monkeypatch)
+    monkeypatch.setattr(supervisor.store, "DATA_ROOT", str(tmp_path))
+    _fresh_cache()
+    env = supervisor.spawn_env(_StubOrg())
+    assert env.get("CLAUDE_CODE_IS_COWORK") == "1", (
+        "the fleet diagnoser flag is not reaching claude spawns")
+    # clean_env must still strip an ambient copy rather than inherit it —
+    # the value must come from the injection, not the backend's own env.
+    monkeypatch.setenv("CLAUDE_CODE_IS_COWORK", "inherited")
+    env = supervisor.spawn_env(_StubOrg())
+    assert env.get("CLAUDE_CODE_IS_COWORK") == "1", (
+        "the flag rode the ambient environment instead of the injection")
+
+
+def test_cowork_env_absent_for_sandboxed_spawns(monkeypatch):
+    # Mutant that must fail here: moving the injection ABOVE the sandbox
+    # early-return.
+    monkeypatch.setattr(supervisor.sbx, "is_sandboxed", lambda _o: True)
+    env = supervisor.spawn_env(_StubOrg())
+    assert "CLAUDE_CODE_IS_COWORK" not in env, (
+        "sandbox spawns must keep the host-side env untouched")
+
+
 def test_env_overrides_reads_only_explicit_entries(monkeypatch, tmp_path):
     monkeypatch.setattr(supervisor.store, "DATA_ROOT", str(tmp_path))
     _fresh_cache()

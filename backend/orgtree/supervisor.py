@@ -1232,6 +1232,19 @@ def spawn_env(org: Org, tier: str | None = None,
     env = clean_env()
     if sbx.is_sandboxed(org):
         return env
+    # D-206 (fleet ruling 2026-08-30): turn on the CLI's own prompt-cache
+    # break diagnoser. CLAUDE_CODE_IS_COWORK gates Claude Code's per-request
+    # cache diff — named causes in the debug log ("[PROMPT CACHE BREAK] …",
+    # tengu_prompt_cache_break) and a state file that SURVIVES RESPAWNS,
+    # which is what makes turn-opening breaks attributable at all. Side
+    # effects enumerated on the pinned 2.1.220 (docs/cache-hazards.md):
+    # eager transcript flush, OTel diag level WARN, telemetry labels — and
+    # skills' inline !`cmd` preprocessing is DISABLED (no skill on this
+    # machine uses it). Must stay AFTER clean_env(), which strips every
+    # CLAUDE_CODE_* var. Revert = revert this commit alone.
+    # ⚠ Spawn env is NOT part of warmpool's ident_hash: a parked process
+    # only picks this up at its next respawn — it rides a deploy restart.
+    env["CLAUDE_CODE_IS_COWORK"] = "1"
     if nid is not None:
         env.update(env_overrides(org.d["slug"], nid))
     key = str(org.d.get("api_key") or "")
