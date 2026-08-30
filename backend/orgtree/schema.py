@@ -291,11 +291,17 @@ class NodeDoc(TypedDict):
     # net_fail_run — the count is CONSECUTIVE, and it is what stops a node
     # that keeps answering "usage limit reached" from waking itself forever.
     untrusted_limit_run: NotRequired[int]
-    # cheap-compact marker (user feature 2026-08-17): the CURRENT session was
-    # minted by cheap_compact — it started EMPTY (no CLI summary), so the
-    # supervisor splices breadcrumbs.md into the identity prompt on every
-    # spawn. A normal compaction (whose successor carries its own summary)
-    # clears it.
+    # cheap-compact marker (user feature 2026-08-17; narrowed by D-201/S1,
+    # coordinator-ruled 2026-08-30): the CURRENT session was minted by
+    # cheap_compact — it started EMPTY (no CLI summary), so the supervisor
+    # splices breadcrumbs.md into the identity prompt FOR THE SUCCESSOR'S
+    # FIRST TURN. The first SUCCESSFUL turn retires it durably (claude lane:
+    # at the result boundary, before the queue-feed decision; provider
+    # lanes: in _after_turn) — after that the content is in the conversation
+    # history, and re-splicing a file the agent appends every turn re-dirtied
+    # the prompt per turn (S1 in the D-201 audit). A FAILED first turn
+    # retains it. A normal compaction (whose successor carries its own
+    # summary) clears it as before.
     cheap_compacted: NotRequired[bool]
     # user bug 2026-08-18: the CURRENT session id was MINTED (cheap_compact,
     # reseed) and has never been handed to the CLI — so no transcript for it
