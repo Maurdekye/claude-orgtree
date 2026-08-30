@@ -14,11 +14,11 @@ import {
   LockIcon, MailIcon, RetireIcon, SettingsIcon,
 } from '../icons'
 import {
-  ago, CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DESK_SCALE, deskDpi, DRAFT, freezeKind, FREEZE_LABEL_SHORT, GEMINI_TIER_LETTER, GEMINI_TIER_SEAT, GEMINI_TIERS, NODE_H, NODE_W, TIER_LETTER, TIERS, USER,
+  ago, CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DESK_SCALE, deskDpi, DRAFT, familyOffer, freezeKind, FREEZE_LABEL_SHORT, GEMINI_TIER_LETTER, GEMINI_TIER_SEAT, GEMINI_TIERS, NODE_H, NODE_W, TIER_LETTER, TIER_SEAT, TIERS, USER,
   USER_H, USER_W,
 } from './shared'
 import type {
-  AttentionPip, CanvasNode, DraftScope, DraftState, MailLinkFn, OpFn, Pile,
+  AttentionPip, CanvasNode, DraftScope, DraftState, HireState, MailLinkFn, OpFn, Pile,
   Pt,
 } from './shared'
 import { Activity, ContextWheel, DeskChat } from './desk'
@@ -37,8 +37,11 @@ interface UserNodeProps {
    *  on the tooltip. `attentionPip` owns it now — see canvas/shared.ts. */
   pip: AttentionPip | null
   seats: Record<string, number>
-  codexHire?: { enabled: boolean; reason: string | null } | null
-  geminiHire?: { enabled: boolean; reason: string | null } | null
+  codexHire?: HireState | null
+  geminiHire?: HireState | null
+  claudeHire?: HireState | null
+  /** D-199: route out of the no-harness state (opens the accounts panel). */
+  onNoHarness?: () => void
   kiosk: TreePayload['kiosk']
   pub: boolean
   kioskRemaining: number | null
@@ -68,7 +71,7 @@ interface UserNodeProps {
   onNodeConfig?: (id: string) => void
 }
 
-export function UserNode({ pos, isDrop, stats, pip, seats, codexHire,
+export function UserNode({ pos, isDrop, stats, pip, seats, codexHire, claudeHire, onNoHarness,
   geminiHire,
   kiosk, pub, kioskRemaining, kioskSegs, pxc, zoom, onInbox, onGear, onSpawn,
   onMailLink,
@@ -161,6 +164,7 @@ export function UserNode({ pos, isDrop, stats, pip, seats, codexHire,
           to tell it apart from anything */}
       <SpawnChips onSpawn={onSpawn} free={kioskRemaining ?? Infinity} seats={seats}
         maxTier={kiosk?.max_tier} soleHire codexHire={codexHire}
+        claudeHire={claudeHire} onNoHarness={onNoHarness}
         geminiHire={geminiHire} />
       {focused && (
         <EyeDesk map={map} op={op} slug={slug} toast={toast}
@@ -390,10 +394,17 @@ interface SpawnChipsProps {
   soleHire?: boolean
   /** FR-15 M8: the codex family's hire state, from the /api/providers
    *  payload (threaded from OrgCanvas). undefined = payload not loaded —
-   *  degrade to the disabled preview, never to hidden. */
-  codexHire?: { enabled: boolean; reason: string | null } | null
+   *  degrade to the disabled preview, never to hidden (`familyOffer`). */
+  codexHire?: HireState | null
   /** D-189: the gemini family's hire state, same contract. */
-  geminiHire?: { enabled: boolean; reason: string | null } | null
+  geminiHire?: HireState | null
+  /** D-199: ...and Claude's, which nothing used to ask for. Same contract:
+   *  absent means "not known yet", not "not installed". */
+  claudeHire?: HireState | null
+  /** D-199: open the accounts panel — the route out of the no-harness state.
+   *  Optional: a surface that cannot open it simply renders the badge inert
+   *  rather than lying about being clickable. */
+  onNoHarness?: () => void
   /** At far map zoom the screen-constant family cluster exceeds its card.
    *  Keep its provider/tier selection intact, but stage it behind one neutral
    *  outward-pointing control until the user asks to see it. */
@@ -403,8 +414,8 @@ interface SpawnChipsProps {
 }
 
 function SpawnChips({ onSpawn, free, seats, maxTier, side, soleHire,
-  codexHire, geminiHire, farCompact = false, expanded = false,
-  onToggleExpanded }: SpawnChipsProps) {
+  codexHire, geminiHire, claudeHire, onNoHarness, farCompact = false,
+  expanded = false, onToggleExpanded }: SpawnChipsProps) {
   // kiosk tier cap (user spec): tokens above the cap DISAPPEAR entirely —
   // seat cost doubles as the tier rank, so the cap is a simple cost compare
   const shown = TIERS.filter((t) =>
@@ -451,6 +462,18 @@ function SpawnChips({ onSpawn, free, seats, maxTier, side, soleHire,
       </button>
     )
   }
+  // D-199: one disabled chip, for a family that IS installed but signed out.
+  // The reason is the payload's own (`run codex login`, `run claude once`),
+  // so the remedy the user reads here is the remedy the accounts panel and
+  // the server's refusal name too.
+  const outChip = (t: string, letter: string | undefined, label: string,
+                   reason: string | null, seat: number) => (
+    <button key={t} disabled className={'t-' + t + ' codex-preview'}
+      title={`${t} — ${label}; `
+        + (reason ?? 'hiring is not enabled yet') + ` (-${seat})`}>
+      {letter}
+    </button>
+  )
   // PROVIDER ROWS (user spec 2026-08-28): each provider's chips on their own
   // row (own COLUMN on the coworker edges), the families sorted INWARD-TO-
   // OUTWARD by how many model tiers each has available, highest count
@@ -461,51 +484,66 @@ function SpawnChips({ onSpawn, free, seats, maxTier, side, soleHire,
   // the list is REVERSED exactly on the edges where "first" points away
   // (top's stack grows upward, left's grows outward).
   //
-  // kiosks hold codex out entirely (user ruling — sandboxing unsettled),
-  // and the kiosk cap is the one thing that sets maxTier, so it doubles as
-  // the kiosk test here. When the provider payload has not enabled codex
-  // hire, the family still SHOWS — disabled, subordinate strip only, the
-  // accounts panel carrying the full install/connect story — so it exists
-  // without crowding the edge-gated sets.
-  const fams: { key: string; tiers: string[]; body: ReactNode }[] = [
-    { key: 'claude', tiers: shown,
-      body: shown.map((t) => chip(t, TIER_LETTER[t])) },
-  ]
-  if (!maxTier && codexHire?.enabled)
-    fams.push({ key: 'codex', tiers: CODEX_TIERS,
-                body: CODEX_TIERS.map((t) => chip(t, CODEX_TIER_LETTER[t])) })
-  else if (!maxTier && !side)
+  // D-199: ONE RULE PER FAMILY, THE SAME ON EVERY STRIP. `familyOffer` decides
+  // offer/disable/hide (shared.ts owns it; do not re-derive it here or in
+  // anything wrapping this). What this replaced was three different rules:
+  // codex and gemini showed a disabled preview on the subordinate strip but
+  // vanished from the side and top strips (`!side`), so one provider was
+  // visible on one edge of a card and absent from another — and Claude was
+  // never asked at all, which is the bug the user reported.
+  //
+  // The kiosk holdout is unchanged and still absolute: kiosks hold codex and
+  // gemini out entirely (user ruling — sandboxing unsettled), and the kiosk
+  // cap is the one thing that sets maxTier, so it doubles as the kiosk test.
+  const fams: { key: string; tiers: string[]; body: ReactNode }[] = []
+  const fam = (key: string, tiers: string[], letters: Record<string, string>,
+               label: string, hire: HireState | null | undefined,
+               seatOf: (t: string) => number,
+               kioskHeld = false): void => {
+    if (kioskHeld) return
+    const offer = familyOffer(hire)
+    if (offer === 'hide') return
     fams.push({
-      key: 'codex', tiers: CODEX_TIERS,
-      body: CODEX_TIERS.map((t) => (
-        <button key={t} disabled className={'t-' + t + ' codex-preview'}
-          title={`${t} — Codex; `
-            + (codexHire?.reason ?? 'hiring is not enabled yet')
-            + ` (-${seats[t] ?? CODEX_TIER_SEAT[t]})`}>
-          {CODEX_TIER_LETTER[t]}
-        </button>
-      )),
+      key, tiers,
+      body: tiers.map((t) => (offer === 'offer'
+        ? chip(t, letters[t])
+        : outChip(t, letters[t], label, hire?.reason ?? null, seatOf(t)))),
     })
-  // the gemini family, same holdout/preview rules as codex (D-189)
-  if (!maxTier && geminiHire?.enabled)
-    fams.push({ key: 'gemini', tiers: GEMINI_TIERS,
-                body: GEMINI_TIERS.map((t) => chip(t, GEMINI_TIER_LETTER[t])) })
-  else if (!maxTier && !side)
-    fams.push({
-      key: 'gemini', tiers: GEMINI_TIERS,
-      body: GEMINI_TIERS.map((t) => (
-        <button key={t} disabled className={'t-' + t + ' codex-preview'}
-          title={`${t} — Gemini; `
-            + (geminiHire?.reason ?? 'hiring is not enabled yet')
-            + ` (-${seats[t] ?? GEMINI_TIER_SEAT[t]})`}>
-          {GEMINI_TIER_LETTER[t]}
-        </button>
-      )),
-    })
+  }
+  // Claude's own list is the kiosk-capped `shown`, not the raw family: the cap
+  // removes tiers, the offer rule removes families, and they compose.
+  fam('claude', shown, TIER_LETTER, 'Claude', claudeHire,
+      (t) => seats[t] ?? TIER_SEAT[t] ?? 0)
+  fam('codex', CODEX_TIERS, CODEX_TIER_LETTER, 'Codex', codexHire,
+      (t) => seats[t] ?? CODEX_TIER_SEAT[t] ?? 0, !!maxTier)
+  fam('gemini', GEMINI_TIERS, GEMINI_TIER_LETTER, 'Gemini', geminiHire,
+      (t) => seats[t] ?? GEMINI_TIER_SEAT[t] ?? 0, !!maxTier)
   fams.sort((a, b) => b.tiers.length - a.tiers.length)   // inward-first
-  // Provider availability is dynamic. A compact arrow with no corresponding
-  // hire choice is worse than an absent affordance, so leave the whole strip
-  // out when the current provider policy offers no families at all.
+  // D-199, the state a brand-new user on a fresh machine hits FIRST: no
+  // provider is installed, so every family hid and the strip would render
+  // empty. An empty hover strip is indistinguishable from a broken one, so
+  // this says what happened and points at the one place that can fix it.
+  // Deliberately a `fams` ENTRY rather than a branch around the strip: the
+  // far-zoom compact control wraps whatever `fams` produced, so shaping the
+  // empty state as a family means that control expands it like any other row
+  // instead of collapsing to a dead arrow.
+  if (!fams.length && !maxTier)
+    fams.push({
+      key: 'none', tiers: [],
+      body: (
+        <button className="hs-none" disabled={!onNoHarness}
+          onClick={(e) => { e.stopPropagation(); onNoHarness?.() }}
+          title={'no agent harness found on this machine — install or sign '
+            + 'in to Claude Code, Codex or Gemini'
+            + (onNoHarness ? ' (opens the accounts panel)' : '')}>
+          no harness
+        </button>
+      ),
+    })
+  // ...and the residual case that is NOT the no-harness state: a kiosk whose
+  // cap has excluded everything. There is nothing to say and nothing to open,
+  // so leave the strip out entirely — a compact arrow with no hire choice
+  // behind it is worse than an absent affordance.
   if (!fams.length) return null
   const away = side === 'top' || side === 'left'   // "first" points away
   if (away) fams.reverse()
@@ -868,8 +906,11 @@ interface NodeSquareProps {
   dragging: boolean
   isDrop: boolean
   seats: Record<string, number>
-  codexHire?: { enabled: boolean; reason: string | null } | null
-  geminiHire?: { enabled: boolean; reason: string | null } | null
+  codexHire?: HireState | null
+  geminiHire?: HireState | null
+  claudeHire?: HireState | null
+  /** D-199: route out of the no-harness state (opens the accounts panel). */
+  onNoHarness?: () => void
   map: Map<string, CanvasNode>
   op: OpFn
   slug: string
@@ -917,7 +958,7 @@ interface NodeSquareProps {
 // before that label-only LOD switch, not at it.
 const HIRE_COMPACT_ZOOM = .75
 
-export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, codexHire, geminiHire, map, op, slug,
+export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, codexHire, geminiHire, claudeHire, onNoHarness, map, op, slug,
   toast, pxc, zoom, onSpawn, onSpawnSide, onSpawnTop, onConfig, onInbox, onLineage, onOpenDoc,
   onRecenter, onJump, pub, kioskRemaining, cascadeAlloc, maxTop, pile, compactAt, maxTier,
   onMailLink, onDragStart, onDragMove, onDragEnd, onDragCancel,
@@ -1193,6 +1234,7 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, c
       {live && !node.isBearerOf && !node.bearer_state &&
         <SpawnChips onSpawn={onSpawn} free={kioskRemaining ?? Infinity} seats={seats}
           maxTier={maxTier} codexHire={codexHire} geminiHire={geminiHire}
+          claudeHire={claudeHire} onNoHarness={onNoHarness}
           farCompact={compactHire} expanded={expandedHireEdge === 'b'}
           onToggleExpanded={() => toggleCompactHire('b')} />}
       {/* FR-03: presented documents pop out the card's side as square icon
@@ -1220,11 +1262,13 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, c
           <SpawnChips side="left" onSpawn={(t) => onSpawnSide(t, 'left')}
             free={kioskRemaining ?? Infinity} seats={seats} maxTier={maxTier}
             codexHire={codexHire} geminiHire={geminiHire}
+            claudeHire={claudeHire} onNoHarness={onNoHarness}
             farCompact={compactHire} expanded={expandedHireEdge === 'l'}
             onToggleExpanded={() => toggleCompactHire('l')} />
           <SpawnChips side="right" onSpawn={(t) => onSpawnSide(t, 'right')}
             free={kioskRemaining ?? Infinity} seats={seats} maxTier={maxTier}
             codexHire={codexHire} geminiHire={geminiHire}
+            claudeHire={claudeHire} onNoHarness={onNoHarness}
             farCompact={compactHire} expanded={expandedHireEdge === 'r'}
             onToggleExpanded={() => toggleCompactHire('r')} />
         </>
@@ -1237,6 +1281,7 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, c
         <SpawnChips side="top" onSpawn={(t) => onSpawnTop(t)}
           free={kioskRemaining ?? Infinity} seats={seats} maxTier={maxTier}
           codexHire={codexHire} geminiHire={geminiHire}
+          claudeHire={claudeHire} onNoHarness={onNoHarness}
           farCompact={compactHire} expanded={expandedHireEdge === 't'}
           onToggleExpanded={() => toggleCompactHire('t')} />
       )}

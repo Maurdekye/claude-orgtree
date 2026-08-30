@@ -2667,6 +2667,79 @@ exactly the state worth refusing. Because it is the same equality the provider
 legs resume on, a re-mint (fresh hire, compaction, re-seed) breaks it here and
 there together, so a stale marker correctly reads as claude-native.
 
+### D-199 · a harness you have not set up is not offered, and not accepted
+Ruling (coordinator, 2026-08-30, from a user report: *"if a user has codex cli
+set up but not claude code, will they only see codex hire tokens? … i want them
+to only see the hire buttons for the agent harnesses they actually have set
+up."*). They saw both. **A provider's tiers are offered exactly where that
+provider is usable, on every hire surface, and the server refuses the rest at
+the door.** The split, which is the substance of the ruling:
+
+> **NOT INSTALLED → HIDDEN. INSTALLED BUT SIGNED OUT → SHOWN, DISABLED, with
+> its reason. UNKNOWN → OFFERED.**
+
+Why the two unavailable states differ: *"you have not installed Codex"* is a
+fact about the MACHINE — identical on every card, and repeating it on thirty
+hovers is noise, not discoverability. The accounts panel is its home and
+already carries the install command. *"Installed but signed out"* is about a
+harness the user demonstrably HAS, where a silent gap reads as the app losing
+it and the remedy is one command away; that one stays visible carrying its own
+reason. This is deliberately NOT D-197's blanket show-disabled: there the
+refusal is about one node's own history and the reason is specific and
+actionable, here it would be the same sentence everywhere.
+CLAUDE WAS THE BUG, AND IT WAS EXEMPT BY CONSTRUCTION. `providers_payload`
+hard-coded `hire_enabled: True` for the claude entry, the API layer hard-coded
+`installed: True` beside it, and no hire surface had a `claudeHire` to consult
+at all — Claude's tiers came off the bare `TIERS` constant. Codex and Gemini
+had honest detection from the day they were added. So on a Codex-only machine
+all four Claude tokens rendered as live buttons (measured in a real browser
+before the fix, with `connected=false` in the same payload). Claude now
+answers the same three questions as everyone else, from
+`supervisor.claude_install_state` — which mirrors the `CLAUDE` resolution order
+(env → private pin → PATH) and re-probes behind a 60s cache, because the flow
+this feeds is "install it, then the buttons appear".
+THE SERVER IS THE OTHER HALF, AND THE UI IS NOT A SUBSTITUTE FOR IT.
+`provider_hire_gate` ungated Claude on the stated grounds that "its absence
+already fails loudly at spawn". Failing at spawn is not refusing at the door:
+the hire was ACCEPTED, the seat spent and the node created, and only the first
+turn failed. Chips not offering a tier stops a click; it does not stop a
+script, a peer agent, or a future surface. Claude is gated now, and the old
+note's fear — bricking every org on a transient detection bug — is answered by
+WHAT is detected: a file on disk plus a signed-in account, never a network
+call.
+Bounds: the gate keys on `CLAUDE_TIERS` MEMBERSHIP, not on `provider_of`.
+`provider_of` answers `"claude"` for an unknown tier by design (D-196), so a
+gate keyed on it would tell someone who typo'd a tier name to go install Claude
+Code. That is why the constant now exists; `claude_tiers()` reads it too, so
+the membership rule lives once.
+⚠ UNKNOWN OFFERS, AND THE FIRST IMPLEMENTATION HAD THIS WRONG. Both
+restrictive answers require POSITIVE knowledge. The cautious-looking reading —
+unknown → disable — is worse in both directions: `/api/providers` is not always
+fast (a cold codex probe shells out to `--version`), so the common case becomes
+a dead hire control on a good machine; and `getProviders` swallows its own
+failure, so an unresolved payload is null FOREVER — not a flicker but a
+permanently unusable hire strip, where "offer" degrades to exactly the
+behaviour that shipped for a year. A transient detection problem must not be
+able to brick hiring. The server gate is what makes offering safe: the
+mis-click is refused with the same reason the chip would have carried.
+Load-bearing: ONE rule, `familyOffer` in `canvas/shared.ts`, for every surface
+— node chips, eye chips, mobile sheet, and anything wrapping them. The three
+disagreed before this: an unavailable family was a disabled preview on the
+subordinate strip but HIDDEN on the side and top strips (`!side`), so the same
+provider was visible on one edge of a card and absent from another, while the
+mobile sheet always showed all three. The far-zoom compact control (D-198's
+sibling) takes its list from whatever that rule produced and must never
+re-derive it — a correct gate that a second surface duplicates is a defect
+waiting to happen.
+Two smaller things the same bug wore as other hats. The mobile sheet's initial
+tier was the literal `'sonnet'`, so on a Codex-only machine it opened
+pre-selected on a model that could not run; it now defaults to the first
+OFFERABLE tier. And when NOTHING is installed every family hides, which would
+leave an empty hover strip — indistinguishable from a broken one, and the
+state a brand-new user on a fresh machine hits FIRST. It renders a "no harness"
+badge that opens the accounts panel, shaped as a `fams` entry so the compact
+control expands it like any other row instead of collapsing to a dead arrow.
+
 ### D-183 · the gemini probe phase: ACP is the substrate, and four wire facts are load-bearing
 Findings (gemini-provider, 2026-08-29; every one measured live on gemini-cli
 0.57.0, probe logs banked in the implementing agent's scratch). The third

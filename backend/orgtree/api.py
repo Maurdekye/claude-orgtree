@@ -2123,10 +2123,20 @@ async def providers_info() -> dict[str, Any]:
 
     def _payload() -> dict[str, Any]:
         live = accounts.live_identity()
+        # D-199: `installed` was the literal `True`. It is now the same
+        # question the codex and gemini entries answer — does the CLI this
+        # machine would actually SPAWN exist — resolved by the one function
+        # that owns Claude's path (`supervisor.claude_install_state`, which
+        # mirrors the `CLAUDE` resolution order). `version` stays best-effort
+        # and is not evidence of install: `cli_version` falls back to a probe
+        # and can return a string for a CLI that is no longer there.
+        inst = supervisor.claude_install_state()
         return providers.providers_payload({
-            "installed": True,
-            "version": supervisor.cli_version(),
-            "connected": bool(live.get("uuid")),
+            "installed": bool(inst["installed"]),
+            "path": inst["path"],
+            "source": inst["source"],
+            "version": supervisor.cli_version() if inst["installed"] else None,
+            "connected": bool(inst["installed"] and live.get("uuid")),
             "email": live.get("email") or None,
         })
     return await run_in_threadpool(_payload)
@@ -5293,10 +5303,18 @@ def provider_hire_gate(org: Org, tier: str | None) -> None:
     the next step, in the order the user would take them.
 
     One gate for all FIVE doors (user hire, agent hire, user switch, agent
-    switch, and — D-197 — a user rehire that OVERRIDES the tier). Claude is
-    ungated here: it predates the provider axis, and its absence already fails
-    loudly at spawn — gating the incumbent would brick every existing org on a
-    transient detection bug.
+    switch, and — D-197 — a user rehire that OVERRIDES the tier).
+
+    ⚠ CLAUDE IS GATED TOO SINCE D-199, and the note that used to sit here said
+    the opposite: "Claude is ungated — its absence already fails loudly at
+    spawn". Failing at spawn is not the same as refusing at the door. The user
+    reported hire buttons for harnesses they had not set up, and the server was
+    the other half of it: it ACCEPTED a Claude hire on a machine with no Claude
+    (measured), spent the seat, created the node, and only then failed when the
+    turn tried to run. The old note's fear — bricking every existing org on a
+    transient detection bug — is answered by WHAT is detected: the CLI file
+    this machine would actually spawn, plus a signed-in account, re-probed
+    behind a 60s cache and never a network call.
 
     ⚠ THE COUNT IN THIS SENTENCE IS LOAD-BEARING, so update it when you add a
     door. It said "four" while rehire-with-a-tier went ungated, and that gap
@@ -5339,6 +5357,22 @@ def provider_hire_gate(org: Org, tier: str | None) -> None:
                 "Google account login, not an API key")
         return
     if tier not in providers.CODEX_TIERS:
+        # D-199: the CLAUDE branch, and it is the last one because Claude is
+        # the fallback lane — `provider_of` answers "claude" for an unknown
+        # tier, so anything unrecognised lands here and must not be refused by
+        # a Claude-shaped message. Gate only tiers Claude actually owns.
+        if tier in providers.CLAUDE_TIERS:
+            inst = supervisor.claude_install_state()
+            if not inst.get("installed"):
+                raise LedgerError(
+                    f"tier '{tier}' is a Claude tier and the Claude Code CLI "
+                    f"is not installed on this machine — the accounts panel's "
+                    f"Claude section has the install command")
+            if not accounts.live_identity().get("uuid"):
+                raise LedgerError(
+                    f"tier '{tier}' is a Claude tier and Claude is not signed "
+                    f"in — run `claude` once on this machine and complete the "
+                    f"login (accounts panel → Claude)")
         return
     st = providers.codex_status()
     if not st.get("installed"):

@@ -35,8 +35,12 @@ function card(zoom: number) {
   return mountView(
     <NodeSquare node={nd} pos={{ x: 0, y: 0 }} lod="norm" focused={false}
       dragging={false} isDrop={false} seats={seats}
-      codexHire={{ enabled: true, reason: null }}
-      geminiHire={{ enabled: true, reason: null }}
+      // D-199 added `installed` to HireState: the offer rule must tell an
+      // absent CLI (hide) from a signed-out one (disable), which `enabled`
+      // alone cannot. These fixtures are the fully-available machine.
+      codexHire={{ enabled: true, installed: true, reason: null }}
+      geminiHire={{ enabled: true, installed: true, reason: null }}
+      claudeHire={{ enabled: true, installed: true, reason: null }}
       map={new Map([[nd.id, nd]])} op={op} slug="org" toast={noop}
       pxc={1} zoom={zoom} compactAt={0.8} pub={false} maxTop={0}
       kioskRemaining={null} cascadeAlloc

@@ -118,6 +118,18 @@ GEMINI_TIERS: Final[dict[str, int]] = {
 GEMINI_MODELS: Final[dict[str, str]] = {
     t: _LEDGER_MODELS[t] for t in _GEMINI_TIER_NAMES}
 
+#: which tier names belong to CLAUDE — everything in the ledger's tables that
+#: is not another provider's, which is the rule `claude_tiers()` already
+#: applied inline. Named (D-199) because the hire gate needs to distinguish "a
+#: tier Claude actually owns" from "an unrecognised tier", and `provider_of`
+#: cannot: it answers "claude" for both, deliberately (see its docstring). A
+#: gate keyed on `provider_of` alone would refuse a typo'd tier with a message
+#: about installing Claude Code.
+CLAUDE_TIERS: Final[dict[str, int]] = {
+    t: seat for t, seat in _LEDGER_TIERS.items()
+    if t not in _CODEX_TIER_NAMES and t not in _GEMINI_TIER_NAMES}
+
+
 def provider_of(tier: str) -> str:
     """Which PROVIDER a tier runs on — `"openai"` | `"google"` | `"claude"`.
 
@@ -290,13 +302,13 @@ def claude_tiers() -> list[TierInfo]:
     """The Claude family, FROM the ledger's own tables — this module adds the
     provider axis without becoming a second copy of the seat prices. The
     ledger's tables carry EVERY provider's tiers (one flat vocabulary), so
-    membership in the codex axis is what says a row is not Claude's."""
+    membership in the codex axis is what says a row is not Claude's — the rule
+    now lives once, in CLAUDE_TIERS, which this reads."""
     letters = {"fable": "F", "opus": "O", "sonnet": "S", "haiku": "H"}
     return [
         {"tier": t, "provider": "claude", "seat": seat,
          "model": _LEDGER_MODELS.get(t, ""), "letter": letters.get(t, t[:1].upper())}
-        for t, seat in sorted(_LEDGER_TIERS.items(), key=lambda kv: kv[1])
-        if t not in CODEX_TIERS and t not in GEMINI_TIERS
+        for t, seat in sorted(CLAUDE_TIERS.items(), key=lambda kv: kv[1])
     ]
 
 
@@ -619,8 +631,24 @@ def providers_payload(claude_status: dict[str, Any]) -> dict[str, Any]:
             "cli": "Claude Code",
             "tiers": claude_tiers(),
             "status": claude_status,
-            "hire_enabled": True,
-            "reason": None,
+            # D-199: Claude answers the SAME question as the other two now.
+            # `hire_enabled: True` and a hard-coded `installed: True` used to
+            # sit here, so a machine with only Codex set up still offered all
+            # four Claude tiers as live hire buttons — the user's report. The
+            # composed `claude_status` carries real install/connect state; this
+            # only reads it, because the API layer owns the CLI path and the
+            # accounts registry and this module must stay importable from
+            # anywhere (see the docstring).
+            "hire_enabled": bool(claude_status.get("installed")
+                                 and claude_status.get("connected")),
+            "reason": (
+                None if claude_status.get("installed")
+                and claude_status.get("connected")
+                else "not signed in — run `claude` once on this machine "
+                     "and complete the login"
+                if claude_status.get("installed")
+                else "Claude Code is not installed — npm install -g "
+                     "@anthropic-ai/claude-code"),
         },
         {
             "id": "openai",

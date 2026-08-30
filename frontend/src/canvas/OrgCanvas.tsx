@@ -4,7 +4,7 @@
 // HUD and agent tray, and the modal wiring. Extracted verbatim from
 // Canvas.tsx in the phase-3 split.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { AudienceGrant, NodeStatus, ProviderInfo, ToastFn, TreeNode, TreePayload } from '../types'
 import { audienceAction, getProviders, orgInboxRead, reorderNode } from '../api'
@@ -13,13 +13,13 @@ import {
   FullscreenIcon, PublicIcon, RemoveIcon, ViewListIcon,
 } from '../icons'
 import {
-  ago, attentionPip, CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DOG_H, DOG_W, DRAFT, ease, edgeJumpPlacement, type EJForm, EXTERN, fallbackActive, flatten, GEMINI_TIER_LETTER, GEMINI_TIER_SEAT, GEMINI_TIERS, INBOX, INBOX_H, layout, NODE_H, NODE_W, orgPxc, segD,
-  segPoint, sizeOf, smooth, SPRING_C, SPRING_K, TIER_LETTER, TIERS, useCrowdPiles, USER, USER_H,
+  ago, attentionPip, CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DOG_H, DOG_W, DRAFT, ease, edgeJumpPlacement, type EJForm, EXTERN, fallbackActive, familyOffer, flatten, GEMINI_TIER_LETTER, GEMINI_TIER_SEAT, GEMINI_TIERS, INBOX, INBOX_H, layout, NODE_H, NODE_W, orgPxc, segD,
+  segPoint, sizeOf, smooth, SPRING_C, SPRING_K, TIER_LETTER, TIER_SEAT, TIERS, useCrowdPiles, USER, USER_H,
   USER_W, withDraftTree, Z_DESK, Z_MAX, Z_MINI,
 } from './shared'
 import type {
   CanvasNode, DraftScope, DraftState, MailEvent, MailLinkFn,
-  OpFn, Pile, Pt, Seg, Spring, StreamEvent, View,
+  HireState, OpFn, Pile, Pt, Seg, Spring, StreamEvent, View,
 } from './shared'
 import { Activity, ContextWheel, DeskChat, LineagePanel } from './desk'
 import { DocReader } from './docs'
@@ -36,6 +36,9 @@ export interface OrgCanvasProps {
   mailEvt: MailEvent | null
   /** open the user's inbox, optionally jumped to a specific mail id */
   onInbox?: (jump?: string) => void
+  /** D-199: open the accounts panel — the route out of the no-harness state,
+   *  which the canvas can reach but cannot render itself (it lives in App). */
+  onAccounts?: () => void
 }
 
 /** has this spring arrived? Both the spring loop (which snaps to the target on
@@ -48,7 +51,8 @@ const atRest = (s: Spring, tgt: Pt): boolean =>
   Math.abs(tgt.x - s.x) <= 0.4 && Math.abs(tgt.y - s.y) <= 0.4
   && Math.abs(s.vx) <= 2 && Math.abs(s.vy) <= 2
 
-export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvasProps) {
+export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
+  onAccounts }: OrgCanvasProps) {
   const [draft, setDraft] = useState<DraftState | null>(null)
   const [configId, setConfigId] = useState<string | null>(null)
   const [lineageId, setLineageId] = useState<string | null>(null)
@@ -91,22 +95,32 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
   const [codexProvider, setCodexProvider] = useState<ProviderInfo | null>(null)
   const [geminiProvider, setGeminiProvider] =
     useState<ProviderInfo | null>(null)
+  // D-199: Claude is read from the payload like the other two. It never was —
+  // there was no `claudeProvider` at all, and the chips rendered Claude's
+  // tiers off the bare TIERS constant — which is exactly why a machine with
+  // only Codex set up still offered four live Claude hire buttons.
+  const [claudeProvider, setClaudeProvider] =
+    useState<ProviderInfo | null>(null)
   useEffect(() => {
     getProviders().then((p) => {
       const cx = p.providers.find((v) => v.id === 'openai')
       if (cx) setCodexProvider(cx)
       const gm = p.providers.find((v) => v.id === 'google')
       if (gm) setGeminiProvider(gm)
+      const cl = p.providers.find((v) => v.id === 'claude')
+      if (cl) setClaudeProvider(cl)
     }).catch(() => {})
   }, [slug])
-  const codexHire = codexProvider && {
-    enabled: !!codexProvider.hire_enabled,
-    reason: codexProvider.reason,
+  // `installed` rides along because the offer rule needs to tell "absent" from
+  // "signed out" — hiding is reserved for the first (see `familyOffer`).
+  const hireOf = (p: ProviderInfo | null): HireState | null => p && {
+    enabled: !!p.hire_enabled,
+    installed: !!p.status?.installed,
+    reason: p.reason,
   }
-  const geminiHire = geminiProvider && {
-    enabled: !!geminiProvider.hire_enabled,
-    reason: geminiProvider.reason,
-  }
+  const codexHire = hireOf(codexProvider)
+  const geminiHire = hireOf(geminiProvider)
+  const claudeHire = hireOf(claudeProvider)
   // canonical retired-stack slot (user note 2026-08-06): display-order every
   // parent's children so archived siblings sit CONTIGUOUSLY at the first
   // archived ordinal. Buried members take no layout space, so with a
@@ -1696,6 +1710,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
               : Math.round(USER_H * 16 / 9)
             return <UserNode key={USER} pos={p} isDrop={dropId === USER} seats={seats}
               codexHire={codexHire} geminiHire={geminiHire}
+              claudeHire={claudeHire} onNoHarness={onAccounts}
               stats={orgStats}
               kiosk={tree.kiosk} pub={!!tree.public} kioskRemaining={kioskRemaining}
               kioskSegs={tree.roots.filter((n) => n.state === 'live')
@@ -1741,6 +1756,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
               dragging={nodeDrag.current?.id === n.id && nodeDrag.current!.moved}
               isDrop={dropId === n.id}
               seats={seats} codexHire={codexHire} geminiHire={geminiHire}
+              claudeHire={claudeHire} onNoHarness={onAccounts}
               map={map} op={op} slug={slug} toast={toast}
               pxc={pxPerCredit} zoom={view.z}
               onSpawn={(t) => spawn(n.id, t)}
@@ -2142,7 +2158,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
       {hireOpen && sheetId && map.get(sheetId) && (
         <MaybePortal>
           <HireSheet anchor={map.get(sheetId)!} seats={seats} codexHire={codexHire}
-            geminiHire={geminiHire}
+            geminiHire={geminiHire} claudeHire={claudeHire}
             defaultGrant={!map.get(sheetId)!.parent ? (tree.default_top_grant ?? 50) : 0}
             onClose={() => setHireOpen(false)}
             onHire={(tier, name, grant, placement) => {
@@ -2182,24 +2198,56 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox }: OrgCanvas
  *  is a full-screen form — and it carries PLACEMENT, so the F-03 side-hire
  *  and FR-25 splice semantics survive: below (report), left/right (coworker
  *  ordering), above (new superior — the anchor moves under the hire). */
-function HireSheet({ anchor, seats, codexHire, geminiHire, defaultGrant,
+function HireSheet({ anchor, seats, codexHire, geminiHire, claudeHire, defaultGrant,
   onHire,
   onClose }: {
   anchor: CanvasNode
   seats: Record<string, number>
-  codexHire?: { enabled: boolean; reason: string | null } | null
-  geminiHire?: { enabled: boolean; reason: string | null } | null
+  codexHire?: HireState | null
+  geminiHire?: HireState | null
+  claudeHire?: HireState | null
   defaultGrant: number
   onHire: (tier: string, name: string, grant: number,
     placement: 'below' | 'left' | 'right' | 'above') => void
   onClose: () => void
 }) {
-  const [tier, setTier] = useState('sonnet')
+  // D-199: which families this sheet may show, by the one shared rule.
+  const famRows = useMemo(() => ([
+    { key: 'claude', label: 'model tier — Claude', tiers: TIERS,
+      letters: TIER_LETTER, hire: claudeHire,
+      seatOf: (t: string) => seats[t] ?? TIER_SEAT[t] ?? 0 },
+    { key: 'codex', label: 'Codex', tiers: CODEX_TIERS,
+      letters: CODEX_TIER_LETTER, hire: codexHire,
+      seatOf: (t: string) => seats[t] ?? CODEX_TIER_SEAT[t] ?? 0 },
+    { key: 'gemini', label: 'Gemini', tiers: GEMINI_TIERS,
+      letters: GEMINI_TIER_LETTER, hire: geminiHire,
+      seatOf: (t: string) => seats[t] ?? GEMINI_TIER_SEAT[t] ?? 0 },
+  ] as const)
+    .map((f) => ({ ...f, offer: familyOffer(f.hire),
+                   reason: f.hire?.reason ?? 'hiring is not enabled yet' }))
+    .filter((f) => f.offer !== 'hide'),
+  [claudeHire, codexHire, geminiHire, seats])
+  // ⚠ THE DEFAULT TIER IS THE FIRST OFFERABLE ONE, NOT A CONSTANT. It was the
+  // literal 'sonnet', so on a machine with only Codex set up this sheet opened
+  // pre-selected on a model that could not run — the same bug as the buttons,
+  // one field over: the form's own initial value asserted an availability
+  // nobody had checked. Falls back to '' when nothing is offerable, which the
+  // submit guard below already treats as not-ready.
+  const firstOfferable = famRows.find((f) => f.offer === 'offer')?.tiers[0] ?? ''
+  const [tier, setTier] = useState(firstOfferable)
+  // the payload arrives after mount, so the first offerable tier can appear a
+  // beat later; adopt it only while the user has not chosen for themselves
+  const touched = useRef(false)
+  useEffect(() => {
+    if (!touched.current && firstOfferable && tier !== firstOfferable)
+      setTier(firstOfferable)
+  }, [firstOfferable])   // eslint-disable-line react-hooks/exhaustive-deps
+  const pickTier = (t: string) => { touched.current = true; setTier(t) }
   const [name, setName] = useState('')
   const [grant, setGrant] = useState(defaultGrant)
   const [placement, setPlacement] =
     useState<'below' | 'left' | 'right' | 'above'>('below')
-  const ok = /^[a-z][a-z0-9-]{1,29}$/.test(name.trim())
+  const ok = /^[a-z][a-z0-9-]{1,29}$/.test(name.trim()) && !!tier
   return (
     <div className="overlay" onPointerDown={(e) => e.stopPropagation()}>
       <div className="settings hire-sheet">
@@ -2207,47 +2255,36 @@ function HireSheet({ anchor, seats, codexHire, geminiHire, defaultGrant,
           : placement === 'above' ? ` above ${anchor.id}`
           : ` beside ${anchor.id}`}</h3>
         {/* each provider's tiers on their own row (user spec 2026-08-28) —
-            the compact form's version of the canvas's mirrored rows */}
-        <div className="field-label">model tier — Claude</div>
-        <div className="hs-tiers">
-          {TIERS.map((t) => (
-            <button key={t} className={'hs-tier t-' + t + (tier === t ? ' on' : '')}
-              onClick={() => setTier(t)}>
-              <span className={'tier t-' + t}>{TIER_LETTER[t]}</span>
-              {t} · seat {seats[t] ?? '?'}
-            </button>
-          ))}
-        </div>
-        <div className="field-label">
-          {codexHire?.enabled ? 'Codex' : 'Codex — preview'}</div>
-        <div className="hs-tiers">
-          {CODEX_TIERS.map((t) => (
-            <button key={t}
-              className={'hs-tier t-' + t + (tier === t ? ' on' : '')}
-              disabled={!codexHire?.enabled}
-              title={codexHire?.enabled ? undefined
-                : (codexHire?.reason ?? 'hiring is not enabled yet')}
-              onClick={() => setTier(t)}>
-              <span className={'tier t-' + t}>{CODEX_TIER_LETTER[t]}</span>
-              {t} · seat {seats[t] ?? CODEX_TIER_SEAT[t]}
-            </button>
-          ))}
-        </div>
-        <div className="field-label">
-          {geminiHire?.enabled ? 'Gemini' : 'Gemini — preview'}</div>
-        <div className="hs-tiers">
-          {GEMINI_TIERS.map((t) => (
-            <button key={t}
-              className={'hs-tier t-' + t + (tier === t ? ' on' : '')}
-              disabled={!geminiHire?.enabled}
-              title={geminiHire?.enabled ? undefined
-                : (geminiHire?.reason ?? 'hiring is not enabled yet')}
-              onClick={() => setTier(t)}>
-              <span className={'tier t-' + t}>{GEMINI_TIER_LETTER[t]}</span>
-              {t} · seat {seats[t] ?? GEMINI_TIER_SEAT[t]}
-            </button>
-          ))}
-        </div>
+            the compact form's version of the canvas's mirrored rows.
+            D-199: the SAME offer rule as the canvas chips, from the same
+            `familyOffer` — a row whose CLI is not installed is not rendered
+            at all, a row that is installed-but-signed-out renders disabled
+            with its reason. This sheet used to show all three unconditionally
+            and Claude always enabled. */}
+        {famRows.map((f) => (
+          <Fragment key={f.key}>
+            <div className="field-label">
+              {f.offer === 'offer' ? f.label : `${f.label} — ${f.reason}`}</div>
+            <div className="hs-tiers">
+              {f.tiers.map((t) => (
+                <button key={t}
+                  className={'hs-tier t-' + t + (tier === t ? ' on' : '')}
+                  disabled={f.offer !== 'offer'}
+                  title={f.offer === 'offer' ? undefined : f.reason}
+                  onClick={() => pickTier(t)}>
+                  <span className={'tier t-' + t}>{f.letters[t]}</span>
+                  {t} · seat {f.seatOf(t)}
+                </button>
+              ))}
+            </div>
+          </Fragment>
+        ))}
+        {!famRows.length && (
+          <div className="field-label hs-none-row">
+            no agent harness is set up on this machine — install or sign in to
+            Claude Code, Codex or Gemini from the accounts panel
+          </div>
+        )}
         <div className="field-label">placement</div>
         <div className="hs-place">
           {([['below', 'report — under ' + anchor.id],
