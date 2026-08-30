@@ -96,14 +96,15 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
   // fetch-once effect made a correctly persisted toggle look inert until a
   // reload or org change.
   const providerPayload = usePolled(getProviders, [slug], 60000)
-  const codexProvider = providerPayload?.providers.find(
+  const providerEntries = providerPayload?.providers ?? []
+  const codexProvider = providerEntries.find(
     (v) => v.id === 'openai') ?? null
-  const geminiProvider = providerPayload?.providers.find(
+  const geminiProvider = providerEntries.find(
     (v) => v.id === 'google') ?? null
   // D-199: Claude is read from the payload like the other two. It never was —
   // there was no `claudeProvider` at all, which is why a machine with only
   // Codex set up still offered four live Claude hire buttons.
-  const claudeProvider = providerPayload?.providers.find(
+  const claudeProvider = providerEntries.find(
     (v) => v.id === 'claude') ?? null
   // `installed` rides along because the offer rule needs to tell "absent" from
   // "signed out" — hiding is reserved for the first (see `familyOffer`).
