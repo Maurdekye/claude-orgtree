@@ -408,11 +408,31 @@ def journal_admit(slug: str, nid: str, sid: str, served: str, reason: str,
     seat the turn already holds rather than acquiring a new one). A stuck-mail
     incident (user report 2026-08-30) traced to a window this journal could
     not explain either way — a slot wait leaves no OTHER trace anywhere, so
-    without this field the next occurrence would be just as unexplainable."""
+    without this field the next occurrence would be just as unexplainable.
+
+    ⚠ THERE IS DELIBERATELY NO `handshake_ms` FIELD. One used to be written
+    here as the literal `0`, and cache-misses measured it vacuous
+    (2026-08-30): 0 in all 46 admit rows, cold spawns included. What makes
+    that a finding rather than a guess is the control — `spawn_ms` in the
+    SAME rows varies 0–483ms, so the journal does record varying values and
+    that field specifically was dead.
+
+    It is REMOVED rather than wired up, because there is no interval here to
+    measure. This pool by explicit user ruling (module docstring) NEVER WAITS
+    FOR THE MCP HANDSHAKE anywhere, so nothing at this seam observes the
+    handshake starting or finishing; any number written here would be
+    invented. Timing it means watching the CLI's own MCP readiness output,
+    which is a feature, not a field.
+
+    A MISSING FIELD IS HONEST; A PERMANENTLY-ZERO ONE LIES — and this one sat
+    in the journal this whole effort steers by, where `handshake_ms=0` on a
+    cold spawn reads as evidence the handshake was free, which is the
+    opposite of what the audit found. Do not re-add it without a proof that
+    it can be non-zero (coordinator-ruled 2026-08-30)."""
     _journal("admit", slug=slug, nid=nid, session_id=sid, served=served,
              reason=reason, ident_hash=ihash,
              warm_age_s=round(warm_age_s, 1) if warm_age_s is not None else None,
-             spawn_ms=spawn_ms, handshake_ms=0, warm_enabled=warm_label,
+             spawn_ms=spawn_ms, warm_enabled=warm_label,
              slot_wait_s=round(slot_wait_s, 1))
 
 
