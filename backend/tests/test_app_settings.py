@@ -17,13 +17,14 @@ import tempfile
 
 _TMP = tempfile.mkdtemp(prefix="orgtree-appsettings-")
 os.environ["ORGTREE_DATA"] = _TMP
+os.environ.pop("ORGTREE_WARM", None)
 os.makedirs(_TMP, exist_ok=True)
 with open(os.path.join(_TMP, "defaults.json"), "w", encoding="utf-8") as _f:
     _f.write('{"net_hub_address":"http://127.0.0.1:9"}')
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from fastapi.testclient import TestClient                    # noqa: E402
-from orgtree import api, appsettings, providers, store       # noqa: E402
+from orgtree import api, appsettings, providers, store, warmpool  # noqa: E402
 from orgtree.ledger import LedgerError, Org                  # noqa: E402
 
 FAILED: list[str] = []
@@ -180,6 +181,47 @@ def put_round_trip_and_unknown_refusal() -> None:
 
 check("PUT saves, reads back, and rejects an unknown provider",
       put_round_trip_and_unknown_refusal)
+
+
+print("\n§5  runtime setting is D-201's sole durable value")
+
+
+def runtime_round_trip_uses_warm_flag() -> None:
+    flag = os.path.join(_TMP, "warm.flag")
+    if os.path.exists(flag):
+        os.remove(flag)
+    warmpool._FLAG_CACHE["at"] = 0.0
+    client = TestClient(api.app)
+
+    initial = client.get("/api/app-settings/runtime")
+    assert initial.status_code == 200, initial.text
+    assert initial.json() == {"warming_enabled": True}, initial.json()
+
+    off = client.put(
+        "/api/app-settings/runtime", json={"enabled": False})
+    assert off.status_code == 200, off.text
+    assert off.json() == {"warming_enabled": False}, off.json()
+    assert open(flag, encoding="utf-8").read().strip() == "0"
+    warmpool._FLAG_CACHE["at"] = 0.0
+    assert warmpool.warm_enabled() is False
+
+    # There must not be a preference mirror: this file is provider admission
+    # only, while warm.flag is both the runtime lever and the visible setting.
+    settings_doc = appsettings.load(strict=True)
+    assert "runtime" not in settings_doc, settings_doc
+    assert "warming_enabled" not in settings_doc, settings_doc
+
+    on = client.put("/api/app-settings/runtime", json={"enabled": True})
+    assert on.status_code == 200, on.text
+    assert on.json() == {"warming_enabled": True}, on.json()
+    denied = api._public_denied(
+        "PUT", "/api/app-settings/runtime", "public-org")
+    assert denied == (
+        403, "kiosk: configuration is managed from the admin side"), denied
+
+
+check("GET/PUT round-trip warm.flag without an app-settings mirror",
+      runtime_round_trip_uses_warm_flag)
 
 print(f"\n{PASSED}/{PASSED + len(FAILED)} checks passed")
 if FAILED:

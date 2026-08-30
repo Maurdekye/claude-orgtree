@@ -250,6 +250,7 @@ def _public_denied(method: str, rest: str, slug: str) -> tuple[int, str] | None:
         # this up.
         or rest.startswith("/api/accounts")
         or rest.startswith("/api/providers")
+        or rest.startswith("/api/app-settings")
     )
     if frozen_config:
         return 403, "kiosk: configuration is managed from the admin side"
@@ -2183,6 +2184,37 @@ async def provider_preference(
     except (appsettings.AppSettingsUnreadable, OSError) as e:
         raise HTTPException(500, str(e)) from e
     return await run_in_threadpool(_providers_payload)
+
+
+class RuntimePreference(Body):
+    enabled: bool
+
+
+@app.get("/api/app-settings/runtime")
+async def runtime_preference_info() -> dict[str, bool]:
+    """Return the machine-wide warming preference/runtime control arm.
+
+    This deliberately reads D-201's warm.flag through warmpool rather than
+    mirroring it in app-settings.json: the user-facing preference, runtime
+    back-out lever and A/B measurement arm are the same durable value.
+    """
+    from fastapi.concurrency import run_in_threadpool
+
+    enabled = await run_in_threadpool(warmpool.warm_enabled)
+    return {"warming_enabled": enabled}
+
+
+@app.put("/api/app-settings/runtime")
+async def runtime_preference(body: RuntimePreference) -> dict[str, bool]:
+    """Flip process warming through warmpool's sole read/modify/write path."""
+    from fastapi.concurrency import run_in_threadpool
+
+    try:
+        await run_in_threadpool(warmpool.set_enabled, body.enabled)
+        enabled = await run_in_threadpool(warmpool.warm_enabled)
+    except OSError as e:
+        raise HTTPException(500, str(e)) from e
+    return {"warming_enabled": enabled}
 
 
 class Reorder(Body):
