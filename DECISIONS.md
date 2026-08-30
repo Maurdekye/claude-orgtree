@@ -2814,6 +2814,85 @@ state a brand-new user on a fresh machine hits FIRST. It renders a "no harness"
 badge that opens the accounts panel, shaped as a `fams` entry so the compact
 control expands it like any other row instead of collapsing to a dead arrow.
 
+### D-202 · an uninstalled provider is not part of the product
+Ruling (user, 2026-08-30): *"if codex isnt installed at all, then codex
+shouldnt appear anywhere in the ui whatsoever; it should be entirely absent.
+same with gemini. with claude, since orgtree is built around it, do show that
+its not installed on the accounts page, but make it a very small piece of ui."*
+Confirmed in the same breath for the middle state: *"if it is installed but not
+configured, thats when it appears in the ui with greyed out hire tokens."*
+
+> **NOT INSTALLED → ABSENT FROM THE WHOLE UI. INSTALLED BUT SIGNED OUT →
+> PRESENT, GREYED, with its reason. UNKNOWN → SHOWN.** Claude is the ONE
+> exception to the first: one small line on the accounts page, nowhere else.
+
+This WIDENS D-199 from the hire surfaces to every surface, and it OVERTURNS
+part of that entry on the user's authority. D-199 hid the buttons on the
+reasoning that the accounts panel was the install story's home, so
+discoverability survived. The user has now decided against that for Codex and
+Gemini: an uninstalled provider is simply not part of the product until it is
+installed. The trade is real and is accepted once, here — someone who has never
+heard of Codex will not learn from this UI that a Codex lane exists.
+ONE RULE, AND IT IS THE SAME QUESTION D-199 ALREADY ASKED. `providerShown` in
+`canvas/shared.ts` is defined as `familyOffer(h) !== 'hide'` rather than as a
+second test, so the hire chips and the wider UI cannot drift into disagreeing
+about whether a provider exists. The specific defect that shape prevents is a
+greyed-out Codex chip on a machine that has never had Codex — "absent" and
+"signed out" are different claims and only one function may decide which is
+which. `ProviderPresence` + `tierShown` carry the verdict to the surfaces that
+are not hire strips, and `hireOf` moved into the shared module when the third
+caller appeared.
+⚠ `tierShown(pres, tier, keep)` ALWAYS KEEPS `keep`, AND THAT IS A DATA
+PROPERTY, NOT A COURTESY. Both selectors it feeds pass their own current value:
+`NodeConfig` passes `node.tier`, `LineagePanel` passes the bearer's tier. A
+`<select>` whose value is absent from its options renders BLANK, so dropping a
+node's own tier would turn "open this agent's settings, change nothing, save"
+into a silent model switch. It is also simply true — a codex agent IS running
+on codex, whatever happened to the CLI afterwards.
+The surfaces, enumerated rather than sampled, because the failure mode is one
+leftover mention: the accounts panel's Codex and Gemini sections (whole
+sections, head and preview tag and tier list included), the model-switch
+dropdown's optgroups (dropped entirely, not rendered empty — an empty
+`<optgroup>` still shows its label), the lineage rehire picker, the usage
+modal's Codex block and the usage button's tooltip, which was the literal
+string `'usage limits — Claude and Codex'`.
+⚠ THE USAGE BLOCK WAS NOT GUARDED BY WHAT IT LOOKED LIKE IT WAS GUARDED BY.
+`codex_limits.fetch` returns a TRUTHY `{available: False, error: "Codex CLI is
+not installed"}` on a machine without Codex, so the bare `codex &&` gate
+rendered a "Codex" heading over that error — the app's clearest remaining
+"you could have Codex" advertisement. Measured, not reasoned about.
+D-197 IS NARROWED, NOT REVERSED, and the distinction is worth keeping. That
+entry lists cross-provider tiers disabled-with-a-reason because *"a gap
+explains nothing"*. That still holds for a provider the user HAS — being told
+why `terra` cannot resume a Claude transcript is information. It does not hold
+for one they have never installed, where the disabled row would be the first
+and only place the app mentions Codex exists. Installed families are still
+listed and disabled; absent ones are gone.
+THE REFUSALS HAD TO MOVE WITH THE UI. Three `provider_hire_gate` messages said
+*"the accounts panel's <X> section has the install command"* — a section this
+change DELETES on precisely the machines that get those refusals, and which for
+Claude never carried a command at all. The gate is now the only place a user is
+told how to install a provider, so it cannot be the copy that drifts:
+`providers.install_hint` is one source read by both the payload's `reason` and
+the gate. ⚠ Not `npm i -g`: codex and gemini install under the orgtree data dir
+with `--prefix`, because that is the copy `codex_path`/`gemini_path` resolve —
+a globally-installed CLI would leave the user just as broken, and the first
+draft of this entry's own fix got that wrong from memory before the repo was
+grepped.
+Unknown still means SHOWN, stated rather than left implicit. `getProviders`
+swallows its failure, so an unresolved payload is null forever rather than
+briefly; erasing a provider the user actually HAS is a worse failure than
+briefly showing one they lack, and the server gate refuses the click either
+way. Deliberately unchanged: the header's live-agent summary walks every tier
+but filters on actual agents, so an absent provider contributes nothing without
+being asked — and hiding a running Codex agent's own letter would make an
+inventory lie about what is in front of you.
+Seam left for D-203: `HireState.userEnabled` / `ProviderInfo.user_enabled`,
+checked FIRST in `familyOffer` and hiding on `=== false` only, so a backend
+that has never heard of the field reads as every provider ON. Kept distinct
+from `installed` on purpose — Claude reports absence on the accounts page and
+must not nag about installing something that is sitting there switched off.
+
 ### D-183 · the gemini probe phase: ACP is the substrate, and four wire facts are load-bearing
 Findings (gemini-provider, 2026-08-29; every one measured live on gemini-cli
 0.57.0, probe logs banked in the implementing agent's scratch). The third

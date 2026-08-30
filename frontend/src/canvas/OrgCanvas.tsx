@@ -13,7 +13,7 @@ import {
   FullscreenIcon, PublicIcon, RemoveIcon, ViewListIcon,
 } from '../icons'
 import {
-  ago, attentionPip, CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DOG_H, DOG_W, DRAFT, ease, edgeJumpPlacement, type EJForm, EXTERN, fallbackActive, familyOffer, flatten, GEMINI_TIER_LETTER, GEMINI_TIER_SEAT, GEMINI_TIERS, INBOX, INBOX_H, layout, NODE_H, NODE_W, orgPxc, segD,
+  ago, attentionPip, CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DOG_H, DOG_W, DRAFT, ease, edgeJumpPlacement, type EJForm, EXTERN, fallbackActive, familyOffer, flatten, GEMINI_TIER_LETTER, GEMINI_TIER_SEAT, GEMINI_TIERS, hireOf, INBOX, INBOX_H, layout, NODE_H, NODE_W, orgPxc, presenceOf, segD,
   segPoint, sizeOf, smooth, SPRING_C, SPRING_K, TIER_LETTER, TIER_SEAT, TIERS, useCrowdPiles, USER, USER_H,
   USER_W, withDraftTree, Z_DESK, Z_MAX, Z_MINI,
 } from './shared'
@@ -113,14 +113,17 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
   }, [slug])
   // `installed` rides along because the offer rule needs to tell "absent" from
   // "signed out" — hiding is reserved for the first (see `familyOffer`).
-  const hireOf = (p: ProviderInfo | null): HireState | null => p && {
-    enabled: !!p.hire_enabled,
-    installed: !!p.status?.installed,
-    reason: p.reason,
-  }
+  // D-202 moved `hireOf` into shared.ts when the accounts panel and the two
+  // dropdown surfaces started asking the same question.
   const codexHire = hireOf(codexProvider)
   const geminiHire = hireOf(geminiProvider)
   const claudeHire = hireOf(claudeProvider)
+  // D-202: which families exist on this machine at all, for the surfaces that
+  // are not hire strips (the model-switch dropdown, the lineage rehire
+  // dropdown). Same verdict the chips use — see `providerShown`.
+  const presence = useMemo(() => presenceOf({
+    claude: claudeProvider, openai: codexProvider, google: geminiProvider,
+  }), [claudeProvider, codexProvider, geminiProvider])
   // canonical retired-stack slot (user note 2026-08-06): display-order every
   // parent's children so archived siblings sit CONTIGUOUSLY at the first
   // archived ordinal. Buried members take no layout space, so with a
@@ -2092,11 +2095,12 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
       {configId && map.get(configId) && (
         <MaybePortal><NodeConfig node={map.get(configId)!} map={map} tree={tree} slug={slug}
           op={op} toast={toast} codexProvider={codexProvider}
-          geminiProvider={geminiProvider}
+          geminiProvider={geminiProvider} presence={presence}
           close={() => setConfigId(null)} /></MaybePortal>
       )}
       {lineageId && map.get(lineageId) && (
         <MaybePortal><LineagePanel node={map.get(lineageId)!} op={op} slug={slug}
+          presence={presence}
           close={() => setLineageId(null)} /></MaybePortal>
       )}
       {dogView && (tree.watchdogs ?? []).some((w) => w.id === dogView) && (

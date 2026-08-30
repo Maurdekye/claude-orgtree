@@ -3,7 +3,7 @@ import type { ReactNode } from 'react'
 import {
   audienceAction, BASE, clearInbox, createOrg, deleteOrg,
   fileBase, fileUrl, getAudiences, getDefaults, getEvents, getHost, getInbox, getOrgMd,
-  getCodexUsage, getCodexUsagePeek, getOrgNet, getSweepPreview, getTree,
+  getCodexUsage, getCodexUsagePeek, getOrgNet, getProviders, getSweepPreview, getTree,
   getUsageAll, getUsagePeek, killAll, listOrgs,
   markRead, openWs,
   probeHub, putOrgMd,
@@ -21,7 +21,7 @@ import {
 } from './icons'
 import { DirList } from './forms'
 import { FolderPickerHost } from './picker'
-import { ALL_TIERS, attentionPip, deskDpi, fallbackActive, freezeKind, orgPxc, primedRestartChip, setCrowdPilesOn, setDeskDpi, TIER_LETTER, useCrowdPiles, usePolled } from './canvas/shared'
+import { ALL_TIERS, attentionPip, deskDpi, fallbackActive, freezeKind, orgPxc, presenceOfPayload, primedRestartChip, setCrowdPilesOn, setDeskDpi, TIER_LETTER, useCrowdPiles, usePolled } from './canvas/shared'
 import { AskCard } from './canvas/asks'
 import { AccountsPanel, UsageBars } from './canvas/accounts'
 import { addPending, dropPending, ingestPulse, ingestStream, resetConvos } from './convo'
@@ -29,9 +29,10 @@ import type {
   AskInfo, AudiencesPayload, DefaultsPayload, HostPayload, InboxPayload,
   KioskSpecRequest,
   MailEntry, OpRequest, OrgEvent, OrgListEntry, SweepPreview, ToastFn,
+  ProvidersPayload,
   ToastUndo, TreeFrozen, TreeNode, TreePayload, UsageLimit, UsagePeek,
 } from './types'
-import type { MailRow } from './canvas/shared'
+import type { MailRow, ProviderPresence } from './canvas/shared'
 
 /** the cost chip's hover split: how much of the org total was billed to the
  *  api_fallback key vs the subscription. '' when the org has never used (and
@@ -53,8 +54,29 @@ type WsEvent =
   | { type: 'node_stream'; node: string; kind: string; text?: string; sticky?: boolean; id?: string }
   | { type: 'node_event'; node: string; event: string }
 
+/** D-202: the usage button's tooltip named "Claude and Codex" as a literal,
+ *  which is a Codex mention on a machine that has never had Codex. The bars
+ *  behind it exist for exactly these two providers (Gemini has no usage
+ *  route), so the label is the shown subset of them.
+ *
+ *  Falls back to the bare "usage limits" rather than an empty tail if neither
+ *  is present — a state that only arises with Claude itself missing, where
+ *  the button is nearly moot anyway and a dangling "usage limits — " would be
+ *  the more visible defect. */
+export const usageTitle = (pres: ProviderPresence): string => {
+  const names = [pres.claude && 'Claude', pres.openai && 'Codex']
+    .filter((s): s is string => !!s)
+  return names.length ? `usage limits — ${names.join(' and ')}` : 'usage limits'
+}
+
 /** The provider-neutral header summary. It deliberately walks ALL_TIERS:
- * this is an inventory of live agents, not a provider picker. */
+ * this is an inventory of live agents, not a provider picker.
+ * ⚠ D-202 DELIBERATELY LEFT THIS ALONE. It looks like a provider surface and
+ * is not: `.filter((tier) => byTier[tier])` means a family appears only when
+ * an agent is actually running on it, so an absent provider contributes
+ * nothing without being asked. Hiding a live Codex agent's own letter because
+ * the CLI went missing would make the header lie about what is running —
+ * the count is an inventory, and an inventory reports what is there. */
 export function ActiveAgentSummary({ tree }: { tree: TreePayload }) {
   const nodes = [...flatNodes(tree).values()].filter((n) => n.state === 'live')
   const busy = nodes.filter((n) => n.busy).length
@@ -139,6 +161,11 @@ export default function App() {
   const codexUsagePeek = usePolled(BASE ? noUsagePeek : getCodexUsagePeek, [], 60000)
   const usageAlert = useMemo(
     () => usagePeak(usagePeek, codexUsagePeek), [usagePeek, codexUsagePeek])
+  // D-202: which providers this machine actually has, for the usage button's
+  // label. Polled rather than fetched once so installing a CLI mid-session is
+  // picked up; unresolved is ALL_PRESENT, i.e. exactly today's wording.
+  const provPresence = presenceOfPayload(
+    usePolled(BASE ? noProviders : getProviders, [], 60000))
   // mobile compact orgbar (D-125 ruling 2026-08-14, 'one row, banner→chip'):
   // the detail chips + resume banner collapse behind a ⋯ toggle
   const [barMore, setBarMore] = useState(false)
@@ -351,7 +378,7 @@ export default function App() {
           <GitHubIcon fontSize="inherit" /></a>
         {!BASE &&
           <button className={'h1-usage' + (usageAlert ? ' u-' + usageAlert.sev : '')}
-            title={usageAlert?.title ?? 'usage limits — Claude and Codex'}
+            title={usageAlert?.title ?? usageTitle(provPresence)}
             onClick={() => setShowUsage(true)}>
             <DataUsageIcon fontSize="inherit" /></button>}
         {/* the accounts panel (machine-local routing, 2026-08-25). Beside
@@ -682,7 +709,7 @@ export default function App() {
                     endpoint (the public gateway 404s it) */}
                 {!tree.public &&
                   <button className={'iconbtn' + (usageAlert ? ' u-' + usageAlert.sev : '')}
-                    title={usageAlert?.title ?? 'usage limits — Claude and Codex'}
+                    title={usageAlert?.title ?? usageTitle(provPresence)}
                     onClick={() => setShowUsage(true)}>
                     <DataUsageIcon fontSize="inherit" /></button>}
                 {!tree.public &&
@@ -893,6 +920,13 @@ export const usagePeak = (...readouts: (UsagePeek | null)[]):
  *  the same nothing. */
 const NO_PEEK: UsagePeek = Object.freeze({ available: false })
 const noUsagePeek = (): Promise<UsagePeek> => Promise.resolve(NO_PEEK)
+// D-202: same shape for /api/providers — a kiosk gateway does not serve it,
+// so don't poll a 404 every minute. An EMPTY provider list, not a rejection:
+// `presenceOfPayload` reads that as all-present, which is the right answer
+// for a kiosk (it hires from the host's own harnesses, and the surfaces this
+// gates are admin-only and unrendered there anyway).
+const noProviders = (): Promise<ProvidersPayload> =>
+  Promise.resolve({ providers: [] })
 
 export function UsageModal({ close }: { close: () => void }) {
   useEsc(close)
@@ -902,11 +936,21 @@ export function UsageModal({ close }: { close: () => void }) {
   // and the panel's per-row buttons cannot drift apart.
   const all = usePolled(getUsageAll, [], 60000)
   const codex = usePolled(getCodexUsage, [], 60000)
+  // D-202. ⚠ `codex` IS TRUTHY ON A MACHINE WITH NO CODEX — measured, not
+  // assumed: codex_limits.fetch returns {available:false, error:"Codex CLI is
+  // not installed"} rather than nothing, so the bare `codex &&` gate below
+  // rendered a "Codex" heading over that error. It was the app's clearest
+  // remaining "you could have Codex" advertisement, and on a Codex-less
+  // machine the whole block is now absent instead.
+  const shown = presenceOfPayload(usePolled(getProviders, [], 60000))
   return (
     <div className="overlay" onClick={(e) => { e.stopPropagation(); close() }}>
       <div className="settings usage-modal" onClick={(e) => e.stopPropagation()}>
         <h3><DataUsageIcon fontSize="inherit" /> usage limits</h3>
-        {!all && !codex ? <div className="dim">loading…</div>
+        {/* the codex half only counts toward "still loading" while it is a
+            half this machine has — otherwise a Codex-less box would skip the
+            spinner and show a blank modal until the Claude bars land */}
+        {!all && !(shown.openai && codex) ? <div className="dim">loading…</div>
           : <>
           {(all?.accounts ?? []).map((a) => (
             <div className="usage-acct" key={a.account}>
@@ -918,7 +962,7 @@ export function UsageModal({ close }: { close: () => void }) {
               <UsageBars u={a} />
             </div>
           ))}
-          {codex && <div className="usage-acct" key={codex.account}>
+          {shown.openai && codex && <div className="usage-acct" key={codex.account}>
             <div className="usage-acct-head">
               <span className="acct-label">{codex.provider ?? 'Codex'}</span>
               <span className="dim"> · {codex.label}</span>

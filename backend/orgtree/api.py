@@ -5335,10 +5335,18 @@ def provider_hire_gate(org: Org, tier: str | None) -> None:
     if tier in providers.GEMINI_TIERS:
         gst = providers.gemini_status()
         if not gst.get("installed"):
+            # ⚠ D-202: DO NOT point at "the accounts panel's Gemini section"
+            # here, which is what this said. That section no longer exists on
+            # a machine without the CLI — the user ruled an uninstalled
+            # provider absent from the entire UI, accounts page included, so
+            # the old message sent people looking for a panel that had been
+            # deliberately removed. A refusal must name a place that exists;
+            # when the UI stops being that place, the message carries the
+            # instruction itself.
             raise LedgerError(
                 f"tier '{tier}' is a Gemini tier and the Gemini CLI is not "
-                f"installed on this machine — the accounts panel's Gemini "
-                f"section has the install command")
+                f"installed on this machine — "
+                f"{providers.install_hint('google')}")
         if not gst.get("connected"):
             raise LedgerError(
                 f"tier '{tier}' is a Gemini tier and Gemini is not signed "
@@ -5365,9 +5373,13 @@ def provider_hire_gate(org: Org, tier: str | None) -> None:
             inst = supervisor.claude_install_state()
             if not inst.get("installed"):
                 raise LedgerError(
+                    # D-202: the Claude section DOES survive on the accounts
+                    # page (Claude is the ruled exception), but it carries one
+                    # small line and no install command of its own, so the
+                    # old pointer was aimed at something that was never there.
                     f"tier '{tier}' is a Claude tier and the Claude Code CLI "
-                    f"is not installed on this machine — the accounts panel's "
-                    f"Claude section has the install command")
+                    f"is not installed on this machine — "
+                    f"{providers.install_hint('claude')}")
             if not accounts.live_identity().get("uuid"):
                 raise LedgerError(
                     f"tier '{tier}' is a Claude tier and Claude is not signed "
@@ -5377,9 +5389,11 @@ def provider_hire_gate(org: Org, tier: str | None) -> None:
     st = providers.codex_status()
     if not st.get("installed"):
         raise LedgerError(
+            # D-202: was "the accounts panel's Codex section has the install
+            # command" — a section that no longer exists when Codex is absent.
+            # See the Gemini branch above.
             f"tier '{tier}' is a Codex tier and the Codex CLI is not "
-            f"installed on this machine — the accounts panel's Codex section "
-            f"has the install command")
+            f"installed on this machine — {providers.install_hint('openai')}")
     if not st.get("connected"):
         raise LedgerError(
             f"tier '{tier}' is a Codex tier and Codex is not signed in — "

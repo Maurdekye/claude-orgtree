@@ -14,7 +14,7 @@ import { onLiveBump } from '../livebus'
 import type { DependencyList } from 'react'
 import type {
   ActivityInfo, AskInfo, DirGrant, MailEntry, NodeState, NodeStatus,
-  OpRequest, OpResult, ToolGrant, TreeNode, TreePayload,
+  OpRequest, OpResult, ProviderInfo, ToolGrant, TreeNode, TreePayload,
 } from '../types'
 
 // One display alphabet for every provider-backed tier. Keeping the Codex rows
@@ -88,6 +88,15 @@ export interface HireState {
   enabled: boolean
   installed: boolean
   reason: string | null
+  /** D-203's seam, agreed with `settings-menu` and built here so their change
+   *  is a server field rather than a frontend refactor: the user has switched
+   *  this provider OFF in settings. Distinct from `installed` ON PURPOSE —
+   *  "absent" and "deliberately disabled" must stay tellable apart, because
+   *  Claude reports the first on the accounts page and should not nag about
+   *  installing something that is sitting right there. MISSING MEANS ON: an
+   *  old backend, or one that has never heard of the setting, must not read
+   *  as every provider disabled. */
+  userEnabled?: boolean
 }
 
 /** What a hire surface should DO with one provider's tier family (D-199).
@@ -134,7 +143,93 @@ export interface HireState {
 export type FamilyOffer = 'offer' | 'disable' | 'hide'
 
 export const familyOffer = (h: HireState | null | undefined): FamilyOffer =>
-  (h == null ? 'offer' : h.enabled ? 'offer' : h.installed ? 'disable' : 'hide')
+  (h == null ? 'offer'
+    // A provider switched off in settings is HIDDEN, not disabled: the user
+    // saying "not this one" is the same request the uninstalled user makes
+    // implicitly, so it takes the same answer. Checked FIRST — an explicit
+    // choice outranks detection, and only `=== false` counts, so an absent
+    // field changes nothing (D-203 seam).
+    : h.userEnabled === false ? 'hide'
+      : h.enabled ? 'offer' : h.installed ? 'disable' : 'hide')
+
+/** The `/api/providers` entry narrowed to what any presence question needs.
+ *  Lived inline in OrgCanvas until D-202 gave a second and third surface the
+ *  same question; one derivation, so no caller can decide `installed`
+ *  differently from the hire strips. */
+export const hireOf = (p: ProviderInfo | null | undefined): HireState | null =>
+  (p ? { enabled: !!p.hire_enabled, installed: !!p.status?.installed,
+         reason: p.reason, userEnabled: p.user_enabled } : null)
+
+/** D-202: is this provider part of the product on this machine AT ALL?
+ *
+ *  USER RULING 2026-08-30: "if codex isnt installed at all, then codex
+ *  shouldnt appear anywhere in the ui whatsoever; it should be entirely
+ *  absent. same with gemini." So the question D-199 asked of the hire strips
+ *  is now asked of every surface, and it is deliberately THE SAME QUESTION —
+ *  `familyOffer`'s 'hide' verdict, not a second test that could drift from it.
+ *  The specific defect this shape prevents is a greyed-out Codex chip on a
+ *  machine that has never had Codex: "absent" and "signed out" are different
+ *  claims and only one function may decide which is which.
+ *
+ *  ⚠ IT DOES NOT COVER CLAUDE'S EXCEPTION, and must not. The user kept one:
+ *  "with claude, since orgtree is built around it, do show that its not
+ *  installed on the accounts page, but make it a very small piece of ui."
+ *  That is one line in one panel, written where it lives (accounts.tsx)
+ *  rather than as a flag here — a general "except sometimes" in this function
+ *  would be a licence for the next surface to keep Claude too.
+ *
+ *  UNKNOWN MEANS SHOWN, and that is a choice rather than a fallthrough.
+ *  `familyOffer`'s long note has the reasoning; the short form is that
+ *  `getProviders` swallows its own failure, so an unresolved payload is null
+ *  FOREVER rather than briefly, and erasing a provider the user actually has
+ *  is a worse failure than briefly showing one they lack. The server refuses
+ *  the click either way (`provider_hire_gate`, all five doors). */
+export const providerShown = (h: HireState | null | undefined): boolean =>
+  familyOffer(h) !== 'hide'
+
+/** Which provider families this machine exposes, by the id `providerOf`
+ *  returns. Built once per surface that has the payload and threaded down, so
+ *  a panel and the card behind it cannot disagree. */
+export type ProviderPresence = Record<'claude' | 'openai' | 'google', boolean>
+
+/** Optimistic default for a surface whose payload has not arrived (or that
+ *  has no access to one): everything shown, matching `providerShown(null)`. */
+export const ALL_PRESENT: ProviderPresence = {
+  claude: true, openai: true, google: true }
+
+export const presenceOf = (p: {
+  claude?: ProviderInfo | null
+  openai?: ProviderInfo | null
+  google?: ProviderInfo | null
+}): ProviderPresence => ({
+  claude: providerShown(hireOf(p.claude)),
+  openai: providerShown(hireOf(p.openai)),
+  google: providerShown(hireOf(p.google)),
+})
+
+/** The same, straight off the `/api/providers` payload, for surfaces that
+ *  poll it themselves rather than being handed three `ProviderInfo`s. `null`
+ *  (unresolved, or a backend too old to serve the route) is ALL_PRESENT. */
+export const presenceOfPayload = (
+  p: { providers: ProviderInfo[] } | null | undefined,
+): ProviderPresence => (p == null ? ALL_PRESENT : presenceOf({
+  claude: p.providers.find((v) => v.id === 'claude'),
+  openai: p.providers.find((v) => v.id === 'openai'),
+  google: p.providers.find((v) => v.id === 'google'),
+}))
+
+/** Should a TIER appear in a list on this machine?
+ *
+ *  `keep` is the escape hatch every such list needs: a node's OWN tier stays
+ *  visible even if its provider has since been uninstalled. Two reasons, and
+ *  the second is a bug rather than a nicety. It is TRUE — that agent is
+ *  running on that provider, so hiding it would make the UI lie about what is
+ *  in front of you. And these lists are `<select>` values: drop the option
+ *  that equals the current value and the control renders blank, which turns
+ *  "look at this agent's settings" into a silent model change on save. */
+export const tierShown = (
+  pres: ProviderPresence, tier: string, keep?: string | null,
+): boolean => tier === keep || pres[providerOf(tier)]
 
 // ---------------------------------------------------------------- view types
 // The canvas overlays the payload's TreeNode with synthetic cards — the eye

@@ -24,7 +24,8 @@ import {
   HearingIcon, LayersIcon, LockIcon, MailIcon, PlayIcon, PsychologyIcon,
   SettingsIcon, SparkIcon, StopIcon, WarnIcon,
 } from '../icons'
-import { ago, ALL_TIERS, CODEX_TIER_SEAT, CODEX_TIERS, CopyIcon, EXTERN, freezeKind, FREEZE_LABEL, GEMINI_TIER_SEAT, GEMINI_TIERS, md, TIER_LETTER, TIER_SEAT, USER, useEsc, usePolled } from './shared'
+import { ago, ALL_PRESENT, ALL_TIERS, CODEX_TIER_SEAT, CODEX_TIERS, CopyIcon, EXTERN, freezeKind, FREEZE_LABEL, GEMINI_TIER_SEAT, GEMINI_TIERS, md, TIER_LETTER, TIER_SEAT, tierShown, USER, useEsc, usePolled } from './shared'
+import type { ProviderPresence } from './shared'
 import {
   addPending, CHAT_WINDOW, dropPending, loadOlder as storeLoadOlder, markBusy,
   MAX_WINDOW, refreshConvo, useConvo,
@@ -1264,10 +1265,14 @@ interface LineagePanelProps {
   node: CanvasNode
   op: OpFn
   slug: string
+  /** D-202: which provider families this machine has at all. Absent = the
+   *  optimistic default (everything) — see `providerShown`. */
+  presence?: ProviderPresence
   close: () => void
 }
 
-export function LineagePanel({ node, op, slug, close }: LineagePanelProps) {
+export function LineagePanel({ node, op, slug, presence = ALL_PRESENT,
+  close }: LineagePanelProps) {
   // spitshined (user request): generation cards in the app's current visual
   // language — tier token, per-generation consult-tier picker (№16: a bearer
   // answers from context, so any tier serves), live bearers marked green
@@ -1312,6 +1317,17 @@ export function LineagePanel({ node, op, slug, close }: LineagePanelProps) {
   // quirk rather than a rule — which is exactly how it was reported. A gap
   // explains nothing; a disabled row with a reason does. Same semantics as
   // the model-switch dropdown in modals.tsx.
+  //
+  // ⚠ D-202 NARROWS THAT, and it is worth being precise about how, because
+  // the paragraph above is still right about the case it was written for.
+  // "A gap explains nothing" holds for a provider the user HAS — being told
+  // why terra is unavailable is information. It does not hold for a provider
+  // they have never installed: there the whole family is absent from the
+  // product (user ruling 2026-08-30), and a disabled row would be the first
+  // and only place the app mentions Codex exists. So: families that are
+  // INSTALLED are listed, disabled, with their reason exactly as before;
+  // families that are ABSENT are not listed at all. The bearer's own family
+  // is always kept — it is the tier it is rehired AS.
   const famOf = (t: string) => CODEX_TIERS.includes(t) ? 'codex'
     : GEMINI_TIERS.includes(t) ? 'gemini' : 'claude'
   const rehireWhy = (t: string, bearerTier: string): string | null =>
@@ -1350,7 +1366,10 @@ export function LineagePanel({ node, op, slug, close }: LineagePanelProps) {
                   <select value={tiers[b.id] ?? ''} onChange={(e) =>
                     setTiers((t) => ({ ...t, [b.id]: e.target.value }))}>
                     <option value="">as {b.tier} · seat {SEAT(b.tier)}</option>
-                    {ALL_TIERS.filter((t) => t !== b.tier).map((t) => {
+                    {ALL_TIERS
+                      .filter((t) => t !== b.tier
+                        && tierShown(presence, t, b.tier))
+                      .map((t) => {
                       const why = rehireWhy(t, b.tier)
                       return (
                         <option key={t} value={t} disabled={!!why}>
