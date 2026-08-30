@@ -369,5 +369,21 @@ def main():
             reply(rid, {})
 
 
+def _spawn_orphan_child():
+    """Fork a long-lived grandchild the way the real `codex app-server` forks
+    its native engine + code-mode-host children. FAKECODEX_CHILD_PIDFILE gets
+    the child's pid so a test can prove AppServerClient.close() reaps the
+    whole TREE, not just this parent (the 2026-08-30 orphan-lock bug)."""
+    import subprocess
+    pidfile = os.environ.get("FAKECODEX_CHILD_PIDFILE")
+    if not pidfile:
+        return
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(600)"])
+    with open(pidfile, "w", encoding="utf-8") as f:
+        f.write(str(child.pid))
+
+
 if __name__ == "__main__":
+    _spawn_orphan_child()
     main()

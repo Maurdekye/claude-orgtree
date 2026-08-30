@@ -227,6 +227,58 @@ def main():
     finally:
         client.close()
 
+    print("§9 close() reaps the WHOLE process tree (2026-08-30 orphan-lock)")
+
+    def tree_teardown():
+        # the real app-server forks a native engine child + a code-mode-host
+        # child; fakecodex forks one long-sleep grandchild and records its pid.
+        # A bare parent-kill orphans it and it keeps the ~/.codex thread lock,
+        # which is what broke `thread/resume` on every second codex turn.
+        import time
+        pidfile = os.path.join(tmp, "child.pid")
+        cl = codexrun.AppServerClient(
+            list(FAKE), cwd=tmp,
+            env_extra={"FAKECODEX_CHILD_PIDFILE": pidfile})
+        cl.initialize()
+        for _ in range(100):
+            if os.path.exists(pidfile):
+                break
+            time.sleep(0.02)
+        child_pid = int(open(pidfile, encoding="utf-8").read().strip())
+
+        def alive(p):
+            if os.name == "nt":
+                r = __import__("subprocess").run(
+                    ["tasklist", "/FI", f"PID eq {p}"],
+                    capture_output=True, text=True)
+                return str(p) in r.stdout
+            try:
+                os.kill(p, 0)
+                return True
+            except OSError:
+                return False
+
+        eq(alive(child_pid), True, "the forked child is running before close()")
+        cl.close()
+        gone = False
+        for _ in range(50):
+            if not alive(child_pid):
+                gone = True
+                break
+            time.sleep(0.1)
+        if not gone:
+            try:
+                (os.kill(child_pid, 9) if os.name != "nt"
+                 else __import__("subprocess").run(
+                     ["taskkill", "/F", "/PID", str(child_pid)],
+                     capture_output=True))
+            except OSError:
+                pass
+        eq(gone, True, "close() left NO orphan (parent-only kill would)")
+
+    check("close() taskkills the tree and waits — no orphan holds the lock",
+          tree_teardown)
+
     print(f"\n{PASS} checks passed")
 
 

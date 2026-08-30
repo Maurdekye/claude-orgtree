@@ -494,9 +494,33 @@ class AppServerClient:
         self.approval_decide = None
 
     def close(self) -> None:
+        """Tear the app-server down — the WHOLE process tree, and wait for it.
+
+        ⚠ `codex app-server` (the `node …/codex.js` entry orgtree spawns) forks
+        a native `codex-*-win32-x64` engine child and a `codex-code-mode-host`
+        child. A bare `self.proc.kill()` kills only the node parent; on Windows
+        the children are orphaned and KEEP THE THREAD'S `~/.codex` write lock,
+        so the NEXT turn's `thread/resume` fails with "thread … already has an
+        active writer" (measured 2026-08-30: a run of orphaned pairs from four
+        failed turns). Kill by pid through the OS so the tree goes, then
+        `wait()` so the next turn does not spawn into a lock the dying tree
+        still holds (the same rapid-kill→spawn contention the module docstring
+        warns about)."""
+        if os.name == "nt":
+            try:
+                subprocess.run(
+                    ["taskkill", "/T", "/F", "/PID", str(self.proc.pid)],
+                    check=False, capture_output=True, timeout=10,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            except (OSError, subprocess.SubprocessError):
+                pass
         try:
-            self.proc.kill()
+            self.proc.kill()          # POSIX, and a belt over taskkill
         except OSError:
+            pass
+        try:
+            self.proc.wait(timeout=5)
+        except (subprocess.TimeoutExpired, OSError, ValueError):
             pass
 
 
