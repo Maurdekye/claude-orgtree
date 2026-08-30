@@ -32,6 +32,7 @@ from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime, timedelta, timezone
 from typing import Any, Final, Literal, cast
 
+from . import deployment
 from .schema import (AudienceGrant, DirGrant, MailEntry, NodeDoc, NoticeEntry,
                      OrgDoc, OrgInboxEntry, ToolGrant, UserMailEntry)
 
@@ -5784,6 +5785,11 @@ class Org:
         machine-wide restart a few minutes later. Each caller still logs its
         OWN event, because "restarted the machine" and "armed a restart" are
         different facts about who did what."""
+        if not deployment.current_policy().allow_agent_restart:
+            raise LedgerError(
+                "the frozen deployment profile disables agent-triggered "
+                "self-update, self-restart, and primed restart; deploy this "
+                "installation through an operator-controlled path")
         self._require_live(nid)
         if self.is_kiosk:
             raise LedgerError(f"kiosk orgs are sealed — no {what}")

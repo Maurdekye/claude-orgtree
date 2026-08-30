@@ -40,7 +40,7 @@ import time
 import uuid
 from typing import TYPE_CHECKING, Any
 
-from . import store
+from . import deployment, store
 
 if TYPE_CHECKING:
     from .ledger import Org
@@ -307,6 +307,49 @@ def uses_subscription_auth(k: dict[str, Any] | None) -> bool:
     return str(key).strip().lower() == "subscription"
 
 
+def _configured_container_auth(org: Org, k: Any = None) -> str:
+    """Resolve sandbox auth without applying deployment-policy gates."""
+    k = (org.d.get("kiosk") or {}) if k is None else k
+    return (("" if org.d.get("api_fallback")
+             else str(org.d.get("api_key") or ""))
+            or str(k.get("api_key") or "")
+            or os.environ.get("ORGTREE_SANDBOX_API_KEY")
+            or "proxied").strip()
+
+
+def uses_legacy_credential_copy(org: Org, k: Any = None) -> bool:
+    """Whether the effective selector asks to copy host credentials."""
+    return _configured_container_auth(org, k).lower() == "subscription"
+
+
+def _legacy_selector_present(org: Org, k: Any = None) -> bool:
+    """Whether any selectable auth source contains the forbidden sentinel."""
+    k = (org.d.get("kiosk") or {}) if k is None else k
+    return any(str(value or "").strip().lower() == "subscription"
+               for value in (org.d.get("api_key"), k.get("api_key"),
+                             os.environ.get("ORGTREE_SANDBOX_API_KEY")))
+
+
+def copied_subscription_credentials(org: Org) -> bool:
+    """Whether a previous standard-mode run left host credentials on disk.
+
+    A permission or filesystem error is not evidence that the credential is
+    absent. Frozen mode treats an unverifiable path as a configuration error.
+    """
+    path = "<sandbox credential path>"
+    try:
+        path = os.path.join(sandbox_home(org.d["slug"]), ".claude",
+                            ".credentials.json")
+        os.lstat(path)
+    except FileNotFoundError:
+        return False
+    except (KeyError, OSError, RuntimeError, TypeError) as e:
+        raise deployment.DeploymentConfigError(
+            "could not verify that the sandbox is free of copied subscription "
+            f"credentials ({path}: {e})") from e
+    return True
+
+
 def container_name(slug: str) -> str:
     return "orgtree-" + slug
 
@@ -359,11 +402,19 @@ def container_auth(org: Org, k: Any = None) -> str:
     org's own key or the host subscription, and reading `org.d["api_key"]`
     alone missed BOTH the kiosk-level key and `ORGTREE_SANDBOX_API_KEY` — a
     per-minute API rate limit was then timed off the subscription's lanes."""
-    k = (org.d.get("kiosk") or {}) if k is None else k
-    return (("" if org.d.get("api_fallback") else str(org.d.get("api_key") or ""))
-            or str(k.get("api_key") or "")
-            or os.environ.get("ORGTREE_SANDBOX_API_KEY")
-            or "proxied").strip()
+    auth = _configured_container_auth(org, k)
+    if not deployment.current_policy().allow_legacy_sandbox_credentials:
+        if _legacy_selector_present(org, k):
+            raise deployment.DeploymentConfigError(
+                "the frozen deployment profile disables legacy sandbox "
+                "credential copying; 'subscription' auth is forbidden -- use "
+                "proxied auth or an explicit API key")
+        if copied_subscription_credentials(org):
+            raise deployment.DeploymentConfigError(
+                "the frozen deployment profile refuses this sandbox because "
+                "copied subscription credentials already exist on its disk; "
+                "remove the sandbox credential copy before running it")
+    return auth
 
 
 def sandbox_home(slug: str) -> str:

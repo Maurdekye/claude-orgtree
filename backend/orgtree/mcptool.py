@@ -19,6 +19,15 @@ import urllib.error
 import urllib.request
 from typing import Any, cast
 
+if __package__:
+    from . import deployment
+else:
+    # Sandboxed Claude runs this dependency-free server by its mounted file
+    # path rather than with ``-m``. Preserve that supported entry point while
+    # sharing the one authoritative policy parser.
+    sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+    from orgtree import deployment
+
 ORG: str = os.environ.get("ORGTREE_ORG", "")
 NODE: str = os.environ.get("ORGTREE_NODE", "")
 PORT: str = os.environ.get("ORGTREE_PORT", "7360")
@@ -1111,6 +1120,19 @@ TOOLS: list[dict[str, Any]] = [
     },
 ]
 
+_AGENT_RESTART_TOOLS = frozenset({
+    "orgtree_self_restart", "orgtree_prime_restart",
+})
+
+
+def available_tools() -> list[dict[str, Any]]:
+    """The tool catalogue permitted by the install-wide deployment policy."""
+
+    if deployment.current_policy().allow_agent_restart:
+        return TOOLS
+    return [tool for tool in TOOLS
+            if str(tool.get("name") or "") not in _AGENT_RESTART_TOOLS]
+
 
 def call_api(tool: str, args: dict[str, Any]) -> str:
     headers: dict[str, str] = {"Content-Type": "application/json"}
@@ -1180,7 +1202,7 @@ def main() -> None:
                 "serverInfo": {"name": "orgtree", "version": "1.0.0"},
             })
         elif method == "tools/list":
-            reply(id_, {"tools": TOOLS})
+            reply(id_, {"tools": available_tools()})
         elif method == "tools/call":
             raw_args = params.get("arguments")
             out = call_api(str(params.get("name", "")),

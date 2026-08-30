@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import ipaddress
 import json
 import os
 import posixpath
@@ -102,9 +103,50 @@ class InstanceStamp:
         await self.inner(scope, receive, _send)
 
 
+class FrozenAdminBoundary:
+    """Keep the bare ASGI admin app loopback-only in frozen mode.
+
+    The supported launcher also binds the admin listener to loopback. This
+    request boundary prevents a direct/custom ASGI server from turning a
+    non-loopback bind into an unauthenticated admin surface. Authenticated
+    bridge traffic is marked by ``BridgeGateway`` before it reaches the app.
+    """
+
+    def __init__(self, inner: ASGIApp) -> None:
+        self.inner = inner
+
+    async def __call__(self, scope: ASGIScope, receive: Receive,
+                       send: Send) -> None:
+        if scope["type"] not in ("http", "websocket") \
+                or deployment.current_policy().allow_admin_exposure \
+                or (scope.get("state") or {}).get("bridge_slug"):
+            return await self.inner(scope, receive, send)
+
+        client = scope.get("client")
+        host = str(client[0]).split("%", 1)[0] if client else ""
+        try:
+            loopback = ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            loopback = False
+        if loopback:
+            return await self.inner(scope, receive, send)
+        if scope["type"] == "websocket":
+            await send({"type": "websocket.close", "code": 4403})
+            return
+        body = json.dumps({
+            "detail": "the frozen deployment profile exposes the admin API "
+                      "to loopback clients only",
+        }).encode()
+        await send({"type": "http.response.start", "status": 403,
+                    "headers": [(b"content-type", b"application/json"),
+                                (b"content-length", str(len(body)).encode())]})
+        await send({"type": "http.response.body", "body": body})
+
+
 # on the APP, so all three listeners (admin, kiosk, bridge) inherit it — they
 # are gateways wrapped around this same object
 app.add_middleware(InstanceStamp)
+app.add_middleware(FrozenAdminBoundary)
 
 
 @app.exception_handler(RequestValidationError)
@@ -763,6 +805,18 @@ def orgs_list(request: Request) -> list[dict[str, Any]]:
 @app.post("/api/orgs")
 def orgs_create(body: OrgCreate) -> dict[str, Any]:
     policy = deployment.current_policy()
+    # Validate global defaults before create_org writes a workspace or doc.
+    dflt = load_org_defaults()
+    default_kiosk = (dflt.get("kiosk")
+                      if isinstance(dflt.get("kiosk"), dict) else {})
+    if not policy.allow_legacy_sandbox_credentials and (
+            str(dflt.get("api_key") or "").strip().lower() == "subscription"
+            or str(default_kiosk.get("api_key") or "").strip().lower()
+            == "subscription"):
+        raise HTTPException(
+            422, "the frozen deployment profile forbids the 'subscription' "
+                 "sandbox auth value in org defaults; use proxied auth or an "
+                 "explicit API key")
     requested_sandbox = (bool(body.kiosk.sandbox)
                          if body.kiosk is not None else bool(body.sandbox))
     if policy.require_sandboxed_orgs and not requested_sandbox:
@@ -795,7 +849,6 @@ def orgs_create(body: OrgCreate) -> dict[str, Any]:
     # global default org settings (user spec): every new org is born with them.
     # net_hub_address is CONFIG for the local hub entry, not an org-doc key —
     # popped here and translated below, never written raw into the doc.
-    dflt = load_org_defaults()
     local_hub_addr = str(dflt.pop("net_hub_address", "") or "") \
         or net.DEFAULT_HUB_ADDRESS
     if dflt:
@@ -1426,6 +1479,13 @@ def _org_settings_locked(slug: str, body: Settings) -> dict[str, Any]:
         org = store.load_org(slug)
     except LedgerError as e:
         raise HTTPException(404, str(e))
+    if body.api_key is not None \
+            and body.api_key.strip().lower() == "subscription" \
+            and not deployment.current_policy().allow_legacy_sandbox_credentials:
+        raise HTTPException(
+            422, "the frozen deployment profile forbids 'subscription' auth "
+                 "because it copies host credentials into the sandbox; use "
+                 "proxied auth or an explicit API key")
     ws = org.d.get("workspace")
     warnings: list[str] = []
     if body.org_dirs is not None:
@@ -3768,6 +3828,13 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
         a = _norm_args(body.args)
     except LedgerError as e:
         raise HTTPException(422, str(e))
+    if body.tool in ("orgtree_self_restart", "orgtree_self_update",
+                     "orgtree_prime_restart") \
+            and not deployment.current_policy().allow_agent_restart:
+        raise HTTPException(
+            403, "the frozen deployment profile disables agent-triggered "
+                 "self-update, self-restart, and primed restart; deploy this "
+                 "installation through an operator-controlled path")
     if body.tool in ("orgtree_read_transcript", "orgtree_read_scratch",
                      "orgtree_chart", "orgtree_send_file"):
         try:
@@ -5871,10 +5938,23 @@ def _deployment_preflight() -> deployment.DeploymentPolicy:
             "the frozen deployment profile disables legacy sandbox credential "
             "copying; ORGTREE_SANDBOX_API_KEY='subscription' is forbidden — "
             "use proxied auth or an explicit API key")
+    defaults = load_org_defaults()
+    default_kiosk = (defaults.get("kiosk")
+                      if isinstance(defaults.get("kiosk"), dict) else {})
+    if not policy.allow_legacy_sandbox_credentials and (
+            str(defaults.get("api_key") or "").strip().lower()
+            == "subscription"
+            or str(default_kiosk.get("api_key") or "").strip().lower()
+            == "subscription"):
+        raise deployment.DeploymentConfigError(
+            "the frozen deployment profile disables legacy sandbox credential "
+            "copying; defaults.json contains forbidden 'subscription' auth -- "
+            "remove it and use proxied auth or an explicit API key")
     if not policy.require_sandboxed_orgs:
         return policy
 
     unsandboxed: list[str] = []
+    legacy_credentials: list[str] = []
     for row in store.list_orgs():
         slug = str(row.get("slug") or "<unknown>")
         try:
@@ -5886,13 +5966,36 @@ def _deployment_preflight() -> deployment.DeploymentPolicy:
             continue
         if not sandbox.is_sandboxed(org):
             unsandboxed.append(slug)
+        kiosk = org.d.get("kiosk") or {}
+        persisted_subscription = (
+            str(org.d.get("api_key") or "").strip().lower() == "subscription"
+            or str(kiosk.get("api_key") or "").strip().lower()
+            == "subscription")
+        try:
+            effective_subscription = sandbox.uses_legacy_credential_copy(org)
+            copied_credentials = sandbox.copied_subscription_credentials(org)
+        except deployment.DeploymentConfigError as e:
+            legacy_credentials.append(f"{slug} (could not verify: {e})")
+            continue
+        if persisted_subscription or effective_subscription:
+            legacy_credentials.append(f"{slug} ('subscription' auth)")
+        if copied_credentials:
+            legacy_credentials.append(f"{slug} (copied credential file)")
     if unsandboxed:
         raise deployment.DeploymentConfigError(
             "the frozen deployment profile requires every org to be "
             "sandboxed; refusing startup because these orgs are not "
-            f"sandboxed: {', '.join(unsandboxed)}. Recreate or migrate them "
-            "as sandboxed orgs before enabling frozen mode (or select the "
-            "standard profile while doing the migration).")
+            f"sandboxed: {', '.join(unsandboxed)}. While running the standard "
+            "profile, back up each org, recreate it with sandboxing enabled, "
+            "verify the replacement, and remove the unsandboxed original "
+            "before enabling frozen mode.")
+    if legacy_credentials:
+        raise deployment.DeploymentConfigError(
+            "the frozen deployment profile disables legacy sandbox credential "
+            "copying; refusing startup because forbidden state exists in: "
+            f"{', '.join(legacy_credentials)}. Remove stored 'subscription' "
+            "selectors and any sandbox .claude/.credentials.json copies, then "
+            "use proxied auth or an explicit API key.")
     return policy
 
 

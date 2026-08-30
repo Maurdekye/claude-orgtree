@@ -37,8 +37,8 @@ import uuid
 from collections.abc import Callable, Iterable, Mapping
 from typing import Any, Final, cast
 
-from . import (accounts, codex_limits, imgblock, limits, net, providers,
-               sandbox as sbx, store, tokens, warmpool)
+from . import (accounts, codex_limits, deployment, imgblock, limits, net,
+               providers, sandbox as sbx, store, tokens, warmpool)
 from .ledger import EXTERN, SYSTEM, USER, LedgerError, Org, expand_mcp, now as now_iso
 from .schema import (Denial, FrozenInfo, InflightInfo, KioskCfg, MailEntry,
                      NodeDoc, NoticeEntry, TurnStat)
@@ -52,6 +52,16 @@ def kiosk_cfg(org: Org) -> KioskCfg | None:
     (user ruling): limits bind whether or not the public URL is currently
     enabled — `enabled` only gates the token gateway."""
     return org.d.get("kiosk") or None
+
+
+def _deployment_org_gate(org: Org) -> None:
+    """Refuse every agent execution path that cannot prove sandboxing."""
+    if deployment.current_policy().require_sandboxed_orgs \
+            and not sbx.is_sandboxed(org):
+        raise RuntimeError(
+            "the frozen deployment profile refuses to run an unsandboxed "
+            f"org ({org.d.get('slug') or '<unknown>'}); recreate the org with "
+            "sandbox enabled before enabling frozen mode")
 
 
 _ws_usage_cache: dict[str, tuple[float, int]] = {}
@@ -3023,7 +3033,8 @@ def identity_prompt(org: Org, nid: str, include_archived: bool = False) -> str:
            "existing is the liveness check. Have a REASON — something to "
            "deploy, or a backend to bounce. Never restart speculatively, on a "
            "hunch, or to 'make sure': there is no free restart. "
-           if n["parent"] is None or org._has_audience(nid, USER)
+           if deployment.current_policy().allow_agent_restart
+           and (n["parent"] is None or org._has_audience(nid, USER))
            else "")
         + f"AUTHENTIC-CHANNEL NOTE: "
         f"the orgtree harness may deliver real mail mid-task — from the user or "
@@ -3726,7 +3737,9 @@ def _build_cmd(org: Org, nid: str, write_ident: bool = True) -> list[str]:
             "args": ["/opt/orgtree-backend/orgtree/mcptool.py"],
             "env": {"ORGTREE_ORG": slug, "ORGTREE_NODE": nid,
                     "ORGTREE_BASE": sbx.bridge_url(),
-                    "ORGTREE_BRIDGE_SECRET": sbx.sandbox_secret(org)},
+                    "ORGTREE_BRIDGE_SECRET": sbx.sandbox_secret(org),
+                    deployment.PROFILE_ENV:
+                        deployment.current_policy().name},
         }
     else:
         chosen = dict(grant)
@@ -3735,7 +3748,9 @@ def _build_cmd(org: Org, nid: str, write_ident: bool = True) -> list[str]:
             "args": ["-m", "orgtree.mcptool"],
             "env": {"ORGTREE_ORG": slug, "ORGTREE_NODE": nid,
                     "ORGTREE_PORT": os.environ.get("ORGTREE_PORT", "7360"),
-                    "PYTHONPATH": BACKEND_DIR},
+                    "PYTHONPATH": BACKEND_DIR,
+                    deployment.PROFILE_ENV:
+                        deployment.current_policy().name},
         }
     # ALWAYSLOAD (cache-structural's finding, coordinator-approved 2026-08-30;
     # decision number to be allocated). Schema-verified in the pinned CLI
@@ -4529,7 +4544,8 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
     The turn itself is `codexrun.CodexTurn`: one `codex app-server` process,
     thread resumed by the node's session id (the codex threadId — harvested
     from `thread/start`, not minted). Org powers attach as dynamicTools built
-    from the SAME cards `mcptool.TOOLS` serves the claude lane, and calls are
+    from the SAME cards `mcptool.available_tools()` serves the claude lane,
+    and calls are
     answered in-process through the same `/api/agent` door — so the ledger
     enforces authority identically for both providers. Mid-turn mail rides a
     poller on the SAME steer store the claude hook drains.
@@ -4576,7 +4592,7 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                   == str(n.get("codex_thread") or "") else None)
     dyn = [{"type": "function", "name": t["name"],
             "description": t["description"], "inputSchema": t["inputSchema"]}
-           for t in mcptool.TOOLS]
+           for t in mcptool.available_tools()]
     # D-180: orgtree's OWN suite rides dynamicTools (above); the node's GRANTED
     # EXTERNAL servers ride `-c mcp_servers.…` on the app-server launch, which
     # is a different mechanism for a different problem and was simply missing.
@@ -5002,7 +5018,8 @@ def _gemini_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         # INHERITED from the CLI process (measured — a stray ORGTREE_NODE
         # leaked through), so partial specs would identity-confuse mcptool
         "env": {"ORGTREE_ORG": slug, "ORGTREE_NODE": nid,
-                "ORGTREE_PORT": port, "PYTHONPATH": BACKEND_DIR},
+                "ORGTREE_PORT": port, "PYTHONPATH": BACKEND_DIR,
+                deployment.PROFILE_ENV: deployment.current_policy().name},
     }
     mcp_list = geminirun.acp_mcp_servers(servers)
 
@@ -5345,6 +5362,7 @@ def _run_one_turn(slug: str, nid: str,
                       f"machine-wide cap being contended, not this node")
             with store.DOC_LOCK:
                 org = store.load_org(slug)
+                _deployment_org_gate(org)
                 if org.node(nid)["state"] != "live":
                     raise RuntimeError(f"{nid} is not live")
                 if org.d.get("spend_frozen"):
@@ -10121,6 +10139,7 @@ def immediate_command(slug: str, nid: str, text: str) -> bool:
     if word not in IMMEDIATE_CMDS:
         return False
     org = store.load_org(slug)
+    _deployment_org_gate(org)
     n = org.node(nid)
     sid = n["session_id"]
     model = org.model_for(nid)   # tier default, or this node's chosen version
@@ -10872,6 +10891,11 @@ def launch_self_restart(
       · verification guidance to the agent: your own next turn existing IS
         the liveness check; a quiet peer is NOT evidence of breakage.
     """
+    if not deployment.current_policy().allow_agent_restart:
+        raise RuntimeError(
+            "the frozen deployment profile disables agent-triggered "
+            "self-update and self-restart; deploy this installation through "
+            "an operator-controlled path")
     if target not in ("org", "mailhub", "both"):
         raise ValueError(f"unknown self-restart target {target!r}")
     # D-104: "only when nobody else is working" is a REFUSAL, not advice. The
@@ -11125,6 +11149,11 @@ def arm_prime_restart(slug: str, nid: str, target: str,
     an already-armed call says so, names who armed it and when, and reports
     the target that is actually going to run (which may not be the one asked
     for). Idempotent, not mute."""
+    if not deployment.current_policy().allow_agent_restart:
+        raise RuntimeError(
+            "the frozen deployment profile disables agent-triggered primed "
+            "restart; deploy this installation through an operator-controlled "
+            "path")
     if target not in ("org", "mailhub", "both"):
         raise ValueError(f"unknown self-restart target {target!r}")
     with _prime_lock:
@@ -11170,6 +11199,10 @@ def arm_prime_restart(slug: str, nid: str, target: str,
 def cancel_prime_restart(slug: str, nid: str) -> dict[str, Any]:
     """Disarm. A cancel with nothing armed is a benign no-op that SAYS it was
     a no-op — the caller is usually checking, not undoing."""
+    if not deployment.current_policy().allow_agent_restart:
+        raise RuntimeError(
+            "the frozen deployment profile disables agent-triggered primed "
+            "restart; manage deployment through an operator-controlled path")
     with _prime_lock:
         d = _prime_read()
         executing = d.get("executing")
@@ -11392,6 +11425,10 @@ def start_prime_restart_engine() -> None:
     registry; this loop only watches for the moment to spend it — which is
     what makes an armed prime survive this process dying and coming back."""
     global _prime_started
+    if not deployment.current_policy().allow_agent_restart:
+        # A prime left by an earlier standard-profile process stays durable
+        # but inert. Frozen mode must never spend it in the background.
+        return
     if _prime_started:
         return
     # An executing record belongs to the process that wrote it. Reaching this
