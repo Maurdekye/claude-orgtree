@@ -1728,6 +1728,17 @@ nowhere else. It is inert: not armed, not resumable, invisible to
 slot. It exists so a thing that HAPPENED can be drawn after the thing that
 existed is gone.
 
+**The tombstone is necessary and NOT sufficient, and the backend author
+asserted otherwise without testing it.** `launchSpark` rejects an endpoint at
+`!m.has(id)` — the flattened AGENT map, which `flatten` never adds `dog:*` ids
+to — and that guard runs BEFORE the `placed()` position check the tombstone
+feeds. So a dog-origin spark was dropped at the first line regardless of
+position, and had been for every dog, one-shot or not: this was a standing
+defect the one-shot case merely exposed. The frontend half of D-200 is a
+direct dog↔owner spark path (`styling`); the tombstone is what gives that path
+an origin to draw from once a one-shot dog is gone. Either alone renders
+nothing.
+
 Bounds: only a FIRE spends a one-shot dog. `watchdog_alert` — the
 subject-went-quiet self-report — does not, because it means "I can no longer
 answer your question" and retiring the watch on that discards it precisely
