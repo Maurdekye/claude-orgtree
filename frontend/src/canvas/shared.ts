@@ -81,6 +81,61 @@ export const providerOf = (tier: string): 'openai' | 'google' | 'claude' =>
 export const PROVIDER_LABEL: Record<string, string> = {
   openai: 'Codex', google: 'Gemini', claude: 'Claude' }
 
+/** One provider's hire state as a hire surface needs it — the `/api/providers`
+ *  entry narrowed to the three things any surface asks. `null`/`undefined`
+ *  means the payload has not arrived yet, which is NOT the same as absent. */
+export interface HireState {
+  enabled: boolean
+  installed: boolean
+  reason: string | null
+}
+
+/** What a hire surface should DO with one provider's tier family (D-199).
+ *
+ *  'offer'   — render live hire buttons.
+ *  'disable' — render them, disabled, with `reason` as the tooltip.
+ *  'hide'    — do not render the family at all.
+ *
+ *  ⚠ THE ONE IMPLEMENTATION. Every hire surface calls this — the node chips,
+ *  the eye chips, the mobile sheet, and anything wrapping them (the far-zoom
+ *  compact control takes its list from whatever this produced, and must not
+ *  re-derive it). Before D-199 each surface decided for itself and they
+ *  disagreed: an unavailable family was a disabled preview on the subordinate
+ *  strip, HIDDEN on the side and top strips, and always shown in the mobile
+ *  sheet — the same provider visible on one edge of a card and absent from
+ *  another. Claude was not asked at all and so was always offered.
+ *
+ *  THE SPLIT (user 2026-08-30, "i want them to only see the hire buttons for
+ *  the agent harnesses they actually have set up"; ruled by coordinator):
+ *  NOT INSTALLED HIDES, SIGNED-OUT DISABLES. They are different claims. "You
+ *  have not installed Codex" is a fact about the MACHINE — identical on every
+ *  card, and repeating it on thirty hovers is noise, not discoverability; the
+ *  accounts panel is its home and carries the install command. "Installed but
+ *  signed out" is about a harness the user demonstrably HAS, where a silent
+ *  gap reads as the app losing it and the remedy is one command away — so it
+ *  stays visible, carrying its own reason.
+ *
+ *  ⚠ UNKNOWN MEANS OFFER, AND THE FIRST DRAFT OF THIS HAD IT WRONG. Hiding and
+ *  disabling both require POSITIVE knowledge; until the payload arrives we
+ *  behave exactly as this app always did, and the SERVER gate added in the
+ *  same change is what makes that safe — a click on something unavailable is
+ *  refused at the door with the same reason the chip would have carried.
+ *
+ *  The tempting reading is the cautious one, "unknown → disable". It is worse
+ *  in both directions. The payload is not always fast (a cold codex probe can
+ *  shell out to `--version`), so the common case becomes a dead hire control
+ *  on a perfectly good machine for as long as that takes. And `getProviders`
+ *  swallows its own failure — a fetch that never resolves leaves the state
+ *  null FOREVER, so "disable" is not a brief flicker but a permanently
+ *  unusable hire strip, while "offer" degrades to precisely today's
+ *  behaviour. A transient detection problem must not be able to brick hiring;
+ *  that is the same fear the old Claude exemption was written out of, and it
+ *  was right about the danger even though it was wrong about the remedy. */
+export type FamilyOffer = 'offer' | 'disable' | 'hide'
+
+export const familyOffer = (h: HireState | null | undefined): FamilyOffer =>
+  (h == null ? 'offer' : h.enabled ? 'offer' : h.installed ? 'disable' : 'hide')
+
 // ---------------------------------------------------------------- view types
 // The canvas overlays the payload's TreeNode with synthetic cards — the eye
 // root, the draft card, live lineage bearers — plus flatten()'s plumbing.

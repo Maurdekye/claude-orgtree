@@ -693,6 +693,7 @@ export default function App() {
               </header>
               <OrgCanvas tree={tree} op={op} slug={slug} toast={toast}
                 mailEvt={mailEvt}
+                onAccounts={BASE ? undefined : () => setShowAccounts(true)}
                 onInbox={(jump: unknown) => {
                   setInboxJump(typeof jump === 'string' ? jump : null)
                   setShowInbox(true)

@@ -1859,6 +1859,22 @@ button.cc-name:hover {
 .hsof button.t-flash { color: var(--tier-flash); border-color: color-mix(in srgb, var(--tier-flash) 45%, var(--line)); }
 .hsof button.t-pro { color: var(--tier-pro); border-color: color-mix(in srgb, var(--tier-pro) 45%, var(--line)); }
 .hsof button.codex-preview:disabled { opacity: .45; border-style: dashed; }
+/* D-199: the no-harness badge. Not a tier chip — it is WIDER than the square
+   letter tokens because it carries a word, and it must not read as a model
+   you could pick. Dashed like the previews (this is a "not yet" state), muted
+   like dim text, and it stays clickable: it is the route to the accounts
+   panel, which is the only place that can resolve it. */
+.hsof button.hs-none {
+  width: auto; padding: 0 .5em; font-size: .82em; letter-spacing: .01em;
+  color: var(--dim); border-color: var(--line); border-style: dashed;
+  white-space: nowrap;
+}
+.hsof button.hs-none:disabled { opacity: .45; }
+.hsof button.hs-none:not(:disabled):hover {
+  color: var(--fg); border-color: var(--fg);
+}
+/* the mobile sheet's version of the same state — a line of prose, not a chip */
+.hire-sheet .hs-none-row { color: var(--dim); line-height: 1.45; }
 /* (the desk needs no special case — the universal --invz counter-scale keeps
    the chips screen-constant below the card border at any zoom) */
 

@@ -204,6 +204,54 @@ CLAUDE = (os.environ.get("ORGTREE_CLAUDE")
 CLAUDE_CLI_JS = os.environ.get("ORGTREE_CLAUDE_CLI", os.path.join(
     os.path.dirname(CLAUDE), "node_modules", "@anthropic-ai", "claude-code", "cli.js"))
 
+_claude_install_cache: tuple[float, dict[str, Any]] | None = None
+
+
+def claude_install_state(force: bool = False) -> dict[str, Any]:
+    """Is the Claude Code CLI actually PRESENT on this machine? (D-199)
+
+    Claude was the incumbent provider and nothing ever asked this question:
+    `providers_payload` hard-coded `installed: True` and `hire_enabled: True`
+    for it, so on a machine with only Codex set up the hire chips still offered
+    all four Claude tiers as live buttons and the server accepted the hire,
+    which then failed at spawn. Codex and Gemini had honest detection from the
+    day they were added; this is Claude catching up to its own axis.
+
+    RE-PROBED behind a 60s cache rather than read off the module-level `CLAUDE`
+    constant, which is resolved at IMPORT: a CLI installed while the backend is
+    running would otherwise stay invisible until a restart, and "install it,
+    then the buttons appear" is the whole flow this feeds. Same cache shape and
+    the same reason as `providers.codex_status`.
+
+    The resolution ORDER mirrors `CLAUDE` above exactly — env override, private
+    pin, PATH — and must keep mirroring it: this answers "will a spawn find the
+    CLI", so any order it does not share is a lie in one direction or the other.
+    The env override is taken on faith as the path to USE but still checked for
+    existence, the same trust split `codex_status` documents: a pin or a PATH
+    hit exists by construction, an override may point at nothing, and reporting
+    "installed" for a broken override would send the user to `claude login`
+    instead of to their own setting.
+    """
+    global _claude_install_cache
+    now = time.time()
+    if not force and _claude_install_cache \
+            and now - _claude_install_cache[0] < 60:
+        return _claude_install_cache[1]
+    env = os.environ.get("ORGTREE_CLAUDE")
+    if env:
+        path, source = env, "env"
+    elif os.path.exists(_PIN):
+        path, source = _PIN, "pin"
+    else:
+        path, source = shutil.which("claude"), "path"
+    st: dict[str, Any] = {
+        "installed": bool(path) and os.path.exists(path or ""),
+        "path": path or None,
+        "source": source,
+    }
+    _claude_install_cache = (now, st)
+    return st
+
 # The machine's GLOBAL (home-scope) skills — the only skills directory a
 # headless agent actually loads from, since its cwd is its own empty scratch
 # dir and project-scope discovery is `<cwd>/.claude/skills`. User ruling
