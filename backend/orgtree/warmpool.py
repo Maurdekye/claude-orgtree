@@ -29,10 +29,11 @@ hash no longer matches is killed, not served — a stale system prompt would
 mean a retool or grant silently not applying.
 
 INVALIDATION IS A HASH, NOT AN EVENT LIST (coordinator ruling). We hash the
-rendered identity prompt, the spawn argv and the resolved credential identity
-— the full set of inputs the process bakes in at spawn. An enumerated list of
-invalidating events is exactly what goes stale when someone adds a surface;
-the audit found surfaces nobody had enumerated.
+rendered identity prompt, the spawn argv, the resolved credential identity and
+the explicit per-node env override — the full set of inputs the process bakes
+in at spawn that may change at runtime. An enumerated list of invalidating
+events is exactly what goes stale when someone adds a surface; the audit found
+surfaces nobody had enumerated.
 
 KILL SWITCH (cache-misses' A/B requirement): ORGTREE_WARM env sets the
 default — which is ON (user ruling 2026-08-30). The file
@@ -42,9 +43,9 @@ per-agent arms; the D-203 settings toggle writes the same file through
 set_enabled(). Checked cheaply (mtime cache) on every decision.
 
 TELEMETRY: append-only JSONL at <ORGTREE_DATA>/journals/warm.jsonl, in the
-exact shape cache-misses registered (admit / proc / pool lines). Deliberately
-NOT in the org document (DOC_LOCK contention) and NOT in scratch or
-transcripts (which would dirty the very prompts being measured).
+exact shape cache-misses registered (admit / proc / pool / cache-break lines).
+Deliberately NOT in the org document (DOC_LOCK contention) and NOT in scratch
+or transcripts (which would dirty the very prompts being measured).
 """
 from __future__ import annotations
 
@@ -216,12 +217,21 @@ class WarmProc:
     able to attach where the first detached."""
 
     def __init__(self, slug: str, nid: str, proc: subprocess.Popen[str],
-                 sid: str, ihash: str, env_id: str) -> None:
+                 sid: str, ihash: str, env_id: str,
+                 ident_components: dict[str, str] | None = None) -> None:
         self.slug, self.nid = slug, nid
         self.proc = proc
         self.sid = sid
         self.hash = ihash
         self.env_id = env_id
+        # D-206 attribution: the four digests that produced `hash`, captured
+        # at the same time as the combined hash. Raw prompt/argv/credential
+        # values never enter telemetry. A process created before this field
+        # existed has no baseline, which is recorded as incomplete rather
+        # than guessed.
+        self.ident_components = (dict(ident_components)
+                                 if ident_components is not None else None)
+        self.identity_change: dict[str, Any] | None = None
         self.spawned_at = time.time()
         self.parked_at = time.time()
         self.claimed = False
@@ -304,7 +314,11 @@ class WarmProc:
     def _pump_err(self) -> None:
         try:
             for line in self.proc.stderr:      # pyright: ignore[reportOptionalIterable]
-                self.err_tail.append(line.rstrip("\n"))
+                raw = line.rstrip("\r\n")
+                self.err_tail.append(raw)
+                journal_cache_break_lines(
+                    self.slug, self.nid, self.sid,
+                    getattr(self.proc, "pid", None), "warm-stderr", raw)
         except (OSError, ValueError):
             pass
 
@@ -371,6 +385,8 @@ _POPEN = subprocess.Popen
 
 # ── telemetry ──────────────────────────────────────────────────────────────
 _J_LOCK = threading.Lock()
+CACHE_BREAK_MARKER = "[PROMPT CACHE BREAK]"
+CACHE_BREAK_LINE_MAX = 4096
 
 
 def _journal(kind: str, **fields: Any) -> None:
@@ -386,6 +402,40 @@ def _journal(kind: str, **fields: Any) -> None:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
     except OSError:
         pass                     # telemetry must never cost a turn
+
+
+def journal_cache_break_lines(slug: str, nid: str, sid: str,
+                              pid: int | None, source: str,
+                              text: str) -> None:
+    """Persist only the CLI's cache-break sentinel from stderr.
+
+    General stderr may contain sensitive material and stays in the existing
+    private tail. The raw sentinel line is the diagnoser's evidence, so keep
+    it verbatim apart from line terminators and a deterministic 4096-character
+    cap. This helper is shared by BOTH stderr owners: WarmProc._pump_err and
+    read_cold_stderr. Missing either owner removes exactly the population this
+    instrument is meant to explain. `_journal`'s `at` is COLLECTION time, not
+    an API request timestamp; consumers join by session/order plus the raw
+    line's call/read/create tuple (the warning carries no requestId).
+    """
+    for raw in text.splitlines() or [text.rstrip("\r\n")]:
+        if CACHE_BREAK_MARKER not in raw:
+            continue
+        _journal("cache-break", slug=slug, nid=nid, session_id=sid,
+                 pid=pid, source=source, line=raw[:CACHE_BREAK_LINE_MAX],
+                 raw_length=len(raw),
+                 truncated=len(raw) > CACHE_BREAK_LINE_MAX)
+
+
+def read_cold_stderr(proc: subprocess.Popen[str], slug: str, nid: str,
+                     sid: str) -> str:
+    """The non-pooled stderr owner, with the same cache-break observation as
+    the warm pump. Kept as one helper so a cold success cannot read and then
+    silently discard the very warning that explains its cache miss."""
+    err = proc.stderr.read()     # pyright: ignore[reportOptionalMemberAccess]
+    journal_cache_break_lines(slug, nid, sid, getattr(proc, "pid", None),
+                              "cold-stderr", err)
+    return err
 
 
 def journal_admit(slug: str, nid: str, sid: str, served: str, reason: str,
@@ -437,7 +487,10 @@ def journal_admit(slug: str, nid: str, sid: str, served: str, reason: str,
 
 
 def _journal_proc(event: str, slug: str, nid: str, reason: str,
-                  ihash: str = "", elapsed_ms: int = 0) -> None:
+                  ihash: str = "", elapsed_ms: int = 0,
+                  session_id: str | None = None,
+                  pid: int | None = None,
+                  identity_change: dict[str, Any] | None = None) -> None:
     try:
         from . import supervisor as sup             # noqa: PLC0415
         with sup._state_lock:
@@ -447,6 +500,12 @@ def _journal_proc(event: str, slug: str, nid: str, reason: str,
     rec: dict[str, Any] = dict(slug=slug, nid=nid, event=event, reason=reason,
                                ident_hash=ihash, queue_depth=qd,
                                elapsed_ms=elapsed_ms)
+    if session_id is not None:
+        rec["session_id"] = session_id
+    if pid is not None:
+        rec["pid"] = pid
+    if identity_change is not None:
+        rec.update(identity_change)
     if event == "exit":
         # every death names its class, so the closed-death-list invariant is
         # checkable from the journal alone
@@ -470,31 +529,103 @@ def _argv_normalized(cmd: list[str]) -> list[str]:
     return out
 
 
-def ident_hash(org: Any, nid: str) -> str:
-    """The invalidation hash: rendered identity prompt + normalized spawn
-    argv + resolved credential identity. Everything a CLI process bakes in at
-    spawn that a turn cannot change afterwards. Pure — writes nothing."""
+def _part(b: bytes) -> str:
+    return hashlib.sha256(b).hexdigest()[:12]
+
+
+IDENTITY_COMPONENTS = ("prompt", "argv", "cred", "envov")
+
+
+def identity_snapshot(org: Any, nid: str, *,
+                      cmd: list[str] | None = None,
+                      env: dict[str, str] | None = None,
+                      overrides: dict[str, str] | None = None,
+                      ) -> tuple[str, dict[str, str]]:
+    """One combined identity hash plus independently verifiable components.
+
+    Optional cmd/env/overrides are the values an actual spawn is about to
+    receive. Supplying them is important: resolving the credential a second
+    time can choose another account and falsely dirty (or falsely admit) a
+    parked process. Raw inputs never leave this function; journals receive
+    only the short SHA-256 component digests.
+    """
     from . import supervisor as sup                 # noqa: PLC0415
     prompt = sup.identity_prompt(org, nid)
-    argv = _argv_normalized(sup._build_cmd(org, nid, write_ident=False))
-    env_id = sup.identity_in_env(
-        sup.spawn_env(org, tier=str(org.node(nid).get("model") or "")))
+    if cmd is None:
+        cmd = sup._build_cmd(org, nid, write_ident=False)
+    if overrides is None:
+        overrides = sup.env_overrides(org.d["slug"], nid)
+    if env is None:
+        env = sup.spawn_env(org,
+                            tier=str(org.node(nid).get("model") or ""),
+                            nid=nid)
+    raw = {
+        "prompt": prompt.encode("utf-8", "replace"),
+        "argv": json.dumps(_argv_normalized(cmd), ensure_ascii=False)
+                    .encode("utf-8", "replace"),
+        "cred": sup.identity_in_env(env).encode("utf-8", "replace"),
+        "envov": json.dumps(overrides, sort_keys=True, ensure_ascii=False)
+                     .encode("utf-8", "replace"),
+    }
     h = hashlib.sha256()
-    h.update(prompt.encode("utf-8", "replace"))
-    h.update(b"\x00")
-    h.update(json.dumps(argv, ensure_ascii=False).encode("utf-8", "replace"))
-    h.update(b"\x00")
-    h.update(env_id.encode("utf-8", "replace"))
-    # D-206: per-node env overrides are spawn inputs a turn cannot change
-    # afterwards, so they belong in the hash — without this, editing
-    # env-overrides.json would silently not reach a parked process until
-    # some unrelated respawn (spawn env is otherwise not hashed; see
-    # docs/cache-hazards.md).
-    h.update(b"\x00")
-    h.update(json.dumps(sup.env_overrides(org.d["slug"], nid),
-                        sort_keys=True, ensure_ascii=False)
-             .encode("utf-8", "replace"))
-    return h.hexdigest()[:32]
+    for i, name in enumerate(IDENTITY_COMPONENTS):
+        if i:
+            h.update(b"\x00")
+        h.update(raw[name])
+    return h.hexdigest()[:32], {name: _part(raw[name])
+                                for name in IDENTITY_COMPONENTS}
+
+
+def ident_hash(org: Any, nid: str) -> str:
+    """The invalidation hash. Pure — writes nothing."""
+    return identity_snapshot(org, nid)[0]
+
+
+def ident_parts(org: Any, nid: str) -> dict[str, str]:
+    """The four short component digests, mainly for diagnostics/tests."""
+    return identity_snapshot(org, nid)[1]
+
+
+def identity_change_fields(previous_hash: str,
+                           previous_components: dict[str, str] | None,
+                           next_hash: str,
+                           next_components: dict[str, str] | None,
+                           ) -> dict[str, Any]:
+    """A falsifiable attribution record: consumer can recompute the changed
+    names from the two digest maps instead of trusting the producer's label."""
+    prev_ok = (isinstance(previous_components, dict)
+               and all(isinstance(previous_components.get(k), str)
+                       for k in IDENTITY_COMPONENTS))
+    next_ok = (isinstance(next_components, dict)
+               and all(isinstance(next_components.get(k), str)
+                       for k in IDENTITY_COMPONENTS))
+    complete = bool(prev_ok and next_ok)
+    previous = ({k: previous_components[k] for k in IDENTITY_COMPONENTS}
+                if prev_ok and previous_components is not None else None)
+    nxt = ({k: next_components[k] for k in IDENTITY_COMPONENTS}
+           if next_ok and next_components is not None else None)
+    changed = ([k for k in IDENTITY_COMPONENTS
+                if previous[k] != nxt[k]]
+               if complete and previous is not None and nxt is not None
+               else None)
+    return {
+        "previous_ident_hash": previous_hash,
+        "next_ident_hash": next_hash,
+        "previous_components": previous,
+        "next_components": nxt,
+        "changed_inputs": changed,
+        "attribution_complete": complete,
+    }
+
+
+def _record_identity_change(wp: WarmProc, next_hash: str,
+                            next_components: dict[str, str] | None,
+                            ) -> dict[str, Any]:
+    fields = identity_change_fields(
+        wp.hash, wp.ident_components, next_hash, next_components)
+    with wp._lk:
+        wp.identity_change = fields
+    return fields
 
 
 def eligible(org: Any, nid: str) -> tuple[bool, str]:
@@ -521,7 +652,9 @@ def eligible(org: Any, nid: str) -> tuple[bool, str]:
 
 
 def boundary_check(slug: str, nid: str,
-                   want_hash: str | None) -> tuple[bool, bool | None, str]:
+                   want_hash: str | None,
+                   wp: WarmProc | None = None,
+                   ) -> tuple[bool, bool | None, str]:
     """The result-boundary decision, with ONE flag read shared between the
     behaviour and the label → (may this process keep serving, the label for
     any admit row this boundary writes, WHY when it may not — the exit
@@ -541,8 +674,11 @@ def boundary_check(slug: str, nid: str,
         ok, why = eligible(org, nid)
         if not ok:
             return False, label, why or "not-eligible"
-        if ident_hash(org, nid) == want_hash:
+        next_hash, next_components = identity_snapshot(org, nid)
+        if next_hash == want_hash:
             return True, label, ""
+        if wp is not None:
+            _record_identity_change(wp, next_hash, next_components)
         return False, label, "identity-changed"
     except Exception:                               # noqa: BLE001
         return False, label, "stdin-closed"
@@ -649,7 +785,11 @@ def _journal_exit_once(wp: WarmProc, reason: str | None = None) -> None:
             return
         wp.exit_journaled = True
         r = reason or wp.exit_reason or "crash"
-    _journal_proc("exit", wp.slug, wp.nid, r, wp.hash)
+        change = (dict(wp.identity_change)
+                  if r == "identity-changed" and wp.identity_change else None)
+    _journal_proc("exit", wp.slug, wp.nid, r, wp.hash,
+                  session_id=wp.sid, pid=getattr(wp.proc, "pid", None),
+                  identity_change=change)
 
 
 def _classify_kill(slug: str, nid: str, reason: str) -> str:
@@ -711,10 +851,12 @@ def _spawn_for(org: Any, nid: str, why: str) -> WarmProc | None:
     slug = org.d["slug"]
     t0 = time.time()
     try:
-        ih = ident_hash(org, nid)
         cmd = sup._build_cmd(org, nid)
         env = sup.spawn_env(org, tier=str(org.node(nid).get("model") or ""),
                             nid=nid)
+        ov = sup.env_overrides(slug, nid)
+        ih, components = identity_snapshot(
+            org, nid, cmd=cmd, env=env, overrides=ov)
         env_id = sup.identity_in_env(env)
         env["ORGTREE_ORG"], env["ORGTREE_NODE"] = slug, nid
         env["ORGTREE_PORT"] = os.environ.get("ORGTREE_PORT", "7360")
@@ -729,7 +871,8 @@ def _spawn_for(org: Any, nid: str, why: str) -> WarmProc | None:
         try:
             sup._leash(proc)
             wp = WarmProc(slug, nid, proc,
-                          org.node(nid)["session_id"], ih, env_id)
+                          org.node(nid)["session_id"], ih, env_id,
+                          components)
         except Exception:
             # setup died AFTER the child existed: reap it or every keeper
             # retry leaks a CLI+MCP tree while turns stay correct — the
@@ -778,7 +921,25 @@ def kill_org(slug: str, reason: str) -> None:
 
 
 # ── the turn-side API ──────────────────────────────────────────────────────
-def claim(slug: str, nid: str, want_hash: str) -> tuple[WarmProc | None, str]:
+_CLAIM_SNAPSHOT = threading.local()
+
+
+def claim_snapshot(slug: str, nid: str, want_hash: str,
+                   want_components: dict[str, str] | None,
+                   ) -> tuple[WarmProc | None, str]:
+    """Carry the turn's exact component snapshot into the stable 3-argument
+    claim seam. The thread local avoids cross-turn races and deliberately
+    calls `claim` by name so the suite's death-between-claim-and-write mutant
+    can still wrap that seam without learning a new signature."""
+    _CLAIM_SNAPSHOT.value = (slug, nid, want_hash, want_components)
+    try:
+        return claim(slug, nid, want_hash)
+    finally:
+        _CLAIM_SNAPSHOT.value = None
+
+
+def claim(slug: str, nid: str,
+          want_hash: str) -> tuple[WarmProc | None, str]:
     """Hand the pooled process to a starting turn IFF it is alive and holds
     the current identity hash. A mismatch is killed on the spot (stale prompt
     = correctness hazard, never served) and the caller spawns cold. The
@@ -794,6 +955,9 @@ def claim(slug: str, nid: str, want_hash: str) -> tuple[WarmProc | None, str]:
     calls here when that read said on. A second read here could disagree
     with the label the admit row carries (cache-misses' misattribution
     hazard)."""
+    snap = getattr(_CLAIM_SNAPSHOT, "value", None)
+    want_components = (snap[3]
+                       if snap and snap[:3] == (slug, nid, want_hash) else None)
     with _pool_lock:
         wp = _pool.get((slug, nid))
         if wp is None:
@@ -806,6 +970,8 @@ def claim(slug: str, nid: str, want_hash: str) -> tuple[WarmProc | None, str]:
             _set_proc_warm(slug, nid, False)   # claimed = no longer parked
             return wp, "warm-hit"
     # (outside the lock) the mismatched/dead one dies now
+    if was_alive:
+        _record_identity_change(wp, want_hash, want_components)
     _kill_proc(wp)
     _set_proc_warm(slug, nid, False)
     _journal_exit_once(wp, "identity-changed" if was_alive else "crash")
@@ -928,10 +1094,12 @@ def _keeper_pass() -> None:
                     if _pool.get((slug, nid)) is wp:
                         del _pool[(slug, nid)]
                 _set_proc_warm(slug, nid, False)
-                _journal_proc("exit", slug, nid, "crash", wp.hash)
+                # Keep the same session/pid join contract as every other
+                # exit owner, and share the once-only guard with the EOF pump.
+                _journal_exit_once(wp, "crash")
                 wp = None
             try:
-                h = ident_hash(org, nid)
+                h, next_components = identity_snapshot(org, nid)
             except Exception:                       # noqa: BLE001
                 continue
             if wp is not None and wp.hash == h:
@@ -941,7 +1109,11 @@ def _keeper_pass() -> None:
                 # is. Immediate and eager (user ruling): kill and re-warm
                 # now, in the background, so the new process is ready before
                 # any turn arrives.
-                _journal_proc("dirty", slug, nid, "identity-changed", h)
+                change = _record_identity_change(wp, h, next_components)
+                _journal_proc("dirty", slug, nid, "identity-changed", h,
+                              session_id=wp.sid,
+                              pid=getattr(wp.proc, "pid", None),
+                              identity_change=change)
                 kill_node(slug, nid, "identity-changed")
             with _spawn_gate:
                 if _busy(slug, nid):                 # a turn started meanwhile

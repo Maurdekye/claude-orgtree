@@ -25,11 +25,23 @@ billing lane belongs to `spawn_env` alone.
 
 Since D-206 every unsandboxed claude spawn carries `CLAUDE_CODE_IS_COWORK=1`.
 It gates the CLI's own prompt-cache-break diagnoser: per-request diffs with
-named causes in the debug log (`[PROMPT CACHE BREAK] …`) and a
-`cache-break-state-*.json` that survives respawns, which is what makes
-turn-opening cache breaks attributable. Enumerated side effects on the pinned
-CLI 2.1.220: eager transcript flush at turn boundaries, OTel diag level WARN,
-telemetry labels — and one real behaviour change:
+named causes emitted as `[PROMPT CACHE BREAK] …` warning lines. Orgtree copies
+ONLY those exact sentinel lines (never general stderr) from both warm and cold
+CLI processes into `journals/warm.jsonl`, with session, pid and timestamp join
+keys. The row's `at` is backend collection time, not an API request timestamp;
+exact attribution uses session/order plus the raw warning's call/read/create
+tuple. The warning does not carry a request ID. Enumerated side effects on the
+pinned CLI 2.1.220: eager transcript flush at turn boundaries, OTel diag level
+WARN, telemetry labels — and one real behaviour change:
+
+**Do not look under `~/.claude` for its state file.** In 2.1.220 the exact path
+is `%TEMP%\claude\cache-break-state-${session_id}.json`
+(`Lie()` → `Iw()` → `path.join(os.tmpdir(), "claude")`). The deployed CLI does
+write those files, but almost every observed stream-json file ends a turn as
+the two bytes `{}`. Useful state surviving a respawn is therefore **not
+established**; the journaled warning line is the observation path. This
+corrects D-206's initial, too-strong claim that the file itself made openings
+across respawns attributable.
 
 **⚠ Skill authors: inline shell preprocessing (`` !`command` `` blocks in
 skill markdown) is DISABLED under this flag** — such blocks render as
