@@ -358,6 +358,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
   // Safe from the resize observer's own feedback path by construction: the
   // flag adds a MASK, which paints and never lays out, so a measurement here
   // can never move the box the observer is watching.
+  const pinRef = useRef<HTMLButtonElement | null>(null)
   const pinTextRef = useRef<HTMLSpanElement | null>(null)
   const [pinClip, setPinClip] = useState(false)
   // rect-based, not offsetTop: the row's offsetParent is not reliably the
@@ -368,7 +369,18 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
     const el = scroller.current
     let v: number | null = null
     if (el) {
-      const top = el.getBoundingClientRect().top + 4
+      // The chip is a sticky item but still owns an in-flow box. Without
+      // removing that box from this measurement, a row exactly at the top
+      // boundary alternates: no chip → row is above → mount chip → its box
+      // pushes the row on-screen → remove chip → row is above again. This
+      // layout effect runs before paint, so that loop is synchronous and React
+      // eventually throws #185 (maximum update depth). Compare against the
+      // scrollport's stable coordinate system instead: the current chip moves
+      // every row below it by its own height, so move the threshold by exactly
+      // the same amount. `getBoundingClientRect` is the real laid-out height;
+      // offsetHeight would report an integer and create a new sub-pixel edge.
+      const pinFlow = pinRef.current?.getBoundingClientRect().height ?? 0
+      const top = el.getBoundingClientRect().top + 4 + pinFlow
       // newest→oldest: the LAST user turn above the scrollport is the nearest
       // one, i.e. the row "↑" actually points at from where the reader stands
       for (let i = userTurns.length - 1; i >= 0; i--) {
@@ -844,6 +856,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
               which is exactly the visibility rule calcPin enforces. */}
           {pinTarget && (
             <button className={'pinuser' + (pinClip ? ' clipped' : '')}
+              ref={pinRef}
               title="jump to your message"
               onClick={(e) => {
                 // ⚠ NOT scrollIntoView: it scrolls EVERY scrollable ancestor,
