@@ -13857,9 +13857,19 @@ def read_chat(org: Org, nid: str, last: int | None = None) -> dict[str, Any]:
                             entry["images"] = imgs
                         # orgtree_send_file (user spec 2026-07-31): the chip
                         # becomes a DOWNLOAD CARD — the result JSON carries
-                        # the outbox path the /file endpoint serves
-                        if (entry.get("name") ==
-                                "mcp__orgtree__orgtree_send_file"
+                        # the outbox path the /file endpoint serves.
+                        #
+                        # ⚠ SAME BARE-NAME GAP AS THE MAIL LINK BELOW (found
+                        # sweeping for the pattern after that fix, 2026-08-30):
+                        # Codex/Gemini journal this tool call as bare
+                        # `orgtree_send_file`, never the Claude-only
+                        # `mcp__orgtree__`-prefixed form this used to require
+                        # — so a Codex- or Gemini-tier agent sending a file
+                        # got no download card at all, and "delivered by
+                        # pasting a path" (explicitly ruled out — a path is
+                        # not a delivery) was silently what happened instead.
+                        if (entry.get("name", "").removeprefix("mcp__orgtree__")
+                                == "orgtree_send_file"
                                 and not block.get("is_error")):
                             try:
                                 sent = json.loads(body).get("sent")
