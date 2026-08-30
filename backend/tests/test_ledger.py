@@ -726,9 +726,12 @@ def main():
     orgM.hire("boss", "boss", "haiku", 0, "kid1", **spec())
     orgM.hire("boss", "boss", "haiku", 0, "kid2", **spec())
     orgM.retire("boss", "kid2")
-    check("mail to an archived sibling queues (deferred, warned)", lambda: (
+    # the warning must name the CONDITION (a rehire) and must not PROMISE it:
+    # "will be acted on when it is rehired" read as a scheduled delivery, and
+    # in an org that hires fresh instead of rehiring, nothing ever came.
+    check("mail to an archived sibling queues (deferred, warned honestly)", lambda: (
         lambda r: None if r["deferred"] and r["delivered"] == "kid2"
-        and any("rehired" in w for w in r["warnings"])
+        and any("rehire" in w and "UNDELIVERED" in w for w in r["warnings"])
         and orgM.d["mail"]["kid2"][0]["from"] == "kid1"
         else (_ for _ in ()).throw(AssertionError(r))
     )(orgM.post_mail("kid1", "kid2", "read this when you're back")))
