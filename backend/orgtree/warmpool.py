@@ -75,13 +75,14 @@ POOL_SNAP_EVERY = 60.0
 
 _FLAG_CACHE: dict[str, Any] = {"at": 0.0, "mtime": None, "val": None}
 _FLAG_TTL = 2.0
+_FLAG_LOCK = threading.RLock()  # atomic read/modify/write for runtime controls
 
 
 def _flag_path() -> str:
     return os.path.join(store.DATA_ROOT, "warm.flag")
 
 
-def _read_flag() -> dict[str, Any] | None:
+def _read_flag_unlocked() -> dict[str, Any] | None:
     """The runtime override: {enabled, exclude, malformed} — or None when no
     flag file exists. A file that exists but cannot be parsed (empty,
     truncated mid-write, bad JSON) comes back {"malformed": True}: what the
@@ -124,18 +125,26 @@ def _read_flag() -> dict[str, Any] | None:
     return val
 
 
+def _read_flag() -> dict[str, Any] | None:
+    """A coherent flag observation across an internal concurrent write."""
+    with _FLAG_LOCK:
+        return _read_flag_unlocked()
+
+
 def set_flag(content: str) -> None:
     """Atomic flag write (temp + replace) for anything that flips the switch
     programmatically — a reader can never observe a torn write through this
     path. Hand-edits remain possible; the malformed handling above is what
     covers those."""
-    p = _flag_path()
-    tmp = p + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(content)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, p)
+    with _FLAG_LOCK:
+        p = _flag_path()
+        tmp = p + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, p)
+        _FLAG_CACHE["at"] = 0.0   # the very next decision sees this write
 
 
 def warm_decision() -> tuple[bool, bool | None]:
@@ -172,14 +181,19 @@ def set_enabled(on: bool) -> None:
     would clobber it. The toggle is a user preference and the flag is the
     A/B control and back-out lever — SAME VALUE, on purpose; splitting them
     would let the off-arm measurement and the user's setting disagree."""
-    f = _read_flag()
-    exclude = list(f.get("exclude") or []) if f and not f.get("malformed") \
-        else []
-    if exclude:
-        set_flag(json.dumps({"enabled": bool(on), "exclude": exclude}))
-    else:
-        set_flag("1" if on else "0")
-    _FLAG_CACHE["at"] = 0.0        # visible to the very next decision
+    with _FLAG_LOCK:
+        # A toggle is a read/modify/write because it must preserve the A/B
+        # exclude list. Bypass the 2 s decision cache here: another atomic
+        # writer may have replaced the durable list inside that TTL, and
+        # writing our cached view back would silently resurrect stale arms.
+        _FLAG_CACHE["at"] = 0.0
+        f = _read_flag()
+        exclude = list(f.get("exclude") or []) \
+            if f and not f.get("malformed") else []
+        if exclude:
+            set_flag(json.dumps({"enabled": bool(on), "exclude": exclude}))
+        else:
+            set_flag("1" if on else "0")
     poke()
 
 

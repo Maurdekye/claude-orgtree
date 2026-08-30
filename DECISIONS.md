@@ -2061,11 +2061,15 @@ their turns never touch the Claude CLI. **Measured on the real CLIs
 across all three lanes the thing ending the process every turn was a choice
 made three times and never revisited.** Codex real probe: two resumed turns
 on one live PID, PASS — inclusion is a user scoping decision (roughly the
-size of the claude-lane supervisor half). Gemini real probe: **verified
-blocker** — real `session/load` refuses ("No previous sessions found for
-this project") where the protocol-faithful fake succeeds, so the fake
-diverges from the real CLI and gemini stays excluded until that is
-understood; zero live gemini agents today.
+size of the claude-lane supervisor half). Gemini is an **UNVERIFIED SCOPE
+EXCLUSION**, not a verified protocol impossibility: the real probe's
+`session/load` refusal ("No previous sessions found for this project") tests
+the post-respawn DISK path, while a persistent process keeps the session in
+`AcpSessionManager` and serves another turn through a direct second
+`session/prompt`. The installed 0.57 source confirms that distinction; a
+corrected real direct-prompt probe was inconclusive because initialization
+hung before either turn. Gemini remains excluded by scope pending that exact
+live test; zero live gemini agents today.
 
 Bounds & residuals, stated rather than hidden:
 - **UNTESTED: N persistent clients against a live single-application MCP
