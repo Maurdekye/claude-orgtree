@@ -166,16 +166,33 @@ def main():
     slug2, org2 = mkorg("notice rehire")
     org2.retire("top", "kid")
     r = org2.post_mail("top", "kid", "fyi while you were out", "notice")
-    check("deferred notice warns 'first turn after rehire', not 'acted on'",
-          lambda: (None if any("first turn after rehire" in w
-                               for w in r["warnings"])
+    # ⚠ PINS THE PROPERTY, NOT THE SENTENCE. The old version matched the
+    # literal phrase "first turn after rehire", which survived a reword that
+    # would have destroyed the distinction it exists to protect. What must
+    # hold is that the NOTICE warning says a rehire ALONE is not enough
+    # (notices never drive a turn) while the MAIL warning does not, and that
+    # NEITHER promises a delivery the org may never perform.
+    _nw = " ".join(r["warnings"])
+    check("deferred notice warns that a rehire ALONE will not deliver it",
+          lambda: (None if ("never starts a turn" in _nw
+                            and "rehire" in _nw)
+                   else (_ for _ in ()).throw(AssertionError(r["warnings"]))))
+    check("no deferred warning PROMISES the message will be acted on",
+          lambda: (None if "will be acted on when it is rehired" not in _nw
                    else (_ for _ in ()).throw(AssertionError(r["warnings"]))))
     r2 = org2.rehire("top", "kid")
     check("rehire over a notice-only box: drive is EMPTY",
           lambda: (None if r2.get("drive") == []
                    else (_ for _ in ()).throw(AssertionError(r2))))
     org2.retire("top", "kid")
-    org2.post_mail("top", "kid", "real work waiting", "message")
+    _mw = " ".join(org2.post_mail("top", "kid", "real work waiting",
+                                  "message")["warnings"])
+    # the MAIL branch must NOT borrow the notice's extra weakness (a rehire is
+    # enough for mail) and must still refuse to promise a rehire nobody may do
+    check("deferred MAIL warning is honest without the notice's extra clause",
+          lambda: (None if ("never starts a turn" not in _mw
+                            and "UNDELIVERED" in _mw)
+                   else (_ for _ in ()).throw(AssertionError(_mw))))
     r3 = org2.rehire("top", "kid")
     check("rehire with actionable mail beside the notice: drive fires",
           lambda: (None if "kid" in r3.get("drive", [])

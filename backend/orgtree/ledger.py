@@ -1476,16 +1476,39 @@ class Org:
             raise LedgerError(f"{to} is unrecoverable — it cannot receive mail")
         deferred = target["state"] != "live"
         if deferred:
-            # user ruling: archived agents still RECEIVE mail — it waits in
-            # their inbox and is acted on at rehire. A notice makes a weaker
-            # promise: rehire alone won't deliver it (notices never drive) —
-            # it rides whatever turn eventually runs.
+            # user ruling: archived agents still RECEIVE mail — it is saved in
+            # their inbox and read at rehire.
+            #
+            # ⚠ THE WARNING MUST NOT PROMISE THE REHIRE. This text used to
+            # say the mail "will be acted on when it is rehired", which reads
+            # as a delivery that has been SCHEDULED. Nothing schedules it. In
+            # an org whose practice is to hire a new agent rather than reopen
+            # an archived one (orgtree's own standing rule from 2026-08-30)
+            # that sentence is a promise nobody keeps, and the send still
+            # reports success — so dead letters accumulate silently. Measured
+            # on this org's doc the day the rule landed: 13 of 15 undelivered
+            # messages were addressed to archived agents.
+            #
+            # So state the CONDITION and leave the POLICY to the caller. This
+            # module serves every org on the machine and must not hard-code
+            # one org's rehiring practice; "nothing reads it until somebody
+            # rehires, and if nobody will, it is undelivered" is true whatever
+            # that practice is, and it puts the judgement where the knowledge
+            # is. A notice makes a weaker promise still: rehire ALONE won't
+            # deliver it (notices never drive), so it rides whatever turn
+            # eventually runs — pinned by test_send_notice.py.
             warnings.append(
-                f"{to} is {target['state']} — the notice waits in its inbox "
-                f"and is read on its first turn after rehire"
+                f"{to} is {target['state']} — the notice is saved in its "
+                f"inbox, but NOTHING WILL READ IT until somebody rehires "
+                f"{to}, and a rehire ALONE still will not deliver it: a "
+                f"notice never starts a turn, so it waits for the first turn "
+                f"{to} runs for some other reason. If no rehire is intended, "
+                f"treat this as UNDELIVERED and send it to a live agent."
                 if kind == "notice" else
-                f"{to} is {target['state']} — the mail is queued in "
-                f"its inbox and will be acted on when it is rehired")
+                f"{to} is {target['state']} — the mail is saved in its inbox, "
+                f"but NOTHING WILL READ IT until somebody rehires {to}. If "
+                f"no rehire is intended, treat this as UNDELIVERED and send "
+                f"it to a live agent.")
         if sender != USER:
             s = self.node(sender)
             allowed = (
