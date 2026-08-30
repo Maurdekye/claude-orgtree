@@ -3526,6 +3526,18 @@ def _upstream() -> httpx.AsyncClient:
     return _hx
 
 
+def _anthropic_operation_allowed(method: str, path: str) -> bool:
+    """Whether this deployment may relay one Anthropic API operation.
+
+    Standard mode keeps the historical transparent passthrough. Frozen mode
+    has one measured CLI requirement: message creation. Unknown methods and
+    paths are refused before credentials are read or an upstream is opened.
+    """
+    policy = deployment.current_policy()
+    return (policy.allow_broad_anthropic_proxy
+            or (method == "POST" and path == "v1/messages"))
+
+
 @app.api_route("/anthropic/{path:path}",
                methods=["GET", "POST", "HEAD", "PUT", "DELETE"])
 async def anthropic_proxy(path: str, request: Request) -> StreamingResponse:
@@ -3535,6 +3547,8 @@ async def anthropic_proxy(path: str, request: Request) -> StreamingResponse:
     bslug = getattr(request.state, "bridge_slug", None)
     if not bslug:
         raise HTTPException(403, "bridge only")
+    if not _anthropic_operation_allowed(request.method, path):
+        raise HTTPException(403, "operation not allowed by deployment policy")
     # api_fallback (user feature 2026-08-17): while the org's fallback window
     # is open, this passthrough re-auths with the org's KEY instead of the
     # host OAuth token — same container, same proxy, no recreate; reverting
@@ -6121,7 +6135,8 @@ def main() -> None:
             PublicGateway(app), host="0.0.0.0", port=PUBLIC_PORT)))
     if sandbox.BRIDGE_PORT:
         servers.append(uvicorn.Server(uvicorn.Config(
-            BridgeGateway(app), host="0.0.0.0", port=sandbox.BRIDGE_PORT)))
+            BridgeGateway(app), host=sandbox.bridge_bind_host(),
+            port=sandbox.BRIDGE_PORT)))
     if len(servers) == 1:
         uvicorn.run(app, host=host, port=PORT)
         return

@@ -110,7 +110,8 @@ os.environ.pop("ORGTREE_SANDBOX_MCP", None)
 os.environ.pop("ORGTREE_SANDBOX_API_KEY", None)
 os.environ.pop("ORGTREE_EXPOSE_ADMIN", None)
 
-from orgtree import api, sandbox, store, subproxy, supervisor    # noqa: E402
+from orgtree import (api, deployment, sandbox, store, subproxy,  # noqa: E402
+                     supervisor)
 from orgtree import disk as dsk                                  # noqa: E402
 from orgtree.ledger import USER                                  # noqa: E402
 
@@ -379,6 +380,8 @@ class FakeDocker:
         self.server_up = True
         self.images: set[str] = set()
         self.volumes: set[str] = set()
+        self.networks: dict[str, dict] = {
+            "bridge": {"internal": False, "gateway": "172.17.0.1"}}
         self.containers: dict[str, dict] = {}
         self.build_fails = False
         self.run_fails = False
@@ -420,6 +423,40 @@ class FakeDocker:
             for v in a[3:]:
                 self.volumes.discard(v)
             return self.cp(a, 0)
+        if a[:2] == ["network", "inspect"]:
+            name = a[2]
+            n = self.networks.get(name)
+            if not n:
+                return self.cp(a, 1, "", f"No such network: {name}")
+            if "--format" in a:
+                fmt = a[a.index("--format") + 1]
+                if ".Internal" in fmt:
+                    return self.cp(
+                        a, 0, ("true 1\n" if n.get("internal")
+                               and n.get("frozen") else "false <no value>\n"))
+                return self.cp(a, 0, n.get("gateway", "172.31.0.1") + "\n")
+            return self.cp(a, 0, json.dumps([{"Name": name}]))
+        if a[:2] == ["network", "create"]:
+            name = a[-1]
+            self.networks[name] = {
+                "internal": "--internal" in a,
+                "frozen": "orgtree.frozen=1" in a,
+                "gateway": "172.31.0.1"}
+            return self.cp(a, 0, name + "\n")
+        if a[:2] == ["network", "connect"]:
+            name, container = a[-2], a[-1]
+            c = self.containers.get(container)
+            if not c or name not in self.networks:
+                return self.cp(a, 1, "", "missing container or network")
+            c["networks"].add(name)
+            return self.cp(a, 0)
+        if a[:2] == ["network", "rm"]:
+            name = a[2]
+            if any(name in c.get("networks", set())
+                   for c in self.containers.values()):
+                return self.cp(a, 1, "", "network has active endpoints")
+            self.networks.pop(name, None)
+            return self.cp(a, 0)
         if a[:2] == ["container", "inspect"]:
             name, fmt = a[-1], a[a.index("-f") + 1]
             c = self.containers.get(name)
@@ -435,10 +472,12 @@ class FakeDocker:
             out = re.sub(r'\{\{index \.Config\.Labels "([^"]+)"\}\}',
                          lambda m: c["labels"].get(m.group(1), "<no value>"),
                          out)
+            out = out.replace("{{json .NetworkSettings.Networks}}",
+                              json.dumps({n: {} for n in c["networks"]}))
             return self.cp(a, 0, out + "\n")
         if a[:1] == ["run"] and "--rm" in a:
             return self.cp(a, 0, self.migrate_output)       # migration helper
-        if a[:1] == ["run"]:
+        if a[:1] in (["run"], ["create"]):
             if self.run_fails:
                 return self.cp(a, 1, "", "invalid mount config")
             name = a[a.index("--name") + 1]
@@ -447,8 +486,12 @@ class FakeDocker:
                 if x == "--label" and "=" in a[i + 1]:
                     k, _, v = a[i + 1].partition("=")
                     labels[k] = v
-            self.containers[name] = {"running": True, "image": a[-3],
-                                     "labels": labels}
+            image = next((x for x in a if x in self.images), a[-3])
+            network = a[a.index("--network") + 1] \
+                if "--network" in a else "bridge"
+            self.containers[name] = {"running": a[0] == "run", "image": image,
+                                     "labels": labels,
+                                     "networks": {network}}
             return self.cp(a, 0, "deadbeef\n")
         if a[:2] == ["rm", "-f"]:
             self.containers.pop(a[2], None)
@@ -659,6 +702,90 @@ if section("§2  the container contract"):
         FD.calls.clear()
         assert sandbox.ensure_container(store.load_org(SLUG_A)) == NAME_A
         assert not FD.find("run") and not FD.find("rm"), FD.calls
+
+    @t("☠ frozen mode gives the agent ONLY a private internal network + relay")
+    def _():
+        o = fresh("cf", kiosk=True, secret="7a" * 16)
+        slug = o.d["slug"]
+        net = sandbox.frozen_network_name(slug)
+        gateway = sandbox.frozen_gateway_name(slug)
+        os.environ[deployment.PROFILE_ENV] = "frozen"
+        try:
+            sandbox.ensure_container(o)
+            creates = FD.find("network", "create")
+            assert creates and "--internal" in creates[-1] \
+                and creates[-1][-1] == net, creates
+            assert FD.networks[net]["internal"], FD.networks[net]
+
+            agent = FD.containers[sandbox.container_name(slug)]
+            relay = FD.containers[gateway]
+            assert agent["networks"] == {net}, agent["networks"]
+            assert relay["networks"] == {"bridge", net}, relay["networks"]
+
+            runs = FD.find("run")
+            agent_run = next(c for c in runs
+                             if c[c.index("--name") + 1]
+                             == sandbox.container_name(slug))
+            relay_run = next(c for c in FD.find("create")
+                             if c[c.index("--name") + 1] == gateway)
+            assert agent_run[agent_run.index("--network") + 1] == net
+            assert "--add-host" not in agent_run, agent_run
+            assert relay_run[relay_run.index("--network") + 1] == "bridge"
+            assert "--read-only" in relay_run and "--cap-drop" in relay_run
+            assert relay_run[relay_run.index("--cap-drop") + 1] == "ALL"
+            assert "no-new-privileges" in relay_run, relay_run
+            assert [x for x in relay_run if x == "-v"] == ["-v"], relay_run
+            assert f"{sandbox.BACKEND_DIR}:/opt/orgtree-backend:ro" in relay_run
+            assert relay_run[relay_run.index("--bind") + 1] == \
+                sandbox.FROZEN_GATEWAY_ALIAS
+            joins = FD.find("network", "connect")
+            assert joins and "--alias" in joins[-1] \
+                and sandbox.FROZEN_GATEWAY_ALIAS in joins[-1], joins
+
+            env = dict(agent_run[i + 1].split("=", 1)
+                       for i, x in enumerate(agent_run) if x == "-e")
+            assert env["ANTHROPIC_BASE_URL"] == (
+                f"http://{sandbox.FROZEN_GATEWAY_ALIAS}:"
+                f"{sandbox.FROZEN_GATEWAY_PORT}/anthropic/{'7a' * 16}")
+            assert sandbox.bridge_url() == (
+                f"http://{sandbox.FROZEN_GATEWAY_ALIAS}:"
+                f"{sandbox.FROZEN_GATEWAY_PORT}")
+        finally:
+            os.environ.pop(deployment.PROFILE_ENV, None)
+
+        # Profile rollback is part of preserving standard mode: a frozen
+        # container must never remain isolated after the operator returns to
+        # standard, and the now-unused relay/network must not leak.
+        FD.calls.clear()
+        sandbox.ensure_container(store.load_org(slug))
+        assert FD.find("rm", "-f", sandbox.container_name(slug)), FD.calls
+        assert gateway not in FD.containers and net not in FD.networks
+        standard_run = FD.last_run()
+        assert "--network" not in standard_run
+        assert standard_run[standard_run.index("--add-host") + 1] == \
+            "host.docker.internal:host-gateway"
+        drop(slug)
+
+    @t("☠ frozen mode refuses a same-name Docker network that is not internal")
+    def _():
+        o = fresh("cfc", kiosk=True, secret="7b" * 16)
+        slug = o.d["slug"]
+        net = sandbox.frozen_network_name(slug)
+        FD.networks[net] = {"internal": False, "frozen": False,
+                            "gateway": "172.31.0.1"}
+        os.environ[deployment.PROFILE_ENV] = "frozen"
+        try:
+            try:
+                sandbox.ensure_container(o)
+                raise AssertionError("adopted a non-internal network")
+            except RuntimeError as e:
+                assert "refusing existing Docker network" in str(e), e
+            assert sandbox.container_name(slug) not in FD.containers
+            assert sandbox.frozen_gateway_name(slug) not in FD.containers
+        finally:
+            os.environ.pop(deployment.PROFILE_ENV, None)
+            FD.networks.pop(net, None)
+        drop(slug)
 
     @t("an AUTH change recreates the container (the credential is baked in "
        "at `docker run`, and supervisor.bills_the_key trusts the config)")
