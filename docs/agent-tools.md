@@ -48,7 +48,7 @@ the MCP catalog in `backend/orgtree/mcptool.py`.
 
 | Tool | Use |
 |---|---|
-| `orgtree_watchdog` | Create, inspect, pause, resume, or remove a persistent file, command, process, or stream monitor. |
+| `orgtree_watchdog` | Create, inspect, pause, resume, or remove a file, command, process, or stream monitor. A `once: true` create makes a one-shot dog. |
 | `orgtree_self_restart` | Rebuild and restart the current backend from its committed repository state. It refuses while an agent is mid-turn. |
 | `orgtree_prime_restart` | Arm the same restart to run automatically once the machine is quiet. |
 
@@ -64,3 +64,25 @@ the MCP catalog in `backend/orgtree/mcptool.py`.
   a document the user should read in the page.
 - Keep a watchdog for a condition that may take longer than a turn instead of
   polling it manually.
+
+### One-shot dogs
+
+Pass `once: true` when creating a **one-shot dog**. It works with every
+watchdog kind (`file`, `command`, `process`, and `stream`) and is independent
+of `notice`: a one-shot dog may wake its owner or deliver a passive notice.
+A real fire makes it fire exactly once and remove itself; the fire mail says
+that it removed itself, and it no longer appears in `orgtree_watchdog list`.
+Its per-agent watchdog slot is returned, so it no longer counts toward the
+eight-dog cap.
+
+Use a one-shot dog whenever a condition is a **deadline** or a question has
+only one answer. A deadline condition stays true after it is reached, so a
+persistent dog re-fires at every interval forever: `READY=yes` and
+`ELAPSED>24h` are deadline conditions. By contrast, `BUILD FAILED` appearing
+in a log is an edge and can suit a persistent dog. If a condition is not a
+one-shot case, remove a persistent dog in the same turn that acts on its first
+fire.
+
+Only a real fire spends a one-shot dog. A went-quiet alert does not, and
+neither does a fire that cannot be delivered because its dog is paused or its
+owner is archived.
