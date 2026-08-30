@@ -3594,6 +3594,77 @@ html.mobile .md table { display: block; overflow-x: auto; max-width: 100%; }
 .acct-prov-tiers { display: flex; flex-wrap: wrap; gap: 6px 14px;
   font-size: 12.5px; }
 .acct-prov-tier { display: inline-flex; align-items: center; gap: 6px; }
+
+/* ------------------------------------------------ D-203: App settings ----
+   Machine-wide provider admission and browser-local display preferences live
+   in one stable tab shell. The short scope badge is a label, not a blurb. */
+.app-settings-tabs {
+  display: flex; align-items: flex-end; gap: 4px;
+  border-bottom: 1px solid var(--line);
+}
+.settings .app-settings-tab {
+  display: inline-flex; align-items: center; gap: 7px;
+  border: 0; border-bottom: 2px solid transparent; border-radius: 0;
+  background: none; color: var(--dim); margin-bottom: -1px;
+  padding: 5px 10px 7px;
+}
+.settings .app-settings-tab:hover { color: var(--ink); background: var(--panel-2); }
+.settings .app-settings-tab.on {
+  color: var(--ink-strong); border-bottom-color: var(--accent);
+}
+@media (max-width: 420px) {
+  .app-settings-tabs {
+    align-items: stretch; flex-wrap: wrap; border-bottom: 0;
+  }
+  .settings .app-settings-tab {
+    flex: 1 1 auto; justify-content: center; margin-bottom: 0;
+    border-bottom-color: var(--line);
+  }
+  .app-settings-panel .app-pref-row:not(.app-pref-check) {
+    align-items: stretch; flex-direction: column; gap: 7px;
+  }
+  .app-settings-panel .app-pref-control {
+    margin-left: 0; justify-content: flex-start;
+  }
+}
+.app-settings-scope {
+  color: var(--dim); border: 1px solid var(--line); border-radius: 8px;
+  padding: 0 6px; font-size: 9.5px; font-weight: 400;
+}
+.app-settings-panel:not([hidden]) {
+  display: flex; flex-direction: column; gap: 12px;
+}
+.provider-switch {
+  display: inline-flex; align-items: center; gap: 5px; margin-left: auto;
+  color: var(--ink); font-size: 11px; font-weight: 500; cursor: pointer;
+}
+.provider-switch input { cursor: pointer; }
+.acct-provider-head.provider-off {
+  border-bottom-style: dashed; color: var(--dim);
+}
+.app-pref-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 16px; min-height: 40px;
+}
+.app-pref-label { font-weight: 600; color: var(--ink); }
+.app-pref-control { margin-left: auto; flex-wrap: nowrap; }
+.app-pref-value { min-width: 4.5em; text-align: center; }
+.app-pref-check { justify-content: flex-start; cursor: pointer; }
+.app-pref-state { margin-left: auto; color: var(--dim); font-size: 11px; }
+.lin-provider-off {
+  color: var(--dim); font-size: 11.5px; line-height: 1.35;
+}
+/* org.md is a document editor, not a form field. Its viewport grows with the
+   window, remains vertically resizable, and is capped so the modal itself
+   stays scrollable on a short display. React owns the buffer above this node,
+   so resize/reflow cannot remount it or discard unsaved text. */
+.settings textarea.orgmd-editor {
+  width: 100%; height: clamp(10rem, 36vh, 24rem); min-height: 8rem;
+  max-height: 55vh; resize: vertical;
+}
+@media (max-height: 560px) {
+  .settings textarea.orgmd-editor { height: 9rem; max-height: 42vh; }
+}
 /* ---- the header usage modal's per-account sections ---- */
 .usage-acct { display: flex; flex-direction: column; gap: 6px;
   border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }

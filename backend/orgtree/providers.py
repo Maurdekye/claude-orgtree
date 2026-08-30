@@ -43,6 +43,7 @@ import sys
 import time
 from typing import Any, Final, TypedDict
 
+from . import appsettings
 from .ledger import MODELS as _LEDGER_MODELS
 from .ledger import TIERS as _LEDGER_TIERS
 
@@ -650,6 +651,11 @@ def providers_payload(claude_status: dict[str, Any]) -> dict[str, Any]:
     module never reaches into those, so it stays importable from anywhere."""
     codex = codex_status()
     gemini = gemini_status()
+    choices = appsettings.provider_choices()
+    claude_on = choices["claude"]
+    codex_on = choices["openai"]
+    gemini_on = choices["google"]
+    off_reason = "turned off in App settings → Providers"
     return {"providers": [
         {
             "id": "claude",
@@ -665,10 +671,17 @@ def providers_payload(claude_status: dict[str, Any]) -> dict[str, Any]:
             # only reads it, because the API layer owns the CLI path and the
             # accounts registry and this module must stay importable from
             # anywhere (see the docstring).
-            "hire_enabled": bool(claude_status.get("installed")
+            "hire_enabled": bool(claude_on
+                                 and claude_status.get("installed")
                                  and claude_status.get("connected")),
+            # D-203: user choice is its own fact. Never falsify `installed`
+            # or `connected` to make an off provider disappear — settings
+            # must still show the real machine state and let the user turn it
+            # back on.
+            "user_enabled": claude_on,
             "reason": (
-                None if claude_status.get("installed")
+                off_reason if not claude_on
+                else None if claude_status.get("installed")
                 and claude_status.get("connected")
                 else "not signed in — run `claude` once on this machine "
                      "and complete the login"
@@ -689,9 +702,11 @@ def providers_payload(claude_status: dict[str, Any]) -> dict[str, Any]:
             # hireable provider — same predicate the api hire gate enforces.
             # The reason is the UI's tooltip, so it speaks to the user, in
             # order of what they'd have to do next.
-            "hire_enabled": bool(codex.get("connected")),
+            "hire_enabled": bool(codex_on and codex.get("connected")),
+            "user_enabled": codex_on,
             "reason": (
-                None if codex.get("connected")
+                off_reason if not codex_on
+                else None if codex.get("connected")
                 else "not signed in — run `codex login` on this machine"
                 if codex.get("installed")
                 else f"Codex CLI not installed — {install_hint('openai')}"),
@@ -704,9 +719,11 @@ def providers_payload(claude_status: dict[str, Any]) -> dict[str, Any]:
             "cli": "Gemini CLI",
             "tiers": gemini_tiers(),
             "status": gemini,
-            "hire_enabled": bool(gemini.get("connected")),
+            "hire_enabled": bool(gemini_on and gemini.get("connected")),
+            "user_enabled": gemini_on,
             "reason": (
-                None if gemini.get("connected")
+                off_reason if not gemini_on
+                else None if gemini.get("connected")
                 else "not signed in — run `gemini` once on this machine and "
                      "pick a login method"
                 if gemini.get("installed")

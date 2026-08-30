@@ -21,7 +21,7 @@ import {
 } from './icons'
 import { DirList } from './forms'
 import { FolderPickerHost } from './picker'
-import { ALL_TIERS, attentionPip, deskDpi, fallbackActive, freezeKind, orgPxc, presenceOfPayload, primedRestartChip, setCrowdPilesOn, setDeskDpi, TIER_LETTER, useCrowdPiles, usePolled } from './canvas/shared'
+import { ALL_TIERS, attentionPip, deskDpi, fallbackActive, freezeKind, orgPxc, presenceOfPayload, primedRestartChip, setDeskDpi, TIER_LETTER, usePolled } from './canvas/shared'
 import { AskCard } from './canvas/asks'
 import { AccountsPanel, UsageBars } from './canvas/accounts'
 import { addPending, dropPending, ingestPulse, ingestStream, resetConvos } from './convo'
@@ -386,7 +386,7 @@ export default function App() {
             ("which account is paying, and how close is it to a wall?") and
             are read together. */}
         {!BASE &&
-          <button className="h1-usage" title="Claude accounts"
+          <button className="h1-usage" title="App settings"
             onClick={() => setShowAccounts(true)}>◑</button>}</h1>
       {slug && <button className="home" onClick={goHome}><HomeIcon fontSize="inherit" /> all organizations</button>}
       <nav>
@@ -1859,56 +1859,6 @@ function SweepBlock({ slug, toast }: { slug: string; toast: ToastFn }) {
   )
 }
 
-// Desk text size — a DEVICE preference, never org state: the same org read on a
-// laptop and a 4K monitor wants different values. Applied immediately to the
-// --desk-dpi custom property, so it is not part of the settings save.
-function DeskTextSize() {
-  const [dpi, setDpi] = useState(deskDpi)
-  const apply = (v: number) => {
-    const c = Math.min(2.5, Math.max(0.75, Math.round(v * 100) / 100))
-    setDpi(c); setDeskDpi(c)
-  }
-  return (
-    <>
-      <div className="field-label">desk text size — this browser only (the desk
-        is counter-scaled into the card, so it reads smaller on smaller screens)</div>
-      <div className="row">
-        <button onClick={() => apply(dpi - 0.25)} disabled={dpi <= 0.75}>−</button>
-        <span style={{ minWidth: '4.5em', textAlign: 'center' }}>{Math.round(dpi * 100)}%</span>
-        <button onClick={() => apply(dpi + 0.25)} disabled={dpi >= 2.5}>+</button>
-        <button onClick={() => apply(1)} disabled={dpi === 1}>reset</button>
-      </div>
-    </>
-  )
-}
-
-// D-198 — collapsing a wide team's ACTIVE agents into one stack. A DEVICE
-// preference like the desk text size above: it lives in localStorage under a
-// key with no slug in it, so it is APP-WIDE and survives switching org (user,
-// verbatim: "app wide, not org wide"). It sits in this per-org panel only
-// because that is where the other browser-local preference already lives —
-// the label says so, since a machine setting inside an org's settings would
-// otherwise read as belonging to that org. Applied immediately, so like the
-// text size it is not part of the settings save.
-function CrowdStackToggle() {
-  const on = useCrowdPiles()
-  return (
-    <>
-      <div className="field-label">canvas — this browser only</div>
-      <label className="checkline">
-        <input type="checkbox" checked={on}
-          onChange={(e) => setCrowdPilesOn(e.target.checked)} />
-        collapse a wide team&apos;s active agents into one stack
-      </label>
-      <div className="hint">Off by default: every active agent keeps its own
-        card, however wide the team gets. Turn this on and an agent with more
-        than eight active reports stacks the reports that have none of their
-        own into a single card you page through — the same stack the retired
-        agents use, which is unaffected either way.</div>
-    </>
-  )
-}
-
 function SettingsPanel({ tree, toast, close }: {
   tree: TreePayload
   toast: ToastFn
@@ -2010,8 +1960,6 @@ function SettingsPanel({ tree, toast, close }: {
     <div className="overlay" onClick={close}>
       <div className="settings" onClick={(e) => e.stopPropagation()}>
         <h3><SettingsIcon fontSize="inherit" /> {tree.name} — settings</h3>
-        <DeskTextSize />
-        <CrowdStackToggle />
         {/* folder access lives on the eye's ⚙ gear panel (user ruling) */}
         <div className="field-label">top-level grant cap</div>
         <input type="number" min="1" step="1" value={maxTop} style={{ width: '8em' }}
@@ -2087,7 +2035,7 @@ function SettingsPanel({ tree, toast, close }: {
           </>
         )}
         <div className="field-label">org.md</div>
-        <textarea rows={6} value={orgMd ?? ''} disabled={orgMd == null}
+        <textarea className="orgmd-editor" value={orgMd ?? ''} disabled={orgMd == null}
           onChange={(e) => setOrgMd(e.target.value)} />
         {/* F-07: everything below the everyday knobs lives in the shared
             advanced modal — same shape the create form opens. The summary

@@ -30,10 +30,14 @@ import type {
 } from '../types'
 import {
   addAccountKey, deleteAccountKey, getAccounts, getAccountUsage,
-  getProviders, setAccountKeyOrder,
+  getProviders, getRuntimeSettings, setAccountKeyOrder, setProviderEnabled,
+  setWarmingEnabled,
 } from '../api'
 import { CheckIcon, DataUsageIcon, DeleteIcon } from '../icons'
-import { hireOf, providerShown, TIER_LETTER, TIERS, useEsc } from './shared'
+import {
+  setCrowdPilesOn, setDeskDpi, TIER_LETTER, TIERS, useCrowdPiles,
+  useDeskDpi, useEsc,
+} from './shared'
 
 // small local copies of the usage-modal label helpers (App.tsx owns the
 // originals beside UsageModal; importing them here would cycle App ↔ panel)
@@ -156,11 +160,70 @@ export function UsageBars({ u }: { u: AccountUsage }) {
   )
 }
 
+type AppSettingsTab = 'providers' | 'runtime' | 'display'
+const APP_TABS: { id: AppSettingsTab; label: string }[] = [
+  { id: 'providers', label: 'Providers' },
+  { id: 'runtime', label: 'Runtime' },
+  { id: 'display', label: 'Display' },
+]
+
+function DeskTextSize() {
+  const dpi = useDeskDpi()
+  const apply = (v: number) => {
+    const clamped = Math.min(2.5, Math.max(0.75,
+      Math.round(v * 100) / 100))
+    setDeskDpi(clamped)
+  }
+  return (
+    <div className="app-pref-row">
+      <span className="app-pref-label">desk text size</span>
+      <div className="row app-pref-control">
+        <button onClick={() => apply(dpi - 0.25)}
+          disabled={dpi <= 0.75}>−</button>
+        <span className="app-pref-value">{Math.round(dpi * 100)}%</span>
+        <button onClick={() => apply(dpi + 0.25)}
+          disabled={dpi >= 2.5}>+</button>
+        <button onClick={() => apply(1)} disabled={dpi === 1}>reset</button>
+      </div>
+    </div>
+  )
+}
+
+function CrowdStackToggle() {
+  const on = useCrowdPiles()
+  return (
+    <label className="checkline app-pref-row app-pref-check">
+      <input type="checkbox" checked={on}
+        onChange={(e) => setCrowdPilesOn(e.target.checked)} />
+      collapse teams with more than 8 active agents into one stack
+    </label>
+  )
+}
+
+function ProviderSwitch({ provider, busy, onChange }: {
+  provider: ProviderInfo | undefined
+  busy: boolean
+  onChange: (provider: ProviderInfo, enabled: boolean) => void
+}) {
+  if (!provider || (!provider.status.installed && provider.user_enabled !== false))
+    return null
+  const enabled = provider.user_enabled !== false
+  return (
+    <label className="provider-switch">
+      <input type="checkbox" role="switch" checked={enabled} disabled={busy}
+        aria-label={`${provider.label} enabled for new agents`}
+        onChange={(e) => onChange(provider, e.target.checked)} />
+      <span>{enabled ? 'on' : 'off'}</span>
+    </label>
+  )
+}
+
 export function AccountsPanel({ toast, close }: {
   toast: ToastFn
   close: () => void
 }) {
-  useEsc(close)
+  const [tab, setTab] = useState<AppSettingsTab>('providers')
+  const tabRefs = useRef<(HTMLButtonElement | null)[]>([])
   const [data, setData] = useState<AccountsPayload | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -170,6 +233,10 @@ export function AccountsPanel({ toast, close }: {
   // an inline expansion), and each row's last-fetched bars
   const [usageFor, setUsageFor] = useState<string | null>(null)
   const [usage, setUsage] = useState<Record<string, AccountUsage | 'loading'>>({})
+  // One Escape closes only the topmost layer. Previously the parent panel's
+  // listener saw Escape while the nested usage modal was open and removed the
+  // entire App settings surface behind it.
+  useEsc(() => { if (usageFor) setUsageFor(null); else close() })
   // ⚠ a REF, not state: dragstart and drop can land in one React batch, and a
   // drop reading the dragged id from its render closure would see the
   // pre-drag null and silently do nothing. The state twin is styling only.
@@ -184,8 +251,17 @@ export function AccountsPanel({ toast, close }: {
   // state. NON-FATAL by design: the Claude rows above predate providers and
   // must keep working if this endpoint is missing (an old backend) or slow.
   const [providers, setProviders] = useState<ProviderInfo[] | null>(null)
+  const [providerBusy, setProviderBusy] = useState<string | null>(null)
+  const [warming, setWarming] = useState<boolean | null>(null)
+  const [warmingBusy, setWarmingBusy] = useState(false)
+  const [warmingErr, setWarmingErr] = useState<string | null>(null)
   useEffect(() => {
     getProviders().then((p) => setProviders(p.providers)).catch(() => {})
+  }, [])
+  useEffect(() => {
+    getRuntimeSettings()
+      .then((p) => { setWarming(p.warming_enabled); setWarmingErr(null) })
+      .catch((e: Error) => setWarmingErr(e.message))
   }, [])
   const claudeProv = providers?.find((p) => p.id === 'claude')
   const codex = providers?.find((p) => p.id === 'openai')
@@ -194,8 +270,13 @@ export function AccountsPanel({ toast, close }: {
   // canvas cannot disagree about whether a provider exists. Undefined (the
   // payload has not arrived, or an old backend omits the entry) shows the
   // section — see `providerShown` for why unknown is optimistic.
-  const codexShown = providerShown(hireOf(codex))
-  const geminiShown = providerShown(hireOf(gemini))
+  // Settings is the deliberate exception to provider hiding: an installed
+  // provider the user switched off must stay visible here or it can never be
+  // switched back on. Truly absent Codex/Gemini remain absent (D-202).
+  const codexShown = codex == null || !!codex.status.installed
+    || codex.user_enabled === false
+  const geminiShown = gemini == null || !!gemini.status.installed
+    || gemini.user_enabled === false
   const srcLabel: Record<string, string> = {
     pin: 'private pin', env: 'ORGTREE_CODEX', path: 'on PATH',
   }
@@ -205,6 +286,23 @@ export function AccountsPanel({ toast, close }: {
     p.then((d) => { setData(d); if (ok) toast([ok]) })
       .catch((e: Error) => toast([`error: ${e.message}`]))
       .finally(() => setBusy(false))
+  }
+
+  const toggleProvider = (provider: ProviderInfo, enabled: boolean) => {
+    setProviderBusy(provider.id)
+    setProviderEnabled(provider.id, enabled)
+      .then((p) => {
+        setProviders(p.providers)
+        toast([`${provider.label} turned ${enabled ? 'on' : 'off'}`])
+      })
+      .catch((e: Error) => toast([`error: ${e.message}`]))
+      .finally(() => setProviderBusy(null))
+  }
+
+  const moveTab = (from: number, delta: number) => {
+    const next = (from + delta + APP_TABS.length) % APP_TABS.length
+    setTab(APP_TABS[next]!.id)
+    tabRefs.current[next]?.focus()
   }
 
   const register = () => {
@@ -305,26 +403,54 @@ export function AccountsPanel({ toast, close }: {
   return (
     <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
       <div className="settings acct-panel" onClick={(e) => e.stopPropagation()}>
-        <h3>Accounts</h3>
-        <div className="dim acct-blurb">
-          Each model runs on the highest row with remaining capacity — the
-          H/S/O/F markers show where each one currently routes. To add a
-          fallback account, run <code>claude setup-token</code> in a terminal
-          logged into that account and paste the key it prints below.
+        <h3>App settings</h3>
+        <div className="app-settings-tabs" role="tablist"
+          aria-label="App settings sections">
+          {APP_TABS.map((item, index) => (
+            <button type="button" role="tab" key={item.id}
+              ref={(el) => { tabRefs.current[index] = el }}
+              id={`app-settings-tab-${item.id}`}
+              aria-selected={tab === item.id}
+              aria-controls={`app-settings-panel-${item.id}`}
+              tabIndex={tab === item.id ? 0 : -1}
+              className={'app-settings-tab' + (tab === item.id ? ' on' : '')}
+              onClick={() => setTab(item.id)}
+              onKeyDown={(e) => {
+                if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+                  e.preventDefault(); moveTab(index, 1)
+                } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+                  e.preventDefault(); moveTab(index, -1)
+                } else if (e.key === 'Home' || e.key === 'End') {
+                  e.preventDefault()
+                  const next = e.key === 'Home' ? 0 : APP_TABS.length - 1
+                  setTab(APP_TABS[next]!.id); tabRefs.current[next]?.focus()
+                }
+              }}>
+              {item.label}
+              {item.id === 'display'
+                && <span className="app-settings-scope">this browser</span>}
+            </button>
+          ))}
         </div>
 
-        {err && <div className="ask-warn">could not read accounts: {err}</div>}
-        {!data && !err && <div className="dim">reading accounts…</div>}
+        <div id="app-settings-panel-providers" role="tabpanel"
+          aria-labelledby="app-settings-tab-providers"
+          hidden={tab !== 'providers'} className="app-settings-panel">
+          {err && <div className="ask-warn">could not read accounts: {err}</div>}
+          {!data && !err && <div className="dim">reading accounts…</div>}
 
-        {data && (
+          {data && (
           <>
             {/* ── provider section: Claude (FR-15 preview) — a head over
                 the rows that were the whole panel while Claude was the only
                 provider; everything under it is untouched. */}
-            <div className="acct-provider-head">
+            <div className={'acct-provider-head'
+              + (claudeProv?.user_enabled === false ? ' provider-off' : '')}>
               Claude
               <span className="dim"> · Claude Code
                 {claudeProv?.status.version ? ` ${claudeProv.status.version}` : ''}</span>
+              <ProviderSwitch provider={claudeProv}
+                busy={providerBusy !== null} onChange={toggleProvider} />
             </div>
             {/* D-202: Claude is the ONE provider whose absence is reported
                 rather than hidden — "since orgtree is built around it, do show
@@ -485,18 +611,22 @@ export function AccountsPanel({ toast, close }: {
                 installed. Installed-but-signed-out is untouched and still
                 renders in full, reason and all. */}
             {codexShown && <>
-            <div className="acct-provider-head prov-openai">
+            <div className={'acct-provider-head prov-openai'
+              + (codex?.user_enabled === false ? ' provider-off' : '')}>
               Codex
               <span className="dim"> · Codex CLI
                 {codex?.status.version ? ` ${codex.status.version}` : ''}</span>
-              <span className="acct-preview-tag">preview</span>
+              {codex?.user_enabled !== false && !codex?.hire_enabled
+                && <span className="acct-preview-tag">preview</span>}
+              <ProviderSwitch provider={codex}
+                busy={providerBusy !== null} onChange={toggleProvider} />
             </div>
             {!codex && (
               <div className="dim acct-prov-note">
                 {providers ? 'provider state unavailable' : 'reading provider state…'}
               </div>
             )}
-            {codex && (
+            {codex?.status.installed && (
               <>
                 <div className="acct-prov-note">
                   {codex.status.installed
@@ -524,7 +654,7 @@ export function AccountsPanel({ toast, close }: {
                     </span>
                   ))}
                 </div>
-                {codex.reason
+                {codex.reason && codex.user_enabled !== false
                   && <div className="dim acct-prov-note">{codex.reason}</div>}
               </>
             )}
@@ -535,19 +665,22 @@ export function AccountsPanel({ toast, close }: {
                 The preview tag only while hiring is actually off.
                 D-202 hides it whole when absent, exactly as Codex above. */}
             {geminiShown && <>
-            <div className="acct-provider-head prov-google">
+            <div className={'acct-provider-head prov-google'
+              + (gemini?.user_enabled === false ? ' provider-off' : '')}>
               Gemini
               <span className="dim"> · Gemini CLI
                 {gemini?.status.version ? ` ${gemini.status.version}` : ''}</span>
-              {!gemini?.hire_enabled
+              {gemini?.user_enabled !== false && !gemini?.hire_enabled
                 && <span className="acct-preview-tag">preview</span>}
+              <ProviderSwitch provider={gemini}
+                busy={providerBusy !== null} onChange={toggleProvider} />
             </div>
             {!gemini && (
               <div className="dim acct-prov-note">
                 {providers ? 'provider state unavailable' : 'reading provider state…'}
               </div>
             )}
-            {gemini && (
+            {gemini?.status.installed && (
               <>
                 <div className="acct-prov-note">
                   {gemini.status.installed
@@ -576,13 +709,50 @@ export function AccountsPanel({ toast, close }: {
                     </span>
                   ))}
                 </div>
-                {gemini.reason
+                {gemini.reason && gemini.user_enabled !== false
                   && <div className="dim acct-prov-note">{gemini.reason}</div>}
               </>
             )}
             </>}
           </>
         )}
+        </div>
+
+        <div id="app-settings-panel-runtime" role="tabpanel"
+          aria-labelledby="app-settings-tab-runtime"
+          hidden={tab !== 'runtime'} className="app-settings-panel">
+          {warmingErr && <div className="ask-warn">
+            could not read runtime settings: {warmingErr}</div>}
+          <label className="app-pref-row app-pref-check">
+            <input type="checkbox" role="switch"
+              aria-label="keep agent processes warm"
+              checked={warming ?? true}
+              disabled={warming == null || warmingBusy}
+              onChange={(e) => {
+                const enabled = e.target.checked
+                setWarmingBusy(true)
+                setWarmingEnabled(enabled)
+                  .then((p) => {
+                    setWarming(p.warming_enabled); setWarmingErr(null)
+                    toast([`process warming turned ${p.warming_enabled ? 'on' : 'off'}`])
+                  })
+                  .catch((runtimeErr: Error) => {
+                    setWarmingErr(runtimeErr.message)
+                    toast([`error: ${runtimeErr.message}`])
+                  })
+                  .finally(() => setWarmingBusy(false))
+              }} />
+            keep agent processes warm
+            <span className="app-pref-state">{warming === false ? 'off' : 'on'}</span>
+          </label>
+        </div>
+
+        <div id="app-settings-panel-display" role="tabpanel"
+          aria-labelledby="app-settings-tab-display"
+          hidden={tab !== 'display'} className="app-settings-panel">
+          <DeskTextSize />
+          <CrowdStackToggle />
+        </div>
 
         <div className="row">
           <span style={{ flex: 1 }} />

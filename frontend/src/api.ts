@@ -8,7 +8,8 @@ import type {
   HireDefaultsRequest, HistoryPayload, HostPayload,
   InboxPayload, KioskCfgRequest, KioskSaveResult, KioskSpecRequest,
   McpServersPayload, OpRequest, OpResult, OrgListEntry, OrgMdPayload,
-  OrgNetReveal, ProvidersPayload, ReorderRequest, ScopeRequest, ScratchPayload,
+  OrgNetReveal, ProvidersPayload, ReorderRequest, RuntimeSettingsPayload,
+  ScopeRequest, ScratchPayload,
   SendMessageResult,
   SettingsRequest, SettingsResult, SweepPreview, SweepResult, TreePayload,
   AccountsPayload, AccountUsage, UsageAllPayload,
@@ -258,8 +259,26 @@ export const audienceAction = (
   })
 export const getHost = (): Promise<HostPayload> => req('/api/host')
 // the provider axis (FR-15 preview): per-vendor tier families + this
-// machine's CLI install/connect state — the accounts panel's section heads
+// machine's CLI install/connect state — App settings and all hire surfaces
 export const getProviders = (): Promise<ProvidersPayload> => req('/api/providers')
+export const setProviderEnabled = (
+  provider: string, enabled: boolean,
+): Promise<ProvidersPayload> =>
+  req(`/api/providers/${encodeURIComponent(provider)}/enabled`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled }),
+  })
+export const getRuntimeSettings = (): Promise<RuntimeSettingsPayload> =>
+  req('/api/app-settings/runtime')
+export const setWarmingEnabled = (
+  enabled: boolean,
+): Promise<RuntimeSettingsPayload> =>
+  req('/api/app-settings/runtime', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled }),
+  })
 export const getUsage = (): Promise<UsagePayload> => req('/api/usage')
 // cache-only — the glow polls this; only the modal above may cost a fetch
 export const getUsagePeek = (): Promise<UsagePeek> => req('/api/usage/peek')

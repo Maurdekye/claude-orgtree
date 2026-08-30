@@ -1297,10 +1297,16 @@ interface LineagePanelProps {
   /** D-202: which provider families this machine has at all. Absent = the
    *  optimistic default (everything) — see `providerShown`. */
   presence?: ProviderPresence
+  /** D-203: distinct from presence. An absent provider and one the user
+   *  deliberately turned off both disappear elsewhere, but only the latter
+   *  should disable this archived bearer's otherwise valid rehire path with
+   *  a Settings-specific explanation. */
+  userDisabled?: ProviderPresence
   close: () => void
 }
 
 export function LineagePanel({ node, op, slug, presence = ALL_PRESENT,
+  userDisabled = { claude: false, openai: false, google: false },
   close }: LineagePanelProps) {
   // spitshined (user request): generation cards in the app's current visual
   // language — tier token, per-generation consult-tier picker (№16: a bearer
@@ -1359,6 +1365,12 @@ export function LineagePanel({ node, op, slug, presence = ALL_PRESENT,
   // is always kept — it is the tier it is rehired AS.
   const famOf = (t: string) => CODEX_TIERS.includes(t) ? 'codex'
     : GEMINI_TIERS.includes(t) ? 'gemini' : 'claude'
+  const providerKey = (t: string): keyof ProviderPresence =>
+    CODEX_TIERS.includes(t) ? 'openai'
+      : GEMINI_TIERS.includes(t) ? 'google' : 'claude'
+  const providerName = (t: string): string =>
+    CODEX_TIERS.includes(t) ? 'Codex'
+      : GEMINI_TIERS.includes(t) ? 'Gemini' : 'Claude'
   const rehireWhy = (t: string, bearerTier: string): string | null =>
     famOf(t) === famOf(bearerTier) ? null
       : `its transcript is a ${famOf(bearerTier)} session — ${famOf(t)} `
@@ -1391,7 +1403,11 @@ export function LineagePanel({ node, op, slug, presence = ALL_PRESENT,
                   title="read this generation's transcript — free, no seat"
                   onClick={() => openRead(b.id)}>read</button>)}
               {b.state === 'archived' && b.bearer_state !== 'lost' ? (
-                <>
+                userDisabled[providerKey(b.tier)] ? (
+                  <span className="lin-provider-off">
+                    {providerName(b.tier)} is off · App settings → Providers
+                  </span>
+                ) : <>
                   <select value={tiers[b.id] ?? ''} onChange={(e) =>
                     setTiers((t) => ({ ...t, [b.id]: e.target.value }))}>
                     <option value="">as {b.tier} · seat {SEAT(b.tier)}</option>

@@ -109,6 +109,9 @@ CFG = os.path.join(TMP, "fakecli.json")
 LOG = os.path.join(TMP, "backend.log")
 os.makedirs(HOME, exist_ok=True)
 os.makedirs(DATA, exist_ok=True)
+with open(os.path.join(HOME, ".claude.json"), "w", encoding="utf-8") as _f:
+    json.dump({"oauthAccount": {"accountUuid": "crowdtoggle-probe",
+                                "emailAddress": "probe@example.test"}}, _f)
 
 PROC: subprocess.Popen | None = None
 RESULTS: list[tuple[str, bool, str]] = []
@@ -150,6 +153,7 @@ def start_backend() -> None:
         "PYTHONPATH": os.path.join(_REPO, "backend"),
         "PYTHONIOENCODING": "utf-8",
         "ORGTREE_BRIDGE_PORT": "0",
+        "ORGTREE_CLAUDE": os.path.join(_REPO, "backend", "tests", "fakecli.js"),
         "ORGTREE_CLAUDE_CLI": os.path.join(_REPO, "backend", "tests", "fakecli.js"),
     })
     env.pop("ORGTREE_PUBLIC_PORT", None)
@@ -234,31 +238,34 @@ def open_org(pg, slug: str) -> None:
 
 def set_toggle(pg, want: bool) -> str:
     """Drive the REAL settings checkbox. Returns a description of what it did."""
-    # ⚠ `:visible` is load-bearing. The orgbar also carries a HIDDEN mobile-only
-    # ellipsis button, and a plain has-text() match resolved to that one and sat
-    # there for the full 30s timeout — a rig that dies in setup measures nothing.
-    pg.locator('.orgbar button:visible:has-text("settings")').first.click()
-    pg.wait_for_selector(".settings", timeout=10000)
+    # D-203 moved this app-wide preference out of the per-org panel. Keep the
+    # canvas alive and drive App settings in a second page, so the check below
+    # requires the storage event to update an already-rendered org live.
+    settings_pg = pg.context.new_page()
+    settings_pg.goto(BASE)
+    settings_pg.locator('button[title="App settings"]:visible').click()
+    settings_pg.wait_for_selector(".settings.acct-panel", timeout=10000)
+    settings_pg.get_by_role("tab", name="Display this browser").click()
     # ⚠ Wait for the PANEL, then look for the toggle without throwing. Waiting
     # on the toggle's own selector makes "the toggle does not exist" an
     # EXCEPTION rather than a finding, which is exactly what the pre-fix
     # control looks like — and a control that dies is not a control.
-    box = pg.locator('.settings label.checkline:has-text("collapse a wide team")'
-                     ).locator("input[type=checkbox]")
+    box = settings_pg.locator(
+        '.settings label.checkline:has-text("collapse teams with more than 8 active agents")'
+    ).locator("input[type=checkbox]")
     for _ in range(20):
         if box.count() == 1:
             break
-        pg.wait_for_timeout(100)
+        settings_pg.wait_for_timeout(100)
     if box.count() != 1:
-        pg.keyboard.press("Escape")
-        pg.wait_for_timeout(300)
+        settings_pg.close()
         return f"NO TOGGLE IN THE SETTINGS PANEL ({box.count()} matches)"
     was = box.is_checked()
     if was != want:
         box.click()
-    pg.wait_for_timeout(300)
+    settings_pg.wait_for_timeout(300)
     now = box.is_checked()
-    pg.keyboard.press("Escape")
+    settings_pg.close()
     pg.wait_for_timeout(600)
     return f"checkbox {was} -> {now}"
 

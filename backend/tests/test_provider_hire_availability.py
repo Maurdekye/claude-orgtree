@@ -288,12 +288,14 @@ def codex_still_gated_independently() -> None:
 
 
 def the_docstring_still_claims_every_door() -> None:
-    """D-197 left this pinned: the sentence asserts completeness, and it was
-    wrong once. If Claude is ever un-gated again, this and the branch move
-    together."""
+    """D-203 replaces the repeatedly-wrong count with a named checklist."""
     import inspect
     doc = inspect.getdoc(api.provider_hire_gate) or ""
-    assert "FIVE doors" in doc, doc
+    for door in ("user hire", "agent hire", "user model switch",
+                 "agent model switch", "user rehire WITH a tier override",
+                 "user plain rehire", "agent plain rehire"):
+        assert door in doc, (door, doc)
+    assert "FIVE doors" not in doc and "all FIVE" not in doc, doc
     assert "CLAUDE IS GATED TOO" in doc, (
         "the docstring must not go back to saying Claude is ungated")
 
