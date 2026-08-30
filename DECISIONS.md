@@ -1685,6 +1685,69 @@ burn turns polling"), and the canvas spec verbatim: a ~60×36 named chip
 wired to its owner, `launchSpark` riding the wire per event, click-through
 detail panel with the sent-events ring.
 
+### D-200 · one-shot dogs: opt in, fire once, remove yourself — and the fire must still be drawable
+Ruling (user, 2026-08-30, their words: *"how about a new feature for
+watchdogs: kill on wake. the watchdog fires once and only once, and
+auto-removes itself when it wakes"*, *"optional toggle for agents creating
+them"*, *"actually call them one-shot dogs"*). `orgtree_watchdog action=create`
+takes **`once: true`**, default OFF. Such a dog fires exactly once and is
+removed as part of that fire. The user-visible term everywhere — tool card,
+fire mail, UI — is **one-shot dog**; `once` is only the wire name.
+
+Why: **a watchdog whose readiness condition encodes a DEADLINE rather than an
+EDGE is permanently true once the deadline passes**, so it re-fires every
+interval forever. Measured, not hypothesised: `d181-population-bar` matched
+`READY=yes WHY=24h deadline reached` and woke its owner every 15 minutes with
+an identical verdict until the owner removed it by hand, at a cost of two
+turns. That is a whole class — any dog whose question has exactly one answer —
+and `once` is its fix. The tool card now names the deadline-vs-edge trap
+directly, because the failure is silent from inside: the dog looks healthy and
+is doing exactly what it was told.
+
+**Removal is one transaction, so there is no ordering to get wrong.** A
+one-shot that mails without removing itself is the runaway; one that removes
+itself without mailing loses the event with no trace, which is worse. Both
+hazards assume two steps that can half-happen. The mailbox and the watchdog
+registry are two keys of ONE document, mutated together in `watchdog_fire`
+under `DOC_LOCK` and persisted by a single atomic `save_org` — they land
+together or not at all, and the surviving failure (the save itself failing)
+leaves the dog armed for a duplicate fire rather than swallowing the event.
+
+**Removal from the ARMING state and disappearance from the CANVAS are
+different events, and the second must lag the first.** Caught by the user
+before it was built: *"if a oneshot dog dies on fire, then the animation that
+plays to show the spark firing off a message to its owner never appears,
+because the dog is already gone before it can start."* Correct —
+`OrgCanvas.launchSpark` takes dog positions from `tree().watchdogs` and
+silently draws nothing when an endpoint is unplaced, so a dog that erases
+itself atomically with its fire deletes its own origin and the user sees mail
+arrive from nowhere. So the fire also writes a **tombstone** (`watchdog_tombs`,
+TTL 15 s), rendered in `tree().watchdogs` as `spent: true, state: 'spent'` and
+nowhere else. It is inert: not armed, not resumable, invisible to
+`orgtree_watchdog list` and to the engine, and it does not hold the per-agent
+slot. It exists so a thing that HAPPENED can be drawn after the thing that
+existed is gone.
+
+Bounds: only a FIRE spends a one-shot dog. `watchdog_alert` — the
+subject-went-quiet self-report — does not, because it means "I can no longer
+answer your question" and retiring the watch on that discards it precisely
+when it has not been answered. Nor does a fire that delivers nothing (paused
+dog, archived owner). All four kinds may be one-shot; `once` is orthogonal to
+`notice`, and all four combinations are legal.
+
+Load-bearing: (a) `once` is stored **sparsely** (present only when true) so no
+pre-existing dog needs migrating — but it is normalised to a real boolean in
+both projections the frontend can reach (`tree()` and `wd_list_row`), because
+a UI that must render one-shot differently from persistent cannot be handed
+`undefined` and asked to guess. (b) `_wd_fire` reads `notice` **before** the
+fire, not after: a one-shot dog is gone from the document by the time the fire
+returns, and the old post-fire read would have fallen back to `False` and made
+every one-shot NOTICE dog wake its owner — the opposite of what it was armed
+with, with nothing anywhere to show why. (c) A spent one-shot STREAM dog's
+listening child is reaped on the fire path itself; `_wd_tick`'s sweep remains
+the backstop, but relying on it alone would make "removes itself as part of
+the fire" false, and — measured by mutation — untestable.
+
 ### D-116 · sonnet seats cost 2 (input pricing locked in at $2/M)
 Ruling (user, 2026-08-12): the sonnet seat drops 3 → 2 in `TIERS`. Because
 per-org tier tables are frozen ADD-only copies (the 2026-08-04 lesson), a

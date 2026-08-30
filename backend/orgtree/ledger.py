@@ -4696,7 +4696,8 @@ class Org:
                         pattern: Any = None,
                         interval_s: Any = 60,
                         notice: Any = False,
-                        shell: Any = None) -> dict[str, Any]:
+                        shell: Any = None,
+                        once: Any = False) -> dict[str, Any]:
         """FR-18 (user request 2026-08-07, rulings 2026-08-12): a PET — a
         persistent watcher that mails its owner when its target produces a
         matching event. Free by ruling (never enters TIERS), bounded
@@ -4735,7 +4736,26 @@ class Org:
         than falling back (see api.py). Falling back would rebuild the defect
         this field exists to fix, one level up: the agent asks for bash, is
         given cmd, writes bash, and the dog matches nothing forever — this
-        time with the tool having agreed that bash was fine."""
+        time with the tool having agreed that bash was fine.
+
+        `once=True` (D-200, user request 2026-08-30) makes it a ONE-SHOT DOG:
+        it fires exactly once and removes itself as part of that fire. Default
+        OFF, stored only when set, so every dog armed before this existed and
+        every dog armed without the flag is persistent exactly as before.
+
+        WHY IT EXISTS, from the case that produced it: a watchdog whose
+        readiness condition encodes a DEADLINE rather than an EDGE is
+        permanently true once the deadline passes, so it re-fires every
+        interval forever. `d181-population-bar` did precisely that — it woke
+        its owner every 15 minutes with the same verdict until the owner
+        noticed and removed it by hand. A one-shot dog is the fix for that
+        whole class: any dog whose question has exactly one answer.
+
+        ⚠ A one-shot dog is removed only by a FIRE. `watchdog_alert` — the
+        subject-went-quiet self-report — deliberately does not spend it: an
+        alert means "I can no longer answer the question you asked", and
+        retiring the dog on that would throw away the watch precisely when it
+        has not been answered yet."""
         self._require_live(owner)
         name = re.sub(r"[^a-z0-9-]+", "-",
                       str(name or "").strip().lower()).strip("-")[:24]
@@ -4788,6 +4808,7 @@ class Org:
                               f"{self.WATCHDOG_PER_ORG} watchdogs")
         wid = "wd" + uuid.uuid4().hex[:8]
         quiet = bool(notice)
+        one_shot = bool(once)
         dogs.append({"id": wid, "owner": owner, "name": name, "kind": kind,
                      "target": tgt, **({"pattern": pat} if pat else {}),
                      "interval_s": iv, "state": "armed", "at": now(),
@@ -4796,13 +4817,17 @@ class Org:
                      # is what makes every pre-existing dog native by
                      # construction rather than by a migration
                      **({"shell": sh} if sh != "native" else {}),
+                     **({"once": True} if one_shot else {}),
                      "fired": 0, "events": []})
         self._log("watchdog_create", owner,
                   {"id": wid, "name": name, "kind": kind,
                    **({"notice": True} if quiet else {}),
+                   **({"once": True} if one_shot else {}),
                    **({"shell": sh} if sh != "native" else {})}, [])
         return {"id": wid, "name": name, "notice": quiet, "shell": sh,
-                "status": f"armed — {kind} watchdog"
+                "once": one_shot,
+                "status": ("armed — ONE-SHOT " if one_shot else "armed — ")
+                          + f"{kind} watchdog"
                           + (f" every {iv}s" if kind != "stream"
                              else " (realtime stream)")
                           + ". A matching event arrives as mail from "
@@ -4810,6 +4835,9 @@ class Org:
                           + (" and waits in your mailbox WITHOUT starting a "
                              "turn — you read it whenever you next run"
                              if quiet else " and wakes you")
+                          + (". It then REMOVES ITSELF — one fire, then gone, "
+                             "so you will not see it again and `list` will "
+                             "not show it" if one_shot else "")
                           + "; it costs no credits."}
 
     def watchdog_action(self, actor: str, wid: str,
@@ -4836,11 +4864,60 @@ class Org:
         return {"id": wid, "name": w["name"], "state":
                 ("removed" if action == "remove" else w["state"])}
 
+    #: How long a spent one-shot dog leaves a TOMBSTONE on the canvas (D-200,
+    #: user catch 2026-08-30).
+    #:
+    #: ⚠ THIS IS NOT A DEFERRED REMOVAL. The dog is gone from `watchdogs` the
+    #: instant it fires: it cannot fire again, cannot be resumed, cannot be
+    #: re-armed by a restart, and stops counting against the per-agent cap.
+    #: The tombstone is a separate, inert record that exists for ONE reason —
+    #: the canvas animates a fire as a spark travelling from the dog to its
+    #: owner, and `launchSpark` silently draws nothing when either endpoint
+    #: has no position. Positions for dogs come from `tree()["watchdogs"]`, so
+    #: a dog that erases itself in the same breath as it fires deletes its own
+    #: origin and the user sees mail appear from nowhere. Removal from the
+    #: ARMING state and disappearance from the CANVAS are different events;
+    #: this is the gap between them.
+    #:
+    #: 15s is chosen to cover a spark (420ms per path segment) plus a tree
+    #: refresh arriving either side of the WebSocket event, with room to
+    #: spare. It is not a correctness knob: nothing waits on it, and at 0 the
+    #: only thing lost is the animation.
+    WATCHDOG_TOMB_TTL_S: Final = 15
+    WATCHDOG_TOMBS_KEEP: Final = 32     # runaway insurance, as for the dogs
+
+    #: appended to a ONE-SHOT dog's fire mail (D-200). The owner must be told
+    #: in the mail itself, because the alternative is an agent calling `list`,
+    #: not finding its dog, and having to work out whether it broke something.
+    WATCHDOG_ONCE_NOTE: Final = (
+        "\n\n— This was a ONE-SHOT dog: it fired once and has REMOVED ITSELF. "
+        "It is gone from your list and will not fire again. Nothing is wrong "
+        "and you need not remove it. If you want to watch for this again, "
+        "arm a new one.")
+
     def watchdog_fire(self, wid: str, gist: str,
                       body: str) -> str | None:
         """The engine's hand: record the event and put the mail in the
         OWNER's box. Returns the owner to drive, or None (paused owner /
-        archived owner — archived pauses the dog per the lifecycle ruling)."""
+        archived owner — archived pauses the dog per the lifecycle ruling).
+
+        ⚠ D-200 — WHY THERE IS NO "ORDER" TO GET WRONG HERE. A one-shot dog
+        must not mail without removing itself (that is the runaway this fixes)
+        and must not remove itself without mailing (that loses the event with
+        no trace, which is worse). Both hazards come from treating the mail
+        and the removal as two steps that could half-happen. They are not:
+        the mailbox and the watchdog registry are two keys of ONE document,
+        every caller of this method mutates that document under `DOC_LOCK` and
+        persists it with a SINGLE `save_org`, and `save_org` writes
+        atomically. So the two land together or neither lands. The sequence of
+        the statements below is therefore irrelevant to correctness, and the
+        thing that actually matters — that no caller can perform one without
+        the other — is enforced by both living in this one method.
+
+        The one failure that remains is the save itself failing, and it fails
+        in the safe direction: neither the mail nor the removal is persisted,
+        the dog is still armed on disk, and it fires again next interval. A
+        duplicate fire is recoverable; a silently swallowed event is not."""
         w = self._watchdog(wid)
         if w["state"] != "armed":
             return None
@@ -4849,11 +4926,18 @@ class Org:
             w["state"] = "paused"      # lifecycle ruling: pause on archive
             w["paused_why"] = self.WATCHDOG_ARCHIVE_PAUSE
             return None
+        one_shot = bool(w.get("once"))
         w["fired"] = int(w.get("fired") or 0) + 1
         w["last_fired"] = now()
         ev = cast("list[dict[str, Any]]", w.setdefault("events", []))
         ev.append({"at": now(), "gist": gist[:200]})
         del ev[:-self.WATCHDOG_EVENTS_KEEP]
+        if one_shot:
+            # truncate to the same 8000 the entry does, but AFTER the note, so
+            # a long event body can never push the "it removed itself"
+            # sentence off the end of the mail that explains its absence
+            body = body[:8000 - len(self.WATCHDOG_ONCE_NOTE)].rstrip() \
+                + self.WATCHDOG_ONCE_NOTE
         entry: MailEntry = {
             "id": uuid.uuid4().hex[:12], "from": str(w["name"]),
             "kind": "watchdog", "body": body[:8000], "at": now(),
@@ -4869,8 +4953,54 @@ class Org:
         log = self.d.setdefault("mail_log", {}).setdefault(owner, [])
         log.append(cast(MailEntry, dict(entry)))
         del log[:-100]
-        self._log("watchdog_fire", owner, {"id": wid, "gist": gist[:80]}, [])
+        self._log("watchdog_fire", owner, {"id": wid, "gist": gist[:80],
+                                           **({"once": True} if one_shot
+                                              else {})}, [])
+        if one_shot:
+            # the dog's own `events` ring and `fired` counter go with it, so
+            # the org event log is the only durable trace that it ever fired.
+            # Both entries are written above/here, in this same transaction.
+            try:
+                self.d.setdefault("watchdogs", []).remove(w)
+            except ValueError:                      # already gone — fine
+                pass
+            # …and the canvas tombstone, in the SAME transaction as the
+            # removal and the mail, so the three cannot disagree. See
+            # WATCHDOG_TOMB_TTL_S: this does not keep the dog alive in any
+            # sense that matters, it keeps its POSITION resolvable long
+            # enough for the fire to be drawn.
+            tombs = cast("list[dict[str, Any]]",
+                         self.d.setdefault("watchdog_tombs", []))
+            tombs[:] = [t for t in tombs
+                        if not self._tomb_expired(t)][-self.WATCHDOG_TOMBS_KEEP:]
+            tombs.append({"id": wid, "owner": owner, "name": str(w["name"]),
+                          "kind": str(w["kind"]),
+                          "target": str(w.get("target") or ""),
+                          "interval_s": w.get("interval_s"),
+                          "at": w.get("at"), "spent_at": now(),
+                          "fired": int(w.get("fired") or 0),
+                          **({"notice": True} if w.get("notice") else {})})
+            self._log("watchdog_remove", owner,
+                      {"id": wid, "name": w["name"],
+                       "why": "one-shot dog spent by its fire"}, [])
         return owner
+
+    def _tomb_expired(self, tomb: dict[str, Any]) -> bool:
+        """Has a spent one-shot dog's canvas tombstone outlived its welcome?
+
+        Age is computed from `spent_at`; a tombstone with an unreadable stamp
+        is treated as EXPIRED. That direction is deliberate — the failure mode
+        of a stuck tombstone is a ghost dog sitting on the canvas forever,
+        which is worse than a missed animation and is precisely the kind of
+        thing nobody would think to report as a bug."""
+        try:
+            spent = datetime.strptime(str(tomb.get("spent_at"))[:23],
+                                      "%Y-%m-%dT%H:%M:%S.%f").replace(
+                                          tzinfo=timezone.utc)
+        except (TypeError, ValueError):
+            return True
+        age = (datetime.now(timezone.utc) - spent).total_seconds()
+        return age < 0 or age > self.WATCHDOG_TOMB_TTL_S
 
     def watchdog_alert(self, wid: str, body: str) -> str | None:
         """Post a dog's SELF-REPORT to its owner — the subject went quiet, the
@@ -6615,8 +6745,27 @@ class Org:
             # their overrides in scope.auto_cheap_compact, already shipped)
             "auto_cheap_compact": self.d.get("auto_cheap_compact"),
             # FR-18: the canvas renders dogs as satellite entities; the
-            # events ring IS the sent-mail tab
-            "watchdogs": self.d.get("watchdogs") or [],
+            # events ring IS the sent-mail tab.
+            # D-200: `once` is NORMALISED to a real boolean on the way out.
+            # On disk it is sparse (present only when true) so that no
+            # pre-existing dog needs migrating — but a UI that must render a
+            # one-shot dog differently from a persistent one cannot be handed
+            # `undefined` and asked to guess, and a field that is absent for
+            # most dogs is one a component will eventually read as "false"
+            # from the wrong object. It is a boolean at this boundary.
+            "watchdogs": [{**w, "once": bool(w.get("once")), "spent": False}
+                          for w in (self.d.get("watchdogs") or [])]
+            # D-200: spent one-shot dogs ride along for WATCHDOG_TOMB_TTL_S so
+            # the canvas can finish drawing the fire that killed them. They
+            # are NOT armed and NOT in `watchdogs` — `orgtree_watchdog list`
+            # cannot see them and neither can the engine. They exist here and
+            # only here, because this is the payload the canvas takes dog
+            # POSITIONS from, and a spark whose origin has no position is
+            # silently not drawn at all.
+            + [{**t, "once": True, "spent": True, "state": "spent",
+                "fired": int(t.get("fired") or 0), "events": []}
+               for t in (self.d.get("watchdog_tombs") or [])
+               if not self._tomb_expired(t)],
             "fable_limit_policy": self.d.get("fable_limit_policy", "halt"),
             "fable_filter_policy": self.d.get("fable_filter_policy", "halt"),
             "fable_api_fallback": bool(self.d.get("fable_api_fallback")),

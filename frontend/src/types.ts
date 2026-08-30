@@ -400,9 +400,32 @@ export interface Watchdog {
   target: string
   pattern?: string
   interval_s: number
-  state: 'armed' | 'paused' | 'exited'
+  state: 'armed' | 'paused' | 'exited' | 'spent'
   at: string
   fired: number
+  /**
+   * D-200: a ONE-SHOT dog — it fires exactly once and removes itself as part
+   * of that fire, so it never appears here again. Sparse on disk, but the
+   * backend normalises it to a real boolean in BOTH projections the UI can
+   * reach (`tree()` and `wd_list_row`), so it is never undefined — do not
+   * infer one-shot-ness from anything else.
+   */
+  once: boolean
+  /**
+   * D-200: a TOMBSTONE — this one-shot dog has already fired and is gone from
+   * the org's arming state. It appears in `tree().watchdogs` for ~15s after
+   * its fire and then never again.
+   *
+   * It exists so the fire can be DRAWN: the canvas animates a spark from
+   * `dog:<id>` to its owner, and `launchSpark` silently draws nothing when
+   * an endpoint has no position — positions come from this array, so a dog
+   * that vanished the instant it fired would delete its own origin.
+   *
+   * Render it as departing, not as live: it is armed for nothing, its
+   * `state` is `'spent'`, and pause/resume/remove on it are meaningless.
+   * Always present (`false` on every live dog), never undefined.
+   */
+  spent: boolean
   last_check?: string
   last_fired?: string
   events?: { at: string; gist: string }[]
