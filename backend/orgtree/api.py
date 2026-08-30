@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import ipaddress
 import json
 import os
 import posixpath
@@ -39,6 +40,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, model_validator
 
 from . import crashreports
+from . import deployment
 from . import ledger as ledger_mod
 from . import (accounts, appsettings, codex_limits, limits, net, providers,
                sandbox, store, subproxy, supervisor, warmpool)
@@ -101,9 +103,50 @@ class InstanceStamp:
         await self.inner(scope, receive, _send)
 
 
+class FrozenAdminBoundary:
+    """Keep the bare ASGI admin app loopback-only in frozen mode.
+
+    The supported launcher also binds the admin listener to loopback. This
+    request boundary prevents a direct/custom ASGI server from turning a
+    non-loopback bind into an unauthenticated admin surface. Authenticated
+    bridge traffic is marked by ``BridgeGateway`` before it reaches the app.
+    """
+
+    def __init__(self, inner: ASGIApp) -> None:
+        self.inner = inner
+
+    async def __call__(self, scope: ASGIScope, receive: Receive,
+                       send: Send) -> None:
+        if scope["type"] not in ("http", "websocket") \
+                or deployment.current_policy().allow_admin_exposure \
+                or (scope.get("state") or {}).get("bridge_slug"):
+            return await self.inner(scope, receive, send)
+
+        client = scope.get("client")
+        host = str(client[0]).split("%", 1)[0] if client else ""
+        try:
+            loopback = ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            loopback = False
+        if loopback:
+            return await self.inner(scope, receive, send)
+        if scope["type"] == "websocket":
+            await send({"type": "websocket.close", "code": 4403})
+            return
+        body = json.dumps({
+            "detail": "the frozen deployment profile exposes the admin API "
+                      "to loopback clients only",
+        }).encode()
+        await send({"type": "http.response.start", "status": 403,
+                    "headers": [(b"content-type", b"application/json"),
+                                (b"content-length", str(len(body)).encode())]})
+        await send({"type": "http.response.body", "body": body})
+
+
 # on the APP, so all three listeners (admin, kiosk, bridge) inherit it — they
 # are gateways wrapped around this same object
 app.add_middleware(InstanceStamp)
+app.add_middleware(FrozenAdminBoundary)
 
 
 @app.exception_handler(RequestValidationError)
@@ -438,7 +481,8 @@ def _share_url(token: str | None) -> str | None:
     """The preauthenticated URL for a kiosk token: explicit origin, else the
     running tunnel's hostname, else best-guess this machine's LAN address."""
     global _LAN_IP
-    if not token or not PUBLIC_PORT:
+    if (not deployment.current_policy().allow_public_listener
+            or not token or not PUBLIC_PORT):
         return None
     origin = _public_origin()
     if origin:
@@ -506,6 +550,10 @@ ledger_mod.external_candidates = _external_candidates
 @app.on_event("startup")  # type: ignore[deprecated]  # migrating to lifespan is a runtime change (D-079: inert wave)
 async def _wire_notify() -> None:  # type: ignore[unused-function]  # registered by the decorator
     global mail_notify, _LOOP
+    # A direct ``uvicorn orgtree.api:app`` launch bypasses main(), so repeat
+    # the install-wide preflight at the ASGI lifecycle boundary. It must run
+    # before warm processes or background drivers can admit a turn.
+    _deployment_preflight()
     loop = asyncio.get_running_loop()
     _LOOP = loop  # type: ignore[constant-redefinition]  # captured-at-startup cell, not a constant
     try:
@@ -756,6 +804,25 @@ def orgs_list(request: Request) -> list[dict[str, Any]]:
 
 @app.post("/api/orgs")
 def orgs_create(body: OrgCreate) -> dict[str, Any]:
+    policy = deployment.current_policy()
+    # Validate global defaults before create_org writes a workspace or doc.
+    dflt = load_org_defaults()
+    default_kiosk = (dflt.get("kiosk")
+                      if isinstance(dflt.get("kiosk"), dict) else {})
+    if not policy.allow_legacy_sandbox_credentials and (
+            str(dflt.get("api_key") or "").strip().lower() == "subscription"
+            or str(default_kiosk.get("api_key") or "").strip().lower()
+            == "subscription"):
+        raise HTTPException(
+            422, "the frozen deployment profile forbids the 'subscription' "
+                 "sandbox auth value in org defaults; use proxied auth or an "
+                 "explicit API key")
+    requested_sandbox = (bool(body.kiosk.sandbox)
+                         if body.kiosk is not None else bool(body.sandbox))
+    if policy.require_sandboxed_orgs and not requested_sandbox:
+        raise HTTPException(
+            422, "the frozen deployment profile requires every org to be "
+                 "sandboxed — create this org with sandbox enabled")
     # sandboxed orgs ride a fixed-size virtual disk with a 4096 MB minimum
     # (the system seed and transcripts count inside the cap) — refuse smaller
     # limits at creation instead of silently flooring them at migration
@@ -782,7 +849,6 @@ def orgs_create(body: OrgCreate) -> dict[str, Any]:
     # global default org settings (user spec): every new org is born with them.
     # net_hub_address is CONFIG for the local hub entry, not an org-doc key —
     # popped here and translated below, never written raw into the doc.
-    dflt = load_org_defaults()
     local_hub_addr = str(dflt.pop("net_hub_address", "") or "") \
         or net.DEFAULT_HUB_ADDRESS
     if dflt:
@@ -1413,6 +1479,13 @@ def _org_settings_locked(slug: str, body: Settings) -> dict[str, Any]:
         org = store.load_org(slug)
     except LedgerError as e:
         raise HTTPException(404, str(e))
+    if body.api_key is not None \
+            and body.api_key.strip().lower() == "subscription" \
+            and not deployment.current_policy().allow_legacy_sandbox_credentials:
+        raise HTTPException(
+            422, "the frozen deployment profile forbids 'subscription' auth "
+                 "because it copies host credentials into the sandbox; use "
+                 "proxied auth or an explicit API key")
     ws = org.d.get("workspace")
     warnings: list[str] = []
     if body.org_dirs is not None:
@@ -3755,6 +3828,13 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
         a = _norm_args(body.args)
     except LedgerError as e:
         raise HTTPException(422, str(e))
+    if body.tool in ("orgtree_self_restart", "orgtree_self_update",
+                     "orgtree_prime_restart") \
+            and not deployment.current_policy().allow_agent_restart:
+        raise HTTPException(
+            403, "the frozen deployment profile disables agent-triggered "
+                 "self-update, self-restart, and primed restart; deploy this "
+                 "installation through an operator-controlled path")
     if body.tool in ("orgtree_read_transcript", "orgtree_read_scratch",
                      "orgtree_chart", "orgtree_send_file"):
         try:
@@ -5827,8 +5907,96 @@ def _admin_host() -> str:
     Still deliberately NOT a setting in the org doc: a setting can be flipped
     by anything that can write the doc, including an agent.
     """
-    return ("0.0.0.0" if os.environ.get(EXPOSE_ENV, "").strip().lower() in _TRUTHY
-            else "127.0.0.1")
+    exposed = os.environ.get(EXPOSE_ENV, "").strip().lower() in _TRUTHY
+    if exposed and not deployment.current_policy().allow_admin_exposure:
+        raise deployment.DeploymentConfigError(
+            "the frozen deployment profile forbids ORGTREE_EXPOSE_ADMIN; "
+            "unset it so the unauthenticated admin API remains loopback-only")
+    return "0.0.0.0" if exposed else "127.0.0.1"
+
+
+def _deployment_preflight() -> deployment.DeploymentPolicy:
+    """Validate the official backend launch against the install-wide policy.
+
+    Frozen mode never converts existing state or silently ignores a
+    contradictory exposure setting. Startup refusal keeps the weaker state
+    offline until the operator explicitly inventories and migrates it.
+    """
+
+    policy = deployment.current_policy()
+    # A conflicting exposure request is a configuration error, not an option
+    # to silently ignore.
+    _admin_host()
+    if not policy.allow_public_listener and PUBLIC_PORT:
+        raise deployment.DeploymentConfigError(
+            "the frozen deployment profile forbids the public kiosk listener; "
+            "unset ORGTREE_PUBLIC_PORT (or set it to 0)")
+    legacy_auth = os.environ.get("ORGTREE_SANDBOX_API_KEY", "").strip().lower()
+    if not policy.allow_legacy_sandbox_credentials \
+            and legacy_auth == "subscription":
+        raise deployment.DeploymentConfigError(
+            "the frozen deployment profile disables legacy sandbox credential "
+            "copying; ORGTREE_SANDBOX_API_KEY='subscription' is forbidden — "
+            "use proxied auth or an explicit API key")
+    defaults = load_org_defaults()
+    default_kiosk = (defaults.get("kiosk")
+                      if isinstance(defaults.get("kiosk"), dict) else {})
+    if not policy.allow_legacy_sandbox_credentials and (
+            str(defaults.get("api_key") or "").strip().lower()
+            == "subscription"
+            or str(default_kiosk.get("api_key") or "").strip().lower()
+            == "subscription"):
+        raise deployment.DeploymentConfigError(
+            "the frozen deployment profile disables legacy sandbox credential "
+            "copying; defaults.json contains forbidden 'subscription' auth -- "
+            "remove it and use proxied auth or an explicit API key")
+    if not policy.require_sandboxed_orgs:
+        return policy
+
+    unsandboxed: list[str] = []
+    legacy_credentials: list[str] = []
+    for row in store.list_orgs():
+        slug = str(row.get("slug") or "<unknown>")
+        try:
+            org = store.load_org(slug)
+        except (LedgerError, OSError) as e:
+            # Could not prove the security property, so frozen mode does not
+            # start. Keep the slug and a compact reason for inventory work.
+            unsandboxed.append(f"{slug} (could not verify: {e})")
+            continue
+        if not sandbox.is_sandboxed(org):
+            unsandboxed.append(slug)
+        kiosk = org.d.get("kiosk") or {}
+        persisted_subscription = (
+            str(org.d.get("api_key") or "").strip().lower() == "subscription"
+            or str(kiosk.get("api_key") or "").strip().lower()
+            == "subscription")
+        try:
+            effective_subscription = sandbox.uses_legacy_credential_copy(org)
+            copied_credentials = sandbox.copied_subscription_credentials(org)
+        except deployment.DeploymentConfigError as e:
+            legacy_credentials.append(f"{slug} (could not verify: {e})")
+            continue
+        if persisted_subscription or effective_subscription:
+            legacy_credentials.append(f"{slug} ('subscription' auth)")
+        if copied_credentials:
+            legacy_credentials.append(f"{slug} (copied credential file)")
+    if unsandboxed:
+        raise deployment.DeploymentConfigError(
+            "the frozen deployment profile requires every org to be "
+            "sandboxed; refusing startup because these orgs are not "
+            f"sandboxed: {', '.join(unsandboxed)}. While running the standard "
+            "profile, back up each org, recreate it with sandboxing enabled, "
+            "verify the replacement, and remove the unsandboxed original "
+            "before enabling frozen mode.")
+    if legacy_credentials:
+        raise deployment.DeploymentConfigError(
+            "the frozen deployment profile disables legacy sandbox credential "
+            "copying; refusing startup because forbidden state exists in: "
+            f"{', '.join(legacy_credentials)}. Remove stored 'subscription' "
+            "selectors and any sandbox .claude/.credentials.json copies, then "
+            "use proxied auth or an explicit API key.")
+    return policy
 
 
 def _ws_impl() -> str | None:
@@ -5879,6 +6047,17 @@ def main() -> None:
               f"  at a different ORGTREE_DATA.\n"
               f"{bar}\n", flush=True)
         raise SystemExit(1)
+
+    try:
+        policy = _deployment_preflight()
+    except deployment.DeploymentConfigError as e:
+        bar = "!" * 74
+        print(f"\n{bar}\n"
+              "  DEPLOYMENT POLICY REFUSED STARTUP\n\n"
+              f"  {e}\n\n"
+              "  Fix the configuration/state above, then start orgtree again.\n"
+              f"{bar}\n", flush=True)
+        raise SystemExit(2) from e
 
     if _ws_impl() is None:
         bar = "!" * 74
@@ -5937,7 +6116,7 @@ def main() -> None:
     # preauthenticated /k/<token> URLs; the bridge listener serves nothing but
     # secret-gated sandbox traffic
     servers = [uvicorn.Server(uvicorn.Config(app, host=host, port=PORT))]
-    if PUBLIC_PORT:
+    if PUBLIC_PORT and policy.allow_public_listener:
         servers.append(uvicorn.Server(uvicorn.Config(
             PublicGateway(app), host="0.0.0.0", port=PUBLIC_PORT)))
     if sandbox.BRIDGE_PORT:
