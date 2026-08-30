@@ -53,6 +53,23 @@ httpx>=0.27             # api.py — outbound calls (bridge, cloud, chatq)
 # keeps its promise that nothing vanishes silently.
 Pillow>=10
 
+# D-201 — warm-pool memory telemetry (warmpool.py, keeper pass): per-pass RSS
+# of every warm process tree plus machine free RAM, journaled into warm.jsonl
+# pool rows. The import is lazy and ImportError-tolerant BY DESIGN — the pool
+# must keep running without it — so a venv missing psutil fails nothing: it
+# journals rss_total_mb=0.0 / free_ram_mb=0.0 forever, a blind instrument
+# shaped like a working one, on the very number (warm-fleet RAM ceiling vs.
+# free memory) the D-201 memory scoping was taken to the user over.
+#
+# Not hypothetical: the deployed venv lacked psutil on activation day
+# (2026-08-30) and journaled zeros for ~3.5 hours while every dev box
+# happened to have it — the websockets story above, replayed on a journal
+# field instead of a protocol upgrade. In warm.jsonl, pool rows with
+# rss_total_mb == 0.0 AND free_ram_mb == 0.0 from before this line reached
+# the deploy mean "unmeasured", not "zero".
+# backend/tests/test_warmpool_deps.py makes the absence loud.
+psutil>=7
+
 # optional — only for tools/ui_probe.py and tools/social_preview.py
 # (headless UI screenshots; not needed to run orgtree):
 # playwright>=1.40
