@@ -3566,6 +3566,14 @@ def _build_cmd(org: Org, nid: str, write_ident: bool = True) -> list[str]:
     # runs inside the org's container; paths below become container paths and
     # the orgtree tools reach the host only via the secret-gated bridge
     sandboxed = sbx.is_sandboxed(org)
+    # Compute once so the CLI proxy, MCP child and steering hook all carry the
+    # same org credential generation. Frozen mode rotates this host-rooted
+    # bearer; standard mode keeps the existing org secret for migration.
+    # This is deliberately NOT node isolation: sandbox siblings share one
+    # root-capable container and are mutually trusted at this boundary.
+    bridge_credential = sbx.bridge_credential(org) if sandboxed else ""
+    frozen_bridge = (sandboxed
+                     and not sbx.legacy_bridge_credentials_allowed())
     # isolation by default: the user's global hooks must not leak into agents.
     # The PostToolUse steering hook (mid-task mail delivery, 3f42476) needs a
     # CLI that fires TOOL hooks headless — <= 2.1.31 does not (live-tested).
@@ -3605,7 +3613,8 @@ def _build_cmd(org: Org, nid: str, write_ident: bool = True) -> list[str]:
         # bearer's hook used to resolve as its successor and eat its mail
         settings: dict = _steer_settings(
             "python3 /opt/orgtree-backend/orgtree/steer.py "
-            f'"{slug}" "{nid}"')
+            f'"{slug}" "{nid}"'
+            + (f' "{bridge_credential}"' if frozen_bridge else ""))
     elif steer_capable and os.environ.get("ORGTREE_STEER_HOOK") != "0":
         steer_py = os.path.join(BACKEND_DIR, "orgtree", "steer.py")
         settings = _steer_settings(
@@ -3661,7 +3670,8 @@ def _build_cmd(org: Org, nid: str, write_ident: bool = True) -> list[str]:
             deny += [f"Edit({p}/**)", f"Write({p}/**)", f"NotebookEdit({p}/**)"]
         settings["permissions"] = {"deny": deny}
     head = ((sbx.exec_argv(sbx.container_name(slug),
-                           sbx.cpath_scratch(slug, nid)) + ["claude"])
+                           sbx.cpath_scratch(slug, nid),
+                           sbx.bridge_exec_env(org)) + ["claude"])
             if sandboxed else _claude_argv())
     # №29 still holds — the identity prompt regenerates every turn — but it
     # rides a FILE now, not argv (user order 2026-08-17). Windows CreateProcess
@@ -3740,7 +3750,7 @@ def _build_cmd(org: Org, nid: str, write_ident: bool = True) -> list[str]:
             "args": ["/opt/orgtree-backend/orgtree/mcptool.py"],
             "env": {"ORGTREE_ORG": slug, "ORGTREE_NODE": nid,
                     "ORGTREE_BASE": sbx.bridge_url(),
-                    "ORGTREE_BRIDGE_SECRET": sbx.sandbox_secret(org),
+                    "ORGTREE_BRIDGE_SECRET": bridge_credential,
                     deployment.PROFILE_ENV:
                         deployment.current_policy().name},
         }

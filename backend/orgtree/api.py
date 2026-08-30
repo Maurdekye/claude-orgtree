@@ -42,8 +42,8 @@ from pydantic import BaseModel, model_validator
 from . import crashreports
 from . import deployment
 from . import ledger as ledger_mod
-from . import (accounts, appsettings, codex_limits, limits, net, providers,
-               sandbox, store, subproxy, supervisor, warmpool)
+from . import (accounts, appsettings, bridgeauth, codex_limits, limits, net,
+               providers, sandbox, store, subproxy, supervisor, warmpool)
 from .ledger import LedgerError, Org, USER, VIS_LEVELS, norm_dirs, norm_tools
 
 if TYPE_CHECKING:
@@ -295,6 +295,11 @@ def _public_denied(method: str, rest: str, slug: str) -> tuple[int, str] | None:
         or rest.startswith("/api/accounts")
         or rest.startswith("/api/providers")
         or rest.startswith("/api/app-settings")
+        # Frozen bridge rotation/attestation is an operator control. A kiosk
+        # bearer must never rotate the sandbox's own bridge identity or read
+        # its generation/fingerprint receipt.
+        or re.fullmatch(
+            r"/api/orgs/[^/]+/bridge-credential(?:/rotate)?", rest) is not None
     )
     if frozen_config:
         return 403, "kiosk: configuration is managed from the admin side"
@@ -379,10 +384,10 @@ def _no_nul(path: str) -> str:
 
 
 # ---- the sandbox bridge: the ONE door out of a kiosk container. Serves only
-# the agent gateway + the steering fetch, gated by the org's sandbox secret
-# (which exists nowhere but inside that org's container and its org doc).
+# the agent gateway + the steering fetch, gated by either the standard
+# deployment's legacy org secret or a frozen deployment's rotatable org token.
 _bridge_cache: dict[str, Any] = {"at": 0.0, "map": {}}
-_STEER_RE = re.compile(r"^/api/orgs/([a-z0-9@-]+)/nodes/[^/]+/steer$")
+_STEER_RE = re.compile(r"^/api/orgs/([a-z0-9@-]+)/nodes/([^/]+)/steer$")
 
 
 def _bridge_secret_map() -> dict[str, str]:
@@ -405,9 +410,16 @@ def _bridge_secret_map() -> dict[str, str]:
 class BridgeGateway:
     """ASGI wrapper served ONLY on the bridge port (containers reach it via
     host.docker.internal): everything except the two sanctioned paths is a
-    bare 403, and the secret pins the caller to its own org."""
+    bare 403. Every credential pins an org. Nodes inside one sandbox are
+    mutually trusted here because they share a root-capable container; the
+    frozen bearer is rotatable but is not a per-node isolation boundary."""
 
     def __init__(self, inner: ASGIApp) -> None:
+        # In a real frozen launch this constructor runs while assembling the
+        # bridge listener. Mint/read the host-only key now so an unwritable or
+        # malformed credential store refuses startup, before any request.
+        if not bridgeauth.legacy_credentials_allowed():
+            bridgeauth.install_key()
         self.inner = inner
 
     async def __call__(self, scope: ASGIScope, receive: Receive, send: Send) -> None:
@@ -431,16 +443,29 @@ class BridgeGateway:
         # proxied-subscription traffic carries the secret IN THE PATH — the
         # CLI can set a base URL but not custom headers we control
         rewritten = None
-        pm = re.match(r"^/anthropic/([a-f0-9]{32})(/.*)$", path)
+        pm = re.match(r"^/anthropic/([^/]+)(/.*)$", path)
         if pm:
             secret = pm.group(1)
             rewritten = "/anthropic" + pm.group(2)
-        slug = _bridge_secret_map().get(secret) if secret else None
+        slug = bridgeauth.resolve_org_credential(secret) if secret else None
+        legacy = False
+        if slug is None and secret and bridgeauth.legacy_credentials_allowed():
+            slug = _bridge_secret_map().get(secret)
+            legacy = slug is not None
+        if slug is not None and not legacy:
+            try:
+                # A persisted forbidden selector or copied subscription file
+                # invalidates even an already-running sandbox's bridge access.
+                # This is deliberately before every allowed route.
+                sandbox.container_auth(store.load_org(slug))
+            except (LedgerError, deployment.DeploymentConfigError):
+                slug = None
         m = _STEER_RE.match(path)
+        steer_ok = bool(m and m.group(1) == slug)
         allowed = slug and (
             rewritten is not None
             or (method == "POST"
-                and (path == "/api/agent" or (m and m.group(1) == slug))))
+                and (path == "/api/agent" or steer_ok)))
         if not allowed:
             body = json.dumps({"detail": "forbidden"}).encode()
             await send({"type": "http.response.start", "status": 403,
@@ -452,7 +477,10 @@ class BridgeGateway:
         if rewritten is not None:
             scope["path"] = rewritten
             scope["raw_path"] = rewritten.encode()
-        scope["state"] = {**(scope.get("state") or {}), "bridge_slug": slug}
+        scope["state"] = {**(scope.get("state") or {}),
+                          "bridge_slug": slug,
+                          "bridge_scope": "legacy-org" if legacy else "org",
+                          "bridge_legacy": legacy}
         await self.inner(scope, receive, send)
 
 
@@ -800,6 +828,51 @@ def orgs_list(request: Request) -> list[dict[str, Any]]:
             }
         out.append(row)
     return out
+
+
+def _bridge_credential_attestation(slug: str, request: Request) -> dict[str, Any]:
+    """Admin-only, secret-free state for the frozen per-org bridge bearer."""
+    if _public_slug(request):
+        raise HTTPException(403, "bridge credentials are operator-managed")
+    if deployment.current_policy().allow_legacy_sandbox_credentials:
+        raise HTTPException(
+            409, "rotatable bridge credentials are active only in the frozen "
+                 "deployment profile")
+    try:
+        org = store.load_org(slug)
+        # Retain the authoritative frozen selector/copied-file checks before
+        # reporting this sandbox as ready.
+        sandbox.container_auth(org)
+        return bridgeauth.credential_attestation(org)
+    except LedgerError as e:
+        raise HTTPException(404, str(e))
+    except deployment.DeploymentConfigError as e:
+        raise HTTPException(409, str(e))
+    except bridgeauth.BridgeCredentialError as e:
+        raise HTTPException(503, str(e))
+
+
+@app.get("/api/orgs/{slug}/bridge-credential")
+def bridge_credential_status(slug: str, request: Request) -> dict[str, Any]:
+    """Inspect the frozen org credential without returning the bearer."""
+    return _bridge_credential_attestation(slug, request)
+
+
+@app.post("/api/orgs/{slug}/bridge-credential/rotate")
+async def bridge_credential_rotate(
+        slug: str, request: Request) -> dict[str, Any]:
+    """Rotate one frozen org bearer and prove the planted old one is dead."""
+    _bridge_credential_attestation(slug, request)
+    try:
+        receipt = bridgeauth.rotate_org_credential(slug)
+    except LedgerError as e:
+        raise HTTPException(404, str(e))
+    except deployment.DeploymentConfigError as e:
+        raise HTTPException(409, str(e))
+    except bridgeauth.BridgeCredentialError as e:
+        raise HTTPException(503, str(e))
+    await hub.changed(slug)
+    return {**receipt, "existing_processes_must_refresh": True}
 
 
 @app.post("/api/orgs")
@@ -3554,11 +3627,11 @@ async def anthropic_proxy(path: str, request: Request) -> StreamingResponse:
     # host OAuth token — same container, same proxy, no recreate; reverting
     # is the window expiring. (A sandboxed fallback org is kept in proxied
     # mode by sandbox.ensure_container for exactly this reason.)
-    fb_key = ""
+    upstream_key = ""
     try:
         _fo = await run_in_threadpool(store.load_org, bslug)
-        if supervisor.api_fallback_active(_fo):
-            fb_key = str(_fo.d.get("api_key") or "")
+        upstream_key = sandbox.anthropic_proxy_api_key(
+            _fo, fallback_active=supervisor.api_fallback_active(_fo))
     except LedgerError:
         pass
     headers: dict[str, str] = {}
@@ -3567,8 +3640,8 @@ async def anthropic_proxy(path: str, request: Request) -> StreamingResponse:
                          "connection", "accept-encoding", "x-orgtree-bridge"):
             continue
         headers[k] = v
-    if fb_key:
-        headers["x-api-key"] = fb_key
+    if upstream_key:
+        headers["x-api-key"] = upstream_key
     else:
         try:
             token = await run_in_threadpool(subproxy.get_access_token)
@@ -5049,16 +5122,16 @@ def disk_file(slug: str, request: Request, path: str = "") -> FileResponse:
     #
     # Content is therefore checked as well as name, for visitors only: any file
     # carrying this org's bridge secret is refused whatever it is called. The
-    # scan is bounded and cheap (the secret is 32 hex chars; a copy of a small
-    # JSON file is what this defends against, and a multi-GB file streaming to
-    # a visitor is not a credential-shaped object).
+    # scan is bounded and cheap (both the 32-hex legacy root and the longer
+    # frozen org token are small; a copied credential file is what this defends
+    # against, not a token buried beyond 256 KiB in a multi-GB artifact).
     if public:
-        secret = sandbox.sandbox_secret(org)
-        if secret:
+        credentials = bridgeauth.accepted_credentials(org)
+        if credentials:
             try:
                 with open(full, "rb") as f:
                     head = f.read(_SECRET_SCAN_BYTES)
-                if secret.encode() in head:
+                if any(secret.encode() in head for secret in credentials):
                     raise HTTPException(403, "credential/secret file")
             except OSError:
                 pass          # unreadable: the FileResponse below reports it

@@ -18,15 +18,17 @@ Container layout (bind mounts):
 The in-container data layout mirrors the host's ~/orgtree shape on purpose:
 steer.py's cwd-derived identity and its ~/orgtree fallback work unchanged.
 `.bridge` in the container's data root carries the backend URL
-(host.docker.internal:<bridge port>) + the org's sandbox secret — the only
-door out, gated by api.BridgeGateway to /api/agent and the steer fetch.
+(host.docker.internal:<bridge port>) and, in standard mode, the org's legacy
+sandbox secret — the only door out, gated by api.BridgeGateway.
 
 Auth: the default is the PROXIED SUBSCRIPTION — the container's CLI points at
 the bridge's /anthropic/<secret> proxy (host-side OAuth, no credential file
-ever enters the sandbox); a kiosk `api_key` (creation form / dashboard) or
-ORGTREE_SANDBOX_API_KEY overrides it with a plain env key. The literal value
-'subscription' copies the host credentials into the sandbox home — private
-single-user installs only.
+ever enters the sandbox). In standard mode, a kiosk `api_key` (creation form /
+dashboard) or ORGTREE_SANDBOX_API_KEY overrides it with a plain env key, and
+the literal value 'subscription' copies host credentials into the sandbox
+home. Frozen mode keeps supported provider keys host-side and routes each org
+through a rotatable bridge token; nodes in that shared root-capable container
+are mutually trusted at the bridge identity boundary.
 """
 
 from __future__ import annotations
@@ -42,7 +44,7 @@ import time
 import uuid
 from typing import TYPE_CHECKING, Any
 
-from . import deployment, store
+from . import bridgeauth, deployment, store
 
 if TYPE_CHECKING:
     from .ledger import Org
@@ -305,7 +307,18 @@ def docker_available() -> bool:
 
 
 def sandbox_secret(org: Org) -> str:
-    return (_cfg(org) or {}).get("secret", "")
+    """The persisted org-wide bridge root (legacy compatibility only)."""
+    return bridgeauth.root_secret(org)
+
+
+def bridge_credential(org: Org) -> str:
+    """The rotatable per-org credential used under the live policy."""
+    return bridgeauth.credential_for_org(org)
+
+
+def legacy_bridge_credentials_allowed() -> bool:
+    """Whether shared org-wide bridge credentials remain policy-allowed."""
+    return bridgeauth.legacy_credentials_allowed()
 
 
 def uses_subscription_auth(k: dict[str, Any] | None) -> bool:
@@ -407,6 +420,12 @@ def auth_label(org: Org, k: Any = None) -> str:
     recreates the container instead of leaving it billing the old way."""
     import hashlib
     auth = container_auth(org, k)
+    # Frozen containers inherit no provider auth material, so their identity
+    # does not depend on which host-side provider lane is selected. This fixed label
+    # forces one recreate at either profile boundary but lets explicit keys
+    # rotate live without exposing even a key digest or recreating the box.
+    if not bridgeauth.legacy_credentials_allowed():
+        return "org-v1"
     low = auth.lower()
     if "prox" in low or low == "subscription":
         return low
@@ -437,6 +456,53 @@ def container_auth(org: Org, k: Any = None) -> str:
                 "copied subscription credentials already exist on its disk; "
                 "remove the sandbox credential copy before running it")
     return auth
+
+
+def shared_container_auth_env(org: Org, k: Any = None) -> dict[str, str]:
+    """Auth env baked into the shared container at ``docker run``.
+
+    Frozen mode returns nothing for every supported provider auth selection:
+    its provider URL and per-org bridge token are attached later by
+    ``docker exec``, and an explicit provider key stays on the host. The
+    ``container_auth`` call is deliberately before the policy branch so its
+    fail-closed validation cannot be bypassed by this helper.
+    """
+    key = container_auth(org, k)
+    if not legacy_bridge_credentials_allowed():
+        return {}
+    low = key.lower()
+    if "prox" in low:
+        return {
+            "ANTHROPIC_BASE_URL": f"{bridge_url()}/anthropic/{sandbox_secret(org)}",
+            "ANTHROPIC_API_KEY": "orgtree-proxied",
+        }
+    if low == "subscription":
+        return {}
+    return {"ANTHROPIC_API_KEY": key}
+
+
+def anthropic_proxy_api_key(org: Org, *, fallback_active: bool = False) -> str:
+    """Explicit key the host-side Anthropic relay should attach.
+
+    Standard mode keeps its historical split: literal keys live directly in
+    the container, while only api-fallback temporarily switches relay traffic
+    to the org key. Frozen mode routes literal keys through the per-org relay
+    too, so the actual provider credential never enters the shared container.
+    An empty return means the relay should use the host OAuth subscription.
+
+    Always resolve ``container_auth`` first.  Besides choosing org, kiosk, and
+    install-default keys consistently, it owns frozen policy validation of
+    forbidden legacy selectors.
+    """
+    selected = container_auth(org)
+    if fallback_active:
+        return str(org.d.get("api_key") or "").strip()
+    if legacy_bridge_credentials_allowed():
+        return ""
+    low = selected.lower()
+    if "prox" in low or low == "subscription":
+        return ""
+    return selected
 
 
 def sandbox_home(slug: str) -> str:
@@ -516,6 +582,14 @@ def bridge_bind_host() -> str:
         raise RuntimeError("frozen deployment got an unusable Docker bridge "
                            f"address: {addr}")
     return str(addr)
+
+
+def bridge_file_config(org: Org) -> dict[str, str]:
+    """Shared ``.bridge`` content; frozen mode contains no credential."""
+    out = {"url": bridge_url()}
+    if legacy_bridge_credentials_allowed():
+        out["secret"] = sandbox_secret(org)
+    return out
 
 
 def chown_agent(org: Org, nid: str, *rel: str) -> None:
@@ -818,7 +892,6 @@ def ensure_container(org: Org) -> str:
     # bridge's /anthropic passthrough instead; skipping the org key here is
     # what routes it there
     key = container_auth(org, k)
-    use_proxy = "prox" in key.lower()
     use_sub = key.lower() == "subscription"
     if use_sub and k.get("enabled") and k.get("token"):
         # structural, not a filter: see uses_subscription_auth
@@ -841,11 +914,15 @@ def ensure_container(org: Org) -> str:
         if not os.path.exists(cfg):
             with open(cfg, "w", encoding="utf-8") as f:
                 json.dump({"hasCompletedOnboarding": True}, f)
-    # the only door out: backend URL + this org's secret, read by steer.py
-    # and mcptool.py inside the container
+    # The locator is shared because the container is shared. Frozen mode keeps
+    # its rotatable per-org bearer out of the persistent file and injects it
+    # into each process/hook. This is at-rest reduction, not node isolation:
+    # root-capable siblings can read each other's live process state. Standard
+    # mode keeps the old document shape as its migration path.
+    bridge_doc = bridge_file_config(org)
     with open(os.path.join(home, "orgtree", ".bridge"), "w",
               encoding="utf-8") as f:
-        json.dump({"url": bridge_url(), "secret": sandbox_secret(org)}, f)
+        json.dump(bridge_doc, f)
     mp = dsk.mount_path(slug)
     if network_layout == FROZEN_NETWORK_LAYOUT:
         _ensure_frozen_gateway(slug, image_tag)
@@ -869,11 +946,9 @@ def ensure_container(org: Org) -> str:
         "-v", f"{usrlocal_volume(ver)}:/usr/local:ro",
         *([] if network_layout == FROZEN_NETWORK_LAYOUT else
           ["--add-host", "host.docker.internal:host-gateway"]),
-        *(["-e", "ANTHROPIC_BASE_URL="
-               f"{bridge_url()}/anthropic/{sandbox_secret(org)}",
-           "-e", "ANTHROPIC_API_KEY=orgtree-proxied"] if use_proxy
-          else [] if use_sub
-          else ["-e", "ANTHROPIC_API_KEY=" + key]),
+        *[item for env_key, env_val in
+          sorted(shared_container_auth_env(org, k).items())
+          for item in ("-e", f"{env_key}={env_val}")],
         "-v", f"{mp}/home:/home/agent",
         "-v", f"{mp}/workspace:{cpath_workspace(slug)}",
         "-v", f"{mp}/scratch:{cpath_data()}/scratch/{slug}",
@@ -982,9 +1057,31 @@ def sandbox_volumes_bytes(slug: str, max_age: float = 60.0) -> int | None:
     return total
 
 
-def exec_argv(name: str, cwd: str) -> list[str]:
+def bridge_exec_env(org: Org) -> dict[str, str]:
+    """Per-process provider proxy env for a sandboxed org.
+
+    Standard mode leaves the container's historical auth env untouched.
+    Frozen mode always routes through the bridge, including orgs configured
+    with explicit API keys; only the host relay sees the provider credential.
+    Resolving auth first preserves its fail-closed policy validation.
+    """
+    container_auth(org)
+    if legacy_bridge_credentials_allowed():
+        return {}
+    credential = bridge_credential(org)
+    return {
+        "ANTHROPIC_BASE_URL": f"{bridge_url()}/anthropic/{credential}",
+        "ANTHROPIC_API_KEY": "orgtree-proxied",
+    }
+
+
+def exec_argv(name: str, cwd: str,
+              env: dict[str, str] | None = None) -> list[str]:
     """Prefix that runs a command inside the org's container."""
-    return ["docker", "exec", "-i", "-w", cwd, name]
+    args = ["docker", "exec", "-i", "-w", cwd]
+    for key, value in sorted((env or {}).items()):
+        args += ["-e", f"{key}={value}"]
+    return args + [name]
 
 
 def kill_claude(name: str, match: str = "claude") -> None:
