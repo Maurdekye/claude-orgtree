@@ -36,7 +36,33 @@ def api(method: str, path: str, body=None):
 
 
 def provider_payload(enabled: bool) -> dict:
+    """The stubbed `/api/providers`, stating ALL THREE families.
+
+    ⚠ IT USED TO STATE ONLY CODEX, and that stopped being harmless twice.
+    D-189 added a Gemini optgroup to the panel and nobody updated `want`, so
+    this probe has been red since then for a reason that has nothing to do
+    with its subject. Then D-202 made an unstated provider mean "unknown", and
+    unknown deliberately SHOWS — so a one-provider stub silently exercised the
+    optimistic fallback instead of the machine state the probe means to
+    describe.
+
+    A real payload always speaks for every family, so this one does too:
+    Claude present, Codex present with `enabled` as the axis under test, and
+    Gemini genuinely not installed on this throwaway root — which under D-202
+    is why the Gemini optgroup is absent from `want`, rather than the omission
+    being an oversight the way it was before.
+    """
     return {"providers": [{
+        "id": "claude", "label": "Claude", "cli": "Claude Code",
+        "tiers": [
+            {"tier": t, "provider": "claude", "seat": s, "model": t,
+             "letter": t[0].upper()}
+            for t, s in (("haiku", 1), ("sonnet", 2), ("opus", 5),
+                         ("fable", 10))
+        ],
+        "status": {"installed": True, "connected": True, "kind": "chatgpt"},
+        "hire_enabled": True, "reason": None,
+    }, {
         "id": "openai", "label": "Codex", "cli": "Codex CLI",
         "tiers": [
             {"tier": "luna", "provider": "openai", "seat": 1,
@@ -50,6 +76,20 @@ def provider_payload(enabled: bool) -> dict:
                    "kind": "chatgpt" if enabled else None},
         "hire_enabled": enabled,
         "reason": None if enabled else "CONTROL: Codex is disconnected",
+    }, {
+        # NOT installed — so D-202 hides the family entirely. This is the leg
+        # that keeps `want` honest: the Gemini rows are absent because the
+        # machine has no Gemini, and the probe now says so out loud.
+        "id": "google", "label": "Gemini", "cli": "Gemini CLI",
+        "tiers": [
+            {"tier": "flash", "provider": "google", "seat": 1,
+             "model": "gemini-flash", "letter": "F"},
+            {"tier": "pro", "provider": "google", "seat": 2,
+             "model": "gemini-pro", "letter": "P"},
+        ],
+        "status": {"installed": False, "connected": False, "kind": None},
+        "hire_enabled": False,
+        "reason": "Gemini CLI not installed",
     }]}
 
 
@@ -78,6 +118,25 @@ def main() -> int:
         data = os.path.join(tmp, "data")
         home = os.path.join(tmp, "home")
         os.makedirs(data); os.makedirs(home)
+        # ⚠ D-199 FIXTURE (regression 2026-08-30). An isolated HOME means no
+        # detected Claude, and since D-199 the hire gate REFUSES a Claude tier
+        # on a machine with no Claude — so this probe's setup started 422ing.
+        # That is the feature working; the fixture was written for the world
+        # where Claude was assumed present. Two truths are needed and they come
+        # from different places: ORGTREE_CLAUDE is INSTALLED (the CLI file
+        # detection resolves), ~/.claude.json's oauthAccount is CONNECTED
+        # (`accounts.live_identity`). ORGTREE_CLAUDE_CLI alone is neither — it
+        # only says what to SPAWN once a hire is already allowed.
+        # ⚠ Written BEFORE the backend starts: LIVE_CONFIG is
+        # `expanduser("~/.claude.json")` evaluated at import IN THE CHILD. And
+        # on Windows expanduser reads USERPROFILE, so both it and HOME must
+        # point here or this file is written somewhere nobody reads.
+        with open(os.path.join(home, ".claude.json"), "w",
+                  encoding="utf-8") as _f:
+            json.dump({"oauthAccount": {
+                "accountUuid": "probe-uuid-0000",
+                "emailAddress": "probe@example.test",
+            }}, _f)
         with open(os.path.join(data, "defaults.json"), "w", encoding="utf-8") as f:
             json.dump({"net_hub_address": "http://127.0.0.1:9"}, f)
         env = dict(os.environ)
@@ -87,6 +146,8 @@ def main() -> int:
             "ORGTREE_PUBLIC_PORT": "0", "ORGTREE_EXPOSE_ADMIN": "0",
             "PYTHONPATH": os.path.join(REPO, "backend"),
             "PYTHONIOENCODING": "utf-8",
+            "ORGTREE_CLAUDE": os.path.join(
+                REPO, "backend", "tests", "fakecli.js"),
             "ORGTREE_CLAUDE_CLI": os.path.join(
                 REPO, "backend", "tests", "fakecli.js"),
         })

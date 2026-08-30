@@ -130,6 +130,25 @@ LOG = os.path.join(TMP, "backend.log")
 os.makedirs(HOME, exist_ok=True)
 os.makedirs(DATA, exist_ok=True)
 
+# ⚠ D-199 FIXTURE (regression 2026-08-30). An isolated HOME means no detected
+# Claude, and since D-199 the hire gate REFUSES a Claude tier on a machine with
+# no Claude — so this probe's setup started 422ing. That is the feature
+# working; the fixture was written for the world where Claude was assumed
+# present. Two truths are needed and they come from different places:
+# ORGTREE_CLAUDE is INSTALLED (the CLI file detection resolves) and
+# ~/.claude.json's oauthAccount is CONNECTED (`accounts.live_identity`).
+# ORGTREE_CLAUDE_CLI alone is NEITHER — it only says what to SPAWN once a hire
+# has already been allowed, which is why setting it was not enough.
+# ⚠ Written BEFORE the backend starts: LIVE_CONFIG is
+# `expanduser("~/.claude.json")` evaluated at import IN THE CHILD. And on
+# Windows expanduser reads USERPROFILE, so HOME alone would put this file
+# somewhere nobody reads.
+with open(os.path.join(HOME, ".claude.json"), "w", encoding="utf-8") as _f:
+    json.dump({"oauthAccount": {
+        "accountUuid": "probe-uuid-0000",
+        "emailAddress": "probe@example.test",
+    }}, _f)
+
 PROC: subprocess.Popen | None = None
 RESULTS: list[tuple[str, bool, str]] = []
 _ORGS: list[str] = []
@@ -172,6 +191,7 @@ def start_backend() -> None:
         "PYTHONPATH": os.path.join(_REPO, "backend"),
         "PYTHONIOENCODING": "utf-8",
         "ORGTREE_BRIDGE_PORT": "0",
+        "ORGTREE_CLAUDE": os.path.join(_REPO, "backend", "tests", "fakecli.js"),
         "ORGTREE_CLAUDE_CLI": os.path.join(_REPO, "backend", "tests", "fakecli.js"),
     })
     env.pop("ORGTREE_PUBLIC_PORT", None)
@@ -382,9 +402,21 @@ def tray_still_works(pg, tag: str) -> None:
 def click_hire_chip(pg, tag: str) -> None:
     # ---- §4 real click: a hire chip --------------------------------------
     before = pg.locator(".sq.draft").count()
+    # ⚠ AN ENABLED CHIP, and `:not(disabled)` is doing real work here (D-199,
+    # found 2026-08-30). This used to take the first chip under the column,
+    # which was fine while side strips only ever carried offerable families.
+    # D-199 removed the `!side` asymmetry, so an installed-but-signed-out
+    # provider now renders on the LEFT strip too, disabled — and on this
+    # probe's throwaway HOME that is exactly what Gemini is, so the first chip
+    # became a dead one and §4 started failing on a correct page.
+    # A disabled chip is the wrong target regardless of which build put it
+    # there: this section asserts that a real click REACHES the control
+    # through the tray column, and a control that does nothing when clicked
+    # cannot answer that question either way.
     pt = pg.evaluate("""() => {
       const w = document.querySelector('.tray-wrap').getBoundingClientRect();
       for (const el of document.querySelectorAll('.hsof.side-l button')) {
+        if (el.disabled) continue;
         const b = el.getBoundingClientRect();
         const x0 = Math.max(b.left, w.left), x1 = Math.min(b.right, w.right);
         if (x1 - x0 >= 2 && b.top >= w.top && b.bottom <= w.bottom)
@@ -395,7 +427,7 @@ def click_hire_chip(pg, tag: str) -> None:
     if pt is None:
         check(f"{tag} §4 real click on a left hire chip inside the column "
               "spawns the draft", False,
-              "no left hire chip lies under the column — rig broken")
+              "no ENABLED left hire chip lies under the column — rig broken")
         return
     pg.mouse.click(pt[0], pt[1])
     pg.wait_for_timeout(700)

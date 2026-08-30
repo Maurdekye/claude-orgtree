@@ -180,6 +180,25 @@ def main() -> int:
         home = os.path.join(tmp, "home")
         codex_home = os.path.join(tmp, "codex-home")
         os.makedirs(data); os.makedirs(home); os.makedirs(codex_home)
+        # ⚠ D-199 FIXTURE (regression 2026-08-30). An isolated HOME means no
+        # detected Claude, and since D-199 the hire gate REFUSES a Claude tier
+        # on a machine with no Claude — so this probe's setup started 422ing.
+        # That is the feature working; the fixture was written for the world
+        # where Claude was assumed present. Two truths are needed and they come
+        # from different places: ORGTREE_CLAUDE is INSTALLED (the CLI file
+        # detection resolves), ~/.claude.json's oauthAccount is CONNECTED
+        # (`accounts.live_identity`). ORGTREE_CLAUDE_CLI alone is neither — it
+        # only says what to SPAWN once a hire is already allowed.
+        # ⚠ Written BEFORE the backend starts: LIVE_CONFIG is
+        # `expanduser("~/.claude.json")` evaluated at import IN THE CHILD. And
+        # on Windows expanduser reads USERPROFILE, so both it and HOME must
+        # point here or this file is written somewhere nobody reads.
+        with open(os.path.join(home, ".claude.json"), "w",
+                  encoding="utf-8") as _f:
+            json.dump({"oauthAccount": {
+                "accountUuid": "probe-uuid-0000",
+                "emailAddress": "probe@example.test",
+            }}, _f)
         with open(os.path.join(data, "defaults.json"), "w", encoding="utf-8") as f:
             json.dump({"net_hub_address": "http://127.0.0.1:9"}, f)
         # A codex bearer needs a codex HIRE, and hiring is gated on a connected
@@ -200,6 +219,8 @@ def main() -> int:
             "ORGTREE_PUBLIC_PORT": "0", "ORGTREE_EXPOSE_ADMIN": "0",
             "PYTHONPATH": os.path.join(REPO, "backend"),
             "PYTHONIOENCODING": "utf-8",
+            "ORGTREE_CLAUDE": os.path.join(
+                REPO, "backend", "tests", "fakecli.js"),
             "ORGTREE_CLAUDE_CLI": os.path.join(
                 REPO, "backend", "tests", "fakecli.js"),
         })
