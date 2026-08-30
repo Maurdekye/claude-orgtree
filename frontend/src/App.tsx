@@ -11,7 +11,7 @@ import {
   sweepLegacy,
 } from './api'
 import { bumpLive } from './livebus'
-import { ConfirmModal, MailFolders, MailList, OrgCanvas, OrgRecord, RetiredFold, useEsc } from './Canvas'
+import { AudienceFold, ConfirmModal, MailFolders, MailList, OrgCanvas, OrgRecord, RetiredFold, useEsc } from './Canvas'
 import { DiskBrowser, DiskFullAlert } from './DiskBrowser'
 import {
   AutorenewIcon, BlockIcon, CheckIcon, ChevronRightIcon, CloseIcon, CopyIcon, EyeIcon, LanIcon,
@@ -1574,8 +1574,11 @@ function InboxPanel({ slug, tree, toast, refresh, close, jumpTo }: {
           <>
             <div className="field-label">audience holders</div>
             <div className="row" style={{ flexWrap: 'wrap' }}>
-              {userAud.filter((a) => nodes.get(a.grantee)?.state === 'live')
-                .map((a) => audBadge(a.grantee))}
+              <AudienceFold
+                ids={userAud.filter((a) => nodes.get(a.grantee)?.state === 'live')
+                  .map((a) => a.grantee)}
+                label="audience holders"
+                render={(g) => audBadge(g)} />
               <RetiredFold
                 ids={userAud.filter((a) =>
                   nodes.get(a.grantee)?.state !== 'live').map((a) => a.grantee)}

@@ -443,6 +443,40 @@ export function RetiredFold({ ids, render }: {
   </>)
 }
 
+// Audience holders are a reader-facing list in both mail surfaces. Seven fit
+// on one row in the standard mail panel; the eighth begins a second, so eight
+// is the first point where the list costs a whole extra line. Unlike retired
+// entries (which have their own lifecycle fold above), this fold is for LIVE
+// holders and starts shut: a busy org should open its mail to the useful
+// summary, not a wall of revoke chips. It deliberately shares RetiredFold's
+// local, per-open-panel disclosure behaviour rather than storing a preference:
+// expanding is an inspection, not a browser-wide change of how audiences work.
+export const AUDIENCE_FOLD_LIMIT = 8
+
+export function AudienceFold({ ids, label, alert = false, render }: {
+  ids: string[]
+  /** plural visible noun, e.g. "audience holders" */
+  label: string
+  /** org inboxes expect one holder: a larger folded count is an anomaly */
+  alert?: boolean
+  render: (id: string) => ReactNode
+}) {
+  const [open, setOpen] = useState(false)
+  if (!ids.length) return null
+  if (ids.length < AUDIENCE_FOLD_LIMIT) return <>{ids.map(render)}</>
+  const summary = `${ids.length} ${label}`
+  return (<>
+    <button type="button"
+      className={'badge dim audience-fold' + (alert ? ' alert' : '')}
+      data-audience-fold aria-expanded={open}
+      title={open ? `collapse ${summary}` : `show ${summary}: ${ids.join(', ')}`}
+      onClick={() => setOpen((o) => !o)}>
+      {alert && '⚠ '}{open ? `hide ${summary}` : summary}
+    </button>
+    {open && ids.map(render)}
+  </>)
+}
+
 // The node's own mailbox (user ruling: its own tab, separate from history),
 // with the same folders as the user's: inbox + sent.
 interface InboxViewProps {
@@ -690,8 +724,14 @@ export function OrgInboxModal({ inbox, net, map, slug, toast, close, jumpTo }: O
         )}
         {tab === 'mail' ? (<>
           <div className="row" style={{ alignItems: 'center', flexWrap: 'wrap' }}>
-            {holders.filter((h) => map.get(h)?.state === 'live')
-              .map((h) => holderChip(h))}
+            <AudienceFold
+              ids={holders.filter((h) => map.get(h)?.state === 'live')}
+              label="org inbox audience holders"
+              // One holder is the org's standing safety rule. Folding must
+              // save space, never make a second external-mail recipient read
+              // as ordinary: the count remains visible and becomes a warning.
+              alert={holders.filter((h) => map.get(h)?.state === 'live').length > 1}
+              render={(h) => holderChip(h)} />
             <RetiredFold
               ids={holders.filter((h) => map.get(h)?.state !== 'live')}
               render={(h) => holderChip(h, true)} />

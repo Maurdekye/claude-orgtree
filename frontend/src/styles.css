@@ -306,6 +306,16 @@ button.badge.frozen:hover { border-color: var(--accent); }
    audience chip row, same collapse as the desk footer's retired reports */
 button.badge.retired-fold { cursor: pointer; font: inherit; font-size: inherit; }
 button.badge.retired-fold:hover { border-color: var(--accent); }
+/* Long LIVE audience rows use the same small disclosure-chip vocabulary as
+   retired holders. The org inbox expects one outside-mail reader, so a folded
+   count above one deliberately keeps a warning colour: tidiness must not turn
+   an unexpected second recipient into an invisible detail. */
+button.badge.audience-fold { cursor: pointer; font: inherit; font-size: inherit; }
+button.badge.audience-fold:hover { border-color: var(--accent); }
+button.badge.audience-fold.alert {
+  color: var(--bad); border-color: color-mix(in srgb, var(--bad) 55%, var(--line));
+  background: color-mix(in srgb, var(--bad) 10%, var(--input));
+}
 .resume-all {
   /* resume = thaw: ice-tinted, matching what it resumes (was haiku-green,
      which made a frozen-org control wear a model tier's color) */
