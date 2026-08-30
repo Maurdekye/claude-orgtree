@@ -136,6 +136,25 @@ LOG = os.path.join(TMP, "backend.log")
 os.makedirs(HOME, exist_ok=True)
 os.makedirs(DATA, exist_ok=True)
 
+# ⚠ D-199 FIXTURE (regression 2026-08-30). An isolated HOME means no detected
+# Claude, and since D-199 the hire gate REFUSES a Claude tier on a machine with
+# no Claude — so this probe's setup started 422ing. That is the feature
+# working; the fixture was written for the world where Claude was assumed
+# present. Two truths are needed and they come from different places:
+# ORGTREE_CLAUDE is INSTALLED (the CLI file detection resolves) and
+# ~/.claude.json's oauthAccount is CONNECTED (`accounts.live_identity`).
+# ORGTREE_CLAUDE_CLI alone is NEITHER — it only says what to SPAWN once a hire
+# has already been allowed, which is why setting it was not enough.
+# ⚠ Written BEFORE the backend starts: LIVE_CONFIG is
+# `expanduser("~/.claude.json")` evaluated at import IN THE CHILD. And on
+# Windows expanduser reads USERPROFILE, so HOME alone would put this file
+# somewhere nobody reads.
+with open(os.path.join(HOME, ".claude.json"), "w", encoding="utf-8") as _f:
+    json.dump({"oauthAccount": {
+        "accountUuid": "probe-uuid-0000",
+        "emailAddress": "probe@example.test",
+    }}, _f)
+
 PROC: subprocess.Popen | None = None
 RESULTS: list[tuple[str, bool, str]] = []
 _ORGS: list[str] = []
@@ -186,6 +205,7 @@ def start_backend() -> None:
         "PYTHONPATH": os.path.join(_REPO, "backend"),
         "PYTHONIOENCODING": "utf-8",
         "ORGTREE_BRIDGE_PORT": "0",
+        "ORGTREE_CLAUDE": os.path.join(_REPO, "backend", "tests", "fakecli.js"),
         "ORGTREE_CLAUDE_CLI": os.path.join(_REPO, "backend", "tests", "fakecli.js"),
     })
     env.pop("ORGTREE_PUBLIC_PORT", None)
