@@ -390,7 +390,7 @@ def _journal(kind: str, **fields: Any) -> None:
 
 def journal_admit(slug: str, nid: str, sid: str, served: str, reason: str,
                   ihash: str, warm_age_s: float | None, spawn_ms: int,
-                  warm_label: bool | None) -> None:
+                  warm_label: bool | None, slot_wait_s: float = 0.0) -> None:
     """One line per turn ADMISSION, written before the turn runs (a crash
     mid-turn cannot lose it). `session_id` is cache-misses' join key against
     the CLI transcript.
@@ -401,11 +401,19 @@ def journal_admit(slug: str, nid: str, sid: str, served: str, reason: str,
     with an arm the turn was not served under is silent misattribution in
     the A/B (process-cache-2's alternating-flag probe measured exactly
     that). None = the flag file was malformed at decision time: the arm is
-    UNKNOWN and recorded as such, never guessed."""
+    UNKNOWN and recorded as such, never guessed.
+
+    `slot_wait_s` is how long this admission waited to acquire the
+    machine-wide `_turn_slots` seat (0.0 for a boundary-feed, which rides a
+    seat the turn already holds rather than acquiring a new one). A stuck-mail
+    incident (user report 2026-08-30) traced to a window this journal could
+    not explain either way — a slot wait leaves no OTHER trace anywhere, so
+    without this field the next occurrence would be just as unexplainable."""
     _journal("admit", slug=slug, nid=nid, session_id=sid, served=served,
              reason=reason, ident_hash=ihash,
              warm_age_s=round(warm_age_s, 1) if warm_age_s is not None else None,
-             spawn_ms=spawn_ms, handshake_ms=0, warm_enabled=warm_label)
+             spawn_ms=spawn_ms, handshake_ms=0, warm_enabled=warm_label,
+             slot_wait_s=round(slot_wait_s, 1))
 
 
 def _journal_proc(event: str, slug: str, nid: str, reason: str,

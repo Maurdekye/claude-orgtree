@@ -667,6 +667,10 @@ COMPACT_TIMEOUT = int(os.environ.get("ORGTREE_COMPACT_TIMEOUT", "600"))
 # ⚠ The cap is GLOBAL, not per-org: 16 is shared across every org on the
 # instance, so a busy org can starve a quiet one. Nothing enforces fairness.
 MAX_CONCURRENT = int(os.environ.get("ORGTREE_MAX_TURNS", "16"))
+# a wait this long is worth a loud line on its own, independent of the admit
+# journal (user report 2026-08-30: a message looked "stuck" for ~58s with no
+# trace anywhere of why — see the SLOT_WAIT_WARN_S print site below).
+SLOT_WAIT_WARN_S = float(os.environ.get("ORGTREE_SLOT_WAIT_WARN_S", "5"))
 
 _turn_slots = threading.Semaphore(MAX_CONCURRENT)
 # per-(slug, nid) in-memory runtime state — see state() for the key set
@@ -5137,8 +5141,23 @@ def _run_one_turn(slug: str, nid: str,
     try:
         # blocked on a turn slot is NOT running (№12) — the UI shows it hollow
         st["waiting"] = True
+        _slot_wait_t0 = time.monotonic()
         with _turn_slots:
             st["waiting"] = False
+            # a wait a human should see, not just a forensic field on the
+            # admit row: a stuck-mail incident (user report 2026-08-30)
+            # traced back to a window where the machine-wide slot cap
+            # (MAX_CONCURRENT, shared across every org on the instance —
+            # "nothing enforces fairness") is the one plausible explanation
+            # left, and a slot wait leaves NO other trace anywhere — not in
+            # this journal, not in any doc. Print loudly so the NEXT
+            # occurrence is measured instead of reconstructed after the fact.
+            slot_wait_s = time.monotonic() - _slot_wait_t0
+            if slot_wait_s > SLOT_WAIT_WARN_S:
+                print(f"[orgtree] {slug}/{nid}: waited {slot_wait_s:.1f}s for "
+                      f"a turn slot (MAX_CONCURRENT={MAX_CONCURRENT}, shared "
+                      f"across every org on this instance) — this is the "
+                      f"machine-wide cap being contended, not this node")
             with store.DOC_LOCK:
                 org = store.load_org(slug)
                 if org.node(nid)["state"] != "live":
@@ -5484,7 +5503,8 @@ def _run_one_turn(slug: str, nid: str,
                 warm_out_base = wp_turn.out_base
                 warmpool.journal_admit(
                     slug, nid, sid, "warm", "warm-hit", turn_hash or "",
-                    time.time() - wp_turn.parked_at, 0, warm_lbl)
+                    time.time() - wp_turn.parked_at, 0, warm_lbl,
+                    slot_wait_s=slot_wait_s)
             else:
                 proc = subprocess.Popen(
                     _build_cmd(org, nid), cwd=scratch_dir(slug, nid), env=env,
@@ -5494,7 +5514,7 @@ def _run_one_turn(slug: str, nid: str,
                 warmpool.journal_admit(
                     slug, nid, sid, "cold", _adm_reason, turn_hash or "",
                     None, int((time.monotonic() - _spawn_t0) * 1000),
-                    warm_lbl)
+                    warm_lbl, slot_wait_s=slot_wait_s)
             ran_sid = sid          # the id _build_cmd just handed the CLI
             res = {}
             # the pipe's own state, tracked rather than probed: `proc.stdin`
@@ -5674,7 +5694,8 @@ def _run_one_turn(slug: str, nid: str,
                         st["proc"] = proc
                     warmpool.journal_admit(
                         slug, nid, sid, "cold", "claim-died",
-                        turn_hash or "", None, 0, warm_lbl)
+                        turn_hash or "", None, 0, warm_lbl,
+                        slot_wait_s=slot_wait_s)
                     proc.stdin.write(_user_event(text, turn_images))   # pyright: ignore[reportOptionalMemberAccess]
                     proc.stdin.flush()                # pyright: ignore[reportOptionalMemberAccess]
                 if wp_turn is not None:
@@ -6248,7 +6269,11 @@ def _run_one_turn(slug: str, nid: str,
                                     slug, nid, ran_sid or "",
                                     "warm" if wp_turn is not None else "cold",
                                     "boundary-feed", turn_hash or "",
-                                    None, 0, bnd_lbl)
+                                    None, 0, bnd_lbl,
+                                    # no NEW slot acquisition here — this
+                                    # message rides the slot the turn is
+                                    # already holding
+                                    slot_wait_s=0.0)
                                 continue
                             except (OSError, ValueError):
                                 # ValueError is io's "I/O operation on closed
