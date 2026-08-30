@@ -485,6 +485,15 @@ def ident_hash(org: Any, nid: str) -> str:
     h.update(json.dumps(argv, ensure_ascii=False).encode("utf-8", "replace"))
     h.update(b"\x00")
     h.update(env_id.encode("utf-8", "replace"))
+    # D-206: per-node env overrides are spawn inputs a turn cannot change
+    # afterwards, so they belong in the hash — without this, editing
+    # env-overrides.json would silently not reach a parked process until
+    # some unrelated respawn (spawn env is otherwise not hashed; see
+    # docs/cache-hazards.md).
+    h.update(b"\x00")
+    h.update(json.dumps(sup.env_overrides(org.d["slug"], nid),
+                        sort_keys=True, ensure_ascii=False)
+             .encode("utf-8", "replace"))
     return h.hexdigest()[:32]
 
 
@@ -704,7 +713,8 @@ def _spawn_for(org: Any, nid: str, why: str) -> WarmProc | None:
     try:
         ih = ident_hash(org, nid)
         cmd = sup._build_cmd(org, nid)
-        env = sup.spawn_env(org, tier=str(org.node(nid).get("model") or ""))
+        env = sup.spawn_env(org, tier=str(org.node(nid).get("model") or ""),
+                            nid=nid)
         env_id = sup.identity_in_env(env)
         env["ORGTREE_ORG"], env["ORGTREE_NODE"] = slug, nid
         env["ORGTREE_PORT"] = os.environ.get("ORGTREE_PORT", "7360")
