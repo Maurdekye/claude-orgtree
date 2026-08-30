@@ -13,7 +13,7 @@ export type {
 } from './canvas/shared'
 export { ConfirmModal } from './canvas/modals'
 export type { ConfirmModalProps } from './canvas/modals'
-export { MailFolders, MailList, OrgRecord, RetiredFold } from './canvas/mail'
+export { AudienceFold, MailFolders, MailList, OrgRecord, RetiredFold } from './canvas/mail'
 export type {
   MailFoldersProps, MailListProps, OrgRecordProps,
 } from './canvas/mail'
