@@ -2005,6 +2005,10 @@ def codex_usage_peek() -> dict[str, Any]:
 # inward, at registration -- after that every response speaks in row ids.
 class AccountKey(BaseModel):
     token: str
+    # The mint happened in an external CLI before this request. This optional
+    # operator-supplied fact is absent when unknown; the backend must not infer
+    # it from its own session and call that provenance.
+    mint_config_dir: str | None = None
 
 
 class AccountKeyOrder(BaseModel):
@@ -2033,7 +2037,8 @@ async def accounts_add_key(body: AccountKey) -> dict[str, Any]:
     never echoed back, never logged, and never appears in any response."""
     from fastapi.concurrency import run_in_threadpool
     try:
-        rec = await run_in_threadpool(accounts.register_key, body.token)
+        rec = await run_in_threadpool(accounts.register_key, body.token,
+                                      body.mint_config_dir)
     except ValueError as e:
         raise HTTPException(422, str(e)) from None
     return {**accounts.readout(), "registered": rec["id"]}

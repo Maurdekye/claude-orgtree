@@ -274,11 +274,11 @@ export const getAccounts = (): Promise<AccountsPayload> => req('/api/accounts')
 // ⚠ STORE FIRST. The CLI shows a minted token exactly once, so the server
 // writes it before anything can reject it — do not add client-side format
 // validation that could swallow the only copy the user will ever have.
-export const addAccountKey = (token: string): Promise<AccountsPayload> =>
+export const addAccountKey = (token: string, mint_config_dir?: string): Promise<AccountsPayload> =>
   req('/api/accounts/keys', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ token }),
+    body: JSON.stringify({ token, ...(mint_config_dir ? { mint_config_dir } : {}) }),
   })
 // ⚠ Irreversible: the CLI cannot show a token again — re-adding = re-minting.
 export const deleteAccountKey = (id: string): Promise<AccountsPayload> =>

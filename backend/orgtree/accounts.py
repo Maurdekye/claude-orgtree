@@ -86,6 +86,12 @@ POOLED = ("haiku", "sonnet", "opus")
 #: piggybacks onto it) and a typo in either is silent.
 FABLE = "fable"
 
+# The probe shares the existing paced usage-warm loop, but this durable claim
+# makes the cap survive a backend restart and prevents two callers from
+# spending the same fallback account twice in an hour.
+FALLBACK_PROBE_INTERVAL_S = 3600.0
+_LIVENESS = "key_liveness"
+
 
 def _pool_of(tier: str) -> tuple[str, ...]:
     """The tiers that share `tier`'s usage pool, `tier` itself included. An
@@ -148,7 +154,8 @@ def _reject_secrets(node: Any, path: str = "") -> None:
 
 # ------------------------------------------------------------------ the record
 def _blank() -> dict[str, Any]:
-    return {"version": VERSION, "keys": [], "usage_refreshes": {}}
+    return {"version": VERSION, "keys": [], "usage_refreshes": {},
+            _LIVENESS: {}}
 
 
 class RegistryUnreadable(RuntimeError):
@@ -178,7 +185,7 @@ def _migrate_v1(doc: dict[str, Any]) -> dict[str, Any]:
     ids += sorted(u for u in stored if u not in ids)
     return {"version": VERSION,
             "keys": [{"id": u, "account_uuid": u} for u in ids],
-            "usage_refreshes": {}}
+            "usage_refreshes": {}, _LIVENESS: {}}
 
 
 def load(*, strict: bool = False) -> dict[str, Any]:
@@ -223,6 +230,8 @@ def load(*, strict: bool = False) -> dict[str, Any]:
                    if isinstance(k, dict) and k.get("id")]
     if not isinstance(doc.get("usage_refreshes"), dict):
         doc["usage_refreshes"] = {}
+    if not isinstance(doc.get(_LIVENESS), dict):
+        doc[_LIVENESS] = {}
     return doc
 
 
@@ -354,7 +363,29 @@ def resolve_key_identity(kid: str) -> str:
     return uuid
 
 
-def register_key(token: str) -> dict[str, Any]:
+def _optional_mint_config_dir(value: str | None) -> str | None:
+    """An operator assertion about the external mint session, or absent.
+
+    The key was minted before this backend saw it. A field named for that
+    event therefore must be supplied by the operator, be optional, and remain
+    absent when unknown — never inferred from this process's own config.
+    """
+    value = str(value or "").strip()
+    if not value:
+        return None
+    # Validate this non-secret adjunct BEFORE storing the one-copy token. A
+    # malformed provenance value must not leave a token durable but unrowed.
+    _reject_secrets({"mint_config_dir": value})
+    return value
+
+
+def _registered_from_config_dir() -> str:
+    """The backend's config directory at registration — not mint provenance."""
+    value = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+    return os.path.abspath(os.path.expanduser(value))
+
+
+def register_key(token: str, mint_config_dir: str | None = None) -> dict[str, Any]:
     """Register a pasted `claude setup-token` key as a secondary account row.
 
     ⚠ STORE FIRST, RESOLVE AFTER — the ordering is the user's standing
@@ -372,6 +403,7 @@ def register_key(token: str) -> dict[str, Any]:
     token = str(token or "").strip()
     if not token:
         raise ValueError("refusing to register an empty key")
+    mint_config_dir = _optional_mint_config_dir(mint_config_dir)
     kid = key_for_token(token) or (
         "k" + hashlib.sha256(token.encode("utf-8")).hexdigest()[:12])
     tokens.put(kid, token)                     # ← durable before anything else
@@ -379,7 +411,19 @@ def register_key(token: str) -> dict[str, Any]:
     with _lock:
         doc = load(strict=True)
         if not any(k["id"] == kid for k in doc["keys"]):
-            doc["keys"].append({"id": kid, "account_uuid": None})
+            # `registered_at`, deliberately not `created_at`: this backend
+            # cannot observe when a CLI elsewhere minted the token. The same
+            # distinction is why mint_config_dir is optional operator input,
+            # while registered_from_config_dir names the fact we can observe.
+            row: dict[str, Any] = {
+                "id": kid,
+                "account_uuid": None,
+                "registered_at": _iso(time.time()),
+                "registered_from_config_dir": _registered_from_config_dir(),
+            }
+            if mint_config_dir is not None:
+                row["mint_config_dir"] = mint_config_dir
+            doc["keys"].append(row)
             created = True
             save(doc)
     # the identity lookup, OUTSIDE the lock (it is a network call) and after
@@ -401,6 +445,7 @@ def remove_key(kid: str) -> bool:
         if existed:
             doc["keys"] = keep
             doc["usage_refreshes"].pop(kid, None)
+            doc[_LIVENESS].pop(kid, None)
             save(doc)
     forgot = tokens.forget(kid)
     return existed or forgot
@@ -419,6 +464,84 @@ def set_key_order(ids: list[str]) -> list[str]:
         doc["keys"] = [by_id[i] for i in new]
         save(doc)
         return new
+
+
+def _liveness_record(doc: dict[str, Any], kid: str) -> dict[str, Any]:
+    value = (doc.get(_LIVENESS) or {}).get(kid)
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _liveness_state(doc: dict[str, Any], kid: str) -> str | None:
+    state = _liveness_record(doc, kid).get("state")
+    return str(state) if state in {"alive", "limited", "dead"} else None
+
+
+def _claim_probe(kid: str, now: float) -> bool:
+    """Atomically reserve this key's once-hourly probe slot.
+
+    A schedule claim is not a liveness verdict. It is persisted even when the
+    coming attempt is UNKNOWN so ambiguity cannot retry itself into a verdict
+    on every warm-loop pass (or after a process restart).
+    """
+    with _lock:
+        doc = load(strict=True)
+        if not any(k["id"] == kid for k in doc["keys"]):
+            return False
+        rec = _liveness_record(doc, kid)
+        try:
+            last = float(rec.get("checked_at") or 0.0)
+        except (TypeError, ValueError):
+            last = 0.0
+        if now - last < FALLBACK_PROBE_INTERVAL_S:
+            return False
+        rec["checked_at"] = now
+        doc[_LIVENESS][kid] = rec
+        save(doc)
+        return True
+
+
+def probe_fallback_keys(now: float | None = None, probe: Any = None) -> list[dict[str, str]]:
+    """Run each due fallback-key probe, never from a turn path.
+
+    This function does not log raw CLI output or tokens. ``unknown`` preserves
+    the prior liveness verdict; its sole durable effect is the scheduler claim
+    above, which prevents automatic retries for one hour. A confirmed dead key
+    is retained for the operator to inspect but the shared resolver stops
+    routing new turns to it.
+    """
+    now = time.time() if now is None else float(now)
+    results: list[dict[str, str]] = []
+    for row in list(load().get("keys") or []):
+        kid = str(row.get("id") or "")
+        if not kid or not _claim_probe(kid, now):
+            continue
+        token = tokens.get(kid)
+        state = "unknown"
+        try:
+            if token:
+                if probe is None:
+                    # Delayed imports avoid the accounts ↔ supervisor import
+                    # cycle. `_claude_argv` is the exact resolved agent CLI:
+                    # override, private pin, then PATH — never a hand-written
+                    # path that can silently probe a different binary.
+                    from . import fallback_probe, supervisor
+                    state = fallback_probe.probe(token, supervisor._claude_argv())
+                else:
+                    state = str(probe(token))
+        except Exception:  # noqa: BLE001 — ambiguity must stay a non-verdict
+            state = "unknown"
+        if state not in {"alive", "limited", "dead", "unknown"}:
+            state = "unknown"
+        if state != "unknown":
+            with _lock:
+                doc = load(strict=True)
+                if any(k["id"] == kid for k in doc["keys"]):
+                    rec = _liveness_record(doc, kid)
+                    rec["state"] = state
+                    doc[_LIVENESS][kid] = rec
+                    save(doc)
+        results.append({"id": kid, "state": state})
+    return results
 
 
 # ------------------------------------------------------------- routing state
@@ -524,7 +647,11 @@ def _routing_order(doc: dict[str, Any], live_uuid: str) -> list[str]:
     signed in at all" decides whether `primary` is a lane; it no longer
     filters keys."""
     order: list[str] = [PRIMARY] if live_uuid else []
-    order += [str(k["id"]) for k in doc["keys"]]
+    # A confirmed dead key is neither removed nor silently retried: removal is
+    # destructive (the CLI cannot show it again), but routing a known corpse
+    # recreates the silent-primary-rebilling failure this probe exists to find.
+    order += [str(k["id"]) for k in doc["keys"]
+              if _liveness_state(doc, str(k["id"])) != "dead"]
     return order
 
 
@@ -633,9 +760,20 @@ def readout() -> dict[str, Any]:
         # public surface. `ordinal` rides along so the panel's "fallback N"
         # and the desk's serving label come from ONE count rather than two.
         # (No `duplicate` flag: that feature is retired — module docstring.)
-        "keys": [{"id": k["id"], "ordinal": i + 1,
-                  "account_uuid": str(k.get("account_uuid") or "") or None}
-                 for i, k in enumerate(doc["keys"])],
+        "keys": [{
+            "id": k["id"],
+            "ordinal": i + 1,
+            "account_uuid": str(k.get("account_uuid") or "") or None,
+            # Registration facts, explicitly not claims about the external
+            # mint. Legacy rows predate these observations and answer null.
+            "registered_at": str(k.get("registered_at") or "") or None,
+            "mint_config_dir": str(k.get("mint_config_dir") or "") or None,
+            "registered_from_config_dir": str(
+                k.get("registered_from_config_dir") or "") or None,
+            "liveness": _liveness_state(doc, str(k["id"])),
+            "liveness_checked_at": _iso(
+                _liveness_record(doc, str(k["id"])).get("checked_at")),
+        } for i, k in enumerate(doc["keys"])],
         "assignments": assignments,
     }
 
