@@ -527,10 +527,32 @@ export const deskDpi = (): number => {
     return Number.isFinite(v) && v >= 0.5 && v <= 3 ? v : 1
   } catch { return 1 }
 }
+const deskDpiSubs = new Set<() => void>()
 export const setDeskDpi = (v: number) => {
   try { localStorage.setItem(DESK_DPI_KEY, String(v)) } catch { /* private mode */ }
   document.documentElement.style.setProperty('--desk-dpi', String(v))
+  for (const fn of [...deskDpiSubs]) fn()
 }
+/* D-203: the control moved beside the already-live crowd preference, exposing
+   that text size only snapshotted its value when the panel opened. This store
+   gives both display preferences the same contract: same-tab writes notify
+   immediately, and another tab's storage event updates both React state and
+   the CSS variable before it renders. */
+const subscribeDeskDpi = (fn: () => void): (() => void) => {
+  const onStorage = (e: StorageEvent) => {
+    if (e.key != null && e.key !== DESK_DPI_KEY) return
+    document.documentElement.style.setProperty('--desk-dpi', String(deskDpi()))
+    fn()
+  }
+  deskDpiSubs.add(fn)
+  window.addEventListener('storage', onStorage)
+  return () => {
+    deskDpiSubs.delete(fn)
+    window.removeEventListener('storage', onStorage)
+  }
+}
+export const useDeskDpi = (): number =>
+  useSyncExternalStore(subscribeDeskDpi, deskDpi)
 
 /* ------------------------------------------- D-198: the crowd-pile toggle
    Collapsing a wide team's ACTIVE agents into one stack is OPT-IN (user

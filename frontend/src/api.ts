@@ -260,6 +260,14 @@ export const getHost = (): Promise<HostPayload> => req('/api/host')
 // the provider axis (FR-15 preview): per-vendor tier families + this
 // machine's CLI install/connect state — the accounts panel's section heads
 export const getProviders = (): Promise<ProvidersPayload> => req('/api/providers')
+export const setProviderEnabled = (
+  provider: string, enabled: boolean,
+): Promise<ProvidersPayload> =>
+  req(`/api/providers/${encodeURIComponent(provider)}/enabled`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled }),
+  })
 export const getUsage = (): Promise<UsagePayload> => req('/api/usage')
 // cache-only — the glow polls this; only the modal above may cost a fetch
 export const getUsagePeek = (): Promise<UsagePeek> => req('/api/usage/peek')

@@ -14,7 +14,7 @@ import {
 } from '../icons'
 import {
   ago, attentionPip, CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DOG_H, DOG_W, DRAFT, ease, edgeJumpPlacement, type EJForm, EXTERN, fallbackActive, familyOffer, flatten, GEMINI_TIER_LETTER, GEMINI_TIER_SEAT, GEMINI_TIERS, hireOf, INBOX, INBOX_H, layout, NODE_H, NODE_W, orgPxc, presenceOf, segD,
-  segPoint, sizeOf, smooth, SPRING_C, SPRING_K, TIER_LETTER, TIER_SEAT, TIERS, useCrowdPiles, USER, USER_H,
+  segPoint, sizeOf, smooth, SPRING_C, SPRING_K, TIER_LETTER, TIER_SEAT, TIERS, useCrowdPiles, usePolled, USER, USER_H,
   USER_W, withDraftTree, Z_DESK, Z_MAX, Z_MINI,
 } from './shared'
 import type {
@@ -90,27 +90,21 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
   // FR-15 M8: hire surfaces render from the provider payload — whether the
   // codex family is hireable HERE and NOW (CLI installed + signed in) or
   // still a disabled preview, with the payload's own reason as the tooltip.
-  // Non-fatal like the accounts panel's fetch: absent payload degrades to
-  // the disabled preview, never to hidden chips.
-  const [codexProvider, setCodexProvider] = useState<ProviderInfo | null>(null)
-  const [geminiProvider, setGeminiProvider] =
-    useState<ProviderInfo | null>(null)
+  // D-203: a provider switch is a machine-wide mutation. `req()` wakes the
+  // livebus after it saves, so this reader refetches immediately and the
+  // canvas behind App settings changes before the modal closes. The old
+  // fetch-once effect made a correctly persisted toggle look inert until a
+  // reload or org change.
+  const providerPayload = usePolled(getProviders, [slug], 60000)
+  const codexProvider = providerPayload?.providers.find(
+    (v) => v.id === 'openai') ?? null
+  const geminiProvider = providerPayload?.providers.find(
+    (v) => v.id === 'google') ?? null
   // D-199: Claude is read from the payload like the other two. It never was —
-  // there was no `claudeProvider` at all, and the chips rendered Claude's
-  // tiers off the bare TIERS constant — which is exactly why a machine with
-  // only Codex set up still offered four live Claude hire buttons.
-  const [claudeProvider, setClaudeProvider] =
-    useState<ProviderInfo | null>(null)
-  useEffect(() => {
-    getProviders().then((p) => {
-      const cx = p.providers.find((v) => v.id === 'openai')
-      if (cx) setCodexProvider(cx)
-      const gm = p.providers.find((v) => v.id === 'google')
-      if (gm) setGeminiProvider(gm)
-      const cl = p.providers.find((v) => v.id === 'claude')
-      if (cl) setClaudeProvider(cl)
-    }).catch(() => {})
-  }, [slug])
+  // there was no `claudeProvider` at all, which is why a machine with only
+  // Codex set up still offered four live Claude hire buttons.
+  const claudeProvider = providerPayload?.providers.find(
+    (v) => v.id === 'claude') ?? null
   // `installed` rides along because the offer rule needs to tell "absent" from
   // "signed out" — hiding is reserved for the first (see `familyOffer`).
   // D-202 moved `hireOf` into shared.ts when the accounts panel and the two
@@ -123,6 +117,11 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
   // dropdown). Same verdict the chips use — see `providerShown`.
   const presence = useMemo(() => presenceOf({
     claude: claudeProvider, openai: codexProvider, google: geminiProvider,
+  }), [claudeProvider, codexProvider, geminiProvider])
+  const userDisabled = useMemo(() => ({
+    claude: claudeProvider?.user_enabled === false,
+    openai: codexProvider?.user_enabled === false,
+    google: geminiProvider?.user_enabled === false,
   }), [claudeProvider, codexProvider, geminiProvider])
   // canonical retired-stack slot (user note 2026-08-06): display-order every
   // parent's children so archived siblings sit CONTIGUOUSLY at the first
@@ -2101,7 +2100,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
       )}
       {lineageId && map.get(lineageId) && (
         <MaybePortal><LineagePanel node={map.get(lineageId)!} op={op} slug={slug}
-          presence={presence}
+          presence={presence} userDisabled={userDisabled}
           close={() => setLineageId(null)} /></MaybePortal>
       )}
       {dogView && (tree.watchdogs ?? []).some((w) => w.id === dogView) && (
@@ -2201,6 +2200,9 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
             geminiHire={geminiHire} claudeHire={claudeHire}
             defaultGrant={!map.get(sheetId)!.parent ? (tree.default_top_grant ?? 50) : 0}
             onClose={() => setHireOpen(false)}
+            onSettings={onAccounts ? () => {
+              setHireOpen(false); onAccounts()
+            } : undefined}
             onHire={(tier, name, grant, placement) => {
               const a = map.get(sheetId)!
               const parentOf = !a.parent || a.parent === USER ? null : a.parent
@@ -2239,7 +2241,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
  *  and FR-25 splice semantics survive: below (report), left/right (coworker
  *  ordering), above (new superior — the anchor moves under the hire). */
 function HireSheet({ anchor, seats, codexHire, geminiHire, claudeHire, defaultGrant,
-  onHire,
+  onHire, onSettings,
   onClose }: {
   anchor: CanvasNode
   seats: Record<string, number>
@@ -2249,6 +2251,7 @@ function HireSheet({ anchor, seats, codexHire, geminiHire, claudeHire, defaultGr
   defaultGrant: number
   onHire: (tier: string, name: string, grant: number,
     placement: 'below' | 'left' | 'right' | 'above') => void
+  onSettings?: () => void
   onClose: () => void
 }) {
   // D-199: which families this sheet may show, by the one shared rule.
@@ -2274,6 +2277,8 @@ function HireSheet({ anchor, seats, codexHire, geminiHire, claudeHire, defaultGr
   // nobody had checked. Falls back to '' when nothing is offerable, which the
   // submit guard below already treats as not-ready.
   const firstOfferable = famRows.find((f) => f.offer === 'offer')?.tiers[0] ?? ''
+  const providersOff = [claudeHire, codexHire, geminiHire]
+    .some((h) => h?.userEnabled === false)
   const [tier, setTier] = useState(firstOfferable)
   // the payload arrives after mount, so the first offerable tier can appear a
   // beat later; adopt it only while the user has not chosen for themselves
@@ -2320,10 +2325,15 @@ function HireSheet({ anchor, seats, codexHire, geminiHire, claudeHire, defaultGr
           </Fragment>
         ))}
         {!famRows.length && (
-          <div className="field-label hs-none-row">
-            no agent harness is set up on this machine — install or sign in to
-            Claude Code, Codex or Gemini from the accounts panel
-          </div>
+          providersOff && onSettings
+            ? <button className="hs-none hs-none-row" onClick={onSettings}>
+              providers are off · App settings → Providers
+            </button>
+            : <div className="field-label hs-none-row">
+              {providersOff
+                ? 'providers are off · App settings → Providers'
+                : 'no agent harness is set up on this machine'}
+            </div>
         )}
         <div className="field-label">placement</div>
         <div className="hs-place">

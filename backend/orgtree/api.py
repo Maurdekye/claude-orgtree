@@ -39,8 +39,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, model_validator
 
 from . import ledger as ledger_mod
-from . import (accounts, codex_limits, limits, net, providers, sandbox, store,
-               subproxy, supervisor, warmpool)
+from . import (accounts, appsettings, codex_limits, limits, net, providers,
+               sandbox, store, subproxy, supervisor, warmpool)
 from .ledger import LedgerError, Org, USER, VIS_LEVELS, norm_dirs, norm_tools
 
 if TYPE_CHECKING:
@@ -2133,6 +2133,20 @@ def host_info() -> dict[str, Any]:
                        "version": sys.version.split()[0]}}
 
 
+def _providers_payload() -> dict[str, Any]:
+    """Compose one provider document for reads and preference writes."""
+    live = accounts.live_identity()
+    inst = supervisor.claude_install_state()
+    return providers.providers_payload({
+        "installed": bool(inst["installed"]),
+        "path": inst["path"],
+        "source": inst["source"],
+        "version": supervisor.cli_version() if inst["installed"] else None,
+        "connected": bool(inst["installed"] and live.get("uuid")),
+        "email": live.get("email") or None,
+    })
+
+
 @app.get("/api/providers")
 async def providers_info() -> dict[str, Any]:
     """The provider axis (FR-15 preview): each vendor's tier family and this
@@ -2143,25 +2157,31 @@ async def providers_info() -> dict[str, Any]:
     event loop the way it would stall nothing else."""
     from fastapi.concurrency import run_in_threadpool
 
-    def _payload() -> dict[str, Any]:
-        live = accounts.live_identity()
-        # D-199: `installed` was the literal `True`. It is now the same
-        # question the codex and gemini entries answer — does the CLI this
-        # machine would actually SPAWN exist — resolved by the one function
-        # that owns Claude's path (`supervisor.claude_install_state`, which
-        # mirrors the `CLAUDE` resolution order). `version` stays best-effort
-        # and is not evidence of install: `cli_version` falls back to a probe
-        # and can return a string for a CLI that is no longer there.
-        inst = supervisor.claude_install_state()
-        return providers.providers_payload({
-            "installed": bool(inst["installed"]),
-            "path": inst["path"],
-            "source": inst["source"],
-            "version": supervisor.cli_version() if inst["installed"] else None,
-            "connected": bool(inst["installed"] and live.get("uuid")),
-            "email": live.get("email") or None,
-        })
-    return await run_in_threadpool(_payload)
+    return await run_in_threadpool(_providers_payload)
+
+
+class ProviderPreference(Body):
+    enabled: bool
+
+
+@app.put("/api/providers/{provider_id}/enabled")
+async def provider_preference(
+    provider_id: str, body: ProviderPreference,
+) -> dict[str, Any]:
+    """Set one machine-wide admission choice and return fresh provider state.
+
+    There is deliberately no org slug: this choice controls future admissions
+    in every org installed under the same ORGTREE_DATA root.
+    """
+    if provider_id not in appsettings.PROVIDERS:
+        raise HTTPException(404, f"unknown provider {provider_id!r}")
+    from fastapi.concurrency import run_in_threadpool
+    try:
+        await run_in_threadpool(
+            appsettings.set_provider_enabled, provider_id, body.enabled)
+    except (appsettings.AppSettingsUnreadable, OSError) as e:
+        raise HTTPException(500, str(e)) from e
+    return await run_in_threadpool(_providers_payload)
 
 
 class Reorder(Body):
@@ -4154,6 +4174,15 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                     org, str(a.get("node") or ""),
                     old_sid=cast(str, result.get("old_session")))
             elif body.tool == "orgtree_rehire":
+                # D-203: plain agent rehire is an admission on the archived
+                # node's stored provider. Check the durable user choice, but
+                # deliberately not transient sign-in/install state (D-197
+                # keeps recovery possible while a provider is signed out).
+                _rehire_node = a.get("node")
+                _rehire_tier = str(
+                    org.node(_rehire_node).get("tier") or "")  # type: ignore[arg-type]
+                provider_hire_gate(
+                    org, _rehire_tier, user_choice_only=True)
                 # `grant` now goes through _arg_int like every other int
                 # argument. It was the ONE that did not, so {"grant": "abc"}
                 # reached `int(grant)` in the ledger and 500ed (mcptool suite,
@@ -5318,14 +5347,29 @@ class Op(Body):
     raise_ceiling: bool = False
 
 
-def provider_hire_gate(org: Org, tier: str | None) -> None:
+def provider_hire_gate(
+    org: Org, tier: str | None, *, user_choice_only: bool = False,
+) -> None:
     """FR-15 M4, the vision made checkable: a tier is hireable exactly while
     its provider's CLI is CONNECTED on this machine. Raises LedgerError (the
     ops/agent layers both turn that into a clean 422) NAMING the provider and
     the next step, in the order the user would take them.
 
-    One gate for all FIVE doors (user hire, agent hire, user switch, agent
-    switch, and — D-197 — a user rehire that OVERRIDES the tier).
+    One gate for every provider-admission entry point, named so completeness
+    is checkable instead of hidden behind a count:
+
+      · user hire (`/api/orgs/{slug}/ops`),
+      · agent hire (`orgtree_hire`),
+      · user model switch (`switch_model` op),
+      · agent model switch (`orgtree_switch_model`),
+      · user rehire WITH a tier override,
+      · user plain rehire on the archived node's stored tier, and
+      · agent plain rehire (`orgtree_rehire`) on its stored tier.
+
+    The two PLAIN rehire paths pass ``user_choice_only=True``. D-197 requires
+    recovery to remain possible when an installed provider is merely signed
+    out, so those paths skip transient install/connect checks. D-203 adds only
+    the user's durable machine-wide admission choice to that recovery door.
 
     ⚠ CLAUDE IS GATED TOO SINCE D-199, and the note that used to sit here said
     the opposite: "Claude is ungated — its absence already fails loudly at
@@ -5338,13 +5382,10 @@ def provider_hire_gate(org: Org, tier: str | None) -> None:
     this machine would actually spawn, plus a signed-in account, re-probed
     behind a 60s cache and never a network call.
 
-    ⚠ THE COUNT IN THIS SENTENCE IS LOAD-BEARING, so update it when you add a
-    door. It said "four" while rehire-with-a-tier went ungated, and that gap
-    was invisible precisely because the docstring asserted completeness — the
-    same shape as D-180 and D-182, a rule written down in one place and not
-    applied at every site it claims to cover. The agent-side `orgtree_rehire`
-    is NOT a fifth door: its schema has no `tier`, so an agent cannot move a
-    node across the axis by rehiring it. If you ever add one, gate it here.
+    This list replaces the old load-bearing count. That count said "four"
+    while rehire-with-a-tier was ungated, then said "five" while both plain
+    rehire paths remained open. A named list makes the next missing call site
+    visible without trusting arithmetic prose.
 
     Two provider-specific rulings ride along (user, 2026-08-28):
       · kiosks hold codex out until its sandbox story is settled;
@@ -5353,6 +5394,18 @@ def provider_hire_gate(org: Org, tier: str | None) -> None:
         present to answer for it.
     """
     if not tier:
+        return
+    provider_id = (
+        "google" if tier in providers.GEMINI_TIERS
+        else "openai" if tier in providers.CODEX_TIERS
+        else "claude" if tier in providers.CLAUDE_TIERS
+        else None)
+    if provider_id and not appsettings.provider_enabled(provider_id):
+        label = providers.PROVIDER_LABEL[provider_id]
+        raise LedgerError(
+            f"tier '{tier}' is a {label} tier and {label} is turned off "
+            "in App settings → Providers")
+    if user_choice_only:
         return
     if tier in providers.GEMINI_TIERS:
         gst = providers.gemini_status()
@@ -5543,6 +5596,11 @@ def _org_op_locked(slug: str, body: Op, allow_raise: bool = False) -> dict[str, 
             # agent nobody can retire or read.
             if body.tier is not None:
                 provider_hire_gate(org, body.tier)
+            else:
+                stored_tier = str(
+                    org.node(body.node).get("tier") or "")  # type: ignore[arg-type]
+                provider_hire_gate(
+                    org, stored_tier, user_choice_only=True)
             result = org.rehire(body.actor, body.node, body.grant, tier=body.tier,  # type: ignore[arg-type]
                                 raise_ceiling=rc)
         elif body.op == "dissolve":

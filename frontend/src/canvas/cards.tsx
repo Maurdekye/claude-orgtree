@@ -520,6 +520,8 @@ function SpawnChips({ onSpawn, free, seats, maxTier, side, soleHire,
   fam('gemini', GEMINI_TIERS, GEMINI_TIER_LETTER, 'Gemini', geminiHire,
       (t) => seats[t] ?? GEMINI_TIER_SEAT[t] ?? 0, !!maxTier)
   fams.sort((a, b) => b.tiers.length - a.tiers.length)   // inward-first
+  const providersOff = [claudeHire, codexHire, geminiHire]
+    .some((h) => h?.userEnabled === false)
   // D-199, the state a brand-new user on a fresh machine hits FIRST: no
   // provider is installed, so every family hid and the strip would render
   // empty. An empty hover strip is indistinguishable from a broken one, so
@@ -534,10 +536,12 @@ function SpawnChips({ onSpawn, free, seats, maxTier, side, soleHire,
       body: (
         <button className="hs-none" disabled={!onNoHarness}
           onClick={(e) => { e.stopPropagation(); onNoHarness?.() }}
-          title={'no agent harness found on this machine — install or sign '
-            + 'in to Claude Code, Codex or Gemini'
-            + (onNoHarness ? ' (opens the accounts panel)' : '')}>
-          no harness
+          title={(providersOff
+            ? 'agent providers are off in App settings → Providers'
+            : 'no agent harness found on this machine — install or sign in '
+              + 'to Claude Code, Codex or Gemini')
+            + (onNoHarness ? ' (opens App settings)' : '')}>
+          {providersOff ? 'providers off' : 'no harness'}
         </button>
       ),
     })
