@@ -4004,6 +4004,37 @@ def _hold_for_deploy(slug: str, nid: str) -> None:
           f"(held {time.monotonic() - t0:.1f}s) — starting the turn")
 
 
+def _retire_breadcrumb_splice(slug: str, nid: str) -> None:
+    """S1 (D-201, coordinator-ruled 2026-08-30): the breadcrumbs splice
+    serves the compaction successor's FIRST turn — after that the content is
+    in the conversation history, and re-splicing a file the agent appends to
+    every turn re-dirties the prompt per turn. Measured stake: the
+    difference between ~24% and ~61% of today's cold starts prevented.
+
+    ⚠ CALLED AT THE FIRST SUCCESSFUL RESULT BOUNDARY, BEFORE THE BOUNDARY
+    QUEUE-FEED DECISION — deliberately not only in `_after_turn`. Retiring
+    it there alone is too late in exactly the case a warm process makes
+    routine: a second message queued at msg1's boundary would be fed into
+    the same process, still under the breadcrumb prompt. Landing the
+    retirement durably first means `boundary_check` re-hashes off disk,
+    sees the splice gone, declines the in-process feed, and msg2 runs as
+    its own fresh turn on the breadcrumb-free prompt
+    (process-cache-2's probe, coordinator-ruled).
+
+    Idempotent; also called from `_after_turn` as the belt for the provider
+    lanes, whose turns never pass the claude boundary. A FAILED first turn
+    reaches neither call site, so the marker survives it and the
+    successor's next attempt still gets the splice."""
+    try:
+        with store.DOC_LOCK:
+            o = store.load_org(slug)
+            if nid in o.nodes and o.node(nid).get("cheap_compacted"):
+                o.node(nid).pop("cheap_compacted", None)
+                store.save_org(o)
+    except Exception:                                        # noqa: BLE001
+        pass
+
+
 def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
     """Run a turn, then keep running whatever the queue has, until it is empty.
 
@@ -5403,6 +5434,11 @@ def _run_one_turn(slug: str, nid: str,
             # flag, arm unknown). Re-reading anywhere later in this turn
             # could label a row with an arm it was not served under.
             warm_on, warm_lbl = warmpool.warm_decision()
+            # S1: does this turn begin as a cheap-compaction successor whose
+            # prompt carries the breadcrumbs splice? Captured here so the
+            # boundary below only pays the retirement write for the one turn
+            # that actually owes it.
+            turn_began_cc = bool(org.node(nid).get("cheap_compacted"))
             _elig_ok, _elig_why = warmpool.eligible(org, nid)
             if _elig_ok and warm_on:
                 try:
@@ -5514,6 +5550,11 @@ def _run_one_turn(slug: str, nid: str,
 
             def _expire() -> None:
                 timed_out.set()
+                if wp_turn is not None:
+                    # the watchdog killing an ACTIVE turn is today's turn
+                    # machinery, not a pool decision — but it still ends a
+                    # warm-origin process, and every such end is classified
+                    wp_turn.exit_reason = wp_turn.exit_reason or "turn-timeout"
                 proc.kill()
                 if sandbox_name:
                     # killing the docker-exec client leaves the in-container
@@ -6070,10 +6111,27 @@ def _run_one_turn(slug: str, nid: str,
                         # boundary-feed admit row — never re-read between.
                         # Ineligible turns skip the check: today's feed,
                         # byte-identical.
+                        # S1: the successor's first SUCCESSFUL boundary
+                        # retires the splice marker — durably, and BEFORE
+                        # boundary_check re-hashes, so a queued msg2 is
+                        # declined off this process and never rides the
+                        # breadcrumb prompt (see _retire_breadcrumb_splice).
+                        # A limit-hit boundary is not a served first turn.
+                        if turn_began_cc and not limited \
+                                and not ev.get("is_error"):
+                            _retire_breadcrumb_splice(slug, nid)
+                            turn_began_cc = False
                         proc_current, bnd_lbl = True, warm_lbl
                         if turn_hash is not None:
-                            proc_current, bnd_lbl = warmpool.boundary_check(
-                                slug, nid, turn_hash)
+                            proc_current, bnd_lbl, _bnd_why = \
+                                warmpool.boundary_check(slug, nid, turn_hash)
+                            if not proc_current and wp_turn is not None:
+                                # note WHY on the process now — its exit row
+                                # (written once, at EOF) must be classified,
+                                # or a serving death is invisible to the
+                                # closed-death-list telemetry
+                                wp_turn.exit_reason = _bnd_why or \
+                                    "identity-changed"
                         # queued texts are RAW (mail stays in the doc until
                         # delivery — restart durability): envelope now, and
                         # track it as the in-flight turn.
@@ -6201,6 +6259,17 @@ def _run_one_turn(slug: str, nid: str,
                                         .get("output_tokens") or 0)):
                                 parked = True
                                 break
+                        if wp_turn is not None and not parked \
+                                and wp_turn.exit_reason is None:
+                            # every non-park end of a warm-origin process
+                            # names itself, in precedence order, so the EOF
+                            # journal writes a classified row instead of a
+                            # generic crash
+                            wp_turn.exit_reason = (
+                                "limit-frozen" if limited else
+                                "background-children" if _bg_count() else
+                                "disabled" if not warmpool.warm_enabled()
+                                else "stdin-closed")
                         try:
                             proc.stdin.close()   # pyright: ignore[reportOptionalMemberAccess]
                         except (OSError, ValueError):
@@ -7786,6 +7855,11 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
             # was waiting for — whatever this turn measured or failed to
             # measure, the successor's session is no longer only a summary
             n.pop("compacted_unrun", None)
+            # S1 belt: the provider lanes (codex/gemini) book their turns
+            # here without ever passing the claude boundary above — a
+            # completed turn retires the breadcrumbs splice on every lane.
+            # Idempotent: the claude boundary usually cleared it already.
+            n.pop("cheap_compacted", None)
             if cost:
                 n["cost_usd"] = round(float(n.get("cost_usd") or 0.0) + cost, 6)
                 if on_key:

@@ -75,7 +75,11 @@ with open(CFG, "w", encoding="utf-8") as f:
                "slowboy": {"echoMs": 40, "firstEventMs": 60,
                            "resultMs": 2500},
                "crashboy": {"echoMs": 40, "firstEventMs": 60,
-                            "resultMs": 1200, "crashAtMs": 400}}, f)
+                            "resultMs": 1200, "crashAtMs": 400},
+               "ccslow": {"echoMs": 40, "firstEventMs": 60,
+                          "resultMs": 2500},
+               "ccfail": {"echoMs": 40, "firstEventMs": 60,
+                          "resultMs": 1200, "crashAtMs": 400}}, f)
 
 from orgtree import store, supervisor as S, warmpool as W   # noqa: E402
 from orgtree.ledger import USER                             # noqa: E402
@@ -218,7 +222,7 @@ check("A3 · a process dead before the claim EOFs the iterator at once",
 # ── rig org for B/C/D ──────────────────────────────────────────────────────
 org = store.create_org("d201 warm rig")
 SLUG = org.d["slug"]
-for name in ("fastboy", "slowboy", "crashboy"):
+for name in ("fastboy", "slowboy", "crashboy", "ccboy", "ccslow", "ccfail"):
     org.hire(USER, None, "haiku", 5, name, add_dirs=[],
              tools={"bash": True, "web": False, "edit": False,
                     "subagents": False, "mcp": []},
@@ -249,6 +253,26 @@ def admit_lines():
 def pooled(nid=NID):
     with W._pool_lock:
         return W._pool.get((SLUG, nid))
+
+
+def exit_rows(nid):
+    """Every classified proc/exit row for `nid` — the observation the
+    closed-death-list invariant is asserted on. COUNT matters as much as
+    class: zero rows means an exit nobody saw, and a vocabulary tripwire
+    cannot fire on a row that does not exist (coordinator ruling after the
+    serving-exit hole)."""
+    p = os.path.join(RIG, "journals", "warm.jsonl")
+    out = []
+    if os.path.exists(p):
+        for ln in open(p, encoding="utf-8"):
+            try:
+                r = json.loads(ln)
+            except ValueError:
+                continue
+            if r.get("kind") == "proc" and r.get("event") == "exit" \
+                    and r.get("nid") == nid:
+                out.append((r.get("reason"), r.get("reason_class")))
+    return out
 
 
 # ── B. identity hash ───────────────────────────────────────────────────────
@@ -389,6 +413,7 @@ def _two_messages(nid, dirty_mid_turn=False, flag_off_mid_turn=False):
 
 
 def d_boundary_feed_control_arm():
+    n0 = len(exit_rows("slowboy"))
     adm = _two_messages("slowboy")
     assert len(adm) == 2, (
         f"control arm: msg1 admission + msg2 boundary-feed row expected, "
@@ -396,9 +421,12 @@ def d_boundary_feed_control_arm():
     assert adm[0]["reason"] == "warm-hit"
     assert (adm[1]["served"], adm[1]["reason"]) == ("warm", "boundary-feed"), (
         f"in-process boundary feed must be journaled as such: {adm[1]}")
+    assert len(exit_rows("slowboy")) == n0, (
+        "a clean park must produce ZERO exit rows")
 
 
 def d_boundary_feed_declines_dirtied_process():
+    n0 = len(exit_rows("slowboy"))
     adm = _two_messages("slowboy", dirty_mid_turn=True)
     assert len(adm) == 2, f"expected two admissions, got {len(adm)}: {adm}"
     assert adm[1]["reason"] != "boundary-feed", (
@@ -407,9 +435,15 @@ def d_boundary_feed_declines_dirtied_process():
     assert adm[1]["served"] == "cold", (
         f"the fresh turn after a mid-turn dirty must not reuse the stale "
         f"process: {adm[1]}")
+    rows = exit_rows("slowboy")[n0:]
+    assert rows == [("identity-changed", "prompt-change")], (
+        f"a SERVING process replaced after a mid-turn dirty must leave "
+        f"EXACTLY ONE classified exit row — zero rows was the invisible-"
+        f"death hole, more than one is double-journaling: {rows}")
 
 
 def d_flag_off_mid_turn_stops_the_boundary_feed():
+    n0 = len(exit_rows("slowboy"))
     adm = _two_messages("slowboy", flag_off_mid_turn=True)
     os.remove(FLAG)
     time.sleep(W._FLAG_TTL + 0.3)
@@ -420,6 +454,10 @@ def d_flag_off_mid_turn_stops_the_boundary_feed():
         f"kill switch flipped OFF mid-turn must stop the very next queued "
         f"message from riding the warm process (clean A/B off-arm, working "
         f"back-out lever): {adm[1]}")
+    rows = exit_rows("slowboy")[n0:]
+    assert len(rows) == 1 and rows[0][1] == "kill-switch", (
+        f"the switch-off serving exit must leave exactly one kill-switch "
+        f"row: {rows}")
 
 
 check("D1 · boot pre-warm parks a process, spends nothing",
@@ -533,24 +571,27 @@ def e_closed_death_list_table():
             store.save_org(o)
 
     rows = [
-        ("no-op rename", lambda: S.rename_node(SLUG, nid, nid, USER), False),
-        ("credit reallocation (org-state only)", op_realloc, False),
-        ("org_visibility team→subtree (org-state only)", op_visibility, False),
-        ("same-value model write (no-op)", op_same_model, False),
-        ("charter edit (identity)", op_charter, True),
+        ("no-op rename", lambda: S.rename_node(SLUG, nid, nid, USER),
+         False, None),
+        ("credit reallocation (org-state only)", op_realloc, False, None),
+        ("org_visibility team→subtree (org-state only)", op_visibility,
+         False, None),
+        ("same-value model write (no-op)", op_same_model, False, None),
+        ("charter edit (identity)", op_charter, True, "prompt-change"),
         # a USER-audience grant on a TOP-LEVEL agent is genuinely inert for
         # the prompt (_claudemd_caveat returns "" when parent is None) — the
         # first run of this table expected death here and the harness
         # correctly refused, which is the harness working. The
         # identity-moving audience case is the CHILD row below.
         ("USER audience grant on a top-level seat (inert)", op_audience,
-         False),
+         False, None),
     ]
-    for label, op, expect_died in rows:
+    for label, op, expect_died, expect_class in rows:
         W.keeper_pass_now()
         wait_for(lambda: W.is_warm(SLUG, nid), why=f"warm before {label}")
         wp0 = pooled(nid)
         pid0 = wp0.proc.pid
+        n0 = len(exit_rows(nid))
         op()
         W.keeper_pass_now()          # the save-hook poke, made synchronous
         cur = pooled(nid)
@@ -559,6 +600,20 @@ def e_closed_death_list_table():
             f"{label}: process {'died' if died else 'survived'}, expected "
             f"{'death' if expect_died else 'survival'} — a warm process ends "
             f"ONLY on retirement, a prompt change, or shutdown")
+        # ROW COUNT, not only content (coordinator ruling after the
+        # serving-exit hole): a survival must observe ZERO exit rows, a
+        # death EXACTLY ONE with the expected class — zero rows on a death
+        # is an exit nobody saw, and the UNLISTED tripwire cannot fire on a
+        # row that does not exist
+        rows_now = exit_rows(nid)[n0:]
+        if expect_died:
+            assert len(rows_now) == 1 and rows_now[0][1] == expect_class, (
+                f"{label}: expected exactly one {expect_class} exit row, "
+                f"got {rows_now}")
+        else:
+            assert not rows_now, (
+                f"{label}: a surviving process must leave no exit rows, "
+                f"got {rows_now}")
     # a CHILD seat: the same audience grant IS an identity change one level
     # down (the CLAUDE.md-caveat paragraph flips to "you hold a USER
     # AUDIENCE"), so the process must die there
@@ -572,6 +627,7 @@ def e_closed_death_list_table():
     W.keeper_pass_now()
     wait_for(lambda: W.is_warm(SLUG, "childboy"), why="warm the child seat")
     wp0 = pooled("childboy")
+    n0 = len(exit_rows("childboy"))
     with store.DOC_LOCK:
         o = reload_org()
         o.d["audiences"].append({"grantee": "childboy", "grantor": USER,
@@ -584,6 +640,8 @@ def e_closed_death_list_table():
         or cur.proc.pid != wp0.proc.pid, (
         "USER audience grant on a CHILD seat is an identity change and must "
         "respawn its process")
+    rows_now = exit_rows("childboy")[n0:]
+    assert len(rows_now) == 1 and rows_now[0][1] == "prompt-change", rows_now
     # retirement, on a disposable seat so the suite keeps its fixtures
     with store.DOC_LOCK:
         o = reload_org()
@@ -595,6 +653,7 @@ def e_closed_death_list_table():
     W.keeper_pass_now()
     wait_for(lambda: W.is_warm(SLUG, "mortal"), why="warm the mortal seat")
     wp0 = pooled("mortal")
+    n0 = len(exit_rows("mortal"))
     with store.DOC_LOCK:
         o = reload_org()
         o.retire(USER, "mortal")
@@ -602,6 +661,8 @@ def e_closed_death_list_table():
     W.keeper_pass_now()
     wait_for(lambda: not wp0.alive(), why="retirement teardown")
     assert pooled("mortal") is None
+    rows_now = exit_rows("mortal")[n0:]
+    assert len(rows_now) == 1 and rows_now[0][1] == "retirement", rows_now
 
 
 def e_failed_spawn_leaves_no_child():
@@ -681,6 +742,7 @@ def f_death_between_claim_and_write_falls_back_cold():
 
     W.claim = killing_claim
     n_before = len(admit_lines())
+    n_rows0 = len(exit_rows(NID))
     try:
         S._run_turn(SLUG, NID, marker)
     finally:
@@ -697,6 +759,10 @@ def f_death_between_claim_and_write_falls_back_cold():
     assert transcript_hits(NID, marker) == 1, (
         f"the retried message must reach a process EXACTLY once, got "
         f"{transcript_hits(NID, marker)}")
+    rows = exit_rows(NID)[n_rows0:]
+    assert len(rows) == 1 and rows[0][1] == "observed-death", (
+        f"the claim-death teardown must leave exactly one observed-death "
+        f"row (discard journals it; EOF must not double it): {rows}")
 
 
 def f_death_after_consumption_is_never_retried_by_the_fallback():
@@ -726,6 +792,89 @@ check("F1 · death between claim and write → exactly-once cold fallback",
       f_death_between_claim_and_write_falls_back_cold)
 check("F2 · death after consumption never triggers the write fallback",
       f_death_after_consumption_is_never_retried_by_the_fallback)
+
+
+# ── G. S1: the breadcrumbs splice serves the FIRST turn only ───────────────
+def _arm_cc(nid, sentinel):
+    with open(os.path.join(S.scratch_dir(SLUG, nid), "breadcrumbs.md"),
+              "w", encoding="utf-8") as f:
+        f.write(f"predecessor log line\n{sentinel}\n")
+    with store.DOC_LOCK:
+        o = reload_org()
+        o.node(nid)["cheap_compacted"] = True
+        store.save_org(o)
+
+
+def g_splice_first_turn_only():
+    """The two-turn witness (coordinator requirement 1): the successor's
+    FIRST prompt carries the predecessor's breadcrumbs; after one SUCCESSFUL
+    turn the marker is retired durably and the SECOND prompt does not.
+    Asserting both halves in one run — a test that only checked the second
+    half would also pass if the splice never happened at all."""
+    sent = f"G1-SENTINEL-{int(time.time() * 1000)}"
+    _arm_cc("ccboy", sent)
+    first = S.identity_prompt(reload_org(), "ccboy")
+    assert sent in first, "first prompt must carry the predecessor's log"
+    S._run_turn(SLUG, "ccboy", "first successor turn")
+    assert S.state(SLUG, "ccboy")["last_error"] is None
+    o = reload_org()
+    assert not o.node("ccboy").get("cheap_compacted"), (
+        "the marker must be retired DURABLY by the first successful turn — "
+        "it survived, so every later prompt still re-splices a file the "
+        "agent appends to every turn (~24% vs ~61% of cold starts)")
+    second = S.identity_prompt(o, "ccboy")
+    assert sent not in second, "second prompt must NOT carry breadcrumbs"
+
+
+def g_boundary_fed_second_message_not_under_breadcrumbs():
+    """process-cache-2's seam: retiring the marker only in _after_turn is
+    TOO LATE when a second message is queued at msg1's result boundary —
+    it would feed into the same process, still under the breadcrumb
+    prompt. Required: retirement lands durably BEFORE the boundary feed
+    decision, so the hash mismatch declines the feed and msg2 runs as its
+    own fresh turn on the breadcrumb-free prompt."""
+    sent = f"G2-SENTINEL-{int(time.time() * 1000)}"
+    _arm_cc("ccslow", sent)
+    n_before = len([a for a in admit_lines() if a["nid"] == "ccslow"])
+    r = S.send_message(SLUG, "ccslow", "slow first successor turn")
+    assert r["accepted"]
+    st = S.state(SLUG, "ccslow")
+    wait_for(lambda: st["busy"], why="cc turn one starts")
+    time.sleep(0.4)                      # inside msg1's 2.5 s result window
+    S.send_message(SLUG, "ccslow", "queued second message")
+    wait_for(lambda: not st["busy"] and not st["queue"], secs=30,
+             why="both cc messages done")
+    adm = [a for a in admit_lines() if a["nid"] == "ccslow"][n_before:]
+    assert len(adm) == 2, f"expected two admissions, got {adm}"
+    assert adm[1]["reason"] != "boundary-feed", (
+        "msg2 was boundary-fed into the process still holding the "
+        "breadcrumb prompt — the marker retirement came too late")
+    o = reload_org()
+    assert not o.node("ccslow").get("cheap_compacted")
+    assert sent not in S.identity_prompt(o, "ccslow")
+
+
+def g_failed_first_turn_retains_the_splice():
+    """Coordinator requirement 3, inverted: a FAILED first turn never
+    reaches a success boundary, so the marker survives and the successor's
+    next attempt still arrives knowing what its predecessor knew."""
+    sent = f"G3-SENTINEL-{int(time.time() * 1000)}"
+    _arm_cc("ccfail", sent)
+    S._run_turn(SLUG, "ccfail", "doomed first successor turn")
+    assert S.state(SLUG, "ccfail")["last_error"] is not None, \
+        "ccfail's turn was supposed to crash mid-flight"
+    o = reload_org()
+    assert o.node("ccfail").get("cheap_compacted"), (
+        "a failed first turn must RETAIN the splice marker")
+    assert sent in S.identity_prompt(o, "ccfail")
+
+
+check("G1 · breadcrumbs splice: first prompt yes, second prompt no",
+      g_splice_first_turn_only)
+check("G2 · boundary-fed msg2 never rides the breadcrumb prompt",
+      g_boundary_fed_second_message_not_under_breadcrumbs)
+check("G3 · a failed first turn retains the splice",
+      g_failed_first_turn_retains_the_splice)
 
 
 # ── C. kill switch ─────────────────────────────────────────────────────────

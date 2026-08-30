@@ -202,6 +202,15 @@ class WarmProc:
         # …and the same baseline for the result event's cumulative
         # usage.output_tokens (rides the per-turn stats ring)
         self.out_base = 0
+        # WHY this process is ending, noted by the turn AT THE DECISION
+        # (boundary decline, bg-children drain, limit freeze, timeout kill)
+        # and journaled exactly once at true EOF — a serving process that
+        # ended without parking used to leave ZERO exit rows, so E3's table
+        # could be green while a primary serving death was invisible
+        # (process-cache-2's serving-exit probe). `exit_journaled` is the
+        # once-guard shared by every journaling path.
+        self.exit_reason: str | None = None
+        self.exit_journaled = False
         self.lines: "queue.Queue[str | None]" = queue.Queue()
         self.init_line: str | None = None   # latest system/init seen inactive
         self.dropped_inactive = 0           # probe counter (process-cache-2)
@@ -431,22 +440,31 @@ def eligible(org: Any, nid: str) -> tuple[bool, str]:
 
 
 def boundary_check(slug: str, nid: str,
-                   want_hash: str | None) -> tuple[bool, bool | None]:
+                   want_hash: str | None) -> tuple[bool, bool | None, str]:
     """The result-boundary decision, with ONE flag read shared between the
     behaviour and the label → (may this process keep serving, the label for
-    any admit row this boundary writes). False whenever the switch is off,
-    the node is excluded, eligibility lapsed, or the identity hash moved —
-    a queued message is 'the next turn' and never rides any of those."""
+    any admit row this boundary writes, WHY when it may not — the exit
+    reason the turn notes on the process so its death row is classified).
+    False whenever the switch is off, the node is excluded, eligibility
+    lapsed, or the identity hash moved — a queued message is 'the next
+    turn' and never rides any of those."""
     on, label = warm_decision()
-    if not on or want_hash is None or node_excluded(slug, nid):
-        return False, label
+    if not on:
+        return False, label, "disabled"
+    if want_hash is None:
+        return False, label, "stdin-closed"
+    if node_excluded(slug, nid):
+        return False, label, "excluded-by-flag"
     try:
         org = store.load_org(slug)
-        if not eligible(org, nid)[0]:
-            return False, label
-        return ident_hash(org, nid) == want_hash, label
+        ok, why = eligible(org, nid)
+        if not ok:
+            return False, label, why or "not-eligible"
+        if ident_hash(org, nid) == want_hash:
+            return True, label, ""
+        return False, label, "identity-changed"
     except Exception:                               # noqa: BLE001
-        return False, label
+        return False, label, "stdin-closed"
 
 
 def current_hash(slug: str, nid: str) -> str | None:
@@ -528,8 +546,29 @@ KILL_REASON_CLASS = {
     "excluded-by-flag": "kill-switch",   # back-out lever, sanctioned
     "superseded": "duplicate-resolution",  # the seat KEEPS a warm process
     "crash": "observed-death",           # the process died; we only noticed
+    "not-eligible": "prompt-change",     # eligibility lapse = scope change
+    # a SERVING process that could not park and drained to exit — today's
+    # turn machinery ending a process the old way, journaled so the death
+    # is visible, distinct from the pool's own deliberate kills:
+    "turn-timeout": "turn-machinery",    # the idle/budget watchdog killed it
+    "limit-frozen": "turn-machinery",    # usage limit froze the seat
+    "background-children": "turn-machinery",  # lives on till bg agents land
+    "stdin-closed": "turn-machinery",    # generic non-park drain-to-exit
     "suite-teardown": "test",
 }
+
+
+def _journal_exit_once(wp: WarmProc, reason: str | None = None) -> None:
+    """EXACTLY ONE classified exit row per warm-origin process, whoever gets
+    there first — the deliberate-kill paths write it at the kill, the pump's
+    EOF writes it for every non-park end the turn only annotated (or for a
+    true crash nobody annotated, the observed-death fallback)."""
+    with wp._lk:
+        if wp.exit_journaled:
+            return
+        wp.exit_journaled = True
+        r = reason or wp.exit_reason or "crash"
+    _journal_proc("exit", wp.slug, wp.nid, r, wp.hash)
 
 
 def _classify_kill(slug: str, nid: str, reason: str) -> str:
@@ -561,14 +600,25 @@ def _on_proc_exit(wp: WarmProc) -> None:
     Drop it from whichever registry holds it. A parked death journals here;
     a SERVING death only leaves the registry — its turn owns the aftermath
     and the story (park refusal, error path, its own journal lines)."""
+    was_tracked = False
     with _pool_lock:
         if _serving.get((wp.slug, wp.nid)) is wp:
             del _serving[(wp.slug, wp.nid)]
+            was_tracked = True
         cur = _pool.get((wp.slug, wp.nid))
         if cur is wp and not wp.claimed:
             del _pool[(wp.slug, wp.nid)]
+            was_tracked = True
             _set_proc_warm(wp.slug, wp.nid, False)
-            _journal_proc("exit", wp.slug, wp.nid, "crash", wp.hash)
+    # EOF is the one observation point EVERY warm-origin process passes —
+    # the journal-once guard makes this the backstop, not a duplicate: a
+    # deliberate kill already wrote its row and this no-ops; a serving
+    # process that drained to exit carries the reason its turn noted; a
+    # true crash falls back to observed-death. (A process that already
+    # left both registries — claimed out and discarded — journaled at the
+    # discard; the guard covers it too.)
+    if was_tracked or wp.claimed:
+        _journal_exit_once(wp)
 
 
 def _spawn_for(org: Any, nid: str, why: str) -> WarmProc | None:
@@ -635,7 +685,7 @@ def kill_node(slug: str, nid: str, reason: str) -> None:
         del _pool[(slug, nid)]
     _kill_proc(wp)
     _set_proc_warm(slug, nid, False)
-    _journal_proc("exit", slug, nid, reason, wp.hash)
+    _journal_exit_once(wp, reason)
 
 
 def kill_org(slug: str, reason: str) -> None:
@@ -676,8 +726,7 @@ def claim(slug: str, nid: str, want_hash: str) -> tuple[WarmProc | None, str]:
     # (outside the lock) the mismatched/dead one dies now
     _kill_proc(wp)
     _set_proc_warm(slug, nid, False)
-    _journal_proc("exit", slug, nid,
-                  "identity-changed" if was_alive else "crash", wp.hash)
+    _journal_exit_once(wp, "identity-changed" if was_alive else "crash")
     return None, ("identity-changed" if was_alive else "crashed")
 
 
@@ -707,7 +756,7 @@ def park_back(wp: WarmProc, cost_base: float, out_base: int = 0) -> bool:
         wp.out_base = max(wp.out_base, out_base)
     if other is not None:
         _kill_proc(other)
-        _journal_proc("exit", wp.slug, wp.nid, "superseded", other.hash)
+        _journal_exit_once(other, "superseded")
     _set_proc_warm(wp.slug, wp.nid, True)
     _journal_proc("park", wp.slug, wp.nid, "turn-end", wp.hash)
     return True
@@ -723,7 +772,7 @@ def discard(wp: WarmProc, reason: str) -> None:
             del _serving[(wp.slug, wp.nid)]
     _kill_proc(wp)
     _set_proc_warm(wp.slug, wp.nid, False)
-    _journal_proc("exit", wp.slug, wp.nid, reason, wp.hash)
+    _journal_exit_once(wp, reason)
 
 
 def poke() -> None:
@@ -829,7 +878,7 @@ def _keeper_pass() -> None:
                     # through the winner. Journaled like every other exit;
                     # an unjournaled kill is an exit with no tripwire on it.
                     _kill_proc(nwp)
-                    _journal_proc("exit", slug, nid, "superseded", nwp.hash)
+                    _journal_exit_once(nwp, "superseded")
                     nwp = None
             if nwp is not None:
                 _set_proc_warm(slug, nid, True)
