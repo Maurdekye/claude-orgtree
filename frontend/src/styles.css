@@ -238,7 +238,7 @@ main {
   border-color: color-mix(
     in srgb, var(--provider-accent) 30%, var(--line));
 }
-.sq.norm::before {
+.sq.norm.proc-warm::before {
   content: '';
   position: absolute; inset: -1px;
   border-radius: inherit;
@@ -246,7 +246,7 @@ main {
     in srgb, var(--provider-accent) 16%, transparent);
   pointer-events: none;
 }
-.sq.norm.busy::before {
+.sq.norm.proc-warm.busy::before {
   box-shadow: 0 0 9px color-mix(
     in srgb, var(--provider-accent) 28%, transparent);
 }
@@ -389,6 +389,14 @@ button.badge.audience-fold.alert {
      (but very small) corner without eating the composer (user ruling) */
   border-radius: 2px; border-top-width: 2px;
 }
+/* D-201 — the soft provider halo says a process is already parked and ready,
+   not that the agent is healthy or working. Cold is ordinary, so it simply
+   omits the halo instead of adding an error colour or a boot animation. */
+.sq.desk.proc-warm {
+  box-shadow: 0 8px 40px rgba(0, 0, 0, .55),
+    0 0 0 1px color-mix(in srgb, var(--accent) 25%, transparent),
+    0 0 20px color-mix(in srgb, var(--provider-accent) 20%, transparent);
+}
 /* ---- mini LOD: the card IS the label. The head keeps only the tier chip and
    status dots; the name fills the body large and wrapping (ellipsised 11px names
    were unreadable at overview zoom, over an otherwise-empty square). */
@@ -445,6 +453,11 @@ button.badge.audience-fold.alert {
   box-shadow: 0 8px 40px rgba(0, 0, 0, .55),
     0 0 0 1px color-mix(in srgb, var(--prov-openai) 25%, transparent);
 }
+.sq.prov-openai.desk.proc-warm {
+  box-shadow: 0 8px 40px rgba(0, 0, 0, .55),
+    0 0 0 1px color-mix(in srgb, var(--prov-openai) 25%, transparent),
+    0 0 20px color-mix(in srgb, var(--prov-openai) 20%, transparent);
+}
 /* A provider theme is inherited chrome, not a list of individual teal
    exceptions. Every desk control below this card already speaks in the shared
    accent variables (composer focus, send/effort controls, working labels,
@@ -453,7 +466,7 @@ button.badge.audience-fold.alert {
    controls honest automatically. Model-tier identity remains a separate
    channel: Luna/Terra/Sol keep their distinct badge and top-edge hues while
    the provider chrome changes. Semantic red/green states are untouched. */
-.sq.prov-openai {
+.sq.prov-openai, .desk-body.prov-openai {
   --provider-accent: var(--prov-openai);
   --accent: var(--prov-openai);
   --accent-soft: color-mix(in srgb, var(--prov-openai) 16%, transparent);
@@ -475,7 +488,12 @@ button.badge.audience-fold.alert {
   box-shadow: 0 8px 40px rgba(0, 0, 0, .55),
     0 0 0 1px color-mix(in srgb, var(--prov-google) 25%, transparent);
 }
-.sq.prov-google {
+.sq.prov-google.desk.proc-warm {
+  box-shadow: 0 8px 40px rgba(0, 0, 0, .55),
+    0 0 0 1px color-mix(in srgb, var(--prov-google) 25%, transparent),
+    0 0 20px color-mix(in srgb, var(--prov-google) 20%, transparent);
+}
+.sq.prov-google, .desk-body.prov-google {
   --provider-accent: var(--prov-google);
   --accent: var(--prov-google);
   --accent-soft: color-mix(in srgb, var(--prov-google) 16%, transparent);
@@ -539,6 +557,17 @@ button.badge.audience-fold.alert {
    but no turn has measured the new session yet, so it is drawn softly rather
    than at full confidence. The tooltip carries the ≈. */
 .ctxwheel.est .fill { opacity: .5; }
+/* D-201 cache cue: filled = a parked process is ready; hollow = ordinary cold
+   start. It stays quiet and static — neither is a health or lifecycle state. */
+.proc-mark {
+  display: inline-block; width: 7px; height: 7px; flex: none;
+  border-radius: 50%; box-sizing: border-box; vertical-align: middle;
+}
+.proc-mark.warm { background: var(--provider-accent, var(--accent)); opacity: .8; }
+.proc-mark.cold { background: transparent; border: 1px solid var(--dim); opacity: .58; }
+.sq-head .proc-mark { margin-left: 2px; }
+.cc-head .proc-mark { margin-left: 1px; }
+.settings h3 .proc-mark { margin: 0 4px; }
 .actgear {
   flex: none; color: var(--accent); font-size: 11px; line-height: 1;
   display: inline-block; animation: actspin 1.4s linear infinite;
