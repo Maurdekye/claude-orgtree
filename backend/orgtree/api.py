@@ -41,6 +41,7 @@ from pydantic import BaseModel, model_validator
 
 from . import crashreports
 from . import deployment
+from . import frozen_install
 from . import ledger as ledger_mod
 from . import (accounts, appsettings, bridgeauth, codex_limits, limits, net,
                providers, sandbox, store, subproxy, supervisor, warmpool)
@@ -6084,6 +6085,10 @@ def _deployment_preflight() -> deployment.DeploymentPolicy:
             f"{', '.join(legacy_credentials)}. Remove stored 'subscription' "
             "selectors and any sandbox .claude/.credentials.json copies, then "
             "use proxied auth or an explicit API key.")
+    # This is deliberately last: policy/profile selection and persisted-state
+    # inventory have their own precise refusals, then the approved-install
+    # verifier proves the code/dependency/provider/image/launch configuration.
+    frozen_install.require_approved_install(policy=policy)
     return policy
 
 
@@ -6136,7 +6141,21 @@ def main() -> None:
               f"{bar}\n", flush=True)
         raise SystemExit(1)
 
+    host: str | None = None
     try:
+        selected_policy = deployment.current_policy()
+        if selected_policy.name == "frozen":
+            # Only this module entry point can truthfully register the Uvicorn
+            # listener plan. A direct ``uvicorn orgtree.api:app`` launch never
+            # reaches this call and is refused at ASGI startup.
+            host = _admin_host()
+            raw_public_port = os.environ.get("ORGTREE_PUBLIC_PORT")
+            frozen_install.register_official_launch(
+                admin_host=host,
+                public_port=(0 if raw_public_port == "0"
+                             else raw_public_port),
+                expose_admin=os.environ.get(EXPOSE_ENV),
+            )
         policy = _deployment_preflight()
     except deployment.DeploymentConfigError as e:
         bar = "!" * 74
@@ -6159,7 +6178,8 @@ def main() -> None:
               "  Fix:  pip install -r requirements.txt      (or: pip install websockets)\n"
               f"{bar}\n", flush=True)
 
-    host = _admin_host()
+    if host is None:
+        host = _admin_host()
     if host != "127.0.0.1":
         # not a log line — a wall. Whoever typed the flag should see exactly
         # what they turned off, and anyone reading the console later should be

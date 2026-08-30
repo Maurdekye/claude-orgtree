@@ -668,14 +668,35 @@ def docker_ok() -> bool:
         return False
 
 
+def _desired_image_tag(
+        policy: deployment.DeploymentPolicy | None = None) -> str:
+    """Return the policy-selected image tag without building or pulling it."""
+
+    selected = policy or deployment.current_policy()
+    if selected.name == "frozen":
+        from . import frozen_install
+        return frozen_install.required_sandbox_image_tag()
+    from . import supervisor        # lazy — supervisor imports this module
+    ver = supervisor.cli_version()
+    return f"{IMAGE}:{ver}-{IMG_REV}" if ver != "unknown" else IMAGE
+
+
 def ensure_image() -> str:
     """№44 (user-approved): the image is TAGGED with the host CLI's version
     and pins the same version inside — when the host CLI updates, the next
     sandboxed turn rebuilds instead of running a CLI frozen at first-build.
     Returns the tag to run."""
+    policy = deployment.current_policy()
+    if policy.name == "frozen":
+        # Frozen startup has already checked this image, but enforce the same
+        # immutable tag/labels again at the exact runtime boundary. Never turn
+        # a missing approved artifact into a mutable network build.
+        from . import frozen_install
+        return frozen_install.require_approved_sandbox_image()
+
     from . import supervisor        # lazy — supervisor imports this module
     ver = supervisor.cli_version()
-    tag = f"{IMAGE}:{ver}-{IMG_REV}" if ver != "unknown" else IMAGE
+    tag = _desired_image_tag(policy)
     if _docker("image", "inspect", tag).returncode == 0:
         return tag
     with _build_lock:
@@ -814,7 +835,7 @@ def ensure_container(org: Org) -> str:
         raise RuntimeError("Docker is not running — start Docker Desktop "
                            "(kiosk sandboxes run their turns in containers)")
     _warn_vm_cap()
-    from . import disk as dsk, supervisor
+    from . import disk as dsk
     # virtual-disk pivot (user verdict): every sandboxed org rides its own
     # capped ext4 disk. Legacy (volume-layout) orgs migrate on first need —
     # user-approved auto-migration; old volumes are KEPT for rollback.
@@ -837,8 +858,7 @@ def ensure_container(org: Org) -> str:
     # Docker mints an EMPTY DIR for a missing bind source — an org must
     # hard-refuse to run rather than bind an empty workspace and diverge.
     dsk.mount(slug)                        # sentinel-verified; raises DiskError
-    ver = supervisor.cli_version()
-    want = f"{IMAGE}:{ver}-{IMG_REV}" if ver != "unknown" else IMAGE
+    want = _desired_image_tag()
     ins = _docker("container", "inspect", "-f",
                   "{{.State.Running}} {{.Config.Image}} "
                   '{{index .Config.Labels "orgtree.layout"}} '

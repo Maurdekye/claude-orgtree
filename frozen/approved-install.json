@@ -1,0 +1,80 @@
+{
+  "schema": 1,
+  "profile": "frozen",
+  "approved_at": "2026-08-31",
+  "files": {
+    "frozen/requirements.txt": "3b1b5705c5f481deb128e7015e5093a3571426bc74d598b8295b153b9e4fa32f",
+    "frozen/requirements-hub.txt": "a587743180eb6f15e7c1363ee3c372f6dcbc8046d7d322da7d89e58a034fc6d5",
+    "frozen/sandbox-apt.txt": "3bc371f5d699eba40d67b448462855886c6a7c2b4829e765da925e0cc259ec36",
+    "frontend/package-lock.json": "d490b76e6c11c844b82ed3dfb5b209aa4a83f715228ced9dc6d8e1fbe91bd09e",
+    "frozen/sandbox-provider/package-lock.json": "d2d3efe1cd8363e3256dfebfd5e30adc68cddb53625538b0fc09c0be9f4fcf1d",
+    "frozen/sandbox.Dockerfile": "ef192d43a1fe4c2f02bb0db7c91368a6a21d75f591bf7a4c838aace1a256dda9",
+    "frozen/hub.Dockerfile": "3feb1fe7b2e581e6b27e3be53f0970b9896fd0e6ef9a85deb13d749c540d75de"
+  },
+  "python": {
+    "requirements": "frozen/requirements.txt",
+    "implementation": "CPython",
+    "versions": ["3.10", "3.11"],
+    "platform_system": "Windows",
+    "platform_machine": "AMD64",
+    "allowed_bootstrap_packages": []
+  },
+  "frontend": {
+    "lockfile": "frontend/package-lock.json",
+    "installed_lockfile": "frontend/node_modules/.package-lock.json"
+  },
+  "providers": [
+    {
+      "id": "claude",
+      "package": "@anthropic-ai/claude-code",
+      "prefix": "cli",
+      "version": "2.1.220",
+      "integrity": "sha512-ogBrvwkqF9f8okmnXKxmRNHuvtFxFEffe5pWdqOV3iQDxlUOKirFqnyWC7NGXXnDA4WkkbPH8pvSbwyCR2Auyw==",
+      "required": true
+    },
+    {
+      "id": "openai",
+      "package": "@openai/codex",
+      "prefix": "codex",
+      "version": "0.150.1",
+      "integrity": "sha512-knrbhpJH3mEULAVStcZW4F5WEt9MQhBj6KFOonBSIUGTLcHlu9CE7FRmr95E33y94+sWNZSeVBBV/kYvlfgxkQ==",
+      "required": false
+    },
+    {
+      "id": "google",
+      "package": "@google/gemini-cli",
+      "prefix": "gemini",
+      "version": "0.57.0",
+      "integrity": "sha512-I0V03d3k0J0ZN2m9u54XhN3VcMG+VjyPzoy7E9QV8lhzd39C6UgaZGLZNsOgODOtDhK8YMijHJWJn+Qxop2umw==",
+      "required": false
+    }
+  ],
+  "containers": [
+    {
+      "id": "sandbox",
+      "repository": "orgtree-sandbox",
+      "dockerfile": "frozen/sandbox.Dockerfile",
+      "platform": "linux/amd64",
+      "required": true,
+      "labels": {
+        "io.orgtree.frozen.component": "sandbox",
+        "io.orgtree.frozen.platform": "linux/amd64",
+        "org.opencontainers.image.base.name": "docker.io/library/node:22.23.2-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5",
+        "org.opencontainers.image.version": "2.1.220"
+      }
+    },
+    {
+      "id": "mailhub",
+      "repository": "orgtree-mailhub",
+      "dockerfile": "frozen/hub.Dockerfile",
+      "platform": "linux/amd64",
+      "required": false,
+      "labels": {
+        "io.orgtree.frozen.component": "mailhub",
+        "io.orgtree.frozen.platform": "linux/amd64",
+        "org.opencontainers.image.base.name": "docker.io/library/python:3.12.14-slim-trixie@sha256:09f7da3bc104798d0afb40bc08d23ab2da20a76130cec1f2ef170848f5d85217",
+        "org.opencontainers.image.version": "3.12.14"
+      }
+    }
+  ]
+}
