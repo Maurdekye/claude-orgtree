@@ -3119,6 +3119,26 @@ The org.md editor remains per-org but grows into a responsive, vertically
 resizable document field; its unsaved buffer stays in the owning panel across
 layout/resize changes.
 
+### D-204 · unsaved Advanced Settings drafts belong to the outer panel
+
+An inactive Advanced Settings tab is unmounted, and closing the Advanced
+modal unmounts the whole tab shell. Therefore a draft held inside the
+mailserver or autonomy tab is disposable component state: changing tabs
+silently erased a half-typed mailserver address, and changing tabs or closing
+the modal erased a pasted Anthropic API key that may have been shown only
+once. The draft address and key now live in the owning per-org Settings panel,
+which remains mounted across both gestures. Successful add/set actions still
+clear their own draft; closing the entire per-org Settings panel still drops
+unsaved input normally.
+
+The regression drives the real browser in both directions. On the pre-fix
+value, its rig first proves the fields accept and read back a sentinel and a
+separate hoisted control survives the same tab gesture, then the three subject
+checks go red. On the fix, the API-key sentinel survives tab switch and modal
+close/reopen, and the mailserver address survives tab switch. The sentinel is
+deliberately invalid and the probe never submits it, so no credential reaches
+the server.
+
 ### D-183 · the gemini probe phase: ACP is the substrate, and four wire facts are load-bearing
 Findings (gemini-provider, 2026-08-29; every one measured live on gemini-cli
 0.57.0, probe logs banked in the implementing agent's scratch). The third
