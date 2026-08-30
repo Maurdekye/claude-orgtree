@@ -30,17 +30,18 @@ function node(): CanvasNode {
   }
 }
 
-function card(zoom: number) {
+const available = { enabled: true, installed: true, reason: null }
+const absent = { enabled: false, installed: false, reason: null }
+
+function card(zoom: number, providers = {
+  codexHire: available, geminiHire: available, claudeHire: available,
+}) {
   const nd = node()
   return mountView(
     <NodeSquare node={nd} pos={{ x: 0, y: 0 }} lod="norm" focused={false}
       dragging={false} isDrop={false} seats={seats}
-      // D-199 added `installed` to HireState: the offer rule must tell an
-      // absent CLI (hide) from a signed-out one (disable), which `enabled`
-      // alone cannot. These fixtures are the fully-available machine.
-      codexHire={{ enabled: true, installed: true, reason: null }}
-      geminiHire={{ enabled: true, installed: true, reason: null }}
-      claudeHire={{ enabled: true, installed: true, reason: null }}
+      codexHire={providers.codexHire} geminiHire={providers.geminiHire}
+      claudeHire={providers.claudeHire}
       map={new Map([[nd.id, nd]])} op={op} slug="org" toast={noop}
       pxc={1} zoom={zoom} compactAt={0.8} pub={false} maxTop={0}
       kioskRemaining={null} cascadeAlloc
@@ -51,9 +52,11 @@ function card(zoom: number) {
     (el) => el)
 }
 
-test('far-map hire strips collapse to one neutral outward control, then reveal the live family list',
+test('the full three-provider set collapses only after its rendered width stops fitting the node',
   async (t) => {
-    const view = await card(0.74)
+    // Four tier buttons are 4×22 + 3×4 = 100px wide. A 124px card at .77 is
+    // 95.48px wide, so this has crossed the fit boundary and must compact.
+    const view = await card(0.77)
     t.after(() => view.unmount())
     const sets = [...view.el.querySelectorAll('.hsof.hire-compact')] as HTMLElement[]
     assert.equal(sets.length, 4, 'the report, both coworker, and superior strips compact together')
@@ -88,13 +91,37 @@ test('far-map hire strips collapse to one neutral outward control, then reveal t
       'the same control closes the cluster before moving to another node')
   })
 
-test('the regular, individual tier controls remain unchanged at the compact threshold and above',
+test('the full three-provider set stays direct once the actual panel is wider than its 100px longest row',
   async (t) => {
-    const view = await card(0.75)
+    // 124×.82 = 101.68px: real room for the 100px Claude row, no compacting.
+    const view = await card(0.82)
     t.after(() => view.unmount())
     assert.equal(view.el.querySelectorAll('.hsof.hire-compact').length, 0)
     assert.equal(view.el.querySelectorAll('.hire-expand').length, 0)
     const report = view.el.querySelector('.hsof:not(.side)') as HTMLElement
     assert.ok(report.querySelectorAll('.hs-fam button').length > 0,
       'normal zoom still exposes individual hire tiers directly')
+  })
+
+test('a reduced provider set keeps direct buttons until its own narrower row stops fitting',
+  async (t) => {
+    // Codex has three chips: 3×22 + 2×4 = 74px. At .61 the card is 75.64px
+    // wide, so collapsing here like the nine-tier machine would be premature.
+    const view = await card(0.61, {
+      codexHire: available, geminiHire: absent, claudeHire: absent,
+    })
+    t.after(() => view.unmount())
+    assert.equal(view.el.querySelectorAll('.hsof.hire-compact').length, 0)
+    assert.equal(view.el.querySelectorAll('.hsof:not(.side) .t-luna').length, 1)
+  })
+
+test('a no-harness row is never replaced with a needless compact arrow',
+  async (t) => {
+    const view = await card(0.24, {
+      codexHire: absent, geminiHire: absent, claudeHire: absent,
+    })
+    t.after(() => view.unmount())
+    assert.equal(view.el.querySelectorAll('.hire-expand').length, 0)
+    assert.equal(view.el.querySelectorAll('.hs-none').length, 4,
+      'the accounts-route one-shot row remains visible on every placement edge')
   })

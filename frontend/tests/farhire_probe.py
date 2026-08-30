@@ -28,8 +28,8 @@ CARDS = FRONTEND / "src" / "canvas" / "cards.tsx"
 
 def source_guard() -> str:
     cards = CARDS.read_text(encoding="utf-8")
-    for needle in ("const HIRE_COMPACT_ZOOM = .75", "farCompact",
-                   "hire-expand", "if (!fams.length) return null",
+    for needle in ("HIRE_BUTTON_PX = 22", "FIT_DEADBAND_PX = 4",
+                   "widestFamilyPx", "hire-expand", "hasFamilies",
                    "onPointerLeave={() => setExpandedHireEdge(null)}"):
         if needle not in cards:
             raise SystemExit(f"cards.tsx is missing {needle!r}; this fixture no longer "
@@ -85,6 +85,41 @@ document.querySelector('#expand').addEventListener('click', () => {{
 </script></body></html>"""
 
 
+def fit_case(key: str, label: str, zoom: float, compact: bool, rows: str) -> str:
+    cls = " hire-compact" if compact else ""
+    arrow = "<button class='hire-expand' type='button'>↓</button>" if compact else ""
+    body = arrow if compact else rows
+    return f"""<section class='fit-case' data-case='{key}'>
+      <b class='fit-label'>{label}</b>
+      <div class='fit-world' style='transform:scale({zoom}); --invzf:{1 / zoom:.8f}'>
+        <div class='sq edge-b fit-card' style='width:124px;height:124px'>
+          <div class='hsof{cls}'>{body}</div>
+        </div>
+      </div>
+    </section>"""
+
+
+def fit_document(css: str) -> str:
+    full = ROWS
+    codex = family("codex", "luna terra sol")
+    cases = "".join((
+        fit_case("full-compact", "full 0.77 · 95.5px card / 100px row · compact", .77, True, full),
+        fit_case("full-direct", "full 0.82 · 101.7px card / 100px row · direct", .82, False, full),
+        fit_case("codex-compact", "Codex 0.59 · 73.2px card / 74px row · compact", .59, True, codex),
+        fit_case("codex-direct", "Codex 0.61 · 75.6px card / 74px row · direct", .61, False, codex),
+    ))
+    return f"""<!doctype html><html><head><style>{css}
+body {{ margin:0; background:#17191c; }}
+#fit {{ width:800px; height:520px; display:grid; grid-template-columns:repeat(2, 1fr);
+  grid-template-rows:repeat(2, 1fr); padding:20px; box-sizing:border-box; gap:8px; }}
+.fit-case {{ position:relative; overflow:visible; border:1px solid #30343a; border-radius:8px; }}
+.fit-label {{ position:absolute; left:10px; top:9px; color:#b9c0c9; font:12px var(--mono); }}
+.fit-world {{ position:absolute; left:138px; top:62px; width:124px; height:124px; transform-origin:0 0; }}
+.fit-card {{ position:absolute; left:0; top:0; }}
+.fit-world .hsof {{ opacity:1; pointer-events:auto; }}
+</style></head><body><div id='fit'>{cases}</div></body></html>"""
+
+
 def state(page):
     return page.evaluate("""() => ({
       card: document.querySelector('#card').getBoundingClientRect().height,
@@ -99,6 +134,8 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--collapsed", type=pathlib.Path)
     parser.add_argument("--expanded", type=pathlib.Path)
+    parser.add_argument("--fit-boundary", type=pathlib.Path,
+                        help="screenshot the full and reduced sets on both sides of their fit boundary")
     parser.add_argument("--expect-fail", action="store_true")
     args = parser.parse_args()
     css = source_guard()
@@ -122,6 +159,25 @@ def main() -> None:
             page.screenshot(path=str(args.expanded))
         if not after["expanded"] or after["families"] != 3 or after["buttons"] != 9:
             errors.append(f"the full max-provider list did not open: {after}")
+        if args.fit_boundary:
+            page.set_viewport_size({"width": 840, "height": 560})
+            page.set_content(fit_document(css))
+            fit = page.evaluate("""() => Object.fromEntries([...document.querySelectorAll('.fit-case')].map((c) => {
+              const card = c.querySelector('.fit-card').getBoundingClientRect();
+              return [c.dataset.case, { width:card.width,
+                compact:!!c.querySelector('.hire-compact'),
+                rows:c.querySelectorAll('.hs-fam').length }]
+            }))""")
+            expected = {
+                "full-compact": (True, 0), "full-direct": (False, 3),
+                "codex-compact": (True, 0), "codex-direct": (False, 1),
+            }
+            for key, (compact, rows) in expected.items():
+                got = fit[key]
+                if got["compact"] != compact or got["rows"] != rows:
+                    errors.append(f"fit boundary {key} wrong: {got}")
+            args.fit_boundary.parent.mkdir(parents=True, exist_ok=True)
+            page.screenshot(path=str(args.fit_boundary))
         browser.close()
     if errors:
         print("farhire_probe: FAIL")
