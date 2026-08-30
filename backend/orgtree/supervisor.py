@@ -38,7 +38,7 @@ from collections.abc import Callable, Iterable, Mapping
 from typing import Any, Final, cast
 
 from . import (accounts, codex_limits, imgblock, limits, net, providers,
-               sandbox as sbx, store, tokens)
+               sandbox as sbx, store, tokens, warmpool)
 from .ledger import EXTERN, SYSTEM, USER, LedgerError, Org, expand_mcp, now as now_iso
 from .schema import (Denial, FrozenInfo, InflightInfo, KioskCfg, MailEntry,
                      NodeDoc, NoticeEntry, TurnStat)
@@ -969,6 +969,16 @@ def rename_node(slug: str, nid: str, new_name: str,
             # no-op — the ledger changed nothing; leave the filesystem alone
             _ = n
             return new_slug_probe
+        for k in stack:
+            # D-201: a PARKED warm process holds the scratch dir as its cwd,
+            # which blocks the directory move below on Windows outright. Kill
+            # it — AFTER the ledger validated and actually changed the name
+            # (a refused or no-op rename changes neither prompt nor argv, and
+            # killing on it would be a process death outside the closed list:
+            # process-cache-2's rename probe, 2026-08-30). The busy check
+            # above proves no turn owns it; the keeper re-warms the seat
+            # under its new name right after.
+            warmpool.kill_node(slug, k, "renamed")
         # ---- filesystem, before save: scratch dir + CLI project dir ----
         moved: list[tuple[str, str]] = []
         try:
@@ -3400,7 +3410,12 @@ def _mail_block(mail: list[MailEntry], slug: str = "", nid: str = "",
 
 
 
-def _build_cmd(org: Org, nid: str) -> list[str]:
+def _build_cmd(org: Org, nid: str, write_ident: bool = True) -> list[str]:
+    # write_ident=False renders the SAME argv without touching
+    # .orgtree-identity.md — for warmpool's hash recompute, which runs every
+    # keeper pass and must not churn the file's mtime (D-201). A real spawn
+    # always writes: the process reads the file, so the bytes on disk must be
+    # the bytes the argv promises.
     n = org.node(nid)
     slug = org.d["slug"]
     sid = n["session_id"]
@@ -3522,13 +3537,14 @@ def _build_cmd(org: Org, nid: str) -> list[str]:
     # mount. Rewritten before every spawn, so tampering/deletion self-heals;
     # the agent may read it, but it is only its own system prompt.
     ident_file = os.path.join(scratch_dir(slug, nid), ".orgtree-identity.md")
-    ident_new = not os.path.exists(ident_file)
-    with open(ident_file, "w", encoding="utf-8") as f:
-        f.write(identity_prompt(org, nid))
-    if sandboxed and ident_new:
-        # first mint lands root-owned through the UNC view (see chown_agent);
-        # later rewrites truncate in place and keep the owner
-        sbx.chown_agent(org, nid, ".orgtree-identity.md")
+    if write_ident:
+        ident_new = not os.path.exists(ident_file)
+        with open(ident_file, "w", encoding="utf-8") as f:
+            f.write(identity_prompt(org, nid))
+        if sandboxed and ident_new:
+            # first mint lands root-owned through the UNC view (see
+            # chown_agent); later rewrites truncate in place and keep the owner
+            sbx.chown_agent(org, nid, ".orgtree-identity.md")
     cmd = head + ["-p",
            "--output-format", "stream-json", "--input-format", "stream-json",
            "--include-partial-messages",   # token-level streaming (user spec)
@@ -5371,12 +5387,45 @@ def _run_one_turn(slug: str, nid: str,
             env["ORGTREE_ORG"], env["ORGTREE_NODE"] = slug, nid
             env["ORGTREE_PORT"] = os.environ.get("ORGTREE_PORT", "7360")
             env["PYTHONPATH"] = BACKEND_DIR + os.pathsep + env.get("PYTHONPATH", "")
-            proc = subprocess.Popen(
-                _build_cmd(org, nid), cwd=scratch_dir(slug, nid), env=env,
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True, encoding="utf-8", errors="replace")
-            _leash(proc)              # dies with the backend (№29)
+            # ── D-201: serve this turn from the warm pool when a parked
+            # process holds the CURRENT identity hash. The pool is a cache,
+            # never the source of truth: any doubt below falls through to the
+            # cold spawn, which is byte-for-byte today's behaviour.
+            wp_turn: warmpool.WarmProc | None = None
+            turn_hash: str | None = None      # identity hash at spawn/claim
+            warm_cost_base = 0.0              # $ booked by this process's
+            warm_out_base = 0                 # earlier turns (see park site)
+            raw_cost_high = 0.0               # process-cumulative $ high-water
+            parked = False                    # this turn ended by parking
             sid = org.node(nid)["session_id"]
+            _elig_ok, _elig_why = warmpool.eligible(org, nid)
+            if _elig_ok and warmpool.warm_enabled():
+                try:
+                    turn_hash = warmpool.ident_hash(org, nid)
+                except Exception:                            # noqa: BLE001
+                    turn_hash = None      # unhashable = ineligible, not fatal
+            _adm_reason = (_elig_why or "not-eligible") \
+                if not _elig_ok else "disabled" \
+                if not warmpool.warm_enabled() else "no-process"
+            if turn_hash is not None:
+                wp_turn, _adm_reason = warmpool.claim(slug, nid, turn_hash)
+            _spawn_t0 = time.monotonic()
+            if wp_turn is not None:
+                proc = wp_turn.proc
+                warm_cost_base = wp_turn.cost_base
+                warm_out_base = wp_turn.out_base
+                warmpool.journal_admit(
+                    slug, nid, sid, "warm", "warm-hit", turn_hash or "",
+                    time.time() - wp_turn.parked_at, 0)
+            else:
+                proc = subprocess.Popen(
+                    _build_cmd(org, nid), cwd=scratch_dir(slug, nid), env=env,
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    text=True, encoding="utf-8", errors="replace")
+                _leash(proc)              # dies with the backend (№29)
+                warmpool.journal_admit(
+                    slug, nid, sid, "cold", _adm_reason, turn_hash or "",
+                    None, int((time.monotonic() - _spawn_t0) * 1000))
             ran_sid = sid          # the id _build_cmd just handed the CLI
             res = {}
             # the pipe's own state, tracked rather than probed: `proc.stdin`
@@ -5520,8 +5569,45 @@ def _run_one_turn(slug: str, nid: str,
             try:
                 # (the pyright ignores below: stdin/stdout/stderr are PIPE ⇒
                 # non-None, which typeshed's Popen cannot express)
-                proc.stdin.write(_user_event(text, turn_images))   # pyright: ignore[reportOptionalMemberAccess]
-                proc.stdin.flush()                    # pyright: ignore[reportOptionalMemberAccess]
+                try:
+                    proc.stdin.write(_user_event(text, turn_images))   # pyright: ignore[reportOptionalMemberAccess]
+                    proc.stdin.flush()                # pyright: ignore[reportOptionalMemberAccess]
+                except (OSError, ValueError):
+                    if wp_turn is None:
+                        raise
+                    # D-201: the warm process died BETWEEN the claim's
+                    # liveness check and this first write (measured TOCTOU,
+                    # process-cache-2's claim-death probe: OSError 22 became
+                    # a failed turn). The cache is never the source of
+                    # truth — discard it and serve THIS turn on a fresh cold
+                    # spawn, exactly today's shape. Safe to re-send once:
+                    # the dead process consumed nothing (its delivery gate
+                    # was never opened) and the journal batch still rides
+                    # `pend_toks`' pending state below. INITIAL write only —
+                    # after any consuming stdout event a blind retry could
+                    # double-deliver, which is why the boundary feed keeps
+                    # its existing requeue recovery instead.
+                    warmpool.discard(wp_turn, "crash")
+                    wp_turn = None
+                    warm_cost_base, warm_out_base = 0.0, 0
+                    proc = subprocess.Popen(
+                        _build_cmd(org, nid), cwd=scratch_dir(slug, nid),
+                        env=env, stdin=subprocess.PIPE,
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                        text=True, encoding="utf-8", errors="replace")
+                    _leash(proc)
+                    with _state_lock:
+                        st["proc"] = proc
+                    warmpool.journal_admit(
+                        slug, nid, sid, "cold", "claim-died",
+                        turn_hash or "", None, 0)
+                    proc.stdin.write(_user_event(text, turn_images))   # pyright: ignore[reportOptionalMemberAccess]
+                    proc.stdin.flush()                # pyright: ignore[reportOptionalMemberAccess]
+                if wp_turn is not None:
+                    # D-201: open the pump's delivery gate only NOW — no line
+                    # emitted before this write can reach the loop below, so
+                    # no pre-write straggler can satisfy the C1 confirm
+                    wp_turn.activate()
                 # ⚠ a successful write into the 64 KB pipe buffer is NOT
                 # consumption (review C1): a child that dies on argv (unknown
                 # --flag on an older CLI) or on session resume never reads
@@ -5536,7 +5622,12 @@ def _run_one_turn(slug: str, nid: str,
                 # a response is useless — the CLI queue-removes such messages,
                 # live-observed). Mid-response delivery happens via the steer
                 # list + PostToolUse hook instead — never an interrupt.
-                for line in proc.stdout:      # live per-message feed to the UI  # pyright: ignore[reportOptionalIterable]
+                # D-201: a warm process's stdout is owned by its pump thread
+                # for the process's whole life (a turn ends at a boundary the
+                # process outlives) — this turn reads through the pump's
+                # queue. The cold path iterates the pipe directly, unchanged.
+                for line in (wp_turn.lines_iter() if wp_turn is not None
+                             else proc.stdout):      # live per-message feed to the UI  # pyright: ignore[reportOptionalIterable]
                     line = line.strip()
                     if not line:
                         continue
@@ -5854,8 +5945,10 @@ def _run_one_turn(slug: str, nid: str,
                         # (same rule as the boundary branch below); `res` is
                         # deliberately NOT touched, which is the protection
                         # this branch exists for.
+                        _rawc = float(ev.get("total_cost_usd") or 0.0)
+                        raw_cost_high = max(raw_cost_high, _rawc)
                         turn_paid = max(turn_paid,
-                                        float(ev.get("total_cost_usd") or 0.0))
+                                        max(0.0, _rawc - warm_cost_base))
                     elif ev.get("type") == "result" \
                             and not ev.get("parent_tool_use_id"):
                         # TWO guards, because a `result` event is not
@@ -5893,9 +5986,14 @@ def _run_one_turn(slug: str, nid: str,
                         # two paid messages booking $0 and 0 turns).
                         # `total_cost_usd` is session-cumulative, hence max():
                         # summing would double-count, and under-counting is the
-                        # safe direction.
+                        # safe direction. D-201: it is PROCESS-cumulative, and
+                        # a warm process served earlier turns — their booked
+                        # spend (`warm_cost_base`) comes off before this turn
+                        # claims the remainder as its own.
+                        _rawc = float(ev.get("total_cost_usd") or 0.0)
+                        raw_cost_high = max(raw_cost_high, _rawc)
                         turn_paid = max(turn_paid,
-                                        float(ev.get("total_cost_usd") or 0.0))
+                                        max(0.0, _rawc - warm_cost_base))
                         budget_t0[0] = time.monotonic()   # fresh ceiling per message
                         if run_tasks:      # message boundary: nothing tracked survives it
                             run_tasks.clear()
@@ -5953,6 +6051,20 @@ def _run_one_turn(slug: str, nid: str,
                         if leftover:
                             _steer_fold_log(slug, nid, len(leftover),
                                             "result boundary")
+                        # D-201: may this PROCESS keep serving? For a
+                        # warm-eligible turn the hash is recomputed at every
+                        # boundary — the ruling is "respawn before the next
+                        # turn is admitted", and a queued message fed here IS
+                        # the next turn. A dirtied hash declines the
+                        # in-process feed (the queue handoff in the finally
+                        # runs it on a fresh process with the fresh prompt)
+                        # and declines the park below. Ineligible turns and
+                        # the kill-switch-off arm skip the check entirely:
+                        # today's feed, byte-identical.
+                        proc_current = True
+                        if turn_hash is not None:
+                            proc_current = (warmpool.current_hash(slug, nid)
+                                            == turn_hash)
                         # queued texts are RAW (mail stays in the doc until
                         # delivery — restart durability): envelope now, and
                         # track it as the in-flight turn.
@@ -5975,7 +6087,8 @@ def _run_one_turn(slug: str, nid: str,
                         # self-contained still goes even with an empty box.
                         while True:
                             with _state_lock:
-                                if not (st["queue"] and not limited):
+                                if not (st["queue"] and not limited
+                                        and proc_current):
                                     nxt = None
                                     break
                                 nxt = st["queue"].pop(0)
@@ -6030,6 +6143,18 @@ def _run_one_turn(slug: str, nid: str,
                                 # batch's toks were confirmed by THIS result
                                 # event, so pend_toks is free)
                                 pend_toks = list(ntoks)
+                                # D-201 telemetry: a boundary-fed message is
+                                # another turn in the transcript, and the one
+                                # most likely to go wrong is the one that
+                                # must not be invisible. `served` reports how
+                                # this PROCESS was obtained; the distinct
+                                # reason lets cache-misses segment these from
+                                # pool-served admissions in both A/B arms.
+                                warmpool.journal_admit(
+                                    slug, nid, ran_sid or "",
+                                    "warm" if wp_turn is not None else "cold",
+                                    "boundary-feed", turn_hash or "",
+                                    None, 0)
                                 continue
                             except (OSError, ValueError):
                                 # ValueError is io's "I/O operation on closed
@@ -6048,6 +6173,25 @@ def _run_one_turn(slug: str, nid: str,
                                         **({"cmd": True} if ncmd else {})}
                                         if (ntoks or ncmd) else nxt)
                                     st["responding"] = False
+                        # D-201: PARK instead of ending the process, when
+                        # everything is clean — warm turn, hash still
+                        # current, no usage limit, no live background
+                        # children (they need the today-shaped drain-to-exit
+                        # below), nothing queued. The break skips the
+                        # stdin close: the process stays alive, parked, and
+                        # the next turn attaches where this one detached.
+                        if (nxt is None and wp_turn is not None
+                                and proc_current and not limited
+                                and not timed_out.is_set()
+                                and _bg_count() == 0 and wp_turn.alive()):
+                            with _state_lock:
+                                _q_idle = not st["queue"]
+                            if _q_idle and warmpool.park_back(
+                                    wp_turn, raw_cost_high,
+                                    int((res.get("usage") or {})
+                                        .get("output_tokens") or 0)):
+                                parked = True
+                                break
                         try:
                             proc.stdin.close()   # pyright: ignore[reportOptionalMemberAccess]
                         except (OSError, ValueError):
@@ -6056,8 +6200,18 @@ def _run_one_turn(slug: str, nid: str,
                         # nothing writable behind it, so the flag must flip on
                         # both paths or a straggler is treated as a boundary
                         stdin_open = False
-                err = proc.stderr.read()   # pyright: ignore[reportOptionalMemberAccess]
-                proc.wait()
+                if parked:
+                    err = ""            # the process lives on, parked
+                elif wp_turn is not None:
+                    # the pump owns a warm process's stderr for its whole
+                    # life — reading the pipe here would race it. The process
+                    # is dying (stdin closed or killed): wait, then take the
+                    # drained tail.
+                    proc.wait()
+                    err = wp_turn.err_text()
+                else:
+                    err = proc.stderr.read()   # pyright: ignore[reportOptionalMemberAccess]
+                    proc.wait()
             finally:
                 dog_stop.set()
                 with _state_lock:
@@ -6137,10 +6291,13 @@ def _run_one_turn(slug: str, nid: str,
             # ownership — never inferred from the error text, for the same
             # reason `exit_only` is a flag.
             handled = False
+            # D-201: a PARKED turn's process is deliberately still alive
+            # (returncode None) — that is a success, not an exit to explain
             err_blob = " / ".join((err or "").strip().splitlines()[-3:]) \
-                if proc.returncode != 0 else (
+                if (not parked and proc.returncode != 0) else (
                     str(res.get("result", "")) if res.get("is_error") else "")
-            if not err_blob and proc.returncode != 0 and not synth_limit_txt:
+            if not err_blob and not parked and proc.returncode != 0 \
+                    and not synth_limit_txt:
                 # ⚠ silence is not success. The CLI's own stream-json catch
                 # path writes its error to STDOUT (as `errors: []` on a result
                 # with no `result` key) and then merely sets an exit code —
@@ -6907,6 +7064,19 @@ def _run_one_turn(slug: str, nid: str,
             # costing nothing. `total_cost_usd` is process-cumulative and
             # orgtree spawns one CLI per turn, so `turn_paid` IS this turn's
             # reported spend: taking the larger is exact, never an over-count.
+            if warm_cost_base or warm_out_base:
+                # D-201: `total_cost_usd` and the result's usage are
+                # PROCESS-cumulative, and this process served earlier turns —
+                # their already-booked share comes off, or turn 2 re-books
+                # turn 1's spend as its own.
+                _u = dict(res.get("usage") or {})
+                if warm_out_base and _u.get("output_tokens"):
+                    _u["output_tokens"] = max(
+                        0, int(_u["output_tokens"]) - warm_out_base)
+                res = {**res, "total_cost_usd": max(0.0, float(
+                    res.get("total_cost_usd") or 0.0) - warm_cost_base)}
+                if _u:
+                    res["usage"] = _u
             if turn_paid > float(res.get("total_cost_usd") or 0.0):
                 res = {**res, "total_cost_usd": turn_paid}
             paid_booked = True     # _after_turn books `res`'s cost itself
@@ -6989,6 +7159,10 @@ def _run_one_turn(slug: str, nid: str,
             # the answer
             st["live"] = [r for r in (st.get("live") or []) if r.get("sticky")]
         notify(slug, nid, "turn_done")
+        # D-201: whatever this turn did to the seat's process (parked it,
+        # killed it, outran a prompt change), the keeper re-checks NOW —
+        # "respawn the instant the turn completes", not at the next poll
+        warmpool.poke()
     return follow
 
 

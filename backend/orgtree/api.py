@@ -40,7 +40,7 @@ from pydantic import BaseModel, model_validator
 
 from . import ledger as ledger_mod
 from . import (accounts, codex_limits, limits, net, providers, sandbox, store,
-               subproxy, supervisor)
+               subproxy, supervisor, warmpool)
 from .ledger import LedgerError, Org, USER, VIS_LEVELS, norm_dirs, norm_tools
 
 if TYPE_CHECKING:
@@ -536,6 +536,15 @@ async def _wire_notify() -> None:  # type: ignore[unused-function]  # registered
     # The explicit hub_changed() calls left at a few endpoints are now
     # redundant but harmless (they coalesce into the same window).
     store.on_save = hub_changed
+    # D-201: the warm pool starts FIRST, before every turn driver below
+    # (auto-resume, the usage/watchdog engines, reconcile's re-drives), and
+    # its first pass runs synchronously inside this call. The user's ruling
+    # is "start all active agents' processes immediately on orgtree launch,
+    # BEFORE a turn begins" — an ordering where any driver can admit a turn
+    # ahead of the boot pre-warm makes the feature absent at exactly the
+    # moment it was specified to be present, on every restart. Pinned by
+    # test_warmpool's startup-order check.
+    warmpool.start_warm_pool()
     supervisor.start_auto_resume_loop()
     # user ruling 2026-08-18: keep the subscription's usage readout warm, so a
     # usage freeze can stamp its reset time from cache instead of blocking the
@@ -1087,6 +1096,14 @@ def org_tree(slug: str, request: Request) -> dict[str, Any]:
         node["ran_as_label"] = accounts.serving_label(
             str(st.get("ran_as") or ""), with_uuid=_public_slug(request) is None)
         node["queued"] = len(st["queue"])
+        # D-201 (contract frozen with styling 2026-08-30): is a pre-warmed
+        # CLI process PARKED for this seat right now, holding a current
+        # system prompt? A SPEED property, never health: false is the normal
+        # state for codex/gemini lanes, archived seats, mid-turn seats and
+        # the kill-switch-off arm, and a false agent answers perfectly well —
+        # it just pays a cold spawn. Always present (never absent) on every
+        # node this block decorates.
+        node["proc_warm"] = bool(st.get("proc_warm"))
         # concurrently running subagents (Task/Agent tool calls in flight) —
         # the desk header shows it beside the working clock, only when > 0
         node["tasks"] = int(st.get("tasks") or 0)
