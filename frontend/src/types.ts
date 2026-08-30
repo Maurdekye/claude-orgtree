@@ -774,6 +774,9 @@ export interface LiveRowPayload {
 
 export interface ChatPayload {
   busy: boolean
+  /** The current busy turn has produced at least one observable event.
+   *  Missing on an older backend and therefore treated as false. */
+  turn_activity?: boolean
   queued: number
   responding: boolean
   last_error: string | null

@@ -423,7 +423,11 @@ function dropOne(list: PendingGhost[], hit: (g: PendingGhost) => boolean): Pendi
 export function markBusy(slug: string, nid: string): void {
   const k = key(slug, nid)
   const c = entry(k).s.chat
-  if (c && !c.busy) patch(k, { chat: { ...c, busy: true } })
+  if (c && !c.busy) {
+    // Optimistic send starts a NEW turn. Do not carry the previous turn's
+    // activity latch across the interval before the server's first refresh.
+    patch(k, { chat: { ...c, busy: true, turn_activity: false } })
+  }
 }
 
 // ------------------------------------------------------------------ ingest

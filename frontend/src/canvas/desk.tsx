@@ -1000,9 +1000,12 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
           {/* D-29: the turn has begun but the CLI has not produced anything
               yet — process launch, hooks, `init`, roughly six seconds during
               which the panel showed nothing but a spinner in the chrome. This
-              is DERIVED, not a new event or a new state cell: busy, with
-              nothing live, nothing thinking and nothing drafted, IS starting. */}
-          {chat?.busy && !live_feed.length && thinkSecs === null && !draft
+              is derived from busy plus the server's per-turn activity latch.
+              The latch matters after the first event: the live row is swept
+              when its transcript twin lands, and that ordinary caught-up gap
+              is NOT the CLI starting again. */}
+          {chat?.busy && !chat.turn_activity && !live_feed.length
+            && thinkSecs === null && !draft
             && !pending.length && (
             <div className="msg live thinking sealed">
               <AutorenewIcon fontSize="inherit" className="cc-spin" /> starting…

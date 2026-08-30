@@ -778,6 +778,10 @@ def live_row(slug: str, nid: str, payload: dict[str, Any]) -> None:
     st = state(slug, nid)
     with _state_lock:
         rows = cast("list[dict[str, Any]]", st.setdefault("live", []))
+        # The tail is swept as soon as the transcript carries the same row,
+        # but this fact lasts for the whole turn.  Without it the desk
+        # mistakes every caught-up gap between rows for CLI startup.
+        st["turn_activity"] = True
         # `n`: a per-node monotonic id, so the client can key a live row on
         # WHICH ROW IT IS rather than on its index. The list both trims at the
         # head and retires from the middle, so an index key silently renames
@@ -799,7 +803,7 @@ def state(slug: str, nid: str) -> dict[str, Any]:
             # them in step (`last_status` had already rotted to zero readers).
             # The doc is the home; a restart no longer changes the answer.
             "busy": False, "waiting": False, "queue": [], "last_error": None,
-            "turns_run": 0,
+            "turns_run": 0, "turn_activity": False,
             # the LIVE TAIL: rows the agent has produced this turn that the
             # transcript may not carry yet. Server-owned (P2) — the client used
             # to accumulate its own copy from the websocket and reconcile it
@@ -4049,6 +4053,13 @@ def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
     (test_turn_lifecycle "deepqueue"): a 260-deep queue against a 200-frame
     limit died at depth 189 with 71 messages still queued; the stock limit
     puts the cliff at ~900. Iterating costs nothing and has no cliff."""
+    # The desk's `starting...` row covers only the interval before THIS turn's
+    # first event. `live` cannot answer that: its rows retire as the transcript
+    # catches up, leaving normal between-event gaps empty. Reset a separate
+    # per-turn fact at the single choke point and let live_row latch it true.
+    st = state(slug, nid)
+    with _state_lock:
+        st["turn_activity"] = False
     # the single choke point: all three thread starts target this function,
     # so one gate here covers every way a turn can begin (D-142/a)
     _hold_for_deploy(slug, nid)
@@ -13506,6 +13517,10 @@ def read_chat(org: Org, nid: str, last: int | None = None) -> dict[str, Any]:
     n = org.node(nid)
     st = state(org.d["slug"], nid)
     out = {"busy": st["busy"], "queued": len(st["queue"]),
+           # Latched by the first durable/live event and reset only by the
+           # next turn. The live tail itself is transient: read_chat sweeps a
+           # row as soon as its transcript twin appears.
+           "turn_activity": bool(st.get("turn_activity")),
            # the composer's STOP gates on this — the tree copy goes stale
            # during a turn (user bug 2026-07-31: no interrupt offered while
            # a long command ran); the chat payload refreshes on every pulse
