@@ -139,6 +139,13 @@ def mcp_config_overrides(servers: dict[str, Any]) -> list[str]:
             else:
                 rendered = _toml(val)
             out += ["-c", f"mcp_servers.{name}.{field}={rendered}"]
+        # `servers` is already the node's granted + deliverable subset (the
+        # caller gets it from codex_mcp_grant).  Codex otherwise defaults MCP
+        # tools to prompting, but Orgtree runs headless and answers an MCP
+        # prompt as a rejection.  Approve only this attached server's tools;
+        # never change the thread's broader approval or sandbox policy.
+        out += ["-c", (f"mcp_servers.{name}."
+                       'default_tools_approval_mode="approve"')]
     return out
 
 
