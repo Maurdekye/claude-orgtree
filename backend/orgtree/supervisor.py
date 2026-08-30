@@ -5398,15 +5398,20 @@ def _run_one_turn(slug: str, nid: str,
             raw_cost_high = 0.0               # process-cumulative $ high-water
             parked = False                    # this turn ended by parking
             sid = org.node(nid)["session_id"]
+            # ONE flag read for this admission: `warm_on` is what the system
+            # does, `warm_lbl` is what the journal records (None = malformed
+            # flag, arm unknown). Re-reading anywhere later in this turn
+            # could label a row with an arm it was not served under.
+            warm_on, warm_lbl = warmpool.warm_decision()
             _elig_ok, _elig_why = warmpool.eligible(org, nid)
-            if _elig_ok and warmpool.warm_enabled():
+            if _elig_ok and warm_on:
                 try:
                     turn_hash = warmpool.ident_hash(org, nid)
                 except Exception:                            # noqa: BLE001
                     turn_hash = None      # unhashable = ineligible, not fatal
             _adm_reason = (_elig_why or "not-eligible") \
                 if not _elig_ok else "disabled" \
-                if not warmpool.warm_enabled() else "no-process"
+                if not warm_on else "no-process"
             if turn_hash is not None:
                 wp_turn, _adm_reason = warmpool.claim(slug, nid, turn_hash)
             _spawn_t0 = time.monotonic()
@@ -5416,7 +5421,7 @@ def _run_one_turn(slug: str, nid: str,
                 warm_out_base = wp_turn.out_base
                 warmpool.journal_admit(
                     slug, nid, sid, "warm", "warm-hit", turn_hash or "",
-                    time.time() - wp_turn.parked_at, 0)
+                    time.time() - wp_turn.parked_at, 0, warm_lbl)
             else:
                 proc = subprocess.Popen(
                     _build_cmd(org, nid), cwd=scratch_dir(slug, nid), env=env,
@@ -5425,7 +5430,8 @@ def _run_one_turn(slug: str, nid: str,
                 _leash(proc)              # dies with the backend (№29)
                 warmpool.journal_admit(
                     slug, nid, sid, "cold", _adm_reason, turn_hash or "",
-                    None, int((time.monotonic() - _spawn_t0) * 1000))
+                    None, int((time.monotonic() - _spawn_t0) * 1000),
+                    warm_lbl)
             ran_sid = sid          # the id _build_cmd just handed the CLI
             res = {}
             # the pipe's own state, tracked rather than probed: `proc.stdin`
@@ -5600,7 +5606,7 @@ def _run_one_turn(slug: str, nid: str,
                         st["proc"] = proc
                     warmpool.journal_admit(
                         slug, nid, sid, "cold", "claim-died",
-                        turn_hash or "", None, 0)
+                        turn_hash or "", None, 0, warm_lbl)
                     proc.stdin.write(_user_event(text, turn_images))   # pyright: ignore[reportOptionalMemberAccess]
                     proc.stdin.flush()                # pyright: ignore[reportOptionalMemberAccess]
                 if wp_turn is not None:
@@ -6052,19 +6058,22 @@ def _run_one_turn(slug: str, nid: str,
                             _steer_fold_log(slug, nid, len(leftover),
                                             "result boundary")
                         # D-201: may this PROCESS keep serving? For a
-                        # warm-eligible turn the hash is recomputed at every
-                        # boundary — the ruling is "respawn before the next
-                        # turn is admitted", and a queued message fed here IS
-                        # the next turn. A dirtied hash declines the
-                        # in-process feed (the queue handoff in the finally
-                        # runs it on a fresh process with the fresh prompt)
-                        # and declines the park below. Ineligible turns and
-                        # the kill-switch-off arm skip the check entirely:
-                        # today's feed, byte-identical.
-                        proc_current = True
+                        # warm-eligible turn the boundary re-decides — the
+                        # ruling is "respawn before the next turn is
+                        # admitted", and a queued message fed here IS the
+                        # next turn. A dirtied hash OR a flipped-off kill
+                        # switch declines the in-process feed (the queue
+                        # handoff in the finally runs it on a fresh process
+                        # with the fresh prompt) and declines the park below.
+                        # ONE flag read inside boundary_check serves both the
+                        # behaviour and `bnd_lbl`, the label for the
+                        # boundary-feed admit row — never re-read between.
+                        # Ineligible turns skip the check: today's feed,
+                        # byte-identical.
+                        proc_current, bnd_lbl = True, warm_lbl
                         if turn_hash is not None:
-                            proc_current = (warmpool.current_hash(slug, nid)
-                                            == turn_hash)
+                            proc_current, bnd_lbl = warmpool.boundary_check(
+                                slug, nid, turn_hash)
                         # queued texts are RAW (mail stays in the doc until
                         # delivery — restart durability): envelope now, and
                         # track it as the in-flight turn.
@@ -6154,7 +6163,7 @@ def _run_one_turn(slug: str, nid: str,
                                     slug, nid, ran_sid or "",
                                     "warm" if wp_turn is not None else "cold",
                                     "boundary-feed", turn_hash or "",
-                                    None, 0)
+                                    None, 0, bnd_lbl)
                                 continue
                             except (OSError, ValueError):
                                 # ValueError is io's "I/O operation on closed

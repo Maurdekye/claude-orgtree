@@ -767,6 +767,66 @@ check("C2 · per-node exclude works and lifts cleanly",
       c_flag_exclude_is_per_node)
 
 
+def c_malformed_flag_labels_unknown_never_guessed():
+    """cache-misses' A/B contract: a malformed flag file (empty = torn
+    write, or truncated JSON) may fall back to the env for BEHAVIOUR, but
+    the admit LABEL must be null — an arm that gets guessed is silent
+    misattribution in the measurement. Also pins the atomic writer seam."""
+    for content in ("", '{"enab'):
+        with open(FLAG, "w", encoding="utf-8") as f:
+            f.write(content)
+        time.sleep(W._FLAG_TTL + 0.3)
+        on, label = W.warm_decision()
+        assert on is True, "behaviour must fall to the env (ORGTREE_WARM=1)"
+        assert label is None, (
+            f"malformed flag {content!r} must label the arm UNKNOWN, "
+            f"got {label!r}")
+        n_before = len(admit_lines())
+        S._run_turn(SLUG, NID, f"malformed flag arm {content!r}")
+        adm = admit_lines()[n_before:]
+        assert adm and all(a["warm_enabled"] is None for a in adm), (
+            f"admit rows under a malformed flag must carry null "
+            f"warm_enabled: {[(a['reason'], a['warm_enabled']) for a in adm]}")
+    W.set_flag("1")                      # the atomic writer seam
+    time.sleep(W._FLAG_TTL + 0.3)
+    assert W.warm_decision() == (True, True)
+    os.remove(FLAG)
+    time.sleep(W._FLAG_TTL + 0.3)
+
+
+def c_snapshot_counts_serving_processes():
+    """The ceiling witness (process-cache-2's two-stub probe, coordinator-
+    gated): a snapshot taken while a process is CLAIMED must count it —
+    parked-only counting reported half the real memory, understating the
+    one number the user asked for in the reassuring direction."""
+    W.keeper_pass_now()
+    wait_for(lambda: W.is_warm(SLUG, NID), why="warm before snapshot test")
+    h = W.ident_hash(reload_org(), NID)
+    wp, r = W.claim(SLUG, NID, h)
+    assert wp is not None and r == "warm-hit"
+    try:
+        W._pool_snapshot()
+        pools = [json.loads(ln) for ln in
+                 open(os.path.join(RIG, "journals", "warm.jsonl"),
+                      encoding="utf-8") if '"pool"' in ln]
+        snap = pools[-1]
+        assert snap["serving"] >= 1, f"serving process invisible: {snap}"
+        assert snap["warm_count"] == snap["parked"] + snap["serving"], snap
+    finally:
+        W.park_back(wp, 0.0, 0)
+    W._pool_snapshot()
+    pools = [json.loads(ln) for ln in
+             open(os.path.join(RIG, "journals", "warm.jsonl"),
+                  encoding="utf-8") if '"pool"' in ln]
+    assert pools[-1]["serving"] == 0, f"park did not release serving: {pools[-1]}"
+
+
+check("C3 · malformed flag: behaviour falls to env, label is null (unknown arm)",
+      c_malformed_flag_labels_unknown_never_guessed)
+check("C4 · pool snapshot counts serving processes (the ceiling witness)",
+      c_snapshot_counts_serving_processes)
+
+
 # ── teardown ───────────────────────────────────────────────────────────────
 with W._pool_lock:
     _left = list(W._pool.values())

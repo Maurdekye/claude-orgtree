@@ -80,9 +80,13 @@ def _flag_path() -> str:
 
 
 def _read_flag() -> dict[str, Any] | None:
-    """The runtime override, {enabled: bool, exclude: [slug/nid,…]} or None
-    when no flag file exists. Cached ~2 s by mtime so per-decision reads cost
-    a stat, not a parse."""
+    """The runtime override: {enabled, exclude, malformed} — or None when no
+    flag file exists. A file that exists but cannot be parsed (empty,
+    truncated mid-write, bad JSON) comes back {"malformed": True}: what the
+    system DOES with that (fall to the env) and what the measurement RECORDS
+    (arm unknown, never guessed) are two separate questions — cache-misses'
+    contract, coordinator-backed. Cached ~2 s by mtime so per-decision reads
+    cost a stat, not a parse."""
     now = time.time()
     if now - _FLAG_CACHE["at"] < _FLAG_TTL:
         return _FLAG_CACHE["val"]
@@ -95,34 +99,68 @@ def _read_flag() -> dict[str, Any] | None:
     if mt == _FLAG_CACHE["mtime"]:
         _FLAG_CACHE["at"] = now
         return _FLAG_CACHE["val"]
-    val: dict[str, Any] | None
+    val: dict[str, Any]
     try:
         raw = open(p, encoding="utf-8").read().strip()
         if raw in ("0", "false", "off"):
-            val = {"enabled": False, "exclude": []}
-        elif raw in ("1", "true", "on", ""):
-            val = {"enabled": True, "exclude": []}
+            val = {"enabled": False, "exclude": [], "malformed": False}
+        elif raw in ("1", "true", "on"):
+            val = {"enabled": True, "exclude": [], "malformed": False}
+        elif not raw:
+            # an EMPTY file is a torn write, not an opinion
+            val = {"malformed": True}
         else:
             d = json.loads(raw)
             val = {"enabled": bool(d.get("enabled", True)),
-                   "exclude": [str(x) for x in (d.get("exclude") or [])]}
-    except (OSError, ValueError):
-        # an unreadable flag is ignorance, not evidence — fall to the env
-        val = None
+                   "exclude": [str(x) for x in (d.get("exclude") or [])],
+                   "malformed": False}
+    except OSError:
+        val = {"malformed": True}       # unreadable ≠ absent: arm unknown
+    except ValueError:
+        val = {"malformed": True}
     _FLAG_CACHE.update(at=now, mtime=mt, val=val)
     return val
 
 
-def warm_enabled() -> bool:
+def set_flag(content: str) -> None:
+    """Atomic flag write (temp + replace) for anything that flips the switch
+    programmatically — a reader can never observe a torn write through this
+    path. Hand-edits remain possible; the malformed handling above is what
+    covers those."""
+    p = _flag_path()
+    tmp = p + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(content)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, p)
+
+
+def warm_decision() -> tuple[bool, bool | None]:
+    """ONE flag read → (what the system does, what the measurement records).
+    The label is the enabled value when the source was trustworthy, and None
+    when the flag file was malformed — the behaviour falls to the env there,
+    but labelling that arm would be a guess, and a guessed arm is silent
+    misattribution in the A/B. Callers journal THIS label, never a re-read:
+    the flag can flip between a decision and a later read, and an admit row
+    labelled with an arm the turn was not served under is worse than no row."""
     f = _read_flag()
-    if f is not None:
-        return bool(f["enabled"])
-    return os.environ.get("ORGTREE_WARM", "1") != "0"
+    if f is None:
+        env_on = os.environ.get("ORGTREE_WARM", "1") != "0"
+        return env_on, env_on
+    if f.get("malformed"):
+        return os.environ.get("ORGTREE_WARM", "1") != "0", None
+    return bool(f["enabled"]), bool(f["enabled"])
+
+
+def warm_enabled() -> bool:
+    return warm_decision()[0]
 
 
 def node_excluded(slug: str, nid: str) -> bool:
     f = _read_flag()
-    return bool(f and f"{slug}/{nid}" in f["exclude"])
+    return bool(f and not f.get("malformed")
+                and f"{slug}/{nid}" in f["exclude"])
 
 
 # ── the pool ───────────────────────────────────────────────────────────────
@@ -262,6 +300,13 @@ class WarmProc:
 
 
 _pool: dict[tuple[str, str], WarmProc] = {}
+# warm-origin processes CURRENTLY SERVING a turn (claimed out of _pool).
+# Tracked so the pool snapshot sees peak memory — parked-only counting
+# structurally hid every serving process, which corrupts the ceiling figure
+# the user asked for (cache-misses contract, coordinator-backed). ONLY
+# telemetry and exit bookkeeping read this: kill_node/kill_org deliberately
+# do not — a mid-turn process is never disturbed, tracked or not.
+_serving: dict[tuple[str, str], WarmProc] = {}
 _pool_lock = threading.RLock()
 _spawn_gate = threading.Semaphore(SPAWN_PACE)
 _poke = threading.Event()
@@ -291,15 +336,23 @@ def _journal(kind: str, **fields: Any) -> None:
 
 
 def journal_admit(slug: str, nid: str, sid: str, served: str, reason: str,
-                  ihash: str, warm_age_s: float | None, spawn_ms: int) -> None:
+                  ihash: str, warm_age_s: float | None, spawn_ms: int,
+                  warm_label: bool | None) -> None:
     """One line per turn ADMISSION, written before the turn runs (a crash
     mid-turn cannot lose it). `session_id` is cache-misses' join key against
-    the CLI transcript; `warm_enabled` rides every line so the A/B arms are
-    readable without inferring flag state from deploy timestamps."""
+    the CLI transcript.
+
+    `warm_label` is THE FLAG OBSERVATION FROM THE DECISION THAT ADMITTED
+    THIS TURN, threaded through by the caller — never re-read here. The flag
+    can flip between the decision and this write, and an admit row labelled
+    with an arm the turn was not served under is silent misattribution in
+    the A/B (process-cache-2's alternating-flag probe measured exactly
+    that). None = the flag file was malformed at decision time: the arm is
+    UNKNOWN and recorded as such, never guessed."""
     _journal("admit", slug=slug, nid=nid, session_id=sid, served=served,
              reason=reason, ident_hash=ihash,
              warm_age_s=round(warm_age_s, 1) if warm_age_s is not None else None,
-             spawn_ms=spawn_ms, handshake_ms=0, warm_enabled=warm_enabled())
+             spawn_ms=spawn_ms, handshake_ms=0, warm_enabled=warm_label)
 
 
 def _journal_proc(event: str, slug: str, nid: str, reason: str,
@@ -377,6 +430,25 @@ def eligible(org: Any, nid: str) -> tuple[bool, str]:
     return True, ""
 
 
+def boundary_check(slug: str, nid: str,
+                   want_hash: str | None) -> tuple[bool, bool | None]:
+    """The result-boundary decision, with ONE flag read shared between the
+    behaviour and the label → (may this process keep serving, the label for
+    any admit row this boundary writes). False whenever the switch is off,
+    the node is excluded, eligibility lapsed, or the identity hash moved —
+    a queued message is 'the next turn' and never rides any of those."""
+    on, label = warm_decision()
+    if not on or want_hash is None or node_excluded(slug, nid):
+        return False, label
+    try:
+        org = store.load_org(slug)
+        if not eligible(org, nid)[0]:
+            return False, label
+        return ident_hash(org, nid) == want_hash, label
+    except Exception:                               # noqa: BLE001
+        return False, label
+
+
 def current_hash(slug: str, nid: str) -> str | None:
     """Fresh-off-disk hash for boundary/park-time revalidation; None = 'this
     seat has no valid warm identity RIGHT NOW', which callers must treat as
@@ -417,12 +489,33 @@ def is_warm(slug: str, nid: str) -> bool:
 
 # ── spawn / kill ───────────────────────────────────────────────────────────
 # THE CLOSED DEATH LIST, made structural (coordinator ruling 2026-08-30,
-# after four separate probes found teardowns outside it). The user's rule: a
-# warm process ends ONLY on retirement, a system-prompt change, or orgtree
-# shutdown (the job-object leash — no code path here). Every deliberate kill
-# must carry a reason from this table; a reason it does not know is journaled
-# as UNLISTED and printed loudly, because an unenumerated teardown is exactly
-# the defect family this exists to catch. `crash` is observation, not a kill.
+# after four separate probes found teardowns outside it), reconciled against
+# the user's ruling which names exactly THREE ways a process may end:
+# retirement, an explicit system-prompt change, and orgtree shutdown.
+#
+# How this table maps onto those three — the authoritative statement lives
+# in the D-201 register entry; this is its enforcement:
+# · retirement, prompt-change — the user's first two, verbatim.
+# · SHUTDOWN IS DELIBERATELY NOT A ROW. It is enforced by the OS job object
+#   (`_leash` at spawn: KILL_ON_JOB_CLOSE), not by any code path here —
+#   which is the only shape that cannot be skipped by a hard kill of the
+#   backend. No Python runs when orgtree dies, so a vocabulary row would be
+#   a row nothing could ever consult. Pinned by the suite's leash check.
+# · kill-switch — an ADDITION to the user's list, coordinator-ordered: the
+#   A/B measurement arm and the production back-out lever. A lever that
+#   cannot kill is not a lever.
+# · duplicate-resolution — an engineering artifact, not a seat death: the
+#   hire-kickoff/keeper race can briefly make TWO processes for one seat
+#   (the alternative was holding a global lock across Popen on the turn
+#   path); the redundant one is killed and THE SEAT KEEPS WARM COVERAGE
+#   throughout. Journaled every time, so "rare" stays checkable.
+# · observed-death — NOT A KILL AT ALL: bookkeeping for a process found
+#   already dead (crash). It is in this table so every pool EXIT carries a
+#   class, but it grants nobody permission to end anything.
+#
+# Every deliberate kill must carry a reason from this table; a reason it
+# does not know is journaled as UNLISTED and printed loudly, because an
+# unenumerated teardown is exactly the defect family this exists to catch.
 KILL_REASON_CLASS = {
     "retired": "retirement", "org-deleted": "retirement",
     "not-live": "retirement",
@@ -465,9 +558,12 @@ def _kill_proc(wp: WarmProc) -> None:
 
 def _on_proc_exit(wp: WarmProc) -> None:
     """Pump saw EOF: the process ended (kill, crash, or backend teardown).
-    Drop it from the pool if it is the pooled entry and unclaimed — a CLAIMED
-    proc's turn owns the aftermath."""
+    Drop it from whichever registry holds it. A parked death journals here;
+    a SERVING death only leaves the registry — its turn owns the aftermath
+    and the story (park refusal, error path, its own journal lines)."""
     with _pool_lock:
+        if _serving.get((wp.slug, wp.nid)) is wp:
+            del _serving[(wp.slug, wp.nid)]
         cur = _pool.get((wp.slug, wp.nid))
         if cur is wp and not wp.claimed:
             del _pool[(wp.slug, wp.nid)]
@@ -556,11 +652,16 @@ def claim(slug: str, nid: str, want_hash: str) -> tuple[WarmProc | None, str]:
     = correctness hazard, never served) and the caller spawns cold. The
     second return is the admit-journal reason when no process is served.
 
-    A CLAIMED process leaves the pool entirely — the turn owns it, and
-    `park_back` is the only way back in. The pool therefore holds parked
-    processes only, which is also exactly what `proc_warm` means."""
-    if not warm_enabled():
-        return None, "disabled"
+    A CLAIMED process moves from the pool to the SERVING registry — the turn
+    owns it, and `park_back` is the only way back in. The pool therefore
+    holds parked processes only, which is also exactly what `proc_warm`
+    means; the serving registry exists so telemetry still sees the process.
+
+    THE CALLER OWNS THE FLAG DECISION: this function does not consult
+    warm_enabled() — the spawn site read the flag exactly once and only
+    calls here when that read said on. A second read here could disagree
+    with the label the admit row carries (cache-misses' misattribution
+    hazard)."""
     with _pool_lock:
         wp = _pool.get((slug, nid))
         if wp is None:
@@ -569,6 +670,7 @@ def claim(slug: str, nid: str, want_hash: str) -> tuple[WarmProc | None, str]:
         del _pool[(slug, nid)]          # journal always says "crash"
         if was_alive and wp.hash == want_hash:
             wp.attach()
+            _serving[(slug, nid)] = wp
             _set_proc_warm(slug, nid, False)   # claimed = no longer parked
             return wp, "warm-hit"
     # (outside the lock) the mismatched/dead one dies now
@@ -589,6 +691,8 @@ def park_back(wp: WarmProc, cost_base: float, out_base: int = 0) -> bool:
         return False
     other: WarmProc | None = None
     with _pool_lock:
+        if _serving.get((wp.slug, wp.nid)) is wp:
+            del _serving[(wp.slug, wp.nid)]
         other = _pool.get((wp.slug, wp.nid))
         if other is wp:
             other = None
@@ -615,6 +719,8 @@ def discard(wp: WarmProc, reason: str) -> None:
     with _pool_lock:
         if _pool.get((wp.slug, wp.nid)) is wp:
             del _pool[(wp.slug, wp.nid)]
+        if _serving.get((wp.slug, wp.nid)) is wp:
+            del _serving[(wp.slug, wp.nid)]
     _kill_proc(wp)
     _set_proc_warm(wp.slug, wp.nid, False)
     _journal_proc("exit", wp.slug, wp.nid, reason, wp.hash)
@@ -718,8 +824,12 @@ def _keeper_pass() -> None:
                     _pool[(slug, nid)] = nwp
                     nwp.claimed = False
                 else:
-                    # raced a turn (its park wins) or a parallel spawn
+                    # raced a turn (its park wins) or a parallel spawn: kill
+                    # OUR redundant spawn — the seat keeps warm coverage
+                    # through the winner. Journaled like every other exit;
+                    # an unjournaled kill is an exit with no tripwire on it.
                     _kill_proc(nwp)
+                    _journal_proc("exit", slug, nid, "superseded", nwp.hash)
                     nwp = None
             if nwp is not None:
                 _set_proc_warm(slug, nid, True)
@@ -734,8 +844,11 @@ def _pool_snapshot() -> None:
     signal. RSS sums each CLI's WHOLE process tree: the MCP servers and any
     wrapper are the part of the memory question nobody counts."""
     with _pool_lock:
-        entries = [(wp.proc.pid, wp.slug, wp.nid) for wp in _pool.values()
-                   if wp.alive()]
+        parked = [(wp.proc.pid, wp.slug, wp.nid) for wp in _pool.values()
+                  if wp.alive()]
+        serving = [(wp.proc.pid, wp.slug, wp.nid)
+                   for wp in _serving.values() if wp.alive()]
+    entries = parked + serving
     elig_total = 0
     for o in store.list_orgs():
         try:
@@ -763,7 +876,12 @@ def _pool_snapshot() -> None:
         free = psutil.virtual_memory().available
     except ImportError:
         pass                                         # psutil absent: sizes 0
-    _journal("pool", warm_count=len(entries), eligible=elig_total,
+    # warm_count is EVERY warm-origin process (parked + serving): counting
+    # parked alone structurally hid each serving process and reported half
+    # the real memory in process-cache-2's two-stub probe — understating the
+    # ceiling in the reassuring direction, on the number the user asked for
+    _journal("pool", warm_count=len(entries), parked=len(parked),
+             serving=len(serving), eligible=elig_total,
              rss_total_mb=round(rss_total / 1048576, 1),
              free_ram_mb=round(free / 1048576, 1), evictions_total=0)
 
