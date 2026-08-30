@@ -81,6 +81,13 @@ export function UserNode({ pos, isDrop, stats, pip, seats, codexHire, claudeHire
   // const extraction: the kiosk-credits narrowing must survive the commit
   // closure below (a property check alone would not)
   const kioskCredits = kiosk?.credits
+  // the eye's hire chips collapse behind the same far-zoom ⋯ toggle as every
+  // other node's (NodeSquare's expandedHireEdge) — the eye has one static
+  // edge (soleHire), so a plain boolean stands in for that per-edge map.
+  // Cleared on zoom change so a cluster can't be left floating after the
+  // camera moves, same as NodeSquare.
+  const [expandedHire, setExpandedHire] = useState(false)
+  useEffect(() => { setExpandedHire(false) }, [zoom])
   return (
     // the mail glow is GONE (user ruling 2026-08-04): unread mail keeps its
     // count badge; the only thing that glows anywhere is an agent that needs
@@ -165,7 +172,9 @@ export function UserNode({ pos, isDrop, stats, pip, seats, codexHire, claudeHire
       <SpawnChips onSpawn={onSpawn} free={kioskRemaining ?? Infinity} seats={seats}
         maxTier={kiosk?.max_tier} soleHire codexHire={codexHire}
         claudeHire={claudeHire} onNoHarness={onNoHarness}
-        geminiHire={geminiHire} />
+        geminiHire={geminiHire}
+        zoom={focused ? undefined : zoom} expanded={expandedHire}
+        onToggleExpanded={() => setExpandedHire((v) => !v)} />
       {focused && (
         <EyeDesk map={map} op={op} slug={slug} toast={toast}
           /* `onFocus` IS `centerOn(USER)` — the very glide an unfocused eye
