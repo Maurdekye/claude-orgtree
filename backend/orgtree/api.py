@@ -38,6 +38,7 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, model_validator
 
+from . import crashreports
 from . import ledger as ledger_mod
 from . import (accounts, appsettings, codex_limits, limits, net, providers,
                sandbox, store, subproxy, supervisor, warmpool)
@@ -3192,6 +3193,97 @@ async def user_inbox_clear(slug: str) -> dict[str, Any]:
         store.save_org(org)
     await hub.changed(slug)
     return {"ok": True}
+
+
+# ------------------------------------------------------------ crash reports
+# The frontend's own crash reporter (frontend/src/crashReporter.ts) posts
+# here from window.onerror / unhandledrejection / the top-level React error
+# boundary — including from inside an already-broken app, via
+# navigator.sendBeacon. That is why this endpoint is unauthenticated beyond
+# whatever already gates the whole /api/ surface, and asks for nothing the
+# browser might not still have: `org` is best-effort (may be null if the
+# crash happened before any org loaded) and every field of `report` is
+# optional from this endpoint's point of view — a half-formed report is still
+# saved rather than 422ed, because a rejected crash report is a lost one.
+_CRASH_STACK_MAX = 20_000
+_CRASH_STR_MAX = 2_000
+_CRASH_BREADCRUMBS_MAX = 50
+
+
+class CrashReportBody(Body):
+    org: str | None = None
+    report: dict[str, Any]
+
+
+def _clip(s: Any, n: int) -> str:
+    s = "" if s is None else str(s)
+    return s if len(s) <= n else s[:n] + "…(truncated)"
+
+
+@app.post("/api/crash-report")
+def crash_report(body: CrashReportBody, request: Request) -> dict[str, Any]:
+    r = body.report
+    report: dict[str, Any] = {
+        "id": _clip(r.get("id") or uuid.uuid4().hex[:12], 64),
+        "at": r.get("at"),
+        "kind": _clip(r.get("kind") or "unknown", 64),
+        "message": _clip(r.get("message"), _CRASH_STR_MAX),
+        "stack": crashreports.resolve_stack(_clip(r.get("stack"), _CRASH_STACK_MAX)),
+        "url": _clip(r.get("url"), 1000),
+        "userAgent": _clip(r.get("userAgent"), 500),
+    }
+    if r.get("componentStack"):
+        report["componentStack"] = _clip(r["componentStack"], _CRASH_STACK_MAX)
+    bc = r.get("breadcrumbs")
+    if isinstance(bc, list):
+        report["breadcrumbs"] = [
+            {"at": b.get("at"), "kind": _clip(b.get("kind"), 32),
+             "detail": _clip(b.get("detail"), 300)}
+            for b in cast("list[Any]", bc)[-_CRASH_BREADCRUMBS_MAX:]
+            if isinstance(b, dict)
+        ]
+    org_slug = (body.org or "").strip() or None
+    path = crashreports.save_report(org_slug, report)
+    # Delivery is a bonus on top of the save above, never a condition of it —
+    # any failure here (bad org, node missing, node not live, mail refused)
+    # must not turn an already-durable report into a 500. Kiosk/public
+    # visitors are save-only: their crash is still real and still recorded,
+    # but a public link is not a channel that should be able to page an
+    # internal agent on demand.
+    delivered = False
+    if org_slug and not _public_slug(request):
+        try:
+            with store.DOC_LOCK:
+                org = store.load_org(org_slug)
+                target = org.nodes.get("crash-reporting")
+                if target is not None and target.get("state") == "live":
+                    org.post_mail(USER, "crash-reporting",
+                                  crashreports.format_mail_body(report))
+                    store.save_org(org)
+                    delivered = True
+            if delivered:
+                mail_notify(org_slug, USER, "crash-reporting")
+                supervisor.send_message(
+                    org_slug, "crash-reporting",
+                    "(orgtree) A UI crash report just arrived — act on it "
+                    "now.", mail_ping=True)
+        except (LedgerError, OSError):
+            pass
+    return {"id": report["id"], "saved": True, "delivered": delivered,
+            "path": os.path.basename(path)}
+
+
+@app.get("/api/crash-reports")
+def crash_reports_list(request: Request, org: str | None = None,
+                       limit: int = 50) -> dict[str, Any]:
+    """Retrieval after the fact — "the UI died ten minutes ago, get me that
+    report" answered without needing the tab that crashed."""
+    if _public_slug(request):
+        raise HTTPException(404, "not found")
+    reports = crashreports.list_reports(limit=min(max(limit, 1), 200))
+    if org:
+        reports = [rep for rep in reports if rep.get("org") == org]
+    return {"reports": reports}
 
 
 # --------------------------------------------------------- inspector + admin

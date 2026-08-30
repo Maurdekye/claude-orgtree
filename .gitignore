@@ -4,6 +4,7 @@ docs/todos.md
 __pycache__/
 node_modules/
 dist/
+sourcemaps/
 .venv/
 shots*/
 
