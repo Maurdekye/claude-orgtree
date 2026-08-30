@@ -3961,7 +3961,7 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                     result = org.watchdog_create(
                         body.node, a.get("name"), kind, tgt,
                         a.get("pattern"), a.get("interval_s") or 60,
-                        a.get("notice"), a.get("shell"))
+                        a.get("notice"), a.get("shell"), a.get("once"))
                     # ☞ the smoke run happens AFTER the lock (see below): it
                     # spawns a real process and waits seconds for it, and
                     # DOC_LOCK is the whole machine's doc lock. Staged, not

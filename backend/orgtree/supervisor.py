@@ -11546,7 +11546,14 @@ def wd_list_row(w: dict[str, Any]) -> dict[str, Any]:
             # appears only on unhealthy dogs cannot be trusted to be absent
             # for a healthy one
             "health": wd_health(w) or "ok",
-            "checks_run": int(w.get("checks_run") or 0)}
+            "checks_run": int(w.get("checks_run") or 0),
+            # D-200, and here for the same reason as `health` above: `once` is
+            # sparse on disk, and the dict comprehension drops falsy-absent
+            # keys, so without this line a persistent dog would answer
+            # "once: (missing)" and a caller would have to know that means
+            # false. An owner checking whether its dog will come back deserves
+            # a straight answer.
+            "once": bool(w.get("once"))}
 
 
 def wd_smoke(org: Org, owner: str, kind: str, target: str,
@@ -11763,21 +11770,43 @@ def _wd_fire(slug: str, wid: str, name: str, lines: list[str],
             + (f"\n… {len(lines) - 20} more" if len(lines) > 20 else ""))
     owner = None
     notice = False
+    one_shot = False
+    kind = ""
     try:
         with store.DOC_LOCK:
             org = store.load_org(slug)
+            # ⚠ READ THE FLAGS BEFORE THE FIRE, under the SAME lock (D-200).
+            # This used to read `notice` AFTER `watchdog_fire` returned, which
+            # was correct while a fire always left the dog in place. A
+            # ONE-SHOT dog is gone from the document by the time the fire
+            # returns, so the lookup would raise, `notice` would fall back to
+            # False, and every one-shot NOTICE dog would silently WAKE its
+            # owner — the exact opposite of what it was armed with, with
+            # nothing anywhere to show why. Reading first keeps the original
+            # invariant (one lock spans both, so no other dog's setting can
+            # be substituted) and survives the removal.
+            try:
+                w0 = org._watchdog(wid)
+                notice = bool(w0.get("notice"))
+                one_shot = bool(w0.get("once"))
+                kind = str(w0.get("kind") or "")
+            except LedgerError:
+                notice = one_shot = False
             owner = org.watchdog_fire(wid, lines[0] if lines else "event",
                                       body)
-            # read the flag under the SAME lock that recorded the fire — a
-            # dog removed/re-armed between the two would otherwise decide
-            # this fire's wake from a different dog's setting
-            try:
-                notice = bool(org._watchdog(wid).get("notice"))
-            except LedgerError:
-                notice = False
             store.save_org(org)
     except LedgerError:
         return
+    if one_shot and owner and kind == "stream":
+        # A spent one-shot STREAM dog owns a live listening child. `_wd_tick`
+        # does sweep streams whose dog has vanished from the doc, so this
+        # would be reaped within a tick anyway — but "within a tick" is not
+        # what "removes itself as part of the fire" promises, and a listener
+        # that keeps running after its dog is gone is exactly the leak this
+        # feature must not introduce. Reap it here, deterministically; the
+        # tick sweep stays as the backstop for the paths that do not come
+        # through here.
+        _wd_reap_stream((slug, wid))
     if owner:
         # the spark is the mailbox animation, not a wake — a notice dog still
         # lights the panel, exactly as orgtree_send_notice does
