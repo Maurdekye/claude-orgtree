@@ -8,7 +8,8 @@ import type {
   HireDefaultsRequest, HistoryPayload, HostPayload,
   InboxPayload, KioskCfgRequest, KioskSaveResult, KioskSpecRequest,
   McpServersPayload, OpRequest, OpResult, OrgListEntry, OrgMdPayload,
-  OrgNetReveal, ProvidersPayload, ReorderRequest, ScopeRequest, ScratchPayload,
+  OrgNetReveal, ProvidersPayload, ReorderRequest, RuntimeSettingsPayload,
+  ScopeRequest, ScratchPayload,
   SendMessageResult,
   SettingsRequest, SettingsResult, SweepPreview, SweepResult, TreePayload,
   AccountsPayload, AccountUsage, UsageAllPayload,
@@ -264,6 +265,16 @@ export const setProviderEnabled = (
   provider: string, enabled: boolean,
 ): Promise<ProvidersPayload> =>
   req(`/api/providers/${encodeURIComponent(provider)}/enabled`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled }),
+  })
+export const getRuntimeSettings = (): Promise<RuntimeSettingsPayload> =>
+  req('/api/app-settings/runtime')
+export const setWarmingEnabled = (
+  enabled: boolean,
+): Promise<RuntimeSettingsPayload> =>
+  req('/api/app-settings/runtime', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ enabled }),

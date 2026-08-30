@@ -3635,6 +3635,7 @@ html.mobile .md table { display: block; overflow-x: auto; max-width: 100%; }
 .app-pref-control { margin-left: auto; flex-wrap: nowrap; }
 .app-pref-value { min-width: 4.5em; text-align: center; }
 .app-pref-check { justify-content: flex-start; cursor: pointer; }
+.app-pref-state { margin-left: auto; color: var(--dim); font-size: 11px; }
 .lin-provider-off {
   color: var(--dim); font-size: 11.5px; line-height: 1.35;
 }

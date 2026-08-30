@@ -3069,6 +3069,55 @@ Controls include real weekly/session limit replies, an unseen per-model reply,
 “organisation limit policy” false-ALIVE trap, shared-detector value replacement,
 and a child-process environment witness. The old exact-sentence classifier is
 kept as a failing control for the first three blind spots.
+### D-203 · App settings are machine-wide, and provider off is an admission policy
+Ruling (user, 2026-08-30): the Accounts surface becomes a tabbed App settings
+panel. Provider choices and process warming describe what THIS MACHINE may do
+for every org, so they are durable server state; desk text size and active-team
+stacking describe the browser/device being looked through, so they retain the
+existing app-wide localStorage keys with no org slug. The per-org Settings
+panel contains neither browser preference after this decision.
+
+Provider enablement is a FOURTH FACT, never a fake detection result.
+`user_enabled=false` leaves `installed` and `connected` truthful, folds
+`hire_enabled` to false, and is checked first by the shared client offer rule.
+Thus the provider vanishes from hire/model/usage surfaces while remaining in
+App settings → Providers with its switch off — the one place it MUST remain or
+the choice cannot be reversed. If a disabled provider is later uninstalled,
+that tab retains only its compact off switch: no tier list or install blurb is
+reintroduced, but a durable preference can never strand its own recovery UI.
+Missing settings and an unknown payload mean enabled/shown, preserving old
+backends and unopened settings screens.
+
+This is BEHAVIOUR, not cosmetic filtering. `provider_hire_gate` applies the
+durable choice at every named admission entry point: user hire, agent hire,
+user switch, agent switch, user rehire with a tier, user plain rehire and agent
+plain rehire. The two plain rehire paths check only the explicit choice and
+skip transient install/sign-in state, preserving D-197's recovery path while a
+provider is temporarily unavailable. Existing live agents keep running and
+taking turns; switching AWAY remains allowed because the gate inspects only
+the target tier. An archived bearer on a disabled provider cannot be rehired
+until it is re-enabled, says so beside the control, and its free transcript
+reader remains available. A machine may deliberately disable every provider;
+the resulting hire empty state points back to App settings → Providers.
+
+Provider choices live in `<ORGTREE_DATA>/app-settings.json`, written
+atomically. Reads of a missing or damaged record default on; writes refuse to
+replace a damaged/unknown-version record. Process warming deliberately does
+NOT join that file: D-201's `<ORGTREE_DATA>/warm.flag` is simultaneously the
+user preference, the runtime back-out lever and the measurement's A/B arm.
+The Runtime-tab switch calls `warmpool.warm_enabled()` / `set_enabled()`
+directly, so no mirror can say on while the runtime is off. Its missing-value
+default is ON.
+
+The tabs use stable string identity and remain mounted while hidden, with
+tablist/tab/tabpanel roles, roving focus and arrow/Home/End navigation. Display
+labels carry their necessary facts inline (`this browser`, and the more-than-8
+stack threshold); explanatory blurbs are absent by the user's explicit style
+ruling. Desk DPI now uses the same live external-store contract as crowd
+stacking, so same-tab writes and other-window storage events update at once.
+The org.md editor remains per-org but grows into a responsive, vertically
+resizable document field; its unsaved buffer stays in the owning panel across
+layout/resize changes.
 
 ### D-183 · the gemini probe phase: ACP is the substrate, and four wire facts are load-bearing
 Findings (gemini-provider, 2026-08-29; every one measured live on gemini-cli

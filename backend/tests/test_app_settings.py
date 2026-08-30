@@ -170,6 +170,10 @@ def put_round_trip_and_unknown_refusal() -> None:
         assert got["user_enabled"] is False, got
         bad = client.put("/api/providers/nope/enabled", json={"enabled": False})
         assert bad.status_code == 404, bad.text
+        denied = api._public_denied(
+            "PUT", "/api/providers/claude/enabled", "public-org")
+        assert denied == (
+            403, "kiosk: configuration is managed from the admin side"), denied
     finally:
         api._providers_payload = real_payload                 # type: ignore[assignment]
 

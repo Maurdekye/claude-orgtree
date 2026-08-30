@@ -30,7 +30,8 @@ import type {
 } from '../types'
 import {
   addAccountKey, deleteAccountKey, getAccounts, getAccountUsage,
-  getProviders, setAccountKeyOrder, setProviderEnabled,
+  getProviders, getRuntimeSettings, setAccountKeyOrder, setProviderEnabled,
+  setWarmingEnabled,
 } from '../api'
 import { CheckIcon, DataUsageIcon, DeleteIcon } from '../icons'
 import {
@@ -159,9 +160,10 @@ export function UsageBars({ u }: { u: AccountUsage }) {
   )
 }
 
-type AppSettingsTab = 'providers' | 'display'
+type AppSettingsTab = 'providers' | 'runtime' | 'display'
 const APP_TABS: { id: AppSettingsTab; label: string }[] = [
   { id: 'providers', label: 'Providers' },
+  { id: 'runtime', label: 'Runtime' },
   { id: 'display', label: 'Display' },
 ]
 
@@ -250,8 +252,16 @@ export function AccountsPanel({ toast, close }: {
   // must keep working if this endpoint is missing (an old backend) or slow.
   const [providers, setProviders] = useState<ProviderInfo[] | null>(null)
   const [providerBusy, setProviderBusy] = useState<string | null>(null)
+  const [warming, setWarming] = useState<boolean | null>(null)
+  const [warmingBusy, setWarmingBusy] = useState(false)
+  const [warmingErr, setWarmingErr] = useState<string | null>(null)
   useEffect(() => {
     getProviders().then((p) => setProviders(p.providers)).catch(() => {})
+  }, [])
+  useEffect(() => {
+    getRuntimeSettings()
+      .then((p) => { setWarming(p.warming_enabled); setWarmingErr(null) })
+      .catch((e: Error) => setWarmingErr(e.message))
   }, [])
   const claudeProv = providers?.find((p) => p.id === 'claude')
   const codex = providers?.find((p) => p.id === 'openai')
@@ -440,7 +450,7 @@ export function AccountsPanel({ toast, close }: {
               <span className="dim"> · Claude Code
                 {claudeProv?.status.version ? ` ${claudeProv.status.version}` : ''}</span>
               <ProviderSwitch provider={claudeProv}
-                busy={providerBusy === 'claude'} onChange={toggleProvider} />
+                busy={providerBusy !== null} onChange={toggleProvider} />
             </div>
             {/* D-202: Claude is the ONE provider whose absence is reported
                 rather than hidden — "since orgtree is built around it, do show
@@ -609,7 +619,7 @@ export function AccountsPanel({ toast, close }: {
               {codex?.user_enabled !== false && !codex?.hire_enabled
                 && <span className="acct-preview-tag">preview</span>}
               <ProviderSwitch provider={codex}
-                busy={providerBusy === 'openai'} onChange={toggleProvider} />
+                busy={providerBusy !== null} onChange={toggleProvider} />
             </div>
             {!codex && (
               <div className="dim acct-prov-note">
@@ -663,7 +673,7 @@ export function AccountsPanel({ toast, close }: {
               {gemini?.user_enabled !== false && !gemini?.hire_enabled
                 && <span className="acct-preview-tag">preview</span>}
               <ProviderSwitch provider={gemini}
-                busy={providerBusy === 'google'} onChange={toggleProvider} />
+                busy={providerBusy !== null} onChange={toggleProvider} />
             </div>
             {!gemini && (
               <div className="dim acct-prov-note">
@@ -706,6 +716,35 @@ export function AccountsPanel({ toast, close }: {
             </>}
           </>
         )}
+        </div>
+
+        <div id="app-settings-panel-runtime" role="tabpanel"
+          aria-labelledby="app-settings-tab-runtime"
+          hidden={tab !== 'runtime'} className="app-settings-panel">
+          {warmingErr && <div className="ask-warn">
+            could not read runtime settings: {warmingErr}</div>}
+          <label className="app-pref-row app-pref-check">
+            <input type="checkbox" role="switch"
+              aria-label="keep agent processes warm"
+              checked={warming ?? true}
+              disabled={warming == null || warmingBusy}
+              onChange={(e) => {
+                const enabled = e.target.checked
+                setWarmingBusy(true)
+                setWarmingEnabled(enabled)
+                  .then((p) => {
+                    setWarming(p.warming_enabled); setWarmingErr(null)
+                    toast([`process warming turned ${p.warming_enabled ? 'on' : 'off'}`])
+                  })
+                  .catch((runtimeErr: Error) => {
+                    setWarmingErr(runtimeErr.message)
+                    toast([`error: ${runtimeErr.message}`])
+                  })
+                  .finally(() => setWarmingBusy(false))
+              }} />
+            keep agent processes warm
+            <span className="app-pref-state">{warming === false ? 'off' : 'on'}</span>
+          </label>
         </div>
 
         <div id="app-settings-panel-display" role="tabpanel"

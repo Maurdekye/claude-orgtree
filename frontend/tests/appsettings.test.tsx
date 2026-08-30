@@ -50,6 +50,10 @@ function stubFetch(seen: Seen[], initial = ON): void {
     seen.push({ method, path, body })
     const payload = path === '/api/accounts' ? ACCOUNTS
       : path === '/api/providers' ? initial
+        : path === '/api/app-settings/runtime' && method === 'GET'
+          ? { warming_enabled: true }
+          : path === '/api/app-settings/runtime' && method === 'PUT'
+            ? { warming_enabled: Boolean((body as { enabled?: boolean })?.enabled) }
         : path === '/api/providers/claude/enabled' && method === 'PUT'
           ? CLAUDE_OFF : null
     if (!payload) return Promise.reject(new Error(`unexpected ${method} ${path}`))
@@ -75,7 +79,7 @@ test('§1 stable accessible tabs navigate by key without swapping identity',
     try {
       const tabs = view.el.querySelectorAll<HTMLButtonElement>('[role="tab"]')
       assert.deepEqual([...tabs].map((b) => b.textContent?.trim()),
-        ['Providers', 'Displaythis browser'])
+        ['Providers', 'Runtime', 'Displaythis browser'])
       assert.equal(tabs[0]!.getAttribute('aria-selected'), 'true')
       assert.equal(tabs[1]!.getAttribute('aria-selected'), 'false')
       await inAct(async () => {
@@ -86,6 +90,13 @@ test('§1 stable accessible tabs navigate by key without swapping identity',
       assert.equal(tabs[0]!.getAttribute('aria-selected'), 'false')
       assert.equal(tabs[1]!.getAttribute('aria-selected'), 'true')
       assert.equal(document.activeElement, tabs[1])
+      await inAct(async () => {
+        tabs[1]!.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'End', bubbles: true,
+        }))
+      })
+      assert.equal(tabs[2]!.getAttribute('aria-selected'), 'true')
+      assert.equal(document.activeElement, tabs[2])
       const display = view.el.querySelector('#app-settings-panel-display')!
       assert.equal(display.hasAttribute('hidden'), false)
     } finally { await view.unmount(); delete g.fetch }
@@ -157,7 +168,27 @@ test('§3 Display owns both browser-local controls, with durable values and no '
   }
 })
 
-test('§4 a durable off choice keeps its recovery switch after uninstall, but '
+test('§4 Runtime reads default-on and writes the one warming control', async () => {
+  const seen: Seen[] = []
+  stubFetch(seen)
+  const view = await mountSettings()
+  try {
+    const runtime = [...view.el.querySelectorAll<HTMLButtonElement>('[role="tab"]')]
+      .find((b) => b.textContent?.includes('Runtime'))!
+    await inAct(async () => { runtime.click() })
+    const sw = view.el.querySelector<HTMLInputElement>(
+      'input[aria-label="keep agent processes warm"]')!
+    assert.equal(sw.checked, true, 'missing warm.flag defaults on')
+    await inAct(async () => { sw.click(); await flush(10) })
+    assert.equal(sw.checked, false)
+    assert.deepEqual(seen.find((r) => r.method === 'PUT'), {
+      method: 'PUT', path: '/api/app-settings/runtime',
+      body: { enabled: false },
+    })
+  } finally { await view.unmount(); delete g.fetch }
+})
+
+test('§5 a durable off choice keeps its recovery switch after uninstall, but '
   + 'does not restore absent-provider details', async () => {
   stubFetch([], CODEX_OFF_ABSENT)
   const view = await mountSettings()
