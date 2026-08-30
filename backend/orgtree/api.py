@@ -6208,9 +6208,15 @@ def main() -> None:
         servers.append(uvicorn.Server(uvicorn.Config(
             PublicGateway(app), host="0.0.0.0", port=PUBLIC_PORT)))
     if sandbox.BRIDGE_PORT:
+        # The frozen org credential rides in the Anthropic URL because the
+        # CLI cannot attach a private header. Uvicorn logs request paths by
+        # default, so suppress only this listener's access log in frozen mode.
+        # The relay also logs no paths. Standard logging stays unchanged.
+        bridge_log = ({"access_log": False}
+                      if not policy.allow_sandbox_internet else {})
         servers.append(uvicorn.Server(uvicorn.Config(
             BridgeGateway(app), host=sandbox.bridge_bind_host(),
-            port=sandbox.BRIDGE_PORT)))
+            port=sandbox.BRIDGE_PORT, **bridge_log)))
     if len(servers) == 1:
         uvicorn.run(app, host=host, port=PORT)
         return

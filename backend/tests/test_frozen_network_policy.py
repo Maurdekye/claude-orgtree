@@ -123,8 +123,9 @@ try:
         configs = []
 
         class Config:
-            def __init__(self, app, *, host, port):
+            def __init__(self, app, *, host, port, **kwargs):
                 self.app, self.host, self.port = app, host, port
+                self.kwargs = kwargs
                 configs.append(self)
 
         class Server:
@@ -169,8 +170,10 @@ try:
             sandbox.BRIDGE_PORT = saved["bridge_port"]
         assert [(c.host, c.port) for c in configs] == [
             ("127.0.0.1", api.PORT), ("127.0.0.1", 7362)], configs
+        assert configs[0].kwargs == {}, configs[0].kwargs
+        assert configs[1].kwargs == {"access_log": False}, configs[1].kwargs
 
-    check("supported `python -m orgtree.api` wires the host-only bridge bind",
+    check("supported launch uses a host-only, credential-log-free bridge",
           supported_main_uses_the_host_only_bridge_bind)
 
     def denied_proxy_never_reads_credentials_or_opens_upstream():

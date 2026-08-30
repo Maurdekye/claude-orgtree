@@ -27,7 +27,9 @@ from urllib.parse import SplitResult, urlsplit
 _STEER = re.compile(
     r"^/api/orgs/[a-z0-9@-]+/nodes/[^/]+/steer$")
 _ANTHROPIC = re.compile(
-    r"^/anthropic/[A-Za-z0-9_-]{16,256}/v1/messages$")
+    # bridgeauth accepts at most 4096 token bytes. The fixed syntax consumes
+    # 38 bytes outside the canonical base64url org payload.
+    r"^/anthropic/otb1\.[A-Za-z0-9_-]{1,4058}\.[a-f0-9]{32}/v1/messages$")
 _HOP = {
     "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
     "te", "trailer", "transfer-encoding", "upgrade",

@@ -744,12 +744,14 @@ if section("§2  the container contract"):
 
             env = dict(agent_run[i + 1].split("=", 1)
                        for i, x in enumerate(agent_run) if x == "-e")
-            assert env["ANTHROPIC_BASE_URL"] == (
-                f"http://{sandbox.FROZEN_GATEWAY_ALIAS}:"
-                f"{sandbox.FROZEN_GATEWAY_PORT}/anthropic/{'7a' * 16}")
+            assert not any(k.startswith("ANTHROPIC_") for k in env), env
             assert sandbox.bridge_url() == (
                 f"http://{sandbox.FROZEN_GATEWAY_ALIAS}:"
                 f"{sandbox.FROZEN_GATEWAY_PORT}")
+            bridge_file = os.path.join(
+                FDISK.root, slug, "home", "orgtree", ".bridge")
+            assert json.load(open(bridge_file, encoding="utf-8")) == {
+                "url": sandbox.bridge_url()}
         finally:
             os.environ.pop(deployment.PROFILE_ENV, None)
 

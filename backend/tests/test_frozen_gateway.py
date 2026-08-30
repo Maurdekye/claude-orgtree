@@ -32,7 +32,8 @@ def check(label, fn):
     print(f"  ok {PASS:2d}  {label}")
 
 
-SECRET = "ab" * 16
+SECRET = "otb1.ZXhhbXBsZQ." + "ab" * 16
+LEGACY_SECRET = "ab" * 16
 ALLOWED = [
     "/api/agent",
     "/api/orgs/example/nodes/alice@2/steer",
@@ -45,6 +46,8 @@ DENIED = [
     f"/anthropic/{SECRET}/v1/models",
     f"/anthropic/{SECRET}/v1/messages/",
     "/anthropic/short/v1/messages",
+    f"/anthropic/{LEGACY_SECRET}/v1/messages",
+    f"/anthropic/otb1.ZXhhbXBsZQ.{'AB' * 16}/v1/messages",
     "http://127.0.0.1:1/api/agent",
     "http://[broken/api/agent",
 ]
