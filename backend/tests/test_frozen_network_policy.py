@@ -80,6 +80,44 @@ try:
     check("frozen bridge binds loopback/Docker-host only, never every interface",
           frozen_bridge_bind_is_not_lan_wide)
 
+    def frozen_bridge_cannot_be_disabled_or_redirect_to_port_zero():
+        profile("frozen")
+        saved = sandbox.BRIDGE_PORT
+        try:
+            sandbox.BRIDGE_PORT = 0
+            try:
+                sandbox.validate_deployment_network()
+                raise AssertionError("disabled frozen bridge was accepted")
+            except deployment.DeploymentConfigError as e:
+                assert "ORGTREE_BRIDGE_PORT" in str(e), e
+        finally:
+            sandbox.BRIDGE_PORT = saved
+
+    check("frozen refuses a disabled host bridge instead of using port zero",
+          frozen_bridge_cannot_be_disabled_or_redirect_to_port_zero)
+
+    def startup_preflight_uses_the_same_network_refusal():
+        profile("frozen")
+        saved_bridge = sandbox.BRIDGE_PORT
+        saved_public = api.PUBLIC_PORT
+        saved_expose = os.environ.pop(api.EXPOSE_ENV, None)
+        try:
+            sandbox.BRIDGE_PORT = 0
+            api.PUBLIC_PORT = 0
+            try:
+                api._deployment_preflight()
+                raise AssertionError("startup accepted a disabled bridge")
+            except deployment.DeploymentConfigError as e:
+                assert "ORGTREE_BRIDGE_PORT" in str(e), e
+        finally:
+            sandbox.BRIDGE_PORT = saved_bridge
+            api.PUBLIC_PORT = saved_public
+            if saved_expose is not None:
+                os.environ[api.EXPOSE_ENV] = saved_expose
+
+    check("startup and ASGI lifespan share the frozen network preflight",
+          startup_preflight_uses_the_same_network_refusal)
+
     def supported_main_uses_the_host_only_bridge_bind():
         profile("frozen")
         configs = []

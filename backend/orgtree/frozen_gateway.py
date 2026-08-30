@@ -122,7 +122,8 @@ class FrozenGatewayHandler(BaseHTTPRequestHandler):
         }
         host = self.upstream.hostname
         assert host is not None                  # validated by configure()
-        port = self.upstream.port or 80
+        port = self.upstream.port
+        assert port is not None                  # validated by configure()
         target = urlsplit(target_text)
         fixed_target = target.path + (("?" + target.query)
                                       if target.query else "")
@@ -199,11 +200,12 @@ def configure(upstream: str) -> None:
     except ValueError as e:
         raise ValueError("--upstream must be a valid http origin") from e
     try:
-        parsed.port
+        port = parsed.port
     except ValueError as e:
         raise ValueError("--upstream contains an invalid port") from e
     if parsed.scheme != "http" or not parsed.hostname or parsed.path not in ("", "/") \
-            or parsed.query or parsed.fragment or parsed.username is not None:
+            or parsed.query or parsed.fragment or parsed.username is not None \
+            or port is None or not 1 <= port <= 65535:
         raise ValueError("--upstream must be one fixed http://host:port origin")
     FrozenGatewayHandler.upstream = parsed
 

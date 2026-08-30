@@ -5945,6 +5945,7 @@ def _deployment_preflight() -> deployment.DeploymentPolicy:
         raise deployment.DeploymentConfigError(
             "the frozen deployment profile forbids the public kiosk listener; "
             "unset ORGTREE_PUBLIC_PORT (or set it to 0)")
+    sandbox.validate_deployment_network(policy=policy)
     legacy_auth = os.environ.get("ORGTREE_SANDBOX_API_KEY", "").strip().lower()
     if not policy.allow_legacy_sandbox_credentials \
             and legacy_auth == "subscription":

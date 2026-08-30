@@ -74,6 +74,20 @@ check("the relay bind resolver refuses a wildcard interface",
       bind_never_accepts_a_wildcard)
 
 
+def upstream_requires_an_explicit_usable_port():
+    for origin in ("http://127.0.0.1", "http://127.0.0.1:0",
+                   "http://127.0.0.1:65536"):
+        try:
+            gateway.configure(origin)
+            raise AssertionError(f"invalid upstream was accepted: {origin}")
+        except ValueError:
+            pass
+
+
+check("the fixed upstream requires an explicit usable TCP port",
+      upstream_requires_an_explicit_usable_port)
+
+
 class Upstream(BaseHTTPRequestHandler):
     hits = []
 

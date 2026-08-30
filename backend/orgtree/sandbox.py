@@ -467,8 +467,22 @@ def bridge_url() -> str:
     their private network's fixed-upstream relay instead.
     """
     if not deployment.current_policy().allow_sandbox_internet:
+        validate_deployment_network()
         return f"http://{FROZEN_GATEWAY_ALIAS}:{FROZEN_GATEWAY_PORT}"
     return f"http://host.docker.internal:{BRIDGE_PORT}"
+
+
+def validate_deployment_network(
+        *, policy: deployment.DeploymentPolicy | None = None) -> None:
+    """Refuse a frozen profile that has no usable host bridge listener."""
+    selected = policy or deployment.current_policy()
+    if selected.allow_sandbox_internet:
+        return
+    if not 1 <= BRIDGE_PORT <= 65535:
+        raise deployment.DeploymentConfigError(
+            "the frozen deployment profile requires ORGTREE_BRIDGE_PORT to "
+            "be an enabled TCP port from 1 through 65535; the private "
+            "sandbox gateway is the only permitted service path")
 
 
 def bridge_bind_host() -> str:
@@ -482,6 +496,7 @@ def bridge_bind_host() -> str:
     """
     if deployment.current_policy().allow_sandbox_internet:
         return "0.0.0.0"
+    validate_deployment_network()
     if sys.platform in ("win32", "darwin"):
         return "127.0.0.1"
     try:
@@ -610,6 +625,7 @@ def _ensure_frozen_gateway(slug: str, image_tag: str) -> None:
     The relay has no writable state, no capabilities, no published port, and
     runs only frozen_gateway.py from the backend's read-only bind.
     """
+    validate_deployment_network()
     net = frozen_network_name(slug)
     name = frozen_gateway_name(slug)
     with _frozen_network_lock:
