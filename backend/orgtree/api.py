@@ -39,6 +39,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, model_validator
 
 from . import crashreports
+from . import deployment
 from . import ledger as ledger_mod
 from . import (accounts, appsettings, codex_limits, limits, net, providers,
                sandbox, store, subproxy, supervisor, warmpool)
@@ -438,7 +439,8 @@ def _share_url(token: str | None) -> str | None:
     """The preauthenticated URL for a kiosk token: explicit origin, else the
     running tunnel's hostname, else best-guess this machine's LAN address."""
     global _LAN_IP
-    if not token or not PUBLIC_PORT:
+    if (not deployment.current_policy().allow_public_listener
+            or not token or not PUBLIC_PORT):
         return None
     origin = _public_origin()
     if origin:
@@ -506,6 +508,10 @@ ledger_mod.external_candidates = _external_candidates
 @app.on_event("startup")  # type: ignore[deprecated]  # migrating to lifespan is a runtime change (D-079: inert wave)
 async def _wire_notify() -> None:  # type: ignore[unused-function]  # registered by the decorator
     global mail_notify, _LOOP
+    # A direct ``uvicorn orgtree.api:app`` launch bypasses main(), so repeat
+    # the install-wide preflight at the ASGI lifecycle boundary. It must run
+    # before warm processes or background drivers can admit a turn.
+    _deployment_preflight()
     loop = asyncio.get_running_loop()
     _LOOP = loop  # type: ignore[constant-redefinition]  # captured-at-startup cell, not a constant
     try:
@@ -756,6 +762,13 @@ def orgs_list(request: Request) -> list[dict[str, Any]]:
 
 @app.post("/api/orgs")
 def orgs_create(body: OrgCreate) -> dict[str, Any]:
+    policy = deployment.current_policy()
+    requested_sandbox = (bool(body.kiosk.sandbox)
+                         if body.kiosk is not None else bool(body.sandbox))
+    if policy.require_sandboxed_orgs and not requested_sandbox:
+        raise HTTPException(
+            422, "the frozen deployment profile requires every org to be "
+                 "sandboxed — create this org with sandbox enabled")
     # sandboxed orgs ride a fixed-size virtual disk with a 4096 MB minimum
     # (the system seed and transcripts count inside the cap) — refuse smaller
     # limits at creation instead of silently flooring them at migration
@@ -5827,8 +5840,60 @@ def _admin_host() -> str:
     Still deliberately NOT a setting in the org doc: a setting can be flipped
     by anything that can write the doc, including an agent.
     """
-    return ("0.0.0.0" if os.environ.get(EXPOSE_ENV, "").strip().lower() in _TRUTHY
-            else "127.0.0.1")
+    exposed = os.environ.get(EXPOSE_ENV, "").strip().lower() in _TRUTHY
+    if exposed and not deployment.current_policy().allow_admin_exposure:
+        raise deployment.DeploymentConfigError(
+            "the frozen deployment profile forbids ORGTREE_EXPOSE_ADMIN; "
+            "unset it so the unauthenticated admin API remains loopback-only")
+    return "0.0.0.0" if exposed else "127.0.0.1"
+
+
+def _deployment_preflight() -> deployment.DeploymentPolicy:
+    """Validate the official backend launch against the install-wide policy.
+
+    Frozen mode never converts existing state or silently ignores a
+    contradictory exposure setting. Startup refusal keeps the weaker state
+    offline until the operator explicitly inventories and migrates it.
+    """
+
+    policy = deployment.current_policy()
+    # A conflicting exposure request is a configuration error, not an option
+    # to silently ignore.
+    _admin_host()
+    if not policy.allow_public_listener and PUBLIC_PORT:
+        raise deployment.DeploymentConfigError(
+            "the frozen deployment profile forbids the public kiosk listener; "
+            "unset ORGTREE_PUBLIC_PORT (or set it to 0)")
+    legacy_auth = os.environ.get("ORGTREE_SANDBOX_API_KEY", "").strip().lower()
+    if not policy.allow_legacy_sandbox_credentials \
+            and legacy_auth == "subscription":
+        raise deployment.DeploymentConfigError(
+            "the frozen deployment profile disables legacy sandbox credential "
+            "copying; ORGTREE_SANDBOX_API_KEY='subscription' is forbidden — "
+            "use proxied auth or an explicit API key")
+    if not policy.require_sandboxed_orgs:
+        return policy
+
+    unsandboxed: list[str] = []
+    for row in store.list_orgs():
+        slug = str(row.get("slug") or "<unknown>")
+        try:
+            org = store.load_org(slug)
+        except (LedgerError, OSError) as e:
+            # Could not prove the security property, so frozen mode does not
+            # start. Keep the slug and a compact reason for inventory work.
+            unsandboxed.append(f"{slug} (could not verify: {e})")
+            continue
+        if not sandbox.is_sandboxed(org):
+            unsandboxed.append(slug)
+    if unsandboxed:
+        raise deployment.DeploymentConfigError(
+            "the frozen deployment profile requires every org to be "
+            "sandboxed; refusing startup because these orgs are not "
+            f"sandboxed: {', '.join(unsandboxed)}. Recreate or migrate them "
+            "as sandboxed orgs before enabling frozen mode (or select the "
+            "standard profile while doing the migration).")
+    return policy
 
 
 def _ws_impl() -> str | None:
@@ -5879,6 +5944,17 @@ def main() -> None:
               f"  at a different ORGTREE_DATA.\n"
               f"{bar}\n", flush=True)
         raise SystemExit(1)
+
+    try:
+        policy = _deployment_preflight()
+    except deployment.DeploymentConfigError as e:
+        bar = "!" * 74
+        print(f"\n{bar}\n"
+              "  DEPLOYMENT POLICY REFUSED STARTUP\n\n"
+              f"  {e}\n\n"
+              "  Fix the configuration/state above, then start orgtree again.\n"
+              f"{bar}\n", flush=True)
+        raise SystemExit(2) from e
 
     if _ws_impl() is None:
         bar = "!" * 74
@@ -5937,7 +6013,7 @@ def main() -> None:
     # preauthenticated /k/<token> URLs; the bridge listener serves nothing but
     # secret-gated sandbox traffic
     servers = [uvicorn.Server(uvicorn.Config(app, host=host, port=PORT))]
-    if PUBLIC_PORT:
+    if PUBLIC_PORT and policy.allow_public_listener:
         servers.append(uvicorn.Server(uvicorn.Config(
             PublicGateway(app), host="0.0.0.0", port=PUBLIC_PORT)))
     if sandbox.BRIDGE_PORT:
