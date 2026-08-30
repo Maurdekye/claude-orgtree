@@ -203,7 +203,8 @@ function ProviderSwitch({ provider, busy, onChange }: {
   busy: boolean
   onChange: (provider: ProviderInfo, enabled: boolean) => void
 }) {
-  if (!provider?.status.installed) return null
+  if (!provider || (!provider.status.installed && provider.user_enabled !== false))
+    return null
   const enabled = provider.user_enabled !== false
   return (
     <label className="provider-switch">
@@ -262,8 +263,10 @@ export function AccountsPanel({ toast, close }: {
   // Settings is the deliberate exception to provider hiding: an installed
   // provider the user switched off must stay visible here or it can never be
   // switched back on. Truly absent Codex/Gemini remain absent (D-202).
-  const codexShown = providers == null || !!codex?.status.installed
-  const geminiShown = providers == null || !!gemini?.status.installed
+  const codexShown = codex == null || !!codex.status.installed
+    || codex.user_enabled === false
+  const geminiShown = gemini == null || !!gemini.status.installed
+    || gemini.user_enabled === false
   const srcLabel: Record<string, string> = {
     pin: 'private pin', env: 'ORGTREE_CODEX', path: 'on PATH',
   }
@@ -613,7 +616,7 @@ export function AccountsPanel({ toast, close }: {
                 {providers ? 'provider state unavailable' : 'reading provider state…'}
               </div>
             )}
-            {codex && (
+            {codex?.status.installed && (
               <>
                 <div className="acct-prov-note">
                   {codex.status.installed
@@ -667,7 +670,7 @@ export function AccountsPanel({ toast, close }: {
                 {providers ? 'provider state unavailable' : 'reading provider state…'}
               </div>
             )}
-            {gemini && (
+            {gemini?.status.installed && (
               <>
                 <div className="acct-prov-note">
                   {gemini.status.installed

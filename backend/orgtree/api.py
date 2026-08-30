@@ -249,6 +249,7 @@ def _public_denied(method: str, rest: str, slug: str) -> tuple[int, str] | None:
         # next person to touch that test would not know they were holding
         # this up.
         or rest.startswith("/api/accounts")
+        or rest.startswith("/api/providers")
     )
     if frozen_config:
         return 403, "kiosk: configuration is managed from the admin side"
@@ -4180,7 +4181,7 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                 # keeps recovery possible while a provider is signed out).
                 _rehire_node = a.get("node")
                 _rehire_tier = str(
-                    org.node(_rehire_node).get("tier") or "")  # type: ignore[arg-type]
+                    org.node(_rehire_node).get("model") or "")  # type: ignore[arg-type]
                 provider_hire_gate(
                     org, _rehire_tier, user_choice_only=True)
                 # `grant` now goes through _arg_int like every other int
@@ -5598,7 +5599,7 @@ def _org_op_locked(slug: str, body: Op, allow_raise: bool = False) -> dict[str, 
                 provider_hire_gate(org, body.tier)
             else:
                 stored_tier = str(
-                    org.node(body.node).get("tier") or "")  # type: ignore[arg-type]
+                    org.node(body.node).get("model") or "")  # type: ignore[arg-type]
                 provider_hire_gate(
                     org, stored_tier, user_choice_only=True)
             result = org.rehire(body.actor, body.node, body.grant, tier=body.tier,  # type: ignore[arg-type]

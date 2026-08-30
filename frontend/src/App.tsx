@@ -1859,17 +1859,6 @@ function SweepBlock({ slug, toast }: { slug: string; toast: ToastFn }) {
   )
 }
 
-// Desk text size — a DEVICE preference, never org state: the same org read on a
-// laptop and a 4K monitor wants different values. Applied immediately to the
-// --desk-dpi custom property, so it is not part of the settings save.
-// D-198 — collapsing a wide team's ACTIVE agents into one stack. A DEVICE
-// preference like the desk text size above: it lives in localStorage under a
-// key with no slug in it, so it is APP-WIDE and survives switching org (user,
-// verbatim: "app wide, not org wide"). It sits in this per-org panel only
-// because that is where the other browser-local preference already lives —
-// the label says so, since a machine setting inside an org's settings would
-// otherwise read as belonging to that org. Applied immediately, so like the
-// text size it is not part of the settings save.
 function SettingsPanel({ tree, toast, close }: {
   tree: TreePayload
   toast: ToastFn

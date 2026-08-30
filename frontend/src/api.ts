@@ -258,7 +258,7 @@ export const audienceAction = (
   })
 export const getHost = (): Promise<HostPayload> => req('/api/host')
 // the provider axis (FR-15 preview): per-vendor tier families + this
-// machine's CLI install/connect state — the accounts panel's section heads
+// machine's CLI install/connect state — App settings and all hire surfaces
 export const getProviders = (): Promise<ProvidersPayload> => req('/api/providers')
 export const setProviderEnabled = (
   provider: string, enabled: boolean,
