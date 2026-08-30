@@ -23,6 +23,7 @@ revoke is explicit; re-parenting intersects the moved subtree's dirs with the ne
 
 from __future__ import annotations
 
+import json
 import math
 import re
 import time as _time
@@ -238,6 +239,25 @@ def now() -> str:
 # alone deliberately: "the USER's authority" is prose, not a quoted span, and
 # pairing it off would swallow half a sentence.
 _NOTICE_QUOTED = re.compile(r'["“”][^"“”]*["“”]')
+
+# ask_user leaked-tool-call defense (D-2xx, 2026-08-30): a caller's own raw
+# completion can leak an unclosed tool-call tag into the `question` string it
+# sends us — e.g. `...call.</question>\n<parameter name="options">[...]` —
+# with `options` never arriving as a real argument at all. `_LEAKED_ASK_RE`
+# is the exact shape of the two incidents this was built from: a closing tag
+# for one of our own field names immediately followed by a `<parameter
+# name="options">` open (an optional namespace prefix like `antml:` is
+# tolerated — the two observed incidents omitted it, but the model's OWN
+# documented format includes one). `_SUSPICIOUS_ASK_MARKUP_RE` is the loose
+# fallback: any fragment of that same tool-call syntax anywhere in text we
+# were not expecting to recover from — enough to refuse loudly even in a
+# shape not yet seen, never enough to guess a repair from.
+_LEAKED_ASK_RE = re.compile(
+    r'</(?:question|header|options|multi|questions)>\s*'
+    r'<(?:\w+:)?parameter\s+name="options">', re.IGNORECASE)
+_SUSPICIOUS_ASK_MARKUP_RE = re.compile(
+    r'</(?:question|header|options|multi|questions|parameter|invoke)>|'
+    r'<(?:\w+:)?parameter\s+name="|<(?:\w+:)?invoke\s+name="', re.IGNORECASE)
 
 
 def _notice_shape(text: str) -> str:
@@ -5266,6 +5286,61 @@ class Org:
 
     # ---------------------------------------------------- F-04: asking the user
     @staticmethod
+    def _recover_leaked_ask(question: str, options: list[Any] | None
+                             ) -> tuple[str, list[Any] | None]:
+        """Defend `question`/`options` against arriving already corrupted by
+        a caller's OWN malformed tool call (measured 2026-08-30: two asks
+        from the same agent stored `question` text ending in
+        `</question>\\n<parameter name="options">[{...}]` with `options`
+        never arriving as a real argument — the raw options JSON had been
+        swallowed into the question string, upstream of us, before this
+        call ever ran). Nothing downstream of ask_user sanitizes this: a
+        card renders whatever string it is given.
+
+        If we can find and cleanly parse the embedded options JSON, recover
+        the real question/options rather than storing the leak. If we can
+        see the leak but cannot safely parse it, raise LedgerError — a loud
+        refusal the caller sees and can retry, never a silently mangled
+        card. `options` arriving structured is untouched either way."""
+        m = _LEAKED_ASK_RE.search(question)
+        if m is None:
+            if options is None and _SUSPICIOUS_ASK_MARKUP_RE.search(question):
+                raise LedgerError(
+                    "this question's text contains what looks like a "
+                    "leaked tool-call fragment (e.g. '</question>' or "
+                    "'<parameter name=\"...\">') rather than a clean "
+                    "question — your call arrived malformed. Refusing "
+                    "rather than showing the user a garbled card: retry "
+                    "the ask (a shorter question and shorter option "
+                    "descriptions are less likely to trip whatever "
+                    "mis-serialized it).")
+            return question, options
+        head = question[:m.start()].strip()
+        tail = question[m.end():].strip()
+        if not head:
+            raise LedgerError(
+                "this question's text is entirely a leaked tool-call "
+                "fragment with no real question left once it is stripped "
+                "— refusing rather than showing the user a garbled card. "
+                "Retry the ask.")
+        try:
+            recovered, _ = json.JSONDecoder().raw_decode(tail)
+        except (json.JSONDecodeError, ValueError) as e:
+            raise LedgerError(
+                "this question's text contains a leaked tool-call "
+                f"fragment ('<parameter name=\"options\">...') but the "
+                f"embedded options payload does not parse as JSON ({e}) "
+                "— refusing rather than showing the user a garbled card. "
+                "Retry the ask.") from e
+        if not isinstance(recovered, list) or not recovered:
+            raise LedgerError(
+                "this question's text contains a leaked tool-call "
+                "fragment but the recovered 'options' payload is not a "
+                "non-empty list — refusing rather than showing the user "
+                "a garbled card. Retry the ask.")
+        return head, cast("list[Any]", recovered)
+
+    @staticmethod
     def _norm_options(options: list[Any] | None) -> list[dict[str, str]]:
         """Options mirror AskUserQuestion's shape (user ruling 2026-08-04):
         {label, description?}. Plain strings are accepted and become bare
@@ -5309,9 +5384,10 @@ class Org:
                 qt = str(qd.get("question") or "").strip()
                 if not qt:
                     raise LedgerError(f"questions[{i}] needs question text")
+                qt, qd_options = self._recover_leaked_ask(
+                    qt, cast("list[Any] | None", qd.get("options")))
                 e: dict[str, Any] = {"question": qt}
-                o = self._norm_options(cast("list[Any] | None",
-                                            qd.get("options")))
+                o = self._norm_options(qd_options)
                 if o:
                     e["options"] = o
                 if qd.get("multi"):
@@ -5324,6 +5400,7 @@ class Org:
         q = str(question or "").strip()
         if not q:
             raise LedgerError("a question is required")
+        q, options = self._recover_leaked_ask(q, options)
         opts = self._norm_options(options)
         hdr = str(header or "").strip()[:24]
         return [{"question": q,
