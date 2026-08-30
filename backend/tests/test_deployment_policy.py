@@ -44,6 +44,8 @@ def test_standard_default() -> None:
             assert policy.allow_public_listener
             assert policy.allow_admin_exposure
             assert policy.allow_legacy_sandbox_credentials
+            assert policy.allow_sandbox_internet
+            assert policy.allow_broad_anthropic_proxy
 
 
 def test_frozen_policy() -> None:
@@ -57,6 +59,8 @@ def test_frozen_policy() -> None:
             assert not policy.allow_public_listener
             assert not policy.allow_admin_exposure
             assert not policy.allow_legacy_sandbox_credentials
+            assert not policy.allow_sandbox_internet
+            assert not policy.allow_broad_anthropic_proxy
 
 
 def test_unknown_fails_closed() -> None:

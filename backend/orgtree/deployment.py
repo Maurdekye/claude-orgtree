@@ -11,9 +11,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
+from typing import Literal
 
 
 PROFILE_ENV = "ORGTREE_DEPLOYMENT_PROFILE"
+DeploymentProfileName = Literal["standard", "frozen"]
 
 
 class DeploymentConfigError(RuntimeError):
@@ -24,12 +26,14 @@ class DeploymentConfigError(RuntimeError):
 class DeploymentPolicy:
     """Security decisions that must agree across the whole installation."""
 
-    name: str
+    name: DeploymentProfileName
     require_sandboxed_orgs: bool
     allow_agent_restart: bool
     allow_public_listener: bool
     allow_admin_exposure: bool
     allow_legacy_sandbox_credentials: bool
+    allow_sandbox_internet: bool
+    allow_broad_anthropic_proxy: bool
 
 
 STANDARD = DeploymentPolicy(
@@ -39,6 +43,8 @@ STANDARD = DeploymentPolicy(
     allow_public_listener=True,
     allow_admin_exposure=True,
     allow_legacy_sandbox_credentials=True,
+    allow_sandbox_internet=True,
+    allow_broad_anthropic_proxy=True,
 )
 
 FROZEN = DeploymentPolicy(
@@ -48,6 +54,8 @@ FROZEN = DeploymentPolicy(
     allow_public_listener=False,
     allow_admin_exposure=False,
     allow_legacy_sandbox_credentials=False,
+    allow_sandbox_internet=False,
+    allow_broad_anthropic_proxy=False,
 )
 
 _PROFILES: dict[str, DeploymentPolicy] = {
