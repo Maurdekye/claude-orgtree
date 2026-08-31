@@ -51,6 +51,27 @@ Everything that works does one of three things: shrink C, move the payment into 
    conversation. Cap it (give up after ~45 min / N misses). Lowest priority: a CC ping is a real
    turn and grows the transcript; the break-even math caps the value.
 
+### Reported-working cache lifecycle (implemented 2026-08-31)
+
+`orgtree_status working` is the explicit expectation gate. While that durable status remains on a
+live Claude agent, the backend makes a disposable `--resume --fork-session` request using the same
+identity, settings, tool, and MCP argv as a real turn. The fork reads the cached prefix, but its
+keepalive prompt and response are deleted with the fork transcript and never enter the agent's
+session. The billed request is still added to the node/org cost ledger.
+
+Cadence follows the spawn-captured billing lane: 50 minutes for OAuth/subscription (the CLI requests
+the one-hour tier) and 4 minutes for `ANTHROPIC_API_KEY` (five-minute tier). The environment variables
+in `configuration.md` can tune both. Codex and Gemini agents are skipped: their provider processes and
+cache contracts are different, so the backend does not send them a synthetic Claude request. Frozen,
+remote-controlled, preserving-bearer, never-run, busy, waiting, responding, or queued nodes are also
+skipped. A real turn/status change always wins a recheck after keeper-slot contention.
+
+Both configured automatic paths stand down while the status is `working`: wake-time cheap compact and
+post-turn occupancy-threshold split. Explicit/manual compaction is unchanged. A successful keepalive
+has its own `cache_keepalive_at` timestamp (not a fake turn); the coldness heuristic uses the fresher
+of it and the latest real turn, so ending `working` does not immediately destroy a session whose cache
+was just refreshed.
+
 ## C. Pay once instead of N times — wake shaping
 
 7. **Debounced delivery for cold agents** — a node idle > TTL doesn't wake on first mail; hold

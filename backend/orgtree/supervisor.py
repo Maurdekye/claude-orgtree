@@ -162,6 +162,23 @@ def workspace_usage_cached(org: Org, max_age: float = 15.0) -> int | None:
 COMPACT_AT = float(os.environ.get("ORGTREE_COMPACT_AT", "0.80"))   # §8.2
 ORACLE_AT = float(os.environ.get("ORGTREE_ORACLE_AT", "0.92"))     # §8.3 state 2→3
 
+# A reported-working agent is declaring a bounded pause between turns rather
+# than open-ended dormancy. Keep its Claude prefix alive at the TTL of the
+# lane that will actually bill the request. OAuth turns receive the CLI's
+# one-hour cache tier; ANTHROPIC_API_KEY turns receive five minutes. Leave
+# headroom for scheduler delay and process startup (50m / 4m).
+WORKING_CACHE_SUBSCRIPTION_S = max(
+    60.0, float(os.environ.get("ORGTREE_WORKING_CACHE_SUBSCRIPTION", "3000")))
+WORKING_CACHE_API_KEY_S = max(
+    30.0, float(os.environ.get("ORGTREE_WORKING_CACHE_API_KEY", "240")))
+WORKING_CACHE_POLL_S = max(
+    5.0, float(os.environ.get("ORGTREE_WORKING_CACHE_POLL", "20")))
+WORKING_CACHE_TIMEOUT_S = max(
+    30.0, float(os.environ.get("ORGTREE_WORKING_CACHE_TIMEOUT", "180")))
+WORKING_CACHE_PROMPT = (
+    "This is an automated prompt-cache keepalive. Reply with exactly OK and "
+    "do not use tools.")
+
 # real context windows per tier (user-verified) — the CLI's
 # modelUsage.contextWindow under-reported 1M-window models as 200k.
 # Override with ORGTREE_CONTEXT_WINDOWS='{"opus": 500000, ...}'
@@ -4160,6 +4177,11 @@ def _auto_cheap_ready(n: NodeDoc | dict[str, Any],
     the other route rather than adding a third one. The occupancy bar below is
     unchanged and still ANDed: see `_cache_moved_account` on why a free
     compaction still needs it."""
+    # A durable reported-working status spans the quiet gap between turns.
+    # Manual compaction remains available; only this configured automatic
+    # wake-time swap stands down.
+    if _reported_working(n):
+        return False
     occ, cw = n.get("occupancy"), context_window(n)
     if not occ or not cw:
         return False
@@ -4180,11 +4202,14 @@ def _auto_cheap_ready(n: NodeDoc | dict[str, Any],
         # or IndexError from the subscript — under DOC_LOCK, on the turn path,
         # killing the very turn this optimization exists to cheapen
         turns = cast("list[dict[str, Any]]", n.get("turns") or [])
-        last = str(turns[-1].get("at") or "") if turns else ""
-        if not last:
+        stamps = ([str(turns[-1].get("at") or "")] if turns else [])
+        stamps.append(str(n.get("cache_keepalive_at") or ""))
+        parsed = [_dtm.datetime.fromisoformat(s.replace("Z", "+00:00"))
+                  for s in stamps if s]
+        if not parsed:
             return False
         idle = (_dtm.datetime.now(_dtm.timezone.utc)
-                - _dtm.datetime.fromisoformat(last.replace("Z", "+00:00"))
+                - max(parsed)
                 ).total_seconds()
         # ⚠ OCCUPANCY IS TESTED FIRST, and that is not cosmetic. The two bars
         # are ANDed and so commute logically, but `_cache_moved_account` calls
@@ -4199,6 +4224,268 @@ def _auto_cheap_ready(n: NodeDoc | dict[str, Any],
     except (ValueError, TypeError, ZeroDivisionError, KeyError,
             AttributeError, IndexError):
         return False
+
+
+# ── reported-working prompt-cache lifecycle ───────────────────────────────
+def _reported_working(n: NodeDoc | dict[str, Any]) -> bool:
+    """The durable lifecycle status, distinct from one turn's busy bit."""
+    status = n.get("last_status")
+    return isinstance(status, dict) and status.get("status") == "working"
+
+
+def _working_cache_interval(org: Org, nid: str) -> tuple[float, bool] | None:
+    """Return (cadence, billed_key) for a Claude keepalive, else None.
+
+    Provider selection is positive. Codex and Gemini own different CLIs and
+    cache contracts, so they receive neither a synthetic Claude request nor a
+    made-up TTL. `bills_the_key` is the real-turn billing resolver, including
+    sandbox auth and active fallback windows.
+    """
+    n = org.nodes.get(nid)
+    if not n or n.get("state") != "live" or not _reported_working(n):
+        return None
+    if str(n.get("model") or "") not in providers.CLAUDE_TIERS:
+        return None
+    on_fallback = api_fallback_active(org)
+    billed_key = bills_the_key(org, on_fallback)
+    return ((WORKING_CACHE_API_KEY_S if billed_key
+             else WORKING_CACHE_SUBSCRIPTION_S), billed_key)
+
+
+def _working_cache_last_request(n: NodeDoc | dict[str, Any]) -> float:
+    """Latest real turn or successful keepalive, as an epoch (0 unknown)."""
+    stamps = [str(n.get("cache_keepalive_at") or "")]
+    turns = n.get("turns")
+    if isinstance(turns, list) and turns and isinstance(turns[-1], dict):
+        stamps.append(str(turns[-1].get("at") or ""))
+    vals: list[float] = []
+    for stamp in stamps:
+        if not stamp:
+            continue
+        try:
+            vals.append(_dtm.datetime.fromisoformat(
+                stamp.replace("Z", "+00:00")).timestamp())
+        except (TypeError, ValueError, OverflowError):
+            pass
+    return max(vals, default=0.0)
+
+
+def _working_cache_due(org: Org, nid: str, now: float | None = None) -> bool:
+    """Pure durable-state half of the keeper decision (test seam)."""
+    plan = _working_cache_interval(org, nid)
+    if plan is None:
+        return False
+    n = org.node(nid)
+    if n.get("frozen") or n.get("limit_locked") \
+            or n.get("remote_controlled") or n.get("bearer_state"):
+        return False
+    # A never-run session has no prefix to read. Starting it here would create
+    # agent history rather than preserve existing history.
+    if not transcript_path(n["session_id"], _transcript_root(org)):
+        return False
+    last = _working_cache_last_request(n)
+    return bool(last and (time.time() if now is None else now) - last >= plan[0])
+
+
+_working_cache_started = False
+_working_cache_inflight: set[tuple[str, str]] = set()
+_working_cache_lock = threading.Lock()
+_working_cache_slots = threading.BoundedSemaphore(2)
+
+
+def _working_cache_idle(slug: str, nid: str,
+                        own_inflight: bool = False) -> bool:
+    """No observed turn, queued turn, or parallel keepalive owns the seat."""
+    st = state(slug, nid)
+    with _state_lock, _working_cache_lock:
+        return (not st.get("busy") and not st.get("waiting")
+                and not st.get("responding") and not st.get("queue")
+                and (own_inflight
+                     or (slug, nid) not in _working_cache_inflight))
+
+
+def _working_cache_result(out: str) -> dict[str, Any]:
+    """Last terminal stream-json result from a disposable fork."""
+    for line in reversed(out.splitlines()):
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict) and obj.get("type") == "result":
+            return cast("dict[str, Any]", obj)
+    return {}
+
+
+def _working_cache_read(slug: str, nid: str) -> None:
+    """Make one billed, disposable read of a reported-working Claude prefix.
+
+    The argv starts from `_build_cmd`, not the lighter compaction argv: cache
+    keys include the system prompt and tools, so the request must mirror the
+    next real turn's identity/settings/MCP shape. `--fork-session` keeps the
+    synthetic prompt and response out of the agent's durable session.
+    """
+    old_sid = fork_sid = ""
+    fork_path: str | None = None
+    billed_key = False
+    cost = 0.0
+    success = False
+    try:
+        with _working_cache_slots:
+            # Re-check after keeper-slot contention. A real turn or status
+            # change wins; cache maintenance is always the loser.
+            if not _working_cache_idle(slug, nid, own_inflight=True):
+                return
+            with store.DOC_LOCK:
+                org = store.load_org(slug)
+                if not _working_cache_due(org, nid):
+                    return
+                n = org.node(nid)
+                old_sid = n["session_id"]
+                tier = str(n.get("model") or "")
+                on_fallback = api_fallback_active(org)
+                billed_key = bills_the_key(org, on_fallback)
+                env = spawn_env(org, tier=tier, nid=nid)
+                # Do not rewrite _build_cmd's MCP/cache policy here. Reusing
+                # it byte-for-byte is what makes this warm the next turn's
+                # prefix and preserve explicit per-server opt-ins.
+                cmd = _build_cmd(org, nid) + ["--fork-session"]
+                cwd = scratch_dir(slug, nid)
+                troot = _transcript_root(org)
+            proc = subprocess.Popen(
+                cmd, cwd=cwd, env=env, stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                encoding="utf-8", errors="replace")
+            _leash(proc)
+            try:
+                out, _err = proc.communicate(
+                    input=_user_event(WORKING_CACHE_PROMPT),
+                    timeout=WORKING_CACHE_TIMEOUT_S)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.communicate()
+                raise RuntimeError("cache keepalive timed out (child killed)")
+            res = _working_cache_result(out)
+            # Even a failed terminal result can have created a fork. Harvest
+            # any emitted session id so the copied transcript is still reaped.
+            fork_sid = str(res.get("session_id")
+                           or _fork_result(out).get("session_id") or "")
+            cost = float(res.get("total_cost_usd") or 0.0)
+            if not _math.isfinite(cost) or cost < 0:
+                cost = 0.0
+            success = (proc.returncode == 0 and bool(res)
+                       and not res.get("is_error")
+                       and bool(fork_sid) and fork_sid != old_sid)
+            if fork_sid and fork_sid != old_sid:
+                fork_path = transcript_path(fork_sid, troot)
+            if not success:
+                raise RuntimeError(
+                    f"cache keepalive fork failed (rc={proc.returncode})")
+    except (LedgerError, OSError, RuntimeError, TypeError, ValueError) as e:
+        # Advisory, deliberately not `last_error`: failure may make a later
+        # turn expensive, but the agent itself is not broken or blocked.
+        print(f"[orgtree] {slug}/{nid}: working cache keepalive skipped: {e}")
+    finally:
+        if fork_path:
+            try:
+                os.remove(fork_path)
+            except OSError:
+                pass
+        if success:
+            spend_total = None
+            kcfg = None
+            try:
+                with store.DOC_LOCK:
+                    current = store.load_org(slug)
+                    if nid in current.nodes:
+                        n2 = current.node(nid)
+                        if cost:
+                            n2["cost_usd"] = round(
+                                float(n2.get("cost_usd") or 0.0) + cost, 6)
+                            if billed_key:
+                                _bank_api_cost(current, cost)
+                        # The read warmed this exact prefix only while the node
+                        # still owns the session we forked.
+                        if n2.get("session_id") == old_sid:
+                            n2["cache_keepalive_at"] = now_iso()
+                        store.save_org(current)
+                        spend_total = current.cost_total()
+                        kcfg = kiosk_cfg(current)
+                    elif cost:
+                        current.d["deleted_cost_usd"] = round(
+                            float(current.d.get("deleted_cost_usd") or 0.0)
+                            + cost, 6)
+                        if billed_key:
+                            _bank_api_cost(current, cost)
+                        store.save_org(current)
+            except LedgerError:
+                print(f"[orgtree] {slug}/{nid}: keepalive finished after org "
+                      f"deletion (${cost:.4f} unrecorded)")
+            if (kcfg and float(kcfg.get("spend_limit") or 0) > 0
+                    and spend_total is not None
+                    and spend_total >= float(kcfg["spend_limit"])):
+                hard_freeze(slug, "spend", "kiosk spend limit reached")
+
+
+def _launch_working_cache_read(slug: str, nid: str) -> None:
+    key = (slug, nid)
+    with _working_cache_lock:
+        if key in _working_cache_inflight:
+            return
+        _working_cache_inflight.add(key)
+
+    def run() -> None:
+        try:
+            _working_cache_read(slug, nid)
+        finally:
+            with _working_cache_lock:
+                _working_cache_inflight.discard(key)
+    threading.Thread(target=run, daemon=True,
+                     name=f"cachekeep-{slug}-{nid}").start()
+
+
+def _working_cache_keeper_pass(
+        launch: Callable[[str, str], None] = _launch_working_cache_read,
+        now: float | None = None) -> None:
+    """One fleet sweep; `launch` is the deterministic hermetic test seam."""
+    now = time.time() if now is None else now
+    for row in store.list_orgs():
+        slug = row["slug"]
+        try:
+            org = store.load_org(slug)
+        except LedgerError:
+            continue
+        for nid in sorted(org.nodes):
+            try:
+                if _working_cache_due(org, nid, now) \
+                        and _working_cache_idle(slug, nid):
+                    launch(slug, nid)
+            except Exception as e:                          # noqa: BLE001
+                print(f"[orgtree] {slug}/{nid}: cache keepalive decision "
+                      f"failed: {type(e).__name__}: {e}")
+
+
+def working_cache_keeper_pass_now() -> None:
+    """Synchronous decision pass; requests themselves remain backgrounded."""
+    _working_cache_keeper_pass()
+
+
+def start_working_cache_keeper() -> None:
+    """Attach periodic cache reads to durable reported-working statuses."""
+    global _working_cache_started
+    if _working_cache_started:
+        return
+    _working_cache_started = True
+
+    def run() -> None:
+        while True:
+            try:
+                _working_cache_keeper_pass()
+            except Exception as e:                          # noqa: BLE001
+                print(f"[orgtree] working cache keeper failed: "
+                      f"{type(e).__name__}: {e}")
+            time.sleep(WORKING_CACHE_POLL_S)
+    threading.Thread(target=run, daemon=True,
+                     name="working-cache-keeper").start()
 
 
 # ── D-142/a · THE DEPLOY KILL WINDOW ──────────────────────────────────────
@@ -8640,6 +8927,14 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
         notify(slug, nid, "compacted")
         return
     if occ and cw and occ / cw >= compact_at:
+        # The status may have been reported through MCP during this turn, so
+        # `org` is intentionally not trusted here: it predates that tool call.
+        # Manual /compact is unaffected; only this automatic split stands down.
+        try:
+            if _reported_working(store.load_org(slug).node(nid)):
+                return
+        except LedgerError:
+            return
         # №28: a failing compaction used to re-fire after EVERY turn, holding
         # a turn slot for up to 10 minutes each time — cool down between tries
         if time.time() >= state(slug, nid).get("compact_retry_at", 0):

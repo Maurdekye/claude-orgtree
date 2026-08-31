@@ -677,6 +677,10 @@ async def _wire_notify() -> None:  # type: ignore[unused-function]  # registered
         marked = supervisor.reconcile(o["slug"])
         if marked:
             print(f"[orgtree] {o['slug']}: marked unrecoverable at startup: {marked}")
+    # Durable `working` statuses survive the restart. Start their cache keeper
+    # only after reconciliation classifies missing sessions and re-drives
+    # interrupted work, so maintenance cannot race startup repair.
+    supervisor.start_working_cache_keeper()
 
 PORT = int(os.environ.get("ORGTREE_PORT", "7360"))
 PUBLIC_PORT = int(os.environ.get("ORGTREE_PUBLIC_PORT", "0") or 0)

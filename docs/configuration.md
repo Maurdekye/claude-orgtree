@@ -80,6 +80,10 @@ scope, charter, and MCP-grant rules as Claude tiers.
 | `ORGTREE_ORACLE_AT` | `0.92` | context fraction for the §8.3 state 2→3 transition (`supervisor.py:145`) |
 | `ORGTREE_CONTEXT_WINDOWS` | `{}` | JSON override of per-model context sizes (`supervisor.py:153`) |
 | `ORGTREE_STEER_HOOK` | on | `0` disables the PostToolUse steer hook (`supervisor.py:930,959`) |
+| `ORGTREE_WORKING_CACHE_SUBSCRIPTION` | `3000` s | cache-read cadence while a Claude agent reports `working` on an OAuth/subscription lane (50 min, below its 1 h TTL) |
+| `ORGTREE_WORKING_CACHE_API_KEY` | `240` s | cache-read cadence while a Claude agent reports `working` on an Anthropic API-key lane (4 min, below its 5 min TTL) |
+| `ORGTREE_WORKING_CACHE_POLL` | `20` s | fleet sweep cadence for due reported-working cache reads |
+| `ORGTREE_WORKING_CACHE_TIMEOUT` | `180` s | bound for one disposable keepalive fork; timeout kills the child and leaves agent state untouched |
 
 ### Sandbox
 
