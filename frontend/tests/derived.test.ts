@@ -370,9 +370,9 @@ test('⑭  the pinned last-user-turn chip attributes by envelope, not role',
     // decides WHETHER to fade.
     const css = readFileSync(path.join(SRC, 'styles.css'), 'utf8')
     const chip = /\.pinuser \{[^}]*\}/.exec(css)?.[0] ?? ''
-    assert.ok(/align-self: stretch/.test(chip),
-      '.pinuser no longer spans the card — align-self: center shrink-wraps '
-      + 'it back to a centred pill')
+    assert.ok(/left: 2px/.test(chip) && /right: 2px/.test(chip),
+      '.pinuser no longer spans the card — the absolute overlay needs both '
+      + 'left and right insets')
     assert.ok(!/nowrap/.test(chip) && !/text-overflow/.test(chip),
       '.pinuser is back to a one-line ellipsis — the chip wraps now, and the '
       + 'cut is a fade')

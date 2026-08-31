@@ -272,6 +272,13 @@ export interface TreeNode {
   /** D-201: a parked CLI process is ready with this agent's current prompt.
    * False is a normal cold-cache condition, never a health/error signal. */
   proc_warm: boolean
+  /** An OS CLI process currently exists for this live seat. Unlike
+   * proc_warm, this is also true while that process is serving a turn. */
+  proc_live: boolean
+  /** The current live process is known not to be reusable for the next turn. */
+  proc_relaunch: boolean
+  /** Backend-owned explanation for proc_relaunch; never inferred by the UI. */
+  proc_relaunch_reason: string | null
   waiting: boolean
   responding: boolean
   phase: string | null

@@ -253,6 +253,10 @@ class NodeDoc(TypedDict):
     context_window: NotRequired[int]
     last_status: NotRequired[dict[str, Any] | None]
     prev_status: NotRequired[dict[str, Any] | None]
+    # Last successful disposable request made only to extend this session's
+    # Claude prompt-cache lifetime while the agent reported `working`.
+    # Separate from `turns`: this request is billed, but is not agent work.
+    cache_keepalive_at: NotRequired[str]
     inflight: NotRequired[InflightInfo | None]
     last_denials: NotRequired[list[Denial]]
     turns: NotRequired[list[TurnStat]]

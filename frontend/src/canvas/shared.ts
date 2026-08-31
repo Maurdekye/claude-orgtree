@@ -283,6 +283,9 @@ export interface CanvasNode {
   busy?: boolean
   /** D-201 warm-process cache state. Synthetic canvas cards never have one. */
   proc_warm?: boolean
+  proc_live?: boolean
+  proc_relaunch?: boolean
+  proc_relaunch_reason?: string | null
   /** G4: server-derived, from the supervisor's live tail (absent on the
    *  synthetic cards — eye root, draft, bearers — which never run turns) */
   activity?: ActivityInfo

@@ -677,6 +677,10 @@ async def _wire_notify() -> None:  # type: ignore[unused-function]  # registered
         marked = supervisor.reconcile(o["slug"])
         if marked:
             print(f"[orgtree] {o['slug']}: marked unrecoverable at startup: {marked}")
+    # Durable `working` statuses survive the restart. Start their cache keeper
+    # only after reconciliation classifies missing sessions and re-drives
+    # interrupted work, so maintenance cannot race startup repair.
+    supervisor.start_working_cache_keeper()
 
 PORT = int(os.environ.get("ORGTREE_PORT", "7360"))
 PUBLIC_PORT = int(os.environ.get("ORGTREE_PUBLIC_PORT", "0") or 0)
@@ -1247,6 +1251,11 @@ def org_tree(slug: str, request: Request) -> dict[str, Any]:
         # it just pays a cold spawn. Always present (never absent) on every
         # node this block decorates.
         node["proc_warm"] = bool(st.get("proc_warm"))
+        node["proc_live"] = bool(st.get("proc_live"))
+        node["proc_relaunch"] = bool(st.get("proc_relaunch"))
+        node["proc_relaunch_reason"] = (
+            str(st.get("proc_relaunch_reason"))
+            if st.get("proc_relaunch_reason") else None)
         # concurrently running subagents (Task/Agent tool calls in flight) —
         # the desk header shows it beside the working clock, only when > 0
         node["tasks"] = int(st.get("tasks") or 0)

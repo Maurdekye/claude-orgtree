@@ -79,10 +79,41 @@ export function ContextWheel({ occ, cw, onCompact, compactAt, est }: ContextWhee
 /** D-201: a filled dot means the agent has a parked process ready; a quiet
  * hollow dot means its next turn needs a normal cold spawn. This is speed
  * information only, so it deliberately borrows no warning/error colour. */
-export function ProcessWarmMark({ warm }: { warm: boolean }) {
+export function ProcessWarmMark({ warm, embedded = false }: {
+  warm: boolean; embedded?: boolean
+}) {
   return <span className={'proc-mark ' + (warm ? 'warm' : 'cold')}
-    aria-label={warm ? 'process warm' : 'process cold'}
-    title={warm ? 'process warm — ready for its next turn' : 'process cold — starts normally on its next turn'} />
+    aria-hidden={embedded || undefined}
+    aria-label={embedded ? undefined : warm ? 'process warm' : 'process cold'}
+    title={embedded ? undefined : warm ? 'process warm — ready for its next turn'
+      : 'process cold — starts normally on its next turn'} />
+}
+
+/** Process existence and cache readiness are separate facts. The square is
+ * OS-process liveness; the circle remains D-201's parked/warm cache cue. A
+ * relaunch gets a third, unmistakable arrow and the backend's exact reason. */
+export function ProcessLifecycleMark({ warm, live, relaunch, reason }: {
+  warm: boolean; live?: boolean; relaunch?: boolean; reason?: string | null
+}) {
+  const isLive = live ?? warm
+  const title = isLive
+    ? relaunch
+      ? `CLI process live — will relaunch before its next turn: ${reason || 'reason unavailable'}`
+      : `CLI process live${warm ? ' — parked and ready for its next turn' : ''}`
+    : 'no CLI process live — starts normally on its next turn'
+  return <span className="proc-state" title={title} aria-label={title}>
+    <span className={'proc-live-mark ' + (isLive ? 'live' : 'cold')} />
+    {relaunch && <AutorenewIcon fontSize="inherit" className="proc-relaunch" />}
+    <ProcessWarmMark warm={warm} embedded />
+  </span>
+}
+
+/** A busy arrow on navigation chrome must name the destination provider even
+ * when it is rendered inside another provider's themed desk. */
+export function DestinationBusy({ tier }: { tier?: string | null }) {
+  const provider = tier && CODEX_TIERS.includes(tier) ? 'openai'
+    : tier && GEMINI_TIERS.includes(tier) ? 'google' : 'claude'
+  return <AutorenewIcon fontSize="inherit" className={`cc-spin prov-${provider}`} />
 }
 
 /* click-to-copy for the React-rendered pres (filepre/respre/diffpre) — same
@@ -202,7 +233,7 @@ function NavChip({ n, dir, onJump }:
         ? <><EyeIcon fontSize="inherit" /> switchboard</>
         : <><span className={'tier t-' + n.tier}>{TIER_LETTER[n.tier!] ?? '?'}</span>
             {n.id}</>}
-      {n.busy && <AutorenewIcon fontSize="inherit" className="cc-spin" />}
+      {n.busy && <DestinationBusy tier={n.tier} />}
       {(n.mail_pending ?? 0) > 0 && <b className="eye-count">{n.mail_pending}</b>}
     </button>
   )
@@ -383,18 +414,11 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
     const el = scroller.current
     let v: number | null = null
     if (el) {
-      // The chip is a sticky item but still owns an in-flow box. Without
-      // removing that box from this measurement, a row exactly at the top
-      // boundary alternates: no chip → row is above → mount chip → its box
-      // pushes the row on-screen → remove chip → row is above again. This
-      // layout effect runs before paint, so that loop is synchronous and React
-      // eventually throws #185 (maximum update depth). Compare against the
-      // scrollport's stable coordinate system instead: the current chip moves
-      // every row below it by its own height, so move the threshold by exactly
-      // the same amount. `getBoundingClientRect` is the real laid-out height;
-      // offsetHeight would report an integer and create a new sub-pixel edge.
-      const pinFlow = pinRef.current?.getBoundingClientRect().height ?? 0
-      const top = el.getBoundingClientRect().top + 4 + pinFlow
+      // The chip is an overlay outside this scroller, so this threshold is in
+      // a stable coordinate system. Earlier code compensated by the chip's
+      // height, but missed the flex gap (and any future margins): the row still
+      // moved farther than the threshold and #185 survived in that band.
+      const top = el.getBoundingClientRect().top + 4
       // newest→oldest: the LAST user turn above the scrollport is the nearest
       // one, i.e. the row "↑" actually points at from where the reader stands
       for (let i = userTurns.length - 1; i >= 0; i--) {
@@ -633,7 +657,9 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
           // post-compaction arc there was no button here to press at all
           onCompact={live && !node.bearer_state && !node.compacted_unrun
             ? () => setAskCompact(true) : undefined} />
-        {live && <ProcessWarmMark warm={Boolean(node.proc_warm)} />}
+        {live && <ProcessLifecycleMark warm={Boolean(node.proc_warm)}
+          live={node.proc_live} relaunch={node.proc_relaunch}
+          reason={node.proc_relaunch_reason} />}
         {node.last_status &&
           <span className={'statuschip ' + node.last_status.status}
             title={node.last_status.summary}>{node.last_status.status}</span>}
@@ -857,35 +883,16 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
       {chat?.last_error && view !== 'chat' && (
         <div className="desk-error"><WarnIcon fontSize="inherit" /> {chat.last_error}</div>)}
       {view === 'chat' && (
-        <div className="msgs" ref={attachScroller}
-          onScroll={(e) => {
-            setStuck(nearBottom())
-            calcPin()
-            // within a screen of the top: page in the previous window
-            if (e.currentTarget.scrollTop < 240 && hasOlder) loadOlder()
-          }}>
-          {/* FR-20: sticky INSIDE the scroller as its FIRST child — same
-              no-new-layout-box reasoning as jumpbottom at the other edge
-              (the desk's flex chain is documented as fragile). Top-sticky
-              only pins while its static position is above the scrollport,
-              which is exactly the visibility rule calcPin enforces. */}
+        <div className="msgs-wrap">
+          {/* The pin is an overlay, not a transcript row. Keeping it outside
+              `.msgs` makes mounting it unable to move the row whose geometry
+              decides whether it mounts — no height/gap arithmetic and no
+              render/layout feedback loop at the boundary. */}
           {pinTarget && (
             <button className={'pinuser' + (pinClip ? ' clipped' : '')}
               ref={pinRef}
               title="jump to your message"
               onClick={(e) => {
-                // ⚠ NOT scrollIntoView: it scrolls EVERY scrollable ancestor,
-                // and overflow:hidden boxes (.desk-over, the subpanel chain)
-                // ARE programmatically scrollable — it shifted the whole desk
-                // inside its panel (blank band at the bottom, header pushed
-                // out the top; live-caught 2026-08-12). Move the transcript
-                // scroller alone, by rect delta. Landing there puts THIS
-                // target on screen, so calcPin hands the chip to the turn
-                // above it — repeated clicks walk up the chain. The landing
-                // clears the chip's own footprint (sticky top:4px + height):
-                // the retargeted chip stays pinned over the top edge, and a
-                // 6px offset parked the message's first line underneath it
-                // (user, 2026-08-14 — "the beginning must be fully visible").
                 const el = scroller.current
                 const tr = pinSeq == null ? null : userRowEls.current.get(pinSeq)
                 if (!el || !tr) return
@@ -893,12 +900,6 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
                 const target = () => el.scrollTop + tr.getBoundingClientRect().top
                   - el.getBoundingClientRect().top - pad
                 el.scrollTo({ top: target(), behavior: 'smooth' })
-                // rows above the target can reflow while the smooth scroll is
-                // in flight (images decode, chips settle), so a one-shot delta
-                // can land with the message's first line off-screen (user,
-                // 2026-08-14). Wait for the animation to stop, re-measure,
-                // and snap the residual — bounded, and dropped if the row
-                // remounted from under us (window slide).
                 let last = -1, still = 0, hops = 0
                 const settle = () => {
                   if (!el.isConnected || !tr.isConnected || ++hops > 300) return
@@ -917,6 +918,13 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
                 ↑ you: {pinTarget.label || 'your message'}
               </span>
             </button>)}
+        <div className="msgs" ref={attachScroller}
+          onScroll={(e) => {
+            setStuck(nearBottom())
+            calcPin()
+            // within a screen of the top: page in the previous window
+            if (e.currentTarget.scrollTop < 240 && hasOlder) loadOlder()
+          }}>
           {/* paging is automatic (the onScroll above pages in within a screen
               of the top) — this is a status line, not a control. It still
               earns its place: it reserves height so the list does not jump as
@@ -1082,7 +1090,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
               title="jump to the newest message">
               ↓ jump to bottom
             </button>)}
-        </div>
+        </div></div>
       )}
       {view === 'history' && <HistoryView slug={slug} nid={node.id} />}
       {view === 'files' && <FilesView slug={slug} nid={node.id} />}

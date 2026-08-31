@@ -16,6 +16,7 @@
   --line: #3c3c3c;
   --line-soft: #2b2b2b;
   --accent: #d97757;        /* Claude terracotta */
+  --prov-claude: #d97757;   /* explicit destination theme inside other desks */
   --aud-user: #d97757;      /* direct line to the user — relationship color,
                                independent of the agent provider theme */
   --accent-soft: rgba(217, 119, 87, .16);
@@ -565,6 +566,15 @@ button.badge.audience-fold.alert {
 }
 .proc-mark.warm { background: var(--provider-accent, var(--accent)); opacity: .8; }
 .proc-mark.cold { background: transparent; border: 1px solid var(--dim); opacity: .58; }
+.proc-state { display: inline-flex; align-items: center; gap: 3px; flex: none; }
+.proc-live-mark {
+  width: 7px; height: 7px; box-sizing: border-box; border-radius: 1px;
+  border: 1px solid var(--dim); opacity: .62;
+}
+.proc-live-mark.live { background: var(--provider-accent, var(--accent));
+  border-color: var(--provider-accent, var(--accent)); opacity: .9; }
+.proc-relaunch { color: var(--provider-accent, var(--accent)); font-size: 10px;
+  animation: none; }
 .sq-head .proc-mark { margin-left: 2px; }
 .cc-head .proc-mark { margin-left: 1px; }
 .settings h3 .proc-mark { margin: 0 4px; }
@@ -787,6 +797,9 @@ button.cc-name:hover {
   color: var(--accent); display: inline-block; line-height: 1; font-size: 12px;
   animation: actspin 1.6s linear infinite; flex: none;
 }
+.cc-spin.prov-claude { color: var(--prov-claude); }
+.cc-spin.prov-openai { color: var(--prov-openai); }
+.cc-spin.prov-google { color: var(--prov-google); }
 .cc-working {
   color: var(--accent); font-size: 11px; display: inline-flex;
   gap: 4px; align-items: center; flex: none;
@@ -826,8 +839,9 @@ button.cc-name:hover {
 }
 /* messages, Claude-Code-style: user turns are neutral boxes, assistant turns
    are plain text on the panel, tool calls are dim ⏺ mono lines */
+.msgs-wrap { flex: 1; min-height: 0; position: relative; }
 .msgs {
-  flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column;
+  height: 100%; min-height: 0; overflow-y: auto; display: flex; flex-direction: column;
   gap: 7px; padding: 3px 2px;
 }
 .desk-over .msgs::-webkit-scrollbar { width: 8px; }
@@ -866,8 +880,7 @@ button.cc-name:hover {
    step crushes this button alone to its padding (~7px, an "empty" pill)
    whenever the transcript overflows, i.e. always. */
 .pinuser {
-  flex: none;
-  position: sticky; top: 4px; align-self: stretch; z-index: 3;
+  position: absolute; top: 7px; left: 2px; right: 2px; z-index: 3;
   text-align: left; font-size: 11px; padding: 3px 9px;
   border-radius: 6px; background: var(--panel); color: var(--ink);
   border: 1px solid var(--line); box-shadow: var(--shadow); cursor: pointer;

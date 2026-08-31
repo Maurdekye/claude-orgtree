@@ -1,11 +1,12 @@
 """Regression test for the "stuck in mid-delivery" mail bug (user report,
-2026-08-30): a message posted while its recipient is mid-turn can be folded
-from the steer path into the in-memory queue at a result boundary, decline a
-D-201 warm-pool boundary-feed because the recipient's identity hash changed
-mid-turn (a routine event — any hire/retire/charter edit on a live org member
-dirties it), and then simply VANISH if that dirtied process's actual OS exit
-is delayed (e.g. by a still-running background subagent) rather than being
-retried immediately or folded back to the durable mailbox.
+2026-08-30/31): a message posted while its recipient is mid-turn can be folded
+from the steer path into the in-memory queue at a result boundary. D-201 used
+an identity-hash mismatch (a routine event — any hire/retire/charter edit on
+a live org member dirties it) as BOTH a cache-reuse gate and a delivery gate.
+It therefore refused to feed the waiting message to the live process and did
+not reach the iterative queue handoff until that process actually exited. A
+still-running background subagent could hold that exit indefinitely, leaving
+the node busy and its messages accumulating for the whole turn.
 
 Forensics on the live incident (cross-referencing the org doc's mail_log,
 steered_log, and the D-201 warm.jsonl telemetry, all timestamped to the
@@ -22,15 +23,12 @@ millisecond) found:
      message A. It surfaces again, batched with a THIRD message, ~73s after
      it was first sent.
 
-test_warmpool.py's D7 (`d_boundary_feed_declines_dirtied_process`) already
-covers "identity dirtied mid-turn while a second message is queued" and
-passes -- but only for a short, single-boundary turn with no background
-work, where the dirtied process's actual OS exit is immediate. This file adds
-the one ingredient D7 does not have: a background subagent (fakecli's
-`bgTasks`) that keeps the OS process alive for a while AFTER orgtree closes
-its stdin, so the teardown -- and everything that is supposed to run in its
-wake, the queue-pop-and-retry or the mailbox fold-back -- is delayed. That is
-the untested combination the live incident actually hit.
+The fix separates those state transitions: identity dirtiness forbids parking
+and classifies the eventual relaunch, but the already-open process drains its
+queue first. Kill-switch and eligibility changes still close delivery. This
+file adds the ingredient the old D7 did not have: a background subagent
+(fakecli's `bgTasks`) that keeps the OS process alive after stdin closes. It is
+the deterministic witness that the message no longer waits for teardown.
 
 Run: python tests/test_stuck_mail_boundary_race.py
 """
@@ -158,6 +156,22 @@ def admit_lines(nid):
     return out
 
 
+def exit_lines(nid):
+    p = os.path.join(RIG, "journals", "warm.jsonl")
+    if not os.path.exists(p):
+        return []
+    out = []
+    for ln in open(p, encoding="utf-8"):
+        try:
+            r = json.loads(ln)
+        except ValueError:
+            continue
+        if r.get("kind") == "proc" and r.get("event") == "exit" \
+                and r.get("nid") == nid:
+            out.append(r)
+    return out
+
+
 # ── rig org ──────────────────────────────────────────────────────────────
 org = store.create_org("stuck-mail rig")
 SLUG = org.d["slug"]
@@ -169,16 +183,52 @@ store.save_org(org)
 NID = "vanishboy"
 
 
-def steer_then_dirty_then_bg_delay():
+def identity_dirty_does_not_block_claude_hook_fetch():
+    """The Claude lane's live PostToolUse hook consumes ``pop_steer``. An
+    identity refresh may classify the process for later relaunch, but it must
+    not make that already-running response stop accepting hook context."""
+    tok = token()
+    st = S.state(SLUG, NID)
+    with S._state_lock:
+        st["busy"] = True
+        st["responding"] = True
+    try:
+        r = S.send_message(SLUG, NID, "live hook mail " + tok)
+        assert r.get("steering"), r
+        with store.DOC_LOCK:
+            o = reload_org()
+            o.node(NID)["charter"] = "dirty before the next hook fetch"
+            store.save_org(o)
+        got = S.pop_steer(SLUG, NID)
+        assert len(got) == 1 and tok in got[0], \
+            f"identity dirtiness blocked the live hook fetch: {got}"
+    finally:
+        with S._state_lock:
+            st["busy"] = False
+            st["responding"] = False
+            st["steer"] = []
+
+
+check("R0 · identity dirtiness does not stop Claude's live hook fetch",
+      identity_dirty_does_not_block_claude_hook_fetch)
+
+
+def steer_then_dirty_drains_before_bg_delayed_relaunch():
     """The exact live sequence: msg2 arrives mid-turn (steer path), the
     recipient's identity is dirtied in the same window (an ordinary
-    hire/retire/charter edit on a live org member), the turn's own process
-    keeps running a while longer (a background subagent), and only THEN does
-    the turn actually end. msg2 must not be lost in that stretch."""
+    hire/retire/charter edit on a live org member), and the turn's own process
+    has a background subagent that would delay teardown. msg2 must ride the
+    live result boundary instead of waiting for that teardown."""
     W.keeper_pass_now()
     wait_for(lambda: W.is_warm(SLUG, NID), why="pre-warm vanishboy")
+    with W._pool_lock:
+        stale_pid = W._pool[(SLUG, NID)].proc.pid
 
-    tok1, tok2, tok3 = token(), token(), token()
+    tok1 = token()
+    queued = [token(), token(), token()]
+    after_relaunch = token()
+    n_before = len(admit_lines(NID))
+    exits_before = len(exit_lines(NID))
     r = S.send_message(SLUG, NID, f"slow one {tok1}")
     assert r["accepted"]
     st = S.state(SLUG, NID)
@@ -186,7 +236,9 @@ def steer_then_dirty_then_bg_delay():
     wait_for(lambda: st.get("responding"), why="turn one is responding")
     time.sleep(0.25)                       # inside msg1's 900ms result window
 
-    S.send_message(SLUG, NID, f"steer me {tok2}")
+    for i, tok in enumerate(queued, 1):
+        r = S.send_message(SLUG, NID, f"queued steer {i} {tok}")
+        assert r.get("steering"), f"message {i} missed the steer lane: {r}"
     # dirty the identity RIGHT NOW -- exactly like a hire/retire elsewhere in
     # the org would, per the coordinator's own diagnosis of the live incident
     with store.DOC_LOCK:
@@ -194,48 +246,50 @@ def steer_then_dirty_then_bg_delay():
         o.node(NID)["charter"] = f"dirtied mid-turn at {time.time()}"
         store.save_org(o)
 
-    # the OLD turn must fully end -- result boundary, declined boundary-feed,
-    # stdin closed, AND the background subagent's extra bgMs on top of that
-    n_before = len(admit_lines(NID))
+    # The live process must drain msg2 before its identity-dirty relaunch.
+    # Before the fix, the false boundary decision closed stdin here and the
+    # background subagent held the entire delivery pump past this deadline.
     wait_for(lambda: not st["busy"] and not st.get("queue"), secs=15,
              why="the dirtied turn (plus its lingering background subagent) "
                  "to fully end")
 
+    after_dirty = admit_lines(NID)[n_before:]
+    assert len(after_dirty) == 1 + len(queued), after_dirty
+    assert after_dirty[0].get("reason") == "warm-hit", after_dirty
+    assert all(a.get("reason") == "boundary-feed"
+               for a in after_dirty[1:]), (
+        "identity dirtiness stopped the live delivery pump; queued mail "
+        "waited for process teardown instead of draining through consecutive "
+        f"result boundaries: {after_dirty}")
+
     # msg2 must be somewhere inspectable -- the mailbox, the delivery
     # journal, still riding an in-memory carrier, or already in the
     # transcript. "nowhere" is the bug.
-    c2 = carriers(NID, tok2)
-    if not any(c2.values()):
-        raise AssertionError(
-            f"MAIL LOST: {tok2} (msg2, folded from steer during a mid-turn "
-            f"identity change whose process teardown was delayed by a "
-            f"background subagent) is in NO carrier: {c2}")
+    transcript = transcript_text()
+    missing = [tok for tok in queued if tok not in transcript]
+    assert not missing, f"queued messages never reached the live process: {missing}"
 
-    # mirror the live incident's THIRD message: sent after the dirtied turn
-    # has fully settled, it must run its own clean turn -- and by then msg2
-    # should already have resurfaced (mailbox or transcript), not merely be
-    # "still queued/steered", which is what "test"'s own clean run in
-    # production proved was NOT the case for message A.
-    S.send_message(SLUG, NID, f"third one {tok3}")
-    wait_for(lambda: not st["busy"], secs=15, why="the third message's turn")
-    assert tok3 in transcript_text(), "the third message was never delivered"
+    # Dirtiness still means RELAUNCH. The stale process must not park after
+    # draining the continuously-busy chain, and the next independently-started
+    # turn must run only after a fresh-identity process is ready.
+    W.keeper_pass_now()
+    wait_for(lambda: W.is_warm(SLUG, NID), why="fresh process after drain")
+    with W._pool_lock:
+        fresh_pid = W._pool[(SLUG, NID)].proc.pid
+    assert fresh_pid != stale_pid, (
+        f"the identity-dirty process parked after draining: pid={stale_pid}")
+    exits = exit_lines(NID)[exits_before:]
+    assert len(exits) == 1 and exits[0].get("reason") == "identity-changed", (
+        f"relaunch was not classified exactly once: {exits}")
 
-    c2_final = carriers(NID, tok2)
-    assert c2_final["mailbox"] or c2_final["transcript"], (
-        f"msg2 ({tok2}) never reached a DURABLE, inspectable home (mailbox "
-        f"or transcript) even after a third, unrelated message ran its own "
-        f"clean turn -- it is stuck exactly the way the user's message was: "
-        f"{c2_final}")
-
-    adm_after = admit_lines(NID)
-    assert len(adm_after) > n_before + 1, (
-        "msg2 never got its own admission (warm or cold) at all -- it did "
-        f"not even get the delayed retry the finally-block is supposed to "
-        f"give it: {adm_after[n_before:]}")
+    S.send_message(SLUG, NID, f"independent turn {after_relaunch}")
+    wait_for(lambda: not st["busy"], secs=15, why="post-relaunch turn")
+    assert after_relaunch in transcript_text(), \
+        "the independent turn did not run after relaunch"
 
 
-check("R1 · a mid-turn identity change + a lingering background subagent "
-      "must not lose the folded steer message", steer_then_dirty_then_bg_delay)
+check("R1 · identity-dirty relaunch does not stop the live delivery pump",
+      steer_then_dirty_drains_before_bg_delayed_relaunch)
 
 
 def slot_wait_is_measured_and_warned_on():

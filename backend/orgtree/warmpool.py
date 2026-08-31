@@ -430,6 +430,70 @@ def journal_cache_break_lines(slug: str, nid: str, sid: str,
                  truncated=len(raw) > CACHE_BREAK_LINE_MAX)
 
 
+def limit_cache_usage_fields(usage: dict[str, Any]) -> dict[str, int]:
+    """The accepted numeric counters from one Claude result usage object.
+
+    The caller uses positive values from this whitelist as its evidence
+    predicate. Explicit zeros still belong in the journal, but a synthetic
+    limit result made entirely of zeros cannot consume the resume marker.
+    """
+    out: dict[str, int] = {}
+    for key in ("input_tokens", "cache_read_input_tokens",
+                "cache_creation_input_tokens", "output_tokens"):
+        value = usage.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool) \
+                and value >= 0:
+            out[key] = int(value)
+    creation = usage.get("cache_creation")
+    if isinstance(creation, dict):
+        for key in ("ephemeral_5m_input_tokens",
+                    "ephemeral_1h_input_tokens"):
+            value = creation.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool) \
+                    and value >= 0:
+                out[key] = int(value)
+    return out
+
+
+def journal_limit_cache_usage(
+        slug: str, nid: str, sid: str, pid: int | None, account: str,
+        usage: dict[str, Any], *, phase: str, limited: bool,
+        prior_sid: str = "", prior_pid: int | None = None,
+        prior_account: str = "", freeze_s: float | None = None,
+        resume_wait_s: float | None = None) -> None:
+    """Record the two boundaries needed to attribute a limit -> wake miss.
+
+    This consumes the result event Orgtree already received; it never probes
+    Claude or mutates a prompt.  Only the limit result and the first result
+    after ``resume_frozen`` call this helper.  The whitelist is intentional:
+    result/error text and unknown provider fields do not belong in the shared
+    warm journal.
+    """
+    if phase not in ("limit", "first-after-resume"):
+        return
+    rec: dict[str, Any] = {
+        "slug": slug, "nid": nid, "session_id": sid, "pid": pid,
+        "account": account, "phase": phase, "limited": bool(limited),
+        **limit_cache_usage_fields(usage),
+    }
+    if phase == "first-after-resume":
+        rec["process_respawned"] = True
+        if prior_sid:
+            rec["prior_session_id"] = prior_sid
+            rec["same_session"] = prior_sid == sid
+        if prior_pid is not None:
+            rec["prior_pid"] = prior_pid
+            rec["pid_changed"] = prior_pid != pid
+        if prior_account:
+            rec["prior_account"] = prior_account
+            rec["same_account"] = prior_account == account
+        if freeze_s is not None:
+            rec["freeze_s"] = round(max(0.0, freeze_s), 3)
+        if resume_wait_s is not None:
+            rec["resume_wait_s"] = round(max(0.0, resume_wait_s), 3)
+    _journal("limit-cache", **rec)
+
+
 def read_cold_stderr(proc: subprocess.Popen[str], slug: str, nid: str,
                      sid: str) -> str:
     """The non-pooled stderr owner, with the same cache-break observation as
@@ -787,8 +851,14 @@ def boundary_check(slug: str, nid: str,
     any admit row this boundary writes, WHY when it may not — the exit
     reason the turn notes on the process so its death row is classified).
     False whenever the switch is off, the node is excluded, eligibility
-    lapsed, or the identity hash moved — a queued message is 'the next
-    turn' and never rides any of those."""
+    lapsed, or the identity hash moved. The boolean answers whether this
+    process is current enough to PARK/REUSE, not whether its already-open
+    stdin may finish draining queued mail. The supervisor normally treats the
+    explicit ``identity-changed`` reason as relaunch-after-drain; every other
+    false reason closes delivery immediately. The one semantic exception is
+    retirement of a cheap-compact breadcrumb splice, whose contract is that it
+    serves exactly one turn. Keeping those state transitions separate prevents
+    an ordinary prompt refresh from becoming a mail-delivery gate."""
     on, label = warm_decision()
     if not on:
         return False, label, "disabled"
@@ -804,8 +874,21 @@ def boundary_check(slug: str, nid: str,
         next_hash, next_components = identity_snapshot(org, nid)
         if next_hash == want_hash:
             return True, label, ""
+        fields = identity_change_fields(
+            want_hash, wp.ident_components if wp is not None else None,
+            next_hash, next_components)
         if wp is not None:
             _record_identity_change(wp, next_hash, next_components)
+        # The boundary can beat the save-hook keeper. Delivery may continue
+        # on this dirtied process, but it is already known unable to park, so
+        # publish the scheduled replacement for the remainder of the busy
+        # chain now. `owner` prevents a late boundary from tagging a newer
+        # process generation for the same seat.
+        _set_proc_lifecycle(
+            slug, nid, live=True, relaunch=True,
+            reason=_relaunch_text("identity-changed",
+                                  fields.get("changed_inputs")),
+            owner=wp)
         return False, label, "identity-changed"
     except Exception:                               # noqa: BLE001
         return False, label, "stdin-closed"
@@ -839,6 +922,80 @@ def _set_proc_warm(slug: str, nid: str, val: bool) -> None:
         with sup._state_lock:
             ent["proc_warm"] = val
         sup.notify(slug, nid, "proc_warm" if val else "proc_cold")
+    except Exception:                               # noqa: BLE001
+        pass
+
+
+_RELAUNCH_LABELS = {
+    "disabled": "warming was disabled",
+    "excluded-by-flag": "this agent was excluded from warming",
+    "not-live": "the agent is no longer live",
+    "provider-lane": "the agent changed provider lane",
+    "sandboxed": "the agent changed to sandboxed execution",
+    "preserving-oracle": "the agent changed to a preserving oracle",
+    "not-eligible": "the agent is no longer eligible for process reuse",
+}
+_IDENTITY_LABELS = {
+    "prompt": "system prompt changed",
+    "argv": "CLI launch arguments changed",
+    "cred": "CLI credential changed",
+    "envov": "CLI environment overrides changed",
+}
+
+
+def _relaunch_text(reason: str,
+                   changed: list[str] | None = None) -> str:
+    """Reader-shaped, backend-owned reason for replacing a live process."""
+    if reason == "identity-changed":
+        labels = [_IDENTITY_LABELS.get(x, x) for x in (changed or [])]
+        return "identity-changed — " + (", ".join(labels)
+                                       if labels else "process identity changed")
+    return f"{reason} — {_RELAUNCH_LABELS.get(reason, reason)}"
+
+
+def _set_proc_lifecycle(slug: str, nid: str, *, live: bool,
+                        relaunch: bool = False,
+                        reason: str | None = None,
+                        owner: Any | None = None,
+                        adopt: bool = False) -> None:
+    """Mirror one concrete process generation into supervisor/UI state.
+
+    ``owner`` is the WarmProc/Popen/provider-turn object whose liveness this
+    transition describes. A late EOF or kill from an older generation may
+    journal its own exit, but must not clear a newer generation's live flag.
+    ``adopt`` is reserved for the sites that actually install a newly current
+    process (claim/spawn/park). Observations from an older owner cannot replace
+    the token merely because they arrived later. Calls without an owner retain
+    the current token (the cold boundary path, where supervisor owns it).
+    """
+    try:
+        from . import supervisor as sup             # noqa: PLC0415
+        ent = sup.state(slug, nid)
+        changed = False
+        with sup._state_lock:
+            current_owner = ent.get("proc_lifecycle_owner")
+            if owner is not None:
+                if not live and current_owner is not owner:
+                    return
+                if live and not adopt and current_owner is not None \
+                        and current_owner is not owner \
+                        and ent.get("proc_live"):
+                    # A stale observation cannot mark OR clear the newer live
+                    # process. Only an installing site may adopt a new owner.
+                    return
+            nxt = (bool(live), bool(relaunch), reason if relaunch else None)
+            cur = (bool(ent.get("proc_live")), bool(ent.get("proc_relaunch")),
+                   ent.get("proc_relaunch_reason"))
+            if cur != nxt:
+                ent["proc_live"], ent["proc_relaunch"], \
+                    ent["proc_relaunch_reason"] = nxt
+                changed = True
+            if live and owner is not None:
+                ent["proc_lifecycle_owner"] = owner
+            elif not live:
+                ent.pop("proc_lifecycle_owner", None)
+        if changed:
+            sup.notify(slug, nid, "proc_lifecycle")
     except Exception:                               # noqa: BLE001
         pass
 
@@ -967,6 +1124,7 @@ def _on_proc_exit(wp: WarmProc) -> None:
     # discard; the guard covers it too.)
     if was_tracked or wp.claimed:
         _journal_exit_once(wp)
+        _set_proc_lifecycle(wp.slug, wp.nid, live=False, owner=wp)
 
 
 def _spawn_for(org: Any, nid: str, why: str) -> WarmProc | None:
@@ -1037,6 +1195,7 @@ def kill_node(slug: str, nid: str, reason: str) -> None:
         del _pool[(slug, nid)]
     _kill_proc(wp)
     _set_proc_warm(slug, nid, False)
+    _set_proc_lifecycle(slug, nid, live=False, owner=wp)
     _journal_exit_once(wp, reason)
 
 
@@ -1095,12 +1254,14 @@ def claim(slug: str, nid: str,
             wp.attach()
             _serving[(slug, nid)] = wp
             _set_proc_warm(slug, nid, False)   # claimed = no longer parked
+            _set_proc_lifecycle(slug, nid, live=True, owner=wp, adopt=True)
             return wp, "warm-hit"
     # (outside the lock) the mismatched/dead one dies now
     if was_alive:
         _record_identity_change(wp, want_hash, want_components)
     _kill_proc(wp)
     _set_proc_warm(slug, nid, False)
+    _set_proc_lifecycle(slug, nid, live=False, owner=wp)
     _journal_exit_once(wp, "identity-changed" if was_alive else "crash")
     return None, ("identity-changed" if was_alive else "crashed")
 
@@ -1133,6 +1294,7 @@ def park_back(wp: WarmProc, cost_base: float, out_base: int = 0) -> bool:
         _kill_proc(other)
         _journal_exit_once(other, "superseded")
     _set_proc_warm(wp.slug, wp.nid, True)
+    _set_proc_lifecycle(wp.slug, wp.nid, live=True, owner=wp, adopt=True)
     _journal_proc("park", wp.slug, wp.nid, "turn-end", wp.hash)
     return True
 
@@ -1147,6 +1309,7 @@ def discard(wp: WarmProc, reason: str) -> None:
             del _serving[(wp.slug, wp.nid)]
     _kill_proc(wp)
     _set_proc_warm(wp.slug, wp.nid, False)
+    _set_proc_lifecycle(wp.slug, wp.nid, live=False, owner=wp)
     _journal_exit_once(wp, reason)
 
 
@@ -1210,8 +1373,45 @@ def _keeper_pass() -> None:
                 kill_node(slug, nid, why)
         for nid in sorted(live):
             ok, _why = eligible(org, nid)
-            if not ok or _busy(slug, nid):
-                continue          # a busy seat's lifecycle belongs to its turn
+            busy = _busy(slug, nid)
+            if busy:
+                # A serving warm process keeps running to a safe boundary, but
+                # a save-hook keeper pass can already know it is stale. Expose
+                # that scheduled replacement immediately, including WHICH
+                # identity input moved, rather than waiting for the boundary.
+                with _pool_lock:
+                    serving = _serving.get((slug, nid))
+                if serving is not None and serving.alive():
+                    if not ok:
+                        _set_proc_lifecycle(
+                            slug, nid, live=True, relaunch=True,
+                            reason=_relaunch_text(_why or "not-eligible"),
+                            owner=serving)
+                    else:
+                        try:
+                            h, parts = identity_snapshot(org, nid)
+                            if h != serving.hash:
+                                fields = identity_change_fields(
+                                    serving.hash, serving.ident_components,
+                                    h, parts)
+                                _set_proc_lifecycle(
+                                    slug, nid, live=True, relaunch=True,
+                                    reason=_relaunch_text(
+                                        "identity-changed",
+                                        fields.get("changed_inputs")),
+                                    owner=serving)
+                            else:
+                                # A later pass is an observation too. If this
+                                # exact serving generation is current again
+                                # (for example a transient stub/probe result),
+                                # clear its earlier scheduled-relaunch flag.
+                                _set_proc_lifecycle(
+                                    slug, nid, live=True, owner=serving)
+                        except Exception:           # noqa: BLE001
+                            pass
+                continue
+            if not ok:
+                continue
             with _pool_lock:
                 wp = _pool.get((slug, nid))
                 if wp is not None and wp.claimed:
@@ -1263,6 +1463,8 @@ def _keeper_pass() -> None:
                     nwp = None
             if nwp is not None:
                 _set_proc_warm(slug, nid, True)
+                _set_proc_lifecycle(slug, nid, live=True, owner=nwp,
+                                    adopt=True)
 
 
 def _pool_snapshot() -> None:

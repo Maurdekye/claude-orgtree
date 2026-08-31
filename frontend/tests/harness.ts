@@ -71,10 +71,11 @@ g.IS_REACT_ACT_ENVIRONMENT = true
 // version of this comment claimed the loop was unreachable because the
 // callback "only writes scrollTop and component-local state". That is wrong:
 // `.msgs` is observed content-box and has a laid-out scrollbar gutter, so
-// toggling `.jumpbottom`/`.pinuser` — both in-flow children — can change
-// scrollHeight, hence the gutter, hence the observed width. The real reason a
-// loop is implausible is that `.msgs`'s box is flex-determined in all three of
-// its homes: `.eye-chat`, `.desk-inner`, `html.mobile .mobsheet-body`.)
+// toggling `.jumpbottom` (then an in-flow child) could change scrollHeight,
+// hence the gutter, hence the observed width. `.pinuser` is now an absolute
+// overlay and cannot contribute that feedback. The real reason a loop is
+// implausible is that `.msgs`'s box is flex-determined in all three of its
+// homes: `.eye-chat`, `.desk-inner`, `html.mobile .mobsheet-body`.)
 // The callback also takes no `entries` argument: code reading
 // `entries[0].contentRect` is unmodelled, and would throw here rather than
 // pass silently.

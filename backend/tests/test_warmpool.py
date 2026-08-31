@@ -22,9 +22,9 @@ Covers, in order:
        turns-in-flight, not to the process
      · a killed parked process degrades to a cold turn that completes
      · an idle identity change respawns the process immediately
-     · a MID-TURN identity change stops the boundary feed: the queued second
-       message runs as its own fresh turn instead of being fed to the stale
-       process (control arm: without the change, it IS fed in-process)
+     · a MID-TURN identity change marks the process for relaunch but DOES NOT
+       stop the boundary feed: queued mail drains before the stale process is
+       retired (control arm: the clean process parks with no exit row)
 
 MUTANT RUNS (value replacements, executed locally against this suite and
 reverted — the checks below must be able to say BROKEN):
@@ -425,16 +425,14 @@ def d_boundary_feed_control_arm():
         "a clean park must produce ZERO exit rows")
 
 
-def d_boundary_feed_declines_dirtied_process():
+def d_boundary_feed_drains_before_relaunching_dirtied_process():
     n0 = len(exit_rows("slowboy"))
     adm = _two_messages("slowboy", dirty_mid_turn=True)
     assert len(adm) == 2, f"expected two admissions, got {len(adm)}: {adm}"
-    assert adm[1]["reason"] != "boundary-feed", (
-        f"msg2 was fed to a process whose prompt had changed — it must run "
-        f"as its own fresh turn: {adm}")
-    assert adm[1]["served"] == "cold", (
-        f"the fresh turn after a mid-turn dirty must not reuse the stale "
-        f"process: {adm[1]}")
+    assert (adm[1]["served"], adm[1]["reason"]) == \
+        ("warm", "boundary-feed"), (
+            f"identity dirtiness is a relaunch condition, not a delivery "
+            f"gate; msg2 must drain at the live boundary: {adm[1]}")
     rows = exit_rows("slowboy")[n0:]
     assert rows == [("identity-changed", "prompt-change")], (
         f"a SERVING process replaced after a mid-turn dirty must leave "
@@ -472,8 +470,8 @@ check("D5 · an idle identity change respawns immediately",
       d_idle_identity_change_respawns_immediately)
 check("D6 · control: clean boundary feeds in-process, journaled as boundary-feed",
       d_boundary_feed_control_arm)
-check("D7 · a mid-turn identity change stops the boundary feed",
-      d_boundary_feed_declines_dirtied_process)
+check("D7 · a mid-turn identity change drains queued mail, then relaunches",
+      d_boundary_feed_drains_before_relaunching_dirtied_process)
 check("D8 · kill switch OFF mid-turn stops the very next boundary feed",
       d_flag_off_mid_turn_stops_the_boundary_feed)
 

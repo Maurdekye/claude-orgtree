@@ -162,6 +162,29 @@ def workspace_usage_cached(org: Org, max_age: float = 15.0) -> int | None:
 COMPACT_AT = float(os.environ.get("ORGTREE_COMPACT_AT", "0.80"))   # §8.2
 ORACLE_AT = float(os.environ.get("ORGTREE_ORACLE_AT", "0.92"))     # §8.3 state 2→3
 
+# A reported-working agent is declaring a bounded pause between turns rather
+# than open-ended dormancy. Keep its Claude prefix alive at the TTL of the
+# lane that will actually bill the request. OAuth turns receive the CLI's
+# one-hour cache tier; ANTHROPIC_API_KEY turns receive five minutes. Leave
+# headroom for scheduler delay and process startup (50m / 4m).
+WORKING_CACHE_SUBSCRIPTION_S = max(
+    60.0, float(os.environ.get("ORGTREE_WORKING_CACHE_SUBSCRIPTION", "3000")))
+WORKING_CACHE_API_KEY_S = max(
+    30.0, float(os.environ.get("ORGTREE_WORKING_CACHE_API_KEY", "240")))
+WORKING_CACHE_POLL_S = max(
+    5.0, float(os.environ.get("ORGTREE_WORKING_CACHE_POLL", "20")))
+WORKING_CACHE_TIMEOUT_S = max(
+    30.0, float(os.environ.get("ORGTREE_WORKING_CACHE_TIMEOUT", "180")))
+WORKING_CACHE_RETRY_BASE_S = max(
+    WORKING_CACHE_POLL_S,
+    float(os.environ.get("ORGTREE_WORKING_CACHE_RETRY_BASE", "60")))
+WORKING_CACHE_RETRY_MAX_S = max(
+    WORKING_CACHE_RETRY_BASE_S,
+    float(os.environ.get("ORGTREE_WORKING_CACHE_RETRY_MAX", "1800")))
+WORKING_CACHE_PROMPT = (
+    "This is an automated prompt-cache keepalive. Reply with exactly OK and "
+    "do not use tools.")
+
 # real context windows per tier (user-verified) — the CLI's
 # modelUsage.contextWindow under-reported 1M-window models as 200k.
 # Override with ORGTREE_CONTEXT_WINDOWS='{"opus": 500000, ...}'
@@ -826,6 +849,11 @@ def state(slug: str, nid: str) -> dict[str, Any]:
             # The doc is the home; a restart no longer changes the answer.
             "busy": False, "waiting": False, "queue": [], "last_error": None,
             "turns_run": 0, "turn_activity": False,
+            # Process existence is not warmth: a serving process is live but
+            # not parked. Relaunch is set by the backend lifecycle owner when
+            # that specific process is known stale; the UI never guesses why.
+            "proc_live": False, "proc_relaunch": False,
+            "proc_relaunch_reason": None,
             # the LIVE TAIL: rows the agent has produced this turn that the
             # transcript may not carry yet. Server-owned (P2) — the client used
             # to accumulate its own copy from the websocket and reconcile it
@@ -835,6 +863,45 @@ def state(slug: str, nid: str) -> dict[str, Any]:
             # view. Bounded; swept in read_chat; cleared at turn end except
             # sticky rows (immediate command output lives in no transcript).
             "live": []})
+
+
+def _limit_cache_result_state(
+        st: dict[str, Any], usage: dict[str, Any], limited: bool,
+) -> tuple[str | None, dict[str, Any] | None]:
+    """Classify a result without losing the first billable resume marker.
+
+    Empty auth/network/error results are real boundaries but carry no cache
+    evidence.  They leave the marker armed.  An immediate limit is still
+    journaled as ``limit`` when empty, or as a usage-bearing
+    ``first-after-resume`` with ``limited=true`` when a counter is positive.
+    """
+    # The real synthetic-limit fixture carries ``input_tokens: 0``.  Presence
+    # is therefore not evidence: keep the marker until Claude reports at
+    # least one positive counter.  The journal helper still preserves zeros
+    # on the limit row because their explicit presence is useful evidence too.
+    has_usage = any(v > 0 for v in
+                    warmpool.limit_cache_usage_fields(usage).values())
+    with _state_lock:
+        marker = st.get("limit_cache_resume")
+        if isinstance(marker, dict) and has_usage:
+            marker = st.pop("limit_cache_resume")
+        else:
+            marker = None
+    if marker is not None:
+        return "first-after-resume", marker
+    if limited:
+        return "limit", None
+    return None, None
+
+
+def _limit_cache_claude_state(st: dict[str, Any], tier: str) -> bool:
+    """Keep attribution state only while the resumed turn is Claude-owned."""
+    if providers.provider_of(tier) == "claude":
+        return True
+    with _state_lock:
+        st.pop("limit_cache_origin", None)
+        st.pop("limit_cache_resume", None)
+    return False
 
 
 def working_count(slug: str) -> int:
@@ -4116,6 +4183,11 @@ def _auto_cheap_ready(n: NodeDoc | dict[str, Any],
     the other route rather than adding a third one. The occupancy bar below is
     unchanged and still ANDed: see `_cache_moved_account` on why a free
     compaction still needs it."""
+    # A durable reported-working status spans the quiet gap between turns.
+    # Manual compaction remains available; only this configured automatic
+    # wake-time swap stands down.
+    if _reported_working(n):
+        return False
     occ, cw = n.get("occupancy"), context_window(n)
     if not occ or not cw:
         return False
@@ -4136,11 +4208,14 @@ def _auto_cheap_ready(n: NodeDoc | dict[str, Any],
         # or IndexError from the subscript — under DOC_LOCK, on the turn path,
         # killing the very turn this optimization exists to cheapen
         turns = cast("list[dict[str, Any]]", n.get("turns") or [])
-        last = str(turns[-1].get("at") or "") if turns else ""
-        if not last:
+        stamps = ([str(turns[-1].get("at") or "")] if turns else [])
+        stamps.append(str(n.get("cache_keepalive_at") or ""))
+        parsed = [_dtm.datetime.fromisoformat(s.replace("Z", "+00:00"))
+                  for s in stamps if s]
+        if not parsed:
             return False
         idle = (_dtm.datetime.now(_dtm.timezone.utc)
-                - _dtm.datetime.fromisoformat(last.replace("Z", "+00:00"))
+                - max(parsed)
                 ).total_seconds()
         # ⚠ OCCUPANCY IS TESTED FIRST, and that is not cosmetic. The two bars
         # are ANDed and so commute logically, but `_cache_moved_account` calls
@@ -4155,6 +4230,425 @@ def _auto_cheap_ready(n: NodeDoc | dict[str, Any],
     except (ValueError, TypeError, ZeroDivisionError, KeyError,
             AttributeError, IndexError):
         return False
+
+
+# ── reported-working prompt-cache lifecycle ───────────────────────────────
+def _reported_working(n: NodeDoc | dict[str, Any]) -> bool:
+    """The durable lifecycle status, distinct from one turn's busy bit."""
+    status = n.get("last_status")
+    return isinstance(status, dict) and status.get("status") == "working"
+
+
+def _working_cache_interval(org: Org, nid: str) -> tuple[float, bool] | None:
+    """Return (cadence, billed_key) for a Claude keepalive, else None.
+
+    Provider selection is positive. Codex and Gemini own different CLIs and
+    cache contracts, so they receive neither a synthetic Claude request nor a
+    made-up TTL. `bills_the_key` is the real-turn billing resolver, including
+    sandbox auth and active fallback windows.
+    """
+    n = org.nodes.get(nid)
+    if not n or n.get("state") != "live" or not _reported_working(n):
+        return None
+    if str(n.get("model") or "") not in providers.CLAUDE_TIERS:
+        return None
+    on_fallback = api_fallback_active(org)
+    billed_key = bills_the_key(org, on_fallback)
+    return ((WORKING_CACHE_API_KEY_S if billed_key
+             else WORKING_CACHE_SUBSCRIPTION_S), billed_key)
+
+
+def _working_cache_last_request(n: NodeDoc | dict[str, Any]) -> float:
+    """Latest real turn or successful keepalive, as an epoch (0 unknown)."""
+    stamps = [str(n.get("cache_keepalive_at") or "")]
+    turns = n.get("turns")
+    if isinstance(turns, list) and turns and isinstance(turns[-1], dict):
+        stamps.append(str(turns[-1].get("at") or ""))
+    vals: list[float] = []
+    for stamp in stamps:
+        if not stamp:
+            continue
+        try:
+            vals.append(_dtm.datetime.fromisoformat(
+                stamp.replace("Z", "+00:00")).timestamp())
+        except (TypeError, ValueError, OverflowError):
+            pass
+    return max(vals, default=0.0)
+
+
+def _working_cache_due(org: Org, nid: str, now: float | None = None) -> bool:
+    """Pure durable-state half of the keeper decision (test seam)."""
+    plan = _working_cache_interval(org, nid)
+    if plan is None:
+        return False
+    n = org.node(nid)
+    if n.get("frozen") or n.get("limit_locked") \
+            or n.get("remote_controlled") or n.get("bearer_state"):
+        return False
+    # A never-run session has no prefix to read. Starting it here would create
+    # agent history rather than preserve existing history.
+    if not transcript_path(n["session_id"], _transcript_root(org)):
+        return False
+    last = _working_cache_last_request(n)
+    return bool(last and (time.time() if now is None else now) - last >= plan[0])
+
+
+_working_cache_started = False
+_working_cache_inflight: set[tuple[str, str]] = set()
+_working_cache_retry: dict[tuple[str, str], tuple[int, float]] = {}
+_working_cache_lock = threading.Lock()
+_working_cache_slots = threading.BoundedSemaphore(2)
+
+
+def _working_cache_idle(slug: str, nid: str) -> bool:
+    """No observed turn, queued turn, or parallel keepalive owns the seat."""
+    st = state(slug, nid)
+    with _state_lock, _working_cache_lock:
+        return (not st.get("busy") and not st.get("waiting")
+                and not st.get("responding") and not st.get("queue")
+                and not st.get("cache_keepalive")
+                and (slug, nid) not in _working_cache_inflight)
+
+
+def _working_cache_retry_due(slug: str, nid: str, now: float) -> bool:
+    with _working_cache_lock:
+        return now >= _working_cache_retry.get((slug, nid), (0, 0.0))[1]
+
+
+def _working_cache_note_failure(slug: str, nid: str, now: float) -> float:
+    """Advance a bounded exponential retry window and return its deadline."""
+    key = (slug, nid)
+    with _working_cache_lock:
+        failures = _working_cache_retry.get(key, (0, 0.0))[0] + 1
+        delay = min(WORKING_CACHE_RETRY_MAX_S,
+                    WORKING_CACHE_RETRY_BASE_S * (2 ** min(failures - 1, 30)))
+        retry_at = now + delay
+        _working_cache_retry[key] = (failures, retry_at)
+        return retry_at
+
+
+def _working_cache_clear_failure(slug: str, nid: str) -> None:
+    with _working_cache_lock:
+        _working_cache_retry.pop((slug, nid), None)
+
+
+def _working_cache_cmd(org: Org, nid: str) -> list[str]:
+    """Real-turn cache prefix, but with a local all-tool execution barrier.
+
+    `--disallowed-tools` would remove tools from the provider request and make
+    this read warm a different prefix.  A PreToolUse hook leaves the model's
+    system/tools/MCP request intact, then denies execution on this machine.
+    `--max-turns 1` is the independent ceiling if the model ignores the
+    instruction and keeps trying.
+    """
+    cmd = _build_cmd(org, nid)
+    pos = cmd.index("--settings") + 1
+    settings = json.loads(cmd[pos])
+    settings.pop("disableAllHooks", None)
+    hooks = settings.setdefault("hooks", {})
+    # A hooks-only settings object merges with global hooks. `_build_cmd`
+    # normally supplies every event when steering is enabled, but its
+    # no-steering form is `disableAllHooks`; replacing that flag with only our
+    # PreToolUse hook would accidentally re-enable operator hooks. Explicit
+    # empty arrays preserve the same isolation before installing the deny.
+    for event in ("PreToolUse", "PostToolUse", "Notification",
+                  "UserPromptSubmit", "Stop", "SubagentStop", "PreCompact",
+                  "SessionStart", "SessionEnd"):
+        hooks.setdefault(event, [])
+    sandboxed = sbx.is_sandboxed(org)
+    if (not sandboxed and not cli_capable()
+            and os.environ.get("ORGTREE_STEER_HOOK") != "1"):
+        # Old Claude CLIs do not fire tool hooks in headless mode. The prompt
+        # is not a security boundary, so refuse maintenance rather than run a
+        # child whose tool denial cannot be enforced locally.
+        raise RuntimeError("Claude CLI cannot enforce the keepalive tool hook")
+    if sandboxed:
+        deny_cmd = "python3 /opt/orgtree-backend/orgtree/cachedeny.py"
+    else:
+        deny_py = os.path.join(BACKEND_DIR, "orgtree", "cachedeny.py")
+        deny_cmd = '"{}" "{}"'.format(
+            sys.executable.replace("\\", "/"), deny_py.replace("\\", "/"))
+    hooks["PreToolUse"] = [{"hooks": [{
+        "type": "command", "command": deny_cmd,
+        "shell": "bash", "timeout": 5,
+    }]}]
+    cmd[pos] = json.dumps(settings)
+    return cmd + ["--fork-session", "--max-turns", "1"]
+
+
+def _working_cache_result(out: str) -> dict[str, Any]:
+    """Last terminal stream-json result from a disposable fork."""
+    for line in reversed(out.splitlines()):
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict) and obj.get("type") == "result":
+            return cast("dict[str, Any]", obj)
+    return {}
+
+
+def _working_cache_fork_id(out: str, old_sid: str) -> str:
+    """Last non-parent session id from any stream event, terminal or partial."""
+    found = ""
+    for line in out.splitlines():
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict):
+            sid = str(obj.get("session_id") or "")
+            if sid and sid != old_sid:
+                found = sid
+    return found
+
+
+def _working_cache_read(slug: str, nid: str,
+                        lease: dict[str, Any] | None = None) -> None:
+    """Make one billed, disposable read of a reported-working Claude prefix.
+
+    The argv starts from `_build_cmd`, not the lighter compaction argv: cache
+    keys include the system prompt and tools, so the request must mirror the
+    next real turn's identity/settings/MCP shape. `--fork-session` keeps the
+    synthetic prompt and response out of the agent's durable session.
+    """
+    old_sid = fork_sid = ""
+    fork_path: str | None = None
+    troot: str | None = None
+    billed_key = False
+    cost = 0.0
+    success = failed = False
+    out = ""
+    proc: subprocess.Popen[str] | None = None
+    try:
+        with _working_cache_slots:
+            if lease is not None and lease["cancel"].is_set():
+                return
+            with store.DOC_LOCK:
+                org = store.load_org(slug)
+                if (not _working_cache_due(org, nid)
+                        or not _working_cache_retry_due(slug, nid, time.time())):
+                    return
+                n = org.node(nid)
+                old_sid = n["session_id"]
+                tier = str(n.get("model") or "")
+                on_fallback = api_fallback_active(org)
+                billed_key = bills_the_key(org, on_fallback)
+                env = spawn_env(org, tier=tier, nid=nid)
+                cmd = _working_cache_cmd(org, nid)
+                cwd = scratch_dir(slug, nid)
+                troot = _transcript_root(org)
+            # The reservation check and Popen are one state-lock transaction.
+            # A real turn either marks busy first (so no child starts), or
+            # observes the published child and kills/waits it before resuming.
+            st = state(slug, nid)
+            with _state_lock:
+                if (st.get("busy") or st.get("waiting")
+                        or st.get("responding") or st.get("queue")
+                        or (lease is not None
+                            and (lease["cancel"].is_set()
+                                 or st.get("cache_keepalive") is not lease))):
+                    return
+                proc = subprocess.Popen(
+                    cmd, cwd=cwd, env=env, stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                    encoding="utf-8", errors="replace")
+                if lease is not None:
+                    lease["proc"] = proc
+            _leash(proc)
+            try:
+                out, _err = proc.communicate(
+                    input=_user_event(WORKING_CACHE_PROMPT),
+                    timeout=WORKING_CACHE_TIMEOUT_S)
+            except subprocess.TimeoutExpired as e:
+                partial = e.output.decode("utf-8", "replace") \
+                    if isinstance(e.output, bytes) else str(e.output or "")
+                _wd_kill_tree(proc)
+                tail, _err = proc.communicate()
+                out = partial + str(tail or "")
+                if lease is not None and lease["cancel"].is_set():
+                    return
+                failed = True
+                raise RuntimeError("cache keepalive timed out (child killed)")
+            if lease is not None and lease["cancel"].is_set():
+                # Real work killed this child. The finally block still reaps
+                # any fork and banks any complete cost record, but this is not
+                # a provider failure and must not create retry backoff/noise.
+                return
+            res = _working_cache_result(out)
+            # Even a failed terminal result can have created a fork. Harvest
+            # any emitted session id so the copied transcript is still reaped.
+            fork_sid = _working_cache_fork_id(out, old_sid)
+            cost = float(res.get("total_cost_usd") or 0.0)
+            if not _math.isfinite(cost) or cost < 0:
+                cost = 0.0
+            success = (proc.returncode == 0 and bool(res)
+                       and not res.get("is_error")
+                       and bool(fork_sid) and fork_sid != old_sid)
+            if fork_sid and fork_sid != old_sid:
+                fork_path = transcript_path(fork_sid, troot)
+            if not success:
+                failed = True
+                raise RuntimeError(
+                    f"cache keepalive fork failed (rc={proc.returncode})")
+    except (LedgerError, OSError, RuntimeError, TypeError, ValueError) as e:
+        if not (lease is not None and lease["cancel"].is_set()):
+            failed = True
+        # Advisory, deliberately not `last_error`: failure may make a later
+        # turn expensive, but the agent itself is not broken or blocked.
+        print(f"[orgtree] {slug}/{nid}: working cache keepalive skipped: {e}")
+    finally:
+        # Result accounting is deliberately outside the success path. A CLI
+        # can report billable usage and then return `is_error`, and a timeout
+        # can leave a complete result in the pipe before process teardown.
+        if out:
+            res = _working_cache_result(out)
+            try:
+                reported = float(res.get("total_cost_usd") or 0.0)
+                if _math.isfinite(reported) and reported >= 0:
+                    cost = reported
+            except (TypeError, ValueError):
+                pass
+        # Timeout and protocol errors may have emitted only init/assistant
+        # events. Harvest their fork id even without a terminal result.
+        if old_sid and not fork_sid:
+            fork_sid = _working_cache_fork_id(out, old_sid)
+        if fork_sid and fork_sid != old_sid and not fork_path:
+            fork_path = transcript_path(fork_sid, troot)
+        if fork_path:
+            try:
+                os.remove(fork_path)
+            except OSError:
+                pass
+        if success:
+            _working_cache_clear_failure(slug, nid)
+        elif failed and not (lease is not None and lease["cancel"].is_set()):
+            _working_cache_note_failure(slug, nid, time.time())
+        if cost or success:
+            spend_total = None
+            kcfg = None
+            try:
+                with store.DOC_LOCK:
+                    current = store.load_org(slug)
+                    if nid in current.nodes:
+                        n2 = current.node(nid)
+                        if cost:
+                            n2["cost_usd"] = round(
+                                float(n2.get("cost_usd") or 0.0) + cost, 6)
+                            if billed_key:
+                                _bank_api_cost(current, cost)
+                        # A failed request can still report billable usage;
+                        # bank it, but only a successful read earns freshness.
+                        # The read warmed this exact prefix only while the node
+                        # still owns the session we forked.
+                        if success and n2.get("session_id") == old_sid:
+                            n2["cache_keepalive_at"] = now_iso()
+                        store.save_org(current)
+                        spend_total = current.cost_total()
+                        kcfg = kiosk_cfg(current)
+                    elif cost:
+                        current.d["deleted_cost_usd"] = round(
+                            float(current.d.get("deleted_cost_usd") or 0.0)
+                            + cost, 6)
+                        if billed_key:
+                            _bank_api_cost(current, cost)
+                        store.save_org(current)
+            except LedgerError:
+                print(f"[orgtree] {slug}/{nid}: keepalive finished after org "
+                      f"deletion (${cost:.4f} unrecorded)")
+            if (kcfg and float(kcfg.get("spend_limit") or 0) > 0
+                    and spend_total is not None
+                    and spend_total >= float(kcfg["spend_limit"])):
+                hard_freeze(slug, "spend", "kiosk spend limit reached")
+
+
+def _launch_working_cache_read(slug: str, nid: str) -> None:
+    key = (slug, nid)
+    st = state(slug, nid)
+    lease: dict[str, Any] = {
+        "cancel": threading.Event(), "done": threading.Event(), "proc": None}
+    with _state_lock, _working_cache_lock:
+        if (st.get("busy") or st.get("waiting") or st.get("responding")
+                or st.get("queue") or st.get("cache_keepalive")
+                or key in _working_cache_inflight):
+            return
+        st["cache_keepalive"] = lease
+        _working_cache_inflight.add(key)
+
+    def run() -> None:
+        try:
+            _working_cache_read(slug, nid, lease)
+        finally:
+            with _state_lock, _working_cache_lock:
+                if st.get("cache_keepalive") is lease:
+                    st.pop("cache_keepalive", None)
+                _working_cache_inflight.discard(key)
+            lease["done"].set()
+    threading.Thread(target=run, daemon=True,
+                     name=f"cachekeep-{slug}-{nid}").start()
+
+
+def _cancel_working_cache(slug: str, nid: str) -> None:
+    """Make a real turn wait only for prompt-cache maintenance to die."""
+    st = state(slug, nid)
+    with _state_lock:
+        lease = st.get("cache_keepalive")
+        if not isinstance(lease, dict):
+            return
+        lease["cancel"].set()
+        proc = lease.get("proc")
+    if proc is not None:
+        _wd_kill_tree(proc)
+    # Popen publication and cancellation share `_state_lock`: no child can
+    # appear after the read above. Five seconds is process reaping, never the
+    # keepalive's 180-second provider timeout.
+    lease["done"].wait(timeout=5)
+
+
+def _working_cache_keeper_pass(
+        launch: Callable[[str, str], None] = _launch_working_cache_read,
+        now: float | None = None) -> None:
+    """One fleet sweep; `launch` is the deterministic hermetic test seam."""
+    now = time.time() if now is None else now
+    for row in store.list_orgs():
+        slug = row["slug"]
+        try:
+            org = store.load_org(slug)
+        except LedgerError:
+            continue
+        for nid in sorted(org.nodes):
+            try:
+                if _working_cache_due(org, nid, now) \
+                        and _working_cache_retry_due(slug, nid, now) \
+                        and _working_cache_idle(slug, nid):
+                    launch(slug, nid)
+            except Exception as e:                          # noqa: BLE001
+                print(f"[orgtree] {slug}/{nid}: cache keepalive decision "
+                      f"failed: {type(e).__name__}: {e}")
+
+
+def working_cache_keeper_pass_now() -> None:
+    """Synchronous decision pass; requests themselves remain backgrounded."""
+    _working_cache_keeper_pass()
+
+
+def start_working_cache_keeper() -> None:
+    """Attach periodic cache reads to durable reported-working statuses."""
+    global _working_cache_started
+    if _working_cache_started:
+        return
+    _working_cache_started = True
+
+    def run() -> None:
+        while True:
+            try:
+                _working_cache_keeper_pass()
+            except Exception as e:                          # noqa: BLE001
+                print(f"[orgtree] working cache keeper failed: "
+                      f"{type(e).__name__}: {e}")
+            time.sleep(WORKING_CACHE_POLL_S)
+    threading.Thread(target=run, daemon=True,
+                     name="working-cache-keeper").start()
 
 
 # ── D-142/a · THE DEPLOY KILL WINDOW ──────────────────────────────────────
@@ -4309,6 +4803,9 @@ def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
     st = state(slug, nid)
     with _state_lock:
         st["turn_activity"] = False
+    # A disposable cache read may own the same Claude session between turns.
+    # Real work always wins: kill/reap it before this choke point can resume.
+    _cancel_working_cache(slug, nid)
     # the single choke point: all three thread starts target this function,
     # so one gate here covers every way a turn can begin (D-142/a)
     _hold_for_deploy(slug, nid)
@@ -4920,6 +5417,8 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         with _state_lock:
             st["codex_turn"] = turn   # the ⏸ escape hatch (interrupt_turn)
             st["responding"] = True   # mail now steers instead of queueing
+        warmpool._set_proc_lifecycle(slug, nid, live=True, owner=turn,
+                                     adopt=True)
 
         def _steer_pump() -> None:
             while not stop.wait(CODEX_STEER_POLL):
@@ -4951,6 +5450,7 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         with _state_lock:
             st.pop("codex_turn", None)
             st["responding"] = False
+        warmpool._set_proc_lifecycle(slug, nid, live=False, owner=turn)
     with dlock:
         draft_timer = dstate.get("timer")
         if draft_timer:
@@ -5298,6 +5798,8 @@ def _gemini_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         with _state_lock:
             st["gemini_turn"] = turn   # the ⏸ escape hatch (interrupt_turn)
             st["responding"] = True    # mail now steers instead of queueing
+        warmpool._set_proc_lifecycle(slug, nid, live=True, owner=turn,
+                                     adopt=True)
 
         def _steer_pump() -> None:
             while not stop.wait(CODEX_STEER_POLL):
@@ -5326,6 +5828,7 @@ def _gemini_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         with _state_lock:
             st.pop("gemini_turn", None)
             st["responding"] = False
+        warmpool._set_proc_lifecycle(slug, nid, live=False, owner=turn)
     with dlock:
         draft_timer = dstate.get("timer")
         if draft_timer:
@@ -5695,7 +6198,12 @@ def _run_one_turn(slug: str, nid: str,
             # "the timeout banner does not go away on its own")
             st["last_error"] = None
             notify(slug, nid, "turn_started")
-            if str(org.node(nid).get("model") or "") in providers.CODEX_TIERS:
+            _turn_tier = str(org.node(nid).get("model") or "")
+            # A limit marker belongs to a Claude result stream.  Retooling a
+            # frozen node across providers must not let it survive a Codex or
+            # Gemini turn and attach to some unrelated future Claude result.
+            _limit_cache_claude_state(st, _turn_tier)
+            if _turn_tier in providers.CODEX_TIERS:
                 # THE PROVIDER SEAM (FR-15 M1b): a codex tier takes its own
                 # leg here — after the provider-neutral prologue above, before
                 # any claude machinery — and rejoins through the success tail
@@ -5708,7 +6216,7 @@ def _run_one_turn(slug: str, nid: str,
                 paid_booked = True     # _after_turn books `res`'s cost itself
                 _after_turn(slug, nid, org, res, st, codex_occ, on_key=False)
                 raise _CodexTurnDone
-            if str(org.node(nid).get("model") or "") in providers.GEMINI_TIERS:
+            if _turn_tier in providers.GEMINI_TIERS:
                 # the same seam one provider over (D-186): identical tail,
                 # its own control raise, the SHARED finally owns the queue.
                 res, gem_occ = _gemini_leg(
@@ -5971,6 +6479,8 @@ def _run_one_turn(slug: str, nid: str,
             with _state_lock:
                 st["proc"] = proc         # for the user-interrupt escape hatch
                 st["responding"] = True
+            warmpool._set_proc_lifecycle(slug, nid, live=True,
+                                         owner=wp_turn or proc, adopt=True)
             try:
                 # (the pyright ignores below: stdin/stdout/stderr are PIPE ⇒
                 # non-None, which typeshed's Popen cannot express)
@@ -6003,6 +6513,8 @@ def _run_one_turn(slug: str, nid: str,
                     _leash(proc)
                     with _state_lock:
                         st["proc"] = proc
+                    warmpool._set_proc_lifecycle(slug, nid, live=True,
+                                                 owner=proc, adopt=True)
                     warmpool.journal_admit(
                         slug, nid, sid, "cold", "claim-died",
                         turn_hash or "", None, 0, warm_lbl,
@@ -6447,6 +6959,34 @@ def _run_one_turn(slug: str, nid: str,
                                 # 2026-08-18). Carry the fact; do not derive
                                 # it from an identity test.
                                 agent_authored = True
+                        # Cross-process complement to the CLI's D-211
+                        # reporter.  The pinned CLI forgets its comparison
+                        # baseline when this limit closes the process, so the
+                        # first resumed result is the only durable evidence
+                        # of read-vs-create.  Consume only fields already on
+                        # this result; no keepalive/probe/prompt mutation.
+                        _usage = ev.get("usage")
+                        _usage = _usage if isinstance(_usage, dict) else {}
+                        _cache_phase, _cache_resume = \
+                            _limit_cache_result_state(st, _usage, limited)
+                        if _cache_phase is not None:
+                            _resume_at = (_cache_resume or {}).get("resumed_at")
+                            warmpool.journal_limit_cache_usage(
+                                slug, nid, ran_sid or "",
+                                getattr(proc, "pid", None),
+                                str(st.get("ran_as") or ""), _usage,
+                                phase=_cache_phase,
+                                limited=limited,
+                                prior_sid=str((_cache_resume or {}).get(
+                                    "session_id") or ""),
+                                prior_pid=(_cache_resume or {}).get("pid"),
+                                prior_account=str((_cache_resume or {}).get(
+                                    "account") or ""),
+                                freeze_s=(_cache_resume or {}).get("freeze_s"),
+                                resume_wait_s=(time.time() - _resume_at
+                                               if isinstance(_resume_at,
+                                                             (int, float))
+                                               else None))
                         nxt = None
                         with _state_lock:
                             st["responding"] = False
@@ -6457,14 +6997,18 @@ def _run_one_turn(slug: str, nid: str,
                         if leftover:
                             _steer_fold_log(slug, nid, len(leftover),
                                             "result boundary")
-                        # D-201: may this PROCESS keep serving? For a
-                        # warm-eligible turn the boundary re-decides — the
-                        # ruling is "respawn before the next turn is
-                        # admitted", and a queued message fed here IS the
-                        # next turn. A dirtied hash OR a flipped-off kill
-                        # switch declines the in-process feed (the queue
-                        # handoff in the finally runs it on a fresh process
-                        # with the fresh prompt) and declines the park below.
+                        # D-201: may this PROCESS remain cached? For a
+                        # warm-eligible turn the boundary re-decides. A
+                        # flipped-off kill switch or an eligibility change
+                        # closes delivery immediately. An IDENTITY change is
+                        # different: it marks this process for relaunch and
+                        # prevents parking, but must not stop an already-busy
+                        # process from draining mail at its result boundaries.
+                        # Waiting for the stale process to exit before handing
+                        # the carrier to a fresh process left mail stuck behind
+                        # long-lived background children (user report
+                        # 2026-08-31). The next cold admission gets the fresh
+                        # prompt after this queue drains.
                         # ONE flag read inside boundary_check serves both the
                         # behaviour and `bnd_lbl`, the label for the
                         # boundary-feed admit row — never re-read between.
@@ -6476,15 +7020,24 @@ def _run_one_turn(slug: str, nid: str,
                         # declined off this process and never rides the
                         # breadcrumb prompt (see _retire_breadcrumb_splice).
                         # A limit-hit boundary is not a served first turn.
+                        retired_splice = False
                         if turn_began_cc and not limited \
                                 and not ev.get("is_error"):
                             _retire_breadcrumb_splice(slug, nid)
                             turn_began_cc = False
-                        proc_current, bnd_lbl = True, warm_lbl
+                            retired_splice = True
+                        proc_current, may_feed, bnd_lbl = True, True, warm_lbl
                         if turn_hash is not None:
                             proc_current, bnd_lbl, _bnd_why = \
                                 warmpool.boundary_check(
                                     slug, nid, turn_hash, wp_turn)
+                            # Identity dirtiness is a RELAUNCH condition, not
+                            # a delivery condition. All other negative reasons
+                            # (kill switch, exclusion, provider/sandbox/scope
+                            # eligibility) still close this process's input.
+                            may_feed = proc_current or (
+                                _bnd_why == "identity-changed"
+                                and not retired_splice)
                             if not proc_current and wp_turn is not None:
                                 # note WHY on the process now — its exit row
                                 # (written once, at EOF) must be classified,
@@ -6515,7 +7068,7 @@ def _run_one_turn(slug: str, nid: str,
                         while True:
                             with _state_lock:
                                 if not (st["queue"] and not limited
-                                        and proc_current):
+                                        and may_feed):
                                     nxt = None
                                     break
                                 nxt = st["queue"].pop(0)
@@ -6665,6 +7218,9 @@ def _run_one_turn(slug: str, nid: str,
                     st["steer"] = []
                     if leftover:
                         st["queue"][0:0] = leftover
+                if not parked:
+                    warmpool._set_proc_lifecycle(
+                        slug, nid, live=False, owner=wp_turn or proc)
                 if leftover:
                     _steer_fold_log(slug, nid, len(leftover), "turn exit")
                 # ⛔ FAIL LOUD (user ruling 2026-08-20). The process is gone.
@@ -6964,6 +7520,7 @@ def _run_one_turn(slug: str, nid: str,
                     # refusal handed back off-lock seconds later. They must
                     # not be able to disagree again — see `subscription_lane`.
                     _sub_lane = False
+                    _frozen_at: str | None = None
                     # a limit the CLI REPORTED — stderr, a result event flagged
                     # is_error, or its own `<synthetic>` limit record — versus
                     # one promoted out of the agent's own final answer by the
@@ -7264,6 +7821,19 @@ def _run_one_turn(slug: str, nid: str,
                                 o2.d["api_fallback_until"] = _stamped_win
                                 o2.d["api_fallback_since"] = time.time()
                             store.save_org(o2)
+                            _frozen_at = str(fz.get("at") or "") or None
+                    # The old process/account identity is runtime attribution,
+                    # not org configuration.  Keep it in memory until the
+                    # freeze is resumed; the limit journal row above remains
+                    # the durable source if the backend itself restarts.
+                    if _frozen_at is not None:
+                        with _state_lock:
+                            st["limit_cache_origin"] = {
+                                "session_id": ran_sid or "",
+                                "pid": getattr(proc, "pid", None),
+                                "account": str(st.get("ran_as") or ""),
+                                "frozen_at": _frozen_at,
+                            }
                     # the stamp above came out of the CACHED readout, because
                     # this block holds the document lock and the usage
                     # endpoint routinely takes over a second (user report
@@ -8523,6 +9093,14 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
         notify(slug, nid, "compacted")
         return
     if occ and cw and occ / cw >= compact_at:
+        # The status may have been reported through MCP during this turn, so
+        # `org` is intentionally not trusted here: it predates that tool call.
+        # Manual /compact is unaffected; only this automatic split stands down.
+        try:
+            if _reported_working(store.load_org(slug).node(nid)):
+                return
+        except LedgerError:
+            return
         # №28: a failing compaction used to re-fire after EVERY turn, holding
         # a turn slot for up to 10 minutes each time — cool down between tries
         if time.time() >= state(slug, nid).get("compact_retry_at", 0):
@@ -10589,7 +11167,7 @@ def resume_frozen(slug: str, only: Iterable[str] | None = None,
     its context is warm — and only when the session has a transcript to
     reload. A refusal falls through to a plain resume, never a gate."""
     pick = None if only is None else set(only)
-    resumed: list[tuple[str, list[str]]] = []
+    resumed: list[tuple[str, list[str], bool, str, str, str]] = []
     with store.DOC_LOCK:
         org = store.load_org(slug)
         if org.d.get("spend_frozen"):
@@ -10619,6 +11197,9 @@ def resume_frozen(slug: str, only: Iterable[str] | None = None,
             fz = _resumable(n)
             if fz is None:
                 continue
+            _limit_resume = bool(fz.get("limit"))
+            _frozen_at = str(fz.get("at") or "")
+            _frozen_sid = str(n.get("session_id") or "")
             # a fallback wake is seconds behind the freeze — the cache is
             # still warm, which is the opposite of what cheap_first is for
             if cheap_first and fz.get("limit") \
@@ -10633,16 +11214,39 @@ def resume_frozen(slug: str, only: Iterable[str] | None = None,
                 except LedgerError:
                     pass          # an optimization, never a gate (D-114)
             n.pop("frozen", None)
-            resumed.append((nid, fz.get("resume_texts") or []))
+            resumed.append((nid, fz.get("resume_texts") or [],
+                            _limit_resume, _frozen_at, _frozen_sid,
+                            str(org.node(nid).get("model") or "")))
         if resumed:
             store.save_org(org)
-    for nid, texts in resumed:
+    for nid, texts, limit_resume, frozen_at, frozen_sid, tier in resumed:
         if not texts:
             texts = ["(orgtree) You were frozen by a usage limit and have been "
                      "resumed — handle any mail above and continue."]
         st = state(slug, nid)
+        claude_resume = _limit_cache_claude_state(st, tier)
         first = None
+        resumed_at = time.time()
+        freeze_s: float | None = None
+        if frozen_at:
+            try:
+                freeze_s = resumed_at - _dtm.datetime.fromisoformat(
+                    frozen_at.replace("Z", "+00:00")).timestamp()
+            except (TypeError, ValueError):
+                pass
         with _state_lock:
+            origin = st.pop("limit_cache_origin", None)
+            if limit_resume and claude_resume:
+                origin = origin if isinstance(origin, dict) else {}
+                st["limit_cache_resume"] = {
+                    "session_id": str(origin.get("session_id")
+                                      or frozen_sid),
+                    "pid": origin.get("pid"),
+                    "account": str(origin.get("account")
+                                   or st.get("ran_as") or ""),
+                    "freeze_s": freeze_s,
+                    "resumed_at": resumed_at,
+                }
             st["queue"].extend(texts[1:])
             if not st["busy"]:
                 st["busy"] = True
@@ -10653,7 +11257,7 @@ def resume_frozen(slug: str, only: Iterable[str] | None = None,
             threading.Thread(target=_run_turn, args=(slug, nid, first),
                              daemon=True).start()
         notify(slug, nid, "resumed")
-    return [nid for nid, _ in resumed]
+    return [nid for nid, *_ in resumed]
 
 
 # The chatq external bridge that lived here (registration, send.sh

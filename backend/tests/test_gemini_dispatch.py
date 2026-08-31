@@ -295,6 +295,14 @@ def main():
             time.sleep(0.05)
         assert "gemini_turn" in st, "the live turn handle appeared"
         eq(st.get("responding"), True, "responding while live")
+        ident_before = supervisor.identity_prompt(store.load_org(s6), n6)
+        with store.DOC_LOCK:
+            o = store.load_org(s6)
+            o.node(n6)["charter"] = "identity changed while gemini is responding"
+            store.save_org(o)
+        ident_after = supervisor.identity_prompt(store.load_org(s6), n6)
+        assert ident_after != ident_before, \
+            "fixture failed to dirty the live turn's identity"
         # mid-turn mail: the pump pops it, the wire refuses (no steer verb),
         # and the text falls back to the queue for boundary delivery
         with supervisor._state_lock:
@@ -317,8 +325,8 @@ def main():
            "interrupted is a completed turn, not a failure")
         cost = float(node_doc(s6, n6).get("cost_usd") or 0.0)
         eq(cost, 0.0, "a cancelled turn carries no usage and books $0")
-    check("session/cancel interrupts; mid-turn mail lands on the queue and "
-          "the shared finally hands it to the next turn", t6)
+    check("identity dirtiness does not stop gemini's queued fallback; "
+          "session/cancel hands it to the next turn", t6)
 
     print("§7 the connected-provider hire gate")
     from orgtree.api import provider_hire_gate
