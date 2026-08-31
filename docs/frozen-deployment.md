@@ -1,12 +1,12 @@
 # Frozen deployment profile
 
-> **Status (2026-08-31).** This document covers the frozen policy, sandbox
-> network isolation, and rotatable bridge credential that are merged in `main`
-> at `c3017347` (`8a417724` policy + `15c72ed8`/`db8d0711`/`b1bd31ac` network
-> and bridge). Approved-install attestation (the manifest and the
-> `verify_frozen_install.py` check) is landing separately and is **not yet on
-> `main`** as of this checkpoint; see [Attestation](#attestation-and-the-approved-install-manifest)
-> below for what it will add and how to tell whether it has landed.
+> **Status (2026-08-31).** This document covers the full frozen contract as
+> merged in `main` at `2316a83b`: the install-wide policy (`8a417724`), sandbox
+> network isolation and the rotatable per-org bridge credential
+> (`15c72ed8`/`db8d0711`/`b1bd31ac`), and approved-install attestation
+> (`bc7e456`…`2316a83b`). All source citations below were checked against that
+> revision, including running the verifier and the seven policy/attestation
+> test suites (99 checks total, all passing).
 
 The frozen deployment profile is an opt-in, install-wide policy for an
 operator-controlled orgtree installation. It reduces the attack surface
@@ -105,9 +105,9 @@ started.
    invoke it). Create every org with sandboxing enabled from the start —
    frozen mode has no path to accept an unsandboxed org, ever.
 5. Read the startup console output. A clean start prints the CLI resolution
-   line and, once attestation lands (see below), an approved-configuration
-   line; a refusal prints the `DEPLOYMENT POLICY REFUSED STARTUP` banner with
-   the specific reason.
+   line, then `frozen-install: approved configuration <sha256> verified (<n>
+   checks)`; a refusal prints the `DEPLOYMENT POLICY REFUSED STARTUP` banner
+   naming the first failed check, and nothing is started.
 6. Verify a live install with the operational checks in
    [Operational guidance](#operational-guidance-running-and-verifying-a-frozen-install).
 
@@ -127,10 +127,11 @@ required, in order:
 2. For each unsandboxed org, separately copy out the work files and records
    that must survive (workspace contents, org documents, anything you need
    from mail history). Create a **replacement** org with sandboxing enabled
-   and a disk of at least 4096 MB (`sandbox.py` refuses and silently raises a
-   smaller request to this floor). Recreate the needed settings and agent
-   structure, transfer only the intended work data, and exercise the
-   replacement container before trusting it.
+   and a disk of at least 4096 MB — org creation refuses a smaller request
+   with HTTP 422 (`api.py`; the one-disk system seed and transcripts do not
+   fit below that floor). Recreate the needed settings and agent structure,
+   transfer only the intended work data, and exercise the replacement
+   container before trusting it.
 3. After verifying the replacement and its recovery copy, delete the old org
    through the admin UI. Deletion is permanent. Do not copy an old org
    document into a replacement data root — that is not a supported migration
@@ -231,29 +232,109 @@ another, they need separate orgs, not just a rotated credential.
 
 ## Attestation and the approved-install manifest
 
-Not yet merged to `main` as of this checkpoint (`c3017347`). It is landing on
-a peer branch and will add:
+`backend/orgtree/frozen_install.py` proves a running install matches a
+pinned, committed configuration — not just that the policy selector says
+`frozen`. It is exercised two ways:
 
-- `backend/orgtree/frozen_install.py` and a standalone CLI,
-  `python tools/verify_frozen_install.py [--verbose] [--build-commands]`,
-  that read-only inspects a live install: active profile, an approved
-  manifest's own digest, the digest of every pinned lock/Dockerfile, the
-  installed Python interpreter and exact package set, the frontend
-  `node_modules` tree against its lockfile, each provider CLI's version,
-  npm integrity, and install location, the presence and labels of the
-  content-addressed sandbox/hub container images, and the launch/listener
-  contract (module entry point used, admin/public/bridge listener state).
-- A JSON manifest, `frozen/approved-install.json`, pinning the exact
-  dependency, container-base, and provider-CLI versions an install must
-  match to be considered approved.
-- A call to `frozen_install.require_approved_install()` at the end of
-  `_deployment_preflight()`, so an unapproved configuration refuses startup
-  the same way an unsandboxed org does.
+- **At startup**, `require_approved_install()` runs at the very end of
+  `_deployment_preflight()`, after the org-inventory and credential-selector
+  checks above. It mints the host-only bridge key if this is the very first
+  frozen boot, then checks everything except the running listener table
+  (nothing is bound yet at this point). Any failure raises
+  `DeploymentConfigError`, which `main()` turns into the same `DEPLOYMENT
+  POLICY REFUSED STARTUP` banner and `SystemExit(2)` as every other frozen
+  refusal — nothing is started.
+- **Standalone**, `python tools/verify_frozen_install.py [--verbose]
+  [--json] [--skip-containers] [--build-commands]` read-only inspects a
+  *live* process. Because it runs after the backend has bound its sockets,
+  it can additionally read the real kernel listener table (via `psutil`) —
+  proof startup cannot produce, since startup necessarily runs before
+  Uvicorn binds anything. `--skip-containers` is diagnostic only and,
+  because it omits the image checks, cannot prove the complete installation.
+  `--build-commands` refuses outside frozen mode and otherwise prints the
+  exact `docker build` invocations for the approved images — quote that
+  command in your own notes rather than hand-writing a build command, since
+  it is derived from the manifest rather than fixed text.
 
-Until it lands, treat any claim about the verifier's exact check names, its
-manifest schema, or its output strings as provisional. This section will be
-filled in with source citations once the landing SHA is confirmed, rather
-than documented from description alone.
+**What it checks**, one manifest section at a time
+(`frozen/approved-install.json`, schema `1`, profile `frozen`):
+
+| manifest section | what is checked | check codes |
+|---|---|---|
+| the manifest itself | the manifest file's own SHA-256 matches a value pinned separately in `frozen_install.py` (`APPROVED_MANIFEST_SHA256`), so the manifest and the code that trusts it cannot drift silently | `MANIFEST_DIGEST` |
+| `files` | SHA-256 of every pinned lock/definition file, **including the frozen network boundary's own source** — `backend/orgtree/bridgeauth.py` and `backend/orgtree/frozen_gateway.py` are pinned alongside the lockfiles and Dockerfiles, because the relay *is* the operation allowlist and is bind-mounted, read-only, into the one dual-homed container | `SOURCE_FILE_DIGEST` |
+| `python` | interpreter (CPython, allowed minor versions, platform/machine) and the exact installed package set against a fully hash-locked `frozen/requirements.txt` (`name==version --hash=sha256:...` per line, no extras allowed) | `PYTHON_RUNTIME`, `PYTHON_PACKAGE_VERSION`, `PYTHON_PACKAGE_SET` |
+| `frontend` | the installed `node_modules` tree (version + integrity) against `frontend/package-lock.json` | `FRONTEND_PACKAGE_TREE` |
+| `providers` | per provider (`claude` required; `openai`/codex and `google`/gemini optional) — installed npm package version, npm `sha512-...` integrity, and that it was resolved from orgtree's own private prefix rather than bare `PATH` | `PROVIDER_VERSION`, `PROVIDER_INTEGRITY`, `PROVIDER_SOURCE` |
+| `containers` | sandbox (required) and mailhub (optional) images exist under a content-addressed tag and carry the approved OCI labels, including a **digest-pinned base image** | `CONTAINER_IMAGE_PRESENT`, `CONTAINER_IMAGE_LABELS` |
+| `bridge` | see below | `BRIDGE_SPEC_INVALID`, `BRIDGE_KEY_PRESENT`, `BRIDGE_KEY_HOST_ONLY`, `BRIDGE_ORGS_COVERED`, `BRIDGE_SCHEME`, `BRIDGE_SCOPE`, `BRIDGE_TRUST_BOUNDARY_DECLARED`, `BRIDGE_LEGACY_CREDENTIALS_REFUSED`, `BRIDGE_GENERATION`, `BRIDGE_FINGERPRINT`, `BRIDGE_PREVIOUS_GENERATION_REJECTED`, `BRIDGE_ATTESTATION_UNAVAILABLE` |
+| launch/listener contract | the launch command actually used, the active `ORGTREE_DEPLOYMENT_PROFILE`, and — standalone only — the real listener table | `DEPLOYMENT_PROFILE`, `LAUNCH_PATH_SUPPORTED`, `LAUNCH_PROFILE_ACTIVE`, `ADMIN_LISTENER_LOOPBACK`, `PUBLIC_LISTENER_DISABLED`, `ADMIN_EXPOSURE_UNSET`, `LISTENER_TABLE_OBSERVED`, `NO_WILDCARD_LISTENER`, `LISTENER_PORT_SET`, `BRIDGE_LISTENER_HOST_ONLY` |
+
+Image tags are content-addressed, not hand-written:
+`<repository>:frozen-<first 16 hex of the manifest SHA-256>` — at this
+checkpoint's manifest (digest `39f78098…`), that is
+`orgtree-sandbox:frozen-39f7809836aa8da6` and
+`orgtree-mailhub:frozen-39f7809836aa8da6`. Every approved image also carries
+`io.orgtree.frozen.config=<full manifest SHA-256>`, so changing the manifest
+changes the required tag and every previously-approved image tag stops being
+approved automatically — there is no separate "re-approve the old images"
+step to forget.
+
+**The bridge manifest section is the adjudicated boundary in machine-readable
+form**, and the verifier enforces it in both directions:
+
+```json
+"bridge": {
+  "scheme": "hmac-sha256-org-v1",
+  "scope": "org",
+  "same_org_nodes_mutually_trusted": true
+}
+```
+
+`_verify_bridge()` refuses a manifest that omits this, and separately refuses
+one that claims anything other than `scope: "org"` and
+`same_org_nodes_mutually_trusted: true` — an attestation that quietly
+asserted per-node isolation would fail its own `BRIDGE_SPEC_INVALID` check.
+For each sandboxed org it then checks that org's live
+`bridgeauth.credential_attestation()` record matches: same scheme, `scope:
+"org"`, the trust-boundary flag literally `true`, legacy credentials not
+accepted, a well-formed non-negative generation counter, a
+`sha256:`-prefixed fingerprint (never the bearer itself), and — the one place
+a `null` is a pass rather than a warning —
+`previous_generation_rejected` is `true` **or** `null` (an org that has never
+rotated has no previous generation to reject; `false` means a rotation
+happened and the superseded credential is still live, which is a real
+finding). It also confirms the host-only signing key
+(`<ORGTREE_DATA>/.bridge-credentials.key`) resolves to a path outside every
+sandbox's own bind root — a key visible inside a container would not be
+host-only. Running the standalone verifier never mints this key; only
+frozen *startup* does, so that the very first frozen boot can attest its own
+freshly-minted bridge instead of deadlocking on a key that only the check
+itself would otherwise create.
+
+**Exact output.** The header line is one of exactly `FROZEN INSTALLATION
+VERIFIED` or `FROZEN INSTALLATION REFUSED`, followed by `profile: <name>`,
+`approved configuration: <sha256 or 'unavailable'>`, and `checks: <n>/<m>
+passed`. By default only failures are listed (`--verbose` shows every check);
+each line reads `[PASS <CODE>] <subject>: expected <...>; actual <...>` or
+`[FAIL <CODE>] <subject>: expected <...>; actual <...>`, occasionally
+followed by an indented one-line detail. A refusal ends with, verbatim,
+`Nothing was approved. Fix every FAIL above and rerun the check.` Startup
+success prints `frozen-install: approved configuration <sha256> verified
+(<n> checks)`.
+
+**The listener table check is not "everything must be loopback".** A frozen
+backend holds exactly two listeners — the admin app and the sandbox bridge —
+and neither may bind a wildcard address, but they are not held to the same
+address: the admin app must be loopback (`127.0.0.1`/`::1`); the bridge must
+be host-only, which is loopback on Windows and macOS and, on native Linux,
+the Docker host-side bridge gateway address that the per-org relay can reach
+but the LAN cannot (`_approved_bridge_hosts()` calls
+`sandbox.bridge_bind_host()` to get the policy-correct answer for the host
+it is running on, rather than asserting one address everywhere). The
+standalone verifier reads the whole table, so a kiosk listener that is
+actually open is caught even if the environment claims
+`ORGTREE_PUBLIC_PORT=0` and no code path opened it on purpose.
 
 ## Threat boundary and residual risk
 
@@ -299,24 +380,37 @@ reachable from the same Docker bridge network the relay containers attach to.
 
 - the console printed the CLI resolution line, not a `DEPLOYMENT POLICY
   REFUSED STARTUP` banner;
-- (once attestation lands) the approved-configuration line printed with a
-  digest, not a refusal;
+- the console printed `frozen-install: approved configuration <sha256>
+  verified (<n> checks)`, not a refusal;
 - `GET /api/host` (loopback-only) reports the expected profile.
 
-**Exercise the policy directly** with the test suite the checkpoint shipped
-with — these check source behavior, not the state of a specific deployed
-host, so run them against the exact revision you intend to deploy, before
-deploying it:
+**Run the standalone verifier against the live process** — this is the check
+startup cannot do, because it reads the real kernel listener table:
 
 ```powershell
-python backend\tests\test_deployment_policy.py           # 4 checks
-python backend\tests\test_frozen_policy_enforcement.py    # 14 checks
-python backend\tests\test_frozen_gateway.py                # 6 checks
-python backend\tests\test_frozen_network_policy.py         # 8 checks
-python backend\tests\test_bridge_credentials.py            # 12 checks
+python tools\verify_frozen_install.py --verbose
 ```
 
-All five currently pass in full (44 checks) against `main` at `c3017347`.
+A clean install prints `FROZEN INSTALLATION VERIFIED` and `checks: <n>/<n>
+passed`; anything else names the exact failing check(s) and ends with
+`Nothing was approved. Fix every FAIL above and rerun the check.`
+
+**Exercise the policy and attestation code directly** with the test suites —
+these check source behavior, not the state of a specific deployed host, so
+run them against the exact revision you intend to deploy, before deploying
+it:
+
+```powershell
+python backend\tests\test_deployment_policy.py               # 4 checks
+python backend\tests\test_frozen_policy_enforcement.py        # 14 checks
+python backend\tests\test_frozen_gateway.py                   # 6 checks
+python backend\tests\test_frozen_network_policy.py            # 8 checks
+python backend\tests\test_bridge_credentials.py               # 12 checks
+python backend\tests\test_frozen_install.py                   # 20 checks
+python backend\tests\test_frozen_attestation_integration.py   # 35 checks
+```
+
+All seven currently pass in full (99 checks) against `main` at `2316a83b`.
 
 **For a running install**, an operator can (all admin-only, loopback):
 
@@ -337,8 +431,8 @@ that org's internal network and nothing else.
 
 Agent-controlled deployment is disabled in frozen policy (see the agent
 restart row in the enforcement table above). A trusted operator must stop
-the service, install a reviewed revision, and — once attestation lands —
-rerun the approved-configuration check before resuming agent work.
+the service, install a reviewed revision, and rerun
+`python tools/verify_frozen_install.py --verbose` before resuming agent work.
 
 Returning the selector to `standard` restores ordinary behavior and is a
 security downgrade: it re-enables legacy sandbox credential copying, the
@@ -348,9 +442,8 @@ inert while frozen, and can become eligible again after a downgrade —
 inspect and handle that state deliberately; frozen policy does not erase it.
 
 For external review, retain: the exact commit and clean/dirty working-tree
-state; the (once landed) approved manifest digest and verifier output;
-startup logs; Docker network/container inspection output for each org; the
-five test-suite results above; and, per org, the bridge-credential
-attestation response. Never include provider tokens, bridge credentials,
-kiosk URLs, or an unredacted environment dump in anything retained for
-review.
+state; `python tools/verify_frozen_install.py --json` output; startup logs;
+Docker network/container inspection output for each org; the seven
+test-suite results above; and, per org, the bridge-credential attestation
+response. Never include provider tokens, bridge credentials, kiosk URLs, or
+an unredacted environment dump in anything retained for review.
