@@ -325,6 +325,14 @@ def main() -> int:
         assert any(m.get("role") == "user"
                    and "peer status arrived" in (m.get("text") or "")
                    for m in running_chat["messages"]), running_chat
+        ident_before = supervisor.identity_prompt(store.load_org(s3), n3)
+        with store.DOC_LOCK:
+            o = store.load_org(s3)
+            o.node(n3)["charter"] = "identity changed while codex is responding"
+            store.save_org(o)
+        ident_after = supervisor.identity_prompt(store.load_org(s3), n3)
+        assert ident_after != ident_before, \
+            "fixture failed to dirty the live turn's identity"
         with supervisor._state_lock:
             st.setdefault("steer", []).append("FROM @user: mid-turn hello")
         th.join(20)
@@ -345,7 +353,7 @@ def main() -> int:
             f"steered agent/user mail vanished from history: {user_text!r}"
         eq(st.get("steer"), [], "steer store drained")
         eq(st["turns_run"], 1, "steered turn completes normally")
-    check("mid-turn mail steers into the live codex turn", t5)
+    check("identity dirtiness does not stop live codex steering", t5)
 
     def t5b():
         os.environ["FAKECODEX_SCENARIO"] = "delta_pause"

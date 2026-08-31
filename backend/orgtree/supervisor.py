@@ -6457,14 +6457,18 @@ def _run_one_turn(slug: str, nid: str,
                         if leftover:
                             _steer_fold_log(slug, nid, len(leftover),
                                             "result boundary")
-                        # D-201: may this PROCESS keep serving? For a
-                        # warm-eligible turn the boundary re-decides — the
-                        # ruling is "respawn before the next turn is
-                        # admitted", and a queued message fed here IS the
-                        # next turn. A dirtied hash OR a flipped-off kill
-                        # switch declines the in-process feed (the queue
-                        # handoff in the finally runs it on a fresh process
-                        # with the fresh prompt) and declines the park below.
+                        # D-201: may this PROCESS remain cached? For a
+                        # warm-eligible turn the boundary re-decides. A
+                        # flipped-off kill switch or an eligibility change
+                        # closes delivery immediately. An IDENTITY change is
+                        # different: it marks this process for relaunch and
+                        # prevents parking, but must not stop an already-busy
+                        # process from draining mail at its result boundaries.
+                        # Waiting for the stale process to exit before handing
+                        # the carrier to a fresh process left mail stuck behind
+                        # long-lived background children (user report
+                        # 2026-08-31). The next cold admission gets the fresh
+                        # prompt after this queue drains.
                         # ONE flag read inside boundary_check serves both the
                         # behaviour and `bnd_lbl`, the label for the
                         # boundary-feed admit row — never re-read between.
@@ -6476,15 +6480,24 @@ def _run_one_turn(slug: str, nid: str,
                         # declined off this process and never rides the
                         # breadcrumb prompt (see _retire_breadcrumb_splice).
                         # A limit-hit boundary is not a served first turn.
+                        retired_splice = False
                         if turn_began_cc and not limited \
                                 and not ev.get("is_error"):
                             _retire_breadcrumb_splice(slug, nid)
                             turn_began_cc = False
-                        proc_current, bnd_lbl = True, warm_lbl
+                            retired_splice = True
+                        proc_current, may_feed, bnd_lbl = True, True, warm_lbl
                         if turn_hash is not None:
                             proc_current, bnd_lbl, _bnd_why = \
                                 warmpool.boundary_check(
                                     slug, nid, turn_hash, wp_turn)
+                            # Identity dirtiness is a RELAUNCH condition, not
+                            # a delivery condition. All other negative reasons
+                            # (kill switch, exclusion, provider/sandbox/scope
+                            # eligibility) still close this process's input.
+                            may_feed = proc_current or (
+                                _bnd_why == "identity-changed"
+                                and not retired_splice)
                             if not proc_current and wp_turn is not None:
                                 # note WHY on the process now — its exit row
                                 # (written once, at EOF) must be classified,
@@ -6515,7 +6528,7 @@ def _run_one_turn(slug: str, nid: str,
                         while True:
                             with _state_lock:
                                 if not (st["queue"] and not limited
-                                        and proc_current):
+                                        and may_feed):
                                     nxt = None
                                     break
                                 nxt = st["queue"].pop(0)

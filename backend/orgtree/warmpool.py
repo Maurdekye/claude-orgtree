@@ -787,8 +787,14 @@ def boundary_check(slug: str, nid: str,
     any admit row this boundary writes, WHY when it may not — the exit
     reason the turn notes on the process so its death row is classified).
     False whenever the switch is off, the node is excluded, eligibility
-    lapsed, or the identity hash moved — a queued message is 'the next
-    turn' and never rides any of those."""
+    lapsed, or the identity hash moved. The boolean answers whether this
+    process is current enough to PARK/REUSE, not whether its already-open
+    stdin may finish draining queued mail. The supervisor normally treats the
+    explicit ``identity-changed`` reason as relaunch-after-drain; every other
+    false reason closes delivery immediately. The one semantic exception is
+    retirement of a cheap-compact breadcrumb splice, whose contract is that it
+    serves exactly one turn. Keeping those state transitions separate prevents
+    an ordinary prompt refresh from becoming a mail-delivery gate."""
     on, label = warm_decision()
     if not on:
         return False, label, "disabled"
