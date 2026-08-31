@@ -433,8 +433,9 @@ def journal_cache_break_lines(slug: str, nid: str, sid: str,
 def limit_cache_usage_fields(usage: dict[str, Any]) -> dict[str, int]:
     """The accepted numeric counters from one Claude result usage object.
 
-    This is also the evidence-presence predicate: an empty/error-only result
-    must not consume the in-memory first-after-resume marker.
+    The caller uses positive values from this whitelist as its evidence
+    predicate. Explicit zeros still belong in the journal, but a synthetic
+    limit result made entirely of zeros cannot consume the resume marker.
     """
     out: dict[str, int] = {}
     for key in ("input_tokens", "cache_read_input_tokens",

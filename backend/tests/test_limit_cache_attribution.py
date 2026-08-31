@@ -113,23 +113,31 @@ def marker_lifecycle_contract() -> None:
     marker = {"session_id": "sid-a", "pid": 101, "account": "acct-a"}
     st = {"limit_cache_resume": marker}
 
-    phase, got = S._limit_cache_result_state(st, {}, limited=False)
+    phase, got = S._limit_cache_result_state(
+        st, {"input_tokens": 0}, limited=False)
     assert (phase, got) == (None, None)
     assert st["limit_cache_resume"] is marker
 
     # A second limit with no usage is still a real limit row, but it cannot
     # answer read-vs-create and therefore must not consume the marker.
-    phase, got = S._limit_cache_result_state(st, {}, limited=True)
+    phase, got = S._limit_cache_result_state(
+        st, {
+            "input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "output_tokens": 0,
+        }, limited=True)
     assert (phase, got) == ("limit", None)
     assert st["limit_cache_resume"] is marker
 
     phase, got = S._limit_cache_result_state(
-        st, {"cache_read_input_tokens": 0}, limited=False)
+        st, {"input_tokens": 1, "cache_read_input_tokens": 22000},
+        limited=False)
     assert phase == "first-after-resume" and got is marker
     assert "limit_cache_resume" not in st
 
 
-check("empty error retains the marker; the next usage-bearing result takes it",
+check("all-zero errors retain the marker; positive usage takes it",
       marker_lifecycle_contract)
 
 

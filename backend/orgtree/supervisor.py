@@ -850,9 +850,14 @@ def _limit_cache_result_state(
     Empty auth/network/error results are real boundaries but carry no cache
     evidence.  They leave the marker armed.  An immediate limit is still
     journaled as ``limit`` when empty, or as a usage-bearing
-    ``first-after-resume`` with ``limited=true`` when it has counters.
+    ``first-after-resume`` with ``limited=true`` when a counter is positive.
     """
-    has_usage = bool(warmpool.limit_cache_usage_fields(usage))
+    # The real synthetic-limit fixture carries ``input_tokens: 0``.  Presence
+    # is therefore not evidence: keep the marker until Claude reports at
+    # least one positive counter.  The journal helper still preserves zeros
+    # on the limit row because their explicit presence is useful evidence too.
+    has_usage = any(v > 0 for v in
+                    warmpool.limit_cache_usage_fields(usage).values())
     with _state_lock:
         marker = st.get("limit_cache_resume")
         if isinstance(marker, dict) and has_usage:
