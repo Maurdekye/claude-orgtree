@@ -209,6 +209,56 @@ def main() -> int:
             "provider change, which is the D-180 failure in another field")
     check("☠ a cross-provider switch never claims the context is intact", t4)
 
+    def t4b():
+        # The agent is told the COST, not only the context loss. Told just
+        # "your conversation does not carry over" it can read the switch as
+        # cheap; the warm process and the whole prompt cache go too, so the
+        # next turn is a full cold open.
+        slug, nid = mkagent("cost", "sol")
+        ran_a_turn(slug, nid, CODEX_TID, "codex_thread")
+        with store.DOC_LOCK:
+            o = store.load_org(slug)
+            o.switch_model(USER, nid, "opus")
+            store.save_org(o)
+        notices = store.load_org(slug).d.get("notices", {}).get(nid, [])
+        body = " ".join(str(x.get("text") or "") for x in notices).lower()
+        assert "sol" in body and "opus" in body,             f"instrument is not reading the switch notice: {body!r}"
+        assert "cache" in body,             "the switched agent is not told its prompt cache is gone"
+        assert "cold" in body,             "the switched agent is not told its next turn is a cold open"
+    check("☠ a cross-provider switch names the cache/cold-open COST", t4b)
+
+    def t4c():
+        # ACTIONABLE, and reusing the re-seed wording rather than inventing a
+        # second phrasing for the same situation: the agent has to re-orient
+        # itself, and its scratch CLAUDE.md is how.
+        slug, nid = mkagent("reorient", "sol")
+        ran_a_turn(slug, nid, CODEX_TID, "codex_thread")
+        with store.DOC_LOCK:
+            o = store.load_org(slug)
+            o.switch_model(USER, nid, "opus")
+            store.save_org(o)
+        notices = store.load_org(slug).d.get("notices", {}).get(nid, [])
+        body = " ".join(str(x.get("text") or "") for x in notices).lower()
+        assert "claude.md" in body,             "the switched agent is not pointed at its scratch CLAUDE.md"
+        assert "breadcrumb" in body, "…nor at its breadcrumbs"
+    check("☠ a cross-provider switch tells the agent HOW to re-orient", t4c)
+
+    def t4d():
+        # the ACTOR is warned about the cost too, not just the switched agent
+        slug, nid = mkagent("actorcost", "sol")
+        ran_a_turn(slug, nid, CODEX_TID, "codex_thread")
+        with store.DOC_LOCK:
+            o = store.load_org(slug)
+            r = o.switch_model(USER, nid, "opus")
+            store.save_org(o)
+        warned = " ".join(r.get("warnings") or []).lower()
+        # provider_of("sol") is "openai", not "codex" — the instrument reads
+        # the provider NAMES, so anchor on a value that must really be there.
+        assert "openai" in warned and "claude" in warned,             f"instrument is not reading the actor warning: {warned!r}"
+        assert "cache" in warned and "cold" in warned,             "the ACTOR is told the context is lost but not that it costs"
+    check("☠ the actor is warned about the cache cost, not just the context",
+          t4d)
+
     print("\n§5 ☠ ANTI-VACUITY: a same-lane switch still keeps its session")
 
     def t5():
@@ -236,6 +286,24 @@ def main() -> int:
             "a codex→codex switch must PRESERVE the thread"
         assert n.get("codex_thread") == CODEX_TID, "…and its marker"
     check("☠ codex→codex preserves the thread and its marker", t5b)
+
+    def t5c():
+        # ANTI-VACUITY for the cost wording: a SAME-LANE switch keeps its
+        # session, so it must NOT be told its cache is gone. Without this a
+        # blanket "you lost your cache" on every switch would pass t4b while
+        # being wrong half the time.
+        slug, nid = mkagent("samecost", "opus")
+        ran_a_turn(slug, nid, "claude-uuid-4444", None)
+        with store.DOC_LOCK:
+            o = store.load_org(slug)
+            r = o.switch_model(USER, nid, "sonnet")
+            store.save_org(o)
+        notices = store.load_org(slug).d.get("notices", {}).get(nid, [])
+        body = " ".join(str(x.get("text") or "") for x in notices).lower()
+        assert "intact" in body,             "a same-lane switch must still say the context is intact"
+        assert "cold open" not in body,             "a same-lane switch must NOT claim a cold open — it keeps its session"
+        assert not any("cache" in w.lower() for w in (r.get("warnings") or [])),             "a same-lane switch must not warn the actor about a lost cache"
+    check("☠ a SAME-LANE switch claims no cost and keeps saying 'intact'", t5c)
 
     print(f"\n{PASS} checks passed, {len(FAIL)} failed")
     for label, tb in FAIL:

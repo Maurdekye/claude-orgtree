@@ -3136,6 +3136,79 @@ Controls include real weekly/session limit replies, an unseen per-model reply,
 “organisation limit policy” false-ALIVE trap, shared-detector value replacement,
 and a child-process environment witness. The old exact-sentence classifier is
 kept as a failing control for the first three blind spots.
+### D-212 · a frozen org runs on its own API key, and nothing stands behind it
+
+Ruling (user, 2026-08-31), verbatim: **"with the featureset requested every
+frozen account should only use an api key"**.
+
+The per-org API key is the **required** credential for the frozen deployment
+profile — not one of two acceptable options. The host-subscription branch is
+not a supported frozen configuration. Frozen startup refuses an install in
+which any sandboxed org lacks a resolvable key, naming the org
+(`[ORG_PROVIDER_KEY] <org>: expected an explicit per-org API key`), and
+`tools/verify_frozen_install.py` reports the same check so an operator can
+find every keyless org before attempting to start.
+
+**Why the subscription could not simply be allowed.** A sandboxed org's
+provider traffic leaves through the bridge's `/anthropic/...` passthrough
+(`api.anthropic_proxy`), which has exactly two credential branches: an explicit
+org key attached as `x-api-key`, or the host subscription read by
+`subproxy.get_access_token()` from the fixed path
+`~/.claude/.credentials.json`. A host-mode turn is authenticated completely
+differently — `supervisor` injects `CLAUDE_CODE_OAUTH_TOKEN` chosen from the
+multi-account pool — and that is what supplies capacity failover in standard
+mode. The two lanes cannot meet: `subproxy` has no reference to the pool,
+`accounts` never writes the file `subproxy` reads, and a pool credential is an
+OAuth token needing `Authorization: Bearer` plus the `oauth-2025-04-20` beta
+header, so it cannot be attached through the `x-api-key` branch at all. No
+operator configuration bridges them.
+
+> **THE ACCOUNT-POOL BRANCH IS CLOSED, NOT DEFERRED.** Teaching
+> `anthropic_proxy` to select a pool token was the obvious alternative and it
+> was considered and rejected by the ruling. A future reader who finds that a
+> frozen install has no failover should know it was **decided**, not
+> overlooked, and should not resurrect it as an oversight. Reopening it is a
+> new user decision, not a bug fix.
+
+**The capacity consequence, which is now intended behaviour.** Each frozen org
+runs on its own key with nothing behind it. If that key is exhausted, revoked,
+or rate-limited, **that org stops** — there is no pool to fail over to, and the
+fallback-account machinery including the D-205 liveness checks is unreachable
+from frozen mode. Capacity must be planned and monitored per org. This is not a
+gap to be closed later; it is the shape the ruling chose.
+
+How it was found is worth recording, because it is the argument for enforcing
+it at startup rather than trusting documentation. On 2026-08-31 the primary
+subscription was at 100% of its weekly limit with a stale token whose refresh
+returned `403`, while every tier was assigned to a live fallback account the
+standard-mode fleet was running on normally. A frozen org could not reach that
+account by any supported configuration, and the failure surfaced only as a
+`502` in the middle of an agent's turn. It is now a named startup refusal.
+
+Two implementation notes that are load-bearing rather than incidental:
+
+* The check resolves `sandbox.anthropic_proxy_api_key()` — precisely the value
+  the passthrough would attach. Reading `org.d["api_key"]` directly is the
+  tempting simplification and it is **wrong**: it misses the kiosk-level key
+  and the install default, and it passes orgs the proxy would nonetheless route
+  to the subscription branch.
+* The attestation records **presence only** — never the key and never a digest
+  of it. Attestation output is written to logs, pasted into chats, and read
+  over shoulders; a test asserts a key cannot reach the report.
+
+**Not enforced at org creation, deliberately.** The natural complaint is that a
+keyless org is accepted quietly and only refuses a later restart, which is the
+error-far-from-its-cause shape this codebase keeps eliminating. It is left as a
+documented setup step because refusing at creation cannot currently be
+satisfied: `OrgCreate` carries no `api_key` field, and `KioskSpec` records a
+separate user ruling that creation-time auth "is NOT configurable … every
+sandbox uses the proxied subscription". A creation-time refusal would therefore
+make a frozen org impossible to create rather than merely harder to
+misconfigure. The documented migration also recreates orgs while still in
+`standard` mode, so a frozen-only creation check would not fire during the one
+procedure that most needs it. If creation ever learns to accept a key, this is
+the first place that check should go.
+
 ### D-210 · an argv assertion is not an integration test
 
 Twice on 2026-08-31 a fully green test suite concealed a defect that made the

@@ -3287,10 +3287,21 @@ class Org:
             # next message — that is the whole point of moving this failure
             # forward. Whether the UI should REFUSE such a switch rather than
             # warn is a user-facing rule and deliberately not decided here.
+            # Both messages name the COST as well as the loss. An agent (or a
+            # user) told only "the conversation does not carry over" can read
+            # the switch as cheap. It is not: the parked warm process and the
+            # whole prompt cache for this agent go with the session, so the
+            # next turn is a full cold open — the single most expensive thing
+            # that routinely happens on the claude lane. Measured 2026-08-30:
+            # switching the fleet to Codex is why the Claude cache work could
+            # not be validated at all — zero successful Claude requests in the
+            # entire post-deploy window.
             warnings.append(
                 f"{nid} moves from {providers.provider_of(old)} to "
                 f"{providers.provider_of(tier)} — a different provider, so its "
                 f"conversation CANNOT carry over and it starts a fresh session. "
+                f"Its warm process and prompt cache go too, so its next turn is "
+                f"a full cold open — the most expensive turn it can have. "
                 f"Its scratch folder, breadcrumbs and mail are untouched.")
         who = "the user" if actor == USER else f'"{actor}"'
         self._notify([x for x in [nid] if x != actor],
@@ -3301,8 +3312,12 @@ class Org:
                         f'({providers.provider_of(old)}→'
                         f'{providers.provider_of(tier)}), so your conversation '
                         f'could NOT be carried over and you are starting a '
-                        f'fresh session. Your scratch folder, breadcrumbs and '
-                        f'mail are untouched — read them to pick up where you '
+                        f'fresh session. Your warm process and prompt cache are '
+                        f'gone with it, so this turn is a cold open and costs '
+                        f'far more than a normal one — expect it, and do not '
+                        f'switch back and forth. Your memory starts fresh — '
+                        f'check your scratch CLAUDE.md, and your breadcrumbs and '
+                        f'mail are untouched; read them to pick up where you '
                         f'left off.'))
         self._notify([x for x in [n["parent"]] if x not in (actor, None)],
                      f'{who.capitalize()} switched "{nid}" {old}→{tier}.')
