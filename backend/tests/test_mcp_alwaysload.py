@@ -1,42 +1,20 @@
-"""alwaysLoad on every MCP server entry (new file per the landing rules).
+"""OrgTree must not force alwaysLoad on every MCP server entry.
 
 Run: python tests/test_mcp_alwaysload.py
 
-WHY. The tools array sits AHEAD of the system prompt in the cached prefix.
-Without alwaysLoad it is assembled from whichever servers have completed their
-handshake when the turn's first request goes out, so it differs run to run for
-the same agent and invalidates everything behind it. Measured association
-(n=1,063): MCP-pending openings 78.7% cold (370/470) vs 43.8% (260/593).
+WHY. CLI 2.1.220 waits for every alwaysLoad server before building turn 1.
+Production measured 5-7 second waits on cold and young-prewarm turns, which
+violates the user's no-first-request-handshake-wait rule. Registry entries may
+still opt in explicitly; the product must not add the field fleet-wide.
 
 CHECKS
-  1. every server in --mcp-config carries alwaysLoad: true (host shape).
-  2. CONTROL: the config is non-empty and names `orgtree` — check 1 is
-     vacuously true over an empty mapping, and an empty mcpServers is a
-     plausible breakage of the very line under test.
-  3. the flag survives a second, independent build — i.e. it is not a
-     first-call artifact of some cached structure.
-  4. CONTROL: the emitted JSON still parses and still round-trips the server's
-     real fields (command/args), so check 1 is not passing over a config we
-     have replaced with stubs.
+  1. CONTROL: emitted config is non-empty and names orgtree.
+  2. no generated entry is forced to alwaysLoad.
+  3. a second independent build stays unforced.
+  4. the emitted JSON retains the server's real command/args fields.
+  5. an explicit per-server opt-in remains true.
 
-⚠ A CHECK THAT WAS HERE AND WAS REMOVED, because it guarded a hazard that does
-not exist. It asserted that building the config does not mutate the shared MCP
-registry in place — the classic aliasing bug for `{**v}`-style code. A mutant
-that DID write in place passed every check, which sent me to look, and the
-claim is false: `registered_mcp_servers` re-parses ~/.claude.json on every call
-and `granted_mcp_servers` calls it again, so every read returns fresh objects
-and there is nothing shared to corrupt. The production code still copies —
-it is free and does not depend on that staying true — but a test asserting a
-property that cannot currently fail is a test that reports "nothing found"
-without being able to find anything, which is the thing this whole effort is
-supposed to be against. Removed rather than left looking like coverage.
-
-MUTANTS RUN (value replacements, reverted after):
-  M1 drop the alwaysLoad line entirely            → checks 1 and 3 FAIL.
-  M2 replace `chosen` with `{}` before serializing → checks 2 and 4 FAIL,
-     proving check 1 cannot pass on an empty mapping.
-  M3 mutate in place instead of copying           → NOTHING FAILS, correctly;
-     see the note above. Recorded because a mutant that survives is a finding.
+MUTANT: restoring the fleet-wide alwaysLoad rewrite turns checks 2 and 3 red.
 """
 import io
 import json
@@ -97,33 +75,50 @@ def mcp_config(nid="boss"):
     return json.loads(cmd[i + 1])["mcpServers"]
 
 
-print("\nalwaysLoad on every MCP server entry")
+print("\nno fleet-wide forced alwaysLoad")
 
 servers = mcp_config()
 
-check("2. CONTROL: the mcp config is non-empty and names `orgtree` "
+check("1. CONTROL: the mcp config is non-empty and names `orgtree` "
       "(check 1 is vacuously true over an empty mapping)",
       lambda: die(f"mcpServers empty or missing orgtree: {list(servers)}")
       if not (servers and "orgtree" in servers) else None)
 
-check("1. every server entry carries alwaysLoad: true",
-      lambda: die("missing/false alwaysLoad on: "
+check("2. no generated server entry is forced to alwaysLoad",
+      lambda: die("forced alwaysLoad on: "
                   + str([k for k, v in servers.items()
-                         if v.get("alwaysLoad") is not True]))
-      if any(v.get("alwaysLoad") is not True for v in servers.values())
-      else None)
+                         if v.get("alwaysLoad") is True]))
+      if any(v.get("alwaysLoad") is True for v in servers.values()) else None)
 
-check("5. CONTROL: the entries still carry their real fields, so check 1 is "
+check("3. CONTROL: the entries still carry their real fields, so check 2 is "
       "not passing over stubs",
       lambda: die(f"orgtree entry lost its command/args: {servers['orgtree']}")
       if not (servers["orgtree"].get("command")
               and servers["orgtree"].get("args")) else None)
 
 
-check("3. a second independent build still carries the flag",
-      lambda: die("flag absent on the second build")
-      if any(v.get("alwaysLoad") is not True
+check("4. a second independent build remains unforced",
+      lambda: die("forced alwaysLoad appeared on the second build")
+      if any(v.get("alwaysLoad") is True
              for v in mcp_config().values()) else None)
+
+original_grants = S.granted_mcp_servers
+S.granted_mcp_servers = lambda _org, _nid: {
+    "explicit-opt-in": {
+        "command": sys.executable,
+        "args": ["-c", "pass"],
+        "alwaysLoad": True,
+    }
+}
+try:
+    opted = mcp_config()
+finally:
+    S.granted_mcp_servers = original_grants
+
+check("5. an explicit per-server alwaysLoad opt-in is preserved",
+      lambda: die(f"explicit opt-in changed: {opted}")
+      if opted.get("explicit-opt-in", {}).get("alwaysLoad") is not True
+      else None)
 
 print(f"\n  servers: {sorted(servers)}")
 print(f"\n{PASS} passed, {FAIL} failed")
